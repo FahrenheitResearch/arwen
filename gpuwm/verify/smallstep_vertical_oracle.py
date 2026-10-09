@@ -167,10 +167,18 @@ def make_vertical_state(raw, metadata):
 @lru_cache(maxsize=12)
 def _diagnostic_module(source, no_fma, preserve_subnormals):
     import cupy as cp
-    options = ("-std=c++17",) + (("--fmad=false",) if no_fma else ())
-    if preserve_subnormals:
+    from gpuwm import wrf_exact
+    from gpuwm.core.kernels import diffusion_kernel, function_options, module_options
+    options = function_options("acoustic", "advance_w_phi", module_options("acoustic"))
+    if wrf_exact.ENABLED:
+        options = wrf_exact.effective_options(options)
+    if no_fma and "--fmad=false" not in options:
+        options += ("--fmad=false",)
+    if preserve_subnormals and "--ftz=false" not in options:
+        options += ("--ftz=false",)
+    if diffusion_kernel("acoustic", "advance_w_phi") or preserve_subnormals:
         from cupy.cuda import compiler, function
-        binary, _ = compiler.compile_using_nvrtc(source, options=options + ("-ftz=false",))
+        binary, _ = compiler.compile_using_nvrtc(source, options=options)
         module = function.Module()
         module.load(binary)
         return module

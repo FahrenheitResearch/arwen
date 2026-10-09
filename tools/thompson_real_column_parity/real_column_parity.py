@@ -145,6 +145,21 @@ def load_columns(path, max_cols=None, seed=0):
     return cols
 
 
+def c_powf(x, y):
+    """Elementwise float32 ``x**y`` through the C library's powf, the word
+    WRF's phy_prep forms ``pi_phy`` with in the gfortran build and the
+    adapter's Exner kernel reproduces.  NumPy's float32 power is not that
+    function on every host (it may dispatch to its own SIMD routine)."""
+    import ctypes
+    import ctypes.util
+    libm = ctypes.CDLL(ctypes.util.find_library("m"))
+    libm.powf.restype = ctypes.c_float
+    libm.powf.argtypes = (ctypes.c_float, ctypes.c_float)
+    x = np.asarray(x, f32)
+    flat = [libm.powf(float(v), float(y)) for v in x.ravel()]
+    return np.array(flat, dtype=f32).reshape(x.shape)
+
+
 def prepare(cols, mp=28):
     """The float32 arrays both codes receive, formed as the adapter forms
     them (gpuwm/core/microphysics_aerosol.py and microphysics.py alike:
@@ -158,7 +173,7 @@ def prepare(cols, mp=28):
     inp = {
         "th": np.ascontiguousarray(cols["th"], dtype=f32),
         "p": p,
-        "pii": np.power(p / f32(C.P0), f32(C.RCP)),
+        "pii": c_powf(p / f32(C.P0), f32(C.RCP)),
         "geop": geop,
         "z8w": z8w,
         "dz": np.ascontiguousarray(z8w[:, 1:] - z8w[:, :-1]),
@@ -342,7 +357,7 @@ def _snapshot(state, dt=None, species=SPECIES):
         snap["ng"] = _cols(state._scratch["mp_thompson_graupel_number_shadow"])
     for acc, var in (("qcten", "qc"), ("ncten", "nc"), ("nwfaten", "nwfa"),
                      ("nifaten", "nifa"), ("qrten", "qr"), ("nrten", "nr"),
-                     ("qiten", "qi"), ("niten", "ni")):
+                     ("qiten", "qi"), ("niten", "ni"), ("qvten", "qv")):
         slot = f"mp_thompson_aero_{acc}"
         if slot in state._scratch:
             snap[acc] = _cols(state._scratch[slot])
@@ -350,6 +365,11 @@ def _snapshot(state, dt=None, species=SPECIES):
                 entry = np.asarray(getattr(state, var), f32)
                 ten = np.asarray(state._scratch[slot], f32)
                 snap[var] = _cols(entry + ten * f32(dt))
+                if var == "qv":
+                    # The vapour accumulator carries qv1d + DT*qvten until
+                    # the rain evaporation forms the running vapour and
+                    # zeroes it; the working value is floored (:3192).
+                    snap[var] = np.maximum(snap[var], 1.0e-10)
     for sfc in ("rainnc", "snownc", "graupelnc"):
         slot = f"mp_{sfc}"
         if slot in state._scratch:

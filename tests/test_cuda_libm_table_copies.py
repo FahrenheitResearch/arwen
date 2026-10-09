@@ -91,6 +91,11 @@ SHARED_TABLES: dict[str, str | None] = {
     "EXP2F_MISC": None,
     "LOGF_MISC": None,
     "POWF_MISC": None,
+    # WOOF's own float32 expf constants (scaled 1/ln2, shift, three
+    # polynomial terms), written once per MYNN unit: mynn_pbl.cu and its
+    # DMP sibling.  No tuple in noahmp_libm spells them, so cross-copy
+    # equality is their gate, as for the other *_MISC rows.
+    "EXPF_MISC": None,
 }
 
 #: Suffixes that are NOT one shared table: the same identifier is reused by

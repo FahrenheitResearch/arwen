@@ -193,7 +193,7 @@ def test_root_guard_refuses_before_disabled_overlay(tmp_path,receipt):
 def test_root_guard_accepts_attestation(tmp_path,nested):
     receipt={'terrain_smoothing':{'d03':TerrainSmoothing('none').echo()}}
     if nested: receipt={'baseline':receipt}
-    base={}
+    base={"HGT_M": np.zeros((2, 2))}
     got=apply_prepared_highres(base,SimpleNamespace(),config=carrier(tmp_path),domain_id=3,
             case_date=date(2000,1,1),landuse_attrs=None,baseline_receipt=receipt)
     assert got[0] is base and got[1] is receipt

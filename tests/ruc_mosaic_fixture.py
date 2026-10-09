@@ -7,7 +7,7 @@ import numpy as np
 from gpuwm.core.ruc import (RUC_DRIVER_COLUMN_FORCING, RUC_DRIVER_COLUMN_STATE,
                             RUC_DRIVER_PROFILE_STATE)
 from tools.ruc_wrf461_oracle.validate_lsmruc_oracle import (
-    _call_arguments, _entry, _load, _result)
+    _call_arguments, _entry, _load, _result, _single_count_sfcevp)
 
 ORACLE = Path(__file__).parents[1] / "gpuwm/data/ruc/oracle"
 
@@ -85,4 +85,6 @@ def driver_calls():
         keywords["landusef"], keywords["soilctop"] = driver_fractions(groups[begin][0])
         expected = {name: _result(field, name)[:, take].copy() for name in RUC_DRIVER_PROFILE_STATE}
         expected.update({name: _result(field, name)[0, take].copy() for name in RUC_DRIVER_COLUMN_STATE})
+        # WRF counts SFCEVP twice per land step (:1095, :1116); WOOF once.
+        expected["sfcevp"] = _single_count_sfcevp(field)[take].copy()
         yield groups[begin][:2], values, keywords, expected

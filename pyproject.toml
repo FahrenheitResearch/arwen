@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.8.7"
+version = "2.8.8"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -144,7 +144,7 @@ requires-python = ">=3.11"
 # tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0", "threadpoolctl>=3.1",
-                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.8.7"]
+                "scipy>=1.11", "pyshp>=2.3", "cdsapi>=0.7.7", "gpuwm-data==2.8.8"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -319,8 +319,15 @@ dealias = []
 # the windows-2025 runner's Python 3.11.9 kept its bundled setuptools 65,
 # which has no setuptools.command.bdist_wheel, and all six wheel-gate tests
 # died on that import before the gate they prove could run (2.8.2 cpu job).
+#
+# ruff: tests/test_no_undefined_names.py runs its undefined-name rules
+# (F821/F822/F823) over gpuwm/, tools/ and tilestream/.  2.8.8's candidate
+# crashed every real forecast at model step 1 on a name an intake commit
+# used and never defined, on a GPU-only path no CPU test reaches; this
+# lint finds that class in seconds.  Pinned exactly so a ruff release
+# cannot move what the gate reports.
 dev = ["pytest>=8.0", "pytest-xdist>=3.5", "psutil>=5.9", "pyyaml>=6.0",
-       "setuptools>=77"]
+       "setuptools>=77", "ruff==0.13.3"]
 # Maintainer-only, and both entries are the same shape: a tool that
 # REGENERATES something the wheel ships, reachable by nobody else.
 #
@@ -404,7 +411,7 @@ all = ["gpuwm[all-cu12]"]
 # Deliberately outside [all]: the quickstart one-liner serves a person
 # running a forecast, and the excuse is recorded where the invariant is
 # enforced (tests/test_dependency_declaration_parity.py).
-mcp = ["mcp>=1.26,<2"]
+mcp = ["mcp>=1.26,<2.0.0a0"]
 
 [project.scripts]
 # Offline carried-physics review; no forecast runtime or GPU imports.

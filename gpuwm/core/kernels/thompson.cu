@@ -3658,6 +3658,29 @@ __device__ __forceinline__ int thompson_decade_table_index_double(
     return max(0, min(one_based - 1, table_size - 1));
 }
 
+// THE RAIN-GRAUPEL TABLE INDEX (mp=8).  WRF allocates tcg_racg..tnr_gacr as
+// (ntb_g1, ntb_g, dimNRHG, ntb_r1, ntb_r) with dimNRHG = NRHG1 = 1 when the
+// scheme is not hail aware (module_mp_thompson.F:465, :607-615), builds its
+// one density slab for rho_g(idx_bg1) (:4123), and then reads it at
+// :2527-2545 with idx_bg(k) = idx_bg1 = 5 (:1950, :2848): an out-of-bounds
+// subscript on a dimension of extent 1, which gfortran without bounds
+// checking turns into a read 4*37*37 words further on (idx_r1+4, and past
+// the end of the array for the last rain bins).  WOOF does not reproduce an
+// out-of-bounds read: it reads the one slab the table holds, the collision
+// rates WRF built for this graupel density.  This is a DECLARED divergence
+// from WRF v4.6.1 wherever rain meets graupel (prg_rcg, prr_rcg, pnr_rcg,
+// png_rcg and everything downstream of them), the same one mp=28 declares
+// at aaf_racg_index (thompson_aerosol_common.cuh).  Bins are zero based.
+__device__ __forceinline__ size_t thompson_racg_index(
+    int graupel_intercept_bin, int graupel_mass_bin,
+    int rain_intercept_bin, int rain_mass_bin)
+{
+    return (size_t)graupel_intercept_bin
+        + (size_t)37 * ((size_t)graupel_mass_bin
+        + (size_t)37 * ((size_t)rain_intercept_bin
+        + (size_t)37 * (size_t)rain_mass_bin));
+}
+
 extern "C" __global__ void thompson_warm_frozen_source_network(
     float* __restrict__ qc,
     float* __restrict__ qr,
@@ -3982,37 +4005,32 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
                 * graupel_lambda;
             const int graupel_intercept_bin =
                 thompson_decade_table_index_double(intercept, 2, 37);
-            const size_t nominal_idx = (size_t)graupel_intercept_bin
-                + (size_t)37 * ((size_t)graupel_mass_bin
-                + (size_t)37 * ((size_t)0
-                + (size_t)1 * ((size_t)rain_intercept_bin
-                + (size_t)37 * (size_t)rain_bin)));
-            const size_t table_idx = nominal_idx + (size_t)4 * 37 * 37;
-            const size_t table_size = (size_t)37 * 37 * 1 * 37 * 37;
-            if (table_idx < table_size) {
-                if (wet_bulb < 273.15f) {
-                    rain_graupel_graupel_rate = fmin(
-                        (double)(rain_mass * inverse_dt),
-                        tmr_racg[table_idx] + tcr_gacr[table_idx]);
-                    rain_graupel_rain_rate =
-                        -rain_graupel_graupel_rate;
-                    rain_graupel_rain_number_rate = fmin(
-                        (double)(rain_number * inverse_dt),
-                        tnr_racg[table_idx] + tnr_gacr[table_idx]);
-                } else {
-                    rain_graupel_rain_rate = fmin(
-                        (double)(graupel_mass * inverse_dt),
-                        tcg_racg[table_idx]);
-                    rain_graupel_graupel_rate =
-                        -rain_graupel_rain_rate;
-                    rain_graupel_number_rate = fmin(
-                        (double)(graupel_number * inverse_dt),
-                        tnr_racg[table_idx]);
-                    // pnr_rcg is deliberately negative in this inverse
-                    // branch: subtracting it adds breakup drops.
-                    rain_graupel_rain_number_rate =
-                        -1.5 * tnr_gacr[table_idx];
-                }
+            // One slab, never WRF's idx_bg1=5 subscript: thompson_racg_index.
+            const size_t table_idx = thompson_racg_index(
+                graupel_intercept_bin, graupel_mass_bin,
+                rain_intercept_bin, rain_bin);
+            if (wet_bulb < 273.15f) {
+                rain_graupel_graupel_rate = fmin(
+                    (double)(rain_mass * inverse_dt),
+                    tmr_racg[table_idx] + tcr_gacr[table_idx]);
+                rain_graupel_rain_rate =
+                    -rain_graupel_graupel_rate;
+                rain_graupel_rain_number_rate = fmin(
+                    (double)(rain_number * inverse_dt),
+                    tnr_racg[table_idx] + tnr_gacr[table_idx]);
+            } else {
+                rain_graupel_rain_rate = fmin(
+                    (double)(graupel_mass * inverse_dt),
+                    tcg_racg[table_idx]);
+                rain_graupel_graupel_rate =
+                    -rain_graupel_rain_rate;
+                rain_graupel_number_rate = fmin(
+                    (double)(graupel_number * inverse_dt),
+                    tnr_racg[table_idx]);
+                // pnr_rcg is deliberately negative in this inverse
+                // branch: subtracting it adds breakup drops.
+                rain_graupel_rain_number_rate =
+                    -1.5 * tnr_gacr[table_idx];
             }
         }
     }
@@ -5832,27 +5850,17 @@ extern "C" __global__ void thompson_rain_graupel_collection(
                     * rain_lambda * rain_lambda,
                 6, 37);
 
-        // WRF-v4.6.1 classic mp=8 allocates this table's bulk-density
-        // dimension with extent one but indexes it using idx_bg1=5.  With
-        // its normal bounds-check-free build, that aliases four complete
-        // r1 slabs forward.  Preserve the observed official-column result
-        // explicitly and safely; never reproduce the source's pointer OOB.
-        const size_t nominal_idx = (size_t)graupel_intercept_bin
-            + (size_t)37 * ((size_t)graupel_mass_bin
-            + (size_t)37 * ((size_t)0
-            + (size_t)1 * ((size_t)rain_intercept_bin
-            + (size_t)37 * (size_t)rain_mass_bin)));
-        const size_t table_idx = nominal_idx + (size_t)4 * 37 * 37;
-        const size_t table_size = (size_t)37 * 37 * 1 * 37 * 37;
-        if (table_idx < table_size) {
-            graupel_rate = tmr_racg[table_idx] + tcr_gacr[table_idx];
-            graupel_rate = fmin(
-                (double)(rain_mass / dt), graupel_rate);
-            collision_number_rate = tnr_racg[table_idx]
-                + tnr_gacr[table_idx];
-            collision_number_rate = fmin(
-                (double)(rain_number / dt), collision_number_rate);
-        }
+        // One slab, never WRF's idx_bg1=5 subscript: thompson_racg_index.
+        const size_t table_idx = thompson_racg_index(
+            graupel_intercept_bin, graupel_mass_bin,
+            rain_intercept_bin, rain_mass_bin);
+        graupel_rate = tmr_racg[table_idx] + tcr_gacr[table_idx];
+        graupel_rate = fmin(
+            (double)(rain_mass / dt), graupel_rate);
+        collision_number_rate = tnr_racg[table_idx]
+            + tnr_gacr[table_idx];
+        collision_number_rate = fmin(
+            (double)(rain_number / dt), collision_number_rate);
     }
 
     const float mass_tendency = (float)(graupel_rate * (double)orho);
@@ -5993,28 +6001,21 @@ extern "C" __global__ void thompson_cold_rain_snow_graupel_network(
             thompson_decade_table_index_double(
                 graupel_intercept, 2, 37);
 
-        // Pin the observed WRF-v4.6.1 classic density-index alias safely;
-        // see thompson_rain_graupel_collection above.
-        const size_t nominal_idx = (size_t)graupel_intercept_bin
-            + (size_t)37 * ((size_t)graupel_mass_bin
-            + (size_t)37 * ((size_t)0
-            + (size_t)1 * ((size_t)rain_intercept_bin
-            + (size_t)37 * (size_t)rain_mass_bin)));
-        const size_t table_idx = nominal_idx + (size_t)4 * 37 * 37;
-        const size_t table_size = (size_t)37 * 37 * 1 * 37 * 37;
-        if (table_idx < table_size) {
-            rain_graupel_graupel_rate =
-                tmr_racg[table_idx] + tcr_gacr[table_idx];
-            rain_graupel_graupel_rate = fmin(
-                (double)(rain_mass / dt),
-                rain_graupel_graupel_rate);
-            rain_graupel_rain_rate = -rain_graupel_graupel_rate;
-            rain_graupel_number_rate =
-                tnr_racg[table_idx] + tnr_gacr[table_idx];
-            rain_graupel_number_rate = fmin(
-                (double)(rain_number / dt),
-                rain_graupel_number_rate);
-        }
+        // One slab, never WRF's idx_bg1=5 subscript: thompson_racg_index.
+        const size_t table_idx = thompson_racg_index(
+            graupel_intercept_bin, graupel_mass_bin,
+            rain_intercept_bin, rain_mass_bin);
+        rain_graupel_graupel_rate =
+            tmr_racg[table_idx] + tcr_gacr[table_idx];
+        rain_graupel_graupel_rate = fmin(
+            (double)(rain_mass / dt),
+            rain_graupel_graupel_rate);
+        rain_graupel_rain_rate = -rain_graupel_graupel_rate;
+        rain_graupel_number_rate =
+            tnr_racg[table_idx] + tnr_gacr[table_idx];
+        rain_graupel_number_rate = fmin(
+            (double)(rain_number / dt),
+            rain_graupel_number_rate);
     }
 
     // WRF groups all rain-mass sinks before applying the species bound.  It
@@ -6272,26 +6273,21 @@ extern "C" __global__ void thompson_cold_rain_source_network(
         const int graupel_intercept_bin =
             thompson_decade_table_index_double(
                 (double)powf(10.0f, intercept_power), 2, 37);
-        const size_t nominal_idx = (size_t)graupel_intercept_bin
-            + (size_t)37 * ((size_t)graupel_mass_bin
-            + (size_t)37 * ((size_t)0
-            + (size_t)1 * ((size_t)rain_intercept_bin
-            + (size_t)37 * (size_t)rain_mass_bin)));
-        const size_t table_idx = nominal_idx + (size_t)4 * 37 * 37;
-        const size_t table_size = (size_t)37 * 37 * 1 * 37 * 37;
-        if (table_idx < table_size) {
-            rain_graupel_graupel_rate =
-                tmr_racg[table_idx] + tcr_gacr[table_idx];
-            rain_graupel_graupel_rate = fmin(
-                (double)(rain_mass / dt),
-                rain_graupel_graupel_rate);
-            rain_graupel_rain_rate = -rain_graupel_graupel_rate;
-            rain_graupel_number_rate =
-                tnr_racg[table_idx] + tnr_gacr[table_idx];
-            rain_graupel_number_rate = fmin(
-                (double)(rain_number / dt),
-                rain_graupel_number_rate);
-        }
+        // One slab, never WRF's idx_bg1=5 subscript: thompson_racg_index.
+        const size_t table_idx = thompson_racg_index(
+            graupel_intercept_bin, graupel_mass_bin,
+            rain_intercept_bin, rain_mass_bin);
+        rain_graupel_graupel_rate =
+            tmr_racg[table_idx] + tcr_gacr[table_idx];
+        rain_graupel_graupel_rate = fmin(
+            (double)(rain_mass / dt),
+            rain_graupel_graupel_rate);
+        rain_graupel_rain_rate = -rain_graupel_graupel_rate;
+        rain_graupel_number_rate =
+            tnr_racg[table_idx] + tnr_gacr[table_idx];
+        rain_graupel_number_rate = fmin(
+            (double)(rain_number / dt),
+            rain_graupel_number_rate);
     }
 
     // Exact classic-WRF rain conservation group.  Only mass rates scale;
@@ -6865,27 +6861,22 @@ extern "C" __global__ void thompson_frozen_vapor_network(
             const int graupel_intercept_bin =
                 thompson_decade_table_index_double(
                     (double)powf(10.0f, intercept_power), 2, 37);
-            const size_t nominal_idx = (size_t)graupel_intercept_bin
-                + (size_t)37 * ((size_t)graupel_mass_bin
-                + (size_t)37 * ((size_t)0
-                + (size_t)1 * ((size_t)rain_intercept_bin
-                + (size_t)37 * (size_t)rain_mass_bin)));
-            const size_t table_idx = nominal_idx + (size_t)4 * 37 * 37;
-            const size_t table_size = (size_t)37 * 37 * 1 * 37 * 37;
-            if (table_idx < table_size) {
-                rain_graupel_graupel_rate =
-                    tmr_racg[table_idx] + tcr_gacr[table_idx];
-                rain_graupel_graupel_rate = fmin(
-                    (double)(rain_mass / dt),
-                    rain_graupel_graupel_rate);
-                rain_graupel_rain_rate =
-                    -rain_graupel_graupel_rate;
-                rain_graupel_number_rate =
-                    tnr_racg[table_idx] + tnr_gacr[table_idx];
-                rain_graupel_number_rate = fmin(
-                    (double)(rain_number / dt),
-                    rain_graupel_number_rate);
-            }
+            // One slab, never WRF's idx_bg1=5 subscript: thompson_racg_index.
+            const size_t table_idx = thompson_racg_index(
+                graupel_intercept_bin, graupel_mass_bin,
+                rain_intercept_bin, rain_mass_bin);
+            rain_graupel_graupel_rate =
+                tmr_racg[table_idx] + tcr_gacr[table_idx];
+            rain_graupel_graupel_rate = fmin(
+                (double)(rain_mass / dt),
+                rain_graupel_graupel_rate);
+            rain_graupel_rain_rate =
+                -rain_graupel_graupel_rate;
+            rain_graupel_number_rate =
+                tnr_racg[table_idx] + tnr_gacr[table_idx];
+            rain_graupel_number_rate = fmin(
+                (double)(rain_number / dt),
+                rain_graupel_number_rate);
         }
     }
 
@@ -7621,27 +7612,22 @@ extern "C" __global__ THOMPSON_COLD_NETWORK_BOUNDS void thompson_frozen_vapor_cl
             const int graupel_intercept_bin =
                 thompson_decade_table_index_double(
                     (double)powf(10.0f, intercept_power), 2, 37);
-            const size_t nominal_idx = (size_t)graupel_intercept_bin
-                + (size_t)37 * ((size_t)graupel_mass_bin
-                + (size_t)37 * ((size_t)0
-                + (size_t)1 * ((size_t)rain_intercept_bin
-                + (size_t)37 * (size_t)rain_mass_bin)));
-            const size_t table_idx = nominal_idx + (size_t)4 * 37 * 37;
-            const size_t table_size = (size_t)37 * 37 * 1 * 37 * 37;
-            if (table_idx < table_size) {
-                rain_graupel_graupel_rate =
-                    tmr_racg[table_idx] + tcr_gacr[table_idx];
-                rain_graupel_graupel_rate = fmin(
-                    (double)(rain_mass / dt),
-                    rain_graupel_graupel_rate);
-                rain_graupel_rain_rate =
-                    -rain_graupel_graupel_rate;
-                rain_graupel_number_rate =
-                    tnr_racg[table_idx] + tnr_gacr[table_idx];
-                rain_graupel_number_rate = fmin(
-                    (double)(rain_number / dt),
-                    rain_graupel_number_rate);
-            }
+            // One slab, never WRF's idx_bg1=5 subscript: thompson_racg_index.
+            const size_t table_idx = thompson_racg_index(
+                graupel_intercept_bin, graupel_mass_bin,
+                rain_intercept_bin, rain_mass_bin);
+            rain_graupel_graupel_rate =
+                tmr_racg[table_idx] + tcr_gacr[table_idx];
+            rain_graupel_graupel_rate = fmin(
+                (double)(rain_mass / dt),
+                rain_graupel_graupel_rate);
+            rain_graupel_rain_rate =
+                -rain_graupel_graupel_rate;
+            rain_graupel_number_rate =
+                tnr_racg[table_idx] + tnr_gacr[table_idx];
+            rain_graupel_number_rate = fmin(
+                (double)(rain_number / dt),
+                rain_graupel_number_rate);
         }
     }
 

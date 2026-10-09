@@ -1137,7 +1137,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     # A runtime check whose own runtime is unnamed is not a check.
     from gpuwm.provenance_gate import announce_for_main
 

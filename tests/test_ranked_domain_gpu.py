@@ -39,6 +39,44 @@ def test_adaptive_same_card_cfl_and_digest():
     adaptive_loop(nsteps=4)
 
 
+def test_executor_clock_order_drains_no_ranked_store():
+    """THE BREAKAGE: 67e213588 (SFIRE clock fix, 10-02; in 2.8.7 through
+    e81291059) made ``StreamedDomain.impose_clock`` read ``self.store``.  On
+    the ranked road that is a full drain of every slab to the host plus a
+    full re-gather before the next sweep, and ``execute_experiment`` calls
+    ``impose_clock`` before and after every step: 720 full drains in 720
+    steps on M1, and a 2-card forecast at 0.78x of one card (V5 synthetic,
+    2 cards: 114.7 ms per step against 67.5 with a lazy store).  The
+    executor's per-step order on a forecast without fire must drain and
+    gather nothing.
+    """
+    from gpuwm.core import streaming
+    from gpuwm.core.devices import DeviceOptions
+    from tilestream.ranks_gate import config, fixture, make_ranked
+    cfg = config(96, 80, 12)
+    state, bundle = fixture(cfg)
+    del state
+    options = DeviceOptions(count=2, ids=(0, 0))
+    streamed = make_ranked(bundle, cfg, streaming.ranked_decision(cfg, options),
+                           options, None, "threads")
+    run = streamed.tiled_run
+    try:
+        assert "fire_clocks" not in streamed.scalars
+        before = dict(run.output_report)
+        for _ in range(4):
+            streamed.impose_clock(streamed.elapsed_seconds)    # model.py, before the step
+            streamed(None, run.cfg)
+            streamed.impose_clock(streamed.elapsed_seconds)    # model.py, after the step
+        drained = {key: run.output_report[key] - before[key]
+                   for key in ("full_drains", "full_gathers")}
+        assert drained == {"full_drains": 0, "full_gathers": 0}, (
+            f"4 executor-order steps on 2 ranks paid {drained}: impose_clock is "
+            "draining the ranked store again (67e213588)")
+        assert streamed.steps == 4
+    finally:
+        run.close()
+
+
 def test_lazy_store_roundtrip_and_worker_failure(monkeypatch):
     import cupy as cp
     from gpuwm.core import dycore, streaming

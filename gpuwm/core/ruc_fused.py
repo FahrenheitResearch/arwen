@@ -365,7 +365,8 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
                            *mosaic_args, np.int32(lakemodel),
                            np.int32(qvg_air),
                            np.int32(1 if params.rdlai2d else 0),
-                           np.float32(params.xice_threshold)))
+                           np.float32(params.xice_threshold),
+                           np.int32(params.fractional_seaice)))
     sfvalues = {name: w.arrays[source] for name, source in _SF_VALUES.items()}
     hook_kwargs = dict(run=w.run, delt=float(timestep), conflx=w.arrays["conflx"],
                        ivgtyp=w.integer[0], iland=w.integer[2], nroot=w.integer[3],
@@ -402,7 +403,8 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
                            landusef, np.int32(landusef.shape[0]), np.int32(mosaic_lu),
                            np.int32(crop), np.int32(natural),
                            np.int32(irrigation_selector), np.int32(log_profile),
-                           np.float32(params.xice_threshold)))
+                           np.float32(params.xice_threshold),
+                           np.int32(params.fractional_seaice)))
     targets = {argument: fields[name] for name, argument in RUC_STATE_BINDING.items()}
     targets.update({argument: fields[name] for name, argument in RUC_PROFILE_BINDING.items()})
     targets.update({name: fields[name] for name in _EXTRAS})

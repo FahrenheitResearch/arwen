@@ -1,0 +1,16 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# -O0 libm symbols (THE REFERENCE):
+U atanf
+U expf
+U logf
+U powf
+# -O2 -ftree-vectorize (WRF's own phys/ setting):
+U _ZGVbN4vv_powf
+U atanf
+U expf
+U logf
+U powf
+# positive control (plain expf loop at -Ofast):
+U _ZGVbN4v_expf
+U expf

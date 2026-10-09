@@ -677,16 +677,22 @@ def test_refl_10cm_is_bit_identical_under_two_very_different_nc_fields():
 
 
 @requires_gpu
-def test_mp28_and_mp8_reflectivity_agree_bitwise_on_identical_inputs():
-    """One WRF routine, so one ArWen answer.
+def test_mp28_echo_is_its_own_transcription_and_mp8s_stays_frozen():
+    """One WRF routine, two ArWen kernels, on purpose.
 
-    If mp=28 ever grew its own reflectivity branch, this is what would
-    catch it: the same state evaluated under both selectors must produce
-    the same bits, because in WRF it is literally the same call.
+    In WRF both selectors call the same ``calc_refl10cm``.  mp=8's kernel
+    (refl.cu, refl10cm_thompson_column) is byte-frozen and its arithmetic is
+    not WRF's (CUDA's pow, 720 where crg(4) = 720.000061, binary64 slopes and
+    radar constants); mp=28 runs its own transcription
+    (thompson_aerosol_state.cu, thompson_aa_refl10cm), which
+    tests/test_thompson_aerosol_sedim_refl.py holds to WRF's word on every
+    cell of its fixture.  So the two agree to the frozen kernel's rounding,
+    not necessarily bit for bit, and mp=28's answer is the transcription's.
     """
     import cupy as cp
 
     from gpuwm.core.refl import compute_refl_10cm
+    from gpuwm.core.thompson_aerosol_state import launch_aa_refl10cm
 
     try:
         cp.cuda.runtime.getDeviceCount()
@@ -726,7 +732,12 @@ def test_mp28_and_mp8_reflectivity_agree_bitwise_on_identical_inputs():
             state, _cfg(mp_physics=mp), temperature=temperature,
             pressure=state.p, thompson_graupel_number=graupel_number)
         out.append(cp.asnumpy(refl).copy())
-    assert np.array_equal(out[0], out[1])
+    state = _make()
+    direct = cp.zeros((nz, ny, nx), dtype=cp.float32)
+    launch_aa_refl10cm(state.qv, state.qr, state.nr, state.qs, state.qg,
+                       graupel_number, temperature, state.p, direct)
+    assert np.array_equal(out[1], cp.asnumpy(direct))
+    assert np.abs(out[0].astype(np.float64) - out[1]).max() < 1.0e-3
 
 
 # ---------------------------------------------------------------------------
@@ -2103,7 +2114,18 @@ _REFL_DBZ_GATE = 2.0e-4
 #: in the deck now clears the flat 2.0e-04 dB gate and the exemption buys
 #: nothing.  Leaving the dict in place keeps `_REFL_DBZ_INHERITED_GATE.get`
 #: as the single lookup and makes re-adding an entry a deliberate act.
-_REFL_DBZ_INHERITED_GATE: dict[str, float] = {}
+#:
+#: RE-ADDED, DELIBERATELY, FOR THE DECLARED RAIN-GRAUPEL DIVERGENCE (lane/
+#: mp28-exact).  ``aero-cold-overlap`` is the one fixture where rain meets
+#: graupel; WRF v4.6.1 reads its rain-graupel collision tables out of bounds
+#: when the scheme is not hail aware (module_mp_thompson.F:465, :607-615,
+#: :2527-2545) and WOOF reads the slab the tables hold, so its rain, snow
+#: and graupel, and the echo they make, differ from WRF by that read alone
+#: (tests/test_thompson_aerosol_adapter.py::_G3_DECLARED_REFL_DB carries the
+#: same 1.585e-03 dB).  The bound is that measurement plus the 1% printing
+#: tolerance the G3 ratchet uses; every other fixture stays on the flat
+#: 2.0e-04 dB gate.
+_REFL_DBZ_INHERITED_GATE: dict[str, float] = {"aero-cold-overlap": 1.601e-03}
 
 
 def _refl_oracle_harness():
@@ -2146,9 +2168,10 @@ def test_refl_10cm_reproduces_wrfs_calc_refl10cm_on_all_nineteen_fixtures():
        it.)  A port that computed dBZ correctly but clamped at, say,
        -35.0000001 would pass a tolerance test and fail this one.
     2. THE SIGNAL AGREES.  The 102 levels with real returns must agree to
-       :data:`_REFL_DBZ_GATE`.  ``_REFL_DBZ_INHERITED_GATE`` is now EMPTY --
-       WP-13a closed the one fixture that needed it -- so this is the flat
-       gate on every fixture, with no exception at all.
+       :data:`_REFL_DBZ_GATE`.  ``_REFL_DBZ_INHERITED_GATE`` names one
+       fixture, ``aero-cold-overlap``, and only for the declared rain-graupel
+       divergence (WRF's out-of-bounds table read); WP-13a closed the rain
+       residual it once held, and every other fixture is on the flat gate.
     3. THE COMPARISON IS NOT VACUOUS.  The fixtures must actually contain
        strong returns; the oracle's maximum is 51.98 dBZ, and a suite of
        all-floor columns would satisfy 1 and 2 while proving nothing.
@@ -2330,7 +2353,9 @@ def test_the_reflectivity_residual_is_the_declared_rain_residual_in_db():
 
     difference = got - want
     level = int(np.argmax(np.abs(difference)))
-    assert not floor[level]
+    # Since mp=28 runs its own WRF-transcribed calc_refl10cm the column's
+    # echo is WRF's word at every level, so argmax lands anywhere.
+    assert not np.any(difference) or not floor[level]
 
     # 1. THE CLOSURE.  WP-13a's sedimentation-density fix put this column
     #    inside the flat gate with a 16x margin; it used to sit at 5.283e-04
@@ -2408,7 +2433,14 @@ def test_the_reflectivity_residual_is_the_declared_rain_residual_in_db():
         "back above the float32 dBZ ulp and assertion 3's ratio test should "
         "be restored")
     assert abs(predicted[level]) <= 1.0e-5, predicted[level]
-    assert unexplained > 0.0
+    # 5. THE THIRD CLOSURE.  What used to remain above the prediction was the
+    #    frozen mp=8 echo's own arithmetic (CUDA's pow, crg(4) = 720 where
+    #    thompson_init leaves 720.000061, binary64 slopes) plus float32 dBZ
+    #    rounding.  mp=28 now evaluates calc_refl10cm with its own WRF
+    #    transcription (thompson_aa_refl10cm), and on this column the echo is
+    #    WRF's word at every level: nothing is left unexplained.
+    assert unexplained == 0.0, unexplained
+    assert np.array_equal(got, want)
 
 
 def test_the_go_chain_refuses_an_unpreparable_mp28_run_before_it_fetches(
@@ -2452,8 +2484,13 @@ def test_the_go_chain_refuses_an_unpreparable_mp28_run_before_it_fetches(
     assert "\nspecified = true\n" in written, written
     mp28 = written.replace("\nmp_physics = 10\n", "\nmp_physics = 28\n")
     assert mp28 != written
+    # By default the chain's own fetch stage acquires the pinned dataset
+    # (2.8.8 acceptance D-01), so the refusal is the OFFLINE case: a
+    # config that opted out of that acquisition with [fetch] wif = false.
+    assert "\n[fetch]\n" in mp28
+    offline = mp28.replace("\n[fetch]\n", "\n[fetch]\nwif = false\n")
     refused = tmp_path / "go-mp28-refused.toml"
-    refused.write_text(mp28, encoding="utf-8", newline="\n")
+    refused.write_text(offline, encoding="utf-8", newline="\n")
 
     with pytest.raises(go_cli.GoRefusal) as refusal:
         go_cli.plan_from_config(refused, outdir=tmp_path / "out")
@@ -2481,6 +2518,15 @@ def test_the_go_chain_refuses_an_unpreparable_mp28_run_before_it_fetches(
         encoding="utf-8", newline="\n")
     plan = go_cli.plan_from_config(opened, outdir=tmp_path / "out-ok")
     assert plan["domains"] == 1
+    assert "--wif" not in go_cli.fetch_command(plan)
+
+    # And without the opt-out the same config plans its acquisition
+    # instead of refusing: the fetch stage is handed --wif.
+    fetched = tmp_path / "go-mp28-fetched.toml"
+    fetched.write_text(mp28, encoding="utf-8", newline="\n")
+    plan = go_cli.plan_from_config(fetched, outdir=tmp_path / "out-fetch")
+    assert plan["wif_domains"] == (1,)
+    assert "--wif" in go_cli.fetch_command(plan)
 
 
 @pytest.mark.parametrize("via,origin", [

@@ -1,0 +1,18 @@
+{
+ "arrays": 3066,
+ "moved": 104,
+ "moved_by_family_arm": {
+  "deformation/km2_iso0": [
+   "khh",
+   "khv",
+   "kmh",
+   "kmv"
+  ],
+  "deformation/km2_iso1": [
+   "khh",
+   "khv",
+   "kmh",
+   "kmv"
+  ]
+ }
+}

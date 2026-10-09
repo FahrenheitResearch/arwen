@@ -44,8 +44,10 @@ def test_actual_cli_dry_run_names_declared_route_and_replayable_command(
     config = case(tmp_path, domains=domains, source=source)
     before = config.read_bytes()
     out = tmp_path / "new run"
-    override = tmp_path / "different geography"
-    override.mkdir()
+    from _staged_geog import staged_geog_tree
+
+    # The dry run asks the named geography, as the launch does.
+    override = staged_geog_tree(tmp_path / "different geography")
     argv = ["go", str(config), "--outdir", str(out), "--geog-root", str(override),
             "--products", "none", "--run-stamp", "off"]
     result = subprocess.run([sys.executable, "-m", "gpuwm.cli", *argv, "--dry-run"],

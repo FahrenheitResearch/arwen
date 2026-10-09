@@ -31,6 +31,8 @@ grid to make the assertions look better.
 
 from __future__ import annotations
 
+import dataclasses
+
 from datetime import datetime
 import hashlib
 
@@ -509,7 +511,7 @@ def test_the_vram_preflight_counts_the_noahmp_arrays():
                      sf_sfclay_physics=1, sf_surface_physics=2,
                      bl_pbl_physics=1)
     noahmp = RunConfig(**{**{f.name: getattr(noah, f.name)
-                             for f in noah.__dataclass_fields__.values()},
+                             for f in dataclasses.fields(noah)},
                           "sf_surface_physics": 4})
     added = set(physics_array_shapes(noahmp)) - set(physics_array_shapes(noah))
     for name in (*NOAHMP_STATE_2D, *NOAHMP_STATE_INT_2D,

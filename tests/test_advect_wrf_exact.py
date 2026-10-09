@@ -1,12 +1,12 @@
 """Exact advection through real CUDA launchers and compiled WRF outputs."""
-import os
 import pytest
 from conftest import requires_gpu
 
 
 @requires_gpu
 def test_exact_advection_active_specified_cases_match_all_words():
-    if os.environ.get("GPUWM_WRF_EXACT_ADVECTION") != "1":
+    from gpuwm.wrf_exact import ADVECTION_ENABLED
+    if not ADVECTION_ENABLED:
         pytest.skip("requires an exact advection process")
     from tools.advect_wrf_exact.compare import compare
     results=compare()

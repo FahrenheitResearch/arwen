@@ -898,7 +898,7 @@ def _nssl_reflectivity(state, temperature, pressure):
 
 
 def _thompson_graupel_number(state, temperature, pressure, *,
-                             version: str = "wrf_461"):
+                             version: str = "wrf_461", aerosol: bool = False):
     """Classic Thompson's transient graupel number, diagnosed here.
 
     ``version`` is the generation (:func:`thompson_generation`): the
@@ -1001,10 +1001,22 @@ def _thompson_graupel_number(state, temperature, pressure, *,
                 state.qv, shadow, mode=WRF39_INTERCEPT_REFLECTIVITY)
         return temperature, pressure, shadow
     graupel_mass = state.qg.copy()
-    launch_classic_graupel_number_init(
-        graupel_mass, temperature, pressure, state.qv, shadow)
-    launch_classic_graupel_number_finalize(
-        graupel_mass, temperature, pressure, state.qv, shadow)
+    if aerosol:
+        from gpuwm.core.thompson_aerosol_state import (
+            launch_aa_graupel_number_init, launch_aa_graupel_number_finalize,
+            launch_tau1_density)
+        launch_aa_graupel_number_init(
+            graupel_mass, temperature, pressure, state.qv, shadow)
+        # Between steps there is no evaporation tendency. Form the scheme's
+        # terminal density on the observed state, without writing that state.
+        density = cp.empty_like(graupel_mass)
+        launch_tau1_density(temperature, pressure, state.qv, density)
+        launch_aa_graupel_number_finalize(graupel_mass, shadow, density)
+    else:
+        launch_classic_graupel_number_init(
+            graupel_mass, temperature, pressure, state.qv, shadow)
+        launch_classic_graupel_number_finalize(
+            graupel_mass, temperature, pressure, state.qv, shadow)
     del graupel_mass
     return temperature, pressure, shadow
 
@@ -1074,6 +1086,14 @@ STATE_REFLECTIVITY_OPERATORS: dict[int, str] = {
     50: "gpuwm.core.p3_device:reflectivity",
 }
 
+
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+# Named schemes compute Z inside their column call in this port; a pure
+# H(x) entry is not wired yet, so the radar operator refuses them by name.
+NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP.update({
+    _s.mp_id: (f"{_s.label}: Z is computed inside the scheme's column call "
+               "in this port; no standalone H(x) entry is wired yet")
+    for _s in _NAMED_MP_SCHEMES.values() if _s.native_reflectivity})
 
 def _refuse_unrouted_reflectivity(mp_physics: int) -> None:
     """Name a shipped scheme whose H(x) route nobody has written.
@@ -1201,11 +1221,22 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
         return my2_reflectivity(
             state, temperature=temperature, pressure=pressure)
 
+    if (int(cfg.mp_physics) == 28 and thompson_generation(cfg) == "wrf_461"
+            and temperature is None):
+        from gpuwm.core.thompson_aerosol_state import launch_aerosol_exner
+        pressure = state.p
+        exner = xp.empty_like(pressure)
+        launch_aerosol_exner(pressure, exner)
+        thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+        temperature = state.scratch(tuple(pressure.shape), "refl_t")
+        temperature[...] = (thb + state.thp) * exner
+
     if (int(cfg.mp_physics) in (8, 28)
             and thompson_graupel_number is None):
         temperature, pressure, thompson_graupel_number = (
             _thompson_graupel_number(state, temperature, pressure,
-                                     version=thompson_generation(cfg)))
+                                     version=thompson_generation(cfg),
+                                     aerosol=int(cfg.mp_physics) == 28))
 
     from gpuwm.core.refl import compute_refl_10cm
 

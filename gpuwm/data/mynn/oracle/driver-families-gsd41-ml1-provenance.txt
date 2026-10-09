@@ -1,0 +1,15 @@
+Independent referee: NOAA-EMC/HRRR v4.1.21 module_bl_mynn.F.
+Source SHA-256: 42178a22693ad14b1a3adcf3e44be3047f051abf80f3a64c0ce9ed9ac2ec6d8a
+Harness: tools/mynn_pbl_gsd41_oracle/run_driver_families_gsd41.F90
+Harness SHA-256: 1054f69f8c2b68e9f17f5005bc71c5574e0f0bf6af7c0542be579a58a4013e1b
+Compiler: GNU Fortran 13.3.0, -O0 -ffp-contract=off, glibc 2.39.
+Controls: &review bl_mynn_mixlength=1 /
+Six families, 30 levels, twelve 20-second steps, cold start followed by warm calls.
+The fixture is the first twelve steps of the independently generated 120-step CSV.
+No source change: the squared CASE(2) line cannot affect CASE(1).
+Fixture SHA-256: 426619df587969099a57d087a7a7a62b9e4635d4fc10db756b368038a7924fff4
+Decoded CSV SHA-256: 3a4d897a284dec369203b7d67eee769439e871e17ea14e7d17059a9c6fcbb2b1
+Rebuild after build.sh:
+  printf '&review bl_mynn_mixlength=1 /\n' > length1.nml
+  sq/run_driver_families_gsd41 driver-families-gsd41-ml1.csv 12 length1.nml
+  gzip -n -9 driver-families-gsd41-ml1.csv

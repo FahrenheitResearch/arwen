@@ -152,7 +152,8 @@ def main() -> None:
     # same state; the digests below are what proves they did the same work.
     start = {k: np.ascontiguousarray(cp.asnumpy(v)) for k, v in inv.items()}
     scalars = physinv.carrier_scalars(state)
-    del state, drv
+    state = None  # rebound, not deleted: a closure above reads it
+    del drv
     cp.get_default_memory_pool().free_all_blocks()
 
     specs = tspec.plan_tiles(args.n, args.n, args.tile, args.tile, halo, True)
@@ -186,7 +187,7 @@ def main() -> None:
         print(f"      digest {h:012x}   moved {moved/1e9:.2f} GB total  "
               f"{moved/args.steps/args.reps/med/1e9 if med else 0:.1f} GB/s "
               f"(per timed step)")
-        del store
+        store = None  # rebound, not deleted: a closure above reads it
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         return med

@@ -2824,8 +2824,20 @@ class StreamedDomain:
                 "this streamed domain carries no scalars, so it has no clock "
                 "to impose -- attach(scalars=None) is the gate's CARRY "
                 "NOTHING control and must not be driven by the model loop")
-        from gpuwm.core.sfire_clock import bind_streamed_clock
-        bind_streamed_clock(self.scalars,self.store,seconds)
+        from gpuwm.core.sfire_clock import SOURCE_CLOCK_KEY, bind_streamed_clock
+
+        def source_store():
+            # Lazy: on the ranked road ``self.store`` is a full drain of
+            # every slab plus a full re-gather before the next sweep, and
+            # this runs twice per step.  Only a fire clock that actually
+            # moves reads it, and only when the domain carries the field
+            # (membership is asked without a drain).  See bind_streamed_clock.
+            keys = getattr(self._run, "store_keys", None)
+            if callable(keys) and SOURCE_CLOCK_KEY not in keys():
+                return {}
+            return self.store
+
+        bind_streamed_clock(self.scalars, source_store, seconds)
         self.scalars["elapsed_seconds"] = float(seconds)
         if getattr(self, "ranked", False):
             self._run.impose_domain_clock(seconds)
@@ -8528,9 +8540,22 @@ def domain_field(state, name: str, *, setup: bool = False):
     Missing live carriers never fall back to the frozen attachment state.
     CanonicalStoreState resolves its own inventory without resident methods.
     Immutable one-dimensional setup is safe to borrow from the template.
+
+    The drain comes first for a canonical facade too: its arrays ARE the
+    owner's host store, current only as of the last drain.  Breakage this
+    prevents: the facade branch returned before the drain, and with
+    ``StreamedDomain.impose_clock`` no longer draining after every step
+    (67e213588's per-step drain, removed by the mc-clock fix) an attribute
+    tracker on a ranked parent read the mirror of the last drain.
     """
     from gpuwm.core.streamed_state import CanonicalStoreState
     if isinstance(state, CanonicalStoreState):
+        # The facade's own owner only: an attribute the facade lacks resolves
+        # through its slab template, whose methods it refuses to run.
+        owner = vars(state).get("_streamed_domain")
+        drain = getattr(getattr(owner, "_run", None), "drain", None)
+        if drain is not None:
+            drain()
         return getattr(state, name, None)
     _drain_streamed(state)
     endpoint = getattr(state, "_streamed_domain", None)

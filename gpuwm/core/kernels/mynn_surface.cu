@@ -10,53 +10,85 @@
 // fail-closed until the PBL kernel and full driver coupling pass their
 // separate WRF oracles.
 
-__device__ __forceinline__ real mynn_psim_stable_full(real z)
+// WRF arithmetic, word for word (lane/verify-mynn-sfclay-wrf461).  Graded at
+// 0 ULP on every output against SFCLAY1D_mynn by
+// tools/mynn_sfclay_wrf461_column_oracle.  Three rules hold the unit there:
+//   * every EXP/LOG/ATAN/REAL**REAL is WOOF's own float32 libm word
+//     (mynn_libm.cuh), never CUDA's expf/logf/atanf/powf;
+//   * the unit compiles with --fmad=false (gpuwm/core/kernels/__init__.py
+//     _NO_FMAD_MODULES) and every expression keeps gfortran's association:
+//     X**2 is X*X, A*B**2 is A*(B*B), and a constant subexpression gfortran
+//     folds (ATAN(1.), LOG(10./1e-4), e**2.) is the folded word;
+//   * no fused multiply-add anywhere, including the table interpolation.
+#define SL_LOG(x) mynn_glibc_logf(x)
+#define SL_EXP(x) mynn_glibc_expf(x)
+#define SL_POW(x, y) mynn_glibc_powf((x), (y))
+#define SL_ATAN(x) mynn_glibc_atanf(x)
+// gfortran folds ATAN(1.) at compile time to the correctly rounded pi/4.
+#define SL_ATAN1 __uint_as_float(0x3F490FDBu)
+//
+// COMPILE TIME.  The four psi forms, the table lookup, Li et al. (2010) and
+// the three z/L solvers (zolri, zolri2, zolrib) are __noinline__.  Inlined,
+// every one of the table's call sites expands two psi forms of several libm
+// routines each, inside solver loops: on box W1 under load NVRTC took 33-40 s
+// for the wrf_461 form and 12-13 minutes for gsl_wrf39 (3-5 s before
+// the libm header).  With these call boundaries both forms take about 1.5 s.
+// The unit compiles with --fmad=false, so a call boundary cannot change a
+// rounding; the column oracle grades the words either way.
+
+// module_sf_mynn.F:2088-2130, psi_opt=0.  1./2.5 and 1./1.1 are the folded
+// quotients; sqrt(3.) is correctly rounded on both sides.
+__device__ __noinline__ real mynn_psim_stable_full(real z)
 {
-    return -6.1f * logf(z + powf(1.0f + powf(z, 2.5f), 1.0f / 2.5f));
+    return -6.1f * SL_LOG(z + SL_POW(1.0f + SL_POW(z, 2.5f),
+                                     __fdiv_rn(1.0f, 2.5f)));
 }
 
-__device__ __forceinline__ real mynn_psih_stable_full(real z)
+__device__ __noinline__ real mynn_psih_stable_full(real z)
 {
-    return -5.3f * logf(z + powf(1.0f + powf(z, 1.1f), 1.0f / 1.1f));
+    return -5.3f * SL_LOG(z + SL_POW(1.0f + SL_POW(z, 1.1f),
+                                     __fdiv_rn(1.0f, 1.1f)));
 }
 
-__device__ __forceinline__ real mynn_psim_unstable_full(real z)
+__device__ __noinline__ real mynn_psim_unstable_full(real z)
 {
-    real x = powf(1.0f - 16.0f * z, 0.25f);
-    real psimk = 2.0f * logf(0.5f * (1.0f + x))
-               + logf(0.5f * (1.0f + x * x))
-               - 2.0f * atanf(x) + 2.0f * atanf(1.0f);
-    real ym = powf(1.0f - 10.0f * z, 0.33f);
+    real x = SL_POW(1.0f - 16.0f * z, 0.25f);
+    real psimk = 2.0f * SL_LOG(0.5f * (1.0f + x))
+               + SL_LOG(0.5f * (1.0f + x * x))
+               - 2.0f * SL_ATAN(x) + 2.0f * SL_ATAN1;
+    real ym = SL_POW(1.0f - 10.0f * z, 0.33f);
     real rt3 = sqrtf(3.0f);
-    real psimc = 1.5f * logf(__fdiv_rn((ym * ym + ym + 1.0f), 3.0f))
-               - rt3 * atanf(__fdiv_rn((2.0f * ym + 1.0f), rt3))
-               + 4.0f * atanf(1.0f) / rt3;
-    return (psimk + z * z * psimc) / (1.0f + z * z);
+    real psimc = 1.5f * SL_LOG(__fdiv_rn((ym * ym + ym + 1.0f), 3.0f))
+               - rt3 * SL_ATAN(__fdiv_rn((2.0f * ym + 1.0f), rt3))
+               + __fdiv_rn(4.0f * SL_ATAN1, rt3);
+    return (psimk + (z * z) * psimc) / (1.0f + z * z);
 }
 
-__device__ __forceinline__ real mynn_psih_unstable_full(real z)
+// (1.-16.*zolf)**.5 is a powf call in WRF (gfortran keeps signed zeros, so
+// it does not become SQRT), and powf is not sqrtf.
+__device__ __noinline__ real mynn_psih_unstable_full(real z)
 {
-    real y = sqrtf(1.0f - 16.0f * z);
-    real psihk = 2.0f * logf((1.0f + y) / 2.0f);
-    real yh = powf(1.0f - 34.0f * z, 0.33f);
+    real y = SL_POW(1.0f - 16.0f * z, 0.5f);
+    real psihk = 2.0f * SL_LOG(__fdiv_rn((1.0f + y), 2.0f));
+    real yh = SL_POW(1.0f - 34.0f * z, 0.33f);
     real rt3 = sqrtf(3.0f);
-    real psihc = 1.5f * logf(__fdiv_rn((yh * yh + yh + 1.0f), 3.0f))
-               - rt3 * atanf(__fdiv_rn((2.0f * yh + 1.0f), rt3))
-               + 4.0f * atanf(1.0f) / rt3;
-    return (psihk + z * z * psihc) / (1.0f + z * z);
+    real psihc = 1.5f * SL_LOG(__fdiv_rn((yh * yh + yh + 1.0f), 3.0f))
+               - rt3 * SL_ATAN(__fdiv_rn((2.0f * yh + 1.0f), rt3))
+               + __fdiv_rn(4.0f * SL_ATAN1, rt3);
+    return (psihk + (z * z) * psihc) / (1.0f + z * z);
 }
 
-__device__ __forceinline__ real mynn_table(real z, int which)
+__device__ __noinline__ real mynn_table(real z, int which)
 {
     // which: 0 psim stable, 1 psih stable, 2 psim unstable, 3 psih unstable.
-    // Cross-architecture identity (xnode-identity, 2026-10-04): every
-    // rounding in the table lookup is pinned. With fp-contract left to the
-    // compiler, NVRTC/ptxas for sm_89 fused `z * 100 - index` into one FMA at
-    // the inlined psim_stable(zol3) site of mynn_zolrib while sm_120 rounded
-    // the product first, a 1-ulp psim difference on 7,954 of 38,400 columns
-    // at step 1 that grew into a different forecast. The pinned order below is
-    // the sm_120 (Blackwell) answer: rounded product, rounded fraction,
-    // rounded table difference, one fused interpolation.
+    // module_sf_mynn.F:2197-2271 on the psi_init tables (:2051-2084), whose
+    // entries are the full functions at zolf = +-float(n)*0.01, evaluated
+    // here on demand.  nzol = INT(zolf*100.), rzol = zolf*100. - nzol, and
+    // tab(n) + rzol*(tab(n+1)-tab(n)) is a rounded product and a rounded
+    // sum: gfortran on x86-64 has no FMA, so neither may this.  (Before
+    // lane/verify-mynn-sfclay-wrf461 the interpolation was one __fmaf_rn,
+    // pinned for sm_89/sm_120 identity; the unfused order is just as pinned
+    // and is the oracle's.)
     bool unstable = which >= 2;
     real scaled = __fmul_rn(unstable ? -z : z, 100.0f);
     int index = (int)scaled;
@@ -68,8 +100,8 @@ __device__ __forceinline__ real mynn_table(real z, int which)
     }
     real fraction = __fsub_rn(scaled, (real)index);
     real sign = unstable ? -1.0f : 1.0f;
-    real z0 = sign * 0.01f * (real)index;
-    real z1 = sign * 0.01f * (real)(index + 1);
+    real z0 = sign * __fmul_rn((real)index, 0.01f);
+    real z1 = sign * __fmul_rn((real)(index + 1), 0.01f);
     real f0, f1;
     if (which == 0) {
         f0 = mynn_psim_stable_full(z0); f1 = mynn_psim_stable_full(z1);
@@ -80,7 +112,7 @@ __device__ __forceinline__ real mynn_table(real z, int which)
     } else {
         f0 = mynn_psih_unstable_full(z0); f1 = mynn_psih_unstable_full(z1);
     }
-    return __fmaf_rn(fraction, __fsub_rn(f1, f0), f0);
+    return __fadd_rn(f0, __fmul_rn(fraction, __fsub_rn(f1, f0)));
 }
 
 __device__ __forceinline__ real mynn_psim_stable(real z)
@@ -92,22 +124,24 @@ __device__ __forceinline__ real mynn_psim_unstable(real z)
 __device__ __forceinline__ real mynn_psih_unstable(real z)
 { return mynn_table(z, 3); }
 
-__device__ __forceinline__ real mynn_li_etal_2010(
+__device__ __noinline__ real mynn_li_etal_2010(
     real rib, real zaz0, real z0zt)
 {
     real zaz02 = fminf(fmaxf(zaz0, 100.0f), 100000.0f);
     real z0zt2 = fminf(fmaxf(z0zt, 0.5f), 100.0f);
-    real alfa = logf(zaz02), beta = logf(z0zt2), zl;
+    // module_sf_mynn.F:1860-1885.  Rib**2, alfa**2 and beta**2 are integer
+    // powers, a rounded square that the coefficient then multiplies.
+    real alfa = SL_LOG(zaz02), beta = SL_LOG(z0zt2), zl;
     if (rib <= 0.0f) {
-        zl = 0.045f * alfa * rib * rib
-           + ((0.003f * beta + 0.0059f) * alfa * alfa
+        zl = 0.045f * alfa * (rib * rib)
+           + ((0.003f * beta + 0.0059f) * (alfa * alfa)
               + (-0.0828f * beta + 0.8845f) * alfa
-              + (0.1739f * beta * beta - 0.9213f * beta - 0.1057f)) * rib;
+              + (0.1739f * (beta * beta) - 0.9213f * beta - 0.1057f)) * rib;
         return fminf(fmaxf(zl, -15.0f), 0.0f);
     }
     if (rib <= 0.2f) {
         zl = ((0.5738f * beta - 0.4399f) * alfa
-              + (-4.901f * beta + 52.50f)) * rib * rib
+              + (-4.901f * beta + 52.50f)) * (rib * rib)
            + ((-0.0539f * beta + 1.540f) * alfa
               + (-0.669f * beta - 3.282f)) * rib;
         return fminf(fmaxf(zl, 0.0f), 4.0f);
@@ -117,7 +151,7 @@ __device__ __forceinline__ real mynn_li_etal_2010(
     return fminf(fmaxf(zl, 1.0f), 20.0f);
 }
 
-__device__ __forceinline__ real mynn_zolrib(
+__device__ __noinline__ real mynn_zolrib(
     real ri, real za, real z0, real zt, real logz0, real logzt, real zol1)
 {
     if (zol1 * ri < 0.0f) zol1 = 0.0f;
@@ -141,7 +175,7 @@ __device__ __forceinline__ real mynn_zolrib(
             psix2 = fmaxf(logz0
                 - (mynn_psim_stable(zol3) - mynn_psim_stable(zol20)), 1.0f);
         }
-        result = ri * psix2 * psix2 / psit2;
+        result = ri * (psix2 * psix2) / psit2;   // :2031 ri*psix2**2/psit2
         ++iteration;
     }
     if (iteration == 20 && fabsf(zolold - result) > 0.01f)
@@ -161,7 +195,7 @@ __device__ __forceinline__ real mynn_zolrib(
 // on either log term, and the heat term's lower argument is z0/L.  The
 // operations are pinned unfused so the 0.01 bracket test in zolri sees the
 // rounding gfortran gives the fork source.
-__device__ __forceinline__ real mynn_zolri2(
+__device__ __noinline__ real mynn_zolri2(
     real &zol2, real ri2, real za, real z0, real zt)
 {
     if (zol2 * ri2 < 0.0f) zol2 = 0.0f;
@@ -172,14 +206,14 @@ __device__ __forceinline__ real mynn_zolri2(
     if (!isfinite(zol20) || !isfinite(zol3)) return __int_as_float(0x7fc00000);
     real psix2, psit2;
     if (ri2 < 0.0f) {
-        psix2 = __fsub_rn(logf((za + z0) / z0),
+        psix2 = __fsub_rn(SL_LOG((za + z0) / z0),
             __fsub_rn(mynn_psim_unstable(zol3), mynn_psim_unstable(zol20)));
-        psit2 = __fsub_rn(logf((za + zt) / zt),
+        psit2 = __fsub_rn(SL_LOG((za + zt) / zt),
             __fsub_rn(mynn_psih_unstable(zol3), mynn_psih_unstable(zol20)));
     } else {
-        psix2 = __fsub_rn(logf((za + z0) / z0),
+        psix2 = __fsub_rn(SL_LOG((za + z0) / z0),
             __fsub_rn(mynn_psim_stable(zol3), mynn_psim_stable(zol20)));
-        psit2 = __fsub_rn(logf((za + zt) / zt),
+        psit2 = __fsub_rn(SL_LOG((za + zt) / zt),
             __fsub_rn(mynn_psih_stable(zol3), mynn_psih_stable(zol20)));
     }
     return __fsub_rn(__fmul_rn(zol2, psit2) / __fmul_rn(psix2, psix2), ri2);
@@ -199,7 +233,7 @@ __device__ __forceinline__ real mynn_zolri2(
 // result variable is unset when the loop body never runs; with a finite
 // first guess the bracket starts at least 0.02 wide, so the body always
 // runs, and the give-up value is the defined initial value regardless.
-__device__ __forceinline__ real mynn_zolri(
+__device__ __noinline__ real mynn_zolri(
     real ri, real za, real z0, real zt, real zol1)
 {
     real giveup = ri < 0.0f ? __fmul_rn(ri, 5.0f) : __fmul_rn(ri, 8.0f);
@@ -235,7 +269,7 @@ __device__ __forceinline__ real mynn_zolri(
 __device__ __forceinline__ void mynn_zilitinkevich_land(
     real z0, real restar, real &zt, real &zq)
 {
-    zt = z0 * expf(-0.4f * 0.085f * sqrtf(restar));
+    zt = z0 * SL_EXP(-0.4f * 0.085f * sqrtf(restar));
     zt = fminf(zt, 0.75f * z0);
     zq = zt;
 }
@@ -243,7 +277,10 @@ __device__ __forceinline__ void mynn_zilitinkevich_land(
 __device__ __forceinline__ real mynn_charnock_1955(
     real ustar, real wsp, real visc, real zu)
 {
-    real wsp10 = wsp * logf(10.0f / 1.0e-4f) / logf(__fdiv_rn(zu, 1.0e-4f));
+    // :1351.  LOG(10./1e-4) is a constant gfortran folds: the correctly
+    // rounded log of 100000., 0x413834F1.
+    real wsp10 = wsp * __uint_as_float(0x413834F1u)
+               / SL_LOG(__fdiv_rn(zu, 1.0e-4f));
     real czc = 0.011f + 0.007f
         * fminf(fmaxf((wsp10 - 10.0f) / 8.0f, 0.0f), 1.0f);
     real z0 = __fdiv_rn(czc * ustar * ustar, 9.81f)
@@ -255,9 +292,9 @@ __device__ __forceinline__ real mynn_charnock_1955(
 // Fortran takes no wind speed.
 __device__ __forceinline__ real mynn_davis_etal_2008(real ustar)
 {
-    real zw = fminf(powf(__fdiv_rn(ustar, 1.06f), 0.3f), 1.0f);
+    real zw = fminf(SL_POW(__fdiv_rn(ustar, 1.06f), 0.3f), 1.0f);
     real zn1 = __fdiv_rn(0.011f * ustar * ustar, 9.81f) + 1.59e-5f;
-    real zn2 = 10.0f * expf(-9.5f * powf(ustar, -0.3333f))
+    real zn2 = 10.0f * SL_EXP(-9.5f * SL_POW(ustar, -0.3333f))
              + 0.11f * 1.5e-5f / fmaxf(ustar, 0.01f);
     real z0 = (1.0f - zw) * zn1 + zw * zn2;
     return fminf(fmaxf(z0, 1.27e-7f), 2.85e-3f);
@@ -267,10 +304,10 @@ __device__ __forceinline__ real mynn_davis_etal_2008(real ustar)
 // subroutine and is never read in its body, so it is not taken here either.
 __device__ __forceinline__ real mynn_taylor_yelland_2001(real wsp)
 {
-    real hs = 0.0248f * powf(wsp, 2.0f);
+    real hs = 0.0248f * (wsp * wsp);   // :1323 wsp10**2.
     real tp = 0.729f * fmaxf(wsp, 0.1f);
     real lp = __fdiv_rn(9.81f * (tp * tp), (2.0f * 3.14159265f));
-    real z0 = 1200.0f * hs * powf(hs / lp, 4.5f);
+    real z0 = 1200.0f * hs * SL_POW(hs / lp, 4.5f);
     return fminf(fmaxf(z0, 1.27e-7f), 2.85e-3f);
 }
 
@@ -280,7 +317,7 @@ __device__ __forceinline__ real mynn_taylor_yelland_2001(real wsp)
 __device__ __forceinline__ void mynn_fairall_etal_2003(
     real restar, real &zt, real &zq)
 {
-    zt = 5.5e-5f * powf(restar, -0.60f);
+    zt = 5.5e-5f * SL_POW(restar, -0.60f);
     zt = fminf(fmaxf(zt, 2.0e-9f), 1.0e-4f);
     zq = zt;
 }
@@ -293,13 +330,14 @@ __device__ __forceinline__ void mynn_garratt_1992(
     real z0, real restar, real xland, real &zt, real &zq)
 {
     if (xland - 1.5f > 0.0f) {
-        real quarter = powf(restar, 0.25f);
-        zt = z0 * expf(2.0f - 2.48f * quarter);
-        zq = z0 * expf(2.0f - 2.28f * quarter);
+        real quarter = SL_POW(restar, 0.25f);
+        zt = z0 * SL_EXP(2.0f - 2.48f * quarter);
+        zq = z0 * SL_EXP(2.0f - 2.28f * quarter);
         zq = fmaxf(fminf(zq, 5.5e-5f), 2.0e-9f);
         zt = fmaxf(fminf(zt, 5.5e-5f), 2.0e-9f);
     } else {
-        zq = __fdiv_rn(z0, powf(2.71828183f, 2.0f));
+        // :1417 e**2. with e a PARAMETER: gfortran folds it to 0x40EC7325.
+        zq = __fdiv_rn(z0, __uint_as_float(0x40EC7325u));
         zt = zq;
     }
 }
@@ -327,11 +365,14 @@ __device__ __forceinline__ void mynn_water_roughness(
 __device__ __forceinline__ void mynn_andreas_snow(
     real visc, real ustar, real &zt, real &zq)
 {
+    // :1580-1582: 0.035*(ustar*ustar)/9.8 and the explicit product of the
+    // two (ustar-0.18)/0.1 factors, not a power.
+    real dev = __fdiv_rn((ustar - 0.18f), 0.1f);
     real zntsno = 0.135f * visc / ustar
-        + __fdiv_rn(0.035f * ustar * ustar, 9.8f)
-        * (5.0f * expf(-powf(__fdiv_rn((ustar - 0.18f), 0.1f), 2.0f)) + 1.0f);
+        + __fdiv_rn(0.035f * (ustar * ustar), 9.8f)
+        * (5.0f * SL_EXP(-(dev * dev)) + 1.0f);
     real ren = fminf(ustar * zntsno / visc, 1000.0f);
-    real log_ren = logf(ren);
+    real log_ren = SL_LOG(ren);
     real bt0, bt1, bt2, bq0, bq1, bq2;
     if (ren <= 0.135f) {
         bt0 = 1.25f; bt1 = 0.0f; bt2 = 0.0f;
@@ -343,8 +384,9 @@ __device__ __forceinline__ void mynn_andreas_snow(
         bt0 = 0.317f; bt1 = -0.565f; bt2 = -0.183f;
         bq0 = 0.396f; bq1 = -0.512f; bq2 = -0.180f;
     }
-    zt = zntsno * expf(bt0 + bt1 * log_ren + bt2 * log_ren * log_ren);
-    zq = zntsno * expf(bq0 + bq1 * log_ren + bq2 * log_ren * log_ren);
+    // :1591-1602: LOG(Ren2)**2 is a rounded square.
+    zt = zntsno * SL_EXP(bt0 + bt1 * log_ren + bt2 * (log_ren * log_ren));
+    zq = zntsno * SL_EXP(bq0 + bq1 * log_ren + bq2 * (log_ren * log_ren));
 }
 
 extern "C" __global__
@@ -401,9 +443,9 @@ void mynn_surface_column(
     real snowh = snowh_a[idx], mol = mol_a[idx], ustm = ustm_a[idx];
 
     real psfc = __fdiv_rn(psfcpa, 1000.0f);
-    real thgb = tsk * powf(100.0f / psfc, rovcp);
+    real thgb = tsk * SL_POW(100.0f / psfc, rovcp);
     real pl = __fdiv_rn(p1, 1000.0f);
-    real th1 = t1 * powf(100.0f / pl, rovcp);
+    real th1 = t1 * SL_POW(100.0f / pl, rovcp);
     real tc1 = t1 - 273.15f;
     real qvsh = qv1 / (1.0f + qv1);
     // See the THVGB comment below: TVCON/THV1D are pinned to unfused
@@ -416,15 +458,15 @@ void mynn_surface_column(
 
     real e1;
     if (tsk < 273.15f) {
-        e1 = svp1 * expf(4648.0f * (1.0f / 273.15f - 1.0f / tsk)
-             - 11.64f * logf(273.15f / tsk) + 0.02265f * (273.15f - tsk));
+        e1 = svp1 * SL_EXP(4648.0f * (1.0f / 273.15f - 1.0f / tsk)
+             - 11.64f * SL_LOG(273.15f / tsk) + 0.02265f * (273.15f - tsk));
     } else {
-        e1 = svp1 * expf(svp2 * (tsk - svpt0) / (tsk - svp3));
+        e1 = svp1 * SL_EXP(svp2 * (tsk - svpt0) / (tsk - svp3));
     }
     // module_sf_mynn.F:532 tests the INCOMING QSFC: a land column whose LSM
     // never set QSFC is recomputed from saturation here.
     real qsfcmr;
-    if (xland > 1.5f || qsfc <= 0.0f) {
+    if (xland > 1.5f || surface_le_zero(qsfc)) {
         qsfc = ep2 * e1 / (psfc - ep3 * e1);
         qsfcmr = ep2 * e1 / (psfc - e1);
     } else {
@@ -432,10 +474,10 @@ void mynn_surface_column(
     }
 
     if (tsk < 273.15f) {
-        e1 = svp1 * expf(4648.0f * (1.0f / 273.15f - 1.0f / t1)
-             - 11.64f * logf(273.15f / t1) + 0.02265f * (273.15f - t1));
+        e1 = svp1 * SL_EXP(4648.0f * (1.0f / 273.15f - 1.0f / t1)
+             - 11.64f * SL_LOG(273.15f / t1) + 0.02265f * (273.15f - t1));
     } else {
-        e1 = svp1 * expf(svp2 * (t1 - svpt0) / (t1 - svp3));
+        e1 = svp1 * SL_EXP(svp2 * (t1 - svpt0) / (t1 - svp3));
     }
     real qgh = ep2 * e1 / (pl - e1);
     real cpm = cp * (1.0f + 0.84f * qv1);
@@ -454,10 +496,10 @@ void mynn_surface_column(
     // module_sf_mynn.F:573 spells the :532 predicate a second time, but it runs
     // after the :533 saturation update, so a land column that entered with
     // QSFC<=0 now takes the LAND height scale.
-    bool wstar_water = xland > 1.5f || qsfc <= 0.0f;
+    bool wstar_water = xland > 1.5f || surface_le_zero(qsfc);
     real height = wstar_water ? pblh : fminf(1.5f * pblh, 4000.0f);
-    real wstar = vconvc * powf(grav / tsk * height * fluxc, 0.33f);
-    real vsgd = 0.32f * powf(fmaxf(__fdiv_rn(dx, 5000.0f) - 1.0f, 0.0f), 0.33f);
+    real wstar = vconvc * SL_POW(grav / tsk * height * fluxc, 0.33f);
+    real vsgd = 0.32f * SL_POW(fmaxf(__fdiv_rn(dx, 5000.0f) - 1.0f, 0.0f), 0.33f);
     wsp = fmaxf(sqrtf(wsp * wsp + wstar * wstar + vsgd * vsgd), wmin);
     real br = govrth * za * dthvdz / (wsp * wsp);
 #ifdef MYNN_SFCLAY_GSL_WRF39
@@ -480,20 +522,20 @@ void mynn_surface_column(
     }
 
     real zratio = z0 / zt;
-    real gz1oz0 = logf((za + z0) / z0);
+    real gz1oz0 = SL_LOG((za + z0) / z0);
 #ifdef MYNN_SFCLAY_GSL_WRF39
     // fork :771-775: zt, not z0, in the numerator of the heat log terms.
-    real gz1ozt = logf((za + zt) / zt);
-    real gz2ozt = logf((2.0f + zt) / zt);
-    real gz10oz0 = logf((10.0f + z0) / z0);
-    real gz10ozt = logf((10.0f + zt) / zt);
+    real gz1ozt = SL_LOG((za + zt) / zt);
+    real gz2ozt = SL_LOG((2.0f + zt) / zt);
+    real gz10oz0 = SL_LOG((10.0f + z0) / z0);
+    real gz10ozt = SL_LOG((10.0f + zt) / zt);
     // fork :813-819, :894-900: z/L capped at 50, not 20.
     const real zol_cap = 50.0f;
 #else
-    real gz1ozt = logf((za + z0) / zt);
-    real gz2ozt = logf((2.0f + z0) / zt);
-    real gz10oz0 = logf((10.0f + z0) / z0);
-    real gz10ozt = logf((10.0f + z0) / zt);
+    real gz1ozt = SL_LOG((za + z0) / zt);
+    real gz2ozt = SL_LOG((2.0f + z0) / zt);
+    real gz10oz0 = SL_LOG((10.0f + z0) / z0);
+    real gz10ozt = SL_LOG((10.0f + z0) / zt);
     const real zol_cap = 20.0f;
 #endif
 
@@ -577,29 +619,30 @@ void mynn_surface_column(
 
 #ifdef MYNN_SFCLAY_GSL_WRF39
     // fork :978-986: zt and zq in the numerators, also for the qstar copy.
-    gz1ozt = logf((za + zt) / zt);
-    gz2ozt = logf((2.0f + zt) / zt);
+    gz1ozt = SL_LOG((za + zt) / zt);
+    gz2ozt = SL_LOG((2.0f + zt) / zt);
     real psit = fmaxf(gz1ozt - psih, 1.0f);
     real psit2 = fmaxf(gz2ozt - psih2, 1.0f);
-    real psiq = fmaxf(logf((za + zq) / zq) - psih, 1.0f);
-    real psiq2 = fmaxf(logf((2.0f + zq) / zq) - psih2, 1.0f);
-    real psiq10 = fmaxf(logf((10.0f + zq) / zq) - psih10, 1.0f);
+    real psiq = fmaxf(SL_LOG((za + zq) / zq) - psih, 1.0f);
+    real psiq2 = fmaxf(SL_LOG((2.0f + zq) / zq) - psih2, 1.0f);
+    real psiq10 = fmaxf(SL_LOG((10.0f + zq) / zq) - psih10, 1.0f);
 #else
-    gz1ozt = logf((za + z0) / zt);
-    gz2ozt = logf((2.0f + z0) / zt);
+    gz1ozt = SL_LOG((za + z0) / zt);
+    gz2ozt = SL_LOG((2.0f + z0) / zt);
     real psit = fmaxf(gz1ozt - psih, 1.0f);
     real psit2 = fmaxf(gz2ozt - psih2, 1.0f);
-    real psiq = fmaxf(logf((za + z0) / zq) - psih, 1.0f);
-    real psiq2 = fmaxf(logf((2.0f + z0) / zq) - psih2, 1.0f);
-    real psiq10 = fmaxf(logf((10.0f + z0) / zq) - psih10, 1.0f);
+    real psiq = fmaxf(SL_LOG((za + z0) / zq) - psih, 1.0f);
+    real psiq2 = fmaxf(SL_LOG((2.0f + z0) / zq) - psih2, 1.0f);
+    real psiq10 = fmaxf(SL_LOG((10.0f + z0) / zq) - psih10, 1.0f);
 #endif
     mol = karman * (thv1 - thvgb) / psit / prt;
-    real qstar = karman * (qvsh - qsfc) * 1000.0f / psiq / prt;
+    // :988-989: DQG = (QVSH-qsfc)*1000. first, then KARMAN*DQG/PSIQ/PRT.
+    real qstar = karman * ((qvsh - qsfc) * 1000.0f) / psiq / prt;
 
     // WRF deliberately recomputes moisture resistance with zq in numerator.
-    psiq = fmaxf(logf((za + zq) / zq) - psih, 1.0f);
-    psiq2 = fmaxf(logf((2.0f + zq) / zq) - psih2, 1.0f);
-    psiq10 = fmaxf(logf((10.0f + zq) / zq) - psih10, 1.0f);
+    psiq = fmaxf(SL_LOG((za + zq) / zq) - psih, 1.0f);
+    psiq2 = fmaxf(SL_LOG((2.0f + zq) / zq) - psih2, 1.0f);
+    psiq10 = fmaxf(SL_LOG((10.0f + zq) / zq) - psih10, 1.0f);
     real flhc, flqc, lh, chs, ch, cqs2, chs2, ck, cka, cd, cda;
     if (isfflx < 1) {
         qfx = 0.0f; hfx = 0.0f; flhc = 0.0f; flqc = 0.0f; lh = 0.0f;
@@ -638,12 +681,13 @@ void mynn_surface_column(
     if (za <= 7.0f) {
         if (za2 > 7.0f && za2 < 13.0f) { u10 = u2; v10 = v2; }
         else {
-            real ratio = logf(10.0f / z0) / logf(za / z0);
-            u10 = u1 * ratio; v10 = v1 * ratio;
+            // :1117: U1D*log(10./z0)/log(ZA/z0), left to right.
+            real l10 = SL_LOG(10.0f / z0), lza = SL_LOG(za / z0);
+            u10 = u1 * l10 / lza; v10 = v1 * l10 / lza;
         }
     } else if (za < 13.0f) {
-        real ratio = logf(10.0f / z0) / logf(za / z0);
-        u10 = u1 * ratio; v10 = v1 * ratio;
+        real l10 = SL_LOG(10.0f / z0), lza = SL_LOG(za / z0);
+        u10 = u1 * l10 / lza; v10 = v1 * l10 / lza;
     } else {
         u10 = u1 * psix10 / psix; v10 = v1 * psix10 / psix;
     }
@@ -652,7 +696,7 @@ void mynn_surface_column(
     if ((th1 > thgb && !(th2 >= thgb && th2 <= th1))
         || (th1 < thgb && !(th2 >= th1 && th2 <= thgb)))
         th2 = thgb + 2.0f * (th1 - thgb) / za;
-    real t2 = th2 * powf(__fdiv_rn(psfc, 100.0f), rovcp);
+    real t2 = th2 * SL_POW(__fdiv_rn(psfc, 100.0f), rovcp);
     real q2 = qsfcmr + (qv1 - qsfcmr) * psiq2 / psiq;
     q2 = fmaxf(q2, fminf(qsfcmr, qv1));
     q2 = fminf(q2, 1.05f * qv1);
@@ -672,4 +716,17 @@ void mynn_surface_column(
     // mutates it in place over water and the updated value persists into the
     // next step's ZNTstoch/restar/z_t/z_q chain.
     znt_o[idx] = z0;
+}
+
+// WRF's wrapper seed uses the same unflushed arithmetic as the column.
+extern "C" __global__ void mynn_surface_seed(
+    const real* u, const real* v, const real* qv,
+    real* ust, real* mol, real* qsfc, real* qstar, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    real speed = 0.04f * sqrtf(u[i] * u[i] + v[i] * v[i]);
+    ust[i] = isnan(speed) ? speed : fmaxf(speed, 0.001f);
+    mol[i] = 0.0f;
+    qsfc[i] = qv[i] / (1.0f + qv[i]);
+    qstar[i] = 0.0f;
 }

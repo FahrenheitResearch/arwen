@@ -4,8 +4,9 @@ The fork counts surface rain above R1*10 (NOAA-EMC/HRRR v4.1.21
 module_mp_thompson.F:3556); WRF v4.6.1 counts it above R1*1000 (:3817).
 thompson.cu is byte-frozen, so the fork pass is a copy of its rain-presence
 pass in thompson_aerosol_sed.cu under THOMPSON_AA_WRF39 with only that test
-changed.  These tests bind the copy to the frozen pass word for word and
-show the one difference acts exactly on trace surface rain.
+changed, and with WOOF's own powf word where the frozen pass calls CUDA's.
+These tests bind the copy to the frozen pass within that word difference and
+show the surface test acts exactly on trace surface rain.
 """
 from __future__ import annotations
 
@@ -99,23 +100,36 @@ def _bits(a):
     return np.ascontiguousarray(a, np.float32).view(np.uint32)
 
 
+def _ulps(a, b):
+    def line(x):
+        v = np.ascontiguousarray(x, np.float32).view(np.int32).astype(np.int64)
+        return np.where(v < 0, -(v & 0x7FFFFFFF), v)
+    return np.abs(line(a) - line(b))
+
+
 @pytest.mark.parametrize("seed", [0, 1, 2])
 def test_fork_rain_fallout_is_the_frozen_pass_except_the_surface_test(seed):
     _require_device()
     columns = _columns(seed)
     fork = _run(columns, fork=True)
     v461 = _run(columns, fork=False)
-    # The column state is the frozen pass's, word for word.
-    for name in ("qr", "nr"):
-        np.testing.assert_array_equal(_bits(fork[name]), _bits(v461[name]),
-                                      err_msg=name)
+    # The column state is the frozen pass's, operation for operation, with
+    # one named difference: every REAL(4) ** in the copy is WOOF's own powf
+    # word (thompson_aerosol_libm.cuh, the word the fork's gfortran build
+    # calls), where the byte-frozen thompson.cu keeps CUDA's powf.  The two
+    # words differ by one ulp on some arguments, and the sub-stepped fallout
+    # carries that a few ulps further, so the copy is held to the frozen pass
+    # within the spread lane/verify-thompson-aerosol-mp28 measured on these
+    # three seeds: qr 3 ulps, nr 8, surface rain 2.
+    for name, bound in (("qr", 3), ("nr", 8)):
+        assert _ulps(fork[name], v461[name]).max() <= bound, name
     kind = columns["kind"]
     # Columns whose surface rain is never in (R1*10, R1*1000] export the
-    # same words; the empty columns export nothing under either test.
+    # same words up to that libm difference; the empty columns export
+    # nothing under either test.
     same = kind != 2
     for name in ("rainnc", "rainncv"):
-        np.testing.assert_array_equal(_bits(fork[name][same]),
-                                      _bits(v461[name][same]), err_msg=name)
+        assert _ulps(fork[name][same], v461[name][same]).max() <= 2, name
     assert np.all(v461["rainncv"][kind == 3] == 0.0)
     assert np.all(v461["rainncv"][kind == 0] > 0.0)
     # Trace surface rain: v4.6.1 drops it, the fork counts it.
@@ -143,14 +157,17 @@ def test_the_fork_pass_refuses_outside_the_fork_generation():
 def test_the_adapter_routes_rain_by_generation():
     """The coupled adapter sends the fork generation to the fork pass and
     v4.6.1 to its tendency-form accumulator pass (the mp=28 accumulator
-    rework); no generation reaches the classic in-place rain launcher."""
+    rework), whose pptrain the surface totals then add in mp_gt_driver's
+    order (lane/mp28fix-sedim-refl); no generation reaches the classic
+    in-place rain launcher."""
     text = (_ROOT / "gpuwm" / "core" / "microphysics_aerosol.py").read_text(
         encoding="utf-8")
     start = text.index("launch_wrf39_rain_sedimentation(\n")
     block = text[text.rindex("if wrf39:", 0, start):start + 900]
     assert "else:\n" in block
     assert "launch_aa_rain_sedimentation_accumulate(" in block
-    assert "accumulate_surface=True" in block
+    assert "export_surface=True" in block
+    assert "launch_aa_surface_precipitation(" in block
     assert "launch_rain_sedimentation(" not in text.replace(
         "launch_wrf39_rain_sedimentation(", "").replace(
         "launch_aa_rain_sedimentation_accumulate(", "")

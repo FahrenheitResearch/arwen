@@ -1,0 +1,63 @@
+{
+  "schema": "gpuwm.rrtmgp-k-distribution-bytes.v1",
+  "rule": "device bytes of the four RRTMGP k-distribution and cloud tables under the to_device dtype rule: float -> 4, int -> 4, bool -> 1",
+  "bytes": 23777296,
+  "tables": {
+    "rrtmgp-gas-lw-g256.nc": "4048360199d1917ed8f2ccaae2ec097d0f990da3bbad9830337b739b4fa01be7",
+    "rrtmgp-gas-sw-g224.nc": "584f1dd41ea9fc07d4ee3754eb1dafbd46ad3161cd6fd20fa06b6922b6f0702e",
+    "rrtmgp-clouds-lw-bnd.nc": "09d6704c5b863b4c3ceb417d20bb3076ec492e6bf2dfbcc9f3c5996a3706f0b0",
+    "rrtmgp-clouds-sw-bnd.nc": "7671835992a45afe66244b591a02c0b3df73d7d59ecb746bbffd9763497651cd"
+  },
+  "meta": {
+    "ngpt_lw": 256,
+    "ngpt_sw": 224,
+    "ngas_lw": 19,
+    "ngas_sw": 19,
+    "nband_lw": 16,
+    "nband_sw": 14
+  },
+  "gas_names": {
+    "lw": [
+      "h2o",
+      "co2",
+      "o3",
+      "n2o",
+      "co",
+      "ch4",
+      "o2",
+      "n2",
+      "ccl4",
+      "cfc11",
+      "cfc12",
+      "cfc22",
+      "hfc143a",
+      "hfc125",
+      "hfc23",
+      "hfc32",
+      "hfc134a",
+      "cf4",
+      "no2"
+    ],
+    "sw": [
+      "h2o",
+      "co2",
+      "o3",
+      "n2o",
+      "co",
+      "ch4",
+      "o2",
+      "n2",
+      "ccl4",
+      "cfc11",
+      "cfc12",
+      "cfc22",
+      "hfc143a",
+      "hfc125",
+      "hfc23",
+      "hfc32",
+      "hfc134a",
+      "cf4",
+      "no2"
+    ]
+  }
+}

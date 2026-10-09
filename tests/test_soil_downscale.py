@@ -826,3 +826,176 @@ def test_actual_native_grid_uses_bounded_shared_geometry_stencil(monkeypatch):
     assert calls == [4]
     from gpuwm.ingest.soil_downscale import source_mesh_receipt
     assert source_mesh_receipt(plan, announce=False)["spacing_metric"] == "great-circle-angle"
+
+
+
+# ---------------------------------------------------------------------------
+# one decision per (source, nominal resolution), never per placement
+# ---------------------------------------------------------------------------
+#: Domain centres from the national-lattice prep study of 2026-10-08: the
+#: HRRR interior window and three whole-cell windows of it, every one on
+#: HRRR's own cone.  Measured per domain at its centre, one HRRR source cell
+#: spanned 0.99984, 1.00136, 1.0355 and 1.012 cells of these 3 km grids, so
+#: the downscale was off on the first and on for the others, and the same
+#: HRRR cell got different soil moisture depending on where the box sat.
+_HRRR_CONE_PLACEMENTS = {
+    "national": (38.5, -97.5),
+    "south-plains": (35.30404923695053, -97.51650693799445),
+    "northeast": (42.5624426215736, -74.19364980752027),
+    "west": (39.56320321439667, -111.55294444452045),
+}
+
+
+def _mapped_lambert_snapshot(mapping_name):
+    """A mapped Lambert snapshot as the decoder hands it over: projected
+    axes in 100 km units beside the mapping's own grid declaration."""
+    import json
+    from types import SimpleNamespace
+
+    from gpuwm.mapped_source import PROJECTED_AXIS_UNIT_M
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    grid = json.loads((root / "gpuwm" / "authorities" / mapping_name)
+                      .read_text(encoding="utf-8"))["grid"]
+    parameters = dict(grid["parameters"], axis_unit_m=PROJECTED_AXIS_UNIT_M)
+    return SimpleNamespace(
+        latitude=(np.arange(parameters["ny"]) * parameters["dy_m"]
+                  / PROJECTED_AXIS_UNIT_M),
+        longitude=(np.arange(parameters["nx"]) * parameters["dx_m"]
+                   / PROJECTED_AXIS_UNIT_M),
+        projection={"family": grid["family"], "parameters": parameters})
+
+
+def _hrrr_cone_domain(centre, dx_m, size=41):
+    from gpuwm.static.lambert import LambertGrid
+
+    lat, lon = centre
+    return LambertGrid(ref_lat=lat, ref_lon=lon, truelat1=38.5,
+                       truelat2=38.5, stand_lon=-97.5, dx=dx_m, dy=dx_m,
+                       e_we=size, e_sn=size)
+
+
+#: The mapped sources published on HRRR's own 3 km grid.
+_HRRR_GRID_MAPPINGS = (
+    "rw-wps-hrrr-prs-grib2.mapping.json",
+    "rw-wps-hrrr-native-grib2.mapping.json",
+    "rw-wps-rrfs-prslev-2dfld-grib2.mapping.json",
+)
+
+
+@pytest.mark.parametrize("mapping_name", _HRRR_GRID_MAPPINGS)
+def test_the_same_hrrr_cell_gets_the_same_soil_moisture_wherever_the_domain_is_drawn(
+        mapping_name):
+    """3 km HRRR onto a 3 km domain has nothing below the source cell to
+    reconstitute, at every placement.  Measured per domain, the switch
+    flipped with the domain centre, and a column it switched on lost every
+    value below its texture's air-dry point (0.016-0.05 m3/m3 in the
+    study) while the same column drawn elsewhere kept them."""
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+
+    snapshot = _mapped_lambert_snapshot(mapping_name)
+    params = pack_params(load_tables())
+    rng = np.random.default_rng(20261008)
+    shape = (40, 40)
+    soil_type = rng.integers(1, 13, size=shape).astype(np.float64)
+    smcdry, smcmax, _ = soil_texture_bounds(soil_type, params)
+    # One HRRR soil column per cell across RUC's nine levels, its wetness
+    # spread over each texture's whole range and some of it below air-dry.
+    moisture = np.stack([
+        smcdry + (smcmax - smcdry) * rng.uniform(-0.2, 1.0, size=shape)
+        for _ in range(9)])
+    land = np.ones(shape, dtype=bool)
+
+    results = {}
+    for name, centre in _HRRR_CONE_PLACEMENTS.items():
+        plan = soil_mesh_plan_from_case(
+            snapshot, _hrrr_cone_domain(centre, 3000.0))
+        result, receipt = downscale_soil_moisture(
+            moisture, soil_type=soil_type, terrestrial=land, params=params,
+            plan=plan, announce=False)
+        results[name] = (np.asarray(result), receipt, plan)
+
+    reference, _, reference_plan = results["national"]
+    for name, (result, receipt, plan) in results.items():
+        np.testing.assert_array_equal(result, reference, err_msg=name)
+        np.testing.assert_array_equal(result, moisture, err_msg=name)
+        assert receipt["applied"] is False, name
+        assert plan.footprint_cells == reference_plan.footprint_cells, name
+        assert max(plan.footprint_cells) <= 1.0, name
+
+
+@pytest.mark.parametrize("mapping_name", (
+    *_HRRR_GRID_MAPPINGS,
+    "rw-wps-rap-native-grib2.mapping.json",
+    "rw-wps-rap-awip32-grib2.mapping.json",
+))
+def test_a_finer_domain_downscales_with_one_fixed_footprint(mapping_name):
+    """Below the source spacing the downscale stays on, and its window is
+    the source's declared spacing over the domain's declared spacing: one
+    number per (source, resolution), not a centre measurement that mixed
+    projected metres with longitude degrees."""
+    from gpuwm.ingest.soil_downscale import (
+        soil_mesh_plan_from_case, source_mesh_receipt)
+    from gpuwm.static.projection import EARTH_RADIUS_M
+
+    snapshot = _mapped_lambert_snapshot(mapping_name)
+    parameters = snapshot.projection["parameters"]
+    plans = [soil_mesh_plan_from_case(snapshot,
+                                      _hrrr_cone_domain(centre, 1000.0))
+             for centre in _HRRR_CONE_PLACEMENTS.values()]
+    assert len({plan.footprint_cells for plan in plans}) == 1
+    scale = EARTH_RADIUS_M / parameters["earth_radius_m"]
+    np.testing.assert_allclose(
+        plans[0].footprint_cells,
+        (parameters["dx_m"] * scale / 1000.0,
+         parameters["dy_m"] * scale / 1000.0), rtol=1e-12)
+    assert all(plan.enabled for plan in plans)
+    assert all(min(plan.footprint_cells) > 1.0 for plan in plans)
+    receipt = source_mesh_receipt(plans[0], announce=False)
+    assert receipt["spacing_metric"] == "nominal-grid-spacing"
+    assert receipt["nominal_spacing_m"] == {
+        "source": {"x": parameters["dx_m"], "y": parameters["dy_m"],
+                   "earth_radius_m": parameters["earth_radius_m"]},
+        "target": {"x": 1000.0, "y": 1000.0,
+                   "earth_radius_m": EARTH_RADIUS_M},
+    }
+
+
+def test_native_hrrr_takes_the_same_fixed_footprint_as_the_mapped_route():
+    """The native decoder's HRRR grid (WPS sphere, scaled dx) and the mapped
+    hrrr-prs declaration (GRIB sphere, 3000 m) describe the same cells, so
+    they fix the same window -- off at 3 km, three cells at 1 km."""
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+
+    mapped = _mapped_lambert_snapshot("rw-wps-hrrr-prs-grib2.mapping.json")
+    for dx_m in (3000.0, 1000.0):
+        native = {soil_mesh_plan_from_case(
+            None, _hrrr_cone_domain(centre, dx_m),
+            source_grid=hrrr_source_grid()).footprint_cells
+            for centre in _HRRR_CONE_PLACEMENTS.values()}
+        assert len(native) == 1
+        (footprint,) = native
+        np.testing.assert_allclose(
+            footprint, soil_mesh_plan_from_case(
+                mapped, _hrrr_cone_domain((38.5, -97.5), dx_m)
+            ).footprint_cells, rtol=1e-12)
+        assert (max(footprint) <= 1.0) is (dx_m == 3000.0)
+
+
+def test_a_latitude_longitude_source_keeps_its_centre_measured_plan():
+    """GFS, ECMWF, ICON and ERA5 arrive on regular latitude/longitude axes
+    with no declared metric spacing; their plan is still the centre
+    measurement, so their preparation bytes do not move."""
+    from types import SimpleNamespace
+
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+
+    source_lat = np.arange(20.0, 55.0 + 1e-9, 0.25)
+    source_lon = np.arange(-130.0, -60.0 + 1e-9, 0.25)
+    snapshot = SimpleNamespace(latitude=source_lat, longitude=source_lon)
+    for centre in _HRRR_CONE_PLACEMENTS.values():
+        grid = _hrrr_cone_domain(centre, 3000.0)
+        assert soil_mesh_plan_from_case(snapshot, grid) == \
+            SoilMeshPlan.from_grids(source_lat, source_lon,
+                                    *grid.latlon_mass())

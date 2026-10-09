@@ -647,11 +647,29 @@ def run_ensemble_renderer(
         elif line.startswith("PAINTBALL_LEGEND\t"):
             report["paintball_legend"] = line.split("\t", 1)[1]
     if result.returncode != 0 and not failures:
-        tail = [line for line in (result.stderr or "").splitlines()
-                if line.strip()]
         failures.append(
-            f"{manifest}: {tail[-1] if tail else f'exit {result.returncode}'}")
+            f"{manifest}: {engine_failure_reason(result.stderr, result.returncode)}")
     return written, failures, skipped, report
+
+
+def engine_failure_reason(stderr: str, returncode: int) -> str:
+    """The line that says why an engine exited non-zero.
+
+    ``rw_ensbatch`` answers an argument or roster problem with the reason
+    and then its two-line usage text, so the last line of stderr is the
+    usage line.  Reported as the failure, it told an operator nothing (a
+    v2 ensemble's refused roster read as "rw_ensbatch --list-fields |
+    --help | --abi").  The usage text is cut off and the last line before
+    it is the reason.
+    """
+
+    lines = [line.strip() for line in (stderr or "").splitlines()
+             if line.strip()]
+    for index, line in enumerate(lines):
+        if line.startswith("usage:"):
+            lines = lines[:index]
+            break
+    return lines[-1] if lines else f"exit {returncode} with no message"
 
 
 def run_obsgrid_renderer(
@@ -706,15 +724,14 @@ def run_obsgrid_renderer(
                                "lat": float(parts[3]),
                                "lon": float(parts[4])})
     if result.returncode != 0 and not failures:
-        tail = [line for line in (result.stderr or "").splitlines()
-                if line.strip()]
+        # rw_obsgrid prints its usage after an argument error too.
         failures.append(
-            f"{obs}: {tail[-1] if tail else f'exit {result.returncode}'}")
+            f"{obs}: {engine_failure_reason(result.stderr, result.returncode)}")
     return written, failures, skipped, roster
 
 
 __all__ = [
-    "CARGO_BUILD_HINT", "COMPARE_ABI_MARKER", "COMPARE_ENV", "COMPARE_NAME",
+    "CARGO_BUILD_HINT", "COMPARE_ABI_MARKER", "COMPARE_ENV", "COMPARE_NAME",  # noqa: F822 -- module __getattr__
     "compare_remedy", "find_compare_bin", "probe_compare_bin",
     "probe_compare_reference_bin", "require_compare_bin",
     "require_compare_reference_bin",

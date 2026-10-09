@@ -133,9 +133,8 @@ tools/thompson_real_column_parity/README.md and
 docs/public/wrf-comparison/mp28-column-evidence.md say what closed and what
 remains.
 
-This module does not import cupy in its own source and opens no device: the
-loader capture replaces ``cupy.RawModule`` with a recorder before any
-compile can happen.
+The source-capture fixture opens no device. It uses the actual loader with
+recording compiler boundaries and a synthetic CUDA cache identity.
 """
 
 from __future__ import annotations
@@ -231,13 +230,24 @@ FROZEN_COMMIT_ORIGINAL = "789f61181fb0b198ace10775f3ea184eb5e786a3"
 #: raw output words against the unbounded source and former launch widths.
 #: Direct mixed and dense sweeps on RTX 4090 and RTX 5090 are byte-identical
 #: for the admitted bound. More aggressive bounds failed the RTX 5090 check.
+#: RE-FROZEN 2026-10-08 (gfix/288-thompson-classic): every classic
+#: rain-graupel table read goes through thompson_racg_index, the one slab WRF
+#: builds, instead of WRF v4.6.1's idx_bg1=5 subscript (+4*37*37 words, and
+#: zero rates where that left the table): the declared divergence mp=28
+#: already carries.  Reading: tests/test_thompson_real_column_host_parity.py
+#: grades the 42 real columns on WRF with only that index corrected
+#: (thompson_real_columns_wrf461_mp8_corrected_racg.npz) with no cell beyond
+#: the gate, and the unchanged stock fixture now shows exactly the
+#: rain-graupel footprint (74 prr_rcg, 80 pnr_rcg, 74 prg_rcg, 55 png_rcg,
+#: 7 prw_vcd cells, one final qg); on sm_89 only the six reading kernels'
+#: SASS moved.  Previously 1ab8d031/b3bbf88b (428981 chars).
 THOMPSON_CU_SHA256 = (
-    "1ab8d0319f471df3505b11591a67e7622f9dbeb022b23ac3179354befaa1443a")
+    "43f76b17febd32acdfe96e9cca4d9c932ce2d72c5a5378ed73b5f3eac33998d8")
 #: sha256 of ``_preamble() + thompson.cu`` -- the exact string nvrtc sees.
 #: THIS is the mp=8 numerics guarantee.
 THOMPSON_COMPILED_SOURCE_SHA256 = (
-    "b3bbf88b6231433036a8449593ff497e46909b145c7556579568a4d3dc64fbf2")
-THOMPSON_COMPILED_SOURCE_LEN = 428981
+    "35ac29fc801c66fc1eb64506267ded1efa2374f0998b0f80eea72f2afd5aa34a")
+THOMPSON_COMPILED_SOURCE_LEN = 428156
 
 COMMON_CUH_SHA256 = (
     "c78b17cb02ef67a2ad24d19e06e1129d7d5bcda74b972b38470fd33a6e58ff43")
@@ -273,8 +283,15 @@ CUDA_DEFINES_PIN = {
 #: RE-FROZEN 2026-10-01: the cold network uses 64-thread blocks; the warm
 #: network retains 256 on device architecture majors 9 and 10, and 64 on
 #: the others. tests/test_thompson_speed_blocks.py checks geometry and bits.
+#: RE-FROZEN 2026-10-08 (gfix/288-thompson-classic): launch_adapter_finish
+#: clamps at DTYPE(mp_tend_lim) * DTYPE(dt), the REAL product WRF forms
+#: (module_big_step_utilities_em.F:5706), not the rounded double product;
+#: a clamped cell's heating moved one float32 unit to WRF's word
+#: (tests/test_thompson_slab1_oracle_gpu.py), and launch_rain_graupel_
+#: collection's docstring names the one-slab read.  __all__ is unchanged.
+#: Previously 8b091e96.
 THOMPSON_PY_SHA256 = (
-    "8b091e96e43876c2f3a4f413267556b20e6e3dfabf92b4a2b802badb11610dc5")
+    "00f661f03a86e5d10b4c27db93264a3dcef287b20cb25f0449304a95d22c2f16")
 
 #: ``gpuwm/core/thompson.py::__all__`` verbatim, in declaration order.
 #: mp=28 launchers live in the new ``thompson_aerosol_*.py`` modules; not
@@ -361,11 +378,14 @@ THOMPSON_PY_ALL = (
 #: level-parallel fallout; counts 14 / 7 / 3 / 3, no site edited.
 #: RE-FROZEN 2026-10-01: the network bound adds seven lines above later
 #: sites. Literal counts and numerical values are unchanged.
+#: RE-FROZEN 2026-10-08: thompson_racg_index added 23 lines above the
+#: later sites and the six one-slab reads removed lines below them; counts
+#: 14 / 7 / 3 / 3 and no site edited.
 THOMPSON_CU_LITERAL_SITES = {
-    '100.0e6f': [416, 1136, 1265, 2572, 3446, 3513, 3739, 4419, 4699, 4822, 4954, 5374, 7672, 9645],
-    '2730.0f': [416, 1136, 1265, 4699, 4822, 5374, 9645],
-    '272.0f': [1142, 1273, 9653],
-    'cloud_number_bin = 65': [4627, 5040, 7754],
+    '100.0e6f': [416, 1136, 1265, 2572, 3446, 3513, 3762, 4437, 4717, 4840, 4972, 5392, 7658, 9631],
+    '2730.0f': [416, 1136, 1265, 4717, 4840, 5392, 9631],
+    '272.0f': [1142, 1273, 9639],
+    'cloud_number_bin = 65': [4645, 5058, 7740],
 }
 
 #: Every ``.cu`` translation unit present at the frozen commit, as
@@ -425,8 +445,16 @@ FROZEN_MODULE_DIGESTS = {
         # histories and canonical state remain byte-identical.
         # The small-step vertical and big-step momentum receipts
         # record the current assembled source and card evidence.
-        'bc2ce86bd35e1017868e8711465ec38a32890eea0dd08a64cc837bcd0790262d',
-        '2356c7c8950b95056b0205da6f787a8f74fa01d4b2ae5e03d43621b2037a4141'),
+        # Re-pinned for lane/verify-base4 (combo sweep round 3): strict-only
+        # operation order inside `#if GPUWM_WRF_EXACT` -- calc_coef_w's top row with rdnw(kde-1)**2 first, advance_uv's external-mode term inside the u/v statement, spec_bdyupdate_ph's (field*num)/den and WRF's muts carrier on the specified ring.
+        # Reading: with no selector the default acoustic PTX is byte-identical to
+        # bc2ce86b/2356c7c8 for compute_89/90/120 under both option sets
+        # (tools/kernel_ptx_identity/receipts/wrf-exact-round3-default.json); the
+        # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
+        # WRF's own dumped words (tools/wrf_exact_localize).  Previously
+        # bc2ce86b/2356c7c8.
+        '89af01f989f6a61a697fba00f1effcfe393d74016a52a5cd100a184701adbc25',
+        '22704608360351a64d84bbf90ed1574e8e62edb5b06f5deea85376d93fca5cf8'),
     'advection': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
@@ -532,8 +560,16 @@ FROZEN_MODULE_DIGESTS = {
         # (tools/kernel_ptx_identity/receipts/,
         # wrf-exact-default-2.8.2-nvrtc13.4.json and -nvrtc12.9.json), so the
         # default build does not move.  Previously 384bf67c/eb691c93.
-        '7b348c87a5d25e6e731198167fb48e0223c1e0a6ce5ca3328dd8c0b52c8c32bb',
-        'f3da804ee5d4e686e044433a4366b3a4f2ed92f1421105dee1a98905818611ea'),
+        # Re-pinned for lane/verify-base4 (combo sweep round 3): strict-only
+        # operation order inside `#if GPUWM_WRF_EXACT` -- calc_p_rho_phi with the acoustic loop's grid%muts as an argument (a helper and a calc_p_alpha_carried_muts entry).
+        # Reading: with no selector the default diagnostics PTX is byte-identical to
+        # 7b348c87/f3da804e for compute_89/90/120 under both option sets
+        # (tools/kernel_ptx_identity/receipts/wrf-exact-round3-default.json); the
+        # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
+        # WRF's own dumped words (tools/wrf_exact_localize).  Previously
+        # 7b348c87/f3da804e.
+        '38ee5c0218f0d542a98079a47ff0f430086d8f9b7232ece705d8b605aaabb9d1',
+        '4418fe6f646c836513e508ebc44a80170c2ca4e0f82e33e304b13e849e1410ca'),
     'diff6': (
         # Re-pinned for the compiled WRF v4.7.1 diffusion oracle (83fde6032,
         # merged dd4908a0f): sixth-order filtering supplies each field's
@@ -541,8 +577,8 @@ FROZEN_MODULE_DIGESTS = {
         # keeps WRF's REAL staging in the main and seam kernels.  Reading: zero
         # differing words over 376,160 against compiled WRF on the 4090 and 5090
         # (tests/test_diff6_wrf471_parity.py).  Previously 7dbcfb2d/563febbc.
-        'deb53522840d9d1bb9f0dcb43cd98fb4da5c4658714025a091d7c6f9ce461e12',
-        '7db172b01a10c9613b1475947c21703d0161844aed348cf029dcbb1199993148'),
+        '0e0de46ac99d264eef27a50ac74e6e92fd68374ebd42698aceb4e1a4808a7467',
+        'be41f8092a63933c6165f67e59f03afaa89bacbd6ffbf1a5ddcef367f38e4bcc'),
     'diff6_seam': (
         # Re-pinned for the compiled WRF v4.7.1 diffusion oracle (83fde6032,
         # merged dd4908a0f): sixth-order filtering supplies each field's
@@ -550,8 +586,8 @@ FROZEN_MODULE_DIGESTS = {
         # keeps WRF's REAL staging in the main and seam kernels.  Reading: zero
         # differing words over 376,160 against compiled WRF on the 4090 and 5090
         # (tests/test_diff6_wrf471_parity.py).  Previously 776ed705/7af0e3dd.
-        'e01ff6b6643c10cbda676a152b0d4c5c54da3afc4e116b9229a3e604e9914b63',
-        '4c00722a7e8e4fb84bd39dea09c2d84ef4b42cf839e088a21e05a0c8a73c55fb'),
+        'b693000a64ccfece2e2cdd45756091c7d200f55e1d136f5a79ab548fe22706e9',
+        '90c48b98a08fa87fc1cabfe41cb0ba7c6ef52e74817f4502c08d494ecacfb905'),
     'diffusion': (
         '00fb2e5d5550680fef154b4f67c7e282ad7ca1b170df59abdea89f888dad91ef',
         'f4958de3298bfcd764a5fd848aedfbb13938043ab91132db419408951c0a061e'),
@@ -610,8 +646,26 @@ FROZEN_MODULE_DIGESTS = {
         # mask), default and strict, RTX 5070 Ti; the previous kernel misses
         # 192 (the west top row of the 16 open-x fixtures).  Previously
         # a9567a3d/3d47bada.
-        'dc89c74d8ac33880a8fa697d955f2c96a8bdfd863afc12e3095c06953049bc81',
-        '2b6f1337d83bfaa691db85e762505a88276f52f81e7cf412b6a03b1bb5a63255'),
+        # Re-pinned for lane/verify-base3 (combo sweep round 2): strict-only
+        # operation order inside `#if GPUWM_WRF_EXACT` -- calc_php's
+        # left-to-right half-level geopotential, pg_buoy_w's (1./msfty)*g
+        # scale, and small_step_finish's muus from muts = (mub+mu)+mu''.
+        # Reading: with no selector the default dycore PTX is byte-identical
+        # to dc89c74d/2b6f1337 for compute_89/90/120 under both option sets
+        # (tools/kernel_ptx_identity/receipts/
+        # wrf-exact-round2-dycore-default.json); the strict words are graded
+        # in tests/test_wrf_exact_operation_order_gpu.py.  Previously
+        # dc89c74d/2b6f1337.
+        # Re-pinned for lane/verify-base4 (combo sweep round 3): strict-only
+        # operation order inside `#if GPUWM_WRF_EXACT` -- calc_mu_uv's face mass in rhs_ph and horizontal_pressure_gradient, calc_cq's species-pair qtot in pg_buoy_w, and small_step_finish reading the muts carrier.
+        # Reading: with no selector the default dycore PTX is byte-identical to
+        # 6fac2471/af786cd2 for compute_89/90/120 under both option sets
+        # (tools/kernel_ptx_identity/receipts/wrf-exact-round3-default.json); the
+        # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
+        # WRF's own dumped words (tools/wrf_exact_localize).  Previously
+        # 6fac2471/af786cd2.
+        'b5bcc35a129fdf130f0473adc7d4500938d28007815f34c7645990b410343b20',
+        '64157bc4a97aed6e4654f34ef2b4f60479be28623c24c45b3db4b8f3b155c1fe'),
     'health': (
         # RECOMPUTED at the tilestream port, over the MERGED health.cu that
         # carries both re-pins below.  The pin that arrived with the port
@@ -747,8 +801,16 @@ FROZEN_MODULE_DIGESTS = {
         # report (DYCORE-SPEED-282/advection-RESULT.md) records forecast
         # identity on B200, H100 and RTX PRO 6000 (3 km CONUS) and on the
         # RTX 4090 and RTX 5090 (default suite).  Previously 05f074d8/c6c21f26.
-        '27ad19bef958c8b6768101ee06a7b4c9df05408b3be581171681ef235de13c27',
-        'e2e4f809c366e020eac3f1a05fd0577ff17e75c6a15852e74eb4cd7b61e274dd'),
+        # Re-pinned for lane/verify-base4 (combo sweep round 3): strict-only
+        # operation order inside `#if GPUWM_WRF_EXACT` -- relax_bdytend_core's (tend+fcx*f0)-gcx*(...) order, calc_mu_uv/couple_momentum coupling of ru/rv, and spec_bdy_final on the specified rows only from grid%muts.
+        # Reading: with no selector the default lbc_state PTX is byte-identical to
+        # 27ad19be/e2e4f809 for compute_89/90/120 under both option sets
+        # (tools/kernel_ptx_identity/receipts/wrf-exact-round3-default.json); the
+        # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
+        # WRF's own dumped words (tools/wrf_exact_localize).  Previously
+        # 27ad19be/e2e4f809.
+        'da4691da051a23f2a7445f74ffd02487599cf644c63067f32e08ddab8711859b',
+        'e650e7df539401637eb77f21617b19ffbf60ea0a88e7285fd738bb741ce8b5b6'),
     'morrison': (
         # MOVER: the deposition-freezing cold-trap bound, carried to the
         # engine line from lane/level5-owner 0c54221d2.  UNLIKE the two
@@ -869,8 +931,25 @@ FROZEN_MODULE_DIGESTS = {
         # 1e-12 initialization production floor under MYNN_GSD41 only.
         # All 96 predictor TKE words match unmodified source. Default PTX
         # is identical to staging cdf5a7dea at compute89 and compute120.
-        '3243ddcbb65e4cae69975840e177822ca3000507f07aef2e50fe10360001a554',
-        'ecf106fc09e1f3982a9fa8c2b277b3959dbc7af102cc1500b4e64dbad6fd6d25'),
+        # Previously 3243ddcb/ecf106fc.
+        # P23 (lane/ec-mynn-p23): the fork's closure level 2.5 diagnoses
+        # tsq, qsq and cov in mym_predict under MYNN_GSD41 only; eight
+        # columns match the unmodified predictor as FP32 bits
+        # (variance-gsd41.csv).  Default PTX is byte-identical to 534c6dea3
+        # at compute_89 (c9058bb3) and compute_120 (d5028fa7).
+        # RE-PINNED by lane/mynn-exact (the YSU recipe on MYNN), MOVES ANSWERS
+        # for bl_pbl_physics = 5: --fmad=false, glibc 2.39 expf/log10f and the
+        # FMA-ifunc logf/powf/expf in the unit, fdlibm tanhf at every site;
+        # under MYNN_GSD41 the fork's a2den algebra and 0.608 thetav.  Reading
+        # (RTX 5090 sm_120, NVRTC 12.9): every MYNN CUDA leaf and both drivers 0
+        # ULP against WRF v4.6.1, six column families x 12 steps free-running 0
+        # ULP (tests/test_mynn_wrf461_exact_gpu.py); gsd_41 0 ULP against the
+        # fork's driver (tests/test_mynn_gsd41_driver_exact_gpu.py). Previously
+        # 9d6b1bcc.
+        # Review: fork CASE(1) and its buoyancy flux now follow the fork.
+        # The stock preprocessed source is unchanged, checked by the sibling test.
+        '176d00a656786395753cd254921fe74968448c8daafc7c7f254b97c484338cda',
+        '01614cc90a77c120aa7a2ae92679ca85a24979e4b19f23629c5da83463109983'),
     'mynn_surface': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
@@ -881,8 +960,8 @@ FROZEN_MODULE_DIGESTS = {
         # The selectable GSL surface variant and explicit table rounding
         # coexist. The ordinary table retains the native Blackwell operation
         # order; the selected variant keeps its own stability solver.
-        'e7d9a055cb1226168d54b4416ef7435746219316b92bfdffc09127feda4203ea',
-        'dc759001e1fbb3886d0c8d066596d31a78b9c57cea51b2fbd62ecdad35ccd650'),
+        'b8b5b9b544dced5ce44acb27a29cfc882b1a008ecd9c5e04b1b4b3ec50dd1220',
+        '2c93b3baab586c642dbb988c866be65215a0e07f1d9d0f9087f3669cffa22e6e'),
     'nest': (
         # Re-pinned for a combined four-side boundary launch. The original
         # single-side entry point and SINT expression tree remain unchanged.
@@ -1489,8 +1568,22 @@ FROZEN_MODULE_DIGESTS = {
         # v4.6.1 snow scheme returning as the default, or either lineage
         # changing unseen.  tests/test_ruc_nzs_tier.py inverts the edits by
         # name before its historical digest.  Previously 844546e3/0af961d3.
-        'f2de42c4b47c26927d1c6097a6f5801a96ae12a96f84f0aede2ec4c45e4cad4a',
-        '48bb40b7e167341509392bafaf5828a84c053c6e5d136b66634f398e7348b846'),
+        #
+        # lane/verify-ruc-lsm, RUC's float32 libm words.  Every EXP, LOG,
+        # LOG10, TANH, COS and REAL**REAL the RUC column evaluates moved from
+        # a float64 evaluation rounded once (and CUDA's logf/cosf) to WOOF's
+        # float32 routines: gfk_pow/gfk_exp/gfk_log, glibc_cosf (the module
+        # now also takes glibc_trig_flt32.cuh) and the log10f/expm1f/tanhf
+        # reductions in ruc.cu.  The binary changes on purpose.  WHAT IT
+        # SHIPPED, measured by tools/ruc_lsm_gpu_oracle against unmodified
+        # WRF v4.6.1 on box W1 (102 columns, six configurations, 8-12 steps,
+        # strict and default arithmetic): 0 ULP on every compared word; before
+        # it, 1,309 of 78,744 words differed on the nine-level case.  The
+        # lsmruc.csv and sfctmp.csv residue maps (26 and 11 cells) are empty.
+        # tests/test_ruc_nzs_tier.py inverts the hunks by name before its
+        # historical digests.  Previously f2de42c4/48bb40b7.
+        'f435298be63975bee606873f5aba969e4faae0ed1a506a8da9a973cca9dc10e2',
+        'bae9a3154a2d2f4a4c91d86e68ee8b8a5de082cc87abf8846982aa78e253f6cc'),
     'saxpy': (
         # 2.8.2: four values per thread with aligned vector loads/stores.
         # Scalar a*x+y and the default FMA policy are unchanged. The word
@@ -1538,8 +1631,18 @@ FROZEN_MODULE_DIGESTS = {
         # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
         # identical to the base's); Blackwell cards now round these quotients
         # IEEE-correctly.  Previously 1e068781/c26f5f05.
-        '20526ca8a9c151ab36a620ba198ee1f1072828c23480b6f9d761057c85c28964',
-        '64893145b9bb557e1c30b32b323cf8118c91f903893c4a5ba7668b4e04a5ee9e'),
+        # Revised MM5 flux-off carry and land scalar EXP overflow fixes:
+        # tests/test_sfclayrev_flux_disable_replay.py and
+        # tests/test_sfclayrev_nonfinite.py grade this surface-layer slice;
+        # tools/sfclayrev_wrf461_oracle/stress/check.py hashes every
+        # WRF-finite field word. PHYSICS.md declares the overflow divergence.
+        # Thompson's own translation unit is unchanged.
+        # 2.8.8 (gfix/288-gpu-shards): the composed unit's sfclay_classic.cuh
+        # keeps the incoming CHS/CHS2/CQS2 words when ISFFLX=0, as WRF and
+        # the revised scheme do (tests/test_sfclayrev_flux_disable_replay.py
+        # option 91); sfclay.cu is byte-unchanged.  Previously 650d6937.
+        '006ce82caeee50a44606b92b83873d15303de74e00e605cbe03195f67e049986',
+        'f5b6d75e8e27007d865bda8022d30c49582b83590ef41b9ecae8fae1639a464a'),
     'smag2d': (
         # Re-pinned on the 1.5 integration line: feature/les-integration's
         # verified km_opt=2/3 work edits smag2d.cu after this table was
@@ -1600,8 +1703,16 @@ FROZEN_MODULE_DIGESTS = {
         # and all 178,128 diff_opt=1 coordinate words reproduced on an RTX
         # 5090 at this source (tests/data/wrf471_diff_opt1/
         # measured-source-transition.json).  Previously 1c8c29c1/565ad5fa.
-        '932359b9f7685918fdd69e204ead1d2ac8369b792d64ff393e00b6b910dc84ad',
-        '400d89d032c13c4ed64be6cfd96e72483dc176fc83a933098b8cde85ac2a34a9'),
+        # Re-pinned for lane/verify-base4 (combo sweep round 3): strict-only
+        # operation order inside `#if GPUWM_WRF_EXACT` -- vertical_diffusion_u_2/_v_2's rdz = -g/dnw then tend - rdz*diff.
+        # Reading: with no selector the default smag2d PTX is byte-identical to
+        # 932359b9/400d89d0 for compute_89/90/120 under both option sets
+        # (tools/kernel_ptx_identity/receipts/wrf-exact-round3-default.json); the
+        # strict words are graded in tests/test_wrf_exact_round3_gpu.py and against
+        # WRF's own dumped words (tools/wrf_exact_localize).  Previously
+        # 932359b9/400d89d0.
+        '731d7f64e86af2d17344be7328fda2a3ecfd4f2e22371f6093128ca2f3192500',
+        'e0ddc6075c1da84434eea66c55f39340e40a273c1080ae32578540a706b8e270'),
     'spec_bdy': (
         'bcc7090fbbb8ea307bd6dd6c65ab9b8a3f56948c4752ae3d744127b450d20161',
         'bc03ed595bacc546d8e041fbb1d11b5bb3b3b90760ef06ea1dd1f0f18b4de931'),
@@ -1643,8 +1754,11 @@ FROZEN_MODULE_DIGESTS = {
         # Re-frozen again by the A146 review repair (see THOMPSON_CU_SHA256).
         # Re-pinned for the network occupancy change and raw-word checks
         # in tests/test_thompson_speed_blocks.py; see THOMPSON_CU_SHA256.
-        '1ab8d0319f471df3505b11591a67e7622f9dbeb022b23ac3179354befaa1443a',
-        'b3bbf88b6231433036a8449593ff497e46909b145c7556579568a4d3dc64fbf2'),
+        # RE-FROZEN 2026-10-08 for the one-slab rain-graupel reads
+        # (thompson_racg_index); see THOMPSON_CU_SHA256 for the reading.
+        # Previously 1ab8d031/b3bbf88b.
+        '43f76b17febd32acdfe96e9cca4d9c932ce2d72c5a5378ed73b5f3eac33998d8',
+        '35ac29fc801c66fc1eb64506267ded1efa2374f0998b0f80eea72f2afd5aa34a'),
     'uh_diag': (
         'cbfc98e8d025a4511fd7f8a41ca4bd163c261da4a48dec22bb979ec5a496b14e',
         '9dc88c6e14b2aaaa4249a9f844dc231f105431623375c988a2894e322de2f3ea'),
@@ -1779,8 +1893,37 @@ FROZEN_MODULE_DIGESTS = {
         # loader's effective options), and tests/test_ysu_wrf461_parity.py's
         # ULP table did not move on either card.  The arm is graded against
         # WRF v4.7.1 by tests/test_terrain_drag_wrf471_parity.py.
-        '41b9a8991fcfa8ac2cb3db0849ae9f866ed01de3d6f6dbb10d55b2ba216e6bc7',
-        '57842bb8e24093d59946ec907fcf6f152397ef4f2725d8f8932efff33b48f739'),
+        # Previously 41b9a899/57842bb8.
+        #
+        # RE-PINNED by lane/parity-286 (WRF parity sweep rows 2 and 9), and
+        # this one MOVES ANSWERS on the default path.  (a) bl_ysu.F90:613
+        # `br > 0` is compared in double through the bit-decoding ysu_f2d
+        # (ysu_topo.cuh), because sm_120 DAZes a positive subnormal br in a
+        # float32 compare and the column took the convective arm where WRF
+        # takes the stable one.  (b) ysu_column and ysu_column_bep take WRF's
+        # ctopo surface-drag arm (bl_ysu.F90:1308) with ctopo = ctopo2 = 1,
+        # which module_bl_ysu.F:404 passes on every WRF run, instead of the
+        # ctopo-absent :1315 no WRF run reaches.  Reading (box F RTX 5090,
+        # sm_120, NVRTC 13.4): tests/test_ysu_wrf461_parity.py case 7 joins
+        # the arithmetic table (wstar/delta 0 as WRF, momentum 4.5e7 -> 1457
+        # ULP, theta 1.8e9 -> 0), du/dv graded against WRF's ctopo call with
+        # maxima unchanged at 1457/23302, case 9 dv 22 -> 0; the BEP table
+        # and the topo_wind arm's table did not move.
+        # Previously d95a63ea/2d0e714d.
+        #
+        # RE-PINNED by lane/parity-286 (sweep row 10), and this MOVES ANSWERS
+        # on the default path: glibc's powf/expf (gfk_pow/gfk_exp) in place
+        # of CUDA's, every real-exponent `**` spelled as gfortran's powf call,
+        # WRF's association for chi/temps/prnumfac, WRF's thx = (th*pi)/pi and
+        # (ttend*pi)/pi round trips (ysu_thx), and the unit compiled with
+        # --fmad=false (kernels/__init__.py _NO_FMAD_MODULES).  Reading (box K
+        # RTX PRO 6000, sm_120, NVRTC 13.4.92 and 12.9.86 identical):
+        # tests/test_ysu_wrf461_parity.py goes from du/dv 1457/23302, exch 7,
+        # hpbl/wstar/delta/dtheta 1 ULP to bitwise WRF on every lane but the
+        # 11 FTZ-flushed subnormal tendencies; the BEP table and the topo_wind
+        # table go to 0 the same way.
+        '46f4642c73cdc00ad08822bb89788d576fc4bc6ca7a9d8a68aa2272d66c7a669',
+        'bce0da685472dca163a1645e4d39fb9b164a3a749ea74d4dafa810cf13ee3a3e'),
 }
 
 # -- R2 --------------------------------------------------------------------
@@ -2614,7 +2757,70 @@ ORACLE_PPA_DIVERGENT_LEVELS = (2, 3, 5, 6, 7, 8, 10, 14, 16, 17, 18, 19, 22)
 
 @pytest.fixture(scope="module")
 def r1():
-    return freeze.receipt_r1_sources()
+    import importlib
+    try:
+        # This fixture records compiler inputs with CUDA operations
+        # intercepted below. Keep the metadata dependency access from
+        # classifying the file's raw-source CPU checks as GPU work.
+        cp = importlib.import_module("cupy")
+    except ImportError:
+        # Preserve the receipt's existing no-CuPy fallback for raw-source
+        # checks; its compiler-capture assertions retain their own marker.
+        return freeze.receipt_r1_sources()
+    compiler = importlib.import_module("cupy.cuda.compiler")
+    from gpuwm import nvrtc_ptx_cache
+    from gpuwm.core import kernels
+
+    class SourceDevice:
+        id = 0
+
+        def __init__(self, *args):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class SourceImage:
+        # A sentinel, never PTX/cubin bytes or a reported compiled image.
+        def startswith(self, *args):
+            return False
+
+    class SourceModule:
+        def load(self, image):
+            assert isinstance(image, SourceImage)
+
+    direct_inputs = []
+
+    def capture_nvrtc(source, options=(), *args, **kwargs):
+        # The receipt replaces RawModule per source. Feed that recorder
+        # the exact inputs passed at the new direct compiler boundary.
+        cp.RawModule(code=source, options=options)
+        direct_inputs.append((freeze._sha256_bytes(source.encode("utf-8")),
+                              tuple(options)))
+        return SourceImage(), {}
+
+    loaders = (kernels.load_module, kernels.load_module_int_defines,
+               kernels._load_diffusion_module, kernels.compile_diffusion_source)
+    for loader in loaders:
+        loader.cache_clear()
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            # Only CUDA ownership/loading and compiler calls are replaced;
+            # source assembly, options and production dispatch stay live.
+            patch.setattr(cp.cuda, "Device", SourceDevice)
+            patch.setattr(cp.cuda.function, "Module", SourceModule)
+            patch.setattr(compiler, "compile_using_nvrtc", capture_nvrtc)
+            patch.setattr(nvrtc_ptx_cache, "compile_using_nvrtc", capture_nvrtc)
+            receipt = freeze.receipt_r1_sources()
+        receipt["source_capture_direct_inputs"] = direct_inputs
+        return receipt
+    finally:
+        # A later numeric GPU check must construct its real modules.
+        for loader in loaders:
+            loader.cache_clear()
 
 
 def test_thompson_cu_is_byte_frozen(r1):
@@ -2710,17 +2916,26 @@ def test_loader_hook_is_inert_for_every_frozen_module(r1):
         Path(__file__).with_name("test_kernel_loader_inert.py"))
     _mod = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
-    _EXPECTED_HEADERS = _mod._EXPECTED_HEADERS
+    # Selected Group A diffusion and surface sources extend the historical
+    # grant. Their raw headers and assembled source pairs are pinned above.
+    _EXPECTED_HEADERS = {
+        **_mod._EXPECTED_HEADERS,
+        "acoustic": ("glibc_trig_flt32.cuh",),
+        "myjsfc": ("glibc_flt32.cuh", "flt32_expf_fma.cuh"),
+        "mynn_surface": ("mynn_libm.cuh", "surface_subnormal.cuh"),
+        "sfclay": ("glibc_flt32.cuh", "sfclay_classic.cuh"),
+        "smag2d": ("glibc_flt32.cuh",),
+    }
 
     # The header grant stays a CLOSED literal: the loader's own allow-list
-    # must equal the mapping test_kernel_loader_inert pins, so a module
-    # cannot gain a header here without that gate moving too.
+    # must equal the historical mapping plus the selected literal grant,
+    # so a module cannot gain a header without its source gate moving too.
     granted = {name: tuple(headers) for name, headers
                in _kernels._EXTRA_HEADERS.items()}
     assert granted == {name: tuple(headers) for name, headers
                        in _EXPECTED_HEADERS.items()}, (
         "the kernel loader's _EXTRA_HEADERS drifted from the closed "
-        "mapping tests/test_kernel_loader_inert.py pins")
+        "historical mapping plus the selected Group A header pins")
     not_inert = sorted(
         name for name in FROZEN_MODULE_DIGESTS
         if name not in granted

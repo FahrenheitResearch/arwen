@@ -52,8 +52,12 @@ from gpuwm.core.noahmp import (
     parse_genparm,
     parse_soilparm,
 )
+from gpuwm.core.noahmp_libm import expf as _libm_expf
+from gpuwm.core.noahmp_libm import expm1f as _libm_expm1f
+from gpuwm.core.noahmp_libm import log10f as _libm_log10f
 from gpuwm.core.noahmp_libm import logf as _glibc_logf
 from gpuwm.core.noahmp_libm import powf as _glibc_powf
+from gpuwm.core.noahmp_libm import tanhf as _libm_tanhf
 from gpuwm.core.ruc_contract import (
     NUM_SOIL_LAYERS,
     RUC_SOIL_LEVELS_M,
@@ -81,42 +85,27 @@ _NUMPY = np
 
 
 _RUC_PROVISIONAL_TRANSCENDENTALS = """\
-PROVISIONAL float32 transcendentals, pending a verified glibc transcription.
+RETIRED (lane/verify-ruc-lsm): RUC's float32 transcendentals are WOOF's libm.
 
-gfortran lowers ``**``, ``exp``, ``log`` and ``log10`` on default REAL to
-glibc's powf/expf/logf/log10f, and glibc's are NOT correctly rounded -- 2.39
-still ships the 1993 SunPro float32 reduction for log10f.  Evaluating in
-float64 and rounding once therefore produces a THIRD function, not a more
-accurate glibc.  Measured against the live glibc 2.39 (a C program built
--O0 -fno-builtin, calling the real libm) over the 30720 distinct float32
-arguments the RUC snow-covered land column reaches:
+gfortran lowers ``**``, ``EXP``, ``LOG``, ``LOG10``, ``TANH`` and ``COS`` on a
+default REAL to the C library's float32 powf/expf/logf/log10f/tanhf/cosf.
+RUC used to stand in for them with a float64 evaluation rounded once (and
+CUDA's logf/cosf on the device), which is a different function on a small
+fraction of arguments.  The RUC GPU column oracle against WRF v4.6.1
+(``tools/ruc_lsm_gpu_oracle``: 102 columns, six configurations, every LSMRUC
+output and every surface-driver seam field after every step) measured that
+choice as 1 ULP misses on scattered columns every step -- grdflx, hfx, qfx,
+the saturation humidities, rhosnf and snowfallac through the new-snow TANH,
+and one dry desert column through the soil-resistance COS -- compounding to
+hundreds of ULP over eight steps.
 
-    float64-then-round-once (what this module uses)   783 / 30720 =  2.55 %
-    CUDA device libm  (powf/expf/logf/log10f)        3030 / 30720 =  9.86 %
-    numpy 2.2.6 float32 loop                         4420 / 30720 = 14.4 %
-    numpy 2.4.3 float32 loop                         8901 / 30720 = 29.0 %
-
-All deviations are 1 ULP for the float64 path and up to 2 ULP for the other
-three.  The float64 path is the closest of the four and, unlike the others,
-is identical on the host and the device.  Of the residual 783, 723 are the
-freezing-curve ``log`` whose only consumer is a ``tln < 0.`` sign test (zero
-sign flips measured) and 34 are the ``log10`` feeding WRF's discarded legacy
-McCumber conductivity, leaving ~26 consequential 1-ULP deviations.
-
-At the column level the cost is smaller still.  Running the whole snowsoil
-CPU lane with these ufuncs routed through ctypes to the live libm gives a
-gfortran-faithful reference; over an 84-column perturbed ensemble (7224
-output values) the Windows CPU, the WSL CPU and the CUDA lanes are identical
-to each other and each leaves that reference in exactly ONE value -- 2 ULP of
-``smfrkeep`` at one level of one column, from the freezing-curve
-``pow(2446.8157, -0.12903225)``, which propagates to nothing else.  Before
-these substitutions the CPU and CUDA lanes disagreed with EACH OTHER on 13 of
-38 columns, with 3 ULP of ``thdif`` amplified to 53248 ULP of ``fltot``.
-
-Every pinned RUC fixture reproduces bit for bit under all four
-implementations, including the ctypes-glibc reference, so fixture parity does
-not discriminate between them; that is precisely why the ensemble exists.
-Replace all of these with the verified glibc transcription when it lands.
+Every call site now takes WOOF's own float32 routines: on the host
+``gpuwm.core.noahmp_libm`` (powf, expf, logf, log10f, expm1f, tanhf) and
+:func:`_f32_cos`; on the device ``gfk_pow``/``gfk_exp``/``gfk_log``
+(glibc_flt32.cuh), ``glibc_cosf`` (glibc_trig_flt32.cuh) and the log10f,
+expm1f and tanhf routines in ``ruc.cu``.  With them the oracle is 0 ULP on
+every compared word under the strict build and under default arithmetic.
+The name is kept because tests and comments cite it.
 """
 
 RUC_TABLE_DIR = Path(__file__).resolve().parent.parent / "data" / "noah_tables"
@@ -1170,19 +1159,11 @@ def ruc_soil_properties(
         )
         mineral = np.float32(
             3.0 if v461 and not qwrtz > np.float32(0.2) else 2.0)
-        # Every transcendental in soilprop rounds a float64 evaluation once.
-        # See _RUC_PROVISIONAL_TRANSCENDENTALS: this is NOT glibc, it is the
-        # closest of the available float32 kernels and the only one that is
-        # identical on the host and the device.  numpy's own float32 kernels
-        # drift between releases (1-3 ULP of thdif/diffu/hydro between 2.2 and
-        # 2.4), which propagated into every RUC lane.
+        # Every transcendental in soilprop is WOOF's float32 libm word, the
+        # same function the device calls (_f32_pow / gfk_pow and friends).
         kas = np.float32(
-            np.float32(
-                np.power(np.float64(conductivity_quartz), np.float64(qwrtz))
-            )
-            * np.float32(
-                np.power(np.float64(mineral), np.float64(np.float32(one - qwrtz)))
-            )
+            _f32_pow(conductivity_quartz, qwrtz)
+            * _f32_pow(mineral, np.float32(one - qwrtz))
         )
 
         for level in range(nzs - 1):
@@ -1194,23 +1175,16 @@ def ruc_soil_properties(
             first_ratio = np.float32(
                 wd / np.float32(liquid_middle + qmin)
             )
-            psif = np.float32(np.float32(psis * np.float32(100.0)) * np.float32(
-                np.power(np.float64(first_ratio), np.float64(bclh))
-            ))
+            psif = np.float32(np.float32(psis * np.float32(100.0)) * _f32_pow(
+                first_ratio, bclh))
             psif = np.float32(
-                psif
-                * np.float32(
-                    np.power(
-                        np.float64(np.float32(ws / wd)), np.float64(3.0)
-                    )
-                )
-            )
-            pf = np.float32(np.log10(np.float64(np.float32(abs(psif)))))
+                psif * _f32_pow(np.float32(ws / wd), np.float32(3.0)))
+            pf = _f32_log10(np.float32(abs(psif)))
             fact = np.float32(one + np.float32(riw * soilicem))
             if pf <= np.float32(5.2):
                 _ = np.float32(
                     np.float32(420.0)
-                    * np.float32(np.exp(np.float32(-(pf + np.float32(2.7)))))
+                    * _f32_exp(np.float32(-(pf + np.float32(2.7))))
                     * fact
                 )
             else:
@@ -1223,36 +1197,21 @@ def ruc_soil_properties(
                         np.float32(np.float32(273.15) * x2)
                         / np.float32(tav * tav)
                     )
-                    * np.float32(np.power(
-                        np.float64(np.float32(tav / np.float32(x1 * tn))),
-                        np.float64(x4),
-                    ))
+                    * _f32_pow(np.float32(tav / np.float32(x1 * tn)), x4)
                 )
                 if profile_flat["keepfr"][level, column] == one:
                     detal = zero
 
-            kasat = np.float32(
-                np.power(np.float64(kas), np.float64(np.float32(one - ws)))
-            )
-            kasat = np.float32(
-                kasat * np.float32(np.power(
-                    np.float64(conductivity_ice),
-                    np.float64(profile_flat["fwsat"][level, column]),
-                ))
-            )
-            kasat = np.float32(
-                kasat * np.float32(np.power(
-                    np.float64(conductivity_water),
-                    np.float64(profile_flat["lwsat"][level, column]),
-                ))
-            )
+            kasat = _f32_pow(kas, np.float32(one - ws))
+            kasat = np.float32(kasat * _f32_pow(
+                conductivity_ice, profile_flat["fwsat"][level, column]))
+            kasat = np.float32(kasat * _f32_pow(
+                conductivity_water, profile_flat["lwsat"][level, column]))
             soilmoism = profile_flat["soilmoism"][level, column]
             x5 = np.float32(np.float32(soilmoism + qmin) / ws)
             if soilicem == zero:
                 sr = np.float32(max(np.float32(0.101), x5))
-                ke = np.float32(
-                    np.float32(np.log10(np.float64(sr))) + one
-                )
+                ke = np.float32(_f32_log10(sr) + one)
             else:
                 ke = x5
             kjpl = np.float32(
@@ -1305,17 +1264,10 @@ def ruc_soil_properties(
                 ame = np.float32(max(minimum, np.float32(porosity - ice)))
                 diffu = np.float32(np.float32(-bclh * ksat) * psis)
                 diffu = np.float32(diffu / ame)
-                diffu = np.float32(
-                    diffu * np.float32(np.power(
-                        np.float64(np.float32(porosity / ame)), np.float64(3.0)
-                    ))
-                )
-                diffu = np.float32(
-                    diffu * np.float32(np.power(
-                        np.float64(h),
-                        np.float64(np.float32(bclh + np.float32(2.0))),
-                    ))
-                )
+                diffu = np.float32(diffu * _f32_pow(
+                    np.float32(porosity / ame), np.float32(3.0)))
+                diffu = np.float32(diffu * _f32_pow(
+                    h, np.float32(bclh + np.float32(2.0))))
                 diffu = np.float32(diffu * facd)
             output_flat["diffu"][level, column] = diffu
             output_flat["thdif"][level, column] = np.float32(kjpl / cap)
@@ -1338,16 +1290,9 @@ def ruc_soil_properties(
                 am = np.float32(max(
                     minimum, np.float32((ws if v461 else dqm) - ice)))
                 hydro = np.float32(ksat / am)
-                hydro = np.float32(
-                    hydro * np.float32(np.power(
-                        np.float64(np.float32(
-                            profile_flat["soiliqw"][level, column] / am
-                        )),
-                        np.float64(np.float32(
-                            np.float32(2.0) * bclh + np.float32(2.0)
-                        )),
-                    ))
-                )
+                hydro = np.float32(hydro * _f32_pow(
+                    np.float32(profile_flat["soiliqw"][level, column] / am),
+                    np.float32(np.float32(2.0) * bclh + np.float32(2.0))))
                 hydro = np.float32(hydro * fach)
                 hydro = np.float32(min(ksat, hydro))
                 if hydro < np.float32(1.0e-10):
@@ -1479,7 +1424,7 @@ def ruc_transpiration(
             )
         ftem = np.float32(
             one
-            / np.float32(one + np.float32(np.exp(np.float64(exponent))))
+            / np.float32(one + _f32_exp(exponent))
         )
 
         veg = vegetation.rows[int(land_flat[column]) - 1]
@@ -1498,7 +1443,7 @@ def ruc_transpiration(
             fsol = np.float32(
                 one
                 / np.float32(
-                    one + np.float32(np.exp(np.float64(light_exponent)))
+                    one + _f32_exp(light_exponent)
                 )
             )
         else:
@@ -1742,7 +1687,7 @@ def ruc_soil_moisture_step(
         # not guarantee.
         infiltration_fraction = np.float32(
             one
-            - np.float32(np.exp(np.float64(np.float32(-kdt * delt1))))
+            - _f32_exp(np.float32(-kdt * delt1))
         )
         ddt = np.float32(free_storage * infiltration_fraction)
         water_input = np.float32(np.float32(-total_liquid) * timestep)
@@ -1775,9 +1720,7 @@ def ruc_soil_moisture_step(
             series = np.float32(
                 series
                 + np.float32(
-                    np.float32(
-                        np.power(np.float64(acrt), np.float64(2.0))
-                    )
+                    _f32_pow(acrt, np.float32(2.0))
                     / np.float32(2.0)
                 )
             )
@@ -1785,7 +1728,7 @@ def ruc_soil_moisture_step(
             frozen_factor = np.float32(
                 one
                 - np.float32(
-                    np.float32(np.exp(np.float64(-acrt))) * series
+                    _f32_exp(np.float32(-acrt)) * series
                 )
             )
         infmax1 = np.float32(infmax1 * frozen_factor)
@@ -2655,14 +2598,8 @@ def ruc_sea_ice_step(
         # float64 rounded once, matching the CUDA kernel; see
         # _RUC_PROVISIONAL_TRANSCENDENTALS and the identical lift in
         # ruc_soil_step and ruc_snow_sea_ice_step.
-        exner = np.float32(
-            np.power(
-                np.float64(
-                    np.float32(reference / column_flat["patm"][column])
-                ),
-                np.float64(rovcp),
-            )
-        )
+        exner = _f32_pow(
+            np.float32(reference / column_flat["patm"][column]), rovcp)
         hfx = np.float32(
             -np.float32(
                 np.float32(
@@ -2860,7 +2797,7 @@ def _ruc_phase_partition(
         exponent = np.float32(np.float32(-one) / bclh)
         for level in range(nzs):
             level_temperature = temperature[level, column]
-            tln = np.float32(np.log(np.float32(level_temperature / freeze)))
+            tln = _f32_log(np.float32(level_temperature / freeze))
             if tln < zero:
                 base = np.float32(
                     xlmelt * np.float32(level_temperature - freeze)
@@ -2875,9 +2812,7 @@ def _ruc_phase_partition(
                 liquid = np.float32(
                     np.float32(
                         maximum
-                        * np.float32(
-                            np.power(np.float64(base), np.float64(exponent))
-                        )
+                        * _f32_pow(base, exponent)
                     )
                     - qmin
                 )
@@ -2919,7 +2854,7 @@ def _ruc_phase_partition(
             )
             flat["tav"][level, column] = middle_temperature
             flat["soilmoism"][level, column] = middle_moisture
-            tavln = np.float32(np.log(np.float32(middle_temperature / freeze)))
+            tavln = _f32_log(np.float32(middle_temperature / freeze))
             if tavln < zero:
                 base = np.float32(
                     xlmelt * np.float32(middle_temperature - freeze)
@@ -2932,9 +2867,7 @@ def _ruc_phase_partition(
                 liquid = np.float32(
                     np.float32(
                         maximum
-                        * np.float32(
-                            np.power(np.float64(base), np.float64(exponent))
-                        )
+                        * _f32_pow(base, exponent)
                     )
                     - qmin
                 )
@@ -3095,11 +3028,7 @@ def ruc_soil_step(
         # ruc_snow_soil_step's copy of this same block.  numpy's float32
         # power and the CUDA device libm's powf are two different non-glibc
         # functions; see _RUC_PROVISIONAL_TRANSCENDENTALS.
-        fraction = np.float32(
-            np.power(
-                np.float64(ratio), np.float64(column_flat["cn"][column])
-            )
-        )
+        fraction = _f32_pow(ratio, column_flat["cn"][column])
         wet_flat[column] = np.float32(min(quarter, fraction))
         dry_flat[column] = np.float32(one - wet_flat[column])
 
@@ -3134,7 +3063,7 @@ def ruc_soil_step(
         else:
             fex = np.float32(total_top / fc)
             fex = np.float32(max(np.float32(0.01), min(one, fex)))
-            cosine = np.float32(np.cos(np.float32(piconst * fex)))
+            cosine = _f32_cos(np.float32(piconst * fex))
             resistance = np.float32(one - cosine)
             resistance = np.float32(resistance * resistance)
             soilres_flat[column] = np.float32(quarter * resistance)
@@ -3299,12 +3228,8 @@ def ruc_soil_step(
         # MEASURED to diverge: with numpy's float32 power here and the device
         # libm's powf there, hfx moved 1 ULP on 1 of 512 warm columns and
         # 2 ULP on 13 of 4,096.  See _RUC_PROVISIONAL_TRANSCENDENTALS.
-        pressure_factor = np.float32(
-            np.power(
-                np.float64(np.float32(one / column_flat["patm"][column])),
-                np.float64(rovcp),
-            )
-        )
+        pressure_factor = _f32_pow(
+            np.float32(one / column_flat["patm"][column]), rovcp)
         output_flat["hfx"][column] = np.float32(hft * pressure_factor)
         q1 = np.float32(
             -np.float32(
@@ -3706,103 +3631,143 @@ RUC_SNOW_COVER_OPTION = 2
 
 
 def _f32_exp(value) -> np.float32:
-    """Single-rounded float32 ``exp``.  NOT glibc's ``expf``: a third function.
+    """Float32 ``EXP``: WOOF's expf (:func:`gpuwm.core.noahmp_libm.expf`).
 
-    ``numpy``'s float32 ``exp`` loop is not correctly rounded and lands up to
-    2 ULP away from glibc's ``expf``.  That is invisible in most places, but
-    ``sfctmp``'s snow compaction evaluates ``(exp(x)-1)/x`` for
-    ``x ~ 2e-4``, where the cancellation amplifies a 1 ULP input error into
-    ~7600 ULP of ``rhosn``.  So the numpy loop is not usable here.
-
-    What this returns is a float64 ``exp`` rounded once.  An earlier version
-    of this docstring claimed that reproduces "the correctly rounded float32
-    result, which is what glibc delivers".  Both halves are wrong.  glibc
-    2.39 is not correctly rounded -- its ``expf`` is a float32 reduction with
-    its own error -- so rounding once yields a *third* function, not a more
-    accurate one.  ``gpuwm/core/noahmp_libm.py`` measures the gap directly:
-    the round-once shim misses glibc ``expf`` on 21,750 of 34,902,602
-    arguments.  ``b303e61`` on the ruc-snowsoil branch retracted the identical
-    claim on its own branch; this is the same retraction.
-
-    It is kept because it is the closest available and because the CUDA half
-    (``ruc_expf_glibc``) computes exactly the same thing, so host and device
-    agree with each other.  ``noahmp_libm.expf`` is the verified glibc
-    transcription and is where this should land; see
-    ``_RUC_PROVISIONAL_TRANSCENDENTALS``.  Switching is a measurement, not an
-    edit -- at ``x ~ 2e-4`` the compaction amplifies 1 ULP by ~7600, so if
-    the two disagree here the fixture may be what is wrong.
+    ``sfctmp``'s snow compaction evaluates ``(exp(x)-1)/x`` for ``x ~ 2e-4``,
+    where the cancellation amplifies a 1 ULP difference in ``exp`` into
+    ~7600 ULP of ``rhosn``, so this has to be the same function gfortran
+    calls, not a nearby one.  The device twin is ``ruc_expf_glibc``
+    (``gfk_exp``).  The earlier float64-rounded-once body missed the
+    reference on 21,750 of 34,902,602 arguments (noahmp_libm's sweep).
     """
 
-    return np.float32(np.exp(np.float64(value)))
+    return np.float32(_libm_expf(np.float32(value)))
 
 
 def _f32_expm1(value) -> np.float32:
-    """Single-rounded float32 ``expm1``.  NOT glibc's ``expm1f``.
+    """Float32 ``expm1``: WOOF's expm1f, the core of :func:`_f32_tanh`."""
 
-    The previous docstring claimed this is "as glibc's ``expm1f`` gives".
-    Measured counter-example: at ``x = 1.0`` this returns ``0x3FDBF0A9``
-    where glibc returns ``0x3FDBF0A8``.  Against the 24 glibc words dumped
-    in ``tests/test_mynn_pbl.py`` this shim misses 1; ``mynn_pbl._expm1f``,
-    which spells out the fdlibm reduction, misses 0 and is the verified
-    transcription.
-    """
-
-    return np.float32(np.expm1(np.float64(value)))
+    return np.float32(_libm_expm1f(np.float32(value)))
 
 
 def _f32_tanh(value) -> np.float32:
-    """The fdlibm ``s_tanhf.c`` reduction.  NOT glibc ``tanhf``.
+    """Float32 ``TANH``: WOOF's tanhf (:func:`gpuwm.core.noahmp_libm.tanhf`).
 
-    **This docstring used to claim "glibc ``tanhf`` bit for bit".  That is
-    measurably false and the claim is retracted here.**  gfortran emits a call
-    to ``tanhf`` for ``tanh`` on a default REAL, but glibc 2.39's ``tanhf`` is
-    no longer fdlibm's ``expm1``-based reduction.  Rebuilding the fdlibm form
-    from glibc's OWN ``expm1f`` gives ``0.760541856`` where glibc ``tanhf``
-    returns ``0.760541916``, at ``x = 0.9974991083145142`` -- so the gap is
-    the algorithm, not the ``expm1``.
+    ``1 - 2/(expm1f(2|x|)+2)`` at ``|x| >= 1``, ``-t/(t+2)`` with
+    ``t = expm1f(-2|x|)`` below, all in float32.  The device twin is
+    ``ruc_tanhf_glibc`` in ``ruc.cu``.
 
-    Measured over the arguments WRF ``:1520-1521`` reaches for air
-    temperatures from 220 K to 310 K in 0.01 K steps (18,000 distinct float32
-    arguments, both the ``0.15`` and the ``0.3333`` forms), this function
-    misses glibc 2.39 ``tanhf`` on 231 of them -- 1.28% -- by up to 3 ULP.
-
-    ``oracle/lsmruc.csv`` is the first RUC fixture to land on one of those
-    arguments, which is why the snow lanes were bitwise without noticing.
-    Twenty-five of that fixture's twenty-six residue cells are this function;
-    substituting a measured glibc ``tanhf`` table collapses them to one cell of
-    1 ULP.  See ``gpuwm/data/ruc/PROVENANCE.md``.
-
-    Fixing it means transcribing glibc 2.39's actual ``tanhf`` here and
-    identically in ``ruc.cu``, then re-verifying ``oracle/sfctmp_prep.csv`` and
-    ``oracle/sfctmp.csv``.  Until then the deviation is pinned, not hidden:
-    every fixture that reaches it fails closed on any cell that is not in its
-    residue table.
-
-    ``expm1`` here is a float64 ``expm1`` rounded once, which is what glibc's
-    ``expm1f`` delivers on every argument this lane's fixtures reach.
+    The previous body ran the same reduction on a float64 ``expm1`` rounded
+    once.  That is a different ``expm1f``, and it is what this docstring once
+    blamed on the reference library's ``tanhf`` "no longer being the expm1
+    reduction".  It is: with a float32 ``expm1f`` the reduction reproduces the
+    reference word at ``x = 0.9974991083145142`` and at every new-snow
+    density argument the RUC GPU column oracle reaches, which removed the 26
+    pinned residue cells of ``oracle/lsmruc.csv``.
 
     Non-finite input is out of contract; callers validate finiteness first.
     """
 
-    x = np.float32(value)
-    one = np.float32(1.0)
-    two = np.float32(2.0)
-    magnitude = np.float32(abs(x))
-    if magnitude < np.float32(22.0):
-        if magnitude < np.float32(2.0 ** -28):
-            # tanh(tiny) == tiny, with the fdlibm inexact-flag form.
-            return np.float32(x * np.float32(one + x))
-        doubled = np.float32(two * magnitude)
-        if magnitude >= one:
-            t = _f32_expm1(doubled)
-            z = np.float32(one - np.float32(two / np.float32(t + two)))
-        else:
-            t = _f32_expm1(np.float32(-doubled))
-            z = np.float32(np.float32(-t) / np.float32(t + two))
+    return np.float32(_libm_tanhf(np.float32(value)))
+
+
+def _f32_pow(base, exponent) -> np.float32:
+    """Float32 ``REAL**REAL``: WOOF's powf; the device twin is ``gfk_pow``."""
+
+    return np.float32(_glibc_powf(np.float32(base), np.float32(exponent)))
+
+
+def _f32_log(value) -> np.float32:
+    """Float32 ``LOG``: WOOF's logf; the device twin is ``gfk_log``."""
+
+    return np.float32(_glibc_logf(np.float32(value)))
+
+
+def _f32_log10(value) -> np.float32:
+    """Float32 ``LOG10``: WOOF's log10f; the device twin is ``ruc_log10f_rn``."""
+
+    return np.float32(_libm_log10f(np.float32(value)))
+
+
+def _f64_fma(a: float, b: float, c: float) -> float:
+    """``a*b + c`` in binary64 with ONE rounding, as a device ``__fma_rn``.
+
+    Exact rational arithmetic, then CPython's correctly rounded int/int
+    division; Python 3.12 has no ``math.fma``.
+    """
+
+    from fractions import Fraction
+
+    return float(Fraction(a) * Fraction(b) + Fraction(c))
+
+
+#: The cosine branch of WOOF's float32 sin/cos (``glibc_trig_flt32.cuh``,
+#: ``gt_sincos_table``): 2/pi scaled by 2**24, pi/2, the four quadrant signs
+#: and the even polynomial for each quadrant pair, with the odd one for the
+#: quadrants that turn cosine into sine.
+_COS_HPI_INV = float.fromhex("0x1.45F306DC9C883p+23")
+_COS_HPI = float.fromhex("0x1.921FB54442D18p0")
+_COS_SIGN = (1.0, -1.0, -1.0, 1.0)
+_COS_C = tuple(float.fromhex(v) for v in (
+    "0x1p0", "-0x1.ffffffd0c621cp-2", "0x1.55553e1068f19p-5",
+    "-0x1.6c087e89a359dp-10", "0x1.99343027bf8c3p-16"))
+_COS_S = tuple(float.fromhex(v) for v in (
+    "-0x1.555545995a603p-3", "0x1.1107605230bc4p-7", "-0x1.994eb3774cf24p-13"))
+
+
+def _f32_cos(value) -> np.float32:
+    """Float32 ``COS``: the host mirror of WOOF's device ``glibc_cosf``.
+
+    SOILRES's ``cos(piconst*fex)`` (``module_sf_ruclsm.F:2638``, ``fex`` in
+    [0.01, 1]) needs the C library's float32 cosf, which is NOT the float64
+    cosine rounded once: on that argument range the two disagree on about one
+    argument in a hundred.  This is the device routine's arithmetic step for
+    step -- binary64 products and fused multiply-adds, one final rounding to
+    float32 -- for ``|x| < 120``; ``tools/ruc_lsm_gpu_oracle/libm_sweep.py``
+    checks every float32 in ``[pi*0.01, pi]`` against the C library on both
+    sides.  Larger arguments are out of contract and refused.
+    """
+
+    x32 = np.float32(value)
+    bits = int(x32.view(np.uint32))
+    top = (bits >> 20) & 0x7FF
+    if top >= 0x7F8:
+        return np.float32(np.nan)
+    if top < 0x398:                       # |x| < 2**-12: cos is 1
+        return np.float32(1.0)
+    if top >= 0x42F:
+        raise ValueError(f"_f32_cos is defined for |x| < 120, got {float(x32)}")
+    x = float(x32)
+    n = 0
+    sign_index = 0
+    negative_table = False
+    if top >= 0x3F4:                      # |x| >= 0.75: reduce by pi/2
+        r = x * _COS_HPI_INV
+        n = (int(r) + 0x800000) >> 24
+        x = _f64_fma(-float(n), _COS_HPI, x)
+        q = n & 3
+        negative_table = bool(q & 2)
+        sign_index = q
+        x2 = x * x
+        x = x * _COS_SIGN[sign_index]
     else:
-        # fdlibm returns one-tiny here, which rounds to exactly one.
-        z = one
-    return z if x >= np.float32(0.0) else np.float32(-z)
+        x2 = x * x
+    c = [-v for v in _COS_C] if negative_table else list(_COS_C)
+    if not (n ^ 1) & 1:                   # the reduction turned cos into sin
+        s1, s2, s3 = _COS_S
+        x3 = x * x2
+        t1 = _f64_fma(x2, s3, s2)
+        x7 = x3 * x2
+        t = _f64_fma(x3, s1, x)
+        return np.float32(_f64_fma(x7, t1, t))
+    c0, c1, c2, c3, c4 = c
+    x4 = x2 * x2
+    p2 = _f64_fma(x2, c4, c3)
+    p1 = _f64_fma(x2, c1, c0)
+    x6 = x4 * x2
+    p = _f64_fma(x4, c2, p1)
+    return np.float32(_f64_fma(x6, p2, p))
+
 
 RUC_SNOW_PREP_PROFILE_INPUTS = ("ts1d",)
 RUC_SNOW_PREP_COLUMN_INPUTS = (
@@ -5671,10 +5636,7 @@ def ruc_snow_sea_ice_step(
         hft = np.float32(-sensible)
         # float64 rounded once, matching the CUDA kernel; see
         # _RUC_PROVISIONAL_TRANSCENDENTALS.
-        exner = np.float32(
-            np.power(np.float64(np.float32(reference / patm)),
-                     np.float64(rovcp))
-        )
+        exner = _f32_pow(np.float32(reference / patm), rovcp)
         hfx = np.float32(-np.float32(sensible * exner))
         q1 = np.float32(
             -np.float32(np.float32(fq * ras) * np.float32(qvatm - qsg))
@@ -7233,11 +7195,7 @@ def ruc_snow_soil_step(
         # Round a float64 power once, matching the CUDA canopy kernel; numpy's
         # float32 power drifts between releases.  See
         # _RUC_PROVISIONAL_TRANSCENDENTALS.
-        fraction = np.float32(
-            np.power(
-                np.float64(ratio), np.float64(column_flat["cn"][column])
-            )
-        )
+        fraction = _f32_pow(ratio, column_flat["cn"][column])
         wet_flat[column] = np.float32(min(quarter, fraction))
         dry_flat[column] = np.float32(one - wet_flat[column])
 
@@ -7454,14 +7412,8 @@ def ruc_snow_soil_step(
             * np.float32(column_flat["tabs"][column] - soilt_flat[column])
         )
         hft = np.float32(-sensible)
-        exner = np.float32(
-            np.power(
-                np.float64(
-                    np.float32(reference / column_flat["patm"][column])
-                ),
-                np.float64(rovcp),
-            )
-        )
+        exner = _f32_pow(
+            np.float32(reference / column_flat["patm"][column]), rovcp)
         output_flat["hfx"][column] = np.float32(-np.float32(sensible * exner))
         q1 = np.float32(
             -np.float32(
@@ -9297,13 +9249,15 @@ def ruc_land_surface_step(
     ``landusef`` and ``soilctop``. WRF mixes parameters before the single
     prognostic column and irrigates root layers after SFCTMP.
 
-    **Two WRF defects reproduced on purpose.**
+    **One WRF defect not copied, one reproduced.**
 
-    ``sfcevp`` is accumulated TWICE per column, at ``:1095`` and again at
-    ``:1116``, with nothing in between changing ``qfx``.  The RUC driver
-    therefore reports twice the accumulated surface moisture flux.  That is a
-    duplicated statement, not undefined behaviour, so gpuwm reproduces it and
-    ``oracle/lsmruc.csv`` pins it: ``sfcevp`` advances by ``2*qfx*dt``.
+    WRF accumulates ``sfcevp`` TWICE per land column, at ``:1095`` and again
+    at ``:1116``, with nothing in between changing ``qfx``, so it reports twice
+    the accumulated surface moisture flux.  WOOF accumulates it once
+    (lane/verify-ruc-lsm): a WRF defect is documented, not copied.  The
+    fixtures still carry WRF's doubled word, so every comparison against them
+    grades ``sfcevp`` against WRF's own entry value plus ``qfx*dt`` once
+    (``tests/test_ruc.py::_lsmruc_wrf_single_count_sfcevp``).
 
     ``rhosnf``, ``precipfr`` and ``snowfallac`` are declared ``intent(out)``
     at ``:344-347``, but ``rhosnf`` is read at ``:695`` into ``rhosnfall`` and
@@ -10173,10 +10127,9 @@ def ruc_land_surface_step(
     columns["snowc"][land] = snowfrac[land]
     columns["rhosnf"][land] = rhosnfall[land]
 
-    # ``:1116``.  The second, duplicated accumulation; see the docstring.
-    columns["sfcevp"][land] = (
-        columns["sfcevp"] + (columns["qfx"] * timestep).astype(np.float32)
-    ).astype(np.float32)[land]
+    # ``:1116`` adds ``qfx*dt`` to SFCEVP a second time, a duplicate of
+    # ``:1095``.  That is a WRF defect and WOOF does not copy it; see the
+    # docstring.
 
     result = RucLandSurfaceStep(
         **{

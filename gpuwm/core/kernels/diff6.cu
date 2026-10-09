@@ -5,18 +5,24 @@
 // (Knievel; references Xue MWR 2000, Durran 1999 sec. 2.4.3), specialized
 // to gpuwm's storage, periodic x/y. The directional tendency map factors
 // use each field's own staggering, including when slopeopt is zero. The
-// Fortran's non-periodic loop trimming is applied host-side AFTER this
-// kernel (gpuwm.core.dycore._zero_open_strips, width 3), and the
-// outermost boundary-normal staggered face (WRF's u ide-3 / v jde-3,
+// Fortran's non-periodic loop trimming is the kernel's own loop bounds
+// (i_lo..j_hi, from dycore.diff6_loop_bounds), and the outermost boundary-normal staggered face (WRF's u ide-3 / v jde-3,
 // which WRF computes: its dflux_p1 reads field(i+3) = field(ide), the
 // true boundary datum, which the wrapped FX/FY stencil below would
-// corrupt with the OPPOSITE boundary's value) is replaced by the honest
-// recomputation in kernels/diff6_seam.cu (dycore._launch_diff6_seam).
+// corrupt with the OPPOSITE boundary's value) is left to the honest
+// computation in kernels/diff6_seam.cu (dycore._launch_diff6_seam).
 // Explicit rounded multiplies preserve the compiled WRF REAL operation
 // order, including hybrid coupling before face averaging. The compiled
 // Fortran fixture is pinned in tests/test_diff6_wrf471_parity.py.
 //
-// diff6 ADDS the coupled tendency for ONE field into tend:
+// diff6 ADDS the coupled tendency for ONE field into tend, in place, as
+// the Fortran does: tend = (tend + tendency_x) + tendency_y.  Callers pass
+// the carrying tendency itself, so the sum's association is WRF's
+// (tendency(i,k,j) = tendency(i,k,j) + tendency_x + tendency_y, :6626).
+// [i_lo, i_hi] x [j_lo, j_hi] are WRF's loop bounds in stored indices;
+// on a non-periodic axis the outermost staggered face (WRF u ide-3 / v
+// jde-3) is excluded here and computed by kernels/diff6_seam.cu.
+//
 //
 //   dflux_p0 = 10*(f(i)-f(i-1)) - 5*(f(i+1)-f(i-2)) + (f(i+2)-f(i-3))
 //   dflux_p1 = the same one face to the right           (Xue eq. 3)
@@ -69,13 +75,18 @@ void diff6(const real* __restrict__ f,      // (nlev, nys, nxs)
            real coef, int mono, int slopeopt,
            real dzthr_x, real dzthr_y,
            int nlev, int ny, int nys, int nx, int nxs,
-           int variant, int wstag)
+           int variant, int wstag,
+           int i_lo, int i_hi, int j_lo, int j_hi)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
     if (i >= nxs || j >= nys || k >= nlev) return;
     if (wstag && (k == 0 || k == nlev - 1)) return;  // BC-pinned w levels
+    // WRF's loop bounds (Fortran :6327-6440): points outside them keep
+    // their incoming tendency untouched, exactly as the Fortran leaves
+    // them.  The host passes the full stored range on a periodic axis.
+    if (i < i_lo || i > i_hi || j < j_lo || j > j_hi) return;
 
     int ic = PERIODIC(i, nx);
     int jc = PERIODIC(j, ny);

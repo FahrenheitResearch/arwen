@@ -42,6 +42,9 @@ for v in asis sq; do
   gfortran -o run_transport_cloud_gsd41 stub_wrf39.o module_bl_mynn.o run_transport_cloud_gsd41.o
   gfortran -c -O0 -ffree-form -ffree-line-length-none -I. "$here/run_predict_gsd41.F90"
   gfortran -o run_predict_gsd41 stub_wrf39.o module_bl_mynn.o run_predict_gsd41.o
+  # The multi-step driver over six column families (lane/mynn-exact).
+  gfortran -c -O0 -ffp-contract=off -ffree-form -ffree-line-length-none -I. "$here/run_driver_families_gsd41.F90"
+  gfortran -o run_driver_families_gsd41 stub_wrf39.o module_bl_mynn.o run_driver_families_gsd41.o
 done
 rm -f "$build/mixlength2-gsd41.csv" "$build/mixlength2-gsd41-sq.csv" \
     "$build/condensation-gsd41.csv"
@@ -56,6 +59,10 @@ rm -f "$build/dmp-mf-gsd41.csv"
 "$build/asis/run_transport_gsd41" "$build/transport-gsd41.csv"
 "$build/asis/run_transport_cloud_gsd41" "$build/transport-cloud-gsd41.csv"
 "$build/asis/run_predict_gsd41" "$build/predict-gsd41.csv"
+rm -f "$build/driver-families-gsd41.csv" "$build/driver-families-gsd41-asis.csv"
+"$build/sq/run_driver_families_gsd41" "$build/driver-families-gsd41.csv" 12
+"$build/asis/run_driver_families_gsd41" "$build/driver-families-gsd41-asis.csv" 12
+gzip -n -9 -f -k "$build/driver-families-gsd41.csv" "$build/driver-families-gsd41-asis.csv"
 cd "$build"
 sha256sum "$src" "$here/stub_wrf39.F90" "$here/run_mixlength_gsd41.F90" \
     "$here/run_condensation_gsd41.F90" "$here/run_turbulence_gsd41.F90" \
@@ -64,6 +71,8 @@ sha256sum "$src" "$here/stub_wrf39.F90" "$here/run_mixlength_gsd41.F90" \
     "$here/run_transport_gsd41.F90" transport-gsd41.csv \
     "$here/run_transport_cloud_gsd41.F90" transport-cloud-gsd41.csv \
     "$here/run_predict_gsd41.F90" predict-gsd41.csv \
+    "$here/run_driver_families_gsd41.F90" driver-families-gsd41.csv \
+    driver-families-gsd41-asis.csv \
     mixlength2-gsd41.csv mixlength2-gsd41-sq.csv condensation-gsd41.csv \
     turbulence2-gsd41-sq.csv plume-condensation-gsd41.csv > oracle-sha256sums.txt
 gfortran --version | head -1 > compiler.txt

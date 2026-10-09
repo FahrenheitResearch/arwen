@@ -1,0 +1,1301 @@
+{
+ "schema": "gpuwm-terrain-clock-adaptation-v1",
+ "local_face": {
+  "schema": "gpuwm-terrain-clock-local-face-v1",
+  "candidate_rows": "terrain_clock_map_local_face.json",
+  "criterion": "blowup",
+  "seconds": 10800.0,
+  "rows": 648,
+  "wind_margin": 2.3
+ },
+ "domains": [
+  {
+   "grid_id": 1,
+   "status": "AS_CONFIGURED",
+   "steepest_slope": 0.09147053958695521,
+   "configured_dt_s": {
+    "seconds": 72.0,
+    "numerator": 72,
+    "denominator": 1
+   },
+   "dt_s": {
+    "seconds": 72.0,
+    "numerator": 72,
+    "denominator": 1
+   },
+   "step_division": 1,
+   "configured_time_step_sound": 4,
+   "time_step_sound": 4,
+   "held_s_per_km": 5.0,
+   "adaptive": false,
+   "crest_height_m": 3614.98388671875,
+   "crest_level_wind_m_s": 48.389916984202195,
+   "when": "boundary at +6 h",
+   "source": "d01",
+   "height_m": 3708.9537143810467,
+   "clock": "local_face",
+   "local_faces": {
+    "sound_steps": 4,
+    "neighbourhood_cells": 5,
+    "neighbourhood_m": 60000.0,
+    "wind_margin": 2.3,
+    "domain_wind_m_s": 48.389916984202195,
+    "arms": [
+     "ncar"
+    ],
+    "faces_read": 252829,
+    "governing": {
+     "faces": 1,
+     "face": {
+      "axis": "x",
+      "j": 135,
+      "i": 67
+     },
+     "slope": 0.09147053958695521,
+     "crest_m": 3398.3857421875,
+     "input_wind_m_s": 23.916366577148438,
+     "wind_read_m_s": 48.389916984202195,
+     "wind_capped_at_domain": true,
+     "wind_from": "d01 (start state)",
+     "map_rows": {
+      "crest_m": 3500.0,
+      "slope": 0.0934,
+      "wind_m_s": 50.0,
+      "beyond": []
+     },
+     "held_s": 72.0,
+     "longest_step_tried_s": 78.0,
+     "shortest_entry_under_a_stop_s": 72.0
+    },
+    "groups": [
+     {
+      "faces": 1,
+      "face": {
+       "axis": "x",
+       "j": 135,
+       "i": 67
+      },
+      "slope": 0.09147053958695521,
+      "crest_m": 3398.3857421875,
+      "input_wind_m_s": 23.916366577148438,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0934,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 72.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": 72.0
+     },
+     {
+      "faces": 5,
+      "face": {
+       "axis": "x",
+       "j": 136,
+       "i": 67
+      },
+      "slope": 0.08652984551575496,
+      "crest_m": 3398.3857421875,
+      "input_wind_m_s": 25.02172088623047,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0881,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 1,
+      "face": {
+       "axis": "x",
+       "j": 82,
+       "i": 76
+      },
+      "slope": 0.08183458614698425,
+      "crest_m": 2164.785888671875,
+      "input_wind_m_s": 17.29875373840332,
+      "wind_read_m_s": 39.787133598327635,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0823,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 16,
+      "face": {
+       "axis": "x",
+       "j": 135,
+       "i": 62
+      },
+      "slope": 0.08039483444228851,
+      "crest_m": 3398.3857421875,
+      "input_wind_m_s": 26.50998306274414,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0827,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 1,
+      "face": {
+       "axis": "x",
+       "j": 81,
+       "i": 76
+      },
+      "slope": 0.07578614414977788,
+      "crest_m": 2164.785888671875,
+      "input_wind_m_s": 17.818309783935547,
+      "wind_read_m_s": 40.98211250305175,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0823,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 20,
+      "face": {
+       "axis": "x",
+       "j": 136,
+       "i": 73
+      },
+      "slope": 0.07351035931016894,
+      "crest_m": 2152.462890625,
+      "input_wind_m_s": 21.290998458862305,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.074,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 22,
+      "face": {
+       "axis": "x",
+       "j": 1,
+       "i": 200
+      },
+      "slope": 0.07173313751331856,
+      "crest_m": 2681.36083984375,
+      "input_wind_m_s": 14.122260093688965,
+      "wind_read_m_s": 32.48119821548462,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.074,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 10,
+      "face": {
+       "axis": "y",
+       "j": 145,
+       "i": 65
+      },
+      "slope": 0.07096572003337406,
+      "crest_m": 3418.837646484375,
+      "input_wind_m_s": 25.60911750793457,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0711,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 1,
+      "face": {
+       "axis": "x",
+       "j": 199,
+       "i": 141
+      },
+      "slope": 0.06959821292861075,
+      "crest_m": 3062.82861328125,
+      "input_wind_m_s": 11.514616012573242,
+      "wind_read_m_s": 26.483616828918453,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0711,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 1,
+      "face": {
+       "axis": "x",
+       "j": 191,
+       "i": 152
+      },
+      "slope": 0.06680129838898875,
+      "crest_m": 3153.697998046875,
+      "input_wind_m_s": 13.59329605102539,
+      "wind_read_m_s": 31.264580917358398,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0711,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 26,
+      "face": {
+       "axis": "y",
+       "j": 142,
+       "i": 66
+      },
+      "slope": 0.06510874409830464,
+      "crest_m": 3418.837646484375,
+      "input_wind_m_s": 25.02172088623047,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0657,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 5,
+      "face": {
+       "axis": "x",
+       "j": 192,
+       "i": 155
+      },
+      "slope": 0.0644549994472537,
+      "crest_m": 3153.697998046875,
+      "input_wind_m_s": 13.40433406829834,
+      "wind_read_m_s": 30.82996835708618,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0657,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 37,
+      "face": {
+       "axis": "x",
+       "j": 130,
+       "i": 74
+      },
+      "slope": 0.0625640227998792,
+      "crest_m": 1869.7650146484375,
+      "input_wind_m_s": 25.70444679260254,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0626,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 9,
+      "face": {
+       "axis": "x",
+       "j": 194,
+       "i": 154
+      },
+      "slope": 0.06203575484932586,
+      "crest_m": 3153.697998046875,
+      "input_wind_m_s": 12.253284454345703,
+      "wind_read_m_s": 28.182554244995114,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0657,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 19,
+      "face": {
+       "axis": "x",
+       "j": 15,
+       "i": 192
+      },
+      "slope": 0.06165085683648679,
+      "crest_m": 2608.38818359375,
+      "input_wind_m_s": 14.47691535949707,
+      "wind_read_m_s": 33.29690532684326,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0626,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 34,
+      "face": {
+       "axis": "x",
+       "j": 193,
+       "i": 154
+      },
+      "slope": 0.05858390351436047,
+      "crest_m": 3153.697998046875,
+      "input_wind_m_s": 12.891712188720703,
+      "wind_read_m_s": 29.650938034057614,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0587,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 15,
+      "face": {
+       "axis": "y",
+       "j": 193,
+       "i": 154
+      },
+      "slope": 0.05856342132282764,
+      "crest_m": 3153.697998046875,
+      "input_wind_m_s": 13.40433406829834,
+      "wind_read_m_s": 30.82996835708618,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0587,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 68,
+      "face": {
+       "axis": "x",
+       "j": 138,
+       "i": 71
+      },
+      "slope": 0.05844709170020028,
+      "crest_m": 3398.3857421875,
+      "input_wind_m_s": 21.290998458862305,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0587,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 82,
+      "face": {
+       "axis": "x",
+       "j": 131,
+       "i": 74
+      },
+      "slope": 0.05637400011034223,
+      "crest_m": 1869.7650146484375,
+      "input_wind_m_s": 25.70444679260254,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0564,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 48,
+      "face": {
+       "axis": "y",
+       "j": 110,
+       "i": 74
+      },
+      "slope": 0.056305412425006286,
+      "crest_m": 2387.556640625,
+      "input_wind_m_s": 16.12763023376465,
+      "wind_read_m_s": 37.09354953765869,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0564,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 10,
+      "face": {
+       "axis": "x",
+       "j": 274,
+       "i": 60
+      },
+      "slope": 0.05473805045238386,
+      "crest_m": 2170.81640625,
+      "input_wind_m_s": 4.74079704284668,
+      "wind_read_m_s": 10.903833198547362,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0564,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 4,
+      "face": {
+       "axis": "x",
+       "j": 175,
+       "i": 45
+      },
+      "slope": 0.05345245073191846,
+      "crest_m": 1629.70703125,
+      "input_wind_m_s": 12.007070541381836,
+      "wind_read_m_s": 27.61626224517822,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0564,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 1,
+      "face": {
+       "axis": "y",
+       "j": 245,
+       "i": 62
+      },
+      "slope": 0.0530361096029813,
+      "crest_m": 1460.163818359375,
+      "input_wind_m_s": 7.618792533874512,
+      "wind_read_m_s": 17.523222827911376,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0623,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 9,
+      "face": {
+       "axis": "y",
+       "j": 245,
+       "i": 63
+      },
+      "slope": 0.05273800450647646,
+      "crest_m": 1460.163818359375,
+      "input_wind_m_s": 8.010047912597656,
+      "wind_read_m_s": 18.42311019897461,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.053,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 3,
+      "face": {
+       "axis": "x",
+       "j": 5,
+       "i": 109
+      },
+      "slope": 0.050651303498500014,
+      "crest_m": 1197.9376220703125,
+      "input_wind_m_s": 13.356664657592773,
+      "wind_read_m_s": 30.720328712463377,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (boundary data over the window)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.053,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 9721,
+      "face": {
+       "axis": "x",
+       "j": 240,
+       "i": 104
+      },
+      "slope": 0.04903722773583849,
+      "crest_m": 1727.143310546875,
+      "input_wind_m_s": 4.271169185638428,
+      "wind_read_m_s": 9.823689126968382,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0491,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 22761,
+      "face": {
+       "axis": "y",
+       "j": 121,
+       "i": 53
+      },
+      "slope": 0.04901755638783457,
+      "crest_m": 1747.61572265625,
+      "input_wind_m_s": 26.40313148498535,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0491,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 6741,
+      "face": {
+       "axis": "x",
+       "j": 8,
+       "i": 197
+      },
+      "slope": 0.04890139583763983,
+      "crest_m": 2562.31640625,
+      "input_wind_m_s": 15.27032470703125,
+      "wind_read_m_s": 35.12174682617187,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0491,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 3262,
+      "face": {
+       "axis": "y",
+       "j": 132,
+       "i": 61
+      },
+      "slope": 0.04889652149619181,
+      "crest_m": 3398.3857421875,
+      "input_wind_m_s": 27.93044662475586,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0489,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 496,
+      "face": {
+       "axis": "y",
+       "j": 192,
+       "i": 155
+      },
+      "slope": 0.04882713395536938,
+      "crest_m": 3153.697998046875,
+      "input_wind_m_s": 13.59329605102539,
+      "wind_read_m_s": 31.264580917358398,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0489,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 552,
+      "face": {
+       "axis": "y",
+       "j": 184,
+       "i": 137
+      },
+      "slope": 0.048436837686629854,
+      "crest_m": 3458.457275390625,
+      "input_wind_m_s": 12.33246898651123,
+      "wind_read_m_s": 28.364678668975827,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0489,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 5531,
+      "face": {
+       "axis": "y",
+       "j": 177,
+       "i": 44
+      },
+      "slope": 0.048342845901080414,
+      "crest_m": 1629.70703125,
+      "input_wind_m_s": 11.6196870803833,
+      "wind_read_m_s": 26.72528028488159,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3000.0,
+       "slope": 0.0491,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 455,
+      "face": {
+       "axis": "x",
+       "j": 151,
+       "i": 161
+      },
+      "slope": 0.046642570917990844,
+      "crest_m": 3572.09912109375,
+      "input_wind_m_s": 19.46706199645996,
+      "wind_read_m_s": 44.774242591857906,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 4500.0,
+       "slope": 0.0495,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 7,
+      "face": {
+       "axis": "y",
+       "j": 241,
+       "i": 62
+      },
+      "slope": 0.04652979265235805,
+      "crest_m": 1460.163818359375,
+      "input_wind_m_s": 7.9871931076049805,
+      "wind_read_m_s": 18.370544147491454,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0467,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 197,
+      "face": {
+       "axis": "y",
+       "j": 146,
+       "i": 148
+      },
+      "slope": 0.043832534314086055,
+      "crest_m": 3577.49951171875,
+      "input_wind_m_s": 15.650794982910156,
+      "wind_read_m_s": 35.99682846069336,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 4500.0,
+       "slope": 0.0495,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 2,
+      "face": {
+       "axis": "x",
+       "j": 6,
+       "i": 109
+      },
+      "slope": 0.04314275970485792,
+      "crest_m": 1197.9376220703125,
+      "input_wind_m_s": 13.356664657592773,
+      "wind_read_m_s": 30.720328712463377,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (boundary data over the window)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0467,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 1,
+      "face": {
+       "axis": "x",
+       "j": 100,
+       "i": 73
+      },
+      "slope": 0.042124347491846216,
+      "crest_m": 1473.343994140625,
+      "input_wind_m_s": 17.95665168762207,
+      "wind_read_m_s": 41.30029888153076,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0467,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 172,
+      "face": {
+       "axis": "y",
+       "j": 205,
+       "i": 135
+      },
+      "slope": 0.041408818438760264,
+      "crest_m": 3062.82861328125,
+      "input_wind_m_s": 4.865864276885986,
+      "wind_read_m_s": 11.191487836837767,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 3500.0,
+       "slope": 0.0489,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 32,
+      "face": {
+       "axis": "x",
+       "j": 218,
+       "i": 88
+      },
+      "slope": 0.04088773024112616,
+      "crest_m": 1460.61376953125,
+      "input_wind_m_s": 10.909709930419922,
+      "wind_read_m_s": 25.092332839965817,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0411,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 23,
+      "face": {
+       "axis": "x",
+       "j": 140,
+       "i": 41
+      },
+      "slope": 0.040595974345859015,
+      "crest_m": 844.377685546875,
+      "input_wind_m_s": 17.155324935913086,
+      "wind_read_m_s": 39.45724735260009,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0411,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 34,
+      "face": {
+       "axis": "x",
+       "j": 246,
+       "i": 61
+      },
+      "slope": 0.040255845477034875,
+      "crest_m": 1460.163818359375,
+      "input_wind_m_s": 7.618792533874512,
+      "wind_read_m_s": 17.523222827911376,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0411,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 22,
+      "face": {
+       "axis": "x",
+       "j": 100,
+       "i": 72
+      },
+      "slope": 0.040001095235155604,
+      "crest_m": 1473.343994140625,
+      "input_wind_m_s": 17.95665168762207,
+      "wind_read_m_s": 41.30029888153076,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0411,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 56,
+      "face": {
+       "axis": "y",
+       "j": 147,
+       "i": 148
+      },
+      "slope": 0.036904428165919635,
+      "crest_m": 3577.49951171875,
+      "input_wind_m_s": 11.056000709533691,
+      "wind_read_m_s": 25.428801631927488,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 4500.0,
+       "slope": 0.0495,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 78.0,
+      "longest_step_tried_s": 78.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 93,
+      "face": {
+       "axis": "x",
+       "j": 260,
+       "i": 53
+      },
+      "slope": 0.03147498975410491,
+      "crest_m": 1119.1748046875,
+      "input_wind_m_s": 8.145272254943848,
+      "wind_read_m_s": 18.734126186370847,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0315,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 48,
+      "face": {
+       "axis": "y",
+       "j": 7,
+       "i": 108
+      },
+      "slope": 0.03137712825598731,
+      "crest_m": 1197.9376220703125,
+      "input_wind_m_s": 13.356664657592773,
+      "wind_read_m_s": 30.720328712463377,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (boundary data over the window)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0315,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 111,
+      "face": {
+       "axis": "x",
+       "j": 55,
+       "i": 84
+      },
+      "slope": 0.03137146837535028,
+      "crest_m": 993.1092529296875,
+      "input_wind_m_s": 12.112957954406738,
+      "wind_read_m_s": 27.859803295135496,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0315,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 96,
+      "face": {
+       "axis": "y",
+       "j": 122,
+       "i": 80
+      },
+      "slope": 0.03126727958117351,
+      "crest_m": 1510.60107421875,
+      "input_wind_m_s": 22.16274642944336,
+      "wind_read_m_s": 48.389916984202195,
+      "wind_capped_at_domain": true,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0315,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 35551,
+      "face": {
+       "axis": "y",
+       "j": 3,
+       "i": 105
+      },
+      "slope": 0.024395556632796883,
+      "crest_m": 1197.9376220703125,
+      "input_wind_m_s": 13.196878433227539,
+      "wind_read_m_s": 30.352820396423336,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (boundary data over the window)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0244,
+       "wind_m_s": 40.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 21418,
+      "face": {
+       "axis": "y",
+       "j": 114,
+       "i": 78
+      },
+      "slope": 0.024395049853520583,
+      "crest_m": 1453.89013671875,
+      "input_wind_m_s": 18.537405014038086,
+      "wind_read_m_s": 42.636031532287596,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0244,
+       "wind_m_s": 50.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 55475,
+      "face": {
+       "axis": "y",
+       "j": 56,
+       "i": 86
+      },
+      "slope": 0.024392884722769563,
+      "crest_m": 993.1092529296875,
+      "input_wind_m_s": 12.758288383483887,
+      "wind_read_m_s": 29.344063282012936,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0244,
+       "wind_m_s": 30.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     },
+     {
+      "faces": 89524,
+      "face": {
+       "axis": "x",
+       "j": 239,
+       "i": 61
+      },
+      "slope": 0.024385001028065782,
+      "crest_m": 1460.163818359375,
+      "input_wind_m_s": 7.9871931076049805,
+      "wind_read_m_s": 18.370544147491454,
+      "wind_capped_at_domain": false,
+      "wind_from": "d01 (start state)",
+      "map_rows": {
+       "crest_m": 1500.0,
+       "slope": 0.0244,
+       "wind_m_s": 20.0,
+       "beyond": []
+      },
+      "held_s": 60.0,
+      "longest_step_tried_s": 60.0,
+      "shortest_entry_under_a_stop_s": null
+     }
+    ]
+   },
+   "map_rows": {
+    "dx_m": [
+     12000.0
+    ],
+    "crest_m": 3500.0,
+    "slope": 0.0934,
+    "wind_m_s": 50.0,
+    "beyond": [],
+    "longest_step_tried_s": 60.0,
+    "shortest_entry_under_a_stop_s": 72.0,
+    "stop_crest_m": 3500.0,
+    "stop_under_a_lower_crest": false
+   }
+  }
+ ],
+ "map": {
+  "path": "terrain_clock_map.json",
+  "winds_m_s": [
+   20.0,
+   30.0,
+   40.0,
+   50.0,
+   60.0,
+   70.0,
+   80.0,
+   90.0,
+   100.0
+  ],
+  "ladder_s_per_km": [
+   5.0,
+   4.5,
+   4.0,
+   3.5,
+   3.0,
+   2.5,
+   2.0,
+   1.5,
+   1.25,
+   1.0,
+   0.75,
+   0.5
+  ],
+  "longest_step_tried_s": {
+   "500": 2.5,
+   "1000": 5.0,
+   "2000": 10.0,
+   "3000": 40.0,
+   "4000": 20.0,
+   "6000": 30.0,
+   "9000": 45.0,
+   "12000": 60.0
+  },
+  "seconds": 1800.0,
+  "rows": 1014
+ }
+}

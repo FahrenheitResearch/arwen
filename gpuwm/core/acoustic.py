@@ -20,6 +20,7 @@ from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 from gpuwm.core.kernels import (get_kernel, get_kernel_int_defines,
                                 module_source, module_source_int_defines)
 from gpuwm.core.state import DTYPE, DomainState
+from gpuwm.microphysics_schemes import mass_loading_species as _mass_loading_species
 
 _THREADS = 256
 
@@ -43,6 +44,60 @@ def prepare_upper_wind_limiter(state, cfg, dtau):
             np.int32(cfg.ny), np.int32(cfg.nx))
     grid = ((cfg.ny * cfg.nx + _THREADS - 1) // _THREADS,)
     return lambda: kernel(grid, (_THREADS,), args)
+
+
+#: Strict mode: WRF's grid%muts through one acoustic loop (see
+#: advance_exact_frame_mu_t).  Rebuilt at every stage start.
+WRF_ACOUSTIC_MUTS_SLOT = "acoustic_wrf_muts"
+
+
+def wrf_acoustic_muts(state: DomainState):
+    return state.scratch(state.mup.shape[-2:], WRF_ACOUSTIC_MUTS_SLOT)
+
+
+def init_wrf_acoustic_muts(state: DomainState, reference=None):
+    """Seed the stage carrier before the first standalone substep."""
+    import cupy as cp
+    cp.add(state.mub2d, state.mup if reference is None else reference,
+           out=wrf_acoustic_muts(state))
+    state._wrf_acoustic_muts_initialized = True
+
+
+def _uv_emdiv_args(state: DomainState, cfg: RunConfig, mudf) -> tuple:
+    """Strict mode: advance_uv's in-statement external-mode damping.
+
+    WRF adds ``c1h*mudf_xy`` inside the u/v statement, after the pressure
+    gradient, with ``mudf_xy = -emdiv*dx*(MUDF(i)-MUDF(i-1))/msfuy`` in
+    REAL; the strict kernel takes MUDF and the REAL scale here, and the
+    separate emdiv launch then only saves mu'' (dycore).  Empty outside
+    strict mode, where the kernel has no such parameters.
+    """
+    if not WRF_EXACT:
+        return ()
+    use = mudf is not None and cfg.emdiv > 0.0
+    return (mudf if use else state.mup, state.msfu, state.msfv,
+            DTYPE(DTYPE(-cfg.emdiv) * DTYPE(cfg.dx)),
+            DTYPE(DTYPE(-cfg.emdiv) * DTYPE(cfg.dy)),
+            np.int32(use), np.int32(state.has_msf))
+
+
+def damp_magnitude(cfg: RunConfig, dtau: float) -> np.float32:
+    """The damp_opt=3 coefficient ``dampmag`` of WRF ``advance_w``.
+
+    WRF 4.6.1 module_small_step_em.F:1284 forms ``dampmag =
+    dts*config_flags%dampcoef`` as ONE float32 product of two float32
+    operands, in every build.  Forming ``dtau*dampcoef`` in Python doubles
+    and rounding the result once gives a different word whenever the double
+    product is not already a float32 (dtau 4.5 s with dampcoef 0.2: WRF
+    0.900000036, the double route 0.899999976), and the whole damping layer
+    then differs from WRF by up to 2,401 ULP
+    (tools/upper_damping_wrf461_oracle).  2.8.7 took the double route in
+    the default build and the float32 product only under the strict build;
+    both builds now take WRF's.  0 when the implicit damper is off.
+    """
+    if cfg.damp_opt != 3:
+        return DTYPE(0.0)
+    return DTYPE(DTYPE(dtau) * DTYPE(cfg.dampcoef))
 
 
 def _base3d(state: DomainState) -> np.int32:
@@ -166,6 +221,12 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
         qi = state.qi
         qs, qg = state.qs, state.qg
         n_mass = 7 if cfg.mp_physics in (9, 18) else 6
+    elif _mass_loading_species(cfg.mp_physics) == ("qi", "qs", "qg"):
+        # A NAMED scheme whose capability row declares the six-mass moist
+        # package: the same calc_cq call as the Thompson family.
+        qi = state.qi
+        qs, qg = state.qs, state.qg
+        n_mass = 6
     else:
         raise ValueError(f"unsupported mp_physics={cfg.mp_physics} for cq")
     qh = state.qh if cfg.mp_physics in (9, 18) else state.qv
@@ -210,6 +271,9 @@ def acoustic_substep_explicit(state: DomainState, cfg: RunConfig,
     mu_old = state.scratch((ny, nx), "acoustic_mu_pp_old")
     th_old = state.scratch((nz, ny, nx), "acoustic_th_pp_old")
 
+    if WRF_EXACT and (first or not getattr(state, "_wrf_acoustic_muts_initialized", False)):
+        init_wrf_acoustic_muts(state)
+
     radiative_x = cfg.open_x and not _boundary_forced(cfg)
     radiative_y = cfg.open_y and not _boundary_forced(cfg)
     if radiative_x:
@@ -236,7 +300,8 @@ def acoustic_substep_explicit(state: DomainState, cfg: RunConfig,
             DTYPE(1.0 / cfg.dx), DTYPE(1.0 / cfg.dy),
             DTYPE(dtau), DTYPE(smdiv),
             np.int32(_spec_zone(cfg)), _base3d(state),
-            np.int32(nz), np.int32(ny), np.int32(nx)))
+            np.int32(nz), np.int32(ny), np.int32(nx))
+           + _uv_emdiv_args(state, cfg, mudf))
 
     if radiative_x:
         state.u_pp[:, :, 0] = sx[..., 0] + DTYPE(dtau) * state.ru_t[:, :, 0]
@@ -293,7 +358,8 @@ def acoustic_substep_explicit(state: DomainState, cfg: RunConfig,
             (state.mu_pp, state.th_pp, state.rmu_t, state.rth_t,
              DTYPE(dtau), np.int32(_mass_w_boundary_zone(cfg)),
              np.int32(not _boundary_x(cfg)), np.int32(nz),
-             np.int32(ny), np.int32(nx)))
+             np.int32(ny), np.int32(nx),
+             wrf_acoustic_muts(state), state.mub2d, state.mup))
 
 
 #: ``WPHI_MAX_LEV`` tiers ``kernels/acoustic.cu`` is compiled at, ascending.
@@ -458,7 +524,8 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
         state.cf1, state.cf2, state.cf3, np.int32(cfg.top_lid),
         rdx, rdy, dtau_arg,
     )
-    uv_suffix = (spec_zone, base3d, nz_arg, ny_arg, nx_arg)
+    uv_suffix = ((spec_zone, base3d, nz_arg, ny_arg, nx_arg)
+                 + _uv_emdiv_args(state, cfg, mudf))
     uv_first_args = uv_prefix + (DTYPE(0.0),) + uv_suffix
     uv_later_args = uv_prefix + (DTYPE(cfg.smdiv),) + uv_suffix
 
@@ -492,9 +559,10 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
             state.mu_pp, state.th_pp, state.rmu_t, state.rth_t,
             dtau_arg, mass_w_zone, np.int32(not int(boundary_x)),
             nz_arg, ny_arg, nx_arg,
+            wrf_acoustic_muts(state), state.mub2d, state.mup,
         )
 
-    dampmag = dtau * cfg.dampcoef if cfg.damp_opt == 3 else 0.0
+    dampmag = damp_magnitude(cfg, dtau)
     w_name = "advance_w_phi_msf" if state.has_msf else "advance_w_phi"
     w_kernel = _w_phi_kernel(w_name, nz)
     w_map_args = (state.msft,) if state.has_msf else ()
@@ -524,7 +592,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
             state.php, state.thp, state.thb, state.alt, c2a, state.rdnw,
             state.c1h, state.c2h, state.c1f, state.c2f, dtau_arg,
             np.int32(cfg.spec_zone), base3d, nz_arg, ny_arg, nx_arg,
-        )
+        ) + ((wrf_acoustic_muts(state),) if WRF_EXACT else ())
     elif _frame_takes_table_w(cfg):
         frame_kernel = get_kernel("acoustic", "advance_nested_phi_w")
         frame_args = (
@@ -534,7 +602,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
             state.rdnw, state.c1h, state.c2h, state.c1f, state.c2f,
             dtau_arg, np.int32(cfg.spec_zone), base3d,
             nz_arg, ny_arg, nx_arg,
-        )
+        ) + ((wrf_acoustic_muts(state),) if WRF_EXACT else ())
 
     radiative_x = cfg.open_x and not _boundary_forced(cfg)
     radiative_y = cfg.open_y and not _boundary_forced(cfg)
@@ -610,7 +678,7 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
     cqu, cqv, cqw, use_cq = cq
     blocks = (ny * nx + _THREADS - 1) // _THREADS
 
-    dampmag = dtau * cfg.dampcoef if cfg.damp_opt == 3 else 0.0
+    dampmag = damp_magnitude(cfg, dtau)
     # Map factors (Task 3): the _msf variant carries WRF advance_w's msfty
     # factors; the msf==1 kernel stays byte-identical to Phase 2.
     name = "advance_w_phi_msf" if state.has_msf else "advance_w_phi"
@@ -652,7 +720,8 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
              state.php, state.thp, state.thb, state.alt, c2a, state.rdnw,
              state.c1h, state.c2h, state.c1f, state.c2f, DTYPE(dtau),
              np.int32(cfg.spec_zone), _base3d(state), np.int32(nz),
-             np.int32(ny), np.int32(nx)))
+             np.int32(ny), np.int32(nx))
+            + ((wrf_acoustic_muts(state),) if WRF_EXACT else ()))
     elif _frame_takes_table_w(cfg):
         # solve_em.F:1577-1611 ELSE: spec_bdyupdate_ph followed by
         # spec_bdyupdate(w_2, rw_tend, dts_rk).  A specified domain that
@@ -667,7 +736,8 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
              state.rmu_t, state.php, state.thp, state.thb, state.alt, c2a,
              state.rdnw, state.c1h, state.c2h, state.c1f, state.c2f,
              DTYPE(dtau), np.int32(cfg.spec_zone), _base3d(state),
-             np.int32(nz), np.int32(ny), np.int32(nx)))
+             np.int32(nz), np.int32(ny), np.int32(nx))
+            + ((wrf_acoustic_muts(state),) if WRF_EXACT else ()))
 
 
 def run_acoustic_only(state: DomainState, cfg: RunConfig,

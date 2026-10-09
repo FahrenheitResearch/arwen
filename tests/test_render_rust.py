@@ -1222,7 +1222,13 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     # The coupled fire's three maps (fire_perimeter, fire_ros,
     # fire_heat_flux, lane/ec-sfire) are listed too, excluded on this
     # fixture because it carries no refined fire grid: 364 + 3 = 367.
-    assert "total=367" in out
+    # Three interval winter products add snowfall_window, snow_10to1_window
+    # and snow_kuchera_window to that complete catalog: 367 + 3 = 370.
+    assert "total=370" in out
+    for slug in ("snowfall_window", "snow_10to1_window", "snow_kuchera_window"):
+        rows = [line for line in out.splitlines()
+                if len(line.split()) >= 3 and line.split()[2] == slug]
+        assert len(rows) == 1, (slug, rows)
     assert "renderable" in out and "excluded" in out
     for slug in ("smoke_near_surface", "pm25_near_surface",
                  "dust_near_surface", "ozone_near_surface", "aod_550"):

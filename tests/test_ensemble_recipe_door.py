@@ -1128,6 +1128,59 @@ def test_a_forecast_failure_is_one_line_and_a_failed_receipt(outcome, code, tmp_
 
 # ---- forecast failures over the real ensemble session ------------------------------
 
+@pytest.mark.parametrize("outcome", [2, RuntimeError("forecast failed"), SystemExit(130)])
+def test_forecast_failure_reuses_prepared_members_on_relaunch(tmp_path, door, stages, outcome):
+    config = _case(tmp_path)
+    out = tmp_path / "out"
+    stages.forecast_result = outcome
+    if isinstance(outcome, SystemExit):
+        with pytest.raises(SystemExit):
+            door("go", config, *RECIPE_FLAGS, "--outdir", out, "--products", "none")
+    else:
+        first = door("go", config, *RECIPE_FLAGS, "--outdir", out, "--products", "none")
+        assert first.code != 0
+    run, receipt = _receipt(out)
+    assert receipt["preparation_status"] == "ready"
+    assert receipt["failure"]["stage"] == "forecast"
+    stages.forecast_result = 0
+    second = door("go", config, *RECIPE_FLAGS, "--outdir", out, "--products", "none")
+    assert second.code == 0, second.text
+    assert [row["member"] for row in stages.prepared] == [0, 1]
+    runs = sorted(out.glob("run-*"))
+    assert len(runs) == 2
+    relaunched = json.loads((runs[-1] / recipe_door.RECEIPT_NAME).read_text())
+    assert relaunched["status"] == "complete"
+    assert [row["preparation_reused_from_run"] for row in relaunched["members"]] == [str(run)] * 2
+
+
+def test_relaunch_does_not_reuse_changed_preparation_context(tmp_path, door, stages, monkeypatch):
+    config = _case(tmp_path)
+    out = tmp_path / "out"
+    stages.forecast_result = 2
+    first = door("go", config, *RECIPE_FLAGS, "--outdir", out)
+    assert first.code == 2
+    monkeypatch.setattr(recipe_door, "_preparation_context_sha256", lambda *args: "changed-code-or-inputs")
+    stages.forecast_result = 0
+    second = door("go", config, *RECIPE_FLAGS, "--outdir", out)
+    assert second.code == 0, second.text
+    assert [row["member"] for row in stages.prepared] == [0, 1, 0, 1]
+
+
+def test_relaunch_into_explicit_failed_run_uses_new_forecast_directory(tmp_path, door, stages):
+    config = _case(tmp_path)
+    out = tmp_path / "out"
+    stages.forecast_result = 2
+    assert door("go", config, *RECIPE_FLAGS, "--outdir", out).code == 2
+    run, _ = _receipt(out)
+    (run / "run").mkdir()
+    (run / "run" / "ensemble-run.json").write_text('{"status":"failed"}')
+    stages.forecast_result = 0
+    second = door("go", config, *RECIPE_FLAGS, "--outdir", run)
+    assert second.code == 0, second.text
+    assert [row["member"] for row in stages.prepared] == [0, 1]
+    assert stages.sim[-1]["outdir"] == run / "forecast-attempts" / "run-001"
+    assert (run / "run" / "ensemble-run.json").read_text() == '{"status":"failed"}'
+
 class _Collector:
     """The aggregate product owner, without a renderer: these runs never finish."""
 
@@ -1659,3 +1712,55 @@ def test_native_hrrr_preparation_binds_every_name_it_calls():
               if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
     assert "supplement_bindings" in called
     assert sorted(called - local - module_names) == []
+
+
+def test_prepare_only_prepares_every_member_and_the_forecast_launch_reuses_them(tmp_path, door, stages, monkeypatch):
+    """``go --prepare-only`` on the recipe route prepares the whole roster, no forecast.
+
+    Breakage it prevents: the flag went to the single-trajectory prepare-only
+    launch, which prepared member 0 alone and exited 0, so the roster's cards
+    idled through every member's preparation inside the forecast hold.
+    """
+    config = _case(tmp_path)
+    out = tmp_path / "out"
+    from gpuwm import go_cli
+    single = []
+    monkeypatch.setattr(go_cli, "_prepare_only_launch", lambda *a, **k: single.append(True) or 0)
+    result = door("go", config, *RECIPE_FLAGS, "--outdir", out, "--prepare-only")
+    assert result.code == 0, result.text
+    assert single == [], "roster prepare-only bypassed the member route"
+    run, receipt = _receipt(out)
+    assert receipt["status"] == "prepared"
+    assert [row["member"] for row in stages.prepared] == [0, 1]
+    assert stages.forecast == []
+    assert receipt["preparation_status"] == "ready"
+    assert len(receipt["members"]) == 2
+    # The forecast launch into the same run folder prepares nothing again.
+    result = door("go", config, *RECIPE_FLAGS, "--outdir", run, "--products", "none")
+    assert result.code == 0, result.text
+    assert [row["member"] for row in stages.prepared] == [0, 1]
+    assert len(stages.forecast) == 1
+    assert "reuses its ready preparation" in result.text
+    _, receipt = _receipt(out)
+    assert receipt["status"] == "complete"
+
+
+def test_prepare_only_admission_needs_geography_and_disk_but_no_forecast_device(tmp_path, monkeypatch):
+    from gpuwm import capabilities, go_cli, rustwx
+    def forecast_gate(*a, **k):
+        pytest.fail("prepare-only reached a forecast GPU or renderer gate")
+    monkeypatch.setattr(capabilities, "require", forecast_gate)
+    monkeypatch.setattr(go_cli, "_require_forecast_device", forecast_gate)
+    monkeypatch.setattr(go_cli, "memory_gate", forecast_gate)
+    monkeypatch.setattr(rustwx, "find_renderer", forecast_gate)
+    geography = []
+    disk = []
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda root: geography.append(root))
+    monkeypatch.setattr(recipe_door, "disk_refusal", lambda *a, **k: disk.append(k))
+    recipe_door.admit([], config=tmp_path / "case.toml", geog_root=tmp_path,
+                      case_root=tmp_path, request=None, options={"prepare_only": True})
+    assert geography == [tmp_path] and len(disk) == 1
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda root: "geography is missing")
+    with pytest.raises(recipe_door.RecipeRefusal, match="geography is missing"):
+        recipe_door.admit([], config=tmp_path / "case.toml", geog_root=tmp_path,
+                          case_root=tmp_path, request=None, options={"prepare_only": True})

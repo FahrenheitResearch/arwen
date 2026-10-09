@@ -15,8 +15,8 @@ pytestmark = pytest.mark.gpu
 
 @pytest.mark.skipif(
     os.environ.get("GPUWM_WRF_EXACT") != "1"
-    or os.environ.get("GPUWM_WRF_EXACT_DIFFUSION") != "1",
-    reason="requires the explicit WRF-exact diffusion process selectors",
+    or os.environ.get("GPUWM_WRF_EXACT_DIFFUSION", "1") == "0",
+    reason="requires a WRF-exact process with the diffusion control on",
 )
 def test_active_diffusion_matches_every_retained_compiled_wrf_word(tmp_path):
     root = Path(__file__).resolve().parents[1]

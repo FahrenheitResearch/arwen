@@ -145,6 +145,27 @@ def _stability_anchor_catalog():
                    "size": 1, "product_id": "era5", "provenance": ""},)})
 
 
+def _under_the_anchor_clock(exp):
+    """Inverse 48847c9eb's declared default without moving any old pin."""
+    from dataclasses import replace
+    from gpuwm.core.model import experiment_fingerprint, restart_identity_payload
+
+    assert all(domain.run.terrain_clock == "local_face" for domain in exp.domains)
+    historical = replace(exp, domains=tuple(replace(
+        domain, run=replace(domain.run, terrain_clock="measured"))
+        for domain in exp.domains))
+    current_payload = restart_identity_payload(exp)
+    historical_payload = restart_identity_payload(historical)
+    for current_domain, historical_domain in zip(
+            current_payload["domains"], historical_payload["domains"]):
+        assert current_domain["run"].pop("terrain_clock") == "local_face"
+        assert "terrain_clock" not in historical_domain["run"]
+    assert current_payload == historical_payload
+    assert experiment_fingerprint(exp, _stability_anchor_catalog()) != (
+        experiment_fingerprint(historical, _stability_anchor_catalog()))
+    return historical
+
+
 def test_no_overlay_keeps_the_experiment_fingerprint(monkeypatch):
     """The option must not move any existing fingerprint when off.
 
@@ -158,7 +179,7 @@ def test_no_overlay_keeps_the_experiment_fingerprint(monkeypatch):
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
-    exp = load_scaffold()
+    exp = _under_the_anchor_clock(load_scaffold())
     _without_the_later_eta_key(monkeypatch, exp)
     assert experiment_fingerprint(
         exp, _stability_anchor_catalog()) == _ANCHOR_FINGERPRINT
@@ -208,7 +229,7 @@ def test_the_anchor_moved_for_the_moist_cq_default_flip_and_nothing_else(
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
-    exp = load_scaffold()
+    exp = _under_the_anchor_clock(load_scaffold())
     _without_the_later_eta_key(monkeypatch, exp)
     historical = _before_the_moist_cq_default_flip(exp)
     assert experiment_fingerprint(
@@ -260,7 +281,7 @@ def test_the_anchor_moved_for_the_unscoped_cumulus_key_and_nothing_else(
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
-    exp = _before_the_moist_cq_default_flip(load_scaffold())
+    exp = _before_the_moist_cq_default_flip(_under_the_anchor_clock(load_scaffold()))
     assert all(domain.run.cu_physics == 0 for domain in exp.domains), (
         "the anchor scaffold selects no cumulus scheme, which is what makes "
         "an unscoped cumulus knob moving it identity churn rather than a "
@@ -290,7 +311,7 @@ def test_the_anchor_moved_for_the_sase_default_flip_and_nothing_else(
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
-    exp = _before_the_moist_cq_default_flip(load_scaffold())
+    exp = _before_the_moist_cq_default_flip(_under_the_anchor_clock(load_scaffold()))
     assert all(
         domain.run.sase_additive_dissipation for domain in exp.domains), (
         "the additive dissipation channel is default-on since 1a0e8a7f8")

@@ -222,7 +222,32 @@ __constant__ unsigned int MYNN_ATANF_TAB[19] = {
 // 0x1p23, the subnormal rescale both logf and powf use.
 __constant__ unsigned int MYNN_LIBM_F32[1] = { 0x4B000000u };
 
-// glibc 2.39 logf -- sysdeps/ieee754/flt-32/e_logf.c
+// glibc 2.39 on an FMA host (every oracle host: x86-64 with FMA/AVX2) runs
+// the ifunc-selected -mfma builds of e_logf.c, e_powf.c and e_expf.c
+// (__logf_fma, __powf_fma, __expf_fma), whose a*b+c sites GCC contracted.
+// lane/mynn-exact measured it on the oracle CPU (Xeon 8559C, glibc 2.39):
+// over every positive normal float32 the fused forms below match the live
+// libm on logf and on powf for every exponent this unit uses, and on every
+// |x| < 88 for expf, where the unfused forms miss 0-2 inputs each (expf at
+// 0x4202422F and 0xC27C65D9, the two points gpuwm/core/noahmp_libm.py had
+// recorded as unexplained: glibc's expf also contracts InvLn2N*x into both
+// the shift add and r).  atanf and tanhf are not ifuncs and stay unfused.
+#define MYNN_DFMA(a, b, c) __fma_rn((a), (b), (c))
+
+// The binary32 result of a binary64 value, INCLUDING glibc's subnormal
+// results, which __double2float_rn flushes under CuPy's -ftz=true.
+__device__ __forceinline__ real mynn_d2f_rn(double y)
+{
+    double a = fabs(y);
+    if (a > 0.0 && a < 1.1754943508222875e-38) {
+        double scaled = rint(MYNN_DMUL(a, 7.1362384635297994e+44));
+        unsigned int s = (__double_as_longlong(y) < 0LL) ? 0x80000000u : 0u;
+        return __uint_as_float(s | (unsigned int) scaled);
+    }
+    return __double2float_rn(y);
+}
+
+// glibc 2.39 logf -- sysdeps/ieee754/flt-32/e_logf.c, FMA variant
 __device__ real mynn_glibc_logf(real x)
 {
     unsigned int ix = __float_as_uint(x);
@@ -247,13 +272,13 @@ __device__ real mynn_glibc_logf(real x)
     double a1 = __longlong_as_double(MYNN_LOGF_MISC[2]);
     double a2 = __longlong_as_double(MYNN_LOGF_MISC[3]);
     double z = (double) __uint_as_float(iz);
-    double r = MYNN_DSUB(MYNN_DMUL(z, invc), 1.0);
-    double y0 = MYNN_DADD(logc, MYNN_DMUL((double) k, ln2));
+    double r = MYNN_DFMA(z, invc, -1.0);
+    double y0 = MYNN_DFMA((double) k, ln2, logc);
     double r2 = MYNN_DMUL(r, r);
-    double y = MYNN_DADD(MYNN_DMUL(a1, r), a2);
-    y = MYNN_DADD(MYNN_DMUL(a0, r2), y);
-    y = MYNN_DADD(MYNN_DMUL(y, r2), MYNN_DADD(y0, r));
-    return __double2float_rn(y);
+    double y = MYNN_DFMA(a1, r, a2);
+    y = MYNN_DFMA(r2, a0, y);
+    y = MYNN_DFMA(r2, y, MYNN_DADD(y0, r));
+    return mynn_d2f_rn(y);
 }
 
 // e_powf.c log2_inline
@@ -272,15 +297,15 @@ __device__ double mynn_glibc_powf_log2(unsigned int ix)
     double a3 = __longlong_as_double(MYNN_POWF_LOG2_POLY[3]);
     double a4 = __longlong_as_double(MYNN_POWF_LOG2_POLY[4]);
     double z = (double) __uint_as_float(iz);
-    double r = MYNN_DSUB(MYNN_DMUL(z, invc), 1.0);
+    double r = MYNN_DFMA(z, invc, -1.0);
     double y0 = MYNN_DADD(logc, (double) k);
     double r2 = MYNN_DMUL(r, r);
-    double y = MYNN_DADD(MYNN_DMUL(a0, r), a1);
-    double p = MYNN_DADD(MYNN_DMUL(a2, r), a3);
+    double y = MYNN_DFMA(a0, r, a1);
+    double p = MYNN_DFMA(a2, r, a3);
     double r4 = MYNN_DMUL(r2, r2);
-    double q = MYNN_DADD(MYNN_DMUL(a4, r), y0);
-    q = MYNN_DADD(MYNN_DMUL(p, r2), q);
-    return MYNN_DADD(MYNN_DMUL(y, r4), q);
+    double q = MYNN_DFMA(a4, r, y0);
+    q = MYNN_DFMA(p, r2, q);
+    return MYNN_DFMA(y, r4, q);
 }
 
 // e_exp2f_data.c's 32-entry exp2 core, as e_powf.c calls it.
@@ -297,11 +322,55 @@ __device__ double mynn_glibc_powf_exp2(double xd, unsigned long long bias)
     double c0 = __longlong_as_double(MYNN_EXP2F_POLY[0]);
     double c1 = __longlong_as_double(MYNN_EXP2F_POLY[1]);
     double c2 = __longlong_as_double(MYNN_EXP2F_POLY[2]);
-    double z = MYNN_DADD(MYNN_DMUL(c0, r), c1);
+    double z = MYNN_DFMA(c0, r, c1);
     double r2 = MYNN_DMUL(r, r);
-    double y = MYNN_DADD(MYNN_DMUL(c2, r), 1.0);
-    y = MYNN_DADD(MYNN_DMUL(z, r2), y);
+    double y = MYNN_DFMA(c2, r, 1.0);
+    y = MYNN_DFMA(z, r2, y);
     return MYNN_DMUL(y, s);
+}
+
+// glibc 2.39 sysdeps/ieee754/flt-32/e_expf.c on the same 32-entry exp2 table
+// (lane/mynn-exact).  CUDA's expf is a different function; a real-argument
+// EXP in module_bl_mynn.F is this one.  Kept in the unit, beside its logf/
+// powf/atanf, for the reason the block above gives: an NVRTC module cannot
+// see another .cu file, and the tests that compile this source themselves
+// must get the same function.  Constants: InvLn2N = 0x1.71547652b82fep+0*32,
+// SHIFT = 0x1.8p+52, poly_scaled = C/N^3, C/N^2, C/N (e_exp2f_data.c); the
+// FMA variant (see the note at logf) and mynn_d2f_rn's subnormal results.
+__constant__ unsigned long long MYNN_EXPF_MISC[5] = {
+    0x40471547652B82FEULL, 0x4338000000000000ULL,
+    0x3EBC6AF84B912394ULL, 0x3F2EBFCE50FAC4F3ULL, 0x3F962E42FF0C52D6ULL,
+};
+
+__device__ real mynn_glibc_expf(real x)
+{
+    unsigned int ix = __float_as_uint(x);
+    unsigned int abstop = (ix >> 20) & 0x7FFu;
+    if (abstop >= 0x42Bu) {                       // |x| >= 88 or NaN/inf
+        if (ix == 0xFF800000u) return 0.0f;
+        if (abstop >= 0x7F8u) return MYNN_ADD(x, x);
+        if (mynn_gt(x, __uint_as_float(0x42B17218u)))
+            return __uint_as_float(0x7F800000u);
+        if (mynn_gt(__uint_as_float(0xC2CFF1B4u), x)) return 0.0f;
+    }
+    double inv = __longlong_as_double(MYNN_EXPF_MISC[0]);
+    double xd = (double) x;
+    double shift = __longlong_as_double(MYNN_EXPF_MISC[1]);
+    double kd = MYNN_DFMA(inv, xd, shift);
+    unsigned long long ki = (unsigned long long) __double_as_longlong(kd);
+    kd = MYNN_DSUB(kd, shift);
+    double r = MYNN_DFMA(inv, xd, -kd);
+    unsigned long long t = MYNN_EXP2F_TAB[ki & 31ULL];
+    t += (ki << (52 - 5));
+    double s = __longlong_as_double((long long) t);
+    double c0 = __longlong_as_double(MYNN_EXPF_MISC[2]);
+    double c1 = __longlong_as_double(MYNN_EXPF_MISC[3]);
+    double c2 = __longlong_as_double(MYNN_EXPF_MISC[4]);
+    double p = MYNN_DFMA(c0, r, c1);
+    double r2 = MYNN_DMUL(r, r);
+    double y = MYNN_DFMA(c2, r, 1.0);
+    y = MYNN_DMUL(MYNN_DFMA(p, r2, y), s);
+    return mynn_d2f_rn(y);
 }
 
 // e_powf.c checkint: 0 = not an integer, 1 = odd, 2 = even.
@@ -372,7 +441,7 @@ __device__ real mynn_glibc_powf(real x, real y)
         if (ylogx <= __longlong_as_double(MYNN_POWF_MISC[3]))
             return bias ? -0.0f : 0.0f;
     }
-    return __double2float_rn(mynn_glibc_powf_exp2(ylogx, bias));
+    return mynn_d2f_rn(mynn_glibc_powf_exp2(ylogx, bias));
 }
 
 // glibc 2.39 atanf -- sysdeps/ieee754/flt-32/s_atanf.c, the fdlibm kernel.
@@ -438,6 +507,41 @@ __device__ real mynn_glibc_atanf(real x)
 #undef MYNN_ATAN_LO
 #undef MYNN_ATAN_T
 }
+
+// glibc 2.39 sysdeps/ieee754/flt-32/e_log10f.c, the function a real-argument
+// LOG10 links to: FP32 arithmetic on top of glibc's own logf (above).  The
+// same algorithm as noahmp_leaves.cu's r_log10, which the Noah-MP lane
+// verified against the live glibc 2.39 (gpuwm/core/noahmp_libm.py log10f);
+// spelled with the non-FTZ MYNN operators.  CUDA's log10f is a different
+// function (up to 2 ULP), and mym_condensation's rh_hack reads it.
+__device__ real mynn_glibc_log10f(real x)
+{
+    const real ivln10 = __int_as_float(0x3ede5bd9);
+    const real log10_2hi = __int_as_float(0x3e9a2080);
+    const real log10_2lo = __int_as_float(0x355427db);
+    const real two25 = __int_as_float(0x4c000000);
+    unsigned int hx = __float_as_uint(x);
+    int k = 0;
+    if ((int)hx < 0x00800000) {
+        if ((hx & 0x7fffffffu) == 0u) return __int_as_float(0xff800000);
+        if ((int)hx < 0) return __int_as_float(0x7fc00000);
+        k -= 25;
+        x = MYNN_MUL(x, two25);
+        hx = __float_as_uint(x);
+    }
+    if (hx >= 0x7f800000u) return MYNN_ADD(x, x);
+    k += (int)(hx >> 23) - 127;
+    int i = (k < 0) ? 1 : 0;
+    hx = (hx & 0x007fffffu) | ((unsigned int)(0x7f - i) << 23);
+    real y = (real)(k + i);
+    x = __uint_as_float(hx);
+    real z = MYNN_ADD(MYNN_MUL(y, log10_2lo),
+                      MYNN_MUL(ivln10, mynn_glibc_logf(x)));
+    return MYNN_ADD(z, MYNN_MUL(y, log10_2hi));
+}
+
+// glibc tanhf (fdlibm s_tanhf.c on expm1f), transcribed further down.
+__device__ real mynn_tanhf(real x);
 
 // ===========================================================================
 // module_bl_mynn.F:7525-7623 phim / phih, bl_mynn_stfunc = 1.
@@ -568,6 +672,21 @@ void mynn_glibc_libm_probe(const real* __restrict__ x,
     out[3 * i + 2] = mynn_glibc_powf(x[i], y[i]);
 }
 
+// The other three glibc words the unit calls (lane/mynn-exact): tanhf
+// (fdlibm s_tanhf.c on expm1f), log10f (e_log10f.c on logf) and expf
+// (mynn_glibc_expf above).  Graded against the live glibc 2.39 over every
+// float32 input by tools/mynn_pbl_wrf461_oracle/libm_sweep.py.
+extern "C" __global__
+void mynn_glibc_libm_probe2(const real* __restrict__ x,
+                            real* __restrict__ out, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[3 * i + 0] = mynn_tanhf(x[i]);
+    out[3 * i + 1] = mynn_glibc_log10f(x[i]);
+    out[3 * i + 2] = mynn_glibc_expf(x[i]);
+}
+
 extern "C" __global__
 void mynn_stfunc_probe(const real* __restrict__ zet, real* __restrict__ out,
                        int n)
@@ -660,11 +779,13 @@ void mynn_level2_pairs(
     real gh = -MYNN_MUL(dtq, gtr);
     real ri = MYNN_DIV(-gh, mynn_max2(duz, 1.0e-10f));
     real a2fac = MYNN_DIV(1.0f, MYNN_ADD(1.0f, mynn_max2(ri, 0.0f)));
+#define MYNN_L2_F1_A2 MYNN_MUL(MYNN_MUL(3.0f, a2), a2fac)
+#define MYNN_L2_A2 MYNN_MUL(a2, a2fac)
 
     real rfc = MYNN_DIV(g1, MYNN_ADD(g1, g2));
     real f1 = MYNN_ADD(
         MYNN_ADD(MYNN_MUL(b1, MYNN_SUB(g1, c1)),
-                 MYNN_MUL(MYNN_MUL(MYNN_MUL(MYNN_MUL(3.0f, a2), a2fac),
+                 MYNN_MUL(MYNN_MUL(MYNN_L2_F1_A2,
                                    MYNN_SUB(1.0f, c2)),
                           MYNN_SUB(1.0f, c5))),
         MYNN_MUL(MYNN_MUL(2.0f, a1), MYNN_SUB(3.0f, MYNN_MUL(2.0f, c2))));
@@ -673,9 +794,11 @@ void mynn_level2_pairs(
     real rf1 = MYNN_DIV(MYNN_MUL(b1, MYNN_SUB(g1, c1)), f1);
     real rf2 = MYNN_DIV(MYNN_MUL(b1, g1), f2);
     real smc = MYNN_DIV(
-        MYNN_MUL(MYNN_DIV(a1, MYNN_MUL(a2, a2fac)), f1), f2);
-    real shc = MYNN_MUL(MYNN_MUL(3.0f, MYNN_MUL(a2, a2fac)),
+        MYNN_MUL(MYNN_DIV(a1, MYNN_L2_A2), f1), f2);
+    real shc = MYNN_MUL(MYNN_MUL(3.0f, MYNN_L2_A2),
                         MYNN_ADD(g1, g2));
+#undef MYNN_L2_F1_A2
+#undef MYNN_L2_A2
     real ri1 = MYNN_DIV(0.5f, smc);
     real ri2 = MYNN_MUL(rf1, smc);
     real ri3 = MYNN_SUB(MYNN_MUL(MYNN_MUL(4.0f, rf2), smc),
@@ -750,7 +873,7 @@ void mynn_pblh_scale_columns(
     }
     pblh_tke = fminf(pblh_tke, zi + 350.0f);
     pblh_tke = fmaxf(pblh_tke, fmaxf(zi - 350.0f, 10.0f));
-    real weight = 0.5f * tanhf(__fdiv_rn((zi - 200.0f), 400.0f)) + 0.5f;
+    real weight = 0.5f * mynn_tanhf(__fdiv_rn((zi - 200.0f), 400.0f)) + 0.5f;
     if (maxqke > 0.05f) zi = pblh_tke * (1.0f - weight) + zi * weight;
 
     int kzi = 2;
@@ -759,12 +882,12 @@ void mynn_pblh_scale_columns(
     }
 
     real dxdh = fmaxf(2.5f * dx[column], 10.0f) / fminf(zi, 3000.0f);
-    real power = powf(dxdh, 0.667f), square = dxdh * dxdh;
+    real power = mynn_glibc_powf(dxdh, 0.667f), square = dxdh * dxdh;
     real psig_bl = (square + 0.106f * power)
         / (square + 0.066f * power + 0.071f);
     dxdh = fmaxf(2.5f * dx[column], 10.0f)
         / fminf(zi + 500.0f, 3500.0f);
-    power = powf(dxdh, 0.667f); square = dxdh * dxdh;
+    power = mynn_glibc_powf(dxdh, 0.667f); square = dxdh * dxdh;
     real psig_shcu = (square + 0.145f * power)
         / (square + 0.172f * power + 0.170f);
 
@@ -1381,9 +1504,9 @@ void mynn_condensation_default_columns(
         real theta1 = th[base + level - 1];
         real theta2 = th[base + level + 1];
         real ht1 = 44307.692f
-            * (1.0f - powf(__fdiv_rn(p[base + level - 1], 101325.0f), 0.190f));
+            * (1.0f - mynn_glibc_powf(__fdiv_rn(p[base + level - 1], 101325.0f), 0.190f));
         real ht2 = 44307.692f
-            * (1.0f - powf(__fdiv_rn(p[base + level + 1], 101325.0f), 0.190f));
+            * (1.0f - mynn_glibc_powf(__fdiv_rn(p[base + level + 1], 101325.0f), 0.190f));
         real slope = (theta2 - theta1) / (ht2 - ht1);
         if (slope < 10.0f / 1500.0f && ht1 < 19000.0f && ht1 > 4000.0f) {
             found = level;
@@ -1432,14 +1555,14 @@ void mynn_condensation_default_columns(
         real frozen = qi[idx] + qs[idx];
         if (frozen > 1.0e-9f && zagl > pblh2) {
             real rh_hack = fminf(
-                rhmax, rhcrit + wt2 * 0.045f * (9.0f + log10f(frozen)));
+                rhmax, rhcrit + wt2 * 0.045f * (9.0f + mynn_glibc_log10f(frozen)));
             rh = fmaxf(rh, rh_hack);
             real q1_rh = -3.0f + __fdiv_rn(3.0f * (rh - rhcrit), (1.0f - rhcrit));
             q1 = fmaxf(q1_rh, q1);
         }
         if (qc[idx] > 1.0e-6f && zagl > pblh2) {
             real rh_hack = fminf(
-                rhmax, rhcrit + wt2 * 0.08f * (6.0f + log10f(qc[idx])));
+                rhmax, rhcrit + wt2 * 0.08f * (6.0f + mynn_glibc_log10f(qc[idx])));
             rh = fmaxf(rh, rh_hack);
             real q1_rh = -3.0f + __fdiv_rn(3.0f * (rh - rhcrit), (1.0f - rhcrit));
             q1 = fmaxf(q1_rh, q1);
@@ -1447,12 +1570,12 @@ void mynn_condensation_default_columns(
 
         real q1k = q1;
         real cldfra_k = fmaxf(
-            0.0f, fminf(1.0f, 0.5f + 0.36f * atanf(1.8f * (q1 + 0.2f))));
+            0.0f, fminf(1.0f, 0.5f + 0.36f * mynn_glibc_atanf(1.8f * (q1 + 0.2f))));
 
         real maxqc = fmaxf(qw[idx] - qsat_tk, 0.0f);
         real ql_water, ql_ice;
         if (q1k < 0.0f) {
-            ql_water = sgm_k * expf(1.2f * q1k - 1.0f);
+            ql_water = sgm_k * mynn_glibc_expf(1.2f * q1k - 1.0f);
             ql_ice = ql_water;
         } else if (q1k > 2.0f) {
             ql_water = fminf(sgm_k * q1k, maxqc);
@@ -1482,9 +1605,9 @@ void mynn_condensation_default_columns(
                                            : fmaxf(q1, -2.0f);
         real fng;
         if (q1k >= 1.0f) fng = 1.0f;
-        else if (q1k >= -1.7f) fng = expf(-0.4f * (q1k - 1.0f));
-        else if (q1k >= -2.5f) fng = 3.0f + expf(-3.8f * (q1k + 1.7f));
-        else fng = fminf(23.9f + expf(-1.6f * (q1k + 2.5f)), 60.0f);
+        else if (q1k >= -1.7f) fng = mynn_glibc_expf(-0.4f * (q1k - 1.0f));
+        else if (q1k >= -2.5f) fng = 3.0f + mynn_glibc_expf(-3.8f * (q1k + 1.7f));
+        else fng = fminf(23.9f + mynn_glibc_expf(-1.6f * (q1k + 2.5f)), 60.0f);
 
         real cfmax = fminf(cldfra_k, 0.6f);
         real zsl = fminf(fmaxf(25.0f, 0.1f * pblh2), 100.0f);
@@ -2250,6 +2373,9 @@ __device__ real mynn_tanhf(real x)
     unsigned word = __float_as_uint(x);
     unsigned magnitude = word & 0x7FFFFFFFu;
     real z;
+    if (magnitude >= 0x7F800000u)                // inf or NaN: one/x +- one
+        return (word & 0x80000000u) == 0u ? MYNN_ADD(MYNN_DIV(1.0f, x), 1.0f)
+                                          : MYNN_SUB(MYNN_DIV(1.0f, x), 1.0f);
     if (magnitude < 0x41B00000u) {               // |x| < 22
         if (magnitude < 0x24000000u)             // |x| < 2**-55
             return MYNN_MUL(x, MYNN_ADD(1.0f, x));
@@ -2267,12 +2393,13 @@ __device__ real mynn_tanhf(real x)
     return (word & 0x80000000u) == 0u ? z : -z;
 }
 
-// Fortran real**real, which gfortran routes to glibc powf.  Neither glibc powf
-// nor CUDA powf is correctly rounded, so both sides evaluate in FP64 and round
-// once; that agrees with glibc on every argument these routines reach.
+// Fortran real**real, which gfortran routes to glibc powf.  This used to
+// round an FP64 pow, on the claim that it agreed with glibc on every argument
+// these routines reach; glibc's powf is not correctly rounded, so that was a
+// third function.  It is glibc's own algorithm now (mynn_glibc_powf above).
 __device__ __forceinline__ real mynn_powf(real x, real y)
 {
-    return (real)pow((double)x, (double)y);
+    return mynn_glibc_powf(x, y);
 }
 
 // module_bl_mynn.F:2417-2567 boulac_length, keeping only the elBLavg branch
@@ -2520,6 +2647,8 @@ __device__ void mynn_mym_level2_column(
         real level_gh = -MYNN_MUL(dtq, gtr);
         real ri = MYNN_DIV(-level_gh, mynn_max2(duz, 1.0e-10f));
         real a2fac = MYNN_DIV(1.0f, MYNN_ADD(1.0f, mynn_max2(ri, 0.0f)));
+#define MYNN_L2_F1_A2 MYNN_MUL(MYNN_MUL(3.0f, a2), a2fac)
+#define MYNN_L2_A2 MYNN_MUL(a2, a2fac)
 
         // a2fac is a runtime value, so f1, rf1, smc and shc are runtime
         // expressions.  a1, c1, a2 and g2 are `asm` results, so every
@@ -2532,7 +2661,7 @@ __device__ void mynn_mym_level2_column(
         real rfc = MYNN_DIV(g1, MYNN_ADD(g1, g2));
         real f1 = MYNN_ADD(
             MYNN_ADD(MYNN_MUL(b1, MYNN_SUB(g1, c1)),
-                     MYNN_MUL(MYNN_MUL(MYNN_MUL(MYNN_MUL(3.0f, a2), a2fac),
+                     MYNN_MUL(MYNN_MUL(MYNN_L2_F1_A2,
                                        MYNN_SUB(1.0f, c2)),
                               MYNN_SUB(1.0f, c5))),
             MYNN_MUL(MYNN_MUL(2.0f, a1), MYNN_SUB(3.0f, MYNN_MUL(2.0f, c2))));
@@ -2541,9 +2670,11 @@ __device__ void mynn_mym_level2_column(
         real rf1 = MYNN_DIV(MYNN_MUL(b1, MYNN_SUB(g1, c1)), f1);
         real rf2 = MYNN_DIV(MYNN_MUL(b1, g1), f2);
         real smc = MYNN_DIV(
-            MYNN_MUL(MYNN_DIV(a1, MYNN_MUL(a2, a2fac)), f1), f2);
-        real shc = MYNN_MUL(MYNN_MUL(3.0f, MYNN_MUL(a2, a2fac)),
+            MYNN_MUL(MYNN_DIV(a1, MYNN_L2_A2), f1), f2);
+        real shc = MYNN_MUL(MYNN_MUL(3.0f, MYNN_L2_A2),
                             MYNN_ADD(g1, g2));
+#undef MYNN_L2_F1_A2
+#undef MYNN_L2_A2
         real ri1 = MYNN_DIV(0.5f, smc);
         real ri2 = MYNN_MUL(rf1, smc);
         real ri3 = MYNN_SUB(MYNN_MUL(MYNN_MUL(4.0f, rf2), smc),
@@ -2833,14 +2964,16 @@ __device__ __forceinline__ real mynn_xl_blend_rn(real t)
     return MYNN_ADD(MYNN_MUL(MYNN_SUB(1.0f, chi), xlvt), MYNN_MUL(chi, xlst));
 }
 
+// glibc 2.39 atanf and expf, the functions a real-argument ATAN and EXP link
+// to; the bodies rounded an FP64 evaluation before, which is neither.
 __device__ __forceinline__ real mynn_atanf(real x)
 {
-    return (real)atan((double)x);
+    return mynn_glibc_atanf(x);
 }
 
 __device__ __forceinline__ real mynn_expf_rn(real x)
 {
-    return (real)exp((double)x);
+    return mynn_glibc_expf(x);
 }
 
 // WRF's layer-to-interface interpolation (a_k*dz_k1 + a_k1*dz_k)/(dz_k1+dz_k).

@@ -93,10 +93,14 @@ def test_existing_hrrr_data_demos_keep_the_previous_generation():
 
 
 def test_recipe_is_consumed_by_the_real_go_planner(tmp_path):
+    from _staged_geog import staged_case_data_env
+
+    # The dry run asks the default geography, as the launch does.
+    env = staged_case_data_env(tmp_path / "case-data", base=dict(
+        os.environ, CUDA_VISIBLE_DEVICES="-1", GPUWM_NO_LOCAL_GPU="1"))
     result = subprocess.run([sys.executable, "-m", "gpuwm.cli", "go",
                              str(RECIPE), "--dry-run"], cwd=ROOT,
                             capture_output=True, text=True, timeout=90,
-                            env=dict(os.environ, CUDA_VISIBLE_DEVICES="-1",
-                                     GPUWM_NO_LOCAL_GPU="1"))
+                            env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "rap-native" in result.stdout

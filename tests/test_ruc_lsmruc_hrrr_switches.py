@@ -14,14 +14,13 @@ expressions as WRF v4.6.1 (fork module_sf_ruclsm.F:845 and :1127 against
 wiring against WRF 4.6.1. It does not establish complete column identity
 against the older fork.
 
-Built with GNU Fortran 13.4.0 and 15.2.0 (byte-identical CSVs) on glibc 2.43,
-not the 13.3.0 / glibc 2.39 toolchain ``lsmruc.csv`` was pinned on.  The two
-libms differ in ``tanhf``/``expf``/``powf`` rounding, so this fixture's
-residue is its own map, measured, and every entry is in the snow-density,
-snow-fraction and surface-flux words the ``lsmruc.csv`` residue documents
-(tests/test_ruc.py LSMRUC_UPSTREAM_RESIDUE).  The same build reproduces
-``lsmruc.csv``'s inputs with 31 residue words in those same classes, the
-control that the toolchain, not the switches, owns the map.
+Rebuilt on box W1 (lane/verify-ruc-lsm) with the toolchain ``lsmruc.csv``
+was pinned on -- GNU Fortran 13.3.0 on glibc 2.39, the C library every WOOF
+float32 libm word is graded against -- by ``build_lsmruc_frac.sh`` against
+pristine WRF v4.6.1.  The earlier copy was built on glibc 2.43, whose
+``tanhf``/``expf``/``powf`` round differently, and carried a 37-word residue
+that was that library's, not the port's.  Against this build the port is
+bitwise on every word but SFCEVP, which WRF counts twice and WOOF once.
 """
 
 from __future__ import annotations
@@ -35,6 +34,7 @@ from tests.test_ruc import (
     RUC_DRIVER_COLUMN_STATE,
     RUC_DRIVER_PROFILE_STATE,
     _lsmruc_call,
+    _lsmruc_expected,
     _lsmruc_oracle,
     _sfctmp_ulp,
     ruc_land_surface_step,
@@ -44,25 +44,10 @@ FIXTURE = (Path(__file__).parents[1] / "gpuwm" / "data" / "ruc" / "oracle"
            / "lsmruc_hrrr_switches.csv")
 
 #: Every output word the port does not reproduce bitwise, ``(field, group,
-#: level)`` -> ULP, measured on this fixture (groups are 0-based (run, step,
-#: column) in file order; level 0 is a column field).
-RESIDUE = {
-    ("grdflx", 15, 0): 1, ("grdflx", 25, 0): 26,
-    ("hfx", 15, 0): 1, ("hfx", 25, 0): 19,
-    ("lh", 25, 0): 7, ("qfx", 25, 0): 10,
-    ("qsfc", 15, 0): 1, ("qsfc", 25, 0): 1,
-    ("qsg", 25, 0): 1, ("qsg", 42, 0): 1,
-    ("qvg", 15, 0): 1, ("qvg", 25, 0): 1,
-    ("rhosnf", 8, 0): 1, ("rhosnf", 20, 0): 1, ("rhosnf", 25, 0): 1,
-    ("rhosnf", 32, 0): 2, ("rhosnf", 37, 0): 1, ("rhosnf", 44, 0): 2,
-    ("sh2o", 15, 3): 1, ("sh2o", 25, 2): 1,
-    ("snowc", 3, 0): 1, ("snowc", 14, 0): 1,
-    ("snowc", 25, 0): 2, ("snowc", 37, 0): 2,
-    ("snowfallac", 8, 0): 1, ("snowfallac", 20, 0): 1,
-    ("snowfallac", 25, 0): 1, ("snowfallac", 32, 0): 2,
-    ("snowfallac", 44, 0): 1,
-    ("snowh", 25, 0): 1,
-}
+#: level)`` -> ULP (groups are 0-based (run, step, column) in file order;
+#: level 0 is a column field): none, once SFCEVP is graded on WRF's single
+#: count (``tests/test_ruc.py::_lsmruc_expected``).
+RESIDUE = {}
 
 
 def _replay(field, groups, **override):
@@ -80,7 +65,7 @@ def _replay(field, groups, **override):
                         got[level:level + 1], want[level:level + 1]))
         for name in RUC_DRIVER_COLUMN_STATE:
             got = np.asarray(getattr(actual, name), dtype=np.float32)
-            want = field[name][0, case:case + 1]
+            want = _lsmruc_expected(field, name)[0, case:case + 1]
             if got.view(np.uint32)[0] != want.view(np.uint32)[0]:
                 residue[(name, case, 0)] = int(_sfctmp_ulp(got, want))
     return residue
@@ -110,12 +95,11 @@ def test_lsmruc_at_threshold_002_with_rdlai2d_matches_unmodified_wrf461():
     groups, field = _lsmruc_oracle(FIXTURE)
     residue = _replay(field, groups)
     assert residue == RESIDUE
-    # The columns the switch moves are bitwise WRF except one 1-ULP qsg
-    # word, the same word that differs at the 0.5 threshold on lsmruc.csv's
-    # inputs with this toolchain (usgs_seaice_bare, step 2).
+    # The columns the switch moves are bitwise WRF.
     ice = set(_ice_groups(field, groups))
+    assert ice
     on_ice = {key: ulp for key, ulp in residue.items() if key[1] in ice}
-    assert on_ice == {("qsg", 42, 0): 1}
+    assert on_ice == {}
 
 
 def test_the_fixture_sees_the_threshold_and_rdlai2d():

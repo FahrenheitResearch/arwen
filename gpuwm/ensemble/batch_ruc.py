@@ -304,6 +304,7 @@ class PackedRucDriver:
             np.float32(params.seaice_albedo_default), np.float32(vegetation.scalars["CFACTR_DATA"]),
             landusef, soilctop, np.int32(nlcat), np.int32(nscat), np.int32(mosaic_lu), np.int32(mosaic_soil),
             np.int32(lakemodel), np.int32(0), np.int32(bool(params.rdlai2d)), np.float32(params.xice_threshold),
+            np.int32(params.fractional_seaice),
             self.arrays["member_dt"], self.arrays["member_ktau"], self.arrays["member_qvg_air"]))
         sfvalues = {name: self.driver[source] for name, source in ordinary._SF_VALUES.items()}
         bundle, sf_tables, ncategory, urban, rsmax = ruc_gpu._sfctmp_tables(params.bundle, params.dataset_identifier, self.nzs)
@@ -343,7 +344,7 @@ class PackedRucDriver:
         kernel("ruc_driver_epilogue")(grid, block, (self.arrays["sptr"], self.arrays["optr"], self.integer,
             self.run, self.flag_slab, tbq, tables.lemitbl, geometry, np.float32(0), np.int32(self.n),
             landusef, np.int32(nlcat), np.int32(mosaic_lu), np.int32(vegetation.scalars["CROP"]), np.int32(vegetation.scalars["NATURAL"]),
-            np.int32(0), np.int32(0), np.float32(params.xice_threshold), self.arrays["member_dt"],
+            np.int32(0), np.int32(0), np.float32(params.xice_threshold), np.int32(params.fractional_seaice), self.arrays["member_dt"],
             self.arrays["member_irrigation"], self.arrays["member_log_profile"]))
         targets = {argument: fields[name] for name, argument in RUC_STATE_BINDING.items()}
         targets.update({argument: fields[name] for name, argument in RUC_PROFILE_BINDING.items()})

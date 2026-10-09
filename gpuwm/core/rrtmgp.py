@@ -36,15 +36,38 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from gpuwm.core.device_cache import cuda_cache, cached_ready
+from types import SimpleNamespace
 import os
 import threading
 from pathlib import Path
 from typing import Mapping, NamedTuple
 
 import numpy as np
-from netCDF4 import Dataset, chartostring
 
-from gpuwm.io.netcdf_serialization import netcdf4_session
+from gpuwm.netcdf_bridge import open_dataset as _open_netcdf
+
+
+def _open_table(path, *, prefetch: bool = True):
+    """One RRTMGP coefficient or input file, read through the Rust route.
+
+    THE BREAKAGE (D-10, 2.8.8 acceptance): the memory estimate packs the
+    gas and cloud tables (:func:`gpuwm.core.preflight.k_distribution_bytes`)
+    while a run is being PREPARED, and these files were read with
+    netCDF4.  A preparation hosted in the site's process -- which the
+    command line's ``PYTHON_GIL=0`` re-exec cannot reach -- switched its
+    free-threaded interpreter lock back on there, and NetCDF reads belong
+    in Rust (the Python boundary).  ``rw_netcdf`` decodes every value as
+    float64 (characters as bytes), which the packing below then casts
+    exactly as it cast netCDF4's arrays; the packed tables are identical.
+
+    ``prefetch`` decodes every variable in one ``rw_netcdf`` run instead
+    of one run per variable read.  No in-process HDF5 is entered, so no
+    :func:`gpuwm.io.netcdf_serialization.netcdf4_session` is needed.
+    """
+    dataset = _open_netcdf(path)
+    if prefetch:
+        dataset.prefetch(list(dataset.variables))
+    return dataset
 
 from gpuwm import data_assets
 from gpuwm.config import DEFAULT_COLUMN_CHUNK
@@ -485,6 +508,11 @@ _MP_CLOUD_OPTICS_SCHEME = {
     #    accepted.
     50: "p3",
 }
+
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+# Named schemes: the capability row names the radii family.
+_MP_CLOUD_OPTICS_SCHEME.update({
+    _s.mp_id: _s.cloud_optics_family for _s in _NAMED_MP_SCHEMES.values()})
 
 # WHY A SELECTOR THIS BUILD ACCEPTS HAS NO ROW ABOVE.  One entry per such
 # selector, stating the reason a row would be WRONG -- not a note that one
@@ -1217,8 +1245,28 @@ def _packed_variable(variable, dimensions, dtype):
 
 
 def _strings(variable) -> tuple[str, ...]:
-    values = chartostring(variable[:])
-    return tuple(str(value).strip().lower() for value in values.tolist())
+    """A NetCDF character array's strings along its last dimension.
+
+    What ``netCDF4.chartostring`` returned here: each row's bytes as text,
+    trailing NULs dropped, then stripped and lowered.
+    """
+    values = np.asarray(variable[:])
+    if values.dtype.kind != "S" or values.dtype.itemsize != 1 or values.ndim != 2:
+        raise ValueError(
+            f"{getattr(variable, 'name', 'variable')}: expected a 2-D NetCDF "
+            f"character array, got {values.dtype} {values.shape}")
+    return tuple(row.tobytes().decode("utf-8").rstrip("\x00").strip().lower()
+                 for row in np.ascontiguousarray(values))
+
+
+def _scalar(variable) -> float:
+    """A scalar NetCDF variable's value (netCDF4's ``getValue()``)."""
+    values = np.asarray(variable[...], dtype=np.float64)
+    if values.size != 1:
+        raise ValueError(
+            f"{getattr(variable, 'name', 'variable')}: expected a scalar, "
+            f"got shape {values.shape}")
+    return float(values.reshape(()))
 
 
 def _make_flavors(key_species: np.ndarray,
@@ -1798,15 +1846,59 @@ class CloudTables:
         return _upload_once(self, upload)
 
 
+@lru_cache(maxsize=1)
+def packaged_table_facts() -> dict | None:
+    """Sizes, shapes and gas names of the four tables, from the packaged receipt.
+
+    Planning (the domain wizard, run-plan, check, tile memory, composition
+    checks) needs these facts, not the tables' values.  Since 2.8.8 the
+    tables decode through rw_netcdf, so decoding them to plan made every
+    plan refuse on an install without the native decoder (measured: the
+    native-free Windows cpu job failed the wizard with NetcdfBridgeMissing).
+    The receipt (gpuwm/data/rrtmgp_k_distribution_bytes.json) is bound to
+    each table's sha256; any other bytes return None and callers decode.
+    """
+    import hashlib
+    import json
+
+    receipt_path = Path(__file__).resolve().parents[1] / "data" / "rrtmgp_k_distribution_bytes.json"
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        for name, digest in receipt["tables"].items():
+            if hashlib.sha256(Path(_table(name)).read_bytes()).hexdigest() != digest:
+                return None
+        return receipt
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def gas_table_shape(kind: str) -> SimpleNamespace:
+    """``ngpt``, ``ngas`` and ``nband`` of one gas table, without decoding it
+    when the packaged receipt matches (see :func:`packaged_table_facts`)."""
+    if kind not in ("lw", "sw"):
+        raise ValueError("kind must be 'lw' or 'sw'")
+    facts = packaged_table_facts()
+    if facts is not None and "meta" in facts:
+        meta = facts["meta"]
+        return SimpleNamespace(ngpt=int(meta[f"ngpt_{kind}"]),
+                               ngas=int(meta[f"ngas_{kind}"]),
+                               nband=int(meta[f"nband_{kind}"]))
+    tables = load_gas_tables(kind)
+    return SimpleNamespace(ngpt=tables.ngpt, ngas=tables.ngas, nband=tables.nband)
+
+
 @lru_cache(maxsize=2)
 def coefficient_gas_names(kind: str) -> tuple[str, ...]:
     """Read selected absorption operands without packing the full tables."""
     if kind not in ("lw", "sw"):
         raise ValueError("kind must be 'lw' or 'sw'")
+    facts = packaged_table_facts()
+    if facts is not None and kind in facts.get("gas_names", {}):
+        return tuple(facts["gas_names"][kind])
     filename = ("rrtmgp-gas-lw-g256.nc" if kind == "lw"
                 else "rrtmgp-gas-sw-g224.nc")
-    with netcdf4_session(), Dataset(_table(filename), "r") as nc:
-        return _strings(nc["gas_names"])
+    with _open_table(_table(filename)) as nc:
+        return _strings(nc.variables["gas_names"])
 
 
 @lru_cache(maxsize=2)
@@ -1823,8 +1915,8 @@ def gas_table_temperature_range_k(kind: str) -> tuple[float, float]:
         raise ValueError("kind must be 'lw' or 'sw'")
     filename = ("rrtmgp-gas-lw-g256.nc" if kind == "lw"
                 else "rrtmgp-gas-sw-g224.nc")
-    with netcdf4_session(), Dataset(_table(filename), "r") as nc:
-        temp_ref = _array(nc["temp_ref"][:], np.float64)
+    with _open_table(_table(filename)) as nc:
+        temp_ref = _array(nc.variables["temp_ref"][:], np.float64)
     return float(np.min(temp_ref)), float(np.max(temp_ref))
 
 
@@ -1836,21 +1928,21 @@ def load_gas_tables(kind: str) -> GasTables:
         raise ValueError("kind must be 'lw' or 'sw'")
     filename = ("rrtmgp-gas-lw-g256.nc" if kind == "lw"
                 else "rrtmgp-gas-sw-g224.nc")
-    with netcdf4_session(), Dataset(_table(filename), "r") as nc:
-        gas_names = _strings(nc["gas_names"])
-        gas_minor = _strings(nc["gas_minor"])
-        identifier_minor = _strings(nc["identifier_minor"])
-        band_lims = _array(nc["bnd_limits_gpt"][:] - 1, np.int32)
-        key_species = _array(nc["key_species"][:], np.int32)
+    with _open_table(_table(filename)) as nc:
+        gas_names = _strings(nc.variables["gas_names"])
+        gas_minor = _strings(nc.variables["gas_minor"])
+        identifier_minor = _strings(nc.variables["identifier_minor"])
+        band_lims = _array(nc.variables["bnd_limits_gpt"][:] - 1, np.int32)
+        key_species = _array(nc.variables["key_species"][:], np.int32)
         flavor, gpoint_flavor = _make_flavors(key_species, band_lims)
         gpoint_bands = np.empty(len(nc.dimensions["gpt"]), np.int32)
         for iband, (start, end) in enumerate(band_lims):
             gpoint_bands[start:end + 1] = iband
 
-        lower_names = _strings(nc["minor_gases_lower"])
-        upper_names = _strings(nc["minor_gases_upper"])
-        scaling_lower = _strings(nc["scaling_gas_lower"])
-        scaling_upper = _strings(nc["scaling_gas_upper"])
+        lower_names = _strings(nc.variables["minor_gases_lower"])
+        upper_names = _strings(nc.variables["minor_gases_upper"])
+        scaling_lower = _strings(nc.variables["scaling_gas_lower"])
+        scaling_upper = _strings(nc.variables["scaling_gas_upper"])
         kwargs = dict(
             kind=kind,
             gas_names=gas_names,
@@ -1860,12 +1952,12 @@ def load_gas_tables(kind: str) -> GasTables:
             ntemp=len(nc.dimensions["temperature"]),
             npres=len(nc.dimensions["pressure"]),
             neta=len(nc.dimensions["mixing_fraction"]),
-            press_ref=_array(nc["press_ref"][:], np.float64),
-            temp_ref=_array(nc["temp_ref"][:], np.float64),
-            press_ref_trop=float(nc["press_ref_trop"].getValue()),
+            press_ref=_array(nc.variables["press_ref"][:], np.float64),
+            temp_ref=_array(nc.variables["temp_ref"][:], np.float64),
+            press_ref_trop=_scalar(nc.variables["press_ref_trop"]),
             # NetCDF dimension order is (temperature, absorber, atmosphere).
             # The numerical kernels use (atmosphere, absorber, temperature).
-            vmr_ref=_array(np.transpose(nc["vmr_ref"][:], (2, 1, 0)),
+            vmr_ref=_array(np.transpose(nc.variables["vmr_ref"][:], (2, 1, 0)),
                            np.float64),
             band_lims_gpt=band_lims,
             gpoint_bands=np.ascontiguousarray(gpoint_bands),
@@ -1874,29 +1966,29 @@ def load_gas_tables(kind: str) -> GasTables:
             # Kernel layouts are selected from declared NetCDF dimension
             # names, never from an assumed positional file order.
             kmajor=_packed_variable(
-                nc["kmajor"],
+                nc.variables["kmajor"],
                 ("temperature", "mixing_fraction", "pressure_interp", "gpt"),
                 np.float64),
             kminor_lower=_packed_variable(
-                nc["kminor_lower"],
+                nc.variables["kminor_lower"],
                 ("temperature", "mixing_fraction", "contributors_lower"),
                 np.float64),
             kminor_upper=_packed_variable(
-                nc["kminor_upper"],
+                nc.variables["kminor_upper"],
                 ("temperature", "mixing_fraction", "contributors_upper"),
                 np.float64),
             minor_limits_gpt_lower=_array(
-                nc["minor_limits_gpt_lower"][:] - 1, np.int32),
+                nc.variables["minor_limits_gpt_lower"][:] - 1, np.int32),
             minor_limits_gpt_upper=_array(
-                nc["minor_limits_gpt_upper"][:] - 1, np.int32),
+                nc.variables["minor_limits_gpt_upper"][:] - 1, np.int32),
             minor_scales_with_density_lower=_array(
-                nc["minor_scales_with_density_lower"][:], bool),
+                nc.variables["minor_scales_with_density_lower"][:], bool),
             minor_scales_with_density_upper=_array(
-                nc["minor_scales_with_density_upper"][:], bool),
+                nc.variables["minor_scales_with_density_upper"][:], bool),
             scale_by_complement_lower=_array(
-                nc["scale_by_complement_lower"][:], bool),
+                nc.variables["scale_by_complement_lower"][:], bool),
             scale_by_complement_upper=_array(
-                nc["scale_by_complement_upper"][:], bool),
+                nc.variables["scale_by_complement_upper"][:], bool),
             idx_minor_lower=_minor_gas_indices(
                 gas_names, gas_minor, identifier_minor, lower_names),
             idx_minor_upper=_minor_gas_indices(
@@ -1906,36 +1998,36 @@ def load_gas_tables(kind: str) -> GasTables:
             idx_minor_scaling_upper=_scaling_gas_indices(
                 gas_names, scaling_upper),
             kminor_start_lower=_array(
-                nc["kminor_start_lower"][:] - 1, np.int32),
+                nc.variables["kminor_start_lower"][:] - 1, np.int32),
             kminor_start_upper=_array(
-                nc["kminor_start_upper"][:] - 1, np.int32),
+                nc.variables["kminor_start_upper"][:] - 1, np.int32),
         )
         if kind == "lw":
             kwargs.update(
                 planck_fraction=_packed_variable(
-                    nc["plank_fraction"],
+                    nc.variables["plank_fraction"],
                     ("temperature", "mixing_fraction", "pressure_interp",
                      "gpt"), np.float64),
-                temperature_planck=_array(nc["temperature_Planck"][:],
+                temperature_planck=_array(nc.variables["temperature_Planck"][:],
                                           np.float64),
-                totplnk=_array(np.transpose(nc["totplnk"][:]), np.float64),
-                optimal_angle_fit=_array(nc["optimal_angle_fit"][:],
+                totplnk=_array(np.transpose(nc.variables["totplnk"][:]), np.float64),
+                optimal_angle_fit=_array(nc.variables["optimal_angle_fit"][:],
                                          np.float64),
             )
         else:
-            rayleigh = np.stack((nc["rayl_lower"][:],
-                                 nc["rayl_upper"][:]), axis=0)
-            quiet = _array(nc["solar_source_quiet"][:], np.float64)
-            facular = _array(nc["solar_source_facular"][:], np.float64)
-            sunspot = _array(nc["solar_source_sunspot"][:], np.float64)
-            mg = float(nc["mg_default"].getValue())
-            sb = float(nc["sb_default"].getValue())
+            rayleigh = np.stack((nc.variables["rayl_lower"][:],
+                                 nc.variables["rayl_upper"][:]), axis=0)
+            quiet = _array(nc.variables["solar_source_quiet"][:], np.float64)
+            facular = _array(nc.variables["solar_source_facular"][:], np.float64)
+            sunspot = _array(nc.variables["solar_source_sunspot"][:], np.float64)
+            mg = _scalar(nc.variables["mg_default"])
+            sb = _scalar(nc.variables["sb_default"])
             solar = quiet + (mg - 0.1495954) * facular \
                 + (sb - 0.00066696) * sunspot
             kwargs.update(
                 rayleigh=_array(rayleigh, np.float64),
                 solar_source=_array(solar, np.float64),
-                tsi_default=float(nc["tsi_default"].getValue()),
+                tsi_default=_scalar(nc.variables["tsi_default"]),
             )
     return GasTables(**kwargs)
 
@@ -1981,26 +2073,25 @@ def load_cloud_tables(kind: str) -> CloudTables:
     kind = kind.lower()
     if kind not in ("lw", "sw"):
         raise ValueError("kind must be 'lw' or 'sw'")
-    with netcdf4_session(), Dataset(
-            _table(f"rrtmgp-clouds-{kind}-bnd.nc"), "r") as nc:
+    with _open_table(_table(f"rrtmgp-clouds-{kind}-bnd.nc")) as nc:
         return CloudTables(
             kind=kind,
             nband=len(nc.dimensions["nband"]),
             nsize_liq=len(nc.dimensions["nsize_liq"]),
             nsize_ice=len(nc.dimensions["nsize_ice"]),
             nrghice=len(nc.dimensions["nrghice"]),
-            radliq_lwr=float(nc["radliq_lwr"].getValue()),
-            radliq_upr=float(nc["radliq_upr"].getValue()),
-            diamice_lwr=float(nc["diamice_lwr"].getValue()),
-            diamice_upr=float(nc["diamice_upr"].getValue()),
-            extliq=_array(np.transpose(nc["extliq"][:]), np.float64),
-            ssaliq=_array(np.transpose(nc["ssaliq"][:]), np.float64),
-            asyliq=_array(np.transpose(nc["asyliq"][:]), np.float64),
-            extice=_array(np.transpose(nc["extice"][:], (2, 1, 0)),
+            radliq_lwr=_scalar(nc.variables["radliq_lwr"]),
+            radliq_upr=_scalar(nc.variables["radliq_upr"]),
+            diamice_lwr=_scalar(nc.variables["diamice_lwr"]),
+            diamice_upr=_scalar(nc.variables["diamice_upr"]),
+            extliq=_array(np.transpose(nc.variables["extliq"][:]), np.float64),
+            ssaliq=_array(np.transpose(nc.variables["ssaliq"][:]), np.float64),
+            asyliq=_array(np.transpose(nc.variables["asyliq"][:]), np.float64),
+            extice=_array(np.transpose(nc.variables["extice"][:], (2, 1, 0)),
                           np.float64),
-            ssaice=_array(np.transpose(nc["ssaice"][:], (2, 1, 0)),
+            ssaice=_array(np.transpose(nc.variables["ssaice"][:], (2, 1, 0)),
                           np.float64),
-            asyice=_array(np.transpose(nc["asyice"][:], (2, 1, 0)),
+            asyice=_array(np.transpose(nc.variables["asyice"][:], (2, 1, 0)),
                           np.float64),
         )
 
@@ -4872,11 +4963,12 @@ def _rfmip_profiles(tables, sites, experiments, inputs=None):
     sites = np.asarray(sites, dtype=np.intp)
     experiments = np.asarray(experiments, dtype=np.intp)
     source = fetch_rfmip("rfmip-clear-sky-inputs.nc", path=inputs)
-    with netcdf4_session(), Dataset(source, "r") as nc:
+    with _open_table(source, prefetch=False) as nc:
         nc.set_auto_mask(False)
+        nc.prefetch(list(nc.variables))
         nsite, nexp = sites.size, experiments.size
-        play_site = np.asarray(nc["pres_layer"][sites], np.float64)
-        plev_site = np.asarray(nc["pres_level"][sites], np.float64)
+        play_site = np.asarray(nc.variables["pres_layer"][sites], np.float64)
+        plev_site = np.asarray(nc.variables["pres_level"][sites], np.float64)
         play = np.broadcast_to(play_site[None], (nexp, *play_site.shape))
         plev = np.broadcast_to(
             plev_site[None], (nexp, *plev_site.shape)).copy()
@@ -4884,24 +4976,24 @@ def _rfmip_profiles(tables, sites, experiments, inputs=None):
         # Match the upstream example's explicit input sanitization.
         top = 0 if play_site[0, 0] < play_site[0, -1] else -1
         plev[..., top] = tables.press_ref[-1] + np.finfo(np.float64).eps
-        tlay = np.asarray(nc["temp_layer"][experiments][:, sites], np.float64)
-        tlev = np.asarray(nc["temp_level"][experiments][:, sites], np.float64)
+        tlay = np.asarray(nc.variables["temp_layer"][experiments][:, sites], np.float64)
+        tlev = np.asarray(nc.variables["temp_level"][experiments][:, sites], np.float64)
         tsfc = np.asarray(
-            nc["surface_temperature"][experiments][:, sites], np.float64)
+            nc.variables["surface_temperature"][experiments][:, sites], np.float64)
         vmr = np.zeros((*tlay.shape, tables.ngas + 1), np.float64)
         vmr[..., tables.gas_index["h2o"]] = np.asarray(
-            nc["water_vapor"][experiments][:, sites], np.float64)
+            nc.variables["water_vapor"][experiments][:, sites], np.float64)
         vmr[..., tables.gas_index["o3"]] = np.asarray(
-            nc["ozone"][experiments][:, sites], np.float64)
+            nc.variables["ozone"][experiments][:, sites], np.float64)
         for gas, rfmip_name in _RFMIP_GAS_NAMES.items():
-            variable = nc[rfmip_name + "_GM"]
+            variable = nc.variables[rfmip_name + "_GM"]
             scale = float(getattr(variable, "units", "1").replace(" ", ""))
             values = np.asarray(variable[experiments], np.float64) * scale
             vmr[..., tables.gas_index[gas]] = values[:, None, None]
-        emiss = np.asarray(nc["surface_emissivity"][sites], np.float64)
-        albedo = np.asarray(nc["surface_albedo"][sites], np.float64)
-        sza = np.asarray(nc["solar_zenith_angle"][sites], np.float64)
-        tsi = np.asarray(nc["total_solar_irradiance"][sites], np.float64)
+        emiss = np.asarray(nc.variables["surface_emissivity"][sites], np.float64)
+        albedo = np.asarray(nc.variables["surface_albedo"][sites], np.float64)
+        sza = np.asarray(nc.variables["solar_zenith_angle"][sites], np.float64)
+        tsi = np.asarray(nc.variables["total_solar_irradiance"][sites], np.float64)
     def flat(a):
         return np.ascontiguousarray(a.reshape(nexp * nsite, *a.shape[2:]))
     return (flat(play), flat(plev), flat(tlay), flat(tlev),

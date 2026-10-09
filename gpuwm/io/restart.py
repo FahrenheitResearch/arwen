@@ -111,12 +111,17 @@ from gpuwm.checkpoint_identity import (
     SHORTWAVE_ALGORITHM_IDENTITIES,
     SURFACE_LAYER_ALGORITHM_IDENTITIES,
     URBAN_ALGORITHM_IDENTITIES,
+    DYCORE_MIXING_ALGORITHM_IDENTITY,
+    dycore_mixing_identity,
+    UPPER_DAMPING_ALGORITHM_IDENTITY,
+    upper_damping_identity,
     drop_default_diffusion_selectors,
     drop_default_spp_selectors,
     require_identifiable_checkpoint_schemes,
     unidentifiable_checkpoint_schemes,
 )
 from gpuwm.config import (MIX_ISOTROPIC_RESTART_BREAK_NOTICE,
+                          TERRAIN_CLOCK_RESTART_BREAK_NOTICE,
                           radiation_scheme_ids)
 from gpuwm.supervisor import _fsync_directory, fsync_file, unique_temp_path
 from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
@@ -430,7 +435,19 @@ def _resolve_physics_asset(relative: Path) -> Path:
 #: end-of-step EOS diagnostics keeps the restored object bit-equal to the
 #: live one for any pre-step consumer (e.g. output frames).
 #: Overwritten before every read (see the module docstring's argument).
+#: The REBUILT attributes below that ``DomainState`` does not allocate:
+#: strict WRF arithmetic attaches them at their first write
+#: (``gpuwm/core/diagnostics.py`` makes ``p_perturbation`` at the first EOS
+#: diagnosis under GPUWM_WRF_EXACT_DIAGNOSTICS), so they sit outside
+#: ``state_array_shapes`` and the allocation-equals-classification gate in
+#: tests/test_preflight.py names them from here.
+STRICT_LAZY_STATE_ATTRS = frozenset({"p_perturbation"})
 STATE_REBUILT_ATTRS = frozenset({
+    # GPUWM_WRF_EXACT_DIAGNOSTICS' stored perturbation pressure: written by
+    # update_diagnostics with p/al/alt at every step entry, before the
+    # pressure force reads it.  Unclassified, every strict run with the
+    # diagnostic control stopped at its first state digest.
+    "p_perturbation",
     # RK time-t copies: dycore.step writes them from the prognostics first.
     "u0", "v0", "w0", "thp0", "php0", "mup0",
     "qv0", "qc0", "qr0", "qi0", "qs0", "qg0", "nr0", "ni0", "ns0", "ng0",
@@ -475,6 +492,10 @@ STATE_REBUILT_ATTRS = frozenset({
 #: Machinery: handled by dedicated sections (scratch, physics, clock) or
 #: rebuilt by attach/prepare (LBC device mirrors, host caches).
 STATE_INFRA_ATTRS = frozenset({
+    # A validity marker for the stage-local acoustic mass buffer, not a
+    # prognostic. Stage entry rebuilds it; a fresh standalone caller seeds
+    # the buffer when the marker is absent. Checkpoints are step-boundary.
+    "_wrf_acoustic_muts_initialized",
     # Cached launch descriptors are rebuilt from the live state buffers.
     "_rk_copy_launch", "_rk_zero_launch", "_glue_add_launch",
     # Used only by analysis snapshot producers. The published LBC field
@@ -651,6 +672,14 @@ SERIALIZED_SCRATCH_SLOTS = frozenset({
 #: shorter window.
 CARRIED_SCRATCH_SLOTS = frozenset({
     "uh_follow_window", "uh_spawn_window",
+    # Strict mode only: WRF's grid%muts from the last acoustic loop, which
+    # the next step's first pressure diagnosis reads (gpuwm/core/dycore.py
+    # WRF_MUTS_SLOT).  Cross-step, so a tile buffer must carry it; a resumed
+    # run starts from mub + mu instead, start_em's spelling.
+    "wrf_exact_muts",
+    # Strict mode only: the ring of mu_2 WRF's halo holds at the next step's
+    # first RK stage (gpuwm/core/dycore.py WRF_MU_HALO_SLOT).
+    "wrf_exact_mu_halo",
 })
 
 #: The same class, for the window family whose names are GENERATED.
@@ -751,6 +780,11 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     "mp_thompson_aero_nrten",
     "mp_thompson_aero_qiten",
     "mp_thompson_aero_niten",
+    "mp_thompson_aero_qvten",
+    "mp_thompson_aero_tten",
+    "mp_thompson_aero_qsten",
+    "mp_thompson_aero_qgten",
+    "mp_thompson_aero_ngten",
     "mp_thompson_aero_rc_entry",
     "mp_thompson_aero_nc_entry_m3",
     "mp_thompson_aero_nu_c_entry",
@@ -2553,6 +2587,9 @@ def _drop_default_off_run_keys(values: dict) -> None:
         values.pop("bl_mynn_gsd41_unsquared_qtke", None)
     if values.get("bl_mynn_cloud_tendency_form", "wrf_461") == "wrf_461":
         values.pop("bl_mynn_cloud_tendency_form", None)
+    # WRF's cycling flag: omitted at its .false. default.
+    if values.get("cycling", False) is False:
+        values.pop("cycling", None)
     # The MYNN surface-layer generation: wrf_461 is omitted at its default.
     if values.get("mynn_sfclay_variant", "wrf_461") == "wrf_461":
         values.pop("mynn_sfclay_variant", None)
@@ -2596,7 +2633,9 @@ def _drop_default_off_run_keys(values: dict) -> None:
     drop_default_spp_selectors(values)
     # terrain_clock (lane/286-fixed-step-grid): "measured" is the
     # launch-time derivation every header written before the field ran
-    # under, so the echo and digest read as they did; "pinned" stays.
+    # under, so the echo and digest read as they did; "pinned" stays, and
+    # so does "local_face" (the default from 2.8.8), which can run a
+    # longer step than "measured" on the same grid.
     if values.get("terrain_clock", "measured") == "measured":
         values.pop("terrain_clock", None)
     # fractional_seaice (lane/286-veg-albedo-seaice, 654993324): 0 is the
@@ -2953,16 +2992,14 @@ def _thompson_aerosol_setup_identity() -> dict:
     }
 
 
-def physics_setup_identity(state, cfg) -> dict:
-    """Return the complete JSON-able trajectory-defining physics setup.
+def physics_algorithm_identities(cfg) -> dict:
+    """The ``algorithms`` component of :func:`physics_setup_identity`.
 
-    The ordinary config echo pins all configured knobs.  This resolves the
-    remaining runtime inputs that config alone cannot prove: callable
-    implementation/policy, radiation calendar/grid/gases/ozone, packed Noah
-    parameters, selected Morrison constants, resolved driver cadence, and
-    the byte digests of every packaged table active on this trajectory.
+    A function of the configuration alone: the scheme selectors pick a row
+    of each identity table.  Split out so the restart door can ask what
+    THIS build calls the configuration a checkpoint recorded, before any
+    state exists (:func:`_require_current_algorithm_identities`).
     """
-    driver = getattr(state, "physics", None)
     ra_lw_physics, ra_sw_physics = radiation_scheme_ids(cfg)
     if ((ra_lw_physics, ra_sw_physics) == (4, 4)
             and rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY):
@@ -3010,6 +3047,36 @@ def physics_setup_identity(state, cfg) -> dict:
         # well as by the configuration fingerprint.
         algorithms["urban"] = _scheme_algorithm(
             URBAN_ALGORITHM_IDENTITIES, cfg.sf_urban_physics, "urban")
+    mixing = dycore_mixing_identity(cfg)
+    if mixing is not None:
+        # Only when the dycore mixes (km_opt 2-4, an active km_opt = 1, or
+        # sixth order), so a run without mixing keeps its pre-2.8.8 header
+        # and resumes; a pre-2.8.8 checkpoint of a mixing run lacks the key
+        # and is refused here before restore (checkpoint_identity.
+        # DYCORE_MIXING_ALGORITHM_IDENTITY names what changed).
+        algorithms["dycore_mixing"] = mixing
+    damping = upper_damping_identity(cfg)
+    if damping is not None:
+        # Only when the implicit damper runs (damp_opt = 3), so a run
+        # without it keeps its pre-2.8.8 header and resumes; a pre-2.8.8
+        # checkpoint of a damped run lacks the key and is refused here
+        # before restore (checkpoint_identity.
+        # UPPER_DAMPING_ALGORITHM_IDENTITY names what changed).
+        algorithms["upper_damping"] = damping
+    return algorithms
+
+
+def physics_setup_identity(state, cfg) -> dict:
+    """Return the complete JSON-able trajectory-defining physics setup.
+
+    The ordinary config echo pins all configured knobs.  This resolves the
+    remaining runtime inputs that config alone cannot prove: callable
+    implementation/policy, radiation calendar/grid/gases/ozone, packed Noah
+    parameters, selected Morrison constants, resolved driver cadence, and
+    the byte digests of every packaged table active on this trajectory.
+    """
+    driver = getattr(state, "physics", None)
+    algorithms = physics_algorithm_identities(cfg)
     microphysics = {"scheme_id": int(cfg.mp_physics)}
     if int(cfg.mp_physics) == 6:
         from gpuwm.core.wsm6_constants import rimed_ice_constants
@@ -4020,6 +4087,12 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
                        if live_v is absent else repr(live_v))
                 policy_changes.append(f"{key}: {was} -> {now}")
             continue
+        if key == "cycling":
+            # A start-only control: it decides what the first MYNN call
+            # (itimestep 1) keeps from the input.  A resume continues after
+            # that step and never repeats it, so either value resumes the
+            # same trajectory.
+            continue
         if key in CONFIG_DIAGNOSTIC_FIELDS:
             continue
         stored = stored_config.get(key, absent)
@@ -4143,7 +4216,9 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             live = 0 if live is absent else live
         if key == "terrain_clock":
             # "measured" is omitted by configuration_echo: the launch-time
-            # derivation every older checkpoint ran under.  "pinned" binds.
+            # derivation every older checkpoint ran under.  "pinned" and
+            # "local_face" (the default from 2.8.8) bind, so a checkpoint
+            # written under "measured" continues only under "measured".
             stored = "measured" if stored is absent else stored
             live = "measured" if live is absent else live
         if key in ("spp_conv", "spp_pbl"):
@@ -4282,7 +4357,172 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
         if (stored_config.get("mix_isotropic", 0) == 0
                 and live_config.get("mix_isotropic") == 1):
             message += "\n" + MIX_ISOTROPIC_RESTART_BREAK_NOTICE
+        # The same accuracy for the 2.8.8 terrain-clock default: an absent
+        # key is the "measured" clock every earlier checkpoint ran.
+        if (stored_config.get("terrain_clock", "measured") == "measured"
+                and live_config.get("terrain_clock") == "local_face"):
+            message += "\n" + TERRAIN_CLOCK_RESTART_BREAK_NOTICE
         raise RestartMismatchError(message)
+
+
+#: The configuration selector each ``algorithms`` component is chosen by,
+#: so a refusal names the setting the user wrote beside the identity that
+#: moved.  ``radiation`` is the summary of the two radiation rows and is
+#: left out of a list that already names them.
+_ALGORITHM_SELECTORS = {
+    "microphysics": ("mp_physics",),
+    "surface_layer": ("sf_sfclay_physics",),
+    "land_surface": ("sf_surface_physics",),
+    "pbl": ("bl_pbl_physics",),
+    "radiation_lw": ("ra_lw_physics",),
+    "radiation_sw": ("ra_sw_physics",),
+    "cumulus": ("cu_physics",),
+    "urban": ("sf_urban_physics",),
+    "dycore_mixing": ("km_opt", "diff_6th_opt"),
+    "upper_damping": ("damp_opt",),
+}
+
+#: Run-configuration keys whose ABSENCE from a checkpoint header means a
+#: value other than this build's RunConfig default.  configuration_echo
+#: drops a key at the value every earlier header ran; for these the
+#: default has since moved, so rebuilding a RunConfig from the header must
+#: put the dropped value back or the rebuilt run is not the one that wrote
+#: the checkpoint.  _require_config_match reads the same absences the same
+#: way.
+#:
+#: terrain_clock: 2.8.8 made "local_face" the default and the echo drops
+#: "measured", so a header without the key ran "measured".  Without this a
+#: 2.8.7 checkpoint was refused on configuration_sha256 even under a
+#: configuration that set terrain_clock = "measured" as the refusal note
+#: says to (stored 588c1266..., rebuilt under the default 2be20cee...).
+ECHO_ABSENT_RUN_VALUES = {"terrain_clock": "measured"}
+
+
+def _run_config_from_header(raw_config):
+    """The RunConfig a checkpoint header's ``config`` echo describes.
+
+    ``None`` when this build cannot rebuild one from the header (a value
+    it refuses, a malformed field): callers then fall back to the stricter
+    raw comparison.
+    """
+    if not isinstance(raw_config, Mapping):
+        return None
+    try:
+        from gpuwm.config import RunConfig
+
+        names = {f.name for f in dataclasses.fields(RunConfig)}
+        values = {k: v for k, v in raw_config.items() if k in names}
+        for key, value in ECHO_ABSENT_RUN_VALUES.items():
+            values.setdefault(key, value)
+        return RunConfig(**values)
+    except (TypeError, ValueError):
+        return None
+
+
+def _selector_values(cfg) -> dict:
+    """``{selector: value}`` of a RunConfig, radiation resolved.
+
+    The radiation pair is read through :func:`radiation_scheme_ids`, so a
+    run configured by ``ra_physics`` names the scheme it ran rather than
+    the -1 that defers to it.
+    """
+    if cfg is None:
+        return {}
+    values = {}
+    for selectors in _ALGORITHM_SELECTORS.values():
+        for name in selectors:
+            value = getattr(cfg, name, None)
+            if value is not None:
+                values[name] = value
+    try:
+        values["ra_lw_physics"], values["ra_sw_physics"] = \
+            radiation_scheme_ids(cfg)
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return values
+
+
+def _algorithm_moves(stored, current, cfg) -> list[str]:
+    """One phrase per moved algorithm identity: selector, old, new.
+
+    ``cfg`` is the RunConfig the selectors are read from (the checkpoint's
+    own, rebuilt from its header), or ``None`` to name components only.
+    """
+    keys = sorted(set(stored) | set(current))
+    if "radiation_lw" in keys or "radiation_sw" in keys:
+        keys = [key for key in keys if key != "radiation"]
+    values = _selector_values(cfg)
+    moves = []
+    for key in keys:
+        old, new = stored.get(key), current.get(key)
+        if old == new:
+            continue
+        named = ", ".join(
+            f"{name}={values[name]!r}"
+            for name in _ALGORITHM_SELECTORS.get(key, ()) if name in values)
+        label = (f"{named} ({key.replace('_', ' ')})" if named
+                 else key.replace("_", " "))
+        moves.append(
+            f"{label}: {old if old is not None else 'none recorded'} -> "
+            f"{new if new is not None else 'none'}")
+    return moves
+
+
+def _require_current_algorithm_identities(header, cfg, path) -> None:
+    """Refuse FIRST a checkpoint whose schemes this build computes differently.
+
+    The breakage: a checkpoint integrated by a scheme implementation this
+    build no longer runs (2.8.8 moved YSU, the surface layers, RUC, the
+    microphysics finish clamp, the dycore mixing and the upper damping
+    layer under unchanged selectors) resumes under no configuration at all.  Asked after the
+    configuration walk, the user was first told to change a configuration
+    field (the terrain-clock note) and, having changed it, was refused
+    again by a sentence naming only "algorithms, configuration_sha256".
+    Asked here, before that walk, the refusal names each scheme, its
+    selector and both identities.
+
+    The identities compared are the checkpoint's recorded ones and the ones
+    THIS build assigns to the checkpoint's OWN configuration, so a change
+    the user made to the live configuration is left to the configuration
+    walk, which names the field.  It refuses only when the recorded
+    identities also differ from the live run's, which the physics setup
+    gate refuses anyway, so it never refuses a resume that gate would
+    allow.  A header this build cannot rebuild, or whose schemes it cannot
+    name, is left to the later gates.
+    """
+    setup = header.get("physics_setup")
+    stored = setup.get("algorithms") if isinstance(setup, Mapping) else None
+    if not isinstance(stored, Mapping):
+        return
+    # Only an intact identity is read here: one that no longer matches its
+    # own stored fingerprint, or is of another schema, is the physics
+    # gate's malformed-file refusal, which must not be reworded as a
+    # change of build.
+    try:
+        intact = (_json_sha256(setup) == header.get("physics_setup_fingerprint")
+                  and setup.get("schema_version")
+                  == PHYSICS_SETUP_SCHEMA_VERSION)
+    except (TypeError, ValueError):
+        intact = False
+    if not intact:
+        return
+    rebuilt = _run_config_from_header(header.get("config"))
+    if rebuilt is None:
+        return
+    try:
+        current = physics_algorithm_identities(rebuilt)
+        live = physics_algorithm_identities(cfg)
+    except (RestartManifestError, TypeError, ValueError):
+        return
+    if dict(stored) == current or dict(stored) == live:
+        return
+    moves = _algorithm_moves(stored, current, rebuilt)
+    raise RestartMismatchError(
+        f"restart file {path} was integrated by scheme implementations this "
+        f"build does not run: {'; '.join(moves)}.  Continuing it here would "
+        "splice two implementations into one forecast, so no configuration "
+        "change resumes it.  Start the run again from its initial time "
+        "under this build, or resume it with the build that wrote it")
 
 
 def _require_physics_setup_match(header: dict, state, cfg, path) -> None:
@@ -4334,32 +4574,30 @@ def _require_physics_setup_match(header: dict, state, cfg, path) -> None:
     # stored dict: that one asks whether the file is intact, which is a
     # different question and must not be normalised away.
     stored_cmp = stored
-    raw_config = header.get("config")
-    if isinstance(raw_config, Mapping):
-        try:
-            from gpuwm.config import RunConfig
-
-            names = {f.name for f in dataclasses.fields(RunConfig)}
-            rebuilt = RunConfig(**{k: v for k, v in raw_config.items()
-                                   if k in names})
-        except (TypeError, ValueError):
-            # A header this build cannot rebuild a RunConfig from falls
-            # back to the RAW stored hash, which is the STRICTER of the
-            # two: it can only refuse a resume this normalisation would
-            # have allowed, never allow one it would have refused.
-            rebuilt = None
-        if rebuilt is not None:
-            stored_cmp = dict(stored)
-            stored_cmp["configuration_sha256"] = _configuration_fingerprint(
-                rebuilt)
+    # A header this build cannot rebuild a RunConfig from falls back to the
+    # RAW stored hash, which is the STRICTER of the two: it can only refuse
+    # a resume this normalisation would have allowed, never allow one it
+    # would have refused.  An absent key is read as the value the header's
+    # run used (ECHO_ABSENT_RUN_VALUES), not as this build's default.
+    rebuilt = _run_config_from_header(header.get("config"))
+    if rebuilt is not None:
+        stored_cmp = dict(stored)
+        stored_cmp["configuration_sha256"] = _configuration_fingerprint(
+            rebuilt)
 
     if stored_cmp != live:
         moved = [key for key in sorted(set(stored_cmp) | set(live))
                  if stored_cmp.get(key) != live.get(key)]
+        detail = ""
+        if ("algorithms" in moved
+                and isinstance(stored_cmp.get("algorithms"), Mapping)
+                and isinstance(live.get("algorithms"), Mapping)):
+            detail = " (" + "; ".join(_algorithm_moves(
+                stored_cmp["algorithms"], live["algorithms"], cfg)) + ")"
         raise RestartMismatchError(
             f"restart file {path} was written under a different physics "
-            f"setup; these components differ: {', '.join(moved)}.  Rebuild "
-            "the identical physics preparation before restoring")
+            f"setup; these components differ: {', '.join(moved)}{detail}.  "
+            "Rebuild the identical physics preparation before restoring")
 
 
 def _require_rrtmg_variant_match(header: dict, cfg, path) -> None:
@@ -4764,6 +5002,36 @@ def _mix_isotropic_autoswitch_flip(stored, live) -> bool:
     return False
 
 
+def _terrain_clock_default_flip(stored, live) -> bool:
+    """Did any domain go "measured"-in-the-checkpoint to "local_face"-live?
+
+    Read off the ``experiment_identity`` components exactly as
+    :func:`_mix_isotropic_autoswitch_flip` reads them; an absent stored key
+    is "measured", the clock every checkpoint before 2.8.8 ran by default.
+    """
+
+    try:
+        stored_domains = {
+            domain.get("grid_id"): domain.get("run", {})
+            for domain in stored.get("experiment_identity", {})
+            .get("domains", ())
+            if isinstance(domain, Mapping)
+            and isinstance(domain.get("run"), Mapping)}
+        for domain in live.get("experiment_identity", {}).get("domains", ()):
+            if not (isinstance(domain, Mapping)
+                    and isinstance(domain.get("run"), Mapping)):
+                continue
+            counterpart = stored_domains.get(domain.get("grid_id"))
+            if counterpart is None:
+                continue
+            if (counterpart.get("terrain_clock", "measured") == "measured"
+                    and domain["run"].get("terrain_clock") == "local_face"):
+                return True
+    except (AttributeError, TypeError):
+        return False
+    return False
+
+
 def _identity_matches_under_current_rules(header, model) -> bool:
     """Do stored and live identity agree once BOTH are normalised?
 
@@ -4888,6 +5156,9 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     if ("experiment_identity" in differing
             and _mix_isotropic_autoswitch_flip(stored, live)):
         reason += "\n" + MIX_ISOTROPIC_RESTART_BREAK_NOTICE
+    if ("experiment_identity" in differing
+            and _terrain_clock_default_flip(stored, live)):
+        reason += "\n" + TERRAIN_CLOCK_RESTART_BREAK_NOTICE
     return reason
 
 
@@ -6808,6 +7079,11 @@ def _validate_restart(path, state, cfg, *,
     # resume is answered by the gate that says what breaks rather
     # than by a field name in a list of differences (audit R-048).
     _require_rrtmg_variant_match(header, cfg, path)
+    # BEFORE the configuration walk too: a checkpoint of a scheme this
+    # build computes differently resumes under no configuration, so the
+    # walk's notes (the terrain clock's among them) must not be what the
+    # user is sent to change first.
+    _require_current_algorithm_identities(header, cfg, path)
     _require_config_match(header["config"], cfg, path)
     live_lbc_clock = root_external_lbc_clock_identity(state, cfg)
     if live_lbc_clock is not None:
@@ -7378,6 +7654,8 @@ __all__ = [
     "MICROPHYSICS_COMPONENTS", "REBUILT_SCRATCH_PREFIXES",
     "MICROPHYSICS_ALGORITHM_IDENTITIES", "PBL_ALGORITHM_IDENTITIES",
     "URBAN_ALGORITHM_IDENTITIES",
+    "DYCORE_MIXING_ALGORITHM_IDENTITY", "dycore_mixing_identity",
+    "UPPER_DAMPING_ALGORITHM_IDENTITY", "upper_damping_identity",
     "NSSL2_LEGACY_RESTART_ALIASES", "NSSL2_RESTART_AUXILIARY_STATE",
     "NSSL2_RESTART_CONTRACT_VERSION", "NSSL2_RESTART_PRECIPITATION_SLOTS",
     "NSSL2_RESTART_PROGNOSTICS",
@@ -7396,7 +7674,7 @@ __all__ = [
     "carried_scratch_manifest",
     "RESTART_ONLY_DRIVER_SLOTS",
     "SERIALIZED_SCRATCH_SLOTS", "STATE_REBUILT_ATTRS",
-    "STATE_DERIVED_SETUP_ARRAYS",
+    "STRICT_LAZY_STATE_ATTRS", "STATE_DERIVED_SETUP_ARRAYS",
     "STATE_SERIALIZED_ATTRS", "STATE_SETUP_ARRAYS", "STATE_SETUP_SCALARS",
     "THOMPSON_AEROSOL_RESTART_STATE",
     "THOMPSON_AEROSOL_RESTART_SURFACE_STATE",

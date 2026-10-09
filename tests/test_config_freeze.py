@@ -73,6 +73,9 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     names = names[:-len(FIRE_RUN_FIELDS)]
     assert names[-len(CHEM_RUN_FIELDS):] == list(CHEM_RUN_FIELDS)
     names = names[:-len(CHEM_RUN_FIELDS)]
+    # WRF's &time_control cycling (the gsd_41 MYNN cycled start).
+    assert names.pop() == "cycling"
+    assert RunConfig.__dataclass_fields__["cycling"].default is False
     # Output-only surface energy carriers, appended after the smoke
     # manifest: off writes the history it always wrote.
     assert names.pop() == "surface_energy_diag"
@@ -147,14 +150,15 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     names = names[:-5]
     # The terrain-clock mode (lane/286-fixed-step-grid), appended last.
     # "measured" is the derivation every configuration before the field
-    # ran under: the terrain clock and the substep rule rewrite the clock
-    # exactly as they did, so no trajectory and no fingerprint moves
-    # (restart_identity_payload and the checkpoint echo drop it at that
-    # value).  "pinned" is the one other value and is never selected by
-    # a frozen configuration.
+    # ran under (restart_identity_payload and the checkpoint echo drop it
+    # at that value).  DECLARED DEFAULT CORRECTION, 2.8.8: the default is
+    # "local_face", which reads every terrain face and is never worse
+    # than "measured" (gpuwm/terrain_clock_local.py; the domain-wide
+    # reading halved NCAR's published CONUS steps, 72 s to 36 s and 15 s
+    # to 7.5 s).  It binds in the echo and the restart identity.
     assert names[-1] == "terrain_clock"
     assert RunConfig.__dataclass_fields__["terrain_clock"].default \
-        == "measured"
+        == "local_face"
     names = names[:-1]
     # The MYNN surface-layer generation, appended at WRF v4.6.1's form,
     # which every earlier build ran: no configuration changes answers.
@@ -697,7 +701,8 @@ def test_every_existing_legacy_toml_resolves_identically():
         for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
             assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
         assert actual.pop("surface_energy_diag") is False
-        assert actual.pop("terrain_clock") == "measured"
+        # Declared default correction, 2.8.8 (test above).
+        assert actual.pop("terrain_clock") == "local_face"
         assert actual.pop("use_rap_aero_icbc") is False
         assert actual.pop("diff_opt") == 2
         assert actual.pop("scalar_pblmix") == 0
@@ -715,6 +720,7 @@ def test_every_existing_legacy_toml_resolves_identically():
         assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
         assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
         assert actual.pop("rrtmg_smoke_manifest") == ""
+        assert actual.pop("cycling") is False
         assert actual.pop("alb_sol") == 0
         # The RUC SOILPROP lineage changed its default: a non-RUC case
         # never reads it; a RUC case changes answers (CHANGELOG).
@@ -757,7 +763,8 @@ def test_frozen_case_constructed_configs_resolve_identically():
         for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
             assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
         assert actual.pop("surface_energy_diag") is False
-        assert actual.pop("terrain_clock") == "measured"
+        # Declared default correction, 2.8.8 (test above).
+        assert actual.pop("terrain_clock") == "local_face"
         assert actual.pop("use_rap_aero_icbc") is False
         assert actual.pop("diff_opt") == 2
         assert actual.pop("scalar_pblmix") == 0
@@ -775,6 +782,7 @@ def test_frozen_case_constructed_configs_resolve_identically():
         assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
         assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
         assert actual.pop("rrtmg_smoke_manifest") == ""
+        assert actual.pop("cycling") is False
         assert actual.pop("alb_sol") == 0
         # The RUC SOILPROP lineage changed its default: a non-RUC case
         # never reads it; a RUC case changes answers (CHANGELOG).

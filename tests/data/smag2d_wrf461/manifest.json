@@ -1,0 +1,723 @@
+{
+  "schema": "smag2d-wrf461-fixtures-v1",
+  "cases": [
+    {
+      "case": "rockies_snow_wave-specified",
+      "file": "case-rockies_snow_wave-specified.npz",
+      "regime": "high terrain, snow, mountain-wave w, stable night",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "a3f849a6913928879886c6874ba6abd6f6fc6dfec53aa011b8d7f6ab373133f9"
+    },
+    {
+      "case": "rockies_snow_wave-periodic",
+      "file": "case-rockies_snow_wave-periodic.npz",
+      "regime": "high terrain, snow, mountain-wave w, stable night; periodic lateral boundaries",
+      "boundary": "periodic",
+      "columns": 168,
+      "sha256": "0404f33ea265f89dd53280c4d329858ca3117e3bad01258ee088b3ed341753ce"
+    },
+    {
+      "case": "high_terrain_dry-specified",
+      "file": "case-high_terrain_dry-specified.npz",
+      "regime": "high terrain, dry, night",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "a9f41d0e3fd1d44505a9002e71a0dd40adfca34502d3bb09519f365d5bc2c4df"
+    },
+    {
+      "case": "plains_stable_night-specified",
+      "file": "case-plains_stable_night-specified.npz",
+      "regime": "flat land, nocturnal inversion",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "cf7c97af812d6d4863a665199956979315088235361cb1e6c6ce8bca017b139c"
+    },
+    {
+      "case": "plains_stable_night-open",
+      "file": "case-plains_stable_night-open.npz",
+      "regime": "flat land, nocturnal inversion; open lateral boundaries",
+      "boundary": "open",
+      "columns": 168,
+      "sha256": "cead24310a6fd6f590702c7966a31735307e8daa91094068fc1ea9226c512cb7"
+    },
+    {
+      "case": "pacific_marine_heating-specified",
+      "file": "case-pacific_marine_heating-specified.npz",
+      "regime": "ocean, cold air over warm water (surface heating)",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "fd4342e82c0d0478ea03f3c70dae9c1ae4e20344490cb6fced456390a89f33ee"
+    },
+    {
+      "case": "pacific_snow_storm-specified",
+      "file": "case-pacific_snow_storm-specified.npz",
+      "regime": "ocean, snow and cloud, ascent",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "ba27cb8d0aaf6b97c85d5720cda8c8faeb7291c2b388acdc498e851027eb365d"
+    },
+    {
+      "case": "great_lakes_snow-specified",
+      "file": "case-great_lakes_snow-specified.npz",
+      "regime": "lake/land snow, night",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "f17b7e6596c12d4ee055211bb064367da542921ed470f0f4235370e398497c2f"
+    },
+    {
+      "case": "gulf_cloud_ocean-specified",
+      "file": "case-gulf_cloud_ocean-specified.npz",
+      "regime": "warm ocean, liquid cloud",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "6cbcd07c9bcbc9f6433161314fc97ef49ebcf1d5eafb65fdac0e22779e7e7f51"
+    },
+    {
+      "case": "gulf_cloud_ocean-periodic",
+      "file": "case-gulf_cloud_ocean-periodic.npz",
+      "regime": "warm ocean, liquid cloud; periodic lateral boundaries",
+      "boundary": "periodic",
+      "columns": 168,
+      "sha256": "086cf2ee26d4c4162d5e49363063d8ba7725f2d4b8ab66ef8a66def6e5a4a820"
+    },
+    {
+      "case": "atlantic_open_ocean-specified",
+      "file": "case-atlantic_open_ocean-specified.npz",
+      "regime": "open ocean, clear",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "f3b1ac62f98f6f4520f6b2543bdf4a7933250ef32a3141d8d9e891fe21588210"
+    },
+    {
+      "case": "steepest_terrain-specified",
+      "file": "case-steepest_terrain-specified.npz",
+      "regime": "steepest real terrain slope in the domain",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "8aa43ed5514b2359f8669ffa8f108c287d2355a4c0ae5985649feccf75333f17"
+    },
+    {
+      "case": "snowiest_column-specified",
+      "file": "case-snowiest_column-specified.npz",
+      "regime": "largest column snow mixing ratio",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "8af106fd34e7f4414db3a3c5f593b603ed72b11004cf033f86189ddc6f1758f6"
+    },
+    {
+      "case": "strongest_w-specified",
+      "file": "case-strongest_w-specified.npz",
+      "regime": "largest |w| in the domain",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "aa492e0605b1c3556e6e37e5210a2827905109101e33a10a068e817a866e68be"
+    },
+    {
+      "case": "iciest_column-specified",
+      "file": "case-iciest_column-specified.npz",
+      "regime": "largest column cloud-ice mixing ratio",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "f79482c4689e72a35c7aaa900781145508425e76c746c0c12aa54294fd42fa5c"
+    },
+    {
+      "case": "zero_flow-specified",
+      "file": "case-zero_flow-specified.npz",
+      "regime": "edge case: u=v=w=0 and every water species 0 (positive zeros)",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "2c91f717fdf039e0432490eca4c635695bb9c217097109f3d4a9ee2d72ae9e0a"
+    },
+    {
+      "case": "signed_zero_flow-specified",
+      "file": "case-signed_zero_flow-specified.npz",
+      "regime": "edge case: winds multiplied by 0, so westerly/southerly negatives become -0",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "1131b1667868ae8c66830bac35e0b77a3867e2c54aa6fc169269aee597c50f24"
+    },
+    {
+      "case": "near_zero_flow-specified",
+      "file": "case-near_zero_flow-specified.npz",
+      "regime": "edge case: winds times 1e-20: strain products underflow into subnormals",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "842062a8d02d56340fe73ae434fa64e6b6fe7b0dcf08acb8eadeefad34d4e9fd"
+    },
+    {
+      "case": "map_extremes-specified",
+      "file": "case-map_extremes-specified.npz",
+      "regime": "edge case: map factors swept 0.25..4.0",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "82b0c1678bade2a30c27fd7df134bff4aa06fd5e64c5df17cad37c20151829f4"
+    },
+    {
+      "case": "map_extremes-periodic",
+      "file": "case-map_extremes-periodic.npz",
+      "regime": "edge case: map factors swept 0.25..4.0; periodic",
+      "boundary": "periodic",
+      "columns": 168,
+      "sha256": "e93a5663e907fd8f92ce64175686c84231a860c821aa983aaaa582652045464c"
+    },
+    {
+      "case": "steep_synthetic-specified",
+      "file": "case-steep_synthetic-specified.npz",
+      "regime": "edge case: 1500 m sinusoidal terrain added to PHB, tapered to the top: slope limiter alpha >> 1",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "a78fad54365b7b5fef9d7d341c370fbe1cde91c2e704c19812d4799bd307a45b"
+    },
+    {
+      "case": "strong_shear_cap-specified",
+      "file": "case-strong_shear_cap-specified.npz",
+      "regime": "edge case: winds times 25: strain above def_limit and K at the 10*mlen cap",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "99171270296049ad2b0574beafb3861147ff5914b89e911bdef3318a6d107f48"
+    },
+    {
+      "case": "updraft_core-specified",
+      "file": "case-updraft_core-specified.npz",
+      "regime": "edge case: synthetic 28 m/s updraft core with low-level convergence, upper divergence and heavy hydrometeors",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "e41a07e4248b411825b1834e274266030b40d1728106588f05c6e1842b1212c1"
+    },
+    {
+      "case": "updraft_core-periodic",
+      "file": "case-updraft_core-periodic.npz",
+      "regime": "edge case: synthetic 28 m/s updraft core with low-level convergence, upper divergence and heavy hydrometeors; periodic",
+      "boundary": "periodic",
+      "columns": 168,
+      "sha256": "8b83417b7e10d649c8aee6389ec93d37c199f24108bc48b78e25e5056cf34217"
+    },
+    {
+      "case": "updraft_core-open",
+      "file": "case-updraft_core-open.npz",
+      "regime": "edge case: synthetic 28 m/s updraft core with low-level convergence, upper divergence and heavy hydrometeors; open",
+      "boundary": "open",
+      "columns": 168,
+      "sha256": "6ef3b983289707c4a769ed356702b05b9ae785ad58e370f1896ac05f450f3289"
+    },
+    {
+      "case": "southern_mirror-specified",
+      "file": "case-southern_mirror-specified.npz",
+      "regime": "edge case: window mirrored north-south with v negated: a southern-hemisphere image",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "7102d9feb8c5bad587f3a444cd837ecf304196aa6774c412fd2215da094e5d05"
+    },
+    {
+      "case": "convective_plains_3km-specified",
+      "file": "case-convective_plains_3km-specified.npz",
+      "regime": "3 km warm-season convective environment (2024-05-21, Iowa), deep moist unstable, strong shear",
+      "boundary": "specified",
+      "columns": 168,
+      "sha256": "83c68cc3489ba387a548a4d1821137718d5c6492baae925bee83dddb021481a0"
+    }
+  ],
+  "columns": 4536,
+  "compared_fields": [
+    "d11",
+    "d22",
+    "d12",
+    "d13",
+    "d23",
+    "kmh",
+    "kmv",
+    "khh",
+    "tu",
+    "tv",
+    "tw",
+    "tth",
+    "tqv",
+    "tqc",
+    "tqr",
+    "tqi",
+    "tqs",
+    "tqg",
+    "tni",
+    "tnr"
+  ],
+  "wrf_build": {
+    "schema": "smag2d-wrf461-oracle-build-v1",
+    "wrf_release": "4.6.1",
+    "control": null,
+    "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+    "source_sha256": {
+      "dyn_em/module_diffusion_em.F": "a7d4570c97e51c635e86a0dbd628c6846457ac5b93d5a7af798b118c7d8d2d54",
+      "dyn_em/module_big_step_utilities_em.F": "8f0649b458fceabd5c31c87ec9f266840fb164e2629322904a3f6ee04c72331a",
+      "share/module_model_constants.F": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062",
+      "share/module_bc.F": "61b9235004b2a7799faabaa928276af8a7ef2e4672619c8ad120c857461301ad"
+    },
+    "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "commands": [
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "oracle_config.F90",
+        "-o",
+        "oracle_config.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "module_model_constants.F",
+        "-o",
+        "constants.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "wrf_routines.F90",
+        "-o",
+        "routines.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "pipeline.F90",
+        "-o",
+        "pipeline.o"
+      ],
+      [
+        "gfortran",
+        "-shared",
+        "oracle_config.o",
+        "constants.o",
+        "routines.o",
+        "pipeline.o",
+        "-o",
+        "oracle.so"
+      ]
+    ],
+    "routines": {
+      "compute_diff_metrics": {
+        "first_line": 6881,
+        "last_line": 7131,
+        "sha256": "b42653382bfc6b71c1686c1330611a49255ba32b153227751ac3832842432d76"
+      },
+      "cal_deform_and_div": {
+        "first_line": 16,
+        "last_line": 1192,
+        "sha256": "84e91fbc8849399c8b0c299b3696857b7c59eb546c93174161d905c22ef04058"
+      },
+      "calculate_km_kh": {
+        "first_line": 1194,
+        "last_line": 1351,
+        "sha256": "d794c65e3e0e8965f6566b314ab392f5ff4847bf1caaf7dcc8164c7a8748fc08"
+      },
+      "calculate_N2": {
+        "first_line": 1484,
+        "last_line": 1715,
+        "sha256": "33e7c32f77268ccd76b5700f030769f17079a8439a474f251bd6a734b499d532"
+      },
+      "cal_dampkm": {
+        "first_line": 1352,
+        "last_line": 1482,
+        "sha256": "f728ae3db102f94ac41cb8b50bee89979dd2332bee4a7ec59c63bd05690869cb"
+      },
+      "isotropic_km": {
+        "first_line": 1717,
+        "last_line": 1774,
+        "sha256": "b31c73dbf21a7abbc38a880ae37d1f6cde12a938da1512f420043a8152d8b7a3"
+      },
+      "smag_km": {
+        "first_line": 1776,
+        "last_line": 1931,
+        "sha256": "586c2e65b34acd25c2acf36d01c43fe43a4789eef177f77650aab252e61a6f8a"
+      },
+      "smag2d_km": {
+        "first_line": 1933,
+        "last_line": 2046,
+        "sha256": "0ebb6c933f7712cf42ddc46e582327037c667138554ab8e3a51ff684eb5c07bb"
+      },
+      "tke_km": {
+        "first_line": 2048,
+        "last_line": 2338,
+        "sha256": "e001cf3f3082a737d46fbdd7866d0efb4027352943734657cdb63ad09f019572"
+      },
+      "calc_l_scale": {
+        "first_line": 2340,
+        "last_line": 2408,
+        "sha256": "5ea3e7af00fbdee1a2ef7a3c76ed8967d2a0574b718eb97b21ece8e7dc8467b1"
+      },
+      "phy_bc": {
+        "first_line": 5900,
+        "last_line": 6096,
+        "sha256": "8a0d4642facfe7881259359c5c35b38cb8cf108e047b5877f232175a1d0002ec"
+      },
+      "horizontal_diffusion_2": {
+        "first_line": 2863,
+        "last_line": 3115,
+        "sha256": "628870cfcb981529e8395d0bea62051cee13db60651c0ef3de3bf44ee29a019c"
+      },
+      "horizontal_diffusion_u_2": {
+        "first_line": 3117,
+        "last_line": 3320,
+        "sha256": "0922e7e7607ca88fead905104b740b1616bbb1d9d2e6f18dc4ef9097231a52e0"
+      },
+      "horizontal_diffusion_v_2": {
+        "first_line": 3322,
+        "last_line": 3516,
+        "sha256": "d0bf16c415dea49eb422a241c96f7fd45a5d3b2264e26b104d47672246ecd056"
+      },
+      "horizontal_diffusion_w_2": {
+        "first_line": 3518,
+        "last_line": 3708,
+        "sha256": "55773ba59c02bbba7885ce03cdb2180e4be9e90689917653f0bcb4efa9fbff6b"
+      },
+      "horizontal_diffusion_s": {
+        "first_line": 3710,
+        "last_line": 4001,
+        "sha256": "d5fe1c4ec2f2620960f645d7d9dc2d68971a4f6cb060249bf3c015a6fbd17b54"
+      },
+      "cal_titau_11_22_33": {
+        "first_line": 5330,
+        "last_line": 5453,
+        "sha256": "7b52096dafc934b0b5cfa299a8b9c7ed15df044db2423e3ca4a0c7e91292d82b"
+      },
+      "cal_titau_12_21": {
+        "first_line": 5455,
+        "last_line": 5596,
+        "sha256": "db0fe2cdc66cd698105a23490b9c28e59e3a4171df21397ea281e2c1fb9c8bb5"
+      },
+      "cal_titau_13_31": {
+        "first_line": 5597,
+        "last_line": 5746,
+        "sha256": "41f78378983b9dd44f07d9bfe651de94798c7b695c0ede67fc53386abd0dc2e1"
+      },
+      "cal_titau_23_32": {
+        "first_line": 5748,
+        "last_line": 5898,
+        "sha256": "64cb78269fe6614af828c99df1db2e3b367233bbf6c9387e581c2e4711045219"
+      },
+      "pthl": {
+        "first_line": 5274,
+        "last_line": 5301,
+        "sha256": "9a4e5e98397e45dbd954aa3d698ce134e2426db2ae8c518b617282c15b3ce02d"
+      },
+      "pu": {
+        "first_line": 5302,
+        "last_line": 5328,
+        "sha256": "59ba3b05fc2b7a81f4b92619bcf3a000c737835dc03763e3203fcc7325eaba27"
+      }
+    },
+    "extra_routines": {
+      "dyn_em/module_big_step_utilities_em.F": {
+        "phy_prep": {
+          "first_line": 4729,
+          "last_line": 4976,
+          "sha256": "fa0ea64366b4e6c003c8e0bbeb0d92851f34e91e0f6bd7002065d51c2a459346"
+        }
+      },
+      "share/module_bc.F": {
+        "set_physical_bc2d": {
+          "first_line": 202,
+          "last_line": 649,
+          "sha256": "098e362bb299c4657c2dd5d91e1fb90fb0117769057379ae29adacd53bbdfe2c"
+        },
+        "set_physical_bc3d": {
+          "first_line": 650,
+          "last_line": 1114,
+          "sha256": "89afe66021a063bc41c20c8fbd0dd1d7d5b564c572b4a13bc18b0dd55704800e"
+        }
+      }
+    },
+    "pipeline_sha256": "e945f5517ba9c1b8e2558bae3ee4a3f61be4b0f6474eaa0f22ff98f28df4ae03",
+    "config_sha256": "fe7f635fcc1bd529f45a9fa35cb760ebc656bccd5643969517ec63d61beddee0",
+    "generated_sha256": "a514bd3e0e4af7a3be49101daac004bcf09947ba1c81b1d081888cb5a7147a2c"
+  },
+  "wrfctl_build": {
+    "schema": "smag2d-wrf461-oracle-build-v1",
+    "wrf_release": "4.6.1",
+    "control": "periodic-top-slope",
+    "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
+    "source_sha256": {
+      "dyn_em/module_diffusion_em.F": "a7d4570c97e51c635e86a0dbd628c6846457ac5b93d5a7af798b118c7d8d2d54",
+      "dyn_em/module_big_step_utilities_em.F": "8f0649b458fceabd5c31c87ec9f266840fb164e2629322904a3f6ee04c72331a",
+      "share/module_model_constants.F": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062",
+      "share/module_bc.F": "61b9235004b2a7799faabaa928276af8a7ef2e4672619c8ad120c857461301ad"
+    },
+    "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "commands": [
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "oracle_config.F90",
+        "-o",
+        "oracle_config.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "module_model_constants.F",
+        "-o",
+        "constants.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "wrf_routines.F90",
+        "-o",
+        "routines.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "pipeline.F90",
+        "-o",
+        "pipeline.o"
+      ],
+      [
+        "gfortran",
+        "-shared",
+        "oracle_config.o",
+        "constants.o",
+        "routines.o",
+        "pipeline.o",
+        "-o",
+        "oracle.so"
+      ]
+    ],
+    "routines": {
+      "compute_diff_metrics": {
+        "first_line": 6881,
+        "last_line": 7131,
+        "sha256": "b42653382bfc6b71c1686c1330611a49255ba32b153227751ac3832842432d76"
+      },
+      "cal_deform_and_div": {
+        "first_line": 16,
+        "last_line": 1192,
+        "sha256": "84e91fbc8849399c8b0c299b3696857b7c59eb546c93174161d905c22ef04058"
+      },
+      "calculate_km_kh": {
+        "first_line": 1194,
+        "last_line": 1351,
+        "sha256": "d794c65e3e0e8965f6566b314ab392f5ff4847bf1caaf7dcc8164c7a8748fc08"
+      },
+      "calculate_N2": {
+        "first_line": 1484,
+        "last_line": 1715,
+        "sha256": "33e7c32f77268ccd76b5700f030769f17079a8439a474f251bd6a734b499d532"
+      },
+      "cal_dampkm": {
+        "first_line": 1352,
+        "last_line": 1482,
+        "sha256": "f728ae3db102f94ac41cb8b50bee89979dd2332bee4a7ec59c63bd05690869cb"
+      },
+      "isotropic_km": {
+        "first_line": 1717,
+        "last_line": 1774,
+        "sha256": "b31c73dbf21a7abbc38a880ae37d1f6cde12a938da1512f420043a8152d8b7a3"
+      },
+      "smag_km": {
+        "first_line": 1776,
+        "last_line": 1931,
+        "sha256": "586c2e65b34acd25c2acf36d01c43fe43a4789eef177f77650aab252e61a6f8a"
+      },
+      "smag2d_km": {
+        "first_line": 1933,
+        "last_line": 2046,
+        "sha256": "0ebb6c933f7712cf42ddc46e582327037c667138554ab8e3a51ff684eb5c07bb"
+      },
+      "tke_km": {
+        "first_line": 2048,
+        "last_line": 2338,
+        "sha256": "e001cf3f3082a737d46fbdd7866d0efb4027352943734657cdb63ad09f019572"
+      },
+      "calc_l_scale": {
+        "first_line": 2340,
+        "last_line": 2408,
+        "sha256": "5ea3e7af00fbdee1a2ef7a3c76ed8967d2a0574b718eb97b21ece8e7dc8467b1"
+      },
+      "phy_bc": {
+        "first_line": 5900,
+        "last_line": 6096,
+        "sha256": "8a0d4642facfe7881259359c5c35b38cb8cf108e047b5877f232175a1d0002ec"
+      },
+      "horizontal_diffusion_2": {
+        "first_line": 2863,
+        "last_line": 3115,
+        "sha256": "628870cfcb981529e8395d0bea62051cee13db60651c0ef3de3bf44ee29a019c"
+      },
+      "horizontal_diffusion_u_2": {
+        "first_line": 3117,
+        "last_line": 3320,
+        "sha256": "0922e7e7607ca88fead905104b740b1616bbb1d9d2e6f18dc4ef9097231a52e0"
+      },
+      "horizontal_diffusion_v_2": {
+        "first_line": 3322,
+        "last_line": 3516,
+        "sha256": "d0bf16c415dea49eb422a241c96f7fd45a5d3b2264e26b104d47672246ecd056"
+      },
+      "horizontal_diffusion_w_2": {
+        "first_line": 3518,
+        "last_line": 3708,
+        "sha256": "55773ba59c02bbba7885ce03cdb2180e4be9e90689917653f0bcb4efa9fbff6b"
+      },
+      "horizontal_diffusion_s": {
+        "first_line": 3710,
+        "last_line": 4001,
+        "sha256": "d5fe1c4ec2f2620960f645d7d9dc2d68971a4f6cb060249bf3c015a6fbd17b54"
+      },
+      "cal_titau_11_22_33": {
+        "first_line": 5330,
+        "last_line": 5453,
+        "sha256": "7b52096dafc934b0b5cfa299a8b9c7ed15df044db2423e3ca4a0c7e91292d82b"
+      },
+      "cal_titau_12_21": {
+        "first_line": 5455,
+        "last_line": 5596,
+        "sha256": "db0fe2cdc66cd698105a23490b9c28e59e3a4171df21397ea281e2c1fb9c8bb5"
+      },
+      "cal_titau_13_31": {
+        "first_line": 5597,
+        "last_line": 5746,
+        "sha256": "41f78378983b9dd44f07d9bfe651de94798c7b695c0ede67fc53386abd0dc2e1"
+      },
+      "cal_titau_23_32": {
+        "first_line": 5748,
+        "last_line": 5898,
+        "sha256": "64cb78269fe6614af828c99df1db2e3b367233bbf6c9387e581c2e4711045219"
+      },
+      "pthl": {
+        "first_line": 5274,
+        "last_line": 5301,
+        "sha256": "9a4e5e98397e45dbd954aa3d698ce134e2426db2ae8c518b617282c15b3ce02d"
+      },
+      "pu": {
+        "first_line": 5302,
+        "last_line": 5328,
+        "sha256": "59ba3b05fc2b7a81f4b92619bcf3a000c737835dc03763e3203fcc7325eaba27"
+      }
+    },
+    "extra_routines": {
+      "dyn_em/module_big_step_utilities_em.F": {
+        "phy_prep": {
+          "first_line": 4729,
+          "last_line": 4976,
+          "sha256": "fa0ea64366b4e6c003c8e0bbeb0d92851f34e91e0f6bd7002065d51c2a459346"
+        }
+      },
+      "share/module_bc.F": {
+        "set_physical_bc2d": {
+          "first_line": 202,
+          "last_line": 649,
+          "sha256": "098e362bb299c4657c2dd5d91e1fb90fb0117769057379ae29adacd53bbdfe2c"
+        },
+        "set_physical_bc3d": {
+          "first_line": 650,
+          "last_line": 1114,
+          "sha256": "89afe66021a063bc41c20c8fbd0dd1d7d5b564c572b4a13bc18b0dd55704800e"
+        }
+      }
+    },
+    "pipeline_sha256": "e945f5517ba9c1b8e2558bae3ee4a3f61be4b0f6474eaa0f22ff98f28df4ae03",
+    "config_sha256": "fe7f635fcc1bd529f45a9fa35cb760ebc656bccd5643969517ec63d61beddee0",
+    "generated_sha256": "68ef4bf2255288cf4bc4ed6acef119a772cbb3e0b5316305d771789b7db90451"
+  },
+  "mix_full_fields_false_differs": {
+    "rockies_snow_wave-specified": [],
+    "rockies_snow_wave-periodic": [],
+    "high_terrain_dry-specified": [],
+    "plains_stable_night-specified": [],
+    "plains_stable_night-open": [],
+    "pacific_marine_heating-specified": [],
+    "pacific_snow_storm-specified": [],
+    "great_lakes_snow-specified": [],
+    "gulf_cloud_ocean-specified": [],
+    "gulf_cloud_ocean-periodic": [],
+    "atlantic_open_ocean-specified": [],
+    "steepest_terrain-specified": [],
+    "snowiest_column-specified": [],
+    "strongest_w-specified": [],
+    "iciest_column-specified": [],
+    "zero_flow-specified": [],
+    "signed_zero_flow-specified": [],
+    "near_zero_flow-specified": [],
+    "map_extremes-specified": [],
+    "map_extremes-periodic": [],
+    "steep_synthetic-specified": [],
+    "strong_shear_cap-specified": [],
+    "updraft_core-specified": [],
+    "updraft_core-periodic": [],
+    "updraft_core-open": [],
+    "southern_mirror-specified": [],
+    "convective_plains_3km-specified": []
+  }
+}

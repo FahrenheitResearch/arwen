@@ -134,10 +134,12 @@ def test_scalar_restart_refuses_instead_of_repeating_one_members_state(tmp_path,
         session(tmp_path, Collector(tmp_path)).run_prepared(lambda *args, **kwargs: {}, prepared(0), restart=tmp_path / "one.npz")
 
 
-def test_checkpointed_roster_uses_one_selected_card_to_keep_its_diagnostic_snapshot_coherent(tmp_path, identity):
+@pytest.mark.parametrize("sampled_ids", [(2,), (2, 5)])
+def test_checkpointed_roster_uses_one_selected_card_to_keep_its_diagnostic_snapshot_coherent(tmp_path, identity, sampled_ids):
     collector = Collector(tmp_path)
     run = session(tmp_path, collector)
-    run.cards = (CardBudget(2, 1000), CardBudget(5, 1000))
+    run.cards = tuple(CardBudget(device, 1000) for device in sampled_ids)
+    run.memory_model = {device: run.memory_model for device in sampled_ids}
     devices = []
     run.device_scope = lambda device: devices.append(device) or nullcontext()
     def runner(inputs, **options):

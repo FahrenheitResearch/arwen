@@ -99,3 +99,39 @@ tests/test_obs_superob_window.py # rw_superob executes the windowed superob and 
 tests/test_sfire_wrfout_io.py # netcdf-writer writes the fire history output; 4 of its 6 tests need it.
 tests/test_wrf_direct.py # netcdf-writer, the default wrfinput/wrfbdy engine, writes the exported WRF pair; 19 of its 100 tests need it.
 tests/test_wrfinput_theta_records.py # rw_netcdf decodes the wrfinput and wrfbdy theta records; 4 of its 16 tests need it.
+
+# Native dependencies added by the selected correctness stack.
+tests/test_mynn_wrf461_exact_gpu.py # compiled pinned WRF Fortran oracle
+tests/test_wrfinput_start_base_wrf461.py # compiled pinned WRF Fortran oracle
+tests/test_ysu_wrf461_parity.py # compiled pinned WRF Fortran oracle
+tests/test_advect_wrf_legacy_parity.py # CUDA/NVRTC compiled kernels on the Blackwell GPU suite
+tests/test_lateral_bc.py # CUDA/NVRTC compiled kernels on the Blackwell GPU suite
+tests/test_preflight.py # CUDA/NVRTC compiled kernels on the Blackwell GPU suite
+tests/test_thompson_aerosol_libm.py # compiled pinned WRF Fortran oracle
+tests/test_zadvect_implicit.py # compiled pinned WRF Fortran oracle
+tests/test_advect_vertical_order.py # CUDA/NVRTC compiled kernels on the Blackwell GPU suite
+tests/test_verify_base4_review.py # Rust wrfout writer bridge
+tests/test_mp28_review_regressions.py # CUDA/NVRTC compiled device modules on the queued Blackwell GPU leg
+tests/test_restart.py # CUDA/NVRTC compiled kernels on the Blackwell GPU suite
+tests/test_ensemble_recipe_door.py # rw_wrfbatch Rust renderer
+tests/test_streaming.py # CUDA/NVRTC compiled kernels on the Blackwell GPU suite
+tests/test_ruc.py # compiled pinned WRF Fortran oracle
+tests/test_ruc_gpu_column_oracle.py # compiled pinned WRF Fortran oracle
+tests/test_ruc_init_history.py # CUDA/NVRTC compiled device modules on the queued Blackwell GPU leg
+tests/test_ruc_libm_words.py # CUDA/NVRTC compiled device modules on the queued Blackwell GPU leg
+tests/test_diff_opt1_wrf471.py # CUDA/NVRTC compiled kernels on the Blackwell GPU suite
+tests/test_smallstep_vertical_wrf471_parity.py # CUDA/NVRTC compiled kernels on the Blackwell GPU suite
+tests/test_myjsfc_wrf461_parity.py # compiled pinned WRF Fortran oracle
+tests/test_mynn_sfclay_wrf461_column_oracle.py # compiled pinned WRF Fortran oracle
+tests/test_sfclay_classic_wrf461_parity.py # compiled pinned WRF Fortran oracle
+tests/test_sfclayrev_wrf461_parity.py # compiled pinned WRF Fortran oracle
+tests/test_aerosol_fill_receipt.py # gpuwm_preprocess_cpu executes the bitmap and missing-value carrier.
+tests/test_ruc_layer_moisture_floor.py # static-fields executes the RUC soil-layer moisture floor.
+tests/test_terrain_autosmooth.py # static-fields executes the bounded terrain smoothing passes.
+tests/test_thompson_real_column_host_parity.py # C++ compiles the production Thompson source and its signed collision-pair probe.
+tests/test_ensemble_restart_roster.py # libnetcdf_writer saves and restores real Rust collector endpoint words.
+tests/test_enprod_v2_engine.py # rw_ensbatch reduces a go --members (v2) run folder and a member_NNN root alike.
+tests/test_render_olr_engine.py # rw_wrfbatch draws --products olr from a history's stored OLR plane.
+
+tests/test_k_distribution_receipt_native.py # rw_netcdf decodes the RRTMGP tables to check the packaged size receipt.
+tests/test_go_dry_run_geography.py # the gfs --dry-run plans through the native preparation chain before its geography check.

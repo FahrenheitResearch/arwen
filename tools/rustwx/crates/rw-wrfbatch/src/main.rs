@@ -33,6 +33,7 @@ mod wrf_process;
 mod wrf_volumes;
 mod wrf_chart_planes;
 mod wrf_column_planes;
+mod snowfall;
 #[path = "mesh.rs"]
 mod mesh;
 #[path = "section.rs"]
@@ -1719,6 +1720,7 @@ fn import_run(
     // can draw at all.
     let mut options = WrfProcessOptions {
         heavy_ecape: heavy,
+        snow_since: std::env::var("GPUWM_SNOW_SINCE").ok().filter(|s| !s.trim().is_empty()),
         named_products_only: !heavy
             && named_product_request(store_products)
             && (!list_products || names_a_product(store_products)),

@@ -32,6 +32,16 @@ def test_shortcut_and_explicit_profile_have_one_canonical_identity():
                    any("fire_smoke" in t['species'] for t in d.terms) for d in table.diagnostics)
 
 
+def test_named_microphysics_and_smoke_share_the_initializer():
+    shortcut = cfg(mp_physics="0", fire_smoke=True)
+    explicit = cfg(mp_physics=0, chem_sets="sfire_smoke")
+    assert type(shortcut.mp_physics) is int
+    assert shortcut.mp_physics == 0
+    assert shortcut.chem_sets == "sfire_smoke"
+    assert shortcut.fire_smoke is True
+    assert asdict(shortcut) == asdict(explicit)
+
+
 def test_bulk_profile_does_not_launder_invalid_shortcut_or_force_pbl():
     assert cfg(fire_smoke=1).fire_smoke==1
     with pytest.raises(ValueError,match="PBL"):

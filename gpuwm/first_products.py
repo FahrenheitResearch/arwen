@@ -425,17 +425,16 @@ def _run_render(command: Sequence[str], *,
     environment = _stage_env()
     if env_overrides:
         environment.update(env_overrides)
-    # popen_options(): the render dies with the process that started it,
-    # its own group or not.  The group keeps a Stop's SIGINT away from a
+    # The render dies with the process that started it, its own group or
+    # not: _stage_env() carries gpuwm.parent_death's entry and the render
+    # binds itself after exec.  The group keeps a Stop's SIGINT away from a
     # render mid-organisation (above); it was never meant to let a render
-    # outlive a forecast killed by pid (gpuwm.parent_death).
-    from gpuwm.parent_death import popen_options
-
+    # outlive a forecast killed by pid.  No preexec_fn (D-03): Python run
+    # in the forked child printed CuPy finalizer tracebacks.
     process = subprocess.Popen(
         list(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, errors="replace", cwd=str(_stage_cwd()),
-        env=environment, **(_own_group_options() if own_group else {}),
-        **popen_options())
+        env=environment, **(_own_group_options() if own_group else {}))
     setattr(process, _OWN_GROUP_ATTRIBUTE, bool(own_group))
     ident = threading.get_ident()
     with _RUNNING_LOCK:

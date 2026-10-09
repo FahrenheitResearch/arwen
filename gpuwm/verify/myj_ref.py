@@ -13,11 +13,14 @@ Both column functions take gpuwm's bottom-up ``(nz,)`` columns and flip to
 MYJ's own top-down 1-based layout internally, exactly as the Fortran
 drivers flip WRF's bottom-up arrays (module_bl_myjpbl.F:364-383,
 module_sf_myjsfc.F:237-259).  All arithmetic is ``np.float32`` with the
-Fortran's expression shapes.  Transcendentals are NumPy's float32
-``log``/``exp``/``sqrt``/``atan``; pinning them to a specific libm word
-(the ``noahmp_libm`` treatment) is deliberately deferred to the MYJ
-oracle campaign -- NO oracle comparison against the WRF Fortran has been
-run yet, and nothing in this module claims one.
+Fortran's expression shapes.  In :func:`np_myjsfc_column` LOG, EXP and
+REAL**REAL are WOOF's own float32 routines (``gpuwm.core.noahmp_libm``),
+and that column function is BIT-IDENTICAL to WRF v4.6.1's MYJSFC on the
+column oracle (tools/myjsfc_wrf461_oracle,
+tests/test_myjsfc_wrf461_parity.py, every field of every call, replayed
+and free-running).  The MYJPBL column function still uses NumPy's float32
+``log``/``exp``/``sqrt``; nothing in this module claims a WRF oracle for
+it.
 
 WRF quirks preserved on purpose (cited where they occur):
 
@@ -54,6 +57,12 @@ import numpy as np
 # sase_limits precedent).  Re-exported here so the reference's callers keep
 # one import site.
 from gpuwm.core.myjsfc_tables import KZTM, KZTM2, build_psi_tables
+# np_myjsfc_column's LOG, EXP and REAL**REAL are WOOF's own float32
+# routines, the words the CUDA kernel's gfk_log / gfk_exp_fma / gfk_pow
+# agree with (see that function's docstring).
+from gpuwm.core.noahmp_libm import expf as _expf
+from gpuwm.core.noahmp_libm import logf as _logf
+from gpuwm.core.noahmp_libm import powf as _powf
 
 F = np.float32
 
@@ -283,10 +292,23 @@ def np_myjsfc_column(
     output set as a dict of float32 scalars (plus ``pblh``).  ``lowlyr=1``
     (ARW sigma, MYJSFCINIT:1117-1124).
 
-    ``ht`` is the interface-height origin (module_sf_myjsfc.F:162-170).  It
-    defaults to gpuwm's DECLARED ground-relative 0 rather than WRF's
-    terrain height; :func:`_interface_heights` carries the declaration and
-    names the test that measures it.
+    ``ht`` is the interface-height origin, WRF's ``ZINT(KTE+1)=HT``
+    (module_sf_myjsfc.F:162-170).  The shipped kernel seeds it with the
+    terrain height exactly as WRF does; pass the column's HT to mirror it
+    (the oracle grading, gpuwm.verify.myjsfc_oracle.measure_cpu_authority,
+    does).  The default 0 is kept for the comparisons in
+    tests/test_myj_port.py.
+
+    LOG, EXP and REAL**REAL are WOOF's own float32 ``logf``/``expf``/
+    ``powf``, the same algorithms as the kernel's gfk_log, gfk_exp and
+    gfk_pow.  The kernel's EXP is the contracted device form gfk_exp_fma,
+    which matches the oracle host's C library at every float32 input
+    (tools/myjsfc_wrf461_oracle/libm_sweep.py); the uncontracted EXP used
+    here differs from it at two inputs only, 1 ULP each, checked on W1:
+    x = 0x4202422F (32.56) and 0xC27C65D9 (-63.10).  The oracle grading
+    shows neither on its columns.  POW is the uncontracted form on both
+    sides (1 ULP from the host at x = 0x3C072A38 with exponent 1/CAPA,
+    unreachable: see libm_sweep.py's DECLARED).
     """
     dz = np.asarray(dz, dtype=F)
     tke = np.asarray(tke, dtype=F)
@@ -299,7 +321,7 @@ def np_myjsfc_column(
         ust = F(0.1)
     ct = F(0.0)
     seamask = F(F(xland) - F(1.0))
-    thsk = F(F(tsk) / F(F(psfc) / P1000MB) ** CAPA)
+    thsk = F(F(tsk) / _powf(F(F(psfc) / P1000MB), CAPA))
     # Q2 profile in myj layout for the PBLH scan (:246,:263-277).
     q2m = np.empty(nz, dtype=F)
     for m in range(nz):
@@ -323,7 +345,7 @@ def np_myjsfc_column(
     ulow = F(u1)
     vlow = F(v1)
     zsl = F(F(zh[lmh - 1] - zh[lmh]) * F(0.5))
-    apesfc = F(F(F(psfc) / P1000MB) ** CAPA)
+    apesfc = _powf(F(F(psfc) / P1000MB), CAPA)
     if ntsd == 1:
         tz0 = F(tsk)                       # :296-305 (ARW branch)
     else:
@@ -431,8 +453,8 @@ def np_myjsfc_column(
             zslt = F(zsl + zt)
             rzsu = F(zslu / zu)
             rzst = F(zslt / zt)
-            rlogu = F(np.log(rzsu))
-            rlogt = F(np.log(rzst))
+            rlogu = F(_logf(rzsu))
+            rlogt = F(_logf(rzst))
             rlmo = F(F(F(elfc * akhs) * dthv) / F(F(ust * ust) * ust))
             zetalu = F(zslu * rlmo)
             zetalt = F(zslt * rlmo)
@@ -452,8 +474,8 @@ def np_myjsfc_column(
             akms = F(max(F(ustark / simm), cxchs))
             akhs = F(max(F(ustark / simh), cxchs))
             if dthv <= F(0.0):
-                wstar2 = F(WWST2 * F(abs(F(F(F(btgh * akhs) * dthv)))
-                                     ** F(F(2.0) / F(3.0))))
+                wstar2 = F(WWST2 * _powf(abs(F(F(F(btgh * akhs) * dthv))),
+                                        F(F(2.0) / F(3.0))))
             else:
                 wstar2 = F(0.0)
             ust = F(max(F(np.sqrt(F(akms * F(np.sqrt(F(du2 + wstar2)))))),
@@ -483,7 +505,7 @@ def np_myjsfc_column(
         rib = F(F(F(btgx * dthv) * zsl) / du2)
         zslu = F(zsl + zu)
         rzsu = F(zslu / zu)
-        rlogu = F(np.log(rzsu))
+        rlogu = F(_logf(rzsu))
         zslt = F(zsl + zu)       # u,v and t are at the same level (:685)
         czil = F(0.1)            # :697 (Chen-Zhang block commented out)
         zilfc = F(F(F(-czil) * VKARMAN) * SQVISC)
@@ -498,10 +520,10 @@ def np_myjsfc_column(
             zzil = zilfc
         for _ in range(ITRMX):
             # Zilitinkevich fix (:733): the v4.6.1 form uses Z0BASE.
-            zt = F(max(F(F(np.exp(F(zzil * F(np.sqrt(F(ust * F(z0base)))))))
+            zt = F(max(F(F(_expf(F(zzil * F(np.sqrt(F(ust * F(z0base)))))))
                         * F(z0base)), EPSZT))
             rzst = F(zslt / zt)
-            rlogt = F(np.log(rzst))
+            rlogt = F(_logf(rzst))
             rlmo = F(F(F(elfc * akhs) * dthv) / F(F(ust * ust) * ust))
             zetalu = F(zslu * rlmo)
             zetalt = F(zslt * rlmo)
@@ -521,8 +543,8 @@ def np_myjsfc_column(
             akms = F(max(F(ustark / simm), cxchl))
             akhs = F(max(F(ustark / simh), cxchl))
             if dthv <= F(0.0):
-                wstar2 = F(WWST2 * F(abs(F(F(F(btgh * akhs) * dthv)))
-                                     ** F(F(2.0) / F(3.0))))
+                wstar2 = F(WWST2 * _powf(abs(F(F(F(btgh * akhs) * dthv))),
+                                        F(F(2.0) / F(3.0))))
             else:
                 wstar2 = F(0.0)
             ust = F(max(F(np.sqrt(F(akms * F(np.sqrt(F(du2 + wstar2)))))),
@@ -538,9 +560,9 @@ def np_myjsfc_column(
     zu10 = F(zu + F(10.0))
     zt02 = F(zt + F(2.0))
     zt10 = F(zt + F(10.0))
-    rlnu10 = F(np.log(F(zu10 / zu)))
-    rlnt02 = F(np.log(F(zt02 / zt)))
-    rlnt10 = F(np.log(F(zt10 / zt)))
+    rlnu10 = F(_logf(F(zu10 / zu)))
+    rlnt02 = F(_logf(F(zt02 / zt)))
+    rlnt10 = F(_logf(F(zt10 / zt)))
     ztau10 = F(zu10 * rlmo_out)
     ztat02 = F(zt02 * rlmo_out)
     ztat10 = F(zt10 * rlmo_out)
@@ -583,7 +605,7 @@ def np_myjsfc_column(
     q02 = F(F(hlflx / akhs02) + qz0)
     q10 = F(F(hlflx / akhs10) + qz0)
     term1 = F(F(-0.068283) / tlow)
-    pshltr = F(F(psfc) * F(np.exp(term1)))
+    pshltr = F(F(psfc) * F(_expf(term1)))
     u10e = u10
     v10e = v10
     if seamask < F(0.5):
@@ -592,7 +614,7 @@ def np_myjsfc_column(
         zu = F(max(F(zu * F(0.35)), zuuz))
         zu10 = F(zu + F(10.0))
         rzsu_l = F(zu10 / zu)
-        rlnu10 = F(np.log(rzsu_l))
+        rlnu10 = F(_logf(rzsu_l))
         zetau_l = F(zu * rlmo_out)
         ztau10 = F(zu10 * rlmo_out)
         ztau10 = F(min(max(ztau10, ztmin2), ztmax2))
@@ -614,12 +636,12 @@ def np_myjsfc_column(
     flhc = F(F(rlow * CP) * akhs)
     flqc = F(F(rlow * akhs) * F(mavail))
     qgh = F(F(F(F(F(F(1.0) - seamask) * PQ0) + F(seamask * PQ0SEA)) / plow)
-            * F(np.exp(F(F(A2S * F(tlow - A3S)) / F(tlow - A4S)))))
+            * F(_expf(F(F(A2S * F(tlow - A3S)) / F(tlow - A4S)))))
     qgh = F(qgh / F(F(1.0) - qgh))       # convert to mixing ratio (:1041)
     cpm = F(CP * F(F(1.0) + F(F(0.8) * qlow)))
     if seamask > F(0.5):
         qs = F(F(PQ0SEA / F(psfc))
-               * F(np.exp(F(F(A2S * F(F(tsk) - A3S)) / F(F(tsk) - A4S)))))
+               * F(_expf(F(F(A2S * F(F(tsk) - A3S)) / F(F(tsk) - A4S)))))
         qs = F(qs / F(F(1.0) - qs))
     # ---- shelter supersaturation removal (module_sf_myjsfc.F:326-349) ----
     tshltr = th02          # SFCDIF's TH02 dummy is MYJSFC's TSHLTR.
@@ -634,12 +656,12 @@ def np_myjsfc_column(
     t10p = F(th10p * rapa10)
     t2_grid = F(th2_grid * apesfc)      # :337
     rcap = F(F(1.0) / CAPA)
-    p02p = F(F(rapa02 ** rcap) * P1000MB)
-    p10p = F(F(rapa10 ** rcap) * P1000MB)
+    p02p = F(_powf(rapa02, rcap) * P1000MB)
+    p10p = F(_powf(rapa10, rcap) * P1000MB)
     qs02 = F(F(PQ0 / p02p)
-             * F(np.exp(F(F(A2C * F(t02p - A3C)) / F(t02p - A4C)))))
+             * F(_expf(F(F(A2C * F(t02p - A3C)) / F(t02p - A4C)))))
     qs10 = F(F(PQ0 / p10p)
-             * F(np.exp(F(F(A2C * F(t10p - A3C)) / F(t10p - A4C)))))
+             * F(_expf(F(F(A2C * F(t10p - A3C)) / F(t10p - A4C)))))
     if qshltr > qs02:
         qshltr = qs02
     if q10 > qs10:

@@ -1,0 +1,6 @@
+Box S venv differs from setup.sh: its cupy-cuda12x[ctk] download ran at about 3 MB/s (3 GB) and was stopped after
+about 20 min. The venv was finished with the same packages minus [ctk]:
+  uv pip install --python /work/tclock/venv/bin/python "numpy>=2.0" "scipy>=1.11" "netCDF4>=1.6" "jsonschema>=4.0" "threadpoolctl>=3.1" "cupy-cuda12x>=14.0"
+(43 s), so on S CuPy compiles kernels with the box's system CUDA 12.8 NVRTC (/usr/local/cuda-12.8), and on G with the
+pip CUDA 12.9 toolkit. Both: cupy 14.2.0, numpy 2.5.3, CPython 3.14.7 free-threaded. Every row records its host and card
+in its provenance.

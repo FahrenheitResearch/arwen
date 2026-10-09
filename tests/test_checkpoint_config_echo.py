@@ -75,10 +75,9 @@ MOVED = {
     "spp_conv": (dict(spp_conv=1), {"spp_conv"}),
     "spp_pbl": (dict(spp_pbl=1), {"spp_pbl"}),
     "ruc_soilprop": (dict(ruc_soilprop="wrf_461"), {"ruc_soilprop"}),
-    # The terrain-clock mode (lane/286-fixed-step-grid): "measured" is the
-    # derivation every header before the field ran under and drops out;
-    # "pinned" is echoed.
-    "terrain_clock": (dict(terrain_clock="pinned"), {"terrain_clock"}),
+    # terrain_clock is no longer default-off: from 2.8.8 its default
+    # ("local_face") is echoed and "measured" drops out
+    # (test_the_terrain_clock_default_is_echoed_and_measured_drops_out).
     "bl_mynn_cloud_tendency_form": (
         dict(bl_mynn_version="gsd_41", bl_mynn_cloud_tendency_form="gsd_41"),
         {"bl_mynn_version", "bl_mynn_cloud_tendency_form"}),
@@ -87,6 +86,8 @@ MOVED = {
                                      {"bl_mynn_gsd41_unsquared_qtke"}),
     "mynn_sfclay_variant": (dict(mynn_sfclay_variant="gsl_wrf39"),
                             {"mynn_sfclay_variant"}),
+    "cycling": (dict(bl_mynn_version="gsd_41", cycling=True),
+                {"bl_mynn_version", "cycling"}),
     "diff_6th_form": (dict(diff_6th_form="noaa_wrf39", diff_6th_factor2=0.04),
                       {"diff_6th_form", "diff_6th_factor2"}),
     "mp_zero_out": (dict(mp_zero_out=2),
@@ -117,8 +118,8 @@ DEFAULT_OFF = frozenset({
     "lakedepth_default", "lake_min_elev",
     "spp_conv", "spp_pbl",
     "ruc_soilprop",
-    # "measured", the launch-time derivation of every earlier header.
-    "terrain_clock",
+    # terrain_clock left this set in 2.8.8: its default, "local_face",
+    # is echoed, and "measured" (every earlier header's clock) drops out.
     "bl_mynn_version", "bl_mynn_gsd41_unsquared_qtke", "bl_mynn_cloud_tendency_form",
     "mynn_sfclay_variant",
     # The RUC sea-ice threshold switch, absent at 0 as in a 2.8.5 header.
@@ -135,6 +136,7 @@ DEFAULT_OFF = frozenset({
     "alb_sol",
     # Output-only surface energy carriers, dropped by the echo when off.
     "surface_energy_diag",
+    "cycling",
 })
 
 
@@ -333,7 +335,10 @@ def test_chemistry_off_emitted_config_bytes_match_recovery_staging(
                            "aq_off_emitted_config_bytes.json").read_text())
     assert baseline["staging_sha"] == "00bbfcf9a91723125b4a1328248e90b66e611256"
     row = baseline["cases"][case]
-    cfg = RunConfig(**row["constructor"])
+    # These bytes were pinned under the measured terrain clock, the default
+    # until 2.8.8; the local-face default is echoed and is checked in
+    # test_the_terrain_clock_default_is_echoed_and_measured_drops_out.
+    cfg = RunConfig(**{"terrain_clock": "measured", **row["constructor"]})
     if inactive_nondefaults:
         cfg = dataclasses.replace(cfg, chem_adv_opt=2, kemit=17,
                                   dust_alpha=3.0, aer_ra_feedback=1)
@@ -571,3 +576,40 @@ def test_output_choices_preserve_every_actual_writer_echo(monkeypatch, tmp_path,
         assert json.dumps(before[road], allow_nan=False).encode("utf-8") == \
             json.dumps(after[road], allow_nan=False).encode("utf-8"), road
         assert option not in before[road] and option not in after[road]
+
+
+def test_the_terrain_clock_default_is_echoed_and_measured_drops_out():
+    """From 2.8.8 the default terrain clock is "local_face", and it binds:
+    a header without the key ran "measured" (every earlier header), so the
+    echo keeps dropping "measured" and an earlier checkpoint resumes only
+    under "measured".  Breakage the binding prevents: a head-bound tree
+    re-derives its clock as each boundary interval arrives, so a resume
+    under the other clock can take a different step later in the run."""
+    from dataclasses import replace
+    from gpuwm.config import TERRAIN_CLOCK_RESTART_BREAK_NOTICE
+
+    default = _cfg()
+    assert default.terrain_clock == "local_face"
+    echo = restart.configuration_echo(default)
+    assert echo["terrain_clock"] == "local_face"
+    measured = replace(default, terrain_clock="measured")
+    legacy = restart.configuration_echo(measured)
+    assert "terrain_clock" not in legacy
+    pinned = restart.configuration_echo(replace(default, terrain_clock="pinned"))
+    assert pinned["terrain_clock"] == "pinned"
+    digest = restart._configuration_digest_values(dataclasses.asdict(measured))
+    assert "terrain_clock" not in digest
+    assert restart._configuration_digest_values(
+        dataclasses.asdict(default))["terrain_clock"] == "local_face"
+    # An earlier header resumes under "measured" and under nothing else;
+    # the refusal under the new default says why and what to write.
+    restart._require_config_match(legacy, measured, "earlier.npz")
+    with pytest.raises(restart.RestartMismatchError,
+                       match="terrain_clock") as caught:
+        restart._require_config_match(legacy, default, "earlier.npz")
+    assert TERRAIN_CLOCK_RESTART_BREAK_NOTICE in str(caught.value)
+    with pytest.raises(restart.RestartMismatchError,
+                       match="terrain_clock") as caught:
+        restart._require_config_match(echo, measured, "new.npz")
+    assert TERRAIN_CLOCK_RESTART_BREAK_NOTICE not in str(caught.value)
+    restart._require_config_match(echo, default, "new.npz")

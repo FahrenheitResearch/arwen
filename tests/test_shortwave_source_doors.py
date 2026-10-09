@@ -80,7 +80,10 @@ def test_analyzed_aerosol_rows_are_absent_for_an_ordinary_request():
 
     exp = load_experiment(ROOT / "configs/hrrr_native_quick_demo.toml")
     ph = parse_namelist_text(render_namelist_input(exp))["physics"]
-    assert "use_aero_icbc" not in ph
+    # The demo runs the fork MYNN (bl_mynn_version = "gsd_41", filled from
+    # its source's generation row since lane/mynn-exact), whose emission
+    # always states use_aero_icbc; for an ordinary request it states off.
+    assert ph.get("use_aero_icbc", [False]) == [False]
     assert "use_rap_aero_icbc" not in ph
 
 

@@ -32,7 +32,9 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
+import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -598,6 +600,16 @@ def admit(plans, *, config, geog_root, case_root, request, options=None,
     from gpuwm import capabilities, go_cli, rustwx
 
     options = options or {}
+    if options.get("prepare_only"):
+        # Preparation needs geography and disk space, but no forecast card
+        # or renderer. Forecast admission still runs on the launch route.
+        geography = go_cli.geography_refusal(geog_root)
+        if geography is not None:
+            raise RecipeRefusal(geography)
+        refusal = disk_refusal(plans, case_root=case_root, request=request, options=options)
+        if refusal is not None:
+            raise RecipeRefusal(refusal)
+        return
     capabilities.require(
         f"gpuwm {command}", capabilities.GPU_RUNTIME,
         before=("Refusing here, before the first member's fetch downloads its "
@@ -713,6 +725,72 @@ def _notify(observer, event, **fields):
     notify(observer, event, **fields)
 
 
+def _preparation_context_sha256(wps, geog_root, options):
+    """Bind relaunch reuse to the same preparation code, geography and fetch policy."""
+    repo = Path(__file__).resolve().parents[2]
+    digest = hashlib.sha256()
+    roots = [repo / "gpuwm" / name for name in
+             ("ingest", "static", "mapped_direct.py", "regional_preparation.py",
+              "go_cli.py", "runplan.py", "experiment.py", "companion_domains.py", "bridges.py")]
+    roots += [repo / "tools" / name for name in
+              ("grib1_bridge", "rw_wps", "region_global_dealias", "zarr_bridge")]
+    for root in roots:
+        files = []
+        if root.is_dir():
+            for directory, folders, names in os.walk(root):
+                folders[:] = sorted(name for name in folders
+                                    if name not in ("target", "vendor", "__pycache__", ".git"))
+                files.extend(Path(directory) / name for name in names)
+        else:
+            files = [root]
+        for path in sorted(files):
+            relative = path.relative_to(repo)
+            if (not path.is_file() or any(part in ("target", "vendor", "__pycache__", ".git")
+                                         for part in relative.parts)
+                    or path.suffix not in (".py", ".rs", ".toml", ".lock", ".h", ".c")):
+                continue
+            digest.update(relative.as_posix().encode())
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    digest.update(Path(wps).read_bytes())
+    digest.update(json.dumps({"geog_root": str(geog_root), "posting": _posting(options)},
+                             sort_keys=True, default=str).encode())
+    return digest.hexdigest()
+
+
+def _relaunch_preparations(case_root, root, recipe, context):
+    """Read ready members from this case's failed forecast, without mutating it.
+
+    The ordinary forecast preflight still checks each reused bundle's full
+    authority and content hashes. This receipt never bypasses those checks.
+    """
+    from gpuwm import stage_cli
+    candidates = [Path(root)] + sorted(Path(case_root).glob("run-*"), reverse=True)
+    for directory in dict.fromkeys(candidates):
+        try:
+            prior = json.loads((directory / RECEIPT_NAME).read_text(encoding="utf-8"))
+            if (prior.get("schema") != RECEIPT_SCHEMA or prior.get("recipe_sha256") != recipe.sha256
+                    or prior.get("preparation_context_sha256") != context
+                    or prior.get("preparation_status") != "ready"
+                    or not (prior.get("status") == "prepared" or
+                            prior.get("failure", {}).get("stage") == "forecast")):
+                continue
+            rows = prior["members"]
+            if {row["member_id"] for row in rows} != {member.index for member in recipe.members}:
+                continue
+            reusable = {}
+            for row in rows:
+                bundle = {key: row[key] for key in ("prepared_root", "experiment_config", "wps_namelist")}
+                stage_cli.resolve_bundle(Path(bundle["prepared_root"]))
+                if not Path(bundle["experiment_config"]).is_file() or (
+                        bundle["wps_namelist"] is not None and not Path(bundle["wps_namelist"]).is_file()):
+                    raise ValueError("prepared member authorities are missing")
+                reusable[row["preparation_binding_sha256"]] = (bundle, str(directory))
+            return reusable
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return {}
+
+
 def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     """Plan, review, prepare and run a time-lagged or multi-model ensemble.
 
@@ -732,6 +810,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     from gpuwm.geog_assets import default_geog_root
 
     options = dict(options or {})
+    options["prepare_only"] = bool(getattr(args, "prepare_only", False))
     options.setdefault("render_products", getattr(args, "render_products", None))
     options.setdefault("no_memory_gate", bool(getattr(args, "no_memory_gate", False)))
     command = getattr(args, "command", None) or "ensemble"
@@ -780,7 +859,10 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                              enabled=run_stamp.run_stamp_enabled(args), create=True)
     root = Path(root)
     wps = companion_wps(root / "route-inputs")
+    context = _preparation_context_sha256(wps, geog_root, options)
+    reusable = _relaunch_preparations(case_root, root, recipe, context)
     receipt = {"schema": RECEIPT_SCHEMA, "status": "preparing", "config": str(config),
+               "preparation_status": "preparing", "preparation_context_sha256": context,
                "recipe": recipe.describe(), "recipe_sha256": recipe.sha256,
                "request": request.receipt(), "members": []}
 
@@ -857,11 +939,16 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
             identity = preparation_binding_key(member.trajectory.identity, member_document,
                                                experiment=member_experiment)
             original_member = prepared_banks.get(identity)
+            reused_run = None
             if original_member is None:
-                prepared[member.index] = prepare_member(
-                    member_config, member_experiment, source=member.trajectory.source,
-                    directory=directory, downloads=case_root, geog_root=geog_root,
-                    recipe_sha256=recipe.sha256, options=options)
+                if identity in reusable:
+                    prepared[member.index], reused_run = reusable[identity]
+                    _say(f"member {member.index} reuses its ready preparation from {reused_run}")
+                else:
+                    prepared[member.index] = prepare_member(
+                        member_config, member_experiment, source=member.trajectory.source,
+                        directory=directory, downloads=case_root, geog_root=geog_root,
+                        recipe_sha256=recipe.sha256, options=options)
                 prepared_banks[identity] = member.index
             else:
                 # Seeded surface members share their unchanged source
@@ -882,15 +969,32 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                    {"variant": recipe.member_variants[member.index]}),
                 **({} if original_member is None else
                    {"preparation_reused_from_member": original_member}),
+                **({} if reused_run is None else {"preparation_reused_from_run": reused_run}),
                 **prepared[member.index]})
             publish()
             _notify(observer, "stage_end", label="prepare", exit_code=0, ok=True,
                     elapsed_seconds=time.monotonic() - where["started"], progress=None)
 
         base = recipe.members[0].index
+        receipt["preparation_status"] = "ready"
+        if options["prepare_only"]:
+            receipt["status"] = "prepared"
+            publish()
+            _say(f"prepare-only: {len(recipe.members)} members prepared under {root / 'members'}; "
+                 f"launch without --prepare-only and with --outdir {root}")
+            return 0
+        publish()
         where.update(stage="forecast", member_id=None, started=time.monotonic())
         bundle = stage_cli.resolve_bundle(Path(prepared[base]["prepared_root"]))
         forecast_dir = root / "run"
+        # Relaunching an explicit failed run folder must not mix its old
+        # forecast outputs into this attempt or trip the create-only runner.
+        if forecast_dir.exists():
+            forecast_dir = root / "forecast-attempts" / "run-001"
+            attempt = 1
+            while forecast_dir.exists():
+                attempt += 1
+                forecast_dir = root / "forecast-attempts" / f"run-{attempt:03d}"
         cache = {}
 
         def provider(*, shared_inputs, member_id, request):

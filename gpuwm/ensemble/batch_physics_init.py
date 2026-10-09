@@ -532,6 +532,12 @@ def initialize_wrfinput_member_physics(batch, restored, *, start_time, landuse=N
         radiation_latitude=restored.raw["XLAT"], radiation_longitude=restored.raw["XLONG"],
         landuse=landuse, constant_glw_wm2=constant_glw_wm2,
         fractional_seaice=fractional_seaice, cam_ozone=cam_ozone)
+    if bootstrap is None:
+        # The single-run door now runs every-scheme-off; the member banks
+        # are built from a driver, so the ensemble keeps the refusal
+        # initialize_physics used to raise here.
+        raise ValueError("ensemble member physics requires at least one enabled "
+                         "physics scheme")
     array_module.cuda.get_current_stream().synchronize()
     bootstrap_used = pool.used_bytes() - used_before
     result = initialize_member_physics_from_bootstrap(batch, bootstrap_state, bootstrap,
@@ -743,7 +749,11 @@ def initialize_member_physics_from_bootstrap(batch, bootstrap_state, bootstrap_d
     bootstrap_state.physics = None
     bootstrap.state = None
     source = value = original_value = None
-    del bootstrap, bootstrap_driver, bootstrap_state, entries, pointers
+    # resolve_array closes over `pointers`, so it is released by rebinding:
+    # a deleted closure cell is a NameError for any later call, and the
+    # undefined-name gate cannot tell that none follows.
+    pointers = None
+    del bootstrap, bootstrap_driver, bootstrap_state, entries
     array_module.cuda.get_current_stream().synchronize()
     receipt["pool_live_after_initialization_bytes"] = pool.used_bytes()
     result = InitializedMemberPhysics(batch, driver, state, bank, atmosphere, microphysics, receipt)

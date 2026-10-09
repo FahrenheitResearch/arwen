@@ -996,6 +996,60 @@ def test_the_native_grid_is_recognised_point_for_point():
     assert not native_grid_identity(_target().grid())
 
 
+def _lattice_piece(grid, x0, y0, nx, ny, **shift):
+    """A whole-cell piece of ``grid`` cut the way the boundary-strip
+    mapping cuts one (``known_x - x0``)."""
+    from gpuwm.static.lambert import LambertGrid
+
+    return LambertGrid(
+        grid.ref_lat, grid.ref_lon, grid.truelat1, grid.truelat2,
+        grid.stand_lon, grid.dx, grid.dy, nx + 1, ny + 1,
+        known_x=grid.known_x - x0 + shift.get("dx_cells", 0.0),
+        known_y=grid.known_y - y0, moad_cen_lat=grid.moad_cen_lat,
+        moad_cen_lon=grid.moad_cen_lon)
+
+
+def test_a_whole_cell_piece_of_the_native_grid_is_placed_on_its_lattice():
+    """Acceptance D-05 (2.8.8): the native grid's boundary strips must
+    take the identity route the grid took, so each is placed on the
+    native lattice; a crop domain, and its strips, are not."""
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    from gpuwm.ingest.hrrr_target import (NativeLatticePlacement,
+                                          native_lattice_placement)
+
+    grid = _native_target().grid()
+    whole = NativeLatticePlacement(0, 0, 1799, 1059)
+    assert native_lattice_placement(grid) == whole
+    assert native_lattice_placement(hrrr_source_grid()) == whole
+    for x0, y0, nx, ny in ((0, 0, 10, 1059), (1789, 0, 10, 1059),
+                           (0, 0, 1799, 10), (0, 1049, 1799, 10),
+                           (500, 300, 7, 9)):
+        piece = _lattice_piece(grid, x0, y0, nx, ny)
+        assert native_lattice_placement(piece, parent=grid) == (
+            NativeLatticePlacement(x0, y0, nx, ny))
+        # Without its parent a piece is not the native grid: unchanged.
+        assert native_lattice_placement(piece) is None
+    # The source grid's own description cuts the same way.
+    source = hrrr_source_grid()
+    assert native_lattice_placement(
+        _lattice_piece(source, 1789, 0, 10, 1059), parent=source) == (
+            NativeLatticePlacement(1789, 0, 10, 1059))
+    # Not a piece of the native grid: half a cell off the lattice, past
+    # its edge, another spacing, or cut from a crop (the one-row trim).
+    assert native_lattice_placement(
+        _lattice_piece(grid, 0, 0, 10, 1059, dx_cells=0.5),
+        parent=grid) is None
+    assert native_lattice_placement(
+        _lattice_piece(grid, 1790, 0, 10, 1059), parent=grid) is None
+    other = _native_target(dx_m=3010.0, dy_m=3010.0).grid()
+    assert native_lattice_placement(
+        _lattice_piece(other, 0, 0, 10, 1059), parent=grid) is None
+    trim = _native_target(nx=1797, ny=1057).grid()
+    assert native_lattice_placement(trim) is None
+    assert native_lattice_placement(
+        _lattice_piece(trim, 0, 0, 10, 1057), parent=trim) is None
+
+
 def test_the_native_grid_takes_the_identity_window_and_the_trim_does_not():
     """Before the identity route this target was refused: its outermost
     mass row needs a parabolic neighbour one cell past the grid, which

@@ -1597,6 +1597,11 @@ tests/test_gfs_initial_perturbation.py
 tests/test_downscale_archive_guards.py
 tests/test_downscale_auto_vram.py
 tests/test_downscale_adaptive_parent.py
+# A fixed-step parent's child step lands on every clock: breakage it prevents is the
+# user-reported review refusal "run_seconds/dt must be a positive integer ... dt = 21.48 s"
+# (12 km parent on 64.44 s, ratio 3, 28 h run).  Its two --point door legs skip without
+# rw_netcdf, so the file runs on the Windows partition too.
+tests/test_downscale_fixed_parent_step.py
 tests/test_offline_child_geography.py
 tests/test_case_catalog.py
 
@@ -2614,7 +2619,17 @@ tests/test_recipe_route_inputs.py
 # supervisor alive under init holding 64 GB of a card for 43 min with no owner;
 # every go stage, render process and run worker now dies with its parent.  The
 # three kill cases fail with the fix removed (Linux; the file skips elsewhere).
+# D-03 (2.8.8 acceptance): its preexec_fn ran Python in every forked child, and
+# on 3.14t that printed CuPy cudaErrorInitializationError tracebacks in 163 of
+# 400 spawns; the children now bind after exec and an at-fork marker proves no
+# Python runs between fork and exec.
 tests/test_parent_death.py
+
+# D-10 (2.8.8 acceptance): a site-hosted preparation switched the free-threaded
+# interpreter lock back on by importing netCDF4 (module-scope imports, and the
+# memory estimate's RRTMGP table reads).  Fresh interpreters prove the
+# preparation path and the table reads never import it.
+tests/test_netcdf4_deferred.py
 
 # lane/wheel-287: since 356c94560 rw_ensbatch --abi prints a second line,
 # GPUWM_BRIDGE_SOURCE_REV=<rev>, and the lane probe compared the whole answer,
@@ -2648,3 +2663,117 @@ tests/test_hrrr_masked_aerosol_pair.py
 # met_em lacks QNWFA/QNIFA refused "could not derive the model mass-point
 # latitudes/longitudes" while holding them.
 tests/test_metem_wif_grid.py
+
+# Selected-stack coverage; collection decides the CPU and GPU legs.
+tests/test_acoustic_adaptation.py
+tests/test_advect_wrf_exact.py
+tests/test_aerosol_fill_receipt.py
+tests/test_combo_sweep_generator.py
+tests/test_combo_sweep_round2_fixes.py
+tests/test_delayed_nest_activation.py
+tests/test_ensemble_restart_roster.py
+tests/test_kernel_manifest.py
+tests/test_lateral_bc.py
+tests/test_mp28_forecast_smoke.py
+tests/test_mp28_review_regressions.py
+tests/test_mp8_frozen.py
+tests/test_myjsfc_wrf461_parity.py
+tests/test_mynn_carry_config.py
+tests/test_mynn_cycling_import.py
+tests/test_mynn_exact_gate.py
+tests/test_mynn_generation_door.py
+tests/test_mynn_restart.py
+tests/test_checkpoint_identity_288.py
+tests/test_operational_namelist_door.py
+tests/test_hrrr_route_cycling.py
+tests/test_mynn_sfclay_wrf461_column_oracle.py
+tests/test_mynn_wrf461_exact_gpu.py
+tests/test_namelist_import.py
+tests/test_preflight.py
+tests/test_registry_history_export.py
+tests/test_ruc_gpu_column_oracle.py
+tests/test_ruc_init_history.py
+tests/test_ruc_layer_moisture_floor.py
+tests/test_ruc_libm_words.py
+tests/test_ruc_lsmruc_hrrr_switches.py
+tests/test_ruc_oracle_harness.py
+tests/test_scalar_pblmix_wrf461_resolution.py
+tests/test_sfclay_classic_wrf461_parity.py
+tests/test_sfclayrev_wrf461_parity.py
+tests/test_single_streamed_output.py
+tests/test_stream.py
+tests/test_terrain_autosmooth.py
+tests/test_terrain_clock.py
+tests/test_terrain_clock_local.py
+tests/test_terrain_clock_probe_adaptive_sweep.py
+tests/test_terrain_clock_review.py
+tests/test_thompson_aerosol_gpu.py
+tests/test_thompson_aerosol_libm.py
+tests/test_thompson_aerosol_sedim_refl.py
+tests/test_thompson_real_column_host_parity.py
+tests/test_thompson_wrf39.py
+tests/test_verify_base4_review.py
+tests/test_verify_exact_compare.py
+tests/test_verify_exact_fixtures.py
+tests/test_verify_exact_replay_setup.py
+tests/test_verify_exact_scoring_holes.py
+tests/test_wrf_exact_diffusion_default.py
+tests/test_wrf_exact_ieva_theta.py
+tests/test_wrf_exact_localize_receipts.py
+tests/test_wrf_exact_round3.py
+tests/test_wrfinput_adapter.py
+tests/test_wrfinput_start_base_wrf461.py
+tests/test_ysu_bep_rural_drag.py
+tests/test_ysu_wrf461_parity.py
+tests/test_mp28_launch_abi.py
+tests/test_mixing_package_admission.py
+tests/test_microphysics_release_scope.py
+
+tests/test_km1_wrf461_oracle.py
+tests/test_vertical_w_control.py
+# gfix/288-thompson-classic: mp=8 rain-graupel reads go through the one slab
+# (thompson_racg_index), never WRF v4.6.1's idx_bg1=5 offset (pure text), and
+# the corrected-RACG active-collision reference keeps every stock input,
+# driver, flag and table.  Cupy-free, so the CPU stage runs every item.
+tests/test_thompson_racg_one_slab.py
+# gfix/288-mp-clamp: the shared microphysics finish (every scheme but classic
+# Thompson) and its npref mirror clamp at WRF's REAL product
+# float32(mp_tend_lim) * float32(dt), not the double product rounded once.
+# CPU: the production finish runs with numpy standing in for cupy.
+tests/test_mp_finish_real_clamp.py
+# gfix/288-door-defects: a 2.8.7 checkpoint resumes under terrain_clock =
+# "measured" (recorded 2.8.7 header) and a changed scheme is refused first,
+# by name; go --dry-run asks the geography the launch asks; enprod reads the
+# go --members (v2) run folder and reports the engine's reason; render
+# --products olr reaches the engine's OLR chart.
+tests/test_restart_287_header.py
+tests/test_go_dry_run_geography.py
+tests/test_enprod_v2_manifest.py
+tests/test_enprod_v2_engine.py
+tests/test_render_olr_alias.py
+tests/test_render_olr_engine.py
+# gfix/288-undefined-names: ruff F821/F822/F823 over gpuwm/, tools/ and
+# tilestream/ must report nothing.  Breakage: 2.8.8's candidate died at model
+# step 1 on NameError WRF_DIFFUSION, a GPU-only path no CPU test reaches.
+tests/test_no_undefined_names.py
+# The GPU step-1 smoke matrix (tools/battery/step1_smoke.py) on CPU: every
+# shipped config loads into a steppable row and every physics profile is one,
+# so the card leg cannot silently drop a config.
+tests/test_step1_smoke_rows.py
+
+# gfix/288-gpu-followups: the six WRF 4.6.1 column oracles the GPU shard lane
+# brought in from the verify lanes were on no list, so their seal and coverage
+# rows ran nowhere and a broken fixture, a re-pinned WRF source or a dropped
+# regime would have passed every leg.  CPU rows here: fixture hashes, WRF
+# source pins, regime coverage, the damping coefficient rule and the launcher
+# sites.  The device rows against WRF run on gpu_shard_files.txt.
+tests/test_diff6_wrf461_column_oracle.py
+tests/test_diffopt1_wrf461_column_oracle.py
+tests/test_km3_wrf461_column_oracle.py
+tests/test_smag2d_wrf461_column_oracle.py
+tests/test_tke_km2_wrf461_column_oracle.py
+tests/test_upper_damping_wrf461_oracle.py
+# Planning sizes the RRTMGP tables from a packaged receipt (no native decoder needed); the native file
+# checks the receipt against a real decode.
+tests/test_k_distribution_receipt.py
+tests/test_k_distribution_receipt_native.py

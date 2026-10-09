@@ -1,0 +1,140 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "base",
+  "lane"
+ ],
+ "nvrtc_version": [
+  12,
+  9
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "smag2d": {
+   "file_sha256": {
+    "base": "932359b9f7685918fdd69e204ead1d2ac8369b792d64ff393e00b6b910dc84ad",
+    "lane": "b361d25fbb490b4917ad8042dbcf693759a523d464dc03a486a7a213e152266f"
+   },
+   "assembled_source_sha256": {
+    "base": "400d89d032c13c4ed64be6cfd96e72483dc176fc83a933098b8cde85ac2a34a9",
+    "lane": "9f192d178453ce642a6fe7398ba6e42d28a50aed0e16e01b9722cc8e1602ed0c"
+   },
+   "entries": [
+    "smag2d_km",
+    "smag_hd_s",
+    "smag_hd_u",
+    "smag_hd_v",
+    "smag_hd_w",
+    "wrf_calc_n2",
+    "wrf_smag2d_km",
+    "wrf_smag3d_km",
+    "wrf_smag_deform",
+    "wrf_smag_flux_s",
+    "wrf_smag_hd_s",
+    "wrf_smag_hd_u",
+    "wrf_smag_hd_v",
+    "wrf_smag_hd_w_cached",
+    "wrf_smag_hd_w_stress",
+    "wrf_smag_km_bc",
+    "wrf_smag_surface_heat_const",
+    "wrf_smag_surface_scalars",
+    "wrf_smag_surface_u",
+    "wrf_smag_surface_u_cd0",
+    "wrf_smag_surface_v",
+    "wrf_smag_surface_v_cd0",
+    "wrf_smag_vd_s",
+    "wrf_smag_vd_u",
+    "wrf_smag_vd_v",
+    "wrf_smag_vd_w",
+    "wrf_smag_w_primitives",
+    "wrf_smag_w_stress",
+    "wrf_tke_km",
+    "wrf_tke_rhs"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base": "88b2f9d268f47fa55b740adb210f23d10006c20229a10718aea36481d239ca11",
+      "lane": "88b2f9d268f47fa55b740adb210f23d10006c20229a10718aea36481d239ca11"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base": "9850c22cba68fc11e2f0623224a8213db1236b586312e18c7aa544b77d7fbdd4",
+      "lane": "9850c22cba68fc11e2f0623224a8213db1236b586312e18c7aa544b77d7fbdd4"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base": "5d1acdb42426477686832513c57ba922f07da83621f1722a764fdad57b7ee626",
+      "lane": "5d1acdb42426477686832513c57ba922f07da83621f1722a764fdad57b7ee626"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base": "01ee508a1212d8a2b1bc3813475af4e938f998e05510caf571b2c199d54d3439",
+      "lane": "01ee508a1212d8a2b1bc3813475af4e938f998e05510caf571b2c199d54d3439"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base": "7298b05e7070da2109a922b3b21c57511b3ba832d20a082809c1b30e5048fe37",
+      "lane": "7298b05e7070da2109a922b3b21c57511b3ba832d20a082809c1b30e5048fe37"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base": "4ed815dd6e05b7cf58e9c276d339cc5c03d455521dee762d32f91dedcce268e1",
+      "lane": "4ed815dd6e05b7cf58e9c276d339cc5c03d455521dee762d32f91dedcce268e1"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

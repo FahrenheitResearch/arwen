@@ -279,7 +279,9 @@ def test_the_lake_bypass_change_carries_its_own_continuation_identity():
     from gpuwm.physics_registry import physics_registry
 
     identity = LAND_SURFACE_ALGORITHM_IDENTITIES[SF_SURFACE_PHYSICS]
-    assert identity == "ruc-lsm-wrf-v4.6.1-v6-default-selection"
+    # v7 (2.8.8): WOOF's libm words and the fractional_seaice gate moved
+    # the column again; tests/test_checkpoint_identity_288.py refuses v6.
+    assert identity == "ruc-lsm-wrf-v4.6.1-v7-woof-libm-fractional-seaice-gate"
     option = physics_registry()[
         "components"]["land_surface"]["options"]["ruc-lsm"]
     assert option["consumers"]["restart_algorithm_identity"] == identity

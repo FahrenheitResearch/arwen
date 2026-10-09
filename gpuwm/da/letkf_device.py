@@ -363,6 +363,10 @@ def _module(members: int, device: int = 0):
         module = cp.RawModule(code=_SOURCE.replace("RR", str(int(members))),
                               options=("--fmad=false", "-std=c++14"))
         module.compile()
+        from gpuwm.certify.kernel_manifest import record_module
+        record_module(f"letkf_device_members_{int(members)}",
+                      source=_SOURCE.replace("RR", str(int(members))),
+                      options=("--fmad=false", "-std=c++14"), module=module)
     return module
 
 

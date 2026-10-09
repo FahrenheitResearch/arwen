@@ -5,7 +5,8 @@ tests use:
 
 * PASSIVE: a run carrying the passive test tracer leaves every dynamics and
   moisture array byte-identical to the same run without chem, with the
-  6th-order filter and the 2-D Smagorinsky mixing on and off.
+  6th-order filter, the 2-D Smagorinsky mixing and constant K (km_opt = 1)
+  on and off.
 * SAME OPERATOR: on a periodic domain a tracer started equal to qv stays
   equal to qv, bit for bit, through every RK stage (no microphysics or PBL
   touches qv here), which is the claim that chem transport IS the moist
@@ -79,12 +80,21 @@ def _bubble_case(**overrides):
 _MET = ("u", "v", "w", "thp", "php", "mup", "p", "al", "alt",
         "qv", "qc", "qr")
 
+#: km_opt = 1 with nonzero constants and no PBL scheme: WRF's isotropic_km
+#: through the shared diff_opt = 2 package, horizontal AND vertical
+#: (vertical_diffusion_2 runs only with the PBL off).  gpuwm.config refused
+#: chem under it until 2.8.8, when its operator was the retired dry-only
+#: add_diffusion_tendencies; these rows are the measurement that retired
+#: that refusal.
+_CONSTANT_K = dict(km_opt=1, khdif=100.0, kvdif=10.0, bl_pbl_physics=0)
+
 
 @pytest.mark.parametrize("mixing", [
     dict(),
     dict(diff_6th_opt=2, diff_6th_factor=0.12),
     dict(km_opt=4, diff_6th_opt=2, diff_6th_factor=0.12),
-], ids=["no-mixing", "diff6", "smag-diff6"])
+    _CONSTANT_K,
+], ids=["no-mixing", "diff6", "smag-diff6", "constant-k"])
 @pytest.mark.parametrize("vorder", [3, 5])
 def test_a_passive_tracer_moves_no_other_byte(mixing, vorder):
     import cupy as cp
@@ -110,7 +120,8 @@ def test_a_passive_tracer_moves_no_other_byte(mixing, vorder):
     dict(),
     dict(diff_6th_opt=2, diff_6th_factor=0.12),
     dict(km_opt=4, diff_6th_opt=2, diff_6th_factor=0.12),
-], ids=["no-mixing", "diff6", "smag-diff6"])
+    _CONSTANT_K,
+], ids=["no-mixing", "diff6", "smag-diff6", "constant-k"])
 @pytest.mark.parametrize("vorder", [3, 5])
 def test_a_tracer_started_as_qv_stays_qv_bit_for_bit(mixing, vorder):
     import cupy as cp
@@ -124,6 +135,58 @@ def test_a_tracer_started_as_qv_stays_qv_bit_for_bit(mixing, vorder):
     a = cp.asnumpy(state.qv)
     b = cp.asnumpy(state.chem_passive_1)
     assert a.tobytes() == b.tobytes()
+
+
+def test_constant_k_mixes_the_chem_rows_and_keeps_their_mass():
+    """The chem rows take the constant-K package's mixing: a sharp layer
+    stirred by the bubble keeps less horizontal structure than in the same
+    run with zero constants, stays finite and non-negative, and its ledger
+    closes.  (Until 2.8.8's fix, chem_transport.chem_fixed_tendencies gated
+    on km_opt in (2, 3, 4), so the chem buffers the package filled under
+    km_opt = 1 were never applied.)
+
+    Mass: the rows are mixed by the operator qv is mixed by, word for word
+    (test_a_tracer_started_as_qv_stays_qv_bit_for_bit[constant-k]), so the
+    chem mass is exactly as consistent as the moisture's.  The transport
+    bucket's drift is printed, not bounded: measured on the RTX 4090 at 60
+    steps it is 2.37e-6 of the layer (horizontal constant K alone 1.20e-6,
+    vertical alone 1.0e-8, no mixing 3.6e-8, km_opt = 4 1.7e-7), above
+    the advection-only layer test's 2e-6, and that bound is not widened to
+    fit it."""
+    import cupy as cp
+    from gpuwm.config import constant_k_mixing_active
+    from gpuwm.core.chem_driver import ledger_report
+    from gpuwm.core.dycore import run_steps
+
+    layer = np.zeros((16, 12, 16), dtype=np.float32)
+    layer[3:6] = 40.0
+    runs = {}
+    for name, mixing in (("mixed", _CONSTANT_K),
+                         ("unmixed", dict(_CONSTANT_K, khdif=0.0,
+                                          kvdif=0.0))):
+        cfg, state = _bubble_case(chem_sets="tracer_test", **mixing)
+        state.chem_passive_1[...] = cp.asarray(layer)
+        run_steps(state, cfg, 60)
+        runs[name] = (cfg, state)
+    cfg, mixed = runs["mixed"]
+    assert constant_k_mixing_active(cfg)
+    a = cp.asnumpy(mixed.chem_passive_1)
+    b = cp.asnumpy(runs["unmixed"][1].chem_passive_1)
+    assert np.isfinite(a).all() and a.min() >= 0.0
+    moved = int(np.count_nonzero(a.view(np.uint32) != b.view(np.uint32)))
+    print("constant-K chem words moved by mixing:", moved, "of", a.size)
+    assert moved > a.size // 2
+    # Mixing removes horizontal structure the bubble's flow put into the
+    # layer.
+    structure = float(a.var(axis=(1, 2)).sum())
+    unmixed = float(b.var(axis=(1, 2)).sum())
+    print("constant-K layer horizontal variance", structure, "unmixed", unmixed)
+    assert structure < unmixed
+    report = ledger_report(mixed)["rows"]["passive_1"]
+    print("constant-K periodic tracer layer", report,
+          "transport/initial", report["transport_kg"] / report["initial_kg"])
+    assert report["initial_kg"] > 0
+    assert abs(report["closure_kg"]) <= 1e-12 * report["initial_kg"]
 
 
 def test_chem_mix6_off_removes_the_filter_from_chem_only():

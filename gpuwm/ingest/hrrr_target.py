@@ -137,6 +137,80 @@ def native_grid_identity(grid: LambertGrid) -> bool:
 
 
 @dataclass(frozen=True)
+class NativeLatticePlacement:
+    """Where a target's mass grid sits on the native HRRR mass lattice.
+
+    The target's mass point ``(j, i)`` (zero-based) IS native cell
+    ``(j0 + j, i0 + i)``; its mass grid is ``ny`` x ``nx``.  The whole
+    native grid is ``(0, 0, 1799, 1059)``.
+    """
+
+    i0: int
+    j0: int
+    nx: int
+    ny: int
+
+
+#: How far from a whole cell a piece's reference position may sit inside
+#: the grid it was cut from.  A piece is cut by subtracting a whole
+#: number of cells from the parent's ``known_x``/``known_y`` (exact for
+#: every cell count a grid can have), so anything but rounding is
+#: another lattice.
+LATTICE_PIECE_TOLERANCE_CELLS = 1.0e-9
+
+
+def native_lattice_placement(
+        grid: LambertGrid, *,
+        parent: LambertGrid | None = None) -> NativeLatticePlacement | None:
+    """The native-lattice rectangle ``grid`` occupies, or ``None``.
+
+    Without ``parent``: the whole native grid when
+    :func:`native_grid_identity` accepts ``grid``, else ``None`` -- the
+    identity route exactly as before.  With ``parent`` (the domain
+    ``grid`` was cut from, as tools/hrrr_single_domain_benchmark.py
+    ``_boundary_mapping_targets`` cuts the four specified-boundary
+    strips): when ``parent`` IS the native grid and ``grid`` is a
+    whole-cell piece of it, the rectangle that piece occupies, so it
+    takes the identity route its domain took.  A domain that is itself a
+    crop of the native grid keeps interpolating, and so do its strips.
+
+    Breakage this prevents (acceptance D-05, 2.8.8): the full
+    1800 x 1060 HRRR grid mapped its start state on the identity route,
+    then every boundary hour mapped its four strips on the interpolated
+    route, where the two spheres' drift (up to 0.35 cells, see
+    :data:`NATIVE_GRID_CORNER_TOLERANCE_DEG`) put edge points past the
+    native grid, and preparation died after five minutes with "HRRR
+    bridge window lacks the bilinear donor cell".
+    """
+    if not isinstance(grid, LambertGrid):
+        return None
+    if parent is None:
+        if native_grid_identity(grid):
+            return NativeLatticePlacement(0, 0, HRRR_SOURCE_NX,
+                                          HRRR_SOURCE_NY)
+        return None
+    if not native_grid_identity(parent):
+        return None
+    same_projection = all(
+        float(getattr(grid, name)) == float(getattr(parent, name))
+        for name in ("ref_lat", "ref_lon", "truelat1", "truelat2",
+                     "stand_lon", "dx", "dy"))
+    if not same_projection:
+        return None
+    shift_x = float(parent.known_x) - float(grid.known_x)
+    shift_y = float(parent.known_y) - float(grid.known_y)
+    i0, j0 = int(round(shift_x)), int(round(shift_y))
+    if (abs(shift_x - i0) > LATTICE_PIECE_TOLERANCE_CELLS
+            or abs(shift_y - j0) > LATTICE_PIECE_TOLERANCE_CELLS):
+        return None
+    nx, ny = int(grid.e_we) - 1, int(grid.e_sn) - 1
+    if not (nx >= 1 and ny >= 1 and 0 <= i0 and i0 + nx <= HRRR_SOURCE_NX
+            and 0 <= j0 and j0 + ny <= HRRR_SOURCE_NY):
+        return None
+    return NativeLatticePlacement(i0, j0, nx, ny)
+
+
+@dataclass(frozen=True)
 class HrrrSourceWindow:
     """Zero-based inclusive HRRR source window with interpolation halos."""
 
@@ -586,8 +660,10 @@ __all__ = [
     "SURFACE_FALLBACK_RADIUS_MAX",
     "HrrrSourceWindow",
     "HrrrTargetDomain",
+    "NativeLatticePlacement",
     "TARGET_DOMAIN_SCHEMA",
     "hrrr_coverage_envelope",
     "load_hrrr_target_domain",
+    "native_lattice_placement",
     "required_hrrr_source_window",
 ]

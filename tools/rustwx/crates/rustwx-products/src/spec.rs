@@ -805,6 +805,9 @@ fn direct_entry_notes(slug: &str) -> Vec<String> {
         "precipitation_type" => vec![
             "Rendered as an accurate HRRR direct composite panel over categorical rain, freezing-rain, ice-pellet, and snow phase flags".to_string(),
         ],
+        "snowfall_window" => vec!["Explicit SNOWFALLAC depth in mm of snow, from model initialization or an exact selected baseline".into()],
+        "snow_10to1_window" => vec!["Interval changes in SNOWNC plus optional GRAUPELNC times 10; mm of snow; history cadence is retained".into()],
+        "snow_kuchera_window" => vec!["Interval changes in frozen liquid equivalent weighted by interval-end native column Tmax through 500 hPa; empirical snow-to-liquid ratio; mm of snow".into()],
         _ => Vec::new(),
     }
 }
@@ -864,6 +867,7 @@ fn render_style_name(style: RenderStyle) -> &'static str {
         RenderStyle::WeatherCloudCover => "weather_cloud_cover",
         RenderStyle::WeatherPrecipitableWater => "weather_precipitable_water",
         RenderStyle::WeatherQpf => "weather_qpf",
+        RenderStyle::WeatherSnowfall => "weather_snowfall",
         RenderStyle::WeatherCategorical => "weather_categorical",
         RenderStyle::WeatherVisibility => "weather_visibility",
         RenderStyle::WeatherRadarReflectivity => "weather_radar_reflectivity",

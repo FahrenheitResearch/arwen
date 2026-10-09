@@ -1,12 +1,7 @@
-"""Device driver checks against the pinned CPU and WRF references.
+"""Exact device driver checks against the pinned CPU and WRF references.
 
-The warm step keeps every historical per-field driver budget. The cold
-step keeps them too, except the two wind tendencies, whose budgets are
-wider there and also held by absolute caps (``_COLD_VAPOR_ULP``,
-``_COLD_VAPOR_ABS``). Ordinary mixing length now reuses the rounded helper
-already called by initialization. The other leaves retain their recorded
-residuals; these upper bounds are regression limits, not a claim of full
-WRF or forecast accuracy.
+The former nonzero residue and compiler-specific budgets are retired.
+Every recorded driver output is compared as raw float32 words.
 """
 
 from __future__ import annotations
@@ -15,11 +10,10 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
-from _toolchain_rows import toolchain_row
 
 import cupy as cp
 
-from gpuwm.core.fp32_ulp import fp32_ulp_distance
+from gpuwm.core.fp32_ulp import assert_bit_exact, fp32_ulp_distance
 from gpuwm.core.mynn_pbl import mynn_bl_driver
 from gpuwm.core.mynn_pbl_scratch import MynnPblScratch
 from gpuwm.core.mynn_pbl_gpu import (
@@ -29,63 +23,13 @@ from gpuwm.core.mynn_pbl_gpu import (
 from test_mynn_pbl import DRIVER_CASES, _driver_step
 
 
-#: Measured worst case per field over both fixture steps, inherited from the
-#: leaves named in the module docstring.  A tighter number here is a real
-#: improvement; a looser one is a regression.
-_PROFILE_BUDGET = {
-    "rublten": 819, "rvblten": 205, "rthblten": 1258291,
-    "rqvblten": 1677721, "rqcblten": 126, "rqiblten": 8,
-    "rqsblten": 0, "dozone": 0, "exch_h": 144, "exch_m": 128,
-    "qke": 10, "tsq": 283, "qsq": 108, "cov": 208, "el": 101,
-    "sh": 48, "sm": 61, "qc_bl": 5, "qi_bl": 2, "cldfra_bl": 32,
-}
-_COLUMN_BUDGET = {
-    "pblh": 1, "rmol": 0, "maxwidth": 0, "maxmf": 2, "ztop_plume": 0,
-}
-
-# COLD-STEP OVERRIDES FOR THE TWO WIND TENDENCIES, AND WHY THEY ARE WIDER.
-# Both drivers now hand vapor (sqv) to initialization on the cold call, as
-# WRF does; both used to hand it total water (sqv+sqc+sqi). The earlier cold
-# comparison was CPU against CUDA on that same input, so it was consistent
-# and its 819 and 205 ULP budgets (the ordinary row above) were right for
-# it: this is NOT a case of an old comparison made against a wrong
-# reference. What changed is the input. With vapor, the cloudy cold columns
-# start from a different initialized state, and on that state the CUDA
-# driver's residue against the CPU driver in these two cancellation-
-# sensitive rates is larger: 3276 and 1638 ULP over the original
-# first-four-column population, measured on sm_89 / NVRTC 13.4, with the
-# same limits passing on RTX PRO 6000 (sm_120), CuPy 14.2.0 / NVRTC 12.9.
-# They are a new measured residue on a new cold-cloud population, declared
-# as such. Every other bound and the entire warm row stay unchanged. The
-# absolute bounds keep these rate comparisons from admitting a larger
-# physical error behind a ULP cap.
-_COLD_VAPOR_ULP = {"rublten": 3276, "rvblten": 1638}
-_COLD_VAPOR_ABS = {
-    "rublten": 7.147900760173798e-8,
-    "rvblten": 4.452886059880257e-9,
-}
-
-#: ``_PROFILE_BUDGET`` per compiler where a compiler reads it differently,
-#: keyed on (compute capability, NVRTC major.minor), the pair measured.
-#: A146: NVRTC had compiled every float division by a compile-time constant
-#: as a multiply by the rounded reciprocal on Blackwell, and the kernels now
-#: spell those divisions ``__fdiv_rn``, the IEEE quotient.  On sm_120 that
-#: moves rvblten against the CPU driver from 205 to 819 ULP (rublten's
-#: budget); every other field reads at or below its budget, most far below
-#: (exch_h 5, tsq 10, cov 7 against 144, 283, 208).  MEASURED 2026-09-30 on
-#: the RTX 5070 Ti (sm_120, NVRTC 13.4.92) over both fixture steps.
-_PROFILE_BUDGET_BY_TOOLCHAIN = {
-    ("120", (13, 4)): {**_PROFILE_BUDGET, "rvblten": 819},
-}
-#: A167: NVRTC 12.9.86, the compiler of the default gpuwm[gpu] extra
-#: (cupy-cuda12x), reads the sm_120 row A146 re-recorded under 13.4: every
-#: reading this file's tests take, and the device result behind each, is
-#: bit-identical under the two compilers.  Before this row 12.9.86 failed
-#: here by name (tests/_toolchain_rows.py).  MEASURED 2026-10-01 on node-4's
-#: RTX 5070 Ti and node-2's RTX 5090, two processes per compiler, at
-#: integrate/2.8 9dbb4a2db.
-_PROFILE_BUDGET_BY_TOOLCHAIN[("120", (12, 9))] = (
-    _PROFILE_BUDGET_BY_TOOLCHAIN[("120", (13, 4))])
+# Every recorded output is exact. There is no compiler-specific allowance.
+_PROFILE_OUTPUTS = (
+    "rublten", "rvblten", "rthblten", "rqvblten", "rqcblten", "rqiblten",
+    "rqsblten", "dozone", "exch_h", "exch_m", "qke", "tsq", "qsq", "cov",
+    "el", "sh", "sm", "qc_bl", "qi_bl", "cldfra_bl",
+)
+_COLUMN_OUTPUTS = ("pblh", "rmol", "maxwidth", "maxmf", "ztop_plume")
 
 
 def _worst(device, host) -> int:
@@ -155,21 +99,11 @@ def test_ordinary_mixing_length_uses_the_rounded_column_contract(
 
 @requires_gpu
 @pytest.mark.parametrize("step", (1, 2))
-def test_device_driver_stays_within_the_measured_leaf_residue(step):
-    """Every output, against the CPU driver, at the numbers this repo measures.
-
-    ``rthblten``/``rqvblten`` carry huge ULP counts because they are
-    cancellation residues from the assembled CUDA leaves. The CPU driver
-    now agrees bitwise with WRF on this option, including cold clouds. The
-    count is a regression tripwire, not a claim about accuracy. The integer
-    indices have no budget at all: a PBL top or plume top that moves a level
-    is a structural disagreement, not rounding.
-    """
+def test_device_driver_is_bitwise_the_cpu_reference(step):
+    """Every profile and column output must have the CPU reference words."""
 
     _, values, initflag, delt = _driver_step(step)
-    # Preserve the historical four-column ULP ratchet unchanged.  The new
-    # snow-only column has its own WRF-facing gate below; folding a new
-    # population into these measured maxima would redefine them.
+    # The snow-only column has its own WRF-facing gate below.
     values = {name: np.asarray(value)[:4].copy()
               for name, value in values.items()}
     host = mynn_bl_driver(
@@ -178,20 +112,11 @@ def test_device_driver_stays_within_the_measured_leaf_residue(step):
     device = mynn_bl_driver_cuda(
         _device(values), initflag=initflag, delt=delt, flag_qs=True)
 
-    profile = toolchain_row(_PROFILE_BUDGET_BY_TOOLCHAIN, _PROFILE_BUDGET,
-                            "_PROFILE_BUDGET_BY_TOOLCHAIN")
-    if step == 1:
-        profile = {**profile, **_COLD_VAPOR_ULP}
-        for name, maximum in _COLD_VAPOR_ABS.items():
-            error = np.abs(cp.asnumpy(device[name]).astype(np.float64)
-                           - np.asarray(host[name], dtype=np.float64))
-            assert float(error.max()) <= maximum, (name, float(error.max()))
-    for name, budget in profile.items():
-        worst = _worst(device[name], host[name])
-        assert worst <= budget, f"{name}: {worst} ULP (budget {budget})"
-    for name, budget in _COLUMN_BUDGET.items():
-        worst = _worst(device[name], np.asarray(host[name]).reshape(-1))
-        assert worst <= budget, f"{name}: {worst} ULP (budget {budget})"
+    for name in _PROFILE_OUTPUTS:
+        assert_bit_exact(cp.asnumpy(device[name]), host[name], name)
+    for name in _COLUMN_OUTPUTS:
+        assert_bit_exact(cp.asnumpy(device[name]),
+                         np.asarray(host[name]).reshape(-1), name)
     for name in ("kpbl", "ktop_plume"):
         np.testing.assert_array_equal(
             cp.asnumpy(device[name]).astype(np.int32).reshape(-1),
@@ -201,8 +126,8 @@ def test_device_driver_stays_within_the_measured_leaf_residue(step):
 
 
 @requires_gpu
-def test_device_driver_supplies_snow_within_the_existing_wrf_leaf_budgets():
-    """The production driver reads sqs and retains the existing WRF budgets."""
+def test_device_driver_supplies_snow_bitwise_as_wrf():
+    """The production driver reads sqs and matches the recorded cloud words."""
 
     blocks, values, initflag, delt = _driver_step(2)
     supplied = mynn_bl_driver_cuda(
@@ -214,9 +139,7 @@ def test_device_driver_supplies_snow_within_the_existing_wrf_leaf_budgets():
     for name in ("qc_bl", "qi_bl", "cldfra_bl"):
         want = np.asarray(
             [np.float32(row[name]) for row in blocks[index]], dtype=np.float32)
-        assert _worst(supplied[name][index], want) <= (
-            toolchain_row(_PROFILE_BUDGET_BY_TOOLCHAIN, _PROFILE_BUDGET,
-                          "_PROFILE_BUDGET_BY_TOOLCHAIN")[name])
+        assert_bit_exact(cp.asnumpy(supplied[name][index]), want, name)
         got = cp.asnumpy(supplied[name][index])
         without = cp.asnumpy(withheld[name][index])
         changed += int(np.count_nonzero(got != without))

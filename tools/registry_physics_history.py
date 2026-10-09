@@ -14,8 +14,9 @@ Usage
 
 ``--since/--until`` takes the document at ``--since`` and every document
 the registry took after it up to ``--until`` (``git rev-list
-SINCE..UNTIL``, merges included).  ``--write`` rewrites the record with
-exactly those documents; without it the record is printed.  ``--check``
+SINCE..UNTIL``, merges included).  ``--write`` adds those documents while
+preserving the retained history required by old preparation receipts.
+Without it the selected record is printed.  ``--check``
 recomputes every row from a committed document with that digest and
 fails on a row it cannot find or that disagrees; it needs the history.
 """
@@ -68,6 +69,9 @@ def record(commits: list[str]) -> dict[str, object]:
         documents[digest] = {
             "physics_sha256": physics_digest,
             "commit": _git("rev-parse", "--short=10", commit).strip(),
+            # git am preserves this blob but changes an exported lane's
+            # commit ID when its parent is the full engine repository.
+            "registry_blob_sha1": _git("rev-parse", f"{commit}:{REGISTRY}").strip(),
         }
         physics.setdefault(physics_digest, registry_physics_parts(document))
     return {
@@ -83,6 +87,22 @@ def _commits_between(since: str, until: str) -> list[str]:
                          "--", REGISTRY).split()]
 
 
+def retain_history(previous: dict, current: dict) -> dict:
+    """A narrow intake range must not discard older preparation identities."""
+    for key in ("schema", "identity_schema"):
+        if previous.get(key) != current[key]:
+            raise ValueError(f"registry history {key} differs; refusing to discard old identities")
+    for digest in previous["physics"].keys() & current["physics"].keys():
+        if previous["physics"][digest] != current["physics"][digest]:
+            raise ValueError(f"registry physics {digest} has conflicting parts; refusing false identity")
+    for digest in previous["documents"].keys() & current["documents"].keys():
+        if previous["documents"][digest]["physics_sha256"] != current["documents"][digest]["physics_sha256"]:
+            raise ValueError(f"registry document {digest} has conflicting physics identities")
+    return {**current,
+            "documents": {**previous["documents"], **current["documents"]},
+            "physics": {**previous["physics"], **current["physics"]}}
+
+
 def check() -> list[str]:
     saved = json.loads(REGISTRY_PHYSICS_HISTORY_PATH.read_text(
         encoding="utf-8"))
@@ -92,9 +112,22 @@ def check() -> list[str]:
         try:
             document = _document(commit)
         except subprocess.CalledProcessError:
-            failures.append(f"{digest}: commit {commit} is not in this "
-                            "repository's history")
-            continue
+            blob = row.get("registry_blob_sha1")
+            if not isinstance(blob, str) or len(blob) != 40 or any(
+                    char not in "0123456789abcdef" for char in blob):
+                failures.append(f"{digest}: commit {commit} is not in this "
+                                "repository's history and no registry blob is recorded")
+                continue
+            try:
+                document = json.loads(_git("cat-file", "blob", blob))
+            except (subprocess.CalledProcessError, json.JSONDecodeError):
+                failures.append(f"{digest}: recorded registry blob {blob} "
+                                "is missing or is not a registry document")
+                continue
+            if not isinstance(document, dict):
+                failures.append(f"{digest}: recorded registry blob {blob} "
+                                "is not a registry object")
+                continue
         if registry_sha256(document) != digest:
             failures.append(f"{digest}: the document at {commit} has "
                             f"digest {registry_sha256(document)}")
@@ -125,7 +158,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if failures else 0
     if not (args.since and args.until):
         parser.error("--since and --until are required without --check")
-    text = canonical_json(record(_commits_between(args.since, args.until)))
+    saved = record(_commits_between(args.since, args.until))
+    if args.write and REGISTRY_PHYSICS_HISTORY_PATH.exists():
+        saved = retain_history(json.loads(REGISTRY_PHYSICS_HISTORY_PATH.read_text(
+            encoding="utf-8")), saved)
+    text = canonical_json(saved)
     if args.write:
         # Bytes, so Windows writes the same LF-only file Linux does.
         REGISTRY_PHYSICS_HISTORY_PATH.write_bytes(

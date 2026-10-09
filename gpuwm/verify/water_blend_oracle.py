@@ -24,7 +24,12 @@ module (a test enforces it), so it is never a silent NumPy fallback.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+
+if TYPE_CHECKING:
+    from gpuwm.ingest.water_overlay import WaterTemperatureOverlay
 
 
 def _nearest_finite_source_water(skin, water, y: float, x: float) -> float:

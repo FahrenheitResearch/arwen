@@ -550,15 +550,24 @@ def test_nonfinite_hfx_surfaces_as_dtheta_and_the_refusal_names_hfx():
 
     Part 1 reproduces it against the real kernel.  Part 2 pins the
     refusal to naming HFX, which is what the shipped message did not do.
+
+    WATER, since lane/parity-286.  Every YSU column now takes WRF's default
+    ctopo surface-drag arm (bl_ysu.F90:1308; module_bl_ysu.F:404 passes
+    ctopo = 1 on every WRF run), whose drag weight vconvlim reads the surface
+    buoyancy flux through the Beljaars vconv on LAND (bl_ysu.F90:1295-1298,
+    fluxc = max(sflux, 0)).  So on a land column HFX reaches du and dv as it
+    does in WRF, and a NaN HFX poisons them too.  Over water WRF sets
+    vconv = 0, and the asymmetry this test is about holds as before.
     """
     import cupy as cp
 
     from gpuwm.core.physics import validate_ysu_tendencies
     from gpuwm.core.ysu import launch_ysu, validate_ysu_outputs
 
-    # A nocturnal stable column: positive bulk Richardson number with the
-    # downward heat flux that goes with it.
-    args = _column(hfx=-35.0, qfx=1.0e-5, ust=0.20, br=0.20, dt=60.0)
+    # A nocturnal stable column over water: positive bulk Richardson number
+    # with the downward heat flux that goes with it.
+    args = _column(hfx=-35.0, qfx=1.0e-5, ust=0.20, br=0.20, xland=2.0,
+                   dt=60.0)
     col, surf = _device_column(args)
 
     # -- part 1: the kernel reproduces the user's exact signature --------

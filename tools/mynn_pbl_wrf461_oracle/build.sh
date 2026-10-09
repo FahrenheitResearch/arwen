@@ -49,6 +49,11 @@ gfortran -c -O0 -ffree-form -ffree-line-length-none \
     -I "${build_dir}" "${script_dir}/run_stfunc.F90"
 gfortran -c -O0 -ffree-form -ffree-line-length-none \
     -I "${build_dir}" "${script_dir}/run_driver.F90"
+# The multi-step column families (lane/mynn-exact).  -ffp-contract=off is
+# explicit: gfortran's x86-64 default never contracts at -O0, and the flag
+# keeps it so on a target whose default would.
+gfortran -c -O0 -ffp-contract=off -ffree-form -ffree-line-length-none \
+    -I "${build_dir}" "${script_dir}/run_driver_families.F90"
 gfortran -o run_level2 stub_wrf.o module_bl_mynn_common.o \
     module_bl_mynn.o run_level2.o
 gfortran -o run_pblh_scale stub_wrf.o module_bl_mynn_common.o \
@@ -75,6 +80,8 @@ gfortran -o run_stfunc stub_wrf.o module_bl_mynn_common.o \
     module_bl_mynn.o run_stfunc.o
 gfortran -o run_driver stub_wrf.o module_bl_mynn_common.o \
     module_bl_mynn.o run_driver.o
+gfortran -o run_driver_families stub_wrf.o module_bl_mynn_common.o \
+    module_bl_mynn.o run_driver_families.o
 
 ./run_level2 pbl-level2.csv
 ./run_pblh_scale pblh-scale.csv
@@ -94,6 +101,12 @@ gfortran -o run_driver stub_wrf.o module_bl_mynn_common.o \
 ./run_initialize initialize2.csv 2
 ./run_turbulence turbulence2.csv 2
 ./run_driver driver2.csv 2
+# Six column families, twelve steps, both options (lane/mynn-exact); stored
+# gzipped with no name or time stamp as
+# gpuwm/data/mynn/oracle/driver-families{,2}.csv.gz.
+./run_driver_families driver-families.csv 1 12
+./run_driver_families driver-families2.csv 2 12
+gzip -n -9 -f -k driver-families.csv driver-families2.csv
 python3 "${script_dir}/validate_oracle.py" pbl-level2.csv
 python3 "${script_dir}/validate_pblh_oracle.py" pblh-scale.csv
 python3 "${script_dir}/validate_mixlength_oracle.py" mixlength.csv
@@ -130,9 +143,11 @@ sha256sum "${common_source}" "${pbl_source}" \
     "${script_dir}/run_tendencies_mf.F90" \
     "${script_dir}/run_stfunc.F90" \
     "${script_dir}/run_driver.F90" \
+    "${script_dir}/run_driver_families.F90" \
     pbl-level2.csv pblh-scale.csv mixlength.csv turbulence.csv predict.csv \
     condensation.csv esat-blend.csv tendencies-nomf.csv initialize.csv \
     dmp-mf.csv tendencies-mf.csv stfunc.csv driver.csv \
     mixlength2.csv initialize2.csv turbulence2.csv driver2.csv \
+    driver-families.csv driver-families2.csv \
     > oracle-sha256sums.txt
 gfortran --version | head -1 > compiler.txt

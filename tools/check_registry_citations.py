@@ -194,7 +194,9 @@ RESOLVED: dict[str, tuple[str, str]] = {
     "gpuwm/verify/shinhong_ref.py:706": (
         "gpuwm/verify/shinhong_ref.py",
         "br > F(0.0)"),
-    "tests/test_mynn_pbl_runtime.py:61": (
+    # :63 since 52ebcb7db/cafa72110 moved the dataclasses import above the
+    # fixture (it was :61); the anchor is the 5/5 selector pair it cites.
+    "tests/test_mynn_pbl_runtime.py:63": (
         "tests/test_mynn_pbl_runtime.py",
         "sf_sfclay_physics=5, sf_surface_physics=2"),
     # The two LES closures' transcription headers.  The anchor is the
@@ -251,10 +253,14 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # moved both six lines, to :1267 and :1361.  Anchors unchanged.)
     # (lane/ec-sfire: the open-boundary geopotential launcher moved both 17
     # lines, to :1284 and :1378.  Anchors unchanged.)
-    "gpuwm/core/dycore.py:1284": (
+    # (lane/wrf-exact-start c501f4d34: the strict split big step's t - t0
+    # transport moved both ten lines, to :1294 and :1388.  Anchors unchanged.)
+    # The restored selected integration resolves these declarations at
+    # :1424 and :1518. Keep the original semantic anchors checked there.
+    "gpuwm/core/dycore.py:1424": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:1378": (
+    "gpuwm/core/dycore.py:1518": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

@@ -275,7 +275,7 @@ def run(args):
             actual = state_hash(scalar, names)
             if actual != expected:
                 raise RuntimeError("complete output identity failed: " + actual + " != " + expected)
-            del scalar
+            scalar = None  # rebound, not deleted: a closure above reads it
             gc.collect()
             pool.free_all_blocks()
         row.update(status="measured", identity="byte_identical_all_state_fields", output_sha256=hashes,

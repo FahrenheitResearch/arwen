@@ -199,19 +199,15 @@ def test_open_boundaries_admit_boundary_aware_terrain(tmp_path):
                                    grid="terrain_opt = 1")).terrain_opt == 1
 
 
-def test_rejects_open_with_constant_k(tmp_path):
-    with pytest.raises(NotImplementedError, match="khdif"):
-        load_config(_write_toml(tmp_path,
-                                dynamics="open_x = true\nkhdif = 75.0"))
-    with pytest.raises(NotImplementedError, match="khdif"):
-        load_config(_write_toml(tmp_path,
-                                dynamics="open_y = true\nkvdif = 75.0"))
-    with pytest.raises(NotImplementedError, match="khdif"):
-        load_config(_write_toml(tmp_path,
-                                dynamics="specified = true\nkhdif = 75.0"))
-    # constant K stays legal on periodic domains (the Straka setup)
-    cfg = load_config(_write_toml(tmp_path, dynamics="khdif = 75.0"))
-    assert cfg.khdif == 75.0
+def test_admits_open_with_constant_k(tmp_path):
+    # km_opt=1 is WRF's isotropic_km package (3641a45f7), whose operators
+    # carry WRF's open-boundary bounds; the refusal belonged to the retired
+    # periodic Laplacian.  The km1 v4.6.1 column oracle
+    # (tests/test_km1_wrf461_oracle.py) holds the open-ring words.
+    for dynamics in ("open_x = true\nkhdif = 75.0",
+                     "open_y = true\nkvdif = 75.0", "khdif = 75.0"):
+        cfg = load_config(_write_toml(tmp_path, dynamics=dynamics))
+        assert cfg.km_opt == 1 and max(cfg.khdif, cfg.kvdif) == 75.0
 
 
 def test_km_opt_selects_exactly_one_diffusion_scheme(tmp_path):
@@ -278,12 +274,9 @@ def test_step_guards_unsupported_combinations_cpu():
 
     base = dict(nx=8, ny=4, nz=6, dx=100.0, dy=100.0, ztop=1000.0,
                 dt=0.5, run_seconds=0.0)
-    with pytest.raises(NotImplementedError, match="khdif"):
-        step(_Stub(), RunConfig(**base, open_x=True, khdif=75.0))
-    with pytest.raises(NotImplementedError, match="khdif"):
-        step(_Stub(), RunConfig(**base, open_y=True, kvdif=75.0))
-    with pytest.raises(NotImplementedError, match="khdif"):
-        step(_Stub(), RunConfig(**base, specified=True, khdif=75.0))
+    # Constant K on open or specified boundaries is no longer refused here:
+    # km_opt=1 runs WRF's isotropic_km package (3641a45f7), so the step's
+    # khdif/kvdif guard retired with the periodic Laplacian it protected.
     with pytest.raises(ValueError, match="diff_6th_opt"):
         step(_Stub(moist=True), RunConfig(**base, moist=True,
                                           diff_6th_opt=1))

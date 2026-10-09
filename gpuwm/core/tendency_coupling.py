@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
+
 _SOURCE = r"""
 extern "C" __global__
 void couple_mass_rates(const float* c1h, const float* c2h, const float* mut,
@@ -234,7 +236,7 @@ def couple_mass(state, mut, slots, *, theta_slot, mask_ring, momentum=None):
          np.uint32(present), np.uint32(wanted), np.int32(len(slots)),
          np.int32(theta_slot), du, dv, mass_u, mass_v,
          np.int32(momentum is not None), np.int32(bool(mask_ring)),
-         np.int32(bool(state.has_msf)),
+         np.int32(bool(state.has_msf) and not WRF_EXACT),
          np.int64(nz), np.int64(ny), np.int64(nx)))
     if momentum is None:
         mass_u = mass_v = None
@@ -257,6 +259,6 @@ def couple_faces(state, mass_u, mass_v, *, mask_ring, open_x, open_y):
         ((total + _THREADS - 1) // _THREADS,), (_THREADS,),
         (mass_u, mass_v, msfu, msfv, ru, rv,
          np.int32(bool(mask_ring)), np.int32(bool(open_x)),
-         np.int32(bool(open_y)), np.int32(bool(state.has_msf)),
+         np.int32(bool(open_y)), np.int32(bool(state.has_msf) and not WRF_EXACT),
          np.int64(nz), np.int64(ny), np.int64(nx)))
     return ru, rv

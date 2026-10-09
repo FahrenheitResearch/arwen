@@ -424,7 +424,7 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
     from gpuwm.static.build import (build_static_for_domain, build_terrain,
                                     geog_selection_from_catalog)
     from gpuwm.static.corridor import (corridor_grid, moving_grid_ids,
-                                       planned_corridor)
+                                       planned_corridor, relocating_subtree_grid_ids)
 
     from gpuwm.static.terrain_smoothing import catalog_with_smoothing
     static_catalog = catalog_with_smoothing(static_catalog, static_highres)
@@ -457,11 +457,23 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
             built, _ = apply_highres_statics(
                 built, grid_by_id[gid], config=static_highres, domain_id=gid,
                 case_date=_domain_start(dc, exp).date(),
-                landuse_attrs=selection.landuse_global_attrs())
+                landuse_attrs=selection.landuse_global_attrs(), run=dc.run)
             terrain = built["HGT_M"]
         else:
             terrain = build_terrain(grid_by_id[gid], selection.root,
                                     selection=selection)
+        from gpuwm.static.terrain_autosmooth import smooth_to_limit, receipt_of
+        terrain, smoothing = smooth_to_limit(
+            terrain, grid_by_id[gid], domain_id=gid, run=dc.run)
+        if highres_on and smoothing is None:
+            smoothing = receipt_of(built)
+        if smoothing is not None and gid in relocating_subtree_grid_ids(exp):
+            raise ValueError(
+                f"d{gid:02d} requires terrain auto-smoothing and moves; "
+                "independent footprint smoothing changes shared edge heights "
+                "and would fail the relocation overlap-statics check. Use "
+                "a fixed domain, or pre-smooth a shared statics corridor "
+                "below the measured slope limit before preparing again.")
         fields.append(TerrainField(f"d{gid:02d} static terrain",
                                    np.asarray(terrain, dtype=np.float64),
                                    float(dc.run.base_temp)))

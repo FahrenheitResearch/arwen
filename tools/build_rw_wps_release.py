@@ -294,16 +294,11 @@ _TOP_LEVEL_EXCLUDES = {
     # Staging either put a module in the wheel that ImportErrors the moment
     # it is reached, and this builder's own staging scans refused outright.
     "local_da_controller.py", "local_da_score.py",
-    # The steep-terrain clock: the acoustic substep rule and the long step a
-    # domain's ground and crest-level wind allow.  Both set the time step a
-    # forecast integrates with, when the forecast starts, and besides each
-    # other their only importers are gpuwm/runtime.py and the two prepared
-    # forecast runners, all excluded above. A preprocessing wheel takes
-    # no step and selects no terrain-dependent forecast clock. The shared
-    # adaptive-clock arithmetic is staged below because the namelist
-    # importer uses its acoustic count for a fixed step through WRF's
-    # adaptive clock; that does not call either terrain adaptation module.
-    "acoustic_adaptation.py", "terrain_clock.py",
+    # Terrain preparation now calls acoustic_adaptation.steepest_slope and
+    # terrain_clock_local.candidate_map through static.terrain_autosmooth.
+    # candidate_map also reads terrain_clock.measured_map. These CPU readers
+    # stay staged with their measured JSON tables; neither module executes a
+    # forecast, and the model, dycore and physics executors remain excluded.
 }
 _CORE_MODULES = {
     "__init__.py",
@@ -698,14 +693,25 @@ _ENSEMBLE_MODULES = {
 #: needs it.  Missing, that call raised ImportError in this package.
 #: Module scope is pathlib, typing and numpy, and its one internal lookup
 #: (``gpuwm.io.nc_writer_bridge``) is function-local and staged.
+#:
+#: ``netcdf_serialization`` holds the deferred ``netCDF4`` handle and the
+#: process-wide netCDF4 session lock (D-10, 2.8.8).  The staged
+#: ``gpuwm.wrf_direct`` imports it at module scope, so without it this
+#: package's staging refused ("unresolved internal imports") and an
+#: installed wheel could not import the domain-artifact reader.  Module
+#: scope is contextlib and threading; netCDF4 itself loads on first use.
 _IO_MODULES = {"__init__.py", "classic_product.py", "classic_tape.py",
                "history_selection.py", "nc_writer_bridge.py",
+               "netcdf_serialization.py",
                "wrf_output_schema.py", "sfire_schema.py"}
 _ROOT_DATA = {
     "native_wrf_support_v1.json",
     "physics_params_registry_v1.json",
     "physics_registry_v2.json",
     "wrf_direct_v461_contract.json",
+    "terrain_clock_map.json",
+    "terrain_clock_map_local_face.json",
+    "terrain_clock_adaptive_local_face.json",
 }
 _TOOL_FILES = {"__init__.py", *HRRR_HELPERS}
 _FORBIDDEN_STAGED_FILES = {
@@ -737,6 +743,11 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/ingest/lateral_bc.py", "gpuwm.core.dycore"):
+        "WRF_MUTS_SLOT inside _wrf_final_muts_arg, called only by the CUDA "
+        "_launch_finalize_field forecast boundary finalizer in strict mode; "
+        "preparation reads or writes boundary forcing without stepping a "
+        "state boundary or running an acoustic loop",
     ("gpuwm/core/chem_ageing.py", "gpuwm.core.kernels"):
         "CUDA launch only; preparation reads process allocation rows "
         "without compiling or stepping a chemistry kernel",
@@ -1387,6 +1398,9 @@ gpuwm = [
   "physics_params_registry_v1.json",
   "physics_registry_v2.json",
   "wrf_direct_v461_contract.json",
+  "terrain_clock_map.json",
+  "terrain_clock_map_local_face.json",
+  "terrain_clock_adaptive_local_face.json",
   "authorities/*.json",
   "core/kernels/*.cu",
   "core/kernels/*.cuh",

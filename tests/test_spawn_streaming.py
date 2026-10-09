@@ -572,7 +572,7 @@ def test_nothing_moves_when_the_diagnostic_is_off(monkeypatch):
 
 
 def test_the_streaming_inventory_carries_what_restart_deliberately_does_not():
-    """``streaming_manifest`` == ``carrier_manifest`` + the tracker windows.
+    """Streaming adds tracker windows and carried strict acoustic mass buffers.
 
     The restart classification is right and stays right: a window means "max
     since that consumer last looked" and a checkpoint cannot know when the
@@ -585,7 +585,14 @@ def test_the_streaming_inventory_carries_what_restart_deliberately_does_not():
     from tilestream import physics_inventory as physinv
 
     added = set(physinv.streaming_only_members())
-    assert added == {f"scratch/{s}" for s in uh_diag.TRACKER_WINDOW_SLOTS}
+    # Strict acoustic mass carriers survive the gap between steps too.
+    # Restart deliberately reconstructs them at start_em instead.
+    acoustic_slots = {"wrf_exact_muts", "wrf_exact_mu_halo"}
+    assert added == {f"scratch/{s}" for s in
+                     set(uh_diag.TRACKER_WINDOW_SLOTS) | acoustic_slots}
+    for slot in acoustic_slots:
+        assert restart.classify_scratch_slot(slot) == "carry"
+        assert slot not in restart.SERIALIZED_SCRATCH_SLOTS
     for slot in uh_diag.TRACKER_WINDOW_SLOTS:
         # "carry", not "rebuild", since feat-uh-accum: restart.py grew a
         # THIRD scratch class for exactly this pair -- genuine cross-step

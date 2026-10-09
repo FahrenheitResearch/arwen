@@ -14,6 +14,7 @@ from typing import Mapping, Sequence
 
 
 from gpuwm import netcdf_bridge
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 import numpy as np
 from gpuwm.ingest.wrfinput_sfire import SFIRE_INPUT_DIMENSIONS, fire_input_extents
 
@@ -217,6 +218,9 @@ PHYSICS_FIELD_ALIASES = {
 
 RUC_INPUT_FIELDS = frozenset({"ACRUNOFF", "RHOSNF", "SNOWFALLAC", "SOILT1"})
 MYNN_QKE_INPUT_FIELDS = frozenset(PHYSICS_FIELD_ALIASES["qke"])
+#: The MYNN subgrid cloud a cycled start (RunConfig.cycling) continues;
+#: restored onto the physics fields of the same lower-case names.
+MYNN_CYCLED_WRFINPUT = frozenset({"QC_BL", "CLDFRA_BL"})
 
 # Optional restart-state fields have explicit consumers in
 # ``restore_domain_state``.  They are permitted when present but are not
@@ -226,6 +230,9 @@ OPTIONAL_WRFINPUT = (
     "QNWFA2D", "QNIFA2D",
     "MAPFAC_MX", "MAPFAC_MY", "MAPFAC_UX", "MAPFAC_UY", "MAPFAC_VX", "MAPFAC_VY",
     "fire_smoke",
+    # The reference-profile constants WRF's cold start rebuilds the base
+    # state from (start_em.F:526-536); wrf_start_base_state reads them.
+    "P00", "T00", "TLP", "TISO", "TLP_STRAT", "P_STRAT",
 )
 
 # These are the only non-science variable records allowed through the reader.
@@ -261,6 +268,7 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL", "H_DIABATIC",
         "QIR", "QIB", "QNWFA", "QNIFA", "QNBCA", "qke", "QKE", "qke_adv",
         "fire_smoke",
+        "QC_BL", "CLDFRA_BL",
     )},
     "U": _U_3D_DIMS, "V": _V_3D_DIMS, "W": _W_3D_DIMS,
     "PH": _W_3D_DIMS, "PHB": _W_3D_DIMS,
@@ -290,6 +298,7 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
     )},
     **{name: () for name in (
         "P_TOP", "CF1", "CF2", "CF3", "XTIME", "ITIMESTEP",
+        "P00", "T00", "TLP", "TISO", "TLP_STRAT", "P_STRAT",
     )},
 }
 
@@ -350,11 +359,11 @@ IGNORED_WRFINPUT = frozenset({
     "LAT_UR_D", "LAT_UR_T", "LAT_UR_U", "LAT_UR_V", "LON_LL_D", "LON_LL_T",
     "LON_LL_U", "LON_LL_V", "LON_LR_D", "LON_LR_T", "LON_LR_U", "LON_LR_V",
     "LON_UL_D", "LON_UL_T", "LON_UL_U", "LON_UL_V", "LON_UR_D", "LON_UR_T",
-    "LON_UR_U", "LON_UR_V", "MF_VX_INV", "O3_GFS_DU", "P00",
-    "PC", "PCB", "P_HYD", "P_STRAT", "QV_BASE", "RDX", "RDY", "RESM",
+    "LON_UR_U", "LON_UR_V", "MF_VX_INV", "O3_GFS_DU",
+    "PC", "PCB", "P_HYD", "QV_BASE", "RDX", "RDY", "RESM",
     "SAVE_TOPO_FROM_REAL", "SHDAVG", "SMCREL", "SNOWC", "SOILCBOT",
-    "SOILCTOP", "SR", "STEP_NUMBER", "T00", "THIS_IS_AN_IDEAL_RUN",
-    "THM", "TISO", "TLP", "TLP_STRAT", "TOPOSLPX", "TOPOSLPY", "T_BASE",
+    "SOILCTOP", "SR", "STEP_NUMBER", "THIS_IS_AN_IDEAL_RUN",
+    "THM", "TOPOSLPX", "TOPOSLPY", "T_BASE",
     "UOCE", "U_BASE", "U_FRAME", "VAR", "VAR_SSO", "VOCE", "V_BASE",
     "V_FRAME", "WATER_DEPTH", "ZETATOP", "ZS", "Z_BASE",
 })
@@ -1037,9 +1046,17 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
                 f"{path} has unmapped WRF variable(s): {unknown}.{claim}")
         raw = {}
         soil_conversions = {}
+        # A cycled start (cfg.cycling) continues the input's MYNN subgrid
+        # cloud: the first radiation call merges QC_BL and CLDFRA_BL and the
+        # gsd_41 MYNN first call keeps them (MYNN_CYCLED_WRFINPUT).  Any
+        # other start passes them through unread, as before.
+        carried = (MYNN_CYCLED_WRFINPUT
+                   if cfg is not None and bool(getattr(cfg, "cycling", False))
+                   else frozenset())
         for name, variable in dataset.variables.items():
             if (name == "Times" or name in IGNORED_WRFINPUT
-                    or name in ANALYSIS_PASSTHROUGH_WRFINPUT
+                    or (name in ANALYSIS_PASSTHROUGH_WRFINPUT
+                        and name not in carried)
                     or name in surface_dispositions):
                 continue
             units = str(getattr(variable, "units", "")).strip().lower()
@@ -1170,7 +1187,8 @@ def _validate_supplied_physics_fields(raw, cfg, attributes):
         raise ValueError(
             f"WRF physics input {sorted(ruc)} requires the RUC "
             "sf_surface_physics=3 consumer")
-    mynn = (MYNN_QKE_INPUT_FIELDS | INACTIVE_MYNN_WRFINPUT) & raw.keys()
+    mynn = (MYNN_QKE_INPUT_FIELDS | INACTIVE_MYNN_WRFINPUT
+            | MYNN_CYCLED_WRFINPUT) & raw.keys()
     if mynn and pbl != 5:
         raise ValueError(
             f"WRF physics input {sorted(mynn)} requires the MYNN "
@@ -1256,8 +1274,13 @@ def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
             initial[...] = source
 
 
-def wrf_coordinate_and_base(restored):
-    """Reconstruct shared setup objects from file values, without regeneration."""
+def wrf_coordinate_and_base(restored, hypsometric_opt=None):
+    """The file's vertical coordinate and WRF's cold-start base state.
+
+    The coordinate is the file's.  The base state is the one WRF's
+    ``start_domain_em`` rebuilds before the first step of a run that is
+    not a restart (:func:`wrf_start_base_state`), not the file's words.
+    """
     from gpuwm.core.grid import VerticalCoord, BaseState
 
     raw = restored.raw
@@ -1267,12 +1290,157 @@ def wrf_coordinate_and_base(restored):
     coord = VerticalCoord(**{name: raw[name.upper()] for name in names},
                           hybrid_opt=int(restored.global_attributes['HYBRID_OPT']),
                           etac=float(restored.global_attributes['ETAC']), p_top=top)
-    # WRF module_initialize_real.F:3785/5106 writes T_INIT minus t0.
-    # DomainState.thb is absolute base potential temperature.
-    theta_base = np.asarray(raw['T_INIT'], np.float32) + np.float32(300.0)
-    base = BaseState(raw['MUB'], top, raw['PB'], raw['ALB'], theta_base,
-                     raw['PHB'], raw['HGT'])
+    if hypsometric_opt is None:
+        hypsometric_opt = int(restored.global_attributes.get(
+            'HYPSOMETRIC_OPT', 2))
+    start = wrf_start_base_state(raw, int(hypsometric_opt))
+    # WRF writes T_INIT minus t0.  DomainState.thb is absolute base
+    # potential temperature.
+    theta_base = start['T_INIT'] + np.float32(300.0)
+    base = BaseState(start['MUB'], top, start['PB'], start['ALB'],
+                     theta_base, start['PHB'], raw['HGT'])
     return coord, base
+
+
+def _glibc_expf_array(x):
+    """glibc 2.39 ``expf`` over a float32 array, the same bits.
+
+    glibc's expf is not correctly rounded, but its error stays within
+    0.502 ULP, so it can differ from the once-rounded binary64 exponential
+    only where the exact value lies within 0.002 ULP of a rounding
+    midpoint.  Those few elements (0.06 % of a terrain field) take the
+    scalar transcription; every other element is the binary64 result
+    rounded once, which is then glibc's.
+    """
+    from gpuwm.core.noahmp_libm import expf
+
+    x = np.asarray(x, np.float32)
+    exact = np.exp(x.astype(np.float64))
+    out = exact.astype(np.float32)
+    wide = out.astype(np.float64)
+    ulp = np.abs(np.nextafter(out, np.float32(np.inf)).astype(np.float64)
+                 - wide)
+    near = np.abs(np.abs(exact - wide) - 0.5 * ulp) < 0.01 * ulp
+    for index in zip(*np.nonzero(near)):
+        out[index] = expf(x[index])
+    return out
+
+
+def wrf_start_base_state(raw, hypsometric_opt: int):
+    """MUB, PB, T_INIT, ALB and PHB as WRF v4.6.1's cold start rebuilds them.
+
+    ``start_em.F:554-636`` (input_from_file, not a restart) discards the
+    file's base state and recomputes it from the terrain and the file's
+    reference-profile constants P00/T00/TLP/TISO/TLP_STRAT/P_STRAT::
+
+        p_surf = p00*EXP(-t00/a + ((t00/a)**2 - 2.*g*ht/a/r_d)**0.5)
+        pb     = c3h*(p_surf - p_top) + c4h + p_top
+        temp   = MAX(tiso, t00 + a*LOG(pb/p00))
+                 (tiso + a_strat*LOG(pb/p_strat) where pb < p_strat)
+        t_init = temp*(p00/pb)**(r_d/cp) - t0
+        alb    = (r_d/p1000mb)*(t_init+t0)*(pb/p1000mb)**cvpm
+        mub    = p_surf - p_top
+        phb    = ht*g, then the hypsometric_opt integration upward
+
+    and ``start_em.F:670-680`` (max_dom = 1) re-forms pb and alb from that
+    mub and t_init, which is the same arithmetic.  Every pressure-gradient
+    and EOS evaluation of the run reads these words.  An exported pair can
+    carry its producer's own base state: on the stock-WRF export of the
+    g400 crop the file's ALB sat up to 4.5 m3/kg from WRF's formula at the
+    model top and its MUB/PHB 7 and 20 float32 ULPs off; the door used
+    the file's words.
+
+    FP32 in Fortran's operation order (the reference gfortran build does
+    not contract), with glibc 2.39's logf, powf and expf for LOG, ``**``
+    and EXP.
+    """
+    from gpuwm.core.noahmp_libm import logf_array, powf_array
+
+    f32 = np.float32
+
+    def scalar(name):
+        if name not in raw:
+            raise ValueError(
+                f"WRF input lacks the base-state constant {name}; WRF's "
+                "start_em stops on the same file (no base state "
+                "parameters in wrfinput)")
+        return f32(np.asarray(raw[name], np.float32).reshape(-1)[0])
+
+    p00, t00, a = scalar('P00'), scalar('T00'), scalar('TLP')
+    tiso, a_strat, p_strat = (scalar('TISO'), scalar('TLP_STRAT'),
+                              scalar('P_STRAT'))
+    if t00 < f32(100.0) or p00 < f32(10000.0):
+        raise ValueError(
+            "WRF input base-state constants T00/P00 are unset; WRF's "
+            "start_em stops on the same file")
+    g, r_d, t0, p1000mb = f32(9.81), f32(287.0), f32(300.0), f32(100000.0)
+    cp_ = f32(f32(f32(7.0) * r_d) / f32(2.0))
+    cvpm = f32(f32(-f32(cp_ - r_d)) / cp_)
+    rcp = f32(r_d / cp_)
+    p_top = scalar('P_TOP')
+
+    def col(name):
+        return np.asarray(raw[name], np.float32).reshape(-1)[:, None, None]
+
+    c3h, c4h, c3f, c4f = col('C3H'), col('C4H'), col('C3F'), col('C4F')
+    ht = np.asarray(raw['HGT'], np.float32)
+    ratio = f32(t00 / a)
+    term = np.asarray(f32(f32(2.0) * g) * ht, np.float32)
+    term = np.asarray(np.asarray(term / a, np.float32) / r_d, np.float32)
+    radicand = np.asarray(f32(ratio * ratio) - term, np.float32)
+    exponent = np.asarray(f32(-ratio) + powf_array(radicand, f32(0.5)),
+                          np.float32)
+    p_surf = np.asarray(p00 * _glibc_expf_array(exponent), np.float32)
+    mub = np.asarray(p_surf - p_top, np.float32)
+
+    def level(c3, c4):
+        return np.asarray(np.asarray(np.asarray(c3 * mub, np.float32) + c4,
+                                     np.float32) + p_top, np.float32)
+
+    pb = level(c3h, c4h)
+    temp = np.maximum(tiso, np.asarray(
+        t00 + np.asarray(a * logf_array(np.asarray(pb / p00, np.float32)),
+                         np.float32), np.float32))
+    strat = pb < p_strat
+    if np.any(strat):
+        upper = np.asarray(tiso + np.asarray(a_strat * logf_array(np.asarray(
+            np.where(strat, pb / p_strat, f32(1.0)), np.float32)),
+            np.float32), np.float32)
+        temp = np.where(strat, upper, temp)
+    t_init = np.asarray(
+        np.asarray(temp * powf_array(np.asarray(p00 / pb, np.float32), rcp),
+                   np.float32) - t0, np.float32)
+    lead = np.asarray(f32(r_d / p1000mb) * np.asarray(t_init + t0, np.float32),
+                      np.float32)
+    alb = np.asarray(
+        lead * powf_array(np.asarray(pb / p1000mb, np.float32), cvpm),
+        np.float32)
+    nz = pb.shape[0]
+    phb = np.empty((nz + 1,) + mub.shape, np.float32)
+    phb[0] = np.asarray(ht * g, np.float32)
+    if hypsometric_opt == 2:
+        for k in range(1, nz + 1):
+            pfu = level(c3f[k], c4f[k])
+            pfd = level(c3f[k - 1], c4f[k - 1])
+            phm = level(c3h[k - 1], c4h[k - 1])
+            thick = np.asarray(
+                np.asarray(alb[k - 1] * phm, np.float32)
+                * logf_array(np.asarray(pfd / pfu, np.float32)), np.float32)
+            phb[k] = np.asarray(phb[k - 1] + thick, np.float32)
+    elif hypsometric_opt == 1:
+        dnw = np.asarray(raw['DNW'], np.float32).reshape(-1)
+        c1h = np.asarray(raw['C1H'], np.float32).reshape(-1)
+        c2h = np.asarray(raw['C2H'], np.float32).reshape(-1)
+        for k in range(1, nz + 1):
+            mass = np.asarray(np.asarray(c1h[k - 1] * mub, np.float32)
+                              + c2h[k - 1], np.float32)
+            phb[k] = np.asarray(phb[k - 1] - np.asarray(
+                np.asarray(dnw[k - 1] * mass, np.float32) * alb[k - 1],
+                np.float32), np.float32)
+    else:
+        raise ValueError(
+            f"hypsometric_opt must be 1 or 2, got {hypsometric_opt}")
+    return {'MUB': mub, 'PB': pb, 'T_INIT': t_init, 'ALB': alb, 'PHB': phb}
 
 
 def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
@@ -1311,7 +1479,8 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
         "restoring this wrfinput onto the card", cfg,
         shared_symbols=getattr(dycore_state_workspace, "_symbol_shapes", ()))
     state = DomainState(cfg, **state_kwargs)
-    coord, base = wrf_coordinate_and_base(restored)
+    coord, base = wrf_coordinate_and_base(
+        restored, int(getattr(cfg, 'hypsometric_opt', 2)))
     state.load_base(coord, base)
 
     for wrf_name, state_name in (("U", "u"), ("V", "v"), ("W", "w"),
@@ -1343,6 +1512,18 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
     _restore_active_moisture(state, raw, cfg, cp)
     if "H_DIABATIC" in raw:
         state.h_diabatic[...] = cp.asarray(raw["H_DIABATIC"], dtype=cp.float32)
+    # WRF's cold start does not keep the file's P, AL or ALT either:
+    # start_em.F:774-842 re-derives AL from the file's PH, MU and the
+    # rebuilt base (calc_p_rho_phi's hypsometric form) and P from the EOS
+    # on T and QV, and the first step's pressure force and every physics
+    # scheme read that P.  The door kept the file's P; on the stock-WRF
+    # export (g400 crop, 2024-05-21 18Z) WRF's start P sat up to 324 Pa
+    # from it (9.6 Pa RMS at the lowest level), and the first surface-layer
+    # call followed that difference (HFX 0.22 W/m2 RMS, 77 times WRF's
+    # ULP twin).  The runtime's own EOS diagnostic, so the start P is the
+    # one every later stage diagnoses from the same prognostics.
+    from gpuwm.core.diagnostics import update_diagnostics
+    update_diagnostics(state, int(cfg.hypsometric_opt))
 
     # WRF start_domain_em diagnoses a cold-start W column after reading
     # real.exe's zero W, before its first history frame. The native door
@@ -1379,6 +1560,13 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
     not a wrfinput header); only the Noah mosaic tile door reads it.
     """
     _validate_supplied_physics_fields(restored.raw, cfg, restored.global_attributes)
+    from gpuwm.core.physics import physics_driver_required
+    if not physics_driver_required(cfg) and cam_ozone is None:
+        # Every scheme off is a run stock WRF makes (a dynamics-only
+        # replay); there is no driver to attach, as on the idealised doors
+        # (gpuwm/verify/cases/nest_ideal_common.py).  initialize_physics
+        # refuses a driverless call, which used to stop this door.
+        return None
     import cupy as cp
     from gpuwm.core.physics import initialize_physics
     from gpuwm.ingest.ruc_mosaic import wrfinput_ruc_mosaic_inputs
@@ -1442,6 +1630,12 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
                             and landuse is not None and not cfg.usemonalb)
     from gpuwm.ingest.wrfinput_noahmp import NOAHMP_INITIALIZED_SURFACE_FIELDS
     for field in driver.fields:
+        if (int(cfg.sf_surface_physics) == 3
+                and field in ("sh2o", "smfr3d", "mavail", "znt")):
+            # RUCLSMINIT owns these cold-start outputs. real.exe's file
+            # carriers precede physics initialization and must not replace
+            # its liquid/frozen partition or water/ice values in history.
+            continue
         if field == "albbck" and retain_landuse_albbck:
             continue
         if (int(cfg.sf_surface_physics) == 4
@@ -2171,6 +2365,20 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
                         side_tables[gpu_name][side_name] = _moist_theta_time_law(
                             restored, side_name, raw_tables, width,
                             wrf_start, gpuwm_start)
+                        continue
+                    if WRF_EXACT:
+                        # Strict mode relaxes and specifies toward real.exe's
+                        # own words, as WRF does: relax_bdytend and
+                        # spec_bdytend read field_bdy + dtbc*field_bdy_tend
+                        # straight from wrfbdy.  The default path recouples
+                        # each endpoint in gpuwm's mass order and re-derives
+                        # the tendency in float64, which moves boundary
+                        # words by an ULP and the relaxation zone with them
+                        # (combo-sweep round 2, LOCALIZE.md item 5).
+                        side_tables[gpu_name][side_name] = SideBoundary(
+                            np.asarray(value, np.float32).astype(np.float64),
+                            np.asarray(tendency, np.float32).astype(
+                                np.float64))
                         continue
                     future = np.asarray(
                         value + np.float32(duration) * tendency,

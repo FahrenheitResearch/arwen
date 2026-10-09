@@ -100,7 +100,7 @@ def compare(directory=None,outputs=None):
     global PIN_RECEIPT
     from gpuwm.wrf_exact import ADVECTION_ENABLED
     if not ADVECTION_ENABLED:
-        raise RuntimeError("Set GPUWM_WRF_EXACT=1 and GPUWM_WRF_EXACT_ADVECTION=1 before import")
+        raise RuntimeError("Set GPUWM_WRF_EXACT=1 (advection control not 0) before import")
     PIN_RECEIPT=verify_fixture_pins(directory)
     from gpuwm.verify import advect_oracle as original
     source=Path(original.__file__).read_text(encoding="utf-8")

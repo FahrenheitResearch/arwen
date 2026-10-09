@@ -534,7 +534,7 @@ def write_pattern_file(path: Path, patterns: tuple[str, ...]) -> Path:
 
 
 __all__ = [
-    "CARGO_BUILD_HINT", "EXIT_REFUSED", "EXIT_TRANSFER", "EXIT_USAGE",
+    "CARGO_BUILD_HINT", "EXIT_REFUSED", "EXIT_TRANSFER", "EXIT_USAGE",  # noqa: F822 -- module __getattr__
     "FETCH_ABI_MARKER", "FETCH_ENV", "FETCH_MODES",
     "FETCH_NAME", "FETCH_RECORD_SCHEMA", "PROBE_REPORT_SCHEMA",
     "ProgressCallback", "RwFetchError", "STREAMS_ENV", "crate_dir",

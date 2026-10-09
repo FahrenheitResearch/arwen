@@ -189,7 +189,7 @@ BASELINE_PINNED: dict[str, str] = {
     "sfire_phys": "e4e217cf69556cb2349ed01e2032be01edba51b94562f0a63525a6eb5c79dcb8",
     "sfire_moisture": "4780e2e58c421c68d7cdfc6f868e25fea4fb2909286e826095fa321edc404ea1",
     "sfire_wind": "81923bd9bf4c9ab11ec240cef898781c1e646520ab2047dc2493c358466435e6",
-    "sfire_coupling": "23d1c1c4b1c111b6d697cf462ce92caa5c8d22b4adc4524e9b9d24cabcab1aa5",
+    "sfire_coupling": '0ce0ae82be28c7a049cd00af4cc540f1eb4ed9594a4972ca10cd4de1cb829754',
     # 47 original/corrected native controls, 96 complete frames, and
     # mapped-host/streamed/disk twins on both GPUs. Eight-composition
     # census and exact receipts accompany the source in the SFIRE tools.
@@ -362,7 +362,7 @@ BASELINE_PINNED: dict[str, str] = {
     # Re-pinned for A146 (a98f2482e): constant-divisor float divisions
     # spelled __fdiv_rn.  Previously 334ae702.
     "myjsfc":
-        "7ce67cdd5459cc8154311b75378a937b066bab24fd7b67892cb92b3ec4fce637",
+        '840d7099b117f3923ddef1137d62f8f2ac5084939efe0993f8855273bfaf3331',
     # 4a0bb3f69 mynn(mixscalars): MYNN-EDMF mixes the qn family, and the DMP unit exports it
     # RE-PINNED by the 2026-09-30 MYNN speed lane (2f5dd16f9): level-major
     # column storage.  Addressing only; every output replayed bitwise
@@ -370,7 +370,7 @@ BASELINE_PINNED: dict[str, str] = {
     # Re-pinned for A146 (a98f2482e): constant-divisor float divisions
     # spelled __fdiv_rn.  Previously 90c71fa1.
     "mynn_dmp_sibling":
-        "57344ddd0b30006febdd7108f5772e5c0cf76671d213812cd83ce614c28b2674",
+        '863169b2e1e35be848ca663162333b7adb2131bb2a46565b034a2edb61d49446',
     # 4a0bb3f69 mynn(mixscalars): MYNN-EDMF mixes the qn family, and the DMP unit exports it
     # RE-PINNED by the 2026-09-30 MYNN speed lane (2f5dd16f9): the flux kernel reads
     # level-major plume and column storage.  Addressing only; the
@@ -441,7 +441,7 @@ BASELINE_PINNED: dict[str, str] = {
     # spelled __fdiv_rn, because NVRTC compiles x / C as a multiply by the
     # rounded reciprocal on Blackwell targets. Previously be8bf6ea.
     "shinhong":
-        "6fd615d06165a26b806fa768e1088f9af1976ead1eedad447aa49474787109b7",
+        '26a78c8f8b24a2c783f6780db4b6b4a8fc52eb30a1e51bc71a7919a33ee8f6ed',
     # 58dfd599c feat(shinhong): CUDA mirror on the RTX 5090 -- dtheta bitwise, br DAZ counte
     "shinhong_validation":
         "e3714616c403a3f272600499164cf9b0215879d567dadcda31287dd33c600b87",
@@ -484,11 +484,18 @@ BASELINE_PINNED: dict[str, str] = {
     # balances take WRF's tendency form (:3022-3091), and the rain
     # conservation ratio is REAL as WRF declares it (:1615).
     # Previously 001c8655d12a2f4a.
+    # RE-PINNED 2026-10-08 (gfix/288-thompson-classic): the dead slab-five
+    # rain-graupel copy after the v4.6.1 dispatch's return (inside if (false)
+    # under THOMPSON_AA_WRF39) is removed; production reads aaf_racg_index.
+    # Measured on an RTX 4090 (sm_89): the compiled module differs from the
+    # previous source's only in .strtab (symbol names carry the source hash),
+    # every .text and .nv.info section byte-identical, for both the v4.6.1
+    # and the WRF39 generation.  Previously d7ae2da9db4fe7b6.
     "thompson_aerosol_cold":
-        "1edfdad2d207da782e2429088b786492ae370d5b03a021173057da8b44b08750",
+        'b8f5496b68a29ee0de0a93203a8619175f428040c634bcd099e2e21bab1e49e7',
     # 0ebda6608 snapshot(mp28): the recovered aerosol-aware Thompson port, re-parented to it
     "thompson_aerosol_probe":
-        "a83d3c9f8157b5702b504350ee93572c34378390917f8c037bf2762b27b0a91e",
+        'a4db6f915e5393c2a809f40c0b793ccba5e9bba51a672f7d5ea99a04c1a18274',
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
     # moved is WRF's own rule in each case, cited to module_mp_thompson.F
@@ -512,7 +519,7 @@ BASELINE_PINNED: dict[str, str] = {
     # working state WRF reads (:3215, :3236-3238).
     # Previously 44d3fb82ecfc49ae.
     "thompson_aerosol_sat":
-        "981c11536a58bb65b2f32f9706732b38199eef87f3daf2e65aeb2886c9a6d01c",
+        '88ee26846dde74b282b286802d0cd838f3332048c74b295cc3723109b2847a30',
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
     # moved is WRF's own rule in each case, cited to module_mp_thompson.F
@@ -568,7 +575,7 @@ BASELINE_PINNED: dict[str, str] = {
     # only on trace surface rain) and the mp=28 oracle and sed GPU decks at
     # their existing bounds.  The DA line's own pin was 664ae49ee658def6.
     "thompson_aerosol_sed":
-        "917dd29cfe9bb8f3cdc2c62e710acacb195a71534d7c30b750b2f1eb7f6fe1a4",
+        'bcd106943cec93f8faa8b6281b1bb8d3d9e90888b9b3a4b4e9dc44466bf58019',
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
     # moved is WRF's own rule in each case, cited to module_mp_thompson.F
@@ -611,7 +618,7 @@ BASELINE_PINNED: dict[str, str] = {
     # (thompson_aa_terminal_rain_ice, :4023-4053).
     # Previously 009f1debca0c3ecb.
     "thompson_aerosol_state":
-        "afccd231a7bd2141e8f47e1c0216d509f035ca1bc381d7e6565303194e11ed82",
+        'c16b1552e1e0a0980aa83e9a3c197e25b71350521ce71de6badb136dd031e3e9',
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
     # moved is WRF's own rule in each case, cited to module_mp_thompson.F
@@ -648,8 +655,15 @@ BASELINE_PINNED: dict[str, str] = {
     # accumulators (:2987) and its rain balances take WRF's tendency form
     # (:3058-3091).
     # Previously 56abc1c1082ee1f1.
+    # RE-PINNED 2026-10-08 (gfix/288-thompson-classic): the dead slab-five
+    # rain-graupel copy after the v4.6.1 dispatch's return (inside if (false)
+    # under THOMPSON_AA_WRF39) is removed; production reads aaf_racg_index.
+    # Measured on an RTX 4090 (sm_89): the compiled module differs from the
+    # previous source's only in .strtab (symbol names carry the source hash),
+    # every .text and .nv.info section byte-identical, for both the v4.6.1
+    # and the WRF39 generation.  Previously 98aa971486192c17.
     "thompson_aerosol_warm":
-        "243a060521afee87ab99e5148a3e359c9df1f6a0c6b615bab24d5bc88b50f89c",
+        '3e6972a7e5c41238c6ba664a8032851c187d007a4bf6366b17020b6dbed9635a',
     # 02cfd5301 feat(les): km_opt=2 restart carrier, lateral-boundary arm, TKE budget
     "tke_budget":
         "c7f6dc37f15b25fccbea50deef0c6d595c08b2ee4762f14eef169b654d54fccb",
@@ -783,7 +797,7 @@ BASELINE_PINNED: dict[str, str] = {
     # test_surface_w_fused.py checks both launch paths against the WRF
     # clamped-index formula, including periodic controls and upper W.
     "surface_w":
-        "587587787fd7d69b80b26861f10eaa78baeec3b9fa243b1cd7ca40e608941c03",
+        'b47cecec63e457c155bdcc4a1a2c9ed299f0a5352c52e5af4f7814671d2526f8',
     # lane/speed-rrtmg-legacy.  rrtmg_legacy_adapter: added at 2c64326aa
     # (the adapter keeps the radiation call on the device), moved by
     # cfd6503b7 and last by 378191e61 (results, ozone and radius conversion
@@ -1023,7 +1037,7 @@ PINNED_HEADERS = {
     # balance helpers the source kernels share
     # (thompson_aa_rain_balance_tendency, thompson_aa_ice_balance_tendency);
     # previously dce2673c68a7a0f8.
-    "thompson_aerosol_common.cuh": "92375bbdb8432cf535477a12e7d4346dfa638fcc0ef5b514e5f016c5871b15db",
+    "thompson_aerosol_common.cuh": 'a24a96dab64e0688106dbdda5fe518ea9390d826c1f32169126a4d3893b38e9d',
     # 399b1c017: glibc 2.43 float32 trig (Arm sinf/cosf, CORE-MATH tanf/
     # asinf/acosf/atanf) for the urban BEP column, generated and proven by
     # tools/glibc_trig_flt32_proof/.
@@ -1031,7 +1045,7 @@ PINNED_HEADERS = {
     # lane/282-terrain-drag: YSU's topo_wind arm (get_pblh, the hill-top 10 m
     # blend), prepended to ysu.cu by _EXTRA_HEADERS["ysu"]; graded with it by
     # tests/test_terrain_drag_wrf471_parity.py.
-    "ysu_topo.cuh": "0774d7ad30422eb3b4190879388499271da6170eb8031a0176b06f5f720c9b4f",
+    "ysu_topo.cuh": '031efb139b827dd94fa9407455c3392e85cb29f4af6b954ef18d931e735890b0',
     # The UW PBL's prepended headers, in the loader's order
     # (gpuwm/core/kernels/__init__.py _EXTRA_HEADERS["uwpbl"]): the
     # binary64 libm (tools/uwpbl_wrf471_oracle/libm64 proves it), the
@@ -1069,7 +1083,24 @@ PINNED_HEADERS = {
     # flux. Named source forms are explicit. The full RUC GPU deck and
     # test_generic_ruc_defaults_match_named_legacy_after_every_gpu_call
     # must verify the merged dispatch before this tip is handed over.
-    "ruc_fused_driver.cuh": "49bc4c655d6fb8ad4a88445347d3490213ba78185063215ec8e5709341a53dc3",
+    "ruc_fused_driver.cuh": '598a63895fa51dd97080b61b25d28e6a930efb0cb424f9fe6ab7acf9db0d7b85',
+    # Selected Group A loader header from the delivered 58-sfclay-noftz-mynn-mm5-eta
+    # source series; retain its exact original byte identity.
+    'flt32_expf_fma.cuh': '755e2529eeead9a3a9099bfe67af703b5c378aad7d3face562a11b6f436e8424',
+    # Selected Group A loader header from the delivered 58-sfclay-noftz-mynn-mm5-eta
+    # source series; retain its exact original byte identity.
+    'mynn_libm.cuh': 'bf5831efbdf1ddc1111e8f0bafc2e272b5597d7d2b12d8320675b8a938618fbb',
+    # Selected Group A loader header from the delivered 58-sfclay-noftz-mynn-mm5-eta
+    # source series.  Re-pinned at 2.8.8 (gfix/288-gpu-shards): ISFFLX=0 now
+    # keeps the incoming CHS/CHS2/CQS2 words as WRF does and the 65 intake's
+    # launch_sfclay contract states (it wrote zeros).
+    'sfclay_classic.cuh': '9b384adef3a2a6fac7e721332e02acd57e63739e81e64fe48ace630a50ce6eb2',
+    # Selected Group A loader header from the delivered 58-sfclay-noftz-mynn-mm5-eta
+    # source series; retain its exact original byte identity.
+    'surface_subnormal.cuh': '99d0aaf80b1de9e243c11cbdcebbb16198b76bd40c8207847d9284718f8021d4',
+    # Selected Group A loader header from the delivered mp28-gate-all-157
+    # source series; retain its exact original byte identity.
+    'thompson_aerosol_libm.cuh': 'c22ea2f8b096e402685df8acf31c775a6f134af26be0646d9380e93e2df10ac0',
 }
 
 #: Headers a module composes ITSELF rather than through the loader's

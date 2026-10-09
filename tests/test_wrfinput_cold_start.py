@@ -80,7 +80,14 @@ def _terrain_input(cfg, *, file_w):
         MAPFAC_MX=rng.uniform(.98, 1.03, (ny, nx)).astype(np.float32),
         MAPFAC_MY=rng.uniform(.98, 1.03, (ny, nx)).astype(np.float32),
         F=np.zeros((ny, nx), np.float32), E=np.zeros((ny, nx), np.float32),
-        SINALPHA=np.zeros((ny, nx), np.float32), COSALPHA=np.ones((ny, nx), np.float32))
+        SINALPHA=np.zeros((ny, nx), np.float32), COSALPHA=np.ones((ny, nx), np.float32),
+        # real.exe writes the reference-profile constants, and the door
+        # rebuilds WRF's cold-start base state from them as start_em does
+        # (gpuwm.ingest.wrfinput.wrf_start_base_state, verify-base4).
+        # WRF's defaults; the W diagnosis this file grades reads none of them.
+        P00=np.array([1.0e5], np.float32), T00=np.array([290.], np.float32),
+        TLP=np.array([50.], np.float32), TISO=np.array([200.], np.float32),
+        TLP_STRAT=np.array([-11.], np.float32), P_STRAT=np.array([0.], np.float32))
     return SimpleNamespace(raw=raw, global_attributes={
         'HYBRID_OPT': coord.hybrid_opt, 'ETAC': coord.etac})
 

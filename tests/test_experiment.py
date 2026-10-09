@@ -840,8 +840,11 @@ def test_experiment_path_runs_runconfig_invariant_battery(tmp_path):
                                shared="moist = true\nmp_physics = 55"))
     with pytest.raises(ValueError, match="time_step_sound must be even"):
         load_experiment(_write(tmp_path, shared="time_step_sound = 3"))
-    with pytest.raises(NotImplementedError, match="khdif"):
-        load_experiment(_write(tmp_path, shared="khdif = 100.0"))
+    # Constant K on these boundaries was refused while km_opt=1 was a
+    # periodic-only Laplacian; WRF's isotropic_km package (3641a45f7)
+    # carries WRF's boundary bounds, so it loads.
+    assert load_experiment(
+        _write(tmp_path, shared="khdif = 100.0")).root.run.khdif == 100.0
     with pytest.raises(ValueError, match="diff_6th_opt"):
         load_experiment(_write(
             tmp_path, shared="moist = true\nmp_physics = 10\n"

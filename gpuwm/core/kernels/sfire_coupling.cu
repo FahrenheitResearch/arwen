@@ -53,5 +53,10 @@ extern "C" __global__ void sfire_stage_tendencies(const float *th,const float *q
     if(p>=n)return;
     // rk_addtend_dry divides thermal forcing by MSFTY. Moist scalar
     // tendencies retain coupled mass units for rk_update_scalar.
-    rt[p]=mapped?__fdiv_rn(th[p],msft[p%plane]):th[p];rq[p]=qv[p];
+#if GPUWM_WRF_EXACT
+    rt[p]=th[p];
+#else
+    rt[p]=mapped?__fdiv_rn(th[p],msft[p%plane]):th[p];
+#endif
+    rq[p]=qv[p];
 }

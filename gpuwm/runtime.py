@@ -4157,6 +4157,14 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
     from gpuwm.ensemble.runtime_context import current_capture
     capture = current_capture()
     captured_refl = None
+    analysis_refl = (not expect_refl_10cm and valid_time == start_time
+                     and prepared.cfg.mp_physics in REFL_10CM_MICROPHYSICS
+                     and state.qv is not None)
+    if analysis_refl:
+        from gpuwm.core.refl import analysis_refl_10cm
+        captured_refl = analysis_refl_10cm(
+            state, shape=(prepared.cfg.nz, prepared.cfg.ny, prepared.cfg.nx),
+            array_module=np if streamed is not None else None)
     if capture is not None:
         if (expect_refl_10cm
                 and prepared.cfg.mp_physics in REFL_10CM_MICROPHYSICS
@@ -4184,6 +4192,12 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
             from gpuwm.core.refl import consume_refl_10cm
             consume_refl_10cm(state)
     frame.update(_metadata_frame(prepared.grid, prepared.static_fields))
+    if analysis_refl:
+        if isinstance(captured_refl, np.ndarray):
+            frame["REFL_10CM"] = captured_refl
+        else:
+            import cupy as cp
+            frame["REFL_10CM"] = cp.asnumpy(captured_refl)
     if streamed is None:
         import cupy as cp
         frame["RAINNC"] = cp.asnumpy(state.physics.microphysics.rainnc)
@@ -4683,8 +4697,8 @@ def integrate_prepared_case(
     if counters is not None and restart_path is None:
         counters.observe()
     if restart_path is None and history_begin_step == 0:
-        # No microphysics call precedes the cold-start frame, so there is no
-        # WRF-arranged post-call reflectivity field to consume.
+        # The cold-start frame writes the initial zeros without consuming
+        # a microphysics handoff that cannot exist before the first step.
         _preparation_progress(progress_callback, "cold-start-wrfout")
         output_path = write_case_output(
             prepared, output_dir, start_time, start_time=start_time,
@@ -5340,10 +5354,22 @@ def _terrain_clock_for_case(exp, data, acoustic, terrain, grids, reach):
         starts[int(dc.grid_id)] = SnapshotWinds(
             f"d{int(dc.grid_id):02d}", window, np.asarray(lat),
             np.asarray(lon), exp.start_time)
+    statics = {gid: {"HGT_M": field} for gid, field in terrain.items()}
+    # The local-face clock (terrain_clock = "local_face", the default)
+    # reads every face with the map factors the substep rule read off
+    # these grids (acoustic_adaptation.readings_from_static); without them
+    # its faces would not be the substep rule's and it keeps the
+    # domain-wide reading.
+    for dc, grid in zip(exp.domains, grids):
+        gid = int(dc.grid_id)
+        if (str(getattr(dc.run, "terrain_clock", "measured")) == "local_face"
+                and gid in statics):
+            for name, method in (("MAPFAC_U", "mapfac_u"),
+                                 ("MAPFAC_V", "mapfac_v")):
+                if hasattr(grid, method):
+                    statics[gid][name] = getattr(grid, method)()
     return clock_for_domains(
-        exp, acoustic, statics={gid: {"HGT_M": field}
-                                for gid, field in terrain.items()},
-        starts=starts, corridors=reach)
+        exp, acoustic, statics=statics, starts=starts, corridors=reach)
 
 
 def _write_terrain_clock_receipt(outdir, adaptations) -> Path | None:
@@ -6143,12 +6169,18 @@ def _submit_tree_history_frame(writers, node, ticks: int) -> None:
     from gpuwm.core.refl import domain_start_ticks_of, refl_10cm_stash_is_due
 
     refl_field = None
-    if (refl_10cm_stash_is_due(
-                ticks, domain_start_ticks=domain_start_ticks_of(node))
-            and node.state.qv is not None
+    if (node.state.qv is not None
+            and node.state.physics is not None
             and node.state.physics.mp_physics in REFL_10CM_MICROPHYSICS):
-        from gpuwm.core.refl import consume_refl_10cm
-        refl_field = consume_refl_10cm(node.state)
+        if refl_10cm_stash_is_due(
+                ticks, domain_start_ticks=domain_start_ticks_of(node)):
+            from gpuwm.core.refl import consume_refl_10cm
+            refl_field = consume_refl_10cm(node.state)
+        elif domain_start_ticks_of(node) == 0:
+            # A run's analysis frame writes WRF's initial array, not nothing.
+            from gpuwm.core.refl import analysis_refl_10cm
+            refl_field = analysis_refl_10cm(
+                node.state, shape=(node.cfg.run.nz, node.cfg.run.ny, node.cfg.run.nx))
     writers.submit(node, ticks, refl_field=refl_field)
     # History-interval reset of this domain's UP_HELI_MAX window.  Safe
     # ordering: submit's producer-stream wait_event fences the side-stream

@@ -1,0 +1,15 @@
+{"settings": "generated", "dx": 2000.0, "crest": 4500.0, "ridge_slope": 0.5, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-generated-dx2000-c4500-r0.5"}
+{"settings": "generated", "dx": 3000.0, "crest": 3000.0, "ridge_slope": 0.4, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-generated-dx3000-c3000-r0.4"}
+{"settings": "generated", "dx": 3000.0, "crest": 3500.0, "ridge_slope": 0.35, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-generated-dx3000-c3500-r0.35"}
+{"settings": "generated", "dx": 3000.0, "crest": 3500.0, "ridge_slope": 0.4, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-generated-dx3000-c3500-r0.4"}
+{"settings": "generated", "dx": 3000.0, "crest": 4500.0, "ridge_slope": 0.35, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-generated-dx3000-c4500-r0.35"}
+{"settings": "generated", "dx": 3000.0, "crest": 4500.0, "ridge_slope": 0.4, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-generated-dx3000-c4500-r0.4"}
+{"settings": "ncar", "dx": 2000.0, "crest": 3500.0, "ridge_slope": 0.35, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-ncar-dx2000-c3500-r0.35"}
+{"settings": "ncar", "dx": 2000.0, "crest": 3500.0, "ridge_slope": 0.4, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-ncar-dx2000-c3500-r0.4"}
+{"settings": "ncar", "dx": 2000.0, "crest": 4500.0, "ridge_slope": 0.35, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-ncar-dx2000-c4500-r0.35"}
+{"settings": "ncar", "dx": 2000.0, "crest": 4500.0, "ridge_slope": 0.4, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-ncar-dx2000-c4500-r0.4"}
+{"settings": "ncar", "dx": 2000.0, "crest": 4500.0, "ridge_slope": 0.45, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-ncar-dx2000-c4500-r0.45"}
+{"settings": "ncar", "dx": 2000.0, "crest": 4500.0, "ridge_slope": 0.5, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-ncar-dx2000-c4500-r0.5"}
+{"settings": "ncar", "dx": 3000.0, "crest": 4500.0, "ridge_slope": 0.45, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-ncar-dx3000-c4500-r0.45"}
+{"settings": "ncar", "dx": 3000.0, "crest": 4500.0, "ridge_slope": 0.5, "evidence": "/work/tclock/s6/ev/adaptive4.json", "key": "ad6-ncar-dx3000-c4500-r0.5"}
+{"settings": "ncar", "dx": 2000.0, "crest": 1500.0, "ridge_slope": 0.25, "evidence": "/work/tclock/s6/ev/adaptive1500.json", "key": "ad6-ncar-dx2000-c1500-r0.25"}

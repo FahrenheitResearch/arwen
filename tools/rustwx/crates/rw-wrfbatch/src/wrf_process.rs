@@ -100,6 +100,9 @@ pub struct WrfProcessOptions {
     /// raw input planes and sounding volumes retain their existing paths.
     #[serde(default)]
     pub named_products_only: bool,
+    /// Exact snowfall baseline; absent means model initialization.
+    #[serde(default)]
+    pub snow_since: Option<String>,
 }
 
 impl Default for WrfProcessOptions {
@@ -115,6 +118,7 @@ impl Default for WrfProcessOptions {
             viewer_2d: false,
             chart_selectors: Vec::new(),
             named_products_only: false,
+            snow_since: None,
         }
     }
 }
@@ -181,6 +185,12 @@ impl WrfProcessOptions {
             }
         }
         names.extend(crate::wrf_column_planes::planned_store_fields(self));
+        if self.should_process("SNOW_LEVEL_FT", Some("wrf_snow_level_ft"), WrfProductGroup::Raw) {
+            names.push("wrf_snow_level_ft".to_string());
+        }
+        names.extend(crate::snowfall::PRODUCTS.iter()
+            .filter(|(name,field)| self.should_process(&FieldSelector::surface(*field).key(), Some(name), WrfProductGroup::Diagnostic))
+            .map(|(name,_)| name.to_string()));
         names.extend(
             self.planned_store_selectors()
                 .into_iter()
@@ -208,6 +218,12 @@ impl WrfProcessOptions {
     /// skipped at process time with a note, exactly like a planned field.
     pub fn planned_store_selectors(&self) -> Vec<FieldSelector> {
         let mut selectors = Vec::new();
+        selectors.extend(winter_selectors().into_iter().filter(|(name, selector)|
+            self.should_process(name, Some(&selector.key()), WrfProductGroup::Core))
+            .map(|(_, selector)| selector));
+        selectors.extend(crate::snowfall::PRODUCTS.iter()
+            .filter(|(name,field)| self.should_process(&FieldSelector::surface(*field).key(), Some(name), WrfProductGroup::Diagnostic))
+            .map(|(_,field)| FieldSelector::surface(*field)));
         for (wrf_name, store_name) in CORE_FIELD_CATALOG {
             if self.should_process(wrf_name, Some(store_name), WrfProductGroup::Core) {
                 selectors.push(core_field_selector(store_name));
@@ -423,6 +439,9 @@ pub(crate) fn core_field_selector(store_name: &str) -> FieldSelector {
 /// Chart planes use selector keys unless a shared writer table assigns a
 /// public store name to that selector.
 fn store_name_for_selector(selector: FieldSelector) -> String {
+    if let Some((name,_)) = crate::snowfall::PRODUCTS.iter().find(|(_,field)| FieldSelector::surface(*field)==selector) {
+        return name.to_string();
+    }
     if let Some(row) = CHEM_CORE_FIELD_CATALOG.iter().find(|row| row.selector == selector) {
         return row.store_name.to_string();
     }
@@ -567,7 +586,7 @@ const PROFILE_FNV64_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// writer provenance so a reflectivity-method change cannot silently replace
 /// an older imported run. v5: raw extras carry the file's own units, so an
 /// import that stored HAILNC or UP_HELI_MAX with no unit is not reused.
-const WRF_PROCESS_SCIENCE_MARKER: &str = "wrf_science_v5";
+const WRF_PROCESS_SCIENCE_MARKER: &str = "wrf_science_v6_winter";
 const COMPOSITE_REFLECTIVITY_FILTER: &str = "maxdbz";
 const COMPOSITE_REFLECTIVITY_STORE: &str = "composite_reflectivity";
 const REFLECTIVITY_1KM_FILTER: &str = "reflectivity_1km";
@@ -1060,7 +1079,16 @@ fn process_paths_with_target(
         return Err("No supported WRF files selected".to_string());
     }
 
-    let source_snapshot = crate::local_import::capture_source_set_identity(&files)?;
+    // The snowfall integration reads neighboring history records too.
+    // Include them in both cache identity and the end-of-import mutation
+    // check, so a revised intermediate frame cannot reuse an old total.
+    let mut dependencies = files.clone();
+    if crate::snowfall::PRODUCTS.iter().any(|(name,field)|
+        options.should_process(&FieldSelector::surface(*field).key(), Some(name), WrfProductGroup::Diagnostic)) {
+        for path in &files { dependencies.extend(crate::snowfall::history_paths(path)?); }
+        dependencies.sort(); dependencies.dedup();
+    }
+    let source_snapshot = crate::local_import::capture_source_set_identity(&dependencies)?;
     let source_identity = &source_snapshot.identity;
     // A store hour is replaced as a unit. Keep every full-processing plan in
     // its own run so a later core-only/custom import cannot erase fields from
@@ -1136,6 +1164,7 @@ fn process_paths_with_target(
     let mut written = Vec::<WrittenHour>::new();
     let mut all_vars = Vec::<String>::new();
     let mut all_notes = Vec::<String>::new();
+    let mut snowfall_cache=crate::snowfall::WindowCache::default();
     // A series that spans a moving nest's moves is stored on its last
     // frame's place ([`crate::nest_move`]); `None` for every other series.
     let moves = if live_target.is_none() {
@@ -1383,6 +1412,7 @@ fn process_paths_with_target(
                 options,
                 stored_plane_index.as_ref(),
                 &mut progress,
+                &mut snowfall_cache,
             )?;
             if let (Some(moves), Some(shift)) = (moves.as_ref(), shift) {
                 move_hour_fields(
@@ -1648,6 +1678,7 @@ fn read_wrf_products(
     options: &WrfProcessOptions,
     stored_plane_index: Option<&netcrust::File>,
     progress: &mut impl FnMut(String),
+    snowfall_cache: &mut crate::snowfall::WindowCache,
 ) -> Result<WrfHourFields, String> {
     // Validate hostile/corrupt dimensions before xlat/xlong can allocate
     // coordinate planes. GridShape owns the shared desktop cell ceiling.
@@ -1853,6 +1884,10 @@ fn read_wrf_products(
     }
 
     push_chem_products(&mut fields, file, timeidx, &grid, projection.clone(), options);
+    push_gust_10m(&mut fields, file, timeidx, &grid, projection.clone(), shape.len(), options);
+    push_precip_type(&mut fields, file, timeidx, &grid, projection.clone(), shape.len(), options);
+    push_snow_level_ft(&mut fields, file, timeidx, shape.len(), options);
+    crate::snowfall::push(&mut fields, file, path, timeidx, options, &grid, projection.clone(), snowfall_cache);
 
     let total_twod = VARS
         .iter()
@@ -3328,6 +3363,10 @@ fn processing_profile_suffix(options: &WrfProcessOptions) -> String {
     let normalized = options.clone().normalized();
     let mut hash = profile_hash_update(PROFILE_FNV64_OFFSET, b"rw-wrf-profile-v2\0");
     hash = profile_hash_update(hash, WRF_PROCESS_SCIENCE_MARKER.as_bytes());
+    hash = profile_hash_update(hash, b"snowfall-window-v1\0");
+    if let Some(since) = &normalized.snow_since {
+        hash = profile_hash_update(hash, since.replace(':', "_").as_bytes());
+    }
     hash = profile_hash_update(
         hash,
         &[
@@ -3437,7 +3476,7 @@ fn writer_build() -> &'static str {
         env!("CARGO_PKG_NAME"),
         " ",
         env!("CARGO_PKG_VERSION"),
-        " wrf_science_v5"
+        " wrf_science_v6_winter"
     )
 }
 
@@ -4193,6 +4232,8 @@ mod tests {
                             .find(|plane| plane.selector() == selector)
                             .map(|plane| plane.store_name)
                     })
+                    .or_else(|| crate::snowfall::PRODUCTS.iter()
+                        .find(|(_,field)| FieldSelector::surface(*field)==selector).map(|(name,_)| *name))
                     .map(str::to_string)
                     .unwrap_or_else(|| selector.key());
                 assert!(fields.contains(&store_name), "{slug} needs {store_name}");
@@ -4302,4 +4343,195 @@ mod tests {
         assert!(error.contains("overflow"));
         assert_eq!(checked_horizontal_cells(3, 4), Ok(12));
     }
+}
+
+fn winter_selectors() -> Vec<(&'static str, FieldSelector)> {
+    let mut rows = vec![("GUST", FieldSelector::height_agl(CanonicalField::WindGust, 10))];
+    rows.extend([CanonicalField::CategoricalRain, CanonicalField::CategoricalFreezingRain,
+        CanonicalField::CategoricalIcePellets, CanonicalField::CategoricalSnow]
+        .into_iter().map(|field| ("PTYPE", FieldSelector::surface(field))));
+    rows
+}
+
+/// 10 m wind gust, NCEP UPP method (CALGUST): the wind at the top of the
+/// boundary layer mixed down, damped as the layer deepens:
+/// gust = w10 + (w_pbltop - w10) * (1 - min(0.5, PBLH / 2000 m)), never
+/// below w10.  Published on the canonical 10 m WindGust selector, so the
+/// catalog's `10m_wind_gusts` product and its standard gust table draw it.
+/// Breakage it prevents: WOOF wrfouts carry no gust field, so a downslope
+/// wind event had only sustained-wind maps (the gust product was "missing").
+fn push_gust_10m(
+    fields: &mut WrfHourFields,
+    file: &WrfFile,
+    timeidx: usize,
+    grid: &LatLonGrid,
+    projection: Option<GridProjection>,
+    cells: usize,
+    options: &WrfProcessOptions,
+) {
+    let selector = FieldSelector::height_agl(CanonicalField::WindGust, 10);
+    let key = selector.key();
+    if !options.should_process("GUST", Some(&key), WrfProductGroup::Core) {
+        return;
+    }
+    let get = |var: &str| compute_var(file, var, timeidx, None).ok();
+    let (Some(hagl), Some(wspd), Some(pblh), Some(w10)) =
+        (get("height_agl"), get("wspd"), get("PBLH"), get("wspd10"))
+    else {
+        fields.notes.push("10 m gust skipped: needs U, V, PH, PHB, PBLH".to_string());
+        return;
+    };
+    if hagl.shape.len() != 3 || wspd.shape != hagl.shape || pblh.data.len() != cells || w10.data.len() != cells {
+        fields.notes.push("10 m gust skipped: unexpected field shapes".to_string());
+        return;
+    }
+    let nz = hagl.shape[0];
+    let mut values = vec![f32::NAN; cells];
+    for (i, value) in values.iter_mut().enumerate() {
+        let zpbl = pblh.data[i];
+        let wind10 = w10.data[i];
+        if !zpbl.is_finite() || !wind10.is_finite() {
+            continue;
+        }
+        let mut k = 0;
+        while k + 1 < nz && hagl.data[k * cells + i] < zpbl {
+            k += 1;
+        }
+        let top = wspd.data[k * cells + i];
+        if !top.is_finite() {
+            continue;
+        }
+        let damp = 1.0 - (zpbl.max(0.0) / 2000.0).min(0.5);
+        *value = (wind10 + (top - wind10) * damp).max(wind10) as f32;
+    }
+    push_canonical_values(fields, grid, projection, &key, selector, "m/s", values);
+}
+
+/// Precipitation type at the ground from the microphysics, as the four
+/// categorical flags (rain, freezing rain, ice pellets, snow) the catalog's
+/// `precipitation_type` and `categorical_*` products draw.
+///
+/// Method: hydrometeor fall FLUX at the lowest model level (rho q Vt, with
+/// Vt 5 m/s rain, 1 m/s snow, 3 m/s graupel); precipitation where the
+/// liquid-equivalent rate reaches 0.1 mm/h.  Frozen share >= 0.7: snow, or
+/// ice pellets when graupel outweighs snow beneath a melting layer (T > 0 C
+/// within 3 km above a sub-freezing 2 m).  Frozen share <= 0.3: rain, or
+/// freezing rain where T2 <= 0 C.  Between: a mix, rain and snow both set.
+/// Breakage it prevents: WOOF wrfouts carry no categorical type, so a
+/// winter forecast had no precipitation-type map at all.
+fn push_precip_type(
+    fields: &mut WrfHourFields,
+    file: &WrfFile,
+    timeidx: usize,
+    grid: &LatLonGrid,
+    projection: Option<GridProjection>,
+    cells: usize,
+    options: &WrfProcessOptions,
+) {
+    let flags = [
+        CanonicalField::CategoricalRain,
+        CanonicalField::CategoricalFreezingRain,
+        CanonicalField::CategoricalIcePellets,
+        CanonicalField::CategoricalSnow,
+    ];
+    let wanted: Vec<bool> = flags
+        .iter()
+        .map(|f| {
+            let key = FieldSelector::surface(*f).key();
+            options.should_process("PTYPE", Some(&key), WrfProductGroup::Core)
+        })
+        .collect();
+    if !wanted.iter().any(|w| *w) {
+        return;
+    }
+    let get = |var: &str| compute_var(file, var, timeidx, None).ok();
+    let (Some(qr), Some(qs), Some(t2), Some(psfc), Some(temp), Some(hagl)) =
+        (get("QRAIN"), get("QSNOW"), get("T2"), get("PSFC"), get("temp"), get("height_agl"))
+    else {
+        fields.notes.push("precipitation type skipped: needs QRAIN, QSNOW, T2, PSFC, T, PH".to_string());
+        return;
+    };
+    let qg = get("QGRAUP");
+    if qr.data.len() < cells || qs.data.len() < cells || t2.data.len() != cells || psfc.data.len() != cells
+        || temp.shape.len() != 3 || hagl.shape != temp.shape
+    {
+        fields.notes.push("precipitation type skipped: unexpected field shapes".to_string());
+        return;
+    }
+    let nz = temp.shape[0];
+    let mut out: [Vec<f32>; 4] = [vec![0.0; cells], vec![0.0; cells], vec![0.0; cells], vec![0.0; cells]];
+    for i in 0..cells {
+        let (t, p) = (t2.data[i], psfc.data[i]);
+        if !t.is_finite() || !p.is_finite() || t <= 0.0 {
+            for o in out.iter_mut() { o[i] = f32::NAN; }
+            continue;
+        }
+        let rho = p / (287.04 * t);
+        let r = qr.data[i].max(0.0) * 5.0;
+        let s = qs.data[i].max(0.0) * 1.0;
+        let g = qg.as_ref().map_or(0.0, |q| q.data[i].max(0.0)) * 3.0;
+        let rate_mm_h = rho * (r + s + g) * 3600.0;
+        if !rate_mm_h.is_finite() || rate_mm_h < 0.1 {
+            continue;
+        }
+        let frozen = (s + g) / (r + s + g);
+        if frozen >= 0.7 {
+            let warm_aloft = t <= 273.15
+                && (0..nz).any(|k| {
+                    let z = hagl.data[k * cells + i];
+                    z <= 3000.0 && temp.data[k * cells + i] > 273.15
+                });
+            if g > s && warm_aloft { out[2][i] = 1.0 } else { out[3][i] = 1.0 }
+        } else if frozen <= 0.3 {
+            if t <= 273.15 { out[1][i] = 1.0 } else { out[0][i] = 1.0 }
+        } else {
+            out[0][i] = 1.0;
+            out[3][i] = 1.0;
+        }
+    }
+    for ((field, values), want) in flags.iter().zip(out).zip(wanted) {
+        if want {
+            let selector = FieldSelector::surface(*field);
+            push_canonical_values(fields, grid, projection.clone(), &selector.key(), selector, "0/1", values);
+        }
+    }
+}
+
+/// Snow level guide in FEET above SEA LEVEL: the wet-bulb 0 C height
+/// (wrf-core `wet_bulb_0`, metres above ground) plus the terrain height,
+/// published as `wrf_snow_level_ft`.  Breakage it prevents: the only
+/// snow-level field was the wet-bulb zero height ABOVE GROUND in metres,
+/// which a forecaster in feet MSL cannot read against a mountain pass.
+fn push_snow_level_ft(
+    fields: &mut WrfHourFields,
+    file: &WrfFile,
+    timeidx: usize,
+    cells: usize,
+    options: &WrfProcessOptions,
+) {
+    if !options.should_process("SNOW_LEVEL_FT", Some("wrf_snow_level_ft"), WrfProductGroup::Raw) {
+        return;
+    }
+    let (Ok(wb0), Ok(hgt)) = (
+        compute_var(file, "wet_bulb_0", timeidx, Some("m")),
+        compute_var(file, "terrain", timeidx, Some("m")),
+    ) else {
+        fields.notes.push("snow level skipped: wet_bulb_0 or terrain unavailable".to_string());
+        return;
+    };
+    if wb0.data.len() != cells || hgt.data.len() != cells {
+        return;
+    }
+    let wb0 = clean_values(&wb0.data);
+    let hgt = clean_values(&hgt.data);
+    let values = wb0
+        .iter()
+        .zip(hgt.iter())
+        .map(|(&w, &h)| if w.is_finite() && h.is_finite() { (w.max(0.0) + h) * 3.280_84 } else { f32::NAN })
+        .collect();
+    fields.derived.push(OwnedDerivedField {
+        name: "wrf_snow_level_ft".to_string(),
+        units: "ft".to_string(),
+        values,
+    });
 }

@@ -217,7 +217,11 @@ def test_go_takes_auto_on_a_run_with_no_fetch_stage(tmp_path, capsys):
     and turned away the default spelled out on every [case_data] run.
     """
 
+    from _staged_geog import staged_geog_tree
+
     config = _case_data_config(tmp_path)
+    # The dry run asks the declared geography, as the launch does.
+    staged_geog_tree(tmp_path / "GEOG")
     argv = ["go", str(config), "--dry-run", "--products", "none",
             "--outdir", str(tmp_path / "runs")]
     assert cli_main([*argv, "--transport", "auto"]) == 0, capsys.readouterr().err

@@ -571,6 +571,7 @@ def read_store_restart(path, store, setup: DomainSetup, cfg, *,
             f"restart file {path} header is missing {missing_header}")
     version = header.get("format_version")
     _restart.require_readable_format_version(version, path)
+    _restart._require_current_algorithm_identities(header, cfg, path)
     _restart._require_config_match(header["config"], cfg, path)
 
     live_lbc_clock = setup.lbc_clock_identity(cfg)

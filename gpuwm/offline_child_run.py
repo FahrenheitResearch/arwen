@@ -22,12 +22,11 @@ import signal
 import sys
 import threading
 import time
-
-import netCDF4
 from typing import Mapping
 
 import numpy as np
 
+from gpuwm.io.netcdf_serialization import netCDF4  # first use only (D-10)
 from gpuwm import downscale_pricing
 from gpuwm.aerosol_source_receipt import aerosol_source_report_entry
 from gpuwm.config import (
@@ -1164,9 +1163,11 @@ def child_cadence(cfg, *, health_interval_seconds: float | None = None
 
     ``run_seconds``, ``output_interval_s`` and ``restart_interval_s`` must
     each be a whole number of ``dt`` steps, and so must the health interval
-    when the caller has one.  A derived child inherits these from its
-    parent with ``dt`` divided by the ratio, so exactness is preserved; a
-    hand-written ``--child-config`` can break it, and that used to be
+    when the caller has one.  A derived child's step is chosen to land on
+    every one of these (``gpuwm.downscale.child_clock_step``: the largest
+    step no longer than the parent's ``dt`` over the ratio that they are
+    all whole numbers of); a hand-written ``--child-config`` can break
+    it, and that used to be
     found only at run start.  ``gpuwm downscale`` reviews with this
     function and the runner integrates on its answer, so the two doors
     cannot disagree about the same clock.  ``restart_interval_s`` unset or
@@ -2253,6 +2254,17 @@ def _parent_grid_metadata(path: Path) -> tuple[float, float, dict[str, object]]:
             if name in present
         }
     return dx, dy, attrs
+
+
+def _history_refl_10cm(state, cfg, ticks):
+    """Consume mature reflectivity, or write WRF's tick-zero initial field."""
+    from gpuwm.core.refl import consume_refl_10cm, refl_10cm_is_stashed, analysis_refl_10cm
+    from gpuwm.core.physics_inventory import REFL_10CM_MICROPHYSICS
+    if refl_10cm_is_stashed(state):
+        return consume_refl_10cm(state)
+    if ticks == 0 and state.qv is not None and cfg.mp_physics in REFL_10CM_MICROPHYSICS:
+        return analysis_refl_10cm(state, shape=(cfg.nz, cfg.ny, cfg.nx))
+    return None
 
 
 def _output_fields(state, initial, refl_field=None,
@@ -3480,8 +3492,7 @@ def _run(args: argparse.Namespace,
         # initial condition under a later timestamp -- correct inventory,
         # correct Times, no forecast.  Zero and a getattr when resident.
         streaming.refresh_streamed_state(stepper, child)
-        refl = (consume_refl_10cm(child)
-                if refl_10cm_is_stashed(child) else None)
+        refl = _history_refl_10cm(child, cfg, clock.ticks)
         path = outdir / wrfout_filename(valid, domain_id=cfg.grid_id)
         _write_frame(path, child, cfg, initial, valid,
                      projection_attrs, placement, refl_field=refl,

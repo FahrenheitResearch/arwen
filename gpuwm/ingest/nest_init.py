@@ -994,7 +994,10 @@ def _prepare_child_input_on_grid_uncached(
             static_fields, grid, config=_highres,
             domain_id=child_dc.grid_id,
             case_date=child_dc.start_time.date(),
-            landuse_attrs=landuse_attrs)
+            landuse_attrs=landuse_attrs, run=cfg)
+    from gpuwm.static.terrain_autosmooth import prepare_fields
+    static_fields = prepare_fields(
+        static_fields, grid, domain_id=child_dc.grid_id, run=cfg)
     # The child assembles its water temperature under the SAME policy as
     # its parent; the catalog carries it because the child sees no case
     # data of its own.  Lakes come from the child's OWN land-use table

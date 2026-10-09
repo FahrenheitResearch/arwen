@@ -72,7 +72,11 @@ is rounding.  A cell beyond it still counts as rounding when:
   step keeps a residual of that size, and the two codes' residuals differ by
   it).
 
-Two rates carry one more named rule each, because rounding decides them:
+Under mp=8 two rates carry one more named rule each, because rounding
+decides them there (under mp=28 both were transcription differences, the
+DOUBLE literal 3.672 in mvd_r and the running-state vapour and temperature
+in the condensation and rain evaporation, repaired on
+lane/mp28fix-warm-network, and the rules no longer apply):
 rain evaporation where the saturation adjustment has just brought the air to
 saturation (WRF's post-adjustment `ssatw` is a residual of a few float32
 units, and its sign opens the evaporation gate at :3501), and rain

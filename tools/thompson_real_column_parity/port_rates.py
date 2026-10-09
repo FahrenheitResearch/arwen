@@ -34,8 +34,10 @@ for _i, _name in enumerate(DIAGNOSTICS):
     SLOT[_name] = len(RATES) + _i
 NSLOTS = len(RATES) + len(DIAGNOSTICS)
 
-#: thompson_aa_cold_network: every cell with entry T < 273.15 K.
-COLD = {
+#: The classic cold kernel's local names for the cold rates
+#: (thompson.cu's thompson_frozen_vapor_cloud_network, which the mp=28 cold
+#: network was first built from): the mp=8 readback below uses them.
+COLD_LOCALS = {
     "pri_ide": "ice_rate", "prs_ide": "ice_to_snow_rate",
     "pni_ide": "ice_number_rate",
     "prs_iau": "autoconversion_rate", "pni_iau": "autoconversion_number_rate",
@@ -76,8 +78,20 @@ COLD = {
 #: update block, so it is read back there.
 COLD_SHADOW = {"png_gde": "graupel_vapor_number_rate"}
 
-#: thompson_aa_warm_source_network: every cell with entry T >= 273.15 K.
-WARM = {
+#: thompson_aa_cold_network (v4.6.1): every cell with entry T < 273.15 K.
+#: The level function keeps every rate under its WRF name in its
+#: ThompsonAaLevel ``L`` (thompson_aerosol_common.cuh); they are read back
+#: where WRF's conservation limiters are done.
+COLD = {name: f"L.{name}" for name in RATES
+        if name not in ("prw_vcd", "pnc_wcd", "prv_rev", "pnr_rev")}
+
+#: thompson_aa_warm_source_network (v4.6.1): every cell with entry
+#: T >= 273.15 K, through the same ThompsonAaLevel ``L`` as the cold network.
+WARM = {name: f"L.{name}" for name in RATES
+        if name not in ("prw_vcd", "pnc_wcd", "prv_rev", "pnr_rev")}
+
+#: The warm kernel's earlier local names (mp=8's warm kernel carries them).
+WARM_LOCALS = {
     "prr_wau": "autoconversion_rate", "pnr_wau": "autoconversion_number_rate",
     "prr_rcw": "rain_cloud_rate", "pnr_rcr": "rain_self_number_rate",
     "pnc_wau": "cloud_autoconversion_number_sink",
@@ -106,13 +120,11 @@ RAIN_EVAPORATION = {"prv_rev": "prv_rev", "pnr_rev": "pnr_rev"}
 #: the anchor, which must occur exactly once in the module's source.
 ANCHORS = {
     "thompson_aerosol_cold": [
-        # Where every cold rate is final, before the in-place and the
-        # accumulator apply forms branch.
-        ("    // :3022-3031.  REAL + DOUBLE*orho, rounded once.\n", COLD),
-        ("        graupel_number_shadow[idx] = thompson_aa_add("
-         "initial_number_per_kg,\n", COLD_SHADOW)],
+        # Where every cold rate is final: after WRF's conservation
+        # limiters, before the tendencies are formed.
+        ("    // HOST READBACK ANCHOR: every rate final.\n", COLD)],
     "thompson_aerosol_warm": [
-        ("    snow_melt_marker[idx] = snow_melt_rate > 0.0 ? 1.0f : 0.0f;\n",
+        ("    // HOST READBACK ANCHOR: every warm-level rate final.\n",
          WARM)],
     "thompson_aerosol_sat": [
         ("    const float prw = (float)prw_vcd;\n", CONDENSATION),
@@ -143,11 +155,11 @@ NOT_CARRIED_MP8 = (
 #: thompson_frozen_vapor_cloud_network: every cell with entry T < 273.15 K.
 #: The classic cold kernel is the one the mp=28 cold network was built
 #: from, so its locals carry the same names; the aerosol terms are absent.
-COLD_MP8 = {name: expr for name, expr in COLD.items()
+COLD_MP8 = {name: expr for name, expr in COLD_LOCALS.items()
             if name not in NOT_CARRIED_MP8}
 
 #: thompson_warm_frozen_source_network: every cell with entry T >= 273.15 K.
-WARM_MP8 = {name: expr for name, expr in WARM.items()
+WARM_MP8 = {name: expr for name, expr in WARM_LOCALS.items()
             if name not in NOT_CARRIED_MP8}
 
 #: thompson_cloud_saturation_adjust_impl keeps the adjustment in mixing
@@ -218,7 +230,8 @@ def instrumented_modules(mp: int = 28) -> tuple[str, ...]:
     return tuple(ANCHORS_BY_MP[mp])
 
 
-__all__ = ["ANCHORS", "ANCHORS_BY_MP", "ANCHORS_MP8", "COLD", "COLD_MP8",
+__all__ = ["ANCHORS", "ANCHORS_BY_MP", "ANCHORS_MP8", "COLD", "COLD_LOCALS",
+           "COLD_MP8", "WARM_LOCALS",
            "COLD_SHADOW", "CONDENSATION", "CONDENSATION_MP8",
            "DIAGNOSTICS", "NOT_CARRIED", "NOT_CARRIED_MP8", "NSLOTS",
            "PER_STEP", "RAIN_EVAPORATION", "RAIN_EVAPORATION_MP8", "SLOT",

@@ -187,7 +187,7 @@ def prepare_acoustic_substep_launch(state, cfg, dtau, coefficients, *, mudf=None
                   write_mudf=I(0), moist_cq=I(0), cf1=state.cf1, cf2=state.cf2, cf3=state.cf3,
                   top_lid=I(cfg.top_lid), rdx=F(1.0 / cfg.dx), rdy=F(1.0 / cfg.dy),
                   dtau=F(dtau), epssm=F(cfg.epssm),
-                  dampmag=F(dtau * cfg.dampcoef if cfg.damp_opt == 3 else 0.0), zdamp=F(cfg.zdamp),
+                  dampmag=original.damp_magnitude(cfg, dtau), zdamp=F(cfg.zdamp),
                   boundary_x=I(0), boundary_y=I(0), open_x=I(0), open_y=I(0),
                   spec_zone=I(0), base3d=bindings.base3d, nz=I(nz), ny=I(ny), nx=I(nx))
     # Signature authority is the installed original CUDA source, not a copied
@@ -199,12 +199,17 @@ def prepare_acoustic_substep_launch(state, cfg, dtau, coefficients, *, mudf=None
 
     def source_spec(entry):
         from gpuwm.ensemble.batch_kernel import _close, _masked
-        masked = _masked(source)
+        # Read the signature from the compiled view (inactive preprocessor
+        # branches blanked, e.g. the strict ww_ref parameter), not the raw
+        # text: a signature whose strict and default arms each close their
+        # own parenthesis (advance_uv) would otherwise end inside the strict
+        # arm and declare its pointers.
+        active = _active_source(source, _runtime_audit_options(
+            KernelSpec("acoustic", entry, ())))
+        masked = _masked(active)
         declaration = re.search(r"\bvoid\s+" + entry + r"\s*\(", masked)
         end = _close(masked, declaration.end() - 1, "(", ")")
-        signature = source[declaration.end():end]
-        # Exclude the inactive strict ww_ref parameter before the ABI audit.
-        signature = re.sub(r"#if GPUWM_WRF_EXACT\s+.*?#endif", "", signature, flags=re.S)
+        signature = active[declaration.end():end]
         pointers = []
         for part in signature.split(","):
             if "*" not in part:

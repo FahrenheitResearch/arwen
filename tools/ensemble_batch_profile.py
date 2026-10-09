@@ -512,7 +512,8 @@ def run(args):
                                   "driver_span_ms": arm["driver_span_ms"],
                                   "raw_launch_span_ms": arm["raw_launch_span_ms"],
                                   "uncategorized_driver_span_ms": arm["uncategorized_driver_span_ms"]}), flush=True)
-            del profiled, advance, state, recorder, inputs
+            state = None  # rebound, not deleted: a closure above reads it
+            del profiled, advance, recorder, inputs
         receipt["status"] = "measured"
         receipt["family_comparison"] = _comparison(receipt["arms"])
     except BaseException as error:

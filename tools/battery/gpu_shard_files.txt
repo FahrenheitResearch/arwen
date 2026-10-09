@@ -883,6 +883,9 @@ tests/test_terrain_drag_devices_gpu.py
 # uniform-theta guard: a 300 K atmosphere moved 4.17 K in one 40 s step
 # before the fix.  Both need a card; the import, refusal and pricing rows
 # run on stage 1.
+# The default GPU leg also starts a strict subprocess for both compiled
+# WRF fixture comparisons. Strict-only IEVA errors and skipped comparisons
+# must fail this leg, rather than being covered only by the ridge probe.
 tests/test_zadvect_implicit.py
 # Live implicit flux must cross rank seams without changing any persisted
 # word across resident and 1/2/4-rank runs. The explicit and poisoned-seam
@@ -1129,6 +1132,72 @@ tests/test_sfire_tilestream_gpu.py
 tests/test_sfire_wind_wrf471_parity.py
 tests/test_sfire_wrf471_parity.py
 
+# Selected per-cut device suites.
+tests/test_diffusion_default_words.py
+# tests/test_ensemble_packing_launch_gpu.py is NOT on this leg: it is marked gpu, network and slow and
+# needs GPUWM_PACKING_TEST_CARDS cards, so this leg deselected all of it (no_silent_deselection).
+# It runs by hand on a multi-card box with GPUWM_NETWORK_TESTS=1, as its own skipif says.
+tests/test_mp28_fallout_integration_gpu.py
+tests/test_mp28_fallout_parallel_gpu.py
+tests/test_mynn_cycled_start_gpu.py
+tests/test_mynn_gsd41_driver_exact_gpu.py
+tests/test_mynn_restart_live_gpu.py
+tests/test_mynn_sfclay_wrf461_column_oracle_gpu.py
+tests/test_mynn_wrf461_cycled_carry_gpu.py
+tests/test_sfclay_noftz_regression.py
+tests/test_sfclayrev_flux_disable_replay.py
+tests/test_sfclayrev_nonfinite.py
+tests/test_shinhong_wrf461_parity.py
+tests/test_surface_subnormal_units_gpu.py
+tests/test_terrain_clock_review_gpu.py
+tests/test_thompson_aerosol_clipping_gpu.py
+tests/test_thompson_aerosol_cold_gpu.py
+tests/test_thompson_aerosol_column_oracle_gpu.py
+tests/test_thompson_aerosol_device_helpers.py
+tests/test_thompson_aerosol_sat_gpu.py
+tests/test_thompson_aerosol_sed_gpu.py
+tests/test_thompson_aerosol_warm_gpu.py
+tests/test_thompson_aerosol_warm_network_oracle_gpu.py
+tests/test_thompson_slab1_oracle_gpu.py
+tests/test_thompson_wrf39_rain_fallout_gpu.py
+tests/test_verify_base4_review_gpu.py
+tests/test_wrf_exact_diffusion.py
+tests/test_wrf_exact_operation_order_gpu.py
+tests/test_wrf_exact_round3_gpu.py
+tests/test_ysu.py
+tests/test_mp28_forecast_smoke.py
+tests/test_thompson_aerosol_gpu.py
+tests/test_thompson_aerosol_sedim_refl.py
+# gfix/288-thompson-classic: mp=8's rain-graupel kernels against WRF's own
+# column words, and the adapter on the corrected-RACG active-collision
+# reference; neither file was on any GPU leg.
+tests/test_thompson_gpu.py
+tests/test_thompson_active_collision.py
+tests/test_km1_wrf461_oracle.py
+
+# gfix/288-gpu-followups: the device rows of the six WRF 4.6.1 column
+# oracles (sixth-order filter, diff_opt = 1 coordinate mixing, 3-D and 2-D
+# Smagorinsky, 1.5-order TKE, and damp_opt = 3 / w_damp).  They were on no GPU
+# leg, so a kernel change that moved any of those words against compiled WRF
+# would have passed every leg.  The rows that grade the strict build skip in
+# a default process; the strict ones that start their own subprocess
+# (diffopt1, smag2d, tke_km2) run here as they are.
+tests/test_diff6_wrf461_column_oracle.py
+tests/test_diffopt1_wrf461_column_oracle.py
+tests/test_km3_wrf461_column_oracle.py
+tests/test_smag2d_wrf461_column_oracle.py
+tests/test_tke_km2_wrf461_column_oracle.py
+tests/test_upper_damping_wrf461_oracle.py
+
+# The Eta/MYJ surface layer graded directly on the card (WRF v4.6.1 parity with the HT
+# negative control, and the port contract). Breakage: 2.8.8's candidate passed one array
+# fewer than myjsfc_column reads, and only test_multislab_hazards_gpu caught it, indirectly.
+# (Per cut, not weekly: 54df6e255 appended them below the shard-2 marker,
+# where tests/test_gpu_shard_manifest.py admits only the frozen cumulus
+# oracle families.)
+tests/test_myjsfc_wrf461_parity.py
+tests/test_myj_port.py
+
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py
 tests/test_gf_shallow_cuda.py
@@ -1170,3 +1239,7 @@ tests/test_ntiedtke_post_run_parity.py
 tests/test_ntiedtke_prep_parity.py
 tests/test_ntiedtke_uscale_parity.py
 tests/test_ntiedtke_workspace.py
+
+# Correctness stack files that collect only on the GPU leg.
+
+# Mixed CPU and GPU selected suites also retain their device leg.

@@ -1450,7 +1450,7 @@ def case_frame_cost(rung: str = "mp10 Morrison", nx: int = 512,
         "setup_bytes_per_cell": setup.bytes_per_cell(cfg),
     }
     store.free()
-    del state
+    state = None  # rebound, not deleted: a closure above reads it
     _free_device()
     return record
 

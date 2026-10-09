@@ -813,6 +813,89 @@ pub fn union_mapping(
     })
 }
 
+/// The contributing-source record of a binding whose files publish no
+/// record for its fields, or `None` when any bound field has no fallback
+/// (or the binding supplies terrain, which has its own `when_absent`).
+///
+/// Twin of `mapped_composition._unpublished_binding_record`.  The record
+/// keeps the binding's mapping, data and provenance identities, so every
+/// inventory check that reads it is unchanged; its alignment says
+/// `UNPUBLISHED` and names each field's fallback.
+#[allow(clippy::too_many_arguments)]
+pub fn unpublished_record(
+    binding: &Binding,
+    fallbacks: &[(String, String)],
+    donor_path: &str,
+    donor_sha256: &str,
+    donor_files: &[String],
+    digests: &BTreeMap<String, String>,
+    provenance_path: &String,
+    provenance_digests: &BTreeMap<String, String>,
+) -> Option<Value> {
+    if fallbacks.is_empty() || binding.fields.iter().any(|name| name == EXTERNAL_FIELD) {
+        return None;
+    }
+    let mut named = serde_json::Map::new();
+    for name in &binding.fields {
+        let (_, id) = fallbacks.iter().find(|(field, _)| field == name)?;
+        named.insert(name.clone(), json!(id));
+    }
+    let mut fields = binding.fields.clone();
+    fields.sort();
+    Some(json!({
+        "binding": binding.name,
+        "source_id": binding.source_id,
+        "mapping": {"path": donor_path, "sha256": donor_sha256},
+        "data": donor_files
+            .iter()
+            .map(|path| json!({"path": path, "sha256": digests[path]}))
+            .collect::<Vec<Value>>(),
+        "provenance": {
+            "path": provenance_path,
+            "sha256": provenance_digests[provenance_path],
+        },
+        "fields": fields,
+        "alignment": {
+            "status": "UNPUBLISHED",
+            "reason": "the supplied files publish no record for these fields",
+            "fallback": Value::Object(named),
+        },
+    }))
+}
+
+/// `mapping` without the named fields, in `fields` and in
+/// `target.required_fields`: an unpublished binding's fields are not on
+/// the composed frame, so the frame does not require them.
+pub fn without_fields(mapping: &Mapping, names: &BTreeSet<String>) -> Result<Mapping> {
+    let fields = mapping
+        .doc
+        .get("fields")
+        .filter(|node| node.is_object())
+        .ok_or_else(|| mapping_invalid("mapping.fields must be an object"))?
+        .object_filtered(|key, _| !names.contains(key));
+    let mut doc = mapping.doc.with_entry("fields", fields);
+    if let Some(target) = mapping.doc.get("target").filter(|node| node.is_object()) {
+        if let Some(required) = target.get("required_fields").filter(|node| node.is_array()) {
+            let kept: Vec<Node> = required
+                .items()
+                .iter()
+                .filter(|item| {
+                    item.get("name")
+                        .and_then(Node::as_str)
+                        .map_or(true, |name| !names.contains(name))
+                })
+                .cloned()
+                .collect();
+            doc = doc.with_entry("target", target.with_entry("required_fields", Node::Array(kept)));
+        }
+    }
+    Ok(Mapping {
+        doc,
+        sha256: mapping.sha256.clone(),
+        path: mapping.path.clone(),
+    })
+}
+
 /// `mapped_composition._bind_manifest_member`: stamp the manifest's
 /// EXPLICIT member onto every composed record.
 ///
@@ -1079,6 +1162,8 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     let mut donors: BTreeMap<String, Mapping> = BTreeMap::new();
     let mut contributing_records: Vec<Value> = Vec::new();
     let mut terrain_binding_receipt: Option<Value> = None;
+    // Fields of bindings recorded as unpublished: off the composed frame.
+    let mut unpublished: BTreeSet<String> = BTreeSet::new();
     for binding in &composition.bindings {
         let donor_path = &contributing[&binding.mapping_role];
         let donor = Mapping::load(donor_path)?;
@@ -1101,11 +1186,42 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             )));
         }
         let donor_files = &supplements[&binding.data_role];
-        let donor_collection = crate::engine::decode_collection(
+        let donor_collection = match crate::engine::decode_collection_or_unmatched(
             &partition_contributing(&donor, &binding.fields, &binding.name)?,
             donor_files,
             progress,
-        )?;
+        )? {
+            Ok(collection) => collection,
+            Err(unmatched) => {
+                // The files publish no record at all for this binding's
+                // fields (HRRR wrfsfc before 2020-12-02 carries no VEG).
+                // When the caller gave a fallback for EVERY bound field the
+                // binding is recorded as unpublished with those fallbacks
+                // and composes nothing; otherwise the miss is refused by
+                // name, as it always was.
+                let Some(record) = unpublished_record(
+                    binding,
+                    &invocation.unpublished_fallbacks,
+                    donor_path,
+                    &donor.sha256,
+                    donor_files,
+                    &digests,
+                    &provenance[&binding.provenance_role],
+                    &provenance_digests,
+                ) else {
+                    return Err(unmatched);
+                };
+                contributing_records.push(record);
+                unpublished.extend(binding.fields.iter().cloned());
+                donors.insert(binding.name.clone(), donor);
+                progress(json!({
+                    "event": "unpublished_binding",
+                    "binding": binding.name,
+                    "fields": binding.fields.len(),
+                }));
+                continue;
+            }
+        };
         let (plan, receipt) = crate::join::plan_bound_fields(
             &crate::join::PrimaryHeader {
                 latitude: stream.latitude(),
@@ -1172,6 +1288,11 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     }
 
     let union = union_mapping(&mapping, &donors, &composition.bindings)?;
+    let union = if unpublished.is_empty() {
+        union
+    } else {
+        without_fields(&union, &unpublished)?
+    };
     let output = std::path::PathBuf::from(
         invocation
             .output
@@ -1543,6 +1664,63 @@ mod tests {
         let field = union.field("soil_temperature").unwrap();
         assert_eq!(field.location().unwrap(), "soil");
         assert!(!field.dependency_only().unwrap());
+    }
+
+    #[test]
+    fn a_binding_whose_files_publish_nothing_is_recorded_only_with_a_fallback_for_every_field() {
+        // HRRR wrfsfc before 2020-12-02 carries no VEG record: the
+        // vegetation binding is recorded UNPUBLISHED with the caller's
+        // fallback and its field leaves the composed frame.  A binding with
+        // any field lacking a fallback, or one that supplies terrain, is
+        // refused as before (None).
+        let binding = |fields: &[&str]| Binding {
+            name: "vegetation_surface".to_owned(),
+            source_id: "v".to_owned(),
+            mapping_role: "vegetation_surface_mapping".to_owned(),
+            mapping_sha256: "ab".repeat(32),
+            data_role: "vegetation_surface_data".to_owned(),
+            provenance_role: "vegetation_surface_provenance".to_owned(),
+            fields: fields.iter().map(|name| (*name).to_owned()).collect(),
+            grid_alignment: "exact_coordinate_subset".to_owned(),
+            time_alignment: "source_cycle_analysis_broadcast".to_owned(),
+        };
+        let fallbacks = vec![(
+            "vegetation_fraction".to_owned(),
+            "static-greenfrac-monthly-climatology".to_owned(),
+        )];
+        let files = vec!["/d/sfc.grib2".to_owned()];
+        let digests = BTreeMap::from([("/d/sfc.grib2".to_owned(), "cd".repeat(32))]);
+        let provenance = "/d/p.json".to_owned();
+        let provenance_digests = BTreeMap::from([(provenance.clone(), "ef".repeat(32))]);
+        let record = |binding: &Binding, fallbacks: &[(String, String)]| {
+            unpublished_record(
+                binding, fallbacks, "/d/m.json", &"12".repeat(32), &files,
+                &digests, &provenance, &provenance_digests,
+            )
+        };
+        let recorded = record(&binding(&["vegetation_fraction"]), &fallbacks).unwrap();
+        assert_eq!(recorded["alignment"]["status"], "UNPUBLISHED");
+        assert_eq!(
+            recorded["alignment"]["fallback"]["vegetation_fraction"],
+            "static-greenfrac-monthly-climatology"
+        );
+        assert_eq!(recorded["data"][0]["sha256"], "cd".repeat(32));
+        assert_eq!(recorded["provenance"]["sha256"], "ef".repeat(32));
+        assert!(record(&binding(&["vegetation_fraction"]), &[]).is_none());
+        assert!(record(&binding(&["vegetation_fraction", "land_fraction"]), &fallbacks).is_none());
+        let terrain = vec![(EXTERNAL_FIELD.to_owned(), "x".to_owned())];
+        assert!(record(&binding(&[EXTERNAL_FIELD]), &terrain).is_none());
+
+        let mapping = Mapping::load(&write(
+            "m9.json",
+            &mapping_document(r#", "vegetation_fraction": {"provider": "composition_bound"}"#),
+        ))
+        .unwrap();
+        assert!(mapping.field("vegetation_fraction").is_ok());
+        let names = BTreeSet::from(["vegetation_fraction".to_owned()]);
+        let reduced = without_fields(&mapping, &names).unwrap();
+        assert!(reduced.field("vegetation_fraction").is_err());
+        assert_eq!(reduced.sha256, mapping.sha256);
     }
 
     #[test]

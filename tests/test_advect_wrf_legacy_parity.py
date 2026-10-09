@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 import warnings
 from pathlib import Path
@@ -327,7 +326,8 @@ def test_exact_build_holds_the_fork_reference_bitwise_on_the_explicit_routines()
     reproduce every word of the fork reference on the specified and
     periodic cases, including the scalar total tendency with the fork's
     semi-Lagrangian low-order vertical flux."""
-    if os.environ.get("GPUWM_WRF_EXACT_ADVECTION") != "1":
+    from gpuwm.wrf_exact import ADVECTION_ENABLED
+    if not ADVECTION_ENABLED:
         pytest.skip("requires an exact advection process")
     from tools.advect_wrf_exact.compare import compare
     outputs = {}

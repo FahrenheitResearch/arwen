@@ -165,11 +165,15 @@ def physics_reuses_pbl_composition(cfg: RunConfig) -> bool:
 #: estimate prices) and ``preflight._materialize_physics`` (what the
 #: measurement constructs).  They used to be three literal tuples, and
 #: mp=16 reached production having moved only two of them.
-PBL_RQI_MICROPHYSICS = (6, 8, 9, 10, 16, 18, 28, 50)
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+from gpuwm.microphysics_schemes import SCHEMES_BY_ID as _NAMED_MP_SCHEMES_BY_ID
+PBL_RQI_MICROPHYSICS = (6, 8, 9, 10, 16, 18, 28, 50) + tuple(
+    _s.mp_id for _s in _NAMED_MP_SCHEMES.values() if "qi" in _s.ice_mass_species)
 
 
 #: Microphysics producers with an output-due radar reflectivity carrier.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50) + tuple(
+    _s.mp_id for _s in _NAMED_MP_SCHEMES.values())
 
 
 #: The raw PBL fields needed to repeat mass coupling after a grid move.
@@ -206,7 +210,7 @@ def microphysics_scratch_slots(
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("sr", "mp_kessler_sr"))
-    if mp_physics in (6, 8, 10, 16, 28):
+    if mp_physics in (6, 8, 10, 16, 28) or mp_physics in _NAMED_MP_SCHEMES_BY_ID:
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("sr", "mp_sr"),

@@ -56,3 +56,52 @@ def test_rebuilt_store_gate_uses_new_template_store_and_full_base(monkeypatch):
     gate.require_healthy(phase='rebuilt')
     store['state/thp'][-1, -1, -1] = np.nan
     assert not gate.validate(phase='new-store-poison').ok
+
+
+class _MirroredOwner:
+    """A streamed owner whose host store is current only after a drain.
+
+    ``StreamedDomain.store`` drains before it hands the mapping out: the
+    deferred seam's scatter tail on one card, every slab of every rank on the
+    ranked road (``tilestream.ranks.RankedRun.store``).  ``slabs`` stands for
+    the device copy a sweep writes; the mirror catches up on a read.
+    """
+
+    def __init__(self, store):
+        self._home = store
+        self.slabs = {key: value.copy() for key, value in store.items()}
+        self.drains = 0
+
+    @property
+    def store(self):
+        self.drains += 1
+        for key, value in self.slabs.items():
+            self._home[key][...] = value
+        return self._home
+
+
+def test_attached_gate_drains_the_owner_at_every_validation(monkeypatch):
+    """THE BREAKAGE: the gate captured ``attached.store`` once and scanned that
+    mapping at every later phase with no drain.  2.8.7's
+    ``StreamedDomain.impose_clock`` drained after every step (67e213588), which
+    kept the mirror current by accident; the mc-clock fix removed that drain,
+    and a 2-card run's periodic and --health-debug gates then scanned the host
+    mirror of the last drain while a NaN sat on the slabs.
+    """
+    state, carriers = _state(NY)
+    owner = _MirroredOwner(_store())
+    state._streamed_domain = owner
+    cfg = SimpleNamespace(ny=NY, nx=NX)
+    node = SimpleNamespace(state=state, cfg=SimpleNamespace(grid_id=1, run=cfg))
+    model = SimpleNamespace(_prepared_by_grid_id={1: None})
+    monkeypatch.setattr(streaming, 'streamed_store_inventory', lambda:
+                        lambda template, _: carriers)
+    gate = health.health_validator_for_domain(model, node)
+    gate.require_healthy(phase='attached')
+    before = owner.drains
+    owner.slabs['state/thp'][NZ-1, NY-1, NX-1] = np.nan     # the sweep's step
+    report = gate.validate(phase='post-step')
+    assert owner.drains > before, 'the gate read a store it did not drain'
+    assert not report.ok
+    assert report.first_bad_field == 'thp'
+    assert report.first_bad_index == (NZ-1, NY-1, NX-1)

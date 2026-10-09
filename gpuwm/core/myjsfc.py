@@ -1,20 +1,26 @@
 """MYJ (Eta similarity) surface layer, ``sf_sfclay_physics = 2``.
 
-CUDA launcher around :mod:`gpuwm.core.kernels.myjsfc`, the device mirror of
-the float32 CPU authority ``gpuwm.verify.myj_ref.np_myjsfc_column``.  Both
-halves interpolate the SAME similarity tables: they are built once on the
-host by :func:`gpuwm.core.myjsfc_tables.build_psi_tables` (a transcription
-of ``MYJSFCINIT``, phys/module_sf_myjsfc.F:1174-1299) and uploaded here, so
-no table word can differ between the reference and the kernel.
+CUDA launcher around :mod:`gpuwm.core.kernels.myjsfc`, the device port of
+the byte-frozen WRF v4.6.1 ``phys/module_sf_myjsfc.F`` (the float32 CPU
+authority ``gpuwm.verify.myj_ref.np_myjsfc_column`` is its tolerance
+twin).  Both interpolate the SAME similarity tables: they are built once on
+the host by :func:`gpuwm.core.myjsfc_tables.build_psi_tables` (a
+transcription of ``MYJSFCINIT``, phys/module_sf_myjsfc.F:1174-1299) and
+uploaded here.
 
 The scheme is the Eta surface layer WRF pairs with the MYJ PBL and with
 nothing else (phys/module_physics_init.F:3770-3772 fatals a MYJ PBL whose
 surface layer did not set ``isfc = 2``).  gpuwm enforces the same pairing in
 :func:`gpuwm.config.validate_myj_pairing`.
 
-Conformance status: implemented-unverified.  ``tests/test_myj_port.py``
-asserts CPU-vs-CUDA agreement and physical sanity; NO oracle comparison
-against the WRF Fortran has been run.
+Conformance status: BIT-IDENTICAL to WRF v4.6.1's MYJSFC and MYJSFCINIT
+on the 224-column oracle (tools/myjsfc_wrf461_oracle,
+tests/test_myjsfc_wrf461_parity.py) under the strict build and under
+default arithmetic; registry maturity stays implemented-unverified because
+no matched forecast trajectory exists.  ``surface["ht"]`` is WRF's HT:
+MYJSFC's interface heights start at the terrain height (ZINT(KTE+1)=HT,
+:165), PBLH and ZSL are differences of them, and the float32 words depend
+on it.
 """
 
 from __future__ import annotations
@@ -40,7 +46,7 @@ _TPB = 128
 _COLUMN_INPUTS = ("dz", "tke")
 #: Read-only surface inputs, in kernel argument order.
 _SURFACE_INPUTS = ("u1", "v1", "t1", "th1", "qv1", "qc1", "p1", "psfc",
-                   "tsk", "xland", "mavail", "z0base")
+                   "tsk", "xland", "mavail", "z0base", "ht")
 
 
 @cuda_cache(maxsize=None, ready=True)

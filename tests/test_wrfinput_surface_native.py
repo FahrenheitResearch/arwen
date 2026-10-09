@@ -104,6 +104,7 @@ def test_native_cold_start_preserves_selected_background_albedo(
     monkeypatch.setitem(sys.modules, 'cupy', np)
     monkeypatch.setitem(sys.modules, 'gpuwm.core.physics', SimpleNamespace(
         initialize_physics=lambda *a, **kw: driver,
+        physics_driver_required=lambda cfg: True,
         NOAH_LAYER_THICKNESS_M=(.1, .3, .6, 1.)))
     monkeypatch.setitem(sys.modules, 'gpuwm.core.noah', SimpleNamespace(
         initialize_noah_liquid_water=lambda *a: None))

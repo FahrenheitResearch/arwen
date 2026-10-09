@@ -24,8 +24,10 @@ def exact_workspace_source(source):
         "real* __restrict__ oracle_t2, real* __restrict__ oracle_mu,\n" + prototype)
     counts = tuple(source.count(marker) for marker in
                    ("real t2_dn =", "real t2_up =", "real muave ="))
+    # (7, 7, 3): advance_w_phi and advance_w_phi_msf each carry a strict,
+    # a WRF-diffusion-order and a default theta average since the 54 intake.
     assert (all(count in (2, 4) for count in counts)
-            or counts in ((3, 3, 3), (5, 5, 3))), counts
+            or counts in ((3, 3, 3), (5, 5, 3), (7, 7, 3))), counts
     for marker, store in (("real t2_dn =", "oracle_t2[c] = t2_dn;"),
                           ("real t2_up =", "oracle_t2[h] = t2_up;"),
                           ("real muave =", "oracle_mu[c] = muts; oracle_mu[st + c] = muave;")):
@@ -143,7 +145,8 @@ def compare_frame_driver(library):
         get_kernel("acoustic","advance_exact_frame_mu_t")(
             ((cfg.ny*cfg.nx+255)//256,),(256,),
             (mu_device,theta_device,cp.asarray(rmu),cp.asarray(rth),np.float32(.25),
-             np.int32(cfg.spec_zone),np.int32(0),np.int32(cfg.nz),np.int32(cfg.ny),np.int32(cfg.nx)))
+             np.int32(cfg.spec_zone),np.int32(0),np.int32(cfg.nz),np.int32(cfg.ny),np.int32(cfg.nx),
+             cp.asarray(data["mub2d"]+data["mup"]),cp.asarray(data["mub2d"]),cp.asarray(data["mup"])))
         result[name]={}
         for label,field,tendency,got in (("mu",data["mu_pp"][None],rmu[None],mu_device),
                                            ("theta",theta,rth,theta_device)):

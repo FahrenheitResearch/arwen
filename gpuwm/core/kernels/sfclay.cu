@@ -12,6 +12,110 @@
 // strong-stable branch leaves ZOL untouched, and both schemes average newly
 // diagnosed u* with old UST and old USTM.  Outputs remain FP32 model state;
 // gpuwm.verify.npref.np_sfclay is the float64 transcription mirror.
+//
+// Bitwise WRF for option 1 (tools/sfclayrev_wrf461_oracle, graded by
+// tests/test_sfclayrev_wrf461_parity.py against the gfortran -O0 reference).
+// What that takes, each one measured on the oracle:
+//   * the unit compiles without multiply-add contraction (kernels/__init__.py
+//     _NO_FMAD_MODULES), as gfortran on baseline x86-64 never contracts;
+//   * ALOG, EXP, real ** and ATAN are WOOF's own float32 routines
+//     (sf_log/sf_exp/sf_pow/sf_atan below), which return the words the
+//     reference's libm returns; CUDA's logf/expf/powf/atanf are different
+//     functions;
+//   * every REAL power is the powf call gfortran emits, including x**0.5
+//     (not sqrtf) and x**2. (not x*x); integer powers stay products;
+//   * every expression keeps WRF's own association, read from gfortran's
+//     -fdump-tree-original of the pinned source: the Exner factor's
+//     (p1000mb*0.001)/(p/1000.) base, rhox's (psfc/1000.)*1000., the land
+//     scalar's (0.01/za)*zol, sqrt(sqrt(restar)), -((zl/0.07)*0.40), and
+//     the wind speed as sqrt(u*u+v*v), not hypotf.
+
+// WOOF's own float32 libm words (glibc_flt32.cuh's gfk_*, prepended by the
+// loader for this unit) in place of CUDA's builtins.
+__device__ __forceinline__ real sf_log(real x) { return gfk_log(x); }
+__device__ __forceinline__ real sf_exp(real x) { return gfk_exp(x); }
+__device__ __forceinline__ real sf_pow(real x, real y) { return gfk_pow(x, y); }
+
+// WOOF's own float32 atanf: the same routine and the same 19 words as
+// mynn_pbl.cu's mynn_glibc_atanf / MYNN_ATANF_TAB (the gate in
+// tests/test_sfclayrev_wrf461_parity.py holds the two tables equal).  Every
+// operation is a plain FP32 multiply or add, none contracted.
+__constant__ unsigned int SFC_ATANF_TAB[19] = {
+    0x3EED6338u, 0x3F490FDAu, 0x3F7B985Eu, 0x3FC90FDAu,
+    0x31AC3769u, 0x33222168u, 0x33140FB4u, 0x33A22168u,
+    0x3EAAAAABu, 0xBE4CCCCDu, 0x3E124925u, 0xBDE38E38u,
+    0x3DBA2E6Eu, 0xBD9D8795u, 0x3D886B35u, 0xBD6EF16Bu,
+    0x3D4BDA59u, 0xBD15A221u, 0x3C8569D7u,
+};
+
+__device__ real sf_atan(real x)
+{
+    unsigned int hx = __float_as_uint(x);
+    unsigned int ix = hx & 0x7FFFFFFFu;
+    int signed_hx = (int) hx;
+    int id;
+#define SFC_ATAN_HI(i) __uint_as_float(SFC_ATANF_TAB[(i)])
+#define SFC_ATAN_LO(i) __uint_as_float(SFC_ATANF_TAB[4 + (i)])
+#define SFC_ATAN_T(i)  __uint_as_float(SFC_ATANF_TAB[8 + (i)])
+    if (ix >= 0x4C000000u) {                     // |x| >= 2**25
+        if (ix > 0x7F800000u) return FADD(x, x);
+        if (signed_hx > 0) return FADD(SFC_ATAN_HI(3), SFC_ATAN_LO(3));
+        return FSUB(-SFC_ATAN_HI(3), SFC_ATAN_LO(3));
+    }
+    if (ix < 0x3EE00000u) {                      // |x| < 0.4375
+        if (ix < 0x31000000u) return x;          // |x| < 2**-29
+        id = -1;
+    } else {
+        x = __uint_as_float(ix);                 // |x|
+        if (ix < 0x3F980000u) {                  // |x| < 1.1875
+            if (ix < 0x3F300000u) {              // 7/16 <= |x| < 11/16
+                id = 0;
+                x = FDIV(FSUB(FMUL(2.0f, x), 1.0f), FADD(2.0f, x));
+            } else {                             // 11/16 <= |x| < 19/16
+                id = 1;
+                x = FDIV(FSUB(x, 1.0f), FADD(x, 1.0f));
+            }
+        } else if (ix < 0x401C0000u) {           // |x| < 2.4375
+            id = 2;
+            x = FDIV(FSUB(x, 1.5f), FADD(1.0f, FMUL(1.5f, x)));
+        } else {                                 // 2.4375 <= |x| < 2**25
+            id = 3;
+            x = FDIV(-1.0f, x);
+        }
+    }
+    real z = FMUL(x, x);
+    real w = FMUL(z, z);
+    real s1 = FMUL(w, SFC_ATAN_T(10));
+    s1 = FMUL(w, FADD(SFC_ATAN_T(8), s1));
+    s1 = FMUL(w, FADD(SFC_ATAN_T(6), s1));
+    s1 = FMUL(w, FADD(SFC_ATAN_T(4), s1));
+    s1 = FMUL(w, FADD(SFC_ATAN_T(2), s1));
+    s1 = FMUL(z, FADD(SFC_ATAN_T(0), s1));
+    real s2 = FMUL(w, SFC_ATAN_T(9));
+    s2 = FMUL(w, FADD(SFC_ATAN_T(7), s2));
+    s2 = FMUL(w, FADD(SFC_ATAN_T(5), s2));
+    s2 = FMUL(w, FADD(SFC_ATAN_T(3), s2));
+    s2 = FMUL(w, FADD(SFC_ATAN_T(1), s2));
+    real s = FADD(s1, s2);
+    if (id < 0) return FSUB(x, FMUL(x, s));
+    real r = FSUB(SFC_ATAN_HI(id),
+                  FSUB(FSUB(FMUL(x, s), SFC_ATAN_LO(id)), x));
+    return (signed_hx < 0) ? -r : r;
+#undef SFC_ATAN_HI
+#undef SFC_ATAN_LO
+#undef SFC_ATAN_T
+}
+
+// Constants gfortran folds at compile time in the pinned source, written as
+// the words it folded (-fdump-tree-original): 2.*ATAN(1.), SQRT(3.),
+// 4.*ATAN(1.)/SQRT(3.), 1./1.1, 1./2.5, SQRT(0.71), SQRT(0.60).
+#define SF_TWO_ATAN1   1.57079637050628662109375f
+#define SF_SQRT3       1.73205077648162841796875f
+#define SF_FOUR_ATAN1_OVER_SQRT3 1.81379950046539306640625f
+#define SF_INV_1P1     9.0909087657928466796875e-1f
+#define SF_INV_2P5     4.000000059604644775390625e-1f
+#define SF_SQRT_0P71   8.42614948749542236328125e-1f
+#define SF_SQRT_0P60   7.74596691131591796875e-1f
 
 __device__ __forceinline__ double sf_f2d(real x)
 {
@@ -41,7 +145,7 @@ __device__ __forceinline__ real sf_log_zratio(real num, real z0)
     // z0 the quotient survives keeps its exact FP32 word
     // (module_sf_sfclay.F:494 GZ1OZ0 = ALOG(ZA/ZNT);
     // sf_sfclayrev.F90:318 alog((za+znt)/znt)).
-    real r = logf(num / z0);
+    real r = sf_log(num / z0);
     if (isfinite(r)) return r;
     // num/z0 overflows FP32 once z0 < num/FLT_MAX (~2.9e-38 for a 10 m
     // level) -- long before the logarithm itself is out of range -- and
@@ -62,16 +166,18 @@ __device__ __forceinline__ real sf_log_zratio(real num, real z0)
 
 __device__ __forceinline__ real sf_psim_classic_full(real z)
 {
-    real x = powf(1.0f - 16.0f * z, 0.25f);
-    return 2.0f * logf(0.5f * (1.0f + x))
-         + logf(0.5f * (1.0f + x * x)) - 2.0f * atanf(x)
-         + 2.0f * atanf(1.0f);
+    // module_sf_sfclay.F:961-963 (sfclayinit).
+    real x = sf_pow(1.0f - 16.0f * z, 0.25f);
+    return 2.0f * sf_log(0.5f * (1.0f + x))
+         + sf_log(0.5f * (1.0f + x * x)) - 2.0f * sf_atan(x)
+         + SF_TWO_ATAN1;
 }
 
 __device__ __forceinline__ real sf_psih_classic_full(real z)
 {
-    real y = sqrtf(1.0f - 16.0f * z);
-    return 2.0f * logf(0.5f * (1.0f + y));
+    // module_sf_sfclay.F:964: (1-16*ZOLN)**0.5 is a powf call, not sqrtf.
+    real y = sf_pow(1.0f - 16.0f * z, 0.5f);
+    return 2.0f * sf_log(0.5f * (1.0f + y));
 }
 
 __device__ __forceinline__ real sf_classic_table(real z, bool heat)
@@ -87,38 +193,41 @@ __device__ __forceinline__ real sf_classic_table(real z, bool heat)
 
 __device__ __forceinline__ real sf_psim_stable_full(real z)
 {
-    return -6.1f * logf(z + powf(1.0f + powf(z, 2.5f), 1.0f / 2.5f));
+    // sf_sfclayrev.F90:991.
+    return -6.1f * sf_log(z + sf_pow(1.0f + sf_pow(z, 2.5f), SF_INV_2P5));
 }
 
 __device__ __forceinline__ real sf_psih_stable_full(real z)
 {
-    return -5.3f * logf(z + powf(1.0f + powf(z, 1.1f), 1.0f / 1.1f));
+    // sf_sfclayrev.F90:999.
+    return -5.3f * sf_log(z + sf_pow(1.0f + sf_pow(z, 1.1f), SF_INV_1P1));
 }
 
 __device__ __forceinline__ real sf_psim_unstable_full(real z)
 {
-    real x = powf(1.0f - 16.0f * z, 0.25f);
-    real psimk = 2.0f * logf(0.5f * (1.0f + x))
-               + logf(0.5f * (1.0f + x * x)) - 2.0f * atanf(x)
-               + 2.0f * atanf(1.0f);
-    real ym = powf(1.0f - 10.0f * z, 0.33f); // file literal .33
-    real rt3 = sqrtf(3.0f);
-    real psimc = 1.5f * logf(__fdiv_rn((ym * ym + ym + 1.0f), 3.0f))
-                - rt3 * atanf(__fdiv_rn((2.0f * ym + 1.0f), rt3))
-                + 4.0f * atanf(1.0f) / rt3;
-    return (psimk + z * z * psimc) / (1.0f + z * z);
+    // sf_sfclayrev.F90:1008-1014.  ym**2. and zolf**2. are powf calls;
+    // zolf**2 (integer power) is a product.
+    real x = sf_pow(1.0f - 16.0f * z, 0.25f);
+    real psimk = 2.0f * sf_log(0.5f * (1.0f + x))
+               + sf_log(0.5f * (1.0f + x * x)) - 2.0f * sf_atan(x)
+               + SF_TWO_ATAN1;
+    real ym = sf_pow(1.0f - 10.0f * z, 0.33f); // file literal .33
+    real psimc = 1.5f * sf_log(__fdiv_rn((sf_pow(ym, 2.0f) + ym + 1.0f), 3.0f))
+                - SF_SQRT3 * sf_atan(__fdiv_rn((2.0f * ym + 1.0f), SF_SQRT3))
+                + SF_FOUR_ATAN1_OVER_SQRT3;
+    return (psimk + z * z * psimc) / (1.0f + sf_pow(z, 2.0f));
 }
 
 __device__ __forceinline__ real sf_psih_unstable_full(real z)
 {
-    real y = sqrtf(1.0f - 16.0f * z);
-    real psihk = 2.0f * logf((1.0f + y) / 2.0f);
-    real yh = powf(1.0f - 34.0f * z, 0.33f);
-    real rt3 = sqrtf(3.0f);
-    real psihc = 1.5f * logf(__fdiv_rn((yh * yh + yh + 1.0f), 3.0f))
-                - rt3 * atanf(__fdiv_rn((2.0f * yh + 1.0f), rt3))
-                + 4.0f * atanf(1.0f) / rt3;
-    return (psihk + z * z * psihc) / (1.0f + z * z);
+    // sf_sfclayrev.F90:1023-1029.  (1.-16.*zolf)**.5 is a powf call.
+    real y = sf_pow(1.0f - 16.0f * z, 0.5f);
+    real psihk = 2.0f * sf_log((1.0f + y) / 2.0f);
+    real yh = sf_pow(1.0f - 34.0f * z, 0.33f);
+    real psihc = 1.5f * sf_log(__fdiv_rn((sf_pow(yh, 2.0f) + yh + 1.0f), 3.0f))
+                - SF_SQRT3 * sf_atan(__fdiv_rn((2.0f * yh + 1.0f), SF_SQRT3))
+                + SF_FOUR_ATAN1_OVER_SQRT3;
+    return (psihk + z * z * psihc) / (1.0f + sf_pow(z, 2.0f));
 }
 
 __device__ __forceinline__ real sf_rev_table(real z, int which)
@@ -203,9 +312,10 @@ __device__ __forceinline__ real sf_rev_heat_psi(real zol, real za,
 {
     real zh = zol * (height + rough) / za;
     real z0 = zol * rough / za;
+    // sf_sfclayrev.F90:545-559's test order: > 0, then == 0, else unstable.
     if (zol > 0.0f) return sf_psih_stable(zh) - sf_psih_stable(z0);
-    if (zol < 0.0f) return sf_psih_unstable(zh) - sf_psih_unstable(z0);
-    return 0.0f;
+    if (zol == 0.0f) return 0.0f;
+    return sf_psih_unstable(zh) - sf_psih_unstable(z0);
 }
 
 extern "C" __global__
@@ -237,6 +347,20 @@ void sfclay_column(
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
+    if (option == 91) {
+        // Classic MM5 (module_sf_sfclay.F) is its own transcription,
+        // sfclay_classic.cuh, graded bitwise against the WRF Fortran.  The
+        // option == 91 arms left in the body below are no longer reached.
+        sfclay_classic_point(u[idx], v[idx], t[idx], qv[idx], p[idx],
+            dz8w[idx], psfc[idx], tsk[idx], pblh[idx], mavail[idx],
+            xland[idx], lakemask[idx], idx,
+            znt, ust, ustm, mol, hfx, qfx, qsfc,
+            zol_o, regime_o, psim_o, psih_o, fm_o, fh_o, lh_o, u10_o, v10_o,
+            th2_o, t2_o, q2_o, chs_o, chs2_o, cqs2_o, flhc_o, flqc_o, qgh_o,
+            rmol_o, wspd_o, br_o, gz1_o, cpm_o, ck_o, cka_o, cd_o, cda_o,
+            dx, isfflx, isftcflx, iz0tlnd);
+        return;
+    }
 
     const real karman = 0.4f, ep1 = RV / RD - 1.0f, xka = 2.4e-5f;
     bool land = xland[idx] < 1.5f;
@@ -247,17 +371,26 @@ void sfclay_column(
     real old_zol = zol_o[idx];
     real old_hfx = hfx[idx], old_qfx = qfx[idx], qs = qsfc[idx];
 
-    real thgb = ground_t * powf(P0 / ps, RCP);
-    real thx = temp * powf(P0 / press, RCP);
+    // Both schemes: THGB=TSK*(P1000mb/PSFCPA)**ROVCP, and the air's Exner
+    // factor from pressure in cb, THCON=(P1000mb*0.001/PL)**ROVCP with
+    // PL=P/1000. (sf_sfclayrev.F90:230,255-259; module_sf_sfclay.F:405,
+    // 430-434).  P1000mb*0.001 rounds to 100.0000076 in float32, so this is
+    // not (P0/p)**ROVCP.
+    real thgb = ground_t * sf_pow(P0 / ps, RCP);
+    real pl = __fdiv_rn(press, 1000.0f);
+    real thx = temp * sf_pow(__fdiv_rn(__fmul_rn(P0, 0.001f), pl), RCP);
     real thvx = thx * (1.0f + ep1 * qvx);
     real tv = temp * (1.0f + ep1 * qvx);
     real cpm = CP * (1.0f + 0.8f * qvx);
-    real es = SVP1 * expf(SVP2 * (ground_t - SVPT0) / (ground_t - SVP3));
+    real psfc_cb = __fdiv_rn(ps, 1000.0f);
+    real es = SVP1 * sf_exp(SVP2 * (ground_t - SVPT0) / (ground_t - SVP3));
     if (!land && lakemask[idx] == 0.0f) es *= 0.98f;
-    if (!land || qs <= 0.0f) qs = EP2 * es / (__fdiv_rn(ps, 1000.0f) - es);
-    real es_air = SVP1 * expf(SVP2 * (temp - SVPT0) / (temp - SVP3));
-    real qgh = EP2 * es_air / (__fdiv_rn(press, 1000.0f) - es_air);
-    real rho = ps / (RD * tv);
+    if (!land || surface_le_zero(qs)) qs = EP2 * es / (psfc_cb - es);
+    real es_air = SVP1 * sf_exp(SVP2 * (temp - SVPT0) / (temp - SVP3));
+    real qgh = EP2 * es_air / (pl - es_air);
+    // RHOX=PSFC*1000./(R*SCR4) with PSFC=PSFCPA/1000. (sf_sfclayrev.F90:221,
+    // 300; module_sf_sfclay.F:396,475): the cb round trip is WRF's word.
+    real rho = __fmul_rn(psfc_cb, 1000.0f) / (RD * tv);
     real za = 0.5f * dz8w[idx];
     real gz1, gz2, gz10;
     if (option == 91) {
@@ -272,19 +405,19 @@ void sfclay_column(
 
     real tskv = thgb * (1.0f + ep1 * qs);
     real dthv = thvx - tskv;
-    real wspd0 = hypotf(uu, vv), vconv;
+    real wspd0 = sqrtf(uu * uu + vv * vv), vconv;   // WRF's SQRT, not hypot
     if (land) {
         real fluxc = fmaxf(__fdiv_rn(old_hfx / rho, CP) + ep1 * tskv * old_qfx / rho,
                            0.0f);
-        vconv = powf(G / ground_t * pblh[idx] * fluxc, 0.33f);
+        vconv = sf_pow(G / ground_t * pblh[idx] * fluxc, 0.33f);
     } else {
         vconv = sqrtf(fmaxf(-dthv, 0.0f));
     }
-    real vsgd = 0.32f * powf(fmaxf(__fdiv_rn(dx, 5000.0f) - 1.0f, 0.0f), 0.33f);
+    real vsgd = 0.32f * sf_pow(fmaxf(__fdiv_rn(dx, 5000.0f) - 1.0f, 0.0f), 0.33f);
     real wspd = fmaxf(sqrtf(wspd0 * wspd0 + vconv * vconv + vsgd * vsgd),
                        0.1f);
     real br = G / thx * za * dthv / (wspd * wspd);
-    if (old_mol < 0.0f) br = fminf(br, 0.0f);
+    if (surface_lt_zero(old_mol)) br = fminf(br, 0.0f);
 
     real psim = 0.0f, psih = 0.0f, psim10 = 0.0f, psih10 = 0.0f;
     real psim2 = 0.0f, psih2 = 0.0f, pq = 0.0f, pq2 = 0.0f, pq10 = 0.0f;
@@ -340,7 +473,8 @@ void sfclay_column(
                   : sf_zolri(fmaxf(br, -250.0f), za, z0);
         real zz = zol * (za + z0) / za, z10 = zol * (10.0f + z0) / za;
         real z2 = zol * (2.0f + z0) / za, zz0 = zol * z0 / za;
-        real scalar_z = land ? zol * 0.01f / za : zz0;
+        // ZL=(0.01)/ZA*ZOL over land (sf_sfclayrev.F90:413), WRF's order.
+        real scalar_z = land ? __fdiv_rn(0.01f, za) * zol : zz0;
         if (br > 0.0f) {
             regime = 1.0f;
             psim = sf_psim_stable(zz) - sf_psim_stable(zz0);
@@ -378,71 +512,75 @@ void sfclay_column(
     real psit = option == 91 ? fmaxf(gz1 - psih, 2.0f) : gz1 - psih;
     real psit2 = gz2 - psih2;
     real zl = land ? 0.01f : z0;
-    real psiq = logf(__fdiv_rn(karman * old_ust * za, xka) + __fdiv_rn(za, zl))
+    real psiq = sf_log(__fdiv_rn(karman * old_ust * za, xka) + __fdiv_rn(za, zl))
               - (option == 91 ? psih : pq);
-    real psiq2 = logf(__fdiv_rn(karman * old_ust * 2.0f, xka) + __fdiv_rn(2.0f, zl))
+    real psiq2 = sf_log(__fdiv_rn(karman * old_ust * 2.0f, xka) + __fdiv_rn(2.0f, zl))
                - (option == 91 ? psih2 : pq2);
-    real psiq10 = logf(__fdiv_rn(karman * old_ust * 10.0f, xka) + __fdiv_rn(10.0f, zl))
+    real psiq10 = sf_log(__fdiv_rn(karman * old_ust * 10.0f, xka) + __fdiv_rn(10.0f, zl))
                 - (option == 91 ? psih10 : pq10);
 
     if (!land) {
         real visc = (1.32f + 0.009f * (temp - 273.15f)) * 1.0e-5f;
         real restar = old_ust * z0 / visc;
-        real z0t = fminf(fmaxf(5.5e-5f * powf(restar, -0.60f), 2.0e-9f),
-                         1.0e-4f);
+        // Z0T=MIN(Z0T,1.0E-4) then MAX(Z0T,2.0E-9), WRF's order.
+        real z0t = fmaxf(fminf(5.5e-5f * sf_pow(restar, -0.60f), 1.0e-4f),
+                         2.0e-9f);
         if (option == 91) {
-            psiq = fmaxf(logf((za + z0t) / z0t) - psih, 2.0f);
-            psit = fmaxf(logf((za + z0t) / z0t) - psih, 2.0f);
-            psiq2 = fmaxf(logf((2.0f + z0t) / z0t) - psih2, 2.0f);
-            psit2 = fmaxf(logf((2.0f + z0t) / z0t) - psih2, 2.0f);
-            psiq10 = fmaxf(logf((10.0f + z0t) / z0t) - psih10, 2.0f);
+            psiq = fmaxf(sf_log((za + z0t) / z0t) - psih, 2.0f);
+            psit = fmaxf(sf_log((za + z0t) / z0t) - psih, 2.0f);
+            psiq2 = fmaxf(sf_log((2.0f + z0t) / z0t) - psih2, 2.0f);
+            psit2 = fmaxf(sf_log((2.0f + z0t) / z0t) - psih2, 2.0f);
+            psiq10 = fmaxf(sf_log((10.0f + z0t) / z0t) - psih10, 2.0f);
         } else {
             psih = sf_rev_heat_psi(zol, za, z0t, za);
             psih2 = sf_rev_heat_psi(zol, za, z0t, 2.0f);
             psih10 = sf_rev_heat_psi(zol, za, z0t, 10.0f);
-            psit = logf((za + z0t) / z0t) - psih;
-            psit2 = logf((2.0f + z0t) / z0t) - psih2;
+            psit = sf_log((za + z0t) / z0t) - psih;
+            psit2 = sf_log((2.0f + z0t) / z0t) - psih2;
             psiq = psit; psiq2 = psit2;
-            psiq10 = logf((10.0f + z0t) / z0t) - psih10;
+            psiq10 = sf_log((10.0f + z0t) / z0t) - psih10;
         }
     }
 
     if (isftcflx == 1 && !land) {
         real z0q = 1.0e-4f;
         if (option == 91) {
-            psiq = logf(__fdiv_rn(za, z0q)) - psih;
-            psiq2 = logf(2.0f / z0q) - psih2;
-            psiq10 = logf(10.0f / z0q) - psih10;
+            psiq = sf_log(__fdiv_rn(za, z0q)) - psih;
+            psiq2 = sf_log(2.0f / z0q) - psih2;
+            psiq10 = sf_log(10.0f / z0q) - psih10;
         } else {
             psih = sf_rev_heat_psi(zol, za, z0q, za);
             psih2 = sf_rev_heat_psi(zol, za, z0q, 2.0f);
             psih10 = sf_rev_heat_psi(zol, za, z0q, 10.0f);
-            psiq = logf(__fdiv_rn((za + z0q), z0q)) - psih;
-            psiq2 = logf((2.0f + z0q) / z0q) - psih2;
-            psiq10 = logf((10.0f + z0q) / z0q) - psih10;
+            psiq = sf_log(__fdiv_rn((za + z0q), z0q)) - psih;
+            psiq2 = sf_log((2.0f + z0q) / z0q) - psih2;
+            psiq10 = sf_log((10.0f + z0q) / z0q) - psih10;
         }
         psit = psiq; psit2 = psiq2;
     } else if (isftcflx == 2 && !land) {
         real visc = (1.32f + 0.009f * (temp - 273.15f)) * 1.0e-5f;
         real restar = old_ust * z0 / visc;
-        real gz0t = 0.4f * (7.3f * powf(restar, 0.25f) * sqrtf(0.71f) - 5.0f);
-        real gz0q = 0.4f * (7.3f * powf(restar, 0.25f) * sqrtf(0.60f) - 5.0f);
+        // 0.40*(7.3*SQRT(SQRT(RESTAR))*SQRT(0.71)-5.): two square roots,
+        // not a quarter power (sf_sfclayrev.F90:636,668;
+        // module_sf_sfclay.F:761-762).
+        real gz0t = 0.4f * (7.3f * sqrtf(sqrtf(restar)) * SF_SQRT_0P71 - 5.0f);
+        real gz0q = 0.4f * (7.3f * sqrtf(sqrtf(restar)) * SF_SQRT_0P60 - 5.0f);
         if (option == 91) {
             psit = gz1 - psih + gz0t; psiq = gz1 - psih + gz0q;
             psit2 = gz2 - psih2 + gz0t; psiq2 = gz2 - psih2 + gz0q;
             psiq10 = gz10 - psih + gz0q;
         } else {
-            real z0t = z0 / expf(gz0t), z0q = z0 / expf(gz0q);
+            real z0t = z0 / sf_exp(gz0t), z0q = z0 / sf_exp(gz0q);
             real pht = sf_rev_heat_psi(zol, za, z0t, za);
             real pht2 = sf_rev_heat_psi(zol, za, z0t, 2.0f);
-            psit = logf((za + z0t) / z0t) - pht;
-            psit2 = logf((2.0f + z0t) / z0t) - pht2;
+            psit = sf_log((za + z0t) / z0t) - pht;
+            psit2 = sf_log((2.0f + z0t) / z0t) - pht2;
             psih = sf_rev_heat_psi(zol, za, z0q, za);
             psih2 = sf_rev_heat_psi(zol, za, z0q, 2.0f);
             psih10 = sf_rev_heat_psi(zol, za, z0q, 10.0f);
-            psiq = logf((za + z0q) / z0q) - psih;
-            psiq2 = logf((2.0f + z0q) / z0q) - psih2;
-            psiq10 = logf((10.0f + z0q) / z0q) - psih10;
+            psiq = sf_log((za + z0q) / z0q) - psih;
+            psiq2 = sf_log((2.0f + z0q) / z0q) - psih2;
+            psiq10 = sf_log((10.0f + z0q) / z0q) - psih10;
         }
     }
 
@@ -450,21 +588,37 @@ void sfclay_column(
     real cd = (karman / psix10) * (karman / psix10);
     real cka = (karman / psix) * (karman / psiq);
     real cda = (karman / psix) * (karman / psix);
+    bool scalar_exp_overflow = false;
     if (iz0tlnd >= 1 && land) {
         real visc = (1.32f + 0.009f * (temp - 273.15f)) * 1.0e-5f;
         real restar = old_ust * z0 / visc;
-        real czil = iz0tlnd == 1 ? powf(10.0f, __fdiv_rn(-0.40f * z0, 0.07f)) : 0.1f;
+        // CZIL=10.0**(-0.40*(ZL/0.07)): the quotient first
+        // (sf_sfclayrev.F90:716; module_sf_sfclay.F:786).
+        real czil = iz0tlnd == 1
+                  ? sf_pow(10.0f, -(__fdiv_rn(z0, 0.07f) * 0.40f)) : 0.1f;
         if (option == 91) {
             real add = czil * karman * sqrtf(restar);
             psit = psiq = gz1 - psih + add;
             psit2 = psiq2 = gz2 - psih2 + add;
         } else {
-            real z0t = z0 / expf(czil * karman * sqrtf(restar));
+            real scalar_exponent = czil * karman * sqrtf(restar);
+            // Revised MM5 land scalar roughness overflow defect:
+            // sf_sfclayrev.F90:723 overflows EXP, makes Z0T zero and then
+            // FH=Inf and TH2/T2/Q2=NaN.  This is the last FP32 argument
+            // whose exponential is finite.  Keep WRF's zero-exchange limit
+            // beyond it, but diagnose the scalar resistance in log space.
+            // The ordinary arm keeps its exact expression and FP32 word.
+            scalar_exp_overflow = scalar_exponent > 88.72283172607421875f;
+            real z0t = scalar_exp_overflow ? 0.0f : z0 / sf_exp(scalar_exponent);
             psih = sf_rev_heat_psi(zol, za, z0t, za);
             psih2 = sf_rev_heat_psi(zol, za, z0t, 2.0f);
             psih10 = sf_rev_heat_psi(zol, za, z0t, 10.0f);
-            psit = psiq = logf((za + z0t) / z0t) - psih;
-            psit2 = psiq2 = logf((2.0f + z0t) / z0t) - psih2;
+            psit = psiq = scalar_exp_overflow
+                ? sf_log_zratio(za, z0) + scalar_exponent - psih
+                : sf_log((za + z0t) / z0t) - psih;
+            psit2 = psiq2 = scalar_exp_overflow
+                ? sf_log_zratio(2.0f, z0) + scalar_exponent - psih2
+                : sf_log((2.0f + z0t) / z0t) - psih2;
         }
     }
 
@@ -479,18 +633,20 @@ void sfclay_column(
     real u10 = uu * psix10 / psix, v10 = vv * psix10 / psix;
     real th2 = thgb + (thx - thgb) * psit2 / psit;
     real q2 = qs + (qvx - qs) * psiq2 / psiq;
-    real t2 = th2 * powf(__fdiv_rn(ps, P0), RCP);
+    real t2 = th2 * sf_pow(__fdiv_rn(ps, P0), RCP);
     if (land) new_ust = fmaxf(new_ust, option == 91 ? 0.1f : 0.001f);
-    real new_mol = karman * (thx - thgb) / psit;
+    real mol_numerator = karman * (thx - thgb);
+    real new_mol = scalar_exp_overflow ? copysignf(0.0f, mol_numerator)
+                                       : mol_numerator / psit;
 
     real z0out = z0;
     if (isfflx && !land) {
         z0out = fminf(__fdiv_rn(0.0185f * new_ust * new_ust, G)
                       + 0.11f * 1.5e-5f / new_ust, 2.85e-3f);
         if (isftcflx != 0) {
-            real zw = fminf(powf(__fdiv_rn(new_ust, 1.06f), 0.3f), 1.0f);
+            real zw = fminf(sf_pow(__fdiv_rn(new_ust, 1.06f), 0.3f), 1.0f);
             real zn1 = __fdiv_rn(0.011f * new_ust * new_ust, G) + 1.59e-5f;
-            real zn2 = 10.0f * expf(-9.5f * powf(new_ust, -0.3333f))
+            real zn2 = 10.0f * sf_exp(-9.5f * sf_pow(new_ust, -0.3333f))
                        + 0.11f * 1.5e-5f / fmaxf(new_ust, 0.01f);
             z0out = fminf(fmaxf((1.0f - zw) * zn1 + zw * zn2, 1.27e-7f),
                            2.85e-3f);
@@ -498,16 +654,24 @@ void sfclay_column(
     }
 
     real flhc = 0.0f, flqc = 0.0f, new_hfx = 0.0f, new_qfx = 0.0f;
-    real lh = 0.0f, chs = 0.0f, chs2 = 0.0f, cqs2 = 0.0f;
+    // Flux-off carry defect: WRF skips the CHS/CHS2/CQS2 assignments
+    // (sf_sfclayrev.F90:794,893,902,903), retaining the caller's buffers.
+    // LH is unassigned in WRF on this path; WOOF defines it as zero.
+    real lh = 0.0f, chs = isfflx ? 0.0f : chs_o[idx];
+    real chs2 = isfflx ? 0.0f : chs2_o[idx];
+    real cqs2 = isfflx ? 0.0f : cqs2_o[idx];
     if (isfflx) {
-        flqc = rho * mavail[idx] * new_ust * karman / psiq;
+        real flqc_numerator = rho * mavail[idx] * new_ust * karman;
+        flqc = scalar_exp_overflow ? copysignf(0.0f, flqc_numerator)
+                                  : flqc_numerator / psiq;
         if (fabsf(thx - thgb) > 1.0e-5f)
             flhc = cpm * rho * new_ust * new_mol / (thx - thgb);
         new_qfx = flqc * (qs - qvx); lh = XLV * new_qfx;
         new_hfx = flhc * (thgb - thx);
-        chs = new_ust * karman / psiq;
-        cqs2 = new_ust * karman / psiq2;
-        chs2 = new_ust * karman / psit2;
+        real chs_numerator = new_ust * karman;
+        chs = scalar_exp_overflow ? copysignf(0.0f, chs_numerator) : chs_numerator / psiq;
+        cqs2 = scalar_exp_overflow ? copysignf(0.0f, chs_numerator) : chs_numerator / psiq2;
+        chs2 = scalar_exp_overflow ? copysignf(0.0f, chs_numerator) : chs_numerator / psit2;
     }
 
     znt[idx] = z0out; ust[idx] = new_ust; ustm[idx] = new_ustm;

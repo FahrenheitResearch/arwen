@@ -72,6 +72,18 @@ def source_absent_microphysics(cfg):
         # gpuwm.config.validate_run_preparation.
         return (("QNCLOUD", "QNRAIN", "QNICE"),
                 dict.fromkeys(("nc", "nr", "ni"), 0.0))
+    from gpuwm.microphysics_schemes import scheme as _named_scheme
+    named = _named_scheme(mp)
+    if named is not None:
+        # A named scheme: every moment species starts at exact zero (the
+        # allocation value); the scheme's own entry block and its adapter's
+        # first-call graupel seeding fill them from the analysed masses.
+        # The aerosol tracers are owned by the aerosol initialisation, as
+        # for mp=28.
+        wrf_names = {"nc": "QNCLOUD", "nr": "QNRAIN", "ni": "QNICE",
+                     "ng": "QNGRAUPEL", "volg": "QVGRAUPEL"}
+        names = tuple(n for n in named.moment_species if n in wrf_names)
+        return (tuple(wrf_names[n] for n in names), dict.fromkeys(names, 0.0))
     raise ValueError(f"no native prognostic-species initialization for mp_physics={mp}")
 
 
@@ -99,6 +111,10 @@ def cold_start_seeded_numbers(cfg):
     if mp in (8, 28):
         seeded["nr"] = ("qr", "rain_number_seed")
         seeded["ni"] = ("qi", "ice_number_seed")
+    # Named schemes seed nothing here: their own entry blocks set every
+    # number moment from its mass under the scheme's assumed distribution
+    # and their adapters seed graupel
+    # number and volume from graupel mass on the first call.
     return seeded
 
 

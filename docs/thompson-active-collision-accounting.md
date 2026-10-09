@@ -67,3 +67,13 @@ The third input has 110-percent liquid saturation and activates condensation.
 `tests/test_thompson_active_collision.py` checks all mass/number fields,
 surface precipitation, actual theta/heating ownership and output-due parity.
 The fixture does not replace the existing oracle records or their tolerances.
+
+Every one of these columns holds rain and graupel together, so since 2.8.8
+the adapter is graded on `tests/fixtures/thompson-active-collision-corrected-racg.json`:
+the same three calls through the same driver, flags and tables, with only
+WRF v4.6.1's eight rain-graupel table reads changed to
+`MIN(idx_bg(k),dimNRHG)` (`active_collision_fixture.py --corrected-racg`).
+Classic Thompson reads the one slab WRF builds (`thompson_racg_index`),
+where WRF's own subscript, `idx_bg1 = 5`, runs off that one-slab axis; the
+unmodified answers stay committed beside it. Regenerating the unmodified
+fixture with the same compiler reproduces every committed case exactly.

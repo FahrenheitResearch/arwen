@@ -38,13 +38,29 @@ def test_unnamed_namelist_keeps_the_global_default(tmp_path):
     from gpuwm.namelist_import import import_namelists
     namelist = tmp_path / "namelist.input"
     namelist.write_bytes((FIXTURE / "hrrr_wrf.nl.c18c").read_bytes())
-    text, _ = import_namelists(FIXTURE / "hrrr_namelist.wps.c18", namelist)
+    text, report = import_namelists(FIXTURE / "hrrr_namelist.wps.c18", namelist)
     # The staged sea-ice importer change predates this surface generation.
     # This pin was emitted by that committed importer, not this module.
     baseline = json.loads((FIXTURE / "identity-6c2dd1535.json").read_text())
-    assert hashlib.sha256(text.encode()).hexdigest() == baseline["namelist"]
-    assert "mynn_sfclay_variant" not in tomllib.loads(text)["shared"]
-    assert build_experiment(tomllib.loads(text), source="unnamed import").root.run.mynn_sfclay_variant == "wrf_461"
+    document = tomllib.loads(text)
+    assert document["shared"]["scalar_pblmix"] == 1
+    assert any(default.key == "scalar_pblmix" and default.value == 1
+               and "resets scalar_pblmix to 1 for mp_physics = 28" in default.reason
+               and "share/module_check_a_mundo.F:2477-2495" in default.reason
+               for default in report.defaults_applied)
+    # WRF's aerosol IC/BC reset is now emitted explicitly. Its exact single
+    # line is the only text delta from the historical canonical-coordinate
+    # constructor recorded by this pin; bind the live correction separately.
+    scalar_line = "scalar_pblmix = 1\n"
+    emitted_lines = text.splitlines(keepends=True)
+    assert emitted_lines.count(scalar_line) == 1
+    historical = "".join(line for line in emitted_lines if line != scalar_line)
+    assert hashlib.sha256(historical.encode()).hexdigest() == baseline["namelist"]
+    assert "mynn_sfclay_variant" not in document["shared"]
+    run = build_experiment(document, source="unnamed import").root.run
+    assert run.scalar_pblmix == 1
+    assert run.mynn_sfclay_variant == RunConfig.__dataclass_fields__["mynn_sfclay_variant"].default == "wrf_461"
+    assert run.terrain_clock == RunConfig.__dataclass_fields__["terrain_clock"].default == "local_face"
 
 
 def _recipe(source, *, profile=None):
@@ -400,16 +416,22 @@ def test_the_load_fill_scopes_thompson_to_mp28_and_stops_at_other_sources():
         assert run.thompson_version == "wrf_461"
 
 
-def test_the_loader_rule_carries_all_three_generation_selectors():
+def test_the_loader_rule_carries_all_four_generation_selectors():
     """The load-time fill (GENERATION_SELECTORS) is one rule for the three keys an operational-fork door needs:
     the surface layer, the Thompson generation and that generation's melting-snow fall.  A two-key tuple ran the
     fork Thompson with WRF v4.6.1's snow fall on every bare door (WOOF-FIX-PROGRAM-2026-10-06, hrrr-all-fixes)."""
     from gpuwm.physics_source_defaults import (GENERATION_SELECTORS, MP_SCOPED_RECIPE_SETTINGS,
                                                omitted_generation_selectors)
-    assert GENERATION_SELECTORS == ("mynn_sfclay_variant", "thompson_version", "thompson_fork_snow_fall")
+    # The MYNN generation joined in lane/mynn-exact (tests/test_mynn_generation_door.py).
+    assert GENERATION_SELECTORS == ("mynn_sfclay_variant", "thompson_version", "thompson_fork_snow_fall",
+                                    "bl_mynn_version")
     # both Thompson keys are read under the aerosol-aware scheme alone, so the fill scopes them alike
     assert MP_SCOPED_RECIPE_SETTINGS["thompson_fork_snow_fall"] == MP_SCOPED_RECIPE_SETTINGS["thompson_version"] == (28,)
+    hrrr_suite = {"mp_physics": 28, "bl_pbl_physics": 5, "ra_physics": 4, "ra_rrtmg_variant": "rrtmg_legacy"}
     for source in ("hrrr", "hrrr-native", "hrrr-prs", "rap", "rap-native"):
-        filled = omitted_generation_selectors({"mp_physics": 28}, [{}], source)
+        filled = omitted_generation_selectors(hrrr_suite, [{}], source)
         assert set(filled) == set(GENERATION_SELECTORS), source
+        assert filled["bl_mynn_version"] == "gsd_41"
+        filled = omitted_generation_selectors({"mp_physics": 28}, [{}], source)
+        assert set(filled) == set(GENERATION_SELECTORS) - {"bl_mynn_version"}, source
         assert filled["thompson_fork_snow_fall"] == "wrf_39_noaa"

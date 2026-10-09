@@ -11,6 +11,12 @@ import pytest
 from gpuwm.core import thompson
 
 FIXTURE = Path(__file__).parent / "fixtures/thompson-active-collision.json"
+#: The corrected-RACG reference the adapter is graded on.  Its provenance
+#: guard (same inputs, driver, flags and tables as the stock fixture) lives
+#: in the cupy-free tests/test_thompson_racg_one_slab.py so the CPU stage
+#: runs it; this module imports cupy and is device-only.
+FIXTURE_CORRECTED_RACG = (
+    Path(__file__).parent / "fixtures/thompson-active-collision-corrected-racg.json")
 
 
 def test_rain_density_history_rejects_overlapping_output():
@@ -124,7 +130,7 @@ def test_active_collision_column_matches_full_reference_and_heating(cp_backend, 
     cp = cp_backend
     from gpuwm.core import microphysics
 
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    fixture = json.loads(FIXTURE_CORRECTED_RACG.read_text(encoding="utf-8"))
     case = next(c for c in fixture["cases"] if c["name"] == name)
     results = []
     for due in (False, True):

@@ -35,7 +35,7 @@ def bench(nbytes, pinned, iters=20, warm=5):
         for _ in range(iters): fn()
         el=time.perf_counter()-t
         out[name]= nbytes*iters/el/1e9
-    del d
+    d = None  # rebound, not deleted: a closure above reads it
     cp.get_default_memory_pool().free_all_blocks()
     return out
 

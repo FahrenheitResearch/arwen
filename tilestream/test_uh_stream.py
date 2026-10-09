@@ -340,7 +340,8 @@ def streamed_run(cfg, boundaries, *, nsteps=NSTEPS, seed=tj.SEED, warmup=1,
                  pre_reset=pre_reset, post_reset=post_reset,
                  resets={label: len(v) for label, v in samples.items()},
                  physics=_delta_fires(before, stepper.scalars))
-    del stepper, domain
+    domain = None  # rebound, not deleted: a closure above reads it
+    del stepper
     cp.get_default_memory_pool().free_all_blocks()
     cp.get_default_pinned_memory_pool().free_all_blocks()
     return out

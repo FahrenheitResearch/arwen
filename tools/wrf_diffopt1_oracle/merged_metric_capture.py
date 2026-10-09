@@ -101,6 +101,64 @@ def checkpoint_payload_state(path, cfg):
     return state
 
 
+#: The metric checkpoints the resume regression continues, written by the
+#: build under test.  The a4177ebbf checkpoints (diff2-legacy-k*.npz) stay
+#: byte for byte as the 2.8.7 attribution's inputs; from 2.8.8 a restore
+#: refuses them before restore because they record no dycore mixing
+#: identity, so the exact-resume claim needs checkpoints this build wrote.
+CURRENT_CHECKPOINT = "diff2-288-legacy-k{km}.npz"
+CURRENT_CHECKPOINT_RECEIPT = "diff2-288-legacy-checkpoints.json"
+CHECKPOINT_STEPS = 2
+
+
+def checkpoint_configuration(km):
+    """The default-on metric form (diff_opt=2, mix_full_fields) as shipped."""
+    return configuration(km=km, diff=2, mix=True)
+
+
+def record_checkpoints(data, engine_commit):
+    """Integrate and write the current-build metric checkpoints into ``data``.
+
+    The same synthetic case and step count as the a4177ebbf originals
+    (2 steps of 0.5 s), under this build's defaults, then the ordinary
+    production writer.  The receipt seals each file and names the build
+    and card that integrated it.
+    """
+    import cupy as cp
+    from gpuwm.checkpoint_identity import DYCORE_MIXING_ALGORITHM_IDENTITY
+    from gpuwm.core.dycore import step
+    from gpuwm.io.restart import write_restart
+    import gpuwm.wrf_exact as exact
+    assert not exact.ENABLED, "Record the default production arithmetic"
+    checkpoints = {}
+    for km in (2, 4):
+        cfg = checkpoint_configuration(km)
+        state = model_state(cfg)
+        for _ in range(CHECKPOINT_STEPS):
+            step(state, cfg)
+        assert state.elapsed_seconds == CHECKPOINT_STEPS * cfg.dt
+        path = write_restart(data / CURRENT_CHECKPOINT.format(km=km), state, cfg)
+        checkpoints[f"k{km}"] = sha256(path)
+    receipt = dict(
+        what=("Metric (diff_opt=2, mix_full_fields) checkpoints integrated "
+              f"{CHECKPOINT_STEPS} steps and written by the build under test, "
+              "for the exact-resume regression"),
+        why=("2.8.8 records the dycore mixing identity in every checkpoint of "
+             "a mixing run and refuses, before restore, one that lacks it. "
+             "The a4177ebbf checkpoints lack it and stay unchanged as the "
+             "2.8.7 attribution's inputs and as the refusal witness."),
+        recipe=("python -m tools.wrf_diffopt1_oracle.merged_metric_capture "
+                "FIXTURE_DIRECTORY --record-checkpoints ENGINE_COMMIT"),
+        engine_commit=engine_commit,
+        device=cp.cuda.runtime.getDeviceProperties(0)["name"].decode(),
+        steps=CHECKPOINT_STEPS,
+        dycore_mixing=DYCORE_MIXING_ALGORITHM_IDENTITY,
+        checkpoints=checkpoints)
+    (data / CURRENT_CHECKPOINT_RECEIPT).write_text(
+        json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(checkpoints))
+
+
 def capture(data, output, level=0, source_dir=None):
     import cupy as cp
     from gpuwm.core.dycore import step
@@ -156,8 +214,15 @@ def capture(data, output, level=0, source_dir=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=Path)
-    parser.add_argument("output", type=Path)
+    parser.add_argument("output", type=Path, nargs="?")
     parser.add_argument("--control-level", type=int, choices=range(6), default=0)
     parser.add_argument("--control-source", type=Path)
+    parser.add_argument("--record-checkpoints", metavar="ENGINE_COMMIT",
+                        help="write the current-build metric checkpoints into DATA")
     args = parser.parse_args()
-    capture(args.data, args.output, args.control_level, args.control_source)
+    if args.record_checkpoints:
+        record_checkpoints(args.data, args.record_checkpoints)
+    elif args.output is None:
+        parser.error("OUTPUT is required unless --record-checkpoints is given")
+    else:
+        capture(args.data, args.output, args.control_level, args.control_source)

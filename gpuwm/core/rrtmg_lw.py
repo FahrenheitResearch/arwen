@@ -4847,7 +4847,12 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
              K["chi"], K["oneminus"], K["bandptrs"], taug_d, fracs_d))
         if _stage_probe is not None:
             _stage_probe("bands")
-        del fs_d, isv_d, wx_d
+        # FV/IV close over the two slabs, so they are released by
+        # rebinding rather than `del`: a deleted closure cell is a NameError
+        # for any later FV/IV call, and the undefined-name gate cannot tell
+        # that none follows (tests/test_no_undefined_names.py).
+        fs_d = isv_d = None
+        del wx_d
 
         # ---- taut --------------------------------------------------------
         taut_d = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)

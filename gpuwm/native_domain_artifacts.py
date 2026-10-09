@@ -391,8 +391,12 @@ def write_domain_static_files(
     geometry_path = directory / "geometry-receipt.json"
     export_static = native_static_export_fields(static_fields, grid)
     static_receipt = write_native_static_cache(static_path, export_static)
+    from gpuwm.static.terrain_autosmooth import bind_receipt
+    static_receipt = bind_receipt(static_fields, static_receipt)
     geometry_receipt = write_native_geometry_receipt(
-        geometry_path, grid, domain.run, static_path)
+        geometry_path, grid, domain.run, static_path,
+        **({"terrain_autosmooth": static_receipt["terrain_autosmooth"]}
+           if "terrain_autosmooth" in static_receipt else {}))
     return static_receipt, geometry_receipt
 
 

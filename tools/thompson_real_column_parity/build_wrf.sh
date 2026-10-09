@@ -6,7 +6,7 @@
 # (mp_physics=8, is_aerosol_aware false).
 #
 # usage:
-#   ./build_wrf.sh WRF_PHYS_DIR BUILD_DIR TABLE_DIR [PROBE_INPUT.bin]
+#   ./build_wrf.sh WRF_PHYS_DIR BUILD_DIR TABLE_DIR [PROBE_INPUT.bin] [stock|corrected-racg]
 #
 # WRF_PHYS_DIR holds module_mp_thompson.F and module_mp_radar.F from tag
 #   v4.6.1 (commit d66e442f); their SHA-256s are pinned below, the same pins
@@ -27,14 +27,19 @@ opt_flags=${OPT_FLAGS:--O2 -fno-tree-vectorize}
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 oracle=$(CDPATH= cd -- "$here/../thompson_wrf461_oracle" && pwd)
 
-if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
-  echo "usage: $0 WRF_PHYS_DIR BUILD_DIR TABLE_DIR [PROBE_INPUT.bin]" >&2
+if [ "$#" -lt 3 ] || [ "$#" -gt 5 ]; then
+  echo "usage: $0 WRF_PHYS_DIR BUILD_DIR TABLE_DIR [PROBE_INPUT.bin] [stock|corrected-racg]" >&2
   exit 2
 fi
 phys=$(realpath "$1")
 build=$(realpath -m "$2")
 tables=$(realpath "$3")
 probe=${4:-}
+source_variant=${5:-stock}
+case "$source_variant" in
+  stock|corrected-racg) ;;
+  *) echo "unknown oracle source variant: $source_variant" >&2; exit 2 ;;
+esac
 
 THOMPSON_SHA=fabf19e2a9073cff886e882b187080bfdf089d3fd40c0fce1d19bc93b1e5e802
 RADAR_SHA=aa99da858be41efa579966680708d230123a7417560af0eb2e24f4c94e253688
@@ -51,13 +56,19 @@ echo "$FREEZEH2O_SHA  $tables/freezeH2O.dat" | sha256sum -c -
 echo "$CCN_SHA  $tables/CCN_ACTIVATE.BIN" | sha256sum -c -
 
 mkdir -p "$build/pristine" "$build/rates" "$build/run"
-python3 "$here/instrument_wrf_rates.py" "$phys/module_mp_thompson.F" \
+oracle_source="$phys/module_mp_thompson.F"
+if [ "$source_variant" = corrected-racg ]; then
+  oracle_source="$build/pristine/module_mp_thompson.F"
+  python3 "$here/corrected_real_reference.py" source \
+    "$phys/module_mp_thompson.F" "$oracle_source" "$build/RACG-SOURCE.json"
+fi
+python3 "$here/instrument_wrf_rates.py" "$oracle_source" \
   "$build/rates/module_mp_thompson.F" "$build/wrf_rate_schema.json"
 
 for variant in pristine rates; do
   cd "$build/$variant"
   if [ "$variant" = pristine ]; then
-    src="$phys/module_mp_thompson.F"
+    src="$oracle_source"
   else
     src="$build/rates/module_mp_thompson.F"
   fi
@@ -85,6 +96,12 @@ done
 {
   echo "wrf_commit = d66e442fccc04111067e29274c9f9eaccc3cef28 (tag v4.6.1)"
   echo "module_mp_thompson.F = $THOMPSON_SHA"
+  echo "oracle_source_variant = $source_variant"
+  echo "compiled module_mp_thompson.F = $(sha256sum "$oracle_source" | cut -d' ' -f1)"
+  if [ "$source_variant" = corrected-racg ]; then
+    echo "oracle defect repaired = eight non-hail rain-graupel reads exceed dimNRHG=1; MIN(idx_bg(k),dimNRHG) selects the supplied slab"
+    echo "oracle repair receipt = RACG-SOURCE.json"
+  fi
   echo "module_mp_radar.F = $RADAR_SHA"
   echo "instrumented module_mp_thompson.F = $(sha256sum "$build/rates/module_mp_thompson.F" | cut -d' ' -f1)"
   echo "fortran = $($fc --version | head -1)"

@@ -215,7 +215,9 @@ def test_the_root_keeps_its_own_frames_while_the_child_waits(monkeypatch):
                    if gid == 1]
     assert [ticks for ticks, _refl in root_frames] == [0, 60, 120, 180,
                                                        240, 300]
-    assert root_frames[0][1] is None
+    # The root's analysis frame writes WRF's initial array: zeros, not a
+    # consumed stash (stock 4.6.1 writes REFL_10CM = 0 at frame 0).
+    assert not np.any(np.asarray(root_frames[0][1]))
     assert all(refl is not None for _ticks, refl in root_frames[1:])
 
 
@@ -591,10 +593,8 @@ def test_a_streamed_nest_is_priced_with_its_reattached_tiles(monkeypatch):
     assert "streamed tile buffers" in str(refused.value)
 
 
-def test_all_domains_at_the_experiment_start_are_untouched(monkeypatch):
-    """The non-delayed path is the one that must not move: both domains
-    publish a stashless tick-0 frame and a stashed frame at every later
-    boundary, exactly as before this fix."""
+def test_all_domains_at_tick_zero_write_initial_reflectivity(monkeypatch):
+    """Both domains write initial zeros, then consume their own stashes."""
     _exp, model = _tree(delay_s=0)
 
     writers = _run(model, monkeypatch)
@@ -604,7 +604,7 @@ def test_all_domains_at_the_experiment_start_are_untouched(monkeypatch):
                   if gid == grid_id]
         assert [ticks for ticks, _refl in frames] == [0, 60, 120, 180,
                                                       240, 300]
-        assert frames[0][1] is None
+        assert frames[0][1] is not None and not np.any(frames[0][1])
         assert all(refl is not None for _ticks, refl in frames[1:])
 
 
@@ -621,7 +621,7 @@ def test_prepared_forecast_due_helper_follows_the_domains_own_start():
     def consumer(_state):
         return sentinel
 
-    assert runner._consume_due_native_refl_10cm(state, 0, consumer) is None
+    assert not np.any(runner._consume_due_native_refl_10cm(state, 0, consumer))
     assert runner._consume_due_native_refl_10cm(
         state, 1, consumer) is sentinel
     assert runner._consume_due_native_refl_10cm(

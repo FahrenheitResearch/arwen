@@ -778,6 +778,15 @@ SCHEME_NATIVE_REFL_10CM: dict[int, str] = {
 }
 
 
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+# Named schemes whose capability row says they compute their own REFL_10CM
+# (gpuwm.microphysics_schemes): the adapter stashes the scheme's field.
+SCHEME_NATIVE_REFL_10CM.update({
+    _s.mp_id: (f"{_s.label} computes REFL_10CM inside its own column call; "
+               "its adapter stashes that field (capability row "
+               f"gpuwm.microphysics_schemes.NAMED_SCHEMES[{_s.name!r}])")
+    for _s in _NAMED_MP_SCHEMES.values() if _s.native_reflectivity})
+
 #: The state fields :func:`compute_refl_10cm` READS for each scheme it
 #: dispatches, keyed by ``mp_physics``.  ONE table, published, instead of
 #: the four ``missing = [...]`` literals the dispatch used to carry inline:
@@ -874,8 +883,13 @@ def compute_refl_10cm(
     NAME through :data:`SCHEME_NATIVE_REFL_10CM`, which also says where
     their field actually is.
 
-    mp=28 shares the mp=8 branch VERBATIM, and that is WRF's own structure,
-    not a convenience.  ``calc_refl10cm``
+    mp=28 shares the mp=8 branch's INPUTS, and that is WRF's own
+    structure, not a convenience; on the v4.6.1 generation it evaluates them
+    with mp=28's own WRF-exact transcription of the same routine
+    (``thompson_aa_refl10cm``), because refl.cu's classic kernel is
+    byte-frozen for mp=8 and its arithmetic is not WRF's (CUDA's math
+    library, 720 for crg(4), binary64 slopes and radar constants).
+    ``calc_refl10cm``
     (module_mp_thompson.F:5710-6028) is ONE routine with no
     ``is_aerosol_aware`` branch, reached from the single call site
     ``mp_gt_driver:1458`` -- which is itself gated only on
@@ -967,10 +981,23 @@ def compute_refl_10cm(
                 "gpuwm.da.obsop.simulated_reflectivity derives the "
                 "wrapper's own diagnosis from the state and passes it "
                 "here.")
-        launch_refl10cm_thompson(
-            state.qv, state.qr, state.nr, state.qs, state.qg,
-            thompson_graupel_number, t, p, refl,
-            melting=refl_melting_for(state))
+        if (cfg.mp_physics == 28 and getattr(
+                cfg, "thompson_version", "wrf_461") == "wrf_461"):
+            # The same WRF routine, through mp=28's own transcription
+            # (thompson_aerosol_state.cu, thompson_aa_refl10cm): WOOF's
+            # own math routines and WRF's REAL(4)/DOUBLE PRECISION
+            # arithmetic, measured against WRF v4.6.1 by the 0 ULP column
+            # oracle.  refl.cu's classic kernel is byte-frozen for mp=8.
+            from gpuwm.core.thompson_aerosol_state import launch_aa_refl10cm
+            launch_aa_refl10cm(
+                state.qv, state.qr, state.nr, state.qs, state.qg,
+                thompson_graupel_number, t, p, refl,
+                melting=refl_melting_for(state))
+        else:
+            launch_refl10cm_thompson(
+                state.qv, state.qr, state.nr, state.qs, state.qg,
+                thompson_graupel_number, t, p, refl,
+                melting=refl_melting_for(state))
     elif cfg.mp_physics == 16:
         missing = _missing_refl_inputs(state, 16)
         if missing:
@@ -1052,6 +1079,37 @@ def domain_start_ticks_of(node) -> int:
     """
     spec = getattr(getattr(node, "clock", None), "spec", None)
     return int(getattr(spec, "start_ticks", 0) or 0)
+
+
+def analysis_refl_10cm(state, *, shape=None, array_module=None):
+    """REFL_10CM for a domain's analysis frame, before any of its steps.
+
+    WRF's ``refl_10cm`` is a history-only state array (Registry
+    ``state real refl_10cm ikj dyn_em 1 - hdu``, no input flag) that only
+    the microphysics driver fills, so the analysis frame writes its initial
+    value: 0 everywhere.  Measured on the stock 4.6.1 combo recording
+    (iowa-convective A088, WSM6 with do_radar_ref = 1): frame 0 hashes to an
+    all-zero (50, 40, 40) float32 array.  WOOF used to omit the field at
+    that frame, which failed every combo that writes it (CHECK2.md item 3).
+
+    Only a domain that starts with the run: a nest activating later gets
+    the parent's field interpolated down in WRF (Registry ``d``), which is
+    not this.  Shaped like the mass grid, in the state's own array module.
+    """
+    import numpy as np
+
+    shape = state.qv.shape if shape is None else shape
+    if array_module is None and getattr(state, "_streamed_domain", None) is not None:
+        # Store history is host-owned. A full-domain device allocation here
+        # would defeat the bounded store road before its first model step.
+        array_module = np
+    if array_module is not None:
+        return array_module.zeros(shape, dtype=array_module.float32)
+    if isinstance(state.qv, np.ndarray):
+        return np.zeros(shape, dtype=np.float32)
+    import cupy as cp
+
+    return cp.zeros(shape, dtype=cp.float32)
 
 
 def consume_refl_10cm(state):

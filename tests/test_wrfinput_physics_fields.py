@@ -185,6 +185,7 @@ def test_actual_initializer_forwards_supplied_fields_and_preserves_absent_cold_s
     driver = SimpleNamespace(fields=fields, rainc=None)
     monkeypatch.setitem(sys.modules, 'cupy', np)
     monkeypatch.setitem(sys.modules, 'gpuwm.core.physics', SimpleNamespace(
+        physics_driver_required=lambda cfg: True,
         initialize_physics=lambda *args, **kwargs: driver))
     assert wi.initialize_wrfinput_physics(object(), restored, cfg) is driver
     for name, value in values.items():
@@ -254,3 +255,46 @@ def test_file_qke_reaches_actual_mynn_column_arguments(tmp_path, monkeypatch, qk
 
     monkeypatch.setattr(mynn_pbl_runtime, 'mynn_bl_driver_cuda', consume)
     with pytest.raises(_ConsumerReached): step(state, cfg)
+
+
+def _cloud(cfg):
+    shape = cfg.nz, cfg.ny, cfg.nx
+    layer = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    return {'QC_BL': layer * np.float32(1.e-6) + np.float32(1.e-5),
+            'CLDFRA_BL': (layer % 7) * np.float32(.125)}
+
+
+def test_a_cycled_start_reads_the_mynn_subgrid_cloud_and_a_cold_one_passes_it(tmp_path):
+    """RunConfig.cycling (audit P18/A10): the input QC_BL and CLDFRA_BL reach
+    the physics carriers the first radiation call and the gsd_41 MYNN first
+    call read; a cold start passes them through unread, as before."""
+    cycled = _cfg(bl_mynn_version='gsd_41', cycling=True)
+    cloud = _cloud(cycled)
+    path = _input(tmp_path/'input', cycled, _surface_values(cycled) | cloud)
+    restored = _read(path, cycled)
+    for name, value in cloud.items():
+        np.testing.assert_array_equal(
+            restored.raw[name].astype('f4').view('u4'), value.view('u4'))
+    cold = _read(path, replace(cycled, cycling=False))
+    assert not (set(cloud) & set(cold.raw))
+
+
+def test_a_cycled_start_forwards_the_subgrid_cloud_to_the_physics_fields(
+        tmp_path, monkeypatch):
+    cfg = _cfg(bl_mynn_version='gsd_41', cycling=True)
+    cloud = _cloud(cfg)
+    restored = _read(_input(tmp_path/'input', cfg,
+                            _surface_values(cfg) | cloud), cfg)
+    fields = {name.lower(): np.full(value.shape, -77., np.float32)
+              for name, value in cloud.items()}
+    fields.update(albbck=np.zeros((cfg.ny, cfg.nx), np.float32),
+                  lai=np.zeros((cfg.ny, cfg.nx), np.float32))
+    driver = SimpleNamespace(fields=fields, rainc=None)
+    monkeypatch.setitem(sys.modules, 'cupy', np)
+    monkeypatch.setitem(sys.modules, 'gpuwm.core.physics', SimpleNamespace(
+        physics_driver_required=lambda cfg: True,
+        initialize_physics=lambda *args, **kwargs: driver))
+    assert wi.initialize_wrfinput_physics(object(), restored, cfg) is driver
+    for name, value in cloud.items():
+        np.testing.assert_array_equal(fields[name.lower()].view('u4'),
+                                      value.view('u4'))

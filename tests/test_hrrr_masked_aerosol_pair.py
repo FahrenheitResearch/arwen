@@ -1,15 +1,7 @@
-"""A masked analyzed aerosol pair is withheld by the bridge and named by the run.
+"""Compatibility checks for historical bridges that withheld aerosol payloads.
 
-NCEP sometimes publishes PMTF (QNWFA, GRIB 0/13/193) on HRRR hybrid level
-1 with a GRIB2 bitmap (2026-10-04 12Z, 2026-10-07 07Z among the cycles
-sampled).  Since 608b9ac47 the native bridge selected the pair whenever a
-file published it, and every selected field refuses a bitmap, so a plain
-`gpuwm go` of an HRRR domain stopped at prepare on those cycles ("selected
-initialization field unexpectedly carries a bitmap") although it never
-asked for the pair.  The bridge now withholds a masked pair (2.8.6's
-selection for that cycle) and says so in its gate; a run that DOES ask for
-the analyzed pair gets the existing named refusal with the reason.  The
-Rust half is held by the bridge's own cargo tests.
+New bridges repair requested bitmap cells in Rust. An old sealed bridge still
+lacks the pair, so its loader must retain the concrete missing-payload refusal.
 """
 from __future__ import annotations
 

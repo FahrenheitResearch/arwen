@@ -591,7 +591,7 @@ Takes no options of its own.
 
 | argument | what it does |
 |---|---|
-| `[ENS_ROOT]` | ensemble root holding member_NNN/ run directories and ensemble-manifest.json (schema gpuwm-ensemble-manifest.v1) |
+| `[ENS_ROOT]` | ensemble root holding member_NNN/ run directories and ensemble-manifest.json (schema gpuwm-ensemble-manifest.v1), or the run folder of gpuwm go --members --keep-member-files (schema gpuwm-ensemble-output.v2, one manifest per domain) |
 
 | option | what it does |
 |---|---|
@@ -1614,7 +1614,7 @@ Takes no options of its own.
 | `--pair-labels ('LEFT', 'RIGHT')` | panel labels (default: the two directory names) |
 | `--pair-subtitle TEXT` | optional pair-sheet subtitle |
 | `--pair-title TITLE` | pair-sheet title (default 'Paired comparison') |
-| `--products LIST` | comma-separated products: refl, t2, wind10, precip, olr, or 'all' (default); with the rust engine, raw catalog slugs (sbcape, srh_0_1km, ...) also work and 'all' renders its full catalog |
+| `--products LIST` | comma-separated products: refl, t2, wind10, precip, olr, or 'all' (default); with the rust engine these are refl=composite_reflectivity, t2=2m_temperature, wind10=10m_wind_speed_and_direction, precip=total_qpf, olr=var:wrf_olr, raw catalog slugs (sbcape, srh_0_1km, ...) also work and 'all' renders its full catalog |
 | `--radar-colors {standard,classic}` | rust engine: the colour tables the reflectivity and radial velocity products draw with -- standard (the radar tables, the default) or classic (the reflectivity ladder and blue-red velocity scale before 2.8.5). One name selects every radar-table product; RUSTWX_RADAR_COLORS is the environment spelling, which `gpuwm go` and `gpuwm run` renders also read |
 | `--run-stamp {on,off}` | put this run's PNGs in its own timestamped folder under --out (default on): --out/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --out, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--section lat,lon,lat,lon\|FILE.json` | rust engine: the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products, any 3-D wrfout field on a height axis) are cut along; a JSON file gives {start, end} or a {points, extend_km} polyline |
@@ -2042,6 +2042,30 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--outdir OUT` | directory for the PNG and wrfout NetCDF output (omit to compute metrics only) |
+
+## `gpuwm verify-exact`
+
+| option | what it does |
+|---|---|
+| `--cases NAMES` | comma-separated case names |
+| `--combos IDS` | comma-separated combo ids (default: every combo) |
+| `--combos-file JSON` | combo list (default: RECORDINGS/provenance/sweep/combos.json) |
+| `--default-arithmetic` | allow a run without GPUWM_WRF_EXACT=1 (not a 0 ULP proof) |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--fixtures DIR` | per-scheme column fixtures (default: RECORDINGS/fixtures when present) |
+| `--keep-history` | keep each replay's wrfout files (default: hash and delete) |
+| `--list` | print the selection and exit |
+| `--no-replay` | score fixtures only |
+| `--out DIR` | where WOOF's replays and the results are written |
+| `--raw-overlay DIR` | extra root holding reference raw arrays in the recording layout |
+| `--recordings DIR` | recording root (runs.csv, inputs/, <build>/<case>/<combo>/) |
+| `--referee {scalar,strict}` | the WRF build a PASS/FAIL is decided against (its Thompson-fixed variant where recorded); every recorded build is reported |
+| `--repeat {auto,off}` | auto: run WOOF twice for combos whose checks ask for a repeat |
+| `--run-summary CSV` | per-run-summary.csv with clean_reference (default: RECORDINGS/...) |
+| `--score-only` | no card: rescore WOOF replays already stored under --out |
+| `--shard I/N` | run every N-th selected run starting at the I-th (1-based) |
+| `--strata LETTERS` | comma-separated strata (A, B, C, D, G, S...) |
+| `--write-needs JSON` | list the referee raw arrays that would turn each digest miss into a ULP measurement (input to tools/verify_exact_raw_subset.py) |
 
 ## `gpuwm verify-visuals`
 

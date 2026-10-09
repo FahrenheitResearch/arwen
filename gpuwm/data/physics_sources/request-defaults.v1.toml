@@ -32,6 +32,16 @@ mix_full_fields = false
 v_sca_adv_order = 5
 v_mom_adv_order = 5
 
+# The operational fork's MYNN boundary layer (GSD MYNN v4.1, NOAA-EMC/HRRR
+# v4.1.21 module_bl_mynn.F), read by the load-time fill alone
+# (physics_source_defaults.GENERATION_SELECTORS) and filled only on trees
+# whose every domain admits it (gsd41_admitted: MYNN with the legacy RRTMG
+# pair, no SPP, no scalar plume mixing).  Origin: the WOOF-HRRR door's
+# carried experiment.toml and the HRRR demo configurations named MYNN with
+# no generation and ran WRF v4.6.1's MYNN against HRRR's analysis.
+[request.load_generations]
+bl_mynn_version = "gsd_41"
+
 # RAP runs the same operational WRF 3.9 fork as HRRR (one code base, the
 # 13 km parent of the 3 km run), so a RAP-sourced configuration takes the
 # fork's surface layer, Thompson generation and melting-snow fall.  Only
@@ -48,6 +58,9 @@ recipe_sources = ["rap", "rap-native"]
 mynn_sfclay_variant = "gsl_wrf39"
 thompson_version = "wrf_39_noaa"
 thompson_fork_snow_fall = "wrf_39_noaa"
+
+[request.load_generations]
+bl_mynn_version = "gsd_41"
 
 [[request]]
 source = "noaa_wrf39_radiation"

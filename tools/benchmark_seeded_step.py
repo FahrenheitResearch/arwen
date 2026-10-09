@@ -59,7 +59,6 @@ _FUNCTION_SECTIONS = (
     ("prepare_moist_cq", "stage_setup"),
     ("_add_slow_tendencies", "slow_tendencies"),
     ("add_h_diabatic_tendency", "held_tendencies"),
-    ("add_diffusion_tendencies", "held_tendencies"),
     ("add_fixed_dry_tendencies", "held_tendencies"),
     ("apply_w_damping", "boundary_and_damping"),
     ("apply_state_lateral_boundaries", "boundary_and_damping"),

@@ -48,6 +48,7 @@ what WRF does:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import sys
 from typing import Mapping
 
 import numpy as np
@@ -541,6 +542,10 @@ class RucSoilState:
     #: as :class:`gpuwm.ingest.soil.NoahSoilState`'s; EMPTY when no land
     #: column needed it.
     soil_temperature_repair: Mapping[str, object] = field(default_factory=dict)
+    #: real.exe's ``SMOIS = MAX(SMOIS, 0.005)`` for a layer source
+    #: (:func:`account_for_zero_ruc_soil_moisture`); EMPTY when nothing was
+    #: below it.
+    soil_moisture_floor: Mapping[str, object] = field(default_factory=dict)
 
 
 def _midpoint_cm(name: str, prefix: str) -> int:
@@ -874,8 +879,9 @@ def preprocess_ruc_soil(
             surface.deep_soil_temperature)[:, rebuilt_columns].astype(
                 soil_temperature.dtype)
 
-    soil_moisture = columns.soil_moisture
-    liquid_moisture = np.array(columns.soil_moisture, copy=True)
+    soil_moisture, moisture_floor = account_for_zero_ruc_soil_moisture(
+        columns.soil_moisture, geometry)
+    liquid_moisture = np.array(soil_moisture, copy=True)
     tsk = surface.tsk
     if fractional_seaice:
         sea_water = None
@@ -906,7 +912,70 @@ def preprocess_ruc_soil(
         level_thicknesses=columns.level_thicknesses,
         soil_texture_downscale=downscale_receipt,
         soil_temperature_repair=temperature_repair,
+        soil_moisture_floor=moisture_floor,
     )
+
+
+#: real.exe's floor for a RUC column built from a LAYER source
+#: (``dyn_em/module_initialize_real.F`` v4.6.1 :3435-3446,
+#: ``account_for_zero_soil_moisture``, ``CASE ( RUCLSMSCHEME )``).
+_WRF_RUC_LAYER_MOISTURE_FLOOR = np.float32(0.005)
+
+
+def account_for_zero_ruc_soil_moisture(soil_moisture, geometry: str):
+    """WRF's ``account_for_zero_soil_moisture`` for ``sf_surface_physics=3``.
+
+    The linear surface anchor from a dry top layer can be negative even
+    when the input layer samples are within 0..1. The remapped 0 and 1 cm
+    nodes then fail cold-start admission without real.exe's layer floor.
+
+    real.exe never hands RUC that column: after the soil remap,
+    ``module_initialize_real.F`` :3435-3446 takes, for a
+    ``flag_soil_layers`` source, ``SMOIS = MAX(SMOIS, 0.005)`` on every
+    level of every column (the ``lqmi`` residual beside it is commented
+    out), and for a ``flag_soil_levels`` source does nothing.  This is that
+    branch, element for element, in float32.  Water columns already hold
+    1.0 and are unaffected.  It is announced with its count and minimum
+    rather than applied silently, and the receipt rides
+    :class:`RucSoilState`.  Returns ``(soil_moisture, receipt)``; the input
+    array is returned untouched (same object) when nothing is below.
+    """
+
+    if geometry != _LAYER_SOURCE:
+        return soil_moisture, {}
+    moisture = np.asarray(soil_moisture)
+    below = np.isfinite(moisture) & (moisture < _WRF_RUC_LAYER_MOISTURE_FLOOR)
+    if not below.any():
+        return soil_moisture, {}
+    per_level = {
+        f"SMOIS_L{level + 1}": int(np.count_nonzero(below[level]))
+        for level in range(moisture.shape[0]) if below[level].any()}
+    receipt = {
+        "policy": "wrf-ruc-layer-source-smois-max-0.005",
+        "wrf_citation": (
+            "dyn_em/module_initialize_real.F v4.6.1 :3435-3446 "
+            "account_for_zero_soil_moisture CASE (RUCLSMSCHEME), "
+            "flag_soil_layers arm"),
+        "floored_values": int(np.count_nonzero(below)),
+        "floored_columns": int(np.count_nonzero(below.any(axis=0))),
+        "per_level": per_level,
+        "min_pre_floor": float(np.min(moisture[below])),
+    }
+    from gpuwm.static.rust_bridge import floor_ruc_layer_moisture
+    floored = floor_ruc_layer_moisture(moisture)
+    # "note:" on stderr: the prep door (gpuwm.prep_output) puts only
+    # warning/note lines on screen, so a bare stdout line reached the
+    # details log alone and the floor was invisible at the door (2.8.8
+    # acceptance D-02).
+    print(
+        f"note: RUC soil moisture: {receipt['floored_values']} value(s) in "
+        f"{receipt['floored_columns']} column(s) below "
+        f"{float(_WRF_RUC_LAYER_MOISTURE_FLOOR):.3g} on {sorted(per_level)} "
+        f"(min {receipt['min_pre_floor']:.6g}, the layer source's "
+        "extrapolated surface anchor) raised to 0.005, as real.exe does for "
+        "RUC from a layer source (module_initialize_real.F:3441)",
+        file=sys.stderr)
+    return floored, receipt
 
 
 def fractional_sea_ice_post(*, xice, tsk, sst, deep_soil_temperature,

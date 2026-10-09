@@ -1,5 +1,5 @@
 {
-  "gpu": "NVIDIA GeForce RTX 5090",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti",
   "rows": [
     {
       "case": 0,
@@ -13,8 +13,8 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 1890,
-      "different_words": 1553,
-      "max_ulp": 4332,
+      "different_words": 1565,
+      "max_ulp": 4335,
       "max_absolute": 1.1920928955078125e-07,
       "first_differences": [
         {
@@ -159,7 +159,7 @@
       "words": 1904,
       "different_words": 1904,
       "max_ulp": 2076482352,
-      "max_absolute": 0.6102337017655373,
+      "max_absolute": 0.6102336421608925,
       "first_differences": [
         {
           "index": [
@@ -335,9 +335,9 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 1785,
-      "different_words": 1492,
-      "max_ulp": 862,
-      "max_absolute": 2.384185791015625e-07,
+      "different_words": 1483,
+      "max_ulp": 861,
+      "max_absolute": 3.5762786865234375e-07,
       "first_differences": [
         {
           "index": [
@@ -479,8 +479,8 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 1890,
-      "different_words": 1553,
-      "max_ulp": 4332,
+      "different_words": 1565,
+      "max_ulp": 4335,
       "max_absolute": 1.1920928955078125e-07,
       "first_differences": [
         {
@@ -625,7 +625,7 @@
       "words": 1904,
       "different_words": 1904,
       "max_ulp": 2076482352,
-      "max_absolute": 0.6102337017655373,
+      "max_absolute": 0.6102336421608925,
       "first_differences": [
         {
           "index": [
@@ -801,9 +801,9 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 1785,
-      "different_words": 1492,
-      "max_ulp": 862,
-      "max_absolute": 2.384185791015625e-07,
+      "different_words": 1483,
+      "max_ulp": 861,
+      "max_absolute": 3.5762786865234375e-07,
       "first_differences": [
         {
           "index": [
@@ -945,7 +945,7 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 1890,
-      "different_words": 1214,
+      "different_words": 1216,
       "max_ulp": 3314379,
       "max_absolute": 1.7881393432617188e-07,
       "first_differences": [
@@ -1322,7 +1322,7 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 1785,
-      "different_words": 1146,
+      "different_words": 1148,
       "max_ulp": 3314379,
       "max_absolute": 1.7881393432617188e-07,
       "first_differences": [
@@ -1602,9 +1602,9 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 1890,
-      "different_words": 1650,
+      "different_words": 1611,
       "max_ulp": 2,
-      "max_absolute": 5.421010862427522e-20,
+      "max_absolute": 1.0842021724855044e-19,
       "first_differences": [
         {
           "index": [
@@ -1747,8 +1747,8 @@
       "dy": 1750.0,
       "words": 1904,
       "different_words": 1904,
-      "max_ulp": 23727294,
-      "max_absolute": 4.76182068494084e-13,
+      "max_ulp": 23727293,
+      "max_absolute": 4.761821565855105e-13,
       "first_differences": [
         {
           "index": [
@@ -1890,9 +1890,9 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 2040,
-      "different_words": 1305,
+      "different_words": 1279,
       "max_ulp": 2,
-      "max_absolute": 5.421010862427522e-20,
+      "max_absolute": 1.0842021724855044e-19,
       "first_differences": [
         {
           "index": [
@@ -2034,9 +2034,9 @@
       "dx": 3000.0,
       "dy": 1750.0,
       "words": 1785,
-      "different_words": 1560,
+      "different_words": 1534,
       "max_ulp": 2,
-      "max_absolute": 5.421010862427522e-20,
+      "max_absolute": 1.0842021724855044e-19,
       "first_differences": [
         {
           "index": [
@@ -2179,7 +2179,7 @@
       "dy": 1750.0,
       "words": 1890,
       "different_words": 1889,
-      "max_ulp": 1840055790,
+      "max_ulp": 1840055783,
       "max_absolute": 0.001070857048034668,
       "first_differences": [
         {
@@ -2324,7 +2324,7 @@
       "words": 1904,
       "different_words": 1904,
       "max_ulp": 2076605138,
-      "max_absolute": 0.6176088452339172,
+      "max_absolute": 0.6176087856292725,
       "first_differences": [
         {
           "index": [
@@ -2501,8 +2501,8 @@
       "dy": 1750.0,
       "words": 1785,
       "different_words": 1785,
-      "max_ulp": 1855745338,
-      "max_absolute": 0.0051070451736450195,
+      "max_ulp": 1855745355,
+      "max_absolute": 0.005106985569000244,
       "first_differences": [
         {
           "index": [
@@ -2829,7 +2829,7 @@
       "routine": "horizontal_diffusion",
       "cases": 21,
       "words": 40838,
-      "different_words": 19982,
+      "different_words": 19943,
       "max_ulp": 2076605138,
       "status": "DIFFERENT"
     },
@@ -2861,8 +2861,8 @@
       "routine": "horizontal_diffusion_3dmp",
       "cases": 7,
       "words": 12495,
-      "different_words": 7475,
-      "max_ulp": 1855745338,
+      "different_words": 7433,
+      "max_ulp": 1855745355,
       "status": "DIFFERENT"
     },
     {

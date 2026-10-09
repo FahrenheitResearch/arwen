@@ -413,7 +413,15 @@ def test_default_authority_and_fingerprint_base_golden(name, authority, fingerpr
     assert hashlib.sha256(payload).hexdigest() == authority
     assert (destination / "namelist.wps").read_bytes() == path.with_suffix(".namelist.wps").read_bytes()
     exp = load_experiment(destination / "experiment.toml")
-    assert experiment_fingerprint(exp, SimpleNamespace(run_provenance={})) == fingerprint
+    # The retained golden predates 48847c9eb's local_face default. Inverse
+    # only that declared value move, and prove the live identity binds it.
+    assert all(domain.run.terrain_clock == "local_face" for domain in exp.domains)
+    historical = replace(exp, domains=tuple(replace(
+        domain, run=replace(domain.run, terrain_clock="measured"))
+        for domain in exp.domains))
+    catalog = SimpleNamespace(run_provenance={})
+    assert experiment_fingerprint(exp, catalog) != experiment_fingerprint(historical, catalog)
+    assert experiment_fingerprint(historical, catalog) == fingerprint
 
 
 def test_host_staging_and_prepared_store_products(exp, rank_api):
@@ -1142,3 +1150,37 @@ def test_ranked_constructor_refuses_unbuilt_physics_before_cuda_import(exp, monk
     with pytest.raises(DevicesRefused, match=selector):
         RankedRun(None, cfg, options=DeviceOptions(count=2, ids=(0, 0)),
                   scalars=None, geography=None, template=None)
+
+
+def test_a_split_tree_that_does_not_fit_is_refused_by_name(rank_api, monkeypatch, capsys):
+    """The tree runner's per-card admission raises ``DevicesRefused``.
+
+    The named breakage: ``_admit_devices_tree`` raised a name it never
+    imported, so a nested ``[devices]`` tree too big for its cards died on
+    ``NameError: name 'DevicesRefused' is not defined`` instead of the
+    refusal that says which card is over (shipped in 2.8.7; found by
+    tests/test_no_undefined_names.py).  Runs the real pricing with a
+    stand-in CUDA runtime whose cards hold 1 GiB each.
+    """
+    import sys
+    from gpuwm.core import device_probe, preflight
+    from gpuwm.core.devices_memory import GIB
+    from gpuwm.core.resident_admission import MEMORY_GATE_OVERRIDE_ENV
+    from gpuwm.prepared_domain_tree_forecast import _admit_devices_tree
+
+    class Device:
+        def __init__(self, dev): self.dev = dev
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+    runtime = SimpleNamespace(getDeviceCount=lambda: 2,
+                              memGetInfo=lambda: (1 * GIB, 2 * GIB))
+    monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(
+        cuda=SimpleNamespace(Device=Device, runtime=runtime)))
+    monkeypatch.setattr(device_probe, "cuda_device_identity", lambda dev: None)
+    monkeypatch.setattr(preflight, "host_available_bytes", lambda: 512 * GIB)
+    monkeypatch.delenv(MEMORY_GATE_OVERRIDE_ENV, raising=False)
+    tree = replace(_tree(), devices=DeviceOptions(count=2, ids=(0, 1)))
+    with pytest.raises(DevicesRefused, match=r"card 0: REFUSED"):
+        _admit_devices_tree(tree, (1, 2), forcing_intervals=None,
+                            forcing_interval_seconds=3600.0, source=None)
+    assert "split on cards [0, 1]" in capsys.readouterr().out

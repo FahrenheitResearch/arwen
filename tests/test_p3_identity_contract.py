@@ -223,6 +223,11 @@ def test_the_p3_restart_contract_string_is_the_measured_configuration():
       of every call under model='WRF', :5018-5021).
     * ``rime-mass-volume-transported`` -- ``qir``/``qib`` advect with
       ``qi`` (gpuwm/core/moist.py::P3_SPECIES).
+    * ``real-clamp-product`` -- ``moist_physics_finish_em`` clamps the
+      theta increment at ``mp_tend_lim*dt``, two REALs multiplied
+      (dyn_em/module_big_step_utilities_em.F:5706-5707), and P3 finishes
+      through gpuwm.core.microphysics.moist_physics_finish, which forms
+      that float32 product since 2.8.8 (v2).
 
     KNOWN IMPRECISION, recorded rather than fixed: the string says
     ``wrf-v4.6.1``, which names a WRF RELEASE, not the P3 version (4.5.2)
@@ -235,10 +240,10 @@ def test_the_p3_restart_contract_string_is_the_measured_configuration():
     """
     identity = MICROPHYSICS_ALGORITHM_IDENTITIES[50]
     assert identity == (
-        "p3-one-category-wrf-v4.6.1-v1-2mom-ice-specified-nc-"
-        "diagnosed-ssat-rime-mass-volume-transported")
+        "p3-one-category-wrf-v4.6.1-v2-2mom-ice-specified-nc-"
+        "diagnosed-ssat-rime-mass-volume-transported-real-clamp-product")
     for token in ("2mom-ice", "specified-nc", "diagnosed-ssat",
-                  "rime-mass-volume-transported"):
+                  "rime-mass-volume-transported", "real-clamp-product"):
         assert token in identity
     # The unported siblings must NOT be describable by this row.
     assert "3mom" not in identity

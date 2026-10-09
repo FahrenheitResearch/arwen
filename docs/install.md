@@ -10,7 +10,8 @@ changes the scientific support matrix.
 ### One command
 
 `install.sh` (POSIX) and `install.ps1` (PowerShell) at the repository root
-perform the whole developer install: create `.venv` if absent, install
+perform the whole developer install: create `.venv` if absent, on
+free-threaded CPython 3.14t (see "Interpreter" below), install
 the matching data companion with `pip install -e gpuwm-data`, then install
 `-e '.[gpu-cu12,render]'` (or `gpu-cu13`) into it, stage the externalized Thompson tables
 with `gpuwm fetch-tables` (downloads only what is absent -- ~243 MiB
@@ -50,8 +51,33 @@ in a `render_basemap_missing` warning event. Both scripts are idempotent: re-run
 `.venv` and the incremental cargo build. Run them from the checkout
 root, or standalone (piped from the raw URL), in which case they clone
 https://github.com/FahrenheitResearch/arwen into `./gpuwm`
-(`GPUWM_REPO_URL` overrides the clone source). `GPUWM_PYTHON`
-overrides the interpreter used to create the venv.
+(`GPUWM_REPO_URL` overrides the clone source).
+
+**Interpreter.** A new `.venv` is made on free-threaded CPython 3.14t:
+a `python3.14t` already on PATH, else the one uv finds or installs
+(`uv python install 3.14t`), else, with consent (`--yes`/`-Yes` or the
+prompt), uv itself from https://astral.sh/uv first. Multi-card
+`[devices]` forecasts step each card from its own Python thread, and under
+a standard Python those threads take turns on the interpreter lock: four
+cards measured 289 s per forecast hour with the lock and 130 s on 3.14t.
+The `gpuwm` command line and both prepared runners re-run themselves once
+with `PYTHON_GIL=0`, so nothing is exported by hand. On a free-threaded
+`.venv` the scripts install with `--prefer-binary` (cftime 1.6.6 has no
+cp314t wheel; 1.6.5 does), and the `[render]` extra's `wrf-rust`, which
+publishes no cp314t wheel, builds from its sdist with the Rust toolchain
+the scripts already require, which is why the Rust check runs before the
+`.venv` step. `--python PY`/`-Python PY` (or `GPUWM_PYTHON`) picks another
+interpreter. When no 3.14t can be had, or a dependency will not install
+under it, the install goes on with `python3`/`python` and prints a warning
+naming the cost and the remedy; `gpuwm doctor` reports the same. A
+`python3.14t` that cannot make a venv (a distribution build without its
+venv package has no ensurepip; deadsnakes splits it out as
+`python3.14-venv`) gives way to the 3.14t uv provides, then to
+`python3`/`python` with that warning, and the half-made `.venv` is removed.
+A pip install on 3.14t outside the scripts needs `--prefer-binary` too, or
+pip builds cftime 1.6.6 from source with a C compiler. A
+re-run keeps an existing `.venv` and warns when it has the lock; remove
+`.venv` and re-run to remake it on 3.14t.
 
 ### Manual steps
 
@@ -236,6 +262,13 @@ interpreter it has no wheel for, `gpuwm doctor` reports that gap by name
 rather than printing a pip line that cannot work -- the runtime window
 still accepts `>=0.2.35`, so a 0.2.38 already on your box keeps
 rendering.
+
+The free-threaded build (`python3.14t`, which `install.sh` and
+`install.ps1` use by default) is the exception: 0.2.39 publishes no cp314t
+wheel, so pip builds it from its sdist, which needs `cargo` on PATH. Its
+PyO3 supports 3.14t: the build takes about 20 s on a 24-core box and the
+module imports without switching the interpreter lock back on (measured
+2026-10-08).
 
 ```bash
 python -m pip install -e '.[dev]'

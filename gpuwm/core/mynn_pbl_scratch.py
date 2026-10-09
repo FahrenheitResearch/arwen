@@ -58,15 +58,20 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 # cupy is imported INSIDE the methods that allocate device memory, so
 # the slot-SHAPE helpers this module also owns stay readable on
 # installs with no GPU runtime -- the preflight estimator prices the
-# MYNN workspace there (`gpuwm domain` on a CPU-only box).  All
+# MYNN workspace there (`gpuwm domain` on a CPU-only box).  The
 # ``cp.`` annotations below are strings under `from __future__ import
-# annotations` and are never evaluated.
+# annotations`; the TYPE_CHECKING import binds the name they spell for
+# a type checker and the undefined-name gate without importing cupy at
+# run time (tests/test_no_undefined_names.py).
+if TYPE_CHECKING:
+    import cupy as cp
 
 from gpuwm.core.state import DTYPE
 

@@ -168,7 +168,7 @@ PER_REGIME = {
 }
 
 
-def _run_wrf(build, inp, dt, stem, mp=28):
+def _run_wrf(build, inp, dt, stem, mp=28, deleted=None):
     ncol, nz = inp["p"].shape
     run_dir = build / "run"
     in_path = run_dir / f"{stem}-in.bin"
@@ -184,9 +184,15 @@ def _run_wrf(build, inp, dt, stem, mp=28):
     wrf = R.read_wrf_output(run_dir / f"{stem}-pristine.out", ncol, nz, mp)
     cps = R.read_checkpoints(run_dir, ncol, nz)
     for cp in R.SCHEMA:
-        (run_dir / f"wrf-{cp}.bin").unlink(missing_ok=True)
+        path = run_dir / f"wrf-{cp}.bin"
+        if deleted is not None and path.exists():
+            deleted.append({"path": str(path), "bytes": path.stat().st_size})
+        path.unlink(missing_ok=True)
     for suffix in ("-in.bin", "-pristine.out", "-rates.out"):
-        (run_dir / f"{stem}{suffix}").unlink(missing_ok=True)
+        path = run_dir / f"{stem}{suffix}"
+        if deleted is not None and path.exists():
+            deleted.append({"path": str(path), "bytes": path.stat().st_size})
+        path.unlink(missing_ok=True)
     return wrf, cps
 
 
@@ -217,11 +223,11 @@ def pick(masks_by_source, seed=0):
     return chosen
 
 
-def _answers(build, raw, dt, stem, mp):
+def _answers(build, raw, dt, stem, mp, deleted=None):
     """The fixture arrays for ``raw`` columns: the inputs, WRF's outputs,
     its sixty-four rates and the checkpoint values the rules read."""
     inp = R.prepare(raw, mp)
-    wrf, cps = _run_wrf(build, inp, dt, stem, mp)
+    wrf, cps = _run_wrf(build, inp, dt, stem, mp, deleted=deleted)
     arrays = {f"col_{k}": v for k, v in raw.items()}
     arrays.update({f"wrf_{k}": np.asarray(v, f32) for k, v in wrf.items()})
     for name in R.RATES:

@@ -194,6 +194,44 @@ real v_face_mu_current(const real* mub2d, const real* mup,
     return __fmul_rn(0.5f, __fadd_rn(north, south));
 }
 
+#if GPUWM_WRF_EXACT
+// Strict mode: the face mass of WRF calc_mu_uv (module_big_step_utilities_em.F),
+// MUU = 0.5*(MU(i)+MU(i-1)+MUB(i)+MUB(i-1)) summed left to right, and on the
+// first and last face of a non-periodic domain the edge column twice
+// (im = its, resp. i-1 = im = ite-1).  relax_bdy_dry relaxes WRF's grid%ru /
+// grid%rv, which couple_momentum forms from exactly this MUU/MUV.  The default
+// helpers above sum (MUB+MU) per column first and take MUB+MU at the edge
+// faces, a different rounding (combo-sweep round 2, LOCALIZE.md item 5).
+static __device__ __forceinline__
+real u_face_mu_wrf(const real* mub2d, const real* mup, int j, int i, int nx)
+{
+    size_t r = (size_t)j*nx + min(i, nx - 1);
+    size_t l = (size_t)j*nx + max(i - 1, 0);
+    return __fmul_rn(0.5f, __fadd_rn(__fadd_rn(__fadd_rn(mup[r], mup[l]),
+                                               mub2d[r]), mub2d[l]));
+}
+
+static __device__ __forceinline__
+real v_face_mu_wrf(const real* mub2d, const real* mup, int j, int i, int ny,
+                   int nx)
+{
+    size_t n = (size_t)min(j, ny - 1)*nx + i;
+    size_t s = (size_t)max(j - 1, 0)*nx + i;
+    return __fmul_rn(0.5f, __fadd_rn(__fadd_rn(__fadd_rn(mup[n], mup[s]),
+                                               mub2d[n]), mub2d[s]));
+}
+
+// WRF relax_bdytend_core: field_tend = field_tend + fcx*fls0
+//                                     - gcx*(fls1+fls2+fls3+fls4-4.*fls0),
+// left to right.  The held rows start from zero, where this equals the
+// default grouping; the mass row adds into the big-step mu tendency, where
+// it does not (LOCALIZE.md item 5, MU in row 1).
+#define LBC_RELAX_ADD(result, fc, gc, f0, f1, f2, f3, f4) \
+    (result) = __fsub_rn(__fadd_rn((result), __fmul_rn((fc), (f0))), \
+        __fmul_rn((gc), __fsub_rn(__fadd_rn(__fadd_rn(__fadd_rn((f1), (f2)), \
+        (f3)), (f4)), __fmul_rn(4.0f, (f0)))))
+
+#endif
 static __device__ __forceinline__
 real u_face_mu_old(const real* old_mup_frame,
                    const real* mub2d, const real* mup,
@@ -249,18 +287,33 @@ real coupled_current(int kind, int k, int j, int i,
     real mass;
     real ch;
     if (kind == LBC_U) {
+#if GPUWM_WRF_EXACT
+        mass = u_face_mu_wrf(mub2d, mup, j, i, mnx);
+#else
         mass = u_face_mu_current(mub2d, mup, j, i, mny, mnx);
+#endif
         ch = __fadd_rn(__fmul_rn(c1h[k], mass), c2h[k]);
         real result = __fmul_rn(ch, u[idx]);
         return has_msf ? __fdiv_rn(result, msfu[(size_t)j*nx + i])
                        : result;
     }
     if (kind == LBC_V) {
+#if GPUWM_WRF_EXACT
+        mass = v_face_mu_wrf(mub2d, mup, j, i, mny, mnx);
+#else
         mass = v_face_mu_current(mub2d, mup, j, i, mny, mnx);
+#endif
         ch = __fadd_rn(__fmul_rn(c1h[k], mass), c2h[k]);
         real result = __fmul_rn(ch, v[idx]);
+#if GPUWM_WRF_EXACT
+        // couple_momentum: rv = v*(c1h*muv+c2h)*msfv_inv, the stored inverse.
+        return has_msf ? __fmul_rn(result,
+                                   __fdiv_rn(1.0f, msfv[(size_t)j*nx + i]))
+                       : result;
+#else
         return has_msf ? __fdiv_rn(result, msfv[(size_t)j*nx + i])
                        : result;
+#endif
     }
     mass = current_mu(mub2d, mup, j, i, mnx);
     if (kind == LBC_W) {
@@ -432,7 +485,11 @@ void state_specified_relaxation(
                  - coupled_current(kind, k, j + 1, i, mub2d, mup, u, v, w,
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
+#if GPUWM_WRF_EXACT
+            LBC_RELAX_ADD(result, fcx[d], gcx[d], f0, f1, f2, f3, f4);
+#else
             result += fcx[d]*f0 - gcx[d]*(f1+f2+f3+f4-4.0f*f0);
+#endif
         } else if (own_n && dn >= spec_zone && dn < relax_zone
                    && (!own_w || i >= dn) && (!own_e || i < nx - dn)) {
             int d = dn;
@@ -463,7 +520,11 @@ void state_specified_relaxation(
                  - coupled_current(kind, k, j - 1, i, mub2d, mup, u, v, w,
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
+#if GPUWM_WRF_EXACT
+            LBC_RELAX_ADD(result, fcx[d], gcx[d], f0, f1, f2, f3, f4);
+#else
             result += fcx[d]*f0 - gcx[d]*(f1+f2+f3+f4-4.0f*f0);
+#endif
         } else if (own_w && dw >= spec_zone && dw < relax_zone
                    && (!own_s || j >= dw + 1)
                    && (!own_n || j < ny - dw - 1)) {
@@ -499,7 +560,11 @@ void state_specified_relaxation(
                  - coupled_current(kind, k, j, i + 1, mub2d, mup, u, v, w,
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
+#if GPUWM_WRF_EXACT
+            LBC_RELAX_ADD(result, fcx[d], gcx[d], f0, f1, f2, f3, f4);
+#else
             result += fcx[d]*f0 - gcx[d]*(f1+f2+f3+f4-4.0f*f0);
+#endif
         } else if (own_e && de >= spec_zone && de < relax_zone
                    && (!own_s || j >= de + 1)
                    && (!own_n || j < ny - de - 1)) {
@@ -531,7 +596,11 @@ void state_specified_relaxation(
                  - coupled_current(kind, k, j, i - 1, mub2d, mup, u, v, w,
                                    thp, thb, php, scalar, c1h, c2h, c1f, c2f,
                                    msft, msfu, msfv, has_msf, thb_3d, ny, nx);
+#if GPUWM_WRF_EXACT
+            LBC_RELAX_ADD(result, fcx[d], gcx[d], f0, f1, f2, f3, f4);
+#else
             result += fcx[d]*f0 - gcx[d]*(f1+f2+f3+f4-4.0f*f0);
+#endif
         }
     }
     if (divide_msf) result = __fdiv_rn(result, msft[(size_t)j*nx + i]);
@@ -948,7 +1017,12 @@ void finalize_state_field(
     const real* __restrict__ north,
     const real* __restrict__ north_t,
     real dtbc, int width, int spec_zone, int has_msf, int thb_3d,
+#if GPUWM_WRF_EXACT
+    int kind, int nz, int ny, int nx, int mny, int mnx,
+    const real* __restrict__ muts_wrf)
+#else
     int kind, int nz, int ny, int nx, int mny, int mnx)
+#endif
 {
     int tid = blockIdx.x*blockDim.x + threadIdx.x;
     if (tid >= nz*ny*nx) return;
@@ -956,6 +1030,46 @@ void finalize_state_field(
     int rem = tid - k*ny*nx;
     int j = rem/nx;
     int i = rem - j*nx;
+#if GPUWM_WRF_EXACT
+    // WRF spec_bdy_final writes the specified rows only:
+    // field = xmsf*bfield/xmu, bfield = bdy + dtbc*bdy_tend, xmsf the
+    // field's map factor for u/v/w (1 otherwise), xmu = c1*mu+c2 with mu
+    // the acoustic loop's grid%muts (t, ph, w, moist) or its calc_mu_uv_1
+    // faces grid%muus/muvs (u, v) -- not the installed new MU.  Every other
+    // cell keeps its value: re-coupling and uncoupling the whole field, the
+    // default path, moved interior words by an ULP at every step end
+    // (combo-sweep round 3).
+    if (muts_wrf != nullptr) {
+        real bfield;
+        if (!boundary_index(k, j, i, ny, nx, spec_zone, width,
+                            west, west_t, east, east_t, south, south_t,
+                            north, north_t, dtbc, &bfield, true))
+            return;
+        real mass;
+        if (kind == LBC_U) {
+            size_t r = (size_t)j*mnx + min(i, mnx - 1);
+            size_t l = (size_t)j*mnx + max(i - 1, 0);
+            mass = __fmul_rn(0.5f, __fadd_rn(muts_wrf[r], muts_wrf[l]));
+        } else if (kind == LBC_V) {
+            size_t n = (size_t)min(j, mny - 1)*mnx + i;
+            size_t s2 = (size_t)max(j - 1, 0)*mnx + i;
+            mass = __fmul_rn(0.5f, __fadd_rn(muts_wrf[n], muts_wrf[s2]));
+        } else {
+            mass = muts_wrf[(size_t)j*mnx + i];
+        }
+        bool full = kind == LBC_W || kind == LBC_PHI;
+        real xmu = __fadd_rn(__fmul_rn(full ? c1f[k] : c1h[k], mass),
+                             full ? c2f[k] : c2h[k]);
+        real num = bfield;
+        if (has_msf) {
+            if (kind == LBC_U) num = __fmul_rn(msfu[(size_t)j*nx + i], num);
+            else if (kind == LBC_V) num = __fmul_rn(msfv[(size_t)j*nx + i], num);
+            else if (kind == LBC_W) num = __fmul_rn(msft[(size_t)j*nx + i], num);
+        }
+        target[tid] = __fdiv_rn(num, xmu);
+        return;
+    }
+#endif
 #if GPUWM_WRF_EXACT_C_BIGSTEP
     real coupled = coupled_old_target(
         kind, k, j, i, target, old_mup_frame, mub2d, mup, thb,

@@ -200,6 +200,8 @@ def test_the_file_is_lf_only() -> None:
 
 
 _TRANSITIVE_DEVICE_HELPERS = {
+    "tests/test_mynn_sfclay_wrf461_column_oracle_gpu.py": (
+        "tools.mynn_sfclay_wrf461_column_oracle.compare", "run"),
     "tests/test_chem_dust_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
     "tests/test_chem_afwa_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
     "tests/test_chem_seasalt_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
@@ -216,6 +218,44 @@ _TRANSITIVE_DEVICE_HELPERS = {
     "tests/test_sfire_ideal_landuse_wrf471_parity.py": (
         "tools.sfire_coupled_ideal.initialization.grade_landuse", "replay"),
 }
+
+# These suites invoke a CUDA driver in a fresh interpreter. Each link is
+# checked against the actual caller and the final CuPy-bearing source.
+_DEVICE_DRIVER_CHAINS = {
+    "tests/test_diffusion_default_words.py": (
+        "tools/diffusion_default_check.py", "tools/smag2d_wrf461_oracle/oracle.py"),
+    "tests/test_mynn_restart_live_gpu.py": (
+        "tools/mynn_review_restart.py", "tests/test_mynn_pbl_runtime.py"),
+    "tests/test_sfclay_noftz_regression.py": (
+        "tools/sfclay_noftz_check/check.py", "tools/sfclay_noftz_check/pbl_run.py"),
+    "tests/test_wrf_exact_diffusion.py": ("tools/wrf_exact_diffusion_oracle.py",),
+}
+
+
+def _assert_device_driver_chain(entry, chain):
+    import ast
+    from conftest import _cupy_scope
+    caller = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and isinstance(node.func.value, ast.Name)
+               and node.func.value.id == "subprocess" and node.func.attr == "run"
+               for node in ast.walk(caller)), entry
+    for index, relative in enumerate(chain):
+        path = REPOSITORY_ROOT / relative
+        assert path.is_file(), relative
+        literals = [node.value for node in ast.walk(caller)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+        imports = [node.module for node in ast.walk(caller)
+                   if isinstance(node, ast.ImportFrom) and node.module]
+        imports += [alias.name for node in ast.walk(caller)
+                    if isinstance(node, ast.Import) for alias in node.names]
+        # Direct paths, Path components and imported helper modules are all
+        # real call routes; comments cannot supply any of these AST nodes.
+        assert (any(path.name in value for value in literals)
+                or path.stem in imports), (entry, relative)
+        caller = ast.parse(path.read_text(encoding="utf-8"))
+    whole, functions = _cupy_scope(str(path))
+    assert whole or functions, (entry, chain[-1])
 
 
 def _module_fixture_calls_device_helper(entry, fixture_name, helper, name):
@@ -251,6 +291,24 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
     """
 
     from conftest import _cupy_scope
+
+    if entry in _DEVICE_DRIVER_CHAINS:
+        _assert_device_driver_chain(entry, _DEVICE_DRIVER_CHAINS[entry])
+        return
+    if entry == "tests/test_km1_wrf461_oracle.py":
+        import ast
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        assert any(isinstance(node, ast.Import)
+                   and any(alias.name == "km1_oracle" for alias in node.names)
+                   for node in ast.walk(tree)), entry
+        assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and isinstance(node.func.value, ast.Name)
+                   and node.func.value.id == "km1_oracle"
+                   and node.func.attr == "woof_outputs" for node in ast.walk(tree)), entry
+        whole, functions = _cupy_scope(str(REPOSITORY_ROOT /
+            "tools/wrf_diffusion_oracle/km1_oracle.py"))
+        assert whole or "woof_outputs" in functions, entry
+        return
 
     if entry == "tests/test_ruc_fork_gpu.py":
         _module_fixture_calls_device_helper(

@@ -250,7 +250,7 @@ def bandwidth(cp, size_mb=512, reps=7):
         s2.synchronize()
 
     dup = timed(both)
-    del dev, up, down
+    dev = up = down = None  # rebound, not deleted: a closure above reads it
     cp.get_default_memory_pool().free_all_blocks()
 
     best_simplex = max(nb / h2d, nb / d2h)

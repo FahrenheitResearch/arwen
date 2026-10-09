@@ -61,7 +61,7 @@ pub use planning::{
 };
 use planning::{
     PlannedDirectRecipe, canonical_fetch_product_for_selectors, group_direct_fetches,
-    plan_direct_recipes,
+    plan_direct_recipes, plan_selected_recipes,
 };
 #[cfg(test)]
 use planning::{canonical_fetch_product, should_attach_direct_idx_patterns};
@@ -259,7 +259,7 @@ pub fn render_direct_recipes_from_selected_fields(
     fetch_key: impl Into<String>,
 ) -> Result<Vec<DirectRenderedRecipe>, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
-    let planned = plan_direct_recipes(request.model, recipe_slugs)?;
+    let planned = plan_selected_recipes(request.model, recipe_slugs)?;
     let fetch_truth_by_actual_product = direct_fetch_truth_for_planned(
         request,
         latest,
@@ -338,7 +338,7 @@ pub fn render_direct_recipes_chunked_from_loader(
     fetch_key: impl Into<String>,
 ) -> Result<Vec<DirectRenderedRecipe>, Box<dyn std::error::Error>> {
     fs::create_dir_all(&request.out_dir)?;
-    let planned = plan_direct_recipes(request.model, recipe_slugs)?;
+    let planned = plan_selected_recipes(request.model, recipe_slugs)?;
     if planned.is_empty() {
         return Ok(Vec::new());
     }

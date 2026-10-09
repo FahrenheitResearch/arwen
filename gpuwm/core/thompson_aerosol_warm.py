@@ -160,7 +160,8 @@ def launch_aerosol_warm_source_network(
         ncten, nwfaten, nifaten,
         rain_cloud_efficiency, snow_cloud_efficiency,
         rain_snow_tables, rain_graupel_tables, dt: float, *,
-        qcten=None, qrten=None, nrten=None) -> None:
+        qcten=None, qrten=None, nrten=None, qvten=None,
+        tten=None, qsten=None, qgten=None, ngten=None) -> None:
     """Apply WRF-ordered warm-level sources with a prognostic droplet number.
 
     ``nc_entry``/``nwfa_entry``/``nifa_entry`` are the FROZEN per-kilogram
@@ -185,6 +186,11 @@ def launch_aerosol_warm_source_network(
     stage's cloud tendency is ADDED to ``qcten``, to be applied once with
     every other cloud tendency (:3975); the production adapter passes it.
     Left ``None``, the tendency is applied to ``qc`` in place.
+
+    ``qvten``/``tten`` (keywords, both or neither) are WRF's vapour and
+    temperature accumulators.  Given, the sources are added to them in
+    WRF's form (:2982, :3174-3179), ``qv`` stays the entry vapour and
+    ``temperature`` becomes ``t1d + DT*tten``.
     """
     fields = {
         "qc": qc,
@@ -212,6 +218,19 @@ def launch_aerosol_warm_source_network(
     if qrten is not None:
         fields["qrten"] = qrten
         fields["nrten"] = nrten
+    if (qvten is None) != (tten is None):
+        raise ValueError("qvten and tten are given together or not at all")
+    if qvten is not None:
+        fields["qvten"] = qvten
+        fields["tten"] = tten
+    frozen = {"qsten": qsten, "qgten": qgten, "ngten": ngten}
+    frozen_given = [name for name, value in frozen.items()
+                    if value is not None]
+    if frozen_given and len(frozen_given) != 3:
+        raise ValueError("qsten, qgten and ngten are given together or not "
+                         f"at all (got {frozen_given})")
+    if frozen_given:
+        fields.update(frozen)
     _, size = validate_fields(fields)
     if qcten is not None and _arrays_overlap(qc, qcten):
         raise ValueError("qcten must not alias qc; the entry cloud is "
@@ -258,7 +277,7 @@ def launch_aerosol_warm_source_network(
          ncten, nwfaten, nifaten,
          rain_cloud_efficiency, snow_cloud_efficiency,
          *rain_snow_values, *rain_graupel_values,
-         qcten, qrten, nrten,
+         qcten, qrten, nrten, qvten, tten, qsten, qgten, ngten,
          DTYPE(dt), np.int32(size)))
 
 
@@ -269,7 +288,8 @@ def launch_aerosol_warm_source_network_from_owner(
         nc_entry, nwfa_entry, nifa_entry,
         ncten, nwfaten, nifaten,
         table_owner, dt: float, *, qcten=None, qrten=None,
-        nrten=None) -> None:
+        nrten=None, qvten=None, tten=None, qsten=None, qgten=None,
+        ngten=None) -> None:
     """Launch the warm network from one verified classic table owner.
 
     mp=28 reuses the four classic Thompson caches unchanged; only
@@ -290,7 +310,8 @@ def launch_aerosol_warm_source_network_from_owner(
         ncten, nwfaten, nifaten,
         tables.rain_cloud_efficiency, table_owner.t_Efsw,
         tables.rain_snow_tables, tables.rain_graupel_tables, dt,
-        qcten=qcten, qrten=qrten, nrten=nrten)
+        qcten=qcten, qrten=qrten, nrten=nrten, qvten=qvten, tten=tten,
+        qsten=qsten, qgten=qgten, ngten=ngten)
 
 
 def launch_ncten_balance(

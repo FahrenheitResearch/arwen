@@ -1,0 +1,164 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "base-91de806e2",
+  "lane-km2"
+ ],
+ "nvrtc_version": [
+  12,
+  9
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "smag2d": {
+   "file_sha256": {
+    "base-91de806e2": "932359b9f7685918fdd69e204ead1d2ac8369b792d64ff393e00b6b910dc84ad",
+    "lane-km2": "650162c270444dc92e6e50cc27ce8633a6766fe01f2d82c5174516f2dad14fa6"
+   },
+   "assembled_source_sha256": {
+    "base-91de806e2": "400d89d032c13c4ed64be6cfd96e72483dc176fc83a933098b8cde85ac2a34a9",
+    "lane-km2": "21e33c5ccb23b318d7c3aed79a2684c37020816383bf81bb97c16d7d5afdd376"
+   },
+   "entries": [
+    "smag2d_km",
+    "smag_hd_s",
+    "smag_hd_u",
+    "smag_hd_v",
+    "smag_hd_w",
+    "wrf_calc_n2",
+    "wrf_smag2d_km",
+    "wrf_smag3d_km",
+    "wrf_smag_deform",
+    "wrf_smag_flux_s",
+    "wrf_smag_hd_s",
+    "wrf_smag_hd_u",
+    "wrf_smag_hd_v",
+    "wrf_smag_hd_w_cached",
+    "wrf_smag_hd_w_stress",
+    "wrf_smag_km_bc",
+    "wrf_smag_surface_heat_const",
+    "wrf_smag_surface_scalars",
+    "wrf_smag_surface_u",
+    "wrf_smag_surface_u_cd0",
+    "wrf_smag_surface_v",
+    "wrf_smag_surface_v_cd0",
+    "wrf_smag_vd_s",
+    "wrf_smag_vd_u",
+    "wrf_smag_vd_v",
+    "wrf_smag_vd_w",
+    "wrf_smag_w_primitives",
+    "wrf_smag_w_stress",
+    "wrf_tke_km",
+    "wrf_tke_rhs"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "base-91de806e2": "88b2f9d268f47fa55b740adb210f23d10006c20229a10718aea36481d239ca11",
+      "lane-km2": "608c0ef743a6129bc5cc8cf50127b1c995cbad6d6ea56a2d00c408c219fe2e6c"
+     },
+     "entry_compared": 30,
+     "entry_different": [
+      "wrf_calc_n2",
+      "wrf_tke_km",
+      "wrf_tke_rhs"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "base-91de806e2": "9850c22cba68fc11e2f0623224a8213db1236b586312e18c7aa544b77d7fbdd4",
+      "lane-km2": "b9828bdf5f120294c06705ebe7e43a46b4214093ad779b095a88e9f3acf0b657"
+     },
+     "entry_compared": 30,
+     "entry_different": [
+      "wrf_calc_n2",
+      "wrf_tke_km",
+      "wrf_tke_rhs"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "base-91de806e2": "5d1acdb42426477686832513c57ba922f07da83621f1722a764fdad57b7ee626",
+      "lane-km2": "ef5eaf4e4abdc8abd0072ec46cb074db34a98014d35e89f6b35cc9adb528e5e2"
+     },
+     "entry_compared": 30,
+     "entry_different": [
+      "wrf_calc_n2",
+      "wrf_tke_km",
+      "wrf_tke_rhs"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "base-91de806e2": "01ee508a1212d8a2b1bc3813475af4e938f998e05510caf571b2c199d54d3439",
+      "lane-km2": "bd870e3060498fb0c7f35de3158aaeac6a5a8efb586b9bff91e40264d607a648"
+     },
+     "entry_compared": 30,
+     "entry_different": [
+      "wrf_calc_n2",
+      "wrf_tke_km",
+      "wrf_tke_rhs"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "base-91de806e2": "7298b05e7070da2109a922b3b21c57511b3ba832d20a082809c1b30e5048fe37",
+      "lane-km2": "1f5c3625a0715d60e98e2813be7dfd931a932816854fac50953d03b2607cf75a"
+     },
+     "entry_compared": 30,
+     "entry_different": [
+      "wrf_calc_n2",
+      "wrf_tke_km",
+      "wrf_tke_rhs"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "base-91de806e2": "4ed815dd6e05b7cf58e9c276d339cc5c03d455521dee762d32f91dedcce268e1",
+      "lane-km2": "572b7f84b18a42fc7688dd1d6cf89ba71bfdfb77252b050c578ce425b418fed1"
+     },
+     "entry_compared": 30,
+     "entry_different": [
+      "wrf_calc_n2",
+      "wrf_tke_km",
+      "wrf_tke_rhs"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

@@ -8,7 +8,7 @@ studies that answer two different questions.
 **The control is the port's own output, not the fixture.**  This file used to
 score a mutant as *killed* when its output was not bitwise-equal to
 ``oracle/lsmruc.csv``.  That is vacuous here: the unmutated port already
-differs from the fixture in the 26 cells of :data:`UPSTREAM_RESIDUE`, so the
+differed from the fixture in the 26 cells :data:`UPSTREAM_RESIDUE` held then, so the
 NULL mutant -- the port with nothing changed -- was itself "killed", and every
 mutant scored as detected whether or not the fixture could see it.  Replaying
 against the correct control turns 218 mutants / 0 survivors into 218 mutants /
@@ -77,63 +77,20 @@ def _constant_key(name: str, value: object) -> tuple[str, object]:
         return (name, value)
     return (name, float(np.float32(value)))
 
-#: Cells that do not reproduce bitwise, with the ULP measured on the pinned
-#: build.  Keyed ``(field, case_row, level)`` with ``case_row`` the 0-based
-#: index into the fixture's 48 (run, step, column) groups and ``level`` the
-#: 1-based soil level (0 for column fields).  A listed cell may only shrink;
-#: an unlisted nonzero cell fails.
+#: Cells that do not reproduce bitwise, keyed ``(field, case_row, level)``
+#: with ``case_row`` the 0-based index into the fixture's 48 (run, step,
+#: column) groups and ``level`` the 1-based soil level (0 for column fields):
+#: none.  An unlisted nonzero cell fails.
 #:
-#: NONE of these originates in the driver.  25 of the 26 are one function:
-#: ``gpuwm.core.ruc._f32_tanh``, used by ``ruc_snow_preparation`` for WRF's
-#: ``:1520-1521`` new-snow density.  ``_f32_tanh`` transcribes fdlibm's
-#: ``tanhf``, but glibc 2.39's ``tanhf`` is NOT fdlibm's -- reconstructing the
-#: fdlibm form from glibc's own ``expm1f`` gives 0.760541856 where glibc
-#: ``tanhf`` returns 0.760541916 at ``x = 0.9974991083145142``.  Over the 80
-#: ``tanh`` arguments this fixture reaches, ``_f32_tanh`` misses glibc on
-#: four, by up to 3 ULP.  Substituting a measured glibc ``tanhf`` table for
-#: ``_f32_tanh`` and replaying collapses this table from 26 cells / 425 ULP
-#: to one cell / 1 ULP -- ``("grdflx", 21, 0)``, which is the separately
-#: documented ``exp``/``pow``/``log10`` class in
-#: ``_RUC_PROVISIONAL_TRANSCENDENTALS``.
-#:
-#: This is a defect in ``ruc_snow_preparation``, not in the driver, and it is
-#: pinned rather than fixed here because fixing it needs a verified glibc
-#: ``tanhf`` transcription, its CUDA twin in ``gpuwm/core/kernels/ruc.cu``,
-#: and a re-verification of ``oracle/sfctmp_prep.csv`` and ``oracle/sfctmp.csv``
-#: -- none of which is this lane.  ``oracle/lsmruc.csv`` is the first RUC
-#: fixture to reach an argument where the two ``tanh`` implementations
-#: disagree, which is why the snow lanes were bitwise without it.
-UPSTREAM_RESIDUE: dict[tuple[str, int, int], int] = {
-    # (2, 1, 'usgs_grass_allsnow') and (2, 2, ...): fresh snow at tabs = 270 K,
-    # where 17*tanh((276.65-tabs)*0.15) lands on the 3 ULP tanh miss.
-    ("rhosnf", 8, 0): 2,
-    ("rhosnf", 20, 0): 2,
-    ("rhosnf", 25, 0): 2,
-    ("rhosnf", 37, 0): 2,
-    ("snowfallac", 8, 0): 2,
-    ("snowfallac", 20, 0): 1,
-    ("snowfallac", 25, 0): 2,
-    ("snowfallac", 37, 0): 1,
-    ("snowh", 25, 0): 1,
-    ("snowh", 37, 0): 1,
-    ("snowc", 25, 0): 2,
-    ("snowc", 30, 0): 1,
-    ("snowc", 37, 0): 2,
-    ("qvg", 25, 0): 1,
-    ("qsg", 25, 0): 1,
-    ("qsfc", 25, 0): 1,
-    ("soilt1", 37, 0): 1,
-    ("tsnav", 37, 0): 256,
-    ("mavail", 39, 0): 1,
-    ("grdflx", 37, 0): 425,
-    ("sh2o", 25, 2): 1,
-    ("sh2o", 37, 1): 27,
-    ("sh2o", 37, 2): 23,
-    ("tso", 37, 1): 1,
-    ("tso", 37, 2): 1,
-    # The one cell the glibc-tanhf substitution does NOT remove.
-    ("grdflx", 21, 0): 1,
-}
+#: This map held 26 cells until lane/verify-ruc-lsm.  25 were
+#: ``gpuwm.core.ruc._f32_tanh`` running its reduction on a float64 ``expm1``
+#: rounded once (the new-snow density at :1520-1521 and what it carried); one,
+#: ``("grdflx", 21, 0)``, was the float64-rounded ``exp``/``pow``/``log10``.
+#: RUC now calls WOOF's float32 libm on host and device, and the fixture
+#: reproduces bitwise.  SFCEVP is graded on WRF's single count
+#: (:func:`_single_count_sfcevp`): WRF adds ``qfx*dt`` twice (:1095, :1116)
+#: and WOOF does not copy that defect.
+UPSTREAM_RESIDUE: dict[tuple[str, int, int], int] = {}
 
 
 #: Driver arguments whose ENTRY value no supported call can observe, with the
@@ -294,6 +251,21 @@ def _entry(field: dict[str, np.ndarray], name: str) -> np.ndarray:
 
 def _result(field: dict[str, np.ndarray], name: str) -> np.ndarray:
     return field[CSV_ALIAS.get(name, name)]
+
+
+def _single_count_sfcevp(field: dict[str, np.ndarray]) -> np.ndarray:
+    """WRF's SFCEVP word with the duplicated :1116 accumulation taken out.
+
+    Land columns (sea ice included): WRF's entry SFCEVP plus WRF's own
+    ``qfx*dt`` once, the same float32 expression.  Water keeps WRF's word.
+    """
+
+    entry = field["sfcevp_i"][0]
+    dt = field["dt"][0].astype(np.float32)
+    once = (entry + (field["qfx"][0] * dt).astype(np.float32)).astype(
+        np.float32)
+    land = (field["xland"][0] - np.float32(1.5)) < np.float32(0.0)
+    return np.where(land, once, field["sfcevp"][0]).astype(np.float32)
 
 
 def _call_arguments(
@@ -741,7 +713,8 @@ def main() -> None:
     failures = 0
     worst = 0
     for name in COLUMN_OUTPUTS:
-        reference = _result(field, name)[0]
+        reference = (_single_count_sfcevp(field) if name == "sfcevp"
+                     else _result(field, name)[0])
         bad, high = _compare(name, reference, produced[name])
         failures += bad
         worst = max(worst, high)

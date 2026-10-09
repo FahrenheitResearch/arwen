@@ -748,11 +748,14 @@ def test_boundary_mapping_targets_are_bitwise_full_grid_slices():
 @pytest.mark.requires_capability("masked_stencil_bridge")
 def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
     observed = []
+    parents = []
 
     def fake_interpolate(
             snapshot, grid, *, target_landmask, soil_mapping_report,
-            surface_fallback_radius, backend, target_name):
+            surface_fallback_radius, backend, target_name,
+            lattice_parent=None):
         observed.append((surface_fallback_radius, backend, target_name))
+        parents.append(lattice_parent)
         soil_mapping_report.update({
             "land_stencil": {
                 "fallback_radius_cells": surface_fallback_radius,
@@ -782,7 +785,7 @@ def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
     boundary_report = {}
     _map_boundary_snapshot(
         object(), targets, boundary_report, surface_fallback_radius=10,
-        preprocess_backend="cpu-backend")
+        preprocess_backend="cpu-backend", domain_grid=grid)
 
     assert [entry[:2] for entry in observed] == [(10, "cpu-backend")] * 5
     # Each of the five mappings names ITSELF.  A soil refusal from one of
@@ -800,6 +803,9 @@ def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
     assert all(
         report["land_stencil"]["fallback_radius_cells"] == 10
         for report in boundary_report["sides"].values())
+    # Each strip names the domain it was cut from, so the strips of the
+    # native grid take its identity route (acceptance D-05, 2.8.8).
+    assert parents == [None] + [grid] * 4
 
 
 @pytest.mark.parametrize("nz", [4, 17, 49, 80])

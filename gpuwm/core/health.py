@@ -25,6 +25,8 @@ from typing import Any
 
 import numpy as np
 
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
+
 
 # A four-domain NSSL-2 step currently reaches 528 descriptors after its lazy
 # persistent microphysics and nest scratch is materialized (527 until the
@@ -374,6 +376,20 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
         return FieldRule("specific_volume", 0.0, 1.0e4,
                          strict_lower=True)
     if leaf in ("qv", "qc", "qr", "qi", "qs", "qg", "qh"):
+        if WRF_EXACT:
+            # Strict mode transcribes WRF's scalar updates, and WRF keeps
+            # moisture non-negative only on its final positive-definite
+            # stage: rk_update_scalar leaves qv = -3.19e-13 at the first step
+            # of the combo-sweep round-3 pair, and the non-PD stages carry
+            # and grow such values (qv = -2.4808048e-07 at step 11, the same
+            # word in stock WRF 4.6.1 and in strict WOOF).  No fixed number
+            # separates WRF's own state from broken transport, so strict
+            # mode drops the sign bound and keeps the ceiling; a non-finite
+            # value still fails the gate.
+            return FieldRule(
+                "moisture", None, 1.0,
+                bound_note=("strict mode keeps WRF's own below-zero moisture "
+                            "residuals, as WRF integrates with them"))
         return FieldRule("moisture", 0.0, 1.0)
     if leaf in ("nc", "nr", "ni", "ns", "ng", "qndrop", "qnr", "qni",
                 "qns", "qng", "qnh", "qnn",
@@ -507,6 +523,11 @@ def _walk_arrays(value: Any, prefix: str, *, seen: set[int] | None = None,
 _LID_FROM_STATE = object()
 
 
+#: Soil columns no scheme touches when ``sf_surface_physics = 0``.
+_INERT_WITHOUT_LAND_MODEL = frozenset({
+    "surface.tslb", "surface.smois", "surface.sh2o", "surface.smcrel"})
+
+
 def collect_state_fields(state: Any, *, backend: str = "cpu",
                          extra_tables: Mapping[str, Any] | None = None,
                          p_top: Any = _LID_FROM_STATE,
@@ -589,7 +610,17 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
         surface_fields = _walk_arrays(getattr(driver, "fields", None),
                                       "surface")
         nz = int(getattr(getattr(state, "p", None), "shape", (0,))[0])
+        no_land_model = (getattr(driver, "scheme_dispatch", None) is not None
+                         and driver.scheme_dispatch.get(
+                             "sf_surface_physics", "") is None)
         for field in surface_fields:
+            if no_land_model and field.name in _INERT_WITHOUT_LAND_MODEL:
+                # sf_surface_physics = 0: no scheme reads or writes the soil
+                # columns; they carry real.exe's words (all zero for TSLB)
+                # into history as WRF's do.  A range rule on them refused
+                # every no-land-model WRF-file run at the initial gate
+                # (2026-10-07 combo sweep), so only finiteness is checked.
+                field = dataclasses.replace(field, rule=_FINITE)
             if field.name == "surface.kpbl":
                 field = dataclasses.replace(
                     field, rule=FieldRule("surface", 0.0, float(nz)))
@@ -1349,6 +1380,31 @@ class StoreHealthValidator:
         return report
 
 
+class _AttachedStoreBundle:
+    """A streamed domain's store as the health rules read it: drained per read.
+
+    ``StreamedDomain.store`` drains before it hands the mapping out (the
+    deferred seam's scatter tail on one card; every slab of every rank on the
+    ranked road, :attr:`tilestream.ranks.RankedRun.store`).  Breakage this
+    prevents: the gate captured ``attached.store`` once, at construction, and
+    scanned that mapping at every later phase with no drain.  2.8.7's
+    ``StreamedDomain.impose_clock`` drained after every step (67e213588), which
+    kept the mirror current by accident; once that per-step drain was removed
+    (it made a 2-card run 0.78x of one card), the periodic and --health-debug
+    gates of a 2-card run scanned the host mirror of the last drain while a
+    NaN sat on the slabs.
+    """
+
+    def __init__(self, owner, template, base):
+        self._owner = owner
+        self.template = template
+        self.base = base
+
+    @property
+    def store(self):
+        return self._owner.store
+
+
 def health_validator_for_domain(model, node):
     """Validate the domain's canonical state after any initialization route."""
     from types import SimpleNamespace
@@ -1365,8 +1421,8 @@ def health_validator_for_domain(model, node):
             thb=geography.get('setup/thb', node.state.thb),
             mub=geography.get('setup/mub2d', node.state.mub2d),
             p_top=getattr(node.state, 'p_top', None))
-        return StoreHealthValidator(SimpleNamespace(
-            template=template, store=attached.store, base=base), node.cfg.run)
+        return StoreHealthValidator(
+            _AttachedStoreBundle(attached, template, base), node.cfg.run)
     prepared = getattr(model, '_prepared_by_grid_id', {}).get(node.cfg.grid_id)
     bundle = getattr(prepared, 'streamed_store', None)
     if bundle is None:

@@ -2504,23 +2504,26 @@ def test_full_cold_rain_frozen_source_order_matches_wrf_column():
     rain_snow_tables = sparse_flat_tables(
         (37, 9, 37, 37), rain_snow_entries, 12)
 
+    # The words WRF v4.6.1 read through its out-of-bounds density
+    # subscript 5, which lands 4*37*37 words past the one-slab entry;
+    # they sit at that entry, where WOOF reads (thompson_racg_index).
     rain_graupel_entries = (
-        (1032947, (1.737609020685299e-07, 3.303892641003907e-08,
+        (1027471, (1.737609020685299e-07, 3.303892641003907e-08,
                    6.091020327012273e-08, 0.06838930809162569,
                    3.3301776919863086)),
-        (980888, (7.65519147373558e-08, 1.555420558543834e-08,
+        (975412, (7.65519147373558e-08, 1.555420558543834e-08,
                   1.86561245468251e-08, 0.03871040384068884,
                   1.2872997901245293)),
-        (927497, (3.5519786863298714e-08, 6.920995103290605e-09,
+        (922021, (3.5519786863298714e-08, 6.920995103290605e-09,
                   9.71775244816401e-09, 0.019249012838508422,
                   0.735414490795451)),
-        (667128, (1.1808937804227983e-08, 3.666520731363542e-09,
+        (661652, (1.1808937804227983e-08, 3.666520731363542e-09,
                   8.721663261155263e-10, 0.006960845717607241,
                   0.059726041562087676)),
-        (461701, (7.097231274158658e-10, 1.8189270229440415e-10,
+        (456225, (7.097231274158658e-10, 1.8189270229440415e-10,
                   7.101087746246616e-11, 0.000795559363525502,
                   0.010026165671118796)),
-        (56141, (1.5140399734947955e-11, 3.7903396602583446e-12,
+        (50665, (1.5140399734947955e-11, 3.7903396602583446e-12,
                  1.4960162068700205e-12, 4.956215597775042e-05,
                  0.0005896004604246597)),
     )
@@ -4234,8 +4237,11 @@ def test_rain_graupel_collection_and_fallout_matches_wrf_column():
     def volume(name):
         return cp.asarray(host(before, name)[:, None, None])
 
-    # Exact entries reached by the seven active levels.  The fourth index
-    # includes WRF-v4.6.1's observed four-slab classic-mp8 density alias.
+    # The rain-graupel words WRF v4.6.1 read at the seven active levels.
+    # Its density subscript 5 overruns the one-slab axis, so they come from
+    # four rain-intercept bins further on in the canonical table; WOOF's
+    # read of the slab itself is the declared divergence, so they are
+    # placed where WOOF reads (see the loop below).
     sparse_entries = (
         ((19, 19, 5, 20, 20), (
             2.046240565630309e-08, 2.6926901952091645e-09,
@@ -4273,8 +4279,11 @@ def test_rain_graupel_collection_and_fallout_matches_wrf_column():
     for one_based_index, values in sparse_entries:
         g1, graupel, density, rain_intercept, rain = one_based_index
         assert density == 5
-        index = (g1 - 1, graupel - 1, 0,
-                 rain_intercept - 1 + density - 1, rain - 1)
+        # density is the subscript WRF reads with; the words are the ones
+        # that subscript reached.  WOOF reads the one slab
+        # (thompson_racg_index), so the words sit there and this gate
+        # checks everything downstream of the read.
+        index = (g1 - 1, graupel - 1, 0, rain_intercept - 1, rain - 1)
         for table, value in zip(table_hosts, values, strict=True):
             table[index] = value
     tables = tuple(cp.asarray(table, order="F") for table in table_hosts)
@@ -4437,8 +4446,9 @@ def test_cold_rain_snow_graupel_network_matches_wrf_column():
     rain_snow_tables = tuple(
         cp.asarray(table, order="F") for table in rain_snow_hosts)
 
-    # Exact canonical qr_acr_qg_V4 entries reached by those same levels.
-    # The density coordinate records WRF-v4.6.1's four-slab legacy alias.
+    # The qr_acr_qg_V4 words WRF v4.6.1 read at those same levels through
+    # its out-of-bounds density subscript 5, placed where WOOF reads
+    # (see the loop below).
     rain_graupel_entries = (
         ((19, 19, 5, 20, 20), (
             2.046240565630309e-08, 2.6926901952091645e-09,
@@ -4476,8 +4486,11 @@ def test_cold_rain_snow_graupel_network_matches_wrf_column():
     for one_based_index, values in rain_graupel_entries:
         g1, graupel, density, rain_intercept, rain = one_based_index
         assert density == 5
-        index = (g1 - 1, graupel - 1, 0,
-                 rain_intercept - 1 + density - 1, rain - 1)
+        # density is the subscript WRF reads with; the words are the ones
+        # that subscript reached.  WOOF reads the one slab
+        # (thompson_racg_index), so the words sit there and this gate
+        # checks everything downstream of the read.
+        index = (g1 - 1, graupel - 1, 0, rain_intercept - 1, rain - 1)
         for table, value in zip(
                 rain_graupel_hosts, values, strict=True):
             table[index] = value
@@ -4720,8 +4733,11 @@ def test_complete_cold_rain_source_network_matches_wrf_column():
     for one_based_index, values in rain_graupel_entries:
         g1, graupel, density, rain_intercept, rain = one_based_index
         assert density == 5
-        index = (g1 - 1, graupel - 1, 0,
-                 rain_intercept - 1 + density - 1, rain - 1)
+        # density is the subscript WRF reads with; the words are the ones
+        # that subscript reached.  WOOF reads the one slab
+        # (thompson_racg_index), so the words sit there and this gate
+        # checks everything downstream of the read.
+        index = (g1 - 1, graupel - 1, 0, rain_intercept - 1, rain - 1)
         for table, value in zip(
                 rain_graupel_hosts, values, strict=True):
             table[index] = value

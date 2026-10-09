@@ -847,7 +847,7 @@ def _control_contract_store(cfg, bnd, failures) -> tuple[bool, str]:
         text = str(exc)
         named = ("missing" in text and str(len(store.arrays)) in text)
         store.free()
-        del domain, geo
+        domain = geo = None  # released before the early return below
         _free()
         if not named:
             failures.append("the 41-name store was refused but the refusal "

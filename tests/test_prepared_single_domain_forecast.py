@@ -215,6 +215,23 @@ def _mapped_proof_literals() -> tuple[dict[str, list[set[str]]],
                         raise AssertionError(
                             "_seal_posted_mapped's proof grew a key this gate "
                             "cannot read statically; teach it, do not delete it")
+    # A CONDITIONAL builder: a module function whose whole answer is
+    # ``return {...} if <receipt> else {}`` (mapped_direct's
+    # _soil_floor_receipts, which spreads the identical receipt into the
+    # proof AND the cache header -- 2.8.8 acceptance D-02).  Spread into a
+    # proof, every key its dict can hold is optional, exactly as if the
+    # IfExp were written inline.
+    conditional_builders: dict[str, set[str]] = {}
+    for function in functions:
+        last = function.body[-1] if function.body else None
+        if not (isinstance(last, ast.Return) and isinstance(last.value, ast.IfExp)):
+            continue
+        branches = (last.value.body, last.value.orelse)
+        if all(isinstance(branch, ast.Dict) and all(
+                isinstance(item, ast.Constant) and isinstance(item.value, str)
+                for item in branch.keys) for branch in branches):
+            conditional_builders[function.name] = {
+                item.value for branch in branches for item in branch.keys}
     head_parts: dict[str, object] = {}
     for node in ordered:
         if node is None:
@@ -263,6 +280,11 @@ def _mapped_proof_literals() -> tuple[dict[str, list[set[str]]],
                 unconditional = _unconditional_spread_key(value)
                 if unconditional is not None:
                     keys.add(unconditional)
+                    continue
+                if (isinstance(value, ast.Call)
+                        and isinstance(value.func, ast.Name)
+                        and value.func.id in conditional_builders):
+                    opted_in |= conditional_builders[value.func.id]
                     continue
                 # (2) `**({...} if <receipt> is not None else {})` -- both
                 # branches are read and every key either can contribute
@@ -332,13 +354,13 @@ def test_the_reader_and_the_writer_agree_on_the_mapped_proof_inventory():
         [sorted(hierarchy), sorted(hierarchy - {"boundary_stream"})]), (
         "the mapped hierarchy proofs the writer publishes and the "
         "inventory the forecast runner accepts have drifted apart")
-    # The opted-in half, bound the same way.  A key the writer can add
+    # The conditional half, bound the same way. A key the writer can add
     # conditionally that the runner does not tolerate is the same dead
     # last leg as a required key it does not know -- it just waits for
     # someone to turn the option on.
     assert optional["PROOF_SCHEMA"] | optional["HIERARCHY_PROOF_SCHEMA"] \
         == set(runner.MAPPED_OPTIONAL_PROOF_KEYS), (
-        "the mapped proof keys the writer publishes only on opt-in and "
+        "the mapped proof keys the writer publishes conditionally and "
         "the optional inventory the forecast runner tolerates have "
         "drifted apart")
 
@@ -1515,7 +1537,8 @@ def _prepared_fixture(
         domain_bundle.mkdir(parents=True)
     static_path = domain_bundle / "native-static.npz"
     if source == "20crv3":
-        np.savez(static_path, STATIC=np.ones((1,), dtype=np.float64))
+        np.savez(static_path, STATIC=np.ones((1,), dtype=np.float64),
+                 HGT_M=np.zeros((exp.root.run.ny, exp.root.run.nx), dtype=np.float64))
     else:
         static_path.write_bytes(b"hash-bound-test-static")
     geometry_path = domain_bundle / "geometry-receipt.json"
@@ -1804,7 +1827,7 @@ def _prepared_fixture(
                 "path": "native-static.npz",
                 "bytes": static_path.stat().st_size,
                 "sha256": _sha256(static_path),
-                "fields": ["STATIC"],
+                "fields": ["HGT_M", "STATIC"],
             },
             "geometry": geometry_payload,
             "prepared_cache": cache_receipt,
@@ -1843,7 +1866,7 @@ def _prepared_fixture(
                     "path": "native-static.npz",
                     "bytes": static_path.stat().st_size,
                     "sha256": _sha256(static_path),
-                    "fields": ["STATIC"],
+                    "fields": ["HGT_M", "STATIC"],
                 },
                 "geometry_receipt": {
                     "path": "geometry-receipt.json",
@@ -2011,7 +2034,7 @@ def _prepared_fixture(
                     "path": "native-static.npz",
                     "bytes": (prepared / "native-static.npz").stat().st_size,
                     "sha256": _sha256(prepared / "native-static.npz"),
-                    "fields": ["STATIC"],
+                    "fields": ["HGT_M", "STATIC"],
                 },
                 "root_geometry": geometry_payload,
                 "static_catalog": {"schema": "test-catalog-v1"},
@@ -2070,7 +2093,8 @@ def test_gpuwm_sim_composes_the_command_a_real_bundle_is_accepted_with(
     monkeypatch.setattr(
         runner, "load_native_static_cache",
         lambda path, actual_grid, ny, nx: {
-            "STATIC": np.ones((ny, nx), dtype=np.float64)})
+            "STATIC": np.ones((ny, nx), dtype=np.float64),
+            "HGT_M": np.zeros((ny, nx), dtype=np.float64)})
 
     from gpuwm import stage_cli
 
@@ -2128,7 +2152,7 @@ def test_preflight_accepts_exact_portable_single_domain_authorities(
         lambda receipt, static, actual_grid, cfg: {"status": "PASS"})
     monkeypatch.setattr(
         runner, "load_native_static_cache",
-        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx))})
+        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx)), "HGT_M": np.zeros((ny, nx))})
 
     inputs = runner.preflight_prepared_forecast(
         source=source, prepared_root=fixture.prepared,
@@ -2215,7 +2239,8 @@ def _bind_synthetic_preflight_geometry(monkeypatch, *, hierarchy: bool):
     monkeypatch.setattr(
         runner, "load_native_static_cache",
         lambda path, actual_grid, ny, nx: {
-            "STATIC": np.ones((ny, nx), dtype=np.float64)})
+            "STATIC": np.ones((ny, nx), dtype=np.float64),
+            "HGT_M": np.zeros((ny, nx), dtype=np.float64)})
 
 
 def _preflight_fixture(fixture, *, physics_profile=runner.PHYSICS_PROFILE,
@@ -2583,14 +2608,23 @@ def _write_280_receipt(fixture):
 # corrections e13fa45c0 / 59f7e280f change WSM6 physics. The named receipt
 # records CQ=False; the synthetic unnamed receipt keeps the current resolved
 # settings, but still carries the old registry's physical operators.
+# 2.8.8 advanced the YSU and classic MM5 restart algorithm identities
+# (gpuwm/checkpoint_identity.py): both now compute differently, and the
+# registry names each changed kernel identity.
 _EXPECTED_280_PREFLIGHT_REFUSALS = {
     runner.PHYSICS_PROFILE: [
         "resolved.moist_cq (prepared False, this build True)",
         "registry physics of components.microphysics.options.wsm6-mp6 (changed)",
+        "registry physics of components.pbl.options.ysu (changed)",
+        "registry physics of components.surface_layer.options.classic-mm5 "
+        "(changed)",
         "registry physics of parameters.moist_cq (changed)",
     ],
     None: [
         "registry physics of components.microphysics.options.wsm6-mp6 (changed)",
+        "registry physics of components.pbl.options.ysu (changed)",
+        "registry physics of components.surface_layer.options.classic-mm5 "
+        "(changed)",
         "registry physics of parameters.moist_cq (changed)",
     ],
 }
@@ -2610,8 +2644,9 @@ def test_a_proof_prepared_under_the_280_registry_resolves_at_preflight(
     by name.  The registry history resolves 2.8.0's document to its
     physics, and what was added since is off in the configuration this
     build loads. The later CQ corrections (e13fa45c0 / 59f7e280f) change
-    WSM6's physical result, so these two historical preparations now
-    refuse with exactly the recorded CQ differences. An unknown registry
+    WSM6's physical result, and 2.8.8 advanced the YSU and classic MM5
+    kernel identities, so these two historical preparations now refuse
+    with exactly those recorded differences. An unknown registry
     document still refuses separately, naming it.
     """
 
@@ -3394,7 +3429,7 @@ def test_preflight_accepts_exact_nssl2_validation_candidate_and_binds_receipt(
         lambda receipt, static, actual_grid, cfg: {"status": "PASS"})
     monkeypatch.setattr(
         runner, "load_native_static_cache",
-        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx))})
+        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx)), "HGT_M": np.zeros((ny, nx))})
 
     inputs = runner.preflight_prepared_forecast(
         source="gfs", prepared_root=fixture.prepared,
@@ -3462,7 +3497,7 @@ def test_preflight_accepts_materialized_morrison_for_named_sources(
         lambda receipt, static, actual_grid, cfg: {"status": "PASS"})
     monkeypatch.setattr(
         runner, "load_native_static_cache",
-        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx))})
+        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx)), "HGT_M": np.zeros((ny, nx))})
 
     inputs = runner.preflight_prepared_forecast(
         source=source, prepared_root=fixture.prepared,
@@ -3497,7 +3532,7 @@ def test_preflight_accepts_guarded_thompson_for_each_prepared_source(
         lambda receipt, static, actual_grid, cfg: {"status": "PASS"})
     monkeypatch.setattr(
         runner, "load_native_static_cache",
-        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx))})
+        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx)), "HGT_M": np.zeros((ny, nx))})
 
     inputs = runner.preflight_prepared_forecast(
         source=source, prepared_root=fixture.prepared,
@@ -3690,7 +3725,7 @@ def test_preflight_derives_hash_bound_hierarchy_d01_bundle(
         lambda receipt, static, actual_grid, cfg: {"status": "PASS"})
     monkeypatch.setattr(
         runner, "load_native_static_cache",
-        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx))})
+        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx)), "HGT_M": np.zeros((ny, nx))})
 
     inputs = runner.preflight_prepared_forecast(
         source="gfs", prepared_root=fixture.prepared,
@@ -3721,7 +3756,7 @@ def test_hierarchy_d01_nssl2_authority_uses_dynamic_microphysics_label(
         lambda receipt, static, actual_grid, cfg: {"status": "PASS"})
     monkeypatch.setattr(
         runner, "load_native_static_cache",
-        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx))})
+        lambda path, actual_grid, ny, nx: {"STATIC": np.ones((ny, nx)), "HGT_M": np.zeros((ny, nx))})
 
     inputs = runner.preflight_prepared_forecast(
         source="gfs", prepared_root=fixture.prepared,
@@ -3763,7 +3798,8 @@ def test_preflight_rejects_wrong_source_adapter_even_when_bundle_is_self_consist
     monkeypatch.setattr(
         runner, "validate_native_lambert_contract", lambda *args, **kwargs: object())
     monkeypatch.setattr(runner, "verify_native_static_receipt", lambda *args: {})
-    monkeypatch.setattr(runner, "load_native_static_cache", lambda *args: {})
+    monkeypatch.setattr(runner, "load_native_static_cache",
+                        lambda path, grid, ny, nx: {"HGT_M": np.zeros((ny, nx))})
 
     with pytest.raises(ValueError, match="source identity differs"):
         runner.preflight_prepared_forecast(
@@ -3884,7 +3920,8 @@ def test_preflight_rejects_resolved_wrf_contract_drift(
     monkeypatch.setattr(
         runner, "validate_native_lambert_contract", lambda *args, **kwargs: object())
     monkeypatch.setattr(runner, "verify_native_static_receipt", lambda *args: {})
-    monkeypatch.setattr(runner, "load_native_static_cache", lambda *args: {})
+    monkeypatch.setattr(runner, "load_native_static_cache",
+                        lambda path, grid, ny, nx: {"HGT_M": np.zeros((ny, nx))})
 
     with pytest.raises(ValueError, match="export source hashes differ"):
         runner.preflight_prepared_forecast(
@@ -4201,7 +4238,7 @@ def test_source_neutral_surface_contract_rejects_land_identity_drift():
 
 def test_output_due_thompson_consumes_native_refl_10cm_stash():
     state = SimpleNamespace(
-        qv=object(), physics=SimpleNamespace(mp_physics=8))
+        qv=np.ones((2, 3, 4), np.float32), physics=SimpleNamespace(mp_physics=8))
     native = object()
     consumed = []
 
@@ -4210,9 +4247,10 @@ def test_output_due_thompson_consumes_native_refl_10cm_stash():
 
     assert result is native
     assert consumed == [state]
-    assert runner._consume_due_native_refl_10cm(
-        state, 0, lambda actual: pytest.fail("initial frame consumed a stash")) \
-        is None
+    # The analysis frame consumes no stash and writes WRF's initial array.
+    analysis = runner._consume_due_native_refl_10cm(
+        state, 0, lambda actual: pytest.fail("initial frame consumed a stash"))
+    assert analysis.shape == (2, 3, 4) and not np.any(analysis)
 
 
 def _retime_single_domain(exp, *, cadence_seconds, run_seconds=None):
@@ -5389,3 +5427,21 @@ def test_explicit_locator_does_not_relax_sealed_manifest_name_safety(tmp_path, r
     manifest["files"][role]["name"] = unsafe
     with pytest.raises(ValueError, match="has an unsafe name"):
         runner._manifest_file_specs("era5", manifest, load_experiment(fixture.experiment), proof)
+
+
+def test_the_era5_writer_binds_a_fired_ruc_layer_floor():
+    """D-02 sweep: the RUC state names its floor ``soil_moisture_floor``
+    (90ae5edc9), the Noah state ``moisture_floor``; the ERA5 writer read
+    the Noah name alone and dropped a fired RUC floor from cache and proof."""
+
+    from gpuwm import era5_direct
+
+    ruc = {"policy": "wrf-ruc-layer-source-smois-max-0.005",
+           "floored_values": 3}
+    noah = {"floored_land_cells": 2}
+    bind = era5_direct._soil_receipt_bindings
+    assert bind(SimpleNamespace(soil_moisture_floor=ruc)) == {
+        "soil_moisture_floor": ruc}
+    assert bind(SimpleNamespace(moisture_floor=noah)) == {
+        "soil_moisture_floor": noah}
+    assert bind(SimpleNamespace(moisture_floor={}, deep_soil_repair={})) == {}

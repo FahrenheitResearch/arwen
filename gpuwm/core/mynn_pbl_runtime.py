@@ -99,7 +99,14 @@ VERTICAL_LEVEL_BOUNDS = (5, None)
 #: ``Registry.EM_COMMON:3031`` declares ``package wdm6scheme
 #: mp_physics==16 - moist:qv,qc,qr,qi,qs,qg;scalar:qnn,qnc,qnr``, so F_QS
 #: is true and the scheme's snow is MYNN's to see.
-MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28))
+#:
+#: A named scheme (gpuwm/microphysics_schemes.py) joins from its own row: it
+#: belongs here exactly when its mass species carry ``qs``.
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES  # noqa: E402
+
+MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28)) | frozenset(
+    _s.mp_id for _s in _NAMED_MP_SCHEMES.values()
+    if "qs" in _s.ice_mass_species)
 
 
 def mynn_flag_qs(mp_physics: int) -> bool:
@@ -280,6 +287,14 @@ def mynn_pbl_step(
                        for name, array in tendencies.items()}
 
     initflag = 1 if int(itimestep) == 1 else 0
+    if initflag and options.get("cycling", False):
+        # WRF v4.6.1 :661-671 and the fork :4007-4018: a cycled
+        # start keeps the input QKE unless its lowest-level maximum is
+        # below 0.0002.  WRF reduces over its tile; the decision here is the
+        # domain's, made once before the column pieces, so every piece
+        # takes the same branch (one WRF tile spanning the domain).
+        options = dict(options, initialize_qke=bool(
+            float(cp.max(source["qke"][0])) < float(DTYPE(0.0002))))
     piece = mynn_column_pieces(ncol, chunk)
     if scalar_diffusion_on:
         from gpuwm.core.mynn_scalar_mix_gpu import scalar_pblmix_columns_cuda

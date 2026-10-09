@@ -110,6 +110,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     experimental_selection_sentence,
 )
 from gpuwm.io.restart import RestartMismatchError  # noqa: E402
+from gpuwm.io.history_layout import wrf_file_grid_history_fields  # noqa: E402
 from gpuwm.ingest.memory_refusal import InitializationMemoryRefused  # noqa: E402
 from gpuwm.supervisor import (  # noqa: E402
     HEARTBEAT_NAME,
@@ -630,6 +631,7 @@ class PreparedDomainBundle:
     cache_identity: Mapping[str, object]
     static_fields: Mapping[str, np.ndarray]
     authority_sha256: Mapping[str, str]
+    terrain_autosmooth: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -884,6 +886,10 @@ def tree_restart_identity_components(
     """
 
     from gpuwm.core.model import restart_identity_payload
+    smoothed = {f"d{bundle.grid_id:02d}": dict(bundle.terrain_autosmooth)
+                for bundle in inputs.domains
+                if getattr(bundle, "terrain_autosmooth", None) is not None}
+    smoothing_identity = {"terrain_autosmooth": smoothed} if smoothed else {}
 
     # An external-input adapter may separate observations about the
     # preparation's resource budget from its immutable scientific recipe.
@@ -909,6 +915,7 @@ def tree_restart_identity_components(
         head_children = getattr(inputs, "head_child_content_sha256", None)
         return _strict_json({
             "schema": REPORT_SCHEMA,
+            **smoothing_identity,
             "experiment_identity": restart_identity_payload(
                 inputs.experiment),
             "prepared_head_sha256": head_sha256,
@@ -930,6 +937,7 @@ def tree_restart_identity_components(
     # a Path reaching json.dump there fails the checkpoint write itself.
     return _strict_json({
         "schema": REPORT_SCHEMA,
+        **smoothing_identity,
         "experiment_identity": restart_identity_payload(inputs.experiment),
         "preparation_receipt_sha256": preparation_sha256,
         "domain_cache_content_sha256": {
@@ -1211,6 +1219,10 @@ def _validate_domain_receipt(
     artifacts = receipt.get("artifacts")
     with np.load(static_path, allow_pickle=False) as archive:
         static_fields = sorted(archive.files)
+        from gpuwm.static.terrain_autosmooth import verify_receipt
+        smoothing = verify_receipt(
+            _json_object(geometry_path, "geometry receipt").get("terrain_autosmooth"),
+            archive["HGT_M"], domain_id=domain.grid_id)
     expected = {
         "prepared_cache": {
             "path": "prepared-cache",
@@ -1230,6 +1242,8 @@ def _validate_domain_receipt(
             "geometry": _json_object(geometry_path, "geometry receipt").get("geometry"),
         },
     }
+    if smoothing is not None:
+        expected["static_cache"]["terrain_autosmooth"] = smoothing
     if artifacts != expected:
         raise ValueError(f"d{domain.grid_id:02d} artifact hashes differ from its files")
     verification = receipt.get("verification")
@@ -1366,6 +1380,9 @@ class StreamedClockGuard:
         self.intervals: dict[float, object] = {}
         #: How many intervals were folded into the reading.
         self.checked = 0
+        from gpuwm.terrain_clock_local import StreamedFaceCache
+
+        self.local_cache = StreamedFaceCache()
 
     def __call__(self, interval) -> None:
         from gpuwm.ingest.boundary_stream import (
@@ -1387,7 +1404,8 @@ class StreamedClockGuard:
         _, clock = clock_for_domains(
             self.basis.experiment, self.basis.acoustic,
             statics=self.basis.statics, starts=self.starts,
-            boundary=boundary, corridors=self.basis.reach, announce=False)
+            boundary=boundary, corridors=self.basis.reach, announce=False,
+            local_cache=getattr(self, "local_cache", None))
         self.checked += 1
         derived = derived_clock(clock_receipt(clock))
         if derived == self.expected:
@@ -2197,13 +2215,19 @@ def preflight_prepared_tree(
                 published=prepared_single._boundary_publication(
                     prepared_source, mapped_paths),
                 source=prepared_source, prepared_root=prepared_root)
-        verify_native_static_receipt(
+        geometry_receipt = verify_native_static_receipt(
             geometry_path, static_path, grid, domain.run,
             relocating=(domain.grid_id in relocating_ids
                         and not preparation.get("statics_corridor")))
         static = load_native_static_cache(
             static_path, grid, domain.run.ny, domain.run.nx
         )
+        from gpuwm.static.terrain_autosmooth import verify_receipt, run_line
+        smoothing = verify_receipt(
+            geometry_receipt.get("terrain_autosmooth"), static["HGT_M"],
+            domain_id=domain.grid_id)
+        if smoothing is not None:
+            print(run_line(smoothing))
         if head_root:
             # No receipt at the head: the root's static cache is bound by
             # the cache identity the head's digest carries.
@@ -2246,6 +2270,7 @@ def preflight_prepared_tree(
                 cache_identity=MappingProxyType(identity),
                 static_fields=MappingProxyType(static),
                 authority_sha256=hashes,
+                terrain_autosmooth=smoothing,
             )
         )
 
@@ -2907,7 +2932,7 @@ def _admit_devices_tree(exp, split_ids, *, forcing_intervals,
     host allocation failure part way through restoring the tree.
     """
     import cupy as cp
-    from gpuwm.core.devices import validate_device_count
+    from gpuwm.core.devices import DevicesRefused, validate_device_count
     from gpuwm.core.devices_memory import GIB, estimate_devices_tree
     from gpuwm.core.preflight import host_available_bytes
 
@@ -3742,6 +3767,9 @@ def run_prepared_tree(
             geog_selection=getattr(bundle, "geog_selection", None),
             initial_result=restored.initial_result,
             streamed_store=store_bundle,
+            # The WRF-file door's own grid words, which history writes
+            # (gpuwm.io.history_layout.WRF_FILE_GRID_HISTORY_FIELDS).
+            wrf_file_grid=MappingProxyType(wrf_file_grid_history_fields(bundle)),
         )
         drivers[domain.grid_id] = driver
     # The loop's names for its LAST domain would otherwise live as long as
@@ -4396,6 +4424,12 @@ def run_prepared_tree(
            {"acoustic_substeps": dict(inputs.acoustic_substeps)}),
         **({} if getattr(inputs, "terrain_clock", None) is None else
            {"terrain_clock": dict(inputs.terrain_clock)}),
+        **({"terrain_autosmooth": {
+            f"d{bundle.grid_id:02d}": dict(bundle.terrain_autosmooth)
+            for bundle in inputs.domains
+            if getattr(bundle, "terrain_autosmooth", None) is not None}}
+           if any(getattr(bundle, "terrain_autosmooth", None) is not None
+                  for bundle in inputs.domains) else {}),
         "schema": REPORT_SCHEMA,
         "status": "PASS",
         "source": inputs.source,
@@ -4930,6 +4964,13 @@ def main(argv=None, *, observer=None) -> int:
     changes nothing.
     """
 
+    if argv is None:
+        # Before any heavy import, as in the single-domain runner: a
+        # free-threaded build keeps the [devices] rank threads of every
+        # domain off the interpreter lock, which netCDF4's import would
+        # otherwise switch back on (gpuwm.free_threading).
+        from gpuwm.free_threading import keep_gil_disabled
+        keep_gil_disabled()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--show-capabilities"]:
         print(json.dumps(runner_capabilities(), sort_keys=True))

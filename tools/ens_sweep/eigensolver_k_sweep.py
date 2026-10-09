@@ -127,7 +127,8 @@ def main() -> int:
         apps_seen.append(compute_apps())
         rows.append(row)
         print(json.dumps(row), flush=True)
-        del a, host
+        a = None  # rebound, not deleted: a closure above reads it
+        del host
         cp.get_default_memory_pool().free_all_blocks()
 
     payload = {

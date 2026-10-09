@@ -641,9 +641,15 @@ def test_install_script_quotes_paths_with_spaces(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "spawn", lambda *a, **k: 0)
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"wheels": [str(wheel)], "extra": "gpu-cu13"})))
     agent.cmd_install(type("A", (), {"workspace": str(workspace)})())
-    script = (workspace / "install" / "install.sh").read_text().splitlines()
+    # The pip steps run from their own script (install-steps.sh), so a
+    # venv made on 3.14t can be made again on python3 and the steps rerun.
+    script = (workspace / "install" / "install-steps.sh").read_text().splitlines()
     last = _shlex.split(script[-1], posix=True)
     assert last[0] == str(workspace / "venv" / "bin" / "python") and last[-1] == f"{wheel}[gpu-cu13]"
+    driver = (workspace / "install" / "install.sh").read_text()
+    venv_lines = [_shlex.split(line, posix=True) for line in driver.splitlines() if " -m venv " in line]
+    assert venv_lines and all(words[-1] == str(workspace / "venv") for words in venv_lines)
+    assert _shlex.quote(str(workspace / "install" / "install-steps.sh")) in driver
 
 
 def test_this_computer_draws_with_the_python_this_page_runs_on():

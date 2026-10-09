@@ -417,7 +417,7 @@ def test_the_prepared_cache_identity_needs_no_scheme_entry():
     from gpuwm.config import inert_fire_fields
     for name in inert_fire_fields(run):
         expected_run.pop(name)
-    neutral = {"surface_energy_diag": False,
+    neutral = {"surface_energy_diag": False, "cycling": False,
                "ruc_irrigation": "wrf_461", "ruc_qvg_cold_start": "wrf",
                "ruc_2m_diagnostic": "flux", "ruc_snow": "wrf_461",
                "swint_opt": 0, "aer_opt": 0, "alb_sol": 0,

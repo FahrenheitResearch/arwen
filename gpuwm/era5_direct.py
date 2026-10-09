@@ -213,6 +213,27 @@ _SOIL_RECEIPT_ATTRIBUTE = {
 }
 
 
+def _soil_receipt_bindings(soil) -> dict[str, object]:
+    """Every fired CONDITIONAL_PREPARATION_RECEIPTS receipt on ``soil``.
+
+    Read under the Noah state's attribute name first
+    (:data:`_SOIL_RECEIPT_ATTRIBUTE`), then under the metadata spelling,
+    which is the RUC state's own (:class:`gpuwm.ingest.ruc_soil.RucSoilState`
+    ``soil_moisture_floor``, real.exe's layer-source ``MAX(SMOIS, 0.005)``).
+    Reading the Noah name alone dropped a fired RUC floor from both the
+    cache and the proof of an ERA5 run (2.8.8 acceptance D-02 sweep).
+    """
+
+    bindings = {}
+    for key in CONDITIONAL_PREPARATION_RECEIPTS:
+        attribute = _SOIL_RECEIPT_ATTRIBUTE.get(key, key)
+        receipt = dict(getattr(soil, attribute, None)
+                       or getattr(soil, key, None) or {})
+        if receipt:
+            bindings[key] = receipt
+    return bindings
+
+
 def _water_temperature_statics(static, landuse_attrs, policy):
     """The surface this route assembles water temperature over.
 
@@ -586,7 +607,7 @@ def prepare_era5_wrf(
     static, root_static_receipt = apply_prepared_highres(
         static, grid, config=static_highres, domain_id=1,
         case_date=exp.start_time.date(), landuse_attrs=landuse_attrs,
-        baseline_receipt=root_static_receipt)
+        baseline_receipt=root_static_receipt, run=cfg)
     # The land-height check reads the terrain the run will integrate: a
     # declared high-resolution terrain gives the islands the baseline
     # dataset holds at 0 m their height.
@@ -909,12 +930,7 @@ def prepare_era5_wrf(
     # the prepared-cache validator binds from the proof.  Keeping one list
     # is the point: when these two sides disagreed, the front door refused
     # the cache it had just written.
-    soil_floor_binding = {}
-    for _receipt_key in CONDITIONAL_PREPARATION_RECEIPTS:
-        _attribute = _SOIL_RECEIPT_ATTRIBUTE.get(_receipt_key, _receipt_key)
-        _receipt = dict(getattr(soil, _attribute, {}) or {})
-        if _receipt:
-            soil_floor_binding[_receipt_key] = _receipt
+    soil_floor_binding = _soil_receipt_bindings(soil)
     initialize_seconds = time.perf_counter() - initialize_started
     input_manifest_digest = _sha256(Path(input_manifest))
     # LOUD when configured, absent when not: the overlay binding joins

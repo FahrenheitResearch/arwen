@@ -65,13 +65,13 @@ def _config(tmp_path, epssm="unset"):
     return path, resolve_child_run_config(path)
 
 
-def _parent(tmp_path):
+def _parent(tmp_path, *, rise_per_cell=2370.0):
     """One archive with a flat footprint and a separate steep footprint."""
     path = tmp_path / "parent.nc"
     _history(path, datetime(2026, 1, 1), nx=36, ny=36)
     x = np.arange(36, dtype=np.float32)
     terrain = np.broadcast_to(
-        np.maximum(x - np.float32(17.0), 0.0) * np.float32(2370.0),
+        np.maximum(x - np.float32(17.0), 0.0) * np.float32(rise_per_cell),
         (36, 36)).copy()
     with netCDF4.Dataset(path, "a") as dataset:
         dataset.DX = 3000.0
@@ -153,10 +153,14 @@ def test_child_reads_the_exact_terrain_and_map_factors_in_its_initial_state(
 def test_offline_child_takes_the_prepared_tree_floor_and_substeps(
         tmp_path, epssm):
     path, cfg = _config(tmp_path, epssm)
-    parent, _ = _parent(tmp_path)
+    # This positive control is steep enough to need six substeps while
+    # remaining inside the measured-stable envelope of the prepared door.
+    parent, _ = _parent(tmp_path, rise_per_cell=2280.0)
     placement = _placement(22)
     initial = interpolate_parent_initial_state(
         parent, placement, source_mp_physics=8, child_cfg=cfg)
+    reading = child_terrain_reading(parent, placement, child_cfg=cfg)
+    assert 0.75 < reading.slope < 0.85
     exp = _Experiment((_Domain(2, cfg),), auto_epssm=(2,))
     static = {2: {
         "HGT_M": initial.fields["HGT"],
@@ -171,6 +175,23 @@ def test_offline_child_takes_the_prepared_tree_floor_and_substeps(
     assert (child.epssm, child.time_step_sound) == (0.5, 6)
     assert acoustic_receipt([child_acoustic]) == acoustic_receipt(
         prepared_acoustics)
+
+
+@requires_netcdf_bridge
+@pytest.mark.parametrize("epssm", ["unset", "auto"])
+def test_unsmoothed_child_beyond_the_measured_envelope_is_refused(tmp_path, epssm):
+    path, cfg = _config(tmp_path, epssm)
+    parent, _ = _parent(tmp_path)
+    placement = _placement(22)
+    reading = child_terrain_reading(parent, placement, child_cfg=cfg)
+    assert reading.slope >= 0.85
+    parent_bytes, config_bytes = parent.read_bytes(), path.read_bytes()
+    with pytest.raises(OfflineChildContractError,
+                       match="outside the measured-stable limit.*Prepare again"):
+        adapt_child_acoustics(cfg, child_config_path=path, frame_path=parent,
+                             placement=placement)
+    assert parent.read_bytes() == parent_bytes
+    assert path.read_bytes() == config_bytes
 
 
 @requires_netcdf_bridge
@@ -195,7 +216,7 @@ def test_explicit_child_epssm_below_its_floor_is_refused_with_the_remedy(
 def test_downscale_review_applies_the_child_rule_before_publishing_a_plan(
         tmp_path, capsys, epssm, code):
     child_path, cfg = _config(tmp_path, epssm)
-    parent, _ = _parent(tmp_path)
+    parent, _ = _parent(tmp_path, rise_per_cell=2280.0)
     first = tmp_path / "wrfout_d01_2026-01-01_00_00_00"
     parent.rename(first)
     second = tmp_path / "wrfout_d01_2026-01-01_00_10_00"

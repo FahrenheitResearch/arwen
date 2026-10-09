@@ -546,10 +546,12 @@ get wrong -- the water arm's `continue` leaving `lh`, `qfx`, `hfx`, `sfcexc`,
 `z0`, `grdflx` and the runoff accumulators as pass-throughs, and
 `ruc_surface_parameters` preserving the caller's `znt` at the water category.
 
-**What the driver reproduces on purpose.**  `sfcevp` is accumulated twice per
-column, at `:1095` and again at `:1116`, with nothing in between changing
-`qfx`; the fixture shows `sfcevp` advancing by `2*qfx*dt` and the port does the
-same.  `rhosnf`, `precipfr` and `snowfallac` are declared `intent(out)` at
+**What the driver does not copy, and what it reproduces.**  WRF accumulates
+`sfcevp` twice per land column, at `:1095` and again at `:1116`, with nothing
+in between changing `qfx`; the fixture shows `sfcevp` advancing by
+`2*qfx*dt`.  That is a WRF defect, and since lane/verify-ruc-lsm WOOF
+accumulates it once; the fixture comparisons grade `sfcevp` against WRF's
+entry value plus `qfx*dt` once.  `rhosnf`, `precipfr` and `snowfallac` are declared `intent(out)` at
 `:344-347` but `rhosnf` is read at `:695` and `snowfallac` is read inside
 `SFCTMP` at `:1641`, so both are live inputs in practice and the port takes
 them as such.  `:1109-1141` (`wb`, `waterbudget`, `acwaterbudget`) and
@@ -811,3 +813,18 @@ sea-ice groups the switch moves, every word is WRF's bit for bit except one
 1-ULP `qsg` word that the rebuilt 0.5-threshold fixture also leaves on the same
 column.  `tests/test_ruc_lsmruc_hrrr_switches.py` pins the map and runs the two
 negative controls (the 0.5 pin and the table LAI each break the fixture).
+
+Rebuilt on box W1 (lane/verify-ruc-lsm) with `build_lsmruc_frac.sh` on the
+13.3.0 / glibc 2.39 toolchain `lsmruc.csv` was pinned on (sha256
+`8f9fea614ebc5b253773d149cc7dcfaf3aaaf8b260917bdbb3d3d60c030bc170`).  With
+RUC on WOOF's float32 libm words the port reproduces it bit for bit except
+SFCEVP, which WRF counts twice and WOOF once, so the pinned map is empty.
+`oracle/mosaic_surface.csv` and `oracle/mosaic_driver.csv` were rebuilt the
+same way (`tools/ruc_mosaic_wrf461_oracle/build.sh`; pins in
+`gpuwm.core.ruc_contract`): their gfortran 15.2 build carried that C
+library's words (grdflx 1-2 ULP) and the 2.39 build is matched bit for bit.
+The `oracle_fork/` CSVs are left as built; rebuilt on W1 their sfctmp case
+reproduces with no residue and the LSMRUC one differs only in `chklowq` and
+in run-2 `znt`/`z0` that the current harness seeds differently, so replacing
+them is a fixture regeneration for the fork lineage, not done here
+(`tests/test_ruc_fork_oracle.py` pins their measured maps).

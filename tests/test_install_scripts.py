@@ -3,8 +3,9 @@
 Both shells run the actual shipped script through the standalone clone route;
 the PowerShell rows run on Windows, the only host install.ps1 installs on, and
 elsewhere pwsh proves the script's refusal instead.
-Only git, pip, cargo and doctor are substitutes; they enforce the dependency
-and executable prerequisites a clean checkout needs, and inject failures.
+Only git, pip, cargo, doctor and the interpreters (python3.14t, python3/python,
+uv and the uv installer) are substitutes; they enforce the dependency and
+executable prerequisites a clean checkout needs, and inject failures.
 """
 from __future__ import annotations
 
@@ -25,23 +26,117 @@ kind, *args = sys.argv[1:]
 cwd = pathlib.Path.cwd()
 with open(os.environ['GPUWM_INSTALL_TEST_LOG'], 'a', encoding='utf8') as stream:
     stream.write(json.dumps({'kind': kind, 'args': args, 'cwd': str(cwd),
-                             'path': os.environ.get('PATH', '')}) + '\n')
+                             'path': os.environ.get('PATH', ''),
+                             'python_gil': os.environ.get('PYTHON_GIL'),
+                             'uv_pref': os.environ.get('UV_PYTHON_PREFERENCE')}) + '\n')
+def make_venv(venv, free_threaded):
+    for name in ('bin', 'Scripts'):
+        (venv / name).mkdir(parents=True, exist_ok=True)
+    for name in ('python', 'gpuwm'):
+        program = venv / 'bin' / name
+        program.write_text('#!/bin/sh\nexec "$GPUWM_INSTALL_TEST_PYTHON" '
+                           '"$GPUWM_INSTALL_TEST_BACKEND" ' + name + ' "$@"\n')
+        program.chmod(0o755)
+        (venv / 'Scripts' / (name + '.exe')).touch()
+    # Whether the interpreter this .venv was made from is a free-threaded build.
+    (venv / 'ft.txt').write_text('1' if free_threaded else '0')
+    # A reused .venv that already holds CuPy builds: one line per registered distribution.
+    (venv / 'cupy.txt').write_text(os.environ.get('GPUWM_INSTALL_TEST_CUPY', ''))
+
+
+def uv_python():
+    """The free-threaded interpreter `uv python find 3.14t` reports."""
+    home = pathlib.Path(os.environ['GPUWM_INSTALL_TEST_UVHOME'])
+    home.mkdir(parents=True, exist_ok=True)
+    if os.name == 'nt':
+        program = home / 'python3.14t.cmd'
+        program.write_text('@"%GPUWM_INSTALL_TEST_PYTHON%" "%GPUWM_INSTALL_TEST_BACKEND%" py314t %*\r\n')
+    else:
+        program = home / 'python3.14t'
+        program.write_text('#!/bin/sh\nexec "$GPUWM_INSTALL_TEST_PYTHON" '
+                           '"$GPUWM_INSTALL_TEST_BACKEND" py314t "$@"\n')
+        program.chmod(0o755)
+    return program
+
+
+def system_python():
+    """A system python3.14t (deadsnakes' /usr/bin/python3.14t, say), which uv
+    reports ahead of its own unless asked for a managed one."""
+    home = pathlib.Path(os.environ['GPUWM_INSTALL_TEST_UVHOME']) / 'system'
+    home.mkdir(parents=True, exist_ok=True)
+    if os.name == 'nt':
+        program = home / 'python3.14t.cmd'
+        program.write_text('@set GPUWM_INSTALL_TEST_FROM_PATH=1\r\n'
+                           '@"%GPUWM_INSTALL_TEST_PYTHON%" "%GPUWM_INSTALL_TEST_BACKEND%" py314t %*\r\n')
+    else:
+        program = home / 'python3.14t'
+        program.write_text('#!/bin/sh\nGPUWM_INSTALL_TEST_FROM_PATH=1 exec "$GPUWM_INSTALL_TEST_PYTHON" '
+                           '"$GPUWM_INSTALL_TEST_BACKEND" py314t "$@"\n')
+        program.chmod(0o755)
+    return program
+
+
 if kind == 'git':
     assert args[:1] == ['clone'], args
     checkout = cwd / args[-1]
     for name in ('gpuwm', 'gpuwm-data', 'tools/grib1_bridge', 'tools/rustwx',
                  'tools/arwen-tui', 'tools/zarr_bridge', 'tools/rw_wps',
-                 'tools/region_global_dealias', '.venv/bin', '.venv/Scripts'):
+                 'tools/region_global_dealias'):
         (checkout / name).mkdir(parents=True, exist_ok=True)
     (checkout / 'pyproject.toml').write_text('# fixture checkout\n')
-    for name in ('python', 'gpuwm'):
-        program = checkout / '.venv/bin' / name
-        program.write_text('#!/bin/sh\nexec "$GPUWM_INSTALL_TEST_PYTHON" '
-                           '"$GPUWM_INSTALL_TEST_BACKEND" ' + name + ' "$@"\n')
-        program.chmod(0o755)
-        (checkout / '.venv/Scripts' / (name + '.exe')).touch()
-    # A reused .venv that already holds CuPy builds: one line per registered distribution.
-    (checkout / '.venv/cupy.txt').write_text(os.environ.get('GPUWM_INSTALL_TEST_CUPY', ''))
+    if os.environ.get('GPUWM_INSTALL_TEST_FRESH') != '1':
+        make_venv(checkout / '.venv', os.environ.get('GPUWM_INSTALL_TEST_FT') == '1')
+if kind in ('py314t', 'py3'):
+    if args[:1] == ['-c']:
+        sys.exit(0 if kind == 'py314t' else 1)
+    assert args[:2] == ['-m', 'venv'], args
+    failure = os.environ.get('GPUWM_INSTALL_TEST_FAIL')
+    if kind == 'py314t' and (failure == 'ft-venv' or (
+            failure == 'path-ft-venv' and os.environ.get('GPUWM_INSTALL_TEST_FROM_PATH') == '1')):
+        # As a distro python3.14t without its venv package (no ensurepip):
+        # the interpreter is written into the new venv, then venv stops.
+        make_venv(cwd / args[2], True)
+        print('Error: Command [...] -m ensurepip [...] returned non-zero exit status 1.', file=sys.stderr)
+        sys.exit(1)
+    make_venv(cwd / args[2], kind == 'py314t')
+if kind == 'python' and args[:1] == ['-c']:
+    # The free-threading probe, answered for the interpreter the .venv was made from.
+    sys.exit(0 if (cwd / '.venv/ft.txt').read_text() == '1' else 1)
+if kind == 'uv':
+    home = pathlib.Path(os.environ['GPUWM_INSTALL_TEST_UVHOME'])
+    if args == ['python', 'find', '3.14t']:
+        if (os.environ.get('GPUWM_INSTALL_TEST_UV_SEES_SYSTEM') == '1'
+                and os.environ.get('UV_PYTHON_PREFERENCE') != 'only-managed'):
+            print(system_python())
+            sys.exit(0)
+        if not (home / 'installed').exists():
+            sys.exit(2)
+        print(uv_python())
+    elif args == ['python', 'install', '3.14t']:
+        if os.environ.get('GPUWM_INSTALL_TEST_FAIL') == 'uv-install':
+            sys.exit(3)
+        # The installer keeps uv from dropping a python3.14t into the user's bin.
+        assert os.environ.get('UV_PYTHON_INSTALL_BIN') == '0', 'UV_PYTHON_INSTALL_BIN'
+        home.mkdir(parents=True, exist_ok=True)
+        (home / 'installed').touch()
+    else:
+        raise AssertionError(args)
+if kind == 'curl':
+    # The uv installer, fetched to a file the installer then runs with sh.
+    assert 'https://astral.sh/uv/install.sh' in args, args
+    if os.environ.get('GPUWM_INSTALL_TEST_FAIL') == 'uv-download':
+        sys.exit(6)
+    target = pathlib.Path(args[args.index('-o') + 1])
+    target.write_text('[ "$UV_NO_MODIFY_PATH" = 1 ] || exit 9\n'
+                      'mkdir -p "$HOME/.local/bin"\n'
+                      "printf '#!/bin/sh\\nexec \"$GPUWM_INSTALL_TEST_PYTHON\" "
+                      "\"$GPUWM_INSTALL_TEST_BACKEND\" uv \"$@\"\\n' > \"$HOME/.local/bin/uv\"\n"
+                      'chmod 755 "$HOME/.local/bin/uv"\n')
+if kind == 'uv-installer':
+    # install.ps1's child PowerShell running astral's install.ps1.
+    assert os.environ.get('UV_NO_MODIFY_PATH') == '1'
+    if os.environ.get('GPUWM_INSTALL_TEST_FAIL') == 'uv-download':
+        sys.exit(6)
 if kind == 'python' and args[:2] == ['-m', 'pip'] and os.environ.get('GPUWM_INSTALL_TEST_PIP_WARN'):
     # As real pip does beside a half-removed package (an uninstall that hit a locked DLL leaves ~upy_...).
     print('WARNING: Ignoring invalid distribution ~upy-cuda12x (fixture site-packages)', file=sys.stderr)
@@ -62,6 +157,10 @@ elif kind == 'python' and args[:3] == ['-m', 'pip', 'install']:
         assert (cwd / 'gpuwm-data').is_dir()
         (cwd / '.companion-installed').touch()
     elif any(arg.startswith('.[') for arg in args):
+        if (os.environ.get('GPUWM_INSTALL_TEST_FAIL') == 'ft-pip'
+                and (cwd / '.venv/ft.txt').read_text() == '1'):
+            print('fixture pip: a dependency has no cp314t wheel and its sdist did not build', file=sys.stderr)
+            sys.exit(31)
         if (os.environ.get('GPUWM_INSTALL_TEST_COMPANION_GATE', '1') == '1'
                 and not (cwd / '.companion-installed').exists()):
             print('fixture pip: checkout gpuwm-data must satisfy the exact local pin first', file=sys.stderr)
@@ -120,7 +219,8 @@ def _shell(platform):
 
 
 def _run(tmp_path, platform, *, no_render=False, failure='', companion_gate=True, doctor_exit=0, cupy=(),
-         cuda='13', pip_warns=False):
+         cuda='13', pip_warns=False, fresh=False, venv_ft=False, has_314t=False, has_uv=False,
+         uv_has_python=False, uv_sees_system=False, yes=True, extra=()):
     shell = _shell(platform)
     stage = tmp_path / 'new checkout with spaces'
     stage.mkdir()
@@ -142,7 +242,40 @@ def _run(tmp_path, platform, *, no_render=False, failure='', companion_gate=True
         'GPUWM_INSTALL_TEST_CUPY': ' '.join(cupy),
         'GPUWM_INSTALL_TEST_PIP_WARN': '1' if pip_warns else '',
         'GPUWM_INSTALL_TEST_SCRIPT': str(ROOT / ('install.ps1' if platform == 'powershell' else 'install.sh')),
+        'GPUWM_INSTALL_TEST_FRESH': '1' if fresh else '',
+        'GPUWM_INSTALL_TEST_FT': '1' if venv_ft else '',
+        'GPUWM_INSTALL_TEST_HAS_314T': '1' if has_314t else '',
+        'GPUWM_INSTALL_TEST_HAS_UV': '1' if has_uv else '',
+        'GPUWM_INSTALL_TEST_UVHOME': str(tmp_path / 'uv-pythons'),
+        'GPUWM_INSTALL_TEST_UV_SEES_SYSTEM': '1' if uv_sees_system else '',
     })
+    if uv_has_python:
+        (tmp_path / 'uv-pythons').mkdir()
+        (tmp_path / 'uv-pythons' / 'installed').touch()
+    if fresh:
+        # Hermetic interpreters: no uv or python3.14t of the test host's own may
+        # answer, so the home and the search path hold only system tools.
+        home = tmp_path / 'home'
+        home.mkdir()
+        env['HOME'] = str(home)
+        env['USERPROFILE'] = str(home)
+        if os.name == 'nt':
+            system = os.environ.get('SystemRoot', r'C:\Windows')
+            env['PATH'] = os.pathsep.join([system + r'\System32', system,
+                                           system + r'\System32\WindowsPowerShell\v1.0'])
+        else:
+            env['PATH'] = '/usr/bin:/bin'
+        env.pop('PYTHON_GIL', None)
+    if has_314t and platform != 'powershell':
+        # A file, not a shell function: dash refuses a function named python3.14t.
+        found = tmp_path / 'free-threaded-bin'
+        found.mkdir()
+        program = found / 'python3.14t'
+        program.write_text('#!/bin/sh\nGPUWM_INSTALL_TEST_FROM_PATH=1 exec "$GPUWM_INSTALL_TEST_PYTHON" '
+                           '"$GPUWM_INSTALL_TEST_BACKEND" py314t "$@"\n',
+                           encoding='utf8', newline='\n')
+        program.chmod(0o755)
+        env['PATH'] = str(found) + os.pathsep + env['PATH']
     if platform == 'powershell':
         harness = tmp_path / 'capture.ps1'
         harness.write_text(r'''
@@ -163,6 +296,32 @@ function global:.venv\Scripts\gpuwm.exe {
     & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'gpuwm' @args
     $global:LASTEXITCODE = $LASTEXITCODE
 }
+function global:Set-UvStub {
+    function global:uv {
+        & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'uv' @args
+        $global:LASTEXITCODE = $LASTEXITCODE
+    }
+}
+if ($env:GPUWM_INSTALL_TEST_FRESH -eq '1') {
+    function global:python {
+        & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'py3' @args
+        $global:LASTEXITCODE = $LASTEXITCODE
+    }
+    function global:powershell {
+        & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'uv-installer' @args
+        $global:LASTEXITCODE = $LASTEXITCODE
+        if ($LASTEXITCODE -eq 0) { Set-UvStub }
+    }
+}
+if ($env:GPUWM_INSTALL_TEST_HAS_314T -eq '1') {
+    function global:python3.14t {
+        $env:GPUWM_INSTALL_TEST_FROM_PATH = '1'
+        & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'py314t' @args
+        $global:LASTEXITCODE = $LASTEXITCODE
+        $env:GPUWM_INSTALL_TEST_FROM_PATH = $null
+    }
+}
+if ($env:GPUWM_INSTALL_TEST_HAS_UV -eq '1') { Set-UvStub }
 & $env:GPUWM_INSTALL_TEST_SCRIPT @args
 $code = $LASTEXITCODE
 # The caller's session Path as the script left it (the piped form runs in that session).
@@ -170,7 +329,7 @@ $code = $LASTEXITCODE
 exit $code
 ''', encoding='utf8')
         args = [shell, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(harness),
-                '-Yes', '-NoFetchTables', '-Cuda', cuda]
+                *(['-Yes'] if yes else []), '-NoFetchTables', '-Cuda', cuda, *extra]
         if no_render:
             args.append('-NoRender')
     else:
@@ -178,20 +337,35 @@ exit $code
         harness.write_text('''#!/bin/sh
 git() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" git "$@"; }
 cargo() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" cargo "$@"; }
+curl() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" curl "$@"; }
+if [ "$GPUWM_INSTALL_TEST_FRESH" = 1 ]; then
+    python3() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" py3 "$@"; }
+fi
+if [ "$GPUWM_INSTALL_TEST_HAS_UV" = 1 ]; then
+    uv() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" uv "$@"; }
+fi
 . "$GPUWM_INSTALL_TEST_SCRIPT"
 ''', encoding='utf8', newline='\n')
         env['GPUWM_INSTALL_TEST_SCRIPT'] = (ROOT / 'install.sh').as_posix()
-        args = [shell, harness.as_posix(), '--yes', '--no-fetch-tables', '--cuda', cuda]
+        args = [shell, harness.as_posix(), *(['--yes'] if yes else []), '--no-fetch-tables', '--cuda', cuda,
+                *extra]
         if no_render:
             args.append('--no-render')
     after_path = tmp_path / 'path-after.txt'
     env['GPUWM_INSTALL_TEST_AFTER_PATH'] = str(after_path)
-    done = subprocess.run(args, cwd=stage, env=env, capture_output=True, text=True, timeout=60)
+    # No terminal and no input: a consent prompt must read as "no", never block.
+    done = subprocess.run(args, cwd=stage, env=env, capture_output=True, text=True, timeout=60,
+                          stdin=subprocess.DEVNULL, start_new_session=os.name != 'nt')
     rows = [json.loads(line) for line in log.read_text(encoding='utf8').splitlines()] if log.exists() else []
     held = stage / 'gpuwm/.venv/cupy.txt'
     done.cupy = held.read_text().split() if held.exists() else None
     done.path_after = after_path.read_text(encoding='utf8') if after_path.exists() else None
     return done, rows
+
+
+def _pip_rows(rows):
+    """The .venv's pip invocations, without the free-threading probes."""
+    return [row['args'] for row in rows if row['kind'] == 'python' and row['args'][:2] == ['-m', 'pip']]
 
 
 def _required_workspaces(no_render=False):
@@ -208,7 +382,7 @@ def _required_workspaces(no_render=False):
 def test_clean_clone_installs_matching_companion_then_engine_and_builds_tui(tmp_path, platform, no_render):
     done, rows = _run(tmp_path, platform, no_render=no_render)
     assert done.returncode == 0, done.stdout + done.stderr
-    installs = [row['args'] for row in rows if row['kind'] == 'python']
+    installs = _pip_rows(rows)
     assert installs == [
         ['-m', 'pip', 'install', '--upgrade', 'pip'],
         ['-m', 'pip', 'list', '--format=freeze', '--disable-pip-version-check'],
@@ -276,10 +450,10 @@ def test_switching_cuda_major_leaves_exactly_one_cupy(tmp_path, platform, had, c
     done, rows = _run(tmp_path, platform, cupy=had, cuda=cuda)
     assert done.returncode == 0, done.stdout + done.stderr
     assert done.cupy == [f'cupy-cuda{cuda}x']
-    uninstalls = [row['args'][4:] for row in rows if row['kind'] == 'python' and row['args'][2:3] == ['uninstall']]
+    uninstalls = [args[4:] for args in _pip_rows(rows) if args[2:3] == ['uninstall']]
     # Every CuPy goes, the chosen one too: the two shared one set of files, so neither is intact.
     assert uninstalls == [had]
-    order = [row['args'][2] for row in rows if row['kind'] == 'python']
+    order = [args[2] for args in _pip_rows(rows)]
     assert order.index('uninstall') < order.index('install', 2)
 
 
@@ -297,7 +471,7 @@ def test_a_pip_warning_on_stderr_still_leaves_exactly_one_cupy(tmp_path, platfor
     done, rows = _run(tmp_path, platform, cupy=['cupy-cuda12x', 'cupy-cuda13x'], cuda='13', pip_warns=True)
     assert done.returncode == 0, done.stdout + done.stderr
     assert done.cupy == ['cupy-cuda13x']
-    uninstalls = [row['args'][4:] for row in rows if row['kind'] == 'python' and row['args'][2:3] == ['uninstall']]
+    uninstalls = [args[4:] for args in _pip_rows(rows) if args[2:3] == ['uninstall']]
     assert uninstalls == [['cupy-cuda12x', 'cupy-cuda13x']]
 
 
@@ -309,6 +483,240 @@ def test_a_pip_that_cannot_list_the_venv_stops_the_install(tmp_path, platform):
     # Nothing is installed over a CuPy nobody could see.
     assert not any(any(arg.startswith('.[') for arg in row['args']) for row in rows)
     assert done.cupy == ['cupy-cuda12x']
+
+
+# ---------------------------------------------------------------------------
+# The interpreter: free-threaded CPython 3.14t by default (2.8.8)
+#
+# THE BREAKAGE THESE GUARD: every [devices] rank of a multi-card forecast
+# steps from its own Python thread, and under an interpreter lock the threads
+# take turns (4 cards: 289 s per forecast hour with the lock, 130 s on 3.14t,
+# measured 2026-10-03).  Through 2.8.7 both installers made .venv from
+# whatever python3/python was on PATH, so a plain install ran multi-card
+# forecasts about 2x slower than every published benchmark.
+# ---------------------------------------------------------------------------
+
+def _python_flag(platform, value):
+    return ['-Python', value] if platform == 'powershell' else ['--python', value]
+
+
+def _locked_name(platform):
+    return 'python' if platform == 'powershell' else 'python3'
+
+
+def _venv_makers(rows):
+    """Which base interpreter made each .venv this run, in order."""
+    return [row['kind'] for row in rows
+            if row['kind'] in ('py314t', 'py3') and row['args'][:2] == ['-m', 'venv']]
+
+
+def _engine_install(rows):
+    return next(args for args in _pip_rows(rows) if any(arg.startswith('.[') for arg in args))
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_fresh_install_makes_its_venv_on_the_python314t_already_on_path(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True, has_314t=True)
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert _venv_makers(rows) == ['py314t']
+    assert '.venv is free-threaded' in output
+    assert 'WARNING' not in output
+    # cftime 1.6.6 has no cp314t wheel; 1.6.5 does, and only --prefer-binary picks it.
+    assert _engine_install(rows) == ['-m', 'pip', 'install', '--prefer-binary', '-e', '.[gpu-cu13,render]']
+    # The engine re-runs itself with PYTHON_GIL=0; the installer never exports it,
+    # because a Python with the lock refuses to start when it sees PYTHON_GIL=0.
+    assert all(row.get('python_gil') is None for row in rows)
+    assert not any(row['kind'] in ('uv', 'curl', 'uv-installer') for row in rows)
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+@pytest.mark.parametrize('uv_has_python', [True, False])
+def test_without_python314t_on_path_uv_finds_or_installs_it(tmp_path, platform, uv_has_python):
+    done, rows = _run(tmp_path, platform, fresh=True, has_uv=True, uv_has_python=uv_has_python)
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    asked = [row['args'] for row in rows if row['kind'] == 'uv']
+    if uv_has_python:
+        assert asked == [['python', 'find', '3.14t']]
+    else:
+        assert asked == [['python', 'find', '3.14t'], ['python', 'install', '3.14t'],
+                         ['python', 'find', '3.14t']]
+    assert _venv_makers(rows) == ['py314t']
+    assert 'WARNING' not in output
+    assert not any(row['kind'] in ('curl', 'uv-installer') for row in rows)
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_with_consent_and_no_uv_the_installer_fetches_uv_then_python314t(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True)
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    kinds = [row['kind'] for row in rows]
+    fetched = 'uv-installer' if platform == 'powershell' else 'curl'
+    assert fetched in kinds
+    assert kinds.index(fetched) < kinds.index('uv')
+    assert [row['args'] for row in rows if row['kind'] == 'uv'][-1] == ['python', 'find', '3.14t']
+    assert _venv_makers(rows) == ['py314t']
+    assert 'WARNING' not in output
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_without_consent_the_install_goes_on_with_the_lock_and_names_the_cost(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True, yes=False)
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert not any(row['kind'] in ('curl', 'uv-installer', 'uv') for row in rows)
+    assert _venv_makers(rows) == ['py3']
+    # Gate law: the fallback names what it costs and how to get out of it.
+    assert 'WARNING: .venv runs on ' + _locked_name(platform) in output
+    assert 'consent to install uv was not given' in output
+    assert 'about 2x slower' in output
+    assert 'install uv' in output
+    # A locked .venv installs exactly as it did before.
+    assert _engine_install(rows) == ['-m', 'pip', 'install', '-e', '.[gpu-cu13,render]']
+
+
+def test_a_failed_uv_download_falls_back_with_its_reason(tmp_path):
+    done, rows = _run(tmp_path, 'posix', fresh=True, failure='uv-download')
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert _venv_makers(rows) == ['py3']
+    assert 'could not be downloaded' in output
+    assert 'about 2x slower' in output
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_failed_python314t_install_falls_back_with_its_reason(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True, has_uv=True, failure='uv-install')
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert _venv_makers(rows) == ['py3']
+    assert 'uv could not install Python 3.14t' in output
+    assert 'about 2x slower' in output
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_an_interpreter_the_user_names_is_used_and_never_replaced(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True, has_314t=True,
+                      extra=_python_flag(platform, _locked_name(platform)))
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert _venv_makers(rows) == ['py3']
+    assert 'GPUWM_PYTHON' in output and 'about 2x slower' in output
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_dependency_that_will_not_install_under_314t_remakes_the_venv_on_the_locked_python(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True, has_314t=True, failure='ft-pip')
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    # Made on 3.14t, the engine install failed there, remade on the locked Python.
+    assert _venv_makers(rows) == ['py314t', 'py3']
+    engine = [args for args in _pip_rows(rows) if any(arg.startswith('.[') for arg in args)]
+    assert engine == [['-m', 'pip', 'install', '--prefer-binary', '-e', '.[gpu-cu13,render]'],
+                      ['-m', 'pip', 'install', '-e', '.[gpu-cu13,render]']]
+    assert 'did not install under 3.14t' in output
+    assert 'about 2x slower' in output
+    assert rows[-1]['kind'] == 'gpuwm' and rows[-1]['args'] == ['doctor']
+
+
+# A python3.14t that cannot make a venv (a distro build without its venv
+# package, deadsnakes without python3.14-venv for one, has no ensurepip):
+# under `set -eu` the venv step ended the whole install, and the half-made
+# .venv it left was "reused" by the next run, which stopped at the pip
+# upgrade.
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+@pytest.mark.parametrize('uv_has_python', [True, False])
+def test_a_python314t_on_path_that_cannot_make_a_venv_gives_way_to_the_one_uv_provides(
+        tmp_path, platform, uv_has_python):
+    # As uv does: asked plainly it answers with the system python3.14t (the
+    # one that just failed), so the retry asks for a managed interpreter.
+    done, rows = _run(tmp_path, platform, fresh=True, has_314t=True, has_uv=True, uv_has_python=uv_has_python,
+                      uv_sees_system=True, failure='path-ft-venv')
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert _venv_makers(rows) == ['py314t', 'py314t']
+    asked = [(row['args'], row['uv_pref']) for row in rows if row['kind'] == 'uv']
+    managed = 'only-managed'
+    if uv_has_python:
+        assert asked == [(['python', 'find', '3.14t'], managed)]
+    else:
+        assert asked == [(['python', 'find', '3.14t'], managed), (['python', 'install', '3.14t'], managed),
+                         (['python', 'find', '3.14t'], managed)]
+    # The preference is scoped to the uv lookup: the venv, pip and builds never see it.
+    assert all(row['uv_pref'] is None for row in rows
+               if row['kind'] in ('python', 'gpuwm', 'cargo') or row['args'][:2] == ['-m', 'venv'])
+    assert '.venv is free-threaded' in output
+    assert 'WARNING' not in output
+    assert _engine_install(rows) == ['-m', 'pip', 'install', '--prefer-binary', '-e', '.[gpu-cu13,render]']
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_python314t_that_cannot_make_a_venv_falls_back_with_the_reason_named(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True, has_314t=True, yes=False, failure='ft-venv')
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    # The failed attempt, then python3/python; no uv without consent.
+    assert _venv_makers(rows) == ['py314t', 'py3']
+    assert not any(row['kind'] in ('curl', 'uv-installer', 'uv') for row in rows)
+    assert 'WARNING: .venv runs on ' + _locked_name(platform) in output
+    assert 'python3.14t could not create a venv' in output
+    assert 'no uv was found and consent to install uv was not given' in output
+    # A python3.14t was found; the reason must not say otherwise.
+    assert 'no python3.14t or uv was found' not in output
+    assert 'about 2x slower' in output
+    # The remedy is the venv support that Python lacks, not "install a 3.14t".
+    assert "that Python" in output.split('To fix:', 1)[1]
+    # The locked .venv installs exactly as before and the install finishes.
+    assert _engine_install(rows) == ['-m', 'pip', 'install', '-e', '.[gpu-cu13,render]']
+    assert rows[-1]['kind'] == 'gpuwm' and rows[-1]['args'] == ['doctor']
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_when_every_python314t_fails_its_venv_the_install_still_finishes_on_the_locked_python(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True, has_314t=True, failure='ft-venv')
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    # PATH python3.14t, then the 3.14t uv installs (with --yes consent), then python3/python.
+    assert _venv_makers(rows) == ['py314t', 'py314t', 'py3']
+    assert 'neither could' in output
+    assert 'about 2x slower' in output
+    assert _engine_install(rows) == ['-m', 'pip', 'install', '-e', '.[gpu-cu13,render]']
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_named_interpreter_that_cannot_make_a_venv_stops_and_leaves_no_half_venv(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, fresh=True, has_314t=True, failure='ft-venv',
+                      extra=_python_flag(platform, 'python3.14t'))
+    output = done.stdout + done.stderr
+    assert done.returncode != 0, output
+    assert _venv_makers(rows) == ['py314t']
+    assert 'could not create .venv' in output
+    # A half-made .venv would be "reused" by the next run and stop at its pip upgrade.
+    assert not (tmp_path / 'new checkout with spaces' / 'gpuwm' / '.venv').exists()
+    assert not _pip_rows(rows)
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_reused_locked_venv_is_kept_and_named(tmp_path, platform):
+    done, rows = _run(tmp_path, platform)
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert _venv_makers(rows) == []
+    assert "WARNING: .venv runs on the existing .venv's Python" in output
+    assert 'remove .venv' in output
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_reused_free_threaded_venv_installs_with_prefer_binary(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, venv_ft=True)
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert 'the existing .venv is free-threaded' in output
+    assert 'WARNING' not in output
+    assert _engine_install(rows) == ['-m', 'pip', 'install', '--prefer-binary', '-e', '.[gpu-cu13,render]']
 
 
 @pytest.mark.parametrize('form', ['file', 'piped'])

@@ -201,6 +201,29 @@ def _read_gate(root: Path) -> dict[str, str]:
     return values
 
 
+def aerosol_fill_receipt(gate: Mapping[str, str]) -> dict[str, object] | None:
+    """Final native bitmap repair counters, bound by the bridge gate hash."""
+    policy = gate.get("aerosol_missing_policy")
+    if policy is None:
+        return None  # Historical bridges predate the repair receipt.
+    fields = {}
+    for name in ("QNWFA", "QNIFA"):
+        counts = {}
+        for stage in ("masked", "nearest_neighbor", "four_pt", "average_4pt", "zero"):
+            key = f"aerosol_{name}_{stage}"
+            try:
+                counts[stage] = int(gate[key])
+            except (KeyError, ValueError) as error:
+                raise ValueError(f"missing or invalid aerosol fill counter {key}") from error
+            if counts[stage] < 0:
+                raise ValueError(f"negative aerosol fill counter {key}")
+        if counts["masked"] != sum(counts[stage] for stage in
+                ("nearest_neighbor", "four_pt", "average_4pt", "zero")):
+            raise ValueError(f"{name} aerosol fill counts do not sum to the masked count")
+        fields[name] = counts
+    return {"policy": policy, "fields": fields}
+
+
 def _parse_window(gate: Mapping[str, str]) -> tuple[int, int, int, int]:
     text = gate["window_zero_based_inclusive"]
     try:
@@ -240,12 +263,9 @@ class HrrrNativeSnapshot:
     nx: int
     fields: Mapping[str, np.ndarray]
     extra_fields: tuple[str, ...] = ()
-    #: Fields the source published but the decoder withheld, with the
-    #: gate's reason (:func:`gpuwm.ingest.native_supplements.
-    #: gate_withheld_optional_hybrid_fields`): the analyzed aerosol pair
-    #: when a GRIB2 bitmap masks points of it.  Carried to the mapped
-    #: snapshot so a run that requests the pair is refused with the
-    #: reason, not only with "missing".
+    #: Compatibility for historical bridges that withheld a masked pair.
+    #: New bridges repair requested aerosol masks and never emit these
+    #: withholding keys. An old artifact still names its missing payload.
     withheld_fields: Mapping[str, str] = field(default_factory=dict)
 
     def source_cell_latlon(self, rows, cols):
@@ -346,6 +366,17 @@ def _load_verified_hrrr_native_window(
         if manifest_entries is not None and payload.relative_to(root) not in manifest_entries:
             raise ValueError(f"analyzed aerosol payload is not bound by the bridge manifest: {payload}")
         fields[name] = _map_f32(payload, (50, ny, nx))
+        mask = atmosphere_dir / f"{name}.mask"
+        requires_mask = "source_mask_preserved_for_target_mapping" in gate.get("aerosol_missing_policy", "")
+        if requires_mask and not mask.is_file():
+            raise ValueError(f"{name} source bitmap is missing: {mask}; using native zero fills as valid donors would bypass the METGRID chain")
+        if mask.exists():
+            if manifest_entries is not None and mask.relative_to(root) not in manifest_entries:
+                raise ValueError(f"aerosol source bitmap is not manifest-bound: {mask}")
+            if mask.stat().st_size != 50 * ny * nx:
+                raise ValueError(f"aerosol source bitmap has the wrong shape: {mask}")
+            fields[name + "_SOURCE_MASK"] = np.memmap(mask, mode="r", dtype=np.uint8, shape=(50, ny, nx))
+
     for name in gate_supplement_fields(gate):
         payload = atmosphere_dir / f"{name}.f32le"
         if manifest_entries is not None and payload.relative_to(root) not in manifest_entries:
@@ -465,9 +496,17 @@ def hrrr_source_grid() -> LambertGrid:
 IDENTITY_SNAP_LIMIT_CELLS = 0.5
 
 
-def _snap_to_native_lattice(global_x, global_y, *, nx: int, ny: int):
+def _snap_to_native_lattice(global_x, global_y, *, nx: int, ny: int,
+                            placement=None):
     """The identity route's coordinates: every target point on its own
     native lattice position, exactly, from the target array's shape.
+
+    ``placement`` (:class:`gpuwm.ingest.hrrr_target.NativeLatticePlacement`,
+    default the whole ``ny`` x ``nx`` grid) is the native rectangle the
+    target's mass grid occupies: a boundary strip of the native grid is
+    its own mass, u or v shape, offset by ``(i0, j0)``.  Its faces that
+    lie inside the native grid read their two neighbours; only a face
+    past the native grid's own edge takes the edge cell.
 
     ``(ny, nx)`` is the mass grid: point ``(j, i)`` is source cell
     ``(j, i)``, fraction 0, so the parabolic and bilinear operators
@@ -483,20 +522,31 @@ def _snap_to_native_lattice(global_x, global_y, *, nx: int, ny: int):
     global_x = np.asarray(global_x, dtype=np.float64)
     global_y = np.asarray(global_y, dtype=np.float64)
     shape = tuple(global_x.shape)
-    if shape == (ny, nx):
+    if placement is None:
+        i0, j0, mass_nx, mass_ny = 0, 0, nx, ny
+    else:
+        i0, j0 = int(placement.i0), int(placement.j0)
+        mass_nx, mass_ny = int(placement.nx), int(placement.ny)
+        if not (0 <= i0 and i0 + mass_nx <= nx
+                and 0 <= j0 and j0 + mass_ny <= ny):
+            raise ValueError(
+                f"the placement i={i0}..+{mass_nx}, j={j0}..+{mass_ny} "
+                f"is not inside the {ny} x {nx} native grid")
+    if shape == (mass_ny, mass_nx):
         offset_x, offset_y = 0.0, 0.0
-    elif shape == (ny, nx + 1):
+    elif shape == (mass_ny, mass_nx + 1):
         offset_x, offset_y = -0.5, 0.0
-    elif shape == (ny + 1, nx):
+    elif shape == (mass_ny + 1, mass_nx):
         offset_x, offset_y = 0.0, -0.5
     else:
         raise ValueError(
             "the identity route maps the native grid's mass, u or v "
-            f"staggering ({ny} x {nx}, {ny} x {nx + 1} or {ny + 1} x {nx}); "
+            f"staggering ({mass_ny} x {mass_nx}, {mass_ny} x "
+            f"{mass_nx + 1} or {mass_ny + 1} x {mass_nx}); "
             f"got a target of shape {shape}")
     rows, cols = np.indices(shape, dtype=np.float64)
-    exact_x = cols + offset_x
-    exact_y = rows + offset_y
+    exact_x = cols + offset_x + i0
+    exact_y = rows + offset_y + j0
     distance = float(max(np.abs(exact_x - global_x).max(),
                          np.abs(exact_y - global_y).max()))
     if not distance <= IDENTITY_SNAP_LIMIT_CELLS:
@@ -513,11 +563,13 @@ def _snap_to_native_lattice(global_x, global_y, *, nx: int, ny: int):
 
 def _projected_index_geometry(snapshot: HrrrNativeSnapshot,
                               target_lat, target_lon, *,
-                              identity: bool = False):
+                              identity: bool = False, placement=None):
     """Resolve exact zero-based HRRR-window interpolation coordinates.
 
     ``identity`` (the target is the native grid itself,
-    :func:`gpuwm.ingest.hrrr_target.native_grid_identity`): the
+    :func:`gpuwm.ingest.hrrr_target.native_grid_identity`, or a whole-cell
+    piece of it whose ``placement`` is given,
+    :func:`gpuwm.ingest.hrrr_target.native_lattice_placement`): the
     coordinates are snapped onto the native lattice
     (:func:`_snap_to_native_lattice`) and no interpolation halo past the
     window is demanded, because every operator clamps its stencil at
@@ -540,7 +592,8 @@ def _projected_index_geometry(snapshot: HrrrNativeSnapshot,
                 f"window, got i={snapshot.i_start}..+{snapshot.nx}, "
                 f"j={snapshot.j_start}..+{snapshot.ny}")
         global_x, global_y, _snap = _snap_to_native_lattice(
-            global_x, global_y, nx=HRRR_SOURCE_NX, ny=HRRR_SOURCE_NY)
+            global_x, global_y, nx=HRRR_SOURCE_NX, ny=HRRR_SOURCE_NY,
+            placement=placement)
     global_ix = np.floor(global_x).astype(np.int64)
     global_iy = np.floor(global_y).astype(np.int64)
     ix = global_ix - snapshot.i_start
@@ -714,12 +767,13 @@ class _ProjectedGpuPlan:
     operator = PROJECTED_OPERATOR_CUDA
 
     def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon,
-                 *, identity: bool = False):
+                 *, identity: bool = False, placement=None):
         cp = _cupy()
         self.route = "identity" if identity else "interpolated"
         (x, y, ix, iy, nearest_ix, nearest_iy,
          global_ix, global_iy) = _projected_index_geometry(
-             snapshot, target_lat, target_lon, identity=identity)
+             snapshot, target_lat, target_lon, identity=identity,
+             placement=placement)
         global_x = x + snapshot.i_start
         global_y = y + snapshot.j_start
         self.source_shape = (snapshot.ny, snapshot.nx)
@@ -817,11 +871,12 @@ class _ProjectedCpuPlan:
     """
 
     def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon,
-                 backend, *, identity: bool = False):
+                 backend, *, identity: bool = False, placement=None):
         self.route = "identity" if identity else "interpolated"
         (x, y, ix, iy, nearest_ix, nearest_iy,
          global_ix, global_iy) = _projected_index_geometry(
-             snapshot, target_lat, target_lon, identity=identity)
+             snapshot, target_lat, target_lon, identity=identity,
+             placement=placement)
         global_x = x + snapshot.i_start
         global_y = y + snapshot.j_start
         self.source_shape = (snapshot.ny, snapshot.nx)
@@ -1745,7 +1800,8 @@ def interpolate_hrrr_to_lambert(
         backend="cuda", workers: int | None = None,
         chem_rows=(), chem_source=None,
         cpu_bridge: Path | str | None = None,
-        target_name: str = DEFAULT_SOIL_TARGET_NAME) -> HorizontalSnapshot:
+        target_name: str = DEFAULT_SOIL_TARGET_NAME,
+        lattice_parent: LambertGrid | None = None) -> HorizontalSnapshot:
     """Interpolate a verified HRRR window to one WRF Lambert C grid.
 
     ``chem_rows`` are active species rows; ``chem_source`` is the selected
@@ -1771,6 +1827,11 @@ def interpolate_hrrr_to_lambert(
     different targets whose soil refusals must not be confusable: a
     coastal domain's all-water west strip once aborted a preparation
     with a sentence naming neither the strip nor the domain.
+
+    ``lattice_parent`` is the domain ``grid`` was cut from (a boundary
+    strip's domain).  When that domain is the native grid, the strip
+    takes the identity route its domain took
+    (:func:`gpuwm.ingest.hrrr_target.native_lattice_placement`).
     """
     if not isinstance(snapshot, HrrrNativeSnapshot):
         raise TypeError("snapshot must be an HrrrNativeSnapshot")
@@ -1789,23 +1850,30 @@ def interpolate_hrrr_to_lambert(
     plan_type = (
         _ProjectedGpuPlan if getattr(engine, "name", None) == "cuda"
         else _ProjectedCpuPlan)
-    # The target IS the native grid: copy index for index
-    # (gpuwm.ingest.hrrr_target.native_grid_identity).
-    from gpuwm.ingest.hrrr_target import native_grid_identity
+    # The target IS the native grid, or a whole-cell piece of it (one of
+    # the native grid's own boundary strips): copy index for index
+    # (gpuwm.ingest.hrrr_target.native_lattice_placement).  Declaring it
+    # only for the whole grid sent that grid's boundary strips down the
+    # interpolated route, which refused their edge points (acceptance
+    # D-05, 2.8.8).
+    from gpuwm.ingest.hrrr_target import native_lattice_placement
 
-    identity = native_grid_identity(grid)
+    placement = native_lattice_placement(grid, parent=lattice_parent)
+    identity = placement is not None
     if plan_type is _ProjectedGpuPlan:
         mass_plan = plan_type(snapshot, mass_lat, mass_lon,
-                              identity=identity)
-        u_plan = plan_type(snapshot, u_lat, u_lon, identity=identity)
-        v_plan = plan_type(snapshot, v_lat, v_lon, identity=identity)
+                              identity=identity, placement=placement)
+        u_plan = plan_type(snapshot, u_lat, u_lon, identity=identity,
+                           placement=placement)
+        v_plan = plan_type(snapshot, v_lat, v_lon, identity=identity,
+                           placement=placement)
     else:
         mass_plan = plan_type(snapshot, mass_lat, mass_lon, engine,
-                              identity=identity)
+                              identity=identity, placement=placement)
         u_plan = plan_type(snapshot, u_lat, u_lon, engine,
-                           identity=identity)
+                           identity=identity, placement=placement)
         v_plan = plan_type(snapshot, v_lat, v_lon, engine,
-                           identity=identity)
+                           identity=identity, placement=placement)
     source = snapshot.fields
     _require_source_physical_ranges(source)
     target_landmask = np.asarray(target_landmask)
@@ -1861,16 +1929,27 @@ def interpolate_hrrr_to_lambert(
         out["VEGFRA"] = mass_plan.apply(source["VEGFRA"], method="bilinear")
     for name in ("QC", "QI", "QR", "QS", "QG"):
         out[name] = mass_plan.apply(source[name], method="bilinear")
+    aerosol_mapping_counts = {}
     # The analyzed aerosol number pair, when the bridge published it.
-    # NOAA's operational HRRR METGRID.TBL maps QNWFA/QNIFA with
-    # nearest_neighbor first (gpuwm/authorities/
-    # rw-wps-hrrr-native-grib2.provenance.json), and every source cell is
-    # a donor here, so nearest is the whole chain.  The surface
-    # pseudo-level is the deepest source level, WPS's rule and the one the
-    # generic routes apply (gpuwm.ingest.horiz).
+    # Native finite payloads retain nearest interpolation. Where the bridge
+    # preserved a source bitmap, the Rust chain sees the original mask at
+    # fractional target coordinates before any zero may become a donor.
     for name in ("QNWFA", "QNIFA"):
         if name in source:
-            out[name] = mass_plan.apply(source[name], method="nearest")
+            mask = source.get(name + "_SOURCE_MASK")
+            if mask is None:
+                out[name] = mass_plan.apply(source[name], method="nearest")
+            else:
+                mapped, counts = stencil_native.missing_value_chain(
+                    source[name], mask, mass_plan.y_host, mass_plan.x_host,
+                    workers=stencil_workers)
+                nearest = mass_plan.apply(source[name], method="nearest")
+                nearest_valid = mass_plan.apply(mask, method="nearest")
+                out[name] = xp.where(nearest_valid != 0, nearest,
+                                     xp.asarray(mapped, dtype=xp.float32))
+                aerosol_mapping_counts[name] = dict(zip(
+                    ("nearest_neighbor", "four_pt", "average_4pt", "zero"),
+                    [int(v) for v in counts.sum(axis=0)]))
             from gpuwm.ingest.host_arrays import deepest_level
 
             surface = deepest_level(
@@ -1960,6 +2039,7 @@ def interpolate_hrrr_to_lambert(
         # of magnitude in wall time -- so a receipt that only said "cpu"
         # could not tell a slow run from a fast one after the fact.
         "projected_horizontal_operator": mass_plan.operator,
+        "aerosol_missing": aerosol_mapping_counts,
         "wind_rotation": {
             "policy": (
                 "source_grid_to_earth_then_earth_to_target_grid; "

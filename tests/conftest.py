@@ -938,6 +938,36 @@ def _chain_static_staging_kept_off_the_network(monkeypatch):
                         lambda *args, **kwargs: [])
 
 
+@pytest.fixture(autouse=True)
+def _the_default_geography_root_counts_as_staged(monkeypatch):
+    """Answer the DEFAULT WPS_GEOG root as staged, on every test machine.
+
+    Since 2.8.8 ``gpuwm go --dry-run`` asks the same geography question the
+    launch asks (it exited 0 on a tree the launch refused).  The dry-run
+    tests here plan configurations against whatever geography the machine
+    has at ``default_geog_root()``: none on public CI and node-4, 16 GB on
+    a workstation, so without this pin the same test passed or refused by
+    host.  Only the default root is answered; a root a test NAMES
+    (``--geog-root``, ``[case_data].geog_root``, a direct call) gets the
+    real check, which is what the negative controls use
+    (tests/test_go_dry_run_geography.py,
+    tests/test_interrupt_contract.py::test_the_geography_refusal_still_fires_when_it_should),
+    and a test that patches ``geography_refusal`` itself still wins.
+    """
+
+    from gpuwm import go_cli
+    from gpuwm.geog_assets import default_geog_root
+
+    real = go_cli.geography_refusal
+
+    def refusal(geog_root):
+        if pathlib.Path(geog_root) == default_geog_root():
+            return None
+        return real(geog_root)
+
+    monkeypatch.setattr(go_cli, "geography_refusal", refusal)
+
+
 @pytest.fixture
 def pinned_thompson_tables(monkeypatch):
     """Resolve the mp8 tables to the checkout's pinned set when it has one.

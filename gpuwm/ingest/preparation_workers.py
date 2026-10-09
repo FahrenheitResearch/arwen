@@ -234,16 +234,29 @@ def configure_preparation_workers(requested):
             # preparation process; it is deliberately not a context manager.
             threadpool_limits(limits=receipt["effective_workers"])
         receipt["loaded_numeric_pools"] = numeric_pools()
+        if requested is not None:
+            # A compiled numeric library can cap its pool below the CPU
+            # budget. Admit that measured capacity before sealing the proof
+            # and keep every subprocess default at the admitted width.
+            capacities = [pool["num_threads"] for pool in receipt["loaded_numeric_pools"]
+                          if isinstance(pool["num_threads"], int) and pool["num_threads"] > 0]
+            if capacities:
+                admitted = min(receipt["effective_workers"], *capacities)
+                if admitted < receipt["effective_workers"]:
+                    receipt["numeric_pool_capacity_workers"] = admitted
+                    receipt["effective_workers"] = admitted
+                    threadpool_limits(limits=admitted)
+                    receipt["loaded_numeric_pools"] = numeric_pools()
         receipt["numeric_pool_control"] = "applied" if requested is not None else "not requested"
     if requested is not None:
-        environment = worker_environment(requested)
+        environment = worker_environment(receipt["effective_workers"])
         for name in (*THREAD_DEFAULTS, "GPUWM_MAPPED_ENGINE_THREADS", PREPARATION_THREADS_ENV):
             os.environ[name] = environment[name]
         os.environ[INHERITED_LIMITS_ENV] = environment[INHERITED_LIMITS_ENV]
     effective = receipt["effective_workers"]
     if requested is not None and effective < requested:
         diagnostic(f"preparation worker warning: requested {requested} workers, but affinity, "
-                   f"CPU quota and worker memory permit {effective}; using {effective}.")
+                   f"CPU quota, worker memory and loaded numeric-pool capacity permit {effective}; using {effective}.")
     if requested is not None and any(
             value.isdecimal() and int(value) < effective
             for value in receipt["inherited_library_limits"].values()):

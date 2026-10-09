@@ -2338,7 +2338,7 @@ def prepare_gfs_wrf(
     static, root_static_receipt = apply_prepared_highres(
         static, grid, config=static_highres, domain_id=1,
         case_date=exp.start_time.date(), landuse_attrs=landuse_attrs,
-        baseline_receipt=root_static_receipt)
+        baseline_receipt=root_static_receipt, run=cfg)
     # The land-height check reads the terrain the run will integrate: a
     # declared high-resolution terrain gives the islands the baseline
     # dataset holds at 0 m their height.

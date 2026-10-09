@@ -1,0 +1,378 @@
+{
+  "source_series": "/workspace/sol/sol11-fresh-install-matrix/identity-legacy-series.tsv",
+  "cycle": "2017-01-19T00",
+  "window": [
+    800,
+    900,
+    300,
+    400
+  ],
+  "fields": [
+    {
+      "field": "atmosphere-f00/HGT.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "45a3bf7a7a24d096f06af2dca1b8345934b7ed6e9bbdeba5292086b7454a8d53",
+      "patched_sha256": "45a3bf7a7a24d096f06af2dca1b8345934b7ed6e9bbdeba5292086b7454a8d53",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/LANDSEA.f32le",
+      "bytes": 40804,
+      "stock_sha256": "b9e0fe5f6b31662f2f57098f3797711ca0f7713e8202b65a66e2c8cdff89e957",
+      "patched_sha256": "b9e0fe5f6b31662f2f57098f3797711ca0f7713e8202b65a66e2c8cdff89e957",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/PRES.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "ee68deb8bc376d21e1f6ef1b3ef3492b2ce075933dbedf500408f5e5d0c10768",
+      "patched_sha256": "ee68deb8bc376d21e1f6ef1b3ef3492b2ce075933dbedf500408f5e5d0c10768",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/PSFC.f32le",
+      "bytes": 40804,
+      "stock_sha256": "39c929426e87c9b1d62b9f369f9edc2f58e94141662780e78f80b88386f40642",
+      "patched_sha256": "39c929426e87c9b1d62b9f369f9edc2f58e94141662780e78f80b88386f40642",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/Q2.f32le",
+      "bytes": 40804,
+      "stock_sha256": "86f8c82209caf3e57fb444000acd73292e98b7de2f612decf7a5cf983a24293e",
+      "patched_sha256": "86f8c82209caf3e57fb444000acd73292e98b7de2f612decf7a5cf983a24293e",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/QC.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "10d219554d8021c78b881587d750a0debca8bf8affd9989324c230c4eba8851d",
+      "patched_sha256": "10d219554d8021c78b881587d750a0debca8bf8affd9989324c230c4eba8851d",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/QG.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "ece22f43f1c2cb8ecbee41ffc92746be91e08161a903f4c33d9c84836d7de931",
+      "patched_sha256": "ece22f43f1c2cb8ecbee41ffc92746be91e08161a903f4c33d9c84836d7de931",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/QI.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "6b5d245bd9fdcc1ecb384524199d0bb5b06543661d47d5133faacd9b8346ae82",
+      "patched_sha256": "6b5d245bd9fdcc1ecb384524199d0bb5b06543661d47d5133faacd9b8346ae82",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/QNIFA.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "269a7b0eb23751fe8a6111236e31c5a70403648d58be33cdc101e3ac27f07f9f",
+      "patched_sha256": "269a7b0eb23751fe8a6111236e31c5a70403648d58be33cdc101e3ac27f07f9f",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/QNWFA.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "245a0df031756b19e44140fe4985b8f8d099427d5849a82468861e8ab5510722",
+      "patched_sha256": "245a0df031756b19e44140fe4985b8f8d099427d5849a82468861e8ab5510722",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/QR.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "67f1523fd035a86c4f278f488e172694051a83dec9dc0dd7b50bcc2909150bed",
+      "patched_sha256": "67f1523fd035a86c4f278f488e172694051a83dec9dc0dd7b50bcc2909150bed",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/QS.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "ece22f43f1c2cb8ecbee41ffc92746be91e08161a903f4c33d9c84836d7de931",
+      "patched_sha256": "ece22f43f1c2cb8ecbee41ffc92746be91e08161a903f4c33d9c84836d7de931",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/SKINTEMP.f32le",
+      "bytes": 40804,
+      "stock_sha256": "ad3f2a3603b03d6743d358ffb9f7f3aa5cc22775888599cf9d1d45be40f0d027",
+      "patched_sha256": "ad3f2a3603b03d6743d358ffb9f7f3aa5cc22775888599cf9d1d45be40f0d027",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/SNOW.f32le",
+      "bytes": 40804,
+      "stock_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "patched_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/SNOWH.f32le",
+      "bytes": 40804,
+      "stock_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "patched_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/SOILHGT.f32le",
+      "bytes": 40804,
+      "stock_sha256": "b08ca2ce983c5de75b8954a2c2820521e57436887f4f6d2288e0d4be3741f658",
+      "patched_sha256": "b08ca2ce983c5de75b8954a2c2820521e57436887f4f6d2288e0d4be3741f658",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/SPFH.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "1ef55a6f8e3081c698fe9393c2f0bf73bccd3033d834b001bbdae3dff101b832",
+      "patched_sha256": "1ef55a6f8e3081c698fe9393c2f0bf73bccd3033d834b001bbdae3dff101b832",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/T2.f32le",
+      "bytes": 40804,
+      "stock_sha256": "fa25de6475c3930a689c0c3932a0b7087c4fa567498d9f13413f6341d42ef21b",
+      "patched_sha256": "fa25de6475c3930a689c0c3932a0b7087c4fa567498d9f13413f6341d42ef21b",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/TT.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "ca47589acae2372c7a6799d0f37fc07fb4b9858df9eeef5d7f1cb129d0221c2c",
+      "patched_sha256": "ca47589acae2372c7a6799d0f37fc07fb4b9858df9eeef5d7f1cb129d0221c2c",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/U10_MASS.f32le",
+      "bytes": 40804,
+      "stock_sha256": "8f9f96f2ac068b3736390c6e64713db9a2808269cf67dfeac6b1ab47639b5862",
+      "patched_sha256": "8f9f96f2ac068b3736390c6e64713db9a2808269cf67dfeac6b1ab47639b5862",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/U_MASS.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "b360638285bf48f9d52647e293e69942bd336e910cce63bfb8d20ad19e368311",
+      "patched_sha256": "b360638285bf48f9d52647e293e69942bd336e910cce63bfb8d20ad19e368311",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/V10_MASS.f32le",
+      "bytes": 40804,
+      "stock_sha256": "deabc08d2cd64575972221a5bb9770ee0c0a6da9294c6635895c2336e940e86e",
+      "patched_sha256": "deabc08d2cd64575972221a5bb9770ee0c0a6da9294c6635895c2336e940e86e",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/V_MASS.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "9258c1fe00e8f8a6771f96f53521e04c653e5d3d0eefdb70f52c786a869d88aa",
+      "patched_sha256": "9258c1fe00e8f8a6771f96f53521e04c653e5d3d0eefdb70f52c786a869d88aa",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f00/XICE.f32le",
+      "bytes": 40804,
+      "stock_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "patched_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/HGT.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "8e87bfa52b668ee2e4d597ff1ee61be373396ae2936592048bcecbf5331b25b0",
+      "patched_sha256": "8e87bfa52b668ee2e4d597ff1ee61be373396ae2936592048bcecbf5331b25b0",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/LANDSEA.f32le",
+      "bytes": 40804,
+      "stock_sha256": "b9e0fe5f6b31662f2f57098f3797711ca0f7713e8202b65a66e2c8cdff89e957",
+      "patched_sha256": "b9e0fe5f6b31662f2f57098f3797711ca0f7713e8202b65a66e2c8cdff89e957",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/PRES.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "d2cc255c1637f7e1351142719aeecc5ce7f05ec4b0f4581eb643e3f1b38f9d7a",
+      "patched_sha256": "d2cc255c1637f7e1351142719aeecc5ce7f05ec4b0f4581eb643e3f1b38f9d7a",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/PSFC.f32le",
+      "bytes": 40804,
+      "stock_sha256": "fca49f6022fb73f87d3663ffe449453f61d0a260721b2dfbfc679c9fbd0a5f13",
+      "patched_sha256": "fca49f6022fb73f87d3663ffe449453f61d0a260721b2dfbfc679c9fbd0a5f13",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/Q2.f32le",
+      "bytes": 40804,
+      "stock_sha256": "4cf479b6ce6cccb1c48f240e1d3d0e3cd78b78e061ea5475fd91e15c8ae4ca2b",
+      "patched_sha256": "4cf479b6ce6cccb1c48f240e1d3d0e3cd78b78e061ea5475fd91e15c8ae4ca2b",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/QC.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "98a55faaa845695536191b296e6b6827925339f18756e92886508c5a01d2c434",
+      "patched_sha256": "98a55faaa845695536191b296e6b6827925339f18756e92886508c5a01d2c434",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/QG.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "ece22f43f1c2cb8ecbee41ffc92746be91e08161a903f4c33d9c84836d7de931",
+      "patched_sha256": "ece22f43f1c2cb8ecbee41ffc92746be91e08161a903f4c33d9c84836d7de931",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/QI.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "731b459c96ce80aa8ca6cc72faae9bf4c1f111f7dbacdbad92811a22da33666c",
+      "patched_sha256": "731b459c96ce80aa8ca6cc72faae9bf4c1f111f7dbacdbad92811a22da33666c",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/QNIFA.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "75882f0ff475ab07a7d17c3d5969a7eb24716c20b21eecfab5930ddcc211ad12",
+      "patched_sha256": "75882f0ff475ab07a7d17c3d5969a7eb24716c20b21eecfab5930ddcc211ad12",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/QNWFA.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "72699ed6e7146c6f707b0a427d7f813265b74c6af492a0bb76cc69cf8f199fc3",
+      "patched_sha256": "72699ed6e7146c6f707b0a427d7f813265b74c6af492a0bb76cc69cf8f199fc3",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/QR.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "3db1c0306f08e8b73c86c652c462766b4b77b1f09e4d0a9339dbaf8c696afb50",
+      "patched_sha256": "3db1c0306f08e8b73c86c652c462766b4b77b1f09e4d0a9339dbaf8c696afb50",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/QS.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "ad34674d8a079cf1d7ce3c1edbf03c71a591c180385c452c9552ca8989a729dc",
+      "patched_sha256": "ad34674d8a079cf1d7ce3c1edbf03c71a591c180385c452c9552ca8989a729dc",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/SKINTEMP.f32le",
+      "bytes": 40804,
+      "stock_sha256": "971d50fca5a9cb70014a91f37c932b45f01fab7e61f7772d0e6f44d6d14537b0",
+      "patched_sha256": "971d50fca5a9cb70014a91f37c932b45f01fab7e61f7772d0e6f44d6d14537b0",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/SNOW.f32le",
+      "bytes": 40804,
+      "stock_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "patched_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/SNOWH.f32le",
+      "bytes": 40804,
+      "stock_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "patched_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/SOILHGT.f32le",
+      "bytes": 40804,
+      "stock_sha256": "b08ca2ce983c5de75b8954a2c2820521e57436887f4f6d2288e0d4be3741f658",
+      "patched_sha256": "b08ca2ce983c5de75b8954a2c2820521e57436887f4f6d2288e0d4be3741f658",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/SPFH.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "9174f919b78a3ec2fcfa8c7f5ae080d1e4dcf18156dacc9cad56f4227ea8b4b4",
+      "patched_sha256": "9174f919b78a3ec2fcfa8c7f5ae080d1e4dcf18156dacc9cad56f4227ea8b4b4",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/T2.f32le",
+      "bytes": 40804,
+      "stock_sha256": "4dec90df7396c006202d140b60de8773df8c52ef7a922972b3f5e2abfaf6e21d",
+      "patched_sha256": "4dec90df7396c006202d140b60de8773df8c52ef7a922972b3f5e2abfaf6e21d",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/TT.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "3fa2fde4dceb0b4bde191b05bf860070e01de984b96794b2156bab0f7faac562",
+      "patched_sha256": "3fa2fde4dceb0b4bde191b05bf860070e01de984b96794b2156bab0f7faac562",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/U10_MASS.f32le",
+      "bytes": 40804,
+      "stock_sha256": "ce09a15b3394005a94b695c58b26df812266c7b2e29b734bddfcaad379a6c4b5",
+      "patched_sha256": "ce09a15b3394005a94b695c58b26df812266c7b2e29b734bddfcaad379a6c4b5",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/U_MASS.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "4568ea3ee51d813a82aa94d65213ad2df4449e5731d11f2310ab265b8fac07a2",
+      "patched_sha256": "4568ea3ee51d813a82aa94d65213ad2df4449e5731d11f2310ab265b8fac07a2",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/V10_MASS.f32le",
+      "bytes": 40804,
+      "stock_sha256": "ae08068c529855cabbb6736a1088077ecab0860724d929db5cede0be4e2bf1f6",
+      "patched_sha256": "ae08068c529855cabbb6736a1088077ecab0860724d929db5cede0be4e2bf1f6",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/V_MASS.f32le",
+      "bytes": 2040200,
+      "stock_sha256": "857f3a5e9cb783df04c86212174a4decf3da00a8295c693cdeb2643c88d65ccb",
+      "patched_sha256": "857f3a5e9cb783df04c86212174a4decf3da00a8295c693cdeb2643c88d65ccb",
+      "equal": true
+    },
+    {
+      "field": "atmosphere-f01/XICE.f32le",
+      "bytes": 40804,
+      "stock_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "patched_sha256": "64e9f8d24d67e01192342a72ce54d6861163a567870d20df5cfa27a2170961db",
+      "equal": true
+    },
+    {
+      "field": "soil-f00/SOILT.f32le",
+      "bytes": 367236,
+      "stock_sha256": "5ac2290a7de582554e7476cfa9280f345368c8ddf6de5e6920514602133455cb",
+      "patched_sha256": "5ac2290a7de582554e7476cfa9280f345368c8ddf6de5e6920514602133455cb",
+      "equal": true
+    },
+    {
+      "field": "soil-f00/SOILW.f32le",
+      "bytes": 367236,
+      "stock_sha256": "6d78ff1900aca5242e6e9bd32485ba5f8b7b9cd57df66f5aaf747b23ca7eb824",
+      "patched_sha256": "6d78ff1900aca5242e6e9bd32485ba5f8b7b9cd57df66f5aaf747b23ca7eb824",
+      "equal": true
+    },
+    {
+      "field": "soil-f01/SOILT.f32le",
+      "bytes": 367236,
+      "stock_sha256": "b31a0aaac7d22962f0136b4450732a4fec4d390ce2291031533207063dbf02a4",
+      "patched_sha256": "b31a0aaac7d22962f0136b4450732a4fec4d390ce2291031533207063dbf02a4",
+      "equal": true
+    },
+    {
+      "field": "soil-f01/SOILW.f32le",
+      "bytes": 367236,
+      "stock_sha256": "303219a94478a1c895228165ef6a84f74f840e46d769507f91c8f923d1e9ad3f",
+      "patched_sha256": "303219a94478a1c895228165ef6a84f74f840e46d769507f91c8f923d1e9ad3f",
+      "equal": true
+    }
+  ],
+  "all_equal": true,
+  "scope": "all emitted numerical planes in two real public HRRR states on the earlier CICE inventory; no values synthesized or interpolated"
+}

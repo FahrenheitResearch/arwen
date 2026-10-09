@@ -148,17 +148,120 @@ def test_watchdog_alone_ends_an_orphaned_stage(tmp_path):
             pass
 
 
-@linux_only
-def test_preexec_refuses_to_start_once_the_launcher_is_gone(tmp_path, monkeypatch):
-    """The fork-to-prctl race: a launcher already gone means no start."""
+def _dead_pid() -> int:
+    """A pid that existed a moment ago and is now reaped."""
 
-    monkeypatch.setattr(os, "getpid", lambda: 1)   # "the launcher" is not our pid
-    options = parent_death.popen_options()
-    monkeypatch.undo()
-    completed = subprocess.run([sys.executable, "-c", "print('started')"],
-                               capture_output=True, text=True, **options)
-    assert completed.returncode == 128 + signal.SIGTERM
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    return gone.pid
+
+
+@linux_only
+def test_child_refuses_to_start_once_the_launcher_is_gone(tmp_path):
+    """The fork-to-arm race: a launcher already gone means no start.
+
+    The child's own check after exec, where 2.8.7 checked inside a
+    preexec_fn (D-03).
+    """
+
+    env = _env(tmp_path)
+    env[parent_death.PARENT_ENV] = str(_dead_pid())
+    completed = subprocess.run(
+        [sys.executable, "-c", "import gpuwm; print('started')"],
+        capture_output=True, text=True, env=env, cwd=tmp_path)
+    assert completed.returncode == 128 + signal.SIGTERM, completed.stderr
     assert "started" not in completed.stdout
+
+
+@linux_only
+def test_child_binds_its_death_signal_after_exec(tmp_path):
+    """PR_SET_PDEATHSIG(SIGTERM) is set by the child itself at import."""
+
+    probe = ("import ctypes, gpuwm, sys; v = ctypes.c_int(0); "
+             "ctypes.CDLL(None).prctl(2, ctypes.byref(v), 0, 0, 0); print(v.value)")
+    env = _env(tmp_path)
+    env.update(parent_death.child_environment())
+    completed = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                               text=True, env=env, cwd=tmp_path, check=True)
+    assert int(completed.stdout.split()[-1]) == signal.SIGTERM
+    env.pop(parent_death.PARENT_ENV)
+    unbound = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                             text=True, env=env, cwd=tmp_path, check=True)
+    assert int(unbound.stdout.split()[-1]) == 0
+
+
+_NO_PYTHON_IN_FORKED_CHILD = '''
+import os, sys
+marker = os.open(sys.argv[1], os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+# Runs in a forked child only when subprocess runs Python between fork
+# and exec -- which a preexec_fn makes it do.
+os.register_at_fork(after_in_child=lambda: os.write(marker, b"python ran in a forked child\\n"))
+from gpuwm import first_products, go_cli
+first_products._run_render([sys.executable, "-c", "pass"])
+first_products._run_render([sys.executable, "-c", "pass"], own_group=True)
+go_cli._run_stage("stage", [sys.executable, "-c", "pass"], explain=False,
+                  heartbeat_seconds=3600)
+print("spawned")
+'''
+
+
+@linux_only
+def test_launchers_run_no_python_between_fork_and_exec(tmp_path):
+    """D-03: the render and stage spawns take subprocess's exec-only path.
+
+    THE BREAKAGE (2.8.8 acceptance, c8f95278): 2.8.7's preexec_fn made
+    subprocess run Python in every forked render, stage and worker child
+    before exec; on the free-threaded build that Python ran CuPy
+    ``Event.__del__`` finalizers with no CUDA context, and 163 of 400
+    spawns printed cudaErrorInitializationError tracebacks.  An at-fork
+    hook runs in the child exactly when Python does, so any marker line
+    is the defect, whatever the interpreter or the card.
+    """
+
+    marker = tmp_path / "forked-python.log"
+    script = tmp_path / "launcher.py"
+    script.write_text(_NO_PYTHON_IN_FORKED_CHILD, encoding="utf-8")
+    completed = subprocess.run([sys.executable, str(script), str(marker)],
+                               capture_output=True, text=True, cwd=tmp_path,
+                               env=_env(tmp_path), timeout=300)
+    assert completed.returncode == 0, completed.stderr
+    assert "spawned" in completed.stdout
+    assert not marker.exists() or marker.read_text() == "", marker.read_text()
+
+
+def test_worker_spawn_passes_no_preexec_fn():
+    """D-03 for the supervisor's worker spawn, which needs a card to run:
+    no ``Popen`` in a CUDA launcher passes ``preexec_fn``."""
+
+    import ast
+
+    for module in ("first_products", "go_cli", "supervisor"):
+        path = REPO / "gpuwm" / f"{module}.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                names = {keyword.arg for keyword in node.keywords}
+                assert "preexec_fn" not in names, f"{path}:{node.lineno}"
+    assert not hasattr(parent_death, "popen_options")
+
+
+def test_reexec_keeps_the_binding(monkeypatch):
+    """The free-threading re-exec hands the launcher pid to its new image."""
+
+    from gpuwm import free_threading
+
+    monkeypatch.setattr(parent_death, "_ARMED_PARENT", None)
+    assert parent_death.reexec_environment() == {}
+    monkeypatch.setattr(parent_death, "_ARMED_PARENT", 4242)
+    assert parent_death.reexec_environment() == {parent_death.PARENT_ENV: "4242"}
+    captured = {}
+    monkeypatch.setattr(free_threading, "reexec_command", lambda: ["python", "x"])
+    monkeypatch.setattr(free_threading.os, "name", "posix")
+    monkeypatch.setattr(free_threading.os, "execve",
+                        lambda exe, argv, env: captured.update(env))
+    free_threading.keep_gil_disabled()
+    assert captured[parent_death.PARENT_ENV] == "4242"
+    assert captured["PYTHON_GIL"] == "0"
 
 
 def test_watchdog_arms_only_in_a_direct_child():

@@ -114,7 +114,10 @@ def test_every_rrtmgp_table_read_holds_the_session():
     # says, so it must hold on a box that has no companion data.
     path = pathlib.Path(gpuwm.__file__).parent / "core" / "rrtmgp.py"
     opens = _dataset_opens(path)
-    assert opens, "no Dataset opens found -- the audit is measuring nothing"
+    # Since 2.8.8 the RRTMGP tables are read through rw_netcdf (no netCDF4,
+    # so no HDF5 session to race), and the module may hold no Dataset open
+    # at all; any open that comes back must still hold the session.
+    # test_the_audit_catches_an_unguarded_open keeps the audit from passing vacuously.
     unguarded = [lineno for lineno, guarded in opens if not guarded]
     assert unguarded == [], (
         f"gpuwm/core/rrtmgp.py opens netCDF4 outside netcdf4_session() at "

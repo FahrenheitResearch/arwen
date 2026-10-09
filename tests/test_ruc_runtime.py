@@ -38,6 +38,7 @@ hiding it.
 
 from __future__ import annotations
 
+import dataclasses
 import numpy as np
 import pytest
 
@@ -125,7 +126,8 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
            ra_physics: int = 0, radt_minutes: float = 12.0,
            mp_physics: int = 6, sf_sfclay_physics: int = 1,
            bl_pbl_physics: int = 1, nzs: int = _NSOIL,
-           ruc_soilprop: str = "wrf_45", ruc_snow: str = "wrf_45"):
+           ruc_soilprop: str = "wrf_45", ruc_snow: str = "wrf_45",
+           fractional_seaice: int = 0):
     """One RUC forecast configuration.
 
     ``nzs`` defaults to :data:`_NSOIL`, which is what keeps every caller in
@@ -152,7 +154,8 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
                     sf_surface_physics=3, num_soil_layers=nzs,
                     bl_pbl_physics=bl_pbl_physics, bldt=0.0,
                     ra_physics=ra_physics, radt_minutes=radt_minutes,
-                    ruc_soilprop=ruc_soilprop, ruc_snow=ruc_snow)
+                    ruc_soilprop=ruc_soilprop, ruc_snow=ruc_snow,
+                    fractional_seaice=fractional_seaice)
 
     def theta(z):
         z = np.asarray(z, np.float64)
@@ -493,8 +496,10 @@ def test_the_vram_preflight_counts_the_ruc_arrays():
                      dt=12.0, run_seconds=0.0, time_step_sound=4, moist=True,
                      sf_sfclay_physics=1, sf_surface_physics=2,
                      bl_pbl_physics=1)
+    # dataclasses.fields, not __dataclass_fields__: the latter also lists
+    # ClassVar constants (RunConfig.constant_k_prandtl), which __init__ refuses.
     ruc = RunConfig(**{**{f.name: getattr(noah, f.name)
-                          for f in noah.__dataclass_fields__.values()},
+                          for f in dataclasses.fields(noah)},
                        "sf_surface_physics": 3, "num_soil_layers": 9})
     noah_shapes = physics_array_shapes(noah)
     ruc_shapes = physics_array_shapes(ruc)
@@ -815,7 +820,7 @@ def test_fractional_sea_ice_reblends_two_distinct_xice_values():
         ruc_fractional_post,
     )
 
-    state, cfg, driver = _build(nx=4, ny=1, water_columns=0)
+    state, cfg, driver = _build(nx=4, ny=1, water_columns=0, fractional_seaice=1)
     xice = np.array([0.55, 0.75], np.float32)
     driver.fields["xice"][0, :2] = cp.asarray(xice)
     driver.fields["ivgtyp"][0, :2] = _ICE
@@ -957,15 +962,15 @@ def test_the_snow_mass_budget_closes_and_a_cold_pack_persists():
             step(state, cfg)
         swe = _land(cp.asnumpy(driver.fields["snow"]), cfg)
         melt = _land(cp.asnumpy(driver.fields["acsnom"]), cfg)
-        # SFCEVP is accumulated TWICE by module_sf_ruclsm.F (:1095 and
-        # :1116), so a water budget must halve it -- which is exactly the
-        # published sfcevp_is_double_counted_on_purpose restriction, used
-        # here rather than merely asserted elsewhere.
-        evap = _land(cp.asnumpy(driver.fields["sfcevp"]), cfg) / 2.0
+        # WRF accumulates SFCEVP twice per land step (module_sf_ruclsm.F
+        # :1095 and :1116), so its water budget only closes on half of it.
+        # WOOF counts it once (lane/verify-ruc-lsm), so the budget closes on
+        # SFCEVP itself; a doubled SFCEVP fails this by the evaporated mass.
+        evap = _land(cp.asnumpy(driver.fields["sfcevp"]), cfg)
         closure = float((swe + melt + evap).mean()) - swe0
         assert abs(closure) < 0.05 * swe0, (
             f"{lineage}: snow mass budget does not close: SWE "
-            f"{swe.mean():.4f} + melt {melt.mean():.4f} + evap/2 "
+            f"{swe.mean():.4f} + melt {melt.mean():.4f} + evap "
             f"{evap.mean():.4f} against {swe0} mm initial, residual "
             f"{closure:.4f} mm")
         if lineage == "wrf_461":

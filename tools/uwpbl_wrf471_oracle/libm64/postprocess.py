@@ -1,4 +1,7 @@
-# s is supplied by assemble.py.
+# s is supplied by assemble.py, which exec()s this file in its own module
+# namespace; named here so the fragment's inputs are explicit.
+import re
+s = globals()["s"]
 s=re.sub(r'(\w+) (\w+) = \{\.([fu])\s*=\s*([^;]+)\};',r'\1 \2; \2.\3 = \4;',s)
 s=re.sub(r'\{\.lo\s*=\s*([^,{}]+),\s*\.hi\s*=\s*([^,{}]+),\s*\.ex\s*=\s*([^,{}]+),\s*\.sgn\s*=\s*([^{}]+)\}',r'{{\1,\2,\3,\4}}',s)
 s=s.replace('''typedef union {

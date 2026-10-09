@@ -43,8 +43,9 @@ from typing import Mapping, Sequence
 import uuid
 from weakref import WeakValueDictionary
 
-import netCDF4
 import numpy as np
+
+from gpuwm.io.netcdf_serialization import netCDF4  # first use only (D-10)
 
 from gpuwm import netcdf_bridge
 from gpuwm.core import constants as _model_constants
@@ -1339,8 +1340,48 @@ def _resolved_prototype_value(
         f"{array.shape} that cannot serve derived shape {target_shape}")
 
 
+def _run_start_vegetation(cache: PreparedCache,
+                          static: Mapping[str, np.ndarray],
+                          valid_time: datetime,
+                          run_config: Mapping[str, object] | None,
+                          ) -> dict[str, np.ndarray]:
+    """VEGFRA, LAI and ALBBCK as the prepared forecast starts with them.
+
+    The forecast takes the analyzed vegetation fraction when its start
+    source carries one (``gpuwm.ingest.vegetation.initial_vegetation_
+    fraction``), otherwise GREENFRAC interpolated to the start date, and
+    LAI and the background albedo interpolated to the date as real.exe
+    does (module_initialize_real.F:1192, :1322-1335).  The export used the
+    calendar month's raw value of each instead, so the pair described
+    another land surface than the run that wrote it: on the 2024-05-21 18Z
+    HRRR-start crop VEGFRA differed by 12 % RMS (up to 37 %) and stock WRF's
+    latent heat flux by 89 W m-2 RMS after ten minutes.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.core.landuse import monthly_background_albedo, surface_leaf_area
+    from gpuwm.ingest.vegetation import initial_vegetation_fraction
+
+    analyzed = ({"VEGFRA": np.asarray(cache.array("met/VEGFRA"))}
+                if "met/VEGFRA" in cache._arrays else {})
+    vegfra = initial_vegetation_fraction(
+        SimpleNamespace(fields=analyzed), static, valid_time)
+    run = SimpleNamespace(**dict(run_config or {}))
+    return {
+        "VEGFRA": np.asarray(vegfra, dtype=np.float64),
+        "LAI": np.asarray(surface_leaf_area(run, static["LAI12M"], valid_time),
+                          dtype=np.float64),
+        "ALBBCK": np.asarray(monthly_background_albedo(
+            static["ALBEDO12M"], static["LANDMASK"], valid_time),
+            dtype=np.float64),
+    }
+
+
 def _surface_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
-                    month_index: int) -> dict[str, np.ndarray]:
+                    valid_time: datetime,
+                    run_config: Mapping[str, object] | None = None,
+                    ) -> dict[str, np.ndarray]:
+    vegetation = _run_start_vegetation(cache, static, valid_time, run_config)
     declared = {
         name.removeprefix("surface/")
         for name in cache._arrays
@@ -1358,16 +1399,14 @@ def _surface_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
         }
         land = result["LANDMASK"] >= 0.5
         green = np.asarray(static["GREENFRAC"], dtype=np.float64)
-        albedo = np.asarray(static["ALBEDO12M"], dtype=np.float64)
-        lai12 = np.asarray(static["LAI12M"], dtype=np.float64)
         snoalb = np.asarray(static["SNOALB"], dtype=np.float64) / 100.0
         result.update({
-            "VEGFRA": 100.0 * green[month_index],
+            "VEGFRA": vegetation["VEGFRA"],
             "SHDMAX": 100.0 * np.max(green, axis=0),
             "SHDMIN": 100.0 * np.min(green, axis=0),
             "SHDAVG": 100.0 * np.mean(green, axis=0),
-            "ALBBCK": albedo[month_index] / 100.0,
-            "LAI": lai12[month_index],
+            "ALBBCK": vegetation["ALBBCK"],
+            "LAI": vegetation["LAI"],
             "SNOALB": np.where(land, np.maximum(snoalb, 0.08), 0.08),
         })
         return result
@@ -1405,8 +1444,6 @@ def _surface_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     valid_tmn = np.isfinite(tmn) & (tmn >= 170.0) & (tmn <= 400.0)
     tmn = np.where(land & valid_tmn, tmn, tsk)
     green = np.asarray(static["GREENFRAC"], dtype=np.float64)
-    albedo = np.asarray(static["ALBEDO12M"], dtype=np.float64)
-    lai12 = np.asarray(static["LAI12M"], dtype=np.float64)
     snoalb = np.asarray(static["SNOALB"], dtype=np.float64) / 100.0
     snoalb = np.where(land, np.maximum(snoalb, 0.08), 0.08)
     return {
@@ -1418,12 +1455,12 @@ def _surface_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
         "SEAICE": xice,
         "XLAND": np.where(effective_land, 1.0, 2.0),
         "LANDMASK": effective_land.astype(np.float64),
-        "VEGFRA": 100.0 * green[month_index],
+        "VEGFRA": vegetation["VEGFRA"],
         "SHDMAX": 100.0 * np.max(green, axis=0),
         "SHDMIN": 100.0 * np.min(green, axis=0),
         "SHDAVG": 100.0 * np.mean(green, axis=0),
-        "ALBBCK": albedo[month_index] / 100.0,
-        "LAI": lai12[month_index],
+        "ALBBCK": vegetation["ALBBCK"],
+        "LAI": vegetation["LAI"],
         "SNOALB": snoalb,
     }
 
@@ -1483,6 +1520,7 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
                      p_top: float, mp_physics: int = 6,
                      sf_surface_physics: int = 2,
                      num_soil_layers: int = 4,
+                     run_config: Mapping[str, object] | None = None,
                      ) -> dict[str, np.ndarray]:
     u = cache.array("state/u")
     v = cache.array("state/v")
@@ -1535,8 +1573,7 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     t2 = np.asarray(cache.array("met/T2"), dtype=np.float64)
     u10_face = np.asarray(cache.array("met/U10"), dtype=np.float64)
     v10_face = np.asarray(cache.array("met/V10"), dtype=np.float64)
-    month_index = valid_time.month - 1
-    surface = _surface_fields(cache, static, month_index)
+    surface = _surface_fields(cache, static, valid_time, run_config)
     soil_depths, soil_thicknesses = _direct_export_soil_geometry(
         sf_surface_physics, num_soil_layers)
     soil_shape_drift = {
@@ -2447,7 +2484,8 @@ def export_prepared_wrf_hierarchy(
                 with np.load(artifact.static_cache, allow_pickle=False) as static:
                     fields = _wrfinput_fields(
                         cache, static, geometry, domain_valid_time, p_top=p_top,
-                        mp_physics=physics_inventory.mp_physics)
+                        mp_physics=physics_inventory.mp_physics,
+                        run_config=cfg)
                     _write_wrfinput(
                         staging / name, input_contract, dimensions,
                         updates, fields, _date_text(domain_valid_time),
@@ -2713,7 +2751,7 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
                 cache, static, geometry, valid_time, p_top=p_top,
                 mp_physics=physics_inventory.mp_physics,
                 sf_surface_physics=sf_surface_physics,
-                num_soil_layers=num_soil_layers)
+                num_soil_layers=num_soil_layers, run_config=cfg)
             input_contract = contract_bundle["wrfinput"]
             input_dimensions = _dimensions(
                 input_contract, nx=nx, ny=ny, nz=nz,

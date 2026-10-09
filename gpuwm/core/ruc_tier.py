@@ -292,6 +292,7 @@ def ruc_fused_source(nzs: int, *, kernel_dir=None,
     prefix = "".join(f"#define {key} {value}\n" for key, value in defines)
     parts = [_preamble(kdir), prefix,
              (kdir / "glibc_flt32.cuh").read_text(encoding=_ENCODING),
+             (kdir / "glibc_trig_flt32.cuh").read_text(encoding=_ENCODING),
              _RUC_AS_DEVICE_OPEN,
              (kdir / f"{RUC_MODULE}.cu").read_text(encoding=_ENCODING),
              _RUC_AS_DEVICE_CLOSE]

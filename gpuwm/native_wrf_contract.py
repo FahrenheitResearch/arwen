@@ -278,7 +278,8 @@ def write_native_static_cache(
 
 
 def write_native_geometry_receipt(
-        path: Path, grid, cfg, static_path: Path) -> dict[str, object]:
+        path: Path, grid, cfg, static_path: Path, *,
+        terrain_autosmooth=None) -> dict[str, object]:
     """Atomically write the standard geometry/static binding receipt."""
 
     path = Path(path)
@@ -295,6 +296,8 @@ def write_native_geometry_receipt(
         "status": "PASS",
         "geometry": native_geometry_contract(grid, cfg),
         "static_sampling_contract": current_sampling_contract(),
+        **({"terrain_autosmooth": terrain_autosmooth}
+           if terrain_autosmooth is not None else {}),
         "cache": {
             "path": static_path.name,
             "bytes": static_path.stat().st_size,

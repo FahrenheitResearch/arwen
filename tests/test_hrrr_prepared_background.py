@@ -294,10 +294,11 @@ def _bind_synthetic_geometry(monkeypatch):
         lambda exp, wps, source_name=None: object())
     monkeypatch.setattr(
         runner, "verify_native_static_receipt",
-        lambda receipt, static, grid, cfg: None)
+        lambda receipt, static, grid, cfg: {"status": "PASS"})
     monkeypatch.setattr(
         runner, "load_native_static_cache",
-        lambda path, grid, ny, nx: {"LANDMASK": np.zeros((ny, nx))})
+        lambda path, grid, ny, nx: {
+            "LANDMASK": np.zeros((ny, nx)), "HGT_M": np.zeros((ny, nx))})
 
 
 def _preflight(bundle: _Bundle, **overrides):

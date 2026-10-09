@@ -191,7 +191,26 @@ def test_stop_reaps_owned_descendants_and_spares_unrelated_process(case, descend
         assert rw._process(pid) is None
         assert not rw._owned_processes(record["token"], owner_pid=owner["pid"])
         assert unrelated.poll() is None
-        assert rw._stop(directory)["job"] == stopped
+        # Detached output consumers drain after forecast termination. Their
+        # intermediate receipts are not immutable STOP results. Require both
+        # consumers to finish, then compare the complete terminal snapshot.
+        def drained_status():
+            status = rw._status(directory)
+            return status if all(status[channel]["done"] for channel in
+                                 ("native_plots", "background_maps")) else None
+
+        drained = wait_for(drained_status)
+        for snapshot in (stopped, drained):
+            durable = {key: value for key, value in snapshot.items()
+                       if key not in ("native_plots", "background_maps")}
+            if snapshot is stopped:
+                first_durable = durable
+            else:
+                assert durable == first_durable
+        assert rw._stop(directory)["job"] == drained
+        assert rw._process(pid) is None
+        assert not rw._owned_processes(record["token"], owner_pid=owner["pid"])
+        assert unrelated.poll() is None
     finally:
         unrelated.terminate()
         unrelated.wait(timeout=5)

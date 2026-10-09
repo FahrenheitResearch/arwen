@@ -631,6 +631,19 @@ def _background_radius_arms():
         if not seeds_effs:
             continue
         test = node.test
+        # The named-scheme arm (``_named_scheme(cfg.mp_physics) is not
+        # None``, gpuwm.microphysics_schemes) is a registry lookup, not a
+        # literal tuple: its members are exactly the registry's ids.
+        if (isinstance(test, ast.Compare) and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.IsNot)
+                and isinstance(test.left, ast.Call)
+                and isinstance(test.left.func, ast.Name)
+                and test.left.func.id == "_named_scheme"
+                and isinstance(test.comparators[0], ast.Constant)
+                and test.comparators[0].value is None):
+            from gpuwm.microphysics_schemes import NAMED_MP_IDS
+            arms.append(tuple(NAMED_MP_IDS))
+            continue
         assert (isinstance(test, ast.Compare)
                 and len(test.ops) == 1
                 and isinstance(test.ops[0], ast.In)

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from gpuwm.microphysics_schemes import scheme as _named_scheme
+
 from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           SASE_PBL_SCHEME, RunConfig)
 
@@ -332,6 +334,16 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
             # QNWFA2D / QNIFA2D surface emission tendencies, # kg-1 s-1.
             # Cross-step constants, allocated once per domain.
             for name in ("nwfa2d", "nifa2d"):
+                shapes[name] = s2
+        named = _named_scheme(cfg.mp_physics)
+        if named is not None:
+            # A NAMED scheme: the capability row is the manifest, the same
+            # row gpuwm/core/state.py allocates from.
+            species = (named.ice_mass_species + named.moment_species
+                       + named.aerosol_species)
+            for name in species + tuple(n + "0" for n in species) + ("effc", "effi", "effs"):
+                shapes[name] = m
+            for name in named.surface_fields:
                 shapes[name] = s2
     if cfg.km_opt == 2:
         # WRF's two-time-level prognostic TKE (Registry.EM_COMMON:312):

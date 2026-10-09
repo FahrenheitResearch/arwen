@@ -102,7 +102,9 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
         "bl_mynn_cloud_tendency_form", "swint_opt", "aer_opt", "alb_sol",
         "thompson_version", "thompson_fork_snow_fall",
         "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest",
-        "surface_energy_diag"]
+        "surface_energy_diag", "cycling"]
+    assert _cfg().cycling is False
+    assert "cycling" not in restart.configuration_echo(_cfg())
     for name, default in {"thompson_version": "wrf_461",
             "thompson_fork_snow_fall": "blend", "rrtmg_cloud_optics_form": "wrf_461",
             "rrtmg_smoke_manifest": ""}.items():

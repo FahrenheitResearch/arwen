@@ -158,6 +158,11 @@ def _kernel_results(cp, *, variant="wrf_471", fixture=FIXTURE):
                           zadvect_implicit_variant=variant)
     mut = d(_load("mut", (ny, nx)))
     mut_old = d(_load("mut_old", (ny, nx)))
+    # Strict arithmetic forms the face masses from the perturbation and base
+    # words apart (ieva.stage_face_masses); the fixture holds their sum, so
+    # it enters as a base with a zero perturbation, the same words.
+    state.mup = cp.zeros((ny, nx), dtype=np.float32)
+    state.mub2d = mut
 
     wwE, wwI = ieva.split_omega(state, cfg, d(_load("ww", fl)), state.u,
                                 state.v, mut, np.float32(dt))
@@ -253,6 +258,57 @@ def test_unmodified_wrf_differs_only_where_a_boundary_term_is_active():
         f"{int(active.sum())} have an active boundary term")
 
 
+@pytest.mark.gpu
+@requires_gpu
+def test_kernels_match_wrf_under_strict_arithmetic(tmp_path):
+    """Strict-only face-mass or solve errors must fail the default GPU leg.
+
+    Strict arithmetic is selected before import. Run both real fixture
+    comparisons in a fresh strict process, including the nonperiodic edge
+    faces and the declared w-boundary difference. A skipped child test is
+    missing coverage, even when pytest exits successfully.
+    """
+    import os
+    import subprocess
+    import sys
+    import xml.etree.ElementTree as ET
+
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    for name in list(env):
+        if name.startswith("GPUWM_WRF_EXACT"):
+            del env[name]
+    env["GPUWM_WRF_EXACT"] = "1"
+    env["CUPY_CACHE_DIR"] = str(tmp_path / "cupy-cache")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(root), str(root / "tests")]
+        + [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p])
+    names = (
+        "test_kernels_are_wrf_471_word_for_word",
+        "test_unmodified_wrf_differs_only_where_a_boundary_term_is_active",
+    )
+    receipt = tmp_path / "strict-ieva.xml"
+    child = """
+import sys
+from gpuwm import wrf_exact
+from gpuwm.core import ieva
+assert wrf_exact.ENABLED and ieva.WRF_EXACT, 'strict IEVA was not selected'
+import pytest
+raise SystemExit(pytest.main(sys.argv[1:]))
+"""
+    done = subprocess.run(
+        [sys.executable, "-c", child, "-q", "-p", "no:cacheprovider",
+         f"--junitxml={receipt}",
+         *[f"tests/test_zadvect_implicit.py::{name}" for name in names]],
+        env=env, cwd=str(root), capture_output=True, text=True, timeout=1800)
+    assert done.returncode == 0, done.stdout[-8000:] + done.stderr[-4000:]
+    cases = ET.parse(receipt).findall(".//testcase")
+    assert sorted(case.attrib["name"] for case in cases) == sorted(names)
+    assert all(len(case) == 0 for case in cases), (
+        "both strict fixture comparisons must pass without skips: "
+        + ET.tostring(ET.parse(receipt).getroot(), encoding="unicode"))
+
+
 @requires_gpu
 def test_a_uniform_theta_stays_uniform_where_the_solve_is_implicit(
         monkeypatch):
@@ -309,6 +365,125 @@ def test_a_uniform_theta_stays_uniform_where_the_solve_is_implicit(
         "the ridge must drive the vertical Courant number past the "
         f"explicit share: {implicit_points}")
     assert drift < 1.0e-2, f"uniform 300 K theta moved {drift} K"
+
+
+_STRICT_RIDGE_CHILD = r"""
+import json, sys
+from pathlib import Path
+import cupy as cp
+import numpy as np
+from gpuwm import wrf_exact
+from gpuwm.core import ieva
+from gpuwm.core.dycore import set_w_surface, step
+from gpuwm.core.grid import make_base_state, make_vertical_coord
+from gpuwm.core.state import init_at_rest
+from gpuwm.core.terrain import bell_hill
+sys.path.insert(0, sys.argv[1])
+import terrain_clock_probe as probe
+
+ridge = probe.Ridge(3000.0, 3000.0, 0.4)
+etac = probe.geometry(ridge)["etac_exact"]
+cfg = probe._config(ridge, nx=96, dt=40.0, sound_steps=8, etac=etac,
+                    seconds=40.0, zadvect_implicit=1)
+terrain = bell_hill(cfg)
+coord = make_vertical_coord(cfg.nz, hybrid_opt=2, etac=float(etac),
+                            eta_levels=np.asarray(cfg.eta_levels))
+base = make_base_state(coord, lambda z: np.full_like(
+    np.asarray(z, dtype=np.float64), 300.0), p_surf=cfg.p_surf,
+    ztop=cfg.ztop, terrain_z=terrain)
+state = init_at_rest(cfg, coord, base, terrain_z=base.terrain_z)
+state.u[...] = cp.float32(40.0)
+set_w_surface(state, cfg)
+state.w[1:] = state.w[0][None] * (state.znw[1:, None, None] ** 2)
+points = []
+prepare = ieva.prepare_dynamics
+
+def counting(state_, cfg_, ww):
+    ctx = prepare(state_, cfg_, ww)
+    points.append(int(cp.count_nonzero(ctx.wwI)))
+    return ctx
+
+ieva.prepare_dynamics = counting
+step(state, cfg)
+drift = float(cp.abs(state.total_theta() - np.float32(300.0)).max())
+print(json.dumps({"strict": bool(wrf_exact.ENABLED), "implicit": points,
+                  "drift": drift}))
+"""
+
+
+@requires_gpu
+def test_a_uniform_theta_stays_uniform_under_strict_arithmetic(tmp_path):
+    """The breakage this prevents: under GPUWM_WRF_EXACT the state holds
+    WRF's t_2 (thb = t0) and the strict acoustic kernels balance t0
+    themselves, yet the IEVA substep still added t0's flux divergence on
+    the full mass flux, so it was counted twice.  A real HRRR-initialized
+    mp=28 forecast (HRRR runs zadvect_implicit = 1) was 2.6 K of theta and
+    233 Pa of column mass off WRF after one step and non-finite at step
+    11, and every field the microphysics read came from that state.  The
+    same neutral 300 K ridge as the default-path test, run in a strict
+    process, must stay 300 K too."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    for name in list(env):
+        if name.startswith("GPUWM_WRF_EXACT"):
+            del env[name]
+    env["GPUWM_WRF_EXACT"] = "1"
+    env["CUPY_CACHE_DIR"] = str(tmp_path / "cupy-cache")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(root)] + [p for p in env.get("PYTHONPATH", "").split(os.pathsep)
+                       if p])
+    done = subprocess.run(
+        [sys.executable, "-c", _STRICT_RIDGE_CHILD, str(root / "tools")],
+        env=env, cwd=str(tmp_path), capture_output=True, text=True,
+        timeout=1800)
+    assert done.returncode == 0, done.stderr[-4000:]
+    result = json.loads(done.stdout.strip().splitlines()[-1])
+    assert result["strict"] is True
+    assert len(result["implicit"]) == 1 and result["implicit"][0] > 0, (
+        "the ridge must drive the vertical Courant number past the "
+        f"explicit share: {result['implicit']}")
+    assert result["drift"] < 1.0e-2, (
+        f"uniform 300 K theta moved {result['drift']} K under strict "
+        "arithmetic")
+
+
+def test_the_strict_ieva_substep_does_not_add_the_t0_flux(monkeypatch):
+    """The CPU half of the strict-arithmetic regression: on an IEVA substep
+    the t0 constant rejoins rth_t on the default path only."""
+    from gpuwm.core import dycore, ieva
+
+    calls = []
+    for name in ("launch_flux_div_scalar", "launch_flux_div_u",
+                 "launch_flux_div_v", "launch_flux_div_w",
+                 "_validate_geopotential_config",
+                 "_launch_slow_geopotential", "_launch_slow_pgf",
+                 "_launch_slow_buoyancy", "add_coriolis_curvature"):
+        monkeypatch.setattr(dycore, name, lambda *a, **k: None)
+    monkeypatch.setattr(dycore, "vertical_orders", lambda cfg: (3, 3))
+    for name in ("_boundary_x", "_boundary_y", "_boundary_forced"):
+        monkeypatch.setattr(dycore, name, lambda cfg: True)
+    for name in ("solve_u", "solve_v", "solve_theta", "solve_ph", "solve_w"):
+        monkeypatch.setattr(ieva, name, lambda *a, **k: None)
+    monkeypatch.setattr(ieva, "theta_minus_t0", lambda state: object())
+    monkeypatch.setattr(ieva, "add_theta_offset_flux",
+                        lambda *a, **k: calls.append("t0"))
+    state = SimpleNamespace(rotational=False, u=None, v=None, w=None,
+                            rth_t=None, ru_t=None, rv_t=None, rw_t=None,
+                            msft=None, msfu=None, msfv=None, has_msf=False,
+                            p=np.zeros((2, 3, 4), dtype=np.float32))
+    cfg = SimpleNamespace(dx=3000.0, dy=3000.0)
+    ctx = SimpleNamespace(wwE=None)
+    for strict, expected in ((False, ["t0"]), (True, [])):
+        calls.clear()
+        monkeypatch.setattr(dycore, "WRF_EXACT", strict)
+        dycore._add_slow_tendencies_ieva(state, cfg, None, None, None, ctx,
+                                         cq=object())
+        assert calls == expected, (strict, calls)
 
 
 def test_namelist_import_carries_the_option(tmp_path):

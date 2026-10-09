@@ -292,6 +292,11 @@ def test_ring_tables_are_released_with_their_state():
         assert len(mp._RING_TABLES[state]) == 2, "one table each way"
         return weakref.ref(state)
 
+    # The baseline is taken after the same collection the loop runs: cyclic
+    # garbage an earlier test left (dead states and their CuPy arrays) would
+    # otherwise be freed inside the loop and read as this test's release,
+    # which failed the one-process GPU shard and passed alone.
+    gc.collect()
     cp.cuda.Device().synchronize()
     before, held = int(pool.used_bytes()), len(mp._RING_TABLES)
     for _ in range(3):

@@ -59,11 +59,17 @@ def _native_column_kernel(module, entry, *, shared_pointers=(), member_columns):
     from gpuwm.certify.kernel_manifest import record_module
     original = kernels.module_source(module)
     source = remap_shared_column_loads(original, shared_pointers, member_columns=member_columns)
-    options = wrf_exact.effective_options(("-std=c++17",)) if wrf_exact.ENABLED else ("-std=c++17",)
-    compiled = cp.RawModule(code=source, options=options)
+    options = wrf_exact.effective_options(kernels.module_options(module)) if wrf_exact.ENABLED else kernels.module_options(module)
     key = f"gpuwm.ensemble.batch_physics:{module}:{entry}:shared-column-loads[columns={member_columns}]"
-    kernels._compile_observed(compiled, key)
-    record_module(key, source=source, options=options, module=compiled)
+    if module in kernels._NO_FTZ_MODULES:
+        # The scalar unit's own compile site (RawModule appends -ftz=true
+        # after the caller's options, which would flush the subnormal words
+        # the scalar kernel keeps).
+        compiled = kernels.compile_noftz_module(module, source, key)
+    else:
+        compiled = cp.RawModule(code=source, options=options)
+        kernels._compile_observed(compiled, key)
+        record_module(key, source=source, options=options, module=compiled)
     return compiled.get_function(entry), {"source_policy": "integer-only shared column indexing",
                                           "scalar_source_sha256": sha256(original.encode()).hexdigest(),
                                           "source_sha256": sha256(source.encode()).hexdigest(),

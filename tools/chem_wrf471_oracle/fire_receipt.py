@@ -23,6 +23,7 @@ def measure(root, kind8=None):
         vol={n:case[n].transpose(1,2,0).copy() for n in ("ebu","rho","dz")}
         plane={n:case[n].T.copy() for n in ("hwp","prev","sw","ends","type")}
         coef=np.ones((1,20),np.float32);hist=coef.copy()
+        carry=None  # written by step 1, read from step 2 on
         for step in range(1,7):
             if step>1:
                 vol["ebu"]=carry_ebu(carry,coef,True)

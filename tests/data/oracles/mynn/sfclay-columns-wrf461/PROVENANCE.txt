@@ -1,0 +1,37 @@
+WRF v4.6.1 MYNN surface-layer column oracle (tools/mynn_sfclay_wrf461_column_oracle).
+Built on box W1 2026-10-07 by build.sh against the pristine WRF v4.6.1 checkout
+(commit d66e442fccc04111067e29274c9f9eaccc3cef28).
+
+Toolchain:
+  GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+  ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+  model name	: Intel(R) Xeon(R) Platinum 8559C
+  fma
+
+Set: 110 columns (64 random over six regimes, 46 edge), 11 option sets
+(8 with spp_pbl=0, 3 with spp_pbl=1 under rstoch = 0.15*REAL(MOD(i-1,7)-3)),
+2-3 steps each.
+
+Builds:
+  o2 libmvec: 0
+  o0 libmvec: 0
+  wrfstock libmvec: 1
+  wrfstock_scalar libmvec: 0
+  wrfstock binds: _ZGVbN4vv_powf (libmvec), the Exner loop at module_sf_mynn.F:499-520
+  o2 vs o0: byte-identical
+  o2 vs wrfstock: DIFFERENT
+  o2 vs wrfstock_scalar: byte-identical (stock flags plus -fno-tree-vectorize)
+
+Position test (stock_position.py, spp_pbl=0 option sets):
+  o2, wrfstock_scalar: 0 output words change when columns move 1-3 indices or run alone
+  wrfstock: 0 change when moved; 1822 words in 4 columns change when run alone
+
+SHA-256:
+  86395534a6c9bfc79dcad50094bce290eff05756777a95794b2673795f9761c3  module_sf_mynn.F
+  9ac652594b1c8e4131a4624e5d0855ce7137f58bf106f6b4644d2d1a784f141c  run_columns.F90
+  4acc8f12fdab4884d59956f00cb8d4c7c4c9972f9e8ca419ba7e46e240a153de  columns.py
+  3a9f709b72199127f43d3712c66d9f074f616c7f9bff3dad8f7b5d6072dab3d8  columns.bin
+  eaea43b076b3de57ae3bb4e91f4789a35b43a0690ab77d46dc1351ff328835af  configs.txt
+  c938d98dcd99430804f99b2f0cf00ba15c98e2b87e3f88adb8e69801ad8b027c  oracle-o2.bin (= o0 = wrfstock_scalar)
+  b37353e37878d07a5b4dc1c7d059b68b6204dc0d19c4683d1fadca420e28cf14  oracle-wrfstock.bin
+  6bba648a074f4c12a67e954d74c3e2583002b01fe5d2ae262203b727b1ff0cad  oracle-o2.bin.gz (gzip -9 -n)

@@ -28,6 +28,8 @@ configuration uses -- but a test on such a grid would assert nothing.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -224,7 +226,7 @@ def test_the_vram_preflight_counts_the_mynn_arrays():
                     sf_sfclay_physics=1, sf_surface_physics=2,
                     bl_pbl_physics=1)
     mynn = RunConfig(**{**{f.name: getattr(ysu, f.name)
-                          for f in ysu.__dataclass_fields__.values()},
+                          for f in dataclasses.fields(ysu)},
                         "sf_sfclay_physics": 5, "bl_pbl_physics": 5})
     ysu_shapes = physics_array_shapes(ysu)
     mynn_shapes = physics_array_shapes(mynn)

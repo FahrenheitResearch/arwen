@@ -184,7 +184,7 @@ __device__ real sh_pu(real d, real h) {
     if (h != 0.0f) {
         real doh = d / h;
         real t2 = doh * doh;
-        real tb = powf(doh, b2);
+        real tb = gfk_pow(doh, b2);
         real num = a1 * t2 + a2 * tb;
         real den = a3 * t2 + a4 * tb + a5;
         pu = num / den;
@@ -223,7 +223,7 @@ __device__ real sh_pthnl(real d, real h) {
     if (h != 0.0f) {
         real doh = d / h;
         real t2 = doh * doh;
-        real tb = powf(doh, b2);
+        real tb = gfk_pow(doh, b2);
         real num = a1 * t2 + a2 * tb + a3;
         real den = a4 * t2 + a5 * tb + a6;
         pthnl = a7 * num / den + (1.0f - a7);
@@ -246,7 +246,7 @@ __device__ real sh_pthl(real d, real h) {
     if (h != 0.0f) {
         real doh = d / h;
         real t2 = doh * doh;
-        real tb = powf(doh, b2);
+        real tb = gfk_pow(doh, b2);
         real num = a1 * t2 + a2 * tb + a3;
         real den = a4 * t2 + a5 * tb + a6;
         pthl = a7 * num / den + (1.0f - a7);
@@ -267,7 +267,7 @@ __device__ real sh_ptke(real d, real h) {
     if (h != 0.0f) {
         real doh = d / h;
         real t2 = doh * doh;
-        real tb = powf(doh, b2);
+        real tb = gfk_pow(doh, b2);
         real num = a1 * t2 + a2 * tb;
         real den = a3 * t2 + a4 * tb + a5;
         ptke = num / den;
@@ -475,7 +475,7 @@ __device__ void sh_mixlen(const real *u, const real *v, const real *theta,
         rel[k] = el[k] / elm[k];
     }
     epshol = sh_min(epshol, 0.0f);               // :1979
-    real ckp = elcbl * powf(1.0f - 8.0f * epshol, 1.0f / 3.0f);   // :1980
+    real ckp = elcbl * gfk_pow(1.0f - 8.0f * epshol, 1.0f / 3.0f);   // :1980
     if (lpbl > 1) {                              // :1981-1992
         for (int k = lpbl; k >= 2; --k) {
             real vkrmz = (z[k] - z[1]) * karman;
@@ -553,7 +553,7 @@ __device__ void sh_prodq2(real dtturbl, real ustar,
             bpr = akhl * gthvk * govrthvk;
         }
         real disel = sh_min(delxy, ceps * el[k]);   // :2111
-        real dis = powf(q2l, 1.5f) / disel;         // (q2l)**1.5 stays powf
+        real dis = gfk_pow(q2l, 1.5f) / disel;         // (q2l)**1.5 stays powf
         q2l = q2l + 2.0f * (pr - bpr - dis) * dtturbl;
         q2[k] = sh_max(q2l, epsq2l);                // amax1: NaN propagates
     }
@@ -584,7 +584,7 @@ __device__ void sh_vdifq(real dtdif, ShCol q2, ShColC z, ShColC akhk,
 
     for (int k = 2; k <= kte; ++k) {             // :2183-2186
         real zak = 0.5f * (z[k] + z[k - 1]);     // za(k-1) of shinhong2d
-        zfacentk[k] = powf(zak / hpbl, 3.0f);    // ((zak/hpbl))**3.0 -- a powf
+        zfacentk[k] = gfk_pow(zak / hpbl, 3.0f);    // ((zak/hpbl))**3.0 -- a powf
     }
     for (int k = kte; k >= 3; --k) {             // :2188-2193 (kte .. kts+2)
         dtoz[k] = (dtdif + dtdif) / (z[k + 1] - z[k - 1]);
@@ -835,20 +835,20 @@ void shinhong_column(const real *u, const real *v, const real *theta,
     epshol = hol1;
     real phim, phih, wstar, wstar3;
     if (sfcflg) {
-        phim = powf(1.0f - aphi16 * hol1, -(1.0f / 4.0f));
-        phih = powf(1.0f - aphi16 * hol1, -(1.0f / 2.0f));
+        phim = gfk_pow(1.0f - aphi16 * hol1, -(1.0f / 4.0f));
+        phih = gfk_pow(1.0f - aphi16 * hol1, -(1.0f / 2.0f));
         real bfx0 = sh_max(sflux, 0.0f);
         // hfx0/qfx0 (:766-767) are computed by WRF and never read; omitted.
         wstar3 = govrth * bfx0 * hpbl;
-        wstar = powf(wstar3, h1);
+        wstar = gfk_pow(wstar3, h1);
     } else {
         phim = 1.0f + aphi5 * hol1;
         phih = phim;
         wstar = 0.0f;
         wstar3 = 0.0f;
     }
-    real ust3 = powf(ustv, 3.0f);                // ust**3. stays powf
-    real wscale = powf(ust3 + phifac * karman * wstar3 * 0.5f, h1);
+    real ust3 = gfk_pow(ustv, 3.0f);                // ust**3. stays powf
+    real wscale = gfk_pow(ust3 + phifac * karman * wstar3 * 0.5f, h1);
     wscale = sh_min(wscale, ustv * aphi16);
     wscale = sh_max(wscale, __fdiv_rn(ustv, aphi5));
 
@@ -863,7 +863,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         hgamt = sh_max(hgamt, 0.0f);
         hgamq = sh_max(hgamq, 0.0f);
         real brint = -15.9f * ustv * ustv / wspdv * wstar3
-                   / powf(wscale, 4.0f);         // wscale**4. stays powf
+                   / gfk_pow(wscale, 4.0f);         // wscale**4. stays powf
         hgamu = brint * SH_UX(1);
         hgamv = brint * SH_VX(1);
     } else {
@@ -903,7 +903,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         if (wstar != 0.0f) {
             real uwst = fabsf(ustv / wstar - 0.5f);
             real uwstx = -80.0f * uwst + 14.0f;
-            csfac = 0.5f * (tanhf(uwstx) + 3.0f);
+            csfac = 0.5f * (__double2float_rn(tanh((double)uwstx)) + 3.0f);
         } else {
             csfac = 1.0f;   // dead in WRF: pblflg requires sflux>0 => wstar>0
         }
@@ -922,7 +922,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         real wspd10 = u10v * u10v + v10v * v10v;
         wspd10 = sqrtf(wspd10);
         real ross = wspd10 / (cori * zntv);
-        brcr_sbro = sh_min(0.16f * powf(1.0e-7f * ross, -0.18f), 0.3f);
+        brcr_sbro = sh_min(0.16f * gfk_pow(1.0e-7f * ross, -0.18f), 0.3f);
     }
     if (!stable) {                               // :876-884
         if ((xlandv - 1.5f) >= 0.0f) brcr = brcr_sbro;
@@ -973,7 +973,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         int kt = kpbl - 1;                       // k = kpbl - 1 (:931)
         prpbl = 1.0f;
         real wm3 = wstar3 + 5.0f * ust3;
-        wm2 = powf(wm3, h2);
+        wm2 = gfk_pow(wm3, h2);
         bfxpbl = __fdiv_rn(-0.15f * thvx[1], G) * wm3 / hpbl;
         dthvx = sh_max(thvx[kt + 1] - thvx[kt], tmin);
         real dthx = sh_max(SH_THX(kt + 1) - SH_THX(kt), tmin);
@@ -1039,15 +1039,15 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         if (k < kpbl) {
             real zfac = sh_min(sh_max(
                 1.0f - (zq[k + 1] - zl1) / (hpbl - zl1), zfmin), 1.0f);
-            zfacent[k] = powf(1.0f - zfac, 3.0f);   // (1.-zfac)**3. -- powf
-            // The ONE cbrtf site (see the header's per-site table): powf
-            // left dv's worst column at 1491308 ULP; under NVRTC 13.0.48
-            // cbrtf lands closer to the oracle here (dv 46603, exch_h 8) for
-            // tke 2005 -> 2022.  Under the CUDA 12 line only the exch_h
-            // 9 -> 8 half survives -- the row is compiler-specific and the
-            // header says why.  Do not "simplify" this back to powf.
-            real wscalek = cbrtf(
-                ust3 + phifac * karman * wstar3 * (1.0f - zfac));
+            zfacent[k] = gfk_pow(1.0f - zfac, 3.0f);   // (1.-zfac)**3. -- powf
+            // WRF's (...)**h1, glibc powf (gfk_pow), since lane/parity-pbl-
+            // libm.  This was the ONE cbrtf site while the unit ran CUDA's
+            // libm: cbrtf then sat closer to the oracle than CUDA's powf did
+            // (see the header's per-site table, which records that era).
+            // With glibc's own powf and no contraction the oracle's word is
+            // reproduced, so the Fortran spelling is the right one again.
+            real wscalek = gfk_pow(
+                ust3 + phifac * karman * wstar3 * (1.0f - zfac), h1);
             real prfac, prfac2, prnumfac;
             if (sfcflg) {
                 prfac = conpr;
@@ -1068,13 +1068,13 @@ void shinhong_column(const real *u, const real *v, const real *theta,
             real prnum0 = phih / phim + prfac;
             prnum0 = sh_max(sh_min(prnum0, prmax), prmin);
             xkzm[k] = wscalek * karman * zq[k + 1] * (zfac * zfac);   // **pfac folds
-            real prnum = 1.0f + (prnum0 - 1.0f) * expf(prnumfac);
+            real prnum = 1.0f + (prnum0 - 1.0f) * gfk_exp(prnumfac);
             // zfac**(pfac_q-pfac) == zfac**0. == 1.0 for every zfac
             // (pow-probe.txt, including 0; device powf(x, 0) is 1 for all x);
             // the multiply is kept.
-            xkzq[k] = xkzm[k] / prnum * powf(zfac, pfac_q - pfac);
+            xkzq[k] = xkzm[k] / prnum * gfk_pow(zfac, pfac_q - pfac);
             prnum0 = prnum0 / (1.0f + prfac2 * karman * sfcfrac);
-            prnum = 1.0f + (prnum0 - 1.0f) * expf(prnumfac);
+            prnum = 1.0f + (prnum0 - 1.0f) * gfk_exp(prnumfac);
             xkzh[k] = xkzm[k] / prnum;
             xkzm[k] = xkzm[k] + xkzminm;         // + xkzom(k), k <= kte-1
             xkzh[k] = xkzh[k] + xkzminh;         // + xkzoh(k)
@@ -1176,7 +1176,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
             // ... and the WHOLE mf -- entrainment term included -- is scaled
             // by pth1 AGAIN at :1127, so the entrainment piece is
             // double-scaled.  WRF's arithmetic, ported as written.
-            mf[k] = mf[k] + hfxpbl * expf(-entfacmf[k]);
+            mf[k] = mf[k] + hfxpbl * gfk_exp(-entfacmf[k]);
             mf[k] = mf[k] * pth1;
         }
     }
@@ -1197,7 +1197,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
             r1[k + 1] = SH_THX(k + 1) - 300.0f - dtodsu * dsdzt;
         } else if (pblflg && k >= kpbl && entfac[k] < 4.6f) {
             // :1161-1164 -- the entrainment-zone overwrite of xkzh ...
-            xkzh[k] = -(we * dza[kpbl] * expf(-entfac[k]));
+            xkzh[k] = -(we * dza[kpbl] * gfk_exp(-entfac[k]));
             xkzh[k] = sqrtf(xkzh[k] * xkzhl[k]);
             xkzh[k] = sh_max(xkzh[k], xkzminh);
             xkzh[k] = sh_min(xkzh[k], xkzmax);
@@ -1265,7 +1265,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
             r1[k] = r1[k] + dtodsd * dsdzq;
             r1[k + 1] = SH_QVX(k + 1) - dtodsu * dsdzq;
         } else if (pblflg && k >= kpbl && entfac[k] < 4.6f) {
-            xkzq[k] = -(we * dza[kpbl] * expf(-entfac[k]));
+            xkzq[k] = -(we * dza[kpbl] * gfk_exp(-entfac[k]));
             xkzq[k] = sqrtf(xkzq[k] * xkzhl[k]);
             xkzq[k] = sh_max(xkzq[k], xkzminh);
             xkzq[k] = sh_min(xkzq[k], xkzmax);

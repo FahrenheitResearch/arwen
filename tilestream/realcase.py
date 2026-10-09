@@ -689,7 +689,7 @@ def prepare_low_water(config_path: str, *, verbose=print):
         # preparers get the sub-source-cell reconstitution too, or
         # they stop being bit-comparable with the mainline route.
         soil_mesh=soil_mesh_plan_from_case(
-            snapshots[start_time], (lat, lon), data),
+            snapshots[start_time], grid, data),
         route=WATER_ROUTE_LOW_WATER)
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], start_time)
     from gpuwm.core.landuse import surface_leaf_area
@@ -1100,7 +1100,7 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
         # preparers get the sub-source-cell reconstitution too, or
         # they stop being bit-comparable with the mainline route.
         soil_mesh=soil_mesh_plan_from_case(
-            snapshots[start_time], (lat, lon), data),
+            snapshots[start_time], grid, data),
         route=WATER_ROUTE_SLABBED)
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], start_time)
     from gpuwm.core.landuse import surface_leaf_area

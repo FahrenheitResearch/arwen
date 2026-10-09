@@ -10,58 +10,19 @@ SOURCE_TRANSITION_SHA256="e77eb3f8f3ce1c483a53b4e89c9784824df37b305a2f1b0da57837
 
 
 def _measured_current_sources(receipt):
-    """Keep the original capture intact and admit only a measured transition.
-
-    Accepted staging changed relevant Smagorinsky FMA/rounding code after
-    the original capture. On node4 the actual current source reproduced
-    all 178128 original float32 words across 88 cases. The separate witness
-    binds source, compiler options, tools and every preserved array hash.
-    Re-measured for 1f625334f (32-bit Smagorinsky addressing, smag2d.cu and
-    dycore.py) on an RTX 5090, NVRTC 13.4: all 178128 words again, written
-    by tools/wrf_diffopt1_oracle/source_transition.py, which refuses on any
-    moved word.  Re-measured again for the 2.8.6 release tree (the sixth-order
-    edge-form workspace and order-5 transport fixes moved dycore.py) on node-4's
-    RTX 5070 Ti: all 178128 words.  Re-measured for the 2.8.7 tree (the DA
-    IAU hook, 838a7d92b, moved dycore.py) on node-4's RTX 5070 Ti: all
-    178128 words.  Re-measured for the AQ line merged into 2.8.7 (the chem
-    hooks and SFIRE's open-boundary geopotential moved dycore.py and
-    dycore.cu) on node-4's RTX 5070 Ti: all 178128 words.
-    """
+    """Retain the historical GPU archive and gate the corrected native proof."""
     import hashlib
-    from gpuwm.core.kernels import module_options
-    body=(DATA/"measured-source-transition.json").read_bytes()
-    assert hashlib.sha256(body).hexdigest()==SOURCE_TRANSITION_SHA256
-    transition=json.loads(body)
-    assert transition["schema"]=="gpuwm-diffopt1-measured-source-transition-v1"
-    assert transition["prior_module_source_sha256"]==receipt["module_source_sha256"]
-    assert transition["original_production_archive_sha256"]==receipt["archive_sha256"]
-    assert transition["new_capture_archive_sha256"]==receipt["archive_sha256"]
-    assert transition["native_archive_sha256"]==receipt["native_archive_sha256"]
-    assert (transition["case_count"],transition["field_count"],transition["words"],
-            transition["different_words"])==(88,272,178128,0)
-    assert transition["forecast_runs"]==0
-    for name,options in transition["module_options"].items():
-        assert list(module_options(name))==options
-    # These inputs participate in the coordinate capture. Unrelated solar,
-    # aerosol or MYNN registration changes are not diffusion source proof.
-    closure={"gpuwm/core/kernels/smag2d.cu","gpuwm/core/kernels/diff_opt1.cu",
-             "gpuwm/core/kernels/common.cuh","gpuwm/core/constants.py",
-             "gpuwm/core/dycore.py"}
-    recorded={row["path"]:row["sha256"] for row in transition["raw_source_inputs"]}
-    root=DATA.parents[2]
-    for name in closure:
-        assert hashlib.sha256((root/name).read_bytes()).hexdigest()==recorded[name]
-    fields=transition["different_by_field"]
-    assert len(fields)==272 and sum(row["words"] for row in fields)==178128
-    with np.load(DATA/"merged-gpu.npz") as arrays:
-        assert set(arrays.files)=={row["name"] for row in fields}
-        for row in fields:
-            value=arrays[row["name"]]
-            digest=hashlib.sha256(value.tobytes()).hexdigest()
-            assert value.dtype==np.float32 and value.size==row["words"]
-            assert row["different_words"]==0
-            assert digest==row["prior_array_sha256"]==row["current_array_sha256"]
-    return transition["current_module_source_sha256"]
+    from assembled_legacy_proofs import validate_coordinate, validate_coordinate_negative
+    # The prior witness is retained byte for byte; it is not relabeled as a
+    # zero-change transition after the 25435 incorrect old words were fixed.
+    historical=(DATA/"measured-source-transition.json").read_bytes()
+    assert hashlib.sha256(historical).hexdigest()==SOURCE_TRANSITION_SHA256
+    proof=validate_coordinate(DATA.parents[2])
+    validate_coordinate_negative(DATA.parents[2])
+    assert proof["prior_gpu_archive_sha256"]==receipt["archive_sha256"]
+    assert proof["native_archive_sha256"]==receipt["native_archive_sha256"]
+    return {name: proof["capture_identity"]["module_source_sha256"][name]
+            for name in ("smag2d","diff_opt1")}
 
 
 def test_merged_coordinate_receipt_is_sealed_to_native_and_production_source():
@@ -141,10 +102,7 @@ def test_coordinate_km2_compiled_wrf_horizontal_coefficients_and_tke_words():
                                 ("kmv",state._scratch["smag_kmv"]),
                                 ("khv",state._scratch["smag_khv"])):
                 actual=cp.asnumpy(value);key=case["name"]+"_"+field
-                np.testing.assert_array_equal(actual.view("u4"),pinned[key].view("u4"),err_msg=key)
-                assert stats(actual,values[case["name"]+"_expected_"+field])==measured[case["name"]][field]
-                if field in ("km","kh","tke"):assert measured[case["name"]][field]["max_ulp"]<=5
-                if field in ("bn2","tke"):assert measured[case["name"]][field]["different"]==0
+                np.testing.assert_array_equal(actual.view("u4"),values[case["name"]+"_expected_"+field].view("u4"),err_msg=key)
             assert bool(cp.all(rtke==np.float32(.125)))
 
 
@@ -164,13 +122,9 @@ def test_coordinate_deformation_matches_compiled_word_receipt():
             tensors=launch_wrf_smag2d_km(state,cfg,km,kh,time_t=False)
             for field,value in zip(("d11","d22","d12"),tensors):
                 actual=cp.asnumpy(value)
-                np.testing.assert_array_equal(actual.view("u4"),pinned[case["name"]+"_"+field].view("u4"))
-                assert stats(actual,values[case["name"]+"_expected_"+field])==measured[case["name"]][field]
                 expected=values[case["name"]+"_expected_"+field]
-                if field in ("d11","d22"):
-                    np.testing.assert_array_equal(actual.view("u4"),expected.view("u4"))
-                else:
-                    assert float(np.max(np.abs(actual-expected)))<=2.**-31
+                np.testing.assert_array_equal(actual.view("u4"),expected.view("u4"))
+                if field == "d12":
                     # cal_deform_and_div copies the evaluated tensor at physical
                     # faces. Preserve the donor rule independently of the pin.
                     if case["bx"]:
@@ -190,10 +144,14 @@ def test_merged_coordinate_moved_words_are_only_the_tensor_donor_fix(tmp_path):
     # kernel loader and its cached function wrappers for the other tests.
     subprocess.run([sys.executable,str(capture),str(DATA),str(output),"--mode","km2",
                     "--revert-deformation-donor"],check=True)
-    with np.load(DATA/"km2-gpu.npz") as prior,np.load(output.with_suffix(".npz")) as control:
-        assert set(control.files)==set(prior.files)
-        for key in prior.files:
-            np.testing.assert_array_equal(control[key].view("u4"),prior[key].view("u4"),err_msg=key)
+    import hashlib
+    from assembled_legacy_proofs import validate_coordinate_negative
+    current = validate_coordinate_negative(DATA.parents[2])
+    with np.load(output.with_suffix(".npz")) as control:
+        assert set(control.files) == set(current["fields"])
+        for key in control.files:
+            assert hashlib.sha256(control[key].tobytes()).hexdigest() == current["fields"][key]["control_sha256"], key
+    # The original archive attribution remains independently checked below.
     proof=json.loads((DATA/"merged-attribution.json").read_text())
     with np.load(DATA/"km2-gpu.npz") as prior,np.load(DATA/"merged-gpu.npz") as merged:
         observed={}
@@ -212,15 +170,17 @@ def test_merged_coordinate_moved_words_are_only_the_tensor_donor_fix(tmp_path):
 @pytest.mark.gpu
 @requires_gpu
 def test_metric_diffusion_matches_merged_oracle_fix_baseline():
-    """The merged native-oracle fixes have an exact, separately named pin.
+    """The 2.8.8 trajectory has an exact, separately named pin.
 
-    The original a417 words remain intact in diff2-baseline.npz. Every moved
-    word is attributed by controlled default-source transitions in the merge
-    receipt rather than accepted by a larger numeric tolerance.
+    The original a417 words remain intact in diff2-baseline.npz and the 2.8.7
+    words in diff2-merged-baseline.npz, every 2.8.7 move attributed by the
+    merge receipt.  diff2-288-baseline.npz is the 2.8.8 release line's
+    measurement; diff2-288-repin.json records what moved and why
+    (test_288_repin_receipt_seals_its_pins).  No tolerance: every word.
     """
     from tools.wrf_diffopt1_oracle.model_case import configuration,model_state,word_arrays
     from gpuwm.core.dycore import step
-    with np.load(DATA/"diff2-merged-baseline.npz") as expected:
+    with np.load(DATA/"diff2-288-baseline.npz") as expected:
         for km in (2,4):
             for boundary in (False,True):
                 for moist in (False,True):
@@ -264,31 +224,106 @@ def test_coordinate_restart_retains_original_theta_and_exact_trajectory(tmp_path
 @pytest.mark.gpu
 @requires_gpu
 @pytest.mark.parametrize("km",[2,4])
-def test_legacy_metric_checkpoint_resumes_exact_trajectory(km):
+def test_legacy_metric_checkpoint_resumes_exact_trajectory(tmp_path,km):
+    """The metric form resumes exactly from a checkpoint this build wrote.
+
+    diff2-288-legacy-k*.npz are the current-build checkpoints
+    (merged_metric_capture --record-checkpoints; sealed by
+    test_288_legacy_checkpoints_are_sealed).  "Legacy" is the metric form's
+    identity bytes: the default diff_opt=2/mix_full_fields selectors stay
+    out of the config echo.  Every comparison runs on the card under test
+    from the same stored bytes, so no word here depends on the card that
+    recorded the fixture.  No tolerance: every word.
+    """
+    import re
     from dataclasses import replace
     from tools.wrf_diffopt1_oracle.model_case import configuration,model_state,word_arrays
+    from gpuwm.checkpoint_identity import DYCORE_MIXING_ALGORITHM_IDENTITY
     from gpuwm.core.dycore import step
-    from gpuwm.io.restart import restore_restart,read_restart_header,RestartMismatchError
-    from tools.wrf_diffopt1_oracle.merged_metric_capture import checkpoint_payload_state
-    # Preserve the sealed pre-CQ trajectory and legacy checkpoint physics.
-    cfg=replace(configuration(km=km,diff=2,mix=True),moist_cq=False)
-    path=DATA/f"diff2-legacy-k{km}.npz"
-    assert "diff_opt" not in read_restart_header(path)["config"]
-    assert "mix_full_fields" not in read_restart_header(path)["config"]
-    # Independent direct payload seeding advances the genuine old state with
-    # the merged operator. It does not call the compatibility restore path.
+    from gpuwm.io.restart import (restore_restart,read_restart_header,write_restart,
+                                  RestartMismatchError)
+    from tools.wrf_diffopt1_oracle.merged_metric_capture import (
+        CHECKPOINT_STEPS,CURRENT_CHECKPOINT,checkpoint_configuration,checkpoint_payload_state)
+    cfg=checkpoint_configuration(km)
+    path=DATA/CURRENT_CHECKPOINT.format(km=km)
+    header=read_restart_header(path)
+    assert "diff_opt" not in header["config"]
+    assert "mix_full_fields" not in header["config"]
+    assert header["physics_setup"]["algorithms"]["dycore_mixing"]==DYCORE_MIXING_ALGORITHM_IDENTITY
+    assert header["elapsed_seconds"]==CHECKPOINT_STEPS*cfg.dt
+    # Independent direct payload seeding advances the stored state with the
+    # production operator. It does not call the restore path.
     straight=checkpoint_payload_state(path,cfg)
     resumed=model_state(cfg);restore_restart(path,resumed,cfg)
     for _ in range(2):
         step(resumed,cfg)
         step(straight,cfg)
     straight_words=word_arrays(straight)
-    with np.load(DATA/"diff2-merged-legacy.npz") as expected:
-        for field,actual in word_arrays(resumed).items():
-            np.testing.assert_array_equal(actual.view("u4"),expected[f"k{km}_"+field].view("u4"),err_msg=field)
-            np.testing.assert_array_equal(actual.view("u4"),straight_words[field].view("u4"),err_msg=field)
+    resumed_words=word_arrays(resumed)
+    assert set(resumed_words)==set(straight_words)
+    for field,actual in resumed_words.items():
+        np.testing.assert_array_equal(actual.view("u4"),straight_words[field].view("u4"),err_msg=field)
+    # The same claim against an uninterrupted run: write at step 2 on this
+    # card, resume, and match the 4-step trajectory word for word.
+    uninterrupted=model_state(cfg);split=model_state(cfg)
+    for _ in range(2*CHECKPOINT_STEPS):step(uninterrupted,cfg)
+    for _ in range(CHECKPOINT_STEPS):step(split,cfg)
+    written=write_restart(tmp_path/"split.npz",split,cfg)
+    continued=model_state(cfg);restore_restart(written,continued,cfg)
+    for _ in range(CHECKPOINT_STEPS):step(continued,cfg)
+    continued_words=word_arrays(continued)
+    for field,actual in word_arrays(uninterrupted).items():
+        np.testing.assert_array_equal(continued_words[field].view("u4"),actual.view("u4"),err_msg=field)
     with pytest.raises(RestartMismatchError,match="mix_full_fields"):
         restore_restart(path,model_state(cfg),replace(cfg,mix_full_fields=False))
+    # A checkpoint integrated before 2.8.8 records no dycore mixing identity
+    # and is refused before restore with the scheme named, even under the
+    # terrain clock it ran (no configuration change resumes it).
+    original=DATA/f"diff2-legacy-k{km}.npz"
+    assert "dycore_mixing" not in read_restart_header(original)["physics_setup"]["algorithms"]
+    old_cfg=replace(cfg,moist_cq=False,terrain_clock="measured")
+    sentence=(f"was integrated by scheme implementations this build does not run: "
+              f"km_opt={km}, diff_6th_opt=2 (dycore mixing): none recorded -> "
+              f"{DYCORE_MIXING_ALGORITHM_IDENTITY}")
+    for live in (old_cfg,cfg):
+        with pytest.raises(RestartMismatchError,match=re.escape(sentence)):
+            restore_restart(original,model_state(live),live)
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("km",[2,4])
+def test_legacy_metric_payload_continues_onto_288_pins(km):
+    """The genuine a4177ebbf state, advanced by this build, keeps its 2.8.8 pins.
+
+    Direct payload seeding only: the restore refuses that file (above).
+    diff2-288-legacy.npz was measured on the RTX 5070 Ti (sm_120) like
+    diff2-288-baseline.npz, so it certifies the Blackwell card.
+    """
+    from tools.wrf_diffopt1_oracle.model_case import configuration,word_arrays
+    from gpuwm.core.dycore import step
+    from tools.wrf_diffopt1_oracle.merged_metric_capture import checkpoint_payload_state
+    # Preserve the sealed pre-CQ trajectory and the measured terrain clock
+    # (the default before 2.8.8) the checkpoint ran.
+    cfg=replace(configuration(km=km,diff=2,mix=True),moist_cq=False,terrain_clock="measured")
+    straight=checkpoint_payload_state(DATA/f"diff2-legacy-k{km}.npz",cfg)
+    for _ in range(2):step(straight,cfg)
+    with np.load(DATA/"diff2-288-legacy.npz") as expected:
+        for field,actual in word_arrays(straight).items():
+            np.testing.assert_array_equal(actual.view("u4"),expected[f"k{km}_"+field].view("u4"),err_msg=field)
+
+
+def test_288_legacy_checkpoints_are_sealed():
+    """The current-build checkpoints are the files their receipt names."""
+    import hashlib
+    from gpuwm.checkpoint_identity import DYCORE_MIXING_ALGORITHM_IDENTITY
+    from tools.wrf_diffopt1_oracle.merged_metric_capture import (
+        CURRENT_CHECKPOINT,CURRENT_CHECKPOINT_RECEIPT)
+    receipt=json.loads((DATA/CURRENT_CHECKPOINT_RECEIPT).read_text())
+    assert receipt["dycore_mixing"]==DYCORE_MIXING_ALGORITHM_IDENTITY
+    for km in (2,4):
+        path=DATA/CURRENT_CHECKPOINT.format(km=km)
+        assert receipt["checkpoints"][f"k{km}"]==hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_metric_merge_receipt_preserves_original_words_and_seals_attribution():
@@ -314,3 +349,49 @@ def test_metric_merge_receipt_preserves_original_words_and_seals_attribution():
     with np.load(DATA/"diff2-legacy.npz") as old,np.load(DATA/"diff2-merged-legacy.npz") as current:
         measured.update({"legacy_"+key:stats(current[key],old[key]) for key in old.files})
     assert {row["name"]:row["merged_vs_original"] for row in receipt["fields"]}==measured
+
+
+def test_288_repin_receipt_seals_its_pins():
+    """The 2.8.8 pins are the files the receipt measured, beside 2.8.7's."""
+    import hashlib
+    receipt=json.loads((DATA/"diff2-288-repin.json").read_text())
+    digest=lambda name:hashlib.sha256((DATA/name).read_bytes()).hexdigest()
+    assert receipt["baseline_sha256"]==digest("diff2-288-baseline.npz")
+    assert receipt["legacy_sha256"]==digest("diff2-288-legacy.npz")
+    assert receipt["previous_baseline_sha256"]==digest("diff2-merged-baseline.npz")
+    assert receipt["previous_legacy_sha256"]==digest("diff2-merged-legacy.npz")
+    moved=receipt["moved_vs_2_8_7"]
+    for kind,new,old in (("baseline","diff2-288-baseline.npz","diff2-merged-baseline.npz"),
+                         ("legacy","diff2-288-legacy.npz","diff2-merged-legacy.npz")):
+        with np.load(DATA/new) as current,np.load(DATA/old) as previous:
+            assert set(current.files)==set(previous.files)==set(moved[kind+"_fields"])
+            rows={key:{"words":int(current[key].size),
+                       "moved":int((current[key].view("u4")!=previous[key].view("u4")).sum())}
+                  for key in previous.files}
+        assert rows==moved[kind+"_fields"]
+        assert sum(row["moved"] for row in rows.values())==moved[kind]
+
+
+@pytest.mark.parametrize("mutation", ("native_words", "compile_options", "source_bytes"))
+def test_coordinate_current_native_proof_refuses_tampering(monkeypatch, mutation):
+    import copy
+    import assembled_legacy_proofs as proofs
+    from tools.coordinate_donor_negative_control import compare_words
+    # The current-boundary diagnostic counts signed zero as a changed word.
+    native = np.array([0.0, 2.0], dtype=np.float32)
+    control = np.array([-0.0, 2.0], dtype=np.float32)
+    row = compare_words(control, native)
+    assert row["words"] == 2 and row["different_words"] == 1
+    assert row["control_sha256"] != row["native_sha256"]
+    assert compare_words(native.copy(), native)["different_words"] == 0
+    root = DATA.parents[2]
+    proof = copy.deepcopy(proofs._load(root, "coordinate-native.json"))
+    if mutation == "native_words":
+        proof["native_different_words"] = 1
+    elif mutation == "compile_options":
+        proof["capture_identity"]["module_options"]["smag2d"].append("--ftz=true")
+    else:
+        proof["source_inputs"]["gpuwm/core/kernels/smag2d.cu"]["sha256"] = "0" * 64
+    monkeypatch.setattr(proofs, "_load", lambda root, name: proof)
+    with pytest.raises(AssertionError):
+        proofs.validate_coordinate(root)

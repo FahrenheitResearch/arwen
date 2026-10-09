@@ -142,12 +142,17 @@ def seed_mynn_surface_first_step(
                 f"seed_mynn_surface_first_step requires same-shape float32 "
                 f"surface arrays; {name} is {array.shape}/{array.dtype}"
             )
-    ust[...] = cp.maximum(
-        DTYPE(0.04) * cp.sqrt(u1 * u1 + v1 * v1), DTYPE(0.001)
-    )
-    mol[...] = DTYPE(0.0)
-    qsfc[...] = qv1 / (DTYPE(1.0) + qv1)
-    qstar[...] = DTYPE(0.0)
+    # Raw CuPy division flushes QV1 before QSFC is handed to the column.
+    # Seed through the same no-FTZ translation unit as the surface layer.
+    inputs = [cp.ascontiguousarray(a) for a in (u1, v1, qv1)]
+    outputs = [cp.ascontiguousarray(a) for a in (ust, mol, qsfc, qstar)]
+    n = u1.size
+    from gpuwm.core.kernels import get_kernel
+    get_kernel("mynn_surface", "mynn_surface_seed")(
+        ((n + 127) // 128,), (128,), (*inputs, *outputs, np.int32(n)))
+    for target, output in zip((ust, mol, qsfc, qstar), outputs):
+        if output is not target:
+            target[...] = output
 
 
 def _validate_options(

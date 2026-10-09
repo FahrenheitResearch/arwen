@@ -274,7 +274,10 @@
       "smoke_column",
       "smoke_near_surface",
       "smoke_pm25_native",
+      "snow_10to1_window",
       "snow_column_max",
+      "snow_kuchera_window",
+      "snowfall_window",
       "sref_prob_10m_wind_speed_above_12p89ms",
       "sref_prob_10m_wind_speed_above_17p5ms",
       "sref_prob_10m_wind_speed_above_25p78ms",
@@ -568,16 +571,16 @@
     }
   },
   "summary": {
-    "blocked_entries": 4,
+    "blocked_entries": 7,
     "derived_entries": 48,
-    "direct_entries": 244,
+    "direct_entries": 247,
     "experimental_entries": 11,
     "heavy_entries": 1,
     "partial_entries": 287,
     "proof_entries": 1,
     "proxy_entries": 2,
     "supported_entries": 51,
-    "total_entries": 342,
+    "total_entries": 345,
     "windowed_entries": 49
   }
 }

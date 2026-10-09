@@ -109,8 +109,11 @@ def test_executor_uses_original_history_window_and_advances_each_clock_once(monk
         field = physics.driver.refl_10cm
         physics.driver.refl_10cm = None
         return field
+    from gpuwm.core.refl import analysis_refl_10cm
+    physics.state.qv = np.zeros((3, 20, 6), np.float32)
     monkeypatch.setitem(sys.modules, "gpuwm.core.refl", SimpleNamespace(
-        consume_refl_10cm=consume, refl_10cm_stash_is_due=lambda ticks, **kwargs: ticks != 0))
+        consume_refl_10cm=consume, analysis_refl_10cm=analysis_refl_10cm,
+        refl_10cm_stash_is_due=lambda ticks, **kwargs: ticks != 0))
     monkeypatch.setitem(sys.modules, "gpuwm.core.uh_diag", SimpleNamespace(
         reset_up_heli_max=lambda state: resets.append((clock.ticks, state.member))))
     class Stability:
@@ -179,7 +182,7 @@ def test_executor_uses_original_history_window_and_advances_each_clock_once(monk
         if tick:
             assert field.shape == (3, 5, 6) and np.all(field == tick)
         else:
-            assert field is None
+            assert field.shape == (3, 5, 6) and not np.any(field)
 
 
 @pytest.mark.parametrize("stage", ["pack", "health"])

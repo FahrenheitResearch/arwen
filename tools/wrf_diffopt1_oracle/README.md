@@ -79,6 +79,23 @@ operator. These are operator and continuation checks, not observation-based
 skill. `diff2-merged-attribution.json` records the exact baseline movement;
 `merged_metric_capture.py` and `merged_metric_attribution.py` reproduce it.
 
+From 2.8.8 a checkpoint of a mixing run records the dycore mixing identity
+(`gpuwm/checkpoint_identity.py`), and a restore refuses, before restoring,
+one that lacks it. The two previous-branch checkpoints lack it: they stay
+byte for byte as the attribution's inputs, the regression asserts their
+refusal names the scheme, and their genuine state is still advanced by direct
+payload seeding onto the 2.8.8 pins. The exact-resume regression continues
+`diff2-288-legacy-k2.npz` and `diff2-288-legacy-k4.npz`, the same case
+integrated two steps and written by the build under test, sealed by
+`diff2-288-legacy-checkpoints.json`. Its comparisons all run on the card
+under test from the stored bytes, so the files need no per-card pin. When a
+change advances the mixing identity, re-record them:
+
+```sh
+python -m tools.wrf_diffopt1_oracle.merged_metric_capture FIXTURE_DIRECTORY \
+  --record-checkpoints ENGINE_COMMIT
+```
+
 For metric attribution, export `gpuwm/core/dycore.py` and the `smag2d`,
 `diff6`, `diff6_seam`, `dycore`, `advection`, `openbc` and `acoustic` CUDA
 files from `a4177ebbf342252405df3f6ed8309704daee94fc` into a control directory

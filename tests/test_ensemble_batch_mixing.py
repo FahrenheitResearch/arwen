@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from gpuwm.config import RunConfig
-from gpuwm.core.kernels import module_source
+from gpuwm.core.kernels import module_options, module_source
 from gpuwm.ensemble.batch_kernel import KernelSpec, PointerSpec, _close, _masked, _entry_parts
 from gpuwm.ensemble.batch_mixing import (
     _GRID_MACRO_ENTRIES, _SMAG_PTX_ENTRIES, _member_smag_ptx,
@@ -130,7 +130,8 @@ def test_w_family_constructor_binds_current_abi_and_original_launch_order(monkey
     monkeypatch.setattr(mixing, "_array", lambda *args, **kwargs: object())
     seen = []
     def bind(state, module, entry, fields, arguments, grid):
-        options = ("-arch=compute_" + architecture,) + (("-DGPUWM_WRF_EXACT=1",) if exact else ())
+        options = module_options("smag2d") + (("-DGPUWM_WRF_EXACT=1",) if exact else ())
+        options += ("-arch=compute_" + architecture,)
         spec = KernelSpec(module, entry, tuple(PointerSpec(name, "member") for name, _ in fields))
         names = _entry_parts(normalized_smag_source(), spec, options)[-2]
         assert len(names) == len(arguments)
@@ -139,6 +140,44 @@ def test_w_family_constructor_binds_current_abi_and_original_launch_order(monkey
         return entry
     monkeypatch.setattr(mixing, "_raw", bind)
     result = mixing._smag_w_launches(state, common, dims, object(), target, object(), object())
-    assert result == metric_w_entry_family(exact=exact, compute_capability=architecture)
+    assert result == metric_w_entry_family(
+        exact=exact or original.DIFFUSION_ENABLED, compute_capability=architecture)
     assert tuple(row[0] for row in seen) == result
     assert seen[-1][1] == (1, 12, 6)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_scalar_ptx_compile_uses_the_ordinary_module_policy(monkeypatch, strict):
+    """Capture the frontend boundary without a GPU or CUDA context."""
+    import sys
+    from gpuwm import wrf_exact
+    import gpuwm.ensemble.batch_mixing as mixing
+
+    captured = {}
+    class Program:
+        def __init__(self, source, **kwargs):
+            captured["source"] = source
+            captured["constructor"] = kwargs
+        def compile(self, options):
+            captured["options"] = options
+            return "// V12.9.0\n", ""
+
+    compiler = SimpleNamespace(_NVRTCProgram=Program, _use_pch=False,
+                               _get_nvrtc_version=lambda: (12, 9))
+    cuda = SimpleNamespace(compiler=compiler)
+    monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(cuda=cuda))
+    monkeypatch.setitem(sys.modules, "cupy.cuda", cuda)
+    monkeypatch.setattr(wrf_exact, "ENABLED", strict)
+    architecture = "-arch=compute_120"
+    expected = module_options("smag2d")
+    if strict:
+        expected = wrf_exact.effective_options(expected)
+    # Call through the cached function's boundary with a fresh call so the
+    # capture proves the options actually supplied to the compiler.
+    ptx, receipt = mixing._scalar_smag_ptx.__wrapped__((architecture,))
+    assert captured["source"] == module_source("smag2d")
+    assert captured["constructor"]["method"] == "ptx"
+    assert captured["options"] == expected + (
+        architecture, "--device-as-default-execution-space")
+    assert receipt["scalar_nvrtc_options"] == captured["options"]
+    assert ptx == "// V12.9.0\n"

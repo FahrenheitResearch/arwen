@@ -33,6 +33,15 @@ weak_buoyancy, neutral_les, deep_pbl, high_tke, moist_flux,
 night_inversion, shallow_pbl, cloud_vt.  33 of the 168 el values differ
 between the two files (the unstable branch reads qtke).
 
+REBUILT on glibc 2.39 (lane/mynn-exact, 2026-10-06): mixlength2-gsd41.csv,
+mixlength2-gsd41-sq.csv, turbulence2-gsd41-sq.csv and condensation-gsd41.csv
+now come from GNU Fortran 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1) -O0, glibc
+2.39 (Ubuntu GLIBC 2.39-0ubuntu8.9), the library every WRF v4.6.1 MYNN CSV in
+this folder was recorded on, by the same build.sh; the other fork CSVs it
+writes reproduced byte for byte.  The 2.43 build differed in 4, 4, 16 and 6
+cells (el; dfm..sh; cldfra_bl, vt, vq) because glibc 2.43's float atanf and
+tanhf are correctly rounded (CORE-MATH) where 2.39's are fdlibm's.  The text
+below describes the 2.43 build that preceded it.
 glibc 2.43 float tanhf and powf are correctly rounded (CORE-MATH); the
 kernel transcribes glibc 2.39 (fdlibm tanhf), the library the WRF v4.6.1
 CSVs were recorded on.  The CUDA kernel matches qkw exactly and el to at

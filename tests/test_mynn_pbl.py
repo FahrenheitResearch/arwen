@@ -559,7 +559,8 @@ def test_the_snow_species_path_is_exact_against_the_wrf_driver_oracle():
     ((0, False), (1, False), (6, True), (8, True), (10, True), (18, True),
      # Registry.EM_COMMON:3036, package thompsonaero:
      # moist:qv,qc,qr,qi,qs,qg -- F_QS is true, exactly as for 8.
-     (28, True)),
+     (28, True),
+     (50, False)),
 )
 def test_mynn_flag_qs_matches_wrf_registry_packages(mp_physics, expected):
     """Exercise multiple selectors on both sides of WRF Registry ``F_QS``."""

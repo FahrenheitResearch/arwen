@@ -1663,6 +1663,22 @@ _STREAMING_DELIVERY: dict[str, str] = {
 }
 
 
+#: The chains whose fetch stage acquires the pinned monthly WIF aerosol
+#: dataset (``gpuwm fetch --wif``) before any forcing byte, so plan review
+#: may defer that machine precondition to them rather than refuse it.
+#: ``prepared:hrrr`` and ``prepared:staged`` add ``wif`` to their fetch
+#: hints; ``prepared:go`` composes ``--wif`` in
+#: :func:`gpuwm.go_cli.fetch_command` from the same
+#: :func:`gpuwm.preparation_assets.wif_fetch_domains` answer.  Breakage the
+#: entry for ``prepared:go`` answers (2.8.8 acceptance D-01): every GFS,
+#: ECMWF and other global mp=28 config refused on a box without a
+#: hand-staged dataset, because only the two native chains were listed.
+#: ``prepared:existing`` prepares nothing and ``experiment`` fetches from
+#: the plan's own arguments, so neither is here.
+_WIF_ACQUIRING_CHAINS = frozenset({"prepared:go", "prepared:hrrr",
+                                   "prepared:staged"})
+
+
 def streaming_decision(exp, *, chain: str) -> dict[str, Any] | None:
     """What ``[tiles]`` will do on ``chain``, or ``None``.
 
@@ -3360,7 +3376,7 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
         # Preparation and initialization still require the acquired dataset.
         fetch_hints = raw.get("fetch") or {}
         pending_wif = (wif_fetch_domains(exp, fetch_hints)
-                       if chain in ("prepared:hrrr", "prepared:staged")
+                       if chain in _WIF_ACQUIRING_CHAINS
                        and not local_input_requested(fetch_hints) else ())
         try:
             validate_experiment_preparation(exp, pending_wif_domains=pending_wif)

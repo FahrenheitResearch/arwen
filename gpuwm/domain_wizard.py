@@ -7120,6 +7120,14 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
             for setting in settings))
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
+    terrain_autosmooth = []
+    if (getattr(args, "geog_root", None)
+            and (Path(args.geog_root) / "topo_gmted2010_30s" / "index").is_file()):
+        from gpuwm.static.terrain_autosmooth import survey_domain_terrain
+        terrain_autosmooth = survey_domain_terrain(
+            exp, Path(args.geog_root), smoothing_settings=(
+                tuple(with_precision(setting, smoothing_precision) for setting in settings)
+                if smoothing_spec is not None or smoothing_precision is not None else ()))
     # The clock rides on the header line, as the extent does: a line of
     # its own would push the default emission past its screen.
     clock_words = (", adaptive time step"
@@ -7246,6 +7254,13 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     print(f"wrote {out}"
           + (f" (+ {', '.join(p.name for p in written[1:])})"
              if len(written) > 1 else ""))
+    if terrain_autosmooth:
+        terrain_receipt_path = out.with_suffix(".terrain-autosmooth.json")
+        _write_atomic(terrain_receipt_path, json.dumps({
+            "schema": "gpuwm-domain-terrain-autosmooth-survey-v1",
+            "terrain_source": "local WPS_GEOG survey; final overlays rechecked in prepare",
+            "domains": terrain_autosmooth,
+        }, indent=2, sort_keys=True) + "\n")
     # The printed command must be pasteable as-is from THIS directory.
     # A relative data path that climbs out of the cwd silently targets
     # the wrong place when pasted from anywhere else, so it is printed

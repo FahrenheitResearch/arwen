@@ -52,6 +52,12 @@ _ALLOWED_AEROSOL_MODULES = frozenset({
 #: at max_ulp 0, which is a stronger gate than source identity and the only
 #: reason the trade was takeable.
 _EXPECTED_HEADERS = {
+    # Selected diffusion and surface sources have independently pinned headers.
+    "acoustic": ("glibc_trig_flt32.cuh",),
+    "myjsfc": ("glibc_flt32.cuh", "flt32_expf_fma.cuh"),
+    "mynn_surface": ("mynn_libm.cuh", "surface_subnormal.cuh"),
+    "sfclay": ("glibc_flt32.cuh", "sfclay_classic.cuh"),
+    "smag2d": ("glibc_flt32.cuh",),
     "upper_wind_limiter": ("glibc_flt32.cuh",),
     # New order-five scalar eta entry, qualified against the native fork.
     # No existing translation unit gains a header through this grant.
@@ -75,7 +81,11 @@ _EXPECTED_HEADERS = {
     **{name: ("glibc_flt32.cuh",) for name in (
         "chem_dust", "chem_seasalt", "chem_rrtmgp_aerosol", "chem_sulfur",
         "chem_ageing", "chem_settling", "chem_drydep_gocart", "chem_optics")},
-    **{name: ("thompson_aerosol_common.cuh",)
+    # The mp=28 units take WOOF's own float32 and binary64 libm words
+    # (thompson_aerosol_libm.cuh on glibc_flt32/flt64.cuh) ahead of their
+    # shared header; the 0 ULP column oracle grades them, not source identity.
+    **{name: ("glibc_flt32.cuh", "glibc_flt64.cuh",
+              "thompson_aerosol_libm.cuh", "thompson_aerosol_common.cuh")
        for name in _ALLOWED_AEROSOL_MODULES},
     "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
     "gf": ("glibc_flt32.cuh",),
@@ -90,6 +100,9 @@ _EXPECTED_HEADERS = {
     # entry points compile to byte-identical PTX with the header present
     # (tests/test_mp8_frozen.py, the ysu re-pin).
     "ysu": ("glibc_flt32.cuh", "ysu_topo.cuh"),
+    # Shin-Hong takes glibc's powf/expf since lane/parity-pbl-libm; its WRF
+    # v4.6.1 oracle grades the unit bitwise (tests/test_shinhong_wrf461_parity.py).
+    "shinhong": ("glibc_flt32.cuh",),
     # Lane 286-aer-swint: WRF swint_opt = 1 and aer_opt = 3, graded
     # bitwise against the operational HRRR fork's gfortran/glibc Fortran.
     "swint": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
@@ -105,8 +118,9 @@ _EXPECTED_HEADERS = {
     # bitwise.
     "noah_mosaic": ("glibc_flt32.cuh",),
     # RUC LOG/EXP mixture words and the new lake driver's REAL32 power
-    # use the shared WRF-oracle float32 functions.
-    "ruc": ("glibc_flt32.cuh",),
+    # use the shared WRF-oracle float32 functions.  RUC's soil-resistance
+    # COS takes glibc_cosf (lane/verify-ruc-lsm).
+    "ruc": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
     "chem_fire": ("glibc_flt32.cuh",),
     "chem_plumerise": ("glibc_flt32.cuh",),
@@ -122,12 +136,25 @@ def _module_names() -> list[str]:
 
 
 def test_lake_compile_options_do_not_change_existing_modules():
-    # Disabling contraction belongs to the lake Fortran translation. A
-    # global option change would also move previously qualified kernels.
-    assert kernel_loader.module_options("lake") == ("-std=c++17", "--fmad=false")
-    for name in _module_names():
-        if name != "lake":
-            assert kernel_loader.module_options(name) == ("-std=c++17",)
+    # These are closed literal grants for the selected source: the five
+    # no-FMA units, four surface units and five diffusion units. In
+    # particular MYNN PBL carries both the no-FMA and no-FTZ requirements.
+    # A global option change must still fail for every other actual module.
+    no_fmad = {"lake", "ysu", "shinhong", "mynn_pbl", "mynn_dmp_sibling"}
+    no_ftz = {"sfclay", "myjsfc", "mynn_surface", "mynn_pbl"}
+    diffusion = {"smag2d", "diffusion", "diff_opt1", "diff6", "diff6_seam"}
+    expected = {name: ("-std=c++17", "--fmad=false") for name in no_fmad}
+    expected.update({name: ("-std=c++17", "--fmad=false", "--ftz=false")
+                     for name in no_ftz})
+    expected.update({name: ("-std=c++17", "--fmad=false", "--ftz=false",
+                           "--prec-div=true", "--prec-sqrt=true",
+                           "-DGPUWM_WRF_EXACT_C_DIFFUSION=1")
+                     for name in diffusion})
+    names = _module_names()
+    assert set(expected) <= set(names), sorted(set(expected) - set(names))
+    for name in names:
+        assert kernel_loader.module_options(name) == expected.get(
+            name, ("-std=c++17",)), name
 
 
 def _pre_hook_source(name: str) -> str:
@@ -214,8 +241,9 @@ def test_allow_listed_module_actually_receives_the_header():
     """The hook must not be inert for the modules it is FOR."""
     name = "thompson_aerosol_probe"
     assert name in kernel_loader.EXTRA_HEADERS
-    header = (_KDIR / "thompson_aerosol_common.cuh").read_text(
-        encoding="utf-8")
+    header = "".join((_KDIR / h).read_text(encoding="utf-8") for h in (
+        "glibc_flt32.cuh", "glibc_flt64.cuh", "thompson_aerosol_libm.cuh",
+        "thompson_aerosol_common.cuh"))
     assembled = kernel_loader.module_source(name)
     assert assembled != _pre_hook_source(name)
     assert assembled == (kernel_loader._preamble() + header

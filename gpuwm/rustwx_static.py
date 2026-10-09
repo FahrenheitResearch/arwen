@@ -435,7 +435,7 @@ def run_static(binary: Path, argv: list[str], *,
 
 
 __all__ = [
-    "CARGO_BUILD_HINT", "REQUIRED_GEOG_DATASETS", "STATIC_ABI_MARKER",
+    "CARGO_BUILD_HINT", "REQUIRED_GEOG_DATASETS", "STATIC_ABI_MARKER",  # noqa: F822 -- module __getattr__
     "STATIC_ENV", "STATIC_NAME", "StaticEngineError",
     "PLACEHOLDER_FIELDS", "FORMERLY_UNWRITTEN_FIELDS", "fetchable_for",
     "crate_dir", "default_geog_root", "find_static_bin",

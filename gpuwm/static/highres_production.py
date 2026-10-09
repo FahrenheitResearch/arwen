@@ -1071,7 +1071,7 @@ def _refusal_remedy(config) -> str:
 
 
 def apply_highres_statics(baseline, grid, *, config, domain_id: int,
-                          case_date: date, landuse_attrs, urlopen=None):
+                          case_date: date, landuse_attrs, urlopen=None, run=None):
     """Replace one domain's static fields from high-resolution sources.
 
     Returns ``(fields, receipt)``.  ``config`` absent or disabled is the
@@ -1125,6 +1125,9 @@ def apply_highres_statics(baseline, grid, *, config, domain_id: int,
                                 case_date=case_date,
                                 landuse_attrs=landuse_attrs,
                                 urlopen=urlopen, **smoothing_kw)
+        from .terrain_autosmooth import prepare_fields, bind_receipt
+        fields = prepare_fields(fields, grid, domain_id=domain_id, run=run)
+        detail = bind_receipt(fields, detail)
         receipt.update(detail)
         receipt["status"] = "APPLIED"
         path = _write_receipt(config, receipt)
@@ -1758,7 +1761,7 @@ def require_prepared_highres(receipt, grid, *, config, domain_id, case_date):
 
 
 def apply_prepared_highres(baseline, grid, *, config, domain_id, case_date,
-                           landuse_attrs, baseline_receipt=None):
+                           landuse_attrs, baseline_receipt=None, run=None):
     """Apply the shared overlay before preparation, retaining both receipts.
 
     A previously sealed overlay can be reused only when its request, date,
@@ -1769,8 +1772,10 @@ def apply_prepared_highres(baseline, grid, *, config, domain_id, case_date,
     require_root_smoothing(config, domain_id, baseline_receipt)
     from .external_source import require_root_static_source
     require_root_static_source(config, domain_id, baseline_receipt, grid=grid)
+    from .terrain_autosmooth import prepare_fields, bind_receipt
     if not overlay_active(config, grid):
-        return baseline, baseline_receipt
+        fields = prepare_fields(baseline, grid, domain_id=domain_id, run=run)
+        return fields, bind_receipt(fields, baseline_receipt)
     previous = (baseline_receipt.get("highres")
                 if isinstance(baseline_receipt, dict) else None)
     if (isinstance(previous, dict) and previous.get("status") == "APPLIED"
@@ -1778,11 +1783,14 @@ def apply_prepared_highres(baseline, grid, *, config, domain_id, case_date,
             and previous.get("case_date") == case_date.isoformat()
             and not _grid_identity_drift(previous.get("grid"), grid,
                                          domain_id)):
-        return baseline, baseline_receipt
+        fields = prepare_fields(baseline, grid, domain_id=domain_id, run=run)
+        return fields, bind_receipt(fields, baseline_receipt)
     fields, receipt = apply_highres_statics(
         baseline, grid, config=config, domain_id=domain_id,
-        case_date=case_date, landuse_attrs=landuse_attrs)
-    return fields, {"baseline": baseline_receipt, "highres": receipt}
+        case_date=case_date, landuse_attrs=landuse_attrs, run=run)
+    fields = prepare_fields(fields, grid, domain_id=domain_id, run=run)
+    return fields, bind_receipt(
+        fields, {"baseline": baseline_receipt, "highres": receipt})
 
 
 __all__ = [

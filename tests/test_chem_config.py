@@ -60,14 +60,28 @@ def test_tracer_set_is_admitted():
      "mp_physics=28"),
     (dict(chem_sets="tracer_test", aer_ra_feedback=1),
      "optics nothing computes"),
-    (dict(chem_sets="tracer_test", km_opt=1, khdif=10.0),
-     "constant-K"),
 ], ids=["list", "bad-name", "unknown-set", "unknown-source",
         "weno", "conv-tr", "aqueous", "uoc-dust", "dms", "mynn-chem",
-        "fire-mode", "mp-coupling", "ra-feedback", "const-k"])
+        "fire-mode", "mp-coupling", "ra-feedback"])
 def test_each_refusal_names_its_breakage(overrides, match):
     with pytest.raises(ValueError, match=match):
         validate_chem_config(_cfg(**overrides))
+
+
+@pytest.mark.parametrize("overrides", [
+    dict(km_opt=1, khdif=10.0),
+    dict(km_opt=1, kvdif=5.0, bl_pbl_physics=0),
+], ids=["khdif", "kvdif-pbl-off"])
+def test_constant_k_mixes_chem_like_wrf(overrides):
+    """km_opt=1 runs WRF's isotropic_km package (3641a45f7), whose
+    horizontal and vertical drivers mix the chem rows, so chem with
+    constant K is admitted; the refusal existed only for the retired
+    dry-only Laplacian.  tests/test_chem_transport.py holds the mixing on
+    the card (a tracer started as qv stays qv under constant K)."""
+    from gpuwm.config import constant_k_mixing_active
+    cfg = _cfg(chem_sets="tracer_test", **overrides)
+    assert constant_k_mixing_active(cfg)
+    validate_chem_config(cfg)
 
 
 @pytest.mark.parametrize("overrides, match", [

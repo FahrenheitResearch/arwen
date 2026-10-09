@@ -168,7 +168,7 @@ def one_arm(*, share: bool, chain, nx: int, ny: int, nz: int, tile: int,
         "tile_compute": (int(tile_cfg.nz), int(tile_cfg.ny), int(tile_cfg.nx)),
         "tiles": len(specs),
     }
-    del store, shared
+    store = shared = None  # rebound, not deleted: a closure above reads it
     store_obj.free()
     vram.trim_pool()
     return out

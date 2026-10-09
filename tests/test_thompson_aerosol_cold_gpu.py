@@ -135,6 +135,8 @@ def _run_cold_network(scenario, dt, table_owner):
 
     from gpuwm.core.thompson_aerosol_cold import (
         launch_aa_cold_network_from_owner)
+    from gpuwm.core.thompson_aerosol_state import (
+        launch_aa_graupel_number_init)
 
     before, _ = _column(scenario)
 
@@ -159,6 +161,11 @@ def _run_cold_network(scenario, dt, table_owner):
     acc = {"ncten": zeros.copy(), "nwfaten": zeros.copy(),
            "nifaten": zeros.copy()}
     shadow = zeros.copy()
+    # mp_gt_driver's per-call graupel number (:1267-1281), as the adapter
+    # forms it before the cold network: the graupel distribution of every
+    # graupel rate is built from it.
+    launch_aa_graupel_number_init(fields["qg"], fields["temperature"],
+                                  pressure, fields["qv"], shadow)
     # Deliberately seeded to a non-neutral value so the unconditional reset
     # at kernel entry (WRF's vts_boost = 1.0 at :2243) is observable.
     boost = cp.full_like(fields["qi"], 7.0)
@@ -297,6 +304,7 @@ def _synthetic_tables(cp, *, marked_in_axis=None, cloud_mass_value=0.0):
         "ice_to_snow_mass": zeros((64, 55)),
         "ice_to_snow_number": zeros((64, 55)),
         "rain_cloud_efficiency": zeros((100, 100)),
+        "snow_cloud_efficiency": zeros((100, 100)),
         "rain_snow": tuple(zeros((37, 9, 37, 37)) for _ in range(12)),
         "rain_graupel": tuple(zeros((37, 37, 1, 37, 37)) for _ in range(5)),
         "rain_freezing": tuple(zeros((37, 37, 45, 55)) for _ in range(4)),
@@ -376,7 +384,8 @@ def test_idx_in_selects_the_slice_thompson_aa_in_bin_returns():
         tables["ice_deposition_partition"], tables["ice_to_snow_mass"],
         tables["ice_to_snow_number"], tables["rain_snow"],
         tables["rain_graupel"], tables["rain_freezing"],
-        tables["rain_cloud_efficiency"], tables["cloud_freezing"], dt)
+        tables["rain_cloud_efficiency"], tables["cloud_freezing"], dt,
+        snow_cloud_efficiency=tables["snow_cloud_efficiency"])
     cp.cuda.Stream.null.synchronize()
 
     xni = cp.asnumpy(probe_ice_demott(
@@ -754,17 +763,32 @@ def test_koop_haze_freezing_matches_committed_oracle(classic_tables):
 #: Net: six of the fifteen cells improved (aero-cold-overlap's three
 #: accumulators by factors of 4 to 9), three grew inside the same decade, and
 #: the gate never moved.
+#:
+#: RE-MEASURED when the cold network was re-transcribed in WRF's arithmetic
+#: order (thompson_aerosol_common.cuh, ThompsonAaLevel): aero-ice-demott-idxin
+#: qi 7.064e-08 -> 4.722e-08 and ni 8.442e-08 -> 4.175e-08; aero-cold-overlap
+#: ni 1.515e-07 -> 6.692e-08 and ncten 5.450e-08 -> 3.863e-08.  What is left
+#: is the float32 round trip of the reference CSV.  aero-cold-overlap's qi is
+#: the declared rain-graupel divergence (:data:`_COLD_DECLARED_DIVERGENCE`).
 _COLD_PER_LEVEL_MEASURED = {
     "aero-ice-demott-idxin": {
-        "qi": 7.064e-08, "ni": 8.442e-08, "ncten": 3.956e-08,
+        "qi": 4.722e-08, "ni": 4.175e-08, "ncten": 3.956e-08,
         "nwfaten": 4.224e-08, "nifaten": 5.239e-08},
     "aero-cloud-freeze-nc": {
         "qi": 2.013e-08, "ni": 3.647e-08, "ncten": 4.328e-08,
         "nwfaten": 0.0, "nifaten": 0.0},
     "aero-cold-overlap": {
-        "qi": 1.637e-07, "ni": 1.515e-07, "ncten": 5.450e-08,
+        "qi": 1.619e-04, "ni": 6.692e-08, "ncten": 3.863e-08,
         "nwfaten": 4.259e-08, "nifaten": 5.509e-08},
 }
+
+#: The cells held to their pin but not to the 1e-6 gate, each a declared
+#: divergence from WRF v4.6.1.  aero-cold-overlap carries rain and graupel
+#: together below 0 C; WRF reads its rain-graupel collision tables out of
+#: bounds when the scheme is not hail aware (dimNRHG = 1, idx_bg = 5,
+#: module_mp_thompson.F:465, :607-615, :2527-2545) and WOOF reads the one slab
+#: the tables hold, and the rain the two codes then freeze into ice differs.
+_COLD_DECLARED_DIVERGENCE = {("aero-cold-overlap", "qi")}
 
 
 @pytest.mark.parametrize(
@@ -804,7 +828,8 @@ def test_cold_network_matches_wrf_per_level(scenario, dt, classic_tables):
         got = source[field]
         assert len(expected) == _LEVELS
         worst = _max_relative(got, expected)
-        assert worst <= 1.0e-6, (
+        assert worst <= 1.0e-6 or (scenario, field) in (
+            _COLD_DECLARED_DIVERGENCE), (
             f"{scenario} {field}: max relative difference {worst:.3e} "
             "against WRF v4.6.1")
         # ...and the RATCHET, which is the strictly stronger statement.
@@ -1272,7 +1297,8 @@ def test_sub_freezing_rain_scavenging_reaches_the_accumulators():
         tables["ice_deposition_partition"], tables["ice_to_snow_mass"],
         tables["ice_to_snow_number"], tables["rain_snow"],
         tables["rain_graupel"], tables["rain_freezing"],
-        tables["rain_cloud_efficiency"], tables["cloud_freezing"], dt)
+        tables["rain_cloud_efficiency"], tables["cloud_freezing"], dt,
+        snow_cloud_efficiency=tables["snow_cloud_efficiency"])
     cp.cuda.Stream.null.synchronize()
 
     rho = (np.float32(0.622) * columns["p_pa"][rows].astype(np.float32)
@@ -1353,7 +1379,8 @@ def test_sub_freezing_autoconversion_debits_droplet_number():
         tables["ice_deposition_partition"], tables["ice_to_snow_mass"],
         tables["ice_to_snow_number"], tables["rain_snow"],
         tables["rain_graupel"], tables["rain_freezing"],
-        tables["rain_cloud_efficiency"], tables["cloud_freezing"], dt)
+        tables["rain_cloud_efficiency"], tables["cloud_freezing"], dt,
+        snow_cloud_efficiency=tables["snow_cloud_efficiency"])
     cp.cuda.Stream.null.synchronize()
 
     rho = (np.float32(0.622) * columns["p_pa"][rows].astype(np.float32)
@@ -1431,7 +1458,8 @@ def test_cold_and_warm_temperature_masks_are_exact_complements():
         tables["ice_deposition_partition"], tables["ice_to_snow_mass"],
         tables["ice_to_snow_number"], tables["rain_snow"],
         tables["rain_graupel"], tables["rain_freezing"],
-        tables["rain_cloud_efficiency"], tables["cloud_freezing"], 30.0)
+        tables["rain_cloud_efficiency"], tables["cloud_freezing"], 30.0,
+        snow_cloud_efficiency=tables["snow_cloud_efficiency"])
     cp.cuda.Stream.null.synchronize()
 
     # vts_boost is reset for EVERY cell by design, so it cannot serve as the
@@ -1508,7 +1536,8 @@ def test_probe_and_production_kernel_agree_on_the_four_new_rates(
         tables["ice_deposition_partition"], tables["ice_to_snow_mass"],
         tables["ice_to_snow_number"], tables["rain_snow"],
         tables["rain_graupel"], tables["rain_freezing"],
-        efrw, tables["cloud_freezing"], dt)
+        efrw, tables["cloud_freezing"], dt,
+        snow_cloud_efficiency=tables["snow_cloud_efficiency"])
     cp.cuda.Stream.null.synchronize()
 
     probe = probe_cold_warm_loop(
@@ -1625,7 +1654,8 @@ def test_launcher_rejects_wrong_shapes_dtypes_and_tables():
             table_args["rain_freezing_tables"],
             table_args["rain_cloud_efficiency"],
             table_args["cloud_freezing_tables"],
-            table_args["dt"])
+            table_args["dt"],
+            snow_cloud_efficiency=tables["snow_cloud_efficiency"])
 
     call()  # the baseline must succeed
 
@@ -2017,60 +2047,38 @@ def test_two_gamma_snow_number_matches_the_wrf_fortran_integral():
                     for i in bad[:6]))
 
 
-#: The ONLY two states, out of a 3721-state Fortran sweep, where
-#: ``thompson_aa_snow_number`` is not bit-exact against compiled WRF.  Columns:
-#: temp_k, rs [kg m^-3], smob, smoc, ns [m^-3] -- all five as WRF's own
-#: ``probe_snow_moments`` (a verbatim copy of :2028-2088 compiled INTO
+#: The two states, out of a 3721-state Fortran sweep, where
+#: ``thompson_aa_snow_number`` used to miss compiled WRF by one float32 ulp.
+#: Columns: temp_k, rs [kg m^-3], smob, smoc, ns [m^-3] -- all five as WRF's
+#: own ``probe_snow_moments`` (a verbatim copy of :2028-2088 compiled INTO
 #: module_mp_thompson, so Kap0/Lam0/csg(15) are thompson_init's) produced them.
-_WRF_SNOW_NUMBER_SURVIVORS = (
+_WRF_SNOW_NUMBER_FORMER_SURVIVORS = (
     (268.25, 6.8129234e-06, 9.8738026e-05, 4.199831e-08, 14104.59),
     (265.84998, 4.641592e-05, 0.0006726945, 5.257931e-07, 28457.361),
 )
 
 
-def test_two_gamma_snow_number_survivors_are_exactly_one_ulp():
-    """The LIMIT of the two-gamma integral, pinned so it cannot grow.
+def test_the_two_former_snow_number_survivors_are_bit_exact():
+    """Both one-ulp survivors are gone, and must stay gone.
 
-    ``test_two_gamma_snow_number_matches_the_wrf_fortran_integral`` above is
-    an EQUALITY over 92 Fortran states, and it is green.  The wider 3721-state
-    sweep behind it (61 temperatures 273.05 K -> 201.05 K x 61 log-spaced snow
-    contents 1e-12 -> 1e-2 kg m^-3, ns spanning 1.460e-01 to 2.797e+08 m^-3)
-    has exactly TWO states that are not bit-exact, and prose is not a gate --
-    so they are pinned here.
-
-    Each is exactly ONE float32 ulp, and BOTH are the double-rounding limit of
-    ``thompson_aa_powf_cr``: it is ``(float)pow((double)x,(double)y)``, which
-    rounds twice, where gfortran lowers ``REAL(4)**REAL(4)`` to glibc's singly
-    rounded ``powf``.  Rebuilding the helper with plain CUDA ``powf`` instead
-    reproduces the SAME 3719/3721, so this is not a powf choice and there is
-    nothing left to repair inside the helper.
-
-    The assertions are: (1) both states still differ, so the limit stays
-    accurate rather than being quietly claimed away, and (2) neither differs by
-    more than one ulp, which is the ratchet.
+    They were the double-rounding limit of the old helper, which evaluated
+    ``REAL(4)**REAL(4)`` as ``(float)pow((double)x,(double)y)`` where gfortran
+    lowers it to the C library's singly rounded ``powf``.  The helper now
+    calls WOOF's own powf word (thompson_aerosol_libm.cuh), which returns the
+    oracle host's word, and both states are bit-exact; the ratchet that
+    pinned them at one ulp retires with the cause it accepted
+    (lane/verify-thompson-aerosol-mp28).
     """
     import cupy as cp
 
     from gpuwm.core.thompson_aerosol_launch import probe_snow_number
 
-    table = np.asarray(_WRF_SNOW_NUMBER_SURVIVORS, dtype=np.float64)
+    table = np.asarray(_WRF_SNOW_NUMBER_FORMER_SURVIVORS, dtype=np.float64)
     smob = cp.asarray(table[:, 2].astype(np.float32).copy())
     smoc = cp.asarray(table[:, 3].astype(np.float32).copy())
     got = cp.asnumpy(probe_snow_number(smob, smoc))
     want = table[:, 4].astype(np.float32)
-
-    for index, row in enumerate(_WRF_SNOW_NUMBER_SURVIVORS):
-        ulp = float(np.spacing(np.float32(want[index])))
-        delta = abs(float(got[index]) - float(want[index]))
-        assert delta > 0.0, (
-            f"T={row[0]} is now bit-exact; the survivor list is stale and "
-            "the sweep must be re-run before this is deleted")
-        assert delta <= ulp, (
-            f"T={row[0]}: {delta / ulp:.3f} ulps, was exactly 1")
-    # And the relative size of the whole limit, as one number.
-    relative = np.abs(got.astype(np.float64) - want.astype(np.float64)) \
-        / np.abs(want.astype(np.float64))
-    assert relative.max() <= 6.93e-08, relative.max()
+    assert np.array_equal(got.view(np.int32), want.view(np.int32)), (got, want)
 
 
 def test_snow_free_levels_contribute_exactly_zero_to_the_koop_gate(
@@ -2097,11 +2105,15 @@ def test_snow_free_levels_contribute_exactly_zero_to_the_koop_gate(
     either side pin the threshold itself at 999.E3 to within 0.1 m^-3, which
     is 4000x finer than the perturbation being excluded.
 
-    No cloud, rain, graupel or entry ice, so ``pni_rfz``/``pni_wfz``/
-    ``pni_ihm``/``pni_ide`` are all zero and ``pni_inu`` contributes nothing
-    here (iceDeMott's ``xnc`` is far below ``xni`` at this loading, so
-    :2628's ``0.5*(xnc-xni+|xnc-xni|)`` is identically zero).  The entire
-    ``ni``/``qi`` response is therefore the Koop term.
+    No cloud, rain or graupel, so ``pni_rfz``/``pni_wfz``/``pni_ihm`` are
+    zero, and ``pni_inu`` contributes nothing here (iceDeMott's ``xnc`` is
+    far below ``xni`` at this loading, so :2628's
+    ``0.5*(xnc-xni+|xnc-xni|)`` is identically zero).  The entry ice carries
+    mass (50 micron crystals): WRF reads ``ni(k)`` only where ``qi1d`` passed
+    R1 and otherwise sets it to R2 (:1871-1874), so ice number without ice
+    mass never reaches the gate.  The synthetic tables are zero, so the
+    deposition stays in snow (``tpi_ide = 0``) and nothing autoconverts, and
+    the entire ``qi`` response is the Koop term.
     """
     import cupy as cp
 
@@ -2143,7 +2155,12 @@ def test_snow_free_levels_contribute_exactly_zero_to_the_koop_gate(
     def zeros():
         return cp.zeros(n, dtype=cp.float32)
 
-    qi = zeros()
+    # 50 micron mean crystals at the threshold number (:1860-1869 leave
+    # them alone): ri = am_i*6*ni*(D/4)**3.
+    am_i = np.pi * 890.0 / 6.0
+    qi_entry = f32(am_i * 6.0 * 999000.0 * (50.0e-6 / 4.0) ** 3
+                   / float(rho))
+    qi = const(qi_entry)
     ni = cp.asarray(ni_entry.copy())
     ncten, nwfaten, nifaten = zeros(), zeros(), zeros()
     launch_aa_cold_network(
@@ -2151,11 +2168,12 @@ def test_snow_free_levels_contribute_exactly_zero_to_the_koop_gate(
         const(temp), const(pres), const(qv),
         zeros(), const(5.0e9), const(1.0e6),
         ncten, nwfaten, nifaten, zeros(), zeros(),
-        *_synthetic_table_arguments(cp, classic_tables), dt)
+        *_synthetic_table_arguments(cp, classic_tables), dt,
+        snow_cloud_efficiency=classic_tables.t_Efsw)
     cp.cuda.Stream.null.synchronize()
 
     qi_out = cp.asnumpy(qi).astype(np.float64)
-    fired = qi_out > 0.0
+    fired = qi_out > float(qi_entry)
     # The gate is OPEN at and below 999.E3 and SHUT above it.  Index 1 is the
     # discriminating cell: 0.1 m^-3 below the threshold, i.e. inside the
     # 0.2310 m^-3 a dropped guard would have added.
@@ -2167,16 +2185,17 @@ def test_snow_free_levels_contribute_exactly_zero_to_the_koop_gate(
         "dropped :2027 guard would inject; re-choose it")
     # All three open cells must produce the SAME ice, because ns is zero at
     # every one of them rather than merely small.
-    assert qi_out[0] == qi_out[1] == qi_out[2] > 0.0, qi_out.tolist()
+    assert qi_out[0] == qi_out[1] == qi_out[2] > float(qi_entry), (
+        qi_out.tolist())
 
     # (3) And the structural statement, so a future reader does not have to
-    #     re-derive it: the kernel initialises its ns to zero and assigns it
-    #     ONLY inside the has_snow branch.
+    #     re-derive it: the level transcription initialises ns to zero and
+    #     assigns it ONLY inside the L_qs branch.
     source = (_REPO / "gpuwm" / "core" / "kernels"
-              / "thompson_aerosol_cold.cu").read_text(
+              / "thompson_aerosol_common.cuh").read_text(
         encoding="utf-8")
-    assert "float snow_number_ns = 0.0f;" in source
-    assert source.count("snow_number_ns = thompson_aa_snow_number(") == 1
+    assert "    L->ns = 0.0f;\n    if (L->L_qs) {" in source
+    assert source.count("L->ns = thompson_aa_snow_number(") == 1
 
 
 def test_two_gamma_snow_number_and_not_smo0_decides_the_koop_gate(
@@ -2258,7 +2277,8 @@ def test_two_gamma_snow_number_and_not_smo0_decides_the_koop_gate(
         zeros(), const(temp), const(pres), const(qv),
         zeros(), const(5.0e9), const(1.0e6),
         ncten, nwfaten, nifaten, zeros(), zeros(),
-        *_synthetic_table_arguments(cp, classic_tables), dt)
+        *_synthetic_table_arguments(cp, classic_tables), dt,
+        snow_cloud_efficiency=classic_tables.t_Efsw)
     cp.cuda.Stream.null.synchronize()
 
     ni_out = cp.asnumpy(ni).astype(np.float64)
@@ -2389,7 +2409,8 @@ def test_production_kernel_uses_the_working_stage_nu_c(classic_tables):
         const(_WRF_NU_C_STAGE_QV),
         cp.asarray(nc.astype(f32).copy()), const(1.0e9), const(1.0e6),
         ncten, nwfaten, nifaten, zeros(), zeros(),
-        *_synthetic_table_arguments(cp, classic_tables), dt)
+        *_synthetic_table_arguments(cp, classic_tables), dt,
+        snow_cloud_efficiency=classic_tables.t_Efsw)
     cp.cuda.Stream.null.synchronize()
 
     rho = f32(f32(0.622) * f32(_WRF_NU_C_STAGE_P)
@@ -2510,9 +2531,11 @@ def test_cold_network_reproduces_wrfs_own_ice_koop_tendency(classic_tables):
         f"{host['qi'][level]!r} want {want_qi[level]!r}")
     assert host["ni"][level] == want_ni[level], (
         f"level 15 ni: got {host['ni'][level]!r} want {want_ni[level]!r}")
-    assert int((host["qi"] == want_qi).sum()) == 23, (
+    # 24 of 24 since the cold network runs WRF's arithmetic order (it was
+    # 23 of 24).
+    assert int((host["qi"] == want_qi).sum()) == 24, (
         int((host["qi"] == want_qi).sum()))
-    assert int((host["ni"] == want_ni).sum()) == 23, (
+    assert int((host["ni"] == want_ni).sum()) == 24, (
         int((host["ni"] == want_ni).sum()))
 
     # ---- the attribution ------------------------------------------------

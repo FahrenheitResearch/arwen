@@ -37,6 +37,8 @@ from typing import Mapping
 import cupy as cp
 import numpy as np
 
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
+
 from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           CU_SCHEMES, MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
                           MYNN_SFCLAY_SCHEME,
@@ -576,7 +578,11 @@ def microphysics_scheme_sr_available(mp_physics: int) -> bool:
     wrapper computes it as the solid-to-total precipitation ratio
     ``pcprt_sol/(pcprt_liq+pcprt_sol+1.e-12)`` (module_mp_p3.F:898).
     """
-    return int(mp_physics) in (1, 6, 8, 9, 10, 16, 18, 28, 50)
+    if int(mp_physics) in (1, 6, 8, 9, 10, 16, 18, 28, 50):
+        return True
+    from gpuwm.microphysics_schemes import scheme as _named_scheme
+    named = _named_scheme(mp_physics)
+    return bool(named is not None and named.sr_available)
 
 
 def _composed_optional_tendency_components(
@@ -901,7 +907,7 @@ def couple_sase_w_tendency(state: DomainState, cfg: RunConfig,
     rw = chf * full
     if cfg.specified or cfg.nested:
         _specified_mass_mask(rw)
-    if state.has_msf:
+    if state.has_msf and not WRF_EXACT:
         rw = rw / state.msft[None]
     return cp.ascontiguousarray(rw)
 
@@ -1315,7 +1321,14 @@ def _validate_native_kf_result(
 
 @dataclass
 class PhysicsTendencies:
-    """Held ARW slow tendencies plus coupled moist-scalar tendencies."""
+    """Held ARW slow tendencies plus coupled moist-scalar tendencies.
+
+    Strict mode (``GPUWM_WRF_EXACT=1``) keeps ``ru``/``rv``/``rtheta`` in
+    WRF's undivided coupled form, the words update_phy_ten adds into
+    ``*_tendf``; the dycore folds them into its held tendency and takes
+    rk_addtend_dry's one map-factor division over the sum
+    (:func:`gpuwm.core.dycore.prepare_fixed_tendencies`).
+    """
 
     ru: cp.ndarray
     rv: cp.ndarray
@@ -1435,7 +1448,7 @@ def _couple_momentum_to_faces(state: DomainState, cfg: RunConfig,
             rv[:, 0, :] = 0.0
             rv[:, -1, :] = 0.0
 
-    if state.has_msf:
+    if state.has_msf and not WRF_EXACT:
         ru = ru / state.msfu[None]
         rv = rv / state.msfv[None]
         # AND THE DIVISION UNDOES THE DUPLICATION MADE ABOVE.
@@ -1518,7 +1531,7 @@ def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
         if rqi is not None:
             _specified_mass_mask(rqi)
 
-    if state.has_msf:
+    if state.has_msf and not WRF_EXACT:
         rtheta = rtheta / state.msft[None]
     return PhysicsTendencies(cp.ascontiguousarray(ru),
                              cp.ascontiguousarray(rv),
@@ -1596,7 +1609,7 @@ def couple_column_tendencies(
     else:
         face_u, face_v = _couple_momentum_to_faces(state, cfg, chm * ru,
                                                    chm * rv)
-    if state.has_msf:
+    if state.has_msf and not WRF_EXACT:
         theta = theta / state.msft[None]
     return PhysicsTendencies(
         cp.ascontiguousarray(face_u),
@@ -3348,6 +3361,11 @@ class PhysicsDriver:
             "psfc": atmosphere["p_interface"][0],
             "tsk": f["tsk"], "xland": f["xland"], "mavail": f["mavail"],
             "z0base": f["z0base"],
+            # ZINT(KTE+1)=HT (module_sf_myjsfc.F:165): MYJSFC's interface
+            # heights start at the terrain height and PBLH/ZSL are their
+            # differences, so the float32 words depend on it
+            # (tests/test_myjsfc_wrf461_parity.py).
+            "ht": cp.ascontiguousarray(self.state.ht, dtype=DTYPE),
         }
         state = {name: f[name] for name in MYJ_SFCLAY_INOUT}
         outputs = {"rib": f["br"]}
@@ -3986,6 +4004,9 @@ class PhysicsDriver:
         # every other scheme in the PBL slot.
         self.pbl_tendencies = self._couple_pbl_slot(
             cfg, out, atmosphere=atmosphere)
+        if cfg.scalar_pblmix == 1:
+            self.pbl_tendencies.extra_scalars = self._ysu_scalar_pblmix(
+                cfg, atmosphere, out["exch_h"])
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -4000,6 +4021,54 @@ class PhysicsDriver:
             self.last_ysu = out
         else:
             self.last_ysu = None
+
+    def _ysu_scalar_pblmix(self, cfg: RunConfig,
+                           atmosphere: Mapping[str, cp.ndarray],
+                           exch_h: cp.ndarray) -> dict[str, cp.ndarray]:
+        """WRF ``scalar_pblmix`` after YSU: ``diff4d`` on YSU's EXCH_H.
+
+        module_pbl_driver.F:2251-2259 (v4.6.1) runs the same local scalar
+        diffusion after any PBL scheme, on that scheme's heat diffusivity;
+        under mp_physics = 28 it mixes QNC, QNI, QNWFA and QNIFA (diff4d
+        skips the precipitating number species), and
+        share/module_check_a_mundo.F:2477-2495 switches it on whenever the
+        aerosol-aware scheme takes aerosol IC/BCs.  The solve is the one
+        the MYNN arm already runs (gpuwm.core.mynn_scalar_mix), and the
+        rates couple through calculate_phy_tend exactly as MYNN's do.
+        """
+        from gpuwm.core.mynn_scalar_mix_gpu import scalar_pblmix_columns_cuda
+
+        nz, ny, nx = exch_h.shape
+        ncol = ny * nx
+        flat = {name: atmosphere[name].reshape(nz, ncol)
+                for name in ("dz", "rho")}
+        diffusivity = exch_h.reshape(nz, ncol)
+        chm = (self.state.c1h[:, None, None]
+               * self.state.total_mu()[None]
+               + self.state.c2h[:, None, None])
+        piece = 32768
+        extra: dict[str, cp.ndarray] = {}
+        for name in ("nc", "ni", "nwfa", "nifa"):
+            scalar = getattr(self.state, name, None)
+            if scalar is None:
+                raise ValueError(
+                    f"scalar_pblmix=1 under YSU needs the mp=28 number "
+                    f"field {name}, which this state does not carry")
+            source = scalar.reshape(nz, ncol)
+            rate = cp.empty((nz, ny, nx), dtype=DTYPE)
+            rate_flat = rate.reshape(nz, ncol)
+            for lo in range(0, ncol, piece):
+                hi = min(lo + piece, ncol)
+                _, chunk = scalar_pblmix_columns_cuda(
+                    source[:, lo:hi].T, flat["dz"][:, lo:hi].T,
+                    flat["rho"][:, lo:hi].T, diffusivity[:, lo:hi].T,
+                    DTYPE(self.bldt_seconds))
+                rate_flat[:, lo:hi] = chunk.T
+            coupled = chm * rate
+            if cfg.specified or cfg.nested:
+                _specified_mass_mask(coupled)
+            extra[name] = coupled
+        return extra
 
     def _run_mynn_pbl(self, atmosphere: Mapping[str, cp.ndarray],
                       cfg: RunConfig) -> None:
@@ -4068,6 +4137,7 @@ class PhysicsDriver:
             bl_mynn_output=cfg.bl_mynn_output,
             bl_mynn_tkeadvect=cfg.bl_mynn_tkeadvect,
             icloud_bl=cfg.icloud_bl,
+            **({"cycling": True} if cfg.cycling else {}),
             # Passed only off their defaults, so a wrf_461 run hands the
             # driver exactly the options it was handed before the selector.
             **({"bl_mynn_version": cfg.bl_mynn_version,
@@ -6723,5 +6793,5 @@ __all__ = ["CumulusResult", "DECLARED_CONSTANT_GLW_WM2",
            "physics_driver_required",
            "physics_retains_ysu_output", "physics_reuses_pbl_composition",
            "resolve_physics_dispatch", "resolve_physics_slot",
-           "run_mpas_column_batch",
+           "run_mpas_column_batch",  # noqa: F822 -- module __getattr__
            "validate_ysu_tendencies"]

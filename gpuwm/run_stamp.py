@@ -541,16 +541,21 @@ def wrfout_init(path) -> datetime.datetime | None:
     valid time of its FIRST FRAME, which is the initialisation only for
     the first file of a run.
 
-    Every failure is ``None``: no netCDF4, an unreadable file, an
+    Read through the Rust NetCDF route (:mod:`gpuwm.netcdf_bridge`), the
+    metadata pass only.  It read through netCDF4 until D-10 (2.8.8
+    acceptance): that import switches a free-threaded interpreter's lock
+    back on for the rest of the process, and NetCDF reads belong in Rust.
+
+    Every failure is ``None``: no decoder, an unreadable file, an
     attribute that is not a timestamp.  A render whose input proves no
     initialisation time gets a launch-only stamp, which is still a
     distinct folder per run.
     """
 
     try:
-        import netCDF4
+        from gpuwm.netcdf_bridge import open_dataset
 
-        with netCDF4.Dataset(path) as dataset:
+        with open_dataset(path) as dataset:
             if "SIMULATION_START_DATE" not in dataset.ncattrs():
                 return None
             raw = dataset.getncattr("SIMULATION_START_DATE")

@@ -1,0 +1,95 @@
+{
+ "label": "verify base 91de806e2: WRF -O0 vs WOOF default arithmetic",
+ "columns": 576,
+ "cases": 9,
+ "arms": [
+  "iso0_sfx0",
+  "iso1_sfx1",
+  "iso0_sfx2",
+  "iso1_seed"
+ ],
+ "words": 1158624,
+ "different": 628566,
+ "max_ulp": 43347968,
+ "fields": {
+  "kmh": {
+   "words": 92160,
+   "different": 21404,
+   "max_ulp": 28730,
+   "max_abs": 0.04109764099121094
+  },
+  "kmv": {
+   "words": 92160,
+   "different": 49163,
+   "max_ulp": 28730,
+   "max_abs": 0.04109764099121094
+  },
+  "khh": {
+   "words": 92160,
+   "different": 21211,
+   "max_ulp": 44586,
+   "max_abs": 0.17008209228515625
+  },
+  "khv": {
+   "words": 92160,
+   "different": 51631,
+   "max_ulp": 7438,
+   "max_abs": 0.014186859130859375
+  },
+  "bn2": {
+   "words": 92160,
+   "different": 51308,
+   "max_ulp": 1457254,
+   "max_abs": 4.5925844460725784e-08
+  },
+  "rtke": {
+   "words": 92160,
+   "different": 68417,
+   "max_ulp": 1202752,
+   "max_abs": 8.59326171875
+  },
+  "d11": {
+   "words": 92160,
+   "different": 60248,
+   "max_ulp": 2023166,
+   "max_abs": 8.940696716308594e-07
+  },
+  "d22": {
+   "words": 92160,
+   "different": 59956,
+   "max_ulp": 1247774,
+   "max_abs": 6.407499313354492e-07
+  },
+  "d12": {
+   "words": 116640,
+   "different": 88972,
+   "max_ulp": 43347968,
+   "max_abs": 3.501772880554199e-07
+  },
+  "d33": {
+   "words": 92160,
+   "different": 34632,
+   "max_ulp": 100,
+   "max_abs": 2.384185791015625e-07
+  },
+  "d13": {
+   "words": 106272,
+   "different": 60804,
+   "max_ulp": 21680,
+   "max_abs": 2.8312206268310547e-07
+  },
+  "d23": {
+   "words": 106272,
+   "different": 60820,
+   "max_ulp": 2187,
+   "max_abs": 1.7881393432617188e-07
+  }
+ },
+ "woof_build": {
+  "GPUWM_WRF_EXACT": "",
+  "GPUWM_WRF_EXACT_DIFFUSION": "",
+  "strict_options": [],
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "cupy": "14.2.0"
+ }
+}

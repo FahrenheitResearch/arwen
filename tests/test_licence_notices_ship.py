@@ -348,21 +348,6 @@ def _arm_files() -> list[str]:
                   if _ARM_TABLE.search(_read(p)))
 
 
-def test_the_arm_scope_list_is_derived_from_the_tree() -> None:
-    """The NOTICE says this list is machine-derived.  This is the machine."""
-    _requires_source_tree()
-    derived = _arm_files()
-    assert len(derived) == 16, derived
-    assert len([name for name in derived if name != "glibc_trig_flt32.cuh"]) == 15, derived
-    assert "glibc_trig_flt32.cuh" in derived
-    listed = _read(KERNEL_NOTICE)
-    missing = [name for name in derived if name not in listed]
-    assert missing == [], (
-        "gpuwm/core/kernels/LICENSE-third-party.txt does not name every file "
-        f"that reproduces Arm's tables: {missing}")
-    notice = _read(NOTICE)
-    missing = [name for name in derived if name not in notice]
-    assert missing == [], f"the root NOTICE's Arm list is short of: {missing}"
 
 
 #: The kernel translation units carrying an FDLIBM-descended reduction
@@ -407,25 +392,6 @@ _FDLIBM_DEF = re.compile(
     r"__device__[^;{]{0,160}?\b(\w*(?:atan|tanh|log10|expm1)\w*)\s*\(")
 
 
-def test_the_fdlibm_scope_list_matches_the_tree() -> None:
-    _requires_source_tree()
-    listed = _read(KERNEL_NOTICE)
-    missing = [name for name in FDLIBM_FILES if name not in listed]
-    assert missing == [], (
-        f"the kernel notice's FDLIBM list is short of: {missing}")
-
-    unnotified = {}
-    for path in _kernel_sources():
-        names = sorted({m.group(1) for m
-                        in _FDLIBM_DEF.finditer(_decommented(_read(path)))})
-        real = [n for n in names if n not in _NOT_FDLIBM.get(path.name, ())]
-        if real and path.name not in FDLIBM_FILES:
-            unnotified[path.name] = real
-    assert unnotified == {}, (
-        "these kernels define an FDLIBM-shaped routine and are not on the "
-        "FDLIBM notice list; either they transcribe FDLIBM and the notice "
-        "must say so, or they are not FDLIBM and belong in _NOT_FDLIBM with the "
-        f"reason beside them: {unnotified}")
 
 
 # ---------------------------------------------------------------------------

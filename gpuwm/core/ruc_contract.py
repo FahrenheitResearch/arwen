@@ -187,15 +187,20 @@ RUC_SURFACE_ORACLE_CASES = (
     "lai2d_preserve",
     "grass_short_season",
 )
+#: The two mosaic fixtures were rebuilt on box W1 (lane/verify-ruc-lsm) with
+#: gfortran 13.3.0 on glibc 2.39, the toolchain of every other RUC WRF
+#: oracle, by tools/ruc_mosaic_wrf461_oracle/build.sh.  The earlier build
+#: (gfortran 15.2 on another C library) recorded that library's float32
+#: words, which WOOF's libm does not reproduce (grdflx 1-2 ULP).
 RUC_MOSAIC_SURFACE_ORACLE_ASSET = ReferenceAsset(
     "mosaic_surface.csv",
-    3_003,
-    "a50e85da109af1981d2a8db8b302aaf4799ab80f25731d761b94d767f7646557",
+    2_967,
+    "0308b9ec425db77501fe2687f81b404d8f2fedcd0d45cb18c82389e147421787",
 )
 RUC_MOSAIC_DRIVER_ORACLE_ASSET = ReferenceAsset(
     "mosaic_driver.csv",
-    590_647,
-    "9ff0ff75a245d2ef7b90bea0b4d1b5eeaf653ff45aba6500304e381573a18e09",
+    583_954,
+    "16698d9e498b0933feca6afbf215fce10a80d1c5c62b765302c56a279100a0dc",
 )
 
 RUC_SOILPROP_ORACLE_ASSET = ReferenceAsset(

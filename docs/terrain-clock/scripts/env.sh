@@ -1,0 +1,4 @@
+export W=/work/tclock T=/work/tclock/tree
+export HOME=$W/home PYTHON_GIL=0 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+export CUDA_CACHE_PATH=$W/cuda-cache CUDA_CACHE_MAXSIZE=4294967296 CUDA_DEVICE_ORDER=PCI_BUS_ID
+export PY=$W/venv/bin/python PYTHONPATH=$W/tree

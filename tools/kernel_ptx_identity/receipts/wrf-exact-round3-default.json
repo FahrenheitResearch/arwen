@@ -1,0 +1,578 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "base3",
+  "base4"
+ ],
+ "nvrtc_version": [
+  12,
+  9
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "acoustic": {
+   "file_sha256": {
+    "base3": "bc2ce86bd35e1017868e8711465ec38a32890eea0dd08a64cc837bcd0790262d",
+    "base4": "d780c292a5d25ae3d93806f8835f2f42d3417f955b90cb8d5d099069f7a40e5e"
+   },
+   "assembled_source_sha256": {
+    "base3": "2356c7c8950b95056b0205da6f787a8f74fa01d4b2ae5e03d43621b2037a4141",
+    "base4": "d7a996193cfd9a681268f6f969180361b04a1447d0d80445cf10a2d90b43ac7d"
+   },
+   "entries": [
+    "accumulate_sumflux",
+    "advance_mu_th",
+    "advance_mu_th_msf",
+    "advance_nested_phi_w",
+    "advance_specified_phi_w",
+    "advance_uv",
+    "advance_w_phi",
+    "advance_w_phi_msf",
+    "apply_emdiv",
+    "calc_coefs",
+    "calc_cq",
+    "finish_sumflux",
+    "update_mudf",
+    "zero_sumflux"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "ca73ae174b582ea4661a1db39ba210cb6b8c35216c8e28f5a897098a07672943",
+      "base4": "ca73ae174b582ea4661a1db39ba210cb6b8c35216c8e28f5a897098a07672943"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "a70414ad84178deed4e32247965674241b03bac477b8fbbaceb07744232f652d",
+      "base4": "a70414ad84178deed4e32247965674241b03bac477b8fbbaceb07744232f652d"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "5d043beae86f79b8a3b23ea611416e2a8fcd41dd7f457dccd683be5b9f46ec18",
+      "base4": "5d043beae86f79b8a3b23ea611416e2a8fcd41dd7f457dccd683be5b9f46ec18"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "5b379ddaf7b22a10d5c9b74b5c867bd843639be616e4d87e96785fd6e2fc885f",
+      "base4": "5b379ddaf7b22a10d5c9b74b5c867bd843639be616e4d87e96785fd6e2fc885f"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "66626b114b0c5596376ead59f244f172b2d2120a083dd0aa63a46789ca4b7713",
+      "base4": "66626b114b0c5596376ead59f244f172b2d2120a083dd0aa63a46789ca4b7713"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "01fc2427cfd30a6ca8b0a437d394f85a8a13e616ce66d5d35468c15591b0183f",
+      "base4": "01fc2427cfd30a6ca8b0a437d394f85a8a13e616ce66d5d35468c15591b0183f"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "diagnostics": {
+   "file_sha256": {
+    "base3": "7b348c87a5d25e6e731198167fb48e0223c1e0a6ce5ca3328dd8c0b52c8c32bb",
+    "base4": "38ee5c0218f0d542a98079a47ff0f430086d8f9b7232ece705d8b605aaabb9d1"
+   },
+   "assembled_source_sha256": {
+    "base3": "f3da804ee5d4e686e044433a4366b3a4f2ed92f1421105dee1a98905818611ea",
+    "base4": "4418fe6f646c836513e508ebc44a80170c2ca4e0f82e33e304b13e849e1410ca"
+   },
+   "entries": [
+    "calc_p_alpha"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "cc50def3379d1152f69a0c90a9433963364c26f709578b2a543cea6560fddf5f",
+      "base4": "cc50def3379d1152f69a0c90a9433963364c26f709578b2a543cea6560fddf5f"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "ee0764c31e1002c5f83c02dafa4cc663a2880594232170dee0e63edcb8907e6a",
+      "base4": "ee0764c31e1002c5f83c02dafa4cc663a2880594232170dee0e63edcb8907e6a"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "89f5a345fdfb7b0d770910763cbf18ed4cad155bc95c7e136a443d15f275baac",
+      "base4": "89f5a345fdfb7b0d770910763cbf18ed4cad155bc95c7e136a443d15f275baac"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "ac0cb18db4a8f390e9f5136639ed03f48530f4a491cf9db7b042ee2267643b64",
+      "base4": "ac0cb18db4a8f390e9f5136639ed03f48530f4a491cf9db7b042ee2267643b64"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "9a37034ead7c5567c44d11d054c154bde03ef9110dba0254133b85af01ffdb98",
+      "base4": "9a37034ead7c5567c44d11d054c154bde03ef9110dba0254133b85af01ffdb98"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "13193c2cb4dccf74c5387aaa0748c6486c98029ef70117fe2ee1acfac81391a6",
+      "base4": "13193c2cb4dccf74c5387aaa0748c6486c98029ef70117fe2ee1acfac81391a6"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "dycore": {
+   "file_sha256": {
+    "base3": "6fac24715246c192644b0f4f391599dc7fa7572718512aad21ce3bdd04c5e978",
+    "base4": "b5bcc35a129fdf130f0473adc7d4500938d28007815f34c7645990b410343b20"
+   },
+   "assembled_source_sha256": {
+    "base3": "af786cd292ba6f627253762c34ac2aa416739ffc014eafa85029a09e5cf22ee0",
+    "base4": "64157bc4a97aed6e4654f34ef2b4f60479be28623c24c45b3db4b8f3b155c1fe"
+   },
+   "entries": [
+    "slow_buoyancy",
+    "slow_geopotential",
+    "slow_geopotential_faces",
+    "slow_geopotential_open",
+    "slow_geopotential_vertical",
+    "slow_pgf",
+    "small_step_finish_column",
+    "small_step_finish_uv",
+    "small_step_init_column",
+    "small_step_init_uv"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "cccaef4dfce9b905769b6d0c7633c68960f9819047a70b4b4074dc0814ad9c5c",
+      "base4": "cccaef4dfce9b905769b6d0c7633c68960f9819047a70b4b4074dc0814ad9c5c"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "4fb60d2421f590b389a48a794c2283e1952d199ad7c720a1395885814872d0b2",
+      "base4": "4fb60d2421f590b389a48a794c2283e1952d199ad7c720a1395885814872d0b2"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "21eaa8ceb8f6ee9dc2ae4b33c03fba8761abd4113c50efece606f9a438bba43f",
+      "base4": "21eaa8ceb8f6ee9dc2ae4b33c03fba8761abd4113c50efece606f9a438bba43f"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "c8f33cb63aed08dab2c6dc631a7ef8cbb3879e5707490dbd3bc474249756a425",
+      "base4": "c8f33cb63aed08dab2c6dc631a7ef8cbb3879e5707490dbd3bc474249756a425"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "f6d6694ff3f3b22913a679cc31f0330effb3e9f6654d5f86998aaf9c19f61d6a",
+      "base4": "f6d6694ff3f3b22913a679cc31f0330effb3e9f6654d5f86998aaf9c19f61d6a"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "da8c7e261a763d7a927cd528416ca45d9a423731cbce0474b62765ba68f34abc",
+      "base4": "da8c7e261a763d7a927cd528416ca45d9a423731cbce0474b62765ba68f34abc"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "lbc_state": {
+   "file_sha256": {
+    "base3": "27ad19bef958c8b6768101ee06a7b4c9df05408b3be581171681ef235de13c27",
+    "base4": "da4691da051a23f2a7445f74ffd02487599cf644c63067f32e08ddab8711859b"
+   },
+   "assembled_source_sha256": {
+    "base3": "e2e4f809c366e020eac3f1a05fd0577ff17e75c6a15852e74eb4cd7b61e274dd",
+    "base4": "e650e7df539401637eb77f21617b19ffbf60ea0a88e7285fd738bb741ce8b5b6"
+   },
+   "entries": [
+    "couple_nest_field",
+    "couple_nest_field_frame",
+    "couple_nest_field_window",
+    "finalize_state_field",
+    "install_mu_boundary",
+    "state_specified_relaxation",
+    "uncouple_feedback_field"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "d573353c25b2b5fc3c90616b916c839814615aa8c6b30880863c72de89741c35",
+      "base4": "d573353c25b2b5fc3c90616b916c839814615aa8c6b30880863c72de89741c35"
+     },
+     "entry_compared": 7,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "50dc189c56d0ee4293437a9bf61c346d459bc01b3a5736878972c8be48712f95",
+      "base4": "50dc189c56d0ee4293437a9bf61c346d459bc01b3a5736878972c8be48712f95"
+     },
+     "entry_compared": 7,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "5ca18821e59f197908f0407e6805d78f7c3eedacdd31706a62320a18da801486",
+      "base4": "5ca18821e59f197908f0407e6805d78f7c3eedacdd31706a62320a18da801486"
+     },
+     "entry_compared": 7,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "e268aa498ef089ac317df274571f7db61a576989c5289e5861374d8b30badfb4",
+      "base4": "e268aa498ef089ac317df274571f7db61a576989c5289e5861374d8b30badfb4"
+     },
+     "entry_compared": 7,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "3940ad155565d20df63c76a784535fbbd43c5fa51e6e9c1d955575bcdbc967a7",
+      "base4": "3940ad155565d20df63c76a784535fbbd43c5fa51e6e9c1d955575bcdbc967a7"
+     },
+     "entry_compared": 7,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "dac9ffaf8ba0630a9fee36ab6b321cf7af3d478015769b206de8639f850d8fe4",
+      "base4": "dac9ffaf8ba0630a9fee36ab6b321cf7af3d478015769b206de8639f850d8fe4"
+     },
+     "entry_compared": 7,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "smag2d": {
+   "file_sha256": {
+    "base3": "932359b9f7685918fdd69e204ead1d2ac8369b792d64ff393e00b6b910dc84ad",
+    "base4": "3ad7634b66d406291e312424e8673d996e68ad907cf2e49d965e982e7a007f14"
+   },
+   "assembled_source_sha256": {
+    "base3": "400d89d032c13c4ed64be6cfd96e72483dc176fc83a933098b8cde85ac2a34a9",
+    "base4": "6751dc6b43267d35c5a62430f686bc5bdf9650b4b7de492b83769be2c1fccbbf"
+   },
+   "entries": [
+    "smag2d_km",
+    "smag_hd_s",
+    "smag_hd_u",
+    "smag_hd_v",
+    "smag_hd_w",
+    "wrf_calc_n2",
+    "wrf_smag2d_km",
+    "wrf_smag3d_km",
+    "wrf_smag_deform",
+    "wrf_smag_flux_s",
+    "wrf_smag_hd_s",
+    "wrf_smag_hd_u",
+    "wrf_smag_hd_v",
+    "wrf_smag_hd_w_cached",
+    "wrf_smag_hd_w_stress",
+    "wrf_smag_km_bc",
+    "wrf_smag_surface_heat_const",
+    "wrf_smag_surface_scalars",
+    "wrf_smag_surface_u",
+    "wrf_smag_surface_u_cd0",
+    "wrf_smag_surface_v",
+    "wrf_smag_surface_v_cd0",
+    "wrf_smag_vd_s",
+    "wrf_smag_vd_u",
+    "wrf_smag_vd_v",
+    "wrf_smag_vd_w",
+    "wrf_smag_w_primitives",
+    "wrf_smag_w_stress",
+    "wrf_tke_km",
+    "wrf_tke_rhs"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "88b2f9d268f47fa55b740adb210f23d10006c20229a10718aea36481d239ca11",
+      "base4": "88b2f9d268f47fa55b740adb210f23d10006c20229a10718aea36481d239ca11"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "9850c22cba68fc11e2f0623224a8213db1236b586312e18c7aa544b77d7fbdd4",
+      "base4": "9850c22cba68fc11e2f0623224a8213db1236b586312e18c7aa544b77d7fbdd4"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "5d1acdb42426477686832513c57ba922f07da83621f1722a764fdad57b7ee626",
+      "base4": "5d1acdb42426477686832513c57ba922f07da83621f1722a764fdad57b7ee626"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "01ee508a1212d8a2b1bc3813475af4e938f998e05510caf571b2c199d54d3439",
+      "base4": "01ee508a1212d8a2b1bc3813475af4e938f998e05510caf571b2c199d54d3439"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "7298b05e7070da2109a922b3b21c57511b3ba832d20a082809c1b30e5048fe37",
+      "base4": "7298b05e7070da2109a922b3b21c57511b3ba832d20a082809c1b30e5048fe37"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "4ed815dd6e05b7cf58e9c276d339cc5c03d455521dee762d32f91dedcce268e1",
+      "base4": "4ed815dd6e05b7cf58e9c276d339cc5c03d455521dee762d32f91dedcce268e1"
+     },
+     "entry_compared": 30,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "surface_w": {
+   "file_sha256": {
+    "base3": "587587787fd7d69b80b26861f10eaa78baeec3b9fa243b1cd7ca40e608941c03",
+    "base4": "b47cecec63e457c155bdcc4a1a2c9ed299f0a5352c52e5af4f7814671d2526f8"
+   },
+   "assembled_source_sha256": {
+    "base3": "483f6d3e72865340880738e1b92f661528d24050532630e771bb81ad191315d1",
+    "base4": "4db37e8462c353a39102ec14ae6b9284c8de31916ec348715af2f3c7e586f2ff"
+   },
+   "entries": [
+    "set_surface_w"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "cf292186c6991f78e44e96d3ec14486e9fc7df3ace48ec473b25ea7285e5f9a9",
+      "base4": "cf292186c6991f78e44e96d3ec14486e9fc7df3ace48ec473b25ea7285e5f9a9"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "cbb3ff1b9ddbf5d81f7371f91fa15f87fdb0f1dd89d3d1d56609ab6eddb9e6eb",
+      "base4": "cbb3ff1b9ddbf5d81f7371f91fa15f87fdb0f1dd89d3d1d56609ab6eddb9e6eb"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "be01c96a899a528be26e4c65b1a0b05a0e2b43b4f3c21d6babf1acaf55ffb1f9",
+      "base4": "be01c96a899a528be26e4c65b1a0b05a0e2b43b4f3c21d6babf1acaf55ffb1f9"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "f5b6b6a78c132075b0912040bcf1a6617a23f5849f82d1bd55080ed063c0cb8d",
+      "base4": "f5b6b6a78c132075b0912040bcf1a6617a23f5849f82d1bd55080ed063c0cb8d"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "8255805fe9f19af6af2aca430b75cdc385a8bdea5d19bfa62be210170cc89fd1",
+      "base4": "8255805fe9f19af6af2aca430b75cdc385a8bdea5d19bfa62be210170cc89fd1"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base3": "728e61ee793d842e1a1dd8649991a8c72396e5f03ed02850a512ed4e5607921d",
+      "base4": "728e61ee793d842e1a1dd8649991a8c72396e5f03ed02850a512ed4e5607921d"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

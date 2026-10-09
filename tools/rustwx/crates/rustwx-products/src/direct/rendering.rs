@@ -41,7 +41,7 @@ pub(crate) fn direct_recipe_render_controls(
     if filled_selector.field == CanonicalField::SmokeMassDensity {
         // Smoke aliases retain the sparse-signal legend and transparent scale.
         (None, None)
-    } else if matches!(recipe.style, RenderStyle::AirQualityPm25 | RenderStyle::AirQualityOzone) {
+    } else if matches!(recipe.style, RenderStyle::AirQualityPm25 | RenderStyle::AirQualityOzone | RenderStyle::WeatherSnowfall) {
         (Some(LegendMode::Thresholds), None)
     } else if matches!(recipe.style, RenderStyle::WeatherDewpoint) {
         let tick = matches!(
@@ -571,6 +571,8 @@ pub(crate) fn direct_fill_unit_conversion(
         } else {
             (UnitConvert::None, Some("mm"))
         }
+    } else if matches!(selector.field, CanonicalField::ModelSnowfall | CanonicalField::Snowfall10to1 | CanonicalField::SnowfallKuchera) {
+        (UnitConvert::MmToInches, Some("in"))
     } else {
         (UnitConvert::None, None)
     }

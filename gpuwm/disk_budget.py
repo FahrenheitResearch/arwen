@@ -325,10 +325,10 @@ def projected_run_bytes(exp, *, keep_checkpoints: int | None,
         h = frame_bytes * frames
         c = cells * per_cell * held
         begin, end = _history_window_seconds(exp, domain)
-        # The activation frame precedes the first physics step and carries
-        # no output-due reflectivity. A delayed first alarm is already mature.
+        # A tick-zero analysis writes the zero reflectivity array. Only a
+        # later activation precedes its domain's first reflectivity producer.
         start = run_seconds - live if live is not None else run_seconds + 1
-        if frames and begin == 0 and (not resumed or float(resume_seconds) < start):
+        if frames and start > 0 and begin == 0 and (not resumed or float(resume_seconds) < start):
             h -= frame_bytes - history_frame_bytes(run, selection, include_reflectivity=False)
         p = (_picture_projection(run.nx, run.ny, live, float(domain.history_interval_s),
                                  render_products,

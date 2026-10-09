@@ -1,0 +1,5 @@
+--- a/phys/module_sf_sfclay.F
++++ b/phys/module_sf_sfclay.F
+@@ -767 +767 @@
+-              PSIQ10=GZ10OZ0(I)-PSIH(I)+GZ0OZQ
++              PSIQ10=GZ10OZ0(I)-PSIH10(I)+GZ0OZQ

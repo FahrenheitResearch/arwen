@@ -2166,8 +2166,20 @@ def test_restore_rejects_changed_physics_setup_before_mutation(
     elif mismatch == "resolved-driver-switch":
         live_driver.surface_enabled = False
 
-    with pytest.raises(restart.RestartMismatchError,
-                       match="physics setup"):
+    # A moved algorithm identity is a change of build, refused before the
+    # configuration walk with the scheme named; the rest are the physics
+    # gate's resolved-setup refusals.
+    expected = {
+        "radiation-algorithm": (
+            "scheme implementations this build does not run: "
+            "ra_lw_physics=4 \\(radiation lw\\): rte-rrtmgp-v1 -> "
+            "rte-rrtmgp-deliberately-different-test"),
+        "land-surface-algorithm": (
+            "scheme implementations this build does not run: "
+            "sf_surface_physics=2 \\(land surface\\): .* -> "
+            "pre-chs2-and-source-water-lake-skin-test-identity"),
+    }.get(mismatch, "physics setup")
+    with pytest.raises(restart.RestartMismatchError, match=expected):
         restart.restore_restart(path, live, cfg)
 
     assert live.elapsed_seconds == 47.0
@@ -2869,6 +2881,14 @@ def test_tree_restart_past_the_stop_tick_refuses_and_names_the_remedy(
 _VOLATILE_CHECKPOINT_HEADER = ("created", "producer", "checkpoint_set_id",
                                "written_mode")
 
+#: The terrain clock every digest below was pinned under.  From 2.8.8 the
+#: default is "local_face", which the echo and the restart identity bind
+#: (a run under it can take a longer step than the checkpoint's), so the
+#: digest fixtures name the clock they were recorded with.  That the
+#: default moves the header and nothing else is
+#: test_the_local_face_default_moves_only_the_clock_binding below.
+_PINNED_UNDER_MEASURED_CLOCK = {"terrain_clock": "measured"}
+
 #: The format stamp every historical digest in this file and its two
 #: per-change siblings was harvested under.  v6 declared the 2.7.0 break
 #: (ENG-010 / ENG-011: adaptive + eta_levels echo, fields/ustm, held/gf_*),
@@ -3013,10 +3033,28 @@ def _member_names(path) -> list[str]:
 #: only that value back and recovers both previous canonical digests,
 #: retaining every array byte and every other header value.  Older ledger
 #: reconstructions first unwind the same default before removing their keys.
+#:
+#: RE-PINNED for the Kessler identity (2.8.8, gfix/288-mp-clamp): the
+#: shared microphysics finish clamps at WRF's REAL product mp_tend_lim*dt,
+#: so this mp=1 fixture's physics_setup names "kessler-warm-rain-v2-real-
+#: clamp-product" and the fingerprint derived from it moves.  The
+#: attribution is test_the_checkpoint_pins_moved_for_the_real_clamp_
+#: identity_and_nothing_else below: naming the v1 identity again and
+#: recomputing the fingerprint recovers the previous pair exactly, and
+#: every older reconstruction unwinds the same name
+#: (_PRE_REAL_CLAMP_ALGORITHMS).
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "efca0135a058d4aedb3a120ee729b769ed13d08352446eaa350f7cf5276fc76a"
+    "8b2e93ccad34802fb47061530dd962af456cda2c8035eec7da4cbd52ed53fddb"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
+    "7b8abced0192f5bd55370d208e16c76d667bf2baa2292ef59d3af0d482d698a6"
+
+#: The pair above before the Kessler identity moved, and the identity every
+#: digest older than 2.8.8's clamp fix was harvested under.
+_PRE_REAL_CLAMP_ROOT_DIGEST = \
+    "efca0135a058d4aedb3a120ee729b769ed13d08352446eaa350f7cf5276fc76a"
+_PRE_REAL_CLAMP_CHILD_DIGEST = \
     "e35a7d91043c4096d8b7087e66eea09a7ca87bea63f3ad4cb8f47b3d5cce48c7"
+_PRE_REAL_CLAMP_ALGORITHMS = {"microphysics": "kessler-warm-rain-v1"}
 
 _PRE_CQ_DEFAULT_ROOT_DIGEST = \
     "9ead8250634097dc3d514611b5b2aed7aefec327008f36c8b2897683a7325b93"
@@ -3066,7 +3104,8 @@ _WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path",
 
 
 
-def _digest_without_config_keys(path, keys, *, config_overrides=None) -> str:
+def _digest_without_config_keys(path, keys, *, config_overrides=None,
+                                algorithm_overrides=None) -> str:
     """The canonical member digest as it would read WITHOUT ``keys``.
 
     Same construction as :func:`_canonical_member_digest`, with exactly
@@ -3083,6 +3122,11 @@ def _digest_without_config_keys(path, keys, *, config_overrides=None) -> str:
     dropping its identity-bound key.  The writer's own derived hashes are
     recomputed after the named replacements; every other header value and
     every array byte remain bound.
+
+    ``algorithm_overrides`` reconstructs a declared scheme identity move
+    (``physics_setup.algorithms``) the same way: the named components take
+    their previous identity and the fingerprint is recomputed; nothing
+    else is touched.
 
     Taking ``keys`` as an argument is what lets one construction serve
     both the cumulative reconstruction below and the per-change
@@ -3106,6 +3150,9 @@ def _digest_without_config_keys(path, keys, *, config_overrides=None) -> str:
         setup = copy.deepcopy(header["physics_setup"])
         setup["configuration_sha256"] = restart._json_sha256(
             restart._json_value(values, "RunConfig"))
+        for component, identity in (algorithm_overrides or {}).items():
+            assert component in setup["algorithms"], component
+            setup["algorithms"][component] = identity
         header["physics_setup"] = setup
         header["physics_setup_fingerprint"] = restart._json_sha256(setup)
         digest = hashlib.sha256()
@@ -3125,8 +3172,10 @@ def _digest_without_the_wif_config_keys(path) -> str:
     """Unwind later config additions and the declared moisture default move."""
     # e13fa45c0 / 59f7e280f turned moist_cq on by default.  These pre-WIF
     # anchors were recorded with it off; restore that value, retain the key.
+    # They also predate 2.8.8's Kessler identity move: name v1 again.
     return _digest_without_config_keys(
-        path, _WIF_CONFIG_KEYS, config_overrides={"moist_cq": False})
+        path, _WIF_CONFIG_KEYS, config_overrides={"moist_cq": False},
+        algorithm_overrides=_PRE_REAL_CLAMP_ALGORITHMS)
 
 
 def test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else(
@@ -3152,7 +3201,8 @@ def test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else(
     ``tests/test_adaptive_timestep_checkpoint.py``.
     """
     source, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
     root_path = restart.write_tree_restart(
         tmp_path, source, start + timedelta(seconds=3600))
     child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
@@ -3171,11 +3221,65 @@ def test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else(
         assert key in echo, key
 
 
+def test_the_local_face_default_moves_only_the_clock_binding(
+        monkeypatch, tmp_path):
+    """From 2.8.8 the default terrain clock is "local_face" and it binds.
+
+    THE CONCRETE BREAKAGE THIS PREVENTS: a checkpoint-format change riding
+    in under the default flip, hidden because the digests above are pinned
+    under "measured".  The same tree written under the default and under
+    "measured" must differ only in the config echo's terrain_clock and the
+    two hashes the writer derives from the echo; every array member is
+    byte for byte the same.
+    """
+    def write(directory, overrides):
+        directory.mkdir()
+        source, start = _sealed_tree_fixture(
+            monkeypatch, forcing_count=2, run_seconds=3600.0,
+            payload_seed=31, run_overrides=overrides)
+        restart.write_tree_restart(
+            directory, source, start + timedelta(seconds=3600))
+        members = {}
+        for path in sorted(directory.glob("gpuwmrst_d0*_*.npz")):
+            with np.load(path, allow_pickle=False) as data:
+                header = json.loads(bytes(bytearray(
+                    data[restart._HEADER_KEY])).decode("utf-8"))
+                arrays = {name: (str(data[name].dtype), data[name].shape,
+                                 data[name].tobytes(order="C"))
+                          for name in data.files
+                          if name != restart._HEADER_KEY}
+            members[path.name.split("_")[1]] = (header, arrays)
+        return members
+
+    default = write(tmp_path / "default", None)
+    measured = write(tmp_path / "measured", _PINNED_UNDER_MEASURED_CLOCK)
+    assert sorted(default) == sorted(measured) == ["d01", "d02"]
+    for member in default:
+        live, live_arrays = default[member]
+        old, old_arrays = measured[member]
+        assert live_arrays == old_arrays
+        assert live["config"]["terrain_clock"] == "local_face"
+        assert "terrain_clock" not in old["config"]
+        moved = {key for key in set(live) | set(old)
+                 if key not in _VOLATILE_CHECKPOINT_HEADER
+                 and live.get(key) != old.get(key)}
+        assert moved == {"config", "physics_setup",
+                         "physics_setup_fingerprint"}
+        assert {key for key in set(live["config"]) | set(old["config"])
+                if live["config"].get(key) != old["config"].get(key)} \
+            == {"terrain_clock"}
+        assert {key for key in set(live["physics_setup"])
+                | set(old["physics_setup"])
+                if live["physics_setup"].get(key)
+                != old["physics_setup"].get(key)} == {"configuration_sha256"}
+
+
 def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(
         monkeypatch, tmp_path):
     """Ran green BEFORE the lifecycle block existed and green after."""
     source, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
     root_path = restart.write_tree_restart(
         tmp_path, source, start + timedelta(seconds=3600))
     child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
@@ -3189,20 +3293,59 @@ def test_the_checkpoint_pins_moved_for_the_moist_cq_default_and_nothing_else(
         monkeypatch, tmp_path):
     """e13fa45c0 / 59f7e280f changed one bound default, not the format."""
     source, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
     root_path = restart.write_tree_restart(
         tmp_path, source, start + timedelta(seconds=3600))
     child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
     for path, old_digest, current_digest in (
             (root_path, _PRE_CQ_DEFAULT_ROOT_DIGEST,
-             _LIFECYCLE_FREE_ROOT_DIGEST),
+             _PRE_REAL_CLAMP_ROOT_DIGEST),
             (child_path, _PRE_CQ_DEFAULT_CHILD_DIGEST,
-             _LIFECYCLE_FREE_CHILD_DIGEST)):
+             _PRE_REAL_CLAMP_CHILD_DIGEST)):
         assert restart.read_restart_header(path)["config"]["moist_cq"] is True
+        # The CQ flip's own "after" pair predates the Kessler identity
+        # move, so both sides name v1 (_PRE_REAL_CLAMP_ALGORITHMS).
+        assert _digest_without_config_keys(
+            path, (), algorithm_overrides=_PRE_REAL_CLAMP_ALGORITHMS
+        ) == current_digest
+        assert current_digest != old_digest
+        assert _digest_without_config_keys(
+            path, (), config_overrides={"moist_cq": False},
+            algorithm_overrides=_PRE_REAL_CLAMP_ALGORITHMS) == old_digest
+
+
+def test_the_checkpoint_pins_moved_for_the_real_clamp_identity_and_nothing_else(
+        monkeypatch, tmp_path):
+    """gfix/288-mp-clamp moved one scheme identity, not the format.
+
+    THE CONCRETE BREAKAGE THIS PREVENTS: a checkpoint-format change riding
+    in under the Kessler identity re-pin.  Naming the v1 identity again and
+    recomputing the fingerprint must land on the previous pair exactly;
+    anything else that moved leaves the reconstruction short.
+    """
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+    for path, old_digest, current_digest in (
+            (root_path, _PRE_REAL_CLAMP_ROOT_DIGEST,
+             _LIFECYCLE_FREE_ROOT_DIGEST),
+            (child_path, _PRE_REAL_CLAMP_CHILD_DIGEST,
+             _LIFECYCLE_FREE_CHILD_DIGEST)):
+        algorithms = restart.read_restart_header(path)["physics_setup"][
+            "algorithms"]
+        assert algorithms["microphysics"] == (
+            restart.MICROPHYSICS_ALGORITHM_IDENTITIES[1])
+        assert algorithms["microphysics"] != (
+            _PRE_REAL_CLAMP_ALGORITHMS["microphysics"])
         assert _canonical_member_digest(path) == current_digest
         assert current_digest != old_digest
         assert _digest_without_config_keys(
-            path, (), config_overrides={"moist_cq": False}) == old_digest
+            path, (), algorithm_overrides=_PRE_REAL_CLAMP_ALGORITHMS
+        ) == old_digest
 
 
 def test_the_live_format_stamp_is_the_declared_v6_and_v5_is_named(

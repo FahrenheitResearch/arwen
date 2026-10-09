@@ -80,11 +80,32 @@ def _require_positive_dt(dt: float) -> float:
     return value
 
 
+def _vapor_accumulators(fields, qvten, tten, theta, exner):
+    """Validate WRF's vapour and temperature accumulators.
+
+    ``qvten``/``tten`` (REAL, per second) and ``theta``/``exner`` (whose
+    product is mp_gt_driver's ``t1d``) are given all four or none.  Given,
+    ``qv`` is the read-only entry vapour ``qv1d``, the working vapour is
+    ``MAX(1.E-10, qv1d + DT*qvten)``, the block's rate is added to the two
+    tendencies as WRF adds it, and ``temperature`` is re-formed as
+    ``t1d + DT*tten``.
+    """
+    given = {"qvten": qvten, "tten": tten, "theta": theta, "exner": exner}
+    present = [name for name, value in given.items() if value is not None]
+    if present and len(present) != 4:
+        raise ValueError("qvten, tten, theta and exner are given together "
+                         f"or not at all (got {present})")
+    if present:
+        fields.update(given)
+
+
 def launch_aerosol_saturation_adjust(
         temperature, pressure, qv, qc, nc_entry, ncten, nwfaten,
         nwfa_work_m3, w, tnccn_act, tnc_wev, dt, *,
         reference_density=None, reference_temperature=None,
-        condensation_rate=None, cloud_presence=None, qcten=None) -> None:
+        condensation_rate=None, cloud_presence=None, qcten=None,
+        qvten=None, tten=None, theta=None, exner=None,
+        heat_ocp=None) -> None:
     """Run WRF's mp=28 cloud condensation/evaporation block on device.
 
     Parameters
@@ -127,6 +148,16 @@ def launch_aerosol_saturation_adjust(
         ``qc`` is the read-only entry cloud, the working cloud is re-formed
         as ``qc + qcten*dt`` (:3215) and ``prw_vcd`` is added to ``qcten``
         (:3480) instead of to ``qc``.
+    qvten, tten, theta, exner
+        Optional, all four or none: WRF's vapour and temperature
+        accumulators and the two factors of ``t1d``.  Given, ``qv`` is the
+        read-only entry vapour, ``-prw_vcd`` and ``(lvap*ocp)*prw_vcd`` are
+        added to the tendencies (:3479, :3483) and ``temperature`` becomes
+        ``t1d + DT*tten`` (:3489).
+    heat_ocp
+        Optional output: ``ocp(k)`` as the TAU+1 refresh forms it (:3207),
+        at every level, for :func:`launch_aerosol_rain_evaporation` to carry
+        to the phase cleanup.
     """
     fields = {
         "temperature": temperature,
@@ -152,6 +183,9 @@ def launch_aerosol_saturation_adjust(
         fields["cloud_presence"] = cloud_presence
     if qcten is not None:
         fields["qcten"] = qcten
+    if heat_ocp is not None:
+        fields["heat_ocp"] = heat_ocp
+    _vapor_accumulators(fields, qvten, tten, theta, exner)
     _, size = validate_fields(fields)
     validate_fp64_fortran_table("tnccn_act", tnccn_act, CCN_ACTIVATION_SHAPE)
     validate_fp64_fortran_table("tnc_wev", tnc_wev, DROP_EVAP_SHAPE)
@@ -163,7 +197,7 @@ def launch_aerosol_saturation_adjust(
         (temperature, pressure, qv, qc, nc_entry, ncten, nwfaten,
          nwfa_work_m3, w, tnccn_act, tnc_wev,
          reference_density, reference_temperature, condensation_rate,
-         cloud_presence, qcten,
+         cloud_presence, qcten, qvten, tten, theta, exner, heat_ocp,
          np.float32(step), np.int32(size)))
 
 
@@ -171,7 +205,9 @@ def launch_aerosol_rain_evaporation(
         qr, nr, temperature, pressure, qv, nwfaten, dt, *,
         reference_density=None, reference_temperature=None,
         graupel_melt_marker=None, condensation_rate=None,
-        entry_density=None, qrten=None, nrten=None) -> None:
+        entry_density=None, qrten=None, nrten=None, qvten=None, tten=None,
+        theta=None, exner=None, heat_ocp=None,
+        tau1_temperature=None) -> None:
     """Run WRF's mp=28 rain evaporation, returning one CCN per raindrop.
 
     A direct port of :3236-3255 + :3384-3388 + :3500-3574, including the
@@ -192,6 +228,19 @@ def launch_aerosol_rain_evaporation(
         the caller already has it; pass that buffer here.  ``None`` falls
         back to the locally recomputed post-condensation density, i.e. mp=8's
         behaviour.
+    qvten, tten, theta, exner
+        As for :func:`launch_aerosol_saturation_adjust`: ``prv_rev`` and
+        ``-(lvap*ocp)*prv_rev`` are added to the tendencies (:3563, :3566)
+        and ``qv`` stays the entry vapour.
+    heat_ocp, tau1_temperature
+        Optional, both or neither, and only with ``condensation_rate``:
+        ``heat_ocp`` holds :3207's ``ocp(k)`` (the saturation adjustment's
+        ``heat_ocp`` output) and ``tau1_temperature`` the :3188 temperature.
+        On exit ``heat_ocp`` holds the ``ocp(k)`` and ``condensation_rate``
+        the ``lvap(k)`` WRF last formed (:3517-3519 where this block's gate
+        passes, the TAU+1 values elsewhere): the phase cleanup's two
+        latent-heat factors (:3953, :3964).  ``condensation_rate``'s
+        ``prw_vcd`` is read before it is overwritten.
     """
     fields = {
         "qr": qr,
@@ -222,6 +271,16 @@ def launch_aerosol_rain_evaporation(
         # and :3562/:3564 add to these instead (thompson_aerosol_sat.cu).
         fields["qrten"] = qrten
         fields["nrten"] = nrten
+    if (heat_ocp is None) != (tau1_temperature is None):
+        raise ValueError("heat_ocp and tau1_temperature are given together "
+                         "or not at all")
+    if heat_ocp is not None:
+        if condensation_rate is None:
+            raise ValueError("heat_ocp needs condensation_rate, which "
+                             "carries lvap(k) out")
+        fields["heat_ocp"] = heat_ocp
+        fields["tau1_temperature"] = tau1_temperature
+    _vapor_accumulators(fields, qvten, tten, theta, exner)
     _, size = validate_fields(fields)
     step = _require_positive_dt(dt)
 
@@ -231,6 +290,7 @@ def launch_aerosol_rain_evaporation(
         (qr, nr, temperature, pressure, qv, nwfaten,
          reference_density, reference_temperature, graupel_melt_marker,
          condensation_rate, entry_density, qrten, nrten,
+         qvten, tten, theta, exner, heat_ocp, tau1_temperature,
          np.float32(step), np.int32(size)))
 
 

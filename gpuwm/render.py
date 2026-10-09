@@ -556,16 +556,15 @@ PRODUCTS = {
 
 #: The shared product names, as the rust engine's catalog slugs.
 #:
-#: This maps four of the five in :data:`PRODUCTS`.  ``olr`` is absent
-#: because the rust catalog has no OLR chart yet -- that half is upstream
-#: work in the renderer's own catalog, and the entry lands here when the
-#: slug it would name exists.  Pointing an alias at a plausible-looking
-#: slug before then is precisely the ``wind10`` bug described below: a
-#: mapping that reads correct and returns the wrong chart.  Until the
-#: catalog carries one, ``--products olr --engine rust`` passes ``olr``
-#: through as a raw slug and the renderer refuses it by name, which is a
-#: legible answer; ``--products all --engine rust`` is unaffected, since
-#: ``all`` is the renderer's own catalog and never this table.
+#: All five of :data:`PRODUCTS`.  ``olr`` maps to ``var:wrf_olr``, the
+#: engine's own chart of the history's stored ``OLR`` plane (the same
+#: W m-2 flux the matplotlib panel draws), and NOT to the catalog's
+#: ``simulated_ir_satellite``: that is a brightness temperature from a
+#: radiative-transfer operator, a different quantity that the history
+#: lane does not serve, and pointing ``olr`` at it would be the
+#: ``wind10`` bug below again.  Before this entry ``gpuwm render --help``
+#: listed ``olr`` and the engine refused it as an unknown slug (2.8.7 and
+#: 2.8.8 candidates alike).
 #:
 #: Each value is the slug of a chart whose SUBJECT is what the key
 #: names.  ``wind10`` used to map to ``mslp_10m_winds`` under a comment
@@ -589,6 +588,8 @@ RUST_PRODUCT_ALIASES = {
     "wind10": "10m_wind_speed_and_direction",
     # run-total accumulated precipitation
     "precip": "total_qpf",
+    # top-of-atmosphere outgoing longwave, the stored OLR plane in W m-2
+    "olr": "var:wrf_olr",
 }
 
 #: What each alias must actually DRAW, as the canonical store selector
@@ -1158,6 +1159,10 @@ def catalog_main(args) -> int:
               file=sys.stderr)
         return 2
     print(result.stdout, end="")
+    # The short names --help advertises, with the engine product each one
+    # asks for, so the two answers to "what may I put in --products" agree.
+    print("render: shared names: " + ", ".join(
+        f"{name} -> {slug}" for name, slug in RUST_PRODUCT_ALIASES.items()))
     print("render: `gpuwm render --list-products WRFOUT` adds which of "
           "these that file can actually render, and why not the rest")
     return 0
@@ -3741,10 +3746,10 @@ def _section_across_km(value: str) -> float:
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "render",
-        help="render forecast product PNGs from wrfout files via the "
-             "wrf package (composite reflectivity, 2 m temperature, "
-             "10 m wind, accumulated precipitation, TOA outgoing "
-             "longwave as synthetic IR)")
+        help="render forecast product PNGs from wrfout files "
+             "(composite reflectivity, 2 m temperature, 10 m wind, "
+             "accumulated precipitation, TOA outgoing longwave "
+             "radiation in W m-2)")
     parser.add_argument(
         "wrfout", type=Path, nargs="*", metavar="WRFOUT",
         help="wrfout NetCDF file(s) written by gpuwm run")
@@ -3764,7 +3769,10 @@ def register_cli(subparsers) -> None:
         "--products", default="all", metavar="LIST",
         help="comma-separated products: "
              f"{', '.join(PRODUCTS)}, or 'all' (default); with the rust "
-             "engine, raw catalog slugs (sbcape, srh_0_1km, ...) also "
+             "engine these are "
+             + ", ".join(f"{name}={slug}" for name, slug
+                         in RUST_PRODUCT_ALIASES.items())
+             + ", raw catalog slugs (sbcape, srh_0_1km, ...) also "
              "work and 'all' renders its full catalog")
     parser.add_argument(
         "--timeidx", default="all", metavar="N|all",

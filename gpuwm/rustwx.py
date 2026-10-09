@@ -2417,7 +2417,7 @@ def run_renderer_difference(renderer: Path,
 
 
 __all__ = [
-    "CARGO_BUILD_HINT", "COMMAND_LINE_BUDGET", "RENDERER_ABI_MARKER",
+    "CARGO_BUILD_HINT", "COMMAND_LINE_BUDGET", "RENDERER_ABI_MARKER",  # noqa: F822 -- module __getattr__
     "DIFFERENCE_EVENT", "parse_difference_line", "run_renderer_difference",
     "RENDERER_ENV", "fit_series_command",
     "NATIVE_WARNING_PREFIXES", "relay_native_warnings",

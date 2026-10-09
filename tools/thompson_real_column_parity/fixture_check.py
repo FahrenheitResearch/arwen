@@ -7,8 +7,8 @@ classifies them.
 A cell whose relative difference from WRF exceeds 2e-6 is counted as
 rounding when the port's own response to a one-unit nudge of every input
 (four draws) explains it, or, for the final state, when it is within four
-float32 units of the largest value the cell held.  Two rates carry one
-more named rule each, because rounding decides them:
+float32 units of the largest value the cell held.  Under mp=8 two rates
+carry one more named rule each, because rounding decides them there:
 
 * rain evaporation (``prv_rev``, ``pnr_rev``) where the saturation
   adjustment has just brought the air to saturation: WRF evaporates where
@@ -21,6 +21,16 @@ more named rule each, because rounding decides them:
   crossing (:2159-2176), whose relative sensitivity to the rain mean
   diameter is ``kappa``; explained when the relative gap over ``kappa`` is
   at most 1e-6.
+
+Under mp=28 neither rule applies.  Both were transcription differences, not
+rounding: the mp=28 rain distribution divided the DOUBLE literal 3.672 where
+WRF divides the REAL sum 3.0 + mu_r + 0.672 (pnr_rcr through mvd_r), and the
+condensation and rain evaporation added their increments to the running
+vapour and temperature where WRF re-forms qv1d + DT*qvten and t1d + DT*tten
+(the sign of the post-adjustment ssatw).  Both were repaired on
+lane/mp28fix-warm-network, after which the mp=28 host build gives pnr_rcr
+bit for bit on every active cell of the 153-column oracle and prv_rev
+differs only where an upstream rate does.
 
 A fixture written by ``make_fixture.py --mp8`` carries ``mp_physics`` 8
 and grades the classic adapter (``gpuwm.core.microphysics._apply_thompson``)
@@ -116,13 +126,14 @@ def check(fixture):
                          mask=np.isfinite(wrf_v))
         un = _unexplained_far(port_v, wrf_v, sens["rates"][name])
         rel, _ok = _rel(port_v, wrf_v, 0.0)
-        if name in ("prv_rev", "pnr_rev"):
+        # mp=8 only: see the module docstring for why mp=28 has no such rule.
+        if mp == 8 and name in ("prv_rev", "pnr_rev"):
             moved = (np.abs(port["rates"]["prv_rev"]
                             - z["rate_prv_rev"].astype(np.float64))
                      * dt / qr_pre)
             un &= ~(((np.abs(ssatw) <= 16 * EPS32) & adjusted)
                     | (moved <= 1.0e-5))
-        if name == "pnr_rcr":
+        if mp == 8 and name == "pnr_rcr":
             un &= ~(rel / np.maximum(np.nan_to_num(kappa), 1.0) <= 1.0e-6)
         entry = {k: cls[k] for k in (
             "n_active", "n_beyond_rounding", "n_beyond_unexplained",

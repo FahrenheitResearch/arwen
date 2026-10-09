@@ -40,6 +40,13 @@ pub struct Invocation {
     /// times on one uniform cadence) are the caller's to hold across its
     /// batches; every other check is unchanged.
     pub lead_batch: bool,
+    /// `compose --unpublished-fallback FIELD=ID`: a contributing binding
+    /// whose files publish no record at all for its fields is recorded
+    /// with these fallbacks instead of refused, when EVERY field it binds
+    /// has one.  The caller owns the field-keyed table and the start
+    /// reads the fallback; a binding with any field not listed here is
+    /// refused exactly as before.
+    pub unpublished_fallbacks: Vec<(String, String)>,
 }
 
 pub const USAGE: &str = "usage: gpuwm_mapped_engine {decode|compose|inspect} \
@@ -47,7 +54,7 @@ pub const USAGE: &str = "usage: gpuwm_mapped_engine {decode|compose|inspect} \
 [--composition COMPOSITION.json] [--supplement ROLE=PATH]... \
 [--provenance ROLE=PATH]... [--contributing-mapping ROLE=PATH]... \
 [--input-manifest MANIFEST.json --input-manifest-sha256 HEX] \
-[--atmospheric-window stdio] [--lead-batch]\n\
+[--atmospheric-window stdio] [--lead-batch] [--unpublished-fallback FIELD=ID]...\n\
    or: gpuwm_mapped_engine inventory --input-list FILES.txt\n\
    or: gpuwm_mapped_engine capabilities";
 
@@ -163,6 +170,21 @@ impl Invocation {
                     invocation.lead_batch = true;
                     position += 1;
                     continue;
+                }
+                "--unpublished-fallback" => {
+                    if invocation.subcommand != "compose" {
+                        return Err(usage("--unpublished-fallback belongs to compose"));
+                    }
+                    let entry = value()?;
+                    let (field, fallback) = entry.split_once('=').ok_or_else(|| {
+                        usage(format!("{flag} takes FIELD=ID; got '{entry}'"))
+                    })?;
+                    if field.is_empty() || fallback.is_empty() {
+                        return Err(usage(format!("{flag} takes FIELD=ID; got '{entry}'")));
+                    }
+                    invocation
+                        .unpublished_fallbacks
+                        .push((field.to_owned(), fallback.to_owned()));
                 }
                 "--composition" => invocation.composition = Some(value()?),
                 "--input-manifest" => invocation.input_manifest = Some(value()?),

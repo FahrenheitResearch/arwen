@@ -1,7 +1,12 @@
 """Generate small active-collision columns through the complete classic driver.
 
 The existing column driver supplies the call ABI and CSV writer. Only its
-four-level input is replaced. The pinned microphysics source is unmodified.
+four-level input is replaced. The pinned microphysics source is unmodified,
+unless ``--corrected-racg`` asks for the reference WOOF's classic Thompson
+is graded on: the same source with only its eight rain-graupel table reads
+changed to MIN(idx_bg(k),dimNRHG)
+(tools/thompson_mp8_column_oracle/corrected_mp28.py), because WOOF reads the
+one slab WRF builds where WRF v4.6.1 subscripts it at idx_bg1=5.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ def main():
     parser.add_argument("--table-root", type=Path, required=True)
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--corrected-racg", action="store_true")
     args = parser.parse_args()
     from gpuwm.core.thompson_contract import load_validated_classic_tables
 
@@ -33,6 +39,17 @@ def main():
         parser.error("Output already exists; retain it and use a new output path")
     args.build_dir.mkdir(parents=True, exist_ok=False)
     build = args.build_dir.resolve()
+    variant = None
+    if args.corrected_racg:
+        from tools.thompson_mp8_column_oracle.corrected_mp28 import (
+            NEW, OLD, corrected_source)
+        corrected = corrected_source(source.read_bytes())
+        source = build / "module_mp_thompson.F"
+        source.write_bytes(corrected)
+        variant = {"oracle_source_variant": "corrected-racg",
+                   "old": OLD, "new": NEW, "replacement_count": 8,
+                   "corrected_source_sha256":
+                       hashlib.sha256(corrected).hexdigest()}
     support = Path(__file__).resolve().parent
     original_driver = (support / "run_column.F90").read_text(encoding="utf-8")
     driver = original_driver.replace("nz = 24", "nz = 4")
@@ -95,6 +112,8 @@ def main():
         "table_identity": tables.identity,
         "cases": [],
     }
+    if variant is not None:
+        result["source_variant"] = variant
     pressure = np.float32(80000.)
     temperature = np.float32(274.15)
     pii = np.power(pressure / np.float32(100000.), np.float32(2. / 7.))

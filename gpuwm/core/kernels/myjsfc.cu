@@ -1,22 +1,35 @@
 // MYJ (Eta similarity) surface layer, sf_sfclay_physics=2, WRF v4.6.1.
 //
-// CUDA mirror of the float32 CPU authority
-// gpuwm/verify/myj_ref.py::np_myjsfc_column, itself transcribed line by
-// line from the byte-frozen phys/module_sf_myjsfc.F (MYJSFC + SFCDIF).
-// The :NNN line anchors below are that Fortran file's.  One thread owns
-// one surface column: the full dz/tke columns feed the PBLH scan
-// (:246,:263-277), everything else is lowest-model-level state.  The
-// PSIM/PSIH tables are BUILT ON THE HOST by
-// gpuwm/core/myjsfc_tables.build_psi_tables (the same float32 words the
-// CPU authority interpolates) and passed in as device arrays, so the two
-// halves of the port share one table byte-for-byte.
+// Device port of the byte-frozen phys/module_sf_myjsfc.F (MYJSFC +
+// SFCDIF); gpuwm/verify/myj_ref.py::np_myjsfc_column is its float32 CPU
+// tolerance twin.  The :NNN line anchors below are that Fortran file's.
+// One thread owns one surface column: the full dz/tke columns feed the
+// PBLH scan (:246,:263-277), everything else is lowest-model-level state.
+// The PSIM/PSIH tables are BUILT ON THE HOST by
+// gpuwm/core/myjsfc_tables.build_psi_tables and passed in as device
+// arrays.
 //
-// Conformance status: CPU-vs-CUDA agreement is asserted by
-// tests/test_myj_port.py within a documented tolerance; NO oracle
-// comparison against the WRF Fortran has been run yet (that campaign is
-// the declared next stage, as it was for Shin-Hong and Grell-Freitas).
-// libm identity (logf/expf/powf vs glibc) is deliberately unpinned until
-// that campaign.
+// CONFORMANCE: BIT-IDENTICAL to WRF v4.6.1's MYJSFC and MYJSFCINIT on the
+// column oracle (tools/myjsfc_wrf461_oracle: the byte-unmodified module
+// under gfortran, 224 columns over cold-start, warm and two-level sets),
+// graded word for word by tests/test_myjsfc_wrf461_parity.py.  What that
+// takes, each item measured as necessary on that oracle:
+//   * ZINT(KTE+1)=HT (:165): the interface heights start at the terrain
+//     height, as WRF's do, and PBLH and ZSL are differences of them
+//     (:277, :292).  The kernel used to accumulate dz from 0; HT cancels
+//     in real arithmetic but not in float32 (21 ULP on PBLH over terrain
+//     before this was fixed, and every flux through ZSL).
+//   * LOG is gfk_log, EXP gfk_exp_fma and REAL**REAL gfk_pow -- WOOF's
+//     own float32 routines (glibc_flt32.cuh, flt32_expf_fma.cuh), not
+//     CUDA's logf/expf/powf.  tools/myjsfc_wrf461_oracle/libm_sweep.py
+//     grades them against the oracle host's C library over every float32
+//     input: LOG and EXP match everywhere, POW matches everywhere for the
+//     exponents CAPA and 2/3, and for RCAP everywhere but x = 0x3C072A38
+//     (0.00825, 1 ULP), a P02P/P10P base that needs a surface pressure
+//     below 0.01 Pa.
+//   * No FMA contraction: myjsfc is in the loader's _NO_FMAD_MODULES.
+//   * The host tables use WOOF's float32 logf/atanf/expf
+//     (gpuwm/core/myjsfc_tables.py), not NumPy's.
 //
 // Faithful quirks: CT is identically zero (:206-211, :816-825); the
 // Chen-Zhang CZIL block is commented out in the source so CZIL=0.1
@@ -113,6 +126,7 @@ extern "C" __global__ void myjsfc_column(
     // static surface (n)
     const real* __restrict__ tsk_a, const real* __restrict__ xland_a,
     const real* __restrict__ mavail_a, const real* __restrict__ z0base_a,
+    const real* __restrict__ ht_a,
     // WRF INOUT state (n)
     real* __restrict__ ust_a, real* __restrict__ znt_a,
     real* __restrict__ thz0_a, real* __restrict__ qz0_a,
@@ -149,38 +163,36 @@ extern "C" __global__ void myjsfc_column(
     if (ntsd == 1) ust = 0.1f;            // :186-203 (ARW branch)
     real seamask = xland_a[col] - 1.0f;   // :231
     real psfc = psfc_a[col];
-    real thsk = tsk_a[col] / powf(__fdiv_rn(psfc, MYJ_P1000MB), SFC_CAPA);  // :227
+    real thsk = tsk_a[col] / gfk_pow(__fdiv_rn(psfc, MYJ_P1000MB), SFC_CAPA);  // :227
 
     // PBLH scan (:263-277): lpbl is the myj (top-down, 1-based) index of
-    // the first weak-TKE level above the lowest layer; PBLH=ZHK(LPBL).
+    // the first weak-TKE level above the lowest layer;
+    // PBLH = ZHK(LPBL) - ZHK(LMH+1).
     //
-    // DELIBERATE DIVERGENCE, gpuwm goes its own way (float32 precision).
-    // WRF builds ZHK upward from ZINT(I,KTE+1,J)=HT(I,J) (:162) and then
-    // subtracts ZHK(LMH+1) back off (:277), so over terrain it differences
-    // two sea-level heights; this kernel accumulates dz directly, which is
-    // the same value in real arithmetic and a strictly better-conditioned
-    // one in float32.  Same declaration as the PBL kernel's header block;
-    // measured by
-    // tests/test_myj_port.py::test_the_dropped_terrain_height_cancels_in_float32.
+    // The interface heights are WRF's: ZINT(I,KTE+1,J)=HT(I,J) (:165) and
+    // ZINT(I,K,J)=ZINT(I,K+1,J)+DZ(I,KFLIP,J) (:177-184), so they are
+    // heights above SEA LEVEL and PBLH and ZSL (:292) are differences of
+    // them.  HT cancels in real arithmetic, not in float32, and the
+    // oracle's terrain columns grade the difference.  The accumulation
+    // stays inside ONE column: element (0, col) of the (nz, ny, nx) array is
+    // dz_a[col] (dz_a[0] was once every thread's seed, wrong by
+    // dz[0][0] - dz[0][col] wherever terrain thins the lowest layer).
     int lmh = nz;
     int lpbl = lmh;
-    // ZINT(I,K,J)=ZINT(I,K+1,J)+DZ(I,KFLIP,J) (:177-184) accumulates inside
-    // ONE column, so the seed is this thread's own lowest layer: element
-    // (0, col) of the (nz, ny, nx) array is dz_a[col], the same index :191
-    // reads six lines down.  dz_a[0] was column 0's lowest layer for every
-    // thread, wrong by dz[0][0] - dz[0][col] wherever terrain thins it.
-    real zcum = dz_a[col];                // interface height above layer 0
+    real zground = ht_a[col];             // ZHK(LMH+1) = ZINT(KTE+1) = HT
+    real zlow = zground + dz_a[col];      // ZINT(KTE): top of the lowest layer
+    real zcum = zlow;
     real pblh = 0.0f;
     bool found = false;
     for (int iz = 1; iz < nz && !found; ++iz) {
-        zcum += dz_a[(size_t)iz * st + col];
+        zcum = zcum + dz_a[(size_t)iz * st + col];
         if (2.0f * tke_a[(size_t)iz * st + col] <= MYJ_EPSQ2 * SFC_FH) {
             lpbl = nz - iz;
-            pblh = zcum;                  // ZHK(LPBL) - ZHK(LMH+1)
+            pblh = zcum - zground;        // ZHK(LPBL) - ZHK(LMH+1)
             found = true;
         }
     }
-    if (!found) { lpbl = 1; pblh = zcum; }
+    if (!found) { lpbl = 1; pblh = zcum - zground; }
     (void)lpbl;
 
     // Lowest-layer state (:284-294).
@@ -193,8 +205,8 @@ extern "C" __global__ void myjsfc_column(
     real thelow = (cwmlow * (-SFC_ELOCP / tlow) + 1.0f) * thlow;
     real ulow = u1_a[col];
     real vlow = v1_a[col];
-    real zsl = dz_a[col] * 0.5f;
-    real apesfc = powf(__fdiv_rn(psfc, MYJ_P1000MB), SFC_CAPA);
+    real zsl = (zlow - zground) * 0.5f;   // (ZHK(LMH)-ZHK(LMH+1))*0.5, :292
+    real apesfc = gfk_pow(__fdiv_rn(psfc, MYJ_P1000MB), SFC_CAPA);
     real tz0 = (ntsd == 1) ? tsk_a[col] : thz0_a[col] * apesfc;  // :296-305
 
     // ---- SFCDIF (:361-1056) ----
@@ -292,8 +304,8 @@ extern "C" __global__ void myjsfc_column(
             real zslt = zsl + zt;
             real rzsu = zslu / zu;
             real rzst = zslt / zt;
-            real rlogu = logf(rzsu);
-            real rlogt = logf(rzst);
+            real rlogu = gfk_log(rzsu);
+            real rlogt = gfk_log(rzst);
             rlmo = elfc * akhs * dthv / (ust * ust * ust);
             real zetalu = zslu * rlmo;
             real zetalt = zslt * rlmo;
@@ -314,7 +326,7 @@ extern "C" __global__ void myjsfc_column(
             akhs = fmaxf(ustark / simh, cxchs);
             if (dthv <= 0.0f) {
                 wstar2 = SFC_WWST2
-                    * powf(fabsf(btgh * akhs * dthv), 2.0f / 3.0f);
+                    * gfk_pow(fabsf(btgh * akhs * dthv), 2.0f / 3.0f);
             } else {
                 wstar2 = 0.0f;
             }
@@ -341,7 +353,7 @@ extern "C" __global__ void myjsfc_column(
         rib = btgx * dthv * zsl / du2;
         real zslu = zsl + zu;
         real rzsu = zslu / zu;
-        real rlogu = logf(rzsu);
+        real rlogu = gfk_log(rzsu);
         real zslt = zsl + zu;       // u,v and t are at the same level (:685)
         const real czil = 0.1f;     // :697 (Chen-Zhang block commented out)
         real zilfc = -czil * SFC_VKARMAN * SFC_SQVISC;
@@ -358,10 +370,10 @@ extern "C" __global__ void myjsfc_column(
             zzil = zilfc;
         }
         for (int itr = 0; itr < SFC_ITRMX; ++itr) {
-            zt = fmaxf(expf(zzil * sqrtf(ust * z0base)) * z0base,
+            zt = fmaxf(gfk_exp_fma(zzil * sqrtf(ust * z0base)) * z0base,
                        SFC_EPSZT);                       // :733
             real rzst = zslt / zt;
-            real rlogt = logf(rzst);
+            real rlogt = gfk_log(rzst);
             rlmo = elfc * akhs * dthv / (ust * ust * ust);
             real zetalu = zslu * rlmo;
             real zetalt = zslt * rlmo;
@@ -382,7 +394,7 @@ extern "C" __global__ void myjsfc_column(
             akhs = fmaxf(ustark / simh, cxchl);
             if (dthv <= 0.0f) {
                 wstar2 = SFC_WWST2
-                    * powf(fabsf(btgh * akhs * dthv), 2.0f / 3.0f);
+                    * gfk_pow(fabsf(btgh * akhs * dthv), 2.0f / 3.0f);
             } else {
                 wstar2 = 0.0f;
             }
@@ -399,9 +411,9 @@ extern "C" __global__ void myjsfc_column(
     real zu10 = zu + 10.0f;
     real zt02 = zt + 2.0f;
     real zt10 = zt + 10.0f;
-    real rlnu10 = logf(zu10 / zu);
-    real rlnt02 = logf(zt02 / zt);
-    real rlnt10 = logf(zt10 / zt);
+    real rlnu10 = gfk_log(zu10 / zu);
+    real rlnt02 = gfk_log(zt02 / zt);
+    real rlnt10 = gfk_log(zt10 / zt);
     real ztau10 = zu10 * rlmo;
     real ztat02 = zt02 * rlmo;
     real ztat10 = zt10 * rlmo;
@@ -447,7 +459,7 @@ extern "C" __global__ void myjsfc_column(
     }
     real q02 = hlflx / akhs02 + qz0;
     real q10 = hlflx / akhs10 + qz0;
-    real pshltr = psfc * expf(-0.068283f / tlow);
+    real pshltr = psfc * gfk_exp_fma(-0.068283f / tlow);
     real u10e = u10;
     real v10e = v10;
     if (seamask < 0.5f) {
@@ -456,7 +468,7 @@ extern "C" __global__ void myjsfc_column(
         real zu_l = fmaxf(zu * 0.35f, zuuz);
         real zu10_l = zu_l + 10.0f;
         real rzsu_l = zu10_l / zu_l;
-        real rlnu10_l = logf(rzsu_l);
+        real rlnu10_l = gfk_log(rzsu_l);
         real ztau10_l = zu10_l * rlmo;
         ztau10_l = fminf(fmaxf(ztau10_l, ztmin2), ztmax2);
         real psm10 = myjsfc_table(psim2, ztau10_l, ztmin2, dzeta2);
@@ -476,13 +488,13 @@ extern "C" __global__ void myjsfc_column(
     real flhc = rlow * MYJ_CP * akhs;
     real flqc = rlow * akhs * mavail;
     real qgh = ((1.0f - seamask) * MYJ_PQ0 + seamask * SFC_PQ0SEA) / plow
-        * expf(SFC_A2S * (tlow - SFC_A3S) / (tlow - SFC_A4S));
+        * gfk_exp_fma(SFC_A2S * (tlow - SFC_A3S) / (tlow - SFC_A4S));
     qgh = qgh / (1.0f - qgh);              // convert to mixing ratio (:1041)
     real cpm = MYJ_CP * (1.0f + 0.8f * qlow);
     if (seamask > 0.5f) {
         real tskl = tsk_a[col];
         qs = SFC_PQ0SEA / psfc
-            * expf(SFC_A2S * (tskl - SFC_A3S) / (tskl - SFC_A4S));
+            * gfk_exp_fma(SFC_A2S * (tskl - SFC_A3S) / (tskl - SFC_A4S));
         qs = qs / (1.0f - qs);
     }
     // ---- shelter supersaturation removal (module_sf_myjsfc.F:326-349) ----
@@ -497,12 +509,12 @@ extern "C" __global__ void myjsfc_column(
     real t02p = th02p * rapa02;
     real t10p = th10p * rapa10;
     real t2_grid = th2_grid * apesfc;      // :337
-    real p02p = powf(rapa02, SFC_RCAP) * MYJ_P1000MB;
-    real p10p = powf(rapa10, SFC_RCAP) * MYJ_P1000MB;
+    real p02p = gfk_pow(rapa02, SFC_RCAP) * MYJ_P1000MB;
+    real p10p = gfk_pow(rapa10, SFC_RCAP) * MYJ_P1000MB;
     real qs02 = MYJ_PQ0 / p02p
-        * expf(MYJ_A2 * (t02p - MYJ_A3) / (t02p - MYJ_A4));
+        * gfk_exp_fma(MYJ_A2 * (t02p - MYJ_A3) / (t02p - MYJ_A4));
     real qs10 = MYJ_PQ0 / p10p
-        * expf(MYJ_A2 * (t10p - MYJ_A3) / (t10p - MYJ_A4));
+        * gfk_exp_fma(MYJ_A2 * (t10p - MYJ_A3) / (t10p - MYJ_A4));
     if (qshltr > qs02) qshltr = qs02;
     if (q10 > qs10) q10 = qs10;
     real q02_grid = qshltr / (1.0f - qshltr);   // :349

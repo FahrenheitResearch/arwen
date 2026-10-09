@@ -422,3 +422,56 @@ extern "C" __global__ void thompson_aa_probe_constant_tables(
     out[11 * THOMPSON_AA_PROBE_TABLE_COLS + idx] = THOMPSON_AA_OCG2[idx];
     out[12 * THOMPSON_AA_PROBE_TABLE_COLS + idx] = THOMPSON_AA_G_RATIO[idx];
 }
+
+
+// WOOF's own libm words (thompson_aerosol_libm.cuh), pointwise, so the GPU
+// gate can compare the device's words with the oracle host's C library.
+//   op 0 expf(x)  1 logf(x)  2 log10f(x)  3 powf(x, y)        -> outf
+//   op 4 exp(xd)  5 log(xd)  6 log10(xd)  7 pow(xd, yd)       -> outd
+//   op 8 hypot(xd, yd)  9 log1p(xd)  10 atan2(xd, yd), xd the ordinate
+extern "C" __global__ void thompson_aa_probe_libm(
+    int op,
+    const float* __restrict__ x,
+    const float* __restrict__ y,
+    const double* __restrict__ xd,
+    const double* __restrict__ yd,
+    float* __restrict__ outf,
+    double* __restrict__ outd,
+    int n)
+{
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n) return;
+    switch (op) {
+    case 0: outf[idx] = thompson_aa_expf(x[idx]); break;
+    case 1: outf[idx] = thompson_aa_logf(x[idx]); break;
+    case 2: outf[idx] = thompson_aa_log10f(x[idx]); break;
+    case 3: outf[idx] = thompson_aa_powf(x[idx], y[idx]); break;
+    case 4: outd[idx] = thompson_aa_exp(xd[idx]); break;
+    case 5: outd[idx] = thompson_aa_log(xd[idx]); break;
+    case 6: outd[idx] = thompson_aa_log10(xd[idx]); break;
+    case 7: outd[idx] = thompson_aa_pow(xd[idx], yd[idx]); break;
+    case 8: outd[idx] = thompson_aa_hypot(xd[idx], yd[idx]); break;
+    case 9: outd[idx] = thompson_aa_log1p(xd[idx]); break;
+    case 10: outd[idx] = thompson_aa_atan2(xd[idx], yd[idx]); break;
+    default: break;
+    }
+}
+
+// Blossey's re-enforcement of a paired collision transfer
+// (thompson_aa_reenforce_pair, :2945-2954), pointwise: a_out and b_out are
+// the pair as WRF leaves it, a's sign and the REAL-rounded magnitude.
+extern "C" __global__ void thompson_aa_probe_reenforce_pair(
+    const double* __restrict__ a,
+    const double* __restrict__ b,
+    double* __restrict__ a_out,
+    double* __restrict__ b_out,
+    int n)
+{
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n) return;
+    double pa = a[idx];
+    double pb = b[idx];
+    thompson_aa_reenforce_pair(&pa, &pb);
+    a_out[idx] = pa;
+    b_out[idx] = pb;
+}

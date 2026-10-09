@@ -378,8 +378,10 @@ def test_gpuwm_go_plans_every_shipped_recipe_from_its_installed_path(
 
     monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
     monkeypatch.delenv(external_source.CACHE_ENV, raising=False)
-    geog = tmp_path / "geog"
-    geog.mkdir()
+    from _staged_geog import staged_geog_tree
+
+    # The dry run asks the named geography, as the launch does.
+    geog = staged_geog_tree(tmp_path / "geog")
     code = cli.main(["go", str(recipe), "--dry-run", "--outdir", str(tmp_path / "out"),
                      "--geog-root", str(geog)])
     said = capsys.readouterr()

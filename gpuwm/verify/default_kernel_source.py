@@ -1,9 +1,8 @@
 """A kernel module's source as the default compile sees it.
 
-The opt-in strict WRF arithmetic (gpuwm/wrf_exact.py) adds ``#if
-GPUWM_WRF_EXACT*`` branches to dycore kernel modules.  A default compile
-defines none of those macros, so it never selects them.  Verification
-harnesses that patch kernel text (a workspace witness, a transcription
+The diffusion compile route selects ``GPUWM_WRF_EXACT_C_DIFFUSION`` by
+default. The remaining WRF-exact selectors are strict verification options.
+Harnesses that patch kernel text (a workspace witness, a transcription
 mutation, a diagnostic clone) must patch the code production runs, not a
 branch that compiles away; they read the module through :func:`default_source`.
 """
@@ -11,8 +10,7 @@ from __future__ import annotations
 
 import re
 
-#: A selector conditional the default compile can decide: every
-#: ``GPUWM_WRF_EXACT*`` macro is undefined unless gpuwm/wrf_exact.py adds it.
+#: Diffusion is selected in production; the other exact selectors are unset.
 _SELECTOR = re.compile(r"#\s*(if|ifdef|ifndef)\s+(!?)\s*(GPUWM_WRF_EXACT\w*)\s*$")
 _OR_SELECTOR = re.compile(r"#\s*if\s+([A-Z0-9_]+(?:\s*\|\|\s*[A-Z0-9_]+)+)\s*$")
 _EXACT_SELECTORS = frozenset(("GPUWM_WRF_EXACT", "GPUWM_WRF_EXACT_C_BIGSTEP",
@@ -24,14 +22,14 @@ _ELSE = re.compile(r"#\s*else\b")
 _ENDIF = re.compile(r"#\s*endif\b")
 
 
-def default_source(source: str) -> str:
-    """``source`` with each WRF-exact selector resolved as no selector set.
+def default_source(source: str, *, diffusion_selected: bool = True) -> str:
+    """``source`` with selectors resolved for production diffusion.
 
     A selector region keeps the branch the default compile takes and loses
     the other branch and its directive lines; every other line, including
     any other preprocessor conditional, is kept byte for byte.  A selector
-    OR expressions containing only the five production exact selectors
-    are false too. Any other compound expression, ``#elif`` or ``#define``
+    OR expressions containing only the five known selectors are resolved
+    too. Any other compound expression, ``#elif`` or ``#define``
     involving an exact selector raises rather than being guessed at.
     """
     kept = []
@@ -43,12 +41,14 @@ def default_source(source: str) -> str:
             if selector:
                 kind, negated, _name = selector.groups()
                 # Undefined: ``#if X`` and ``#ifdef X`` are false.
-                frames.append((True, kind == "ifndef" or bool(negated)))
+                selected = diffusion_selected and _name == "GPUWM_WRF_EXACT_C_DIFFUSION"
+                frames.append((True, selected != (kind == "ifndef" or bool(negated))))
                 continue
             selector_or = _OR_SELECTOR.fullmatch(text)
             if selector_or and all(name.strip() in _EXACT_SELECTORS
                                    for name in selector_or.group(1).split("||")):
-                frames.append((True, False))
+                frames.append((True, diffusion_selected and any(name.strip() == "GPUWM_WRF_EXACT_C_DIFFUSION"
+                                         for name in selector_or.group(1).split("||"))))
                 continue
             if _ELIF.match(text):
                 if (frames and frames[-1][0]) or "GPUWM_WRF_EXACT" in text:

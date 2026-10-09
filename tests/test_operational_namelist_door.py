@@ -2,10 +2,11 @@
 
 The file (NOAA-EMC/HRRR v4.1.21 parm/conus/hrrr_wrf.nl, pinned by hash)
 carries groups for machinery WOOF does not run: WRF-Chem smoke, the
-digital filter, MPI log routing, the fork's extra diagnostics and its
-cycle-state switch.  Each is read whole: inert when off, a declared
-divergence the report prints when on.  Nothing in it describes a forecast
-WOOF would get wrong, so nothing in it refuses.
+digital filter, MPI log routing and the fork's extra diagnostics.  Each is
+read whole: inert when off, a declared divergence the report prints when
+on.  Nothing in it describes a forecast WOOF would get wrong, so nothing in
+it refuses.  Its cycle-state switch (cycling = .true.) is not one of them:
+WOOF runs it, so it reaches [shared] cycling.
 """
 from __future__ import annotations
 
@@ -55,7 +56,14 @@ def test_unmodified_operational_namelist_imports(tmp_path):
     # the head grid has no parent, so WPS's value stands.
     assert (root["i_parent_start"], root["j_parent_start"]) == (1, 1)
     divergences = {s.key: s for s in report.substitutions if s.reason}
-    for key in ("chem_opt", "gsd_diagnostics", "cycling", "hailcast_opt",
+    # The namelist's cycling = .true. is run, not substituted: both MYNN
+    # generations keep the input QKE, QC_BL and CLDFRA_BL on a cycled
+    # start, so the import must not report a fresh start.
+    assert doc["shared"]["cycling"] is True
+    assert "cycling" not in {s.key for s in report.substitutions}
+    assert ("time_control", "cycling") not in {
+        (d.section, d.key) for d in report.dropped}
+    for key in ("chem_opt", "gsd_diagnostics", "hailcast_opt",
                 "ra_sw_eclipse", "prec_acc_dt", "prec_acc_dt1",
                 "interp_type", "lagrange_order", "rebalance",
                 "seaice_threshold"):

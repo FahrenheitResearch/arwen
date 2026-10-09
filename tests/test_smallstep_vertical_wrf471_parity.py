@@ -21,8 +21,7 @@ from gpuwm.verify.smallstep_vertical_oracle import _measure, vertical_port_outpu
 
 def test_vertical_workspace_witness_only_stores_existing_register_words():
     from tools.smallstep_wrf471_oracle.vertical_workspace import workspace_source
-    from gpuwm.verify.default_kernel_source import default_source
-    original = default_source(module_source("acoustic"))
+    original = module_source("acoustic")
     source = workspace_source(original)
     restored = source
     for declaration, store in (
@@ -36,8 +35,9 @@ def test_vertical_workspace_witness_only_stores_existing_register_words():
     assert source.count(parameters) == original.count(prototype) == 2
     restored = restored.replace(parameters, "")
     assert " ".join(restored.split()) == " ".join(original.split())
-    # It instruments the default compile: no opt-in WRF-exact branch survives.
-    assert "GPUWM_WRF_EXACT" not in source
+    # Every original preprocessor branch is retained at the compile boundary.
+    assert [line for line in source.splitlines() if line.lstrip().startswith("#")] == [
+        line for line in original.splitlines() if line.lstrip().startswith("#")]
 
 
 def test_vertical_workspace_default_view_resolves_or_refuses_each_selector():
@@ -48,7 +48,9 @@ def test_vertical_workspace_default_view_resolves_or_refuses_each_selector():
     selector_or = ("GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || "
                    "GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || "
                    "GPUWM_WRF_EXACT_D_DIAGNOSTICS")
-    assert default_source(f"#if {selector_or}\nstrict\n#else\ndefault\n#endif\n") == "default\n"
+    assert default_source(f"#if {selector_or}\nstrict\n#else\ndefault\n#endif\n") == "strict\n"
+    assert default_source(f"#if {selector_or}\nstrict\n#else\ndefault\n#endif\n",
+                          diffusion_selected=False) == "default\n"
     assert default_source("#if GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT\nstrict\n#endif\n") == ""
     for unreadable in ("#if GPUWM_WRF_EXACT && X\n#endif\n", "#if GPUWM_WRF_EXACT\n#elif X\n#endif\n",
                        "#if GPUWM_WRF_EXACT || X\n#endif\n",
@@ -59,6 +61,149 @@ def test_vertical_workspace_default_view_resolves_or_refuses_each_selector():
                        "#if GPUWM_WRF_EXACT\n", "#endif\n"):
         with pytest.raises(ValueError):
              default_source(unreadable)
+
+
+@pytest.mark.parametrize("no_fma,preserve_subnormals", [(False, False), (True, False),
+                                                       (False, True), (True, True)])
+@pytest.mark.parametrize("strict", [False, True])
+def test_workspace_compiler_matches_the_ordinary_vertical_policy(
+        monkeypatch, no_fma, preserve_subnormals, strict):
+    """The witness uses the selected ordinary IEEE compile boundary."""
+    import sys
+    from types import SimpleNamespace
+    from gpuwm import wrf_exact
+    from gpuwm.core.kernels import DIFFUSION_OPTIONS, diffusion_kernel, function_options, module_options
+    from gpuwm.verify.smallstep_vertical_oracle import _diagnostic_module
+
+    calls = {}
+    class Module:
+        def load(self, binary):
+            calls["binary"] = binary
+    def compile_using_nvrtc(source, *, options):
+        calls.update(source=source, options=options, frontend="direct")
+        return b"owned-compiled-witness", ""
+    def raw_module(*, code, options):
+        calls.update(source=code, options=options, frontend="ordinary")
+        return Module()
+    cuda = SimpleNamespace(compiler=SimpleNamespace(compile_using_nvrtc=compile_using_nvrtc),
+                           function=SimpleNamespace(Module=Module))
+    monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(cuda=cuda, RawModule=raw_module))
+    monkeypatch.setitem(sys.modules, "cupy.cuda", cuda)
+    monkeypatch.setattr(wrf_exact, "ENABLED", strict)
+    result = _diagnostic_module.__wrapped__("owned witness source", no_fma, preserve_subnormals)
+    assert isinstance(result, Module)
+    assert calls["source"] == "owned witness source"
+    expected = function_options("acoustic", "advance_w_phi", module_options("acoustic"))
+    assert diffusion_kernel("acoustic", "advance_w_phi") is strict
+    assert expected == (DIFFUSION_OPTIONS if strict else module_options("acoustic"))
+    if strict:
+        expected = wrf_exact.effective_options(expected)
+    if no_fma and "--fmad=false" not in expected:
+        expected += ("--fmad=false",)
+    if preserve_subnormals and "--ftz=false" not in expected:
+        expected += ("--ftz=false",)
+    assert calls["options"] == expected
+    assert calls["frontend"] == ("direct" if strict or preserve_subnormals else "ordinary")
+    if calls["frontend"] == "direct":
+        assert calls["binary"] == b"owned-compiled-witness"
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("integer_tier", [False, True])
+def test_acoustic_production_loader_honors_default_arm_drop(monkeypatch, strict, integer_tier):
+    from types import SimpleNamespace
+    from gpuwm import wrf_exact
+    from gpuwm.core import kernels
+
+    calls = []
+    def loader(route):
+        def load(*args):
+            calls.append((route, args))
+            return SimpleNamespace(get_function=lambda symbol: (route, symbol))
+        return load
+    monkeypatch.setattr(wrf_exact, "ENABLED", strict)
+    monkeypatch.setattr(kernels, "_load_diffusion_module", loader("diffusion"))
+    monkeypatch.setattr(kernels, "load_module", loader("ordinary"))
+    monkeypatch.setattr(kernels, "load_module_int_defines", loader("ordinary"))
+    if integer_tier:
+        actual = kernels.get_kernel_int_defines.__wrapped__(
+            "acoustic", "advance_w_phi", (("WPHI_MAX_LEV", 64),))
+    else:
+        actual = kernels.get_kernel.__wrapped__("acoustic", "advance_w_phi")
+    route = "diffusion" if strict else "ordinary"
+    assert actual == (route, "advance_w_phi")
+    assert len(calls) == 1 and calls[0][0] == route
+
+
+def test_coordinate_native_proof_keeps_signed_zero_and_archive_identity(tmp_path):
+    from tools.assembled_legacy_replay import coordinate_native_proof, sha
+
+    data = tmp_path / "native"
+    data.mkdir()
+    prefix = tmp_path / "current"
+    reference = np.array([0., 1., -2.], dtype=np.float32)
+    prior = reference.copy()
+    prior[0] = np.float32(-0.)
+    np.savez(data / "wrf471.npz", h_expected=reference)
+    np.savez(data / "merged-gpu.npz", h_tendency=prior)
+    np.savez(prefix.with_suffix(".npz"), h_tendency=reference)
+    cases = [{"name": "h", "family": "horizontal"}]
+    (data / "wrf471.json").write_text(json.dumps({"cases": cases}))
+    (data / "merged-gpu.json").write_text(json.dumps({
+        "native_archive_sha256": sha(data / "wrf471.npz"),
+        "archive_sha256": sha(data / "merged-gpu.npz")}))
+    prefix.with_suffix(".json").write_text(json.dumps({
+        "cases": cases, "native_archive_sha256": sha(data / "wrf471.npz"),
+        "archive_sha256": sha(prefix.with_suffix(".npz"))}))
+    proof = coordinate_native_proof(data, prefix)
+    assert proof["native_exact"] is True
+    assert proof["native_different_words"] == 0
+    assert proof["prior_gpu_different_words"] == 1
+    assert proof["previously_native_equal_words"] == 2
+    assert proof["changed_previously_native_equal_words"] == 0
+    row = proof["fields"]["h_tendency"]
+    assert row["current_sha256"] == row["native_sha256"] != row["prior_gpu_sha256"]
+    assert row["current_to_prior_gpu"]["different_words"] == 1
+    # Altering the actual archive without recapturing its receipt refuses,
+    # even though this change is a single finite adjacent float32 word.
+    changed = reference.copy()
+    changed[1] = np.nextafter(changed[1], np.float32(2.))
+    np.savez(prefix.with_suffix(".npz"), h_tendency=changed)
+    with pytest.raises(RuntimeError, match="current GPU archive identity changed"):
+        coordinate_native_proof(data, prefix)
+
+
+def test_acoustic_native_reference_keeps_signed_zero_and_c2a_strict():
+    from tools.assembled_legacy_replay import acoustic_native_rows
+
+    frozen = {"case__a_native": np.array([-0., 1.], dtype=np.float32),
+              "case__a_wrf": np.array([0., 1.], dtype=np.float32),
+              "case__c2a_native": np.array([3.], dtype=np.float32)}
+    current = {"a": frozen["case__a_wrf"].copy(), "c2a": frozen["case__c2a_native"].copy()}
+    rows = acoustic_native_rows(current, frozen, "case")
+    assert rows["case/a"]["current_to_reference"]["different_words"] == 0
+    assert rows["case/a"]["current_to_prior_gpu"]["different_words"] == 1
+    assert rows["case/a"]["previously_reference_equal_words"] == 1
+    assert rows["case/a"]["changed_previously_reference_equal_words"] == 0
+    assert rows["case/c2a"]["reference_kind"] == "retained_supplied_c2a_input"
+    current["c2a"][0] = np.nextafter(current["c2a"][0], np.float32(4.))
+    assert acoustic_native_rows(current, frozen, "case")["case/c2a"]["current_to_reference"]["different_words"] == 1
+    with pytest.raises(RuntimeError, match="reference absent"):
+        acoustic_native_rows({"w": np.ones(1, dtype=np.float32)}, {}, "case")
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_acoustic_default_drop_preserves_strict_and_qualified_diffusion(monkeypatch, strict):
+    from gpuwm import wrf_exact
+    from gpuwm.core.kernels import diffusion_kernel, function_options, module_options, DIFFUSION_OPTIONS
+    monkeypatch.setattr(wrf_exact, "ENABLED", strict)
+    for name in ("calc_coefs", "advance_w_phi", "advance_w_phi_msf"):
+        assert diffusion_kernel("acoustic", name) is strict
+        assert function_options("acoustic", name, module_options("acoustic")) == (
+            DIFFUSION_OPTIONS if strict else ("-std=c++17",))
+    assert diffusion_kernel("smag2d", "wrf_smag_vd_w") is True
+    assert module_options("smag2d") == DIFFUSION_OPTIONS
+    assert module_options("mynn_surface") == ("-std=c++17", "--fmad=false", "--ftz=false")
 
 
 def test_vertical_selector_invokes_native_callable_once(monkeypatch):

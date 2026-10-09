@@ -72,6 +72,11 @@ REGENERATED oracle (all three CSVs reproduce their committed SHA-256s):
     lamr, prr_rcw, pnc_rcw, pna_rca, pnd_rcd                <= 7e-16
     pnr_wau                                                  1.2337e-07
 
+Those last two lines were transcription, not rounding, and were repaired on
+lane/mp28fix-warm-network: pnr_wau's divisor is now WRF's left-to-right
+chain, and the collection rates read lamr = 1./ilamr(k) as WRF does
+(:2198, :2213).  _RATE_TOLERANCE asserts every rate equal.
+
 THE PREDICTION IN THIS SECTION WAS ACTED ON AND IT HELD.  It used to read:
 
     nc_m3, lamc, mvd_c, xDc, pnc_rcw                        <= 5e-7
@@ -81,12 +86,12 @@ THE PREDICTION IN THIS SECTION WAS ACTED ON AND IT HELD.  It used to read:
     ``gpuwm/core/kernels/thompson_aerosol_common.cuh`` (WP-02), which uses
     CUDA's ``powf`` (~2 ulp) where gfortran lowers ``REAL(4)**REAL(4)`` to
     glibc's correctly-rounded ``powf``.  PROVEN by substitution: replacing
-    those two ``powf`` calls with the header's own ``thompson_aa_powf_cr``
+    those two ``powf`` calls with the header's own ``thompson_aa_powf``
     makes nc_m3, lamc, mvd_c, xDc and prr_wau BIT-EXACT on all 12348 rows and
     drops every remaining term below 5e-7.
 
 The header now spells ``thompson_aa_cloud_dist`` with
-``thompson_aa_powf_cr`` AND with every float32 product and quotient pinned to
+``thompson_aa_powf`` AND with every float32 product and quotient pinned to
 ``__fmul_rn``/``__fdiv_rn`` (the power alone fixes ``lamc`` but not the :1840
 rediagnosis, whose REAL(4) prefactor Fortran rounds and nvrtc was widening).
 The re-measurement above is what that bought, and ``_RATE_TOLERANCE`` below
@@ -358,23 +363,31 @@ BALANCE = _table(_NCTEN_BALANCE_ORACLE)
 #: The command that produces these numbers is
 #:     tools/thompson_wrf461_oracle/build_aero_probes.sh <wrf> <build> <ccn>
 #:     tools/thompson_wrf461_oracle/measure_probe_oracles_gpu_aero.py <build>/probe-oracle-aero
+#:
+#: RETIRED 2026-10-07 (lane/mp28fix-warm-network): the last six non-zero
+#: bounds named two transcription defects, both fixed.  pnr_wau's 2.0e-7
+#: was WRF's divisor am_r*nu_c*10.*D0r*D0r*D0r grouped as
+#: (...*D0r)*(D0r*D0r) instead of left to right; lamr, prr_rcw, pnc_rcw,
+#: pna_rca and pnd_rcd's 1.0e-15 was the collection rates reading the :2147
+#: lamr where WRF reads lamr = 1./ilamr(k) (:2198, :2213).  Every rate is
+#: now asserted equal.
 _RATE_TOLERANCE = {
     "nc_m3": 0.0,
     "lamc": 0.0,
     "mvd_c": 0.0,
     "xDc": 0.0,
     "nr_m3": 0.0,
-    "lamr": 1.0e-15,
+    "lamr": 0.0,
     "mvd_r": 0.0,
     "N0_r": 0.0,
     "prr_wau": 0.0,
-    "pnr_wau": 2.0e-7,
+    "pnr_wau": 0.0,
     "pnc_wau": 0.0,
-    "prr_rcw": 1.0e-15,
-    "pnc_rcw": 1.0e-15,
+    "prr_rcw": 0.0,
+    "pnc_rcw": 0.0,
     "pnr_rcr": 0.0,
-    "pna_rca": 1.0e-15,
-    "pnd_rcd": 1.0e-15,
+    "pna_rca": 0.0,
+    "pnd_rcd": 0.0,
 }
 
 
@@ -1264,7 +1277,7 @@ __device__ __forceinline__ bool thompson_aa_entry_rain_distribution_golden(
     double* rain_intercept_n0)
 {
     // Every product/quotient below is contraction-pinned and every power is
-    // the correctly-rounded thompson_aa_powf_cr, for the same reason the
+    // the correctly-rounded thompson_aa_powf, for the same reason the
     // balance limiter is: gfortran -O2 on baseline x86-64 has no FMA and
     // glibc's powf is correctly rounded, while CUDA's carries ~2 ulp.
     // MEASURED: with plain powf, lamr / N0_r / prr_rcw / pna_rca / pnd_rcd
@@ -1288,7 +1301,7 @@ __device__ __forceinline__ bool thompson_aa_entry_rain_distribution_golden(
                              thompson_aa_mul(crg2_org3, rr), am_r)
                          * lam * lam * lam);
         }
-        double lamr = (double)thompson_aa_powf_cr(
+        double lamr = (double)thompson_aa_powf(
             thompson_aa_div(
                 thompson_aa_mul(thompson_aa_mul(am_r, 6.0f), nr), rr),
             obmr);
@@ -1313,7 +1326,7 @@ __device__ __forceinline__ bool thompson_aa_entry_rain_distribution_golden(
     }
 
     // :2146-2150, executed for every level in WRF, rain or not.
-    const double lamr = (double)thompson_aa_powf_cr(
+    const double lamr = (double)thompson_aa_powf(
         thompson_aa_div(
             thompson_aa_mul(thompson_aa_mul(am_r, 6.0f), nr), rr),
         obmr);
@@ -1429,47 +1442,20 @@ def test_promoted_bound_rain_number_is_bitwise_identical_to_the_local_copy():
         f"(qr={qr[bad[0]]!r}, nr={nr[bad[0]]!r}, rho={rho[bad[0]]!r})")
 
 
-def test_promoted_entry_rain_distribution_is_bitwise_identical():
-    """Every one of the five outputs, bitwise, over the full state space.
-
-    ``rain_intercept_n0`` and ``rain_lambda`` are the two the cold network's
-    deleted copy did not even produce, and they are what prr_rcw, pnc_rcw,
-    pna_rca and pnd_rcd are built from -- so they are exactly the outputs a
-    sloppy promotion would get wrong.
-    """
-    import cupy as cp
-
-    module = _golden_comparison_module()
-    qr, nr, rho = _promotion_states()
-    size = qr.size
-    buffers = {}
-    for tag in ("s", "g"):
-        buffers[f"act_{tag}"] = cp.empty(size, dtype=cp.int32)
-        buffers[f"n_{tag}"] = cp.empty(size, dtype=cp.float32)
-        buffers[f"lam_{tag}"] = cp.empty(size, dtype=cp.float64)
-        buffers[f"mvd_{tag}"] = cp.empty(size, dtype=cp.float32)
-        buffers[f"n0_{tag}"] = cp.empty(size, dtype=cp.float64)
-    block = 256
-    module.get_function("wp07_compare_entry_rain_distribution")(
-        ((size + block - 1) // block,), (block,),
-        (_f32(qr), _f32(nr), _f32(rho),
-         buffers["act_s"], buffers["n_s"], buffers["lam_s"],
-         buffers["mvd_s"], buffers["n0_s"],
-         buffers["act_g"], buffers["n_g"], buffers["lam_g"],
-         buffers["mvd_g"], buffers["n0_g"], np.int32(size)))
-    raw = {"act": None, "n": np.uint32, "lam": np.uint64,
-           "mvd": np.uint32, "n0": np.uint64}
-    for name, view in raw.items():
-        got = cp.asnumpy(buffers[f"{name}_s"])
-        want = cp.asnumpy(buffers[f"{name}_g"])
-        if view is not None:
-            got = got.view(view)
-            want = want.view(view)
-        bad = np.flatnonzero(got != want)
-        assert bad.size == 0, (
-            f"{name}: {bad.size}/{size} states differ; first at row "
-            f"{bad[0]} (qr={qr[bad[0]]!r}, nr={nr[bad[0]]!r}, "
-            f"rho={rho[bad[0]]!r})")
+# RETIRED 2026-10-07 (lane/mp28fix-warm-network):
+# test_promoted_entry_rain_distribution_is_bitwise_identical held the shared
+# thompson_aa_entry_rain_distribution to the byte-copy of its pre-promotion
+# body.  That body carried two transcription defects the helper no longer
+# has: mvd_r divided by the DOUBLE literal 3.672 where WRF divides the REAL
+# sum 3.0 + mu_r + 0.672 (:1889, :2149), and the clamp's lamr**bm_r as a
+# product chain where gfortran calls pow (:1885-1897).  Measured on the
+# 153-column oracle: pnr_rcr differed from WRF at 237 of 2816 active cells
+# with the old body and at none with the new one.  The helper is gated
+# against WRF's form by tests/test_thompson_aerosol_device_helpers.py::
+# test_entry_rain_distribution_is_bit_exact_against_the_pinned_reference
+# and end to end by tests/test_thompson_aerosol_warm_network_oracle_gpu.py.
+# The golden body stays in _GOLDEN_PRE_CONSOLIDATION_HELPERS only because
+# the bound-rain-number comparison above shares its compile.
 
 
 def test_warm_translation_unit_defines_no_shared_helper_locally():
@@ -1736,7 +1722,8 @@ def _run_seam_cold(column, dt=20.0):
         tables["ice_deposition_partition"], tables["ice_to_snow_mass"],
         tables["ice_to_snow_number"], tables["rain_snow"],
         tables["rain_graupel"], tables["rain_freezing"],
-        tables["rain_cloud_efficiency"], tables["cloud_freezing"], dt)
+        tables["rain_cloud_efficiency"], tables["cloud_freezing"], dt,
+        snow_cloud_efficiency=_t_efsw())
     return {name: cp.asnumpy(value) for name, value in fields.items()}
 
 
@@ -1859,7 +1846,8 @@ def test_the_cold_kernel_gate_is_the_literal_complement_of_the_warm_mask():
     assert "temperature[idx] =" not in block and "qv[idx] =" not in block
     # The warm side never re-tests temperature; it consumes the held mask,
     # because the cold network has already heated the temperature array.
-    assert "const bool entry_warm = graupel_melt_marker[idx] != 0.0f;" in warm
+    assert "const float entry_mark = graupel_melt_marker[idx];" in warm
+    assert "const bool entry_warm = entry_mark != 0.0f;" in warm
     assert "if (!entry_warm) return;" in warm
     # mp=8's adapter, which the mp=28 adapter copies, builds that mask with
     # the same >= and the same constant, on the ENTRY temperature, in its
@@ -2843,7 +2831,7 @@ _FROZEN_EF_GW_EXACT_ROWS = 17
 #: committed table is a stratified slice and the bound must cover the oracle
 #: it documents, not just the slice.  Verified against the alternative
 #: explanation as well: rebuilding this translation unit with EVERY remaining
-#: plain ``powf`` replaced by ``thompson_aa_powf_cr`` reproduces the identical
+#: plain ``powf`` replaced by ``thompson_aa_powf`` reproduces the identical
 #: 18 numbers, so nothing here is waiting on a power.
 _FROZEN_TOLERANCE = {
     "pna_gca": 5.0e-16,

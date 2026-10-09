@@ -739,6 +739,9 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     "run.bl_mynn_version",
     "run.bl_mynn_gsd41_unsquared_qtke",
     "run.bl_mynn_cloud_tendency_form",
+    # cycling decides only what the first MYNN call keeps from the loaded
+    # start; preparation computes nothing from it.
+    "run.cycling",
     # Only the MYNN surface-layer column solver reads its generation;
     # preparation computes no surface exchange from it.
     "run.mynn_sfclay_variant",

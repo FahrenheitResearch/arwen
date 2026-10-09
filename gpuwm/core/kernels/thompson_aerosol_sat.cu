@@ -177,7 +177,7 @@ __device__ __forceinline__ thompson_aa_sat_env thompson_aa_sat_environment(
     // defect as the expf below.
     e.diffu = thompson_aa_mul(
         thompson_aa_mul(2.11e-5f,
-                        thompson_aa_powf_cr(
+                        thompson_aa_powf(
                             thompson_aa_div(temp0, 273.15f), 1.94f)),
         thompson_aa_div(101325.0f, pres));
     // :3206-3209.  Each of these has a multiply feeding an add and would be
@@ -373,11 +373,30 @@ __device__ __forceinline__ void thompson_aa_saturation_adjust_impl(
     float* __restrict__ condensation_rate,
     float* __restrict__ cloud_presence,
     float* __restrict__ qcten,
+    float* __restrict__ qvten,
+    float* __restrict__ tten,
+    const float* __restrict__ theta,
+    const float* __restrict__ exner,
+    float* __restrict__ heat_ocp,
     float dt, int idx)
 {
+    // THE VAPOUR AND TEMPERATURE ACCUMULATORS (qvten/tten given, the
+    // production adapter's v4.6.1 generation).  qv is then WRF's read-only
+    // qv1d and the working vapour is re-formed as :3192 forms it,
+    // MAX(1.E-10, qv1d + DT*qvten); temperature already holds :3189's
+    // t1d + DT*tten.  After the adjustment WRF ADDS prw_vcd to the REAL
+    // tendencies (:3479, :3483) and re-forms temp and qv from them (:3488-
+    // 3489).  Applying the increment to the running state instead rounds
+    // once more and moved the post-adjustment ssatw, the sign that decides
+    // the rain evaporation at :3501, at levels the adjustment brought to
+    // saturation.
+    const bool accumulate_vapor = qvten != nullptr;
     const float temp0 = temperature[idx];
     const float pres = pressure[idx];
-    const float qv0 = fmaxf(1.0e-10f, qv[idx]);
+    const float qv0 = accumulate_vapor
+        ? fmaxf(1.0e-10f, thompson_aa_add(qv[idx],
+                                          thompson_aa_mul(dt, qvten[idx])))
+        : fmaxf(1.0e-10f, qv[idx]);
     // With the accumulator, qc is WRF's read-only qc1d and the working
     // cloud is re-formed from it exactly as :3215 does,
     // (qc1d(k) + qcten(k)*DT): the product rounded, then the sum.  Without
@@ -392,6 +411,10 @@ __device__ __forceinline__ void thompson_aa_saturation_adjust_impl(
     if (reference_density != nullptr) reference_density[idx] = e.rho;
     if (reference_temperature != nullptr) reference_temperature[idx] = temp0;
     if (condensation_rate != nullptr) condensation_rate[idx] = 0.0f;
+    // :3207, ocp(k) at every level as the TAU+1 refresh leaves it.  The
+    // rain evaporation re-forms it where its gate passes (:3519) and the
+    // phase cleanup reads whichever WRF last formed (:3953, :3964).
+    if (heat_ocp != nullptr) heat_ocp[idx] = e.ocp;
 
     // :3215-3224.  L_qc and the working droplet number.  nc is rebuilt from
     // the FROZEN entry value plus the accumulator, never read back from a
@@ -433,7 +456,7 @@ __device__ __forceinline__ void thompson_aa_saturation_adjust_impl(
         thompson_aa_sub(qv0, qvs),
         thompson_aa_add(1.0f, thompson_aa_mul(lvt2, qvs)));
     for (int iteration = 0; iteration < 3; ++iteration) {
-        const float exponential = thompson_aa_expf_cr(
+        const float exponential = thompson_aa_expf(
             thompson_aa_mul(lvt2, clap));
         const float fcd = thompson_aa_add(
             thompson_aa_sub(thompson_aa_mul(qvs, exponential), qv0), clap);
@@ -487,14 +510,25 @@ __device__ __forceinline__ void thompson_aa_saturation_adjust_impl(
     const float prw = (float)prw_vcd;
     // :3483.  lvap(k)*ocp(k) is a REAL(4)*REAL(4) product, rounded BEFORE
     // the DOUBLE prw_vcd multiplies it.
-    const float tten = (float)(
+    const float tten_increment = (float)(
         (double)thompson_aa_mul(e.lvap, e.ocp) * prw_vcd);
 
     // :3479 and :3488.  The running vapour qv1d + DT*qvten is unfloored;
     // :3488's MAX(1.E-10, ...) is the WORKING value the next block reads,
     // and every reader re-forms it.  WRF floors the vapour it returns once,
     // at :3974 (thompson_aa_state_finalize_with_columns).
-    qv[idx] = thompson_aa_sub(qv[idx], thompson_aa_mul(prw, dt));
+    if (accumulate_vapor) {
+        // :3479, :3483 and :3488-3489.  qvten - prw_vcd and tten +
+        // (lvap*ocp)*prw_vcd*(1-IFDRY) are REAL + DOUBLE, rounded once;
+        // temp(k) = t1d(k) + DT*tten(k) with t1d = th*pii (mp_gt_driver).
+        const float qvten_new = (float)((double)qvten[idx] - prw_vcd);
+        const float tten_new = (float)__dadd_rn((double)tten[idx],
+            __dmul_rn((double)thompson_aa_mul(e.lvap, e.ocp), prw_vcd));
+        qvten[idx] = qvten_new;
+        tten[idx] = tten_new;
+    } else {
+        qv[idx] = thompson_aa_sub(qv[idx], thompson_aa_mul(prw, dt));
+    }
     float qc_after;
     if (qcten != nullptr) {
         // :3480, `qcten(k) = qcten(k) + prw_vcd(k)`: REAL plus DOUBLE,
@@ -518,7 +552,14 @@ __device__ __forceinline__ void thompson_aa_saturation_adjust_impl(
             && !(thompson_aa_mul(qc_after, rho) > THOMPSON_AA_R1)) {
         cloud_presence[idx] = 0.0f;
     }
-    temperature[idx] = thompson_aa_add(temp0, thompson_aa_mul(tten, dt));
+    if (accumulate_vapor) {
+        temperature[idx] = thompson_aa_add(
+            thompson_aa_mul(theta[idx], exner[idx]),
+            thompson_aa_mul(dt, tten[idx]));
+    } else {
+        temperature[idx] = thompson_aa_add(
+            temp0, thompson_aa_mul(tten_increment, dt));
+    }
     ncten[idx] = (float)((double)ncten[idx] + pnc_wcd);
     // THE aerosol return path (:3482): activation consumes one CCN per
     // droplet nucleated, evaporation regenerates one per droplet lost.
@@ -544,6 +585,13 @@ extern "C" __global__ void thompson_aa_saturation_adjust(
     float* __restrict__ condensation_rate,
     float* __restrict__ cloud_presence,
     float* __restrict__ qcten,
+    float* __restrict__ qvten,
+    float* __restrict__ tten,
+    const float* __restrict__ theta,
+    const float* __restrict__ exner,
+    // ocp(k) out (nullable): the :3207 value at every level, for the rain
+    // evaporation to carry to the phase cleanup.
+    float* __restrict__ heat_ocp,
     float dt, int size)
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -552,7 +600,7 @@ extern "C" __global__ void thompson_aa_saturation_adjust(
         temperature, pressure, qv, qc, nc_entry, ncten, nwfaten,
         nwfa_work_m3, w, tnccn_act, tnc_wev, reference_density,
         reference_temperature, condensation_rate, cloud_presence, qcten,
-        dt, idx);
+        qvten, tten, theta, exner, heat_ocp, dt, idx);
 }
 
 
@@ -690,7 +738,7 @@ __device__ __forceinline__ float thompson_aa_bound_rain_number(
     // :3245.  REAL(4) base, REAL(4) exponent -> powf, widened into the
     // DOUBLE PRECISION lamr (:1597).
     float nr_work = fmaxf(THOMPSON_AA_R2, nr_m3);
-    double lamr = (double)thompson_aa_powf_cr(
+    double lamr = (double)thompson_aa_powf(
         thompson_aa_div(
             thompson_aa_mul(
                 thompson_aa_mul(
@@ -713,10 +761,10 @@ __device__ __forceinline__ float thompson_aa_bound_rain_number(
         nr_work = (float)(
             (double)thompson_aa_mul(
                 thompson_aa_mul(1.0f, THOMPSON_AA_ORG3), rr)
-            * pow(lamr, (double)THOMPSON_AA_BM_R)
+            * thompson_aa_pow(lamr, (double)THOMPSON_AA_BM_R)
             / (double)THOMPSON_AA_AM_R);
         // :3385 runs again over the rebuilt number.
-        lamr = (double)thompson_aa_powf_cr(
+        lamr = (double)thompson_aa_powf(
             thompson_aa_div(
                 thompson_aa_mul(
                     thompson_aa_mul(
@@ -740,15 +788,36 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
     float* __restrict__ reference_density,
     float* __restrict__ reference_temperature,
     const float* __restrict__ graupel_melt_marker,
-    const float* __restrict__ condensation_rate,
+    float* __restrict__ condensation_rate,
     const float* __restrict__ entry_density,
     double* __restrict__ prv_rev_out,
     double* __restrict__ pnr_rev_out,
     float* __restrict__ nr_bound_out,
     float* __restrict__ qrten,
     float* __restrict__ nrten,
+    float* __restrict__ qvten,
+    float* __restrict__ tten,
+    const float* __restrict__ theta,
+    const float* __restrict__ exner,
+    float* __restrict__ heat_ocp,
+    const float* __restrict__ tau1_temperature,
     float dt, int idx)
 {
+    // THE PHASE CLEANUP'S ocp(k) AND lvap(k) (heat_ocp given, the production
+    // adapter's v4.6.1 generation).  :3953 and :3964 multiply by the ocp(k)
+    // and lvap(k) WRF last formed: :3203/:3207 at the TAU+1 refresh, or
+    // :3517/:3519 where this block's gate passes.  heat_ocp arrives holding
+    // the :3207 value and is overwritten where the gate passes; lvap(k)
+    // leaves in condensation_rate, whose prw_vcd this block is the last
+    // reader of (read here, before the write).
+    const float prw_in = condensation_rate != nullptr
+        ? condensation_rate[idx] : 0.0f;
+    const bool export_heat = heat_ocp != nullptr;
+    if (export_heat) {
+        condensation_rate[idx] = thompson_aa_add(THOMPSON_AA_LVAP0,
+            thompson_aa_mul(2106.0f - 4218.0f,
+                            thompson_aa_sub(tau1_temperature[idx], 273.15f)));
+    }
     // With WRF's qrten/nrten (both given), qr and nr are the read-only qr1d /
     // nr1d and the working rain is re-formed as WRF's TAU+1 refresh forms it
     // (:3236-3238, qr1d + qrten*DT); :3562 and :3564 add to the tendencies
@@ -758,8 +827,15 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
         ? thompson_aa_add(qr[idx], thompson_aa_mul(qrten[idx], dt)) : qr[idx];
     const float nr_working = accumulate_rain
         ? thompson_aa_add(nr[idx], thompson_aa_mul(nrten[idx], dt)) : nr[idx];
+    // With qvten/tten (see the saturation adjustment), qv is qv1d and the
+    // working vapour is MAX(1.E-10, qv1d + DT*qvten), the value :3192 or
+    // :3488 left; temperature is t1d + DT*tten.
+    const bool accumulate_vapor = qvten != nullptr;
     const float temp0 = temperature[idx];
-    const float qv0 = fmaxf(1.0e-10f, qv[idx]);
+    const float qv0 = accumulate_vapor
+        ? fmaxf(1.0e-10f, thompson_aa_add(qv[idx],
+                                          thompson_aa_mul(dt, qvten[idx])))
+        : fmaxf(1.0e-10f, qv[idx]);
     const float pres = pressure[idx];
     // :3572/:3490 -- the density carried into this loop.
     const float rho = thompson_aa_div(
@@ -840,7 +916,7 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
         return;
     }
     // :3502.
-    if (condensation_rate != nullptr && condensation_rate[idx] > 0.0f) return;
+    if (condensation_rate != nullptr && prw_in > 0.0f) return;
 
     const float qvs = thompson_rslf(pres, temp0);
     float ssatw = thompson_aa_sub(thompson_aa_div(qv0, qvs), 1.0f);
@@ -881,7 +957,7 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
     const float rhof2 = sqrtf(rhof);
     const float diffu = thompson_aa_mul(
         thompson_aa_mul(2.11e-5f,
-                        thompson_aa_powf_cr(
+                        thompson_aa_powf(
                             thompson_aa_div(temp0, 273.15f), 1.94f)),
         thompson_aa_div(101325.0f, pres));
     const float visco = tempc >= 0.0f
@@ -906,6 +982,10 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
         thompson_aa_mul(THOMPSON_AA_CP,
                         thompson_aa_add(1.0f,
                                         thompson_aa_mul(0.887f, qv0))));
+    if (export_heat) {
+        heat_ocp[idx] = ocp;
+        condensation_rate[idx] = lvap;
+    }
 
     // :3519-3533.  Identical chain to :3426-3441 above; pinned identically.
     const float rvs = thompson_aa_mul(rho, qvs);
@@ -956,7 +1036,7 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
     // :663 and :800-801.  Sc3 must be the correctly rounded cube root -- see
     // point 2 in the header note.  crg(10) = Gamma(2) = 1 and
     // crg(11) = Gamma(3) = 2 exactly, so t1_qr_ev is literally 0.78.
-    const float sc3 = thompson_aa_powf_cr(THOMPSON_AA_SC, 1.0f / 3.0f);
+    const float sc3 = thompson_aa_powf(THOMPSON_AA_SC, 1.0f / 3.0f);
     const float t1_qr_ev = thompson_aa_mul(0.78f, 1.0f);
     const float t2_qr_ev = thompson_aa_mul(
         thompson_aa_mul(thompson_aa_mul(0.308f, sc3),
@@ -968,11 +1048,11 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
     // cre(11) = 0.5*(bv_r+5+2*mu_r) = 3.
     const float rate_prefix = thompson_aa_mul(
         thompson_aa_mul(t1_evap, diffu), -ssatw);
-    const double diffusion_term = (double)t1_qr_ev * pow(ilamr, 2.0);
+    const double diffusion_term = (double)t1_qr_ev * thompson_aa_pow(ilamr, 2.0);
     const float vent_prefix = thompson_aa_mul(
         thompson_aa_mul(t2_qr_ev, vsc2), rhof2);
     const double ventilation_term = (double)vent_prefix
-        * pow(lamr + (double)thompson_aa_mul(0.5f, THOMPSON_AA_FV_R), -3.0);
+        * thompson_aa_pow(lamr + (double)thompson_aa_mul(0.5f, THOMPSON_AA_FV_R), -3.0);
     double prv_rev = (double)rate_prefix * n0_r * (double)rvs
         * (diffusion_term + ventilation_term);
 
@@ -1022,11 +1102,26 @@ __device__ __forceinline__ void thompson_aa_rain_evaporation_impl(
         qr[idx] = thompson_aa_add(qr[idx], thompson_aa_mul(qr_tendency, dt));
         nr[idx] = thompson_aa_add(nr[idx], thompson_aa_mul(nr_tendency, dt));
     }
-    // :3563 and :3569, the same running / working split as the
-    // adjustment: unfloored here, floored by every reader and at :3974.
-    qv[idx] = thompson_aa_add(qv[idx], thompson_aa_mul(qv_tendency, dt));
-    temperature[idx] = thompson_aa_add(
-        temp0, thompson_aa_mul(temperature_tendency, dt));
+    if (accumulate_vapor) {
+        // :3563 and :3566, REAL + DOUBLE rounded once, then :3571's
+        // temp(k) = t1d(k) + DT*tten(k).  qv stays qv1d; the adapter forms
+        // the running vapour once this block has run everywhere.
+        qvten[idx] = (float)((double)qvten[idx] + prv_rev);
+        const float tten_new = (float)__dsub_rn((double)tten[idx],
+            __dmul_rn((double)thompson_aa_mul(lvap, ocp), prv_rev));
+        tten[idx] = tten_new;
+        temperature[idx] = thompson_aa_add(
+            thompson_aa_mul(theta[idx], exner[idx]),
+            thompson_aa_mul(dt, tten_new));
+        (void)qv_tendency;
+        (void)temperature_tendency;
+    } else {
+        // :3563 and :3569, the same running / working split as the
+        // adjustment: unfloored here, floored by every reader and at :3974.
+        qv[idx] = thompson_aa_add(qv[idx], thompson_aa_mul(qv_tendency, dt));
+        temperature[idx] = thompson_aa_add(
+            temp0, thompson_aa_mul(temperature_tendency, dt));
+    }
     // :3565.  The whole aerosol addition to this process.
     if (nwfaten != nullptr) {
         nwfaten[idx] = (float)((double)nwfaten[idx] + pnr_rev);
@@ -1044,10 +1139,20 @@ extern "C" __global__ void thompson_aa_rain_evaporation(
     float* __restrict__ reference_density,
     float* __restrict__ reference_temperature,
     const float* __restrict__ graupel_melt_marker,
-    const float* __restrict__ condensation_rate,
+    // prw_vcd in; with heat_ocp given, lvap(k) out (see the impl).
+    float* __restrict__ condensation_rate,
     const float* __restrict__ entry_density,
     float* __restrict__ qrten,
     float* __restrict__ nrten,
+    float* __restrict__ qvten,
+    float* __restrict__ tten,
+    const float* __restrict__ theta,
+    const float* __restrict__ exner,
+    // ocp(k) in (:3207) and out (:3519 where the gate passes), nullable;
+    // with it, tau1_temperature is the :3188 temperature lvap(k) was
+    // formed from at the TAU+1 refresh.
+    float* __restrict__ heat_ocp,
+    const float* __restrict__ tau1_temperature,
     float dt, int size)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1055,7 +1160,8 @@ extern "C" __global__ void thompson_aa_rain_evaporation(
     thompson_aa_rain_evaporation_impl(
         qr, nr, temperature, pressure, qv, nwfaten, reference_density,
         reference_temperature, graupel_melt_marker, condensation_rate,
-        entry_density, nullptr, nullptr, nullptr, qrten, nrten, dt, idx);
+        entry_density, nullptr, nullptr, nullptr, qrten, nrten,
+        qvten, tten, theta, exner, heat_ocp, tau1_temperature, dt, idx);
 }
 
 
@@ -1083,5 +1189,6 @@ extern "C" __global__ void thompson_aa_rain_evaporation_probe(
     thompson_aa_rain_evaporation_impl(
         qr, nr, temperature, pressure, qv, nullptr, nullptr, nullptr,
         graupel_melt_marker, nullptr, entry_density,
-        prv_rev_out, pnr_rev_out, nr_bound_out, nullptr, nullptr, dt, idx);
+        prv_rev_out, pnr_rev_out, nr_bound_out, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, dt, idx);
 }

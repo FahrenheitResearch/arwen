@@ -455,8 +455,10 @@ def test_each_metric_mixing_raw_leaf_matches_scalar_identical_input_words(member
 
     monkeypatch.setattr(mixing, "_raw", trace_bind)
     mixing.prepare_fixed_tendencies(batch)()
-    from gpuwm.core.dycore import WRF_EXACT
-    assert set(mixing.metric_w_entry_family(exact=WRF_EXACT, compute_capability=batch.w.device.compute_capability)) <= set(seen)
+    # The production selector (batch_mixing._smag_w_launches): the WRF
+    # diffusion order is the default arithmetic since 2.8.8, not strict-only.
+    from gpuwm.core.dycore import WRF_EXACT, DIFFUSION_ENABLED
+    assert set(mixing.metric_w_entry_family(exact=WRF_EXACT or DIFFUSION_ENABLED, compute_capability=batch.w.device.compute_capability)) <= set(seen)
     assert "wrf_smag_vd_w" in seen
 
 

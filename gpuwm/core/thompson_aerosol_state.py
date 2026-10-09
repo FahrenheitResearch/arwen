@@ -162,6 +162,26 @@ def launch_aerosol_entry_snapshot(temperature, pressure, qv, nwfa, nifa,
              np.int32(size)))
 
 
+def launch_aa_entry_warm_mask(temperature, warm_mask) -> None:
+    """The warm network's entry mask with WRF's melting level, :1971-2013.
+
+    Writes, per level of the ENTRY temperature, 0.0 below 273.15 K (the cold
+    network owns the level), 1.0 at or above it where WRF re-forms the
+    wet-bulb ``twet`` (``k <= k_melting``), and 2.0 at or above it where WRF
+    keeps ``twet = temp`` (a level at exactly 273.15 K with no warmer level
+    at or above it).
+    """
+    shape, _ = validate_fields({"temperature": temperature,
+                                "warm_mask": warm_mask})
+    if len(shape) != 3:
+        raise ValueError(f"fields must be (nz, ny, nx), got {shape}")
+    nz = shape[0]
+    ncol = int(shape[1] * shape[2])
+    grid, block = launch_grid(ncol)
+    _kernel("thompson_aa_entry_warm_mask")(
+        grid, block, (temperature, warm_mask, np.int32(nz), np.int32(ncol)))
+
+
 def launch_aerosol_micro_columns(qc, qi, qr, qs, qg, temperature, pressure,
                                  qv, micro_columns) -> None:
     """WRF's per-column ``no_micro`` decision, :1646, :1827-1990, :2020.
@@ -227,6 +247,17 @@ def launch_aerosol_entry_cloud_number(qc, nc, rho, rc_out, nc_entry_m3,
 # ---------------------------------------------------------------------------
 # 2.  Working refresh.
 # ---------------------------------------------------------------------------
+
+def launch_aerosol_exner(pressure, pii_out) -> None:
+    """``pii = (p/p1000mb)**rcp`` as WRF's phy_prep forms ``pi_phy``.
+
+    A REAL(4) power is the C library's powf in the gfortran WRF, which is
+    not CUDA's powf; the kernel evaluates it with WOOF's own float32 word
+    (gpuwm/core/kernels/thompson_aerosol_libm.cuh).
+    """
+    _, size = validate_fields({"pressure": pressure, "pii_out": pii_out})
+    _launch("thompson_aa_exner", size, (pressure, pii_out, np.int32(size)))
+
 
 def launch_tau1_density(temperature, pressure, qv, rho_out) -> None:
     """TAU+1 density, :3189-3193.
@@ -584,6 +615,72 @@ def launch_aerosol_effective_radius(temperature, pressure, qv, qc, nc,
              effc, effi, effs, np.int32(size)))
 
 
+# ---------------------------------------------------------------------------
+# The classic graupel number and the 10 cm reflectivity, WRF v4.6.1.
+# ---------------------------------------------------------------------------
+
+def launch_aa_graupel_number_init(qg, temperature, pressure, qv,
+                                  graupel_number) -> None:
+    """mp_gt_driver :1266-1281: the call's private ng1d (per kilogram).
+
+    Diagnosed from the entry graupel on the driver's density (the raw
+    vapour, no floor); zero where the graupel is at or below R1.
+    """
+    _, size = validate_fields({
+        "qg": qg, "temperature": temperature, "pressure": pressure,
+        "qv": qv, "graupel_number": graupel_number,
+    })
+    _launch("thompson_aa_graupel_number_init", size,
+            (qg, temperature, pressure, qv, graupel_number, np.int32(size)))
+
+
+def launch_aa_graupel_number_finalize(qg, graupel_number,
+                                      terminal_density) -> None:
+    """:4058-4077: the private ng1d's terminal bound, and the graupel at or
+    below R1 zeroed with its number, on rho(k) as the terminal apply finds
+    it (``terminal_density``)."""
+    _, size = validate_fields({
+        "qg": qg, "graupel_number": graupel_number,
+        "terminal_density": terminal_density,
+    })
+    _launch("thompson_aa_graupel_number_finalize", size,
+            (qg, graupel_number, terminal_density, np.int32(size)))
+
+
+#: Column-kernel launch width for the reflectivity.
+_REFL_TPB = 32
+
+
+def launch_aa_refl10cm(qv, qr, nr, qs, qg, graupel_number, temperature,
+                       pressure, refl, *, melting: bool = True) -> None:
+    """calc_refl10cm (:5710-6028) and mp_gt_driver's MAX(-35., dBZ).
+
+    ``melting=False`` leaves out the melting-snow (Blahak) term, as
+    :func:`gpuwm.core.refl.refl_melting_for` asks for the MPAS column seam.
+
+    ``graupel_number`` is the call's private ng1d after
+    :func:`launch_aa_graupel_number_finalize`; the size bins, their widths
+    and the Simpson weights are gpuwm.core.refl's device table, which
+    carries WRF's radar_init values bit for bit.
+    """
+    from gpuwm.core.refl import _device_tables
+
+    shape, _ = validate_fields({
+        "qv": qv, "qr": qr, "nr": nr, "qs": qs, "qg": qg,
+        "graupel_number": graupel_number, "temperature": temperature,
+        "pressure": pressure, "refl": refl,
+    })
+    if len(shape) != 3:
+        raise ValueError(f"reflectivity fields must be 3-D, got {shape}")
+    nz, ny, nx = shape
+    blocks = (ny * nx + _REFL_TPB - 1) // _REFL_TPB
+    _kernel("thompson_aa_refl10cm")(
+        (blocks,), (_REFL_TPB,),
+        (qv, qr, nr, qs, qg, graupel_number, temperature, pressure,
+         _device_tables(), refl, np.int32(1 if melting else 0),
+         np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
 __all__ = [
     "AEROSOL_CEILING",
     "INIT_PROFILE_HEIGHT_FIELD",
@@ -598,10 +695,15 @@ __all__ = [
     "PROFILE_FILL_EPS",
     "R1",
     "aerosol_profile_needs_fill",
+    "launch_aa_graupel_number_finalize",
+    "launch_aa_graupel_number_init",
+    "launch_aa_refl10cm",
     "launch_aerosol_effective_radius",
     "launch_aerosol_entry_cloud_number",
+    "launch_aerosol_exner",
     "launch_aerosol_entry_snapshot",
     "launch_aerosol_init_profile",
+    "launch_aa_entry_warm_mask",
     "launch_aerosol_micro_columns",
     "launch_aerosol_state_finalize",
     "launch_aerosol_surface_emission",

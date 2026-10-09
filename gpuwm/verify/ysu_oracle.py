@@ -17,7 +17,10 @@ Two CSVs live in ``gpuwm/data/ysu/oracle/``:
 Both CSVs also carry the momentum tendencies from a *second* call made with
 ``ctopo = ctopo2 = 1``.  That second call is not an alternative -- it is what
 WRF's own driver does on every column of every default run
-(``module_bl_ysu.F:404``), and the port implements the other arm.
+(``module_bl_ysu.F:404``), and since lane/parity-286 it is the arm every
+entry point of ``kernels/ysu.cu`` takes, so the port's ``du``/``dv`` are
+graded against it.  The first, ctopo-absent call (``utnp``/``vtnp``) is
+kept as the WRF-against-WRF control that shows the two arms differ.
 
 Nothing in this module knows a tolerance.  It returns measurements; the gate
 decides what to do with them.
@@ -46,8 +49,8 @@ YSU_ORACLE_DIR = Path(__file__).resolve().parents[1] / "data" / "ysu" / "oracle"
 
 #: port output name -> oracle column name, for the per-level fields.
 LEVEL_FIELD_MAP = {
-    "du": "utnp",
-    "dv": "vtnp",
+    "du": "utnp_ctopo",
+    "dv": "vtnp_ctopo",
     "dtheta": "rthblten",
     "dqv": "qvtnp",
     "dqc": "qctnp",
@@ -63,9 +66,11 @@ SURFACE_FIELD_MAP = {
     "delta": "delta",
 }
 
-#: The port has no ctopo arm at all, so its du/dv are compared against the
-#: no-ctopo call.  These are the same words from WRF's own driver path.
-CTOPO_FIELD_MAP = {"du": "utnp_ctopo", "dv": "vtnp_ctopo"}
+#: The ctopo-absent call (bl_ysu.F90:1315, ``ad(1) = 1+fric``), which no WRF
+#: run reaches because module_bl_ysu.F:404 always passes ctopo.  The port
+#: stopped taking it in lane/parity-286; measured against it only to show
+#: the port now sits on WRF's default arm and not on this one.
+NOCTOPO_FIELD_MAP = {"du": "utnp", "dv": "vtnp"}
 
 #: Loaded but not compared to anything by itself.  ``ttnp`` is the temperature
 #: tendency ``bl_ysu_run`` returns, before ``module_bl_ysu.F:452`` divides it
@@ -172,7 +177,7 @@ def load_ysu_oracle(directory: Path | None = None) -> YsuOracleFixture:
     level_reference = {
         column: level(column)
         for column in sorted(set(LEVEL_FIELD_MAP.values())
-                             | set(CTOPO_FIELD_MAP.values())
+                             | set(NOCTOPO_FIELD_MAP.values())
                              | set(EXTRA_REFERENCE_COLUMNS))
     }
 
@@ -286,8 +291,8 @@ def measure_ysu_parity(fixture: YsuOracleFixture,
         result[name] = _worst(fixture, name, column,
                               np.ascontiguousarray(port[name], np.float32),
                               fixture.surface_reference[column])
-    for name, column in CTOPO_FIELD_MAP.items():
-        result[f"{name}@ctopo"] = _worst(
+    for name, column in NOCTOPO_FIELD_MAP.items():
+        result[f"{name}@noctopo"] = _worst(
             fixture, name, column,
             np.ascontiguousarray(port[name], np.float32),
             fixture.level_reference[column])

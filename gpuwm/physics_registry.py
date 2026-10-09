@@ -1146,7 +1146,9 @@ def expert_template_ids_for_source(route: Mapping[str, object] | None,
 #: configuration whose resolved option violates it (a hand-edited JSON, a
 #: consumer added ahead of its rows).  Turbulence carries no identity row
 #: by design: ``configuration_sha256`` binds km_opt and its constants, and
-#: a row would be a sixth turbulence authority.
+#: a row would be a sixth turbulence authority; the operators'
+#: implementation is the one string
+#: ``gpuwm.checkpoint_identity.DYCORE_MIXING_ALGORITHM_IDENTITY``.
 CONSUMER_ROW_CONTRACT: dict[str, dict[str, str]] = {
     "microphysics": {
         "restart_algorithm_identity": (
@@ -1252,8 +1254,10 @@ CONSUMER_ROW_CONTRACT: dict[str, dict[str, str]] = {
     },
     "turbulence": {
         "restart_identity_binding": (
-            "records that km_opt is bound by configuration_sha256 and has no "
-            "identity table by design"),
+            "records that km_opt is bound by configuration_sha256, has no "
+            "per-option identity table by design, and that the mixing "
+            "operators' implementation is bound by the one "
+            "DYCORE_MIXING_ALGORITHM_IDENTITY string"),
     },
 }
 

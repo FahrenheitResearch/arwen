@@ -1,0 +1,6 @@
+a76e1e5b52fc7cd40be9ccb506fde28b1ef2486b812d518f7f1c882766d484db  /work/pverify/wrf-build/src/WRF-4.6.1/phys/ccpp_kind_types.F
+5897bb51c289ecd3f156ccdba975deb72dd538a45a53c9018be42388b463bf8e  /work/pverify/wrf-build/src/WRF-4.6.1/phys/physics_mmm/sf_sfclayrev.F90
+388633bac8063c8e773083ea4f280f69f25e607efb903ed221e112e239cb1cb2  /work/pverify/wrf-build/src/WRF-4.6.1/phys/module_sf_sfclayrev.F
+5b786e881cf93c381b0b74527085e67954a397fa557500f688662d5a52f406d5  /work/pverify/revised-mm5-sfclay/src/tools/sfclayrev_wrf461_oracle/run_sfclayrev.F90
+be71a3f5300347a6402890bd4bc06940f2d69ddc849fba7c66eed047cc729bdb  /work/pverify/revised-mm5-sfclay/src/tests/data/oracles/sfclayrev/sfclayrev-inputs.hex
+f528eba6a9f38a5f8c0f2bb730d3d58890ab9d7ccf72ee6bca9ade8219e83512  sfclayrev-outputs.hex

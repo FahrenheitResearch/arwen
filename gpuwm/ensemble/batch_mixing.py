@@ -61,10 +61,10 @@ def _scalar_smag_ptx(audit_options):
     This is used by the compiled-arithmetic identity proof before batching.
     """
     from cupy.cuda import compiler
-    from gpuwm.core.kernels import module_source
+    from gpuwm.core.kernels import module_options, module_source
     from gpuwm import wrf_exact
     source = module_source("smag2d")
-    options = ("-std=c++17", "-ftz=true")
+    options = module_options("smag2d")
     if wrf_exact.ENABLED:
         options = wrf_exact.effective_options(options)
     options += (audit_options[-1], "--device-as-default-execution-space")
@@ -509,7 +509,7 @@ def _zero_strips(value, cfg, width):
 
 
 def metric_w_entry_family(*, exact, compute_capability):
-    """The original dycore's W route: one stress route on every architecture.
+    """Select the compiled WRF w route independently of architecture.
 
     ``compute_capability`` no longer selects a route (xnode-identity,
     2026-10-04): a per-architecture choice broke cross-card byte identity.
@@ -520,9 +520,9 @@ def metric_w_entry_family(*, exact, compute_capability):
 
 
 def _smag_w_launches(state, common, dims, km, tend, fx, fy):
-    from gpuwm.core.dycore import WRF_EXACT
+    from gpuwm.core.dycore import WRF_EXACT, DIFFUSION_ENABLED
     cfg = state.cfg
-    entries = metric_w_entry_family(exact=WRF_EXACT,
+    entries = metric_w_entry_family(exact=WRF_EXACT or DIFFUSION_ENABLED,
         compute_capability=tend.device.compute_capability)
     fields = _common_fields(state)
     grid = _grid(state.storage.specs["w0"].shape)
@@ -662,12 +662,19 @@ def _smag_launches(state):
 
 
 def _diff6_launch(state, row, factor, mass):
-    from gpuwm.core.dycore import _boundary_x, _boundary_y, _diff6_dt
-    field, slot, temporary_slot, stagger, c1, c2 = row
+    """One diff6 row, accumulated in place onto the held ``*_tendf`` slot.
+
+    WRF forms ``(tendency + tendency_x) + tendency_y`` on the tendency it
+    already holds (sixth_order_diffusion :6626), so the kernel writes the
+    carrying slot itself; its loop bounds (``diff6_loop_bounds``) leave
+    the points WRF skips untouched and the seam kernel adds the outermost
+    staggered face.  ``row[2]`` (the former temporary slot) is unused.
+    """
+    from gpuwm.core.dycore import _boundary_x, _boundary_y, _diff6_dt, diff6_loop_bounds
+    field, slot, _temporary_slot, stagger, c1, c2 = row
     cfg = state.cfg
-    name = "scratch:" + temporary_slot
+    name = "scratch:" + slot
     f = _array(state, field)
-    temporary = _array(state, name, output=True)
     nlev, nys, nxs = state.storage.specs[field].shape
     nx = nxs - 1 if stagger == "x" else nxs
     ny = nys - 1 if stagger == "y" else nys
@@ -683,12 +690,12 @@ def _diff6_launch(state, row, factor, mass):
               ("phb", phb), ("msfu", "msfu"), ("msfv", "msfv"), ("msft", "msft"))
     pointers = tuple(_array(state, allocation) for _, allocation in fields)
     scalars = (coef, np.int32(cfg.diff_6th_opt), np.int32(slope), dzx, dzy)
-    main = _raw(state, "diff6", "diff6", fields, pointers + scalars + tuple(np.int32(value) for value in
-                (nlev, ny, nys, nx, nxs, variant, stagger == "z")), _grid((nlev, nys, nxs)))
-    seam = None
-    seam_slice = None
     seam_u = stagger == "x" and _boundary_x(cfg)
     seam_v = stagger == "y" and _boundary_y(cfg)
+    bounds = diff6_loop_bounds(nx, ny, nxs, nys, _boundary_x(cfg), _boundary_y(cfg))
+    main = _raw(state, "diff6", "diff6", fields, pointers + scalars + tuple(np.int32(value) for value in
+                (nlev, ny, nys, nx, nxs, variant, stagger == "z", *bounds)), _grid((nlev, nys, nxs)))
+    seam = None
     if seam_u or seam_v:
         along, cross = (nx, ny) if seam_u else (ny, nx)
         bnd_cross = _boundary_y(cfg) if seam_u else _boundary_x(cfg)
@@ -697,22 +704,13 @@ def _diff6_launch(state, row, factor, mass):
             entry = "diff6_seam_u" if seam_u else "diff6_seam_v"
             seam = _raw(state, "diff6_seam", entry, fields, pointers + scalars + tuple(np.int32(value) for value in
                         (nlev, ny, nx, h0, h1, bnd_cross)), ((h1 - h0 + _TPB) // _TPB, 1, nlev))
-            seam_slice = temporary[..., nx - 3] if seam_u else temporary[..., ny - 3, :]
-    target = _array(state, "scratch:" + slot, output=True)
-    size = int(np.prod(state.storage.specs[field].shape))
-    add = _raw(state, "bandwidth_glue", "glue_add", (("src", name), ("dst", "scratch:" + slot)),
-               (temporary, target, np.uint64(size)), ((size + 511) // 512,))
 
     def launch():
-        temporary.fill(0)
         main()
         if seam is not None:
-            seam_slice.fill(0)
             seam()
-        _zero_strips(temporary, cfg, 3)
-        add()
 
-    launch.numerical_entries = main.numerical_entries + (() if seam is None else seam.numerical_entries) + add.numerical_entries
+    launch.numerical_entries = main.numerical_entries + (() if seam is None else seam.numerical_entries)
     return launch
 
 

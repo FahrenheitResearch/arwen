@@ -275,7 +275,14 @@ void advance_uv(real* __restrict__ u_pp, real* __restrict__ v_pp,
                  real cf1, real cf2, real cf3,
                 int top_lid,
                 real rdx, real rdy, real dtau, real smdiv,
+#if GPUWM_WRF_EXACT
+                int spec_zone, int base3d, int nz, int ny, int nx,
+                const real* __restrict__ mudf,
+                const real* __restrict__ msfu, const real* __restrict__ msfv,
+                real xscale, real yscale, int use_emdiv, int has_msf)
+#else
                 int spec_zone, int base3d, int nz, int ny, int nx)
+#endif
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int nyf = ny + 1, nxf = nx + 1;
@@ -306,6 +313,16 @@ void advance_uv(real* __restrict__ u_pp, real* __restrict__ v_pp,
         u_pp[uix] = u_pp[uix] + dtau * ru_t[uix];
         real cq = moist_cq ? cqu[uix] : 1.0f;
         u_pp[uix] = u_pp[uix] - dtau * cq * dpxy;
+        if (use_emdiv) {
+            // advance_uv: u = u - dts*cqu*dpxy + (c1h*mudf_xy), the
+            // external-mode term last, with mudf_xy = -emdiv*dx*
+            // (MUDF(i)-MUDF(i-1))/msfuy.  Applied before the substep (the
+            // default) it rounds differently once MUDF is non-zero, from
+            // the second RK stage on (combo-sweep round 3).
+            real gx = xscale * (mudf[cA] - mudf[cB]);
+            if (has_msf) gx = gx / msfu[(size_t)j * nxf + i];
+            u_pp[uix] = u_pp[uix] + c1h[k] * gx;
+        }
 #else
         if (moist_cq)
             u_pp[uix] += dtau * (ru_t[uix] - cqu[uix] * dpxy);
@@ -336,6 +353,12 @@ void advance_uv(real* __restrict__ u_pp, real* __restrict__ v_pp,
         v_pp[vix] = v_pp[vix] + dtau * rv_t[vix];
         real cq = moist_cq ? cqv[vix] : 1.0f;
         v_pp[vix] = v_pp[vix] - dtau * cq * dpxy;
+        if (use_emdiv) {
+            // mudf_xy = -emdiv*dy*(MUDF(j)-MUDF(j-1))*msfvx_inv.
+            real gy = yscale * (mudf[cA] - mudf[cB]);
+            if (has_msf) gy = gy * (1.0f / msfv[(size_t)j * nx + i]);
+            v_pp[vix] = v_pp[vix] + c1h[k] * gy;
+        }
 #else
         if (moist_cq)
             v_pp[vix] += dtau * (rv_t[vix] - cqv[vix] * dpxy);
@@ -454,14 +477,26 @@ void advance_exact_frame_mu_t(real* __restrict__ mu_pp,
                               const real* __restrict__ rmu_t,
                               const real* __restrict__ rth_t,
                               real dtau, int spec_zone, int periodic_x,
-                              int nz, int ny, int nx)
+                              int nz, int ny, int nx,
+                              real* __restrict__ muts,
+                              const real* __restrict__ mub2d,
+                              const real* __restrict__ mup)
 {
     int c=blockIdx.x*blockDim.x+threadIdx.x;
     if (c>=ny*nx) return;
     int j=c/nx, i=c-j*nx;
     bool frame=j<spec_zone || j>=ny-spec_zone
                 || (!periodic_x && (i<spec_zone || i>=nx-spec_zone));
-    if (!frame) return;
+    // WRF's grid%muts: advance_mu_t sets MUTS = MUT + MU'' where it
+    // integrates (module_small_step_em.F); on the specified ring solve_em
+    // instead advances it like mu_2, spec_bdyupdate(muts, mu_tend, dts),
+    // from small_step_prep's MUB+MU_2 (rk_step 1) or MUB+MU_1 (later).
+    // The two agree on RK stage 1 only.
+    if (!frame) {
+        muts[c]=(mub2d[c]+mup[c])+mu_pp[c];
+        return;
+    }
+    muts[c]=muts[c]+dtau*rmu_t[c];
     mu_pp[c]=mu_pp[c]+dtau*rmu_t[c];
     size_t st=(size_t)ny*nx;
     for (int k=0;k<nz;++k) {
@@ -965,6 +1000,39 @@ void diagnose_p_column(real* __restrict__ p_pp,
     }
 }
 
+#if GPUWM_WRF_EXACT
+// diagnose_p_column with WRF's grid%muts for the column supplied: the
+// specified ring's muts is the spec_bdyupdate carrier, not (mub+mu)+mu''.
+static __device__ __forceinline__
+void diagnose_p_column_muts(real* __restrict__ p_pp,
+                            real* __restrict__ al_pp,
+                            const real* __restrict__ th_pp,
+                            const real* __restrict__ ph_pp,
+                            const real* __restrict__ mu_pp,
+                            const real* __restrict__ thp,
+                            const real* __restrict__ alt,
+                            const real* __restrict__ c2a,
+                            const real* __restrict__ rdnw,
+                            const real* __restrict__ c1h,
+                            const real* __restrict__ c2h,
+                            size_t c, size_t st, int nz, real muts)
+{
+    for (int k = 0; k < nz; ++k) {
+        size_t tid = (size_t)k * st + c;
+        real chm = c1h[k] * muts + c2h[k];
+        real th_ref = thp[tid];
+        real al = __fdiv_rn(-1.0f, chm)
+                * (alt[tid] * (c1h[k] * mu_pp[c])
+                   + rdnw[k] * (ph_pp[tid + st] - ph_pp[tid]));
+        al_pp[tid] = al;
+        p_pp[tid] = c2a[tid]
+                  * (__fdiv_rn(alt[tid]
+                      * (th_pp[tid] - (c1h[k] * mu_pp[c]) * th_ref),
+                      chm * (300.0f + th_ref)) - al);
+    }
+}
+
+#endif
 // Sound-speed factor c2a = gamma*p/alpha and the LU-factored tridiagonal
 // coefficients a/alpha/gam of the implicit w'' system, all from the fixed
 // t* state (WRF calc_coef_w; lid_flag = !top_lid).  One thread per column;
@@ -1013,7 +1081,7 @@ void calc_coefs(const real* __restrict__ p, const real* __restrict__ alt,
                                        * (c1f[k - 1] * mut + c2f[k - 1]));
     }
     if (top_lid) {
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
         a[(size_t)nz * st + c] = -0.0f;
 #else
         a[(size_t)nz * st + c] = 0.0f;   // WRF lid_flag = 0
@@ -1021,11 +1089,25 @@ void calc_coefs(const real* __restrict__ p, const real* __restrict__ alt,
     } else {
         // WRF v4.6.1 module_small_step_em.F:619-626: the default
         // lid_flag=1 keeps the one-sided top row coupled to w[nz-1].
+#if GPUWM_WRF_EXACT
+        // WRF writes rdnw(kde-1)**2, and Fortran raises the power before
+        // the product: (-2.*cof)*(rdnw*rdnw), then *c2a*lid_flag.  The
+        // default left-to-right ((-2*cof)*rdnw)*rdnw rounds differently
+        // and the top alpha carries it down the back-substitution, the
+        // levels 44-50 w/ph difference of combo-sweep round 2
+        // (LOCALIZE.md item 6).  lid_flag is 1 on this branch.
+        a[(size_t)nz * st + c] =
+            -2.0f * cof * (rdnw[nz - 1] * rdnw[nz - 1])
+            * c2a[(size_t)(nz - 1) * st + c]
+            / ((c1h[nz - 1] * mut + c2h[nz - 1])
+               * (c1f[nz - 1] * mut + c2f[nz - 1]));
+#else
         a[(size_t)nz * st + c] =
             -2.0f * cof * rdnw[nz - 1] * rdnw[nz - 1]
             * c2a[(size_t)(nz - 1) * st + c]
             / ((c1h[nz - 1] * mut + c2h[nz - 1])
                * (c1f[nz - 1] * mut + c2f[nz - 1]));
+#endif
     }
     for (int k = 1; k < nz; ++k) {
         real chm_k  = c1h[k] * mut + c2h[k];
@@ -1054,16 +1136,24 @@ void calc_coefs(const real* __restrict__ p, const real* __restrict__ alt,
         alpha[(size_t)k * st + c] = al;
         gam[(size_t)k * st + c] = cc * al;
     }
+#if GPUWM_WRF_EXACT
+    // b = 1.+2.*cof*rdnw(kde-1)**2*c2a/(...): the power first, as above.
+    real b_top = 1.0f + 2.0f * cof * (rdnw[nz - 1] * rdnw[nz - 1])
+                        * c2a[(size_t)(nz - 1) * st + c]
+                        / ((c1h[nz - 1] * mut + c2h[nz - 1])
+                           * (c1f[nz] * mut + c2f[nz]));
+#else
     real b_top = 1.0f + 2.0f * cof * rdnw[nz - 1] * rdnw[nz - 1]
                         * c2a[(size_t)(nz - 1) * st + c]
                         / ((c1h[nz - 1] * mut + c2h[nz - 1])
                            * (c1f[nz] * mut + c2f[nz]));
+#endif
     alpha[(size_t)nz * st + c] = 1.0f / (b_top - a[(size_t)nz * st + c]
                                          * gam[(size_t)(nz - 1) * st + c]);
     gam[(size_t)nz * st + c] = 0.0f;
 }
 
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
 static __device__ __forceinline__
 real wrf_theta_average(real current, real previous, real muave,
                        real c1, real c2, real muts, real theta, real epssm)
@@ -1071,6 +1161,19 @@ real wrf_theta_average(real current, real previous, real muave,
     real average = 0.5f*((1.0f+epssm)*current+(1.0f-epssm)*previous);
     return __fdiv_rn(average+(c1*muave)*300.0f,
                      (c1*muts+c2)*(300.0f+theta));
+}
+
+// Convert the full-theta acoustic increments to WRF's perturbation words
+// before averaging. Each stored REAL conversion rounds independently.
+static __device__ __forceinline__
+real wrf_full_theta_average(real current, real previous, real mu, real mu_old,
+                            real muave, real c1, real c2, real muts,
+                            real theta, real epssm)
+{
+    real current_wrf = current - (c1 * mu) * 300.0f;
+    real previous_wrf = previous - (c1 * mu_old) * 300.0f;
+    return wrf_theta_average(current_wrf, previous_wrf, muave,
+                             c1, c2, muts, theta, epssm);
 }
 #endif
 
@@ -1147,7 +1250,7 @@ void advance_w_phi(real* __restrict__ w_pp, real* __restrict__ ph_pp,
     real ph_lo = phb[boff] + php[c];
     real ph_hi = phb[bstr + boff] + php[(size_t)st + c];
     real wd_lo = 0.5f * (ww_pp[(size_t)st + c] + ww_pp[c])
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
                * rdnw[0] * (php[st+c]-php[c]+phb[bstr+boff]-phb[boff]);
 #else
                * rdnw[0] * (ph_hi - ph_lo);
@@ -1158,7 +1261,7 @@ void advance_w_phi(real* __restrict__ w_pp, real* __restrict__ ph_pp,
               + php[(size_t)(k + 1) * st + c];
         real wd_hi = 0.5f * (ww_pp[(size_t)(k + 1) * st + c]
                            + ww_pp[(size_t)k * st + c])
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
                    * rdnw[k] * (php[(size_t)(k+1)*st+c]-php[(size_t)k*st+c]
                      +phb[(size_t)(k+1)*bstr+boff]-phb[(size_t)k*bstr+boff]);
 #else
@@ -1208,9 +1311,15 @@ void advance_w_phi(real* __restrict__ w_pp, real* __restrict__ ph_pp,
     real t2_dn = wrf_theta_average(th_pp[c],th_pp_old[c],muave,
                                         c1h[0],c2h[0],muts,thp[c],epssm);
 #else
+#if GPUWM_WRF_EXACT_C_DIFFUSION
+    real t2_dn = wrf_full_theta_average(th_pp[c], th_pp_old[c], mu_pp[c], mu_pp_old[c],
+                                        muave, c1h[0], c2h[0], muts,
+                                        thp[c] + (thb[boff] - 300.0f), epssm);
+#else
     real t2_dn = 0.5f * ((1.0f + epssm) * th_pp[c]
                        + (1.0f - epssm) * th_pp_old[c])
                / ((c1h[0] * muts + c2h[0]) * (thb[boff] + thp[c]));
+#endif
 #endif
     for (int k = 1; k < nz; ++k) {
         size_t h = (size_t)k * st + c;                 // half level above
@@ -1219,10 +1328,16 @@ void advance_w_phi(real* __restrict__ w_pp, real* __restrict__ ph_pp,
         real t2_up = wrf_theta_average(th_pp[h],th_pp_old[h],muave,
                                             c1h[k],c2h[k],muts,thp[h],epssm);
 #else
+#if GPUWM_WRF_EXACT_C_DIFFUSION
+        real t2_up = wrf_full_theta_average(th_pp[h], th_pp_old[h], mu_pp[c], mu_pp_old[c],
+                                            muave, c1h[k], c2h[k], muts,
+                                            thp[h] + (thb[(size_t)k * bstr + boff] - 300.0f), epssm);
+#else
         real t2_up = 0.5f * ((1.0f + epssm) * th_pp[h]
                            + (1.0f - epssm) * th_pp_old[h])
                    / ((c1h[k] * muts + c2h[k])
                       * (thb[(size_t)k * bstr + boff] + thp[h]));
+#endif
 #endif
         real dph_up = (1.0f + epssm) * (rhs[k + 1] - rhs[k])
                     + (1.0f - epssm) * (ph_pp[(size_t)(k + 1) * st + c]
@@ -1231,7 +1346,7 @@ void advance_w_phi(real* __restrict__ w_pp, real* __restrict__ ph_pp,
                     + (1.0f - epssm) * (ph_pp[(size_t)k * st + c]
                                         - ph_pp[(size_t)(k - 1) * st + c]);
         size_t f = (size_t)k * st + c;
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
         if (moist_cq) {
             w_pp[f] = w_pp[f] + dtau * rw_t[f]
                      + cqw[f] * (0.5f * dtau * G * rdn[k]
@@ -1288,7 +1403,7 @@ void advance_w_phi(real* __restrict__ w_pp, real* __restrict__ ph_pp,
         real dph_dn = (1.0f + epssm) * (rhs[nz] - rhs[nz - 1])
                     + (1.0f - epssm)
                       * (ph_pp[f] - ph_pp[(size_t)(nz - 1) * st + c]);
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
         w_pp[f] = w_pp[f] + dtau * rw_t[f]
                  + (__fdiv_rn(-0.5f*dtau*G,c1h[nz-1]*mut+c2h[nz-1])
                     * (rdnw[nz-1]*rdnw[nz-1])*2.0f*c2a[h]*dph_dn
@@ -1324,7 +1439,7 @@ void advance_w_phi(real* __restrict__ w_pp, real* __restrict__ ph_pp,
             real hk = __fdiv_rn((phb[(size_t)k * bstr + boff]
                        + php[(size_t)k * st + c]), G);
             if (hk >= hbot) {
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
                 real angle = __fdiv_rn(1.5707963267948966f*(hk-hbot),zdamp);
                 real sn = glibc_sinf(angle);
 #else
@@ -1440,7 +1555,7 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
     real ph_lo = phb[boff] + php[c];
     real ph_hi = phb[bstr + boff] + php[(size_t)st + c];
     real wd_lo = 0.5f * (ww_pp[(size_t)st + c] + ww_pp[c])
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
                * rdnw[0] * (php[st+c]-php[c]+phb[bstr+boff]-phb[boff]);
 #else
                * rdnw[0] * (ph_hi - ph_lo);
@@ -1451,7 +1566,7 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
               + php[(size_t)(k + 1) * st + c];
         real wd_hi = 0.5f * (ww_pp[(size_t)(k + 1) * st + c]
                            + ww_pp[(size_t)k * st + c])
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
                    * rdnw[k] * (php[(size_t)(k+1)*st+c]-php[(size_t)k*st+c]
                      +phb[(size_t)(k+1)*bstr+boff]-phb[(size_t)k*bstr+boff]);
 #else
@@ -1487,7 +1602,7 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
         real vs = cf1 * v_pp[I3S(0, j, i, ny + 1, nx)]
                 + cf2 * v_pp[I3S(1, j, i, ny + 1, nx)]
                 + cf3 * v_pp[I3S(2, j, i, ny + 1, nx)];
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
         w_pp[c] = msf_c * 0.5f * rdy * ((ht[cjp] - ht[c]) * vn
                                          + (ht[c] - ht[cjm]) * vs)
                            + msf_c * 0.5f * rdx * ((ht[cip] - ht[c]) * ue
@@ -1505,9 +1620,15 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
     real t2_dn = wrf_theta_average(th_pp[c],th_pp_old[c],muave,
                                         c1h[0],c2h[0],muts,thp[c],epssm);
 #else
+#if GPUWM_WRF_EXACT_C_DIFFUSION
+    real t2_dn = wrf_full_theta_average(th_pp[c], th_pp_old[c], mu_pp[c], mu_pp_old[c],
+                                        muave, c1h[0], c2h[0], muts,
+                                        thp[c] + (thb[boff] - 300.0f), epssm);
+#else
     real t2_dn = 0.5f * ((1.0f + epssm) * th_pp[c]
                        + (1.0f - epssm) * th_pp_old[c])
                / ((c1h[0] * muts + c2h[0]) * (thb[boff] + thp[c]));
+#endif
 #endif
     for (int k = 1; k < nz; ++k) {
         size_t h = (size_t)k * st + c;                 // half level above
@@ -1516,10 +1637,16 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
         real t2_up = wrf_theta_average(th_pp[h],th_pp_old[h],muave,
                                             c1h[k],c2h[k],muts,thp[h],epssm);
 #else
+#if GPUWM_WRF_EXACT_C_DIFFUSION
+        real t2_up = wrf_full_theta_average(th_pp[h], th_pp_old[h], mu_pp[c], mu_pp_old[c],
+                                            muave, c1h[k], c2h[k], muts,
+                                            thp[h] + (thb[(size_t)k * bstr + boff] - 300.0f), epssm);
+#else
         real t2_up = 0.5f * ((1.0f + epssm) * th_pp[h]
                            + (1.0f - epssm) * th_pp_old[h])
                    / ((c1h[k] * muts + c2h[k])
                       * (thb[(size_t)k * bstr + boff] + thp[h]));
+#endif
 #endif
         real dph_up = (1.0f + epssm) * (rhs[k + 1] - rhs[k])
                     + (1.0f - epssm) * (ph_pp[(size_t)(k + 1) * st + c]
@@ -1528,7 +1655,7 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
                     + (1.0f - epssm) * (ph_pp[(size_t)k * st + c]
                                         - ph_pp[(size_t)(k - 1) * st + c]);
         size_t f = (size_t)k * st + c;
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
         if (moist_cq) {
             w_pp[f] = w_pp[f] + dtau * rw_t[f]
                      + msf_i * cqw[f] * (0.5f * dtau * G * rdn[k]
@@ -1592,7 +1719,7 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
         real dph_dn = (1.0f + epssm) * (rhs[nz] - rhs[nz - 1])
                     + (1.0f - epssm)
                       * (ph_pp[f] - ph_pp[(size_t)(nz - 1) * st + c]);
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
         w_pp[f] = w_pp[f] + dtau * rw_t[f]
                  + msf_i
                    * (__fdiv_rn(-0.5f*dtau*G,c1h[nz-1]*mut+c2h[nz-1])
@@ -1628,7 +1755,7 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
             real hk = __fdiv_rn((phb[(size_t)k * bstr + boff]
                        + php[(size_t)k * st + c]), G);
             if (hk >= hbot) {
-#if GPUWM_WRF_EXACT
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_DIFFUSION
                 real angle = __fdiv_rn(1.5707963267948966f*(hk-hbot),zdamp);
                 real sn = glibc_sinf(angle);
 #else
@@ -1873,7 +2000,12 @@ void advance_specified_phi_w(real* __restrict__ ph_pp,
                              const real* __restrict__ c1f,
                              const real* __restrict__ c2f,
                              real dtau, int spec_zone, int base3d,
+#if GPUWM_WRF_EXACT
+                             int nz, int ny, int nx,
+                             const real* __restrict__ muts_wrf)
+#else
                              int nz, int ny, int nx)
+#endif
 {
     size_t c = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     size_t st = (size_t)ny * nx;
@@ -1882,8 +2014,12 @@ void advance_specified_phi_w(real* __restrict__ ph_pp,
     if (i >= spec_zone && i < nx - spec_zone
         && j >= spec_zone && j < ny - spec_zone) return;
 
+#if GPUWM_WRF_EXACT
+    real muts = muts_wrf[c];
+#else
     real mut = arn_add(mub2d[c], mup[c]);
     real muts = arn_add(mut, mu_pp[c]);
+#endif
     real dt_rmu = arn_mul(dtau, rmu_t[c]);
     real mu_old = arn_sub(muts, dt_rmu);
     int source_j = min(max(j, spec_zone), ny - 1 - spec_zone);
@@ -1894,7 +2030,14 @@ void advance_specified_phi_w(real* __restrict__ ph_pp,
         real numerator = arn_add(arn_mul(c1f[k], mu_old), c2f[k]);
         real denominator = arn_add(arn_mul(c1f[k], muts), c2f[k]);
         real ratio = arn_div(numerator, denominator);
+#if GPUWM_WRF_EXACT
+        // spec_bdyupdate_ph: field*(c1*mu_old+c2)/(c1*muts+c2), i.e.
+        // (field*num)/den.  field*(num/den) agrees while phi'' is zero on
+        // the ring (RK stage 1) and rounds apart from stage 2 on.
+        real value0 = arn_div(arn_mul(ph_pp[tid], numerator), denominator);
+#else
         real value0 = arn_mul(ph_pp[tid], ratio);
+#endif
         real value1 = arn_mul(dtau, rph_t[tid]);
         real denominator2 = arn_add(arn_mul(c1f[k], muts), c2f[k]);
         real value2 = arn_div(value1, denominator2);
@@ -1904,9 +2047,14 @@ void advance_specified_phi_w(real* __restrict__ ph_pp,
         ph_pp[tid] = arn_add(value3, value5);
         w_pp[tid] = w_pp[(size_t)k * st + source_c];
     }
+#if GPUWM_WRF_EXACT
+    diagnose_p_column_muts(p_pp, al_pp, th_pp, ph_pp, mu_pp, thp, alt, c2a,
+                           rdnw, c1h, c2h, c, st, nz, muts);
+#else
     diagnose_p_column(p_pp, al_pp, th_pp, ph_pp, mu_pp, thp, thb, alt,
                       c2a, mup, rdnw, c1h, c2h, mub2d,
                       c, st, base3d, nz);
+#endif
 }
 
 // Nested counterpart of advance_specified_phi_w.  solve_em.F:1602-1611
@@ -1937,7 +2085,12 @@ void advance_nested_phi_w(real* __restrict__ ph_pp,
                           const real* __restrict__ c1f,
                           const real* __restrict__ c2f,
                           real dtau, int spec_zone, int base3d,
+#if GPUWM_WRF_EXACT
+                          int nz, int ny, int nx,
+                          const real* __restrict__ muts_wrf)
+#else
                           int nz, int ny, int nx)
+#endif
 {
     size_t c = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     size_t st = (size_t)ny * nx;
@@ -1946,8 +2099,12 @@ void advance_nested_phi_w(real* __restrict__ ph_pp,
     if (i >= spec_zone && i < nx - spec_zone
         && j >= spec_zone && j < ny - spec_zone) return;
 
+#if GPUWM_WRF_EXACT
+    real muts = muts_wrf[c];
+#else
     real mut = arn_add(mub2d[c], mup[c]);
     real muts = arn_add(mut, mu_pp[c]);
+#endif
     real dt_rmu = arn_mul(dtau, rmu_t[c]);
     real mu_old = arn_sub(muts, dt_rmu);
     for (int k = 0; k <= nz; ++k) {
@@ -1955,7 +2112,14 @@ void advance_nested_phi_w(real* __restrict__ ph_pp,
         real numerator = arn_add(arn_mul(c1f[k], mu_old), c2f[k]);
         real denominator = arn_add(arn_mul(c1f[k], muts), c2f[k]);
         real ratio = arn_div(numerator, denominator);
+#if GPUWM_WRF_EXACT
+        // spec_bdyupdate_ph: field*(c1*mu_old+c2)/(c1*muts+c2), i.e.
+        // (field*num)/den.  field*(num/den) agrees while phi'' is zero on
+        // the ring (RK stage 1) and rounds apart from stage 2 on.
+        real value0 = arn_div(arn_mul(ph_pp[tid], numerator), denominator);
+#else
         real value0 = arn_mul(ph_pp[tid], ratio);
+#endif
         real value1 = arn_mul(dtau, rph_t[tid]);
         real denominator2 = arn_add(arn_mul(c1f[k], muts), c2f[k]);
         real value2 = arn_div(value1, denominator2);
@@ -1965,9 +2129,14 @@ void advance_nested_phi_w(real* __restrict__ ph_pp,
         ph_pp[tid] = arn_add(value3, value5);
         w_pp[tid] = arn_add(w_pp[tid], arn_mul(dtau, rw_t[tid]));
     }
+#if GPUWM_WRF_EXACT
+    diagnose_p_column_muts(p_pp, al_pp, th_pp, ph_pp, mu_pp, thp, alt, c2a,
+                           rdnw, c1h, c2h, c, st, nz, muts);
+#else
     diagnose_p_column(p_pp, al_pp, th_pp, ph_pp, mu_pp, thp, thb, alt,
                       c2a, mup, rdnw, c1h, c2h, mub2d,
                       c, st, base3d, nz);
+#endif
 }
 
 // WRF external-mode filter.  gx/gy were formerly full-domain CuPy

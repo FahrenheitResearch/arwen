@@ -701,6 +701,13 @@ def test_g4_persistent_scratch_is_not_carried_between_forecast_steps():
         "mp_thompson_aero_qcten", "mp_thompson_aero_qrten",
         "mp_thompson_aero_nrten", "mp_thompson_aero_qiten",
         "mp_thompson_aero_niten",
+        # WRF's REAL vapour and temperature tendencies
+        # (lane/mp28fix-warm-network).
+        "mp_thompson_aero_qvten", "mp_thompson_aero_tten",
+        # The frozen carriers' snow, graupel and graupel-number accumulators
+        # (a860663b5, the delivered frozen-carrier launch).
+        "mp_thompson_aero_qsten", "mp_thompson_aero_qgten",
+        "mp_thompson_aero_ngten",
         "mp_thompson_aero_condensation_rate",
     )
     assert AEROSOL_SCRATCH_SLOTS == expected_slots

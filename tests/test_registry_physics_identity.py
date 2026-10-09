@@ -84,6 +84,13 @@ DOCUMENTS_CITATION_ONLY_SINCE_280 = (
 _URBAN = (
     "the urban canopy models (sf_urban_physics), a component 2.8.0 did not "
     "have, off at its none option in every template (f21eedce3)")
+#: Every scheme that finishes through gpuwm.core.microphysics.
+#: moist_physics_finish moved its restart_algorithm_identity consumer row
+#: in 2.8.8 for the same cause.
+_REAL_CLAMP = (
+    "Its restart_algorithm_identity consumer row also advanced (2.8.8, "
+    "gfix/288-mp-clamp): the shared microphysics finish clamps the heating "
+    "at WRF's REAL product mp_tend_lim*dt, as classic Thompson already did")
 PHYSICS_CHANGES_SINCE_280 = {
     "templates.thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1": (
         "a new named configuration selects the prescribed monthly surface "
@@ -101,15 +108,23 @@ PHYSICS_CHANGES_SINCE_280 = {
         "off by default"),
     **{f"components.microphysics.options.{option}": (
         "new analyzed-aerosol controls are forbidden under this package; "
-        "exact prior option declarations remain compatible at admitted old settings")
-       for option in ("thompson-mp8", "milbrandt2mom-mp9", "morrison-mp10",
-                      "nssl2-mp18")},
+        "exact prior option declarations remain compatible at admitted old "
+        "settings. " + _REAL_CLAMP)
+       for option in ("milbrandt2mom-mp9", "morrison-mp10", "nssl2-mp18")},
+    "components.microphysics.options.thompson-mp8": (
+        "new analyzed-aerosol controls are forbidden under this package; "
+        "exact prior option declarations remain compatible at admitted old "
+        "settings. Its restart_algorithm_identity consumer row also changed: "
+        "classic Thompson reads rain collecting graupel from the one slab WRF "
+        "builds and clamps its heating at the REAL product (v5, "
+        "gfix/288-thompson-classic), so a 2.8.0 mp=8 receipt is refused for it"),
     "components.microphysics.options.p3-mp50": (
         "new analyzed-aerosol controls are forbidden under this package; "
         "exact prior option declarations remain compatible at admitted old "
         "settings. Its radar_da consumer row also changed: P3 gained a "
         "scheme-diagnostic reflectivity operator and one clear-air value "
-        "(acb8faf25, audit S14), so a 2.8.0 P3 receipt is refused for it"),
+        "(acb8faf25, audit S14), so a 2.8.0 P3 receipt is refused for it. "
+        + _REAL_CLAMP),
     "parameters.aer_init_opt": (
         "first-guess aerosol source value 2 is admitted with explicit analyzed "
         "selection; prior values retain their parameter-declaration identity"),
@@ -127,10 +142,10 @@ PHYSICS_CHANGES_SINCE_280 = {
         "states bypass the enabled policy"),
     "components.microphysics.options.kessler-mp1": (
         "Kessler profiles apply WRF's moisture pressure correction "
-        "instead of the retired launch guard"),
+        "instead of the retired launch guard. " + _REAL_CLAMP),
     "components.microphysics.options.wsm6-mp6": (
         "WSM6 profiles apply WRF's moisture pressure correction "
-        "instead of the retired launch guard"),
+        "instead of the retired launch guard. " + _REAL_CLAMP),
     "templates.p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1": (
         "its explicit CQ-on setting now equals the enabled default, "
         "so template identity normalization removes that redundant pin"),
@@ -151,7 +166,7 @@ PHYSICS_CHANGES_SINCE_280 = {
     "components.microphysics.options.wdm6-mp16": (
         "WDM6's restart algorithm identity v4: rain with no rain number no "
         "longer evaporates through the condensation cap, which changes "
-        "WDM6 forecasts (A144, b814c65a0)"),
+        "WDM6 forecasts (A144, b814c65a0). " + _REAL_CLAMP),
     "components.urban": _URBAN,
     "components.urban.options.none": _URBAN + "; none runs nothing",
     "components.urban.options.slucm": _URBAN + "; the single-layer UCM",
@@ -207,7 +222,27 @@ PHYSICS_CHANGES_SINCE_280 = {
         "snow default (ruc_snow), whose admitted names are wrf_45 and "
         "wrf_461; v6 binds the restored generic irrigation and snow "
         "defaults, wrf_461, so a v5 header which omitted wrf_45 cannot "
-        "silently resume as wrf_461"),
+        "silently resume as wrf_461; v7 (2.8.8) binds WOOF's libm words in "
+        "the column and the fractional_seaice gate on the ice blend"),
+    "components.pbl.options.ysu": (
+        "YSU's restart algorithm identity v2 (2.8.8): no FMA contraction, "
+        "WOOF's float32 pow/exp, the driver's theta, the double Richardson "
+        "sign test and WRF's surface-drag form change YSU forecasts, so a "
+        "checkpoint of the earlier code may not resume onto it"),
+    "components.pbl.options.shinhong": (
+        "Shin-Hong's restart algorithm identity v2 (2.8.8): no FMA "
+        "contraction and WOOF's float32 pow/exp change its forecasts"),
+    **{f"components.surface_layer.options.{option}": (
+        "the surface layer's restart algorithm identity v2 (2.8.8): the "
+        "sfclay, Eta and MYNN surface units compile without FMA contraction "
+        "and keep denormals on WOOF's libm words, which changes their "
+        "forecasts")
+       for option in ("revised-mm5", "eta-similarity", "mynn", "classic-mm5")},
+    "components.microphysics.options.thompson-aerosol-mp28": (
+        "aerosol-aware Thompson's restart algorithm identity v2 (2.8.8): "
+        "WRF's arithmetic on WOOF's libm words, the 273.15 K melting fix "
+        "and the rain-graupel table slab change its forecasts. "
+        + _REAL_CLAMP),
     "parameters.mynn_sfclay_variant": (
         "the MYNN surface layer's generation, a knob 2.8.0 did not have: "
         "the default wrf_461 is the WRF v4.6.1 form every earlier build "
@@ -226,6 +261,10 @@ PHYSICS_CHANGES_SINCE_280 = {
         "keeps the later rain-share form and the fork defect is explicit"),
     "parameters.bl_mynn_cloud_tendency_form": (
         "paired source cloud conservation defects, explicitly selected and off at wrf_461"),
+    "parameters.cycling": (
+        "WRF's cycled start, a knob 2.8.0 did not have: false (default) "
+        "cold-starts the MYNN; true keeps the start's QKE, QC_BL and "
+        "CLDFRA_BL in the gsd_41 MYNN, as the operational fork does"),
     "parameters.bl_mynn_version": (
         "the MYNN generation, a knob 2.8.0 did not have: wrf_461 (default) "
         "is WRF v4.6.1, gsd_41 the GSD MYNN v4.1 of the NOAA-EMC WRF 3.9 "
@@ -334,8 +373,9 @@ EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
         "registry physics of parameters.moist_cq (changed)",
         *([f"registry physics of components.microphysics.options.{option} "
            "(changed)"] if (option := {
-               1: "kessler-mp1", 6: "wsm6-mp6", 16: "wdm6-mp16",
-               50: "p3-mp50",
+               1: "kessler-mp1", 6: "wsm6-mp6", 8: "thompson-mp8",
+               9: "milbrandt2mom-mp9", 10: "morrison-mp10",
+               16: "wdm6-mp16", 18: "nssl2-mp18", 50: "p3-mp50",
            }.get(row["switches"]["mp_physics"])) else []),
         *(["registry physics of templates.p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1 "
            "(changed)"] if spelling == "named" and
@@ -343,6 +383,18 @@ EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
         *(["registry physics of components.pbl.options.mynn (changed)",
            "registry physics of parameters.bl_mynn_mixlength (changed)"]
           if row["switches"].get("bl_pbl_physics") == 5 else []),
+        *(["registry physics of components.pbl.options.ysu (changed)"]
+          if row["switches"].get("bl_pbl_physics") == 1 else []),
+        *(["registry physics of components.pbl.options.shinhong (changed)"]
+          if row["switches"].get("bl_pbl_physics") == 11 else []),
+        *([f"registry physics of components.surface_layer.options.{layer} "
+           "(changed)"] if (layer := {
+               1: "revised-mm5", 2: "eta-similarity", 5: "mynn",
+               91: "classic-mm5",
+           }.get(row["switches"].get("sf_sfclay_physics"))) else []),
+        *(["registry physics of components.microphysics.options."
+           "thompson-aerosol-mp28 (changed)"]
+          if row["switches"]["mp_physics"] == 28 else []),
         *(["registry physics of components.land_surface.options.ruc-lsm "
            "(changed)",
            "registry physics of parameters.mosaic_lu (changed)",
@@ -454,16 +506,22 @@ def _move_citation(text: str, old: str, new: str) -> str:
     (("components", "pbl", "options", "shinhong", "warnings", 1),
      "kernels/shinhong.cu:1429", "kernels/shinhong.cu:1371"),
     (("components", "turbulence", "options", "tke-1.5-order", "warnings", 0),
-     "gpuwm/core/dycore.py:1284", "gpuwm/core/dycore.py:1041"),
+     "gpuwm/core/dycore.py:1294", "gpuwm/core/dycore.py:1041"),
     (("components", "turbulence", "options", "smagorinsky-3d", "warnings",
       0),
-     "gpuwm/core/dycore.py:1378", "gpuwm/core/dycore.py:1131"),
+     "gpuwm/core/dycore.py:1388", "gpuwm/core/dycore.py:1131"),
 ])
 def test_a_citation_edit_keeps_the_physics_identity(path, old, new):
     registry = physics_registry()
     node = registry
     for key in path[:-1]:
         node = node[key]
+    # Source integration moves citation lines without changing the contract.
+    citation_path = old.rsplit(":", 1)[0]
+    match = re.search(re.escape(citation_path) + r":\d+", node[path[-1]])
+    assert match is not None, (citation_path, node[path[-1]])
+    old = match.group(0)
+    assert old != new
     node[path[-1]] = _move_citation(node[path[-1]], old, new)
 
     assert registry_sha256(registry) != registry_sha256()
@@ -1196,7 +1254,8 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
     implemented since 2.8.0, including A179's registered IEVA knob,
     lane/282-namelist-tolerance's diff_opt and mix_full_fields, terrain
     drag, WRF's three advection orders, and the radiation-driver options
-    swint_opt, aer_opt, alb_sol and source cloud/smoke controls."""
+    swint_opt, aer_opt, alb_sol and source cloud/smoke controls, and
+    WRF's cycling (the gsd_41 MYNN cycled start)."""
     row = next(row for row in _receipts_2492999cd()
                if row["profile"] == PROFILE)
     _added_knobs(monkeypatch)
@@ -1208,7 +1267,7 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
         "registry physics of parameters.use_rap_aero_icbc (absent from the prepared registry)", *[
         f"registry physics of parameters.{knob} (absent from the prepared "
         "registry)"
-        for knob in ('aer_opt', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'lake_min_elev', 'lakedepth_default', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'sf_lake_physics', 'sf_surface_mosaic', 'slope_rad', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'zadvect_implicit', 'zadvect_implicit_variant')])
+        for knob in ('aer_opt', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'cycling', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'lake_min_elev', 'lakedepth_default', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'sf_lake_physics', 'sf_surface_mosaic', 'slope_rad', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'zadvect_implicit', 'zadvect_implicit_variant')])
 
 
 def test_a_new_receipt_resolves_to_its_own_parts():

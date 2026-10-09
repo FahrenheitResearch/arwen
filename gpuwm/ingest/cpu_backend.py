@@ -1055,6 +1055,29 @@ class CpuPreprocessBackend:
             "prepared with it; rebuild or re-fetch it\n"
             + cpu_bridge_remedy(self.path.name))
 
+    def missing_value_chain(self, layers, valid, target_y, target_x, *, workers=None):
+        """Rust METGRID donor chain using each layer's original source bitmap."""
+        try:
+            entry = self._library.gpuwm_missing_value_chain_f32
+        except AttributeError as error:
+            raise RuntimeError("the CPU bridge lacks gpuwm_missing_value_chain_f32; using repaired zeros as source donors would bypass the requested METGRID aerosol donor chain; rebuild tools/grib1_bridge") from error
+        layers = np.ascontiguousarray(layers, dtype=np.float32)
+        valid = np.ascontiguousarray(valid, dtype=np.uint8)
+        yy = np.ascontiguousarray(target_y, dtype=np.float64)
+        xx = np.ascontiguousarray(target_x, dtype=np.float64)
+        if layers.ndim != 3 or valid.shape != layers.shape or yy.shape != xx.shape:
+            raise ValueError("missing-value chain dimensions disagree")
+        nlayer, ny, nx = layers.shape
+        output = np.empty((nlayer, yy.size), dtype=np.float32)
+        counts = np.empty((nlayer, 4), dtype=np.uint64)
+        entry.argtypes = [ctypes.c_void_p] * 6 + [ctypes.c_size_t] * 5
+        entry.restype = ctypes.c_int
+        code = entry(layers.ctypes.data, valid.ctypes.data, yy.ctypes.data, xx.ctypes.data,
+                     output.ctypes.data, counts.ctypes.data, nlayer, ny, nx, yy.size,
+                     int(available_cpu_count() if workers is None else workers))
+        self._raise_native(int(code), "masked nearest/four-point/average interpolation")
+        return output.reshape((nlayer,) + yy.shape), counts
+
     def wps_masked_chain(self, layers, donors, partial, target_y, target_x,
                          target_mask, chain, *, mode: str, fill_value,
                          physical_range=None, workers: int | None = None,

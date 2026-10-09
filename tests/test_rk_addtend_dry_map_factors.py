@@ -58,6 +58,21 @@ from conftest import requires_gpu
 
 pytestmark = pytest.mark.gpu
 
+
+def _periodic_authority_applies():
+    """The float64 mixing authority models the default stress boundary.
+
+    Under ``GPUWM_WRF_EXACT=1`` the diffusion control is on by default and
+    selects WRF's own tensor donor coordinates and stability boundary mask,
+    which this host authority does not reproduce (rows j = 0..1 differ by up
+    to 12 %).  That arm is graded word for word against compiled WRF in
+    tests/test_wrf_exact_diffusion.py, so these three gates stand down there
+    rather than grade it against the wrong reference.
+    """
+    from gpuwm.wrf_exact import DIFFUSION_ENABLED
+    if DIFFUSION_ENABLED:
+        pytest.skip("strict diffusion control: graded by tests/test_wrf_exact_diffusion.py")
+
 # (carrying slot, coupled tendency attribute, rk_addtend_dry's map factor)
 _ROWS = (("smag_ru", "ru_t", "msfu"),
          ("smag_rv", "rv_t", "msfv"),
@@ -220,6 +235,7 @@ def test_the_mixing_rows_take_rk_addtend_drys_map_factor():
     ``bl_pbl_physics=1`` keeps ``vertical_diffusion_2`` out, so the held
     buffer is exactly the authority's horizontal rows.
     """
+    _periodic_authority_applies()
     from gpuwm.config import RunConfig
 
     cfg = RunConfig(**_BASE, km_opt=4, bl_pbl_physics=1, diff_6th_opt=0)
@@ -292,6 +308,7 @@ def test_both_packages_at_once_deliver_coupled_mixing_plus_raw_diff6():
     both ways -- as ``(S+D)/msf`` when the division is applied to the sum,
     and as ``S+D`` when it is applied to neither.
     """
+    _periodic_authority_applies()
     import cupy as cp
 
     from gpuwm.config import RunConfig
@@ -340,6 +357,7 @@ def test_the_moist_rows_are_not_coupled_but_theta_is():
     against the same float64 authority in one test is what stops a
     division from being sprayed over every scalar -- or lifted off theta.
     """
+    _periodic_authority_applies()
     import cupy as cp
 
     from gpuwm.config import RunConfig

@@ -117,22 +117,54 @@ __constant__ real ruc_soil_layer_depth[RUC_NZS] = {
 // them, and a local literal pair would hand that arithmetic to the folder.
 __constant__ real ruc_snow_layer_threshold_depth[2] = { 0.05f, 0.01f };
 
+// WOOF's float32 libm words for RUC (lane/verify-ruc-lsm).  gfortran lowers
+// `**`, EXP, LOG and LOG10 on a default REAL to the C library's float32
+// powf/expf/logf/log10f, and the RUC column oracle against WRF v4.6.1
+// (tools/ruc_lsm_gpu_oracle) measured the earlier float64-rounded-once
+// stand-ins missing the reference words by 1 ULP on scattered columns every
+// step (grdflx, hfx, qfx, the saturation humidities).  These are WOOF's own
+// float32 routines -- gfk_pow / gfk_exp / gfk_log from glibc_flt32.cuh, and
+// the log10f, expm1f and tanhf reductions the MYNN unit already grades
+// bitwise against its gfortran oracle -- so RUC calls the same functions
+// every other bitwise-graded unit calls.  The names are kept so the host
+// mirror in gpuwm/core/ruc.py and the generated fused sources still bind.
 __device__ __forceinline__
 real ruc_powf_rn(real base, real exponent)
 {
-    return __double2float_rn(pow((double)base, (double)exponent));
+    return gfk_pow(base, exponent);
 }
 
-__device__ __forceinline__
-real ruc_log10f_rn(real value)
+// log10f on WOOF's float32 logf: the exponent split, then
+// y*log10_2lo + ivln10*log(m) + y*log10_2hi, each step rounded.
+__device__ real ruc_log10f_rn(real x)
 {
-    return __double2float_rn(log10((double)value));
+    const real ivln10 = __int_as_float(0x3ede5bd9);
+    const real log10_2hi = __int_as_float(0x3e9a2080);
+    const real log10_2lo = __int_as_float(0x355427db);
+    const real two25 = __int_as_float(0x4c000000);
+    unsigned int hx = __float_as_uint(x);
+    int k = 0;
+    if ((int)hx < 0x00800000) {
+        if ((hx & 0x7fffffffu) == 0u) return __int_as_float(0xff800000);
+        if ((int)hx < 0) return __int_as_float(0x7fc00000);
+        k -= 25;
+        x = FMUL(x, two25);
+        hx = __float_as_uint(x);
+    }
+    if (hx >= 0x7f800000u) return FADD(x, x);
+    k += (int)(hx >> 23) - 127;
+    int i = (k < 0) ? 1 : 0;
+    hx = (hx & 0x007fffffu) | ((unsigned int)(0x7f - i) << 23);
+    real y = (real)(k + i);
+    x = __uint_as_float(hx);
+    real z = FADD(FMUL(y, log10_2lo), FMUL(ivln10, gfk_log(x)));
+    return FADD(z, FMUL(y, log10_2hi));
 }
 
 __device__ __forceinline__
 real ruc_expf_rn(real value)
 {
-    return __double2float_rn(exp((double)value));
+    return gfk_exp(value);
 }
 
 // >>> RUC MOSAIC SURFACE >>>
@@ -393,20 +425,19 @@ void ruc_soil_phase_partition(
         fwsat[index] = zero;
 
         real temperature = tso[index];
-        real tln = logf(__fdiv_rn(temperature, freeze));
+        real tln = gfk_log(__fdiv_rn(temperature, freeze));
         if (tln < zero) {
             real base = __fmul_rn(
                 xlmelt, __fsub_rn(temperature, freeze));
             base = __fdiv_rn(base, temperature);
             base = __fdiv_rn(base, gravity);
             base = __fdiv_rn(base, psis);
-            // ruc_powf_rn, not powf: plain CUDA powf drifts ~4 ULP into
-            // soilice on cold deep layers relative to gfortran.  See the
-            // provisional-transcendental note at the top of this file.
+            // WOOF's float32 powf (gfk_pow), not CUDA powf: CUDA's drifts
+            // ~4 ULP into soilice on cold deep layers relative to gfortran.
             real liquid = __fsub_rn(
                 __fmul_rn(
                     maximum,
-                    __double2float_rn(pow((double)base, (double)exponent))),
+                    gfk_pow(base, exponent)),
                 qmin);
             liquid = fmaxf(zero, liquid);
             liquid = fminf(liquid, soilmois[index]);
@@ -434,18 +465,18 @@ void ruc_soil_phase_partition(
             half, __fadd_rn(soilmois[index], soilmois[below]));
         tav[index] = middle_temperature;
         soilmoism[index] = middle_moisture;
-        real tln = logf(__fdiv_rn(middle_temperature, freeze));
+        real tln = gfk_log(__fdiv_rn(middle_temperature, freeze));
         if (tln < zero) {
             real base = __fmul_rn(
                 xlmelt, __fsub_rn(middle_temperature, freeze));
             base = __fdiv_rn(base, middle_temperature);
             base = __fdiv_rn(base, gravity);
             base = __fdiv_rn(base, psis);
-            // Same ruc_powf_rn substitution as the full-level loop above.
+            // The same float32 powf as the full-level loop above.
             real liquid = __fsub_rn(
                 __fmul_rn(
                     maximum,
-                    __double2float_rn(pow((double)base, (double)exponent))),
+                    gfk_pow(base, exponent)),
                 qmin);
             fwsat[index] = __fsub_rn(dqm, liquid);
             lwsat[index] = __fadd_rn(liquid, qmin);
@@ -535,8 +566,12 @@ void ruc_soil_canopy_setup(
     } else {
         real fex = __fdiv_rn(total_top, fc);
         fex = fmaxf(0.01f, fminf(one, fex));
+        // COS on a default REAL is the C library's float32 cosf; CUDA's
+        // cosf is a different function (the RUC oracle's dry desert column
+        // took a 1 ULP soilres miss into mavail, qfx and the top soil water).
+        // glibc_cosf is WOOF's float32 cosf (glibc_trig_flt32.cuh).
         real resistance = __fsub_rn(
-            one, cosf(__fmul_rn(3.141592653589793f, fex)));
+            one, glibc_cosf(__fmul_rn(3.141592653589793f, fex)));
         resistance = __fmul_rn(resistance, resistance);
         soilres = __fmul_rn(quarter, resistance);
     }
@@ -2069,47 +2104,130 @@ __device__ static const real ruc_sncovfac[30] = {
 __device__ __forceinline__
 real ruc_expf_glibc(real x)
 {
-    return (real)exp((double)x);
+    return gfk_exp(x);
 }
 
-__device__ __forceinline__
-real ruc_expm1f_glibc(real x)
+// expm1f in float32: the k*ln2 split, the five-term rational in hxs and the
+// exponent rebuild, every operation rounded.  The same routine as MYNN's
+// mynn_expm1f.
+__device__ __forceinline__ real ruc_scale_exponent(real y, int k)
 {
-    return (real)expm1((double)x);
+    return __uint_as_float(__float_as_uint(y) + ((unsigned)k << 23));
 }
 
-// glibc's tanhf, unlike its expf, is still fdlibm's expm1-based reduction
-// evaluated in float32 and is NOT correctly rounded - on this lane's fixture
-// it lands 2 ULP above the correctly rounded value for one snow-fraction
-// argument.  The reduction is therefore spelled out here exactly as in
-// gpuwm.core.ruc._f32_tanh, so host and device share one definition instead of
-// inheriting two different libm implementations.
+__device__ real ruc_expm1f_glibc(real x)
+{
+    const real ln2_hi = __uint_as_float(0x3F317180u);
+    const real ln2_lo = __uint_as_float(0x3717F7D1u);
+    const real invln2 = __uint_as_float(0x3FB8AA3Bu);
+    const real q1 = __uint_as_float(0xBD088889u);
+    const real q2 = __uint_as_float(0x3AD00D01u);
+    const real q3 = __uint_as_float(0xB8A670CDu);
+    const real q4 = __uint_as_float(0x36867E54u);
+    const real q5 = __uint_as_float(0xB457EDBBu);
+    const real tiny = 1.0e-30f;
+
+    unsigned word = __float_as_uint(x);
+    unsigned sign = word & 0x80000000u;
+    unsigned magnitude = word & 0x7FFFFFFFu;
+    if (magnitude >= 0x4195B844u) {              // |x| >= 27*ln2
+        if (magnitude >= 0x42B17218u) {          // |x| >= 88.72
+            if (magnitude > 0x7F800000u) return FADD(x, x);
+            if (magnitude == 0x7F800000u) return sign == 0u ? x : -1.0f;
+            if (x > 8.8721679688e01f) return __int_as_float(0x7F800000);
+        }
+        if (sign != 0u) return FSUB(tiny, 1.0f);
+    }
+    int k;
+    real correction;
+    if (magnitude > 0x3EB17218u) {               // |x| > 0.5*ln2
+        real hi, lo;
+        if (magnitude < 0x3F851592u) {           // |x| < 1.5*ln2
+            if (sign == 0u) {
+                hi = FSUB(x, ln2_hi); lo = ln2_lo; k = 1;
+            } else {
+                hi = FADD(x, ln2_hi); lo = -ln2_lo; k = -1;
+            }
+        } else {
+            k = (int)FADD(FMUL(invln2, x), sign == 0u ? 0.5f : -0.5f);
+            real scale = (real)k;
+            hi = FSUB(x, FMUL(scale, ln2_hi));
+            lo = FMUL(scale, ln2_lo);
+        }
+        x = FSUB(hi, lo);
+        correction = FSUB(FSUB(hi, x), lo);
+    } else if (magnitude < 0x33000000u) {        // |x| < 2**-25
+        return x;
+    } else {
+        k = 0;
+        correction = 0.0f;
+    }
+
+    real hfx = FMUL(0.5f, x);
+    real hxs = FMUL(x, hfx);
+    real r1 = FADD(1.0f, FMUL(hxs, FADD(q1, FMUL(hxs,
+        FADD(q2, FMUL(hxs, FADD(q3, FMUL(hxs,
+            FADD(q4, FMUL(hxs, q5))))))))));
+    real t = FSUB(3.0f, FMUL(r1, hfx));
+    real e = FMUL(hxs, FDIV(FSUB(r1, t), FSUB(6.0f, FMUL(x, t))));
+    if (k == 0) return FSUB(x, FSUB(FMUL(x, e), hxs));
+    e = FSUB(FMUL(x, FSUB(e, correction)), correction);
+    e = FSUB(e, hxs);
+    if (k == -1) return FSUB(FMUL(0.5f, FSUB(x, e)), 0.5f);
+    if (k == 1) {
+        if (x < -0.25f)
+            return FMUL(-2.0f, FSUB(e, FADD(x, 0.5f)));
+        return FADD(1.0f, FMUL(2.0f, FSUB(x, e)));
+    }
+    real y;
+    if (k <= -2 || k > 56) {
+        y = FSUB(1.0f, FSUB(e, x));
+        y = ruc_scale_exponent(y, k);
+        return FSUB(y, 1.0f);
+    }
+    if (k < 23) {
+        t = __uint_as_float(0x3F800000u - (0x1000000u >> k));
+        y = FSUB(t, FSUB(e, x));
+    } else {
+        t = __uint_as_float((unsigned)(0x7F - k) << 23);
+        y = FSUB(x, FADD(e, t));
+        y = FADD(y, 1.0f);
+    }
+    return ruc_scale_exponent(y, k);
+}
+
+// tanhf in float32 on ruc_expm1f_glibc: 1 - 2/(expm1(2|x|)+2) at |x| >= 1,
+// -t/(t+2) with t = expm1(-2|x|) below, x*(1+x) under 2**-55 and 1 beyond
+// 22.  The same routine as MYNN's mynn_tanhf.  The earlier body ran this
+// reduction on a float64 expm1 rounded once, which is a different expm1f:
+// the RUC oracle measured it 1-2 ULP off the reference TANH in the new-snow
+// density (module_sf_ruclsm.F:1520-1521) and so in rhosnf and snowfallac.
+// gpuwm.core.ruc._f32_tanh is the host mirror.
 __device__ __forceinline__
 real ruc_tanhf_glibc(real x)
 {
-    const real one = 1.0f;
-    const real two = 2.0f;
-    real magnitude = fabsf(x);
+    const real tiny = 1.0e-30f;
+    unsigned word = __float_as_uint(x);
+    unsigned magnitude = word & 0x7FFFFFFFu;
     real z;
-    if (magnitude < 22.0f) {
-        if (magnitude < 3.7252902984619141e-09f) {
-            // tanh(tiny) == tiny, in fdlibm's inexact-flag form.
-            return __fmul_rn(x, __fadd_rn(one, x));
-        }
-        real doubled = __fmul_rn(two, magnitude);
-        real t;
-        if (magnitude >= one) {
-            t = ruc_expm1f_glibc(doubled);
-            z = __fsub_rn(one, __fdiv_rn(two, __fadd_rn(t, two)));
+    if (magnitude >= 0x7F800000u)                // inf or NaN: one/x +- one
+        return (word & 0x80000000u) == 0u ? FADD(FDIV(1.0f, x), 1.0f)
+                                          : FSUB(FDIV(1.0f, x), 1.0f);
+    if (magnitude < 0x41B00000u) {               // |x| < 22
+        if (magnitude < 0x24000000u)             // |x| < 2**-55
+            return FMUL(x, FADD(1.0f, x));
+        real ax = __uint_as_float(magnitude);
+        if (magnitude >= 0x3F800000u) {          // |x| >= 1
+            real t = ruc_expm1f_glibc(FMUL(2.0f, ax));
+            z = FSUB(1.0f, FDIV(2.0f, FADD(t, 2.0f)));
         } else {
-            t = ruc_expm1f_glibc(-doubled);
-            z = __fdiv_rn(-t, __fadd_rn(t, two));
+            real t = ruc_expm1f_glibc(FMUL(-2.0f, ax));
+            z = FDIV(-t, FADD(t, 2.0f));
         }
     } else {
-        // fdlibm returns one-tiny here, which rounds to exactly one.
-        z = one;
+        z = FSUB(1.0f, tiny);
     }
-    return (x >= 0.0f) ? z : -z;
+    return (word & 0x80000000u) == 0u ? z : -z;
 }
 
 // ruc_tanhf_glibc over a column field.

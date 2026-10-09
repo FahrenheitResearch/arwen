@@ -1275,8 +1275,16 @@ def _consume_unrun_dynamics_controls(dyn, inp: dict, max_dom: int,
 
 def _translate_operational_fork_time_controls(tc, run_seconds: float, drop,
                                               substitutions) -> None:
-    """&time_control keys of the operational WRF 3.9 fork and WRF's
-    ``cycling``: output-cadence and cycle-state controls, never refused.
+    """&time_control output-cadence keys of the operational WRF 3.9 fork,
+    never refused.
+
+    WRF's ``cycling`` is NOT handled here.  :func:`_translate_namelists`
+    maps it onto ``[shared] cycling`` on every route (the fork namelist's
+    included), before this function runs.  This function used to declare
+    ``cycling = .true.`` a fresh start; had it ever run first it would have
+    eaten the key and the report would have said the run did not cycle
+    while both MYNN generations carry the input QKE, QC_BL and CLDFRA_BL
+    on a cycled start.
     """
     for key in ("diag_int", "wind_int"):
         drop("time_control", key, tc.take(key),
@@ -1312,23 +1320,6 @@ def _translate_operational_fork_time_controls(tc, run_seconds: float, drop,
                  "declared output difference above")
             drop("time_control", "history_interval_change", change,
                  "declared output difference above")
-    cycling = tc.take("cycling")
-    if cycling is not None:
-        if cycling[0] is True:
-            substitutions.append(Substitution(
-                key="cycling", wrf_value=True,
-                wrf_name="cycled start (carried MYNN TKE and lake state "
-                         "from the input file)",
-                gpuwm_key="cycling", gpuwm_value=False,
-                gpuwm_name="fresh start",
-                reason="WOOF starts every forecast fresh from its prepared "
-                       "analysis: boundary-layer TKE and lake state are "
-                       "initialized by the schemes, not carried from a "
-                       "previous cycle's file, so the first hours of "
-                       "boundary-layer mixing spin up as in a cold start"))
-        drop("time_control", "cycling", cycling,
-             "fresh start" if cycling[0] is not True else
-             "declared divergence above")
 
 
 def ignored_time_control_reason(key: str) -> str | None:
@@ -3159,6 +3150,24 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                 "UP_HELI_MAX running-max diagnostic).")
         nwp_diagnostics = value
 
+    # cycling (Registry.EM_COMMON, &time_control, default .false.): the start
+    # carries a previous forecast's scheme state.  Mapped onto RunConfig
+    # .cycling and emitted only when .true., so every namelist that omits
+    # it or spells the default imports to the same bytes as before.  Its
+    # consumers are the first MYNN call of EITHER generation (keep the input
+    # QKE unless its lowest-level maximum is below 0.0002, and QC_BL and
+    # CLDFRA_BL; gpuwm/core/mynn_pbl_runtime.py) and the wrfinput carry of
+    # that subgrid cloud (gpuwm/ingest/wrfinput.py).  validate_run_config
+    # admits it under both: WOOF's v4.6.1 generation carries the three
+    # fields its WRF original zeroes, a declared fix.  This is the ONE place
+    # the key is read, on every import route including the operational
+    # fork's (_translate_operational_fork_time_controls leaves it alone).
+    cycling_values = tc.take("cycling")
+    cycling = None
+    if cycling_values is not None:
+        if _require_bools("time_control", "cycling", cycling_values[:1])[0]:
+            cycling = True
+
     # WRF's Registry default is .true. for EVERY element -- Registry.EM_COMMON:
     # `rconfig logical input_from_file namelist,time_control max_domains
     # .true.` -- so an omitted key and an omitted tail both import (the
@@ -4577,6 +4586,34 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     bl_pbl_physics, wrf_name, gp_name = bl_mapped[0]
     if bl_mynn_mixscalars is None and any(value == 5 for value in bl_pbl_col):
         notices.append(MYNN_MIXSCALARS_DEFAULT_NOTICE)
+    # WRF does not run the scalar_pblmix this namelist states under the
+    # aerosol-aware Thompson scheme: share/module_check_a_mundo.F:2477-2495
+    # (v4.6.1) resets it to 1 for mp_physics = 28 with use_aero_icbc or
+    # use_rap_aero_icbc, at debug level 1, so wrf.exe prints nothing and
+    # namelist.output still shows the stated value; :2497-2511 then turns
+    # it off again under MYNN with bl_mynn_mixscalars = 1.  Importing the
+    # stated 0 gave a run that never mixed QNC/QNI/QNWFA/QNIFA in the PBL
+    # while wrf.exe on the same namelist did: on the stock-WRF door case
+    # the lowest-level QNWFA drifted 3 % from WRF in 10 minutes and 14 %
+    # in 90.  Resolved here as WRF resolves it, and said so.
+    if (mp_physics == 28 and (_aero_icbc or analyzed_aerosol_imported)
+            and not (bl_pbl_physics == 5 and bl_mynn_mixscalars == 1)
+            and scalar_pblmix != 1):
+        defaults_applied.append(AppliedDefault(
+            key="scalar_pblmix", value=1,
+            reason=(f"the namelist states {scalar_pblmix!r}, but WRF "
+                    "resets scalar_pblmix to 1 for mp_physics = 28 with "
+                    "aerosol IC/BCs (share/module_check_a_mundo.F:"
+                    "2477-2495) and runs that, silently")))
+        scalar_pblmix = 1
+    elif (bl_pbl_physics == 5 and bl_mynn_mixscalars == 1
+          and scalar_pblmix == 1):
+        defaults_applied.append(AppliedDefault(
+            key="scalar_pblmix", value=0,
+            reason=("WRF turns scalar_pblmix off when MYNN mixes the "
+                    "scalars itself (bl_mynn_mixscalars = 1; "
+                    "share/module_check_a_mundo.F:2497-2511)")))
+        scalar_pblmix = 0
     if bl_pbl_physics != bl_wrf[0]:
         substitutions.append(Substitution(
             key="bl_pbl_physics", wrf_value=bl_wrf[0], wrf_name=wrf_name,
@@ -4854,9 +4891,11 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             "isfflx=0 has no consumer when sf_sfclay_physics=0; gpuwm "
             "implements the gate in its MM5 and MYNN surface layers.")
     from types import SimpleNamespace
-    from gpuwm.config import soil_layer_count, validated_soil_layer_count
+    from gpuwm.config import (WRF_NO_LAND_SURFACE_SOIL_LAYERS, soil_layer_count,
+                              validated_soil_layer_count)
 
-    resolved_soil_layers = validated_soil_layer_count(sfsfc)
+    resolved_soil_layers = (WRF_NO_LAND_SURFACE_SOIL_LAYERS if sfsfc == 0
+                            else validated_soil_layer_count(sfsfc))
     requested_soil_layers = ph.take("num_soil_layers")
     if requested_soil_layers is not None:
         requested = int(_uniform("physics", "num_soil_layers", requested_soil_layers))
@@ -6236,7 +6275,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        ("seaice_albedo_default",
                         seaice_albedo_default),
                        ("rdmaxalb", rdmaxalb),
-                       ("nwp_diagnostics", nwp_diagnostics)):
+                       ("nwp_diagnostics", nwp_diagnostics),
+                       ("cycling", cycling)):
         if value is not None:
             lines.append(f"{key} = {_fmt(value)}")
     if wrf_rrtmg_compatibility != "none":

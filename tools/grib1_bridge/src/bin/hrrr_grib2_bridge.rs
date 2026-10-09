@@ -72,8 +72,8 @@ const CLOUD_ICE_BEFORE_HRRR_V3: Parameter = Parameter {
 /// (kg-1), read only when the caller asks for them (`--analyzed-aerosol`:
 /// a configuration whose preparation reads the analyzed aerosol,
 /// gpuwm.preparation_assets.analyzed_aerosol_domains) and the file
-/// publishes the pair on all 50 hybrid levels with no GRIB2 bitmap (a
-/// masked pair is withheld: `masked_optional_pair`).  Unrequested, the
+/// publishes the pair on all 50 hybrid levels. Masked values follow the
+/// operational missing-value chain at decode. Unrequested, the
 /// pair is never selected, 2.8.6's inventory: NCEP masks PMTF at some
 /// leads of some cycles (2026-10-04 06Z f06 and f07, clean at f00-f05 and
 /// f08), and an as-posted series that read the pair at its reference lead
@@ -415,10 +415,7 @@ struct AtmosInventory {
     reference_time: String,
     forecast_hour: u32,
     grid: GridFingerprint,
-    /// Why the analyzed aerosol pair was published but not read: a GRIB2
-    /// bitmap masks points of one of its records.  `None` when the pair
-    /// was read or not published at all.
-    optional_hybrid_withheld: Option<String>,
+
 }
 
 #[derive(Clone, Debug)]
@@ -560,7 +557,6 @@ fn validate_message_common(
         .into());
     }
     validate_native_packing(message)?;
-    validate_payload(message)?;
     validate_canonical_grid(&message.grid)
 }
 
@@ -576,16 +572,45 @@ fn validate_native_packing(message: &Grib2Message) -> Result<(), Box<dyn Error>>
 }
 
 fn validate_payload(message: &Grib2Message) -> Result<(), Box<dyn Error>> {
-    if message.bitmap.is_some() {
-        return Err("selected initialization field unexpectedly carries a bitmap".into());
-    }
     let expected_points = u64::from(message.grid.nx) * u64::from(message.grid.ny);
-    if u64::from(message.data_rep.section5_num_data_points) != expected_points {
-        return Err(format!(
-            "selected field declares {} packed points, expected {expected_points}",
-            message.data_rep.section5_num_data_points
-        )
-        .into());
+    let packed_points = if let Some(mask) = &message.bitmap {
+        if mask.len() as u64 != expected_points {
+            return Err(format!("selected field bitmap has {} cells, expected {expected_points}", mask.len()).into());
+        }
+        mask.iter().filter(|present| **present).count() as u64
+    } else { expected_points };
+    if u64::from(message.data_rep.section5_num_data_points) != packed_points {
+        return Err(format!("selected field declares {} packed points, expected {packed_points} present cells",
+            message.data_rep.section5_num_data_points).into());
+    }
+    Ok(())
+}
+
+fn payload_context(message: &Grib2Message, index: usize, variable: &str, window: Window) -> String {
+    let nx = message.grid.nx as usize;
+    let masked = message.bitmap.as_ref().map(|mask| {
+        mask.iter().enumerate().filter(|(cell, present)| {
+            !**present && nx != 0 && window.i_start <= cell % nx && cell % nx <= window.i_end
+                && window.j_start <= cell / nx && cell / nx <= window.j_end
+        }).count()
+    }).unwrap_or(0);
+    format!("{variable} level {} (level_type={}, message {index}, f{:02}) crop i={}..{} j={}..{} masked_inside_crop={masked}",
+        message.product.level_value, message.product.level_type, message.product.forecast_time,
+        window.i_start, window.i_end, window.j_start, window.j_end)
+}
+
+fn validate_crop_payload(message: &Grib2Message, index: usize, variable: &str, window: Window)
+    -> Result<(), Box<dyn Error>> {
+    let context = payload_context(message, index, variable, window);
+    validate_payload(message).map_err(|error| format!("{context}: {error}"))?;
+    if let Some(mask) = &message.bitmap {
+        let nx = message.grid.nx as usize;
+        let masked = (window.j_start..=window.j_end).flat_map(|j|
+            (window.i_start..=window.i_end).map(move |i| j * nx + i))
+            .filter(|cell| !mask[*cell]).count();
+        if masked != 0 && !OPTIONAL_HYBRID_NAMES.contains(&variable) {
+            return Err(format!("{context}: missing source cells prevent finite initialization; no missing-value donor policy is declared for this field").into());
+        }
     }
     Ok(())
 }
@@ -712,12 +737,7 @@ fn inventory_atmosphere_with_extras(
                 .count()
         })
         .collect();
-    let optional_hybrid_withheld = if published.iter().any(|&count| count != 0) {
-        masked_optional_pair(messages, forecast_hour)
-    } else {
-        None
-    };
-    if optional_hybrid_withheld.is_none() && published.iter().any(|&count| count != 0) {
+    if published.iter().any(|&count| count != 0) {
         if published.iter().any(|&count| count < N_HYBRID_LEVELS) {
             return Err(format!(
                 "analyzed aerosol numbers QNWFA/QNIFA are published on {published:?} hybrid \
@@ -778,43 +798,11 @@ fn inventory_atmosphere_with_extras(
         reference_time: expected_cycle.to_owned(),
         forecast_hour,
         grid: common_grid.ok_or("empty atmosphere inventory")?,
-        optional_hybrid_withheld,
     })
 }
 
-/// Why a file that publishes the analyzed aerosol pair cannot have it
-/// read: the first of its records, in file order, that carries a GRIB2
-/// bitmap.  NCEP publishes PMTF (QNWFA) on hybrid level 1 with a bitmap
-/// on some cycles (2026-10-04 12Z, 2026-10-07 07Z among them), and every
-/// selected field refuses a bitmap (`validate_payload`), so reading the
-/// pair there stopped a run that never asked for it at prepare.  No fill
-/// policy for masked points exists, so the pair is treated as not
-/// published, the 2.8.6 selection, and the reason rides the gate.
-fn masked_optional_pair(messages: &[Grib2Message], forecast_hour: u32) -> Option<String> {
-    messages.iter().enumerate().find_map(|(index, message)| {
-        let spec = OPTIONAL_HYBRID_SPECS.iter().find(|spec| {
-            parameter_matches(message, spec.parameter)
-                && message.product.template == 0
-                && message.product.level_type == HYBRID_LEVEL_TYPE
-        })?;
-        let bitmap = message.bitmap.as_ref()?;
-        let masked = bitmap.iter().filter(|present| !**present).count();
-        Some(format!(
-            "f{forecast_hour:02} {} hybrid level {} (message {index}) carries a GRIB2 bitmap \
-             ({masked} of {} points masked); no fill policy for masked points exists, so \
-             the pair is not read",
-            spec.name,
-            message.product.level_value,
-            bitmap.len()
-        ))
-    })
-}
-
-/// The gate's lines for the analyzed aerosol pair: declared with its unit
-/// when read; named with the reason when published but withheld, so a
-/// reader can tell a masked cycle from one that never carried the pair;
-/// absent when the file does not publish it or the caller did not request
-/// it (`--analyzed-aerosol`).
+/// The requested pair is declared whole. Bitmap handling happens with the
+/// concrete crop at decode, including the operational missing-value chain.
 fn optional_hybrid_gate_lines(inventory: &AtmosInventory) -> Vec<String> {
     let mut lines = Vec::new();
     let optional_hybrid = optional_hybrid_fields(inventory);
@@ -824,70 +812,10 @@ fn optional_hybrid_gate_lines(inventory: &AtmosInventory) -> Vec<String> {
             .collect::<Vec<_>>().join(",");
         lines.push(format!("optional_hybrid_units\t{units}"));
     }
-    if let Some(reason) = &inventory.optional_hybrid_withheld {
-        lines.push(format!("optional_hybrid_withheld\t{}", OPTIONAL_HYBRID_NAMES.join(",")));
-        lines.push(format!("optional_hybrid_withheld_reason\t{reason}"));
-    }
     lines
 }
 
 const OPTIONAL_HYBRID_NAMES: [&str; 2] = [OPTIONAL_HYBRID_SPECS[0].name, OPTIONAL_HYBRID_SPECS[1].name];
-
-fn strip_optional_pair(inventory: &mut AtmosInventory) {
-    inventory
-        .selected
-        .retain(|field| !OPTIONAL_HYBRID_NAMES.contains(&field.variable));
-}
-
-/// One series, one answer: when any lead withholds the analyzed aerosol
-/// pair, every lead does, so the leads keep one selected inventory (the
-/// cross-time check refuses leads that differ) and the gate declares the
-/// pair for none of them.  Returns the reasons, one per withholding lead.
-fn withhold_optional_pair_across_leads(inventories: &mut [AtmosInventory]) -> Option<String> {
-    let reasons: Vec<String> = inventories
-        .iter()
-        .filter_map(|inventory| inventory.optional_hybrid_withheld.clone())
-        .collect();
-    if reasons.is_empty() {
-        return None;
-    }
-    let reason = reasons.join("; ");
-    for inventory in inventories.iter_mut() {
-        strip_optional_pair(inventory);
-        inventory.optional_hybrid_withheld = Some(reason.clone());
-    }
-    Some(reason)
-}
-
-/// An as-posted lead, read after the reference was published, follows the
-/// reference: withheld there, withheld here.  A lead that masks the pair
-/// the reference read is refused.  Only a configuration that requested the
-/// pair reaches the refusal (`--analyzed-aerosol`); unrequested, no lead
-/// selects it.  Breakage it prevents: the gate already declares the pair
-/// and the reference lead's payloads are written, so dropping it at a
-/// later lead publishes a series the loader maps with a declared payload
-/// missing on that lead, and the requested analyzed aerosol would end at
-/// that lead with nothing saying so.
-fn admit_optional_pair(
-    reference: &AtmosInventory,
-    mut candidate: AtmosInventory,
-) -> Result<AtmosInventory, Box<dyn Error>> {
-    if reference.optional_hybrid_withheld.is_some() {
-        strip_optional_pair(&mut candidate);
-        return Ok(candidate);
-    }
-    if let Some(reason) = &candidate.optional_hybrid_withheld {
-        return Err(format!(
-            "the configuration requests the analyzed aerosol pair QNWFA/QNIFA, and this \
-             cycle publishes it with a GRIB2 bitmap (masked points) at a later lead: \
-             {reason}; the reference lead f{:02} read the pair and the gate already \
-             declares it, so an as-posted series cannot withhold it at a later lead",
-            reference.forecast_hour
-        )
-        .into());
-    }
-    Ok(candidate)
-}
 
 fn inventory_soil(
     path: &str,
@@ -1099,7 +1027,7 @@ fn validate_window(window: Window, grid: &GridFingerprint) -> Result<(), Box<dyn
 /// columns while this line did not, and nothing in the build noticed: a
 /// 13-column row shipped under an 11-column header, which is a receipt
 /// that reads wrong rather than one that fails loudly.
-const MANIFEST_HEADER: &str = "role\tindex\tvariable\tlevel_value\tlevel_type\tdrt\tbitmap\tdecoded_count\tminimum\tmaximum\tclamped\tmax_excursion\tfilename";
+const MANIFEST_HEADER: &str = "role\tindex\tvariable\tlevel_value\tlevel_type\tdrt\tbitmap\tdecoded_count\tminimum\tmaximum\tclamped\tmax_excursion\tfilename\tmasked_inside_crop\tnearest_neighbor\tfour_pt\taverage_4pt\tfill_zero";
 
 #[allow(clippy::too_many_arguments)]
 fn manifest_row(
@@ -1114,12 +1042,14 @@ fn manifest_row(
     filename: &str,
 ) -> String {
     format!(
-        "{role}\t{index}\t{variable}\t{level_value}\t{level_type}\t{drt}\t{bitmap}\t{}\t{}\t{}\t{}\t{}\t{filename}",
+        "{role}\t{index}\t{variable}\t{level_value}\t{level_type}\t{drt}\t{bitmap}\t{}\t{}\t{}\t{}\t{}\t{filename}\t{}\t{}\t{}\t{}\t{}",
         stats.count,
         stats.minimum,
         stats.maximum,
         stats.clamped.clamps,
         stats.clamped.max_excursion,
+        stats.fill.masked, stats.fill.nearest_neighbor, stats.fill.four_pt,
+        stats.fill.average_4pt, stats.fill.zero,
     )
 }
 
@@ -1131,6 +1061,7 @@ struct Stats {
     /// Cells clamped back onto a physical bound they overshot by no more
     /// than this record's own packing step.
     clamped: ClampTally,
+    fill: gpuwm_preprocess_cpu::missing_value_chain::Counts,
 }
 
 /// The physical bounds a variable is held to, and how far past each the
@@ -1167,13 +1098,17 @@ fn value_bounds(nonnegative: bool, unit_fraction: bool, scale: f64) -> Bounds {
 
 fn decode_crop_write(
     message: &Grib2Message,
+    message_index: usize,
     writer: &mut BufWriter<File>,
     window: Window,
     variable: &str,
     nonnegative: bool,
     unit_fraction: bool,
 ) -> Result<Stats, Box<dyn Error>> {
-    let mut values = unpack_message(message)?;
+    validate_window(window, &GridFingerprint::from_grid(&message.grid))?;
+    validate_crop_payload(message, message_index, variable, window)?;
+    let context = payload_context(message, message_index, variable, window);
+    let mut values = unpack_message(message).map_err(|error| format!("{context}: {error}"))?;
     let nx = message.grid.nx as usize;
     let ny = message.grid.ny as usize;
     if values.len() != nx * ny {
@@ -1188,9 +1123,12 @@ fn decode_crop_write(
     // the magnitude this record's own data occupies, which is only known
     // once the whole field has been read.
     let mut scale = 0.0f64;
-    for value in values.iter().copied() {
+    for (cell, value) in values.iter().copied().enumerate() {
         if !value.is_finite() {
-            return Err(format!("{variable} contains a non-finite decoded value").into());
+            if message.bitmap.as_ref().map(|mask| !mask[cell]).unwrap_or(false) {
+                continue;
+            }
+            return Err(format!("{context}: non-finite present value at source row {}, column {}; bitmap does not mark it missing", cell / nx, cell % nx).into());
         }
         scale = scale.max(value.abs());
     }
@@ -1204,6 +1142,7 @@ fn decode_crop_write(
     let mut maximum = f64::NEG_INFINITY;
     let mut clamped = ClampTally::default();
     for value in values.iter_mut() {
+        if !value.is_finite() { continue; }
         match bounds.check(*value, quantum) {
             BoundVerdict::Inside => {}
             BoundVerdict::Clamped {
@@ -1229,11 +1168,30 @@ fn decode_crop_write(
         minimum = minimum.min(*value);
         maximum = maximum.max(*value);
     }
+    let mut fill = gpuwm_preprocess_cpu::missing_value_chain::Counts::default();
+    // The output window lies on the native integer lattice. Preserve the
+    // original masked plane while each missing target exhausts the chain.
     for j in window.j_start..=window.j_end {
         for i in window.i_start..=window.i_end {
+            if !values[j * nx + i].is_finite() {
+                fill.masked += 1;
+                let (value, stage) = gpuwm_preprocess_cpu::missing_value_chain::interpolate(
+                    &values, nx, ny, i as f64, j as f64);
+                match stage {
+                    gpuwm_preprocess_cpu::missing_value_chain::Stage::NearestNeighbor => fill.nearest_neighbor += 1,
+                    gpuwm_preprocess_cpu::missing_value_chain::Stage::FourPt => fill.four_pt += 1,
+                    gpuwm_preprocess_cpu::missing_value_chain::Stage::Average4pt => fill.average_4pt += 1,
+                    gpuwm_preprocess_cpu::missing_value_chain::Stage::Zero => fill.zero += 1,
+                }
+                let value = value as f32;
+                minimum = minimum.min(value as f64);
+                maximum = maximum.max(value as f64);
+                writer.write_all(&value.to_le_bytes())?;
+                continue;
+            }
             let value = values[j * nx + i] as f32;
             if !value.is_finite() {
-                return Err(format!("{variable} overflows FP32 in output window").into());
+                return Err(format!("{context}: overflows FP32 in output window").into());
             }
             writer.write_all(&value.to_le_bytes())?;
         }
@@ -1243,6 +1201,7 @@ fn decode_crop_write(
         maximum,
         count: values.len(),
         clamped,
+        fill,
     })
 }
 
@@ -1289,6 +1248,10 @@ fn write_atmosphere(
     for spec in HYBRID_SPECS.into_iter().chain(optional) {
         let path = output.join(format!("{}.f32le", spec.name));
         let mut writer = BufWriter::new(File::create(&path)?);
+        let needs_mask = OPTIONAL_HYBRID_NAMES.contains(&spec.name);
+        let mut mask_writer = if needs_mask {
+            Some(BufWriter::new(File::create(output.join(format!("{}.mask", spec.name)))?))
+        } else { None };
         let mut any_positive = false;
         for selected in inventory
             .selected
@@ -1301,12 +1264,22 @@ fn write_atmosphere(
                 .ok_or("selected atmosphere index disappeared on reopen")?;
             let stats = decode_crop_write(
                 message,
+                selected.index,
                 &mut writer,
                 window,
                 spec.name,
                 spec.nonnegative,
                 unit_fraction(spec.name),
             )?;
+            if let Some(mask_writer) = &mut mask_writer {
+                let nx = message.grid.nx as usize;
+                for j in window.j_start..=window.j_end {
+                    for i in window.i_start..=window.i_end {
+                        let present = message.bitmap.as_ref().map(|mask| mask[j * nx + i]).unwrap_or(true);
+                        mask_writer.write_all(&[u8::from(present)])?;
+                    }
+                }
+            }
             any_positive |= stats.maximum > 0.0;
             writeln!(
                 manifest,
@@ -1325,6 +1298,7 @@ fn write_atmosphere(
             )?;
         }
         writer.flush()?;
+        if let Some(mask_writer) = &mut mask_writer { mask_writer.flush()?; }
         if spec.require_any_positive && !any_positive {
             return Err(format!(
                 "{role} {} is finite/nonnegative but zero on all 50 full-domain levels",
@@ -1347,6 +1321,7 @@ fn write_atmosphere(
         let mut writer = BufWriter::new(File::create(&path)?);
         let stats = decode_crop_write(
             message,
+            selected.index,
             &mut writer,
             window,
             spec.name,
@@ -1403,7 +1378,7 @@ fn write_soil(
                 .get(selected.index)
                 .ok_or("selected soil index disappeared on reopen")?;
             let stats =
-                decode_crop_write(message, &mut writer, window, variable, true, unit_fraction(variable))?;
+                decode_crop_write(message, selected.index, &mut writer, window, variable, true, unit_fraction(variable))?;
             writeln!(
                 manifest,
                 "{}",
@@ -1427,7 +1402,7 @@ fn write_soil(
             .ok_or("selected optional surface index disappeared on reopen")?;
         let path = output.join(format!("{}.f32le", selected.variable));
         let mut writer = BufWriter::new(File::create(&path)?);
-        let stats = decode_crop_write(message, &mut writer, window,
+        let stats = decode_crop_write(message, selected.index, &mut writer, window,
             selected.variable, true, false)?;
         if stats.maximum > 100.0 {
             return Err(format!("{} exceeds 100 percent", selected.variable).into());
@@ -1884,7 +1859,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             input.forecast_hour,
         )?);
     }
-    withhold_optional_pair_across_leads(&mut atmosphere_inventories);
     let atmosphere_reference = &atmosphere_inventories[0];
     let soil_reference = &soil_inventories[0];
     for index in 0..inventoried {
@@ -1933,7 +1907,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .flat_map(|path| donor_files[path].iter().map(|(_, message)| message));
             let selected = select_pmsl(messages, &expected_cycle,
                 input.forecast_hour, &atmosphere.source_grid)?;
-            validate_payload(selected)?;
             let (path, message_index) = input.supplements.iter().find_map(|path| {
                 donor_files[path].iter().find_map(|(index, message)|
                     std::ptr::eq(message, selected).then_some((path, *index)))
@@ -1946,7 +1919,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             donor_rows.last_mut().unwrap().push_str(&format!("\t{}\t{:?}\t{:?}\t{:?}",
                 selected.product.template, selected.product.ensemble_type,
                 selected.product.perturbation_number, selected.product.num_forecasts_in_ensemble));
-            Some(selected.clone())
+            validate_crop_payload(selected, message_index, "PMSL", window)?;
+            Some((message_index, selected.clone()))
         };
         donors.push(message);
     }
@@ -1974,6 +1948,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let result = (|| -> Result<(), Box<dyn Error>> {
         let mut gate = BufWriter::new(File::create(partial.join("gate.txt"))?);
         writeln!(gate, "status\tPASS")?;
+        writeln!(gate, "aerosol_missing_policy\tnearest_neighbor+four_pt+average_4pt;fill_missing=0;native_grid_coordinates;source_mask_preserved_for_target_mapping")?;
         writeln!(gate, "cycle\t{expected_cycle}")?;
         let valid_times = inputs
             .iter()
@@ -2118,12 +2093,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     .as_ref()
                                     .ok_or("a lead was not inventoried before decode")?;
                                 wait_admitted(directory, input, &cancelled)?;
-                                let atmosphere = admit_optional_pair(
-                                    atmosphere_reference,
-                                    inventory_atmosphere(
+                                let atmosphere = inventory_atmosphere(
                                         &input.atmosphere, &expected_cycle, hour, &extras,
-                                        analyzed_aerosol)?,
-                                )?;
+                                        analyzed_aerosol)?;
                                 let soil = inventory_soil(&input.soil, &expected_cycle, hour)?;
                                 compare_atmosphere_inventory(atmosphere_reference, &atmosphere, hour)?;
                                 compare_soil_inventory(soil_reference, &soil, hour)?;
@@ -2153,13 +2125,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                             window,
                             &mut fragment,
                         )?;
-                        if let Some(message) = &donors[index] {
+                        if let Some((message_index, message)) = &donors[index] {
                             let path = partial.join(&atmosphere_role).join("PMSL.f32le");
                             let mut writer = BufWriter::new(File::create(&path)?);
-                            let stats = decode_crop_write(message, &mut writer, window,
+                            let stats = decode_crop_write(message, *message_index, &mut writer, window,
                                 "PMSL", true, false)?;
                             writer.flush()?;
-                            writeln!(fragment, "{}", manifest_row(&atmosphere_role, 0,
+                            writeln!(fragment, "{}", manifest_row(&atmosphere_role, *message_index,
                                 "PMSL", message.product.level_value, message.product.level_type,
                                 message.data_rep.template, message.bitmap.is_some(), stats,
                                 "PMSL.f32le"))?;
@@ -2206,6 +2178,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             fs::remove_file(fragment_path)?;
         }
         manifest.flush()?;
+        drop(manifest);
+        // Counters are reduced in lead order, after every decoder finished.
+        // Early streaming consumers see the policy; the completed gate and
+        // its sealed hash carry the final counts for all leads.
+        let mut gate = fs::OpenOptions::new().append(true).open(partial.join("gate.txt"))?;
+        let text = fs::read_to_string(partial.join("inventory.tsv"))?;
+        for variable in OPTIONAL_HYBRID_NAMES {
+            let mut total = gpuwm_preprocess_cpu::missing_value_chain::Counts::default();
+            for line in text.lines().skip(1) {
+                let columns: Vec<_> = line.split('\t').collect();
+                if columns[2] != variable { continue; }
+                total.add(gpuwm_preprocess_cpu::missing_value_chain::Counts {
+                    masked: columns[13].parse()?, nearest_neighbor: columns[14].parse()?,
+                    four_pt: columns[15].parse()?, average_4pt: columns[16].parse()?, zero: columns[17].parse()?,
+                });
+            }
+            for (stage, count) in [("masked", total.masked), ("nearest_neighbor", total.nearest_neighbor),
+                ("four_pt", total.four_pt), ("average_4pt", total.average_4pt), ("zero", total.zero)] {
+                writeln!(gate, "aerosol_{variable}_{stage}\t{count}")?;
+            }
+        }
         Ok(())
     })();
     if let Err(error) = result {
@@ -2275,6 +2268,87 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
+    fn bitmap_record(mask: Option<Vec<bool>>) -> Grib2Message {
+        let mut record = canonical_record(PMTF, HYBRID_LEVEL_TYPE, 1.0, 0);
+        record.grid.nx = 3;
+        record.grid.ny = 3;
+        record.data_rep.template = 0;
+        record.data_rep.bits_per_value = 8;
+        record.data_rep.section5_num_data_points = mask.as_ref()
+            .map(|m| m.iter().filter(|p| **p).count() as u32).unwrap_or(9);
+        record.raw_data = (1u8..=9).enumerate()
+            .filter(|(i, _)| mask.as_ref().map(|m| m[*i]).unwrap_or(true))
+            .map(|(_, v)| v).collect();
+        record.bitmap = mask;
+        record
+    }
+
+    fn bitmap_crop(record: &Grib2Message, variable: &str, window: Window)
+        -> Result<(Vec<u8>, Stats), String> {
+        let path = std::env::temp_dir().join(format!("bitmap-check-{}-{}.f32le",
+            std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let mut writer = BufWriter::new(File::create(&path).unwrap());
+        let result = decode_crop_write(record, 17, &mut writer, window, variable, true, false);
+        writer.flush().unwrap();
+        drop(writer);
+        let bytes = fs::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        result.map(|stats| (bytes, stats)).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn bitmap_check_outside_crop_preserves_values() {
+        let window = Window { i_start: 1, i_end: 2, j_start: 0, j_end: 2 };
+        let masked = bitmap_record(Some(vec![false, true, true, true, true, true, true, true, true]));
+        validate_payload(&masked).unwrap();
+        assert_eq!(bitmap_crop(&masked, "TT", window).unwrap().0,
+            bitmap_crop(&bitmap_record(None), "TT", window).unwrap().0);
+    }
+
+    #[test]
+    fn bitmap_check_all_present_is_byte_identical() {
+        let window = Window { i_start: 0, i_end: 2, j_start: 0, j_end: 2 };
+        assert_eq!(bitmap_crop(&bitmap_record(Some(vec![true; 9])), "TT", window).unwrap().0,
+            bitmap_crop(&bitmap_record(None), "TT", window).unwrap().0);
+    }
+
+    #[test]
+    fn bitmap_check_named_non_aerosol_refusal() {
+        let window = Window { i_start: 0, i_end: 2, j_start: 0, j_end: 2 };
+        let masked = bitmap_record(Some(vec![false, true, true, true, true, true, true, true, true]));
+        let error = bitmap_crop(&masked, "TT", window).unwrap_err();
+        for required in ["TT", "level 1", "message", "i=0..2", "j=0..2", "masked_inside_crop=1"] {
+            assert!(error.contains(required), "missing {required}: {error}");
+        }
+    }
+
+    #[test]
+    fn bitmap_check_aerosol_donor_chain_and_counts() {
+        let window = Window { i_start: 0, i_end: 2, j_start: 0, j_end: 2 };
+        let masked = bitmap_record(Some(vec![false, true, true, true, true, true, true, true, false]));
+        let (bytes, stats) = bitmap_crop(&masked, "QNWFA", window).unwrap();
+        let expected: Vec<u8> = [0.0f32, 2., 3., 4., 5., 6., 7., 8., 0.]
+            .iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert_eq!(bytes, expected);
+        let counts = format!("{stats:?}");
+        for required in ["masked: 2", "nearest_neighbor: 0", "four_pt: 0", "average_4pt: 0", "zero: 2"] {
+            assert!(counts.contains(required), "missing {required}: {counts}");
+        }
+    }
+
+    #[test]
+    fn bitmap_check_shape_and_packed_count() {
+        let mut record = bitmap_record(Some(vec![true; 9]));
+        record.data_rep.section5_num_data_points = 8;
+        assert!(validate_payload(&record).unwrap_err().to_string().contains("expected 9 present cells"));
+        record.bitmap = Some(vec![true; 8]);
+        assert!(validate_payload(&record).unwrap_err().to_string().contains("bitmap has 8 cells, expected 9"));
+        let window = Window { i_start: 0, i_end: 2, j_start: 0, j_end: 2 };
+        let error = bitmap_crop(&record, "TT", window).unwrap_err();
+        for required in ["TT", "level 1", "message 17", "i=0..2", "j=0..2", "masked_inside_crop=0", "bitmap has 8 cells"] {
+            assert!(error.contains(required), "{error}");
+        }
+    }
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2670,243 +2744,23 @@ mod tests {
     }
 
     #[test]
-    fn a_masked_aerosol_pair_is_withheld_and_the_lead_still_decodes() {
-        // 2026-10-07 07Z: NCEP publishes PMTF on hybrid level 1 with a
-        // bitmap.  Reading the pair there refused the whole run at prepare
-        // ("selected initialization field unexpectedly carries a bitmap");
-        // 2.8.6 never selected it.  A configuration that requests the pair
-        // has it withheld with the reason; one that does not never reads it.
-        let mut records = decodable_lead(0);
-        let masked = mask(&mut records, PMTF, 1);
-        let inventory = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap();
-        assert!(optional_hybrid_fields(&inventory).is_empty());
-        assert_eq!(inventory.selected.len(), 561);
-        assert!(inventory.selected.iter().all(|field| field.index != masked));
-        let reason = inventory.optional_hybrid_withheld.clone().unwrap();
-        assert_eq!(
-            reason,
-            format!(
-                "f00 QNWFA hybrid level 1 (message {masked}) carries a GRIB2 bitmap \
-                 (2 of {POINTS} points masked); no fill policy for masked points exists, \
-                 so the pair is not read"
-            )
-        );
-        // The receipt: published, withheld, and why; never declared.
-        assert_eq!(
-            optional_hybrid_gate_lines(&inventory),
-            vec![
-                "optional_hybrid_withheld\tQNWFA,QNIFA".to_owned(),
-                format!("optional_hybrid_withheld_reason\t{reason}"),
-            ]
-        );
-        // Every other field of the lead decodes: each variable's first
-        // level and every surface, through the writer's own decoder.
-        let scratch = std::env::temp_dir().join(format!(
-            "gpuwm-hrrr-masked-pair-{}-{}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        fs::create_dir_all(&scratch).unwrap();
-        let window = Window { i_start: 10, i_end: 12, j_start: 20, j_end: 21 };
-        let mut decoded = Vec::new();
-        for field in &inventory.selected {
-            if decoded.contains(&field.variable) {
-                continue;
-            }
-            let path = scratch.join(format!("{}.f32le", field.variable));
-            let mut writer = BufWriter::new(File::create(&path).unwrap());
-            let stats = decode_crop_write(
-                &records[field.index],
-                &mut writer,
-                window,
-                field.variable,
-                atmosphere_nonnegative(field.variable),
-                unit_fraction(field.variable),
-            )
-            .unwrap();
-            writer.flush().unwrap();
-            assert_eq!(stats.count, POINTS, "{}", field.variable);
-            assert_eq!((stats.minimum, stats.maximum), (0.5, 0.5), "{}", field.variable);
-            assert_eq!(fs::read(&path).unwrap(), 0.5f32.to_le_bytes().repeat(6));
-            decoded.push(field.variable);
-        }
-        fs::remove_dir_all(&scratch).unwrap();
-        assert_eq!(decoded.len(), HYBRID_SPECS.len() + SURFACE_SPECS.len());
-
-        // Unrequested, the masked lead selects the same 561 records and
-        // its gate says nothing of the pair.
-        let unrequested = inventory_atmosphere_unrequested(&records, CYCLE, 0).unwrap();
-        assert!(unrequested.optional_hybrid_withheld.is_none());
-        assert!(optional_hybrid_gate_lines(&unrequested).is_empty());
-        assert_eq!(
-            unrequested.selected.iter().map(|field| field.index).collect::<Vec<_>>(),
-            inventory.selected.iter().map(|field| field.index).collect::<Vec<_>>()
-        );
-
-        // The same lead unmasked reads the pair, gated as before.
-        let clean = inventory_atmosphere_messages(&decodable_lead(0), CYCLE, 0).unwrap();
-        assert_eq!(optional_hybrid_fields(&clean), vec!["QNWFA", "QNIFA"]);
-        assert!(clean.optional_hybrid_withheld.is_none());
-        assert_eq!(
-            optional_hybrid_gate_lines(&clean),
-            vec![
-                "optional_hybrid_fields\tQNWFA,QNIFA".to_owned(),
-                "optional_hybrid_units\tQNWFA=kg-1,QNIFA=kg-1".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_bitmap_on_a_required_field_is_still_refused() {
-        // Withholding is the aerosol pair's alone: a masked required field
-        // has no published alternative and is refused as before, masked
-        // pair or not.
-        let mut records = decodable_lead(0);
-        mask(&mut records, HYBRID_SPECS[0].parameter, 1);
-        let error = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap_err().to_string();
-        assert_eq!(error, "selected initialization field unexpectedly carries a bitmap");
-        mask(&mut records, PMTF, 1);
-        let error = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap_err().to_string();
-        assert_eq!(error, "selected initialization field unexpectedly carries a bitmap");
-        let mut surface = decodable_lead(0);
-        let index = surface
-            .iter()
-            .position(|record| parameter_matches(record, SURFACE_SPECS[0].parameter)
-                && record.product.level_type == SURFACE_SPECS[0].level_type
-                && level_matches(record.product.level_value, SURFACE_SPECS[0].level_value))
-            .unwrap();
-        surface[index].bitmap = Some(vec![true; POINTS]);
-        let error = inventory_atmosphere_messages(&surface, CYCLE, 0).unwrap_err().to_string();
-        assert_eq!(error, "selected initialization field unexpectedly carries a bitmap");
-        // Unrequested (the default profile) the same: the pair is never
-        // read, every required field still is, under the same refusal.
-        for masked in [&records, &surface] {
-            let error = inventory_atmosphere_unrequested(masked, CYCLE, 0).unwrap_err().to_string();
-            assert_eq!(error, "selected initialization field unexpectedly carries a bitmap");
-        }
-    }
-
-    #[test]
-    fn a_series_withholds_the_pair_from_every_lead_or_none() {
-        // f00 masked, f01 clean: both leads withhold, so the cross-time
-        // check sees one inventory and the gate declares the pair for none.
-        let mut f00 = decodable_lead(0);
-        mask(&mut f00, PMTF, 1);
-        let mut leads = vec![
-            inventory_atmosphere_messages(&f00, CYCLE, 0).unwrap(),
-            inventory_atmosphere_messages(&decodable_lead(1), CYCLE, 1).unwrap(),
-        ];
-        assert_eq!(optional_hybrid_fields(&leads[1]), vec!["QNWFA", "QNIFA"]);
-        assert!(compare_atmosphere_inventory(&leads[0], &leads[1], 1).is_err());
-        let reason = withhold_optional_pair_across_leads(&mut leads).unwrap();
-        assert!(reason.starts_with("f00 QNWFA hybrid level 1"), "{reason}");
-        for lead in &leads {
-            assert!(optional_hybrid_fields(lead).is_empty());
-            assert_eq!(lead.optional_hybrid_withheld.as_deref(), Some(reason.as_str()));
-        }
-        compare_atmosphere_inventory(&leads[0], &leads[1], 1).unwrap();
-        // No lead masked: nothing changes.
-        let mut clean = vec![
-            inventory_atmosphere_messages(&decodable_lead(0), CYCLE, 0).unwrap(),
-            inventory_atmosphere_messages(&decodable_lead(1), CYCLE, 1).unwrap(),
-        ];
-        assert!(withhold_optional_pair_across_leads(&mut clean).is_none());
-        assert_eq!(optional_hybrid_fields(&clean[1]), vec!["QNWFA", "QNIFA"]);
-
-        // As posted: a later lead follows a withholding reference, and a
-        // later lead masking a pair the reference read is refused by name.
-        let reference = leads[0].clone();
-        let admitted = admit_optional_pair(
-            &reference,
-            inventory_atmosphere_messages(&decodable_lead(1), CYCLE, 1).unwrap(),
-        )
-        .unwrap();
-        compare_atmosphere_inventory(&reference, &admitted, 1).unwrap();
-        let mut f01 = decodable_lead(1);
-        mask(&mut f01, PMTF, 1);
-        let error = admit_optional_pair(
-            &clean[0],
-            inventory_atmosphere_messages(&f01, CYCLE, 1).unwrap(),
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("f01 QNWFA hybrid level 1"), "{error}");
-        assert!(error.contains("cannot withhold it at a later lead"), "{error}");
-    }
-
-    #[test]
-    fn the_default_profile_admits_a_pair_masked_at_a_later_lead_as_posted() {
-        // 2026-10-04 06Z: PMTF hybrid level 1 is clean at f00-f05, carries
-        // a bitmap at f06 and f07 and is clean again at f08.  `gpuwm go`
-        // reads HRRR as posted: f00 is the reference and is inventoried
-        // alone, each later lead is admitted against it.  Reading the pair
-        // unasked declared it at f00 and then refused the whole run at
-        // f06; the default profile (aer_init_opt = wif_input_opt = 1) never
-        // uses the pair, and 2.8.6 never selected it.
-        let lead = |hour: u32, masked: bool| {
+    fn masked_pair_is_selected_whole_across_requested_leads() {
+        let mut first = decodable_lead(0);
+        mask(&mut first, PMTF, 1);
+        let reference = inventory_atmosphere_messages(&first, CYCLE, 0).unwrap();
+        assert_eq!(optional_hybrid_fields(&reference), vec!["QNWFA", "QNIFA"]);
+        assert_eq!(reference.selected.len(), 661);
+        for hour in [1, 6, 7, 8] {
             let mut records = decodable_lead(hour);
-            if masked {
-                mask(&mut records, PMTF, 1);
-            }
-            records
-        };
-        let posted = [(0, false), (5, false), (6, true), (7, true), (8, false)];
-        let reference = inventory_atmosphere_unrequested(&lead(0, false), CYCLE, 0).unwrap();
-        assert!(optional_hybrid_fields(&reference).is_empty());
-        assert!(reference.optional_hybrid_withheld.is_none());
-        assert_eq!(reference.selected.len(), 561);
-        // The gate carries no pair line at all: 2.8.6's bytes.
-        assert!(optional_hybrid_gate_lines(&reference).is_empty());
-        let plain = inventory_atmosphere_unrequested(&wrfnat_records(CIMIXR, 0), CYCLE, 0).unwrap();
-        let indices = |inventory: &AtmosInventory| {
-            inventory.selected.iter().map(|field| field.index).collect::<Vec<_>>()
-        };
-        assert_eq!(indices(&reference), indices(&plain));
-        for &(hour, masked) in &posted[1..] {
-            let admitted = admit_optional_pair(
-                &reference,
-                inventory_atmosphere_unrequested(&lead(hour, masked), CYCLE, hour).unwrap(),
-            )
-            .unwrap();
-            assert!(admitted.optional_hybrid_withheld.is_none(), "f{hour:02}");
-            compare_atmosphere_inventory(&reference, &admitted, hour).unwrap();
+            mask(&mut records, PMTF, 1);
+            let candidate = inventory_atmosphere_messages(&records, CYCLE, hour).unwrap();
+            compare_atmosphere_inventory(&reference, &candidate, hour).unwrap();
         }
-        // Up front (every lead inventoried first) likewise: nothing to
-        // withhold, one inventory for the series.
-        let mut leads: Vec<AtmosInventory> = posted
-            .iter()
-            .map(|&(hour, masked)| {
-                inventory_atmosphere_unrequested(&lead(hour, masked), CYCLE, hour).unwrap()
-            })
-            .collect();
-        assert!(withhold_optional_pair_across_leads(&mut leads).is_none());
-        for (lead, &(hour, _)) in leads.iter().zip(&posted) {
-            compare_atmosphere_inventory(&leads[0], lead, hour).unwrap();
-        }
-        // Unrequested, a half pair is no refusal either: it is not read.
-        let half = with_aerosol_numbers(wrfnat_records(CIMIXR, 0), &OPTIONAL_HYBRID_SPECS[..1]);
-        assert_eq!(inventory_atmosphere_unrequested(&half, CYCLE, 0).unwrap().selected.len(), 561);
-
-        // A configuration that requests the pair on the same cycle reads
-        // it at f00 and is refused at f06 by name, saying the pair is
-        // published with a bitmap there.
-        let requested = inventory_atmosphere_messages(&lead(0, false), CYCLE, 0).unwrap();
-        assert_eq!(optional_hybrid_fields(&requested), vec!["QNWFA", "QNIFA"]);
-        admit_optional_pair(
-            &requested,
-            inventory_atmosphere_messages(&lead(5, false), CYCLE, 5).unwrap(),
-        )
-        .unwrap();
-        let error = admit_optional_pair(
-            &requested,
-            inventory_atmosphere_messages(&lead(6, true), CYCLE, 6).unwrap(),
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.starts_with("the configuration requests the analyzed aerosol pair"), "{error}");
-        assert!(error.contains("GRIB2 bitmap (masked points) at a later lead"), "{error}");
-        assert!(error.contains("f06 QNWFA hybrid level 1"), "{error}");
-        assert!(error.contains("the reference lead f00 read the pair"), "{error}");
+        let unrequested = inventory_atmosphere_unrequested(&first, CYCLE, 0).unwrap();
+        assert_eq!(unrequested.selected.len(), 561);
+        assert!(optional_hybrid_gate_lines(&unrequested).is_empty());
+        assert_eq!(optional_hybrid_gate_lines(&reference), vec![
+            "optional_hybrid_fields\tQNWFA,QNIFA", "optional_hybrid_units\tQNWFA=kg-1,QNIFA=kg-1"]);
     }
 
     #[test]
@@ -3038,6 +2892,7 @@ mod tests {
                     clamps: 2,
                     max_excursion: 1.9073486328125e-9,
                 },
+                fill: Default::default(),
             },
             "SOILW.f32le",
         );

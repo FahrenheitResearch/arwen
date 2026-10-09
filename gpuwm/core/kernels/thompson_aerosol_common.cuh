@@ -90,7 +90,7 @@
 //        rain_intercept_n0 = nr*org2*lamr**cre(2) = nr*lamr (cre(2)=mu_r+1=1,
 //        org2=1/WGAMMA(1)=1).  THIS IS THE CONTRACTION-PINNED FORM: every
 //        product/quotient is thompson_aa_mul/div and every power is
-//        thompson_aa_powf_cr.  warm.cu:81-92 records lamr / mvd_r / N0_r and
+//        thompson_aa_powf.  warm.cu:81-92 records lamr / mvd_r / N0_r and
 //        every rate built on them at <= 7e-16 relative over 12348 Fortran-
 //        oracle rows -- float32-exact, the residual being the CSV round trip
 //        -- where the earlier plain-powf form sat at ~2.7e-7.  Two properties
@@ -226,7 +226,7 @@
 //        the Fortran probe.  Prefer these wherever a fixture disagrees in the
 //        last digits.
 //
-//  float thompson_aa_expf_cr/logf_cr(float x), thompson_aa_powf_cr(float,
+//  float thompson_aa_expf/logf_cr(float x), thompson_aa_powf(float,
 //        float)
 //        Correctly-rounded float32 EXP/LOG/**, evaluated in double and
 //        rounded ONCE.  gfortran lowers REAL(4) EXP/LOG/** to glibc, which is
@@ -597,38 +597,9 @@ __device__ __forceinline__ int thompson_aa_nint_double(double x)
 }
 
 
-// ---------------------------------------------------------------------------
-// Correctly-rounded float32 transcendentals.
-// ---------------------------------------------------------------------------
-//
-// gfortran lowers a REAL(4) EXP/LOG/** to glibc's expf/logf/powf, which are
-// correctly rounded (<= 0.5 ulp).  CUDA's expf/logf/powf carry up to ~2 ulp.
-// That is normally invisible, but iceKoop forms `1. - exp(-x)` with x ~ 1e-14,
-// where the cancellation amplifies a single expf ulp into an O(1) relative
-// error in the returned ice number.  Evaluating in double and rounding ONCE
-// to float reproduces the correctly-rounded float32 result, and MEASURES
-// bit-exact against all 480 rows of probe-icekoop.csv and all 320 rows of
-// probe-icedemott.csv (CUDA's own powf/expf do not).
-//
-// This is not a change of formula or of precision: every operand and every
-// stored result is still float32, exactly as WRF's REAL(4) declarations
-// require.  thompson_field_a/thompson_field_b keep thompson.cu's powf; the
-// saturation fits thompson_rslf/thompson_rsif no longer do -- see the
-// "THE SHARED FITS" note below for why mp=28 diverges from mp=8 there.
-__device__ __forceinline__ float thompson_aa_expf_cr(float x)
-{
-    return (float)exp((double)x);
-}
+// WRF's EXP/LOG/LOG10/** are WOOF's own libm words: thompson_aerosol_libm.cuh,
+// prepended to every mp=28 unit ahead of this header.
 
-__device__ __forceinline__ float thompson_aa_logf_cr(float x)
-{
-    return (float)log((double)x);
-}
-
-__device__ __forceinline__ float thompson_aa_powf_cr(float x, float y)
-{
-    return (float)pow((double)x, (double)y);
-}
 
 
 // ---------------------------------------------------------------------------
@@ -710,6 +681,16 @@ __device__ __forceinline__ float thompson_aa_div(float a, float b)
     return __fdiv_rn(a, b);
 }
 
+// WRF paired collision transfer, module_mp_thompson.F:2945-2954.
+// Restore the delivered mp28 helper with its REAL rounding and signed zero.
+__device__ __forceinline__ void thompson_aa_reenforce_pair(double* a,
+                                                        double* b)
+{
+    const float ratio = (float)fmin(fabs(*a), fabs(*b));
+    *a = (double)thompson_aa_mul(ratio, copysignf(1.0f, (float)*a));
+    *b = -*a;
+}
+
 
 // ---------------------------------------------------------------------------
 // WRF's terminal clamps.  :1805-1806 (entry), :3217/:3486 (working refresh),
@@ -772,7 +753,7 @@ __device__ __forceinline__ int thompson_aa_nu_c_working(
 __device__ __forceinline__ int thompson_aa_droplet_bin(float nc_m3)
 {
     const double raw = 1.0
-        + 100.0 * log((double)nc_m3 / THOMPSON_AA_T_NC_1)
+        + 100.0 * thompson_aa_log((double)nc_m3 / THOMPSON_AA_T_NC_1)
           / (double)THOMPSON_AA_NIC1;
     const int one_based = thompson_aa_nint_double(raw);
     return max(1, min(one_based, THOMPSON_AA_NBC)) - 1;
@@ -784,17 +765,17 @@ __device__ __forceinline__ int thompson_aa_droplet_bin(float nc_m3)
 __device__ __forceinline__ int thompson_aa_decade_index(
     float value, int first_exponent, int table_size)
 {
-    const int center = (int)roundf(log10f(value));
+    const int center = (int)roundf(thompson_aa_log10f(value));
     int exponent = center;
     for (int candidate = center - 1; candidate <= center + 1; ++candidate) {
-        const float scale = powf(10.0f, (float)candidate);
+        const float scale = thompson_aa_powf(10.0f, (float)candidate);
         const float mantissa = value / scale;
         if (mantissa >= 1.0f && mantissa < 10.0f) {
             exponent = candidate;
             break;
         }
     }
-    const float scale = powf(10.0f, (float)exponent);
+    const float scale = thompson_aa_powf(10.0f, (float)exponent);
     const int digit = (int)(value / scale);
     const int one_based = digit + 9 * (exponent - first_exponent);
     return max(0, min(one_based - 1, table_size - 1));
@@ -822,17 +803,17 @@ __device__ __forceinline__ int thompson_aa_decade_index(
 __device__ __forceinline__ int thompson_aa_decade_index_double(
     double value, int first_exponent, int table_size)
 {
-    const int center = (int)round(log10(value));
+    const int center = (int)round(thompson_aa_log10(value));
     int exponent = center;
     for (int candidate = center - 1; candidate <= center + 1; ++candidate) {
-        const float scale = powf(10.0f, (float)candidate);
+        const float scale = thompson_aa_powf(10.0f, (float)candidate);
         const double mantissa = value / (double)scale;
         if (mantissa >= 1.0 && mantissa < 10.0) {
             exponent = candidate;
             break;
         }
     }
-    const float scale = powf(10.0f, (float)exponent);
+    const float scale = thompson_aa_powf(10.0f, (float)exponent);
     const int digit = (int)(value / (double)scale);
     const int one_based = digit + 9 * (exponent - first_exponent);
     return max(0, min(one_based - 1, table_size - 1));
@@ -982,7 +963,7 @@ __device__ __forceinline__ float thompson_aa_field_loga(float tc0, float mom)
 __device__ __forceinline__ float thompson_field_a(float tc, float moment)
 {
     // :2075  a_ = 10.0**loga_   (REAL(4)**REAL(4) -> glibc powf)
-    return thompson_aa_powf_cr(10.0f, thompson_aa_field_loga(tc, moment));
+    return thompson_aa_powf(10.0f, thompson_aa_field_loga(tc, moment));
 }
 
 __device__ __forceinline__ float thompson_field_b(float tc, float moment)
@@ -1042,8 +1023,8 @@ __device__ __forceinline__ float thompson_activ_ncloud(
             break;
         }
     }
-    const float x1 = thompson_aa_logf_cr(THOMPSON_AA_TA_NA[i - 2]);
-    const float x2 = thompson_aa_logf_cr(THOMPSON_AA_TA_NA[i - 1]);
+    const float x1 = thompson_aa_logf(THOMPSON_AA_TA_NA[i - 2]);
+    const float x2 = thompson_aa_logf(THOMPSON_AA_TA_NA[i - 1]);
 
     float w_local = Ww;
     if (w_local >= THOMPSON_AA_TA_WW[THOMPSON_AA_NTB_ARW - 1]) {
@@ -1059,8 +1040,8 @@ __device__ __forceinline__ float thompson_activ_ncloud(
             break;
         }
     }
-    const float y1 = thompson_aa_logf_cr(THOMPSON_AA_TA_WW[j - 2]);
-    const float y2 = thompson_aa_logf_cr(THOMPSON_AA_TA_WW[j - 1]);
+    const float y1 = thompson_aa_logf(THOMPSON_AA_TA_WW[j - 2]);
+    const float y2 = thompson_aa_logf(THOMPSON_AA_TA_WW[j - 1]);
 
     // NEAREST-NEIGHBOUR in temperature over a 10 K grid.  There is no
     // interpolation here, so activated number is a STEP function of T.
@@ -1082,8 +1063,8 @@ __device__ __forceinline__ float thompson_activ_ncloud(
     const float C = (float)tnccn_act[row_hi + (i - 1)];
     const float D = (float)tnccn_act[row_hi + (i - 2)];
 
-    const float nx = thompson_aa_logf_cr(n_local);
-    const float wy = thompson_aa_logf_cr(w_local);
+    const float nx = thompson_aa_logf(n_local);
+    const float wy = thompson_aa_logf(w_local);
     const float t = thompson_aa_div(thompson_aa_sub(nx, x1),
                                     thompson_aa_sub(x2, x1));
     const float u = thompson_aa_div(thompson_aa_sub(wy, y1),
@@ -1131,8 +1112,8 @@ __device__ __forceinline__ float thompson_ice_demott(
     const float exponent = thompson_aa_add(
         thompson_aa_mul(-0.0264f, tempc), 0.0033f);
     float xni = thompson_aa_mul(
-        thompson_aa_mul(5.94e-5f, thompson_aa_powf_cr(-tempc, 3.33f)),
-        thompson_aa_powf_cr(nifa_cc, exponent));
+        thompson_aa_mul(5.94e-5f, thompson_aa_powf(-tempc, 3.33f)),
+        thompson_aa_powf(nifa_cc, exponent));
     // xni = xni*rho/RHO_NOT0 * 1000.
     xni = thompson_aa_mul(
         thompson_aa_div(thompson_aa_mul(xni, rho), THOMPSON_AA_RHO_NOT0),
@@ -1164,8 +1145,8 @@ __device__ __forceinline__ float thompson_ice_koop(
         210368.0f, thompson_aa_mul(131.438f, temp));
     mu_diff = thompson_aa_sub(mu_diff, thompson_aa_div(3.32373e6f, temp));
     mu_diff = thompson_aa_sub(
-        mu_diff, thompson_aa_mul(41729.1f, thompson_aa_logf_cr(temp)));
-    const float a_w_i = thompson_aa_expf_cr(
+        mu_diff, thompson_aa_mul(41729.1f, thompson_aa_logf(temp)));
+    const float a_w_i = thompson_aa_expf(
         thompson_aa_div(mu_diff,
                         thompson_aa_mul(THOMPSON_AA_R_UNI, temp)));
     const float d = thompson_aa_sub(satw, a_w_i);
@@ -1180,14 +1161,14 @@ __device__ __forceinline__ float thompson_ice_koop(
         thompson_aa_mul(
             thompson_aa_mul(thompson_aa_mul(29180.0f, d), d), d));
     log_J_rate = fminf(20.0f, log_J_rate);
-    const float J_rate = thompson_aa_powf_cr(10.0f, log_J_rate);  // cm-3 s-1
+    const float J_rate = thompson_aa_powf(10.0f, log_J_rate);  // cm-3 s-1
     // `1. - exp(-x)` with x ~ 1e-14: prob_h is quantized to multiples of
     // 2^-24 here, so this subtraction is where WRF's own REAL(4) evaluation
-    // becomes ulp-sensitive.  See thompson_aa_expf_cr above.
+    // becomes ulp-sensitive.  See thompson_aa_expf above.
     const float koop_arg = thompson_aa_mul(
         thompson_aa_mul(-J_rate, THOMPSON_AA_AR_VOLUME), dt);
     const float prob_h = fminf(
-        thompson_aa_sub(1.0f, thompson_aa_expf_cr(koop_arg)), 1.0f);
+        thompson_aa_sub(1.0f, thompson_aa_expf(koop_arg)), 1.0f);
     float xni = 0.0f;
     if (prob_h > 0.0f) {
         xni = fminf(thompson_aa_mul(prob_h, naero), 1000.0e3f);
@@ -1229,10 +1210,10 @@ __device__ __forceinline__ float thompson_eff_aero(
                 D));
     } else if (species == THOMPSON_AA_SPECIES_SNOW) {
         vt = thompson_aa_mul(
-            THOMPSON_AA_AV_S, thompson_aa_powf_cr(D, THOMPSON_AA_BV_S));
+            THOMPSON_AA_AV_S, thompson_aa_powf(D, THOMPSON_AA_BV_S));
     } else if (species == THOMPSON_AA_SPECIES_GRAUPEL) {
         vt = thompson_aa_mul(
-            THOMPSON_AA_AV_G, thompson_aa_powf_cr(D, THOMPSON_AA_BV_G));
+            THOMPSON_AA_AV_G, thompson_aa_powf(D, THOMPSON_AA_BV_G));
     }
 
     // Cc = 1. + 2.*meanPath/Da * (1.257 + 0.4*exp(-0.55*Da/meanPath))
@@ -1240,7 +1221,7 @@ __device__ __forceinline__ float thompson_eff_aero(
         1.257f,
         thompson_aa_mul(
             0.4f,
-            thompson_aa_expf_cr(
+            thompson_aa_expf(
                 thompson_aa_div(thompson_aa_mul(-0.55f, Da), meanPath))));
     const float Cc = thompson_aa_add(
         1.0f,
@@ -1266,7 +1247,7 @@ __device__ __forceinline__ float thompson_eff_aero(
             thompson_aa_mul(thompson_aa_mul(Da, Da), vt), 1000.0f),
         thompson_aa_mul(thompson_aa_mul(9.0f, visc), D));
     const float aval = thompson_aa_add(
-        1.0f, thompson_aa_logf_cr(thompson_aa_add(1.0f, Re)));
+        1.0f, thompson_aa_logf(thompson_aa_add(1.0f, Re)));
     // St2 = (1.2 + 1./12.*aval)/(1.+aval)
     const float St2 = thompson_aa_div(
         thompson_aa_add(1.2f, thompson_aa_mul(1.0f / 12.0f, aval)),
@@ -1277,7 +1258,7 @@ __device__ __forceinline__ float thompson_eff_aero(
     float brownian = thompson_aa_add(
         1.0f,
         thompson_aa_mul(thompson_aa_mul(0.4f, sqrt_re),
-                        thompson_aa_powf_cr(Sc, 0.3333f)));
+                        thompson_aa_powf(Sc, 0.3333f)));
     brownian = thompson_aa_add(
         brownian,
         thompson_aa_mul(thompson_aa_mul(0.16f, sqrt_re), sqrtf(Sc)));
@@ -1298,7 +1279,7 @@ __device__ __forceinline__ float thompson_eff_aero(
         const float excess = thompson_aa_sub(St, St2);
         Eff = thompson_aa_add(
             Eff,
-            thompson_aa_powf_cr(
+            thompson_aa_powf(
                 thompson_aa_div(excess,
                                 thompson_aa_add(excess, 0.666667f)),
                 1.5f));
@@ -1329,7 +1310,7 @@ __device__ __forceinline__ float thompson_aa_eff_aero(
 //
 // CONTRACTION-PINNED and correctly-rounded, for the same reason every other
 // helper here is -- every operation below is __fdiv_rn / __fmul_rn /
-// __fadd_rn and both powers are thompson_aa_powf_cr.  (If you are reading
+// __fadd_rn and both powers are thompson_aa_powf.  (If you are reading
 // this because someone told you the body "uses plain *, /, + and CUDA's
 // powf": it does not, and has not since wave 4.  Check the body, not the
 // claim.)
@@ -1356,7 +1337,7 @@ __device__ __forceinline__ float thompson_aa_eff_aero(
 //         powf_cr      smoc 3717/3721 (1.063558e-07)  ns 3716/3721 (1.344195e-07)
 //     thompson_field_a / thompson_field_b are BIT-EXACT on all 3721, so the
 //     whole of that difference is the power.  cold.cu and warm.cu both spell
-//     the composite with thompson_aa_powf_cr for exactly this reason.
+//     the composite with thompson_aa_powf for exactly this reason.
 //
 // THE HELPER WAS NOT THE ICE-KOOP PROBLEM.  Feeding it WRF's own smoc it was
 // already good to 1.2e-07; feeding it the smoc the OLD thompson_field_a /
@@ -1383,9 +1364,9 @@ __device__ __forceinline__ float thompson_aa_snow_number(
         thompson_aa_mul(
             thompson_aa_mul(
                 thompson_aa_mul(Mrat, THOMPSON_AA_KAP1),
-                thompson_aa_powf_cr(M0, THOMPSON_AA_MU_S)),
+                thompson_aa_powf(M0, THOMPSON_AA_MU_S)),
             THOMPSON_AA_CSG15),
-        thompson_aa_powf_cr(slam2, THOMPSON_AA_CSE15));
+        thompson_aa_powf(slam2, THOMPSON_AA_CSE15));
     return thompson_aa_add(first, second);
 }
 
@@ -1414,7 +1395,7 @@ __device__ __forceinline__ float thompson_aa_snow_number(
 //                                                  max 3.632162e-07 relative
 //                                                  lamc 929/975 exact,
 //                                                  max 1.108940e-07
-//     thompson_aa_powf_cr only                     nc  831/975 exact,
+//     thompson_aa_powf only                     nc  831/975 exact,
 //                                                  max 1.893911e-07
 //                                                  lamc 975/975 BIT-EXACT
 //     powf_cr + every float32 chain pinned         nc  975/975 BIT-EXACT
@@ -1431,7 +1412,7 @@ __device__ __forceinline__ float thompson_aa_cloud_dist(
     float nc = thompson_aa_clamp_nc(thompson_aa_mul(nc_per_kg, rho));
     const int nu_c = thompson_aa_nu_c(nc);
     // :1833  lamc = (nc(k)*am_r*ccg(2,nu_c)*ocg1(nu_c)/rc(k))**obmr
-    double lamc = (double)thompson_aa_powf_cr(
+    double lamc = (double)thompson_aa_powf(
         thompson_aa_div(
             thompson_aa_mul(
                 thompson_aa_mul(thompson_aa_mul(nc, THOMPSON_AA_AM_R),
@@ -1462,7 +1443,7 @@ __device__ __forceinline__ float thompson_aa_cloud_dist(
                                 THOMPSON_AA_OCG2[nu_c]),
                 rc),
             THOMPSON_AA_AM_R)
-            * pow(lamc, (double)THOMPSON_AA_BM_R));
+            * thompson_aa_pow(lamc, (double)THOMPSON_AA_BM_R));
     // ENTRY-STAGE values only (:1832-1838).  Everything downstream of :1838
     // recomputes nu_c from the RETURNED nc via thompson_aa_nu_c_working.
     if (nu_c_entry_out != nullptr) *nu_c_entry_out = nu_c;
@@ -1500,7 +1481,7 @@ __device__ __forceinline__ void thompson_aa_bound_rain_number(
     }
     const float am_r = THOMPSON_AA_AM_R;
     float rain_number = fmaxf(THOMPSON_AA_R2, *rain_number_per_kg * density);
-    float lambda = powf(am_r * 6.0f * rain_number / rain_mass,
+    float lambda = thompson_aa_powf(am_r * 6.0f * rain_number / rain_mass,
                         1.0f / 3.0f);
     float mvd = 3.672f / lambda;
     if (mvd > 2.5e-3f) {
@@ -1530,7 +1511,7 @@ __device__ __forceinline__ void thompson_aa_bound_ice_number(
     }
     const float am_i = THOMPSON_AA_AM_I;
     float ice_number = fmaxf(THOMPSON_AA_R2, *ice_number_per_kg * density);
-    double lambda = (double)powf(
+    double lambda = (double)thompson_aa_powf(
         am_i * 6.0f * ice_number / ice_mass, 1.0f / 3.0f);
     const float diameter = (float)(4.0 / lambda);
     if (diameter < 5.0e-6f) {
@@ -1557,7 +1538,7 @@ __device__ __forceinline__ void thompson_aa_bound_ice_number(
 // put the terminal size bound before the :3956 freeze where WRF puts it
 // after.  Every product, quotient and sum below is REAL(4) and pinned as
 // gfortran -O2 (no FMA) forms it; lami/lamr are DOUBLE (:1597-1599), the
-// powers of REAL bases are correctly rounded (thompson_aa_powf_cr) and the
+// powers of REAL bases are correctly rounded (thompson_aa_powf) and the
 // DOUBLE**REAL(3.0) is pow(x, 3.0), as the graupel balance in the cold
 // network already writes it.
 //
@@ -1574,7 +1555,7 @@ __device__ __forceinline__ void thompson_aa_ice_balance_tendency(
         thompson_aa_add(ni1d, thompson_aa_mul(*niten, dt)), rho));
     if (xri > THOMPSON_AA_R1) {
         // :3039-3041.  cig(2) = 6 and oig1 = 1 exactly.
-        double lami = (double)thompson_aa_powf_cr(
+        double lami = (double)thompson_aa_powf(
             thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
                 thompson_aa_mul(THOMPSON_AA_AM_I, THOMPSON_AA_CIG2),
                 THOMPSON_AA_OIG1), xni), xri),
@@ -1589,7 +1570,7 @@ __device__ __forceinline__ void thompson_aa_ice_balance_tendency(
             lami = (double)thompson_aa_div(4.0f, 5.0e-6f);
             xni = (float)fmin(999.0e3, (double)thompson_aa_div(
                 thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f), xri),
-                THOMPSON_AA_AM_I) * pow(lami, 3.0));
+                THOMPSON_AA_AM_I) * thompson_aa_pow(lami, 3.0));
             *niten = thompson_aa_mul(thompson_aa_mul(thompson_aa_sub(
                 xni, thompson_aa_mul(ni1d, rho)), odts), orho);
         } else if (xdi > 300.0e-6f) {
@@ -1597,7 +1578,7 @@ __device__ __forceinline__ void thompson_aa_ice_balance_tendency(
             lami = (double)thompson_aa_div(4.0f, 300.0e-6f);
             xni = (float)((double)thompson_aa_div(
                 thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f), xri),
-                THOMPSON_AA_AM_I) * pow(lami, 3.0));
+                THOMPSON_AA_AM_I) * thompson_aa_pow(lami, 3.0));
             *niten = thompson_aa_mul(thompson_aa_mul(thompson_aa_sub(
                 xni, thompson_aa_mul(ni1d, rho)), odts), orho);
         }
@@ -1625,7 +1606,7 @@ __device__ __forceinline__ void thompson_aa_rain_balance_tendency(
         thompson_aa_add(nr1d, thompson_aa_mul(*nrten, dt)), rho));
     if (xrr > THOMPSON_AA_R1) {
         // :3075-3076.  crg(3) = 6 and org2 = 1 exactly.
-        double lamr = (double)thompson_aa_powf_cr(
+        double lamr = (double)thompson_aa_powf(
             thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
                 thompson_aa_mul(THOMPSON_AA_AM_R, 6.0f), 1.0f), xnr), xrr),
             THOMPSON_AA_OBMR);
@@ -1650,7 +1631,7 @@ __device__ __forceinline__ void thompson_aa_rain_balance_tendency(
             const float xnr_bounded = (float)(
                 (double)thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f),
                                         xrr)
-                * pow(lamr, 3.0) / (double)THOMPSON_AA_AM_R);
+                * thompson_aa_pow(lamr, 3.0) / (double)THOMPSON_AA_AM_R);
             *nrten = thompson_aa_mul(thompson_aa_mul(thompson_aa_sub(
                 xnr_bounded, thompson_aa_mul(nr1d, rho)), odts), orho);
         }
@@ -1679,7 +1660,7 @@ __device__ __forceinline__ void thompson_aa_rain_balance_tendency(
 // 1 exactly, cre(2) = mu_r+1 = 1 exactly, so N0_r = nr*lamr.  crg(2)*org3 =
 // WGAMMA(1)/WGAMMA(4) = 1/6.
 //
-// CONTRACTION-PINNED, and every power is thompson_aa_powf_cr: build_aero.sh
+// CONTRACTION-PINNED, and every power is thompson_aa_powf: build_aero.sh
 // compiles the oracle with plain `gfortran -O2` on baseline x86-64, which has
 // no FMA instruction and lowers REAL(4)** to glibc's correctly-rounded powf,
 // while nvrtc defaults to --fmad=true and CUDA's powf carries ~2 ulp.
@@ -1693,8 +1674,14 @@ __device__ __forceinline__ bool thompson_aa_entry_rain_distribution(
 {
     const float am_r = THOMPSON_AA_AM_R;
     const float obmr = THOMPSON_AA_OBMR;
+    // (3.0 + mu_r + 0.672) is a REAL sum, 3.6719999313354492, not the
+    // DOUBLE literal 3.672.  Every mvd_r = (...)/lamr below divides that
+    // REAL value, widened, by the DOUBLE lamr, and rounds to REAL; with the
+    // DOUBLE literal mvd_r moved by one float32 unit at a share of levels,
+    // and Ef_rr = 1 - EXP(2300*(mvd_r - 1950e-6)) with it (pnr_rcr).
+    const float mvd_num = thompson_aa_add(thompson_aa_add(3.0f, 0.0f), 0.672f);
     // crg(2)*org3 = WGAMMA(mu_r+1)/WGAMMA(bm_r+mu_r+1) = 1/6 exactly.
-    const float crg2_org3 = 1.0f / 6.0f;
+    const float crg2_org3 = thompson_aa_mul(1.0f, 1.0f / 6.0f);
     float rr;
     float nr;
     bool active;
@@ -1704,28 +1691,33 @@ __device__ __forceinline__ bool thompson_aa_entry_rain_distribution(
         nr = fmaxf(THOMPSON_AA_R2,
                    thompson_aa_mul(rain_number_per_kg, density));
         if (nr <= THOMPSON_AA_R2) {
-            const double lam = (double)thompson_aa_div(3.672f, 1.0e-3f);
-            nr = (float)((double)thompson_aa_div(
-                             thompson_aa_mul(crg2_org3, rr), am_r)
-                         * lam * lam * lam);
+            // :1883-1885.  lamr is a REAL quotient widened; nr is
+            // ((crg(2)*org3)*rr) REAL times lamr**bm_r, which gfortran
+            // lowers to the DOUBLE pow(lamr, 3.0) (only exponents 2, 1 and
+            // -1 fold), over am_r in DOUBLE, rounded to REAL.
+            const double lam = (double)thompson_aa_div(mvd_num, 1.0e-3f);
+            nr = (float)((double)thompson_aa_mul(crg2_org3, rr)
+                         * thompson_aa_pow(lam, 3.0) / (double)am_r);
         }
-        double lamr = (double)thompson_aa_powf_cr(
+        double lamr = (double)thompson_aa_powf(
             thompson_aa_div(
-                thompson_aa_mul(thompson_aa_mul(am_r, 6.0f), nr), rr),
+                thompson_aa_mul(thompson_aa_mul(
+                    thompson_aa_mul(am_r, 6.0f), 1.0f), nr), rr),
             obmr);
-        float mvd = (float)(3.672 / lamr);
+        float mvd = (float)((double)mvd_num / lamr);
+        const float d0r_low = thompson_aa_mul(THOMPSON_AA_D0R, 0.75f);
         if (mvd > 2.5e-3f) {
+            // :1891-1893, the same forms.
             mvd = 2.5e-3f;
-            lamr = (double)thompson_aa_div(3.672f, mvd);
-            nr = (float)((double)thompson_aa_div(
-                             thompson_aa_mul(crg2_org3, rr), am_r)
-                         * lamr * lamr * lamr);
-        } else if (mvd < THOMPSON_AA_D0R * 0.75f) {
-            mvd = THOMPSON_AA_D0R * 0.75f;
-            lamr = (double)thompson_aa_div(3.672f, mvd);
-            nr = (float)((double)thompson_aa_div(
-                             thompson_aa_mul(crg2_org3, rr), am_r)
-                         * lamr * lamr * lamr);
+            lamr = (double)thompson_aa_div(mvd_num, mvd);
+            nr = (float)((double)thompson_aa_mul(crg2_org3, rr)
+                         * thompson_aa_pow(lamr, 3.0) / (double)am_r);
+        } else if (mvd < d0r_low) {
+            // :1895-1897.
+            mvd = d0r_low;
+            lamr = (double)thompson_aa_div(mvd_num, mvd);
+            nr = (float)((double)thompson_aa_mul(crg2_org3, rr)
+                         * thompson_aa_pow(lamr, 3.0) / (double)am_r);
         }
     } else {
         active = false;
@@ -1734,15 +1726,31 @@ __device__ __forceinline__ bool thompson_aa_entry_rain_distribution(
     }
 
     // :2146-2150, executed for every level in WRF, rain or not.
-    const double lamr = (double)thompson_aa_powf_cr(
+    const double lamr = (double)thompson_aa_powf(
         thompson_aa_div(
-            thompson_aa_mul(thompson_aa_mul(am_r, 6.0f), nr), rr),
+            thompson_aa_mul(thompson_aa_mul(
+                thompson_aa_mul(am_r, 6.0f), 1.0f), nr), rr),
         obmr);
     *rain_number = nr;
     *rain_lambda = lamr;
-    *rain_mvd = (float)(3.672 / lamr);
-    *rain_intercept_n0 = (double)nr * lamr;
+    *rain_mvd = (float)((double)mvd_num / lamr);
+    // N0_r = (nr*org2)*lamr**cre(2): org2 = 1, and cre(2) = 1 is a runtime
+    // REAL, so pow(lamr, 1.0), which is lamr exactly.
+    *rain_intercept_n0 = (double)thompson_aa_mul(nr, 1.0f) * lamr;
     return active;
+}
+
+// ilamr(k) = 1./lamr (:2148), and every rate that reads the rain slope
+// after :2150 re-forms it as lamr = 1./ilamr(k) (:2198, :2213, :2322,
+// :2723), which is not always the :2147 lamr: the double reciprocal moves
+// it by one binary64 unit at a share of levels, and (lamr+fv_r)**(-cre(9))
+// follows.  rain_lambda above is the :2147 value; this is what the
+// collection rates must use.
+__device__ __forceinline__ double thompson_aa_rain_lambda_reformed(
+    double rain_lambda)
+{
+    const double ilamr = 1.0 / rain_lambda;
+    return 1.0 / ilamr;
 }
 
 
@@ -1844,7 +1852,7 @@ __device__ __forceinline__ int thompson_aa_inu_c_effrad(float nc_m3)
 // not to widen this today" into a property of the source, which is what lets
 // thompson_aerosol_state.cu delete its three private copies of these
 // functions and call these instead.  The two surviving effi states are the
-// double-rounding limit of thompson_aa_powf_cr -- `(float)pow(double,double)`
+// double-rounding limit of thompson_aa_powf -- `(float)pow(double,double)`
 // rounds twice where glibc's powf rounds once -- not a chain-association
 // defect; plain CUDA powf does not fix them either.
 
@@ -1855,7 +1863,7 @@ __device__ __forceinline__ float thompson_aa_eff_rad_cloud(
     // :5646  lamc = (nc(k)*am_r*g_ratio(inu_c)/rc(k))**obmr.  CORRECTLY
     // ROUNDED: WRF's `**` is REAL(4)**REAL(4) -> glibc powf.  See the block
     // above for what this costs and why it is right.
-    const double lamc = (double)thompson_aa_powf_cr(
+    const double lamc = (double)thompson_aa_powf(
         thompson_aa_div(
             thompson_aa_mul(thompson_aa_mul(nc_m3, THOMPSON_AA_AM_R),
                             THOMPSON_AA_G_RATIO[inu_c]),
@@ -1875,7 +1883,7 @@ __device__ __forceinline__ float thompson_aa_eff_rad_ice(float ri, float ni)
     // THIS is the one that costs the mp=8 effective-radius identity test, at
     // aero-reduces-to-classic's top levels, by one float32 ulp -- because
     // mp=8 is 1 ulp off WRF there and mp=28 is not.  See the block above.
-    const double lami = (double)thompson_aa_powf_cr(
+    const double lami = (double)thompson_aa_powf(
         thompson_aa_div(
             thompson_aa_mul(
                 thompson_aa_mul(
@@ -1902,7 +1910,7 @@ __device__ __forceinline__ float thompson_aa_eff_rad_snow(float rs, float t_k)
     // :5694  smoc = a_ * smo2**b_
     const float smoc = thompson_aa_mul(
         thompson_field_a(tc0, moment),
-        thompson_aa_powf_cr(smo2, thompson_field_b(tc0, moment)));
+        thompson_aa_powf(smo2, thompson_field_b(tc0, moment)));
     // :5695  0.5*(smoc/smob)
     const float diagnosed = thompson_aa_mul(
         0.5f, thompson_aa_div(smoc, smob));
@@ -1960,7 +1968,7 @@ __device__ __forceinline__ void thompson_aa_wrf39_bound_ice_number(
     }
     const float am_i = THOMPSON_AA_AM_I;
     float ice_number = fmaxf(THOMPSON_AA_R2, *ice_number_per_kg * density);
-    double lambda = (double)powf(
+    double lambda = (double)thompson_aa_powf(
         am_i * 6.0f * ice_number / ice_mass, 0.33333334326744080f);
     const float diameter = (float)(4.0 / lambda);
     if (diameter < 5.0e-6f) {
@@ -1990,8 +1998,8 @@ __device__ __forceinline__ float thompson_aa_wrf39_ice_demott(
     const float exponent = thompson_aa_add(
         thompson_aa_mul(-0.0264f, tempc), 0.0033f);
     float xni = thompson_aa_mul(
-        thompson_aa_mul(5.94e-5f, thompson_aa_powf_cr(-tempc, 3.33f)),
-        thompson_aa_powf_cr(nifa_cc, exponent));
+        thompson_aa_mul(5.94e-5f, thompson_aa_powf(-tempc, 3.33f)),
+        thompson_aa_powf(nifa_cc, exponent));
     xni = thompson_aa_mul(
         thompson_aa_div(thompson_aa_mul(xni, rho), THOMPSON_AA_RHO_NOT0),
         1000.0f);
@@ -2012,7 +2020,7 @@ __device__ __forceinline__ void thompson_aa_wrf39_graupel_slope(
     float n0_exp, float rg, double* lamg, double* ilamg, double* n0_g)
 {
     const float am_g = thompson_aa_wrf39_am_g();
-    const double lam_exp = pow(
+    const double lam_exp = thompson_aa_pow(
         (double)n0_exp * (double)am_g * 6.0 / (double)rg, 0.25);
     *lamg = lam_exp;
     *ilamg = 1.0 / lam_exp;
@@ -2028,7 +2036,7 @@ __device__ __forceinline__ double thompson_aa_wrf39_table_intercept(
     const double lamg = 1.0 / ilamg;
     const float prefix = __fdiv_rn(
         thompson_aa_mul(0.16666667163372040f, rg), thompson_aa_wrf39_am_g());
-    return (double)prefix * pow(lamg, 4.0);
+    return (double)prefix * thompson_aa_pow(lamg, 4.0);
 }
 
 // calc_effectRad's fork floors: ice 5.01 microns (fork :5275, v4.6.1 2.51),
@@ -2046,4 +2054,1406 @@ __device__ __forceinline__ float thompson_aa_wrf39_eff_rad_snow(
     float rs, float t_k)
 {
     return fmaxf(10.0e-6f, thompson_aa_eff_rad_snow(rs, t_k));
+}
+
+
+// ===========================================================================
+// THE PER-LEVEL SOURCE STAGE IN WRF'S OWN ARITHMETIC ORDER
+// (module_mp_thompson.F:1798-2151 entry, :2157-2234 warm loop, :2239-2848
+// frozen block, :2856-2952 conservation).
+// ===========================================================================
+//
+// THE BREAKAGE THIS PREVENTS.  The cold network was assembled from the
+// classic (mp=8) kernel's algebra: products regrouped (rvs*(otemp*x) for
+// WRF's (rvs*otemp)*x, a*(x*x) for (a*x)*x), DOUBLE literals where WRF has
+// REAL(4) constants (1.0e-12 for xm0i, 2.0e-12 for 2.*xm0i, 3.89 for
+// cge(9,5), 720 for crg(8)), caps formed as DBLE(x)*DBLE(odts) where WRF
+// rounds x*odts in REAL first, the graupel distribution re-diagnosed from
+// mp=8's intercept fit instead of from WRF's ng, the conservation limiters
+// in DOUBLE where WRF's sump/ratio are REAL, the paired rain/graupel
+// transfer kept in DOUBLE where WRF rounds it through the REAL ratio, and
+// 1./ilamr, NINT/INT and 10.**n spelled differently.  The host CPU
+// comparison against WRF v4.6.1 (tools/thompson_aerosol_column_oracle/
+// host_bitwise.py) found 52 of the 64 process rates differing, on up to
+// every active cell: 6585 differing rate cells below 0 C.
+//
+// Everything below is written statement for statement from the Fortran:
+// every REAL(4) operation is one pinned float32 operation (no contraction
+// in any arithmetic mode), REAL op DOUBLE widens the REAL operand, a REAL
+// variable assigned a DOUBLE expression rounds once, x**y with a REAL
+// exponent calls WOOF's own powf/pow word (gfortran folds only the
+// exponents 2.0, 1.0 and -1.0; WRF's exponents here are runtime REAL
+// variables or other constants, so they reach the library), REAL**INTEGER
+// is libgcc's __powisf2 (thompson_aa_powi_f), and NINT is lroundf/lround.
+// WRF names are kept as field names so each line can be checked against
+// the source.
+
+__device__ __forceinline__ float aaf_fm(float a, float b) { return __fmul_rn(a, b); }
+__device__ __forceinline__ float aaf_fa(float a, float b) { return __fadd_rn(a, b); }
+__device__ __forceinline__ float aaf_fs(float a, float b) { return __fsub_rn(a, b); }
+__device__ __forceinline__ float aaf_fd(float a, float b) { return __fdiv_rn(a, b); }
+__device__ __forceinline__ double aaf_dm(double a, double b) { return __dmul_rn(a, b); }
+__device__ __forceinline__ double aaf_da(double a, double b) { return __dadd_rn(a, b); }
+__device__ __forceinline__ double aaf_ds(double a, double b) { return __dsub_rn(a, b); }
+__device__ __forceinline__ double aaf_dd(double a, double b) { return __ddiv_rn(a, b); }
+
+// REAL(4)**INTEGER as gfortran lowers it with a non-constant exponent: a
+// call to libgcc's __powisf2, square-and-multiply in float32 and one
+// reciprocal for a negative exponent (libgcc2.c).
+__device__ __forceinline__ float thompson_aa_powi_f(float x, int m)
+{
+    unsigned int n = m < 0 ? 0u - (unsigned int)m : (unsigned int)m;
+    float y = (n % 2u) ? x : 1.0f;
+    while (n >>= 1) {
+        x = aaf_fm(x, x);
+        if (n % 2u) y = aaf_fm(y, x);
+    }
+    return m < 0 ? aaf_fd(1.0f, y) : y;
+}
+
+// The decade-mantissa table index WRF writes out at :2263-2272 (rc), :2282
+// (ri), :2296 (ni), :2311 (rr), :2340 (rs), :2355 (rg) and :2580 (xni):
+//     nic = NINT(ALOG10(v))
+//     do nn = nic-1, nic+1
+//        n = nn
+//        if ((v/10.**nn).ge.1.0 .and. (v/10.**nn).lt.10.0) goto 141
+//     enddo
+// 141 idx = INT(v/10.**n) + 10*(n-n2) - (n-n2);  MAX(1, MIN(idx, ntb))
+// n2 = NINT(ALOG10(first table entry)).  When no candidate matches, n is
+// the last one tried (nic+1).  Returned ONE-BASED.
+__device__ __forceinline__ int thompson_aa_wrf_table_index(
+    float v, int n2, int ntb)
+{
+    const int nic = (int)roundf(thompson_aa_log10f(v));
+    int n = nic + 1;
+    for (int nn = nic - 1; nn <= nic + 1; ++nn) {
+        const float m = aaf_fd(v, thompson_aa_powi_f(10.0f, nn));
+        if (m >= 1.0f && m < 10.0f) { n = nn; break; }
+    }
+    const int idx = (int)aaf_fd(v, thompson_aa_powi_f(10.0f, n))
+        + 10 * (n - n2) - (n - n2);
+    return max(1, min(idx, ntb));
+}
+
+// The DOUBLE PRECISION N0_exp form at :2325-2333 and :2369-2377:
+// nir = NINT(DLOG10(N0_exp)); N0_exp/10.**nn is DOUBLE over a REAL(4)
+// __powisf2 result.  Returned ONE-BASED.
+__device__ __forceinline__ int thompson_aa_wrf_table_index_d(
+    double v, int n2, int ntb)
+{
+    const int nic = (int)round(thompson_aa_log10(v));
+    int n = nic + 1;
+    for (int nn = nic - 1; nn <= nic + 1; ++nn) {
+        const double m = aaf_dd(v, (double)thompson_aa_powi_f(10.0f, nn));
+        if (m >= 1.0 && m < 10.0) { n = nn; break; }
+    }
+    const int idx = (int)aaf_dd(v, (double)thompson_aa_powi_f(10.0f, n))
+        + 10 * (n - n2) - (n - n2);
+    return max(1, min(idx, ntb));
+}
+
+// WRF's REAL(4) constants: PARAMETERs folded as gfortran folds them, and
+// the init-time values thompson_init forms (:663-817), as the instrumented
+// WRF v4.6.1 build writes them out (the literals below are those values).
+#define AAF_PI          3.1415926536f
+#define AAF_T0          273.15f
+#define AAF_R1          1.0e-12f
+#define AAF_R2          1.0e-6f
+#define AAF_EPS         1.0e-15f
+#define AAF_XM0I        1.0e-12f
+#define AAF_D0C         1.0e-6f
+#define AAF_D0R         50.0e-6f
+#define AAF_D0S         300.0e-6f
+#define AAF_HGFR        235.16f
+#define AAF_LSUB        2.834e6f
+#define AAF_LVAP0       2.5e6f
+#define AAF_ORV         (1.0f / 461.5f)               // oRv
+#define AAF_OLFUS       (1.0f / (2.834e6f - 2.5e6f))  // olfus
+#define AAF_RHO_NOT     (101325.0f / (287.05f * 298.0f))
+#define AAF_AM_R        (AAF_PI * 1000.0f / 6.0f)
+#define AAF_AM_I        (AAF_PI * 890.0f / 6.0f)
+#define AAF_AM_G5       (AAF_PI * 400.0f / 6.0f)      // am_g(idx_bg1)
+#define AAF_OAMS        14.492753982543945f           // 1./am_s
+#define AAF_OBM         0.3333333432674408f           // obmr = obmi = obmg
+#define AAF_MVD_NUM     ((3.0f + 0.0f) + 0.672f)      // (3.0 + mu + 0.672)
+#define AAF_D0I         1.289843385166023e-05f        // (xm0i/am_i)**(1./bm_i)
+#define AAF_O6          0.1666666716337204f           // oig2 = org3 = ogg3
+#define AAF_T1_QR_QC    22873.9375f                   // PI*.25*av_r*crg(9)
+#define AAF_T2_QR_QI    1437212032.0f                 // PI*.25*am_r*av_r*crg(8)
+#define AAF_T1_QS_QC    31.41592788696289f            // PI*.25*av_s
+#define AAF_T1_QS_SD    0.86f
+#define AAF_T2_QS_SD    1.5197088718414307f           // 0.28*Sc3*SQRT(av_s)
+#define AAF_T1_QS_ME    4.853478912991704e-06f        // PI*4.*C_sqrd*olfus*0.86
+#define AAF_T2_QS_ME    8.576598702347837e-06f
+#define AAF_T1_QG_SD    0.86f                         // 0.86*cgg(10,1)
+#define AAF_T1_QG_ME    1.6178260921151377e-05f
+#define AAF_SC3         0.8581680655479431f           // Sc**(1./3.)
+#define AAF_AV_G5       442.0f                        // av_g(idx_bg1)
+#define AAF_BV_G5       0.8899999856948853f           // bv_g(idx_bg1)
+#define AAF_CGE9_5      3.8899998664855957f           // cge(9,5)
+#define AAF_CGE11_5     2.944999933242798f            // cge(11,5)
+#define AAF_CGE10_1     2.0f                          // cge(10,1)
+#define AAF_CGG6_5      20.36322784423828f            // cgg(6,5)
+#define AAF_CGG9_5      5.234762668609619f            // cgg(9,5)
+#define AAF_CGG11_5     1.9021706581115723f           // cgg(11,5)
+#define AAF_CSE1        3.0f
+#define AAF_CSE13       2.549999952316284f            // bv_s + 2.
+#define AAF_CSE16       1.774999976158142f            // 1.+(1.+bv_s)/2.
+// Dr(1), Dr(nbr), Ds(1), Ds(nbs) as thompson_init builds them in DOUBLE
+// from the REAL(4) D0r / D0s (:850-872).
+#define AAF_DR1         5.116464832797255e-05
+#define AAF_DRN         0.004886186104161873
+#define AAF_DS1         0.0003063661781989868
+#define AAF_DSN         0.019584408175394835
+
+// One model level of mp_thompson, under WRF's names.  REAL fields are
+// float, DOUBLE PRECISION fields double.
+struct ThompsonAaLevel {
+    // :1798-1951
+    float temp, qv, pres, rho, nwfa, nifa;
+    float rc, nc, ri, ni, rr, nr, rs, rg, ng;
+    bool L_qc, L_qi, L_qr, L_qs, L_qg;
+    // :1971-2013
+    float tempc, rhof, rhof2, qvs, qvsi, delQvs, satw, sati, ssatw, ssati;
+    float diffu, visco, ocp, vsc2, lvap, tcond, twet;
+    // :2025-2129
+    float smob, smo0, smo1, smoc, smoe, smof, ns;
+    // :2135-2151
+    double ilamg, N0_g, ilamr, N0_r;
+    float mvd_r, mvd_c;
+    int nu_c;
+    // the frozen block's per-level scalars, :2242-2777
+    float orho, xDs, rvs, rvs_p, rvs_pp, gamsc, alphsc, t1_subl, rate_max;
+    float xni, xnc, xDi, xmi, oxmi, C_snow, tf, r_frac, g_frac, vts;
+    float const_Ri, rime_dens, vtg, stoke_g, xDg, Ef_sw, Ef_gw, vts_boost;
+    double lami, ilami;
+    int idx_tc, idx_t, idx_c, idx_n, idx_i, idx_i1, idx_r, idx_r1, idx_s;
+    int idx_g, idx_g1, idx_IN;
+    // the process rates, :1545-1575
+    double pnc_wau, pnc_rcw, pnc_scw, pnc_gcw;
+    double pna_rca, pna_sca, pna_gca, pnd_rcd, pnd_scd, pnd_gcd;
+    double prr_wau, prr_rcw, prr_rcs, prr_rcg, prr_sml, prr_gml, prr_rci;
+    double pnr_wau, pnr_rcs, pnr_rcg, pnr_rci, pnr_sml, pnr_gml, pnr_rcr,
+           pnr_rfz;
+    double pri_inu, pni_inu, pri_ihm, pni_ihm, pri_wfz, pni_wfz, pri_rfz,
+           pni_rfz, pri_ide, pni_ide, pri_rci, pni_rci, pni_sci, pni_iau,
+           pri_iha, pni_iha;
+    double prs_iau, prs_sci, prs_rcs, prs_scw, prs_sde, prs_ihm, prs_ide;
+    double prg_scw, prg_rfz, prg_gde, prg_gcw, prg_rci, prg_rcs, prg_rcg,
+           prg_ihm;
+    double png_rcs, png_rcg, png_scw, png_gde;
+};
+
+// :1798-1951, one level.  ng1d is the driver's diagnosed graupel number per
+// kilogram (:1267-1281).
+__device__ __forceinline__ void thompson_aa_wrf_entry(
+    ThompsonAaLevel* L, float t1d, float p1d, float qv1d, float qc1d,
+    float nc1d, float qi1d, float ni1d, float qr1d, float nr1d, float qs1d,
+    float qg1d, float ng1d, float nwfa1d, float nifa1d)
+{
+    L->temp = t1d;
+    L->qv = fmaxf(1.0e-10f, qv1d);
+    L->pres = p1d;
+    // :1802  rho = 0.622*pres/(R*temp*(qv+0.622))
+    L->rho = aaf_fd(aaf_fm(0.622f, p1d),
+                    aaf_fm(aaf_fm(287.04f, t1d), aaf_fa(L->qv, 0.622f)));
+    // :1805-1806 (aer_init_opt < 2); naIN1*0.01 is 5000.
+    L->nwfa = fmaxf(11.1e6f, fminf(9999.0e6f, aaf_fm(nwfa1d, L->rho)));
+    L->nifa = fmaxf(0.5e6f * 0.01f, fminf(9999.0e6f, aaf_fm(nifa1d, L->rho)));
+
+    // :1827-1849
+    if (qc1d > AAF_R1) {
+        L->rc = aaf_fm(qc1d, L->rho);
+        L->nc = thompson_aa_cloud_dist(L->rc, nc1d, L->rho, nullptr,
+                                       nullptr);
+        L->L_qc = true;
+    } else {
+        L->rc = AAF_R1;
+        L->nc = 2.0f;
+        L->L_qc = false;
+    }
+
+    // :1851-1876.  cig(1)*oig2 = 1*oig2; am_i*cig(2)*oig1 = am_i*6*1;
+    // cie(2)/5.E-6 and cie(2)/300.E-6 are REAL quotients.
+    if (qi1d > AAF_R1) {
+        L->ri = aaf_fm(qi1d, L->rho);
+        L->ni = fmaxf(AAF_R2, aaf_fm(ni1d, L->rho));
+        const float pre = aaf_fd(aaf_fm(aaf_fm(1.0f, AAF_O6), L->ri),
+                                 AAF_AM_I);
+        if (L->ni <= AAF_R2) {
+            const double lami = (double)aaf_fd(4.0f, 5.0e-6f);
+            L->ni = (float)fmin(999.0e3, aaf_dm((double)pre,
+                                                thompson_aa_pow(lami, 3.0)));
+        }
+        L->L_qi = true;
+        double lami = (double)thompson_aa_powf(
+            aaf_fd(aaf_fm(aaf_fm(aaf_fm(AAF_AM_I, 6.0f), 1.0f), L->ni),
+                   L->ri), AAF_OBM);
+        const double ilami = aaf_dd(1.0, lami);
+        const float xDi = (float)aaf_dm(4.0, ilami);
+        if (xDi < 5.0e-6f) {
+            lami = (double)aaf_fd(4.0f, 5.0e-6f);
+            L->ni = (float)fmin(999.0e3, aaf_dm((double)pre,
+                                                thompson_aa_pow(lami, 3.0)));
+        } else if (xDi > 300.0e-6f) {
+            lami = (double)aaf_fd(4.0f, 300.0e-6f);
+            L->ni = (float)aaf_dm((double)pre, thompson_aa_pow(lami, 3.0));
+        }
+    } else {
+        L->ri = AAF_R1;
+        L->ni = AAF_R2;
+        L->L_qi = false;
+    }
+
+    // :1878-1905.  crg(2)*org3 = 1*org3; am_r*crg(3)*org2 = am_r*6*1.
+    if (qr1d > AAF_R1) {
+        L->rr = aaf_fm(qr1d, L->rho);
+        L->nr = fmaxf(AAF_R2, aaf_fm(nr1d, L->rho));
+        const float pre = aaf_fm(aaf_fm(1.0f, AAF_O6), L->rr);
+        if (L->nr <= AAF_R2) {
+            const double lamr = (double)aaf_fd(AAF_MVD_NUM, 1.0e-3f);
+            L->nr = (float)aaf_dd(aaf_dm((double)pre,
+                                         thompson_aa_pow(lamr, 3.0)),
+                                  (double)AAF_AM_R);
+        }
+        L->L_qr = true;
+        const double lamr = (double)thompson_aa_powf(
+            aaf_fd(aaf_fm(aaf_fm(aaf_fm(AAF_AM_R, 6.0f), 1.0f), L->nr),
+                   L->rr), AAF_OBM);
+        const float mvd_r = (float)aaf_dd((double)AAF_MVD_NUM, lamr);
+        float bound = 0.0f;
+        if (mvd_r > 2.5e-3f) {
+            bound = 2.5e-3f;
+        } else if (mvd_r < AAF_D0R * 0.75f) {
+            bound = AAF_D0R * 0.75f;
+        }
+        if (bound != 0.0f) {
+            const double lb = (double)aaf_fd(AAF_MVD_NUM, bound);
+            L->nr = (float)aaf_dd(aaf_dm((double)pre,
+                                         thompson_aa_pow(lb, 3.0)),
+                                  (double)AAF_AM_R);
+        }
+    } else {
+        L->rr = AAF_R1;
+        L->nr = AAF_R2;
+        L->L_qr = false;
+    }
+
+    // :1906-1914
+    if (qs1d > AAF_R1) {
+        L->rs = aaf_fm(qs1d, L->rho);
+        L->L_qs = true;
+    } else {
+        L->rs = AAF_R1;
+        L->L_qs = false;
+    }
+
+    // :1915-1949, not hail aware: idx_bg = idx_bg1 = 5.
+    // cgg(2,1)*ogg3 = 1*ogg3; am_g*cgg(3,1)*ogg2 = am_g*6*1.
+    if (qg1d > AAF_R1) {
+        L->L_qg = true;
+        L->rg = aaf_fm(qg1d, L->rho);
+        L->ng = fmaxf(AAF_R2, aaf_fm(ng1d, L->rho));
+        const float pre = aaf_fm(aaf_fm(1.0f, AAF_O6), L->rg);
+        if (L->ng <= AAF_R2) {
+            const double lamg = (double)aaf_fd(AAF_MVD_NUM, 1.5e-3f);
+            L->ng = (float)aaf_dd(aaf_dm((double)pre,
+                                         thompson_aa_pow(lamg, 3.0)),
+                                  (double)AAF_AM_G5);
+        }
+        const double lamg = (double)thompson_aa_powf(
+            aaf_fd(aaf_fm(aaf_fm(aaf_fm(AAF_AM_G5, 6.0f), 1.0f), L->ng),
+                   L->rg), AAF_OBM);
+        const float mvd_g = (float)aaf_dd((double)AAF_MVD_NUM, lamg);
+        float bound = 0.0f;
+        if (mvd_g > 25.4e-3f) {
+            bound = 25.4e-3f;
+        } else if (mvd_g < AAF_D0R) {
+            bound = AAF_D0R;
+        }
+        if (bound != 0.0f) {
+            const double lb = (double)aaf_fd(AAF_MVD_NUM, bound);
+            L->ng = (float)aaf_dd(aaf_dm((double)pre,
+                                         thompson_aa_pow(lb, 3.0)),
+                                  (double)AAF_AM_G5);
+        }
+    } else {
+        L->rg = AAF_R1;
+        L->ng = AAF_R2;
+        L->L_qg = false;
+    }
+}
+
+// :1971-2002 for one level, then the snow moments (:2025-2129) and the
+// graupel and rain intercepts (:2135-2151).  twet is the caller's
+// (:2004-2013; at a level below 0 C only its comparison with T_0 is ever
+// read, and there it agrees with temp's).
+__device__ __forceinline__ void thompson_aa_wrf_level_state(
+    ThompsonAaLevel* L, float twet)
+{
+    const float tempc = aaf_fs(L->temp, 273.15f);
+    L->tempc = tempc;
+    L->rhof = sqrtf(aaf_fd(AAF_RHO_NOT, L->rho));
+    L->rhof2 = sqrtf(L->rhof);
+    L->qvs = thompson_rslf(L->pres, L->temp);
+    L->delQvs = fmaxf(0.0f, aaf_fs(thompson_rslf(L->pres, 273.15f), L->qv));
+    L->qvsi = tempc <= 0.0f ? thompson_rsif(L->pres, L->temp) : L->qvs;
+    L->satw = aaf_fd(L->qv, L->qvs);
+    L->sati = aaf_fd(L->qv, L->qvsi);
+    L->ssatw = aaf_fs(L->satw, 1.0f);
+    L->ssati = aaf_fs(L->sati, 1.0f);
+    if (fabsf(L->ssatw) < AAF_EPS) L->ssatw = 0.0f;
+    if (fabsf(L->ssati) < AAF_EPS) L->ssati = 0.0f;
+    // :1991  2.11E-5*(temp/273.15)**1.94 * (101325./pres)
+    L->diffu = aaf_fm(aaf_fm(2.11e-5f, thompson_aa_powf(
+        aaf_fd(L->temp, 273.15f), 1.94f)), aaf_fd(101325.0f, L->pres));
+    if (tempc >= 0.0f) {
+        L->visco = aaf_fm(aaf_fa(1.718f, aaf_fm(0.0049f, tempc)), 1.0e-5f);
+    } else {
+        L->visco = aaf_fm(aaf_fs(aaf_fa(1.718f, aaf_fm(0.0049f, tempc)),
+                                 aaf_fm(aaf_fm(1.2e-5f, tempc), tempc)),
+                          1.0e-5f);
+    }
+    L->ocp = aaf_fd(1.0f, aaf_fm(1004.0f, aaf_fa(1.0f,
+                                                 aaf_fm(0.887f, L->qv))));
+    L->vsc2 = sqrtf(aaf_fd(L->rho, L->visco));
+    L->lvap = aaf_fa(AAF_LVAP0, aaf_fm(2106.0f - 4218.0f, tempc));
+    L->tcond = aaf_fm(aaf_fm(aaf_fa(5.69f, aaf_fm(0.0168f, tempc)), 1.0e-5f),
+                      418.936f);
+    L->twet = twet;
+
+    // :2027-2129.  bm_s = 2, so smo2 = smob.
+    L->smob = L->smo0 = L->smo1 = L->smoc = L->smoe = L->smof = 0.0f;
+    L->ns = 0.0f;
+    if (L->L_qs) {
+        const float tc0 = fminf(-0.1f, tempc);
+        L->smob = aaf_fm(L->rs, AAF_OAMS);
+        L->smo0 = aaf_fm(thompson_field_a(tc0, 0.0f), thompson_aa_powf(
+            L->smob, thompson_field_b(tc0, 0.0f)));
+        L->smo1 = aaf_fm(thompson_field_a(tc0, 1.0f), thompson_aa_powf(
+            L->smob, thompson_field_b(tc0, 1.0f)));
+        L->smoc = aaf_fm(thompson_field_a(tc0, AAF_CSE1), thompson_aa_powf(
+            L->smob, thompson_field_b(tc0, AAF_CSE1)));
+        L->ns = thompson_aa_snow_number(L->smob, L->smoc);
+        L->smoe = aaf_fm(thompson_field_a(tc0, AAF_CSE13), thompson_aa_powf(
+            L->smob, thompson_field_b(tc0, AAF_CSE13)));
+        L->smof = aaf_fm(thompson_field_a(tc0, AAF_CSE16), thompson_aa_powf(
+            L->smob, thompson_field_b(tc0, AAF_CSE16)));
+    }
+
+    // :2135-2139, every level.  N0_g = ng*ogg2*lamg**cge(2,1), with ogg2 = 1
+    // and cge(2,1) = 1 (the library's pow(x, 1.0) is x).
+    {
+        const double lamg = (double)thompson_aa_powf(
+            aaf_fd(aaf_fm(aaf_fm(aaf_fm(AAF_AM_G5, 6.0f), 1.0f), L->ng),
+                   L->rg), AAF_OBM);
+        L->ilamg = aaf_dd(1.0, lamg);
+        L->N0_g = aaf_dm((double)aaf_fm(L->ng, 1.0f), lamg);
+    }
+    // :2146-2151, every level.  N0_r = nr*org2*lamr**cre(2), org2 = 1,
+    // cre(2) = 1.
+    {
+        const double lamr = (double)thompson_aa_powf(
+            aaf_fd(aaf_fm(aaf_fm(aaf_fm(AAF_AM_R, 6.0f), 1.0f), L->nr),
+                   L->rr), AAF_OBM);
+        L->ilamr = aaf_dd(1.0, lamr);
+        L->mvd_r = (float)aaf_dd((double)AAF_MVD_NUM, lamr);
+        L->N0_r = aaf_dm((double)aaf_fm(L->nr, 1.0f), lamr);
+    }
+}
+
+// Zero every rate (:1667-1769).
+__device__ __forceinline__ void thompson_aa_wrf_zero_rates(ThompsonAaLevel* L)
+{
+    L->pnc_wau = L->pnc_rcw = L->pnc_scw = L->pnc_gcw = 0.0;
+    L->pna_rca = L->pna_sca = L->pna_gca = 0.0;
+    L->pnd_rcd = L->pnd_scd = L->pnd_gcd = 0.0;
+    L->prr_wau = L->prr_rcw = L->prr_rcs = L->prr_rcg = L->prr_sml = 0.0;
+    L->prr_gml = L->prr_rci = 0.0;
+    L->pnr_wau = L->pnr_rcs = L->pnr_rcg = L->pnr_rci = L->pnr_sml = 0.0;
+    L->pnr_gml = L->pnr_rcr = L->pnr_rfz = 0.0;
+    L->pri_inu = L->pni_inu = L->pri_ihm = L->pni_ihm = L->pri_wfz = 0.0;
+    L->pni_wfz = L->pri_rfz = L->pni_rfz = L->pri_ide = L->pni_ide = 0.0;
+    L->pri_rci = L->pni_rci = L->pni_sci = L->pni_iau = L->pri_iha = 0.0;
+    L->pni_iha = 0.0;
+    L->prs_iau = L->prs_sci = L->prs_rcs = L->prs_scw = L->prs_sde = 0.0;
+    L->prs_ihm = L->prs_ide = 0.0;
+    L->prg_scw = L->prg_rfz = L->prg_gde = L->prg_gcw = L->prg_rci = 0.0;
+    L->prg_rcs = L->prg_rcg = L->prg_ihm = 0.0;
+    L->png_rcs = L->png_rcg = L->png_scw = L->png_gde = 0.0;
+    L->vts_boost = 1.0f;
+    L->xDi = L->xmi = L->oxmi = L->C_snow = L->tf = L->r_frac = 0.0f;
+    L->g_frac = L->vts = L->const_Ri = L->rime_dens = L->vtg = 0.0f;
+    L->stoke_g = L->xDg = L->Ef_sw = L->Ef_gw = L->xni = L->xnc = 0.0f;
+    L->rate_max = 0.0f;
+    L->lami = L->ilami = 0.0;
+    L->idx_IN = 0;
+}
+
+// (lamr + fv_r)**(-cre(n)) with lamr = 1./ilamr(k), as :2198-2203 forms it.
+__device__ __forceinline__ double aaf_rain_kernel(double ilamr, double expo)
+{
+    return thompson_aa_pow(aaf_da(aaf_dd(1.0, ilamr), 195.0), expo);
+}
+
+// :2157-2234, the warm-rain loop, one level.
+__device__ __forceinline__ void thompson_aa_wrf_warm_loop(
+    ThompsonAaLevel* L, float odts, const double* __restrict__ t_Efrw)
+{
+    // :2161-2167
+    if (L->L_qr && L->mvd_r > AAF_D0R) {
+        const float Ef_rr = aaf_fs(1.0f, thompson_aa_expf(
+            aaf_fm(2300.0f, aaf_fs(L->mvd_r, 1950.0e-6f))));
+        L->pnr_rcr = (double)aaf_fm(aaf_fm(aaf_fm(Ef_rr, 2.0f), L->nr),
+                                    L->rr);
+    }
+    // :2169-2176
+    L->mvd_c = AAF_D0C;
+    float xDc = 0.0f;
+    double lamc = 0.0;
+    int nu_c = 0;
+    if (L->L_qc) {
+        nu_c = min(15, (int)roundf(aaf_fd(1000.0e6f, L->nc)) + 2);
+        xDc = fmaxf(AAF_D0C * 1.0e6f, aaf_fm(thompson_aa_powf(
+            aaf_fd(L->rc, aaf_fm(AAF_AM_R, L->nc)), AAF_OBM), 1.0e6f));
+        lamc = (double)thompson_aa_powf(
+            aaf_fd(aaf_fm(aaf_fm(aaf_fm(L->nc, AAF_AM_R),
+                                 THOMPSON_AA_CCG2[nu_c]),
+                          THOMPSON_AA_OCG1[nu_c]), L->rc), AAF_OBM);
+        const float num = aaf_fa(aaf_fa(3.0f, (float)nu_c), 0.672f);
+        L->mvd_c = (float)aaf_dd((double)num, lamc);
+        L->mvd_c = fmaxf(AAF_D0C, fminf(L->mvd_c, AAF_D0R));
+    }
+    L->nu_c = nu_c;
+    // :2180-2194, Berry and Reinhardt.
+    if (L->rc > 0.01e-3f) {
+        const float Dc_g = (float)aaf_dm(aaf_dd((double)thompson_aa_powf(
+            aaf_fm(THOMPSON_AA_CCG3[nu_c], THOMPSON_AA_OCG2[nu_c]), AAF_OBM),
+            lamc), 1.0e6);
+        const float x3 = aaf_fm(aaf_fm(xDc, xDc), xDc);
+        const float arg = aaf_fs(
+            aaf_fm(aaf_fm(aaf_fm(x3, Dc_g), Dc_g), Dc_g),
+            aaf_fm(aaf_fm(aaf_fm(x3, xDc), xDc), xDc));
+        const float Dc_b = thompson_aa_powf(fmaxf(0.0f, arg), 1.0f / 6.0f);
+        const float z = aaf_fs(aaf_fm(aaf_fm(aaf_fm(aaf_fm(6.25e-6f, xDc),
+                                                    Dc_b), Dc_b), Dc_b),
+                               0.4f);
+        const float zeta1 = aaf_fm(0.5f, aaf_fa(z, fabsf(z)));
+        const float zeta = aaf_fm(aaf_fm(0.027f, L->rc), zeta1);
+        const float td = aaf_fs(aaf_fm(0.5f, Dc_b), 7.5f);
+        const float taud = aaf_fa(aaf_fm(0.5f, aaf_fa(td, fabsf(td))), AAF_R1);
+        const float tau = aaf_fd(3.72f, aaf_fm(L->rc, taud));
+        L->prr_wau = (double)aaf_fd(zeta, tau);
+        L->prr_wau = fmin((double)aaf_fm(L->rc, odts), L->prr_wau);
+        L->pnr_wau = aaf_dd(L->prr_wau, (double)aaf_fm(aaf_fm(aaf_fm(
+            aaf_fm(aaf_fm(AAF_AM_R, (float)nu_c), 10.0f), AAF_D0R), AAF_D0R),
+            AAF_D0R));
+        L->pnc_wau = fmin((double)aaf_fm(L->nc, odts),
+                          aaf_dd(L->prr_wau, (double)aaf_fm(aaf_fm(
+                              aaf_fm(AAF_AM_R, L->mvd_c), L->mvd_c),
+                              L->mvd_c)));
+    }
+    // :2197-2208
+    if (L->L_qr && L->mvd_r > AAF_D0R && L->mvd_c > AAF_D0C) {
+        int idx = 1 + (int)aaf_dd(aaf_dm(100.0, thompson_aa_log(
+            aaf_dd((double)L->mvd_r, AAF_DR1))),
+            thompson_aa_log(aaf_dd(AAF_DRN, AAF_DR1)));
+        idx = min(idx, 100);
+        const int jdx = (int)aaf_fm(L->mvd_c, 1.0e6f);
+        const float Ef_rw = (float)t_Efrw[(idx - 1) + 100 * (jdx - 1)];
+        const double kern = aaf_rain_kernel(L->ilamr, -4.0);
+        L->prr_rcw = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+            L->rhof, AAF_T1_QR_QC), Ef_rw), L->rc), L->N0_r), kern);
+        L->prr_rcw = fmin((double)aaf_fm(L->rc, odts), L->prr_rcw);
+        L->pnc_rcw = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+            L->rhof, AAF_T1_QR_QC), Ef_rw), L->nc), L->N0_r), kern);
+        L->pnc_rcw = fmin((double)aaf_fm(L->nc, odts), L->pnc_rcw);
+    }
+    // :2211-2222
+    if (L->L_qr && L->mvd_r > AAF_D0R) {
+        const double kern = aaf_rain_kernel(L->ilamr, -4.0);
+        float Ef_ra = thompson_eff_aero(L->mvd_r, 0.04e-6f, L->visco,
+                                        L->rho, L->temp,
+                                        THOMPSON_AA_SPECIES_RAIN);
+        L->pna_rca = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+            L->rhof, AAF_T1_QR_QC), Ef_ra), L->nwfa), L->N0_r), kern);
+        L->pna_rca = fmin((double)aaf_fm(L->nwfa, odts), L->pna_rca);
+        Ef_ra = thompson_eff_aero(L->mvd_r, 0.8e-6f, L->visco, L->rho,
+                                  L->temp, THOMPSON_AA_SPECIES_RAIN);
+        L->pnd_rcd = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+            L->rhof, AAF_T1_QR_QC), Ef_ra), L->nifa), L->N0_r), kern);
+        L->pnd_rcd = fmin((double)aaf_fm(L->nifa, odts), L->pnd_rcd);
+    }
+}
+
+// The lami/ilami/xDi/xmi/oxmi block WRF writes twice (:2647-2651 and
+// :2711-2715).
+__device__ __forceinline__ void aaf_ice_size(ThompsonAaLevel* L)
+{
+    L->lami = (double)thompson_aa_powf(
+        aaf_fd(aaf_fm(aaf_fm(aaf_fm(AAF_AM_I, 6.0f), 1.0f), L->ni), L->ri),
+        AAF_OBM);
+    L->ilami = aaf_dd(1.0, L->lami);
+    L->xDi = (float)fmax((double)AAF_D0I, aaf_dm(4.0, L->ilami));
+    L->xmi = aaf_fm(AAF_AM_I, thompson_aa_powf(L->xDi, 3.0f));
+    L->oxmi = aaf_fd(1.0f, L->xmi);
+}
+
+// The tables the frozen block reads, float64 in Fortran order.
+struct ThompsonAaFrozenTables {
+    const double* tpi_ide;   const double* tps_iaus;  const double* tni_iaus;
+    const double* tcs_racs1; const double* tmr_racs1;
+    const double* tcs_racs2; const double* tmr_racs2;
+    const double* tcr_sacr1; const double* tms_sacr1;
+    const double* tcr_sacr2; const double* tms_sacr2;
+    const double* tnr_racs1; const double* tnr_racs2;
+    const double* tnr_sacr1; const double* tnr_sacr2;
+    const double* tcg_racg;  const double* tmr_racg;  const double* tcr_gacr;
+    const double* tnr_racg;  const double* tnr_gacr;
+    const double* tpi_qrfz;  const double* tni_qrfz;
+    const double* tpg_qrfz;  const double* tnr_qrfz;
+    const double* tpi_qcfz;  const double* tni_qcfz;
+    const double* t_Efsw;
+};
+
+// THE RAIN-GRAUPEL TABLE INDEX.  WRF allocates tcg_racg..tnr_gacr as
+// (ntb_g1, ntb_g, dimNRHG, ntb_r1, ntb_r) with dimNRHG = NRHG1 = 1 when the
+// scheme is not hail aware (:465, :607-615), builds its one density slab
+// for rho_g(idx_bg1) (:4123), and then reads it at :2527-2545 with
+// idx_bg(k) = idx_bg1 = 5 (:1950, :2848): an out-of-bounds subscript on a
+// dimension of extent 1, which gfortran without bounds checking turns into
+// a read 4*37*37 words further on (idx_r1+4, and past the end of the array
+// for the last rain bins).  WOOF does not reproduce an out-of-bounds read:
+// it reads the one slab the table holds, the collision rates WRF built for
+// this graupel density.  This is a DECLARED divergence from WRF v4.6.1
+// wherever rain meets graupel (prg_rcg, prr_rcg, pnr_rcg, png_rcg and
+// everything downstream of them).
+__device__ __forceinline__ size_t aaf_racg_index(int idx_g1, int idx_g,
+                                                 int idx_r1, int idx_r)
+{
+    return (size_t)(idx_g1 - 1) + (size_t)37 * ((size_t)(idx_g - 1)
+        + (size_t)37 * ((size_t)(idx_r1 - 1)
+        + (size_t)37 * (size_t)(idx_r - 1)));
+}
+
+// :2242-2848, the frozen-species block for one level, both temperature
+// branches.  dt is dtsave; odts = 1./dtsave.
+__device__ __forceinline__ void thompson_aa_wrf_frozen_block(
+    ThompsonAaLevel* L, float dt, float odts,
+    const ThompsonAaFrozenTables* T)
+{
+    const float tempc = L->tempc;
+    L->vts_boost = 1.0f;
+    L->orho = aaf_fd(1.0f, L->rho);
+
+    L->xDs = L->L_qs ? aaf_fd(L->smoc, L->smob) : 0.0f;
+
+    // :2255-2259.  INT truncates toward zero.
+    L->idx_tc = max(1, min((int)roundf(-tempc), 45));
+    int idx_t = (int)aaf_fd(aaf_fs(tempc, 2.5f), 5.0f) - 1;
+    idx_t = max(1, -idx_t);
+    L->idx_t = min(idx_t, 9);
+
+    // :2263-2275.  r_c(1) = 1.e-6, nic2 = -6.
+    L->idx_c = L->rc > 1.0e-6f
+        ? thompson_aa_wrf_table_index(L->rc, -6, 37) : 1;
+    // :2278-2279.  NINT(1.0 + FLOAT(nbc)*DLOG(nc/t_Nc(1))/nic1), nic1 = 7.
+    {
+        const double raw = aaf_da(1.0, aaf_dd(aaf_dm(100.0, thompson_aa_log(
+            aaf_dd((double)L->nc, THOMPSON_AA_T_NC_1))), 7.0));
+        L->idx_n = max(1, min((int)round(raw), 100));
+    }
+    // :2282-2308.  r_i(1) = 1.e-10 (nii2 = -10), Nt_i(1) = 1 (nii3 = 0).
+    L->idx_i = L->ri > 1.0e-10f
+        ? thompson_aa_wrf_table_index(L->ri, -10, 64) : 1;
+    L->idx_i1 = L->ni > 1.0f
+        ? thompson_aa_wrf_table_index(L->ni, 0, 55) : 1;
+    // :2311-2337.  r_r(1) = 1.e-6 (nir2 = -6), N0r_exp(1) = 1.e6 (nir3 = 6).
+    // lam_exp = lamr*(crg(3)*org2*org1)**bm_r: the REAL base 6*1*(1/6)
+    // rounds to 1.0, powf(1, 3) = 1.
+    if (L->rr > 1.0e-6f) {
+        L->idx_r = thompson_aa_wrf_table_index(L->rr, -6, 37);
+        const double lamr = aaf_dd(1.0, L->ilamr);
+        const double lam_exp = aaf_dm(lamr, (double)thompson_aa_powf(
+            aaf_fm(aaf_fm(6.0f, 1.0f), AAF_O6), 3.0f));
+        const double N0_exp = aaf_dm((double)aaf_fd(aaf_fm(AAF_O6, L->rr),
+                                                    AAF_AM_R),
+                                     thompson_aa_pow(lam_exp, 4.0));
+        L->idx_r1 = thompson_aa_wrf_table_index_d(N0_exp, 6, 37);
+    } else {
+        L->idx_r = 1;
+        L->idx_r1 = 37;
+    }
+    // :2340-2352.  r_s(1) = 1.e-6.
+    L->idx_s = L->rs > 1.0e-6f
+        ? thompson_aa_wrf_table_index(L->rs, -6, 37) : 1;
+    // :2355-2381.  r_g(1) = 1.e-6 (nig2 = -6), N0g_exp(1) = 1.e2 (nig3 = 2).
+    if (L->rg > 1.0e-6f) {
+        L->idx_g = thompson_aa_wrf_table_index(L->rg, -6, 37);
+        const double lamg = aaf_dd(1.0, L->ilamg);
+        const double lam_exp = aaf_dm(lamg, (double)thompson_aa_powf(
+            aaf_fm(aaf_fm(6.0f, 1.0f), AAF_O6), 3.0f));
+        const double N0_exp = aaf_dm((double)aaf_fd(aaf_fm(AAF_O6, L->rg),
+                                                    AAF_AM_G5),
+                                     thompson_aa_pow(lam_exp, 4.0));
+        L->idx_g1 = thompson_aa_wrf_table_index_d(N0_exp, 2, 37);
+    } else {
+        L->idx_g = 1;
+        L->idx_g1 = 37;
+    }
+
+    // :2384-2400, the deposition/sublimation prefactor.
+    const float otemp = aaf_fd(1.0f, L->temp);
+    L->rvs = aaf_fm(L->rho, L->qvsi);
+    const float X = aaf_fs(aaf_fm(aaf_fm(AAF_LSUB, otemp), AAF_ORV), 1.0f);
+    L->rvs_p = aaf_fm(aaf_fm(L->rvs, otemp), X);
+    L->rvs_pp = aaf_fm(L->rvs, aaf_fa(aaf_fa(
+        aaf_fm(aaf_fm(aaf_fm(otemp, X), otemp), X),
+        -aaf_fm(aaf_fm(aaf_fm(aaf_fm(2.0f * AAF_LSUB, otemp), otemp), otemp),
+                AAF_ORV)),
+        aaf_fm(otemp, otemp)));
+    L->gamsc = aaf_fm(aaf_fd(aaf_fm(AAF_LSUB, L->diffu), L->tcond), L->rvs_p);
+    {
+        const float g1 = aaf_fd(L->gamsc, aaf_fa(1.0f, L->gamsc));
+        L->alphsc = aaf_fd(aaf_fm(aaf_fd(aaf_fm(aaf_fm(aaf_fm(0.5f, g1), g1),
+                                                L->rvs_pp), L->rvs_p),
+                                  L->rvs), L->rvs_p);
+    }
+    L->alphsc = fmaxf(1.0e-9f, L->alphsc);
+    float xsat = L->ssati;
+    if (fabsf(xsat) < 1.0e-9f) xsat = 0.0f;
+    {
+        const float a = L->alphsc;
+        float p = aaf_fs(1.0f, aaf_fm(a, xsat));
+        p = aaf_fa(p, aaf_fm(aaf_fm(aaf_fm(aaf_fm(2.0f, a), a), xsat), xsat));
+        p = aaf_fs(p, aaf_fm(aaf_fm(aaf_fm(aaf_fm(aaf_fm(aaf_fm(5.0f, a), a),
+                                                  a), xsat), xsat), xsat));
+        L->t1_subl = aaf_fd(aaf_fm(4.0f * AAF_PI, p), aaf_fa(1.0f, L->gamsc));
+    }
+
+    // :2403-2440, snow and graupel collecting cloud water.
+    const float t1_qg_qc = aaf_fm(aaf_fm(AAF_PI * 0.25f, AAF_AV_G5),
+                                  AAF_CGG9_5);
+    if (L->L_qc && L->mvd_c > AAF_D0C) {
+        if (L->xDs > AAF_D0S) {
+            int idx = 1 + (int)aaf_dd(aaf_dm(100.0, thompson_aa_log(
+                aaf_dd((double)L->xDs, AAF_DS1))),
+                thompson_aa_log(aaf_dd(AAF_DSN, AAF_DS1)));
+            idx = min(idx, 100);
+            const int jdx = (int)aaf_fm(L->mvd_c, 1.0e6f);
+            L->Ef_sw = (float)T->t_Efsw[(idx - 1) + 100 * (jdx - 1)];
+            L->prs_scw = (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+                L->rhof, AAF_T1_QS_QC), L->Ef_sw), L->rc), L->smoe);
+            L->prs_scw = fmin((double)aaf_fm(L->rc, odts), L->prs_scw);
+            L->pnc_scw = (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+                L->rhof, AAF_T1_QS_QC), L->Ef_sw), L->nc), L->smoe);
+            L->pnc_scw = fmin((double)aaf_fm(L->nc, odts), L->pnc_scw);
+        }
+        if (L->rg >= 1.0e-6f && L->mvd_c > AAF_D0C) {
+            L->xDg = (float)aaf_dm(4.0, L->ilamg);
+            L->vtg = (float)aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+                L->rhof, AAF_AV_G5), AAF_CGG6_5), AAF_O6),
+                thompson_aa_pow(L->ilamg, (double)AAF_BV_G5));
+            L->stoke_g = aaf_fd(aaf_fm(aaf_fm(aaf_fm(L->mvd_c, L->mvd_c),
+                                              L->vtg), 1000.0f),
+                                aaf_fm(aaf_fm(9.0f, L->visco), L->xDg));
+            float Ef_gw = 0.0f;
+            if (L->stoke_g >= 0.4f && L->stoke_g <= 10.0f) {
+                Ef_gw = aaf_fm(0.55f, thompson_aa_log10f(
+                    aaf_fm(2.51f, L->stoke_g)));
+            } else if (L->stoke_g > 10.0f) {
+                Ef_gw = 0.77f;
+            }
+            if (L->twet > AAF_T0) Ef_gw = aaf_fm(Ef_gw, 0.1f);
+            L->Ef_gw = Ef_gw;
+            const double kern = thompson_aa_pow(L->ilamg, (double)AAF_CGE9_5);
+            L->prg_gcw = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+                L->rhof, t1_qg_qc), Ef_gw), L->rc), L->N0_g), kern);
+            L->pnc_gcw = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+                L->rhof, t1_qg_qc), Ef_gw), L->nc), L->N0_g), kern);
+            L->pnc_gcw = fmin((double)aaf_fm(L->nc, odts), L->pnc_gcw);
+        }
+    }
+
+    // :2443-2481, snow and graupel collecting aerosols.
+    if (L->rs > 1.0e-6f) {
+        float Ef_sa = thompson_eff_aero(L->xDs, 0.04e-6f, L->visco, L->rho,
+                                        L->temp, THOMPSON_AA_SPECIES_SNOW);
+        L->pna_sca = (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+            L->rhof, AAF_T1_QS_QC), Ef_sa), L->nwfa), L->smoe);
+        L->pna_sca = fmin((double)aaf_fm(L->nwfa, odts), L->pna_sca);
+        Ef_sa = thompson_eff_aero(L->xDs, 0.8e-6f, L->visco, L->rho,
+                                  L->temp, THOMPSON_AA_SPECIES_SNOW);
+        L->pnd_scd = (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+            L->rhof, AAF_T1_QS_QC), Ef_sa), L->nifa), L->smoe);
+        L->pnd_scd = fmin((double)aaf_fm(L->nifa, odts), L->pnd_scd);
+    }
+    if (L->rg > 1.0e-6f) {
+        L->xDg = (float)aaf_dm(4.0, L->ilamg);
+        float Ef_ga = thompson_eff_aero(L->xDg, 0.04e-6f, L->visco, L->rho,
+                                        L->temp,
+                                        THOMPSON_AA_SPECIES_GRAUPEL);
+        const double kern = thompson_aa_pow(L->ilamg, (double)AAF_CGE9_5);
+        L->pna_gca = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+            L->rhof, t1_qg_qc), Ef_ga), L->nwfa), L->N0_g), kern);
+        L->pna_gca = fmin((double)aaf_fm(L->nwfa, odts), L->pna_gca);
+        Ef_ga = thompson_eff_aero(L->xDg, 0.8e-6f, L->visco, L->rho,
+                                  L->temp, THOMPSON_AA_SPECIES_GRAUPEL);
+        L->pnd_gcd = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+            L->rhof, t1_qg_qc), Ef_ga), L->nifa), L->N0_g), kern);
+        L->pnd_gcd = fmin((double)aaf_fm(L->nifa, odts), L->pnd_gcd);
+    }
+
+    // :2486-2548, rain collecting snow and graupel.
+    if (L->rr >= 1.0e-6f) {
+        if (L->rs >= 1.0e-6f) {
+            const size_t i = (size_t)(L->idx_s - 1) + (size_t)37
+                * ((size_t)(L->idx_t - 1) + (size_t)9
+                * ((size_t)(L->idx_r1 - 1) + (size_t)37
+                * (size_t)(L->idx_r - 1)));
+            if (L->twet < AAF_T0) {
+                L->prr_rcs = -(T->tmr_racs2[i] + T->tcr_sacr2[i]
+                               + T->tmr_racs1[i] + T->tcr_sacr1[i]);
+                L->prs_rcs = T->tmr_racs2[i] + T->tcr_sacr2[i]
+                    - T->tcs_racs1[i] - T->tms_sacr1[i];
+                L->prg_rcs = T->tmr_racs1[i] + T->tcr_sacr1[i]
+                    + T->tcs_racs1[i] + T->tms_sacr1[i];
+                L->prr_rcs = fmax((double)aaf_fm(-L->rr, odts), L->prr_rcs);
+                L->prs_rcs = fmax((double)aaf_fm(-L->rs, odts), L->prs_rcs);
+                L->prg_rcs = fmin((double)aaf_fm(aaf_fa(L->rr, L->rs), odts),
+                                  L->prg_rcs);
+                L->pnr_rcs = T->tnr_racs1[i] + T->tnr_racs2[i]
+                    + T->tnr_sacr1[i] + T->tnr_sacr2[i];
+                L->pnr_rcs = fmin((double)aaf_fm(L->nr, odts), L->pnr_rcs);
+                L->png_rcs = L->pnr_rcs;
+            } else {
+                L->prs_rcs = -T->tcs_racs1[i] - T->tms_sacr1[i]
+                    + T->tmr_racs2[i] + T->tcr_sacr2[i];
+                L->prs_rcs = fmax((double)aaf_fm(-L->rs, odts), L->prs_rcs);
+                L->prr_rcs = -L->prs_rcs;
+            }
+        }
+        if (L->rg >= 1.0e-6f) {
+            const size_t i = aaf_racg_index(L->idx_g1, L->idx_g, L->idx_r1,
+                                            L->idx_r);
+            if (L->twet < AAF_T0) {
+                L->prg_rcg = T->tmr_racg[i] + T->tcr_gacr[i];
+                L->prg_rcg = fmin((double)aaf_fm(L->rr, odts), L->prg_rcg);
+                L->prr_rcg = -L->prg_rcg;
+                L->pnr_rcg = T->tnr_racg[i] + T->tnr_gacr[i];
+                L->pnr_rcg = fmin((double)aaf_fm(L->nr, odts), L->pnr_rcg);
+            } else {
+                L->prr_rcg = T->tcg_racg[i];
+                L->prr_rcg = fmin((double)aaf_fm(L->rg, odts), L->prr_rcg);
+                L->prg_rcg = -L->prr_rcg;
+                L->png_rcg = T->tnr_racg[i];
+                L->png_rcg = fmin((double)aaf_fm(L->ng, odts), L->png_rcg);
+                L->pnr_rcg = -1.5 * T->tnr_gacr[i];
+            }
+        }
+    }
+
+    if (L->temp < AAF_T0) {
+        // ---- :2554-2777, below 0 C ----------------------------------------
+        L->vts_boost = 1.0f;
+        L->rate_max = aaf_fm(aaf_fm(aaf_fm(aaf_fs(L->qv, L->qvsi), L->rho),
+                                    odts), 0.999f);
+        // :2573-2577
+        L->xni = thompson_ice_demott(tempc, L->rho, L->nifa);
+        // :2580-2592.  Nt_IN(1) = 1, niIN2 = 0.
+        L->idx_IN = L->xni > 1.0f
+            ? thompson_aa_wrf_table_index(L->xni, 0, 55) : 1;
+
+        // :2595-2605, freezing of rain.
+        {
+            const size_t i = (size_t)(L->idx_r - 1) + (size_t)37
+                * ((size_t)(L->idx_r1 - 1) + (size_t)37
+                * ((size_t)(L->idx_tc - 1) + (size_t)45
+                * (size_t)(L->idx_IN - 1)));
+            if (L->rr > 1.0e-6f) {
+                L->prg_rfz = aaf_dm(T->tpg_qrfz[i], (double)odts);
+                L->pri_rfz = aaf_dm(T->tpi_qrfz[i], (double)odts);
+                L->pni_rfz = aaf_dm(T->tni_qrfz[i], (double)odts);
+                L->pnr_rfz = aaf_dm(T->tnr_qrfz[i], (double)odts);
+                L->pnr_rfz = fmin((double)aaf_fm(L->nr, odts), L->pnr_rfz);
+            } else if (L->rr > AAF_R1 && L->temp < AAF_HGFR) {
+                L->pri_rfz = (double)aaf_fm(L->rr, odts);
+                L->pni_rfz = (double)aaf_fm(L->nr, odts);
+            }
+        }
+        // :2607-2616, freezing of cloud water.
+        {
+            const size_t i = (size_t)(L->idx_c - 1) + (size_t)37
+                * ((size_t)(L->idx_n - 1) + (size_t)100
+                * ((size_t)(L->idx_tc - 1) + (size_t)45
+                * (size_t)(L->idx_IN - 1)));
+            if (L->rc > 1.0e-6f) {
+                L->pri_wfz = aaf_dm(T->tpi_qcfz[i], (double)odts);
+                L->pri_wfz = fmin((double)aaf_fm(L->rc, odts), L->pri_wfz);
+                L->pni_wfz = aaf_dm(T->tni_qcfz[i], (double)odts);
+                L->pni_wfz = fmin(fmin((double)aaf_fm(L->nc, odts),
+                                       aaf_dd(L->pri_wfz,
+                                              (double)(2.0f * AAF_XM0I))),
+                                  L->pni_wfz);
+            } else if (L->rc > AAF_R1 && L->temp < AAF_HGFR) {
+                L->pri_wfz = (double)aaf_fm(L->rc, odts);
+                L->pni_wfz = (double)aaf_fm(L->nc, odts);
+            }
+        }
+        // :2620-2631, deposition nucleation.
+        if (L->ssati >= 0.25f
+                || (L->ssatw > AAF_EPS && L->temp < 253.15f)) {
+            L->xnc = thompson_ice_demott(tempc, L->rho, L->nifa);
+            L->xni = (float)aaf_da((double)L->ni, aaf_dm(
+                aaf_da(L->pni_rfz, L->pni_wfz), (double)dt));
+            const float d = aaf_fs(L->xnc, L->xni);
+            L->pni_inu = (double)aaf_fm(aaf_fm(0.5f, aaf_fa(d, fabsf(d))),
+                                        odts);
+            L->pri_inu = fmin((double)L->rate_max,
+                              aaf_dm((double)AAF_XM0I, L->pni_inu));
+            L->pni_inu = aaf_dd(L->pri_inu, (double)AAF_XM0I);
+        }
+        // :2634-2641, Koop haze freezing.
+        L->xni = (float)aaf_da((double)aaf_fa(L->ns, L->ni), aaf_dm(
+            aaf_da(aaf_da(L->pni_rfz, L->pni_wfz), L->pni_inu), (double)dt));
+        if (L->xni <= 999.0e3f && L->temp < 238.0f && L->ssati >= 0.4f) {
+            L->xnc = thompson_ice_koop(L->temp, L->qv, L->qvs, L->nwfa, dt);
+            L->pni_iha = (double)aaf_fm(L->xnc, odts);
+            L->pri_iha = fmin((double)L->rate_max,
+                              aaf_dm((double)(AAF_XM0I * 0.1f), L->pni_iha));
+            L->pni_iha = aaf_dd(L->pri_iha, (double)(AAF_XM0I * 0.1f));
+        }
+
+        // :2646-2679, cloud ice deposition and ice-to-snow.  C_cube = 0.5,
+        // oig1 = cig(5) = 1.
+        if (L->L_qi) {
+            aaf_ice_size(L);
+            L->pri_ide = aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+                aaf_fm(aaf_fm(0.5f, L->t1_subl), L->diffu), L->ssati),
+                L->rvs), 1.0f), 1.0f), L->ni), L->ilami);
+            if (L->pri_ide < 0.0) {
+                L->pri_ide = fmax(fmax((double)aaf_fm(-L->ri, odts),
+                                       L->pri_ide), (double)L->rate_max);
+                L->pni_ide = aaf_dm(L->pri_ide, (double)L->oxmi);
+                L->pni_ide = fmax((double)aaf_fm(-L->ni, odts), L->pni_ide);
+            } else {
+                L->pri_ide = fmin(L->pri_ide, (double)L->rate_max);
+                const double t = T->tpi_ide[(L->idx_i - 1)
+                                            + 64 * (L->idx_i1 - 1)];
+                L->prs_ide = aaf_dm(aaf_ds(1.0, t), L->pri_ide);
+                L->pri_ide = aaf_dm(t, L->pri_ide);
+            }
+            if (L->idx_i == 64 || L->xDi > 5.0f * AAF_D0S) {
+                L->prs_iau = (double)aaf_fm(aaf_fm(L->ri, 0.99f), odts);
+                L->pni_iau = (double)aaf_fm(aaf_fm(L->ni, 0.95f), odts);
+            } else if (L->xDi < 0.1f * AAF_D0S) {
+                L->prs_iau = 0.0;
+                L->pni_iau = 0.0;
+            } else {
+                const size_t i = (size_t)(L->idx_i - 1)
+                    + (size_t)64 * (size_t)(L->idx_i1 - 1);
+                L->prs_iau = aaf_dm(T->tps_iaus[i], (double)odts);
+                L->prs_iau = fmin((double)aaf_fm(aaf_fm(L->ri, 0.99f), odts),
+                                  L->prs_iau);
+                L->pni_iau = aaf_dm(T->tni_iaus[i], (double)odts);
+                L->pni_iau = fmin((double)aaf_fm(aaf_fm(L->ni, 0.95f), odts),
+                                  L->pni_iau);
+            }
+        }
+
+        // :2683-2694, snow deposition/sublimation.  C_sqrd = 0.15,
+        // C_cube = 0.5.
+        if (L->L_qs) {
+            L->C_snow = aaf_fa(0.15f, aaf_fd(aaf_fm(aaf_fa(tempc, 1.5f),
+                                                    0.5f - 0.15f),
+                                             -30.0f + 1.5f));
+            L->C_snow = fmaxf(0.15f, fminf(L->C_snow, 0.5f));
+            L->prs_sde = (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+                L->C_snow, L->t1_subl), L->diffu), L->ssati), L->rvs),
+                aaf_fa(aaf_fm(AAF_T1_QS_SD, L->smo1),
+                       aaf_fm(aaf_fm(aaf_fm(AAF_T2_QS_SD, L->rhof2), L->vsc2),
+                              L->smof)));
+            if (L->prs_sde < 0.0) {
+                L->prs_sde = fmax(fmax((double)aaf_fm(-L->rs, odts),
+                                       L->prs_sde), (double)L->rate_max);
+            } else {
+                L->prs_sde = fmin(L->prs_sde, (double)L->rate_max);
+            }
+        }
+
+        // :2696-2707, graupel deposition/sublimation.
+        if (L->L_qg && L->ssati < -AAF_EPS) {
+            const float t2_qg_sd = aaf_fm(aaf_fm(aaf_fm(0.28f, AAF_SC3),
+                                                 sqrtf(AAF_AV_G5)),
+                                          AAF_CGG11_5);
+            L->prg_gde = aaf_dm(aaf_dm(
+                (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(0.5f, L->t1_subl),
+                                             L->diffu), L->ssati), L->rvs),
+                L->N0_g),
+                aaf_da(aaf_dm((double)AAF_T1_QG_SD, thompson_aa_pow(
+                           L->ilamg, (double)AAF_CGE10_1)),
+                       aaf_dm((double)aaf_fm(aaf_fm(t2_qg_sd, L->vsc2),
+                                             L->rhof2),
+                              thompson_aa_pow(L->ilamg,
+                                              (double)AAF_CGE11_5))));
+            if (L->prg_gde < 0.0) {
+                L->prg_gde = fmax(fmax((double)aaf_fm(-L->rg, odts),
+                                       L->prg_gde), (double)L->rate_max);
+                L->png_gde = aaf_dd(aaf_dm(L->prg_gde, (double)L->ng),
+                                    (double)L->rg);
+            } else {
+                L->prg_gde = fmin(L->prg_gde, (double)L->rate_max);
+            }
+        }
+
+        // :2710-2736, snow and rain collecting cloud ice.  t1_qs_qi =
+        // t1_qs_qc, Ef_si = 0.05, t1_qr_qi = t1_qr_qc, Ef_ri = 0.95.
+        if (L->L_qi) {
+            aaf_ice_size(L);
+            if (L->rs >= 1.0e-6f) {
+                L->prs_sci = (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+                    AAF_T1_QS_QC, L->rhof), 0.05f), L->ri), L->smoe);
+                L->pni_sci = aaf_dm(L->prs_sci, (double)L->oxmi);
+            }
+            if (L->rr >= 1.0e-6f && L->mvd_r > aaf_fm(4.0f, L->xDi)) {
+                const double k4 = aaf_rain_kernel(L->ilamr, -4.0);
+                L->pri_rci = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+                    L->rhof, AAF_T1_QR_QC), 0.95f), L->ri), L->N0_r), k4);
+                L->pnr_rci = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+                    L->rhof, AAF_T1_QR_QC), 0.95f), L->ni), L->N0_r), k4);
+                L->pnr_rci = fmin((double)aaf_fm(L->nr, odts), L->pnr_rci);
+                L->pni_rci = aaf_dm(L->pri_rci, (double)L->oxmi);
+                L->prr_rci = aaf_dm(aaf_dm((double)aaf_fm(aaf_fm(aaf_fm(
+                    L->rhof, AAF_T2_QR_QI), 0.95f), L->ni), L->N0_r),
+                    aaf_rain_kernel(L->ilamr, -7.0));
+                L->prr_rci = fmin((double)aaf_fm(L->rr, odts), L->prr_rci);
+                L->prg_rci = aaf_da(L->pri_rci, L->prr_rci);
+            }
+        }
+
+        // :2739-2752, Hallett-Mossop.
+        if (L->prg_gcw > (double)AAF_EPS && tempc > -8.0f) {
+            float tf = 0.0f;
+            if (tempc >= -5.0f && tempc < -3.0f) {
+                tf = aaf_fm(0.5f, aaf_fs(-3.0f, tempc));
+            } else if (tempc > -8.0f && tempc < -5.0f) {
+                tf = aaf_fm(0.33333333f, aaf_fa(8.0f, tempc));
+            }
+            L->tf = tf;
+            L->pni_ihm = aaf_dm((double)aaf_fm(3.5e8f, tf), L->prg_gcw);
+            L->pri_ihm = aaf_dm((double)AAF_XM0I, L->pni_ihm);
+            L->prs_ihm = aaf_dm(aaf_dd(L->prs_scw,
+                                       aaf_da(L->prs_scw, L->prg_gcw)),
+                                L->pri_ihm);
+            L->prg_ihm = aaf_dm(aaf_dd(L->prg_gcw,
+                                       aaf_da(L->prs_scw, L->prg_gcw)),
+                                L->pri_ihm);
+        }
+
+        // :2758-2777, rimed snow to graupel.
+        if (L->prs_scw > aaf_dm(2.0, L->prs_sde)
+                && L->prs_sde > (double)AAF_EPS) {
+            L->r_frac = (float)fmin(30.0, aaf_dd(L->prs_scw, L->prs_sde));
+            float g_frac = fminf(0.95f, aaf_fa(0.15f, aaf_fm(
+                aaf_fs(L->r_frac, 2.0f), 0.028f)));
+            L->vts_boost = fminf(1.5f, aaf_fa(1.1f, aaf_fm(
+                aaf_fs(L->r_frac, 2.0f), 0.014f)));
+            L->prg_scw = aaf_dm((double)g_frac, L->prs_scw);
+            L->png_scw = aaf_dd(aaf_dm(L->prg_scw, (double)L->smo0),
+                                (double)L->rs);
+            L->vts = aaf_fm(aaf_fm(40.0f, thompson_aa_powf(L->xDs, 0.55f)),
+                            thompson_aa_expf(-aaf_fm(100.0f, L->xDs)));
+            float cri = -aaf_fd(aaf_fm(aaf_fm(1.0f, aaf_fm(L->mvd_c, 0.5e6f)),
+                                       L->vts),
+                                fminf(-0.1f, tempc));
+            cri = fmaxf(0.1f, fminf(cri, 10.0f));
+            L->const_Ri = cri;
+            L->rime_dens = aaf_fm(aaf_fs(aaf_fa(0.051f, aaf_fm(0.114f, cri)),
+                                         aaf_fm(aaf_fm(0.0055f, cri), cri)),
+                                  1000.0f);
+            if (L->rime_dens < 150.0f) {
+                g_frac = 0.0f;
+                L->prg_scw = 0.0;
+                L->png_scw = 0.0;
+            }
+            L->g_frac = g_frac;
+            L->prs_scw = aaf_dm((double)aaf_fs(1.0f, g_frac), L->prs_scw);
+        }
+    } else {
+        // ---- :2781-2844, at or above 0 C ----------------------------------
+        if (L->L_qs) {
+            L->prr_sml = (double)aaf_fm(aaf_fs(aaf_fm(tempc, L->tcond),
+                aaf_fm(aaf_fm(AAF_LVAP0, L->diffu), L->delQvs)),
+                aaf_fa(aaf_fm(AAF_T1_QS_ME, L->smo1),
+                       aaf_fm(aaf_fm(aaf_fm(AAF_T2_QS_ME, L->rhof2), L->vsc2),
+                              L->smof)));
+            if (L->prr_sml > 0.0) {
+                L->prr_sml = aaf_da(L->prr_sml, aaf_dm(
+                    (double)aaf_fm(4218.0f * AAF_OLFUS,
+                                   aaf_fs(L->twet, AAF_T0)),
+                    aaf_da(L->prr_rcs, L->prs_scw)));
+            }
+            L->prr_sml = fmin((double)aaf_fm(L->rs, odts),
+                              fmax(0.0, L->prr_sml));
+            if (L->prr_sml > 0.0) {
+                L->pnr_sml = aaf_dm(aaf_dm((double)aaf_fd(L->smo0, L->rs),
+                                           L->prr_sml),
+                                    (double)thompson_aa_powf(10.0f, aaf_fm(
+                                        -0.25f, aaf_fs(L->twet, AAF_T0))));
+            } else if (L->ssati < 0.0f) {
+                L->prs_sde = (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+                    0.15f, L->t1_subl), L->diffu), L->ssati), L->rvs),
+                    aaf_fa(aaf_fm(AAF_T1_QS_SD, L->smo1),
+                           aaf_fm(aaf_fm(aaf_fm(AAF_T2_QS_SD, L->rhof2),
+                                         L->vsc2), L->smof)));
+                L->prs_sde = fmax((double)aaf_fm(-L->rs, odts), L->prs_sde);
+            }
+        }
+        if (L->L_qg) {
+            double N0_melt = L->N0_g;
+            if (aaf_fm(L->rg, L->ng) < 1.0e-4f) {
+                const double lamg = aaf_dd(1.0, L->ilamg);
+                N0_melt = aaf_dm((double)aaf_fm(aaf_fd(1.0e-4f, L->rg), 1.0f),
+                                 thompson_aa_pow(lamg, 1.0));
+            }
+            const float t2_qg_me = aaf_fm(aaf_fm(aaf_fm(aaf_fm(aaf_fm(aaf_fm(
+                aaf_fm(AAF_PI, 4.0f), 0.5f), AAF_OLFUS), 0.28f), AAF_SC3),
+                sqrtf(AAF_AV_G5)), AAF_CGG11_5);
+            L->prr_gml = aaf_dm(aaf_dm(
+                (double)aaf_fs(aaf_fm(tempc, L->tcond),
+                               aaf_fm(aaf_fm(AAF_LVAP0, L->diffu), L->delQvs)),
+                N0_melt),
+                aaf_da(aaf_dm((double)AAF_T1_QG_ME, thompson_aa_pow(
+                           L->ilamg, (double)AAF_CGE10_1)),
+                       aaf_dm((double)aaf_fm(aaf_fm(t2_qg_me, L->rhof2),
+                                             L->vsc2),
+                              thompson_aa_pow(L->ilamg,
+                                              (double)AAF_CGE11_5))));
+            L->prr_gml = fmin((double)aaf_fm(L->rg, odts),
+                              fmax(0.0, L->prr_gml));
+            if (L->prr_gml > 0.0) {
+                L->pnr_gml = aaf_dm(aaf_dd(aaf_dm(L->prr_gml, (double)L->ng),
+                                           (double)L->rg),
+                                    (double)thompson_aa_powf(10.0f, aaf_fm(
+                                        -0.33f, aaf_fs(L->twet, AAF_T0))));
+            } else if (L->ssati < 0.0f) {
+                const float t2_qg_sd = aaf_fm(aaf_fm(aaf_fm(0.28f, AAF_SC3),
+                                                     sqrtf(AAF_AV_G5)),
+                                              AAF_CGG11_5);
+                L->prg_gde = aaf_dm(aaf_dm(
+                    (double)aaf_fm(aaf_fm(aaf_fm(aaf_fm(0.5f, L->t1_subl),
+                                                 L->diffu), L->ssati), L->rvs),
+                    L->N0_g),
+                    aaf_da(aaf_dm((double)AAF_T1_QG_SD, thompson_aa_pow(
+                               L->ilamg, (double)AAF_CGE10_1)),
+                           aaf_dm((double)aaf_fm(aaf_fm(t2_qg_sd, L->vsc2),
+                                                 L->rhof2),
+                                  thompson_aa_pow(L->ilamg,
+                                                  (double)AAF_CGE11_5))));
+                L->prg_gde = fmax((double)aaf_fm(-L->rg, odts), L->prg_gde);
+                L->png_gde = aaf_dd(aaf_dm(L->prg_gde, (double)L->ng),
+                                    (double)L->rg);
+            }
+        }
+        if (dt > 120.0f) {
+            L->prr_rcw = aaf_da(aaf_da(L->prr_rcw, L->prs_scw), L->prg_gcw);
+            L->prs_scw = 0.0;
+            L->prg_gcw = 0.0;
+        }
+    }
+}
+
+// :2856-2952, the conservation limiters for one level.  sump, rate_max and
+// ratio are REAL (:1615): each DOUBLE sum is rounded once, compared and
+// divided in float32, and the REAL ratio widens to rescale the DOUBLE rates.
+__device__ __forceinline__ void thompson_aa_wrf_conserve(
+    ThompsonAaLevel* L, float odts)
+{
+    float sump, rate_max, ratio;
+    // :2862-2875
+    sump = (float)aaf_da(aaf_da(aaf_da(aaf_da(aaf_da(L->pri_inu, L->pri_ide),
+                                              L->prs_ide), L->prs_sde),
+                                L->prg_gde), L->pri_iha);
+    rate_max = aaf_fm(aaf_fm(aaf_fm(aaf_fs(L->qv, L->qvsi), L->rho), odts),
+                      0.999f);
+    if ((sump > AAF_EPS && sump > rate_max)
+            || (sump < -AAF_EPS && sump < rate_max)) {
+        ratio = aaf_fd(rate_max, sump);
+        L->pri_inu = aaf_dm(L->pri_inu, (double)ratio);
+        L->pri_ide = aaf_dm(L->pri_ide, (double)ratio);
+        L->pni_ide = aaf_dm(L->pni_ide, (double)ratio);
+        L->prs_ide = aaf_dm(L->prs_ide, (double)ratio);
+        L->prs_sde = aaf_dm(L->prs_sde, (double)ratio);
+        L->prg_gde = aaf_dm(L->prg_gde, (double)ratio);
+        L->pri_iha = aaf_dm(L->pri_iha, (double)ratio);
+    }
+    // :2878-2889
+    sump = (float)aaf_ds(aaf_ds(aaf_ds(aaf_ds(aaf_ds(-L->prr_wau, L->pri_wfz),
+                                              L->prr_rcw), L->prs_scw),
+                                L->prg_scw), L->prg_gcw);
+    rate_max = aaf_fm(-L->rc, odts);
+    if (sump < rate_max && L->L_qc) {
+        ratio = aaf_fd(rate_max, sump);
+        L->prr_wau = aaf_dm(L->prr_wau, (double)ratio);
+        L->pri_wfz = aaf_dm(L->pri_wfz, (double)ratio);
+        L->prr_rcw = aaf_dm(L->prr_rcw, (double)ratio);
+        L->prs_scw = aaf_dm(L->prs_scw, (double)ratio);
+        L->prg_scw = aaf_dm(L->prg_scw, (double)ratio);
+        L->prg_gcw = aaf_dm(L->prg_gcw, (double)ratio);
+    }
+    // :2892-2901
+    sump = (float)aaf_ds(aaf_ds(aaf_ds(L->pri_ide, L->prs_iau), L->prs_sci),
+                         L->pri_rci);
+    rate_max = aaf_fm(-L->ri, odts);
+    if (sump < rate_max && L->L_qi) {
+        ratio = aaf_fd(rate_max, sump);
+        L->pri_ide = aaf_dm(L->pri_ide, (double)ratio);
+        L->prs_iau = aaf_dm(L->prs_iau, (double)ratio);
+        L->prs_sci = aaf_dm(L->prs_sci, (double)ratio);
+        L->pri_rci = aaf_dm(L->pri_rci, (double)ratio);
+    }
+    // :2904-2914
+    sump = (float)aaf_da(aaf_da(aaf_ds(aaf_ds(-L->prg_rfz, L->pri_rfz),
+                                       L->prr_rci), L->prr_rcs), L->prr_rcg);
+    rate_max = aaf_fm(-L->rr, odts);
+    if (sump < rate_max && L->L_qr) {
+        ratio = aaf_fd(rate_max, sump);
+        L->prg_rfz = aaf_dm(L->prg_rfz, (double)ratio);
+        L->pri_rfz = aaf_dm(L->pri_rfz, (double)ratio);
+        L->prr_rci = aaf_dm(L->prr_rci, (double)ratio);
+        L->prr_rcs = aaf_dm(L->prr_rcs, (double)ratio);
+        L->prr_rcg = aaf_dm(L->prr_rcg, (double)ratio);
+    }
+    // :2917-2926
+    sump = (float)aaf_da(aaf_ds(aaf_ds(L->prs_sde, L->prs_ihm), L->prr_sml),
+                         L->prs_rcs);
+    rate_max = aaf_fm(-L->rs, odts);
+    if (sump < rate_max && L->L_qs) {
+        ratio = aaf_fd(rate_max, sump);
+        L->prs_sde = aaf_dm(L->prs_sde, (double)ratio);
+        L->prs_ihm = aaf_dm(L->prs_ihm, (double)ratio);
+        L->prr_sml = aaf_dm(L->prr_sml, (double)ratio);
+        L->prs_rcs = aaf_dm(L->prs_rcs, (double)ratio);
+    }
+    // :2929-2938
+    sump = (float)aaf_da(aaf_ds(aaf_ds(L->prg_gde, L->prg_ihm), L->prr_gml),
+                         L->prg_rcg);
+    rate_max = aaf_fm(-L->rg, odts);
+    if (sump < rate_max && L->L_qg) {
+        ratio = aaf_fd(rate_max, sump);
+        L->prg_gde = aaf_dm(L->prg_gde, (double)ratio);
+        L->prg_ihm = aaf_dm(L->prg_ihm, (double)ratio);
+        L->prr_gml = aaf_dm(L->prr_gml, (double)ratio);
+        L->prg_rcg = aaf_dm(L->prg_rcg, (double)ratio);
+    }
+    // :2942-2950.  ratio is REAL: MIN(ABS(),ABS()) of two DOUBLEs rounds
+    // once, and ratio*SIGN(1.0, SNGL(x)) is a REAL product.
+    L->pri_ihm = aaf_da(L->prs_ihm, L->prg_ihm);
+    ratio = (float)fmin(fabs(L->prr_rcg), fabs(L->prg_rcg));
+    L->prr_rcg = (double)aaf_fm(ratio, copysignf(1.0f, (float)L->prr_rcg));
+    L->prg_rcg = -L->prr_rcg;
+    if (L->twet > AAF_T0) {
+        ratio = (float)fmin(fabs(L->prr_rcs), fabs(L->prs_rcs));
+        L->prr_rcs = (double)aaf_fm(ratio,
+                                    copysignf(1.0f, (float)L->prr_rcs));
+        L->prs_rcs = -L->prr_rcs;
+    }
+}
+
+
+// :2982 and :3164-3179, then :3189.  qvten and tten are REAL accumulators
+// (:1668-1669 zero them): each source stage adds its DOUBLE right-hand side
+// and rounds once.  Given both (the production adapter's v4.6.1 path), the
+// vapour stays WRF's read-only qv1d, and the temperature becomes the TAU+1
+// t1d + DT*tten; the condensation and the rain evaporation add their own
+// terms to the same accumulators and re-form qv1d + DT*qvten and
+// t1d + DT*tten as WRF does (:3189, :3479-3483, :3563-3566).  Null (the unit
+// gates' in-place form): the level's own tendencies are applied in place.
+__device__ __forceinline__ void thompson_aa_wrf_apply_vapor_heat(
+    int idx, float t1d, float* __restrict__ qv,
+    float* __restrict__ temperature, float* __restrict__ qvten,
+    float* __restrict__ tten, double qv_rate, double t_rate, float dt)
+{
+    if (tten != nullptr) {
+        qvten[idx] = (float)aaf_da((double)qvten[idx], qv_rate);
+        tten[idx] = (float)aaf_da((double)tten[idx], t_rate);
+        temperature[idx] = aaf_fa(t1d, aaf_fm(dt, tten[idx]));
+    } else {
+        temperature[idx] = aaf_fa(t1d, aaf_fm(dt, (float)t_rate));
+        qv[idx] = aaf_fa(qv[idx], aaf_fm(dt, (float)qv_rate));
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// WRF's wet-bulb temperature twet (:2004-2013) and its Bolton (1980)
+// helpers theta_e (:6032), t_lcl (:6066), t_dew (:6089), theta_wetb (:6111)
+// and compT_fr_The (:6149), every REAL(4) operation pinned.  twet selects
+// the melting branch of rain collecting snow and graupel and scales the
+// collision-enhanced melting and the melted-drop number (:2488, :2526,
+// :2787, :2793, :2825).
+// ---------------------------------------------------------------------------
+
+__device__ __forceinline__ float aaf_theta_e(float pp, float tt, float w,
+                                             float tlc)
+{
+    const float rr = aaf_fa(w, 1.0e-8f);
+    const float power = aaf_fm(0.2854f, aaf_fs(1.0f, aaf_fm(0.28f, rr)));
+    const float xx = aaf_fm(tt, thompson_aa_powf(aaf_fd(100000.0f, pp),
+                                                 power));
+    const float p1 = aaf_fs(aaf_fd(3.376f, tlc), 0.00254f);
+    const float p2 = aaf_fm(aaf_fm(rr, 1000.0f),
+                            aaf_fa(1.0f, aaf_fm(0.81f, rr)));
+    return aaf_fm(xx, thompson_aa_expf(aaf_fm(p1, p2)));
+}
+
+__device__ __forceinline__ float aaf_t_lcl(float tt, float tttd)
+{
+    const float denom = aaf_fa(aaf_fd(1.0f, aaf_fs(tttd, 56.0f)),
+                               aaf_fd(thompson_aa_logf(aaf_fd(tt, tttd)),
+                                      800.0f));
+    return aaf_fa(aaf_fd(1.0f, denom), 56.0f);
+}
+
+__device__ __forceinline__ float aaf_t_dew(float p, float w)
+{
+    const float rr = aaf_fa(w, 1.0e-8f);
+    const float es = aaf_fd(aaf_fm(p, rr), aaf_fa(0.622f, rr));
+    const float esln = thompson_aa_logf(es);
+    return aaf_fd(aaf_fs(aaf_fm(35.86f, esln), 4947.2325f),
+                  aaf_fs(esln, 23.6837f));
+}
+
+// c and d are real*8 arrays DATA-initialised from default-REAL literals,
+// so each coefficient is the float32 literal widened; answer is REAL.
+__device__ __forceinline__ float aaf_theta_wetb(float thetae)
+{
+    const double c[7] = {
+        (double)-1.00922292e-10f, (double)-1.47945344e-8f,
+        (double)-1.7303757e-6f, (double)-0.00012709f,
+        (double)1.15849867e-6f, (double)-3.518296861e-9f,
+        (double)3.5741522e-12f};
+    const double d[7] = {
+        (double)0.0f, (double)-3.5223513e-10f, (double)-5.7250807e-8f,
+        (double)-5.83975422e-6f, (double)4.72445163e-8f,
+        (double)-1.13402845e-10f, (double)8.729580402e-14f};
+    const float x = fminf(475.0f, thetae);
+    const double* k = x <= 335.5f ? c : d;
+    const double xd = (double)x;
+    const double a = aaf_da(k[0], aaf_dm(xd, aaf_da(k[1], aaf_dm(xd,
+        aaf_da(k[2], aaf_dm(xd, aaf_da(k[3], aaf_dm(xd, aaf_da(k[4],
+        aaf_dm(xd, aaf_da(k[5], aaf_dm(xd, k[6]))))))))))));
+    return aaf_fa((float)a, 273.15f);
+}
+
+__device__ __forceinline__ float aaf_compT_fr_The(float thelcl, float pres)
+{
+    float guess = aaf_fm(aaf_fs(thelcl, aaf_fm(0.5f, thompson_aa_powf(
+        fmaxf(aaf_fs(thelcl, 270.0f), 0.0f), 1.05f))),
+        thompson_aa_powf(aaf_fd(pres, 100000.0f), 0.2f));
+    for (int iter = 1; iter <= 100; ++iter) {
+        const float w1 = thompson_rslf(pres, guess);
+        const float w2 = thompson_rslf(pres, aaf_fa(guess, 1.0f));
+        const float tenu = aaf_theta_e(pres, guess, w1, guess);
+        const float tenup = aaf_theta_e(pres, aaf_fa(guess, 1.0f), w2,
+                                        aaf_fa(guess, 1.0f));
+        // WRF divides unguarded; a zero denominator there is garbage, not a
+        // result, and WOOF leaves the iteration instead (never measured to
+        // occur on the column oracle).
+        const float den = aaf_fs(tenup, tenu);
+        if (den == 0.0f) break;
+        const float cor = aaf_fd(aaf_fs(thelcl, tenu), den);
+        guess = aaf_fa(guess, cor);
+        if (cor < 0.01f && -cor < 0.01f) return guess;
+    }
+    return aaf_fm(aaf_theta_wetb(thelcl),
+                  thompson_aa_powf(aaf_fd(pres, 100000.0f), 0.286f));
+}
+
+// :2006-2011 for a level at or below k_melting.  satw = qv/qvs with qv the
+// floored working vapour (:1800, :1984).
+__device__ __forceinline__ float thompson_aa_wrf_twet(float pres, float temp,
+                                                      float qv)
+{
+    const float satw = aaf_fd(qv, thompson_rslf(pres, temp));
+    if (!(satw < 0.999f)) return temp;
+    const float dew_t = fminf(aaf_fs(temp, 0.001f), aaf_t_dew(pres, qv));
+    const float Tlcl = aaf_t_lcl(temp, dew_t);
+    const float The = aaf_theta_e(pres, temp, qv, Tlcl);
+    return fminf(temp, aaf_compT_fr_The(The, pres));
+}
+
+
+// ---------------------------------------------------------------------------
+// Snow and classic-graupel constants, the air density and the classic
+// graupel number, shared by the v4.6.1 snow and graupel fallout
+// (thompson_aerosol_sed.cu), the graupel-number entry and exit
+// (thompson_aerosol_state.cu) and the reflectivity.  The REAL(4) gamma
+// moments were read back from the oracle build's thompson_init, which forms
+// them as WGAMMA(cse(k)) at runtime (:727-776); two of them are not the
+// integers they approximate: crg(4) = cgg(4,1) = 720.000061, not 720.
+// ---------------------------------------------------------------------------
+__device__ __forceinline__ float thompson_aa_air_density(
+    float pressure, float temperature, float qv)
+{
+    // 0.622*pres(k)/(R*temp(k)*(qv(k)+0.622)), qv already floored.
+    return thompson_aa_div(thompson_aa_mul(0.622f, pressure),
+        thompson_aa_mul(thompson_aa_mul(THOMPSON_AA_R_DRY, temperature),
+                        thompson_aa_add(qv, 0.622f)));
+}
+
+// WRF's RHO_NOT, 101325./(287.05*298.0) folded in REAL(4).
+#define THOMPSON_AA_RHO_NOT 1.18452108f
+
+// Snow (:113-117, :146-148, :727-749): csg(k) = WGAMMA(cse(k)) as REAL(4),
+// read back from the oracle build's thompson_init.
+#define THOMPSON_AA_CSE1  3.0f
+#define THOMPSON_AA_CSG1  2.0f
+#define THOMPSON_AA_CSE4  3.54999995f
+#define THOMPSON_AA_CSG4  3.51325202f
+#define THOMPSON_AA_CSE7  3.63569999f
+#define THOMPSON_AA_CSG7  3.87160635f
+#define THOMPSON_AA_CSE10 4.18569994f
+#define THOMPSON_AA_CSG10 7.61279917f
+#define THOMPSON_AA_FV_S  100.0f
+
+// Classic graupel, idx_bg1 = 5 (rho_g = 400): am_g(5), cgg(k,5) and the
+// cge/ogg family, as thompson_init leaves them in REAL(4).
+#define THOMPSON_AA_AM_G5   209.439514f
+#define THOMPSON_AA_CGG1    6.0f
+#define THOMPSON_AA_CGG2    1.0f
+#define THOMPSON_AA_CGG3    6.0f
+#define THOMPSON_AA_CGG4    720.000061f
+#define THOMPSON_AA_CGE4    7.0f
+#define THOMPSON_AA_CGG6    20.3632278f
+#define THOMPSON_AA_CGG7    2.94954014f
+#define THOMPSON_AA_CGG12   1.32934034f
+#define THOMPSON_AA_OGG1    0.166666672f
+#define THOMPSON_AA_OGG2    1.0f
+#define THOMPSON_AA_OGG3    0.166666672f
+#define THOMPSON_AA_OGE1    0.25f
+#define THOMPSON_AA_OBMG    0.333333343f
+#define THOMPSON_AA_BM_G    3.0f
+
+// :3289-3297, the classic (not hail-aware) graupel number WRF diagnoses
+// from the working content rg(k) for the fallout; ng1d is not read.  N0_exp,
+// lam_exp and lamg are DOUBLE PRECISION, ygra1 and zans1 REAL.
+__device__ __forceinline__ float thompson_aa_classic_graupel_number_m3(
+    float rg)
+{
+    const float ygra1 = thompson_aa_log10f(fmaxf(1.0e-9f, rg));
+    float zans1 = thompson_aa_add(3.0f, thompson_aa_mul(
+        2.0f / 7.0f, thompson_aa_add(ygra1, 8.0f)));
+    zans1 = fmaxf(2.0f, fminf(zans1, 6.0f));
+    const double n0_exp = (double)thompson_aa_powf(10.0f, zans1);
+    const double lam_exp = thompson_aa_pow(__ddiv_rn(__dmul_rn(__dmul_rn(
+        n0_exp, (double)THOMPSON_AA_AM_G5), (double)THOMPSON_AA_CGG1),
+        (double)rg), (double)THOMPSON_AA_OGE1);
+    const double lamg = __dmul_rn(lam_exp, (double)thompson_aa_powf(
+        thompson_aa_mul(thompson_aa_mul(THOMPSON_AA_CGG3, THOMPSON_AA_OGG2),
+                        THOMPSON_AA_OGG1), THOMPSON_AA_OBMG));
+    return (float)__ddiv_rn(__dmul_rn((double)thompson_aa_mul(
+        thompson_aa_mul(THOMPSON_AA_CGG2, THOMPSON_AA_OGG3), rg),
+        thompson_aa_pow(lamg, (double)THOMPSON_AA_BM_G)),
+        (double)THOMPSON_AA_AM_G5);
 }

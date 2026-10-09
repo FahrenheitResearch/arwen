@@ -255,10 +255,12 @@ fn the_fileless_catalog_says_which_products_a_wrfout_can_ever_draw() {
         assert_eq!(rows[*slug].0, "eligible", "{slug}: {:?}", rows[*slug]);
     }
     assert_eq!(rows.len(), selectable.len() + fire.len(), "one row per selectable slug");
-    // The General preset's three that never drew: no wrfout import writes
-    // their fields.
-    for slug in ["10m_wind_gusts", "precipitation_type", "cloud_cover"] {
-        assert_eq!(rows[slug].0, "missing", "{slug}: {:?}", rows[slug]);
+    // No wrfout import writes the aggregate cloud-cover selector.
+    assert_eq!(rows["cloud_cover"].0, "missing", "{:?}", rows["cloud_cover"]);
+    // The winter import now writes the canonical gust and categorical
+    // precipitation selectors. Its real-frame contract is in winter.rs.
+    for slug in ["10m_wind_gusts", "precipitation_type"] {
+        assert_eq!(rows[slug], ("drawable".to_string(), "0".to_string()), "{slug}");
     }
     // And the products the retired NEEDS/PLANNED reading wrongly called
     // undrawable, beside the layer cloud panel that does draw.

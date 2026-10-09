@@ -32,6 +32,19 @@ extern "C" __global__ void set_surface_w(
     if (by && j == ny - 1) dyn = 0.0f;
     if (bx && i == 0) dxw = 0.0f;
     if (bx && i == nx - 1) dxe = 0.0f;
+#if GPUWM_WRF_EXACT
+    // WRF set_w_surface: msfty*.5*rdy*(...) + msftx*.5*rdx*(...), each map
+    // factor taken into its own coefficient left to right; rdx = 1./dx is
+    // twice half_rdx exactly.  msft is 1 on an unmapped grid.
+    float msf = mapped ? msft[col] : 1.0f;
+    float cy = __fmul_rn(__fmul_rn(msf, 0.5f), __fmul_rn(2.0f, half_rdy));
+    float cx = __fmul_rn(__fmul_rn(msf, 0.5f), __fmul_rn(2.0f, half_rdx));
+    float y = __fmul_rn(cy, __fadd_rn(__fmul_rn(dyn, vc1),
+                                      __fmul_rn(dys, vc0)));
+    float x = __fmul_rn(cx, __fadd_rn(__fmul_rn(dxe, uc1),
+                                      __fmul_rn(dxw, uc0)));
+    w[col] = __fadd_rn(y, x);
+#else
     float y = __fmul_rn(half_rdy, __fadd_rn(__fmul_rn(dyn, vc1),
                                           __fmul_rn(dys, vc0)));
     float x = __fmul_rn(half_rdx, __fadd_rn(__fmul_rn(dxe, uc1),
@@ -39,4 +52,5 @@ extern "C" __global__ void set_surface_w(
     float out = __fadd_rn(y, x);
     if (mapped) out = __fmul_rn(out, msft[col]);
     w[col] = out;
+#endif
 }

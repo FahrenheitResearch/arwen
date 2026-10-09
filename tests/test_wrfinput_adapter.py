@@ -16,15 +16,27 @@ def test_file_coordinate_is_retained_and_base_theta_is_absolute():
     names = ('znw', 'znu', 'dnw', 'rdnw', 'dn', 'rdn', 'fnp', 'fnm',
              'c1f', 'c2f', 'c3f', 'c4f', 'c1h', 'c2h', 'c3h', 'c4h')
     raw = {name.upper(): np.arange(3, dtype=np.float32) for name in names}
-    raw.update(P_TOP=np.float32(5000), T_INIT=np.array([-6., 168.], np.float32),
-               MUB=np.array([80000.]), PB=np.array([90000.]), ALB=np.array([1.]),
-               PHB=np.array([0., 1000.]), HGT=np.array([0.]))
+    raw.update(C3H=np.array([0.9, 0.5], np.float32), C4H=np.zeros(2, np.float32),
+               C3F=np.array([1.0, 0.7, 0.0], np.float32), C4F=np.zeros(3, np.float32),
+               P_TOP=np.float32(5000), T_INIT=np.array([[[-6.]], [[168.]]], np.float32),
+               MUB=np.array([[80000.]]), PB=np.array([[[90000.]], [[40000.]]]),
+               ALB=np.ones((2, 1, 1)), PHB=np.zeros((3, 1, 1)),
+               HGT=np.array([[300.]], np.float32),
+               P00=np.float32(1e5), T00=np.float32(290.), TLP=np.float32(50.),
+               TISO=np.float32(200.), TLP_STRAT=np.float32(-11.),
+               P_STRAT=np.float32(0.))
     coord, base = wrf_coordinate_and_base(SimpleNamespace(
         raw=raw, global_attributes={'HYBRID_OPT':2, 'ETAC':.2}))
-    np.testing.assert_array_equal(base.thb, [294., 468.])
     for name in names:
         assert getattr(coord, name) is raw[name.upper()]
-    assert base.pb is raw['PB']
+    # The base state is WRF's cold-start rebuild (start_em.F:554-680), not
+    # the file's words: test_wrfinput_start_base_wrf461 pins it against
+    # wrf.exe's own minute-0 history.
+    from gpuwm.ingest.wrfinput import wrf_start_base_state
+    start = wrf_start_base_state(raw, 2)
+    np.testing.assert_array_equal(base.pb, start['PB'])
+    np.testing.assert_array_equal(base.thb, start['T_INIT'] + np.float32(300.))
+    assert not np.array_equal(base.pb, raw['PB'])
 
 
 def test_wrf_command_help_is_cpu_only_and_executable(tmp_path):

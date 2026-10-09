@@ -1,0 +1,15 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# WRF build: /work/pverify/wrf-build/serial/WRF-4.6.1
+# libm symbols the as-built scheme and wrapper import:
+U _ZGVbN4vv_powf
+U atanf
+U expf
+U logf
+U powf
+826fa604b5052ae71138e886e07e061a951302a69b3f18a9df8590c35504bcd3  ccpp_kind_types.o
+9cb03cc2e44c2c9817d1dd5462618200823eec5c5fb5a70bb72f6f0eb5dcd592  sf_sfclayrev.o
+86978b3e70083a0970dcb503e14e467b3d92127f55cb2ae0532939b16a2c0d2d  module_sf_sfclayrev.o
+46459b5c6abc45d7252dcc10a528baf845a233285bb6fc201a222e0c03bd75bb  tools/sfclayrev_wrf461_oracle/run_sfclayrev.F90
+be71a3f5300347a6402890bd4bc06940f2d69ddc849fba7c66eed047cc729bdb  tests/data/oracles/sfclayrev/sfclayrev-inputs.hex
+22b736575b3f181de2f4f5b264c9aa7dde03b775db399dc99101188dbf22482a  sfclayrev-outputs-asbuilt.hex

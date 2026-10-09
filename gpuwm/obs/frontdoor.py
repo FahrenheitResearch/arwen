@@ -382,6 +382,6 @@ FRONT_DOORS = {"mrms": MRMS, "stage4": STAGE4, "asos": ASOS, "goes": GOES,
                "opera": OPERA, "odim": ODIM, "airnow": AIRNOW}
 
 
-__all__ = ["AIRNOW", "ASOS", "CARGO_BUILD_HINT", "FRONT_DOORS", "GOES", "MRMS", "ODIM",
+__all__ = ["AIRNOW", "ASOS", "CARGO_BUILD_HINT", "FRONT_DOORS", "GOES", "MRMS", "ODIM",  # noqa: F822 -- module __getattr__
            "OPERA", "PREPBUFR",
            "STAGE4", "FrontDoor", "crate_dir"]

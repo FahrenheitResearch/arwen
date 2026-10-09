@@ -485,6 +485,56 @@ for module in ("gpuwm.core.physics", "gpuwm.core.ruc", "gpuwm.core.ruc_gpu", "gp
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
+def test_standalone_terrain_preparation_reads_measured_maps_without_forecast(tmp_path):
+    """Non-flat preparation reaches the staged map readers and their data."""
+    import tomllib
+
+    staged = tmp_path / "rw-wps-python"
+    receipt = _stage_or_skip(staged)
+    names = {
+        "terrain_clock_map.json", "terrain_clock_map_local_face.json",
+        "terrain_clock_adaptive_local_face.json",
+    }
+    assert {f"gpuwm/{name}" for name in names} <= set(receipt["files"])
+    metadata = tomllib.loads((staged / "pyproject.toml").read_text(encoding="utf-8"))
+    assert names <= set(metadata["tool"]["setuptools"]["package-data"]["gpuwm"])
+    assert not [item for item in receipt["optional_internal_imports"]
+                if item["module"] in {"gpuwm.acoustic_adaptation",
+                                      "gpuwm.terrain_clock",
+                                      "gpuwm.terrain_clock_local"}]
+    script = """
+from pathlib import Path
+import sys
+import numpy as np
+from gpuwm import acoustic_adaptation, terrain_clock, terrain_clock_local
+from gpuwm.static.lambert import LambertGrid
+from gpuwm.static.terrain_autosmooth import measured_slope_limit, prepare_fields
+
+root = Path.cwd().resolve()
+for module in (acoustic_adaptation, terrain_clock, terrain_clock_local):
+    assert Path(module.__file__).resolve().is_relative_to(root)
+grid = LambertGrid(25, 0, 20, 30, 0, 500, 500, 25, 25)
+limit, arms = measured_slope_limit(grid)
+assert limit == .85 and arms
+# A non-flat field reaches the map instead of taking the flat early return.
+terrain = np.zeros((24, 24))
+terrain[10:14, 10:14] = 20
+fields = {"HGT_M": terrain}
+assert prepare_fields(fields, grid, domain_id=1) is fields
+table = terrain_clock_local.candidate_map(arms)
+assert table.rows
+assert terrain_clock_local.adaptive_document()["rows"]
+for name in ("gpuwm.core.model", "gpuwm.core.dycore", "gpuwm.core.physics", "cupy"):
+    assert name not in sys.modules, name
+"""
+    environment = os.environ.copy()
+    environment.update(PYTHONPATH=str(staged), CUDA_VISIBLE_DEVICES="",
+                       GPUWM_NO_LOCAL_GPU="1", PYTHONDONTWRITEBYTECODE="1")
+    completed = subprocess.run([sys.executable, "-P", "-c", script], cwd=staged,
+                               env=environment, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     staged = tmp_path / "rw-wps-python"
     receipt = _stage_or_skip(staged)
@@ -624,16 +674,18 @@ assert variants[1]["surface"]["sst_offset_k"] == 1.0
     assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
         ("gpuwm/static/corridor.py", "gpuwm.core.nest_relocation"),
         ("gpuwm/static/corridor.py", "gpuwm.ingest.relocation_init")}
-    # Terrain adaptation belongs to the excluded forecast runners. The
-    # namelist importer needs the shared acoustic count, which ships with
-    # its adaptive-timestep dependency. Its live physics cadence stays out.
-    assert "gpuwm/acoustic_adaptation.py" not in files
-    assert "gpuwm/terrain_clock.py" not in files
+    # Static preparation checks its slope against the measured terrain map.
+    # Ship its CPU readers while leaving forecast execution and live physics
+    # cadence out of this preprocessing package.
+    assert "gpuwm/acoustic_adaptation.py" in files
+    assert "gpuwm/terrain_clock.py" in files
+    assert "gpuwm/terrain_clock_local.py" in files
     assert "gpuwm/core/adaptive_clock.py" in files
     assert "gpuwm/core/adaptive_timestep.py" in files
     assert "gpuwm/core/physics.py" not in files
     assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
-        ("gpuwm/core/adaptive_clock.py", "gpuwm.core.physics")}
+        ("gpuwm/core/adaptive_clock.py", "gpuwm.core.physics"),
+        ("gpuwm/ingest/lateral_bc.py", "gpuwm.core.dycore")}
     # The chained writer ships with the era5, gfs and mapped routes; the
     # forecast admission it reaches only when it chains does not, and a
     # preparation-only install never chains, so that import is optional.
@@ -2234,3 +2286,28 @@ def test_both_installed_launchers_bind_every_declared_bridge():
         assert (f'$env:{bridge.env_var} = Join-Path $Root '
                 f'"libexec{separator}bridges{separator}'
                 f'{bridge.name}.exe"') in windows, bridge.name
+
+
+@pytest.mark.parametrize("argv, message", [
+    ([], "--bridge-dir is required unless --contract is used"),
+    (["--contract", "--receipt", "r.json"],
+     "--contract cannot be combined with runtime verification inputs"),
+])
+def test_runtime_check_usage_errors_reach_the_user(argv, message, monkeypatch,
+                                                   capsys):
+    """``gpuwm-wrf-runtime-check`` prints its usage error and exits 2.
+
+    The named breakage: ``main`` called ``parser.error`` on a parser it
+    never bound, so a bare ``gpuwm-wrf-runtime-check`` (or ``--contract``
+    with a runtime input) died on ``NameError: name 'parser' is not
+    defined`` instead of saying what was missing (shipped in 2.8.7;
+    found by tests/test_no_undefined_names.py).
+    """
+    import gpuwm.native_wrf_distribution as runtime_check
+    import gpuwm.provenance_gate as provenance_gate
+
+    monkeypatch.setattr(provenance_gate, "announce_for_main", lambda name: None)
+    with pytest.raises(SystemExit) as caught:
+        runtime_check.main(argv)
+    assert caught.value.code == 2
+    assert message in capsys.readouterr().err

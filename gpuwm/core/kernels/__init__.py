@@ -38,6 +38,7 @@ _ENCODING = "utf-8"
 # This table must stay a literal name -> filenames mapping.  Do not give it
 # filesystem probing, globbing, or any implicit fallback.
 _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
+    "acoustic": ("glibc_trig_flt32.cuh",),
     "upper_wind_limiter": ("glibc_flt32.cuh",),
     # Reuse the scalar high-order helpers without moving the order-3 unit.
     "pd_vertical_sl": ("pd_advection.cu",),
@@ -60,12 +61,29 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "chem_settling": ("glibc_flt32.cuh",),
     "chem_drydep_gocart": ("glibc_flt32.cuh",),
     "chem_optics": ("glibc_flt32.cuh",),
-    "thompson_aerosol_probe": ("thompson_aerosol_common.cuh",),
-    "thompson_aerosol_state": ("thompson_aerosol_common.cuh",),
-    "thompson_aerosol_sat": ("thompson_aerosol_common.cuh",),
-    "thompson_aerosol_cold": ("thompson_aerosol_common.cuh",),
-    "thompson_aerosol_warm": ("thompson_aerosol_common.cuh",),
-    "thompson_aerosol_sed": ("thompson_aerosol_common.cuh",),
+    # The mp=28 units evaluate WRF's EXP/LOG/LOG10/** through WOOF's own
+    # float32 and binary64 libm words (thompson_aerosol_libm.cuh),
+    # measured equal to the gfortran oracle host's words; CUDA's
+    # builtins are different functions and left no column of the 0 ULP
+    # column oracle bit-identical (tools/thompson_aerosol_column_oracle).
+    "thompson_aerosol_probe": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                               "thompson_aerosol_libm.cuh",
+                               "thompson_aerosol_common.cuh"),
+    "thompson_aerosol_state": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                               "thompson_aerosol_libm.cuh",
+                               "thompson_aerosol_common.cuh"),
+    "thompson_aerosol_sat": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                               "thompson_aerosol_libm.cuh",
+                               "thompson_aerosol_common.cuh"),
+    "thompson_aerosol_cold": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                               "thompson_aerosol_libm.cuh",
+                               "thompson_aerosol_common.cuh"),
+    "thompson_aerosol_warm": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                               "thompson_aerosol_libm.cuh",
+                               "thompson_aerosol_common.cuh"),
+    "thompson_aerosol_sed": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                               "thompson_aerosol_libm.cuh",
+                               "thompson_aerosol_common.cuh"),
     # The LW solver derives the Planck sources itself instead of loading
     # what rrtmgp_planck_sources wrote; the helpers it needs live in a
     # header whose every FP op is pinned (HOWTO 13.6j).  rrtmgp_gas is
@@ -84,8 +102,11 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # still grade at max_ulp 0.  See glibc_flt32.cuh's header.
     # Noah mosaic uses scalar glibc float32 words for the WRF column oracle.
     "noah_mosaic": ("glibc_flt32.cuh",),
-    # RUC mosaic roughness uses WRF's LOG/EXP parameter blend.
-    "ruc": ("glibc_flt32.cuh",),
+    # RUC: every EXP, LOG, LOG10, TANH and REAL**REAL of module_sf_ruclsm.F
+    # takes WOOF's float32 words (gfk_* here, the log10/expm1/tanh routines in
+    # ruc.cu) and the soil-resistance COS takes glibc_cosf, graded bitwise
+    # against WRF v4.6.1 by tools/ruc_lsm_gpu_oracle.
+    "ruc": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
     "gf": ("glibc_flt32.cuh",),
     # WRF-Chem Wesely gas dry deposition: rc/depvel read exp, log and pow,
@@ -111,6 +132,9 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # and the arm's own pieces (get_pblh, the 10 m blend), kept out of
     # ysu.cu so its cited line numbers stand.
     "ysu": ("glibc_flt32.cuh", "ysu_topo.cuh"),
+    # Shin-Hong takes glibc's powf/expf (gfk_pow/gfk_exp) since
+    # lane/parity-pbl-libm, graded by tests/test_shinhong_wrf461_parity.py.
+    "shinhong": ("glibc_flt32.cuh",),
     # The UW moist-turbulence PBL (bl_pbl_physics=9) computes in binary64
     # like the CAM code it transcribes: glibc's own binary64 exp/log/pow,
     # the rounding-pinned R8 vocabulary, then the CAM modules in call order
@@ -137,6 +161,15 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "real_init_math": ("real_init_common.cuh", "portable_libm64.cuh"),
     "chem_fire": ("glibc_flt32.cuh",),
     "chem_plumerise": ("glibc_flt32.cuh",),
+    # The km_opt=2/3 path (tke_km, calc_l_scale, tke_dissip, calculate_N2 and
+    # phy_prep's p8w/t8w) takes REAL**REAL, EXP and LOG as gfk_pow/gfk_exp/
+    # gfk_log, graded bitwise by tools/tke_km2_wrf461_oracle against the WRF
+    # v4.6.1 Fortran.  CUDA's powf/expf/logf flipped calculate_N2's saturated
+    # predicate there and moved the TKE coefficients by up to 34,746 ULP.
+    "smag2d": ("glibc_flt32.cuh",),
+    "myjsfc": ("glibc_flt32.cuh", "flt32_expf_fma.cuh"),
+    "mynn_surface": ("mynn_libm.cuh", "surface_subnormal.cuh"),
+    "sfclay": ("glibc_flt32.cuh", "sfclay_classic.cuh"),
 }
 
 #: Read-only view for tests and freeze receipts.
@@ -156,9 +189,7 @@ def _extra_header_text(name: str, kernel_dir: Path = _KDIR) -> str:
     makes the assembled source byte-identical to the pre-hook string.
     """
     headers = _EXTRA_HEADERS.get(name, ())
-    from gpuwm.wrf_exact import ENABLED, DIAGNOSTICS_ENABLED
-    if ENABLED and name == "acoustic":
-        headers += ("glibc_trig_flt32.cuh",)
+    from gpuwm.wrf_exact import ENABLED, DIAGNOSTICS_ENABLED, DIFFUSION_ENABLED
     if DIAGNOSTICS_ENABLED and name == "diagnostics":
         headers += ("glibc_flt32.cuh",)
     return "".join((Path(kernel_dir) / header).read_text(encoding=_ENCODING)
@@ -183,10 +214,130 @@ def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
             + _unit_text(name, kernel_dir))
 
 
+#: Units graded word for word against a WRF column oracle, which needs NVRTC
+#: not to contract multiply-adds (WRF's reference is gfortran -O0, no FMA).
+#: lake: the CLM lake oracle.  ysu and shinhong: the WRF 4.6.1 YSU and
+#: Shin-Hong oracles (tests/test_ysu_wrf461_parity.py,
+#: tests/test_shinhong_wrf461_parity.py), together with glibc's powf/expf
+#: (gfk_pow/gfk_exp) in place of CUDA's.  mynn_pbl and its DMP sibling: the
+#: WRF 4.6.1 MYNN oracles (tests/test_mynn_wrf461_exact_gpu.py), through
+#: both loaders (the gsd_41 generation compiles mynn_pbl with an integer
+#: define, :func:`load_module_int_defines`).
+_NO_FMAD_MODULES = frozenset({"lake", "ysu", "shinhong", "mynn_pbl",
+                              "mynn_dmp_sibling"})
+
+
+_NO_FTZ_MODULES = frozenset({"sfclay", "myjsfc", "mynn_surface", "mynn_pbl"})
+
+
 def module_options(name: str) -> tuple[str, ...]:
     """Compile options shared by runtime, oracle and division census."""
-    return (("-std=c++17", "--fmad=false") if name == "lake"
+    if name in _NO_FTZ_MODULES:
+        return ("-std=c++17", "--fmad=false", "--ftz=false")
+    if name in _DIFFUSION_MODULES:
+        return DIFFUSION_OPTIONS
+    return (("-std=c++17", "--fmad=false") if name in _NO_FMAD_MODULES
             else ("-std=c++17",))
+
+
+_DIFFUSION_MODULES = frozenset(("smag2d", "diffusion", "diff_opt1", "diff6", "diff6_seam"))
+
+DIFFUSION_OPTIONS = ("-std=c++17", "--fmad=false", "--ftz=false",
+                     "--prec-div=true", "--prec-sqrt=true",
+                     "-DGPUWM_WRF_EXACT_C_DIFFUSION=1")
+# Only the coefficient and w solve use this route in the acoustic unit.
+# Other acoustic symbols keep their existing compiled module.
+_DIFFUSION_FUNCTIONS = {
+    "acoustic": frozenset(("calc_coefs", "advance_w_phi", "advance_w_phi_msf")),
+    "dycore": frozenset(("w_damp", "w_cfl_stat")),
+}
+
+
+def diffusion_kernel(name: str, function: str) -> bool:
+    # The default acoustic arm failed the real-column exactness gate.
+    # Retain its existing strict opt-in compiler and the qualified diffusion
+    # modules; an ordinary acoustic launch keeps its published arithmetic.
+    if name == "acoustic":
+        from gpuwm.wrf_exact import ENABLED
+        if not ENABLED:
+            return False
+    return name in _DIFFUSION_MODULES or function in _DIFFUSION_FUNCTIONS.get(name, ())
+
+
+def function_options(name: str, function: str, options) -> tuple[str, ...]:
+    """Keep scalar and batch diffusion on the same arithmetic route."""
+    if not diffusion_kernel(name, function):
+        return tuple(options)
+    overridden = {"std", "fmad", "ftz", "prec-div", "prec-sqrt", "use_fast_math",
+                  "DGPUWM_WRF_EXACT_C_DIFFUSION"}
+    return tuple(o for o in options if o.lstrip("-").split("=", 1)[0] not in overridden) + DIFFUSION_OPTIONS
+
+
+@cuda_cache(maxsize=None)
+def compile_diffusion_source(source: str, key: str, options):
+    """Load and record an IEEE diffusion image, including batch witnesses."""
+    import cupy as cp
+    from cupy.cuda import compiler
+    from gpuwm.kernel_compile_notice import observe_module_compile
+    from gpuwm.certify.kernel_manifest import record_module
+    from types import SimpleNamespace
+    from gpuwm.wrf_exact import ENABLED, effective_options
+    if ENABLED:
+        options = effective_options(options)
+    with observe_module_compile(key):
+        binary, _ = compiler.compile_using_nvrtc(source, options=options)
+        module = cp.cuda.function.Module()
+        module.load(binary.encode() if isinstance(binary, str) else binary)
+    image = binary.encode() if isinstance(binary, str) else binary
+    kind = "cubin" if image.startswith(b"\x7fELF") else "ptx"
+    record_module(key, source=source, options=options,
+                  module=SimpleNamespace(**{kind: image}))
+    return module
+
+
+@cuda_cache(maxsize=None)
+def _load_diffusion_module(name: str, defines=()):
+    """Compile with IEEE arithmetic at NVRTC's final boundary.
+
+    RawModule appends FTZ after caller options. Direct NVRTC keeps the
+    requested --ftz=false and records the actual image and option tuple.
+    The ordinary and integer-tier loaders share this one compile site.
+    """
+    from gpuwm.wrf_exact import ENABLED, DIFFUSION_ENABLED, effective_options
+    from gpuwm.physics_params import note_compiled
+    source = module_source_int_defines(name, defines) if defines else module_source(name)
+    options = DIFFUSION_OPTIONS
+    if not DIFFUSION_ENABLED:
+        options = tuple(o for o in options if "DGPUWM_WRF_EXACT_C_DIFFUSION" not in o)
+    if ENABLED:
+        options = effective_options(options)
+    tier = ",".join(f"{key}={value}" for key, value in defines)
+    key = f"{MODULE_KEY_ROOT}:{name}" + (f"[{tier}]" if tier else "")
+    module = compile_diffusion_source(source, key, options)
+    note_compiled(name)
+    return module
+
+
+def compile_noftz_module(name: str, src: str, key: str):
+    """Compile the requested image without CuPy's appended FTZ option."""
+    import cupy as cp
+    from gpuwm import nvrtc_ptx_cache as compiler
+    from gpuwm.kernel_compile_notice import observe_module_compile
+    from gpuwm.certify.kernel_manifest import record_module
+    from gpuwm.physics_params import note_compiled
+    options = module_options(name)
+    # Bind strict macros into the direct cache key as well as the compiler
+    # request. Otherwise a default cached image could enter a strict run.
+    from gpuwm import wrf_exact
+    if wrf_exact.ENABLED:
+        options = wrf_exact.effective_options(options)
+    with observe_module_compile(key):
+        image, _ = compiler.compile_using_nvrtc(src, options, None, name + ".cu")
+        module = cp.cuda.function.Module()
+        module.load(image.encode() if isinstance(image, str) else image)
+    note_compiled(name)
+    record_module(key, source=src, options=options, module=None)
+    return module
 
 
 def _load_module_without_fmad(name: str, src: str, options: tuple[str, ...]):
@@ -209,6 +360,13 @@ def _load_module_without_fmad(name: str, src: str, options: tuple[str, ...]):
     mod = cp.RawModule(code=src, options=("-std=c++17", "--fmad=false"),
                        name_expressions=None)
     _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
+    # The physics-parameter guard must see these units compile too:
+    # mynn_pbl and mynn_dmp_sibling carry registered literals
+    # (gpuwm/physics_params_registry_v1.json), and a set declared after they
+    # compiled would otherwise run under the set's name with the default
+    # constants, the breakage physics_params.declare refuses.
+    from gpuwm.physics_params import note_compiled
+    note_compiled(name)
     from gpuwm.certify.kernel_manifest import record_module
     record_module(f"{MODULE_KEY_ROOT}:{name}", source=src,
                   options=("-std=c++17", "--fmad=false"), module=mod)
@@ -218,6 +376,8 @@ def _load_module_without_fmad(name: str, src: str, options: tuple[str, ...]):
 @cuda_cache(maxsize=None)
 def load_module(name: str):
     import cupy as cp
+    if name in _DIFFUSION_MODULES:
+        return _load_diffusion_module(name)
     if name.startswith("noahmp_"):
         from gpuwm.core.noahmp_kernel_sources import (
             NOAHMP_TRANSLATION_UNITS, compile_runtime_unit)
@@ -235,6 +395,8 @@ def load_module(name: str):
                 and name != "noahmp_vegeflux"):
             return compile_runtime_unit(name, module_key=f"{MODULE_KEY_ROOT}:{name}")
     src = module_source(name)
+    if name in _NO_FTZ_MODULES:
+        return compile_noftz_module(name, src, f"{MODULE_KEY_ROOT}:{name}")
     options = module_options(name)
     if options != ("-std=c++17",):
         return _load_module_without_fmad(name, src, options)
@@ -273,6 +435,13 @@ def load_module_int_defines(
                 f"CUDA integer define {key} must be a positive integer")
     prefix = "\n".join(f"#define {key} {value}" for key, value in normalized)
     src = module_source_int_defines(name, normalized, prefix=prefix)
+    if name in _NO_FTZ_MODULES:
+        tier = ",".join(f"{key}={value}" for key, value in normalized)
+        return compile_noftz_module(name, src, f"{MODULE_KEY_ROOT}:{name}[{tier}]")
+    if name in _DIFFUSION_MODULES:
+        return _load_diffusion_module(name, normalized)
+    if name in _NO_FMAD_MODULES:
+        return _load_module_int_defines_without_fmad(name, src, normalized)
     mod = cp.RawModule(code=src, options=("-std=c++17",),
                        name_expressions=None)
     _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
@@ -282,6 +451,30 @@ def load_module_int_defines(
     tier = ",".join(f"{key}={value}" for key, value in normalized)
     record_module(f"{MODULE_KEY_ROOT}:{name}[{tier}]",
                   source=src, options=("-std=c++17",), module=mod)
+    return mod
+
+
+def _load_module_int_defines_without_fmad(name: str, src: str, normalized):
+    """An integer-define tier of a no-FMA unit: the same literal tuple as
+    :func:`_load_module_without_fmad`.
+
+    The breakage this prevents: the gsd_41 MYNN generation compiles
+    mynn_pbl through this loader; with the plain tuple NVRTC would contract
+    its multiply-adds while the default build (load_module) does not, and
+    the two builds of one source would round differently.  The record sits
+    beside the compile with the same literal tuple, as the lake's does.
+    """
+    import cupy as cp
+    mod = cp.RawModule(code=src, options=("-std=c++17", "--fmad=false"),
+                       name_expressions=None)
+    _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
+    from gpuwm.physics_params import note_compiled
+    note_compiled(name)
+    from gpuwm.certify.kernel_manifest import record_module
+    tier = ",".join(f"{key}={value}" for key, value in normalized)
+    record_module(f"{MODULE_KEY_ROOT}:{name}[{tier}]",
+                  source=src, options=("-std=c++17", "--fmad=false"),
+                  module=mod)
     return mod
 
 
@@ -310,6 +503,8 @@ def module_source_int_defines(
 @cuda_cache(maxsize=None)
 def get_kernel(name: str, func: str):
     """Return one stable CuPy function wrapper per raw-kernel symbol."""
+    if diffusion_kernel(name, func) and func in _DIFFUSION_FUNCTIONS.get(name, ()):
+        return _load_diffusion_module(name).get_function(func)
     return load_module(name).get_function(func)
 
 
@@ -317,6 +512,16 @@ def get_kernel(name: str, func: str):
 def get_kernel_int_defines(
         name: str, func: str, defines: tuple[tuple[str, int], ...]):
     """Return a cached kernel compiled with validated integer definitions."""
+    if diffusion_kernel(name, func) and func in _DIFFUSION_FUNCTIONS.get(name, ()):
+        # Validate through the same public loader before selecting a tier.
+        # The tier loader's validation remains the sole definition contract.
+        if defines != tuple((str(key), int(value)) for key, value in defines):
+            raise TypeError("kernel integer defines must be canonical (str, int) pairs")
+        import re
+        for key, value in defines:
+            if re.fullmatch(r"[A-Z][A-Z0-9_]*", key) is None or isinstance(value, bool) or value < 1:
+                raise ValueError(f"invalid CUDA integer define {key}={value!r}")
+        return _load_diffusion_module(name, defines).get_function(func)
     return load_module_int_defines(name, defines).get_function(func)
 
 

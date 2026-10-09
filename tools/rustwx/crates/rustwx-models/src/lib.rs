@@ -88,6 +88,7 @@ pub enum RenderStyle {
     WeatherCloudCover,
     WeatherPrecipitableWater,
     WeatherQpf,
+    WeatherSnowfall,
     WeatherCategorical,
     WeatherVisibility,
     WeatherRadarReflectivity,
@@ -3700,6 +3701,19 @@ const FIELD_SNOW_COLUMN_MAX: GribFieldSpec = field_spec(
     &[],
 );
 
+const FIELD_MODEL_SNOWFALL: GribFieldSpec = field_spec(
+    "snowfall_window", "Model snowfall depth, window total", ProductFamily::Surface,
+    GribLevelKind::Surface, None, Some(FieldSelector::surface(CanonicalField::ModelSnowfall)), &[],
+);
+const FIELD_SNOW_10TO1: GribFieldSpec = field_spec(
+    "snow_10to1_window", "10:1 snowfall depth, window total", ProductFamily::Surface,
+    GribLevelKind::Surface, None, Some(FieldSelector::surface(CanonicalField::Snowfall10to1)), &[],
+);
+const FIELD_SNOW_KUCHERA: GribFieldSpec = field_spec(
+    "snow_kuchera_window", "Kuchera snowfall depth, window total", ProductFamily::Surface,
+    GribLevelKind::Surface, None, Some(FieldSelector::surface(CanonicalField::SnowfallKuchera)), &[],
+);
+
 const FIELD_GRAUPEL_COLUMN_MAX: GribFieldSpec = field_spec(
     "graupel_column_max",
     "Graupel Mixing Ratio, Column Maximum",
@@ -5805,6 +5819,21 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherHydrometeorMixingRatio,
     },
     PlotRecipe {
+        slug: "snowfall_window", title: "Model snowfall, window total",
+        filled: FIELD_MODEL_SNOWFALL, contours: None, barbs_u: None, barbs_v: None,
+        style: RenderStyle::WeatherSnowfall,
+    },
+    PlotRecipe {
+        slug: "snow_10to1_window", title: "10:1 snowfall, window total",
+        filled: FIELD_SNOW_10TO1, contours: None, barbs_u: None, barbs_v: None,
+        style: RenderStyle::WeatherSnowfall,
+    },
+    PlotRecipe {
+        slug: "snow_kuchera_window", title: "Kuchera snowfall, window total",
+        filled: FIELD_SNOW_KUCHERA, contours: None, barbs_u: None, barbs_v: None,
+        style: RenderStyle::WeatherSnowfall,
+    },
+    PlotRecipe {
         slug: "graupel_column_max",
         title: "Graupel, Column Maximum",
         filled: FIELD_GRAUPEL_COLUMN_MAX,
@@ -6171,6 +6200,17 @@ pub fn plot_recipe_fetch_plan(
     plot_recipe_fetch_plan_for(recipe, model)
 }
 
+/// Plan a recipe whose canonical fields are supplied by a local store or
+/// caller. Download capability cannot reject an already available plane.
+/// The host must resolve every store requirement before rendering.
+pub fn plot_recipe_store_plan(slug: &str, model: ModelId) -> Result<PlotRecipeFetchPlan, ModelError> {
+    let recipe = plot_recipe(slug).ok_or_else(|| ModelError::UnknownPlotRecipe { slug: slug.into() })?;
+    let fields = collect_recipe_fields(recipe);
+    let (product, fetch_policy) = plot_recipe_fetch_defaults(model, &fields);
+    Ok(PlotRecipeFetchPlan { recipe_slug: recipe.slug, model, product, fetch_policy,
+        fetch_mode: fetch_policy.fetch_mode(), fields })
+}
+
 pub fn selector_fetch_plan(
     model: ModelId,
     selector: FieldSelector,
@@ -6383,6 +6423,11 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 | ModelId::RrfsA
                 | ModelId::Rrfs | ModelId::RrfsPublic
                 | ModelId::RrfsFireWx
+                // WRF-family stores: the importer derives the four flags
+                // from the lowest-level hydrometeor fluxes (rw-wrfbatch
+                // push_precip_type). Breakage it prevents: a WOOF winter
+                // run had no precipitation-type map at all.
+                | ModelId::WrfGdex
         ),
         (CanonicalField::LandSeaMask, VerticalSelector::Surface) => {
             matches!(model, ModelId::EcmwfOpenData)

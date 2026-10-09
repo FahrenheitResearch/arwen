@@ -65,9 +65,9 @@ domain integrates.  Where it reaches the bound below which four substeps
 were measured stable at the domain's ``epssm``, ``time_step_sound`` is
 raised to six.  A count is never lowered, so a configuration that asked
 for more keeps it, and a domain on gentler ground runs exactly as
-configured.  Past the slope six substeps hold, the run still takes six
-(the most stable count measured) and says plainly that its ground is
-steeper than any stable measurement.
+configured. Preparation smooths ground beyond the measured envelope with
+bounded 1-2-1 passes. A prepared forecast still beyond that envelope is
+refused before GPU time and names re-preparation as the remedy.
 
 UNDER THE ADAPTIVE CLOCK the configured count is not the one that runs:
 the clock derives the count from its live step every root step, and that
@@ -203,30 +203,46 @@ def steepest_slope(terrain, dx: float, dy: float, *, msfu=None,
         raise ValueError(
             f"terrain for {label or 'a domain'} carries non-finite heights; "
             "its steepest slope cannot be read")
+    slope_x, slope_y = face_slopes(h, dx, dy, msfu=msfu, msfv=msfv)
+    candidates = []
+    if slope_x is not None:
+        j, i = np.unravel_index(int(np.argmax(slope_x)), slope_x.shape)
+        candidates.append((float(slope_x[j, i]), ("x", int(j), int(i) + 1)))
+    if slope_y is not None:
+        j, i = np.unravel_index(int(np.argmax(slope_y)), slope_y.shape)
+        candidates.append((float(slope_y[j, i]), ("y", int(j) + 1, int(i))))
+    if not candidates:
+        return SlopeReading(label, 0.0, ("x", 0, 0))
+    slope, face = max(candidates, key=lambda item: item[0])
+    return SlopeReading(label, slope, face)
+
+
+def face_slopes(terrain, dx: float, dy: float, *, msfu=None, msfv=None):
+    """Every face's slope, as :func:`steepest_slope` reads it: ``(x, y)``,
+    ``x`` ``(ny, nx - 1)`` for the faces between ``(j, i)`` and
+    ``(j, i + 1)`` and ``y`` ``(ny - 1, nx)`` for those between ``(j, i)``
+    and ``(j + 1, i)``, ``None`` along an axis one column wide.  The
+    terrain clock's local-face reading (:mod:`gpuwm.terrain_clock_local`)
+    reads every face, not only the steepest."""
+
+    h = np.asarray(terrain, dtype=np.float64)
     ny, nx = h.shape
     across_x = (np.gradient(h, float(dx), axis=1) if nx > 1
                 else np.zeros_like(h))
     across_y = (np.gradient(h, float(dy), axis=0) if ny > 1
                 else np.zeros_like(h))
-    candidates = []
+    slope_x = slope_y = None
     if nx > 1:
-        slope = np.hypot(np.diff(h, axis=1) / float(dx),
-                         0.5 * (across_y[:, 1:] + across_y[:, :-1]))
+        slope_x = np.hypot(np.diff(h, axis=1) / float(dx),
+                           0.5 * (across_y[:, 1:] + across_y[:, :-1]))
         if msfu is not None:
-            slope = slope * np.asarray(msfu, dtype=np.float64)[:, 1:-1]
-        j, i = np.unravel_index(int(np.argmax(slope)), slope.shape)
-        candidates.append((float(slope[j, i]), ("x", int(j), int(i) + 1)))
+            slope_x = slope_x * np.asarray(msfu, dtype=np.float64)[:, 1:-1]
     if ny > 1:
-        slope = np.hypot(np.diff(h, axis=0) / float(dy),
-                         0.5 * (across_x[1:, :] + across_x[:-1, :]))
+        slope_y = np.hypot(np.diff(h, axis=0) / float(dy),
+                           0.5 * (across_x[1:, :] + across_x[:-1, :]))
         if msfv is not None:
-            slope = slope * np.asarray(msfv, dtype=np.float64)[1:-1, :]
-        j, i = np.unravel_index(int(np.argmax(slope)), slope.shape)
-        candidates.append((float(slope[j, i]), ("y", int(j) + 1, int(i))))
-    if not candidates:
-        return SlopeReading(label, 0.0, ("x", 0, 0))
-    slope, face = max(candidates, key=lambda item: item[0])
-    return SlopeReading(label, slope, face)
+            slope_y = slope_y * np.asarray(msfv, dtype=np.float64)[1:-1, :]
+    return slope_x, slope_y
 
 
 def offcentering_floor(slope: float) -> float | None:
@@ -377,19 +393,15 @@ class AcousticAdaptation:
             f"{reading.label} runs {self._runs()}{self._instead()}")
 
     def beyond_sentence(self) -> str:
-        """The plain line a run prints over ground past every stable count."""
-
+        """The refusal for unsmoothed prepared ground beyond the map."""
         reading = self.reading
-        change = self._instead() if self.adapted else ""
         return (
-            f"acoustic substeps: {reading.label}'s steepest terrain slope is "
-            f"{reading.slope:.2f} ({reading.degrees:.0f} degrees), steeper "
-            f"than {self.six_below:.2f}, the steepest ground any acoustic "
-            f"substep count was measured stable on at epssm {self.epssm:g}; "
-            f"{reading.label} runs {self._runs()}"
-            f"{change}, the most stable count measured, and may still stop "
-            "over that ground.  The same area at a coarser grid spacing has "
-            "gentler slopes")
+            f"{reading.label} terrain slope {reading.slope:.6g} is outside "
+            f"the measured-stable limit {self.six_below:.6g}; refusing the "
+            "forecast before GPU time because this terrain can produce "
+            "non-finite state and runaway vertical velocity. Prepare again "
+            "to apply default terrain auto-smoothing, or use a coarser "
+            "grid or smoother terrain input.")
 
     def receipt(self) -> dict:
         reading = self.reading
@@ -508,7 +520,8 @@ def adapt_experiment_acoustics(
         adaptations.append(adaptation)
         if run is not dc.run:
             dc = replace(dc, run=run)
-        _announce(adaptation, announce=announce, caution=caution)
+        if refusal is None:
+            _announce(adaptation, announce=announce, caution=caution)
         domains.append(dc)
     if refusals:
         raise ValueError(" ".join(refusals))
@@ -553,6 +566,8 @@ def adapt_domain_acoustics(grid_id: int, run, reading: SlopeReading, *,
 def _announce(adaptation: AcousticAdaptation, *, announce, caution) -> None:
     """The lines one domain's adaptation prints, in the order they read."""
 
+    if adaptation.reading.slope >= STABLE_SLOPE_BY_OFFCENTERING[-1][2]:
+        raise ValueError(adaptation.beyond_sentence())
     if adaptation.offcentering_raised and announce is not None:
         announce(adaptation.offcentering_sentence())
     if adaptation.pinned:
@@ -564,10 +579,7 @@ def _announce(adaptation: AcousticAdaptation, *, announce, caution) -> None:
             caution(adaptation.pinned_sentence())
         return
     # One line per domain: the caution already names the count it runs.
-    if adaptation.beyond_measured:
-        if caution is not None:
-            caution(adaptation.beyond_sentence())
-    elif adaptation.adapted and announce is not None:
+    if adaptation.adapted and announce is not None:
         announce(adaptation.sentence())
 
 

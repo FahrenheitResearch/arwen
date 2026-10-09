@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 import sys
 
@@ -37,8 +36,9 @@ def main() -> None:
     ap.add_argument("--oracle-tools", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
-    if os.environ.get("GPUWM_WRF_EXACT") != "1" or os.environ.get("GPUWM_WRF_EXACT_DIFFUSION") != "1":
-        raise ValueError("select both exact mode and its diffusion substage before import")
+    from gpuwm.wrf_exact import DIFFUSION_ENABLED
+    if not DIFFUSION_ENABLED:
+        raise ValueError("select exact mode (GPUWM_WRF_EXACT=1, diffusion control not set to 0) before import")
     # The helpers import their own siblings (cases, deformation_reference)
     # by bare name, so their directory goes on the path first.
     sys.path.insert(0, str(args.oracle_tools))

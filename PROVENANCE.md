@@ -192,22 +192,22 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 8 distinct caller-supplied option tuples across the 86
+  The inventory records 8 distinct caller-supplied option tuples across the 89
   compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 51 other site(s)
-  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:243` (cp.RawModule), and
+    (xp.ElementwiseKernel), and 53 other site(s)
+  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:405` (cp.RawModule), and
     12 other site(s)
   - `--std=c++17` -- `gpuwm/ensemble/batch_perturbation.py:51`
     (xp.RawModule), and 8 other site(s)
   - `-std=c++17` `--ftz=false` -- `gpuwm/core/chem_plumerise_cache.py:36`
     (compiler.compile_using_nvrtc), and 5 other site(s)
-  - `-fmad=false` -- `gpuwm/core/dycore.py:300` (cp.ElementwiseKernel), and
+  - `-fmad=false` -- `gpuwm/core/dycore.py:301` (cp.ElementwiseKernel), and
     2 other site(s)
+  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:360`
+    (cp.RawModule), and 1 other site(s)
   - `--fmad=false` `-std=c++14` -- `gpuwm/da/letkf_device.py:363`
-    (cp.RawModule)
-  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:209`
     (cp.RawModule)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:261`
     (cp.RawModule)
@@ -1142,10 +1142,18 @@ oversight, and each says what would close it.
   column fixtures -- the 19 the port spec names plus three `wp08-*` columns
   from the same oracle build -- driven end to end through the shipped adapter
   and compared on 23 quantities each at a flat 2.0e-6 relative / 2.0e-4 dB
-  gate.  **22 of 22 clear every quantity with nothing held out** (all 19
-  `aero-*`, plus `wp08-freeze`, `wp08-melt` and `wp08-nusweep`), and the
-  gated count is the same 22 of 22: no allowance remains.  An RTX 4090 and an
-  RTX 5090 read the whole table identically.
+  gate.  **21 of 22 clear every quantity with nothing held out** (18 of the
+  19 `aero-*`, plus `wp08-freeze`, `wp08-melt` and `wp08-nusweep`), and the
+  gated count is the same 21 of 22: no allowance remains.  The 22nd,
+  `aero-cold-overlap`, misses by the declared rain-graupel divergence alone:
+  WRF v4.6.1 reads its rain-graupel collision tables out of bounds when the
+  scheme is not hail aware (`module_mp_thompson.F:465`, `:607-615`,
+  `:2527-2545`) and WOOF reads the one slab the tables hold, so it reads `qr`
+  5.070e-04, `nr` 5.066e-04, `qi` 1.618e-04, `qg` 8.776e-05, `effi`
+  5.394e-05, `ni` 1.464e-05, `effs` 6.574e-06 and 1.585e-03 dB of
+  reflectivity from WRF; with WRF's read emulated in a measurement copy of
+  the tree it clears all 23 quantities.  An RTX 4090 (sm_89) and an RTX 5070
+  Ti (sm_120) read the whole table identically.
 
   WHAT CLOSED THE LAST FOUR (the 2.8.6 accumulator rework).  WRF's
   `mp_thompson` never writes a hydrometeor during the call: every process
@@ -1163,8 +1171,9 @@ oversight, and each says what would close it.
   frozen mp=8 kernel file is unchanged.  Measured: `aero-cloud-freeze-nc` `qc`
   4.926e-06 -> bit-exact; `aero-cold-overlap` `qc` / `nc` / `effc` at level 4
   (1.000e+00 / 1.000e+00 / 8.102e-01, one float32 ULP of cloud flipping
-  `:4007`) and `nr` 1.261e-04 / `qr` 4.443e-05 at level 6 -> bit-exact;
-  `wp08-nusweep` `qr` 4.642e-06 -> 5.532e-07; `wp08-freeze` `nr` level 0
+  `:4007`) and `nr` 1.261e-04 / `qr` 4.443e-05 at level 6 -> bit-exact in
+  2.8.6, before 2.8.8 moved rain collecting graupel onto the one slab WRF's
+  tables hold (the declared divergence above); `wp08-nusweep` `qr` 4.642e-06 -> 5.532e-07; `wp08-freeze` `nr` level 0
   4.006e-07 -> bit-exact; `aero-reduces-to-classic` level 6 bit-exact in `qr`
   and `nr`, which retired the last allowance.
 

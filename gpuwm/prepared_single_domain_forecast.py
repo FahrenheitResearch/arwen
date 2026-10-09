@@ -277,7 +277,8 @@ HRRR_BUNDLE_PATHS = MappingProxyType({
 #: asserts they are the same set -- and which fails on ANY surviving
 #: ``mp_physics in (1, 6, 8, 10, 18)`` literal anywhere under ``gpuwm/``,
 #: so a fifth copy of this gate cannot be added silently.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50) + tuple(
+    __import__('gpuwm.microphysics_schemes', fromlist=['NAMED_MP_IDS']).NAMED_MP_IDS)
 #: What a PACKAGED source reports when nothing has been measured on it:
 #: the suites the generic mapped route carries for every packaged profile,
 #: with the row's own limitation saying no source-specific verification is
@@ -686,7 +687,7 @@ MAPPED_VERTICAL_COORDINATE_KEYS = frozenset({"vertical_coordinate"})
 MAPPED_PREPARATION_TELEMETRY_KEYS = frozenset({
     "preparation_parallelism", "forcing_stage_timings"})
 #: Top-level proof keys the writer publishes ONLY when that preparation
-#: opted in, so the runner has to take the document with them and
+#: performed the recorded operation, so the runner takes documents with them and
 #: without them.  ``gpuwm/mapped_direct.py`` spreads these in
 #: conditionally -- ``**({...} if <receipt> is not None else {})`` --
 #: which is why they cannot sit in the required sets above: a mapped
@@ -699,7 +700,10 @@ MAPPED_PREPARATION_TELEMETRY_KEYS = frozenset({
 #: era ladder), so a full-ladder bundle's proof is unchanged.
 #: ``soil_temperature_repair`` likewise: written only when real.exe's TSLB
 #: reasonableness rebuild, or the snow-covered rebuild beside it, touched
-#: a land column of the root.  ``initial_perturbation`` likewise: written
+#: a land column of the root. ``soil_moisture_floor`` is present only when
+#: the soil moisture floor touched a column, with the same exact receipt
+#: bound in cache user metadata by CONDITIONAL_PREPARATION_RECEIPTS.
+#: ``initial_perturbation`` likewise: written
 #: only on a tree whose experiment carries a [perturbation] block, which
 #: the tree runner applies at start (gpuwm.experiment
 #: deferred_initial_perturbation).
@@ -711,6 +715,7 @@ MAPPED_PREPARATION_TELEMETRY_KEYS = frozenset({
 #: such bundle as an unknown top-level inventory.
 MAPPED_OPTIONAL_PROOF_KEYS = frozenset({
     "statics_corridor", "source_vertical_ladder", "soil_temperature_repair",
+    "soil_moisture_floor",
     "initial_perturbation", "posting", "initial_source", "source_pairing"})
 _SOURCE_ADAPTER = {
     # The generic mapped adapter, truthfully: a packaged profile is
@@ -5442,7 +5447,14 @@ def _validate_packaged_mapped_evidence(
                         f"contributing source {binding_name!r} names a "
                         "different source than the packaged composition")
                 entry_alignment = entry.get("alignment")
-                if (not isinstance(entry_alignment, dict)
+                # A binding whose files published none of its fields is
+                # UNPUBLISHED with the field-keyed fallback recorded (HRRR
+                # wrfsfc before 2020-12-02 carries no VEG); a receipt whose
+                # fallback is not the table's raises here.
+                from gpuwm.runtime_surface_fetch import unpublished_binding_fallbacks
+                if unpublished_binding_fallbacks(entry) is not None:
+                    pass
+                elif (not isinstance(entry_alignment, dict)
                         or entry_alignment.get("status") != "PASS"):
                     raise ValueError(
                         f"contributing source {binding_name!r} alignment "
@@ -7173,6 +7185,12 @@ def preflight_prepared_forecast(
         geometry_receipt_path, static_path, grid, exp.root.run)
     static = load_native_static_cache(
         static_path, grid, exp.root.run.ny, exp.root.run.nx)
+    from gpuwm.static.terrain_autosmooth import verify_receipt, run_line
+    smoothing = verify_receipt(
+        geometry_receipt.get("terrain_autosmooth"), static["HGT_M"],
+        domain_id=exp.root.grid_id)
+    if smoothing is not None:
+        print(run_line(smoothing))
     static_sha256 = _sha256(static_path)
     geometry_sha256 = _sha256(geometry_receipt_path)
     header_sha256 = (None if cache_header_path is None
@@ -7693,7 +7711,7 @@ def _verify_inputs_unchanged(inputs: PreparedForecastInputs) -> None:
 
 
 def _consume_due_native_refl_10cm(state, ticks: int, consumer, *,
-                                  domain_start_ticks: int = 0):
+                                  domain_start_ticks: int = 0, shape=None):
     """Consume the scheme-native field staged by an output-due MP call.
 
     ``domain_start_ticks`` is the DOMAIN's own start tick, not the
@@ -7707,11 +7725,15 @@ def _consume_due_native_refl_10cm(state, ticks: int, consumer, *,
     """
     from gpuwm.core.refl import refl_10cm_stash_is_due
 
-    if (refl_10cm_stash_is_due(ticks,
-                               domain_start_ticks=domain_start_ticks)
-            and state.qv is not None
+    if (state.qv is not None
             and state.physics.mp_physics in REFL_10CM_MICROPHYSICS):
-        return consumer(state)
+        if refl_10cm_stash_is_due(ticks,
+                                  domain_start_ticks=domain_start_ticks):
+            return consumer(state)
+        if domain_start_ticks == 0:
+            # A run's analysis frame writes WRF's initial array, not nothing.
+            from gpuwm.core.refl import analysis_refl_10cm
+            return analysis_refl_10cm(state, shape=shape)
     return None
 
 
@@ -9075,6 +9097,10 @@ def _single_checkpoint_identity(inputs, runtime_source_identity):
         getattr(inputs, "experiment", None), "physics_params", None))
     parameter_binding = ({} if parameters is None
                          else {"physics_params": parameters})
+    smoothing = (getattr(inputs, "geometry_receipt", {}) or {}).get(
+        "terrain_autosmooth")
+    smoothing_binding = ({"terrain_autosmooth": dict(smoothing)}
+                         if smoothing is not None else {})
     stream_head = getattr(inputs, "stream_head", None)
     head_sha256 = (stream_head["head_sha256"] if stream_head is not None
                    else (dict(getattr(inputs, "proof", {}) or {}).get(
@@ -9087,6 +9113,7 @@ def _single_checkpoint_identity(inputs, runtime_source_identity):
             "authority_sha256": dict(inputs.file_sha256),
             "runtime_source_identity": runtime_source_identity,
             **parameter_binding,
+            **smoothing_binding,
         }
     # A chained preparation is bound by its head whichever way this run
     # binds it (the head at launch, or the sealed proof that names it), so
@@ -9104,6 +9131,7 @@ def _single_checkpoint_identity(inputs, runtime_source_identity):
         "schema": "gpuwm.prepared-single-checkpoint.v1",
         "source": inputs.source,
         "prepared_head_sha256": head_sha256,
+        **smoothing_binding,
         "authority_sha256": {
             name: digest for name, digest in inputs.file_sha256.items()
             if name not in sealed_only},
@@ -9118,9 +9146,14 @@ def _checkpoint_restore_resources(writers, step_log):
     try:
         yield
     except BaseException as error:
+        # The closures read `failure`, not the except name: Python unbinds
+        # `error` when this clause ends, so a closure over it is a NameError
+        # waiting for any caller that outlives the clause, and the
+        # undefined-name gate flags it (tests/test_no_undefined_names.py).
+        failure = error
         for close in (
-                lambda: writers.__exit__(type(error), error, error.__traceback__),
-                lambda: step_log.close(status="FAIL", error=f"{type(error).__name__}: {error}")):
+                lambda: writers.__exit__(type(failure), failure, failure.__traceback__),
+                lambda: step_log.close(status="FAIL", error=f"{type(failure).__name__}: {failure}")):
             try:
                 close()
             except BaseException as cleanup_error:
@@ -9863,7 +9896,8 @@ def run_prepared_forecast(
                 + f"; sample {sample}")
         refl = _consume_due_native_refl_10cm(
             current.state, ticks, consume_refl_10cm,
-            domain_start_ticks=domain_start_ticks_of(current))
+            domain_start_ticks=domain_start_ticks_of(current),
+            shape=(current.cfg.run.nz, current.cfg.run.ny, current.cfg.run.nx))
         writers.submit(current, ticks, refl_field=refl)
         # History-interval reset of the UP_HELI_MAX window
         # (module_diag_nwp.F:246-269; gpuwm's ratified placement is

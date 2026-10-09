@@ -605,8 +605,10 @@ def test_step_adds_one_time_t_diff6_tendency_to_all_three_rk_stages(
     monkeypatch.setattr(dycore, "prepare_acoustic_substep_launch",
                         lambda *_a, **_k: lambda **_kw: None)
     monkeypatch.setattr(dycore, "stage_fluxes",
-                        lambda s, _cfg: (s.u, s.v, s.w))
-    for name in ("_add_slow_tendencies", "add_diffusion_tendencies",
+                        lambda s, _cfg, **_k: (s.u, s.v, s.w))
+    # add_diffusion_tendencies is gone from the model step: km_opt=1 is
+    # WRF's once-per-step mixing package now (gpuwm/core/diffusion.py).
+    for name in ("_add_slow_tendencies",
                  "apply_w_damping", "apply_state_lateral_boundaries",
                  "apply_open_radiative_bc", "apply_open_zero_gradient",
                  "apply_state_boundary_values", "set_w_surface",

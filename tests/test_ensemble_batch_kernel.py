@@ -211,6 +211,7 @@ def test_continued_macro_grid_read_uses_virtual_components_in_helper():
 
 
 def test_real_default_diagnostics_signature_is_resolved_with_original_body():
+    from gpuwm.ensemble.batch_kernel import _active_source, _close
     from gpuwm.core.kernels import module_source
     source = module_source("diagnostics")
     members = {"thp", "php", "mup", "qv", "p", "al", "alt"}
@@ -223,7 +224,12 @@ def test_real_default_diagnostics_signature_is_resolved_with_original_body():
     body = source.index("{\n    int col", source.index("void calc_p_alpha"))
     assert generated.endswith(source[body + 1:])
     assert source[:source.index("void calc_p_alpha")] in generated
-    assert "real* __restrict__ p_perturbation)" not in generated
+    # Optional helper definitions retain their raw bytes, even when their
+    # selector is inactive. Only the compiled entry declaration sets its ABI.
+    active = _active_source(generated, spec.options)
+    opening = active.index("(", active.index("void calc_p_alpha"))
+    closing = _close(active, opening, "(", ")")
+    assert "p_perturbation" not in active[opening:closing]
     assert "__ensemble_pointer_strides" in generated
     assert generate_batch_source(source, spec, 1) == source
 

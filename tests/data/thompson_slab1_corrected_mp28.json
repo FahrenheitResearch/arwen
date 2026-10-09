@@ -1,0 +1,102 @@
+{
+  "source": {
+    "stock_module_sha256": "fabf19e2a9073cff886e882b187080bfdf089d3fd40c0fce1d19bc93b1e5e802",
+    "corrected_module_sha256": "c4ef53134ce939afc6428e4883dfb96bffee19eef6249ed57b0cde05a61e8676",
+    "old": "idx_g1,idx_g,idx_bg(k),idx_r1,idx_r)",
+    "new": "idx_g1,idx_g,MIN(idx_bg(k),dimNRHG),idx_r1,idx_r)",
+    "replacement_count": 8,
+    "compiler_flags": [
+      "-O2",
+      "-fno-tree-vectorize",
+      "-ffree-form",
+      "-ffree-line-length-none"
+    ],
+    "binary_sha256": "add9b32f486da20aab1ccebf45626ec1fd3825e81f78533afe50b9cfeba93fb8"
+  },
+  "input_fixture_sha256": "4c6cb5a04543bedc67fcf44cd28552c2a3b60e462b12e3aa8c3d9d57783d86d8",
+  "columns": 157,
+  "levels": 49,
+  "fields": [
+    "qv",
+    "qc",
+    "qr",
+    "qi",
+    "qs",
+    "qg",
+    "ni",
+    "nr",
+    "nc",
+    "nwfa",
+    "nifa",
+    "th",
+    "refl",
+    "re_cloud",
+    "re_ice",
+    "re_snow",
+    "rainnc",
+    "rainncv",
+    "snownc",
+    "snowncv",
+    "graupelnc",
+    "graupelncv",
+    "sr"
+  ],
+  "dts": {
+    "5": {
+      "sha256": {
+        "qv": "a7c7d830f4a884c48808ab33639f292074422b270f44d080964a8b60a712e6ab",
+        "qc": "6d97a14e2580fabb07e3141727dade8d8ddd04ef26ab1435b3ff897299ecd42d",
+        "qr": "c56ecb920b067f505de5de8875231f8cde008efc6830b8a6974dd6157aa8faa1",
+        "qi": "9a04ab500a2338606c19035d77a8057f596ce32dabf2b1a696f353240d25a258",
+        "qs": "3347b89edc95afe098c4df1642c6f584f7685568acdfc1dd93882df82746a7a2",
+        "qg": "b11422206ae5a75bd7d8a7e0cbdec5aaaa4ada6e7b95d78464b100f314c1b1fb",
+        "ni": "c4fb264914eb3faff1cbbb20ec0c3b5ec4230db5a1d3c3c3b16d0f55bd6c9b6e",
+        "nr": "2d3ac9e2e0bb36c58cc42204d223e4f9b18d05cb8e859ba6127ea8fcc4d2248f",
+        "nc": "a373446e5ca0ad7056efd7524e794fde5f69f56f1e451304ec18d2b7d38f16ab",
+        "nwfa": "185f3e1b8c2793981cad41792f51f0911d95755294aa44d34c69b4f25b0cd794",
+        "nifa": "fd28398b524fe8f8aefa46887144e30ff59c1287b303fa6aceb0def23d181bf6",
+        "th": "7931c92dcb548e3c0407a9a88e9f75dde16673878adb62f0a851916e5ebf3175",
+        "refl": "88b226a4a0196e5213e75f0047325b5463fe5ca75068d2d35ccf6a26d4378d8d",
+        "re_cloud": "10b5b00de8f3ad0f1b18a57cc66ad682850279728b2a4d8c1a9a73c52e676f5c",
+        "re_ice": "44ad586f888bdfa8435dd66702a9bd207feb13dc6684794c6665057918b3d884",
+        "re_snow": "e87ec846ec50e7b2f47bae8d658f866b1556edd449a4acee0082b37dea6314a5",
+        "rainnc": "5472b3d7d67dc74d19aa07a63fbfe617ce90a892ddbb8a9b4a27176f5de94d6f",
+        "rainncv": "5472b3d7d67dc74d19aa07a63fbfe617ce90a892ddbb8a9b4a27176f5de94d6f",
+        "snownc": "f70beefeb7f8148ca236978ddc2f57fbeb4187a5f7840a9390e63c6cda172e7a",
+        "snowncv": "f70beefeb7f8148ca236978ddc2f57fbeb4187a5f7840a9390e63c6cda172e7a",
+        "graupelnc": "e387abe9c9d5b3eb3e8c6db62d07b2a70fde625edac38ede255cf3f11309def3",
+        "graupelncv": "e387abe9c9d5b3eb3e8c6db62d07b2a70fde625edac38ede255cf3f11309def3",
+        "sr": "6f2d7c1e542c4623f7951fd72768d8f134a450fabb9c9faa309600cc409e7240"
+      },
+      "words": 124187
+    },
+    "20": {
+      "sha256": {
+        "qv": "4929c387ba46a1201041770dc4ae09b2a4f028dcb1a260d90daa572eafb81bf5",
+        "qc": "28923e758a65e5c4380591c0e923802fef684b2d0f7cf98d19eddba5dc716366",
+        "qr": "c955a599c470f1567d9a7d2c83ed6c3a3a0bb5f3d01c55b7f809eada91307e75",
+        "qi": "d6e665ffb4d8b18ea7015bb26f586d1136b0165c164e531933738f3eac67c99d",
+        "qs": "6b06894b1866bfcd7c0cfacadc6b6b8ba49b3724dba602be623f81fbecb713c7",
+        "qg": "9d7695f584b6bd842296d7c4cfb93eb590f43889973ea0bac83e2a7d8fe6f700",
+        "ni": "74f878e28a691bdb7412bcb2916fe0628c07a56b89fedd24a9fcc66c7ab34aef",
+        "nr": "ee79e0c4396a86af7fc4e19c49f0bf329537fc9dea225d46c8f768aba92f7a09",
+        "nc": "91ceb42317e47b89050b8b49f0e396c135fd6b261f3a73b30ddaaae03e8af5a8",
+        "nwfa": "7577008d9b154876cb47131f89492388b053fb835f65f22662d8f971cbfdd15d",
+        "nifa": "37e4cea88a720404f74e23a417d4739c97f622c6fc7906d7ce3745a758eea145",
+        "th": "edb40a4f1c0c3d3f5fad2f7890a55295ae7fe9f720866ffdc26ecebbe93868c9",
+        "refl": "0e170636e57d397ffe767e049838985170966f3ba908976e9dfdf576222edb3a",
+        "re_cloud": "4abd1b84c9a820e73852ca67c618520441b7903a619114bf46d3659d1a95c4cb",
+        "re_ice": "c266c442e4e02f8f941880177736bc479e56804fbb49b4b868659a1d3f931e4c",
+        "re_snow": "82545f80b43e24662852da8471f18fbc67a1a0c571628419c1f0d3cb4ee13664",
+        "rainnc": "ec063accc16638195f02ad3775e6b2dbdceccd0f699d2aab4eecc7b825b424ff",
+        "rainncv": "ec063accc16638195f02ad3775e6b2dbdceccd0f699d2aab4eecc7b825b424ff",
+        "snownc": "4946293fe222642bca382855c8efbbbfe118ed6ae209233710d4c17ba5bc0b14",
+        "snowncv": "4946293fe222642bca382855c8efbbbfe118ed6ae209233710d4c17ba5bc0b14",
+        "graupelnc": "3d326a929aaea8b2c73cabdfdcddfddfc262a242e2a2a8db9e7467976402ae00",
+        "graupelncv": "3d326a929aaea8b2c73cabdfdcddfddfc262a242e2a2a8db9e7467976402ae00",
+        "sr": "992f59bb8d3c54d247a05ef3fc5697c012dc9962dd0c722b28c7eae423aac3b6"
+      },
+      "words": 124187
+    }
+  }
+}

@@ -105,8 +105,8 @@ def test_andes_ground_at_500_m_runs_six_substeps():
     # across the grid broke six after an hour and a half at 250 m, so the
     # run says it is past the measured map rather than claiming margin.
     assert adaptation.status == "BEYOND_MEASURED"
-    assert ("runs 6 substeps per step instead of 4"
-            in adaptation.beyond_sentence())
+    assert ("refusing the forecast before GPU time"
+                in adaptation.beyond_sentence())
     band = derive_acoustics(1, _Run(), _reading(0.8))
     assert band.status == "ADAPTED"
     assert "runs 6 substeps per step instead of 4" in band.sentence()
@@ -124,18 +124,17 @@ def test_ground_past_every_stable_count_takes_six_and_says_so():
     adaptation = derive_acoustics(1, _Run(), _reading(1.07))
     assert adaptation.time_step_sound == 6
     assert adaptation.status == "BEYOND_MEASURED"
-    assert "may still stop" in adaptation.beyond_sentence()
+    assert "refusing the forecast before GPU time" in adaptation.beyond_sentence()
 
 
 def test_one_line_per_domain_past_the_measured_bound():
     exp = _Experiment((_Domain(1, _Run()),))
     announced, cautioned = [], []
-    adapted, _ = adapt_experiment_acoustics(
-        exp, {1: _reading(1.07)}, announce=announced.append,
-        caution=cautioned.append)
-    assert announced == [] and len(cautioned) == 1
-    assert "runs 6 substeps per step instead of 4" in cautioned[0]
-    assert adapted.domains[0].run.time_step_sound == 6
+    with pytest.raises(ValueError, match="before GPU time.*non-finite.*Prepare again"):
+        adapt_experiment_acoustics(
+            exp, {1: _reading(1.07)}, announce=announced.append,
+            caution=cautioned.append)
+    assert announced == cautioned == []
 
 
 def test_offcentering_between_rows_takes_the_less_stable_row():
@@ -311,8 +310,8 @@ def test_run_route_reads_each_domains_own_terrain(monkeypatch):
     monkeypatch.setattr(build, "build_terrain",
                         lambda grid, root, selection=None: steep)
     data = SimpleNamespace(geog_root=Path("geog"), static_highres=None)
-    derived = runtime._terrain_acoustics_for_case(exp, data)
-    assert [dc.run.time_step_sound for dc in derived.domains] == [4, 6]
+    with pytest.raises(ValueError, match="before GPU time"):
+        runtime._terrain_acoustics_for_case(exp, data)
     # The same experiment, flat everywhere, is handed back untouched.
     monkeypatch.setattr(build, "build_terrain",
                         lambda grid, root, selection=None: np.zeros((30, 30)))
@@ -362,9 +361,9 @@ def test_run_route_reads_a_following_nests_corridor(monkeypatch, highres):
     data = SimpleNamespace(
         geog_root=Path("geog"),
         static_highres=SimpleNamespace(enabled=True) if highres else None)
-    derived = runtime._terrain_acoustics_for_case(exp, data)
+    with pytest.raises(ValueError, match="before GPU time"):
+        runtime._terrain_acoustics_for_case(exp, data)
     assert planned == [2]
-    assert [dc.run.time_step_sound for dc in derived.domains] == [4, 6]
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +399,7 @@ def test_a_default_epssm_over_steep_ground_takes_the_floor():
                       auto_epssm=(2,))
     lines = []
     adapted, adaptations = adapt_experiment_acoustics(
-        exp, {1: _reading(0.31, "d01"), 2: _reading(0.87, "d02")},
+        exp, {1: _reading(0.31, "d01"), 2: _reading(0.84, "d02")},
         announce=lines.append, caution=lines.append)
     assert adapted.domains[0] is exp.domains[0]
     child = adapted.domains[1].run
@@ -418,7 +417,7 @@ def test_a_default_epssm_over_steep_ground_takes_the_floor():
     assert "epssm 0.1 is the default" in lines[0]
     assert "runs epssm 0.5" in lines[0]
     assert "past 0.50" in lines[0]
-    # The substep caution still follows: 0.87 is past every measured row.
+    # The substep count follows the floor on in-limit steep ground.
     assert lines[1].startswith("acoustic substeps: d02")
 
 
@@ -441,7 +440,7 @@ def test_a_default_epssm_on_gentle_ground_is_untouched():
         "domains"][0]
     # A default already at or above the floor is left alone too.
     exp = _Experiment((_Domain(1, _Run(epssm=0.5)),), auto_epssm=(1,))
-    _, adaptations = adapt_experiment_acoustics(exp, {1: _reading(0.87)})
+    _, adaptations = adapt_experiment_acoustics(exp, {1: _reading(0.84)})
     assert not adaptations[0].offcentering_raised
 
 
@@ -563,7 +562,7 @@ def test_gpuwm_run_publishes_the_raised_epssm_in_its_folder(tmp_path):
     _, calm = adapt_experiment_acoustics(exp, {2: _reading(0.3, "d02")})
     assert runtime._write_acoustic_receipt(tmp_path, calm) is None
     assert not (tmp_path / runtime.ACOUSTIC_RECEIPT_NAME).exists()
-    _, raised = adapt_experiment_acoustics(exp, {2: _reading(0.87, "d02")})
+    _, raised = adapt_experiment_acoustics(exp, {2: _reading(0.84, "d02")})
     path = runtime._write_acoustic_receipt(tmp_path, raised)
     assert path == tmp_path / runtime.ACOUSTIC_RECEIPT_NAME
     row = json.loads(path.read_text())["domains"][0]

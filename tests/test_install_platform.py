@@ -757,7 +757,13 @@ def test_an_install_after_the_driver_changed_cuda_major_leaves_one_cupy(tmp_path
     for major in ("12", "13"):
         # Both builds install the same cupy package files, as the real ones do.
         _wheel(index, f"cupy_cuda{major}x", {"cupy/__init__.py": f"MAJOR = {major}\n"}, version="14.2.0")
-    env = {**os.environ, "PIP_NO_INDEX": "1", "PIP_FIND_LINKS": str(index), "PIP_DISABLE_PIP_VERSION_CHECK": "1"}
+    # The host's python3 and no uv or python3.14t of its own, which the agent
+    # would make the venv with (and install a 3.14t through).
+    only = tmp_path / "python3-only"
+    only.mkdir()
+    (only / "python3").symlink_to(shutil.which("python3"))
+    env = {**os.environ, "PIP_NO_INDEX": "1", "PIP_FIND_LINKS": str(index), "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+           "PATH": f"{only}:/usr/bin:/bin", "HOME": str(tmp_path / "home")}
     workspace = tmp_path / "workspace"
     assert _agent_install(workspace, [main, data], first, env)["state"] == "installed"
     # The driver moved to the other major; the Install button sends that major's extra into the same venv.
@@ -798,6 +804,110 @@ def test_an_install_that_cannot_list_the_venv_stops_before_installing(tmp_path):
     lines = calls.read_text().splitlines()
     assert lines[-1].startswith("-m pip list")
     assert not any("[gpu-cu13]" in line for line in lines)
+
+
+# THE BREAKAGE THESE GUARD: a machine installed from the Machines page made its
+# venv with plain python3, a Python with the interpreter lock, so its multi-card
+# [devices] forecasts ran about 2x slower than every published benchmark (all on
+# free-threaded 3.14t).  The agent now makes the venv on 3.14t when the machine
+# has one (or uv can install one), and says by name when it cannot.
+
+def _stub_interpreters(tmp_path, *, ft_install_fails=False, ft_venv_fails=False):
+    """python3.14t and python3 stand-ins whose venvs log every call."""
+
+    bin_dir = tmp_path / "stub-bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls.txt"
+    venv_python = (
+        "#!/bin/sh\n"
+        f'echo "$KIND $*" >> {calls}\n'
+        'case "$1" in -c) [ "$KIND" = ft ] && exit 0 || exit 1 ;; esac\n'
+        'case "$*" in *"[gpu-cu13]"*) [ "$KIND" = ft ] && [ "$FAIL_FT" = 1 ] && exit 5 ;; esac\n'
+        "exit 0\n")
+    for name, kind in (("python3.14t", "ft"), ("python3", "locked")):
+        program = bin_dir / name
+        program.write_text(
+            "#!/bin/sh\n"
+            f'echo "base-{kind} $*" >> {calls}\n'
+            f'case "$1" in -c) [ {kind} = ft ] && exit 0 || exit 1 ;; esac\n'
+            '[ "$1 $2" = "-m venv" ] || exit 9\n'
+            'mkdir -p "$3/bin"\n'
+            f"cat > \"$3/bin/python\" <<'EOF'\n#!/bin/sh\nKIND={kind}\n{venv_python}EOF\n"
+            'chmod 755 "$3/bin/python"\n'
+            # As a distro python3.14t without its venv package: bin/python is
+            # written, then ensurepip is missing and venv stops.
+            f'if [ {kind} = ft ] && [ "$FAIL_FT_VENV" = 1 ]; then echo "no ensurepip" >&2; exit 1; fi\n'
+            'exit 0\n')
+        program.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path / "home"),
+           "FAIL_FT": "1" if ft_install_fails else "", "FAIL_FT_VENV": "1" if ft_venv_fails else ""}
+    return env, calls
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None,
+                    reason="the agent's install runs on a Linux machine, with bash")
+def test_the_agent_makes_its_venv_on_a_python314t_the_machine_has(tmp_path):
+    env, calls = _stub_interpreters(tmp_path)
+    wheel = tmp_path / "gpuwm-2.8.8-py3-none-any.whl"
+    wheel.write_bytes(b"stand-in")
+    ended = _agent_install(tmp_path / "workspace", [wheel], "gpu-cu13", env)
+    log = (tmp_path / "workspace" / "install" / "install.log").read_text(encoding="utf-8", errors="replace")
+    assert ended["state"] == "installed", log[-3000:]
+    lines = calls.read_text().splitlines()
+    assert [line for line in lines if " -m venv " in line] == [
+        f"base-ft -m venv {tmp_path / 'workspace' / 'venv'}"]
+    assert "making the venv on free-threaded python3.14t" in log
+    assert "WARNING" not in log
+    # cftime 1.6.6 has no cp314t wheel; --prefer-binary takes 1.6.5's.
+    main = [line for line in lines if "[gpu-cu13]" in line]
+    assert main and all("--prefer-binary" in line for line in main)
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None,
+                    reason="the agent's install runs on a Linux machine, with bash")
+def test_the_agent_falls_back_to_python3_by_name(tmp_path):
+    env, calls = _stub_interpreters(tmp_path)
+    (tmp_path / "stub-bin" / "python3.14t").unlink()
+    wheel = tmp_path / "gpuwm-2.8.8-py3-none-any.whl"
+    wheel.write_bytes(b"stand-in")
+    ended = _agent_install(tmp_path / "workspace", [wheel], "gpu-cu13", env)
+    log = (tmp_path / "workspace" / "install" / "install.log").read_text(encoding="utf-8", errors="replace")
+    assert ended["state"] == "installed", log[-3000:]
+    assert "about 2x slower" in log and "python3.14t" in log
+    main = [line for line in calls.read_text().splitlines() if "[gpu-cu13]" in line]
+    assert main and not any("--prefer-binary" in line for line in main)
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None,
+                    reason="the agent's install runs on a Linux machine, with bash")
+def test_a_dependency_failing_under_314t_remakes_the_agent_venv_on_python3(tmp_path):
+    env, calls = _stub_interpreters(tmp_path, ft_install_fails=True)
+    wheel = tmp_path / "gpuwm-2.8.8-py3-none-any.whl"
+    wheel.write_bytes(b"stand-in")
+    ended = _agent_install(tmp_path / "workspace", [wheel], "gpu-cu13", env)
+    log = (tmp_path / "workspace" / "install" / "install.log").read_text(encoding="utf-8", errors="replace")
+    assert ended["state"] == "installed", log[-3000:]
+    lines = calls.read_text().splitlines()
+    assert [line.split()[0] for line in lines if " -m venv " in line] == ["base-ft", "base-locked"]
+    assert [line.split()[0] for line in lines if "[gpu-cu13]" in line] == ["ft", "locked"]
+    assert "did not install under 3.14t" in log and "about 2x slower" in log
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None,
+                    reason="the agent's install runs on a Linux machine, with bash")
+def test_a_python314t_that_cannot_make_a_venv_gives_way_to_python3_and_leaves_no_half_venv(tmp_path):
+    # Under `set -e` the failed venv step ended the install, and the bin/python
+    # it left made the next install take the venv as already made.
+    env, calls = _stub_interpreters(tmp_path, ft_venv_fails=True)
+    wheel = tmp_path / "gpuwm-2.8.8-py3-none-any.whl"
+    wheel.write_bytes(b"stand-in")
+    ended = _agent_install(tmp_path / "workspace", [wheel], "gpu-cu13", env)
+    log = (tmp_path / "workspace" / "install" / "install.log").read_text(encoding="utf-8", errors="replace")
+    assert ended["state"] == "installed", log[-3000:]
+    lines = calls.read_text().splitlines()
+    assert [line.split()[0] for line in lines if " -m venv " in line] == ["base-ft", "base-locked"]
+    assert [line.split()[0] for line in lines if "[gpu-cu13]" in line] == ["locked"]
+    assert "python3.14t could not make the venv" in log and "about 2x slower" in log
 
 
 def test_an_install_without_a_cuda_extra_touches_no_cupy():

@@ -1,0 +1,626 @@
+{
+ "ncar12": {
+  "1": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 72.0,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 72.0,
+      "numerator": 72,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 72.0,
+      "numerator": 72,
+      "denominator": 1
+     }
+    },
+    "shipped_measured": {
+     "status": "ADAPTED",
+     "dt_s": {
+      "seconds": 36.0,
+      "numerator": 36,
+      "denominator": 1
+     },
+     "step_division": 2,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 36.0,
+      "numerator": 36,
+      "denominator": 1
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 13,
+   "hours_same": 13,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": Infinity,
+   "envelope_same": true
+  }
+ },
+ "ncar25": {
+  "1": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 15.0,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "ADAPTED",
+     "dt_s": {
+      "seconds": 15.0,
+      "numerator": 15,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 6,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 15.0,
+      "numerator": 15,
+      "denominator": 1
+     }
+    },
+    "shipped_measured": {
+     "status": "ADAPTED",
+     "dt_s": {
+      "seconds": 7.5,
+      "numerator": 15,
+      "denominator": 2
+     },
+     "step_division": 2,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 7.5,
+      "numerator": 15,
+      "denominator": 2
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 7,
+   "hours_same": 7,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": 20.0,
+   "envelope_same": true
+  }
+ },
+ "la-santaana-250107-48h": {
+  "1": {
+   "receipt_status": "ADAPTED",
+   "dt_s": 10.0,
+   "time_step_sound": 6,
+   "max_time_step_s": 10.12,
+   "never_worse": {
+    "applied": true,
+    "reason": "beyond_measured",
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "BEYOND_MEASURED",
+     "dt_s": {
+      "seconds": 5.0,
+      "numerator": 5,
+      "denominator": 1
+     },
+     "step_division": 2,
+     "time_step_sound": 6,
+     "max_time_step_s": {
+      "seconds": 7.87,
+      "numerator": 787,
+      "denominator": 100
+     },
+     "longest_step_s": {
+      "seconds": 7.87,
+      "numerator": 787,
+      "denominator": 100
+     }
+    },
+    "shipped_measured": {
+     "status": "ADAPTED",
+     "dt_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 6,
+     "max_time_step_s": {
+      "seconds": 10.12,
+      "numerator": 253,
+      "denominator": 25
+     },
+     "longest_step_s": {
+      "seconds": 10.12,
+      "numerator": 253,
+      "denominator": 25
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 5880,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": 13.5,
+   "envelope_same": true
+  },
+  "2": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 3.3333333333333335,
+   "time_step_sound": 6,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 3.3333333333333335,
+      "numerator": 10,
+      "denominator": 3
+     },
+     "step_division": 1,
+     "time_step_sound": 6,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 4.5,
+      "numerator": 9,
+      "denominator": 2
+     }
+    },
+    "shipped_measured": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 3.3333333333333335,
+      "numerator": 10,
+      "denominator": 3
+     },
+     "step_division": 1,
+     "time_step_sound": 6,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 4.5,
+      "numerator": 9,
+      "denominator": 2
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": Infinity,
+   "envelope_same": true
+  }
+ },
+ "sf-diablo-210118-48h": {
+  "1": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 10.0,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 13.5,
+      "numerator": 27,
+      "denominator": 2
+     }
+    },
+    "shipped_measured": {
+     "status": "BEYOND_MEASURED",
+     "dt_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": {
+      "seconds": 11.25,
+      "numerator": 45,
+      "denominator": 4
+     },
+     "longest_step_s": {
+      "seconds": 11.25,
+      "numerator": 45,
+      "denominator": 4
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": 33.75,
+   "envelope_same": true
+  },
+  "2": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 3.3333333333333335,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 3.3333333333333335,
+      "numerator": 10,
+      "denominator": 3
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 4.5,
+      "numerator": 9,
+      "denominator": 2
+     }
+    },
+    "shipped_measured": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 3.3333333333333335,
+      "numerator": 10,
+      "denominator": 3
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 4.5,
+      "numerator": 9,
+      "denominator": 2
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": Infinity,
+   "envelope_same": true
+  },
+  "3": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 1.1111111111111112,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 1.1111111111111112,
+      "numerator": 10,
+      "denominator": 9
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 1.5,
+      "numerator": 3,
+      "denominator": 2
+     }
+    },
+    "shipped_measured": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 1.1111111111111112,
+      "numerator": 10,
+      "denominator": 9
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 1.5,
+      "numerator": 3,
+      "denominator": 2
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": Infinity,
+   "envelope_same": true
+  }
+ },
+ "tor18z-48h": {
+  "1": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 3.0,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 3.0,
+      "numerator": 3,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 30.0,
+      "numerator": 30,
+      "denominator": 1
+     }
+    },
+    "shipped_measured": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 3.0,
+      "numerator": 3,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 30.0,
+      "numerator": 30,
+      "denominator": 1
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": Infinity,
+   "envelope_same": true
+  },
+  "2": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 1.5,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 1.5,
+      "numerator": 3,
+      "denominator": 2
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     }
+    },
+    "shipped_measured": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 1.5,
+      "numerator": 3,
+      "denominator": 2
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": Infinity,
+   "envelope_same": true
+  }
+ },
+ "bos0400-48h": {
+  "1": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 10.0,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 30.0,
+      "numerator": 30,
+      "denominator": 1
+     }
+    },
+    "shipped_measured": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 30.0,
+      "numerator": 30,
+      "denominator": 1
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": 33.75,
+   "envelope_same": true
+  },
+  "2": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 3.3333333333333335,
+   "time_step_sound": 4,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 3.3333333333333335,
+      "numerator": 10,
+      "denominator": 3
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     }
+    },
+    "shipped_measured": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 3.3333333333333335,
+      "numerator": 10,
+      "denominator": 3
+     },
+     "step_division": 1,
+     "time_step_sound": 4,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 10.0,
+      "numerator": 10,
+      "denominator": 1
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 49,
+   "hours_same": 49,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": Infinity,
+   "envelope_same": true
+  },
+  "3": {
+   "receipt_status": "AS_CONFIGURED",
+   "dt_s": 1.1111111111111112,
+   "time_step_sound": 12,
+   "max_time_step_s": null,
+   "never_worse": {
+    "applied": false,
+    "reason": null,
+    "rule": "the grid takes the shipped measured clock's decision where the local-face one is BEYOND_MEASURED or runs a shorter first or longest step",
+    "local_face": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 1.1111111111111112,
+      "numerator": 10,
+      "denominator": 9
+     },
+     "step_division": 1,
+     "time_step_sound": 12,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 1.6666666666666667,
+      "numerator": 5,
+      "denominator": 3
+     }
+    },
+    "shipped_measured": {
+     "status": "AS_CONFIGURED",
+     "dt_s": {
+      "seconds": 1.1111111111111112,
+      "numerator": 10,
+      "denominator": 9
+     },
+     "step_division": 1,
+     "time_step_sound": 12,
+     "max_time_step_s": null,
+     "longest_step_s": {
+      "seconds": 1.6666666666666667,
+      "numerator": 5,
+      "denominator": 3
+     }
+    }
+   },
+   "reproduces": true,
+   "hours": 289,
+   "hours_same": 289,
+   "refuse_at_read_or_actual": 0,
+   "refuse_at_actual": 0,
+   "least_limit_at_actual_s": Infinity,
+   "envelope_same": true
+  }
+ }
+}

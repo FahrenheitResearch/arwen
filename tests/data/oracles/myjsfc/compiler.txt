@@ -1,0 +1,22 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# cpu:       Intel(R) Xeon(R) Platinum 8559C
+# WRF:      d66e442fccc04111067e29274c9f9eaccc3cef28 (clean: phys/module_sf_myjsfc.F, share/module_model_constants.F)
+# -O0 undefined symbols (THE REFERENCE):
+#   U __powisf2
+#   U atanf
+#   U expf
+#   U free
+#   U logf
+#   U malloc
+#   U powf
+# -O2 -ftree-vectorize -funroll-loops undefined symbols:
+#   U atanf
+#   U expf
+#   U free
+#   U logf
+#   U malloc
+#   U memcpy
+#   U memset
+#   U powf
+# FMA instructions in either object: 0

@@ -11,11 +11,9 @@ card, and the GPU-lock refusal with the lock genuinely held.
 CPU-only: ``GPUWM_NO_LOCAL_GPU=1`` rides the server environment, so no
 test opens a device; anything card-shaped stays out of this file.
 
-Needs the ``mcp`` SDK (the ``[mcp]`` extra).  ``importorskip`` rather
-than a hard import so a bare-wheel environment reports the missing
-extra instead of an error -- but the battery census records this file
-contributing its tests, so the leg cannot go green with the module
-silently skipped without the deselection floor naming it.
+Execution needs the ``mcp`` SDK (the ``[mcp]`` extra). It is loaded by
+the execution fixture so collection and the battery census retain the
+whole test inventory when the optional SDK is absent.
 """
 
 from __future__ import annotations
@@ -34,12 +32,13 @@ from gpuwm import proc_identity
 import numpy as np
 import pytest
 
-pytest.importorskip(
-    "mcp", reason="the arwen-mcp server needs the [mcp] extra "
-                  "(pip install gpuwm[mcp])")
-
-from mcp import ClientSession, StdioServerParameters  # noqa: E402
-from mcp.client.stdio import stdio_client  # noqa: E402
+@pytest.fixture(scope="module", autouse=True)
+def mcp_sdk():
+    pytest.importorskip("mcp", reason="the server needs the [mcp] extra "
+                        "(pip install gpuwm[mcp])")
+    global ClientSession, StdioServerParameters, stdio_client
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,6 +86,10 @@ class McpClient:
         env = {str(k): str(v) for k, v in os.environ.items()}
         env["GPUWM_NO_LOCAL_GPU"] = "1"
         env["GPUWM_MCP_JOBS_DIR"] = str(self.jobs_dir)
+        # A dry run checks the WPS_GEOG tree as the launch does (2.8.8), so
+        # the server sees a staged stand-in tree, not the host's default.
+        from _staged_geog import staged_case_data_env
+        env = staged_case_data_env(self.jobs_dir / "case-data", base=env)
         params = StdioServerParameters(
             command=sys.executable, args=["-m", "gpuwm.mcp"],
             env=env, cwd=str(REPO_ROOT))

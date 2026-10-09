@@ -18,7 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from types import MappingProxyType
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
+
+if TYPE_CHECKING:
+    # The "Path" return annotations below; pathlib itself is imported
+    # where a path is built.
+    from pathlib import Path
 
 from gpuwm.explain import layered, warn
 #: Re-exported, not redefined.  The class lives in

@@ -65,6 +65,13 @@ static inline double __dsub_rn(double a, double b) { return a - b; }
 static inline double __dmul_rn(double a, double b) { return a * b; }
 static inline double __ddiv_rn(double a, double b) { return a / b; }
 static inline double __fma_rn(double a, double b, double c) { return fma(a, b, c); }
+static inline double __dsqrt_rn(double a) { return sqrt(a); }
+// Integer intrinsics WOOF's binary64 libm header (glibc_flt64.cuh) uses.
+static inline int __clzll(unsigned long long x)
+{ return x == 0ULL ? 64 : __builtin_clzll(x); }
+static inline unsigned long long __umul64hi(unsigned long long a,
+                                            unsigned long long b)
+{ return (unsigned long long)(((unsigned __int128)a * b) >> 64); }
 static inline float __double2float_rn(double d) { return (float)d; }
 // __float2int_rn rounds half to EVEN (the current, default rounding mode).
 static inline int __float2int_rn(float x) { return (int)nearbyintf(x); }

@@ -927,6 +927,9 @@ def validate_streamed_restart(path, store, cfg, *, setup, template_state,
     except restart.RestartMismatchError as error:
         raise RestartRefused(str(error)) from error
     with _as_refusal(f"restart file {path} does not match this run"):
+        # Schemes this build computes differently first: no configuration
+        # resumes such a checkpoint, so the walk's notes must not lead.
+        restart._require_current_algorithm_identities(header, cfg, path)
         restart._require_config_match(header["config"], cfg, path)
         elapsed = restart._admissible_elapsed_seconds(
             header["elapsed_seconds"], f"restart file {path}")

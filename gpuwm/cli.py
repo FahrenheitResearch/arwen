@@ -482,6 +482,10 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     # and an assistant read.
     physics_catalog_register_cli = _lazy_register("gpuwm.physics_catalog")
     physics_catalog_register_cli(sub)
+    # The 0 ULP referee for that catalog: recorded stock WRF runs of every
+    # combination, replayed through WOOF and scored word for word.
+    verify_exact_register_cli = _lazy_register("gpuwm.verify_exact.cli")
+    verify_exact_register_cli(sub)
     # The browser door drives run-plan and its query modes, so it is
     # registered beside them.  Imported here, not at module top: the page
     # server is standard library only and no other command pays for it.

@@ -45,9 +45,13 @@ def test_native_config_has_a_runnable_human_next_command(
     parsed = build_parser().parse_args(tokens[1:])
     assert parsed.func is go_cli.go_main
     assert Path(parsed.config) == config
+    from _staged_geog import staged_case_data_env
+
+    # The dry run asks the default geography, as the launch does.
+    env = staged_case_data_env(tmp_path / "case-data")
     result = subprocess.run(
         [sys.executable, "-m", "gpuwm.cli", *tokens[1:], "--dry-run"],
-        capture_output=True, text=True, timeout=60)
+        capture_output=True, text=True, timeout=60, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"go: {source}, {2 if '-' in ladder else 1} domain(s)" in result.stdout
     assert "sha256" not in result.stdout
@@ -59,7 +63,7 @@ def test_native_config_has_a_runnable_human_next_command(
     # A second real process consumes the EXACT printed argv, adding only dry-run.
     again = subprocess.run(
         [sys.executable, "-m", "gpuwm.cli", *rerun[1:], "--dry-run"],
-        capture_output=True, text=True, timeout=60)
+        capture_output=True, text=True, timeout=60, env=env)
     assert again.returncode == 0, again.stdout + again.stderr
     assert not (tmp_path / "weather area-go").exists()
 

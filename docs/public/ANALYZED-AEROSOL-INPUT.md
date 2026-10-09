@@ -6,13 +6,32 @@ Missing fields stop preparation rather than substitute a climatology.
 On the native HRRR route the bridge reads the pair only for a configuration
 that requests it (this key, or `use_rap_aero_icbc`); any other configuration
 never selects it, so a masked or partial pair cannot stop it. For a
-configuration that requests it, a pair published with a GRIB2 bitmap (masked
-points, as NCEP publishes PMTF on hybrid level 1 at some leads of some cycles)
-is not read: no fill for masked points exists. When the bridge sees the mask
-before it declares the pair (the first lead of a series decoded as posted, any
-lead of a window inventoried whole), its `gate.txt` records the pair as
-`optional_hybrid_withheld` with its reason and the run stops with that reason;
-a later lead masked as posted stops the bridge at that lead, naming it.
+configuration that requests it, bitmap shape and present packed count must
+agree. Masked cells outside the requested native crop are accepted. Missing
+QNWFA/QNIFA cells inside it take nearest_neighbor, four_pt, average_4pt, then
+zero only when the chain has no answer. Finite source values retain the existing
+packing bounds policy and output bytes. Any other selected field with masked
+cells inside the crop refuses with its field, level, message index, crop and
+masked count.
+
+The bridge emits finite native payloads and, for each requested aerosol field,
+a level-major byte bitmap in `QNWFA.mask` or `QNIFA.mask`.
+The bitmap is part of the sealed bridge manifest. Native floor/ceiling corners
+coincide at integer grid points, so masked native cells exhaust the chain and
+receive zero in the numeric payload. Those zeros never become valid aerosol
+donors: the Python boundary carries the original bitmap to the Rust chain at
+the fractional target coordinates. Finite neighboring corners are tried before
+zero is used there. A field without an in-crop mask retains its existing nearest
+mapping and output bits.
+
+`inventory.tsv` records each selected message's masked count and repair stage
+counts. The completed `gate.txt` sums them per aerosol field across every lead.
+The prepare report carries those counts as `input.aerosol_missing` and, when
+streaming, `pipeline.aerosol_missing`. Mapping reports add the target counts under
+`aerosol_missing`, including finite nearest answers. A later masked lead is repaired under
+the same policy; no series-wide withholding or masked-later-lead refusal
+remains. Historical bridges that omitted the pair still refuse analyzed
+initialization: their actual missing payload cannot be repaired retrospectively.
 The source mapping declares `water_friendly_aerosol_number` and
 `ice_friendly_aerosol_number`, both in `kg-1`. The regular source join carries
 them as QNWFA and QNIFA through the existing scalar interpolation and specified

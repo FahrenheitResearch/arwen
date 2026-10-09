@@ -5399,7 +5399,8 @@ def _public_config_value(value):
                                   ("thompson_fork_snow_fall", "blend"),
                                   ("rrtmg_cloud_optics_form", "wrf_461"),
                                   ("rrtmg_smoke_manifest", ""),
-                                  ("surface_energy_diag", False)):
+                                  ("surface_energy_diag", False),
+                                  ("cycling", False)):
                 if run_document.get(name, default) == default:
                     run_document.pop(name, None)
         return document

@@ -98,6 +98,7 @@ sf_surface_physics = 3
 bl_pbl_physics = 5
 bl_mynn_version = "gsd_41"
 bl_mynn_mixlength = 2
+scalar_pblmix = 1
 num_soil_layers = 9
 terrain_opt = 1
 km_opt = 4

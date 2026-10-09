@@ -209,7 +209,8 @@ def share_case(*, share: bool = True, chain=None, rrtmgp_column_chunk=None,
         "cumulus_calls": scalars.get("call_counts", {}).get("cumulus"),
         "tile_cfg": tile_cfg,
     }
-    del store, shared
+    shared = None  # rebound, not deleted: a closure above reads it
+    del store
     vram.trim_pool()
     return record
 

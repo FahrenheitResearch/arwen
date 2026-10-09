@@ -126,6 +126,9 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     "cdsapi": ("cdsapi",),
     "setuptools": ("setuptools",),
     "xdist": ("pytest-xdist",),
+    # tests/test_no_undefined_names.py locates the linter through the
+    # wheel's own module (ruff.__main__.find_ruff_bin).
+    "ruff": ("ruff",),
 }
 
 #: Modules this project deliberately never declares, because a *declared*
@@ -451,6 +454,12 @@ _TEST_TREE_IMPORT_SITES: dict[str, tuple[str, ...]] = {
     # construction as the three above.
     "tools/da_member_leg_proof.py": ("test_da_cycle_join_gpu",
                                      "test_da_nested_forecast_gpu"),
+    # These numerical review tools explicitly insert the checkout's tests
+    # directory. Their fixture helpers are verified by the liveness gate
+    # below and are not runtime dependencies of an installed distribution.
+    "tools/mynn_exact_review.py": ("_mynn_families", "_mynn_families_gsd41"),
+    "tools/mynn_review_restart.py": ("test_mynn_pbl_runtime",),
+    "tools/terrain_clock_review_bench.py": ("test_terrain_clock_review",),
 }
 
 

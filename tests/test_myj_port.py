@@ -34,6 +34,12 @@ changes the table rather than passing anyway.  Two coverage holes are
 DECLARED there rather than papered over: stubbing ``_vdifq`` breaks
 nothing in this file, and neutering the similarity-table lookup leaves
 every surface bar green.
+
+The Eta surface layer's WRF oracle lives in its own file:
+tests/test_myjsfc_wrf461_parity.py grades the CUDA kernel and the host
+similarity tables word for word against the byte-unmodified
+phys/module_sf_myjsfc.F (tools/myjsfc_wrf461_oracle).  Nothing in THIS file
+depends on it.
 """
 
 from __future__ import annotations
@@ -883,11 +889,19 @@ def test_the_registry_rows_are_accurate_about_the_evidence():
         assert option["reachability"] == {"state": "template"}
         assert option["selectors"] == {selector: value}
         assert option["scientific_evidence"] == "none"
-        joined = " ".join(option["warnings"])
-        # The evidence string must SAY there is no oracle.  A maturity label
-        # alone has been read as "probably fine" before.
-        assert "NO ORACLE COMPARISON AGAINST THE WRF FORTRAN" in joined
-        assert "tests/test_myj_port.py" in joined
+    # The PBL's evidence string must SAY there is no oracle for it.  A
+    # maturity label alone has been read as "probably fine" before.
+    myj_text = " ".join(myj["warnings"])
+    assert "NO ORACLE COMPARISON AGAINST THE WRF FORTRAN" in myj_text
+    assert "tests/test_myj_port.py" in myj_text
+    # The surface layer's must name the oracle that grades it bitwise, and
+    # must no longer carry the ground-relative divergence it retired.
+    eta_text = " ".join(eta["warnings"])
+    assert "BIT-IDENTICAL" in eta_text
+    assert "tests/test_myjsfc_wrf461_parity.py" in eta_text
+    assert "tools/myjsfc_wrf461_oracle" in eta_text
+    assert "NO ORACLE COMPARISON" not in eta_text
+    assert "GROUND-relative" not in eta_text
     # Audit R-067 gave the pair its first named suite, so reachability is
     # 'template' now and the old "no template may select either half" is
     # retired with it.  What survives is the property that actually
@@ -1010,9 +1024,12 @@ def test_the_surface_kernels_pblh_accumulator_is_column_local():
         "utf-8")
     code = [ln.split("//")[0].strip() for ln in source.splitlines()]
     assert [ln for ln in code if "dz_a[" in ln] == [
-        "real zcum = dz_a[col];",
-        "zcum += dz_a[(size_t)iz * st + col];",
-        "real zsl = dz_a[col] * 0.5f;",
+        "real zlow = zground + dz_a[col];",
+        "zcum = zcum + dz_a[(size_t)iz * st + col];",
+    ]
+    # ZINT(KTE+1)=HT (module_sf_myjsfc.F:165) is this thread's own HT too.
+    assert [ln for ln in code if "ht_a[" in ln] == [
+        "real zground = ht_a[col];",
     ]
 
 
@@ -1047,13 +1064,18 @@ def _to_device(cp, array):
 @pytest.mark.parametrize("xland,tsk,tag", [(1.0, 305.0, "land"),
                                            (2.0, 295.0, "water")])
 def test_the_surface_kernel_agrees_with_the_cpu_authority(xland, tsk, tag):
-    """CPU-vs-CUDA, on the same column, within a STATED tolerance.
+    """CPU-vs-CUDA, on the same column, word for word.
 
-    This is a conformance check between two halves of one port, not a
-    measurement against WRF.  The tolerance is loose on purpose: neither
-    half pins its libm, so logf/expf/powf differ between glibc and CUDA,
-    and the five-pass flux iteration amplifies a last-place difference.
-    The bar that matters is that the two halves describe the same physics.
+    This used to be a tolerance check (rel 2e-4, abs 1e-6) because neither
+    half pinned its libm.  Both are now graded bit-identical to WRF v4.6.1's
+    MYJSFC on the column oracle (tests/test_myjsfc_wrf461_parity.py: the
+    kernel on GPU, the CPU authority on CPU), and the tolerance had become
+    the wrong instrument: on the water column below, a cold-start QZ0 that
+    equals QLOW to within one ULP makes QFX and LH a pure rounding residue
+    (WRF writes LH = -1.7143344e-05 W m-2, the kernel the same word, and
+    the CPU authority wrote -0.0 while it still used NumPy's log/exp/pow,
+    one ULP off on QZ0).  With both halves pinned the residue is the same
+    word on both sides, so the bar is bitwise.
     """
     import cupy as cp
 
@@ -1081,6 +1103,7 @@ def test_the_surface_kernel_agrees_with_the_cpu_authority(xland, tsk, tag):
         "xland": _to_device(cp, np.full(shape, xland)),
         "mavail": _to_device(cp, np.ones(shape)),
         "z0base": _to_device(cp, np.full(shape, 0.1)),
+        "ht": _to_device(cp, np.zeros(shape)),
     }
     seed = {"ust": 0.1, "znt": 0.1, "thz0": 300.0, "qz0": 0.012,
             "uz0": 0.0, "vz0": 0.0, "qsfc": 0.012, "akhs": 0.01,
@@ -1095,7 +1118,8 @@ def test_the_surface_kernel_agrees_with_the_cpu_authority(xland, tsk, tag):
         device = float(cp.asnumpy(source[name]).ravel()[0])
         host = float(reference[name])
         assert np.isfinite(device), f"{tag}: {name} non-finite on device"
-        assert device == pytest.approx(host, rel=2.0e-4, abs=1.0e-6), (
+        assert (np.float32(device).tobytes()
+                == np.float32(host).tobytes()), (
             f"{tag}: {name} CPU {host!r} vs CUDA {device!r}")
 
 
@@ -1138,7 +1162,8 @@ def test_the_surface_kernel_pblh_uses_each_columns_own_dz():
                 ("t1", thick["t"][0]), ("th1", thick["th"][0]),
                 ("qv1", thick["qv"][0]), ("qc1", thick["qc"][0]),
                 ("p1", thick["p"][0]), ("psfc", 1.0e5), ("tsk", tsk),
-                ("xland", xland), ("mavail", 1.0), ("z0base", 0.1))}
+                ("xland", xland), ("mavail", 1.0), ("z0base", 0.1),
+                ("ht", 0.0))}
     seed = {"ust": 0.1, "znt": 0.1, "thz0": 300.0, "qz0": 0.012,
             "uz0": 0.0, "vz0": 0.0, "qsfc": 0.012, "akhs": 0.01,
             "akms": 0.01}

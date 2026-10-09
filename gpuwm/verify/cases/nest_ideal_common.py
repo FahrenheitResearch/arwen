@@ -931,7 +931,8 @@ def prepare_idealized_domain(state, dc, grid, start_time):
 #: gpuwm/runtime.py admitted it is exactly the failure this comment warns
 #: about -- the stage happens, the consume does not, and the raise lands at
 #: the next history frame.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50) + tuple(
+    __import__('gpuwm.microphysics_schemes', fromlist=['NAMED_MP_IDS']).NAMED_MP_IDS)
 
 
 def consume_history_reflectivity(node, ticks: int) -> None:

@@ -1696,6 +1696,39 @@ def _compose_scratch_base(destination: Path | None) -> Path | None:
     return base
 
 
+def _unpublished_binding_record(binding_name, binding, fallbacks, *,
+                                mapping_path, donor_files, provenance_path,
+                                before):
+    """The receipt of a binding whose files publish none of its fields.
+
+    Twin of the engine's ``compose.rs unpublished_record``: ``None`` when
+    any bound field has no fallback in ``fallbacks`` (or the binding
+    supplies terrain, which has its own ``when_absent``), so the caller
+    refuses as it always did.
+    """
+
+    names = [str(name) for name in binding["fields"]]
+    if (not fallbacks or _EXTERNAL_FIELD in names
+            or any(name not in fallbacks for name in names)):
+        return None
+    return {
+        "binding": binding_name,
+        "source_id": str(binding["source_id"]),
+        "mapping": {"path": str(mapping_path),
+                    "sha256": before[str(mapping_path)]},
+        "data": [{"path": str(path), "sha256": before[str(path)]}
+                 for path in donor_files],
+        "provenance": {"path": str(provenance_path),
+                       "sha256": before[str(provenance_path)]},
+        "fields": sorted(names),
+        "alignment": {
+            "status": "UNPUBLISHED",
+            "reason": "the supplied files publish no record for these fields",
+            "fallback": {name: fallbacks[name] for name in names},
+        },
+    }
+
+
 def _compose_through_engine(
     *,
     engine: Path,
@@ -1720,6 +1753,7 @@ def _compose_through_engine(
     workers: int | None = None,
     lead_batch: bool = False,
     memory_budget_bytes: int | None = None,
+    unpublished_fallbacks: Mapping[str, str] | None = None,
 ) -> MappedSourceBundle:
     """Compose on the Rust engine, keeping every policy check on this side.
 
@@ -1778,6 +1812,8 @@ def _compose_through_engine(
                 lead_batch=lead_batch,
                 **({} if memory_budget_bytes is None else {
                     "memory_budget_bytes": memory_budget_bytes}),
+                **({"unpublished_fallbacks": unpublished_fallbacks}
+                   if unpublished_fallbacks else {}),
             )
         except ScratchDiskRefusal as refusal:
             raise scratch_disk_refusal(refusal, scratch_base) from refusal
@@ -1797,7 +1833,8 @@ def _compose_through_engine(
                 before=before, member=member, member_identity=member_identity,
                 scratch_destination=scratch_destination, workers=workers,
                 lead_batch=lead_batch,
-                memory_budget_bytes=decode_control["budget_bytes"]).frames
+                memory_budget_bytes=decode_control["budget_bytes"],
+                unpublished_fallbacks=unpublished_fallbacks).frames
             decode_control["pending"] = False
             return full
         frames = mapped_engine_bridge.open_frameset(
@@ -1931,6 +1968,8 @@ def _composed_bundle_from_frames(
         terrain_provenance_path = provenance[
             str(terrain_binding["provenance_role"])]
     warn_completed_fields(completed_field_summary(frames), subject="the source")
+    from gpuwm.mapped_source import warn_unpublished_bindings
+    warn_unpublished_bindings(contributing_records, subject="the source")
     return MappedSourceBundle(
         frames=frames,
         mapping_path=mapping_path,
@@ -2211,8 +2250,11 @@ def decode_composed_source(
         raise InitializationMemoryRefused(
             "the live preparation's future decode requires the native host-memory budget; "
             "the Python decoder cannot enforce that reservation")
+    from gpuwm.runtime_surface_fetch import composition_unpublished_fallbacks
+    unpublished_fallbacks = composition_unpublished_fallbacks(bindings)
     if engine_binary is not None:
         return _compose_through_engine(
+            unpublished_fallbacks=unpublished_fallbacks,
             engine=engine_binary,
             mapping_path=mapping_path,
             composition_path=composition_path,
@@ -2275,17 +2317,34 @@ def decode_composed_source(
     terrain_binding: Mapping[str, object] | None = None
     terrain_binding_receipt: dict[str, object] | None = None
     soil_donor_mapping: Mapping[str, object] | None = None
+    unpublished: set[str] = set()
     for binding_name in sorted(bindings):
         binding = bindings[binding_name]
         bound_names = [str(name) for name in binding["fields"]]
         donor_files = supplements[str(binding["data_role"])]
-        donor_collection = _decode_partition(
-            _partition_contributing(
-                donor_mappings[binding_name], bound_names,
-                binding_name=binding_name,
-            ),
-            donor_files, decoders,
-        )
+        try:
+            donor_collection = _decode_partition(
+                _partition_contributing(
+                    donor_mappings[binding_name], bound_names,
+                    binding_name=binding_name,
+                ),
+                donor_files, decoders,
+            )
+        except NothingMatched:
+            # Twin of the engine's unpublished binding (compose.rs
+            # unpublished_record): files that publish no record for any
+            # bound field, every one of which has a field-keyed fallback.
+            record = _unpublished_binding_record(
+                binding_name, binding, unpublished_fallbacks,
+                mapping_path=donor_paths[binding_name],
+                donor_files=donor_files,
+                provenance_path=provenance[str(binding["provenance_role"])],
+                before=before)
+            if record is None:
+                raise
+            contributing_records.append(record)
+            unpublished.update(bound_names)
+            continue
         combined, receipt = _compose_bound_fields(
             combined, donor_collection,
             binding_name=binding_name, binding=binding,
@@ -2336,6 +2395,8 @@ def decode_composed_source(
     for binding_name in sorted(bindings):
         donor_mapping = donor_mappings[binding_name]
         for name in bindings[binding_name]["fields"]:
+            if str(name) in unpublished:
+                continue
             spec = copy.deepcopy(dict(donor_mapping["fields"][str(name)]))
             # The primary binds a borrowed field in order to publish it,
             # so the donor's own ``dependency_only`` does not ride along:
@@ -2343,7 +2404,16 @@ def decode_composed_source(
             # off the composed frame.
             spec.pop("dependency_only", None)
             union_fields[str(name)] = spec
+    for name in unpublished:
+        # Off the composed frame: the start reads the recorded fallback.
+        union_fields.pop(name, None)
     union["fields"] = union_fields
+    if unpublished:
+        target = dict(union["target"])
+        target["required_fields"] = [
+            item for item in target["required_fields"]
+            if str(item["name"]) not in unpublished]
+        union["target"] = target
 
     input_hashes = {
         str(path): before[str(path)]
@@ -2379,6 +2449,8 @@ def decode_composed_source(
             "member_identity": declared_member_identity,
         }
     warn_completed_fields(completed_field_summary(frames), subject="the source")
+    from gpuwm.mapped_source import warn_unpublished_bindings
+    warn_unpublished_bindings(contributing_records, subject="the source")
     return MappedSourceBundle(
         frames=frames,
         mapping_path=mapping_path,

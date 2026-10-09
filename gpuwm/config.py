@@ -3,6 +3,7 @@ import math
 import tomllib
 from dataclasses import KW_ONLY, dataclass, fields
 from pathlib import Path
+from typing import ClassVar
 from gpuwm.sfire_config import FireRunFields, validate_fire_config
 
 from gpuwm.physics_compat import (
@@ -57,6 +58,11 @@ def validate_surface_radiation_policy(policy: str) -> str:
 @dataclass(frozen=True)
 class RunConfig:
     def __post_init__(self):
+        # Resolve named microphysics before all consumers inspect its id.
+        # Keep this in the same initializer as the chemistry shortcut.
+        if not isinstance(self.mp_physics, int) or isinstance(self.mp_physics, bool):
+            from gpuwm.microphysics_schemes import resolve_mp_physics
+            object.__setattr__(self, "mp_physics", resolve_mp_physics(self.mp_physics))
         # Resolve this public shortcut before arena, cache and restart
         # identities inspect chem_sets. It is inert for existing configs.
         if not isinstance(self.chem_sets, str) or not isinstance(self.fire_smoke, bool):
@@ -100,7 +106,9 @@ class RunConfig:
     etac: float = 0.2
     moist: bool = False
     # 0 off, 1 Kessler, 6 WSM6, 8 Thompson, 10 Morrison, 18 NSSL,
-    # 28 Thompson aerosol-aware (Registry/Registry.EM_COMMON:3036)
+    # 28 Thompson aerosol-aware (Registry/Registry.EM_COMMON:3036).
+    # Named WOOF schemes are given by name and resolve to their
+    # WOOF-side id (gpuwm.microphysics_schemes) in __post_init__.
     mp_physics: int = 0
     moist_adv_opt: int = 1       # PD limiter on when moist
     # WRF no_mp_heating (Registry.EM_COMMON:2630, default 0): 1 disables
@@ -993,8 +1001,9 @@ class RunConfig:
     #: value, including ``wrf_461``, is kept.  Appended last.
     mynn_sfclay_variant: str = "wrf_461"
     #: Whether the engine's measured terrain rules may rewrite this
-    #: domain's clock at launch.  ``"measured"`` (the default, every
-    #: configuration before this field): the terrain clock
+    #: domain's clock at launch.  ``"local_face"`` is the default (below).
+    #: ``"measured"`` (the default until 2.8.8, and every configuration
+    #: before this field): the terrain clock
     #: (:mod:`gpuwm.terrain_clock`) divides the step or raises the acoustic
     #: substep count where its measured map saw a longer step stop under
     #: the domain's steepest slope, crest height and crest-level wind, and
@@ -1016,7 +1025,24 @@ class RunConfig:
     #: operational grid, so on such a grid their verdict is advice, and the
     #: run's own stability evidence is the referee.  Nothing in preparation
     #: reads it; a prepared tree carries the same state under either value.
-    terrain_clock: str = "measured"
+    #: ``"local_face"`` (the default from 2.8.8): the terrain clock reads
+    #: every terrain face with the crest and crest-level wind in a
+    #: neighbourhood around it, a measured wind margin and its own measured
+    #: rows (:mod:`gpuwm.terrain_clock_local`) instead of the domain-wide
+    #: steepest slope, highest ground and strongest wind, and it is never
+    #: worse than ``"measured"``: where the face-by-face reading is
+    #: BEYOND_MEASURED or would run a shorter first or longest step, the
+    #: grid takes the ``"measured"`` decision and its receipt and run line
+    #: say so (:func:`gpuwm.terrain_clock_local.never_worse`).  Breakage
+    #: the default answers: the domain-wide reading put a Plains jet on a
+    #: mountain face hundreds of km away and halved NCAR's published CONUS
+    #: steps (72 s to 36 s at 12 km, 15 s to 7.5 s at 2.5 km), which ran
+    #: clean at NCAR's own steps (CLOCK-CHECK-NCAR-2026-10-06, steps 3 to
+    #: 7).  The substep rule reads as under ``"measured"``.  A checkpoint
+    #: echo or fingerprint without ``terrain_clock`` was written under
+    #: ``"measured"`` and still reads so; ``"local_face"`` binds
+    #: (:func:`gpuwm.io.restart.configuration_echo`).
+    terrain_clock: str = "local_face"
     #: Which WRF source's sixth-order filter runs (diff_6th_opt > 0;
     #: gpuwm.core.dycore.DIFF6_FORMS).  ``wrf_461`` (WRF v4.6.1
     #: sixth_order_diffusion and rk_scalar_tend): moisture, scalar and TKE
@@ -1203,6 +1229,25 @@ class RunConfig:
     #: Appended after rrtmg_smoke_manifest, ahead of the chem block (which
     #: stays the last positional block) and the keyword-only fire block.
     surface_energy_diag: bool = False
+
+    #: WRF &time_control ``cycling`` (Registry default .false.): the start
+    #: carries a previous forecast's scheme state, so the first MYNN call
+    #: keeps the input QKE (unless its lowest-level maximum is below
+    #: 0.0002, module_bl_mynn.F:4007-4018 of the NOAA-EMC/HRRR v4.1.21
+    #: fork) and the input QC_BL and CLDFRA_BL, which the first radiation
+    #: call and the first cloud decay also read. Both MYNN generations
+    #: carry these fields; wrf_461 repairs the source's lost-carry zeroing.
+    #: Appended last.
+    cycling: bool = False
+
+    #: Turbulent Prandtl number of the km_opt = 1 constants: xkhh =
+    #: khdif/prandtl and xkhv = kvdif/prandtl (isotropic_km,
+    #: module_diffusion_em.F:1756-1767), read by
+    #: dycore.launch_wrf_isotropic_km.  WRF fixes it at prandtl = 1./3.0
+    #: (share/module_model_constants.F:86) and has no namelist knob for
+    #: it, so it is a class constant, not a field: no TOML key, no
+    #: namelist import, no configuration digest or restart identity entry.
+    constant_k_prandtl: ClassVar[float] = 1.0 / 3.0
 
     # Appended after the existing selectors.
     # The chem block (smoke, GOCART-lite aerosols, CAMS-carried gases;
@@ -1451,9 +1496,22 @@ class RunConfig:
     fire_smoke: bool = False
 
 
-#: The two ways a domain's clock meets the measured terrain rules
+#: The ways a domain's clock meets the measured terrain rules
 #: (:attr:`RunConfig.terrain_clock`).
-TERRAIN_CLOCK_MODES: tuple[str, ...] = ("measured", "pinned")
+TERRAIN_CLOCK_MODES: tuple[str, ...] = ("measured", "pinned", "local_face")
+
+#: The restart doors' accuracy about the changed default, beside the
+#: existing refusal (the mismatch already names the breakage: a run whose
+#: clock can differ from the checkpoint's).  Said when a checkpoint
+#: written under "measured" (an absent key) meets a run under
+#: "local_face", because from 2.8.8 a configuration that leaves
+#: terrain_clock unset reads "local_face".
+TERRAIN_CLOCK_RESTART_BREAK_NOTICE = (
+    "note: the checkpoint was integrated under the measured terrain clock "
+    "(terrain_clock = \"measured\", the default before 2.8.8) and this run "
+    "reads terrain_clock = \"local_face\", the default from 2.8.8, which "
+    "can give a domain a longer step. To resume this checkpoint, write "
+    "terrain_clock = \"measured\" explicitly; otherwise restart from t = 0.")
 
 
 #: WRF vertical advection orders the kernels carry (module_advect_em.F
@@ -1712,12 +1770,13 @@ def validate_scalar_pblmix_consumer(cfg) -> None:
     Shared with plan review (gpuwm.physics_registry), which calls it on the
     resolved settings so a plan is not offered that this refuses.
     """
-    if cfg.scalar_pblmix == 1 and (cfg.bl_pbl_physics != 5
+    if cfg.scalar_pblmix == 1 and (cfg.bl_pbl_physics not in (1, 5)
                                    or cfg.mp_physics != 28):
         raise NotImplementedError(
-            "scalar_pblmix=1 requires bl_pbl_physics=5 and mp_physics=28; "
-            "the implemented coupling reads MYNN exch_h and the "
-            "Thompson aerosol scalar fields nc/ni/nwfa/nifa.")
+            "scalar_pblmix=1 requires bl_pbl_physics=1 (YSU) or 5 (MYNN) "
+            "and mp_physics=28; the implemented coupling reads that "
+            "scheme's exch_h and the Thompson aerosol scalar fields "
+            "nc/ni/nwfa/nifa.")
 
 
 def validate_mynn_generation_spp(cfg) -> None:
@@ -2238,6 +2297,14 @@ def validated_soil_layer_count(sf_surface_physics: int) -> int:
 #: so :mod:`gpuwm.io.wrfout` can default its ``soil_layers`` argument without
 #: carrying a soil-geometry constant of its own.
 NO_LAND_SURFACE_SOIL_LAYERS = LAND_SURFACE_SOIL_LAYERS[0][0]
+#: The soil axis real.exe writes with no land-surface scheme: WRF's
+#: ``set_physics_rconfigs`` sets NOLSMSCHEME to five layers
+#: (share/module_check_a_mundo.F:3548-3549) and overwrites any namelist value.
+#: The WRF namelist door resolves this number, so a ``sf_surface_physics = 0``
+#: namelist agrees with the ``wrfinput_d01`` its own real.exe wrote (93 runs of
+#: the 2026-10-07 combo sweep were refused on 5 against 4).  Idealised configs
+#: keep :data:`NO_LAND_SURFACE_SOIL_LAYERS` for the frozen headers named above.
+WRF_NO_LAND_SURFACE_SOIL_LAYERS = 5
 #: Human-readable names used only in validation messages.
 _LAND_SURFACE_NAMES = {
     0: "none", 2: "Noah LSM", 3: "RUC LSM", 4: "Noah-MP LSM"}
@@ -2450,7 +2517,7 @@ _MP_PHYSICS_SCHEMA_MENU = (
     "mp_physics must be 0 (off), 1 (Kessler), 6 (WSM6), 8 "
     "(Thompson), 9 (Milbrandt-Yau two-moment), 10 (Morrison "
     "two-moment), 16 (WDM6 double-moment warm rain), 18 (NSSL "
-    "two-moment), 28 (Thompson aerosol-aware), or 50 (P3 "
+    "two-moment), 28 (Thompson aerosol-aware), 50 (P3 "
     "one-category)"
 )
 
@@ -4145,6 +4212,49 @@ def terrain_drag_refusal(*, topo_wind, gwd_opt, bl_pbl_physics,
 HMIX_PRODUCING_PBL_SCHEMES: tuple[int, ...] = (SASE_PBL_SCHEME,)
 
 
+def constant_k_mixing_active(cfg) -> bool:
+    """Whether ``km_opt = 1`` runs WRF's diff_opt = 2 mixing package.
+
+    WRF's ``km_opt = 1`` is not a separate operator: ``calculate_km_kh``
+    calls ``isotropic_km`` (module_diffusion_em.F:1718-1772), which fills
+    xkmh = khdif, xkmv = kvdif, xkhh = khdif/prandtl and xkhv =
+    kvdif/prandtl, and the SAME ``horizontal_diffusion_2`` and (PBL off)
+    ``vertical_diffusion_2`` that serve km_opt 2-4 then mix every dry,
+    moist, chem and tracer row once per step from the time-t fields
+    (module_first_rk_step_part2.F:419-1100).
+
+    The package is skipped only where WRF's own words would all be zero:
+    both constants zero AND either a PBL scheme on (vertical_diffusion_2
+    is not called) or no surface forcing ``vertical_diffusion_2`` could
+    apply.  Skipping then changes nothing but the sign of an exact zero
+    tendency word, and it keeps the default configuration (km_opt = 1,
+    khdif = kvdif = 0) free of a full-grid package that computes zeros.
+    """
+    if int(getattr(cfg, "km_opt", 0)) != 1:
+        return False
+    if cfg.khdif != 0.0 or cfg.kvdif != 0.0:
+        return True
+    if getattr(cfg, "diff_opt", 2) != 2 or cfg.bl_pbl_physics != 0:
+        return False
+    isfflx = getattr(cfg, "isfflx", 1)
+    heat = getattr(cfg, "tke_heat_flux", 0.0)
+    drag = getattr(cfg, "tke_drag_coefficient", 0.0)
+    if isfflx == 0:
+        return heat != 0.0 or drag != 0.0
+    if isfflx == 2 and heat != 0.0:
+        return True
+    return getattr(cfg, "sf_sfclay_physics", 0) != 0
+
+
+def wrf_mixing_package_active(cfg) -> bool:
+    """Whether the dycore builds WRF's once-per-step mixing tendencies.
+
+    km_opt 2/3/4 always; km_opt 1 under :func:`constant_k_mixing_active`.
+    """
+    return (int(getattr(cfg, "km_opt", 0)) in (2, 3, 4)
+            or constant_k_mixing_active(cfg))
+
+
 def km_opt_zero_producer(cfg: RunConfig) -> str | None:
     """What supplies horizontal mixing at ``km_opt = 0``, or None."""
     if cfg.bl_pbl_physics == SASE_PBL_SCHEME:
@@ -4894,7 +5004,10 @@ def _validate_adaptive_time_step(cfg: RunConfig) -> None:
             "clock and the steep-ground substep rule rewrite the clock at "
             "launch where their measured maps saw a step stop; \"pinned\" "
             "runs dt and time_step_sound exactly as configured and records "
-            "what those rules would have done as advice in the receipt")
+            "what those rules would have done as advice in the receipt; "
+            "\"local_face\" (the default) reads every terrain face with the "
+            "crest and crest-level wind around it and is never worse than "
+            "\"measured\" (gpuwm/terrain_clock_local.py)")
     if not cfg.use_adaptive_time_step:
         return
 
@@ -5180,12 +5293,6 @@ def validate_chem_config(cfg) -> None:
             "approximation (aer_op_opt = 1, module_optical_averaging.F) is "
             "ported; the Maxwell-Garnett and exact-Mie mixing rules are not, "
             "so the optics would silently use the volume rule.")
-    if int(cfg.km_opt) == 1 and (cfg.khdif > 0.0 or cfg.kvdif > 0.0):
-        raise ValueError(
-            f"chem with km_opt=1 and khdif={cfg.khdif}/kvdif={cfg.kvdif}: the "
-            "constant-K operator (dycore.add_diffusion_tendencies) acts on "
-            "the dry fields only, so chem would not be diffused where WRF's "
-            "rk_scalar_tend diffuses it (module_em.F, diff_opt=1 branch).")
     # Emission frames.  The one frame provider in this build
     # (gpuwm.chem_emission_frames, through gpuwm.chem_source_netcdf.ingest)
     # serves extensive NetCDF sources on a cell-sum remap, the RAVE fire
@@ -5388,13 +5495,17 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "(surface-scheme drag/moisture with prescribed tke_heat_flux), "
             f"got {cfg.isfflx}."
         )
-    _prescribed_flux_consumer = (
-        cfg.km_opt in (2, 3, 4) and cfg.bl_pbl_physics == 0)
+    # km_opt=1 under diff_opt=2 runs the same vertical_diffusion_2 surface
+    # arms as km_opt 2-4 (constant_k_mixing_active), so it consumes the
+    # prescribed forcing too.
+    _prescribed_flux_consumer = cfg.bl_pbl_physics == 0 and (
+        cfg.km_opt in (2, 3, 4) or constant_k_mixing_active(cfg))
     if cfg.isfflx == 0 and cfg.sf_sfclay_physics == 0 \
             and not _prescribed_flux_consumer:
         raise ValueError(
             "isfflx=0 has no consumer when sf_sfclay_physics=0 unless the "
-            "PBL-off turbulence path (km_opt=2/3/4, bl_pbl_physics=0) is "
+            "PBL-off turbulence path (km_opt=2/3/4, or 1 under diff_opt=2; "
+            "bl_pbl_physics=0) is "
             "active to take the prescribed tke_drag_coefficient/"
             "tke_heat_flux forcing; gpuwm otherwise implements the gate "
             "in its MM5 and MYNN surface-layer paths."
@@ -5403,7 +5514,8 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
         raise ValueError(
             "isfflx=2 (prescribed tke_heat_flux) is consumed only by "
             "WRF's diff_opt=2 vertical_diffusion_2 path, which gpuwm "
-            "runs under km_opt=2/3/4 with bl_pbl_physics=0 "
+            "runs under km_opt=2/3/4 (or 1 under diff_opt=2) with "
+            "bl_pbl_physics=0 "
             "(module_diffusion_em.F:4286-4305); enable that path or "
             "choose isfflx 0/1."
         )
@@ -5826,6 +5938,8 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "NOAA-EMC WRF 3.9 branch): the two delete or keep a dew flux "
             "and mix with different lengths, so an unknown name cannot "
             "select either.")
+    if type(cfg.cycling) is not bool:
+        raise TypeError("cycling must be a bool")
     if cfg.bl_mynn_cloud_tendency_form not in ("wrf_461", "gsd_41"):
         raise ValueError("bl_mynn_cloud_tendency_form must be 'wrf_461' or 'gsd_41'")
     if cfg.bl_mynn_cloud_tendency_form == "gsd_41" and cfg.bl_mynn_version != "gsd_41":
@@ -6387,14 +6501,6 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "no column (WRF reads its halo there), so the solve would run "
             "on an invented flux.  Periodic, specified and nested "
             "boundaries are wired."
-        )
-    if (cfg.km_opt == 1 and (cfg.open_x or cfg.open_y or cfg.specified)
-            and (cfg.khdif > 0.0 or cfg.kvdif > 0.0)):
-        raise NotImplementedError(
-            "khdif/kvdif > 0 with open or specified lateral boundaries is "
-            "not wired: the constant-K diffusion stencils have no "
-            "boundary-aware bounds and would wrap across the domain; use "
-            "km_opt=4 and/or diff_6th_opt=2 for boundary dissipation."
         )
     if cfg.diff_6th_opt == 1 and cfg.moist:
         raise ValueError(

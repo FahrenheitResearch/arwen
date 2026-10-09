@@ -1157,6 +1157,8 @@ def test_snow_preparation_kernel_is_insensitive_to_fma_contraction():
         + "\n"
         + (kernels / "glibc_flt32.cuh").read_text()
         + "\n"
+        + (kernels / "glibc_trig_flt32.cuh").read_text()
+        + "\n"
         + (kernels / "ruc.cu").read_text()
     )
     variants = {}
@@ -1858,6 +1860,8 @@ def test_ruc_snow_temperature_cuda_has_no_unpinned_contraction():
         + (kernels / "common.cuh").read_text()
         + "\n"
         + (kernels / "glibc_flt32.cuh").read_text()
+        + "\n"
+        + (kernels / "glibc_trig_flt32.cuh").read_text()
         + "\n"
         + (kernels / "ruc.cu").read_text()
     )

@@ -736,101 +736,55 @@ GPU_SURFACE_FIELD_MAP = {"hpbl": "hpbl", "wstar": "wstar", "delta": "delta"}
 #: reciprocal multiply for the kernel's constant divisions, not the card;
 #: with them spelled __fdiv_rn the 5090 reads el 13 under all three
 #: compilers and no field differs between cards (GPU_CARD_SENSITIVE_FIELDS).
-RTX_5090 = "NVIDIA GeForce RTX 5090"
-RTX_4090 = "NVIDIA GeForce RTX 4090"
-RTX_5070_TI = "NVIDIA GeForce RTX 5070 Ti"
+RTX_PRO_6000 = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
 
-#: The RTX 4090's row, also measured under NVRTC 13.4.92 after the workspace move.
-_GPU_ROW_RTX_4090 = {
-    "du": 93207,
-    "dv": 46603,
+#: The kernel's distance from the pinned WRF words since lane/parity-pbl-libm
+#: (sweep row 20): every field is WRF's word on every lane except the 72
+#: flushed subnormal tendencies (GPU_SUBNORMAL_LANES), which are the only
+#: non-zero dqv/dqc/dqi maxima here.  The unit now takes glibc's powf and
+#: expf (gfk_pow/gfk_exp, glibc_flt32.cuh) instead of CUDA's, WRF's ``**h1``
+#: powf at the wscalek site that used to be the one cbrtf, tanh in double
+#: rounded once, and compiles with --fmad=false
+#: (kernels/__init__.py _NO_FMAD_MODULES).  The rows this table carried before
+#: (du 93207, dv 46603 or 1491308 by compiler, tke 2022 or 2005, el 13,
+#: exch_h 8, hpbl/wstar/delta 1, on the RTX 5090, 4090 and 5070 Ti) were CUDA
+#: libm and contraction; they are history now, in the commit that retired them.
+#:
+#: Measured 2026-10-05 on box K's RTX PRO 6000 (sm_120), one process per
+#: compiler, NVRTC 13.4.92 (cupy-cuda13x 14.2.0) and 12.9.86 (cupy-cuda12x
+#: 14.2.0): identical.  The compiler split that justified per-build rows is
+#: gone with the device libm, so both builds carry the same row; a build or
+#: card with no row is still refused or skipped, naming itself, because nobody
+#: has read it under the new kernel yet.
+_GPU_ROW_GLIBC = {
+    "du": 0,
+    "dv": 0,
     "dtheta": 0,
-    "dqv": 349526,
+    "dqv": 15069,
     "dqc": 155602,
     "dqi": 3055548,
-    "exch_h": 8,
-    "tke": 2022,
-    "el": 13,
-    "hpbl": 1,
-    "wstar": 1,
-    "delta": 1,
+    "exch_h": 0,
+    "tke": 0,
+    "el": 0,
+    "hpbl": 0,
+    "wstar": 0,
+    "delta": 0,
 }
 
-#: Every RTX 5090 row below was RE-RECORDED for A146 on 2026-10-01, on
-#: node-2's 5090 (driver 13.3, cupy 14.2.0), two processes per compiler:
-#: el 14 -> 13 under each of 13.0.48, 12.9.86 and 13.4.92 and no other field
-#: moved.  shinhong.cu's constant divisions are now spelled __fdiv_rn; NVRTC
-#: had compiled them for sm_120 as reciprocal multiplies.
 GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD = {
-    "13.0.48": {
-        RTX_5090: {
-            "du": 93207,
-            "dv": 46603,
-            "dtheta": 0,
-            "dqv": 349526,
-            "dqc": 155602,
-            "dqi": 3055548,
-            "exch_h": 8,
-            "tke": 2022,
-            "el": 13,
-            "hpbl": 1,
-            "wstar": 1,
-            "delta": 1,
-        },
-        RTX_4090: _GPU_ROW_RTX_4090,
-    },
-    "12.9.86": {
-        RTX_5090: {
-            "du": 93207,
-            "dv": 1491308,
-            "dtheta": 0,
-            "dqv": 349526,
-            "dqc": 155602,
-            "dqi": 3055548,
-            "exch_h": 8,
-            "tke": 2005,
-            "el": 13,
-            "hpbl": 1,
-            "wstar": 1,
-            "delta": 1,
-        },
-    },
-    "13.3.33": {
-        RTX_4090: _GPU_ROW_RTX_4090,
-    },
-    # Two fresh processes per card measured these rows; on each card the old
-    # and workspace kernels also returned identical bits for every oracle
-    # output, including TKE.  Receipts: shinhong-workspace-nvrtc13492-sm89
-    # and -sm120.json under pin-gates.
-    # The 5090 now reads the 4090's row here (A146, above).  Node-4's RTX
-    # 5070 Ti (driver 13.2), which had no row, reads the same row in two
-    # processes and joins the table.
-    "13.4.92": {
-        RTX_5090: _GPU_ROW_RTX_4090,
-        RTX_5070_TI: _GPU_ROW_RTX_4090,
-        RTX_4090: _GPU_ROW_RTX_4090,
-    },
+    "13.4.92": {RTX_PRO_6000: _GPU_ROW_GLIBC},
+    "12.9.86": {RTX_PRO_6000: _GPU_ROW_GLIBC},
 }
 
-#: The certification row, kept under its original name so the fields that are
-#: compiler-independent stay quotable from one place.  Rows must agree on
-#: every field the ``wscalek`` site does not reach and the card does not move
-#: -- asserted below, so a future row cannot quietly re-baseline a field it
-#: has no business touching.
-GPU_BASELINE_MAX_ULP = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD["13.0.48"][RTX_5090]
+#: The certification row.
+GPU_BASELINE_MAX_ULP = _GPU_ROW_GLIBC
 
-#: Fields the ``wscalek`` cube root is allowed to move between compiler rows
-#: on one card.  Everything else is required to be identical across compilers.
-GPU_COMPILER_SENSITIVE_FIELDS = ("dv", "tke")
+#: Fields allowed to differ between compiler rows on one card: NONE since the
+#: device libm left the unit (the ``wscalek`` cube root used to move dv and
+#: tke between the CUDA 12 and 13 lines).
+GPU_COMPILER_SENSITIVE_FIELDS: tuple = ()
 
-#: Fields allowed to differ between cards under one compiler: NONE.  This
-#: was ``el`` alone, the 2026-09-18 reading (14 on the RTX 5090, 13 on the
-#: RTX 4090 under NVRTC 13.0.48), filed as the card.  It was A146: NVRTC
-#: compiled shinhong.cu's constant divisions for sm_120 as reciprocal
-#: multiplies.  With them spelled ``__fdiv_rn`` the 5090 reads el 13 under
-#: every compiler it was measured with and the 5070 Ti reads the 4090's row,
-#: so every field is required to be identical across cards.  A card with no
-#: row still skips, naming itself: one nobody has read can still differ.
+#: Fields allowed to differ between cards under one compiler: NONE (A146).
 GPU_CARD_SENSITIVE_FIELDS: tuple = ()
 
 
@@ -894,12 +848,10 @@ GPU_NAN_LANES = {"dtheta": 240, "exch_h": 6, "tke": 234}
 
 #: Device partition curves against the oracle's direct d x h probe
 #: (shinhong-partition.csv), pinned in isolation from the column dynamics.
-#: pq carries NO transcendental -- its rational form is multiply/divide/add
-#: only -- so its 2 ULP is pure --fmad=true contraction (get_kernel compiles
-#: with CuPy's defaults), measured clean of everything else.  The others add
-#: device powf at b2 = 2/3, 0.875, 0.5 against glibc's correctly rounded
-#: powf.
-GPU_PARTITION_MAX_ULP = {"pu": 2, "pq": 2, "pthnl": 0, "pthl": 1, "ptke": 2}
+#: All bitwise since lane/parity-pbl-libm (were pu 2, pq 2, pthl 1, ptke 2:
+#: pq's 2 was pure --fmad=true contraction, the others CUDA powf).
+#: Measured on the RTX PRO 6000 under NVRTC 13.4.92 and 12.9.86.
+GPU_PARTITION_MAX_ULP = {"pu": 0, "pq": 0, "pthnl": 0, "pthl": 0, "ptke": 0}
 
 _GPU_PORT_CACHE: dict = {}
 
@@ -981,7 +933,7 @@ def test_the_rows_only_differ_where_the_compiler_or_the_card_reaches():
     exactly the failure mode the split would otherwise create.
     """
     rows = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD
-    assert len(rows) >= 2, "the split is pointless with one row"
+    assert len(rows) >= 2, "two compilers must be measured, or a compiler move is unguarded"
     every = [row for by_card in rows.values() for row in by_card.values()]
     fields = {name for row in every for name in row}
     assert all(set(row) == fields for row in every), (
@@ -1007,11 +959,9 @@ def test_the_rows_only_differ_where_the_compiler_or_the_card_reaches():
         f" {sorted(card_moved ^ set(GPU_CARD_SENSITIVE_FIELDS))}.  If a new"
         " card really moves another field, record the reading in the same"
         " commit that widens GPU_CARD_SENSITIVE_FIELDS.")
-    # And the compiler split must actually differ, or it is vacuous.  The
-    # card split has none since A146 (GPU_CARD_SENSITIVE_FIELDS), and the
-    # equality above holds every card row to that.
-    assert compiler_moved, (
-        "no field differs between compiler rows: the split proves nothing")
+    # Since lane/parity-pbl-libm no field differs between compilers or
+    # cards (GPU_COMPILER_SENSITIVE_FIELDS and GPU_CARD_SENSITIVE_FIELDS are
+    # empty), and the equalities above hold every row to that.
 
 
 def test_the_kernel_compiler_identifies_itself_to_four_parts():
@@ -1229,10 +1179,8 @@ def test_shinhong_cuda_partition_curves_hold_their_distance_from_glibc():
             f"{name}: an h == 0 row is not exactly 1.0 on device")
     assert measured == GPU_PARTITION_MAX_ULP, (
         f"measured {measured}\n  recorded {GPU_PARTITION_MAX_ULP}")
-    assert differing_total > 0, (
-        "no probe row differs from glibc at all: either device libm became"
-        " correctly rounded (celebrate, update the table) or this control"
-        " has gone vacuous")
+    # Bitwise since the unit took glibc's powf and dropped contraction.
+    assert differing_total == 0, differing_total
 
 
 @pytest.mark.gpu

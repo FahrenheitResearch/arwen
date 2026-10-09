@@ -195,3 +195,35 @@ def test_native_rayon_width_and_outputs_ignore_inherited_global_limit(monkeypatc
     for width in (1, 8, 32, count):
         assert query(width) == min(width, count)
         assert plan.apply(field, workers=width).tobytes() == reference
+
+
+def test_compiled_numeric_pool_capacity_admits_one_truthful_width(monkeypatch):
+    import types
+    import sys
+    monkeypatch.setattr(workers, "cpu_budget", lambda: {
+        "affinity_cpus": 192, "cgroup_cpus": 184, "available_cpus": 184})
+    monkeypatch.setattr(workers, "memory_worker_limit", lambda: None)
+    for name in (*workers.THREAD_DEFAULTS, "GPUWM_MAPPED_ENGINE_THREADS",
+                 workers.PREPARATION_THREADS_ENV):
+        monkeypatch.setenv(name, "1")
+    monkeypatch.delenv(workers.INHERITED_LIMITS_ENV, raising=False)
+    widths = [1, 1]
+    calls = []
+    def limits(*, limits):
+        calls.append(limits)
+        widths[:] = [min(limits, 64), min(limits, 96)]
+    def info():
+        return [{"internal_api": "pool-a", "num_threads": widths[0], "version": "test"},
+                {"internal_api": "pool-b", "num_threads": widths[1], "version": "test"}]
+    monkeypatch.setitem(sys.modules, "threadpoolctl", types.SimpleNamespace(
+        threadpool_info=info, threadpool_limits=limits))
+    receipt = workers.configure_preparation_workers(182)
+    assert calls == [182, 64]
+    assert receipt["requested_workers"] == 182
+    assert receipt["effective_workers"] == 64
+    assert receipt["numeric_pool_capacity_workers"] == 64
+    assert [p["num_threads"] for p in receipt["loaded_numeric_pools_before"]] == [1, 1]
+    assert [p["num_threads"] for p in receipt["loaded_numeric_pools"]] == [64, 64]
+    assert {workers.os.environ[name] for name in (*workers.THREAD_DEFAULTS,
+            "GPUWM_MAPPED_ENGINE_THREADS", workers.PREPARATION_THREADS_ENV)} == {"64"}
+    assert set(receipt["inherited_library_limits"].values()) == {"1"}

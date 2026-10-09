@@ -219,6 +219,23 @@ def _source_top_pressure_pa(snapshots, count: int | None = None, *,
     return model_top
 
 
+def _soil_floor_receipts(soil) -> dict[str, object]:
+    """The root soil's conditional receipts, for the proof AND the cache.
+
+    ``soil_moisture_floor`` (real.exe's RUC layer-source
+    ``SMOIS = MAX(SMOIS, 0.005)``, :class:`gpuwm.ingest.ruc_soil.RucSoilState`)
+    is present only when the floor raised a value.  The front door binds
+    every :data:`gpuwm.ingest.prepared_cache.CONDITIONAL_PREPARATION_RECEIPTS`
+    key from the proof and compares the cache's user metadata EXACTLY, so
+    the one dict this returns goes into both: a receipt in the proof and
+    not in the header made every RUC run whose floor fired refuse its own
+    preparation (2.8.8 acceptance D-02).
+    """
+
+    floor = getattr(soil, "soil_moisture_floor", None)
+    return {"soil_moisture_floor": dict(floor)} if floor else {}
+
+
 def _file_receipt(path: Path) -> dict[str, object]:
     return {
         "path": str(path),
@@ -1927,7 +1944,7 @@ def prepare_mapped_wrf(
             case_date=exp.start_time.date(),
             landuse_attrs=(selection.landuse_global_attrs()
                            if static_highres is not None and static_highres.enabled else None),
-            baseline_receipt=root_static_receipt)
+            baseline_receipt=root_static_receipt, run=cfg)
     static_seconds = time.perf_counter() - static_started
 
     # THE COORDINATE, BEFORE ANYTHING IS BUILT ON IT.  The same call the
@@ -2407,6 +2424,9 @@ def prepare_mapped_wrf(
         )
         geometry_receipt = write_native_geometry_receipt(
             geometry_path, grid, cfg, static_path,
+            **({"terrain_autosmooth": root_static_receipt["terrain_autosmooth"]}
+               if root_static_receipt and "terrain_autosmooth" in root_static_receipt
+               else {}),
         )
         source_identity = {
             "adapter": _source_adapter,
@@ -2524,6 +2544,7 @@ def prepare_mapped_wrf(
                 root_metadata={
                     "composition_receipt_sha256": receipt_identity_sha256,
                     "mapped_target_contract": target_contract,
+                    **_soil_floor_receipts(soil),
                 },
                 input_provenance={
                     "mapping_sha256": bundle.mapping_sha256,
@@ -2571,6 +2592,7 @@ def prepare_mapped_wrf(
                 # Present only when a soil temperature rebuild (real.exe's
                 # band, or the snow-covered rule beside it) touched a land
                 # column of the root.
+                **_soil_floor_receipts(soil),
                 **({"soil_temperature_repair": soil_temperature_repair}
                    if soil_temperature_repair is not None else {}),
                 forcing_key: list(forcing_axis),
@@ -2693,6 +2715,7 @@ def prepare_mapped_wrf(
             # Present only when a soil temperature rebuild (real.exe's
             # band, or the snow-covered rule beside it) touched a land
             # column, so a healthy proof is unchanged.
+            **_soil_floor_receipts(soil),
             **({"soil_temperature_repair": soil_temperature_repair}
                if soil_temperature_repair is not None else {}),
             forcing_key: list(forcing_axis),
@@ -2789,6 +2812,7 @@ def prepare_mapped_wrf(
                     forcing_key: list(forcing_axis),
                     "boundary_interval_seconds": boundary_interval_seconds,
                     "composition_receipt_sha256": receipt_identity_sha256,
+                    **_soil_floor_receipts(soil),
                 },
                 lbc={
                     "spec_bdy_width": cfg.spec_bdy_width,
@@ -2987,7 +3011,8 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
     # Exactly the three the unchained tree hands its hierarchy call.
     tree_identity = {**c.source_identity, "target_contract": c.target_contract}
     root_metadata = {"composition_receipt_sha256": receipt_sha256,
-                     "mapped_target_contract": c.target_contract}
+                     "mapped_target_contract": c.target_contract,
+                     **_soil_floor_receipts(c.soil)}
     input_provenance = {
         "mapping_sha256": bundle.mapping_sha256,
         "composition_sha256": bundle.composition_sha256,
@@ -3074,6 +3099,7 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
             # Present only when a soil temperature rebuild (real.exe's
             # band, or the snow-covered rule beside it) touched a land
             # column of the root.
+            **_soil_floor_receipts(c.soil),
             **({"soil_temperature_repair": c.soil_temperature_repair}
                if c.soil_temperature_repair is not None else {}),
             forcing_key: list(forcing_axis),
@@ -3226,7 +3252,8 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
                         valid_time=exp.start_time,
                         root_metadata={"composition_receipt_sha256":
                             source["composition_receipt_sha256"],
-                            "mapped_target_contract": c.target_contract}).identity
+                            "mapped_target_contract": c.target_contract,
+                            **_soil_floor_receipts(c.soil)}).identity
                 sealed = _seal_posted_mapped(posted, writer=writer,
                     plan=c.posted_plan, mapping_contract=c.mapping_contract,
                     snapshots=c.snapshots, exp=exp, cfg=cfg,
@@ -3240,7 +3267,8 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
                 tree_identity = sealed["source_identity"]
                 root_metadata = {"composition_receipt_sha256":
                     tree_identity["composition_receipt_sha256"],
-                    "mapped_target_contract": c.target_contract}
+                    "mapped_target_contract": c.target_contract,
+                    **_soil_floor_receipts(c.soil)}
                 input_provenance = {**input_provenance,
                     "input_manifest_sha256": manifest_sha256}
                 root_identity = sealed["identity"]

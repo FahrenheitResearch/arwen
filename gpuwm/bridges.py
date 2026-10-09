@@ -2419,7 +2419,7 @@ __all__ = [
     "BRIDGE_ABI_MARKERS", "bridge_abi_matches",
     "CheckoutBuildStatus", "StaleCheckoutBuildError", "checkout_build_status",
     "checkout_workspace_of", "require_current_checkout_build",
-    "BRIDGE_ENV", "CARGO_BUILD_HINT", "CLONE_DIR", "CRATE_RELATIVE",
+    "BRIDGE_ENV", "CARGO_BUILD_HINT", "CLONE_DIR", "CRATE_RELATIVE",  # noqa: F822 -- module __getattr__
     "CPU_BRIDGE_ARTIFACT", "CPU_BRIDGE_ENV", "cpu_bridge_remedy",
     "REPOSITORY_URL", "RUSTWX_CRATE_RELATIVE", "WINDOWS_SHELL",
     "artifact_candidates", "cargo_build_one_liner",

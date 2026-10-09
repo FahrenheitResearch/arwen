@@ -153,7 +153,11 @@ def run_initialized_native_ensemble(inputs, node, *, members, member_ids=None, m
         if output_metadata is None:
             from gpuwm.runtime import _metadata_frame
             bundle = next(bundle for bundle in inputs.domains if int(bundle.grid_id) == int(node.cfg.grid_id))
-            output_metadata = _metadata_frame(node.grid, bundle.static_fields)
+            # A WRF-file door domain writes the file's own grid words, as the
+            # ordinary writer does (gpuwm.io.wrfout, wrf_file_grid).
+            from gpuwm.io.history_layout import wrf_file_grid_history_fields
+            output_metadata = {**_metadata_frame(node.grid, bundle.static_fields),
+                               **wrf_file_grid_history_fields(bundle)}
         # Each allocation receives a current remaining budget. An integer caller
         # budget is decremented by all native plans already constructed above.
         remaining = None if callable(available_bytes) else int(available_bytes)
@@ -215,6 +219,11 @@ def run_initialized_native_ensemble(inputs, node, *, members, member_ids=None, m
         reports = stability()
         reflected = (consume_refl_10cm(physics.state)
             if refl_10cm_stash_is_due(clock.ticks, domain_start_ticks=clock.spec.start_ticks) else None)
+        from gpuwm.core.physics_inventory import REFL_10CM_MICROPHYSICS
+        if (reflected is None and clock.ticks == 0
+                and getattr(cfg, "mp_physics", 0) in REFL_10CM_MICROPHYSICS):
+            from gpuwm.core.refl import analysis_refl_10cm
+            reflected = analysis_refl_10cm(physics.state)
         fields = physics.driver.output_fields()
         views = tuple(member_output_view(owners, member, output_fields=fields) for member in range(members))
         validation("history", views)

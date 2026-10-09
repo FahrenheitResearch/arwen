@@ -229,28 +229,37 @@ def test_gwdo_gsl_matches_wrf_module_bl_gwdo_gsl(dx):
 
 
 #: Worst ULP distance from ``ysu_column_topo`` to bl_ysu.F90's ctopo-present
-#: call, per field, over the columns that take WRF's branches. Cases 7, 12
+#: call, per field, over the columns that take WRF's branches. Cases 12
 #: and 13 have inherited branch differences, pinned separately below rather
-#: than hidden inside the arithmetic maximum. Measured on the RTX 4090 (sm_89) and the RTX
+#: than hidden inside the arithmetic maximum.  Case 7 (a positive subnormal
+#: br) joined the arithmetic columns in lane/parity-286, when the kernel's
+#: br > 0 compare moved to double (ysu_f2d) and stopped DAZing it. Measured on the RTX 4090 (sm_89) and the RTX
 #: 5090 (sm_120), identical on both, pinned for equality.
 #:
 #: The momentum numbers are the YSU kernel's own distance and nothing of the
 #: arm's: the worst ABSOLUTE error is 4.2375177e-08 m/s2 in every one of the
 #: five (ctopo, ctopo2) variants, the same as with ctopo = 1, which is the YSU
-#: baseline (``CTOPO_BASELINE_MAX_ULP`` in tests/test_ysu_wrf461_parity.py,
-#: du 1457 and dv 23302 against this same call).  The ULP count rises to 5826
+#: baseline (``BASELINE_MAX_ULP`` in tests/test_ysu_wrf461_parity.py,
+#: du 1457 and dv 23302 against this same call, which every YSU entry point
+#: takes with ctopo = 1 since lane/parity-286).  The ULP count rises to 5826
 #: only because ctopo = 0 and 0.5 shrink the worst lane's tendency four-fold
 #: (:func:`test_the_topo_arm_adds_no_absolute_error_to_ysus_own`).  The one
 #: U10 ULP is a 1e-45 m/s input wind: the YSU module compiles through
 #: ``cupy.RawModule``, which appends ``-ftz=true``, so ``ctopo2*u10`` flushes
 #: the subnormal to 0 where gfortran keeps it (``SUBNORMAL_LANES`` in the YSU
 #: test is the same flush; :func:`test_the_u10_ulp_is_a_flushed_subnormal_input`).
-YSU_TOPO_MAX_ULP: dict[str, int] = {"du": 5826, "dv": 23302, "u10": 1,
+#:
+#: RE-MEASURED 2026-10-05 (lane/parity-286, sweep row 10): du/dv 5826/23302
+#: -> 0.  The YSU unit now compiles with --fmad=false and glibc's powf/expf,
+#: so every (ctopo, ctopo2) variant is bitwise WRF's ctopo call; the U10 ULP is
+#: the flushed subnormal input above.  RTX PRO 6000, NVRTC 13.4.92 and 12.9.86.
+YSU_TOPO_MAX_ULP: dict[str, int] = {"du": 0, "dv": 0, "u10": 1,
                                     "v10": 0}
-YSU_BRANCH_CASES = (7, 12, 13)
+YSU_BRANCH_CASES = (12, 13)
 #: The YSU kernel's worst absolute momentum-tendency error against WRF, with
-#: or without the topo arm (m/s2).
-YSU_ABS_MOMENTUM_ERROR = np.float32(4.2375177e-08)
+#: or without the topo arm (m/s2): zero since lane/parity-286 (was
+#: 4.2375177e-08, CUDA libm and contraction).
+YSU_ABS_MOMENTUM_ERROR = np.float32(0.0)
 
 
 def _ysu_topo_run():
@@ -328,10 +337,11 @@ def test_the_u10_ulp_is_a_flushed_subnormal_input():
         assert (got[name][0, differ] == 0).all(), name
 
 
-# The fifteen legacy probes have a branch disagreement with WRF. They
+# The ten legacy probes have a branch disagreement with WRF. They
 # remain constrained for every coefficient variant, not removed from the
-# oracle. Case 7 flushes a positive subnormal BR and becomes convective;
-# cases 12/13 take the inherited zero-coupling early return. WRF case 13
+# oracle. Cases 12/13 take the inherited zero-coupling early return.
+# (Case 7, a positive subnormal BR the kernel used to flush and read as
+# convective, was closed in lane/parity-286 and is graded with the rest.) WRF case 13
 # produces 0/0 in prfac2, so its heat diffusivity and theta rates are NaN.
 _LEGACY_FLOAT_REFERENCE = {
     "du": "utnp", "dv": "vtnp", "dtheta": "ttnp", "dqv": "qvtnp",
@@ -340,11 +350,6 @@ _LEGACY_FLOAT_REFERENCE = {
     "delta": "delta", "u10": "u10", "v10": "v10",
 }
 _LEGACY_MAX_ULP = {
-    7: {"du": (44972260, 44972260, 44972260, 44972260, 1880226385),
-        "dv": 29686352, "dtheta": 1768691394, "dqv": 48094686,
-        "dqc": 0, "dqi": 0, "exch_h": 2914795, "exch_m": 3113042,
-        "hpbl": 1525, "wstar": 1047649058, "delta": 1100214161,
-        "u10": 0, "v10": 0},
     12: {"du": 920253600, "dv": 912814535, "dtheta": 892734306,
          "dqv": 830378986, "dqc": 0, "dqi": 0, "exch_h": 1029269266,
          "exch_m": 1041400506, "hpbl": 40359677, "wstar": 0,
@@ -356,12 +361,6 @@ _LEGACY_MAX_ULP = {
 }
 # Finite absolute momentum errors in m/s2, measured on sm_89 and sm_120.
 _LEGACY_MOMENTUM_ABS = {
-    7: {"du": (0.00013580848462879658, 0.00015851622447371483,
-               0.000145461643114686, 0.0001324494369328022,
-               0.00012903742026537657),
-        "dv": (3.1595758628100157e-05, 3.7215882912278175e-05,
-               3.39839025400579e-05, 3.076397115364671e-05,
-               2.9917515348643064e-05)},
     12: {"du": (6.495582056231797e-06,) * 5,
          "dv": (3.4636921100172913e-06,) * 5},
     13: {"du": (5.928675363975344e-06,) * 5,
@@ -488,7 +487,7 @@ _MUTATIONS = (
      "const real varmax_ss = 35.0f, varmax_fd = 160.0f, beta_ss = 0.1f;",
      "const real varmax_ss = 35.0f, varmax_fd = 160.0f, beta_ss = 0.11f;",
      "gsl", 3000),
-    ("ysu_drag", True, "real ctopo = topo.ctopo[col];",
+    ("ysu_drag", True, "real ctopo = topo.ctopo ? topo.ctopo[col] : 1.0f;",
      "real ctopo = 1.0f;", "ysu_abs", None),
     ("ysu_blend", True, "real c2 = topo.ctopo2[col];",
      "real c2 = 1.0f;", "ysu_ulp", None),

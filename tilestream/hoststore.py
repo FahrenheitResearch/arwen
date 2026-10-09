@@ -1441,7 +1441,7 @@ class HostDomainStore:
                 stop.synchronize()
                 elapsed_ms = cp.cuda.get_elapsed_time(start, stop)
                 samples.append(total / (elapsed_ms * 1e-3) / 1e9)
-        del buf
+        buf = None  # rebound, not deleted: a closure above reads it
         return {"accurate": True, "bytes": total, "fields": selected,
                 "n_transfers": len(selected),
                 "gb_per_s": max(samples), "gb_per_s_median": float(

@@ -624,8 +624,25 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # GB, then refuse" shape, and it is the shape the route table this
     # precondition replaced was written against.
     from gpuwm.config import experiment_preparation_refusals
+    from gpuwm.preparation_assets import wif_fetch_domains
 
-    unmet = experiment_preparation_refusals(experiment)
+    # ... EXCEPT what this chain's own fetch stage acquires.  The monthly
+    # WIF aerosol dataset is a pinned table asset (size + SHA-256), and
+    # the fetch stage stages it before any forcing byte when it is handed
+    # --wif (gpuwm.fetch.fetch_main), whatever the source.  Breakage this
+    # answers (2.8.8 acceptance D-01): this composer asked the dataset of
+    # the machine and never let the fetch supply it, so every GFS, ECMWF
+    # or other global mp=28 template refused on a box where nobody had
+    # run `gpuwm fetch-tables --wif` by hand -- the HRRR and staged
+    # chains already deferred it to their fetch.  A named file or
+    # directory, `[fetch] wif = false`, and a local-bytes source are not
+    # deferred (wif_fetch_domains), so those keep the refusal.
+    from gpuwm.source_drivability import local_input_requested
+
+    pending_wif = (() if local_input_requested(fetch_table)
+                   else wif_fetch_domains(experiment, fetch_table))
+    unmet = experiment_preparation_refusals(
+        experiment, pending_wif_domains=pending_wif)
     if unmet:
         raise GoRefusal("\n".join(
             f"{label}: {sentence}" for label, sentence in unmet))
@@ -880,6 +897,10 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # itself; None leaves every table-declared field on its fallback
         # rule (recorded) when a cycle publishes no record for it.
         "runtime_surface": fetch_table.get("runtime_surface"),
+        # The domains whose monthly WIF aerosol dataset the fetch stage
+        # acquires (``--wif``) before forcing transfer; empty when the
+        # dataset is named, cached, opted out of, or not read at all.
+        "wif_domains": tuple(pending_wif),
         "area": str(fetch_table["area"]),
         "data": data,
         "profile": profile,
@@ -1163,6 +1184,8 @@ def fetch_command(plan: dict) -> list[str]:
                         f"{float(plan['late_after_minutes']):g}"))
     if plan.get("runtime_surface"):
         command.extend(("--runtime-surface", str(plan["runtime_surface"])))
+    if plan.get("wif_domains"):
+        command.append("--wif")
     return command
 
 
@@ -2949,18 +2972,19 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             # interrupt path has to be able to NAME (it does not signal
             # it -- see GoInterrupted).
             #
-            # popen_options(): the stage dies with this process.  THE
-            # BREAKAGE: a `gpuwm go` killed by pid (box B, 2026-10-07)
-            # left its forecast supervisor reparented to init, holding
-            # 63.9 GB on a card for 43 minutes with no owner.  This thread
-            # stays blocked on the child until it ends, which is what
-            # PR_SET_PDEATHSIG's per-thread "parent" needs.
-            from gpuwm.parent_death import popen_options
-
+            # The stage dies with this process: _stage_env() carries
+            # gpuwm.parent_death's entry and the stage binds itself after
+            # exec.  THE BREAKAGE: a `gpuwm go` killed by pid (box B,
+            # 2026-10-07) left its forecast supervisor reparented to init,
+            # holding 63.9 GB on a card for 43 minutes with no owner.  This
+            # thread stays blocked on the child until it ends, which is
+            # what PR_SET_PDEATHSIG's per-thread "parent" needs.  No
+            # preexec_fn (D-03): Python run in the forked child printed
+            # CuPy finalizer tracebacks on the free-threaded build.
             proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, errors="replace", cwd=str(_stage_cwd()),
-                env={**_stage_env(), **(env or {})}, **popen_options())
+                env={**_stage_env(), **(env or {})})
             box["pid"] = proc.pid
             box["process"] = proc
             with _STAGE_PROCESSES_LOCK:
@@ -4544,10 +4568,18 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                 print("warning: " + warning["action"], file=sys.stderr)
         else:
             from gpuwm.geog_assets import default_geog_root
-            note = static_source_note(
-                payload, (data.geog_root if data is not None
-                          else Path(args.geog_root) if args.geog_root is not None
-                          else default_geog_root()), base_dir=config.parent)
+            geog_root = (data.geog_root if data is not None
+                         else Path(args.geog_root) if args.geog_root is not None
+                         else default_geog_root())
+            # The launch below refuses an unusable WPS_GEOG tree before the
+            # fetch; a dry run that validates the route refuses it too.
+            # It exited 0 on a --geog-root naming no directory, and the
+            # real launch of the same command then refused.
+            geography = geography_refusal(geog_root)
+            if geography is not None:
+                raise GoRefusal(geography)
+            note = static_source_note(payload, geog_root,
+                                      base_dir=config.parent)
             if note is not None:
                 print(note)
         print(f"Output: {output}")
@@ -5006,12 +5038,18 @@ def go_main(args, *, observer=None) -> int:
             raise GoRefusal("--restart-roster requires the original ensemble configuration")
         from gpuwm.ensemble.restart_roster import resume_prepared_roster
         return resume_prepared_roster(args, request, observer=observer)
-    if getattr(args, "prepare_only", False):
+    from gpuwm.ensemble import member_inputs
+    if getattr(args, "prepare_only", False) and not (
+            request is not None and (request.recipe is not None
+                                     or member_inputs.needs_member_sources(request))):
         # Source preparation owns one trajectory even when its configuration
         # also describes a forecast ensemble. It creates no member session.
+        # A recipe roster is the exception: its --prepare-only prepares every
+        # member on the recipe route below.  Breakage it prevents: this branch
+        # prepared member 0 alone and exited 0, so a multi-model roster could
+        # not be prepared outside a card hold.
         with memory_gate_override(getattr(args, "no_memory_gate", False)), verification_scope(enabled):
             return _go_launch(args, observer=observer)
-    from gpuwm.ensemble import member_inputs
     # A plain member count (N > 1, no recipe named) is given real members
     # too: this chain prepares ONE trajectory, so launching it would run N
     # copies of one forecast and publish zero spread.  It takes the recipe
@@ -5257,8 +5295,13 @@ def _go_recipe(args, request, *, observer=None) -> int:
     if cycle is not None:
         config, payload = _at_flag_cycle(args, config, payload, cycle)
     _extend_outdir(args, config, payload)
-    if getattr(args, "prepare_only", False):
-        return _prepare_only_launch(args, config=config, payload=payload, observer=observer)
+    # --prepare-only on the recipe route prepares EVERY member and stops at
+    # the forecast (recipe_door.run_recipe_ensemble).  Breakage it prevents:
+    # this branch used to hand the flag to _prepare_only_launch, which
+    # prepared only the config's own [fetch] trajectory (member 0) and exited
+    # 0, so a multi-model roster could not be prepared on CPU outside a card
+    # hold and its cards idled through every member's sequential preparation
+    # Multi-source preparation belongs on the CPU before forecast admission.
     with _checkpoint_retention(getattr(args, "keep_checkpoints", None)):
         return recipe_door.run_recipe_ensemble(args, request, observer=observer,
                                                options=posting)
@@ -5626,6 +5669,12 @@ def _go_prepared_main(args, *, observer=None) -> int:
             print(gate["verdict"])
             if gate["refuse"]:
                 raise GoRefusal(memory_refusal_text(gate))
+        # The same geography refusal the launch makes before its fetch:
+        # a dry run that printed six stages over an unusable WPS_GEOG
+        # tree described a run that refuses.
+        geography = geography_refusal(geog_root)
+        if geography is not None:
+            raise GoRefusal(geography)
         print("")
         beside = posts_beside_preparation(plan)
         for label, command in (

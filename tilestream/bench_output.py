@@ -1023,7 +1023,8 @@ def mode_overlap(args) -> None:
     print(f"     C sits {100 * (1 - frac):.0f}% of the way to perfect overlap")
     print(f"     => overlap efficiency {100 * (A + B - C) / min(A, B):.0f}% "
           f"of the smaller task hidden")
-    del host_fields, pinned
+    host_fields = None  # rebound, not deleted: a closure above reads it
+    del pinned
     del state
     cp.get_default_memory_pool().free_all_blocks()
 

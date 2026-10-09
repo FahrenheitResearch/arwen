@@ -1094,8 +1094,10 @@ class HrrrPipelineProducer:
             staging_cleanup = f"retained:{type(error).__name__}:{error}"
         else:
             staging_cleanup = "removed"
+        from gpuwm.ingest.hrrr import aerosol_fill_receipt
         return {
             "status": "PASS",
+            "aerosol_missing": aerosol_fill_receipt(_read_tsv(self.output / "gate.txt")),
             "source_forecast_hours": list(self.series_hours),
             "model_forcing_hours": list(range(self.series_count)),
             "workers": self.worker_receipt,

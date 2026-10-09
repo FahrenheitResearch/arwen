@@ -76,6 +76,7 @@ SITE_FILES = (
     # the native member RUC unit. Audit its actual source/options recording.
     "gpuwm/ensemble/batch_ruc.py",
     "gpuwm/ensemble/surface_recipe.py",
+    "gpuwm/da/letkf_device.py",
 )
 
 #: Two cached loaders, nest interpolation, and the one Noah-MP compile
@@ -91,7 +92,12 @@ SITE_FILES = (
 # compiler call too, so the same source/options audit covers that site.
 # 3fa941d96, lane/ensemble-nested-pack: the one recorded member RUC
 # constructor joins the 28 retained sites; no compiler source is changed.
-EXPECTED_SITE_COUNT = 29
+# lane/mynn-exact: the integer-define tier of a no-FMA unit
+# (``_load_module_int_defines_without_fmad``, the gsd_41 MYNN build) records
+# in its own function beside its compile, as the lake's site does.
+# The recorded LETKF member-count loader joins the 30 retained sites.
+# Its original source expression and compiler options remain unchanged.
+EXPECTED_SITE_COUNT = 31
 
 #: ``cp.RawModule`` constructors under ``gpuwm/`` that are NOT manifest
 #: sites, each with the reason.  Closed and literal: a new constructor
@@ -174,10 +180,13 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
         "tests/test_smallstep_vertical_wrf471_parity.py, never in a forecast"),
 }
 
-#: ``compile_using_nvrtc`` sites among SITE_FILES: shortwave and RUC SPP.
+#: ``compile_using_nvrtc`` sites among SITE_FILES: shortwave, RUC SPP,
+#: shared diffusion, shared no-FTZ and member physics initialization.
 #: (``rrtmg_lw.py`` and ``rrtmg_mcica.py`` take the same route but record
 #: nothing, so they are not manifest sites and are not listed above.)
-EXPECTED_NVRTC_SITE_COUNT = 3
+# The shared diffusion and no-FTZ loaders each compile and record their
+# actual source/options alongside the three prior direct compiler sites.
+EXPECTED_NVRTC_SITE_COUNT = 5
 
 # These direct-NVRTC transforms precede forecast construction. They bind
 # compiler options and source bytes in their own preparation receipts.
@@ -554,3 +563,41 @@ def test_gpu_a_compiled_module_records_the_source_the_test_rebuilds():
     assert entry["options"] == ["-std=c++17"]
     assert entry["compiled_image"]["status"] in {"resolved", "unavailable"}
     reset_kernel_manifest()
+
+
+def test_letkf_device_records_its_original_compiler_inputs(monkeypatch):
+    import importlib
+    import sys
+    import types
+    from gpuwm.da import letkf_device
+    # The package exports a function named kernel_manifest. Import the
+    # submodule explicitly so this seam patches the compiler's recorder.
+    manifest = importlib.import_module("gpuwm.certify.kernel_manifest")
+    events = []
+    class Device:
+        def __init__(self, device):
+            self.device = device
+        def __enter__(self):
+            events.append(("device", self.device))
+        def __exit__(self, *args):
+            return False
+    class Module:
+        def __init__(self, *, code, options):
+            self.code, self.options = code, options
+            events.append(("construct", code, options))
+        def compile(self):
+            events.append(("compile",))
+    records = []
+    monkeypatch.setitem(sys.modules, "cupy", types.SimpleNamespace(
+        cuda=types.SimpleNamespace(Device=Device), RawModule=Module))
+    monkeypatch.setattr(manifest, "record_module", lambda key, **args: records.append((key, args)))
+    letkf_device._module.cache_clear()
+    try:
+        module = letkf_device._module(7, 2)
+        assert events == [("device", 2), ("construct", module.code, module.options), ("compile",)]
+        assert module.code == letkf_device._SOURCE.replace("RR", "7")
+        assert module.options == ("--fmad=false", "-std=c++14")
+        assert records == [("letkf_device_members_7", {
+            "source": module.code, "options": module.options, "module": module})]
+    finally:
+        letkf_device._module.cache_clear()

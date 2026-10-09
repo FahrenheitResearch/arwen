@@ -28,7 +28,7 @@ import threading
 import traceback
 
 import numpy as np
-import netCDF4
+from gpuwm.io.netcdf_serialization import netCDF4  # first use only (D-10)
 
 from gpuwm import perf_timing, progress_log, render_layout
 from gpuwm.wrf_exact import ENABLED as _WRF_EXACT, DIAGNOSTICS_ENABLED
@@ -2556,8 +2556,10 @@ class PerDomainWrfoutWriters:
             domain_start_time = (
                 start_time if configured_start is None
                 else configured_start)
-            self._metadata_by_grid_id[node.cfg.grid_id] = _metadata_frame(
-                node.grid, case.static_fields)
+            metadata = _metadata_frame(node.grid, case.static_fields)
+            file_grid = getattr(case, "wrf_file_grid", None)
+            self._metadata_by_grid_id[node.cfg.grid_id] = (
+                {**metadata, **file_grid} if file_grid else metadata)
             self._episode_by_grid_id[node.cfg.grid_id] = resumed_episodes.get(
                 int(node.cfg.grid_id), 0)
             self._writers[node.cfg.grid_id] = AsyncDomainWrfoutWriter(
@@ -2773,8 +2775,10 @@ class PerDomainWrfoutWriters:
         configured_start = getattr(node.cfg, "start_time", None)
         domain_start_time = (self.start_time if configured_start is None
                              else configured_start)
-        self._metadata_by_grid_id[grid_id] = _metadata_frame(
-            grid, static_fields)
+        metadata = _metadata_frame(grid, static_fields)
+        file_grid = getattr(case, "wrf_file_grid", None)
+        self._metadata_by_grid_id[grid_id] = (
+            {**metadata, **file_grid} if file_grid else metadata)
         self._writers[grid_id].update_global_attrs(_global_wrf_attrs(
             grid, domain_start_time,
             getattr(case, "geog_selection", None),

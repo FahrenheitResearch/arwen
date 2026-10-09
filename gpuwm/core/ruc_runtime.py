@@ -355,15 +355,6 @@ RUC_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
         "on that fixture the five are unobservable and ilnb is not.",
     ),
     (
-        "sfcevp_is_double_counted_on_purpose",
-        "SFCEVP advances by 2*QFX*dt per call.",
-        "module_sf_ruclsm.F accumulates it twice, at :1095 and again at "
-        ":1116, with nothing in between changing qfx.  That is a duplicated "
-        "statement rather than undefined behaviour, so gpuwm reproduces it "
-        "and oracle/lsmruc.csv pins it.  A user integrating SFCEVP as a "
-        "water budget must halve it.",
-    ),
-    (
         "sfcdiags_ruclsm_flux_branch_only",
         "The flux=.true. arms of SFCDIAGS_RUCLSM are transcribed.",
         "flux is a hardcoded local (module_sf_sfcdiags_ruclsm.F:47-48), so "
@@ -916,7 +907,8 @@ def _ruc_lsm_step_reference(
     device["albbck"], ice = _ruc_seaice_albedo_override(
         device["albbck"], device["xice"], params.seaice_albedo_default,
         arrays=cp, xice_threshold=params.xice_threshold)
-    ice_component = ice & (device["xice"] <= np.float32(1.0))
+    ice_component = (ice & (device["xice"] <= np.float32(1.0))
+                     & (params.fractional_seaice == 1))
     ice_fraction = device["xice"]
     # module_surface_driver.F:3461-3473.  The static optics are grid-cell
     # blends; LSMRUC must receive the full ice component.

@@ -13,6 +13,7 @@ import numpy as np
 from gpuwm.boundary_fields import SCALAR_ARRAY_BOUNDARY_FIELDS
 from gpuwm.core import portable_math as pm
 from gpuwm.core.kernels import get_kernel
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 from gpuwm.grid_requirements import boundary_axis
 
 #: Every transported hydrometeor/number/volume scalar the coupled-units
@@ -601,6 +602,28 @@ def _weights(width, spec_zone, relax_zone, dt, spec_exp, *, wrf_real=False,
             fcx[index] = np.float32(f / denominator)
             g = np.float32(g * numerator)
             gcx[index] = np.float32(g / denominator)
+            continue
+        if WRF_EXACT and timescale_s <= 0.0:
+            # Strict mode, specified branch of WRF lbc_fcx_gcx
+            # (module_bc_em.F): default-REAL left-to-right operations, then
+            # the sponge weight multiplied in REAL.  The float64 law below
+            # rounds once at the end, a different word for some dt
+            # (combo-sweep round 2, LOCALIZE.md item 5).  spec_exp = 0, the
+            # WRF default, makes the sponge weight exactly 1.
+            numerator = np.float32(spec_zone + relax_zone - loop)
+            denominator = np.float32(relax_zone - 1)
+            dt32 = np.float32(dt)
+            f = np.float32(np.float32(0.1) / dt32)
+            f = np.float32(f * numerator)
+            f = np.float32(f / denominator)
+            g = np.float32(np.float32(1.0) / dt32)
+            g = np.float32(g / np.float32(50.0))
+            g = np.float32(g * numerator)
+            g = np.float32(g / denominator)
+            sponge = np.float32(np.exp(np.float32(-(loop - (spec_zone + 1)))
+                                       * np.float32(spec_exp)))
+            fcx[index] = np.float32(f * sponge)
+            gcx[index] = np.float32(g * sponge)
             continue
         ramp = (spec_zone + relax_zone - loop) / (relax_zone - 1)
         sponge = float(pm.exp(-(loop - (spec_zone + 1)) * spec_exp))
@@ -1736,6 +1759,43 @@ class StateBoundaryFrames:
             for side in ("west", "east", "south", "north")
         })
 
+    def replace_snapshot(self, snapshot: Mapping[str, object], *,
+                         index: int) -> None:
+        """Replace the held frame at ``index`` with ``snapshot``'s perimeter.
+
+        For a start state replaced after its boundary frame was taken: a
+        separate initial analysis (``--initial-inputs``) is decoded after
+        the boundary source's own start built frame 0.  Left in place, that
+        frame forces the outer rows toward another atmosphere than the one
+        the run starts from, and they jump on the first step (3 km RAP crop
+        under a HRRR start, 2024-05-21 18Z: outer-row T 1.76 K RMS and up to
+        9.7 K, U up to 19 m/s, MU up to 324 Pa after one 20 s step).
+        real.exe's first record is always the coupling of its own wrfinput
+        (main/real_em.F:866-899) and WRFDA's da_update_bc rewrites it the
+        same way after an analysis; taking frame 0 from the new start does
+        both at once, since interval 0's tendency is then built toward the
+        unchanged frame 1.  Only a held frame can be replaced: once its
+        interval is written the boundary it fed is already published.
+        """
+        position = int(index)
+        if position not in self._frames:
+            raise ValueError(
+                f"forcing-time frame {position} is not held"
+                + (" (its interval was already written)"
+                   if position in self._released else "")
+                + "; only a held frame can take a replaced start")
+        if frozenset(snapshot) != self._inventory:
+            raise ValueError(
+                "the replacing boundary field inventory differs from the "
+                "frames already held")
+        self._frames[position] = MappingProxyType({
+            side: extract_lateral_side(snapshot, side, self.spec_bdy_width)
+            for side in ("west", "east", "south", "north")
+        })
+
+    def replace_state(self, state, *, index: int) -> None:
+        """Use the published start-state coupling and inventory checks."""
+        self.replace_start_state(state, index=index)
     def build(self, times: Sequence[datetime | float]) -> LateralBoundaries:
         """Assemble the intervals from the accumulated perimeter frames."""
         if len(self._frames) != len(times) or len(self._frames) < 2:
@@ -2141,6 +2201,111 @@ def attach_nest_boundaries(state, fields: Mapping[str, Mapping[str, tuple]],
         frame_width, int(spec_zone), int(relax_zone))
 
 
+def folded_relaxation_rows(cfg) -> tuple[str, ...]:
+    """The rows whose stage-1 relaxation WRF folds into the held tendency.
+
+    ``rk_addtend_dry`` (module_em.F) does ``ru_tendf = ru_tendf +
+    u_save*msfuy`` (v: ``*msfvx``, w: ``*msfty``, t: plain) on rk_step 1
+    and then divides the sum by the map factor on every stage.  phi is not
+    folded the same way only in name: ``ph_tendf`` carries nothing else, so
+    ``(0 + ph_save)/msfty`` is the held phi row this module already adds.
+    w joins on a nest, and on a specified domain that relaxes w.
+    """
+    rows = ["u", "v", "theta"]
+    if cfg.nested or specified_relaxes_w(cfg):
+        rows.append("w")
+    return tuple(rows)
+
+
+def _relaxation_context(state, cfg):
+    device_interval, dtbc, dt, spec_exp = _active_device_interval(state, cfg)
+    timescale_s = relax_timescale_seconds(cfg)
+    common = dict(dtbc=dtbc, dt=dt, spec_zone=cfg.spec_zone,
+                  relax_zone=cfg.relax_zone, spec_exp=spec_exp,
+                  timescale_s=timescale_s)
+    weights = _resident_weights(
+        state, device_interval.fields["u"].west.value.shape[-1],
+        cfg.spec_zone, cfg.relax_zone, dt, spec_exp,
+        wrf_real=bool(cfg.nested), timescale_s=timescale_s)
+    return device_interval, common, weights
+
+
+def capture_folded_relaxation(state, cfg) -> dict:
+    """Strict mode: WRF ``relax_bdy_dry``'s stage-1 relaxation, unscaled.
+
+    Returns ``{row: held}`` for :func:`folded_relaxation_rows`, each the
+    relaxation term WRF writes into ``u_save``/``v_save``/``t_save``/
+    ``w_save`` (zero on the specified rows and the interior), with no map
+    factor.  The dycore folds these into the held ``*_tendf`` before the
+    division (:func:`gpuwm.core.dycore.fold_lateral_relaxation`).  Read
+    from the time-t state, which is the stage-1 state WRF relaxes.
+    """
+    if not (cfg.specified or cfg.nested):
+        return {}
+    if state.lateral_boundaries is None:
+        raise RuntimeError(
+            "cfg.specified=True requires attach_lateral_boundaries(state, ...)")
+    device_interval, common, weights = _relaxation_context(state, cfg)
+    rows = folded_relaxation_rows(cfg)
+    if "w" in rows and "w" not in device_interval.fields:
+        raise RuntimeError(
+            "relax_w = true needs a w boundary table, and this domain's "
+            "lateral forcing carries none")
+    nested_sources = {"u": state.u0, "v": state.v0, "w": state.w0,
+                      "theta": state.thp0}
+    held_rows = {}
+    for name in rows:
+        target = getattr(state, {"theta": "thp"}.get(name, name))
+        held = state.scratch(target.shape, "lbc_relax_" + name)
+        held[...] = 0
+        apply_specified_relaxation(
+            target, held, device_interval.fields[name], **common,
+            apply_relax=True, state=state, field_name=name, weights=weights,
+            clear_specified=True, divide_msf=False,
+            source_field=nested_sources[name] if cfg.nested else None,
+            source_mup=state.mup0 if cfg.nested else None)
+        held_rows[name] = held
+    return held_rows
+
+
+def _apply_state_lateral_boundaries_wrf(state, cfg, rk_stage,
+                                        device_interval, common, weights):
+    """Strict mode, WRF solve_em order.
+
+    The folded rows' relaxation reached the held tendency before this
+    stage's ``rk_addtend_dry`` (:func:`capture_folded_relaxation`), so here
+    they take only ``spec_bdy_dry``: the specified rows' tendency.  phi
+    keeps its held ``ph_save/msfty`` row; mu relaxes on stage 1 straight
+    into its tendency, as ``relax_bdytend(mu, mu_tend)`` does.
+    """
+    folded = folded_relaxation_rows(cfg)
+    rows = [("u", state.ru_t), ("v", state.rv_t), ("theta", state.rth_t)]
+    if "w" in folded:
+        rows.append(("w", state.rw_t))
+    for name, tendency in rows:
+        apply_specified_relaxation(
+            getattr(state, {"theta": "thp"}.get(name, name)), tendency,
+            device_interval.fields[name], **common, apply_relax=False,
+            state=state, field_name=name, weights=weights)
+    held = state.scratch(state.rph_t.shape, "lbc_relax_phi")
+    if rk_stage == 0 or cfg.nested:
+        held[...] = 0
+        apply_specified_relaxation(
+            state.php, held, device_interval.fields["phi"], **common,
+            apply_relax=True, state=state, field_name="phi", weights=weights,
+            clear_specified=True, divide_msf=state.has_msf,
+            source_field=state.php0 if cfg.nested else None,
+            source_mup=state.mup0 if cfg.nested else None)
+    apply_specified_relaxation(
+        state.php, state.rph_t, device_interval.fields["phi"], **common,
+        apply_relax=False, state=state, field_name="phi", weights=weights,
+        add_held=held)
+    apply_specified_relaxation(
+        state.mup[None], state.rmu_t[None], device_interval.fields["mu"],
+        **common, apply_relax=(rk_stage == 0), state=state, field_name="mu",
+        weights=weights)
+
+
 def apply_state_lateral_boundaries(state, cfg, *, rk_stage: int) -> None:
     """Apply WRF dry specified/relaxation tendencies for one RK stage.
 
@@ -2172,6 +2337,10 @@ def apply_state_lateral_boundaries(state, cfg, *, rk_stage: int) -> None:
         state, device_interval.fields["u"].west.value.shape[-1],
         cfg.spec_zone, cfg.relax_zone, common["dt"], spec_exp,
         wrf_real=bool(cfg.nested), timescale_s=timescale_s)
+    if WRF_EXACT:
+        _apply_state_lateral_boundaries_wrf(
+            state, cfg, rk_stage, device_interval, common, weights)
+        return
     if cfg.specified:
         if specified_relaxes_w(cfg):
             # w joins the held rows exactly as it joins a nest's
@@ -2326,7 +2495,22 @@ def _launch_finalize_field(state, name, boundary, old_mup_frame, dtbc,
         np.int32(boundary.west.value.shape[-1]), np.int32(spec_zone),
         np.int32(state.has_msf), np.int32(state.thb.ndim == 3),
         np.int32(kind), np.int32(nz), np.int32(ny), np.int32(nx),
-        np.int32(state.mup.shape[0]), np.int32(state.mup.shape[1])))
+        np.int32(state.mup.shape[0]), np.int32(state.mup.shape[1]))
+        + _wrf_final_muts_arg(state))
+
+
+def _wrf_final_muts_arg(state) -> tuple:
+    """Strict mode: WRF's grid%muts for spec_bdy_final, or a null pointer.
+
+    The dycore keeps it after every acoustic loop (gpuwm.core.dycore
+    WRF_MUTS_SLOT); a path that never ran one (a restart's first boundary
+    pass, a unit fixture) passes null and keeps the re-coupling finalizer.
+    """
+    if not WRF_EXACT:
+        return ()
+    from gpuwm.core.dycore import WRF_MUTS_SLOT
+    muts = state.existing_scratch(WRF_MUTS_SLOT)
+    return (muts if muts is not None else np.uint64(0),)
 
 
 def apply_state_boundary_values(state, cfg, elapsed_seconds=None) -> None:

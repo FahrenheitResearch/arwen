@@ -1,26 +1,26 @@
-"""Constant-K diffusion and Rayleigh damping layer (kernels/diffusion.cu).
+"""Constant-K Laplacian utility and Rayleigh damping layer (kernels/diffusion.cu).
 
-``add_diffusion_tendencies`` adds simple constant-eddy-viscosity 2nd-order
-diffusion of u, v, w and theta' (WRF ``diff_opt=1`` style) to the coupled
-slow tendencies whenever ``cfg.khdif > 0 or cfg.kvdif > 0``.  The Laplacian
-is evaluated on coordinate surfaces horizontally and in physical space
-vertically, using per-level base-state dz.  Design choice (per plan): the
-mixing tendencies are recomputed on *every* RK stage from that stage's
-estimate, whereas WRF computes them ONCE per timestep on RK stage 1 (from
-the time-t fields, into the fixed ``*_tendf`` accumulators) and applies
-that same tendency on every stage — Straka's published setups use
-per-stage mixing and the benchmark tolerances absorb the difference.
-Theta is diffused in perturbation form (theta' = theta - thb) so the base
-stratification is not mixed; u, v, w have a zero (at-rest) base state, so
-perturbation and full fields coincide.
+``launch_add_diff2`` adds a simple constant-eddy-viscosity 2nd-order
+Laplacian ``kh*(f_xx + f_yy) + kv*(f_z)_z`` of one field into a tendency
+(uncoupled): coordinate-surface horizontal second differences with
+periodic wrap, physical-space vertical second differences on per-level
+base-state dz, and zero-flux top/bottom cell boundaries.  It is NOT WRF's
+``km_opt = 1``.  It keeps Straka's definition (the given K applies to every
+field exactly as given), it is measured against WRF's diff_opt=1 routines
+by tests/test_constant_diffusion_wrf471_parity.py as a declared different
+operator, and ``diffuse_only_test`` drives it for the 1-D analytic
+diffusion test.
 
-Comparison semantics (Straka investigation): gpuwm's constant-K
-deliberately follows Straka's definition — the configured K applies to
-theta (and momentum) exactly as given — whereas WRF's ``km_opt=1`` gives
-scalars ``khdif/prandtl`` with prandtl = 1/3 (i.e. 3x the momentum
-diffusivity; v4.6.1 module_diffusion_em.F ``khdq = 3.*khdif`` and
-share/module_model_constants.F).  Cross-model comparisons must record the
-effective per-field diffusivities, not just the namelist K.
+``km_opt = 1`` in the model is WRF's own: ``isotropic_km`` constants
+(xkmh = khdif, xkmv = kvdif, xkhh = khdif/prandtl, xkhv = kvdif/prandtl
+with prandtl = 1/3) into WRF's diff_opt=2 ``horizontal_diffusion_2`` and,
+PBL off, ``vertical_diffusion_2``, once per step from the time-t fields
+(``gpuwm.core.dycore.launch_wrf_isotropic_km``; column oracle in
+tools/wrf_diffusion_oracle/km1_README.md).  Until 2026-10-07 the model ran
+this Laplacian as ``km_opt = 1`` on every RK stage, with scalars at 1x
+instead of 3x the momentum K, no moisture or chem mixing, no surface
+fluxes, and refusals for terrain and open or specified boundaries; that
+operator is retired from the model step.
 
 ``apply_rayleigh_damping`` is a relaxational sponge utility (WRF
 ``damp_opt=2`` style, restricted to fields with a zero/at-rest reference):
@@ -44,8 +44,7 @@ import numpy as np
 from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel
-from gpuwm.core.state import (DTYPE, DomainState, mu_at_u_faces,
-                              mu_at_v_faces)
+from gpuwm.core.state import DTYPE, DomainState
 
 _TPB = 128  # threads per block along i (i fastest)
 
@@ -95,41 +94,6 @@ def launch_add_diff2(f, tend, kh, kv, dx, dy, zf, stagger: str = "") -> None:
           cp.asarray(rdzf, dtype=DTYPE), cp.asarray(rdzc, dtype=DTYPE),
           np.int32(nlev), np.int32(ny), np.int32(nys),
           np.int32(nx), np.int32(nxs), np.int32(1 if stagger == "z" else 0)))
-
-
-def add_diffusion_tendencies(state: DomainState, cfg: RunConfig) -> None:
-    """Accumulate mu-coupled diffusion of u, v, w, theta' into the slow
-    tendencies (hybrid coupling ``c1h*mu + c2h`` on half levels /
-    ``c1f*mu + c2f`` on w levels).  No-op unless ``cfg.khdif > 0 or
-    cfg.kvdif > 0``."""
-    # WRF selects these namelist values only for the constant-K scheme.
-    # Positive dormant values must not add a second closure under km_opt2..4.
-    if cfg.km_opt != 1 or (cfg.khdif <= 0.0 and cfg.kvdif <= 0.0):
-        return
-    if state.phb.ndim != 1:
-        raise NotImplementedError(
-            "constant-K diffusion assumes a flat base state (1-D phb for "
-            "the vertical spacings); terrain cases must run with "
-            "khdif = kvdif = 0")
-    zf = cp.asnumpy(state.phb).astype(np.float64) / c.G
-    mu = state.total_mu()                            # (ny, nx) total dry mass
-    mux = mu_at_u_faces(mu)                          # shared face helpers
-    muy = mu_at_v_faces(mu)
-    c1h = state.c1h[:, None, None]
-    c2h = state.c2h[:, None, None]
-    c1f = state.c1f[:, None, None]
-    c2f = state.c2f[:, None, None]
-
-    for f, tend, muf, cc1, cc2, slot, stag in (
-            (state.u, state.ru_t, mux, c1h, c2h, "diff_u", "x"),
-            (state.v, state.rv_t, muy, c1h, c2h, "diff_v", "y"),
-            (state.w, state.rw_t, mu, c1f, c2f, "diff_w", "z"),
-            (state.thp, state.rth_t, mu, c1h, c2h, "diff_th", "")):
-        tmp = state.scratch(f.shape, slot)
-        tmp[...] = 0
-        launch_add_diff2(f, tmp, cfg.khdif, cfg.kvdif, cfg.dx, cfg.dy, zf,
-                         stagger=stag)
-        tend += (cc1 * muf[None] + cc2) * tmp
 
 
 def _damp_factors(z, cfg: RunConfig) -> np.ndarray:

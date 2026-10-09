@@ -43,7 +43,9 @@ the shape of the path will not.
 
 One command does all of it -- `bash install.sh` (POSIX; the universal
 form, mode-bit independent) or `.\install.ps1`
-(PowerShell) from the checkout root: venv, the checkout's `gpuwm-data`
+(PowerShell) from the checkout root: a venv on free-threaded Python 3.14t
+(found on PATH or installed with uv; multi-card forecasts run about twice
+as fast on it, and `--python` / `-Python` picks another interpreter), the checkout's `gpuwm-data`
 companion, `[gpu-cu12,render]` extras, the offline Rust builds of all six
 vendored workspaces (the `tools/grib1_bridge` GRIB bridges, the
 `tools/rustwx` render engine, the `tools/arwen-tui` terminal, the

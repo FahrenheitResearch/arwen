@@ -14,8 +14,8 @@ _THREADS = 256
 
 
 def update_diagnostics(state: DomainState, hypsometric_opt: int = 1,
-                       window: tuple[int, int, int, int] | None = None
-                       ) -> None:
+                       window: tuple[int, int, int, int] | None = None,
+                       muts=None) -> None:
     """Recompute ``p``, ``al``, ``alt`` in place from (thp, php, mup[, qv]).
 
     General hybrid/terrain form: the kernel consumes the 2-D dry mass
@@ -42,6 +42,12 @@ def update_diagnostics(state: DomainState, hypsometric_opt: int = 1,
     the whole domain, and the full-domain launch is arithmetic-identical
     to the pre-window kernel.  The consumer is the two-way-feedback
     finalize, whose restriction changes only the columns under the nest.
+
+    ``muts`` (strict diagnostics only) is WRF's ``grid%muts`` as the last
+    acoustic loop left it, ``MUT + MU''`` (advance_mu_t).  WRF's
+    calc_p_rho_phi reads that word, not ``mub + mu_2``; the two differ in
+    a few columns and move ``al``/``p`` there.  Without it the column mass
+    is ``mub + mu``, start_em's spelling.  Ignored outside strict mode.
     """
     if hypsometric_opt not in (1, 2):
         raise ValueError(
@@ -56,8 +62,25 @@ def update_diagnostics(state: DomainState, hypsometric_opt: int = 1,
     nz, ny, nx = state.p.shape
     j0, i0, nyw, nxw = _validated_window(window, ny, nx)
     moist = state.qv is not None
-    kernel = get_kernel("diagnostics", "calc_p_alpha")
     blocks = (nxw * nyw + _THREADS - 1) // _THREADS
+    if DIAGNOSTICS_ENABLED and muts is not None:
+        if getattr(state, "p_perturbation", None) is None:
+            import cupy as cp
+            state.p_perturbation = cp.empty_like(state.p)
+        get_kernel("diagnostics", "calc_p_alpha_carried_muts")(
+            (blocks,), (_THREADS,),
+            (state.thp, state.php, state.mup, state.thb, state.phb,
+             state.alb, state.pb, muts, state.rdnw, state.c1h, state.c2h,
+             state.c3h, state.c4h, state.c3f, state.c4f,
+             state.qv if moist else state.thp,
+             np.float32(0.0 if state.p_top is None else state.p_top),
+             np.int32(hypsometric_opt), np.int32(moist),
+             np.int32(state.thb.ndim == 3),
+             np.int32(nz), np.int32(ny), np.int32(nx),
+             np.int32(j0), np.int32(i0), np.int32(nyw), np.int32(nxw),
+             state.p, state.al, state.alt, state.p_perturbation))
+        return
+    kernel = get_kernel("diagnostics", "calc_p_alpha")
     args = (state.thp, state.php, state.mup,
             state.thb, state.phb, state.dphb_resid, state.alb)
     if DIAGNOSTICS_ENABLED:

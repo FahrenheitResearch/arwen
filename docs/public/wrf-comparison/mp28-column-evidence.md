@@ -22,11 +22,18 @@ evidence, not validation against observations. The scope is:
   comparisons; the separate idealized runs linked above were.
 
 The label's evidence is the measurements in this page, not an assertion that
-no comparison exists. Of 22 committed WRF column fixtures, 22 of 22 clear
+no comparison exists. Of 22 committed WRF column fixtures, 21 of 22 clear
 the flat gate on all 23 compared quantities, with no allowance and nothing
-held out, since the 2.8.6 accumulator rework; section 3 publishes the table
-field by field and the history of every residual that closed. These are
-component code verification results. The idealized forecast comparisons
+held out; the 22nd, `aero-cold-overlap`, misses by a declared divergence
+(WOOF does not reproduce WRF's out-of-bounds read of its rain-graupel
+collision tables; section 3) and clears the gate when that read is emulated
+in a measurement copy of the tree. Section 3 publishes the table field by
+field and the history of every residual that closed. The 153-column oracle
+of section 3.6 compares every output word bit for bit: outside the columns
+where rain meets graupel the port is WRF v4.6.1, word for word, in the
+strict and the default build at 20 s and 5 s, and with WRF's out-of-bounds
+read reproduced in a measurement copy every word of every column is. These
+are component code verification results. The idealized forecast comparisons
 above have not produced a declared PASS, and no observation-based validation
 is claimed. A clean single-call deck is not a forecast validation.
 
@@ -102,9 +109,17 @@ and `PROVENANCE.md` all said "nineteen" while the gate drove twenty-two,
 so two residuals (`wp08-freeze`, `wp08-nusweep`) were in no published class
 at all. They are below.
 
-**Result: 22 of 22 clear the flat 2.0e-6 / 2.0e-4 dB gate on every
+**Result: 21 of 22 clear the flat 2.0e-6 / 2.0e-4 dB gate on every
 compared quantity, with nothing held out and no allowance anywhere** —
-19 of the 19 spec'd `aero-*` fixtures and the three `wp08-*` columns. Five fixtures
+18 of the 19 spec'd `aero-*` fixtures and the three `wp08-*` columns. The
+22nd, `aero-cold-overlap`, is the declared rain-graupel divergence: WRF
+v4.6.1 allocates its rain-graupel collision tables with a graupel-density
+axis of extent 1 when the scheme is not hail aware, fills that one slab,
+and reads it with index 5 (`module_mp_thompson.F:465`, `:607-615`,
+`:2527-2545`), an out-of-bounds read; WOOF reads the slab the tables hold.
+With WRF's read emulated in a measurement copy of the tree (never shipped)
+the fixture clears the gate on all 23 quantities, so nothing else in it
+differs. Five fixtures
 (`aero-ccn-activate`, `aero-ccn-sweep`, `aero-init-profile`,
 `aero-sfc-emit`, `wp08-melt`) are bit-exact against WRF on every quantity at
 every level, and eight more are bit-exact on all 16 fields of the table
@@ -153,6 +168,14 @@ first leaves WRF):
 | `wp08-freeze` `nr`, level 0 | was 4.006e-07 (5 ULP) | **0 (bit-exact)** |
 | worst ULP of any cell inside the gate | 20.0 | **6.0** |
 
+The table is the 2.8.6 measurement. On this tree `wp08-nusweep` reads 0.0
+on every quantity and, outside the declared divergence, the worst ULP of any
+cell inside the gate is 1.0 (a `temp_k`), under the gate's 6.0 ceiling, on an RTX 4090 (sm_89) and an RTX
+5070 Ti (sm_120) alike. The two `aero-cold-overlap` rows are not current:
+2.8.8 moved rain collecting graupel onto the one slab WRF's tables hold, and
+since then the fixture misses by the declared rain-graupel divergence (§3.1)
+and by nothing else.
+
 The table below gives, for every spec'd fixture, the worst of the 16
 fields and its measured relative difference. `PASS`/`MISS` is against the
 uniform 2.0e-6 gate.
@@ -171,18 +194,18 @@ uniform 2.0e-6 gate.
 | `aero-nc-sed` | PASS | - | 0.0 | number-weighted cloud sedimentation |
 | `aero-scav-rain` | PASS | - | 0.0 | rain scavenging of CCN and IN |
 | `aero-warm-overlap` | PASS | - | 0.0 | **cross-network `ncten`/`nwfaten` reconciliation, warm half** |
+| `aero-scav-frozen` | PASS | - | 0.0 | snow/graupel aerosol scavenging, `Eff_aero`; bit-exact since the scheme's own WRF-transcribed graupel fallout and graupel number |
 | `aero-cloud-freeze-nc` | PASS | temp_k | 6.363e-08 | Bigg freezing with the `nc`-driven cap — **closed by the accumulator rework; see §3.0** |
-| `aero-scav-frozen` | PASS | qg | 9.507e-08 | snow/graupel aerosol scavenging, `Eff_aero` |
-| `aero-ice-demott-idxin` | PASS | temp_k | 1.272e-07 | the only fixture that reads a `freezeH2O` slice other than 27 |
-| `aero-reduces-to-classic` | PASS | temp_k | 1.393e-07 | the bridge to mp=8, which has a historical matched WRF run; `qr` and `nr` bit-exact at every level, no allowance |
-| `aero-ice-koop` | PASS | ni_per_kg | 2.280e-07 | **homogeneous haze freezing; see §3.4** |
-| `aero-ice-demott-dep` | PASS | ni_per_kg | 2.659e-07 | `iceDeMott` replacing Cooper nucleation |
-| `aero-cold-overlap` | PASS | qv | 3.670e-07 | **cross-network reconciliation, cold half — closed by the accumulator rework; see §3.0** |
+| `aero-ice-demott-idxin` | PASS | temp_k | 6.359e-08 | the only fixture that reads a `freezeH2O` slice other than 27 |
+| `aero-reduces-to-classic` | PASS | temp_k | 6.967e-08 | the bridge to mp=8, which has a historical matched WRF run; `qr` and `nr` bit-exact at every level, no allowance |
+| `aero-ice-koop` | PASS | temp_k | 6.634e-08 | **homogeneous haze freezing; see §3.4** |
+| `aero-ice-demott-dep` | PASS | temp_k | 6.358e-08 | `iceDeMott` replacing Cooper nucleation |
+| `aero-cold-overlap` | MISS | qr | 5.070e-04 | **cross-network reconciliation, cold half; misses by the declared rain-graupel divergence only (emulating WRF's out-of-bounds table read clears it)** |
 
 The three columns outside the spec'd nineteen, measured the same way:
 `wp08-melt` PASS (bit-exact on every quantity), `wp08-freeze` PASS
-(`temp_k` 1.326e-07; its `nr` is bit-exact), `wp08-nusweep` PASS (`qr`
-5.532e-07).
+(`temp_k` 6.636e-08; its `nr` is bit-exact), `wp08-nusweep` PASS (0.0 on
+every quantity; it read `qr` 5.532e-07 after the 2.8.6 rework).
 
 **The numbers are per card class, and the two measured classes agree.** The
 table above is sm_120's (RTX 5090). An RTX 4090 (sm_89) reads every row,
@@ -199,13 +222,18 @@ only, and the test output says so.
 
 | fixture | fields above 2.0e-6 |
 | --- | --- |
+| `aero-cold-overlap` | declared rain-graupel divergence: `qr` 5.070e-04, `nr` 5.066e-04, `qi` 1.618e-04, `qg` 8.776e-05, `effi` 5.394e-05, `ni` 1.464e-05, `effs` 6.574e-06, reflectivity 1.585e-03 dB |
 
-None. `tests/test_thompson_aerosol_adapter.py::_G3_RESIDUALS` and its
-attribution table are empty and asserted empty, and
+Only the declared rain-graupel divergence, read identically on an RTX 4090
+(sm_89) and an RTX 5070 Ti (sm_120).
+`tests/test_thompson_aerosol_adapter.py::_G3_RESIDUALS` carries that one row
+and is asserted to name exactly `_G3_DECLARED_DIVERGENCE`, its attribution
+table is empty and asserted empty, and
 `test_no_residual_survives_and_none_needs_a_regime` asserts the
-unexceptioned table — every level, every field, the seven surface
-diagnostics included — has nothing above the flat gate. `RAINNC`, `RAINNCV`
-and `SR` are bitwise identical to WRF on all 22 columns.
+unexceptioned table (every level, every field, the seven surface
+diagnostics included) has nothing above the flat gate outside
+`_G3_DECLARED_DIVERGENCE`. `RAINNC`, `RAINNCV` and `SR` are bitwise
+identical to WRF on all 22 columns.
 
 The text that used to stand here, for the record of what closed: the four
 missing fixtures were `aero-cold-overlap` (`qc` 1.000e+00, `nc` 1.000e+00,
@@ -429,6 +457,71 @@ Two things follow, and the second is the uncomfortable one:
 * Single call, single column, no transport, no accumulation. Everything
   multi-step is class D.
 
+### 3.6 The column oracle: every output word against WRF, bit for bit
+
+The fixtures above are graded at a 2.0e-6 relative gate.  The column oracle
+(`tools/thompson_aerosol_column_oracle`, README there) grades the port at 0
+ULP: WOOF's shipped adapter on the GPU and unmodified WRF v4.6.1
+`module_mp_thompson.F` (gfortran 13.3, `-O2 -fno-tree-vectorize`, scalar
+libm) on the CPU, on identical float32 columns, every one of the 23 output
+words compared bit for bit: the eleven moments, theta, 10 cm reflectivity,
+the three effective radii and the seven surface accumulations.  153 columns
+of 49 levels (42 real convective columns, eight synthetic regimes raw and
+after WRF's own 10- and 45-step spin-up, 15 edge cases), 121,023 words per
+run.  RTX PRO 6000 Blackwell (sm_120), NVRTC 12.9, measured 2026-10-07 at
+lane/mp28-exact.
+
+| run | strict 20 s | default 20 s | strict 5 s | default 5 s |
+|---|---:|---:|---:|---:|
+| shipped tree: differing words | 3,267 | 3,267 | 2,787 | 2,787 |
+| shipped tree: bit-identical columns | 105 / 153 | 105 / 153 | 105 / 153 | 105 / 153 |
+| measurement copy reproducing WRF's rain-graupel read: differing words | **0** | **0** | **0** | **0** |
+
+Every differing word of the shipped tree sits in one of 48 columns that
+carry rain and graupel at a common level: the declared rain-graupel
+divergence above, and nothing else.  On a measurement copy of the tree
+whose `aaf_racg_index` reproduces WRF's out-of-bounds read
+(`make_racg_read_copy.sh`; never shipped) every word of every column is
+WRF's, in both arithmetic builds; the copy faults rather than read past the
+arrays' end, so its completed runs also show WRF never read past the end on
+these columns.  The strict build (`GPUWM_WRF_EXACT=1`) and the default build
+give the same words: every mp=28 operation is pinned, so contraction has
+nothing to fuse.
+
+The same holds beyond the 153.  The four residue edge columns (157 in all:
+whole-cloud evaporation, the cloud limiter under rain and under riming, the
+freeze below HGFR and the melt above 0 C) are bit-identical on the shipped
+tree.  The stress sets of `make_stress_columns.py` (every synthetic regime at
+2, 17, 49 and 73 levels; isothermal columns at 190 to 310 K and RH 0.001 to
+1.08; thin air; condensate from the smallest float32 to 0.02 kg/kg), run at
+0.001, 1, 60 and 300 s, and the bounded set at 20, 5, 0.001 and 300 s, read
+0 differing words on the measurement copy in all 40 runs (strict and
+default), and on the shipped
+tree differ only in columns carrying rain and graupel together.
+
+What closed the last differences, in the order they were found: WRF's
+`qsten`/`qgten`/`ngten` accumulators (the snow and graupel fallout add to
+the sources' REAL tendencies and `:4054-4059` applies each sum once; the
+port rounded twice: 592 `qs` and 325 `qg` words at strict 20 s), the phase
+cleanup's latent heat (`:3943-3973` adds `lfus*ocp(k)*xri*odt` and
+`lfus2*ocp(k)*xrc*odt` to `tten` with the `ocp(k)` and `lvap(k)` WRF last
+formed, and returns `t1d + tten*DT`), and the wet-bulb `twet` above WRF's
+melting level (`:1971-2013`: a level at exactly 273.15 K keeps `twet = temp`
+unless a warmer level sits at or above it).
+
+`tests/test_thompson_aerosol_column_oracle_gpu.py` holds the result: the
+157 columns and WRF's 23 words at 20 s and 5 s are committed
+(`tests/data/mp28_column_oracle_wrf461.npz`), and the 109 columns outside
+the divergence must stay bit-identical in both builds. All 48 declared
+columns also pin every strict WOOF output word. A cut requires the same
+inputs to pass the measurement-copy check, recorded in the fixture.
+
+The melting-level repair has a separate full-column gate,
+`tests/data/mp28_melting_level_wrf461.npz`, with two exactly freezing
+columns and a warm neighbor at 20 s and 5 s. The real legacy-mask negative
+control must differ in cloud number; the shipped adapter equals all 23
+WRF outputs in strict and default arithmetic.
+
 ---
 
 ## 4. Class B — committed scratch-driver Fortran output
@@ -642,7 +735,7 @@ not inferred. §6.7 lists what left this section since the previous
 revision, so a reader can see the direction of travel without taking it on
 trust.
 
-### 6.1 Removing the aerosol initial condition moves this case's surface rain by 52.9%
+### 6.1 Removing the aerosol initial condition moves this case's surface rain by 56.6%
 
 This is a **sensitivity**, not a defect — but it is the first thing to
 understand about mp=28, because it is the largest single number the port
@@ -666,10 +759,10 @@ removed:
 | quantity | with the profile (what a run does today) | with it removed | change |
 | --- | --- | --- | --- |
 | initial mean `nwfa` | 6.653e+07 kg⁻¹ | 0 | — |
-| final interior `nwfa` | 2.174e+07 kg⁻¹ | 4.241e+06 kg⁻¹ | floor where the scheme runs, zero in clear columns |
+| final interior `nwfa` | 2.174e+07 kg⁻¹ | 4.274e+06 kg⁻¹ | floor where the scheme runs, zero in clear columns |
 | peak `nc` over the run | 1.593e+08 kg⁻¹ | 2.848e+07 kg⁻¹ | **5.6× fewer droplets** |
-| domain-total `RAINNC` | 2.066 mm | 3.158 mm | **+52.9%** |
-| peak `RAINNC` | 0.798 mm | 1.014 mm | +27.0% |
+| domain-total `RAINNC` | 2.077 mm | 3.253 mm | **+56.6%** |
+| peak `RAINNC` | 0.847 mm | 1.056 mm | +24.7% |
 
 Re-measured 2026-09-30 on the RTX 5070 Ti (sm_120) when A146 made Blackwell
 cards divide by compile-time constants IEEE-correctly: the stripped run's
@@ -690,6 +783,25 @@ bubble that is a trajectory difference grown from rounding, not a change
 in what the aerosol does: the droplet ratio and the peak rain change are
 the same to the printed precision.
 
+Re-measured 2026-10-07 on an RTX PRO 6000 Blackwell (sm_120), the same card
+class, with the same script, when the cold and warm source networks were
+re-transcribed in WRF's arithmetic order and the rain-graupel divergence was
+declared (§3). The tree before that change already read 1.989 and 3.167 mm
+(+59.2%; the table above it was stale); the change moved the run with the
+profile to 1.967 mm and the run without it to 3.258 mm. Rain collecting
+graupel is the largest single difference: the collision rates now come from
+the table slab WRF built rather than from four rain-intercept bins away.
+
+Re-measured again 2026-10-07 for lane/mp28-exact, same card class, same
+script: the four fix lanes merged, WRF's snow and graupel accumulators
+applied once, the phase cleanup's latent heat on WRF's own ocp(k)/lvap(k)
+and twet above the melting level moved the run with the profile to
+2.077 mm and the run without it to 3.253 mm (+56.6%; the table above).
+The one-step scheme is now WRF's word for word outside the declared
+rain-graupel divergence (§3.6), so this is the 150-step trajectory those
+repairs make, not a change in what the aerosol does: the droplet ratio is
+5.6 as before.
+
 Both runs are re-executed and this table rebuilt by
 `tests/test_physics_md_aerosol_claims.py::test_the_published_aerosol_sensitivity_is_a_live_measurement`,
 compared at the precision printed here. The comparison is exact rather
@@ -698,7 +810,7 @@ measurement machine and every value was bit-identical across repeats; if
 that stops holding, the right response is to publish the spread.
 
 Read that precisely: removing the CCN loading raises domain-total surface
-precipitation by 52.9% over half an hour and cuts the peak droplet count by
+precipitation by 56.6% over half an hour and cuts the peak droplet count by
 a factor of 5.6. (Both forecasts were re-run for the 2.8 line. Measured
 commit by commit, most of the move from the earlier 74% rise came from the
 2026-09-24 mp=28 Thompson repairs; WRF's `:2020` column exit, which stopped
@@ -753,7 +865,7 @@ does not measure its forecast effect.
 What *is* known is the endpoint, and §6.1 now measures it directly: after
 `L/U` the whole domain holds inflow air, aerosol-free where it is clear and
 at the CCN floor where the scheme runs, which is the right-hand column of
-the section 6.1 table: 5.6 times fewer droplets and +52.9% domain-total surface rain.
+the section 6.1 table: 5.6 times fewer droplets and +56.6% domain-total surface rain.
 That is an endpoint magnitude inferred from a different experiment, not a
 measured trajectory difference, and it should be read as an order of
 magnitude for this zero-inflow experiment, not a measured effect of the
@@ -762,17 +874,19 @@ extended to the climatology boundary supply described above. The numerical
 and observational effects of that supplied-boundary path need their own
 matched comparisons; this extrapolation does not qualify them.
 
-### 6.3 Four column residuals remain, and one of them is worse than it was
+### 6.3 One column residual remains, and it is the declared divergence
 
-§3.1, in full. Nothing there is a rate disagreement any more: every
-surviving residual sits where a field is created from zero inside the step
-or driven to near-total consumption, and no surface accumulation misses on
-any fixture. The two that a reader should carry away are
-`aero-cold-overlap` — three full-scale relative numbers on a one-ULP
-absolute difference, and a genuine 1.261e-04 in `nr` at a second level —
-and the fact that this fixture got **worse** in this revision, its level-6
-`qr` growing 3.667e-05 → 4.443e-05 as the direct price of pinning the
-terminal apply's contraction, while four others got better.
+§3.1, in full: `aero-cold-overlap`, the one fixture where rain meets
+graupel, misses by the declared rain-graupel divergence alone (`qr`
+5.070e-04, `nr` 5.066e-04, `qi` 1.618e-04, `qg` 8.776e-05, `effi`
+5.394e-05, `ni` 1.464e-05, `effs` 6.574e-06, reflectivity 1.585e-03 dB),
+and no surface accumulation misses on any fixture. It is a different table
+read, not a rounding residual: with WRF's out-of-bounds read emulated in a
+measurement copy of the tree the fixture clears all 23 quantities. What this
+section said before the 2.8.6 accumulator rework, kept as history: four
+column residuals remained and `aero-cold-overlap` had got **worse**, its
+level-6 `qr` growing 3.667e-05 → 4.443e-05 as the direct price of pinning
+the terminal apply's contraction, while four others got better.
 
 ### 6.4 MYNN mixes the `qn` family when it is asked to — **D9d CLOSED**
 

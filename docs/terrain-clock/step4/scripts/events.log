@@ -1,0 +1,223 @@
+2026-10-07T09:16:55Z loop4 a: 0 of 112 rows
+2026-10-07T09:16:58Z loop4 b: 0 of 112 rows
+2026-10-07T09:17:01Z loop4 c: 0 of 112 rows
+2026-10-07T09:17:04Z loop4 d: 0 of 112 rows
+2026-10-07T09:18:23Z loop4 a: 0 of 224 rows
+2026-10-07T09:18:25Z loop4 b: 0 of 224 rows
+2026-10-07T09:18:27Z loop4 c: 0 of 224 rows
+2026-10-07T09:18:29Z loop4 d: 0 of 224 rows
+2026-10-07T09:25:39Z start c card=5 nproc=4 deadline=1791366638
+2026-10-07T09:27:31Z start d card=7 nproc=4 deadline=1791366751
+2026-10-07T09:27:55Z start a card=0 nproc=4 deadline=1791366775
+2026-10-07T09:36:29Z start b card=1 nproc=4 deadline=1791367288
+2026-10-07T09:36:59Z loop4 b: 32 of 224 rows
+2026-10-07T09:37:20Z start b card=1 nproc=3 deadline=1791367340
+2026-10-07T09:50:51Z end c card=5 rows=100
+2026-10-07T09:50:57Z loop4 c: 100 of 224 rows
+2026-10-07T09:52:51Z end d card=7 rows=110
+2026-10-07T09:52:56Z loop4 d: 110 of 224 rows
+2026-10-07T09:53:07Z end a card=0 rows=111
+2026-10-07T09:53:08Z start c card=0 nproc=4 deadline=1791368287
+2026-10-07T09:53:12Z loop4 a: 112 of 224 rows
+2026-10-07T09:54:42Z start a card=6 nproc=4 deadline=1791368382
+2026-10-07T10:02:27Z end b card=1 rows=143
+2026-10-07T10:02:28Z start d card=1 nproc=4 deadline=1791368847
+2026-10-07T10:02:32Z loop4 b: 143 of 224 rows
+2026-10-07T10:14:04Z start b card=2 nproc=3 deadline=1791369543
+2026-10-07T10:18:29Z end c card=0 rows=206
+2026-10-07T10:18:34Z loop4 c: 206 of 224 rows
+2026-10-07T10:18:35Z start c card=0 nproc=4 deadline=1791369815
+2026-10-07T10:19:45Z end a card=6 rows=213
+2026-10-07T10:19:50Z loop4 a: 213 of 224 rows
+2026-10-07T10:19:51Z start a card=3 nproc=4 deadline=1791369890
+2026-10-07T10:20:03Z end a card=3 rows=216
+2026-10-07T10:20:08Z loop4 a: 216 of 224 rows
+2026-10-07T10:20:09Z start a card=3 nproc=4 deadline=1791369908
+2026-10-07T10:20:17Z end a card=3 rows=216
+2026-10-07T10:20:21Z end b card=2 rows=217
+2026-10-07T10:20:22Z loop4 a: 217 of 224 rows
+2026-10-07T10:20:23Z start a card=2 nproc=4 deadline=1791369922
+2026-10-07T10:20:26Z loop4 b: 219 of 224 rows
+2026-10-07T10:20:27Z start b card=3 nproc=3 deadline=1791369926
+2026-10-07T10:20:31Z end a card=2 rows=219
+2026-10-07T10:20:33Z end b card=3 rows=219
+2026-10-07T10:20:34Z end d card=1 rows=220
+2026-10-07T10:20:36Z loop4 a: 220 of 224 rows
+2026-10-07T10:20:36Z start a card=1 nproc=4 deadline=1791369936
+2026-10-07T10:20:38Z loop4 b: 220 of 224 rows
+2026-10-07T10:20:38Z start b card=2 nproc=3 deadline=1791369938
+2026-10-07T10:20:39Z loop4 d: 220 of 224 rows
+2026-10-07T10:20:40Z start d card=3 nproc=4 deadline=1791369940
+2026-10-07T10:20:44Z end a card=1 rows=220
+2026-10-07T10:20:44Z end b card=2 rows=220
+2026-10-07T10:20:48Z end d card=3 rows=220
+2026-10-07T10:20:49Z loop4 a: 220 of 224 rows
+2026-10-07T10:20:49Z loop4 b: 220 of 224 rows
+2026-10-07T10:20:50Z start a card=1 nproc=4 deadline=1791369950
+2026-10-07T10:20:50Z start b card=2 nproc=3 deadline=1791369950
+2026-10-07T10:20:53Z loop4 d: 220 of 224 rows
+2026-10-07T10:20:54Z start d card=3 nproc=4 deadline=1791369953
+2026-10-07T10:20:56Z end b card=2 rows=220
+2026-10-07T10:20:58Z end a card=1 rows=221
+2026-10-07T10:21:01Z loop4 b: 221 of 224 rows
+2026-10-07T10:21:02Z end d card=3 rows=221
+2026-10-07T10:21:02Z start b card=1 nproc=3 deadline=1791369962
+2026-10-07T10:21:03Z loop4 a: 221 of 224 rows
+2026-10-07T10:21:04Z start a card=2 nproc=4 deadline=1791369964
+2026-10-07T10:21:07Z loop4 d: 221 of 224 rows
+2026-10-07T10:21:08Z start d card=3 nproc=4 deadline=1791369967
+2026-10-07T10:21:08Z end b card=1 rows=221
+2026-10-07T10:21:12Z end a card=2 rows=221
+2026-10-07T10:21:13Z loop4 b: 221 of 224 rows
+2026-10-07T10:21:14Z start b card=1 nproc=3 deadline=1791369973
+2026-10-07T10:21:16Z end d card=3 rows=221
+2026-10-07T10:21:17Z loop4 a: 221 of 224 rows
+2026-10-07T10:21:18Z start a card=2 nproc=4 deadline=1791369977
+2026-10-07T10:21:20Z end b card=1 rows=221
+2026-10-07T10:21:21Z loop4 d: 221 of 224 rows
+2026-10-07T10:21:21Z start d card=1 nproc=4 deadline=1791369981
+2026-10-07T10:21:25Z loop4 b: 221 of 224 rows
+2026-10-07T10:21:26Z start b card=3 nproc=3 deadline=1791369985
+2026-10-07T10:21:26Z end a card=2 rows=221
+2026-10-07T10:21:29Z end d card=1 rows=221
+2026-10-07T10:21:31Z loop4 a: 221 of 224 rows
+2026-10-07T10:21:32Z start a card=1 nproc=4 deadline=1791369991
+2026-10-07T10:21:32Z end b card=3 rows=221
+2026-10-07T10:21:34Z loop4 d: 221 of 224 rows
+2026-10-07T10:21:35Z start d card=2 nproc=4 deadline=1791369995
+2026-10-07T10:21:37Z loop4 b: 221 of 224 rows
+2026-10-07T10:21:37Z start b card=3 nproc=3 deadline=1791369997
+2026-10-07T10:21:40Z end a card=1 rows=221
+2026-10-07T10:21:43Z end d card=2 rows=221
+2026-10-07T10:21:43Z end b card=3 rows=221
+2026-10-07T10:21:45Z loop4 a: 221 of 224 rows
+2026-10-07T10:21:45Z start a card=1 nproc=4 deadline=1791370005
+2026-10-07T10:21:48Z loop4 d: 221 of 224 rows
+2026-10-07T10:21:48Z loop4 b: 221 of 224 rows
+2026-10-07T10:21:49Z start d card=2 nproc=4 deadline=1791370008
+2026-10-07T10:21:49Z start b card=3 nproc=3 deadline=1791370009
+2026-10-07T10:21:53Z end a card=1 rows=221
+2026-10-07T10:21:55Z end b card=3 rows=222
+2026-10-07T10:21:57Z end d card=2 rows=222
+2026-10-07T10:21:58Z loop4 a: 222 of 224 rows
+2026-10-07T10:21:59Z start a card=1 nproc=4 deadline=1791370019
+2026-10-07T10:22:00Z loop4 b: 222 of 224 rows
+2026-10-07T10:22:01Z start b card=2 nproc=3 deadline=1791370020
+2026-10-07T10:22:02Z loop4 d: 222 of 224 rows
+2026-10-07T10:22:03Z start d card=3 nproc=4 deadline=1791370022
+2026-10-07T10:22:07Z end b card=2 rows=222
+2026-10-07T10:22:07Z end a card=1 rows=222
+2026-10-07T10:22:11Z end d card=3 rows=222
+2026-10-07T10:22:12Z loop4 b: 222 of 224 rows
+2026-10-07T10:22:12Z loop4 a: 222 of 224 rows
+2026-10-07T10:22:13Z start b card=1 nproc=3 deadline=1791370032
+2026-10-07T10:22:13Z start a card=2 nproc=4 deadline=1791370032
+2026-10-07T10:22:16Z loop4 d: 222 of 224 rows
+2026-10-07T10:22:16Z start d card=3 nproc=4 deadline=1791370036
+2026-10-07T10:22:19Z end b card=1 rows=222
+2026-10-07T10:22:21Z end a card=2 rows=222
+2026-10-07T10:22:24Z loop4 b: 222 of 224 rows
+2026-10-07T10:22:24Z end d card=3 rows=222
+2026-10-07T10:22:25Z start b card=1 nproc=3 deadline=1791370044
+2026-10-07T10:22:26Z loop4 a: 222 of 224 rows
+2026-10-07T10:22:27Z start a card=2 nproc=4 deadline=1791370046
+2026-10-07T10:22:29Z loop4 d: 222 of 224 rows
+2026-10-07T10:22:30Z start d card=3 nproc=4 deadline=1791370050
+2026-10-07T10:22:31Z end b card=1 rows=222
+2026-10-07T10:22:35Z end a card=2 rows=222
+2026-10-07T10:22:36Z loop4 b: 222 of 224 rows
+2026-10-07T10:22:36Z start b card=1 nproc=3 deadline=1791370056
+2026-10-07T10:22:38Z end d card=3 rows=222
+2026-10-07T10:22:40Z loop4 a: 222 of 224 rows
+2026-10-07T10:22:40Z start a card=2 nproc=4 deadline=1791370060
+2026-10-07T10:22:42Z end b card=1 rows=222
+2026-10-07T10:22:43Z loop4 d: 222 of 224 rows
+2026-10-07T10:22:44Z start d card=1 nproc=4 deadline=1791370063
+2026-10-07T10:22:47Z loop4 b: 222 of 224 rows
+2026-10-07T10:22:48Z start b card=3 nproc=3 deadline=1791370068
+2026-10-07T10:22:48Z end a card=2 rows=222
+2026-10-07T10:22:52Z end d card=1 rows=222
+2026-10-07T10:22:53Z loop4 a: 222 of 224 rows
+2026-10-07T10:22:54Z end b card=3 rows=222
+2026-10-07T10:22:54Z start a card=1 nproc=4 deadline=1791370074
+2026-10-07T10:22:57Z loop4 d: 222 of 224 rows
+2026-10-07T10:22:58Z start d card=2 nproc=4 deadline=1791370077
+2026-10-07T10:22:59Z loop4 b: 222 of 224 rows
+2026-10-07T10:23:00Z start b card=3 nproc=3 deadline=1791370079
+2026-10-07T10:23:02Z end a card=1 rows=222
+2026-10-07T10:23:06Z end d card=2 rows=222
+2026-10-07T10:23:06Z end b card=3 rows=222
+2026-10-07T10:23:07Z loop4 a: 222 of 224 rows
+2026-10-07T10:23:08Z start a card=1 nproc=4 deadline=1791370087
+2026-10-07T10:23:11Z loop4 d: 223 of 224 rows
+2026-10-07T10:23:11Z loop4 b: 223 of 224 rows
+2026-10-07T10:23:12Z start d card=2 nproc=4 deadline=1791370091
+2026-10-07T10:23:12Z start b card=3 nproc=3 deadline=1791370091
+2026-10-07T10:23:16Z end a card=1 rows=223
+2026-10-07T10:23:18Z end b card=3 rows=223
+2026-10-07T10:23:20Z end d card=2 rows=223
+2026-10-07T10:23:21Z loop4 a: 223 of 224 rows
+2026-10-07T10:23:22Z start a card=1 nproc=4 deadline=1791370101
+2026-10-07T10:23:23Z loop4 b: 223 of 224 rows
+2026-10-07T10:23:23Z start b card=2 nproc=3 deadline=1791370103
+2026-10-07T10:23:25Z loop4 d: 223 of 224 rows
+2026-10-07T10:23:25Z start d card=3 nproc=4 deadline=1791370105
+2026-10-07T10:23:28Z end c card=0 rows=224
+2026-10-07T10:23:29Z end b card=2 rows=224
+2026-10-07T10:23:30Z end a card=1 rows=224
+2026-10-07T10:23:33Z loop4 c: 224 of 224 rows
+2026-10-07T10:23:33Z loop4 c: end
+2026-10-07T10:23:33Z end d card=3 rows=224
+2026-10-07T10:23:34Z loop4 b: 224 of 224 rows
+2026-10-07T10:23:34Z loop4 b: end
+2026-10-07T10:23:35Z loop4 a: 224 of 224 rows
+2026-10-07T10:23:35Z loop4 a: end
+2026-10-07T10:23:38Z loop4 d: 224 of 224 rows
+2026-10-07T10:23:38Z loop4 d: end
+2026-10-07T10:23:38Z loop4b d: 0 of 224 rows
+2026-10-07T10:23:38Z loop4b a: 0 of 224 rows
+2026-10-07T10:23:38Z loop4b b: 0 of 224 rows
+2026-10-07T10:23:38Z loop4b c: 0 of 224 rows
+2026-10-07T10:23:39Z start b card=0 nproc=4 deadline=1791370119
+2026-10-07T10:23:40Z start d card=1 nproc=4 deadline=1791370119
+2026-10-07T10:23:40Z start a card=2 nproc=4 deadline=1791370119
+2026-10-07T10:23:40Z start c card=3 nproc=4 deadline=1791370119
+2026-10-07T10:43:19Z end b card=0 rows=215
+2026-10-07T10:43:22Z end c card=3 rows=216
+2026-10-07T10:43:24Z loop4b b: 217 of 224 rows
+2026-10-07T10:43:25Z start b card=0 nproc=4 deadline=1791371304
+2026-10-07T10:43:27Z loop4b c: 217 of 224 rows
+2026-10-07T10:43:28Z start c card=3 nproc=4 deadline=1791371307
+2026-10-07T10:43:33Z end b card=0 rows=217
+2026-10-07T10:43:36Z end c card=3 rows=217
+2026-10-07T10:43:38Z loop4b b: 217 of 224 rows
+2026-10-07T10:43:38Z start b card=0 nproc=4 deadline=1791371318
+2026-10-07T10:43:41Z loop4b c: 219 of 224 rows
+2026-10-07T10:43:41Z start c card=3 nproc=4 deadline=1791371321
+2026-10-07T10:43:43Z end d card=1 rows=220
+2026-10-07T10:43:46Z end b card=0 rows=221
+2026-10-07T10:43:48Z loop4b d: 221 of 224 rows
+2026-10-07T10:43:49Z start d card=0 nproc=4 deadline=1791371328
+2026-10-07T10:43:49Z end c card=3 rows=221
+2026-10-07T10:43:51Z loop4b b: 221 of 224 rows
+2026-10-07T10:43:52Z start b card=1 nproc=4 deadline=1791371332
+2026-10-07T10:43:54Z loop4b c: 222 of 224 rows
+2026-10-07T10:43:55Z start c card=3 nproc=4 deadline=1791371335
+2026-10-07T10:43:57Z end d card=0 rows=222
+2026-10-07T10:44:00Z end b card=1 rows=222
+2026-10-07T10:44:02Z loop4b d: 222 of 224 rows
+2026-10-07T10:44:03Z start d card=0 nproc=4 deadline=1791371342
+2026-10-07T10:44:03Z end c card=3 rows=222
+2026-10-07T10:44:05Z loop4b b: 223 of 224 rows
+2026-10-07T10:44:06Z end a card=2 rows=224
+2026-10-07T10:44:06Z start b card=1 nproc=4 deadline=1791371345
+2026-10-07T10:44:08Z loop4b c: 224 of 224 rows
+2026-10-07T10:44:08Z loop4b c: end
+2026-10-07T10:44:11Z end d card=0 rows=224
+2026-10-07T10:44:11Z loop4b a: 224 of 224 rows
+2026-10-07T10:44:11Z loop4b a: end
+2026-10-07T10:44:14Z end b card=1 rows=224
+2026-10-07T10:44:16Z loop4b d: 224 of 224 rows
+2026-10-07T10:44:16Z loop4b d: end
+2026-10-07T10:44:19Z loop4b b: 224 of 224 rows
+2026-10-07T10:44:19Z loop4b b: end

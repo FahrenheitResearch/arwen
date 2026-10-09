@@ -74,11 +74,13 @@ import cupy as cp
 import numpy as np
 
 from gpuwm.config import RunConfig
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 from gpuwm.core import constants as c
 from gpuwm.core.advection import launch_flux_div_scalar, vertical_orders
 from gpuwm.core.grid import BaseState, VerticalCoord
 from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS
 from gpuwm.core.kernels import get_kernel
+from gpuwm.microphysics_schemes import scheme_for_state as _named_scheme_for_state
 from gpuwm.core.state import DTYPE, DomainState, init_at_rest
 from gpuwm.core.wdm6_constants import WDM6_NUMBER_SPECIES
 from gpuwm.core import tke_budget
@@ -261,6 +263,14 @@ def extra_moist_species(state: DomainState) -> tuple[str, ...]:
         return MY2_SPECIES
     if getattr(state, "qh", None) is not None:
         return NSSL_SPECIES
+    # Named schemes (gpuwm.microphysics_schemes) answer from their own
+    # capability row, selected on their discriminator field; the
+    # ``volg`` test sits ahead of the ``nwfa`` test when a scheme also carries
+    # the two aerosol tracers.
+    named = _named_scheme_for_state(state)
+    if named is not None:
+        return (named.ice_mass_species + named.moment_species
+                + named.aerosol_species)
     if getattr(state, "nwfa", None) is not None:
         return ICE_MASS_SPECIES + THOMPSON_AERO_NUMBER_SPECIES
     # WDM6 alone allocates nn. Its complete Registry scalar package is
@@ -588,6 +598,113 @@ def _ieva_scalar(state, tend, q_old, implicit, mu0, mu, dt_eff) -> None:
                       variant=getattr(implicit, "variant", "wrf_471"))
 
 
+def _wrf_scalar_source(state: DomainState, name: str, physics_tendencies,
+                       fixed_tendencies, out):
+    """Strict mode: WRF's ``moist_tend`` for one species before the boundary.
+
+    ``first_rk_step_part2`` starts it at zero and adds the physics
+    tendency (update_phy_ten), then the km_opt mixing; rk_scalar_tend adds
+    the sixth order on rk_step 1.  gpuwm holds the mixing and the sixth
+    order together as the species' fixed tendency.
+    """
+    out[...] = 0
+    physics = (physics_tendencies.scalar_for(name)
+               if physics_tendencies is not None else None)
+    fixed = (fixed_tendencies.get(name)
+             if fixed_tendencies is not None else None)
+    if physics is not None:
+        out += physics
+    if fixed is not None:
+        out += fixed
+    return out
+
+
+def _advance_species_wrf(state: DomainState, cfg: RunConfig, name: str, q, q0,
+                         tend, held, *, ru, rv, ww, implicit, pd, bufs,
+                         mu0, mu, mu0_row, mu_row, chm0, dt_eff: float,
+                         final: bool, physics_tendencies, fixed_tendencies,
+                         recompute: bool, apply_scalar_lbc,
+                         export_advective_forcing: bool,
+                         boundary_x: bool, boundary_y: bool) -> None:
+    """Strict mode: one species' RK-stage update in WRF's order.
+
+    WRF holds ONE source tendency per species, ``moist_tend`` (physics,
+    mixing, sixth order, then on rk_step 1 relax_bdy_scalar adding onto
+    that sum and spec_bdy_scalar replacing the specified rows), and
+    rk_update_scalar forms ``tendency = advect_tend*msfty + sc_tend``
+    (advection only inside the specified ring) before the coupled update.
+    On the final positive-definite stage rk_update_scalar_pd first folds
+    it into the time-t scalar as ``((c1*muold+c2)*q + dt*sc)/(c1*muold+c2)``
+    with the time-t mass on both sides, and the advection then runs on
+    that scalar (module_em.F).  The default path adds the parts one by one
+    in another grouping, which moved qv in 23719 of 80000 words at the
+    end of the first RK stage (combo-sweep round 3, case p1).
+    """
+    nz, ny, nx = q0.shape
+    boundary_forced = cfg.specified or cfg.nested
+    if held is not None:
+        source = held
+    else:
+        source = _wrf_scalar_source(state, name, physics_tendencies,
+                                    fixed_tendencies,
+                                    state.scratch((nz, ny, nx), "moist_sc_t"))
+        if (cfg.nested or recompute) and apply_scalar_lbc is not None:
+            apply_scalar_lbc(state, cfg, name, source, apply_relax=True,
+                             source_field=q0)
+    ww_explicit = ww if implicit is None else implicit[0]
+    if pd:
+        q0_eff = state.scratch((nz, ny, nx), "moist_pd_q0")
+        q0_eff[...] = ((chm0 * q0) + (DTYPE(dt_eff) * source)) / chm0
+        tend[...] = 0
+        # advect_scalar_pd's mut is rk_scalar_tend's grid%muts, the
+        # acoustic loop's MUT + MU'' (the ring its own carrier), not
+        # mub + mu_2 after small_step_finish: 1674 interior words of the
+        # final-stage qv advection differed by that rounding.
+        from gpuwm.core.dycore import WRF_MUTS_SLOT
+        muts = state.existing_scratch(WRF_MUTS_SLOT)
+        launch_pd_fluxes(q, q0_eff, ru, rv, ww_explicit,
+                         mu if muts is None else muts, state,
+                         cfg.dx, cfg.dy, dt_eff, *bufs,
+                         msft=state.msft, has_msf=state.has_msf,
+                         open_x=boundary_x, open_y=boundary_y,
+                         vorder=vertical_orders(cfg)[0])
+        launch_pd_renorm_apply(q0_eff, mu0, *bufs, tend=tend, coord=state,
+                               dx=cfg.dx, dy=cfg.dy, dt=dt_eff,
+                               msft=state.msft, has_msf=state.has_msf,
+                               open_x=boundary_x, open_y=boundary_y)
+        if implicit is not None:
+            _ieva_scalar(state, tend, q0_eff, implicit, mu0, mu, dt_eff)
+        if boundary_forced:
+            _exclude_specified_ring_advection(tend, cfg.spec_zone)
+        _update_scalar_in_place(
+            q, q0_eff, tend, state.c1h, state.c2h, mu0_row, mu_row, dt_eff,
+            msft=(state.msft.reshape(-1) if state.has_msf else None),
+            clamp=False)
+        return
+    tend[...] = 0
+    launch_flux_div_scalar(q, ru, rv, ww_explicit, tend, state,
+                           cfg.dx, cfg.dy, open_x=boundary_x,
+                           open_y=boundary_y, msf=state.msft,
+                           has_msf=state.has_msf, spec=boundary_forced,
+                           vorder=vertical_orders(cfg)[0])
+    if implicit is not None:
+        _ieva_scalar(state, tend, q0, implicit, mu0, mu, dt_eff)
+    if export_advective_forcing and name == "qv":
+        _capture_advective_qv_forcing(state, tend, mu0)
+    if boundary_forced:
+        # flux_div_scalar fills the specified ring; rk_update_scalar's
+        # advection loop starts inside it (i_start = ids+spec_zone).
+        _exclude_specified_ring_advection(tend, cfg.spec_zone)
+    if state.has_msf:
+        tend *= state.msft[None]
+    tend += source
+    # No clamp: rk_update_scalar keeps WRF's float32 residuals, which can
+    # be a few 1e-13 below zero after the final stage (one qv word at the
+    # first step of the round-3 pair).  The default path clamps them.
+    _update_scalar_in_place(q, q0, tend, state.c1h, state.c2h, mu0_row,
+                            mu_row, dt_eff, clamp=False)
+
+
 def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                           ru, rv, ww, dt_eff: float, final: bool,
                           apply_relax: bool = True,
@@ -718,8 +835,21 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                     raise KeyError(f"unregistered external scalar hold: {name}")
                 held_lbc[name] = held
                 if apply_relax:
-                    held[...] = 0
-                    apply_scalar_lbc(state, cfg, name, held, apply_relax=True)
+                    if WRF_EXACT:
+                        # WRF relaxes onto moist_tend, which already holds
+                        # the species' physics and mixing, with grid%mut,
+                        # the stage-start (time-t) mass: the capture runs
+                        # after small_step_finish has moved state.mup.
+                        _wrf_scalar_source(state, name, physics_tendencies,
+                                           fixed_tendencies, held)
+                        apply_scalar_lbc(state, cfg, name, held,
+                                         apply_relax=True,
+                                         source_field=getattr(state,
+                                                              name + "0"))
+                    else:
+                        held[...] = 0
+                        apply_scalar_lbc(state, cfg, name, held,
+                                         apply_relax=True)
             from gpuwm.boundary_fields import HELD_BOUNDARY_FIELDS
             from gpuwm.ingest.lateral_bc import COUPLED_SCALAR_STATE_FIELDS
             recomputed_lbc = frozenset(
@@ -736,6 +866,19 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
     for name in SPECIES:
         q = getattr(state, name)
         q0 = getattr(state, name + "0")
+        if WRF_EXACT:
+            _advance_species_wrf(
+                state, cfg, name, q, q0, tend, held_lbc.get(name), ru=ru,
+                rv=rv, ww=ww, implicit=implicit, pd=pd,
+                bufs=(bufs if pd else None), mu0=mu0, mu=mu,
+                mu0_row=mu0_row, mu_row=mu_row, chm0=chm0, dt_eff=dt_eff,
+                final=final, physics_tendencies=physics_tendencies,
+                fixed_tendencies=fixed_tendencies,
+                recompute=name in recomputed_lbc,
+                apply_scalar_lbc=apply_scalar_lbc,
+                export_advective_forcing=export_advective_forcing,
+                boundary_x=boundary_x, boundary_y=boundary_y)
+            continue
         # The zeroing lives on each consuming branch rather than the loop
         # prologue: on the positive-definite path the buffer is re-zeroed
         # below before any kernel reads it, so a prologue memset was ten
@@ -846,6 +989,19 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
         for name in extra_moist_species(state):
             q = getattr(state, name)
             q0 = getattr(state, name + "0")
+            if WRF_EXACT:
+                _advance_species_wrf(
+                    state, cfg, name, q, q0, tend, held_lbc.get(name), ru=ru,
+                    rv=rv, ww=ww, implicit=implicit, pd=pd,
+                    bufs=(bufs if pd else None), mu0=mu0, mu=mu,
+                    mu0_row=mu0_row, mu_row=mu_row, chm0=chm0, dt_eff=dt_eff,
+                    final=final, physics_tendencies=physics_tendencies,
+                    fixed_tendencies=fixed_tendencies,
+                    recompute=name in recomputed_lbc,
+                    apply_scalar_lbc=apply_scalar_lbc,
+                    export_advective_forcing=export_advective_forcing,
+                    boundary_x=boundary_x, boundary_y=boundary_y)
+                continue
             # See the qv/qc/qr loop: zeroing moved onto the branches that
             # consume it, dropping the dead prologue memset on the pd path.
             recompute = name in recomputed_lbc

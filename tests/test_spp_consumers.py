@@ -178,12 +178,27 @@ def test_spp_specializations_leave_default_compiler_sources_frozen():
             # This pins the actual default compiler string and checks that
             # constructing an SPP specialization leaves that string intact.
             # It does not claim unchanged default PTX from the older source.
-            "mynn_pbl": "ecf106fc09e1f3982a9fa8c2b277b3959dbc7af102cc1500b4e64dbad6fd6d25",
+            # P23 (lane/ec-mynn-p23) adds MYNN_GSD41 arms only; the default
+            # PTX is byte-identical (test_mp8_frozen's mynn_pbl row).
+            # RE-PINNED by lane/mynn-exact (the YSU recipe on MYNN), MOVES ANSWERS
+            # for bl_pbl_physics = 5: --fmad=false, glibc 2.39 expf/log10f and the
+            # FMA-ifunc logf/powf/expf in the unit, fdlibm tanhf at every site;
+            # under MYNN_GSD41 the fork's a2den algebra and 0.608 thetav.  Reading
+            # (RTX 5090 sm_120, NVRTC 12.9): every MYNN CUDA leaf and both drivers 0
+            # ULP against WRF v4.6.1, six column families x 12 steps free-running 0
+            # ULP (tests/test_mynn_wrf461_exact_gpu.py); gsd_41 0 ULP against the
+            # fork's driver (tests/test_mynn_gsd41_driver_exact_gpu.py). Previously
+            # 185b36a7.
+            # Review: the changed CASE(1) is excluded from the stock/SPP build.
+            # Source-only synchronization to the selected R1 capture in
+            # test_mp8_frozen.FROZEN_MODULE_DIGESTS. This does not establish new PTX or
+            # numerical replay identity for the assembled MYNN source.
+            "mynn_pbl": "01614cc90a77c120aa7a2ae92679ca85a24979e4b19f23629c5da83463109983",
             # Match test_mp8_frozen's accepted staging source: selectable
             # GSL WRF 3.9 stability solver plus explicitly rounded ordinary
             # mynn_table interpolation. The SPP construction remains inert
             # for the default compiler string; the table source has changed.
-            "mynn_surface": "dc759001e1fbb3886d0c8d066596d31a78b9c57cea51b2fbd62ecdad35ccd650"}
+            "mynn_surface": "2c93b3baab586c642dbb988c866be65215a0e07f1d9d0f9087f3669cffa22e6e"}
     for name, pin in pins.items():
         baseline = module_source(name)
         assert hashlib.sha256(baseline.encode()).hexdigest() == pin
@@ -230,3 +245,30 @@ def test_disabled_spp_config_preserves_old_prepared_cache_identity():
         live["run"][key] = 1
         assert compare_prepared_domain_config(cached,live,not_in_use=defaults)[1] == ["run."+key]
         live["run"][key] = 0
+
+
+def test_gpu_surface_bounds_never_exceed_the_cpu_authority():
+    """Every gpu.surface element bound is at most the CPU port's bound.
+
+    The breakage: the gpu.surface rows were re-recorded on 2.8.8 (the MYNN
+    surface unit lost flush to zero and took WOOF's float32 libm), which
+    raised 46 per-element bounds.  Each raised bound equals the CPU float32
+    port's bound for the same element, so the card reproduces a residual the
+    CPU port already carries against WRF.  A re-record that raised a bound
+    past the CPU's would let the GPU acquire a residual the CPU port lacks,
+    and the native gate above would accept it because it reads only
+    gpu-ulp.npz.
+    """
+    receipt = json.loads((DATA / "gpu-ulp.json").read_text(encoding="utf-8"))
+    assert "cpu-ulp" in receipt["metadata"]["rerecorded_rows"]["gpu.surface"]["bounds"]
+    with np.load(DATA / "gpu-ulp.npz", allow_pickle=False) as gpu, \
+            np.load(DATA / "cpu-ulp.npz", allow_pickle=False) as cpu:
+        rows = [name for name in gpu.files if name.startswith("gpu.surface/")]
+        assert len(rows) > 0
+        for name in rows:
+            twin = "cpu.surface/" + name.split("/", 1)[1]
+            assert twin in cpu.files, name
+            assert gpu[name].shape == cpu[twin].shape, name
+            above = gpu[name] > cpu[twin]
+            assert not above.any(), (name, gpu[name][above].tolist(),
+                                     cpu[twin][above].tolist())

@@ -1402,6 +1402,70 @@ def one_cupy_lines(py: str, extra: str) -> list[str]:
     ]
 
 
+#: The free-threading probe: exits 0 only on a build without the GIL (PEP 703).
+FT_PROBE = 'import sys, sysconfig; sys.exit(0 if sysconfig.get_config_var("Py_GIL_DISABLED") else 1)'
+
+#: Said in the install log when the venv is made on a Python with the lock.
+LOCKED_WARNING = ("WARNING: this venv runs on a Python with the interpreter lock, not free-threaded "
+                  "CPython 3.14t: multi-card [devices] forecasts run about 2x slower on it (4 cards "
+                  "measured 289 s per forecast hour against 130 s on 3.14t); one-card forecasts are "
+                  "unaffected. To fix: put python3.14t on PATH (or install uv), remove the venv and "
+                  "install again.")
+
+
+def interpreter_lines(venv: str) -> list[str]:
+    """Shell lines that make ``venv`` on free-threaded CPython 3.14t when one can be had.
+
+    THE BREAKAGE THIS PREVENTS: the rank threads of a multi-card forecast take
+    turns on the interpreter lock, so a machine installed from the Machines page
+    ran multi-card forecasts about 2x slower than the published benchmarks
+    (every one ran 3.14t).  The order is a python3.14t on PATH, then the one
+    uv finds or installs, then python3 with a warning in the install log.
+    Sets ``made_ft=1`` when the venv this run made is free-threaded.
+
+    A 3.14t that cannot make a venv (a distro build without its venv package
+    has no ensurepip) gives way to python3 instead of ending the install
+    under ``set -e``, and any half-made venv is removed: one left with its
+    bin/python would be taken as already made by the next install, which
+    then stopped at its pip upgrade.
+    """
+    q = shlex.quote
+    could_not = ("could not make the venv (a Python without its venv package, "
+                 "python3.14-venv on deadsnakes, does this); making it on python3. ")
+    return [
+        f"FT_PROBE={q(FT_PROBE)}",
+        "made_ft=0",
+        f"if [ ! -x {q(venv + '/bin/python')} ]; then",
+        "  base=",
+        '  if command -v python3.14t >/dev/null 2>&1 && python3.14t -c "$FT_PROBE"; then',
+        "    base=python3.14t",
+        "  else",
+        '    for uv in uv "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do',
+        '      command -v "$uv" >/dev/null 2>&1 || continue',
+        '      found=$("$uv" python find 3.14t 2>/dev/null) || {',
+        '        UV_PYTHON_INSTALL_BIN=0 "$uv" python install 3.14t && found=$("$uv" python find 3.14t 2>/dev/null); } || found=',
+        '      if [ -n "$found" ] && "$found" -c "$FT_PROBE"; then base=$found; fi',
+        "      break",
+        "    done",
+        "  fi",
+        '  if [ -n "$base" ]; then',
+        '    echo "making the venv on free-threaded $base"',
+        f'    if "$base" -m venv {q(venv)}; then',
+        "      made_ft=1",
+        "    else",
+        f'      echo "$base "{q(could_not + LOCKED_WARNING)}',
+        f"      rm -rf {q(venv)}",
+        "    fi",
+        "  else",
+        f"    echo {q(LOCKED_WARNING)}",
+        "  fi",
+        '  if [ "$made_ft" != 1 ]; then',
+        f"    python3 -m venv {q(venv)} || {{ rm -rf {q(venv)}; exit 1; }}",
+        "  fi",
+        "fi",
+    ]
+
+
 def cmd_install(args) -> dict:
     """Start a detached install of the given wheels into <workspace>/venv."""
 
@@ -1421,16 +1485,34 @@ def cmd_install(args) -> dict:
     main = wheels[0] + (f"[{extra}]" if extra else "")
     q = shlex.quote
     py = q(str(venv / "bin" / "python"))
+    steps = [
+        # --prefer-binary on a free-threaded venv: cftime 1.6.6 publishes no
+        # cp314t wheel (1.6.5 does), and pip would build the newest from source.
+        f"if {py} -c \"$FT_PROBE\" 2>/dev/null; then prefer=--prefer-binary; else prefer=; fi",
+        f"{py} -m pip install --upgrade pip",
+        f"{py} -m pip install --force-reinstall --no-deps " + " ".join(q(w) for w in wheels),
+        *one_cupy_lines(py, extra),
+        f"{py} -m pip install $prefer {q(main)} " + " ".join(q(w) for w in wheels[1:]),
+    ]
     script = "\n".join([
         "set -e",
         f"export PIP_CACHE_DIR={q(str(folder / 'pip-cache'))} TMPDIR={q(str(folder / 'tmp'))}",
         f"mkdir -p {q(str(folder / 'tmp'))}",
-        f"[ -x {py} ] || python3 -m venv {q(str(venv))}",
-        f"{py} -m pip install --upgrade pip",
-        f"{py} -m pip install --force-reinstall --no-deps " + " ".join(q(w) for w in wheels),
-        *one_cupy_lines(py, extra),
-        f"{py} -m pip install {q(main)} " + " ".join(q(w) for w in wheels[1:]),
+        *interpreter_lines(str(venv)),
+        # The steps run in their own `bash -e`: a shell testing a function's
+        # status ignores `set -e` inside it, and a failed `pip list` must stop.
+        f"set +e; bash -e {q(str(folder / 'install-steps.sh'))}; status=$?; set -e",
+        # A dependency that will not install under 3.14t must not cost the
+        # whole install: a venv this run made on 3.14t is made again on python3.
+        "if [ \"$status\" -ne 0 ]; then",
+        "  [ \"$made_ft\" = 1 ] || exit \"$status\"",
+        f"  echo {q('a dependency did not install under 3.14t; making the venv again on python3. ' + LOCKED_WARNING)}",
+        f"  rm -rf {q(str(venv))}",
+        f"  python3 -m venv {q(str(venv))} || {{ rm -rf {q(str(venv))}; exit 1; }}",
+        f"  bash -e {q(str(folder / 'install-steps.sh'))}",
+        "fi",
     ])
+    (folder / "install-steps.sh").write_text("\n".join([f"FT_PROBE={q(FT_PROBE)}", *steps]) + "\n")
     (folder / "install.sh").write_text(script + "\n")
     document = {"state": "installing", "started_utc": utc(), "wheels": wheels, "extra": extra,
                 "python": str(venv / "bin" / "python"), "log": str(folder / "install.log")}

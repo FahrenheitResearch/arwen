@@ -97,7 +97,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    # Only the PhaseMemoryEstimate.streamed annotation names it; the
+    # streaming module is imported where the envelope is computed.
+    from gpuwm.core.streaming import StreamedEnvelope
 
 from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           DEFAULT_COLUMN_CHUNK, MYJ_PBL_SCHEME,
@@ -3120,6 +3125,13 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     50: ("p3_composed", "microphysics_validation"),
 }
 
+# Named schemes compile their column kernel through their own runtime
+# module (state in global work arrays, no large
+# local frame) and take the native validation path.
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES_K
+_MICROPHYSICS_KERNEL_MODULES.update({
+    _s.mp_id: ("microphysics_validation",) for _s in _NAMED_MP_SCHEMES_K.values()})
+
 #: ``mp_physics`` values with a REFL_10CM path in ``gpuwm/core/refl.py``.
 #: The ``refl`` module is priced only when a history frame can come due
 #: during the run (:func:`refl_diagnostic_reachable`), because the kernel is
@@ -3201,6 +3213,14 @@ _SELF_REFLECTIVITY_MICROPHYSICS: dict[int, str] = {
     ),
 }
 
+
+# Named schemes computing their own REFL_10CM (capability row): the adapter
+# stashes the scheme's field, so no refl kernel is loaded.
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+_SELF_REFLECTIVITY_MICROPHYSICS.update({
+    _s.mp_id: (f"{_s.label} computes REFL_10CM in its own column call and "
+               "its adapter hands the finished array to stash_refl_10cm")
+    for _s in _NAMED_MP_SCHEMES.values() if _s.native_reflectivity})
 
 def _hold_reflectivity_rail_equal_to_the_operator() -> None:
     """HELD EQUAL, AT IMPORT, to the reflectivity operator's own tables.
@@ -4965,6 +4985,9 @@ def scratch_slot_registry(cfg: RunConfig, *,
     slots.update(acoustic_mu_pp_old=s2, acoustic_th_pp_old=m,
                  acoustic_c2a=m, acoustic_a=fl, acoustic_alpha=fl,
                  acoustic_gamma=fl)
+    from gpuwm.wrf_exact import ENABLED as wrf_exact
+    if wrf_exact:
+        slots["acoustic_wrf_muts"] = s2
     if cfg.moist and cfg.moist_cq:
         # acoustic.py:prepare_moist_cq.  These stage-fixed face arrays alias
         # the disjoint advection-only adv_ru/rv/rw arena backings below.
@@ -5196,6 +5219,12 @@ def scratch_slot_registry(cfg: RunConfig, *,
         #   ni_entry               -- fork generation only: frozen ni1d,
         #       credited to ncten by the cloud-ice melt branch of the final
         #       phase cleanup (:3943-3966), whose sources write ni in place.
+        #   qvten/tten             -- v4.6.1 generation: WRF's vapour and
+        #       temperature accumulators (:1668-1669 zero), written by the
+        #       two source networks, the condensation and the rain
+        #       evaporation, each of which re-forms qv1d + DT*qvten and
+        #       t1d + DT*tten as WRF does (state.qv stays qv1d until the
+        #       rain evaporation has run, so no copy).
         #   condensation_rate      -- prw_vcd, held so rain evaporation can
         #       reproduce the :3502 gate that suppresses evaporation in a
         #       cell that just condensed.
@@ -5224,6 +5253,11 @@ def scratch_slot_registry(cfg: RunConfig, *,
                 mp_thompson_aero_nrten=m,
                 mp_thompson_aero_qiten=m,
                 mp_thompson_aero_niten=m,
+                mp_thompson_aero_qvten=m,
+                mp_thompson_aero_tten=m,
+                mp_thompson_aero_qsten=m,
+                mp_thompson_aero_qgten=m,
+                mp_thompson_aero_ngten=m,
             )
     if cfg.mp_physics == 9:
         # milbrandt2.py::apply -- the WRF prep pair, the thirteen scratch
@@ -5290,14 +5324,17 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # mass-shaped, filled and consumed inside one operator call.
         slots.update(da_nssl_rho=m, da_nssl_t=m)
 
-    if cfg.km_opt in (2, 3, 4):
+    from gpuwm.config import wrf_mixing_package_active
+    mixing_package = wrf_mixing_package_active(cfg)
+    if mixing_package:
         slots.update(smag_km=m, smag_kh=m)
         if cfg.diff_opt == 1:
             slots.update(diff1_theta_initial=m, diff1_theta_work=m,
                          smag_mut=s2)
-    if cfg.km_opt in (2, 3):
+    if cfg.km_opt in (2, 3) or (mixing_package and cfg.km_opt == 1):
         # These closures carry the vertical exchange-coefficient pair; BN2
         # borrows the diff6_x face-workspace prefix and needs no slot.
+        # km_opt=1 keeps its kvdif pair there (launch_wrf_isotropic_km).
         slots.update(smag_kmv=m, smag_khv=m)
     if cfg.km_opt == 2:
         # Prognostic-TKE forward tendency, its doubling temporary, and the
@@ -5316,7 +5353,7 @@ def scratch_slot_registry(cfg: RunConfig, *,
                 tke_budget_mu0=s2, tke_budget_mu=s2,
                 tke_budget_acc=(len(TERMS), nz),
                 tke_budget_steps=(1,))
-    if cfg.km_opt in (2, 3, 4) or cfg.diff_6th_opt:
+    if mixing_package or cfg.diff_6th_opt:
         # dycore.py prepare_fixed_tendencies: carrying WRF forward
         # tendencies shared by Smagorinsky and sixth-order diffusion.
         slots.update(smag_ru=xs, smag_rv=ys, smag_rw=fl, smag_rth=m)
@@ -5395,7 +5432,7 @@ def scratch_slot_registry(cfg: RunConfig, *,
             from gpuwm.chem_table import load as load_chem_table
             for row in load_chem_table(cfg).transported:
                 slots["smag_r" + row.state_attr] = m
-    if cfg.km_opt in (2, 3, 4) or cfg.diff_6th_opt:
+    if mixing_package or cfg.diff_6th_opt:
         # Smagorinsky reuses the x/y face workspaces for u/v staging,
         # W stresses and metric scalar fluxes (km_opt=3 stages BN2 in the
         # diff6_x prefix during the K computation); sixth-order diffusion
@@ -5410,8 +5447,6 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # dycore.launch_diff6_to_edge filters (diff6_edge_workspace.py).
         from gpuwm.core.diff6_edge_workspace import diff6_edge_slot_shapes
         slots.update(diff6_edge_slot_shapes(cfg))
-    if cfg.khdif > 0.0 or cfg.kvdif > 0.0:
-        slots.update(diff_u=xs, diff_v=ys, diff_w=fl, diff_th=m)
 
     from gpuwm.core.physics_inventory import physics_enabled
     if physics_enabled(cfg):
@@ -5826,10 +5861,6 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "after the step that wrote them (drain ends the window), and both "
         "are float64 while ScratchArena is float32-only"),
     ScratchSlotLifetime(
-        ("diff_u", "diff_v", "diff_w", "diff_th"), "write_before_read",
-        "gpuwm/core/diffusion.py:121-130",
-        "each constant-K temporary is zeroed and filled before accumulation"),
-    ScratchSlotLifetime(
         ("diff6_x", "diff6_y", "diff6_z", "diff6_m"),
         "write_before_read", "gpuwm/core/dycore.py:prepare_fixed_tendencies; "
         "gpuwm/core/dycore.py:apply_diff6",
@@ -6002,6 +6033,11 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          "mp_thompson_aero_qiten",
          "mp_thompson_aero_niten",
          "mp_thompson_aero_ni_entry",
+         "mp_thompson_aero_qvten",
+         "mp_thompson_aero_tten",
+         "mp_thompson_aero_qsten",
+         "mp_thompson_aero_qgten",
+         "mp_thompson_aero_ngten",
          "mp_thompson_aero_condensation_rate"),
         "write_before_read",
         "gpuwm/core/thompson_aerosol_state.py:"
@@ -6493,7 +6529,8 @@ def shared_scratch_arena_aliases(
             and math.prod(shapes["lbc_nested_relax"])
             <= math.prod(shapes["acoustic_a"])):
         aliases["lbc_nested_relax"] = "acoustic_a"
-    smag_uses_xy = any(dc.run.km_opt in (2, 3, 4) for dc in domains)
+    from gpuwm.config import wrf_mixing_package_active
+    smag_uses_xy = any(wrf_mixing_package_active(dc.run) for dc in domains)
     if "diff6_z" in shapes:
         candidates = (("diff6_x", "diff6_m") if smag_uses_xy
                       else ("diff6_x", "diff6_y", "diff6_m"))
@@ -6526,11 +6563,13 @@ def shared_scratch_arena_bytes(
 @lru_cache(maxsize=1)
 def _gas_table_meta() -> dict[str, int]:
     """ngpt/ngas per band from the shipped k-distributions (lazy import --
-    the estimator stays CPU-only; table loading is host NetCDF I/O)."""
-    from gpuwm.core.rrtmgp import load_gas_tables
+    the estimator stays CPU-only; table loading is host NetCDF I/O).
+    Read from the packaged receipt when the installed tables match it, so a
+    plan needs no native NetCDF decoder (see gpuwm.core.rrtmgp.packaged_table_facts)."""
+    from gpuwm.core.rrtmgp import gas_table_shape
 
-    lw = load_gas_tables("lw")
-    sw = load_gas_tables("sw")
+    lw = gas_table_shape("lw")
+    sw = gas_table_shape("sw")
     return {"ngpt_lw": lw.ngpt, "ngpt_sw": sw.ngpt,
             "ngas_lw": lw.ngas, "ngas_sw": sw.ngas,
             "nband_lw": lw.nband, "nband_sw": sw.nband}
@@ -6541,7 +6580,17 @@ def k_distribution_bytes() -> int:
     """Device bytes of the lru_cache-shared k-distribution/cloud tables,
     counted ONCE per process (rrtmgp.py:324/:436 -- baseline behavior,
     never claimed as savings).  Uses the to_device dtype rule
-    (rrtmgp.py:266-282): float -> f32, int -> i32, bool -> 1 byte."""
+    (rrtmgp.py:266-282): float -> f32, int -> i32, bool -> 1 byte.
+    Read from the packaged receipt when the installed tables match it."""
+    from gpuwm.core.rrtmgp import packaged_table_facts
+
+    facts = packaged_table_facts()
+    if facts is not None:
+        return int(facts["bytes"])
+    return _decoded_k_distribution_bytes()
+
+
+def _decoded_k_distribution_bytes() -> int:
     import numpy as np
     from gpuwm.core.rrtmgp import load_cloud_tables, load_gas_tables
 
@@ -6930,9 +6979,17 @@ def mynn_scalar_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     Charge the larger phase, rather than summing nonconcurrent phases.
     The scalar-off estimate is unchanged.
     """
-    if int(cfg.bl_pbl_physics) != 5 or int(cfg.scalar_pblmix) != 1:
+    if int(cfg.scalar_pblmix) != 1 or int(cfg.bl_pbl_physics) not in (1, 5):
         return {}
     nz, columns = int(cfg.nz), int(cfg.ny) * int(cfg.nx)
+    if int(cfg.bl_pbl_physics) == 1:
+        # YSU's arm (physics._ysu_scalar_pblmix): four raw rates, four
+        # coupled rates and the mass coefficient live together; each
+        # 32768-column chunk adds four packed inputs, 5*nz+1 work values
+        # and two outputs per column.
+        chunk = min(32768, columns)
+        return {"ysu_scalar/local_diffusion_peak": (
+            9 * nz * columns + (11 * nz + 1) * chunk,)}
     chunk = mynn_pbl_column_chunk(cfg)
     solve = 8 * nz * columns + (8 * nz + 2) * chunk + 1
     coupling = 13 * nz * columns

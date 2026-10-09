@@ -53,12 +53,14 @@ def chem_fixed_tendencies(state, cfg):
     """Held forward tendencies of the chem rows, by ``state_attr``, or None.
 
     The buffers ``dycore.prepare_fixed_tendencies`` fills once per step
-    whenever a mixing operator (km_opt 2/3/4) or the 6th-order filter runs;
+    whenever a mixing operator (km_opt 2/3/4, or km_opt 1 with constant K
+    active) or the 6th-order filter runs;
     ``chem_mix2_off``/``chem_mix6_off`` leave a row's buffer holding only
     the part WRF still applies (``dycore.chem_mix2_exempt_slots``,
     ``dycore.diff6_exempt_slots``).
     """
-    if cfg.km_opt not in (2, 3, 4) and cfg.diff_6th_opt <= 0:
+    from gpuwm.config import wrf_mixing_package_active
+    if not wrf_mixing_package_active(cfg) and cfg.diff_6th_opt <= 0:
         return None
     shape = state.p.shape
     return {row.state_attr: state.scratch(shape, chem_fixed_slot(row))

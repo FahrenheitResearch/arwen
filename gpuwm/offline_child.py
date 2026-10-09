@@ -24,9 +24,8 @@ from types import MappingProxyType
 from typing import Mapping, Sequence
 import time
 
-import netCDF4
-
 from gpuwm import netcdf_bridge
+from gpuwm.io.netcdf_serialization import netCDF4  # first use only (D-10)
 import numpy as np
 
 from gpuwm.explain import warn

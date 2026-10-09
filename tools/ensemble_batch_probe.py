@@ -92,7 +92,8 @@ def main():
                          "output_sha256": hashlib.sha256(got_bytes).hexdigest(),
                          "array_payload_bytes": mu.nbytes + out.nbytes + reference.nbytes + copied.nbytes})
             print(json.dumps(rows[-1]), flush=True)
-            del mu, out, reference, copied, member_views, copy, zero, ref_bytes, got_bytes
+            member_views = None  # rebound, not deleted: a closure above reads it
+            del mu, out, reference, copied, copy, zero, ref_bytes, got_bytes
             cp.get_default_memory_pool().free_all_blocks()
     props = cp.cuda.runtime.getDeviceProperties(cp.cuda.Device().id)
     name = props["name"]

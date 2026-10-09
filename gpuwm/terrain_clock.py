@@ -130,6 +130,17 @@ runs on six substeps instead of four at 30 m/s and is halved to 9 s on
 four from 40 m/s, and a fixed 20 s likewise runs on six at 30 m/s and
 is halved to 10 s from 40 m/s.
 
+THE LOCAL-FACE CLOCK.  ``terrain_clock = "local_face"`` (the default from
+2.8.8; :mod:`gpuwm.terrain_clock_local`) reads every face with the crest and
+crest-level wind in a measured neighbourhood around it, times a measured
+wind margin and never past the domain-wide wind read here, on these rows
+plus the candidate's own, and holds the domain to the least of them.  The
+shipped reading below is untouched by it, and it is the floor under the
+candidate: where the face-by-face reading would be BEYOND_MEASURED, or
+would run a grid on a shorter step than the shipped reading gives, the
+grid takes the shipped reading's decision and its receipt and run line say
+so (:func:`gpuwm.terrain_clock_local.never_worse`).
+
 UNDER zadvect_implicit.  Every entry was measured with explicit vertical
 advection, and a domain that runs WRF's implicit-explicit vertical
 advection (:mod:`gpuwm.core.ieva`) reads the map unchanged: the step and
@@ -154,7 +165,7 @@ import math
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, ClassVar, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -205,6 +216,14 @@ class MapRow:
 
     def tried_at(self, index: int, top: float) -> float:
         return float(top) if self.tried is None else float(self.tried[index])
+
+    def measured(self, index: int) -> bool:
+        """The row was run at this wind.  Every shipped row was run at
+        every mapped wind; a row the local-face candidate adds
+        (:mod:`gpuwm.terrain_clock_local`) carries ``None`` in ``tried``
+        at a wind it was not run at, and that cell is not read: it is no
+        evidence of a step holding or stopping."""
+        return self.tried is None or self.tried[index] is not None
 
     def adaptive_measured_at(self, index: int) -> bool:
         return (self.adaptive_tried is not None
@@ -258,7 +277,7 @@ class StableStepMap:
         longest: dict[float, float] = {}
         for row in self.rows:
             tried = max(row.tried_at(i, self.top)
-                        for i in range(len(self.winds)))
+                        for i in range(len(self.winds)) if row.measured(i))
             longest[row.dx_m] = max(longest.get(row.dx_m, 0.0),
                                     tried * row.dx_m / 1000.0)
         return dict(sorted(longest.items()))
@@ -503,26 +522,35 @@ def read_map(dx: float, crest_m: float, slope: float, wind: float,
         beyond.append("crest")
     if slope_beyond:
         beyond.append("slope")
+    # A table column is not evidence that every selected ridge was run
+    # there. Missing cells must not borrow held steps from weaker winds.
+    if any(not row.measured(i) for row in selected
+           for i in range(wind_index + 1)) and "wind" not in beyond:
+        beyond.append("wind")
 
     def held_through(index):
         values = []
         for row in selected:
-            window = row.stable[:index + 1]
+            if any(not row.measured(i) for i in range(index + 1)):
+                return None
+            window = [row.stable[i] for i in range(index + 1)]
             if any(v is None for v in window):
                 return None
-            values.append(min(window))
+            if window:
+                values.append(min(window))
         return min(values) if values else None
 
     def tried_through(index, spacing=None):
         return min((row.tried_at(i, table.top) for row in selected
                     if spacing is None or row.dx_m == spacing
-                    for i in range(index + 1)), default=table.top)
+                    for i in range(index + 1) if row.measured(i)),
+                   default=table.top)
 
     def stops(candidates, index):
         # Cell by cell: an entry shorter than the step tried there is a
         # stop seen, whatever the other rows were tried to.
         return [(row, i) for row in candidates for i in range(index + 1)
-                if row.stable[i] is not None
+                if row.measured(i) and row.stable[i] is not None
                 and row.stable[i] < row.tried_at(i, table.top)
                 * (1.0 - 1e-9)]
 
@@ -740,11 +768,21 @@ class StartWinds:
 
     source: str
     fields: Callable[[str], np.ndarray]
+    #: How the local-face reading names this input in its receipt.
+    kind: ClassVar[str] = "start state"
 
     @classmethod
     def from_fields(cls, source, u, v, php, phb):
         arrays = {"u": u, "v": v, "php": php, "phb": phb}
         return cls(source, arrays.__getitem__)
+
+    def column_band(self, tops):
+        """Per mass column, the strongest wind from the ground up to the
+        first level at or above ``tops`` there; NaN where none
+        (:func:`gpuwm.terrain_clock_local.start_column_band`)."""
+        from gpuwm.terrain_clock_local import start_column_band
+
+        return start_column_band(self, tops)
 
     def strongest(self, crest_height):
         levels = _band_heights(self.fields("php"), self.fields("phb"),
@@ -803,6 +841,7 @@ class BoundaryWinds:
     boundaries: object
     geometry: BoundaryGeometry
     run_seconds: float
+    kind: ClassVar[str] = "boundary data over the window"
 
     def instants(self):
         seen = []
@@ -882,7 +921,23 @@ class BoundaryWinds:
                     "the domain's static fields and its start state on one "
                     "grid")
 
+    def column_band(self, tops):
+        """Per mass column of the slabs, the strongest crest-band wind over
+        the window, the band up to ``tops`` there; NaN off the slabs
+        (:func:`gpuwm.terrain_clock_local.boundary_column_band`)."""
+        from gpuwm.terrain_clock_local import boundary_column_band
+
+        return boundary_column_band(self, tops)
+
     def _side(self, fields, side, offset, crest_height):
+        speed, heights, _jj, _ii = self._side_cells(fields, side, offset)
+        return _strongest(speed, heights, crest_height)
+
+    def _side_cells(self, fields, side, offset):
+        """One side's slab at ``offset``: ``(speed, heights, jj, ii)``, the
+        uncoupled wind speed and mass-level heights on the slab's mass
+        cells (``(nz, rows, cells)``) and each cell's domain row and
+        column (``(rows, cells)``)."""
         from gpuwm.ingest.lateral_bc import evaluate_boundary_side
 
         geo = self.geometry
@@ -953,7 +1008,19 @@ class BoundaryWinds:
         speed = np.hypot(0.5 * (normal[..., :-1] + normal[..., 1:]),
                          0.5 * (along[..., :-1, cells]
                                 + along[..., 1:, cells]))
-        return _strongest(speed, heights[..., cells], crest_height)
+        # Domain indices of the cells: the slab's rows run along the side
+        # (rows of the domain on west and east, its columns on south and
+        # north), its cells inward from the domain's edge.
+        rows = np.arange(speed.shape[-2])
+        span = int(mub.shape[-1])
+        inward = (np.arange(0, w - 1) if low
+                  else np.arange(span - w + 1, span))
+        along_idx, in_idx = np.meshgrid(rows, inward, indexing="ij")
+        if across_x:
+            jj, ii = along_idx, in_idx
+        else:
+            jj, ii = in_idx, along_idx
+        return speed, heights[..., cells], jj, ii
 
 
 def _boundary_when(seconds: float) -> str:
@@ -1141,10 +1208,35 @@ class ClockAdaptation:
     #: ``(division, time_step_sound, ceiling)``, the three fields the
     #: measured derivation writes.  ``None`` where the clock is measured.
     advice: tuple | None = None
+    #: ``RunConfig.terrain_clock = "local_face"`` (the candidate,
+    #: :mod:`gpuwm.terrain_clock_local`): the face-by-face reading at the
+    #: substep count the derivation chose
+    #: (:class:`gpuwm.terrain_clock_local.LocalFaces`), or ``None``.
+    local: object | None = None
+    #: Under ``local_face``, why the domain kept the domain-wide reading
+    #: (a following nest's corridor, faces not readable with the substep
+    #: rule's map factors, no wind over any face); ``None`` otherwise.
+    local_note: str | None = None
+    #: Under ``local_face``, the never-worse comparison with the shipped
+    #: measured clock (:class:`gpuwm.terrain_clock_local.NeverWorse`):
+    #: where it is applied this adaptation IS the shipped clock's decision
+    #: for the grid, and the face-by-face one it replaced is kept in it for
+    #: the receipt and the run line.  ``None`` under every other clock.
+    never_worse: object | None = None
 
     @property
     def dt(self) -> Fraction:
         return self.configured_dt / self.division
+
+    @property
+    def faces_read(self):
+        """Under ``local_face``, the face-by-face reading made for this
+        grid, whether it decided the grid or the never-worse rule put the
+        shipped decision in its place; ``None`` where none was made."""
+        never_worse = self.never_worse
+        if never_worse is not None and never_worse.applied:
+            return never_worse.local.local
+        return self.local
 
     @property
     def adapted(self) -> bool:
@@ -1229,6 +1321,27 @@ class ClockAdaptation:
 
     def _what(self) -> str:
         crest = self.crest
+        local = self.local
+        if local is not None and local.governing is not None:
+            g = local.governing
+            if not g.wind_capped:
+                capped = f" with the {local.margin:g} x wind margin"
+            elif g.wind_read_m_s > local.domain_wind_m_s * (1.0 + 1e-9):
+                # Read past the domain-wide reading: the input-wind floor
+                # (terrain_clock_local.INPUT_WIND_FLOOR), not that reading.
+                capped = (f", {g.wind_read_m_s / g.input_wind_m_s:.2g} x "
+                          f"its own input wind (the floor; the domain-wide "
+                          f"reading is {local.domain_wind_m_s:.0f} m/s)")
+            else:
+                capped = ", the domain-wide reading"
+            return (f"{self.label}'s {local.faces} faces were read one by "
+                    f"one (steepest slope {self.slope:.2f}); the face that "
+                    f"sets its limit has slope {g.slope:.2f} at "
+                    f"{g.axis}-face ({g.j}, {g.i}) under a "
+                    f"{g.crest_m:.0f} m local crest, and its inputs carry "
+                    f"{g.input_wind_m_s:.0f} m/s within "
+                    f"{local.radius_m / 1000.0:g} km of it ({g.source}), "
+                    f"read as {g.wind_read_m_s:.0f} m/s{capped}")
         return (f"{self.label}'s steepest terrain slope is {self.slope:.2f} "
                 f"and the strongest wind its start and boundary data carry "
                 f"up to its {crest.crest_height_m:.0f} m crest is "
@@ -1240,20 +1353,32 @@ class ClockAdaptation:
         return "steps up to " + _seconds_float(
             self.held_per_km * self.dx / 1000.0)
 
-    def _stop(self) -> str:
-        """Where the step the domain may run is not a step the ground read
-        held, what it is: the entry under a longer step seen to stop."""
+    def _map_part(self) -> str:
+        """What the measured map lets the domain run, and with how many
+        substeps.  Where that step is not a step the ground read held
+        (``limit_per_km`` past ``held_per_km``: some of that ground was
+        never tried longer), the line names the step the clock applies
+        first and the shorter range tried after it, so it never says the
+        map holds a step shorter than the one the domain then runs.
+        Breakage it prevents: NCAR's 2.5 km line said the map "holds steps
+        up to 12.5 s there with 6 substeps" and then ran 15 s
+        (CLOCK-CHECK-NCAR-2026-10-06/fix/step4/REVIEW.md, gap 3)."""
         limit, held = self.limit_per_km, self.held_per_km
+        count = self.time_step_sound
         if limit is None or held is None or limit <= held * (1.0 + 1e-9):
-            return ""
+            return (f"the measured map holds {self._held()} there with "
+                    f"{count} substeps")
         reading = self.reading
         where = ("under a lower "
                  f"{reading.stopped_crest_m:.0f} m crest at this spacing"
                  if reading.stopped_under_a_lower_crest else
                  "on the gentler rows or weaker winds read with it")
-        return (" (no longer step was tried there, and a step longer than "
-                + _seconds_float(limit * self.dx / 1000.0)
-                + f" stopped {where})")
+        step = _seconds_float(limit * self.dx / 1000.0)
+        return (f"the measured map lets {self.label} run steps up to {step} "
+                f"there with {count} substeps (a step longer than {step} "
+                f"stopped {where}; no cell read saw {step} or a shorter "
+                "step stop, though some of that ground was tried no longer "
+                f"than {_seconds_float(held * self.dx / 1000.0)})")
 
     def _adaptive_part(self) -> str:
         """What the adaptive clock's own entries say, where they set or
@@ -1302,9 +1427,8 @@ class ClockAdaptation:
     def sentence(self) -> str:
         """The plain line a run prints when this domain's clock changed."""
 
-        return (f"time step: {self._what()}; the measured map holds "
-                f"{self._held()} there with {self.time_step_sound} "
-                f"substeps{self._stop()}{self._adaptive_part()}"
+        return (f"time step: {self._what()}; "
+                f"{self._map_part()}{self._adaptive_part()}"
                 f"{self._implicit_part()}, so {self._runs()}")
 
     def beyond_sentence(self) -> str:
@@ -1330,13 +1454,11 @@ class ClockAdaptation:
         if not reading.beyond:
             # Within the map's edges, on ground where the adaptive clock
             # held no longest step tried (:attr:`adaptive_unheld`).
-            return (f"time step: {self._what()}; the measured map holds "
-                    f"{self._held()} there with {self.time_step_sound} "
-                    f"substeps{self._stop()}{self._adaptive_part()}, so "
+            return (f"time step: {self._what()}; "
+                    f"{self._map_part()}{self._adaptive_part()}, so "
                     f"{self._runs()}, and may still stop")
-        return (f"time step: {self._what()}; the measured map holds "
-                f"{self._held()} there with {self.time_step_sound} "
-                f"substeps{self._stop()}{self._adaptive_part()} but was "
+        return (f"time step: {self._what()}; "
+                f"{self._map_part()}{self._adaptive_part()} but was "
                 f"not measured this far out in "
                 f"{', '.join(reading.beyond)}, so {self._runs()}, and may "
                 "still stop")
@@ -1351,9 +1473,8 @@ class ClockAdaptation:
         out = ("" if not reading.beyond else
                f" but was not measured this far out in "
                f"{', '.join(reading.beyond)}")
-        return (f"time step: {self._what()}; the measured map holds "
-                f"{self._held()} there with {self.time_step_sound} "
-                f"substeps{self._stop()}{self._adaptive_part()}{out}, so "
+        return (f"time step: {self._what()}; "
+                f"{self._map_part()}{self._adaptive_part()}{out}, so "
                 f"{self.label}'s adaptive clock keeps its own longest step "
                 "and may still stop")
 
@@ -1400,6 +1521,23 @@ class ClockAdaptation:
             }
         if self.crest is not None:
             row.update(self.crest.receipt())
+        never_worse = self.never_worse
+        faces_from = (never_worse.local if never_worse is not None
+                      and never_worse.applied else self)
+        if (faces_from.local is not None
+                or faces_from.local_note is not None):
+            # Written only under the local-face clock, so every measured
+            # or pinned receipt reads as it did.  Where the never-worse
+            # rule put the shipped decision in place, the faces are the
+            # reading it replaced.
+            row["clock"] = "local_face"
+            row["local_faces"] = (
+                {"kept_domain_wide_reading": faces_from.local_note}
+                if faces_from.local is None
+                else faces_from.local.receipt(self.dx))
+        if never_worse is not None:
+            row["clock"] = "local_face"
+            row["never_worse"] = never_worse.receipt()
         if self.reading is not None:
             row["map_rows"] = {
                 "dx_m": list(self.reading.dx_rows),
@@ -1472,7 +1610,8 @@ def _holds(reading: MapReading, configured_per_km) -> bool:
 
 def derive_clock(grid_id: int, run, dt: Fraction, slope: float,
                  crest: CrestWind | None, *, label: str | None = None,
-                 table: StableStepMap | None = None) -> ClockAdaptation:
+                 table: StableStepMap | None = None,
+                 local=None) -> ClockAdaptation:
     """The step and substep count one domain runs.
 
     ``dt`` is the domain's configured step as an exact rational.  Without a
@@ -1495,9 +1634,23 @@ def derive_clock(grid_id: int, run, dt: Fraction, slope: float,
     apply it.
     """
 
+    mode = str(getattr(run, "terrain_clock", "measured"))
+    if mode == "local_face" and crest is not None and hasattr(
+            local, "reading"):
+        from gpuwm.terrain_clock_local import derive_local
+
+        return derive_local(grid_id, run, dt, slope, crest, local,
+                            label=label)
     measured = _derive_measured(grid_id, run, dt, slope, crest,
                                 label=label, table=table)
-    if str(getattr(run, "terrain_clock", "measured")) != "pinned":
+    if mode == "local_face":
+        # The candidate could not read this domain face by face: it runs
+        # the shipped domain-wide reading, and its receipt says why.
+        return replace(measured, local_note=(
+            str(local) if isinstance(local, str) else
+            "no wind reading" if crest is None else
+            "no face reading was made for this domain"))
+    if mode != "pinned":
         return measured
     return replace(
         measured, division=1, time_step_sound=measured.configured_sound,
@@ -1508,8 +1661,14 @@ def derive_clock(grid_id: int, run, dt: Fraction, slope: float,
 
 def _derive_measured(grid_id: int, run, dt: Fraction, slope: float,
                      crest: CrestWind | None, *, label: str | None = None,
-                     table: StableStepMap | None = None) -> ClockAdaptation:
-    """:func:`derive_clock`'s measured derivation, whatever the mode."""
+                     table: StableStepMap | None = None,
+                     read: Callable[[int], MapReading] | None = None
+                     ) -> ClockAdaptation:
+    """:func:`derive_clock`'s measured derivation, whatever the mode.
+
+    ``read(count)``, where given, is the domain's reading at a substep
+    count in place of the one triple (:mod:`gpuwm.terrain_clock_local`);
+    ``table`` is then the map it was read on."""
 
     from gpuwm.core.adaptive_clock import least_sound_steps
 
@@ -1543,8 +1702,9 @@ def _derive_measured(grid_id: int, run, dt: Fraction, slope: float,
     counts = [configured_sound]
     if configured_sound < 6:
         counts.append(6)
-    readings = {count: read_map(dx, crest.crest_height_m, slope,
-                                crest.wind_m_s, count, table)
+    readings = {count: (read(count) if read is not None else
+                        read_map(dx, crest.crest_height_m, slope,
+                                 crest.wind_m_s, count, table))
                 for count in counts}
     own = readings[configured_sound]
     if _holds(own, configured_per_km) and not own.beyond:
@@ -1784,7 +1944,8 @@ def adapt_experiment_clock(
         exp, slopes: Mapping[int, float], winds: Mapping[int, CrestWind],
         *, announce: Callable[[str], None] | None = None,
         caution: Callable[[str], None] | None = None,
-        table: StableStepMap | None = None):
+        table: StableStepMap | None = None,
+        local: Mapping[int, object] | None = None):
     """Return ``(experiment, adaptations)`` with each read domain's clock.
 
     ``slopes`` maps ``grid_id`` to the steepest slope the substep rule read
@@ -1806,7 +1967,8 @@ def adapt_experiment_clock(
         dt = (exp.dt_exact(gid) if wind is not None else
               Fraction(float(getattr(dc.run, "dt", 0.0))))
         adaptations.append(derive_clock(
-            gid, dc.run, dt, float(slopes[gid]), wind, table=table))
+            gid, dc.run, dt, float(slopes[gid]), wind, table=table,
+            local=(local or {}).get(gid)))
     changed = [a for a in adaptations if a.adapted]
     adapted, final = exp, list(adaptations)
     if changed:
@@ -1827,6 +1989,9 @@ def adapt_experiment_clock(
     # clock stays as configured.
     changed_ids = {a.grid_id for a in changed}
     for adaptation in final:
+        if adaptation.local_note is not None and announce is not None:
+            announce(f"time step: {adaptation.label} keeps the shipped "
+                     "domain-wide terrain clock: " + adaptation.local_note)
         if adaptation.pinned:
             # A pinned domain never changes, so it is never in ``changed``;
             # it says what it runs and what the map would have done, and
@@ -1836,6 +2001,12 @@ def adapt_experiment_clock(
             if say is not None:
                 say(adaptation.pinned_sentence())
             continue
+        never_worse = adaptation.never_worse
+        if (never_worse is not None and never_worse.applied
+                and announce is not None):
+            # Said before the shipped decision's own line, changed or not:
+            # the face-by-face reading did not decide this grid.
+            announce(never_worse.sentence(adaptation.label))
         if adaptation.grid_id in changed_ids or adaptation.unheld:
             if adaptation.beyond_measured:
                 if caution is not None:
@@ -1866,13 +2037,13 @@ _WHY = (
     "that the map holds.")
 
 
-def adapt_experiment_clock_to_terrain(exp, slopes, winds):
+def adapt_experiment_clock_to_terrain(exp, slopes, winds, *, local=None):
     """:func:`adapt_experiment_clock` in the run's own voice."""
 
     from gpuwm.explain import warn
 
     return adapt_experiment_clock(
-        exp, slopes, winds,
+        exp, slopes, winds, local=local,
         announce=lambda sentence: warn(sentence, _WHY),
         caution=lambda sentence: warn(sentence, _WHY))
 
@@ -1882,8 +2053,33 @@ def clock_receipt(adaptations) -> dict:
     not."""
 
     table = measured_map()
+    local = {}
+    if any(getattr(a, "local", None) is not None
+           or getattr(a, "local_note", None) is not None
+           for a in adaptations):
+        # Written only under the local-face clock (the default from 2.8.8).
+        from gpuwm.terrain_clock_local import (ADAPTIVE_ROWS_PATH,
+                                               CANDIDATE_MAP_PATH,
+                                               INPUT_WIND_FLOOR, SCHEMA,
+                                               WIND_MARGIN,
+                                               adaptive_document,
+                                               candidate_document)
+        document = candidate_document()
+        local = {"local_face": {
+            "schema": SCHEMA, "candidate_rows": CANDIDATE_MAP_PATH.name,
+            "criterion": document["criterion"],
+            "seconds": document["seconds"],
+            "rows": len(document["rows"]),
+            "cells_shortened_by_12_h_runs": len(document.get(
+                "long_probes", {}).get("patched", ())),
+            "adaptive_rows": ADAPTIVE_ROWS_PATH.name,
+            "adaptive_rows_seconds": adaptive_document()["adaptive"][
+                "seconds"],
+            "wind_margin": WIND_MARGIN,
+            "input_wind_floor": INPUT_WIND_FLOOR}}
     return {
         "schema": TERRAIN_CLOCK_SCHEMA,
+        **local,
         "domains": [adaptation.receipt() for adaptation in adaptations],
         "map": {"path": MAP_PATH.name, "winds_m_s": list(table.winds),
                 "ladder_s_per_km": list(table.ladder),
@@ -1948,7 +2144,7 @@ def clock_for_domains(exp, acoustic, *, statics: Mapping[int, object],
                       starts: Mapping[int, object],
                       boundary: BoundaryWinds | None = None,
                       corridors: Mapping[int, object] | None = None,
-                      announce: bool = True):
+                      announce: bool = True, local_cache=None):
     """Every prepared door's derivation: ``(experiment, adaptations)``.
 
     ``statics`` maps ``grid_id`` to the static fields each domain runs on
@@ -1973,9 +2169,19 @@ def clock_for_domains(exp, acoustic, *, statics: Mapping[int, object],
                if start is not None}
     winds = tree_crest_winds(exp, crests, sources,
                              [] if boundary is None else [boundary])
+    local = None
+    if any(str(getattr(dc.run, "terrain_clock", "measured")) == "local_face"
+           for dc in exp.domains):
+        from gpuwm.terrain_clock_local import local_readings
+
+        reader = local_readings if local_cache is None else local_cache.readings
+        local = reader(exp, slopes=slopes, winds=winds,
+                               statics=statics, sources=sources,
+                               boundary=boundary, corridors=corridors)
     if announce:
-        return adapt_experiment_clock_to_terrain(exp, slopes, winds)
-    return adapt_experiment_clock(exp, slopes, winds)
+        return adapt_experiment_clock_to_terrain(exp, slopes, winds,
+                                                 local=local)
+    return adapt_experiment_clock(exp, slopes, winds, local=local)
 
 
 def clock_for_prepared_cache(exp, acoustic, *, readers, statics,
@@ -2037,6 +2243,67 @@ class SnapshotWinds:
     latitude: np.ndarray
     longitude: np.ndarray
     start_time: object
+    kind: ClassVar[str] = "forcing over the window"
+
+    def column_band(self, tops):
+        """Per domain column, the strongest crest-band wind the forcing
+        carries over the window at the source columns around it.
+
+        Each domain column reads the (up to) four source columns that
+        bracket it on the source grid, and each source column's band runs
+        up to the highest ``tops`` of the domain columns that read it, so
+        no domain column reads a shallower band than its own top.  NaN
+        where no snapshot covers a column."""
+
+        from gpuwm.ingest.horiz import source_coordinate_transform
+
+        tops = np.asarray(tops, dtype=np.float64)
+        best = np.full(tops.shape, -np.inf)
+        for snapshot in self.snapshots:
+            fields = snapshot.fields
+            if not {"UU", "VV", "GHT"} <= set(fields):
+                continue
+            transform, projected = source_coordinate_transform(snapshot)
+            y, x = transform(np.asarray(self.latitude, dtype=np.float64),
+                             np.asarray(self.longitude, dtype=np.float64))
+            y = np.asarray(y, dtype=np.float64)
+            x = np.asarray(x, dtype=np.float64)
+            axis_y = np.asarray(snapshot.latitude, dtype=np.float64)
+            axis_x = np.asarray(snapshot.longitude, dtype=np.float64)
+            rows = _axis_window(axis_y, y)
+            cols = (_axis_window(axis_x, x) if projected
+                    else _longitude_window(axis_x, x))
+            if rows.size == 0 or cols.size == 0:
+                continue
+            jy = _brackets(axis_y[rows], y, wrap=False)
+            ix = _brackets(axis_x[cols], x, wrap=not projected)
+            order = np.argsort(-np.asarray(snapshot.levels_hpa,
+                                           dtype=np.float64))
+
+            def cut(name):
+                field = np.asarray(fields[name], dtype=np.float64)
+                return field[order][:, rows][:, :, cols]
+            speed = np.hypot(cut("UU"), cut("VV"))
+            heights = cut("GHT")
+            ground = fields.get("SOILHGT")
+            if ground is not None:
+                ground = np.asarray(ground, dtype=np.float64)[rows][:, cols]
+                speed = np.where(heights >= ground[None], speed, np.nan)
+            source_top = np.full(speed.shape[1:], -np.inf)
+            for a in jy:
+                for b in ix:
+                    np.maximum.at(source_top, (a.ravel(), b.ravel()),
+                                  tops.ravel())
+            under = heights[:-1] < source_top[None]
+            band = np.concatenate(
+                [np.ones((1,) + source_top.shape, dtype=bool), under],
+                axis=0)
+            column = np.where(band & np.isfinite(speed), speed,
+                              -np.inf).max(axis=0)
+            for a in jy:
+                for b in ix:
+                    best = np.maximum(best, column[a, b])
+        return np.where(np.isfinite(best), best, np.nan)
 
     def strongest(self, crest_height):
         from gpuwm.ingest.horiz import source_coordinate_transform
@@ -2078,6 +2345,29 @@ class SnapshotWinds:
             if best is None or found[0] > best[0]:
                 best = (found[0], found[1], when)
         return best
+
+
+def _brackets(axis, values, *, wrap: bool):
+    """The two indices of ``axis`` around each of ``values``: ``(lo, hi)``
+    arrays of ``values``' shape, clipped at the ends.  ``axis`` is
+    monotonic either way; a longitude ``axis`` (``wrap``) may cross the
+    seam, and is read as an arc."""
+
+    axis = np.asarray(axis, dtype=np.float64)
+    values = np.asarray(values, dtype=np.float64)
+    if wrap:
+        finite = values[np.isfinite(values)]
+        ref = (0.0 if finite.size == 0 else float(np.degrees(np.arctan2(
+            np.sin(np.radians(finite)).mean(),
+            np.cos(np.radians(finite)).mean())))) - 180.0
+        axis = np.mod(axis - ref, 360.0)
+        values = np.mod(values - ref, 360.0)
+    perm = np.argsort(axis, kind="stable")
+    ordered = axis[perm]
+    hi = np.clip(np.searchsorted(ordered, values, side="left"), 0,
+                 ordered.size - 1)
+    lo = np.clip(hi - 1, 0, ordered.size - 1)
+    return perm[lo], perm[hi]
 
 
 def _axis_window(axis, values):

@@ -130,14 +130,33 @@ G3_GATE = 2.0e-6
 #: aero-cloud-freeze-nc qc 4.9256e-06 -> 0, aero-cold-overlap
 #: qc / nc_per_kg / effc_m / nr_per_kg / qr -> 0, and wp08-nusweep qr
 #: 4.6424e-06 -> 5.532e-07, all on an RTX 5090 and an RTX 4090 alike.
-_PUBLISHED_G3: dict[str, dict[str, float]] = {}
+#:
+#: ONE ROW AGAIN, AND IT IS NOT A RESIDUAL: ``aero-cold-overlap`` is the
+#: declared rain-graupel divergence.  WRF v4.6.1 reads its rain-graupel
+#: collision tables out of bounds when the scheme is not hail aware
+#: (module_mp_thompson.F:465, :607-615, :2527-2545) and WOOF reads the slab
+#: the tables hold; with WRF's read emulated in a measurement copy of the
+#: tree the fixture clears the gate.  Measured on an RTX PRO 6000 Blackwell
+#: (sm_120).  Re-measured by lane/mp28-exact after WRF's snow and graupel
+#: accumulators (:4054-4059): qs 2.2658e-06 -> 1.9259e-06 (inside the gate),
+#: qg 8.7700e-05 -> 8.7763e-05, effs_m 4.6974e-06 -> 6.5743e-06.
+_PUBLISHED_G3: dict[str, dict[str, float]] = {
+    "aero-cold-overlap": {
+        "qr": 5.0700e-04, "qi": 1.6180e-04, "qs": 1.9259e-06,
+        "qg": 8.7763e-05, "ni_per_kg": 1.4643e-05, "nr_per_kg": 5.0656e-04,
+        "effi_m": 5.3941e-05, "effs_m": 6.5743e-06,
+    },
+}
 
 #: Fixtures that clear :data:`G3_GATE` on EVERY compared field.  Membership is
 #: asserted for equality, not containment: a fixture that starts clearing the
 #: gate must be moved here in the same change that updates the evidence
 #: document, or the document silently understates the port.
 #:
-#: 22 of 22 since the 2.8.6 accumulator rework, which added
+#: 21 of 22 since the cold and warm source networks were re-transcribed in
+#: WRF's arithmetic order: ``aero-cold-overlap`` left for the declared
+#: rain-graupel divergence (see :data:`_PUBLISHED_G3`).
+#: 22 of 22 from the 2.8.6 accumulator rework, which added
 #: ``aero-cloud-freeze-nc``, ``aero-cold-overlap`` and ``wp08-nusweep``.
 #: Before it: 19 of 22.  ``wp08-freeze`` joined when the rain fallout was handed WRF's
 #: L_qr.  ``aero-drop-evap`` and ``aero-ice-demott-idxin`` joined at
@@ -154,7 +173,6 @@ _G3_CLEAN_FIXTURES = (
     "aero-ccn-activate",
     "aero-ccn-sweep",
     "aero-cloud-freeze-nc",
-    "aero-cold-overlap",
     "aero-drop-evap",
     "aero-ice-demott-dep",
     "aero-ice-demott-idxin",
@@ -346,9 +364,9 @@ def test_the_set_of_fixtures_clearing_the_gate_is_exactly_what_is_published():
     assert not set(_PUBLISHED_G3) & expected, (
         "a fixture is published both clean and with a residual: "
         f"{sorted(set(_PUBLISHED_G3) & expected)}")
-    assert len(clean) == 22 and len(matrix) == 22, (len(clean), len(matrix))
+    assert len(clean) == 21 and len(matrix) == 22, (len(clean), len(matrix))
     aero = sorted(name for name in clean if name.startswith("aero-"))
-    assert len(aero) == 19, aero
+    assert len(aero) == 18, aero
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +586,7 @@ _SKIP_SITES = frozenset({
      "test_refl_10cm_is_bit_identical_under_two_very_different_nc_fields",
      "call:skip"),
     ("test_mp28_runnable.py",
-     "test_mp28_and_mp8_reflectivity_agree_bitwise_on_identical_inputs",
+     "test_mp28_echo_is_its_own_transcription_and_mp8s_stays_frozen",
      "call:skip"),
     ("test_mp28_runnable.py",
      "test_microphysics_apply_runs_mp28_end_to_end_on_a_real_domainstate",

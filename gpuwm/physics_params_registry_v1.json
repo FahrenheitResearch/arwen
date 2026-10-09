@@ -15,7 +15,7 @@
       "wrf_source": "phys/module_sf_mynn.F zilitinkevich_1995",
       "host_mirror": null,
       "sites": [
-        {"module": "mynn_surface", "anchor": "zt = z0 * expf(-0.4f * 0.085f * sqrtf(restar));", "literal": "0.085f", "count": 1}
+        {"module": "mynn_surface", "anchor": "zt = z0 * SL_EXP(-0.4f * 0.085f * sqrtf(restar));", "literal": "0.085f", "count": 1}
       ]
     },
     {

@@ -55,6 +55,7 @@ from gpuwm.core.grid import BaseState, VerticalCoord, rebalance_hydrostatic
 # preprocessing distribution omits the verification tree.
 from gpuwm.core.sase_limits import E_MIN as SASE_E_MIN
 from gpuwm.core.wdm6_constants import WDM6_NUMBER_SPECIES
+from gpuwm.microphysics_schemes import scheme as _named_scheme
 
 #: Model-field dtype.  FP64 only in setup code and test references.  Keeping
 #: the scalar type available without CuPy lets the Rust/NumPy native-input
@@ -729,6 +730,24 @@ class DomainState:
                     # ArWen shortcut.
                     self.nwfa2d = zeros(ny, nx)
                     self.nifa2d = zeros(ny, nx)
+            elif _named_scheme(cfg.mp_physics) is not None:
+                # A NAMED scheme (gpuwm.microphysics_schemes): its capability
+                # row is the allocation table.  Every species gets storage
+                # and an RK time copy; radii start at the Thompson-family
+                # background; surface
+                # emission fields are cross-step constants like mp=28's.
+                named = _named_scheme(cfg.mp_physics)
+                for name in (named.ice_mass_species + named.moment_species
+                             + named.aerosol_species + ("effc", "effi", "effs")):
+                    setattr(self, name, zeros(nz, ny, nx))
+                self.effc[...] = DTYPE(2.49)
+                self.effi[...] = DTYPE(4.99)
+                self.effs[...] = DTYPE(9.99)
+                for name in (named.ice_mass_species + named.moment_species
+                             + named.aerosol_species):
+                    setattr(self, name + "0", rebuilt(name + "0", nz, ny, nx))
+                for name in named.surface_fields:
+                    setattr(self, name, zeros(ny, nx))
         else:
             self.qv = self.qc = self.qr = None
             self.qv0 = self.qc0 = self.qr0 = None

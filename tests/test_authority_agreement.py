@@ -1143,9 +1143,14 @@ def test_the_gate_fails_when_the_runtime_authority_is_the_wrong_one():
     assert report["launchable"] is True, report["errors"]
 
     settings = dict(report["resolved_domains"][0]["settings"])
-    # km_opt=1 with the template's zero khdif/kvdif is fine; km_opt=4 with a
-    # nonzero one is exactly what validate_run_config refuses, and the registry
-    # spec for khdif is a bare non-negative number, so it cannot see it.
+    # The template's km_opt=4 under diff_opt=2 takes a nonzero khdif as
+    # written (WRF ignores it there; WRF's own fire namelists set it).  Under
+    # diff_opt=1 the same khdif is exactly what validate_run_config refuses
+    # (WRF's diff_opt=1 vertical diffusion would read the constants), and the
+    # registry spec for khdif is a bare non-negative number, so it cannot see
+    # it.
+    assert settings["km_opt"] == 4
+    settings["diff_opt"] = 1
     settings["khdif"] = 100.0
     assert _config_refusal(settings, nested=False) is not None
     forged = deepcopy(report)

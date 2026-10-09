@@ -126,6 +126,22 @@ pub(super) fn plan_direct_recipes(
     Ok(planned)
 }
 
+/// Rendering already supplied planes uses store requirements. The fetch
+/// planner remains unchanged for invocations that download source files.
+pub(super) fn plan_selected_recipes(model: ModelId, slugs: &[String])
+    -> Result<Vec<PlannedDirectRecipe>, Box<dyn std::error::Error>> {
+    let mut planned = Vec::new();
+    let mut seen = HashSet::new();
+    for slug in slugs {
+        let recipe = plot_recipe(slug).ok_or_else(|| format!("unknown recipe '{slug}'"))?;
+        if seen.insert(recipe.slug) {
+            planned.push(PlannedDirectRecipe { recipe,
+                plan: rustwx_models::plot_recipe_store_plan(recipe.slug, model)? });
+        }
+    }
+    Ok(planned)
+}
+
 /// Which planned recipe slugs route their fetches through this group?
 pub(super) fn recipe_slugs_depending_on_group(
     planned: &[PlannedDirectRecipe],

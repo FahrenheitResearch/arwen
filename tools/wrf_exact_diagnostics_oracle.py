@@ -9,7 +9,6 @@ import argparse
 import ctypes
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -142,8 +141,9 @@ def reference(fn, raw: dict, hypso: int, wet: int) -> dict:
 
 
 def gpu(raw: dict, hypso: int, wet: int) -> dict:
-    if os.environ.get("GPUWM_WRF_EXACT") != "1" or os.environ.get("GPUWM_WRF_EXACT_DIAGNOSTICS") != "1":
-        raise ValueError("GPU replay requires both exact selectors before import")
+    from gpuwm.wrf_exact import DIAGNOSTICS_ENABLED
+    if not DIAGNOSTICS_ENABLED:
+        raise ValueError("GPU replay requires exact mode with the diagnostics control on, before import")
     import cupy as cp
     from gpuwm.core.diagnostics import update_diagnostics
     nz, ny, nx = raw["T"].shape

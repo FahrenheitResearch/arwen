@@ -361,6 +361,18 @@ UNVALIDATED_MIXED_EDGE_MOMENTS: dict[int, tuple[str, ...]] = {}
 #: that define them.
 _UNVALIDATED_MIXED_EDGE_REASONS: dict[int, tuple[str, str]] = {}
 
+# Named schemes (gpuwm.microphysics_schemes) run same-scheme nests; a mixed
+# edge into or out of one has no validated entry closure for its moments
+# yet, so it is refused by name with the scheme's own moment list.
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+for _s in _NAMED_MP_SCHEMES.values():
+    UNVALIDATED_MIXED_EDGE_SELECTORS += (_s.mp_id,)
+    UNVALIDATED_MIXED_EDGE_MOMENTS[_s.mp_id] = _s.moment_species + _s.aerosol_species
+    _UNVALIDATED_MIXED_EDGE_REASONS[_s.mp_id] = (
+        _s.name.upper(),
+        "a named WOOF scheme whose cross-scheme moment closure (graupel "
+        "number and volume included) has not been written or measured")
+
 # A selector may not join UNVALIDATED_MIXED_EDGE_SELECTORS without bringing
 # its own moments and its own sentence.  Adding 16 to the selector tuple and
 # not to the moments table turned the named refusal into a bare KeyError(16),

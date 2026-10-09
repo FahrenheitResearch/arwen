@@ -36,14 +36,59 @@ merge is `rla_mynn_gsd41` in `gpuwm/core/kernels/rrtmg_legacy_adapter.cu`.
 | P14, P24 | Plume condensation uses the same 273.16..253 K saturation blend and the 2e-5 iteration stop, v4.1.21 :5933-5981. | 24 cold and warm plume states against the unmodified source's condensation_edmf: QC and THV bit for bit. |
 | P4, P5, P6 | Ten 100 m plume classes, surface excess, resolved-motion taper, trigger, entrainment, overshoot and height damping, v4.1.21 :5107-5562. | 17 columns against unmodified DMP_mf, including every plume stopping at its first interface. |
 | P10 | Scale awareness uses dx, not 2.5 dx, v4.1.21 :6011-6049. | Source check and coupled forecast cuts. |
+| P23 | Closure level 2.5 (the fork's levflag 2): only TKE is predicted; tsq, qsq and cov are diagnosed from their production with the start-of-call qkw, v4.1.21 :2232-2253 (v4.6.1's closure 2.6 predicts qsq). mym_turbulence already ran level 2.5 under gsd_41. | Eight 12-level columns with nonzero variance production against the unmodified predictor: qke, tsq, qsq and cov as FP32 bits (`variance-gsd41.csv`). |
 | P11 | Density-free mass flux, local transport and surface forcing; no EDMF K floors, v4.1.21 :2044-2114, :2835-3114, :5633-5729. | Full plume oracle and eight clear transport columns. Ten-class workspace sizes are priced and allocated only for gsd_41. |
 
-## Not ported yet (run the v4.6.1 form under either name)
+## Exactness (lane/mynn-exact)
 
-- Closure 2.5 (P23).
-- Cycled TKE and subgrid cloud (P18): the driver still refuses cycling and
-  cold-starts.
-- Mixing length option 1 under gsd_41 is the v4.6.1 option 1.
+`tools/mynn_pbl_gsd41_oracle/run_driver_families_gsd41.F90` runs the fork's
+own `mynn_bl_driver` with HRRR's namelist identity over six column families
+for twelve steps (`driver-families-gsd41{,-asis}.csv.gz`, gfortran 13.3 -O0,
+glibc 2.39).  With `bl_mynn_cloud_tendency_form = "gsd_41"` the CUDA driver
+is that driver's word on every output of every step, free-running from the
+cold start, for the file as written and for the squared `:995`
+(`tests/test_mynn_gsd41_driver_exact_gpu.py`).  Four corrections got it
+there: the fork's `mym_level2` and level-2.5 algebra divide by `a2den`
+where v4.6.1 multiplies by `a2fac`; its warm-step `thetav` is
+`th*(1+0.608*sqv)`; its `cpm` reads the mixing ratio handed in; and the
+level-2 pair kernel now runs the selected generation.  The default
+`wrf_461` tendency form changes RTHBLTEN and RQVBLTEN values for the
+P13/P22 fix and can change the sign of a zero RQCBLTEN. Its nonzero
+RQCBLTEN values remain identical in this family oracle. The raw-word
+gate checks this specific zero-sign scope rather than treating all
+signed zeros as equal. The fork leaf CSVs `mixlength2-gsd41*.csv`,
+`turbulence2-gsd41-sq.csv` and `condensation-gsd41.csv` were rebuilt on
+glibc 2.39, the library of every WRF v4.6.1 oracle (2.43's atanf and tanhf
+are correctly rounded); the leaf budgets are now 0.
+
+## Selection
+
+The HRRR and RAP rows of `gpuwm/data/physics_sources/request-defaults.v1.toml`
+declare `bl_mynn_version = "gsd_41"` under `[request.load_generations]`, so a
+configuration naming those sources and omitting the key runs it, on trees
+every domain of which admits it (`physics_source_defaults.gsd41_admitted`).
+
+## Review coverage
+
+Both admitted mixing lengths run the fork's own arms. Option 1 uses the
+fork's harmonic lengths, minimum BouLac displacement and interface-theta
+buoyancy coefficient. It no longer substitutes WRF v4.6.1 option 1.
+The regression fixture `driver-families-gsd41-ml1.csv.gz` records twelve
+steps from the unmodified fork. The optional third argument to the Fortran
+family harness names a `review` namelist for mixing length, cycling,
+carried QKE and cloud, and forcing scales. Omission keeps the original
+fixture inputs unchanged.
+
+Cycling compares the lowest-level maximum with the fork's float32 `0.0002`,
+including equality. The comparison is decided once before column pieces.
+WRF v4.6.1 zeroes QKE, QC_BL and CLDFRA_BL after its cycled keep decision; WOOF carries them by default with `cycling = true`.
+Both generations reset sh/sm/el/tsq/qsq/cov on a cycled start. The stock
+carry referee is built by `tools/mynn_pbl_wrf461_oracle/build_cycled.sh`;
+the family driver's fourth argument selects empty, below, equal, above,
+high or mixed carry. Omission preserves its cold-start inputs.
+The exact-driver checkpoint identity is
+`mynn-edmf-pbl-wrf-v4.6.1-v3-exact-driver`; the former v2 identity cannot
+resume into these changed tendencies.
 
 ## The one defect-shaped line
 

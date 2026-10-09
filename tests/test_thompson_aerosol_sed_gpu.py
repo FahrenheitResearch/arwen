@@ -1570,29 +1570,31 @@ def test_a_copied_mass_velocity_would_freeze_the_mean_droplet_mass():
 # it does own must tile and gate exactly like its classic sibling.
 
 def test_this_module_sediments_cloud_and_nothing_else():
-    """No snow/graupel or aerosol fallout may be duplicated here.
+    """No aerosol fallout, and no second in-place rain or ice pass.
 
-    Aerosol number in particular has NO fallout term anywhere in
-    module_mp_thompson.F.  Snow and graupel fallout are mp=8's, verified and
-    frozen in thompson.py.  Rain and ice are the one deliberate exception
-    since the 2.8.6 accumulator rework: the v4.6.1 generation carries WRF's
+    Aerosol number has NO fallout term anywhere in module_mp_thompson.F.
+    Rain and ice exist here only as ``_accumulate`` launchers since the
+    2.8.6 accumulator rework: the v4.6.1 generation carries WRF's
     qrten/nrten/qiten/niten through its own TENDENCY-FORM rain and ice
-    fallout (the classic kernels apply in place and fold the terminal size
-    bounds in before the cleanup's freeze, which WRF does not), so those two
-    exist here only as ``_accumulate`` launchers.
+    fallout.  Snow and graupel are mp=28's own since lane/mp28fix-sedim-refl
+    (the classic passes in thompson.cu are byte-frozen for mp=8 and their
+    arithmetic is not WRF's; tests/test_thompson_aerosol_sedim_refl.py), and
+    so are the surface totals in mp_gt_driver's order.
     """
     import gpuwm.core.thompson_aerosol_sed as module
 
     assert sorted(module.__all__) == [
         "DIAGNOSTIC_FIELDS", "VERTICAL_LEVEL_BOUNDS",
         "launch_aa_cloud_sedimentation", "launch_aa_final_phase_cleanup",
+        "launch_aa_graupel_sedimentation",
         "launch_aa_ice_sedimentation_accumulate",
-        "launch_aa_rain_sedimentation_accumulate"]
+        "launch_aa_rain_sedimentation_accumulate",
+        "launch_aa_snow_sedimentation",
+        "launch_aa_surface_precipitation"]
     source = Path(module.__file__).read_text(encoding="utf-8")
-    for species in ("rain", "ice", "snow", "graupel", "aerosol_sediment",
-                    "nwfa", "nifa"):
+    for species in ("rain", "ice", "aerosol_sediment", "nwfa", "nifa"):
         assert f"def launch_aa_{species}_sedimentation(" not in source, species
-    # ...and the four it delegates really do exist to be delegated to.
+    # mp=8 keeps its own frozen passes.
     for species in ("rain", "ice", "snow", "graupel"):
         assert hasattr(classic_thompson, f"launch_{species}_sedimentation")
 
@@ -1682,6 +1684,15 @@ def test_only_cloud_fallout_is_a_single_pass_in_the_frozen_kernel_too():
     stop = aerosol.index("}", stop) + 1
     tendency_form = aerosol[start:stop]
     assert "nstep" in tendency_form and "onstep" in tendency_form
+    aerosol = aerosol[:start] + aerosol[stop:]
+    # The v4.6.1 snow and graupel fallout (lane/mp28fix-sedim-refl) carry
+    # the substep loop those species have, and the surface totals follow
+    # them; set aside likewise.
+    start = aerosol.index("// SNOW AND GRAUPEL FALLOUT AND THE SURFACE TOTALS")
+    stop = aerosol.index("void thompson_aa_surface_precipitation(")
+    stop = aerosol.index("\n}\n", stop) + 3
+    snow_graupel = aerosol[start:stop]
+    assert "nstep" in snow_graupel and "onstep" in snow_graupel
     aerosol = aerosol[:start] + aerosol[stop:]
     code = "\n".join(line for line in aerosol.splitlines()
                      if not line.lstrip().startswith("//"))
@@ -2623,7 +2634,12 @@ def test_bridge_two_ports_agree_where_aerosol_is_neutral_and_split_where_it_is_n
     assert disagreeing.size == 2, disagreeing.tolist()
     level = int(np.argmax(np.abs(mine - theirs)))
     wrf = want_qc[level]
-    assert (mine[level] - wrf) * (theirs[level] - wrf) < 0.0, (
+    # Since lane/mp28fix-warm-network (WRF's REAL qvten/tten through the
+    # condensation) the strict build lands mp=28 ON WRF at this level, so the
+    # product is zero there; the split is then mp=8's distance alone, which
+    # the sum below still states.  mp=8 must still be off WRF.
+    assert theirs[level] != wrf
+    assert (mine[level] - wrf) * (theirs[level] - wrf) <= 0.0, (
         "the two ports no longer straddle WRF; the split is no longer the "
         "sum of their distances and this test's arithmetic does not hold")
     assert split == pytest.approx(

@@ -43,8 +43,9 @@ import os
 import re
 from pathlib import Path
 
-import netCDF4
 import numpy as np
+
+from gpuwm.io.netcdf_serialization import netCDF4  # first use only (D-10)
 
 from gpuwm import downscale_pricing
 
@@ -702,6 +703,66 @@ def _fraction_gcd(values):
     return result
 
 
+def child_clock_step(ceiling, clocks) -> float:
+    """The largest step no longer than ``ceiling`` that every clock is a
+    whole number of.
+
+    One answer for both kinds of parent.  ``ceiling`` is the longest step
+    the child may take (its CFL bound): the parent's ``dt`` over the ratio
+    for a fixed-step parent, the engine's clock convention at the child's
+    spacing for an adaptive one (:func:`adaptive_parent_child_step`).
+    ``clocks`` are the instants the child has to land on: its run length,
+    history, checkpoint and health intervals, and the parent's frame
+    interval, which the boundary seam needs to be a whole number of child
+    steps (``offline_child_run._child_boundary_clock``).  Zero and ``None``
+    clocks are not kept.
+
+    WHY A FIXED PARENT NEEDS IT TOO.  A 12 km parent on a 64.44 s step,
+    ratio 3, handed its child 21.48 s, and a 28 h run is 4692.74 of those:
+    the review refused it ("run_seconds/dt must be a positive integer")
+    and the only way out was to guess a run length.  The child now takes
+    20 s, the largest step under 21.48 s that 28 h, the hour of history and
+    the minute of health checks are all whole numbers of.
+
+    When the ceiling itself lands on every clock it is returned as it was
+    given, so a child whose clocks already worked keeps exactly the step it
+    always had.  The step is never longer than the ceiling.
+    """
+
+    from fractions import Fraction
+
+    given = float(ceiling)
+    limit = (ceiling if isinstance(ceiling, Fraction)
+             else Fraction(given).limit_denominator(10 ** 6))
+    kept = [float(value) for value in clocks
+            if value is not None and float(value) > 0.0]
+    if not kept:
+        return given
+    base = _fraction_gcd(kept)
+    divisions = max(1, math.ceil(base / limit))
+    # The ceiling is returned as given only when the runner's boundary
+    # clock reads it back as the same step: it rebuilds ``dt`` as the
+    # nearest fraction with denominator at most a million and refuses the
+    # run unless that fraction's float is ``dt`` again
+    # (offline_child_run._child_boundary_clock).  9.6 s / 6 is
+    # 1.5999999999999999, whose nearest such fraction is 8/5, and
+    # float(8/5) is 1.6: handing back the given float there was a step the
+    # run could not land on.
+    if (base / divisions == limit
+            and float(Fraction(given).limit_denominator(10 ** 6)) == given):
+        return given
+    # Otherwise take the longest whole division of ``base`` (a step every
+    # clock lands on) that is exactly rational within a millionth and,
+    # as a float, no longer than the given ceiling.  When the ceiling's
+    # fraction rounds a hair above it (8/5 above 1.5999999999999999) that
+    # skips the division equal to it, so the step never goes over.
+    for count in range(divisions, divisions + 10 ** 4):
+        step = base / count
+        if step.denominator <= 10 ** 6 and float(step) <= given:
+            return float(step)
+    return given
+
+
 def adaptive_parent_child_step(*, child_dx: float, child_dy: float,
                                centre_lat: float, clocks) -> float:
     """The fixed step of a child whose parent ran the adaptive clock.
@@ -720,9 +781,10 @@ def adaptive_parent_child_step(*, child_dx: float, child_dy: float,
     ``--point`` route, which has no way to set a step.  A child's step is
     the child's own: the engine's clock convention at the child's spacing
     (:func:`gpuwm.domain_wizard.seconds_per_km`, 5 s per km outside the
-    tropics), taken down to the largest step that every clock the child
-    keeps (``clocks``: run length, history, checkpoint and health
-    intervals) is a whole number of.
+    tropics), taken down by :func:`child_clock_step` to the largest step
+    that every clock the child keeps (``clocks``: run length, history,
+    checkpoint and health intervals, and the parent's frame interval) is a
+    whole number of.
     """
 
     from fractions import Fraction
@@ -732,13 +794,7 @@ def adaptive_parent_child_step(*, child_dx: float, child_dy: float,
     spacing_km = Fraction(min(float(child_dx), float(child_dy))
                           ).limit_denominator(10 ** 6) / 1000
     ceiling = Fraction(seconds_per_km(float(centre_lat))) * spacing_km
-    kept = [float(value) for value in clocks
-            if value is not None and float(value) > 0.0]
-    if not kept:
-        return float(ceiling)
-    base = _fraction_gcd(kept)
-    divisions = max(1, math.ceil(base / ceiling))
-    return float(base / divisions)
+    return child_clock_step(ceiling, clocks)
 
 
 def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
@@ -751,12 +807,16 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
     """Child RunConfig dict: parent physics verbatim, geometry rescaled,
     lateral zone sized in parent cells (:func:`child_lateral_zone`).
 
-    A parent that ran the adaptive clock hands the child a fixed step of
-    its own (:func:`adaptive_parent_child_step`, at ``centre_lat``; the
-    parent grid's mean latitude when absent) that lands on the child's
-    run length, history and checkpoint intervals and on every value in
-    ``clock_seconds`` (the health interval), and the child's config says
-    it runs a fixed clock, which is what the offline child integrates."""
+    The child's step lands on its run length, history and checkpoint
+    intervals and on every value in ``clock_seconds`` (the health interval
+    and the parent's frame interval): the largest such step no longer than
+    the parent's ``dt`` over the ratio for a fixed-step parent
+    (:func:`child_clock_step`, which keeps ``dt / ratio`` exactly when it
+    already lands on every clock).  A parent that ran the adaptive clock
+    hands the child a fixed step of its own
+    (:func:`adaptive_parent_child_step`, at ``centre_lat``; the parent
+    grid's mean latitude when absent), and the child's config says it runs
+    a fixed clock, which is what the offline child integrates."""
     from dataclasses import fields as dataclass_fields
 
     from gpuwm.config import RunConfig, validate_run_config
@@ -766,6 +826,8 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
               if key in known}
     child_dx = float(parent["dx"]) / ratio
     child_dy = float(parent["dy"]) / ratio
+    clocks = (run_seconds, output_interval_s,
+              parent_config.get("restart_interval_s", 0.0), *clock_seconds)
     if parent_config.get("use_adaptive_time_step"):
         if centre_lat is None:
             xlat = parent.get("xlat") if isinstance(parent, dict) else None
@@ -773,12 +835,11 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
                           else 45.0)
         child_dt = adaptive_parent_child_step(
             child_dx=child_dx, child_dy=child_dy, centre_lat=centre_lat,
-            clocks=(run_seconds, output_interval_s,
-                    parent_config.get("restart_interval_s", 0.0),
-                    *clock_seconds))
+            clocks=clocks)
         merged["use_adaptive_time_step"] = False
     else:
-        child_dt = float(parent_config["dt"]) / ratio
+        child_dt = child_clock_step(float(parent_config["dt"]) / ratio,
+                                    clocks)
     merged.update({
         "nx": int(child_nx), "ny": int(child_ny),
         "dx": child_dx,
@@ -1258,7 +1319,7 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
                     run_seconds: float, output_interval_s: float,
                     vram_gib: float, child_eta_levels=None,
                     measured_free_bytes: int | None = None,
-                    profile=None) -> tuple:
+                    profile=None, clock_seconds=()) -> tuple:
     """Largest centered square child whose peak envelope fits the card.
 
     Returns ``(size, estimate)``: the extent AND the estimator's own
@@ -1337,6 +1398,7 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
                 parent_config, parent=parent, ratio=ratio,
                 child_nx=size, child_ny=size, run_seconds=run_seconds,
                 output_interval_s=output_interval_s,
+                clock_seconds=clock_seconds,
                 # PRICED ON THE LADDER IT WILL RUN.  Sizing without this
                 # priced a 128-level child as its 49-level parent: measured
                 # on a 342x342 4 km child against a 10 GiB card, 6.554 GiB
@@ -1840,6 +1902,12 @@ def _downscale_main(args, reservation: _OutputReservation,
                              if args.output_interval_seconds is not None
                              else contract.interval_seconds)
         child_levels = _parse_child_levels(args.child_levels)
+        # Every instant the child's step has to land on besides its run
+        # length, history and checkpoint: the health line, and the parent's
+        # frame interval, where the boundary seam falls
+        # (offline_child_run._child_boundary_clock).
+        child_clock_seconds = (float(args.health_interval_seconds),
+                               float(contract.interval_seconds))
         sizing = _sizing_budget(args, auto_vram)
         sizing_receipt = _sizing_receipt(sizing)
         memory_vram_gib = sizing.vram_gib
@@ -1863,6 +1931,7 @@ def _downscale_main(args, reservation: _OutputReservation,
                 output_interval_s=output_interval_s,
                 vram_gib=sizing.vram_gib,
                 child_eta_levels=child_levels,
+                clock_seconds=child_clock_seconds,
                 **({"measured_free_bytes": sizing.free_bytes,
                     "profile": sizing.device_profile}
                    if sizing.measured else {}))
@@ -1876,7 +1945,7 @@ def _downscale_main(args, reservation: _OutputReservation,
             child_nx=child_nx, child_ny=child_ny,
             run_seconds=run_seconds, output_interval_s=output_interval_s,
             child_eta_levels=child_levels, centre_lat=lat,
-            clock_seconds=(float(args.health_interval_seconds),))
+            clock_seconds=child_clock_seconds)
         if parent_config.get("use_adaptive_time_step"):
             live = float(parent_config["dt"])
             warn(f"the parent ran the adaptive clock and its checkpoint "
@@ -1889,7 +1958,19 @@ def _downscale_main(args, reservation: _OutputReservation,
                      "engine's clock convention at its own spacing (5 s "
                      "per km outside the tropics), down to the largest "
                      "step its run length, history, checkpoint and health "
-                     "intervals are whole numbers of.")
+                     "intervals and the parent's frame interval are whole "
+                     "numbers of.")
+        elif merged["dt"] != float(parent_config["dt"]) / ratio:
+            over_ratio = float(parent_config["dt"]) / ratio
+            warn(f"the child runs a {merged['dt']:g} s step, not the "
+                 f"parent's {float(parent_config['dt']):g} s over the ratio "
+                 f"({over_ratio:g} s), so it lands on every clock it keeps",
+                 why="The child integrates in whole steps, and its run "
+                     "length, history, checkpoint and health intervals and "
+                     "the parent's frame interval must each be a whole "
+                     "number of them.  The step taken is the largest one "
+                     "no longer than the parent's step over the ratio "
+                     "that all of them are.")
         outdir = Path(args.out)
         child_config = derived_child_config_path(
             outdir, dry_run=bool(args.dry_run))

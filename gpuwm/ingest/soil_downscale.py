@@ -112,6 +112,22 @@ not, so the source-cell mean of ``TSLB`` is unchanged, exactly.  Layer 1 is
 weighted 0.017 and layer 4 is weighted 0.5, so this is a deep-layer
 correction by construction.
 
+One decision per source and resolution
+======================================
+
+Whether to downscale, and over how wide a window, is a property of the
+pair (source, domain resolution), not of where a domain is drawn.  When
+both ends declare a metric grid spacing -- every projected source mapping
+(HRRR, RRFS, RAP) and the native HRRR grid on one side, every WPS domain
+on the other -- the footprint is the declared source spacing over the
+declared domain spacing, each taken to an angle on its own sphere
+(:meth:`SoilMeshPlan.from_nominal_spacing`).  So 3 km HRRR onto any 3 km
+domain is 0.9998 source cells per target cell (off) and onto any 1 km
+domain 2.9994 (on).  Measuring it at each domain's centre instead let the
+same HRRR cell get different soil moisture by box placement.  A
+latitude/longitude source (GFS, ECMWF, ICON, ERA5) declares degrees, not
+metres, and keeps the centre measurement of :meth:`SoilMeshPlan.from_grids`.
+
 Resolution advisory
 ===================
 
@@ -188,6 +204,10 @@ class SoilMeshPlan:
     target_spacing_deg_lon: float
     enabled: bool = True
     spacing_metric: str = "coordinate-components"
+    #: The declared spacings a :meth:`from_nominal_spacing` plan was fixed
+    #: from, ``((dx, dy, earth radius) of the source, (dx, dy, earth
+    #: radius) of the target)`` in metres; ``None`` on a measured plan.
+    nominal_spacing_m: tuple | None = None
 
     def __post_init__(self) -> None:
         for name in ("source_spacing_deg_lat", "source_spacing_deg_lon",
@@ -197,8 +217,14 @@ class SoilMeshPlan:
                 raise ValueError(f"{name} must be a positive finite spacing")
             object.__setattr__(self, name, value)
         object.__setattr__(self, "enabled", bool(self.enabled))
-        if self.spacing_metric not in {"coordinate-components", "great-circle-angle"}:
+        if self.spacing_metric not in {"coordinate-components",
+                                       "great-circle-angle",
+                                       "nominal-grid-spacing"}:
             raise ValueError("unknown source mesh spacing metric")
+        if (self.nominal_spacing_m is None) != (
+                self.spacing_metric != "nominal-grid-spacing"):
+            raise ValueError("a nominal-grid-spacing plan carries its "
+                             "declared spacings, and only it does")
 
     @property
     def footprint_cells(self) -> tuple[float, float]:
@@ -295,6 +321,61 @@ class SoilMeshPlan:
                                            lat[jc, ic + 1], lon[jc, ic + 1]),
             enabled=enabled, spacing_metric="great-circle-angle")
 
+    @classmethod
+    def from_nominal_spacing(cls, source_spacing_m, target_spacing_m, *,
+                             source_earth_radius_m, target_earth_radius_m,
+                             enabled=True):
+        """Fix the footprint from both grids' DECLARED spacings.
+
+        ``source_spacing_m`` and ``target_spacing_m`` are ``(dx, dy)`` in
+        metres on each grid's own sphere; each is carried to an angle on
+        its own radius, so a GRIB-sphere source and a WPS-sphere domain are
+        compared as the same Earth.  Nothing here depends on where the
+        domain sits, so one source at one resolution gets one window and
+        one on/off decision everywhere: 3 km HRRR onto a 3 km domain is
+        0.9998 source cells per target cell at every placement (off), and
+        onto a 1 km domain 2.9994 (on).
+        """
+        source_dx, source_dy = (float(value) for value in source_spacing_m)
+        target_dx, target_dy = (float(value) for value in target_spacing_m)
+        source_radius = float(source_earth_radius_m)
+        target_radius = float(target_earth_radius_m)
+        for name, value in (("source_earth_radius_m", source_radius),
+                            ("target_earth_radius_m", target_radius)):
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be a positive finite radius")
+
+        def degrees(metres, radius):
+            return float(np.rad2deg(metres / radius))
+
+        return cls(
+            source_spacing_deg_lat=degrees(source_dy, source_radius),
+            source_spacing_deg_lon=degrees(source_dx, source_radius),
+            target_spacing_deg_lat=degrees(target_dy, target_radius),
+            target_spacing_deg_lon=degrees(target_dx, target_radius),
+            enabled=enabled, spacing_metric="nominal-grid-spacing",
+            nominal_spacing_m=((source_dx, source_dy, source_radius),
+                               (target_dx, target_dy, target_radius)))
+
+
+def _declared_metric_spacing_m(grid):
+    """``(dx, dy)`` in metres of a grid on a metric WPS projection.
+
+    ``None`` for anything else -- an explicit coordinate pair, a stand-in
+    without a projection -- whose footprint can only be measured.
+    """
+    from gpuwm.static.projection import WRF_MAP_PROJ_CODES
+
+    if getattr(grid, "map_proj", None) not in WRF_MAP_PROJ_CODES:
+        return None
+    try:
+        spacing = (float(grid.dx), float(grid.dy))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not all(np.isfinite(value) and value > 0.0 for value in spacing):
+        return None
+    return spacing
+
 
 def source_mesh_receipt(plan: SoilMeshPlan, *, announce: bool = True) -> dict:
     """Record the forcing mesh on the run receipt, and warn when it is coarse.
@@ -324,6 +405,11 @@ def source_mesh_receipt(plan: SoilMeshPlan, *, announce: bool = True) -> dict:
     }
     if plan.spacing_metric != "coordinate-components":
         receipt["spacing_metric"] = plan.spacing_metric
+    if plan.nominal_spacing_m is not None:
+        receipt["nominal_spacing_m"] = {
+            end: {"x": dx, "y": dy, "earth_radius_m": radius}
+            for end, (dx, dy, radius) in zip(("source", "target"),
+                                             plan.nominal_spacing_m)}
     if announce and plan.advisory:
         print(
             "soil-state source resolution: the forcing mesh is "
@@ -796,6 +882,11 @@ def soil_mesh_plan_from_case(source_snapshot, target, case_data=None, *,
     ``enabled`` overrides the declaration for a caller that has already
     resolved it -- ``prepare_real_case`` takes it as a parameter, because
     its caller holds the config and it does not.
+
+    A ``target`` grid on a metric projection paired with a source that
+    declares its metric spacing (a projected snapshot, or ``source_grid``
+    on a gpuwm projection) gets the fixed nominal plan; only a source or a
+    target with no declared spacing is measured at the domain centre.
     """
     mass_latlon = getattr(target, "latlon_mass", None)
     if mass_latlon is not None:
@@ -810,7 +901,25 @@ def soil_mesh_plan_from_case(source_snapshot, target, case_data=None, *,
         return None
     resolved_enabled = (declared_soil_texture_downscale(case_data)
                         if enabled is None else bool(enabled))
+    # A source and a domain that both DECLARE a metric spacing are compared
+    # on those declarations, never on a measurement at the domain centre.
+    # Measured, 3 km HRRR onto 3 km domains on HRRR's own cone came out
+    # 0.99984, 1.00136, 1.012 or 1.0355 source cells per target cell by
+    # placement, so the downscale switched itself on or off with where the
+    # box was drawn and the same HRRR cell got different soil moisture
+    # (national-lattice prep study, 2026-10-08).
+    from gpuwm.static.projection import EARTH_RADIUS_M
+
+    target_spacing_m = _declared_metric_spacing_m(target)
     if source_grid is not None:
+        source_spacing_m = _declared_metric_spacing_m(source_grid)
+        if source_spacing_m is not None and target_spacing_m is not None:
+            # gpuwm's own projection classes are all on the WPS sphere.
+            return SoilMeshPlan.from_nominal_spacing(
+                source_spacing_m, target_spacing_m,
+                source_earth_radius_m=EARTH_RADIUS_M,
+                target_earth_radius_m=EARTH_RADIUS_M,
+                enabled=resolved_enabled)
         return SoilMeshPlan.from_projected_grid(
             source_grid, target_lat, target_lon, enabled=resolved_enabled)
     latitude = getattr(source_snapshot, "latitude", None)
@@ -822,6 +931,16 @@ def soil_mesh_plan_from_case(source_snapshot, target, case_data=None, *,
     if latitude.ndim != 1 or longitude.ndim != 1:
         return None
     projection = getattr(source_snapshot, "projection", None)
+    if projection is not None and target_spacing_m is not None:
+        # A projected source declares its spacing and the sphere it is
+        # measured on (mapping.grid.parameters, required on every
+        # projected mapping).
+        parameters = projection["parameters"]
+        return SoilMeshPlan.from_nominal_spacing(
+            (parameters["dx_m"], parameters["dy_m"]), target_spacing_m,
+            source_earth_radius_m=parameters["earth_radius_m"],
+            target_earth_radius_m=EARTH_RADIUS_M,
+            enabled=resolved_enabled)
     if projection is not None:
         # Projected axes carry metres in `axis_unit_m` units; the mesh
         # plan compares spacings in degrees, so convert the source mesh to

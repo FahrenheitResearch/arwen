@@ -1,7 +1,7 @@
 #!/bin/sh
 # One-command install for a gpuwm (ArWen) developer checkout (POSIX sh).
 #
-#   ./install.sh [--yes] [--no-render] [--cuda 12|13]
+#   ./install.sh [--yes] [--no-render] [--cuda 12|13] [--python PY]
 #                                           -- from a checkout root
 #
 # The standalone (curl | sh) form clones the public repository into
@@ -10,18 +10,20 @@
 #
 # What it does, in order (every step is re-run safe):
 #   1. finds the checkout (or clones $GPUWM_REPO_URL into ./gpuwm);
-#   2. creates .venv if absent, installs the checkout's gpuwm-data
+#   2. makes sure a Rust toolchain is present, offering to install
+#      rustup when `cargo` is missing (prompts first; --yes or
+#      GPUWM_INSTALL_YES=1 consents non-interactively);
+#   3. creates .venv if absent on free-threaded CPython 3.14t (see
+#      "Interpreter" below), installs the checkout's gpuwm-data
 #      companion, then installs -e '.[gpu-cuNN,render]' into it,
 #      where NN is the CUDA major this box's driver reports (CuPy
 #      ships one wheel per major and the wrong one dies at its first
 #      cuBLAS load); --cuda overrides the detection, and an
 #      undetectable major is announced rather than defaulted quietly;
-#   3. stages the externalized Thompson tables with `gpuwm fetch-tables`
+#   4. stages the externalized Thompson tables with `gpuwm fetch-tables`
 #      (downloads only what is absent -- ~243 MiB from a checkout --
 #      SHA-256 verified before install; a no-op when already staged;
 #      skip with --no-fetch-tables or GPUWM_INSTALL_NO_FETCH_TABLES=1);
-#   4. offers to install rustup when `cargo` is missing (prompts first;
-#      --yes or GPUWM_INSTALL_YES=1 consents non-interactively);
 #   5. builds the vendored Rust GRIB bridges offline in
 #      tools/grib1_bridge;
 #   6. builds the vendored production render engine offline in
@@ -39,12 +41,30 @@
 #   GPUWM_REPO_URL     clone source when run outside a checkout
 #                      (default:
 #                      https://github.com/FahrenheitResearch/arwen).
-#   GPUWM_PYTHON       interpreter used to create .venv (default:
-#                      python3, then python)
+#   GPUWM_PYTHON       interpreter used to create .venv, same as
+#                      --python (default: free-threaded CPython 3.14t,
+#                      see "Interpreter" below)
 #   GPUWM_INSTALL_YES  "1" behaves like --yes
 #   GPUWM_INSTALL_NO_RENDER  "1" behaves like --no-render
 #   GPUWM_INSTALL_NO_FETCH_TABLES  "1" behaves like --no-fetch-tables
 #   GPUWM_INSTALL_CUDA  "12" or "13" behaves like --cuda
+#
+# Interpreter.  A new .venv is made on free-threaded CPython 3.14t
+# (PEP 703): a python3.14t already on PATH, else the one uv finds or
+# installs (`uv python install 3.14t`), else, with consent (--yes, or
+# the prompt), uv itself from https://astral.sh/uv first.  The gpuwm
+# command line then re-executes itself once with PYTHON_GIL=0 (see
+# gpuwm/free_threading.py), so nothing has to be exported by hand.
+# THE BREAKAGE THIS PREVENTS: every [devices] rank of a multi-card
+# forecast steps its card from its own Python thread, and under an
+# interpreter lock those threads take turns -- measured 2026-10-03,
+# 4 cards ran 289 s per forecast hour with the lock and 130 s on
+# 3.14t, so a plain multi-card install ran about 2x slower than the
+# published benchmarks.  --python (or GPUWM_PYTHON) picks another
+# interpreter; when no 3.14t can be had, none can make a venv, or a
+# dependency will not install under it, the install continues on
+# python3 (then python) and says, by name, what that costs and how to
+# get 3.14t.
 
 set -eu
 
@@ -52,6 +72,7 @@ YES="${GPUWM_INSTALL_YES:-0}"
 NO_RENDER="${GPUWM_INSTALL_NO_RENDER:-0}"
 NO_FETCH_TABLES="${GPUWM_INSTALL_NO_FETCH_TABLES:-0}"
 CUDA_MAJOR="${GPUWM_INSTALL_CUDA:-}"
+EXPLICIT_PYTHON="${GPUWM_PYTHON:-}"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -y|--yes) YES=1 ;;
@@ -63,12 +84,18 @@ while [ "$#" -gt 0 ]; do
                 exit 2; }
             CUDA_MAJOR="$2"; shift ;;
         --cuda=*) CUDA_MAJOR="${1#--cuda=}" ;;
+        --python)
+            [ "$#" -ge 2 ] || {
+                echo "install.sh: --python needs an interpreter" >&2
+                exit 2; }
+            EXPLICIT_PYTHON="$2"; shift ;;
+        --python=*) EXPLICIT_PYTHON="${1#--python=}" ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" 2>/dev/null || true
             exit 0 ;;
         *)
             echo "install.sh: unknown argument '$1'" \
-                 "(--yes, --no-render, --no-fetch-tables, and --cuda)" >&2
+                 "(--yes, --no-render, --no-fetch-tables, --cuda and --python)" >&2
             exit 2 ;;
     esac
     shift
@@ -96,25 +123,236 @@ else
     cd gpuwm
 fi
 
-# -------------------------------------------------------------------- venv
-if [ -n "${GPUWM_PYTHON:-}" ]; then
-    PYTHON="$GPUWM_PYTHON"
-elif command -v python3 >/dev/null 2>&1; then
-    PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
-    PYTHON=python
+# ---------------------------------------------------------------- rust/cargo
+# Before the .venv: on free-threaded 3.14t the [render] extra's wrf-rust
+# has no published wheel (0.2.39 ships cp310-cp314 only, read off the
+# index 2026-10-08), so pip builds it from its sdist, and that needs
+# cargo on PATH.  It builds in about 20 s and imports without turning
+# the interpreter lock back on.
+#
+# A rustup installed earlier in this same run (or a previous one) lives in
+# ~/.cargo/bin before it reaches PATH, so look there too.
+PATH="$HOME/.cargo/bin:$PATH"
+if command -v cargo >/dev/null 2>&1; then
+    say "cargo found: $(command -v cargo)"
 else
-    fail "no python3/python on PATH (Python 3.11+ is required)"
+    say "cargo was not found; the Rust GRIB bridges need a Rust toolchain."
+    RUSTUP_YES="$YES"
+    if [ "$RUSTUP_YES" != 1 ]; then
+        if [ -r /dev/tty ]; then
+            printf 'install: install rustup (https://rustup.rs) now? [y/N] '
+            read -r answer < /dev/tty || answer=""
+            case "$answer" in
+                y|Y|yes|YES) RUSTUP_YES=1 ;;
+            esac
+        fi
+    fi
+    if [ "$RUSTUP_YES" != 1 ]; then
+        fail "cargo is missing and consent to install rustup was not \
+given; re-run with --yes (or GPUWM_INSTALL_YES=1), or install a Rust \
+toolchain yourself and re-run"
+    fi
+    command -v curl >/dev/null 2>&1 || fail "curl is required to fetch rustup"
+    say "installing rustup (stable toolchain, PATH left unmodified)"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --no-modify-path
+    command -v cargo >/dev/null 2>&1 \
+        || fail "rustup finished but cargo is still not on PATH"
 fi
 
-if [ -x .venv/bin/python ]; then
-    say "reusing the existing .venv"
-else
-    say "creating .venv with $PYTHON"
-    "$PYTHON" -m venv .venv
-fi
+# -------------------------------------------------------------------- venv
+# The interpreter: free-threaded CPython 3.14t unless --python (or
+# GPUWM_PYTHON) names another one.  See "Interpreter" in the header for
+# the breakage this prevents and the measurement behind it.
+FT_PROBE='import sys, sysconfig; sys.exit(0 if sysconfig.get_config_var("Py_GIL_DISABLED") else 1)'
+is_free_threaded() { "$1" -c "$FT_PROBE" >/dev/null 2>&1; }
+
+warn_locked() {
+    # $1 = the interpreter, $2 = why it is not 3.14t, $3 = the remedy
+    say "WARNING: .venv runs on $1, a Python with the interpreter lock,"
+    say "not free-threaded CPython 3.14t: $2."
+    say "Multi-card [devices] forecasts run about 2x slower on it, because"
+    say "their slab threads take turns on the lock (measured: 4 cards at"
+    say "289 s per forecast hour against 130 s on 3.14t).  One-card"
+    say "forecasts are unaffected.  To fix: $3"
+}
+
+find_uv() {
+    for candidate in uv "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            UV="$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+bootstrap_uv() {
+    UV_YES="$YES"
+    # Opened, not just tested with -r: in a container or under a service
+    # /dev/tty is readable by mode but has no terminal behind it.
+    if [ "$UV_YES" != 1 ] && ( : < /dev/tty ) 2>/dev/null; then
+        printf 'install: install uv (https://astral.sh/uv) to provide free-threaded Python 3.14t? [Y/n] '
+        read -r answer < /dev/tty || answer="n"
+        case "$answer" in
+            ''|y|Y|yes|YES) UV_YES=1 ;;
+        esac
+    fi
+    if [ "${SKIP_PATH_FT:-0}" = 1 ]; then NONE_FOUND="no uv was found"
+    else NONE_FOUND="no python3.14t or uv was found"; fi
+    if [ "$UV_YES" != 1 ]; then
+        FT_WHY="$NONE_FOUND and consent to install uv was not given"
+        return 1
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        FT_WHY="$NONE_FOUND and curl, needed to fetch uv, is missing"
+        return 1
+    fi
+    say "installing uv (https://astral.sh/uv; shell profiles left unmodified)"
+    # Fetched to a file first: piped straight into sh, a failed download
+    # runs an empty script that exits 0.
+    UV_SCRIPT=$(mktemp "${TMPDIR:-/tmp}/gpuwm-uv-install.XXXXXX") \
+        || { FT_WHY="no temporary file for the uv installer could be made"; return 1; }
+    if ! curl -LsSf https://astral.sh/uv/install.sh -o "$UV_SCRIPT"; then
+        rm -f "$UV_SCRIPT"
+        FT_WHY="the uv installer could not be downloaded from https://astral.sh/uv/install.sh"
+        return 1
+    fi
+    if ! env UV_NO_MODIFY_PATH=1 sh "$UV_SCRIPT"; then
+        rm -f "$UV_SCRIPT"
+        FT_WHY="the uv installer failed (see its output above)"
+        return 1
+    fi
+    rm -f "$UV_SCRIPT"
+    find_uv || { FT_WHY="uv installed but could not be found afterwards"; return 1; }
+}
+
+# uv, asked for a managed interpreter only when SKIP_PATH_FT=1: by default
+# `uv python find` answers with a system python3.14t first, which on the
+# retry is the very one that could not make a venv (seen 2026-10-08 with
+# deadsnakes' python3.14-nogil: uv found /usr/bin/python3.14t again).
+uv_python() {
+    if [ "${SKIP_PATH_FT:-0}" = 1 ]; then
+        UV_PYTHON_PREFERENCE=only-managed "$UV" python "$@"
+    else
+        "$UV" python "$@"
+    fi
+}
+
+provision_free_threaded() {
+    # Sets FT_PYTHON on success and FT_WHY on failure.  SKIP_PATH_FT=1
+    # passes over a python3.14t on PATH (one that could not make a venv)
+    # and takes only a uv-managed 3.14t.
+    if [ "${SKIP_PATH_FT:-0}" != 1 ] \
+        && command -v python3.14t >/dev/null 2>&1 && is_free_threaded python3.14t; then
+        FT_PYTHON=python3.14t
+        return 0
+    fi
+    find_uv || bootstrap_uv || return 1
+    if FT_PYTHON=$(uv_python find 3.14t 2>/dev/null) && is_free_threaded "$FT_PYTHON"; then
+        return 0
+    fi
+    say "installing free-threaded CPython 3.14t with uv"
+    if ! UV_PYTHON_INSTALL_BIN=0 uv_python install 3.14t; then
+        FT_WHY="uv could not install Python 3.14t (see its output above)"
+        return 1
+    fi
+    if FT_PYTHON=$(uv_python find 3.14t 2>/dev/null) && is_free_threaded "$FT_PYTHON"; then
+        return 0
+    fi
+    FT_WHY="uv installed Python 3.14t but did not report a free-threaded interpreter"
+    return 1
+}
+
+locked_python() {
+    if command -v python3 >/dev/null 2>&1; then
+        LOCKED_PYTHON=python3
+    elif command -v python >/dev/null 2>&1; then
+        LOCKED_PYTHON=python
+    else
+        fail "no python3/python on PATH (Python 3.11+ is required)"
+    fi
+}
+
+# A venv that fails part-way leaves .venv/bin/python behind, and the next
+# run would take the "reused" route and stop at the pip upgrade, so a
+# failed attempt is removed.  THE BREAKAGE THIS PREVENTS: a distro
+# python3.14t without its venv package (deadsnakes without
+# python3.14-venv, for one) has no ensurepip, so `-m venv` stops after
+# writing bin/python; under `set -eu` that ended the whole install.
+make_venv() {
+    say "creating .venv with $1"
+    if "$1" -m venv .venv; then
+        return 0
+    fi
+    rm -rf .venv
+    return 1
+}
+
 VENV_PY=.venv/bin/python
-"$VENV_PY" -m pip install --upgrade pip
+VENV_ROUTE=reused
+VENV_FT=0
+if [ -x "$VENV_PY" ]; then
+    say "reusing the existing .venv"
+    if is_free_threaded "$VENV_PY"; then
+        VENV_FT=1
+        say "the existing .venv is free-threaded"
+    elif [ -z "$EXPLICIT_PYTHON" ]; then
+        warn_locked "the existing .venv's Python" \
+            "that .venv was made before this installer provisioned 3.14t, or with another interpreter" \
+            "remove .venv (rm -rf .venv) and re-run ./install.sh."
+    fi
+else
+    if [ -n "$EXPLICIT_PYTHON" ]; then
+        PYTHON="$EXPLICIT_PYTHON"
+        VENV_ROUTE=explicit
+    elif provision_free_threaded; then
+        PYTHON="$FT_PYTHON"
+        VENV_ROUTE=free-threaded
+    else
+        locked_python
+        PYTHON="$LOCKED_PYTHON"
+        VENV_ROUTE=locked
+    fi
+    if ! make_venv "$PYTHON"; then
+        [ "$VENV_ROUTE" = free-threaded ] \
+            || fail "$PYTHON could not create .venv (see its output above; Ubuntu ships the venv module as python3-venv)"
+        VENV_WHY="$PYTHON could not create a venv (see its output above; a distro python3.14t without its venv package does this)"
+        VENV_MADE=0
+        # A system python3.14t that cannot make a venv does not rule out
+        # the 3.14t uv manages, which carries its own ensurepip.
+        SKIP_PATH_FT=1
+        if provision_free_threaded; then
+            PYTHON="$FT_PYTHON"
+            if make_venv "$PYTHON"; then
+                VENV_MADE=1
+            else
+                VENV_WHY="$VENV_WHY, and neither could $PYTHON"
+            fi
+        else
+            VENV_WHY="$VENV_WHY, and $FT_WHY"
+        fi
+        if [ "$VENV_MADE" != 1 ]; then
+            FT_WHY="$VENV_WHY"
+            FT_REMEDY="install that Python's venv package (python3.14-venv on deadsnakes) or uv (https://docs.astral.sh/uv/), remove .venv (rm -rf .venv) and re-run ./install.sh."
+            locked_python
+            PYTHON="$LOCKED_PYTHON"
+            VENV_ROUTE=locked
+            make_venv "$PYTHON" \
+                || fail "$PYTHON could not create .venv either (see its output above; Ubuntu ships the venv module as python3-venv)"
+        fi
+    fi
+    if is_free_threaded "$VENV_PY"; then
+        VENV_FT=1
+        say ".venv is free-threaded: multi-card slab threads run at once"
+    elif [ "$VENV_ROUTE" = explicit ]; then
+        warn_locked "$PYTHON" "it was chosen with --python or GPUWM_PYTHON" \
+            "remove .venv and re-run without --python and GPUWM_PYTHON."
+    else
+        warn_locked "$PYTHON" "${FT_WHY:-no free-threaded interpreter was found}" \
+            "${FT_REMEDY:-install uv (https://docs.astral.sh/uv/) or a python3.14t, remove .venv (rm -rf .venv) and re-run ./install.sh.}"
+    fi
+fi
 # ------------------------------------------------------------ CUDA major
 # CuPy ships ONE wheel per CUDA major and pip cannot detect the major, so
 # the extra has to name it.  Through 1.8.0 this line pasted
@@ -166,29 +404,60 @@ esac
 # while the other major's build answered, and uninstalling either broke
 # the other.  So when any CuPy other than the chosen one is present,
 # every CuPy is removed and the chosen one is installed clean below.
-CUPY_WANTED="cupy-cuda${GPU_EXTRA#gpu-cu}x"
-# A pip that cannot list the .venv stops here: reading its failure as
-# "no CuPy" would install beside a build nobody saw.
-if ! CUPY_LISTED=$("$VENV_PY" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null); then
-    fail "pip could not list the packages in .venv, so this install cannot tell which CuPy it holds (run $VENV_PY -m pip list to see why)"
-fi
-CUPY_HAVE=$(printf '%s\n' "$CUPY_LISTED" |
-    tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz' |
-    sed -n 's/^\(cupy\(-cuda[0-9][0-9]*x\)\{0,1\}\) *[=@].*/\1/p')
-CUPY_OTHER=0
-for dist in $CUPY_HAVE; do
-    [ "$dist" = "$CUPY_WANTED" ] || CUPY_OTHER=1
-done
-if [ "$CUPY_OTHER" = 1 ]; then
-    say "this .venv holds another CUDA major's CuPy ($(echo $CUPY_HAVE));"
-    say "removing every CuPy build so $CUPY_WANTED installs clean"
+# --prefer-binary on a free-threaded .venv: netCDF4's cftime publishes no
+# cp314t wheel for its newest release (1.6.6; 1.6.5 has one, read off the
+# index 2026-10-08), and without the flag pip builds the newest from
+# source, which needs a C compiler and Cython.  A locked .venv installs
+# exactly as before.
+install_python_packages() {
+    if [ "$VENV_FT" = 1 ]; then PREFER_BINARY=--prefer-binary; else PREFER_BINARY=; fi
+    "$VENV_PY" -m pip install --upgrade pip || return 1
+    CUPY_WANTED="cupy-cuda${GPU_EXTRA#gpu-cu}x"
+    # A pip that cannot list the .venv stops here: reading its failure as
+    # "no CuPy" would install beside a build nobody saw.
+    if ! CUPY_LISTED=$("$VENV_PY" -m pip list --format=freeze --disable-pip-version-check 2>/dev/null); then
+        fail "pip could not list the packages in .venv, so this install cannot tell which CuPy it holds (run $VENV_PY -m pip list to see why)"
+    fi
+    CUPY_HAVE=$(printf '%s\n' "$CUPY_LISTED" |
+        tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz' |
+        sed -n 's/^\(cupy\(-cuda[0-9][0-9]*x\)\{0,1\}\) *[=@].*/\1/p')
+    CUPY_OTHER=0
+    for dist in $CUPY_HAVE; do
+        [ "$dist" = "$CUPY_WANTED" ] || CUPY_OTHER=1
+    done
+    if [ "$CUPY_OTHER" = 1 ]; then
+        say "this .venv holds another CUDA major's CuPy ($(echo $CUPY_HAVE));"
+        say "removing every CuPy build so $CUPY_WANTED installs clean"
+        # shellcheck disable=SC2086
+        "$VENV_PY" -m pip uninstall -y $CUPY_HAVE || return 1
+    fi
+    say "installing the matching gpuwm-data companion from this checkout (editable)"
     # shellcheck disable=SC2086
-    "$VENV_PY" -m pip uninstall -y $CUPY_HAVE
+    "$VENV_PY" -m pip install $PREFER_BINARY -e gpuwm-data || return 1
+    say "installing gpuwm with the [$GPU_EXTRA,render] extras (editable)"
+    # shellcheck disable=SC2086
+    "$VENV_PY" -m pip install $PREFER_BINARY -e ".[$GPU_EXTRA,render]" || return 1
+}
+
+# A dependency that will not install under 3.14t (no cp314t wheel and an
+# sdist that does not build) must not cost the user the whole install: a
+# .venv this run made on 3.14t by default is remade on python3 and the
+# install goes on, saying what that costs.  A reused .venv, or one made
+# from an interpreter the user named, is never removed.
+if ! install_python_packages; then
+    [ "$VENV_ROUTE" = free-threaded ] \
+        || fail "pip could not install gpuwm into .venv (see its output above)"
+    locked_python
+    warn_locked "$LOCKED_PYTHON" \
+        "a dependency did not install under 3.14t (see pip's output above), so this run remade .venv on $LOCKED_PYTHON" \
+        "once that package installs under 3.14t, remove .venv (rm -rf .venv) and re-run ./install.sh."
+    rm -rf .venv
+    make_venv "$LOCKED_PYTHON" \
+        || fail "$LOCKED_PYTHON could not create .venv (see its output above; Ubuntu ships the venv module as python3-venv)"
+    VENV_FT=0
+    install_python_packages \
+        || fail "pip could not install gpuwm into .venv (see its output above)"
 fi
-say "installing the matching gpuwm-data companion from this checkout (editable)"
-"$VENV_PY" -m pip install -e gpuwm-data
-say "installing gpuwm with the [$GPU_EXTRA,render] extras (editable)"
-"$VENV_PY" -m pip install -e ".[$GPU_EXTRA,render]"
 
 # ------------------------------------------------------- externalized tables
 # The two largest Thompson tables ship as GitHub release assets rather
@@ -202,36 +471,6 @@ else
     say "staging the externalized Thompson tables (downloads only what"
     say "is absent -- ~243 MiB from a checkout; SHA-256 verified)"
     .venv/bin/gpuwm fetch-tables
-fi
-
-# ---------------------------------------------------------------- rust/cargo
-# A rustup installed earlier in this same run (or a previous one) lives in
-# ~/.cargo/bin before it reaches PATH, so look there too.
-PATH="$HOME/.cargo/bin:$PATH"
-if command -v cargo >/dev/null 2>&1; then
-    say "cargo found: $(command -v cargo)"
-else
-    say "cargo was not found; the Rust GRIB bridges need a Rust toolchain."
-    if [ "$YES" != 1 ]; then
-        if [ -r /dev/tty ]; then
-            printf 'install: install rustup (https://rustup.rs) now? [y/N] '
-            read -r answer < /dev/tty || answer=""
-            case "$answer" in
-                y|Y|yes|YES) YES=1 ;;
-            esac
-        fi
-    fi
-    if [ "$YES" != 1 ]; then
-        fail "cargo is missing and consent to install rustup was not \
-given; re-run with --yes (or GPUWM_INSTALL_YES=1), or install a Rust \
-toolchain yourself and re-run"
-    fi
-    command -v curl >/dev/null 2>&1 || fail "curl is required to fetch rustup"
-    say "installing rustup (stable toolchain, PATH left unmodified)"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --no-modify-path
-    command -v cargo >/dev/null 2>&1 \
-        || fail "rustup finished but cargo is still not on PATH"
 fi
 
 # ------------------------------------------------------- offline Rust build

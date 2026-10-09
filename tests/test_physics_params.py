@@ -320,7 +320,7 @@ def test_an_active_set_rewrites_exactly_its_literals():
     assert "MYNN_MUL(0.23f, elt)" in pbl
     assert "MYNN_DIV(0.33f, MYNN_MUL(" in pbl
     surface = pp.edit_kernel_source("mynn_surface", _cu("mynn_surface"))
-    assert "expf(-0.4f * 0.1f * sqrtf(restar))" in surface
+    assert "SL_EXP(-0.4f * 0.1f * sqrtf(restar))" in surface
     # Everything else in the unit is byte-for-byte the file.
     assert len(surface) == len(_cu("mynn_surface")) - len("0.085f") + len("0.1f")
     other = _cu("ysu")

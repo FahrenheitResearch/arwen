@@ -26,34 +26,26 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 from build_registry import canonical_json  # noqa: E402
 
 YSU_WARNINGS = [
-    "YSU RUNS and its distance from WRF is now MEASURED rather than assumed. "
-    "Until 2026-07-26 this option was maturity 'supported' with no warnings "
-    "and no WRF number of any kind: the CUDA kernel had only ever been "
-    "compared to gpuwm.verify.npref.np_ysu_column, a float64 mirror of the "
-    "same transcription, so a misread line agreed with itself. "
-    "tools/ysu_wrf461_oracle now drives bl_ysu_run in the byte-unmodified "
-    "phys/physics_mmm/bl_ysu.F90 at the pinned commit and dumps 24 columns x "
-    "40 levels of inputs and outputs. Measured on two RTX 5090s with "
-    "identical maxima (tests/test_ysu_wrf461_parity.py): potential-temperature "
-    "tendency 1 ULP, EXCH_H/EXCH_M 7 ULP (2.4e-04 m2/s), PBLH/WSTAR/DELTA 1 "
-    "ULP, KPBL exact, and the momentum and moisture tendencies 1457 and 23302 "
-    "ULP -- which is 4.2e-08 m/s2 and 3.1e-11 kg/kg/s in absolute terms, "
-    "because those tendencies are near-total cancellations that amplify a "
-    "7-ULP diffusivity. What remains is CUDA's expf/powf against glibc's; "
-    "respelling ust**3, cbrtf and WRF's exact association for fric, xkzm, "
-    "prnumfac and entfac was measured and changes none of it.",
-
-    "CORRECTNESS BUG, not a parity gap: a POSITIVE SUBNORMAL BR selects the "
-    "WRONG STABILITY REGIME. WRF's test is br > 0.0 (bl_ysu.F90:613); the "
-    "kernel's is br <= 0.0f, and CuPy appends -ftz=true unconditionally, so a "
-    "br of 1.4e-45 flushes to zero and the kernel takes the CONVECTIVE arm "
-    "where WRF takes the STABLE one. Measured on that column: WSTAR 0.236 "
-    "against WRF's 0, DELTA 18.49 against WRF's 0, PBLH 1525 ULP out, and "
-    "every tendency 1e7 to 1e8 ULP out. The smallest NORMAL br (1.17549435e-38) "
-    "agrees exactly, which is how the cause is known to be the flush and not "
-    "the operator. This is the FOURTH time -ftz has produced a real bug in "
-    "this tree. Closing it needs a compare that cannot be flushed; --ftz=false "
-    "is not available through CuPy.",
+"YSU RUNS and is BITWISE against WRF on its oracle. Until 2026-07-26 "
+    "this option was maturity 'supported' with no warnings and no WRF "
+    "number of any kind: the CUDA kernel had only ever been compared to "
+    "gpuwm.verify.npref.np_ysu_column, a float64 mirror of the same "
+    "transcription. tools/ysu_wrf461_oracle drives bl_ysu_run in the "
+    "byte-unmodified phys/physics_mmm/bl_ysu.F90 at the pinned commit and "
+    "dumps 24 columns x 40 levels of inputs and outputs. Since "
+    "lane/parity-286 (2026-10-05) every word the kernel writes on the 22 "
+    "columns that take WRF's branches is WRF's word "
+    "(tests/test_ysu_wrf461_parity.py, RTX PRO 6000 under NVRTC 13.4.92 and"
+    " 12.9.86 alike), except 11 subnormal tendencies the card flushes "
+    "(below). That took: glibc's powf and expf in place of CUDA's, every "
+    "real-exponent ** spelled as the powf call gfortran makes, WRF's "
+    "association expression by expression, the unit compiled without "
+    "multiply-add contraction, WRF's thx = (th*pi)/pi and (ttend*pi)/pi "
+    "round trips, the br > 0 regime compare made in double so a positive "
+    "subnormal br takes WRF's stable arm, and WRF's ctopo surface-drag arm "
+    "(bl_ysu.F90:1308), which WRF's driver passes on every run "
+    "(module_bl_ysu.F:404), in place of the ctopo-absent arm no WRF run "
+    "reaches.",
 
     "gpuwm SHORT CIRCUITS a case WRF computes. kernels/ysu.cu:250 returns zero "
     "tendencies, PBLH = dz(1) and KPBL = 1 whenever UST, HFX and QFX are all "
@@ -73,23 +65,12 @@ YSU_WARNINGS = [
     "kernels/ysu.cu:437 guards that access with kpbl < nz and skips the "
     "top-down block instead.",
 
-    "THE ARM WRF ACTUALLY USES IS NOT THE ARM THIS PORT IMPLEMENTS. "
-    "module_bl_ysu.F:404 always passes ctopo and ctopo2, and the Registry "
-    "default (topo_wind=0) fills both with 1.0, so every default WRF column "
-    "takes bl_ysu.F90:1308 -- ad(i,1) = 1+fric*vconvlim+ctopo*fric*(1-vconvlim) "
-    "-- which needs the paj TKE block, GET_PBLH and the Beljaars vconv, none of "
-    "which is ported. kernels/ysu.cu implements bl_ysu.F90:1315, "
-    "ad(i,1) = 1+fric, and "
-    "has no ctopo argument. Measured WRF against WRF on the same fixture: the "
-    "two arms differ by up to 182 ULP (1.1e-08 m/s2) on 6 of 960 lanes, "
-    "wherever vconvlim < 1. Small, but it means the port cannot be bitwise "
-    "against a default WRF run even with everything else closed.",
-
     "-ftz=true also FLUSHES SUBNORMAL TENDENCIES to exactly zero. Eleven lanes "
     "of the oracle fixture carry a subnormal qv/qc/qi tendency from WRF and the "
     "kernel writes zero in all eleven, which reads as up to 207470 ULP but is "
     "3.3e-13 kg/kg/s. Physically nil; it is recorded because it is the same "
-    "mechanism as the br bug above, where the consequence was not nil.",
+    "mechanism as the subnormal-br regime bug closed above, where the "
+    "consequence was not nil.",
 
     "UNVERIFIED against a WRF forecast. The oracle compares one YSU call at a "
     "time on synthetic columns. No gpuwm/WRF trajectory comparison exists for "

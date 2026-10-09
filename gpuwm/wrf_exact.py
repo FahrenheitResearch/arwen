@@ -16,14 +16,26 @@ from pathlib import Path
 import threading
 
 ENABLED = os.environ.get("GPUWM_WRF_EXACT", "0") == "1"
-DIAGNOSTICS_ENABLED = (ENABLED and
-    os.environ.get("GPUWM_WRF_EXACT_DIAGNOSTICS", "0") == "1")
-ADVECTION_ENABLED = (ENABLED and
-    os.environ.get("GPUWM_WRF_EXACT_ADVECTION", "0") == "1")
-DIFFUSION_ENABLED = (ENABLED and
-    os.environ.get("GPUWM_WRF_EXACT_DIFFUSION", "0") == "1")
-BIGSTEP_ENABLED = (ENABLED and
-    os.environ.get("GPUWM_WRF_EXACT_BIGSTEP", "0") == "1")
+
+#: The four strict controls.  Under ``GPUWM_WRF_EXACT=1`` each one is ON
+#: unless its variable is set to ``0``: strict mode is WRF's arithmetic,
+#: and with any control off the very first operation of a forecast already
+#: leaves WRF (the combo sweep of 2026-10-07 ran ``GPUWM_WRF_EXACT=1``
+#: alone, and the stage-1 pressure diagnosis differed in ~90 % of words
+#: before any tendency; round2/LOCALIZE.md).  ``=0`` keeps a control off
+#: for an experiment that measures one control at a time.
+CONTROL_VARIABLES = ("GPUWM_WRF_EXACT_DIAGNOSTICS", "GPUWM_WRF_EXACT_ADVECTION",
+                     "GPUWM_WRF_EXACT_DIFFUSION", "GPUWM_WRF_EXACT_BIGSTEP")
+
+
+def _control(name: str) -> bool:
+    return ENABLED and os.environ.get(name, "1") != "0"
+
+
+DIAGNOSTICS_ENABLED = _control("GPUWM_WRF_EXACT_DIAGNOSTICS")
+ADVECTION_ENABLED = _control("GPUWM_WRF_EXACT_ADVECTION")
+DIFFUSION_ENABLED = not ENABLED or _control("GPUWM_WRF_EXACT_DIFFUSION")
+BIGSTEP_ENABLED = _control("GPUWM_WRF_EXACT_BIGSTEP")
 STRICT_OPTIONS = ("--fmad=false", "--ftz=false", "--prec-div=true",
                   "--prec-sqrt=true", "-DGPUWM_WRF_EXACT=1")
 for _selected, _macro in (
@@ -40,6 +52,13 @@ _OVERRIDDEN = {"fmad", "ftz", "prec-div", "prec-sqrt", "use_fast_math",
                "DGPUWM_WRF_EXACT_C_BIGSTEP"}
 _RECORDS: list[dict] = []
 _LOCK = threading.Lock()
+
+
+def effective_controls() -> dict[str, bool]:
+    """Which strict controls this process runs (receipts record these, not
+    only the environment, because an unset control is on)."""
+    return {"diagnostics": DIAGNOSTICS_ENABLED, "advection": ADVECTION_ENABLED,
+            "diffusion": DIFFUSION_ENABLED, "bigstep": BIGSTEP_ENABLED}
 
 
 def effective_options(options) -> tuple[str, ...]:
@@ -63,7 +82,8 @@ def _record(kind, source, options):
 def compile_receipt() -> dict:
     """Requests include cache hits; NVRTC entries identify actual compilations."""
     with _LOCK:
-        return {"enabled": ENABLED, "strict_options": list(STRICT_OPTIONS),
+        return {"enabled": ENABLED, "controls": effective_controls(),
+                "strict_options": list(STRICT_OPTIONS),
                 "records": list(_RECORDS)}
 
 

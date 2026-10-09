@@ -460,6 +460,15 @@ HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE = {
 #: site.  ``test_the_analyzed_inventory_tuple_and_its_moist_packages_agree``
 #: pins the two equal.
 HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
+# Named schemes with the six-mass moist package retain every analysed
+# hydrometeor (capability row, gpuwm.microphysics_schemes).
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+for _s in _NAMED_MP_SCHEMES.values():
+    if _s.ice_mass_species == ("qi", "qs", "qg"):
+        HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE[_s.mp_id] = {
+            "registry_citation": f"gpuwm.microphysics_schemes:{_s.name}",
+            "retained": HRRR_ANALYZED_HYDROMETEORS}
+        HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS += (_s.mp_id,)
 
 # WRF v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28:
 # dyn_em/module_initialize_real.F:1859-1977 interpolates QR/QC/QI/QS/QG one

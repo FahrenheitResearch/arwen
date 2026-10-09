@@ -7737,6 +7737,30 @@ def warn_completed_fields(summary: Mapping[str, Mapping[str, object]], *,
         )
 
 
+def warn_unpublished_bindings(records, *, subject: str) -> None:
+    """Say once which contributing fields start from a recorded fallback."""
+
+    for record in records:
+        alignment = record.get("alignment")
+        if not isinstance(alignment, Mapping) or alignment.get("status") != "UNPUBLISHED":
+            continue
+        fallback = dict(alignment.get("fallback") or {})
+        files = ", ".join(Path(str(row.get("path"))).name
+                          for row in record.get("data", ()))
+        for name, fallback_id in sorted(fallback.items()):
+            warn(
+                f"{subject}'s {record.get('binding')} files ({files}) publish no "
+                f"{name.replace('_', ' ')} record; it starts from "
+                f"{fallback_id}, recorded in the preparation receipt",
+                why=("HRRR surface files before 2020-12-02 (HRRRv3) carry no "
+                     "vegetation fraction.  The start then reads the static "
+                     "GREENFRAC monthly climatology interpolated to the start "
+                     "date, as WPS does, and the receipt's contributing source "
+                     "says so (status UNPUBLISHED, with the fallback id)."),
+                once=True,
+            )
+
+
 def mapped_frame_receipt(
     mapping_path: str | Path,
     files: Sequence[str | Path],

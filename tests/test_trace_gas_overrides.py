@@ -144,9 +144,12 @@ def test_legacy_sw_n2o_interface_is_not_claimed_as_absorption():
 
 
 def test_modern_preserves_noaa_defaults_and_accepts_ordinary_oxygen():
-    from gpuwm.core.rrtmgp import trace_gases, coefficient_gas_names, load_gas_tables
+    from gpuwm.core.rrtmgp import trace_gases, coefficient_gas_names
     assert trace_gases(datetime(1974,1,1)) == {"co2": 336.85*1e-6}
     assert trace_gases(datetime(1974,1,1), {"co2": 330e-6,"o2": .209488}) == {
         "co2": 330e-6, "o2": .209488}
+    # The decoded tables' own gas list is compared with these names in
+    # tests/test_k_distribution_receipt_native.py; here, without a decoder,
+    # oxygen must be a named absorber of both tables.
     for kind in ("lw", "sw"):
-        assert coefficient_gas_names(kind) == load_gas_tables(kind).gas_names
+        assert "o2" in coefficient_gas_names(kind)

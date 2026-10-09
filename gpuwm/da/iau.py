@@ -358,6 +358,15 @@ class IauStepTendencies:
             target = getattr(state, slot)
             target += rate
 
+    def strict_stage_tendencies(self):
+        """IAU rates already carry the slow-slot map scaling.
+
+        Strict physics and scalars have been folded into held slots. Keep
+        only the five dynamics rates here, including geopotential, so they
+        enter each RK stage once without a second map-factor division.
+        """
+        return IauStepTendencies(None, self.slow, {})
+
     def scalar_for(self, name: str):
         own = self.scalars.get(name)
         base = (self.base.scalar_for(name) if self.base is not None
@@ -375,6 +384,8 @@ class IauStepTendencies:
     def __getattr__(self, name):
         base = self.__dict__.get("base")
         if base is None:
+            if name in ("ru", "rv", "rw", "rtheta"):
+                return None
             raise AttributeError(name)
         return getattr(base, name)
 

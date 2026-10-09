@@ -33,11 +33,15 @@ implementation. All nine acoustic routine groups match the compiled WRF
 oracle across the retained fixture corpus. Whole-forecast identity remains
 a separate measurement.
 
-Additional experiment switches select separately measured controls:
-`GPUWM_WRF_EXACT_BIGSTEP=1`, `GPUWM_WRF_EXACT_ADVECTION=1`,
-`GPUWM_WRF_EXACT_DIFFUSION=1` and
-`GPUWM_WRF_EXACT_DIAGNOSTICS=1`. They require `GPUWM_WRF_EXACT=1` and must be
-set before import. Their presence is not a claim of routine identity.
+Four controls are part of strict mode and are on whenever
+`GPUWM_WRF_EXACT=1` is set: big-step, advection, diffusion and diagnostics.
+Setting `GPUWM_WRF_EXACT_BIGSTEP=0`, `GPUWM_WRF_EXACT_ADVECTION=0`,
+`GPUWM_WRF_EXACT_DIFFUSION=0` or `GPUWM_WRF_EXACT_DIAGNOSTICS=0` before import
+turns one off, for an experiment that measures the controls one at a time.
+Until 2026-10-07 they were opt-in, and a strict run with none of them set left
+WRF at the first pressure diagnosis of the first step. Compile receipts and
+`gpuwm verify-exact` headers record the effective controls, not only the
+environment. Their presence is not a claim of routine identity.
 
 The big-step control restores pressure-force interpolation, Coriolis and
 curvature sums and tendency application, native PH/PHB geopotential differences,

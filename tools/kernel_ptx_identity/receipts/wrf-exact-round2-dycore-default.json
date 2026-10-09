@@ -1,0 +1,120 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "base2",
+  "base3"
+ ],
+ "nvrtc_version": [
+  12,
+  9
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "dycore": {
+   "file_sha256": {
+    "base2": "dc89c74d8ac33880a8fa697d955f2c96a8bdfd863afc12e3095c06953049bc81",
+    "base3": "6fac24715246c192644b0f4f391599dc7fa7572718512aad21ce3bdd04c5e978"
+   },
+   "assembled_source_sha256": {
+    "base2": "2b6f1337d83bfaa691db85e762505a88276f52f81e7cf412b6a03b1bb5a63255",
+    "base3": "af786cd292ba6f627253762c34ac2aa416739ffc014eafa85029a09e5cf22ee0"
+   },
+   "entries": [
+    "slow_buoyancy",
+    "slow_geopotential",
+    "slow_geopotential_faces",
+    "slow_geopotential_open",
+    "slow_geopotential_vertical",
+    "slow_pgf",
+    "small_step_finish_column",
+    "small_step_finish_uv",
+    "small_step_init_column",
+    "small_step_init_uv"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base2": "cccaef4dfce9b905769b6d0c7633c68960f9819047a70b4b4074dc0814ad9c5c",
+      "base3": "cccaef4dfce9b905769b6d0c7633c68960f9819047a70b4b4074dc0814ad9c5c"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base2": "4fb60d2421f590b389a48a794c2283e1952d199ad7c720a1395885814872d0b2",
+      "base3": "4fb60d2421f590b389a48a794c2283e1952d199ad7c720a1395885814872d0b2"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base2": "21eaa8ceb8f6ee9dc2ae4b33c03fba8761abd4113c50efece606f9a438bba43f",
+      "base3": "21eaa8ceb8f6ee9dc2ae4b33c03fba8761abd4113c50efece606f9a438bba43f"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base2": "c8f33cb63aed08dab2c6dc631a7ef8cbb3879e5707490dbd3bc474249756a425",
+      "base3": "c8f33cb63aed08dab2c6dc631a7ef8cbb3879e5707490dbd3bc474249756a425"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base2": "f6d6694ff3f3b22913a679cc31f0330effb3e9f6654d5f86998aaf9c19f61d6a",
+      "base3": "f6d6694ff3f3b22913a679cc31f0330effb3e9f6654d5f86998aaf9c19f61d6a"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "base2": "da8c7e261a763d7a927cd528416ca45d9a423731cbce0474b62765ba68f34abc",
+      "base3": "da8c7e261a763d7a927cd528416ca45d9a423731cbce0474b62765ba68f34abc"
+     },
+     "entry_compared": 10,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

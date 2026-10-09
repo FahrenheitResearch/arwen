@@ -151,6 +151,11 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
              | set(pf.state_array_shapes(my2_cfg))
              | set(pf.state_array_shapes(wdm6_cfg))
              | set(pf.state_array_shapes(gf_cfg)))
+    # Strict WRF arithmetic attaches its own carriers at first write, outside
+    # DomainState's allocation list (c501f4d34, lane/wrf-exact-start); they
+    # are classified, so they join the union by name.
+    assert restart.STRICT_LAZY_STATE_ATTRS <= restart.STATE_REBUILT_ATTRS
+    names |= set(restart.STRICT_LAZY_STATE_ATTRS)
     classified = (set(restart.STATE_SERIALIZED_ATTRS)
                   | set(restart.STATE_REBUILT_ATTRS)
                   | set(restart.CHECKPOINT_ONLY_STATE)
@@ -479,7 +484,13 @@ def test_scratch_registry_feature_matrix(d01_cfg):
     assert kessler["mp_kessler_sr"] == (6, 8)
     assert kessler["openbc_upp_faces"] == (4, 6, 2)
     assert kessler["openbc_vpp_faces"] == (4, 2, 8)
-    assert kessler["diff_u"] == (4, 6, 9)
+    # km_opt = 1 with khdif/kvdif runs WRF's diff_opt = 2 package, so its
+    # slots are priced (the retired constant-K operator's diff_* were
+    # priced in their place, and the package's were missing).
+    assert "diff_u" not in kessler
+    assert kessler["smag_km"] == kessler["smag_kmv"] == (4, 6, 8)
+    assert kessler["smag_ru"] == (4, 6, 9) and kessler["smag_rqv"] == (4, 6, 8)
+    assert kessler["diff6_x"] == (4, 6, 9) and kessler["diff6_y"] == (4, 7, 8)
     assert kessler["physics_validation_status"] == (1,)
     # Open boundaries: PD final stage disabled -> no pd_* slots; not
     # specified -> no LBC residents.
@@ -971,7 +982,6 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
         ("gpuwm/core/dycore.py", "_couple_dry_mixing_map_factor"),
         ("gpuwm/core/dycore.py", "add_fixed_dry_tendencies"),
         ("gpuwm/core/dycore.py", "apply_diff6"),
-        ("gpuwm/core/diffusion.py", "add_diffusion_tendencies"),
         ("gpuwm/core/physics.py", "__init__"),
         ("gpuwm/io/restart.py", "_apply_validated_restart"),
         ("gpuwm/io/restart.py", "_restore_driver"),
@@ -1368,6 +1378,8 @@ def test_mp28_scratch_registry_is_complete():
         "mp_thompson_aero_nrten",
         "mp_thompson_aero_qiten",
         "mp_thompson_aero_niten",
+        "mp_thompson_aero_qvten",
+        "mp_thompson_aero_tten",
         "mp_thompson_aero_condensation_rate",
     )}
     assert aerosol.items() <= slots.items()

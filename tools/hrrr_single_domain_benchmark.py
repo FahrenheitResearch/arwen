@@ -32,6 +32,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpuwm import runtime_manifest  # noqa: E402
+from gpuwm.ingest.hrrr import _read_gate, aerosol_fill_receipt  # noqa: E402
 from gpuwm.ingest.preprocess_backend import preprocess_math_call
 from gpuwm.aerosol_source_receipt import (  # noqa: E402
     AEROSOL_SOURCE_KEY,
@@ -3062,8 +3063,17 @@ def _detach_mapped_snapshot(met):
 
 def _map_boundary_snapshot(
         snapshot, targets, mapping_report, *,
-        surface_fallback_radius: int = 8, preprocess_backend="cuda"):
-    """Map only four boundary strips, avoiding a disposable full-domain hour."""
+        surface_fallback_radius: int = 8, preprocess_backend="cuda",
+        domain_grid=None):
+    """Map only four boundary strips, avoiding a disposable full-domain hour.
+
+    ``domain_grid`` is the domain the strips were cut from.  Each strip is
+    mapped with it as its lattice parent, so the strips of a domain that
+    IS the native HRRR grid take the identity route its start state took;
+    without it they were interpolated and their edge points refused
+    (acceptance D-05, 2.8.8: the full 1800 x 1060 grid died in its first
+    boundary hour, "HRRR bridge window lacks the bilinear donor cell").
+    """
     from gpuwm.ingest.hrrr import interpolate_hrrr_to_lambert
 
     started = time.perf_counter()
@@ -3079,7 +3089,8 @@ def _map_boundary_snapshot(
             # Four strips are mapped independently here, so a soil
             # refusal that named only "soil mapping" left a coastal
             # domain's owner with four identical-looking suspects.
-            target_name=f"the {side} boundary strip of domain 1")
+            target_name=f"the {side} boundary strip of domain 1",
+            lattice_parent=domain_grid)
         compact[side] = _detach_mapped_snapshot(met)
         side_reports[side] = side_report
         del met
@@ -5211,7 +5222,8 @@ def run(args):
                         hour_snapshot, boundary_targets, mapping,
                         surface_fallback_radius=(
                             target.surface_fallback_radius_cells),
-                        preprocess_backend=hour_preprocess)
+                        preprocess_backend=hour_preprocess,
+                        domain_grid=grid)
                     if physical_output is not None:
                         # Capture is observational: the ordinary boundary strips
                         # above remain the exact arrays the initializer consumes.
@@ -5737,6 +5749,7 @@ def run(args):
             },
             "input": {
                 "bridge": str(args.bridge.resolve()),
+                "aerosol_missing": aerosol_fill_receipt(_read_gate(args.bridge)),
                 "bridge_manifest_sha256": args.manifest_sha256,
                 "source_manifest_sha256": args.source_manifest_sha256,
                 # Present only when a runtime surface field started from its
@@ -6114,6 +6127,7 @@ def run(args):
         },
         "input": {
             "bridge": str(args.bridge.resolve()),
+                "aerosol_missing": aerosol_fill_receipt(_read_gate(args.bridge)),
             "bridge_manifest_sha256": args.manifest_sha256,
             "source_manifest_sha256": args.source_manifest_sha256,
             # Present only when a runtime surface field started from its

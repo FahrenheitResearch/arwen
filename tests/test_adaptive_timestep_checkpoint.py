@@ -27,6 +27,8 @@ import pytest
 import gpuwm.io.restart as restart
 from gpuwm.core.model import ADAPTIVE_TIMESTEP_RUN_FIELDS
 from test_restart import (_HISTORICAL_FORMAT_VERSION,
+                                _PINNED_UNDER_MEASURED_CLOCK,
+                                _PRE_REAL_CLAMP_ALGORITHMS,
                                 _VOLATILE_CHECKPOINT_HEADER,
                                 _canonical_member_digest,
                                 _sealed_tree_fixture)
@@ -51,6 +53,9 @@ def _digest_without_the_adaptive_config_keys(
 
     The named historical arm also restores the moist_cq value recorded
     before e13fa45c0 / 59f7e280f. It changes no array or non-config header.
+    The anchor also predates 2.8.8's Kessler identity move
+    (gfix/288-mp-clamp), so every arm names the v1 identity again and
+    recomputes the fingerprint from it.
     """
     with np.load(path, allow_pickle=False) as data:
         header = json.loads(bytes(bytearray(
@@ -77,6 +82,9 @@ def _digest_without_the_adaptive_config_keys(
         setup = copy.deepcopy(header["physics_setup"])
         setup["configuration_sha256"] = restart._json_sha256(
             restart._json_value(values, "RunConfig"))
+        for component, identity in _PRE_REAL_CLAMP_ALGORITHMS.items():
+            assert component in setup["algorithms"], component
+            setup["algorithms"][component] = identity
         header["physics_setup"] = setup
         header["physics_setup_fingerprint"] = restart._json_sha256(setup)
         digest = hashlib.sha256()
@@ -94,7 +102,8 @@ def _digest_without_the_adaptive_config_keys(
 
 def _write(monkeypatch, tmp_path):
     source, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
     root = restart.write_tree_restart(
         tmp_path, source, start + timedelta(seconds=3600))
     child = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))

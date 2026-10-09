@@ -752,6 +752,9 @@ def restart_identity_payload(exp) -> dict:
             run.pop("bl_mynn_gsd41_unsquared_qtke", None)
         if run.get("bl_mynn_cloud_tendency_form", "wrf_461") == "wrf_461":
             run.pop("bl_mynn_cloud_tendency_form", None)
+        # WRF's cycling flag, omitted at its .false. default.
+        if run.get("cycling", False) is False:
+            run.pop("cycling", None)
         # ... and the MYNN surface-layer generation, omitted at its wrf_461
         # default (what every earlier build ran) so no fingerprint moves.
         if run.get("mynn_sfclay_variant", "wrf_461") == "wrf_461":
@@ -840,6 +843,9 @@ def restart_identity_payload(exp) -> dict:
         # fingerprint written before the field ran under, so it drops
         # out; "pinned" binds, because the same configured clock then
         # integrates where the measured rule might have divided it.
+        # "local_face", the default from 2.8.8, binds too: it can run a
+        # longer step than "measured" on the same grid, so a run under it
+        # is not the trajectory an absent key names.
         if run.get("terrain_clock", "measured") == "measured":
             run.pop("terrain_clock", None)
         # Earlier runs held shortwave between calls, used zero aerosol,

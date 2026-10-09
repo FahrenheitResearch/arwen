@@ -72,8 +72,11 @@ from gpuwm.core.thompson_aerosol_sed import (
     VERTICAL_LEVEL_BOUNDS,
     launch_aa_cloud_sedimentation,
     launch_aa_final_phase_cleanup,
+    launch_aa_graupel_sedimentation,
     launch_aa_ice_sedimentation_accumulate,
     launch_aa_rain_sedimentation_accumulate,
+    launch_aa_snow_sedimentation,
+    launch_aa_surface_precipitation,
 )
 from gpuwm.core.thompson_aerosol_state import (
     AEROSOL_CEILING,
@@ -85,9 +88,14 @@ from gpuwm.core.thompson_aerosol_state import (
     PROFILE_FILL_EPS,
     R1,
     aerosol_profile_needs_fill,
+    launch_aa_entry_warm_mask,
+    launch_aa_graupel_number_finalize,
+    launch_aa_graupel_number_init,
+    launch_aa_refl10cm,
     launch_aerosol_effective_radius,
     launch_aerosol_entry_cloud_number,
     launch_aerosol_entry_snapshot,
+    launch_aerosol_exner,
     launch_aerosol_init_profile,
     launch_aerosol_micro_columns,
     launch_aerosol_state_finalize,
@@ -114,6 +122,7 @@ AEROSOL_LAUNCHERS: dict[str, tuple[str, ...]] = {
         # the same gate: the accumulator zeroing is a call the adapter must
         # make, in a position the order test pins.
         "zero_aerosol_accumulators",
+        "launch_aerosol_exner",
         "launch_aerosol_entry_snapshot",
         "launch_aerosol_entry_cloud_number",
         "launch_aerosol_micro_columns",
@@ -125,6 +134,10 @@ AEROSOL_LAUNCHERS: dict[str, tuple[str, ...]] = {
         "launch_aerosol_surface_emission",
         "launch_aerosol_init_profile",
         "launch_aerosol_effective_radius",
+        "launch_aa_graupel_number_init",
+        "launch_aa_graupel_number_finalize",
+        "launch_aa_refl10cm",
+        "launch_aa_entry_warm_mask",
     ),
     "gpuwm.core.thompson_aerosol_cold": (
         "launch_aa_cold_network",
@@ -142,30 +155,26 @@ AEROSOL_LAUNCHERS: dict[str, tuple[str, ...]] = {
     "gpuwm.core.thompson_aerosol_sed": (
         "launch_aa_cloud_sedimentation",
         "launch_aa_ice_sedimentation_accumulate",
+        "launch_aa_snow_sedimentation",
+        "launch_aa_graupel_sedimentation",
         "launch_aa_rain_sedimentation_accumulate",
+        "launch_aa_surface_precipitation",
         "launch_aa_final_phase_cleanup",
     ),
 }
 
 #: The classic (frozen mp=8) launchers the mp=28 adapter reuses UNCHANGED.
 #: Listed here for the call-order gate only; they are NOT re-exported.
-#: The v4.6.1 generation's rain and ice fallout are its own accumulator
-#: kernels (launch_aa_rain/ice_sedimentation_accumulate) and the fork's are
-#: its own THOMPSON_AA_WRF39 kernels, so no classic rain or ice launcher is
-#: reused.
-#:
-#: Every name is verified above to contain no aerosol reference:
-#: module_mp_thompson.F:3790-3936 (the four reused fallout blocks) has no
-#: ``is_aerosol_aware`` branch and no nc/nwfa/nifa reference at all, and the
-#: classic graupel-number diagnostic is identical because ``is_hail_aware``
-#: is false for mp=8 and mp=28 alike.
+#: Only the two column masks, pure reductions over mass with nothing to
+#: round.  The v4.6.1 generation's rain, ice, snow and graupel fallout, its
+#: classic graupel-number entry and exit and its 10 cm echo are its own
+#: kernels: thompson.cu's and refl.cu's are byte-frozen for mp=8 and their
+#: arithmetic is not WRF's (the 0 ULP column oracle,
+#: tools/thompson_aerosol_column_oracle, measured them).  The fork's fallout
+#: is its own THOMPSON_AA_WRF39 kernels.
 REUSED_CLASSIC_LAUNCHERS: tuple[str, ...] = (
-    "launch_classic_graupel_number_init",
-    "launch_classic_graupel_number_finalize",
     "launch_hydrometeor_column_mask",
     "launch_graupel_fallout_column_mask",
-    "launch_snow_sedimentation",
-    "launch_graupel_sedimentation",
 )
 
 #: What the fork generation (thompson_version = "wrf_39_noaa") reuses on top
@@ -237,12 +246,20 @@ __all__ = [
     "launch_aa_cloud_sedimentation",
     "launch_aa_cold_network",
     "launch_aa_cold_network_from_owner",
+    "launch_aa_entry_warm_mask",
     "launch_aa_final_phase_cleanup",
+    "launch_aa_graupel_number_finalize",
+    "launch_aa_graupel_number_init",
+    "launch_aa_graupel_sedimentation",
     "launch_aa_ice_sedimentation_accumulate",
     "launch_aa_rain_sedimentation_accumulate",
+    "launch_aa_refl10cm",
+    "launch_aa_snow_sedimentation",
+    "launch_aa_surface_precipitation",
     "launch_aerosol_effective_radius",
     "launch_aerosol_entry_cloud_number",
     "launch_aerosol_entry_snapshot",
+    "launch_aerosol_exner",
     "launch_aerosol_init_profile",
     "launch_aerosol_micro_columns",
     "launch_aerosol_rain_evaporation",

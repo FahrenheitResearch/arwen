@@ -29,6 +29,7 @@ pub mod panel;
 pub mod ensemble_products;
 pub mod ensemble_reduce;
 pub mod sfire;
+pub mod snowfall;
 pub mod domain_naming;
 
 #[path = "grib_import.rs"]

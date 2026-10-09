@@ -1,0 +1,101 @@
+{
+ "label": "verify base 91de806e2: WRF -O0 vs WOOF, GPUWM_WRF_EXACT=1 alone",
+ "columns": 576,
+ "cases": 9,
+ "arms": [
+  "iso0_sfx0",
+  "iso1_sfx1",
+  "iso0_sfx2",
+  "iso1_seed"
+ ],
+ "words": 1158624,
+ "different": 568908,
+ "max_ulp": 48852992,
+ "fields": {
+  "kmh": {
+   "words": 92160,
+   "different": 17416,
+   "max_ulp": 34746,
+   "max_abs": 0.04970359802246094
+  },
+  "kmv": {
+   "words": 92160,
+   "different": 45228,
+   "max_ulp": 34746,
+   "max_abs": 0.04970359802246094
+  },
+  "khh": {
+   "words": 92160,
+   "different": 17364,
+   "max_ulp": 53930,
+   "max_abs": 0.20572662353515625
+  },
+  "khv": {
+   "words": 92160,
+   "different": 47860,
+   "max_ulp": 5292,
+   "max_abs": 0.0025234222412109375
+  },
+  "bn2": {
+   "words": 92160,
+   "different": 42824,
+   "max_ulp": 77538,
+   "max_abs": 3.251625457778573e-08
+  },
+  "rtke": {
+   "words": 92160,
+   "different": 59796,
+   "max_ulp": 110980,
+   "max_abs": 10.3916015625
+  },
+  "d11": {
+   "words": 92160,
+   "different": 53372,
+   "max_ulp": 2023033,
+   "max_abs": 8.940696716308594e-07
+  },
+  "d22": {
+   "words": 92160,
+   "different": 52768,
+   "max_ulp": 1247774,
+   "max_abs": 6.556510925292969e-07
+  },
+  "d12": {
+   "words": 116640,
+   "different": 84984,
+   "max_ulp": 48852992,
+   "max_abs": 3.725290298461914e-07
+  },
+  "d33": {
+   "words": 92160,
+   "different": 34632,
+   "max_ulp": 100,
+   "max_abs": 2.384185791015625e-07
+  },
+  "d13": {
+   "words": 106272,
+   "different": 56252,
+   "max_ulp": 16384,
+   "max_abs": 2.8312206268310547e-07
+  },
+  "d23": {
+   "words": 106272,
+   "different": 56412,
+   "max_ulp": 2048,
+   "max_abs": 1.7881393432617188e-07
+  }
+ },
+ "woof_build": {
+  "GPUWM_WRF_EXACT": "1",
+  "GPUWM_WRF_EXACT_DIFFUSION": "",
+  "strict_options": [
+   "--fmad=false",
+   "--ftz=false",
+   "--prec-div=true",
+   "--prec-sqrt=true",
+   "-DGPUWM_WRF_EXACT=1"
+  ],
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "cupy": "14.2.0"
+ }
+}

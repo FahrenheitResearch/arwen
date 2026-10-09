@@ -113,7 +113,11 @@ def live_state_history_fields(state) -> dict[str, object]:
             # history file ArWen itself had written (audit R-017).  The row
             # is safe by the same never-both argument QNCCN above makes:
             # mp=9 allocates ``nh`` and mp=18 allocates ``qnh``, never both.
-            ("QNHAIL", "nh")):
+            ("QNHAIL", "nh"),
+            # A named scheme's graupel volume (m3 kg-1).
+            # Same QVGRAUPEL name and unit NSSL's qvolg publishes under; never
+            # both on one state (the discriminator identifies the owner).
+            ("QVGRAUPEL", "volg")):
         value = getattr(state, state_name, None)
         if value is not None:
             fields[output_name] = value
@@ -427,6 +431,27 @@ def physics_history_fields(physics) -> dict[str, object]:
     return output
 
 
+#: The grid words a ``wrfinput_d01`` carries that WRF's history writes back
+#: unchanged.  The WRF-file door's dynamics run on the file's map factors,
+#: Coriolis and rotation words (``restore_domain_state`` installs them), so
+#: history writes those words, not the projection's own recomputation of
+#: them, which differs by up to 3 ULP (``XLAT``) and made every replay of the
+#: 2026-10-07 combo sweep differ from WRF at step 0.
+WRF_FILE_GRID_HISTORY_FIELDS = (
+    "XLAT", "XLONG", "XLAT_U", "XLONG_U", "XLAT_V", "XLONG_V",
+    "MAPFAC_M", "MAPFAC_U", "MAPFAC_V", "F", "E", "SINALPHA", "COSALPHA")
+
+
+def wrf_file_grid_history_fields(bundle) -> dict[str, np.ndarray]:
+    """The file's own grid words for a domain that entered through a
+    ``wrfinput`` (``bundle.restored.raw``); empty for every other door."""
+    raw = getattr(getattr(bundle, "restored", None), "raw", None)
+    if not raw:
+        return {}
+    return {name: np.asarray(raw[name], dtype=np.float32)
+            for name in WRF_FILE_GRID_HISTORY_FIELDS if name in raw}
+
+
 def metadata_history_fields(grid, static: dict) -> dict[str, object]:
     lat, lon = grid.latlon_mass()
     lat_u, lon_u = grid.latlon_u()
@@ -475,8 +500,9 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
 
     Shape carriers exercise the live writer's state, physics and geography
     mappings. Allocation shapes come from the same schema used by preflight.
-    The initial analysis frame has no output-due reflectivity stash; callers
-    pricing that frame can set ``include_reflectivity=False``.
+    The tick-zero analysis frame writes zero reflectivity. A domain that
+    activates later has no output-due stash at activation; only callers
+    pricing that later activation set ``include_reflectivity=False``.
     """
     from gpuwm.core.device_inventory import state_array_shapes
     from gpuwm.core.preflight import physics_array_shapes

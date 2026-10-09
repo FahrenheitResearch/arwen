@@ -71,6 +71,73 @@
 // `j = col / nx` form.  The consumer is the two-way-feedback finalize,
 // which re-diagnoses only the parent columns the restriction touched.
 
+#ifdef GPUWM_WRF_EXACT_D_DIAGNOSTICS
+// WRF calc_p_rho_phi for one column, with WRF's grid%muts as an argument.
+// calc_p_alpha passes mub+mu (start_em's spelling, and WRF's mut); after an
+// acoustic loop WRF's muts is advance_mu_t's MUTS = MUT + MU'', which
+// calc_p_alpha_carried_muts reads from the carrier the dycore keeps
+// (combo-sweep round 3: 164 al words at the second RK stage).
+static __device__ void wrf_p_rho_phi_column(
+    const real* __restrict__ thp, const real* __restrict__ php,
+    const real* __restrict__ mup, const real* __restrict__ phb,
+    const real* __restrict__ alb, const real* __restrict__ pb,
+    const real* __restrict__ rdnw, const real* __restrict__ c1h,
+    const real* __restrict__ c2h, const real* __restrict__ c3h,
+    const real* __restrict__ c4h, const real* __restrict__ c3f,
+    const real* __restrict__ c4f, const real* __restrict__ qv,
+    real p_top, int hypso, int moist, size_t kstr, size_t coff,
+    int nz, int ny, int nx, int j, int i, const real muts,
+    real* __restrict__ p, real* __restrict__ al, real* __restrict__ alt,
+    real* __restrict__ p_perturbation)
+{
+    for (int k = 0; k < nz; ++k) {
+        // Verification-only WRF v4.7.1 calc_p_rho_phi operation order.
+        // This substage reads canonical t = theta - 300 from thp. Native
+        // exact initialization keeps thb at 300; other initialization doors
+        // must supply that same carrier before selecting this substage.
+        // gfk_log/gfk_pow come from the conditional glibc_flt32 header.
+        const size_t h = IDX3(k, j, i);
+        const size_t b = (size_t)k * kstr + coff;
+        const real dphp = __fsub_rn(php[IDX3(k + 1, j, i)], php[h]);
+        real ap;
+        if (hypso == 2) {
+            const real pfu = __fadd_rn(
+                __fadd_rn(__fmul_rn(c3f[k + 1], muts), c4f[k + 1]), p_top);
+            const real pfd = __fadd_rn(
+                __fadd_rn(__fmul_rn(c3f[k], muts), c4f[k]), p_top);
+            const real phm = __fadd_rn(
+                __fadd_rn(__fmul_rn(c3h[k], muts), c4h[k]), p_top);
+            const real dph = __fsub_rn(
+                __fadd_rn(dphp, phb[(size_t)(k + 1) * kstr + coff]), phb[b]);
+            ap = __fsub_rn(
+                __fdiv_rn(__fdiv_rn(dph, phm),
+                          gfk_log(__fdiv_rn(pfd, pfu))), alb[b]);
+        } else {
+            const real inverse_mass = __fdiv_rn(
+                -1.0f, __fadd_rn(__fmul_rn(c1h[k], muts), c2h[k]));
+            const real base_mass = __fmul_rn(
+                alb[b], __fmul_rn(c1h[k], mup[(size_t)j * nx + i]));
+            ap = __fmul_rn(inverse_mass,
+                __fadd_rn(base_mass, __fmul_rn(rdnw[k], dphp)));
+        }
+        const real a = __fadd_rn(ap, alb[b]);
+        const real theta = __fadd_rn(300.0f, thp[h]);
+        real numerator = __fmul_rn(RD, theta);
+        if (moist) {
+            const real qvf = __fadd_rn(1.0f, __fmul_rn(RVOVRD, qv[h]));
+            numerator = __fmul_rn(numerator, qvf);
+        }
+        const real temperature_ratio = __fdiv_rn(numerator, __fmul_rn(P0, a));
+        const real perturbation_pressure = __fsub_rn(
+            __fmul_rn(gfk_pow(temperature_ratio, GAMMA), P0), pb[b]);
+        alt[h] = a;
+        al[h] = ap;
+        p_perturbation[h] = perturbation_pressure;
+        p[h] = __fadd_rn(perturbation_pressure, pb[b]);
+    }
+}
+
+#endif
 extern "C" __global__
 void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
                   const real* __restrict__ php,   // (nz+1, ny, nx) phi'
@@ -117,55 +184,16 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
     size_t kstr = base3d ? (size_t)ny * nx : 1;
     size_t coff = base3d ? (size_t)j * nx + i : 0;
 
+#ifdef GPUWM_WRF_EXACT_D_DIAGNOSTICS
+    wrf_p_rho_phi_column(thp, php, mup, phb, alb, pb, rdnw, c1h, c2h, c3h, c4h,
+                         c3f, c4f, qv, p_top, hypso, moist, kstr, coff, nz,
+                         ny, nx, j, i,
+                         __fadd_rn(mub[(size_t)j * nx + i],
+                                   mup[(size_t)j * nx + i]),
+                         p, al, alt, p_perturbation);
+#else
     real mu = mub[(size_t)j * nx + i] + mup[(size_t)j * nx + i];
     for (int k = 0; k < nz; ++k) {
-#ifdef GPUWM_WRF_EXACT_D_DIAGNOSTICS
-        // Verification-only WRF v4.7.1 calc_p_rho_phi operation order.
-        // This substage reads canonical t = theta - 300 from thp. Native
-        // exact initialization keeps thb at 300; other initialization doors
-        // must supply that same carrier before selecting this substage.
-        // gfk_log/gfk_pow come from the conditional glibc_flt32 header.
-        const size_t h = IDX3(k, j, i);
-        const size_t b = (size_t)k * kstr + coff;
-        const real muts = __fadd_rn(mub[(size_t)j * nx + i],
-                                   mup[(size_t)j * nx + i]);
-        const real dphp = __fsub_rn(php[IDX3(k + 1, j, i)], php[h]);
-        real ap;
-        if (hypso == 2) {
-            const real pfu = __fadd_rn(
-                __fadd_rn(__fmul_rn(c3f[k + 1], muts), c4f[k + 1]), p_top);
-            const real pfd = __fadd_rn(
-                __fadd_rn(__fmul_rn(c3f[k], muts), c4f[k]), p_top);
-            const real phm = __fadd_rn(
-                __fadd_rn(__fmul_rn(c3h[k], muts), c4h[k]), p_top);
-            const real dph = __fsub_rn(
-                __fadd_rn(dphp, phb[(size_t)(k + 1) * kstr + coff]), phb[b]);
-            ap = __fsub_rn(
-                __fdiv_rn(__fdiv_rn(dph, phm),
-                          gfk_log(__fdiv_rn(pfd, pfu))), alb[b]);
-        } else {
-            const real inverse_mass = __fdiv_rn(
-                -1.0f, __fadd_rn(__fmul_rn(c1h[k], muts), c2h[k]));
-            const real base_mass = __fmul_rn(
-                alb[b], __fmul_rn(c1h[k], mup[(size_t)j * nx + i]));
-            ap = __fmul_rn(inverse_mass,
-                __fadd_rn(base_mass, __fmul_rn(rdnw[k], dphp)));
-        }
-        const real a = __fadd_rn(ap, alb[b]);
-        const real theta = __fadd_rn(300.0f, thp[h]);
-        real numerator = __fmul_rn(RD, theta);
-        if (moist) {
-            const real qvf = __fadd_rn(1.0f, __fmul_rn(RVOVRD, qv[h]));
-            numerator = __fmul_rn(numerator, qvf);
-        }
-        const real temperature_ratio = __fdiv_rn(numerator, __fmul_rn(P0, a));
-        const real perturbation_pressure = __fsub_rn(
-            __fmul_rn(gfk_pow(temperature_ratio, GAMMA), P0), pb[b]);
-        alt[h] = a;
-        al[h] = ap;
-        p_perturbation[h] = perturbation_pressure;
-        p[h] = __fadd_rn(perturbation_pressure, pb[b]);
-#else
         real th  = thb[k * kstr + coff] + thp[IDX3(k, j, i)];
         if (moist) th *= 1.0f + RVOVRD * qv[IDX3(k, j, i)];
         real dphb = (phb[(k + 1) * kstr + coff] - phb[k * kstr + coff])
@@ -186,6 +214,37 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
         alt[IDX3(k, j, i)] = a;
         al[IDX3(k, j, i)]  = ap;
         p[IDX3(k, j, i)]   = P0 * powf((RD * th) / (P0 * a), GAMMA);
-#endif
     }
+#endif
 }
+#ifdef GPUWM_WRF_EXACT_D_DIAGNOSTICS
+
+// calc_p_alpha with WRF's grid%muts read from a carrier (ny, nx) instead of
+// formed as mub+mu: the strict dycore's diagnosis after an acoustic loop.
+extern "C" __global__
+void calc_p_alpha_carried_muts(
+    const real* __restrict__ thp, const real* __restrict__ php,
+    const real* __restrict__ mup, const real* __restrict__ thb,
+    const real* __restrict__ phb, const real* __restrict__ alb,
+    const real* __restrict__ pb, const real* __restrict__ muts,
+    const real* __restrict__ rdnw, const real* __restrict__ c1h,
+    const real* __restrict__ c2h, const real* __restrict__ c3h,
+    const real* __restrict__ c4h, const real* __restrict__ c3f,
+    const real* __restrict__ c4f, const real* __restrict__ qv,
+    real p_top, int hypso, int moist, int base3d, int nz, int ny, int nx,
+    int j0, int i0, int nyw, int nxw,
+    real* __restrict__ p, real* __restrict__ al, real* __restrict__ alt,
+    real* __restrict__ p_perturbation)
+{
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= nyw * nxw) return;
+    int j = j0 + col / nxw;
+    int i = i0 + (col - (col / nxw) * nxw);
+    size_t kstr = base3d ? (size_t)ny * nx : 1;
+    size_t coff = base3d ? (size_t)j * nx + i : 0;
+    wrf_p_rho_phi_column(thp, php, mup, phb, alb, pb, rdnw, c1h, c2h, c3h, c4h,
+                         c3f, c4f, qv, p_top, hypso, moist, kstr, coff, nz,
+                         ny, nx, j, i, muts[(size_t)j * nx + i],
+                         p, al, alt, p_perturbation);
+}
+#endif

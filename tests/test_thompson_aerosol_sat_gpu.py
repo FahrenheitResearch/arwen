@@ -329,7 +329,11 @@ def test_translation_unit_receives_the_shared_header_and_exports_its_kernels():
         DROPLET_EVAP_PROBE_KERNEL, RAIN_EVAPORATION_KERNEL,
         SATURATION_ADJUST_KERNEL)
 
-    assert EXTRA_HEADERS[SAT_MODULE] == (AEROSOL_COMMON_HEADER,)
+    # WOOF's own libm words ride ahead of the shared header
+    # (gpuwm/core/kernels/thompson_aerosol_libm.cuh).
+    assert EXTRA_HEADERS[SAT_MODULE] == (
+        "glibc_flt32.cuh", "glibc_flt64.cuh",
+        "thompson_aerosol_libm.cuh", AEROSOL_COMMON_HEADER)
     source = module_source(SAT_MODULE)
     # The helpers this kernel must not re-derive locally.
     assert "thompson_activ_ncloud" in source

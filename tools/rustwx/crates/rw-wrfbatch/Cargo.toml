@@ -93,6 +93,10 @@ wx-core = { path = "../../vendor/wx-core" }
 # reader (see src/obs_grid.rs).
 wx-radar = { path = "../../vendor/wx-radar" }
 
+[[bin]]
+name = "rw_points"
+path = "src/bin/points.rs"
+
 # Test scope only; the shipped binaries do not link it.  The stored-plane
 # tests need a wrfout to exist before they can assert anything about
 # importing one, and `netcdf-writer` is this workspace's classic-NetCDF
@@ -102,3 +106,7 @@ wx-radar = { path = "../../vendor/wx-radar" }
 netcdf-writer = { path = "../netcdf-writer" }
 static-fields = { path = "../static-fields" }
 rw-store = { path = "../rw-store" }
+
+[[bin]]
+name = "rw_refsnow"
+path = "src/bin/refsnow.rs"

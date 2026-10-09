@@ -25,6 +25,71 @@ RUNTIME_SURFACE_FALLBACKS = {
 }
 
 
+#: The canonical name a mapped composition binds each fallback field
+#: under (``fields.vegetation_fraction`` of the HRRR surface vegetation
+#: mapping is the VEGFRA a start reads).  Keyed by field, like the
+#: fallback table: any composition that binds one of these fields from a
+#: contributing source gets the same fallback when that source's files
+#: publish no record for it.
+CANONICAL_RUNTIME_SURFACE_FIELDS = {"vegetation_fraction": "VEGFRA"}
+
+
+def composition_unpublished_fallbacks(bindings):
+    """``{canonical field: fallback id}`` a composition's decode may take.
+
+    ``bindings`` is a composition's ``field_sources``.  Only fields that a
+    contributing source supplies and that RUNTIME_SURFACE_FALLBACKS
+    covers are named; the engine records such a binding as unpublished
+    only when its files carry no record for any of its fields AND every
+    field it binds is named here, and refuses it otherwise.
+    """
+    found = {}
+    for binding in (bindings or {}).values():
+        for name in binding.get("fields", ()):
+            legacy = CANONICAL_RUNTIME_SURFACE_FIELDS.get(str(name))
+            if legacy in RUNTIME_SURFACE_FALLBACKS:
+                found[str(name)] = RUNTIME_SURFACE_FALLBACKS[legacy][0]
+    return found
+
+
+def unpublished_binding_fallbacks(entry):
+    """The recorded fallbacks of an UNPUBLISHED contributing-source receipt.
+
+    ``{VEGFRA-style field: rows}`` in the shape the native route's
+    ``require_runtime_surface_fields`` returns, or ``None`` when ``entry``
+    is not an unpublished binding.  A receipt whose fallback is not
+    exactly the table's for every bound field raises: the start would
+    read a field nobody recorded where it came from.
+    """
+    alignment = entry.get("alignment") if isinstance(entry, dict) else None
+    if not isinstance(alignment, dict) or alignment.get("status") != "UNPUBLISHED":
+        return None
+    named = alignment.get("fallback")
+    fields = entry.get("fields")
+    expected = {str(name): RUNTIME_SURFACE_FALLBACKS.get(
+                    CANONICAL_RUNTIME_SURFACE_FIELDS.get(str(name)), (None,))[0]
+                for name in (fields if isinstance(fields, list) else ())}
+    if (not isinstance(named, dict) or not expected or named != expected
+            or None in expected.values()):
+        raise ValueError(
+            f"contributing source {entry.get('binding')!r} is recorded as "
+            f"unpublished with fallback {named!r}, which is not the "
+            "field-keyed fallback table's for its fields; the start would "
+            "read a field without a recorded origin")
+    rows = {}
+    for name, fallback_id in expected.items():
+        legacy = CANONICAL_RUNTIME_SURFACE_FIELDS[name]
+        rows[legacy] = [{
+            "field": legacy, "fallback_id": fallback_id,
+            "fallback": RUNTIME_SURFACE_FALLBACKS[legacy][1],
+            "reason": str(alignment.get("reason")),
+            "binding": str(entry.get("binding")),
+            "source_files": [str(row.get("path")) for row in entry.get("data", ())
+                             if isinstance(row, dict)],
+        }]
+    return rows
+
+
 class RuntimeSurfaceRecordAbsent(ValueError):
     """The cycle's file carries no record matching a runtime selector."""
 
@@ -151,6 +216,38 @@ def require_runtime_surface_fields(met, adapter, *, source_manifest=None,
     return {name: recorded[name] for name in missing if name in recorded}
 
 
+def _index_lists_no_record(error, selector):
+    """Whether an ``rw_fetch`` refusal says the index lists no ``selector``.
+
+    ``rw_fetch`` refuses an index subset whose selector matches no index
+    line (rw-fetch net.rs ``select``) before any payload moves.  For the
+    one selector a runtime surface row asks, that is the cycle saying it
+    publishes no such record (HRRR wrfsfc before 2020-12-02 lists no
+    VEG), the same answer a full file with no matching message gives.
+    """
+    from gpuwm import rustwx_fetch
+    text = str(error)
+    return (isinstance(error, rustwx_fetch.RwFetchError)
+            and error.returncode == rustwx_fetch.EXIT_REFUSED
+            and "matched no index record" in text and selector in text)
+
+
+def _probed_entry(binary, *, adapter, cycle, lead, product, source, cache_dir):
+    """The object a refused index subset named, from ``rw_fetch probe``."""
+    from gpuwm import rustwx_fetch
+    report = rustwx_fetch.run_probe(
+        binary, model=adapter.upstream_model_id, date=f"{cycle:%Y%m%d}",
+        cycle=cycle.hour, hours=(lead,), product=product, source=source,
+        mode="auto", cache_dir=cache_dir)
+    hours = report.get("hours") or [{}]
+    hour = hours[0] if isinstance(hours[0], dict) else {}
+    url = hour.get("grib_url")
+    probe = hour.get("probe") if isinstance(hour.get("probe"), dict) else {}
+    return {"name": str(url).rsplit("/", 1)[-1] if url else None,
+            "grib_url": url, "sha256": None, "idx_url": hour.get("idx_url"),
+            "idx_record_count": probe.get("idx_record_count")}
+
+
 def _absent_record(name, selector, adapter, cycle, lead, entry, declared):
     """The receipt row for a cycle that publishes no record for ``name``."""
     reason = f"this cycle publishes no {selector} record"
@@ -169,11 +266,18 @@ def _absent_record(name, selector, adapter, cycle, lead, entry, declared):
             f"runtime surface {name}: {reason} ({where}), and "
             "RUNTIME_SURFACE_FALLBACKS declares no fallback for this field, "
             "so the start would have no value for it")
-    return {"field": name, "selector": selector, "fallback_id": fallback[0],
-            "fallback": fallback[1], "reason": reason,
-            "cycle": f"{cycle:%Y-%m-%dT%H}Z", "lead": int(lead),
-            "source_file": entry["name"], "url": entry["grib_url"],
-            "source_file_sha256": entry["sha256"]}
+    row = {"field": name, "selector": selector, "fallback_id": fallback[0],
+           "fallback": fallback[1], "reason": reason,
+           "cycle": f"{cycle:%Y-%m-%dT%H}Z", "lead": int(lead),
+           "source_file": entry["name"], "url": entry["grib_url"],
+           "source_file_sha256": entry["sha256"]}
+    if entry.get("idx_url") is not None:
+        # Decided from the object's index, so no payload was downloaded
+        # and there is no file digest; the index and its line count are
+        # the evidence.
+        row.update(evidence="index", idx_url=entry["idx_url"],
+                   idx_record_count=entry.get("idx_record_count"))
+    return row
 
 
 def append_runtime_surface_records(path, *, adapter, cycle, lead, host,
@@ -206,12 +310,31 @@ def append_runtime_surface_records(path, *, adapter, cycle, lead, host,
             folder.mkdir()
             patterns = folder / "selectors.txt"
             rustwx_fetch.write_pattern_file(patterns, (selector,))
-            record = rustwx_fetch.run_fetch(
-                binary, model=adapter.upstream_model_id,
-                date=f"{cycle:%Y%m%d}", cycle=cycle.hour, hours=(lead,),
-                product=product, source=RW_FETCH_SOURCES[host], mode="auto",
-                out=folder, pattern_file=patterns, cache_dir=cache_dir,
-                keep_idx=True, streams=streams)
+            try:
+                record = rustwx_fetch.run_fetch(
+                    binary, model=adapter.upstream_model_id,
+                    date=f"{cycle:%Y%m%d}", cycle=cycle.hour, hours=(lead,),
+                    product=product, source=RW_FETCH_SOURCES[host], mode="auto",
+                    out=folder, pattern_file=patterns, cache_dir=cache_dir,
+                    keep_idx=True, streams=streams)
+            except rustwx_fetch.RwFetchError as error:
+                # The index lists no such record: the cycle publishes none
+                # (HRRR wrfsfc before 2020-12-02 has no VEG).  The index
+                # subset refuses before any payload moves, so the absence
+                # is recorded from the index instead of from a file.
+                if not _index_lists_no_record(error, selector):
+                    raise
+                entry = _probed_entry(
+                    binary, adapter=adapter, cycle=cycle, lead=lead,
+                    product=product, source=RW_FETCH_SOURCES[host],
+                    cache_dir=cache_dir)
+                row = _absent_record(name, selector, adapter, cycle, lead,
+                                     entry, declared)
+                progress(f"fetch {adapter.source_id} f{int(lead):02d}: "
+                         f"{row['reason']}; {name} starts from "
+                         f"{row['fallback_id']} (recorded in the fetch receipt)")
+                evidence.append(row)
+                continue
             if len(record["files"]) != 1:
                 raise ValueError(f"runtime surface {name} fetched another file inventory")
             entry = record["files"][0]

@@ -279,9 +279,11 @@ def test_one_line_per_changed_domain_and_one_for_a_nest_its_parent_moves():
         announce=lines.append, caution=lines.append)
     assert adapted.dt_exact(1) < 15
     assert [a.grid_id for a in adaptations if a.adapted] == [1, 2]
-    assert len(lines) == 2
-    assert lines[0].startswith("time step: d01's")
-    assert lines[1].startswith("time step: d02 runs")
+    assert len(lines) == 4
+    assert "d01 keeps the shipped domain-wide terrain clock" in lines[0]
+    assert lines[1].startswith("time step: d01's")
+    assert "d02 keeps the shipped domain-wide terrain clock" in lines[2]
+    assert lines[3].startswith("time step: d02 runs")
     receipt = tc.clock_receipt(adaptations)
     assert receipt["schema"] == tc.TERRAIN_CLOCK_SCHEMA
     assert receipt["domains"][0]["crest_level_wind_m_s"] == 70.0
@@ -698,7 +700,8 @@ def test_ground_and_wind_past_every_held_step_is_said_even_unchanged():
         exp, {1: 1.5}, {1: _wind(80.0, crest=8600.0)},
         announce=lines.append, caution=lines.append)
     assert adaptations[0].status == "BEYOND_MEASURED"
-    assert len(lines) == 1
+    assert len(lines) == 2
+    assert "keeps the shipped domain-wide terrain clock" in lines.pop(0)
     assert "holds no step there at any substep count" in lines[0]
     assert "may still stop" in lines[0]
 
@@ -796,7 +799,9 @@ def test_the_adaptive_count_is_written_as_the_floor_the_clock_keeps():
     run = adapted.domains[0].run
     assert adaptations[0].time_step_sound == 6
     assert run.min_time_step_sound == 6 and run.time_step_sound == 6
-    assert len(lines) == 1 and "at least 6 acoustic substeps" in lines[0]
+    assert len(lines) == 2
+    assert "keeps the shipped domain-wide terrain clock" in lines[0]
+    assert "at least 6 acoustic substeps" in lines[1]
     validate_run_config(run)
     # What the clock runs at the generated 5 s step and at a short one.
     assert adaptive_sound_steps(Fraction(5), run) == 6
@@ -1504,10 +1509,14 @@ def test_a_limit_past_what_the_ground_held_is_said_as_a_stop_seen():
     assert beyond.status == "BEYOND_MEASURED"
     assert beyond.ceiling == Fraction(33)
     line = beyond.beyond_sentence()
-    assert "the measured map holds steps up to 15 s there" in line
-    assert ("(no longer step was tried there, and a step longer than 33 s "
-            "stopped on the gentler rows or weaker winds read with it)"
-            in line)
+    # The step it runs comes first; the shorter range the ground was
+    # tried to after it (REVIEW.md gap 3: never "holds 12.5 s" then 15 s).
+    assert "the measured map lets d01 run steps up to 33 s there" in line
+    assert ("(a step longer than 33 s stopped on the gentler rows or weaker "
+            "winds read with it; no cell read saw 33 s or a shorter step "
+            "stop, though some of that ground was tried no longer than "
+            "15 s)" in line)
+    assert "holds steps up to 15 s" not in line
     receipt = beyond.receipt()
     assert receipt["held_s_per_km"] == 5.0
     assert receipt["limit_s_per_km"] == 11.0
@@ -1523,7 +1532,7 @@ def test_a_limit_past_what_the_ground_held_is_said_as_a_stop_seen():
     conus = tc.derive_clock(1, _Run(use_adaptive_time_step=True),
                             Fraction(12), 0.356, _wind(40.0, crest=3932.0))
     assert conus.ceiling == Fraction(15)
-    assert "no longer step was tried" not in conus.sentence()
+    assert "tried no longer than" not in conus.sentence()
     assert "holds steps up to 15 s there with 4 substeps, so" in (
         conus.sentence())
 
@@ -1876,7 +1885,8 @@ def test_an_unchanged_domain_where_the_adaptive_clock_held_none_says_so():
     assert adaptation.adaptive_unheld
     assert adaptation.reading.held_everything_tried
     assert adaptation.status == "BEYOND_MEASURED"
-    assert notes == [] and len(cautions) == 1
+    assert len(notes) == 1 and "domain-wide terrain clock" in notes[0]
+    assert len(cautions) == 1
     line = cautions[0]
     assert line == adaptation.beyond_sentence()
     assert line.startswith("time step: d01's steepest terrain slope is 0.09")
@@ -2162,12 +2172,17 @@ def test_a_pinned_experiment_the_map_holds_prints_one_announcement():
 def test_the_terrain_clock_mode_is_validated_by_name():
     from gpuwm.config import TERRAIN_CLOCK_MODES, validate_run_config
 
-    assert TERRAIN_CLOCK_MODES == ("measured", "pinned")
+    # "local_face" is the default from 2.8.8 (gpuwm/terrain_clock_local.py)
+    assert TERRAIN_CLOCK_MODES == ("measured", "pinned", "local_face")
     exp = _wizard_experiment([(60, 60)], (), 3000.0)
     run = exp.domains[0].run
-    assert run.terrain_clock == "measured"
+    assert run.terrain_clock == "local_face"
+    assert validate_run_config(replace(run, terrain_clock="measured")) \
+        .terrain_clock == "measured"
     assert validate_run_config(replace(run, terrain_clock="pinned")) \
         .terrain_clock == "pinned"
+    assert validate_run_config(replace(run, terrain_clock="local_face")) \
+        .terrain_clock == "local_face"
     with pytest.raises(ValueError, match="terrain_clock='off' is not one of"):
         validate_run_config(replace(run, terrain_clock="off"))
 
@@ -2175,12 +2190,19 @@ def test_the_terrain_clock_mode_is_validated_by_name():
 def test_the_terrain_mode_rides_only_in_route_selector_metadata():
     from gpuwm.hrrr_route_inputs import render_namelist_input
     from gpuwm.physics_source_defaults import read_physics_selector_comment
-    exp = _wizard_experiment([(60, 60)], (), 3000.0)
+    default = _wizard_experiment([(60, 60)], (), 3000.0)
+    exp = replace(default, domains=(replace(
+        default.root, run=replace(default.root.run,
+                                  terrain_clock="measured")),))
     measured = render_namelist_input(exp)
     # The route reads its pair under the hrrr recipe, which fills
     # "pinned" where the comment is silent, so the measured mode is
     # carried too: an unmarked emission was read back as pinned.
     assert read_physics_selector_comment(measured)["terrain_clock"] == "measured"
+    # So is the default (local_face from 2.8.8), for the same reason.
+    local = render_namelist_input(default)
+    assert read_physics_selector_comment(local)["terrain_clock"] == "local_face"
+    assert local.splitlines(keepends=True)[1:] == measured.splitlines(keepends=True)[1:]
     pinned_exp = replace(exp, domains=(replace(
         exp.root, run=replace(exp.root.run, terrain_clock="pinned")),))
     pinned = render_namelist_input(pinned_exp)
@@ -2192,11 +2214,18 @@ def test_the_terrain_mode_rides_only_in_route_selector_metadata():
 def test_the_pinned_mode_never_reaches_a_measured_fingerprint():
     """"measured" is dropped from the restart identity and the checkpoint
     echo, so every fingerprint written before the field keeps its value;
-    "pinned" binds."""
+    "pinned" binds, and so does "local_face", the default from 2.8.8."""
     from gpuwm.core.model import restart_identity_payload
     from gpuwm.io.restart import configuration_echo
 
-    exp = _wizard_experiment([(60, 60)], (), 3000.0)
+    default = _wizard_experiment([(60, 60)], (), 3000.0)
+    local = restart_identity_payload(default)
+    assert local["domains"][0]["run"]["terrain_clock"] == "local_face"
+    assert configuration_echo(default.root.run)["terrain_clock"] \
+        == "local_face"
+    exp = replace(default, domains=(replace(
+        default.root, run=replace(default.root.run,
+                                  terrain_clock="measured")),))
     root = exp.domains[0]
     measured = restart_identity_payload(exp)
     assert "terrain_clock" not in measured["domains"][0]["run"]

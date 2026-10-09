@@ -1725,7 +1725,7 @@ def _host_calc_effect_rad(t_k, p_pa, qv, qc, nc, qi, ni, qs,
 
     ``pow_fn`` selects the float32 power: the default is the libm ``powf``
     gfortran emits, and the alternative is the device's round-once-from-double
-    ``thompson_aa_powf_cr``.  Having both lets a mismatch be ATTRIBUTED rather
+    ``thompson_aa_powf``.  Having both lets a mismatch be ATTRIBUTED rather
     than tolerated.
     """
     if pow_fn is None:
@@ -1993,7 +1993,7 @@ def test_effective_radius_reduces_to_the_frozen_mp8_kernel_at_nt_c():
     np.testing.assert_array_equal(got_s, want_s, err_msg="effs")
 
     # (2) THE ONE DIVERGENCE, MEASURED IN BOTH DIRECTIONS.  mp=28's ice branch
-    #     uses thompson_aa_powf_cr for :5654 because gfortran lowers
+    #     uses thompson_aa_powf for :5654 because gfortran lowers
     #     REAL(4)**REAL(4) to glibc powf; thompson.cu uses CUDA's powf and is
     #     byte-frozen.  They differ at exactly ONE of these 24 levels, by
     #     exactly one float32 ulp -- and mp=28 is the one that matches WRF.
@@ -2088,7 +2088,11 @@ def test_state_module_is_in_the_shared_header_allow_list():
     from gpuwm.core.thompson_aerosol_launch import (
         AEROSOL_COMMON_HEADER, STATE_MODULE)
 
-    assert EXTRA_HEADERS[STATE_MODULE] == (AEROSOL_COMMON_HEADER,)
+    # WOOF's own libm words ride ahead of the shared header
+    # (gpuwm/core/kernels/thompson_aerosol_libm.cuh).
+    assert EXTRA_HEADERS[STATE_MODULE] == (
+        "glibc_flt32.cuh", "glibc_flt64.cuh",
+        "thompson_aerosol_libm.cuh", AEROSOL_COMMON_HEADER)
     source = module_source(STATE_MODULE)
     assert "thompson_aa_cloud_dist" in source
     assert "thompson_aa_inu_c_effrad" in source

@@ -116,6 +116,12 @@ def test_named_import_emitted_bytes_select_the_pbl_source(
     if not fork_thompson:
         carried_rows += ['thompson_version = "wrf_461"\n',
                          'thompson_fork_snow_fall = "blend"\n']
+    # 9822cdfbd, lane/wrf-exact-start: this namelist has mp_physics = 28,
+    # use_aero_icbc = .true. and MYNN without bl_mynn_mixscalars, so WRF's
+    # check_a_mundo runs scalar_pblmix = 1 although the namelist leaves it
+    # at 0, and the importer now emits the value wrf.exe runs.  The
+    # historical capture predates that resolution.
+    carried_rows += ['scalar_pblmix = 1\n']
     for carried in carried_rows:
         assert previous.count(carried) == 1
         previous = previous.replace(carried, "")
@@ -142,6 +148,7 @@ def test_named_import_emitted_bytes_select_the_pbl_source(
     assert cfg.rdlai2d is cfg.usemonalb is False
     assert cfg.ruc_soilprop == RunConfig.__dataclass_fields__["ruc_soilprop"].default == "wrf_45"
     assert cfg.bl_mynn_version == "gsd_41"
+    assert cfg.scalar_pblmix == 1
     assert (cfg.thompson_version, cfg.thompson_fork_snow_fall) == (
         ("wrf_39_noaa", "wrf_39_noaa") if fork_thompson else ("wrf_461", "blend"))
     assert cfg.ra_rrtmg_variant == "rrtmg_legacy"

@@ -49,6 +49,8 @@ def _pack_physical(members, *, moist=False, mapped=False, boundary="periodic",
             state.qv[...] = cp.asarray(rng.uniform(0.002, 0.011, (nz, ny, nx)), cp.float32)
             update_diagnostics(state)
         if WRF_EXACT:
+            from gpuwm.core.acoustic import init_wrf_acoustic_muts
+            init_wrf_acoustic_muts(state)
             # The strict mu/theta helper reads this independent stage flux.
             # Give every member distinct nonzero interior words, with the
             # original physical zero-flux surface and lid.

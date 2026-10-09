@@ -26,6 +26,7 @@ import pytest
 
 from tests.test_restart import (_LIFECYCLE_FREE_CHILD_DIGEST,
                                 _LIFECYCLE_FREE_ROOT_DIGEST,
+                                _PINNED_UNDER_MEASURED_CLOCK,
                                 _canonical_member_digest,
                                 _sealed_tree_fixture)
 from tests.test_wrfout import _manual_async_writer, _queue_cpu_ticket
@@ -72,7 +73,8 @@ def test_a_deferred_checkpoint_is_the_synchronous_one_byte_for_byte(
     from gpuwm.io import restart
 
     source, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
     pending = restart.write_tree_restart(
         tmp_path, source, start + timedelta(seconds=3600),
         defer_publish=True)
@@ -92,7 +94,8 @@ def test_a_deferred_checkpoint_owns_what_it_writes(monkeypatch, tmp_path):
     from gpuwm.io import restart
 
     source, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
     pending = restart.write_tree_restart(
         tmp_path, source, start + timedelta(seconds=3600),
         defer_publish=True)
@@ -117,7 +120,8 @@ def test_frames_in_flight_refuse_a_synchronous_checkpoint_but_not_a_deferred_one
     from gpuwm.io import restart
 
     source, start = _sealed_tree_fixture(
-        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
     source._io_manager = SimpleNamespace(pending=1)
     with pytest.raises(restart.RestartMismatchError, match="'D2H': 1"):
         restart.write_tree_restart(

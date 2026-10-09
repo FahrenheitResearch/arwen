@@ -1,6 +1,8 @@
 """Finite-transfer corrections are a distinct continuation algorithm."""
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -22,7 +24,10 @@ def test_prior_morrison_algorithm_is_rejected_before_state_restore(
     _fill_setup(fresh)
     fresh.qv.fill(np.float32(.0123))
     before = fresh.qv.tobytes()
-    with pytest.raises(restart.RestartMismatchError, match="physics setup"):
+    moved = re.escape(
+        f"mp_physics=10 (microphysics): {previous} -> "
+        f"{restart.MICROPHYSICS_ALGORITHM_IDENTITIES[10]}")
+    with pytest.raises(restart.RestartMismatchError, match=moved):
         restart.restore_restart(path, fresh, cfg)
     assert fresh.qv.tobytes() == before
 

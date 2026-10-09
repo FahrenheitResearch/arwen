@@ -32,9 +32,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-pytest.importorskip(
-    "wrf", reason="gpuwm render requires the wrf package (wrf-rust)")
-
 import gpuwm.cli as cli
 from gpuwm import render_layout, render_receipts, run_stamp
 from gpuwm.io.wrfout import WrfoutWriter
@@ -67,6 +64,9 @@ def _frame(seed: int) -> dict:
 
 
 def _write_wrfout(path: Path, *, dx: float = 1000.0) -> Path:
+    # Gate the real artifact route; pure layout contracts require no SDK.
+    pytest.importorskip(
+        "wrf", reason="gpuwm render requires the wrf package (wrf-rust)")
     with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=dx, dy=dx) as writer:
         for index, stamp in enumerate(_STAMPS):
             writer.write_frame(stamp, _frame(seed=11 + index))

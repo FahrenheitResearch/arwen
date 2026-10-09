@@ -49,7 +49,7 @@ KEYED_BY_COMPILER_OR_CARD = {
     "tests/test_sase_gpu.py::test_dynamic_solve_device_real_lift_golden",
     "tests/test_feedback.py::test_feedback_zero_output_is_pinned_and_costs_nothing",
     "tests/test_ysu_wrf461_parity.py::test_ysu_cuda_column_holds_its_measured_distance_from_wrf",
-    "tests/test_ysu_wrf461_parity.py::test_ysu_momentum_is_this_far_from_wrfs_own_ctopo_driver_path",
+    "tests/test_ysu_wrf461_parity.py::test_ysu_is_bitwise_wrf_outside_the_flushed_subnormal_lanes",
     "tests/test_noah_wrf461_parity.py::test_noah_cuda_column_holds_its_measured_distance_from_wrf",
 }
 #: Two more max-ULP tables asserted for equality that the set had missed

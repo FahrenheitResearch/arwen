@@ -79,6 +79,10 @@ _COLUMN_TPB = 32
 _SHALLOW_KMAX = 64
 _KMAX = 256
 
+# The serial host oracle cannot execute a block barrier. Its installer selects
+# the retained column kernels; every device launch uses the parallel route.
+LEVEL_PARALLEL_FALLOUT = True
+
 #: Advertised vertical extent, matching ``thompson.VERTICAL_LEVEL_BOUNDS``.
 VERTICAL_LEVEL_BOUNDS = (2, _KMAX)
 
@@ -264,7 +268,8 @@ def launch_aa_cloud_sedimentation(
 def launch_aa_final_phase_cleanup(
         qc, qi, ni, temperature, cloud_number_entry, ice_number_entry,
         cloud_number_tendency, pressure, qv, dt: float, *,
-        qcten=None, qiten=None, niten=None) -> None:
+        qcten=None, qiten=None, niten=None, tten=None, heat_ocp=None,
+        heat_lvap=None, theta=None, exner=None) -> None:
     """Melt cloud ice above 0 C and freeze cloud water below HGFR.
 
     module_mp_thompson.F:3943-3966.  Both transfers move NUMBER as well as
@@ -286,7 +291,23 @@ def launch_aa_final_phase_cleanup(
     ``qcten`` (:3949), the freeze reads ``xrc`` from ``qc + qcten*dt`` and
     subtracts ``xrc*odt`` (:3955, :3962), and the R1 zeroing waits for the
     terminal apply.
+
+    ``tten``, ``heat_ocp``, ``heat_lvap``, ``theta`` and ``exner`` (all five
+    or none, with the ice accumulators): WRF's temperature accumulator and
+    the ``ocp(k)``/``lvap(k)`` WRF last formed (the rain evaporation's
+    export).  Given, the melt and the freeze add their latent heat to
+    ``tten`` as WRF writes it (:3953, :3964) and ``temperature`` becomes
+    ``t1d + tten*DT`` (:3973), ``t1d = theta*exner``.
     """
+    heat = {"tten": tten, "heat_ocp": heat_ocp, "heat_lvap": heat_lvap,
+            "theta": theta, "exner": exner}
+    heat_given = [name for name, value in heat.items() if value is not None]
+    if heat_given and len(heat_given) != 5:
+        raise ValueError("tten, heat_ocp, heat_lvap, theta and exner are "
+                         f"given together or not at all (got {heat_given})")
+    if heat_given and qiten is None:
+        raise ValueError("the temperature accumulator rides with the ice "
+                         "and cloud ones")
     _, size = validate_fields({
         "qc": qc,
         "qi": qi,
@@ -299,6 +320,7 @@ def launch_aa_final_phase_cleanup(
         "qv": qv,
         **({} if qcten is None else {"qcten": qcten}),
         **({} if qiten is None else {"qiten": qiten, "niten": niten}),
+        **({} if not heat_given else heat),
     })
     if (qiten is None) != (niten is None):
         raise ValueError("qiten and niten are given together or not at all")
@@ -311,6 +333,7 @@ def launch_aa_final_phase_cleanup(
         grid, block,
         (qc, qi, ni, temperature, cloud_number_entry, ice_number_entry,
          cloud_number_tendency, pressure, qv, qcten, qiten, niten,
+         tten, heat_ocp, heat_lvap, theta, exner,
          DTYPE(dt), np.int32(size)))
 
 
@@ -325,7 +348,8 @@ def _column_launch(name: str, nz: int, ny: int, nx: int, arguments) -> None:
 def launch_aa_rain_sedimentation_accumulate(
         qr1d, nr1d, qrten, nrten, temperature, pressure, qv, dz,
         rainnc, rainncv, dt: float, *, reference_density,
-        accumulate_surface: bool = True) -> None:
+        accumulate_surface: bool = True,
+        export_surface: bool = False) -> None:
     """WRF's rain fallout in tendency form (:3611-3640, :3790-3812).
 
     ``qr1d``/``nr1d`` are the read-only entry rain; the fallout is added to
@@ -334,7 +358,9 @@ def launch_aa_rain_sedimentation_accumulate(
     that once, with the size bounds).  ``reference_density`` is the rain
     evaporation's level-wise export (zero: no L_qr; negative: the :3568
     rewrite on that density; positive: the :3193 TAU+1 density).  The surface
-    bookkeeping is the classic launcher's.
+    bookkeeping is the classic launcher's, unless ``export_surface``: then
+    the column's pptrain alone goes into ``rainncv`` and ``rainnc`` is not
+    touched, for :func:`launch_aa_surface_precipitation`.
     """
     shape, _ = validate_fields({
         "qr1d": qr1d, "nr1d": nr1d, "qrten": qrten, "nrten": nrten,
@@ -349,20 +375,23 @@ def launch_aa_rain_sedimentation_accumulate(
     _column_launch("thompson_aa_rain_sediment_accumulate", nz, ny, nx,
                    (qr1d, nr1d, qrten, nrten, temperature, pressure, qv,
                     reference_density, dz, rainnc, rainncv,
-                    np.int32(1 if accumulate_surface else 0), DTYPE(dt),
+                    np.int32(2 if export_surface
+                             else 1 if accumulate_surface else 0), DTYPE(dt),
                     np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
 def launch_aa_ice_sedimentation_accumulate(
         qi1d, ni1d, qiten, niten, temperature, pressure, qv, dz,
         rainnc, rainncv, snownc, snowncv, dt: float, *, reference_density,
-        rain_active_columns) -> None:
+        rain_active_columns, export_surface: bool = False) -> None:
     """WRF's ice fallout in tendency form (:3664-3698, :3838-3870).
 
     The working pair is :3226-3233's on the held :3193 density
     (``reference_density``); rhof is refreshed from the current density
     only in columns ``rain_active_columns`` marks (WRF's ANY(L_qr)).  The
-    surface bookkeeping is the classic launcher's.
+    surface bookkeeping is the classic launcher's, unless ``export_surface``:
+    then the column's pptice alone goes into ``snowncv`` and nothing else is
+    written, for :func:`launch_aa_surface_precipitation`.
     """
     shape, _ = validate_fields({
         "qi1d": qi1d, "ni1d": ni1d, "qiten": qiten, "niten": niten,
@@ -379,16 +408,129 @@ def launch_aa_ice_sedimentation_accumulate(
     _column_launch("thompson_aa_ice_sediment_accumulate", nz, ny, nx,
                    (qi1d, ni1d, qiten, niten, temperature, pressure, qv,
                     reference_density, rain_active_columns, dz, rainnc,
-                    rainncv, snownc, snowncv, DTYPE(dt), np.int32(nz),
-                    np.int32(ny), np.int32(nx)))
+                    rainncv, snownc, snowncv,
+                    np.int32(1 if export_surface else 0), DTYPE(dt),
+                    np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_aa_snow_sedimentation(
+        qs, temperature, pressure, qv, dz, snow_precipitation, dt: float, *,
+        reference_density, reference_temperature, snow_melt_marker,
+        velocity_boost, qr1d, nr1d, qrten, nrten, rain_density,
+        qsten=None) -> None:
+    """WRF v4.6.1's snow fallout (:3257-3262, :3313-3353, :3699-3733,
+    :3871-3902) and its terminal zero (:4054-4055).
+
+    ``qs`` is the post-source snow the networks leave in place; the fallout
+    tendency times DT is added to it.  ``reference_density`` and
+    ``reference_temperature`` are the :3193 density and :3188 temperature.
+    The melting blend reads the rain fall-speed pass's own vtrk and rr, from
+    the entry rain, its tendency so far and ``rain_density`` (the rain
+    evaporation's export, which also carries ANY(L_qr) for rhof).  The
+    column's pptsnow goes into ``snow_precipitation``.
+
+    ``qsten`` (keyword): WRF's snow accumulator as the source networks left
+    it.  Given, ``qs`` is the entry snow qs1d, the fallout forms its working
+    snow as qs1d + qsten*DT, adds its own tendency to ``qsten`` and applies
+    the sum once (:4054); ``None`` keeps the in-place form above.
+    """
+    if qsten is not None:
+        validate_fields({"qs": qs, "qsten": qsten})
+    shape, _ = validate_fields({
+        "qs": qs, "temperature": temperature, "pressure": pressure,
+        "qv": qv, "dz": dz, "reference_density": reference_density,
+        "reference_temperature": reference_temperature,
+        "snow_melt_marker": snow_melt_marker,
+        "velocity_boost": velocity_boost, "qr1d": qr1d, "nr1d": nr1d,
+        "qrten": qrten, "nrten": nrten, "rain_density": rain_density,
+    })
+    nz, ny, nx = shape
+    if nz < 2 or nz > _KMAX:
+        raise ValueError(f"snow fallout requires 2 <= nz <= {_KMAX}, got {nz}")
+    _validate_surface_mask("snow_precipitation", snow_precipitation, (ny, nx))
+    _column_launch("thompson_aa_snow_sediment", nz, ny, nx,
+                   (qs, snow_melt_marker, qr1d, nr1d, qrten, nrten,
+                    rain_density, temperature, pressure, qv,
+                    reference_density, reference_temperature, velocity_boost,
+                    dz, snow_precipitation, qsten, DTYPE(dt),
+                    np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_aa_graupel_sedimentation(
+        qg, graupel_number, temperature, pressure, qv, dz,
+        graupel_precipitation, dt: float, *, reference_density,
+        active_columns, rain_density, qgten=None, ngten=None) -> None:
+    """WRF v4.6.1's classic graupel fallout (:3283-3303, :3370-3376,
+    :3740-3773, :3903-3937).
+
+    ``qg`` and ``graupel_number`` (the private ng1d) are the post-source
+    values in place; the fallout tendencies times DT are added to them, and
+    :func:`gpuwm.core.thompson_aerosol_state.launch_aa_graupel_number_finalize`
+    applies :4058-4077 after the phase cleanup.  ``active_columns`` is
+    WRF's ANY(L_qg); ``rain_density`` carries ANY(L_qr) for rhof.  The
+    column's pptgraul goes into ``graupel_precipitation``.
+
+    ``qgten``/``ngten`` (keywords, both or neither): WRF's graupel and
+    graupel-number accumulators as the source networks left them.  Given,
+    ``qg`` and ``graupel_number`` are the entry qg1d and ng1d, the fallout
+    forms its working graupel as qg1d + qgten*DT, adds its own tendencies to
+    the accumulators and applies the sums (:4058-4059); in a column with no
+    fallout the sources' tendencies are applied alone.
+    """
+    if (qgten is None) != (ngten is None):
+        raise ValueError("qgten and ngten are given together or not at all")
+    if qgten is not None:
+        validate_fields({"qg": qg, "qgten": qgten, "ngten": ngten})
+    shape, _ = validate_fields({
+        "qg": qg, "graupel_number": graupel_number,
+        "temperature": temperature, "pressure": pressure, "qv": qv,
+        "dz": dz, "reference_density": reference_density,
+        "rain_density": rain_density,
+    })
+    nz, ny, nx = shape
+    if nz < 2 or nz > _KMAX:
+        raise ValueError(
+            f"graupel fallout requires 2 <= nz <= {_KMAX}, got {nz}")
+    for name, value in (("active_columns", active_columns),
+                        ("graupel_precipitation", graupel_precipitation)):
+        _validate_surface_mask(name, value, (ny, nx))
+    _column_launch("thompson_aa_graupel_sediment", nz, ny, nx,
+                   (qg, graupel_number, rain_density, temperature, pressure,
+                    qv, reference_density, dz, active_columns,
+                    graupel_precipitation, qgten, ngten, DTYPE(dt),
+                    np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_aa_surface_precipitation(rainnc, rainncv, snownc, snowncv,
+                                    graupelnc, graupelncv, sr) -> None:
+    """mp_gt_driver :1294-1308 in the driver's order of addition.
+
+    On entry ``sr`` holds pptrain, ``rainncv`` pptsnow, ``snowncv`` pptice
+    and ``graupelncv`` pptgraul (the four fallout passes' exports); on exit
+    all seven hold WRF's surface fields, SR included.
+    """
+    surface = {"rainnc": rainnc, "rainncv": rainncv, "snownc": snownc,
+               "snowncv": snowncv, "graupelnc": graupelnc,
+               "graupelncv": graupelncv, "sr": sr}
+    shape = rainnc.shape
+    for name, value in surface.items():
+        _validate_surface_mask(name, value, shape)
+    ncol = int(np.prod(shape))
+    grid, block = launch_grid(ncol)
+    aerosol_kernel(SED_MODULE, "thompson_aa_surface_precipitation")(
+        grid, block, (rainnc, rainncv, snownc, snowncv, graupelnc,
+                      graupelncv, sr, np.int32(ncol)))
 
 
 __all__ = [
     "DIAGNOSTIC_FIELDS",
     "VERTICAL_LEVEL_BOUNDS",
     "launch_aa_cloud_sedimentation",
+    "launch_aa_graupel_sedimentation",
     "launch_aa_ice_sedimentation_accumulate",
     "launch_aa_rain_sedimentation_accumulate",
+    "launch_aa_snow_sedimentation",
+    "launch_aa_surface_precipitation",
     "launch_aa_final_phase_cleanup",
 ]
 
@@ -411,6 +553,11 @@ def _require_wrf39(what: str) -> None:
 def _column_launch(name_stem: str, nz: int, ny: int, nx: int, args) -> None:
     if nz < 2 or nz > _KMAX:
         raise ValueError(f"fallout needs 2 <= nz <= {_KMAX}, got {nz}")
+    if LEVEL_PARALLEL_FALLOUT and nz <= _SHALLOW_KMAX and name_stem in (
+            "thompson_aa_snow_sediment", "thompson_aa_graupel_sediment"):
+        aerosol_kernel(SED_MODULE, name_stem + "_levels_64")(
+            (ny * nx,), (64,), args)
+        return
     name = name_stem + ("_64" if nz <= _SHALLOW_KMAX else "_256")
     blocks = (ny * nx + _COLUMN_TPB - 1) // _COLUMN_TPB
     aerosol_kernel(SED_MODULE, name)((blocks,), (_COLUMN_TPB,), args)

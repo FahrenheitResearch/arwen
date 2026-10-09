@@ -355,6 +355,7 @@ pub fn operational_fill_scale_for_recipe_in(
         RenderStyle::WeatherCloudCover => cloud_cover_scale(),
         RenderStyle::WeatherPrecipitableWater => precipitable_water_inches_scale(),
         RenderStyle::WeatherQpf => crate::qpf::qpf_inches_scale(),
+        RenderStyle::WeatherSnowfall => crate::qpf::snowfall_inches_scale(),
         RenderStyle::WeatherCategorical => DiscreteColorScale {
             levels: vec![0.0, 0.5, 1.0],
             colors: vec![

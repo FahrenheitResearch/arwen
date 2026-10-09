@@ -666,24 +666,54 @@ def _host_threads_check() -> Check:
     interpreter, and four cards slower than two.  Never blocking: one-card
     forecasts do not care, and a GIL build still runs every forecast.
     """
-    from gpuwm.free_threading import free_threaded_build
+    from gpuwm.free_threading import free_threaded_build, gil_enabled
 
     name = "multi-card host threads"
     version = ".".join(str(v) for v in sys.version_info[:3])
     if free_threaded_build():
+        lock = ("the interpreter lock is off in this process"
+                if not gil_enabled() else
+                "the lock is on in this process (an explicit PYTHON_GIL=1, or "
+                "a run that did not start from the command line)")
         return Check(name, "verified",
                      f"free-threaded Python {version}: [devices] slab threads "
-                     "run at once (PYTHON_GIL=0 is kept for command lines)",
+                     "run at once (command lines re-run themselves with "
+                     f"PYTHON_GIL=0); {lock}",
                      brief="free-threaded")
+    # install.sh and install.ps1 make .venv on free-threaded 3.14t by
+    # default (2.8.8), so the remedy is to let them make it again; a
+    # pip-only environment is remade on a 3.14t uv provides.
+    #
+    # Every line is a comment, deliberately.  The closing line of the
+    # report says every remedy line is a command "to run as printed, in
+    # the order printed", so a pasted report would have deleted .venv --
+    # the environment this report runs in, and on a pip install whatever
+    # .venv the reader's own directory holds -- part-way through the
+    # other gaps' commands, then called an installer a pip install does
+    # not have.  Remaking an environment is a choice made on purpose, not
+    # a line in a select-all paste; it is spelled out here for the shell
+    # the rest of the report is spelled for (bridges.WINDOWS_SHELL, which
+    # tests force both ways), not the host's os.name.
+    if bridges.WINDOWS_SHELL:
+        rebuild = "Remove-Item -Recurse -Force .venv; .\\install.ps1"
+        installer = ".\\install.ps1"
+    else:
+        rebuild = "rm -rf .venv && bash install.sh"
+        installer = "install.sh"
+    remedy = ("# for multi-card forecasts, remake the environment on free-threaded Python 3.14t\n"
+              "# (not pasted as a command: it deletes the environment this report runs in);\n"
+              f"# in a source checkout {installer} provisions 3.14t by default, so from its root:\n"
+              f"#   {rebuild}\n"
+              "# a pip install: uv venv --seed --python 3.14t, then in it\n"
+              "#   pip install --prefer-binary gpuwm (cftime 1.6.6 has no 3.14t wheel)")
     return Check(
         name, "info",
         f"Python {version} has the interpreter lock: the slab threads of a "
         "multi-card [devices] forecast take turns on it, so extra cards add "
-        "little; one-card forecasts are unaffected",
-        "# for multi-card forecasts, reinstall under a free-threaded Python 3.14\n"
-        "export GPUWM_PYTHON=python3.14t\n"
-        "bash install.sh",
-        action="reinstall under python3.14t for multi-card forecasts",
+        "little (about 2x slower on 4 cards than free-threaded 3.14t); "
+        "one-card forecasts are unaffected",
+        remedy,
+        action="remake the environment on free-threaded python3.14t for multi-card forecasts",
         brief="GIL build: multi-card slabs take turns", blocking=False)
 
 
@@ -1539,6 +1569,9 @@ _IMPORT_NAME = {
     # The wheel-gate tests' build backend ([dev] extra): they run setup.py
     # with the battery's interpreter.
     "setuptools": "setuptools",
+    # The undefined-name gate's linter ([dev] extra):
+    # tests/test_no_undefined_names.py runs it.
+    "ruff": "ruff",
     # The CDS client ([era5] extra): distribution and module share the name.
     "cdsapi": "cdsapi",
     "huggingface-hub": "huggingface_hub",
@@ -6904,7 +6937,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["Check", "DOCTOR_SOURCES", "DOCTOR_STATE_ENV",
+__all__ = ["Check", "DOCTOR_SOURCES", "DOCTOR_STATE_ENV",  # noqa: F822 -- module __getattr__
            "DOCTOR_STATE_SCHEMA",
            "SETUP_ACTIONS", "SEVERITY_BROKEN", "SEVERITY_DEGRADED",
            "SEVERITY_OPT_IN", "SEVERITY_UNREACHABLE", "blocking_gaps",

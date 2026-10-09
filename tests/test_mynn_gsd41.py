@@ -222,8 +222,9 @@ def test_gsd41_mixlength2_cuda_matches_its_fortran(csv_name, unsquared):
     got = cp.asnumpy(actual.qkw)
     np.testing.assert_array_equal(got, fields["qkw"], err_msg="qkw")
     distance = fp32_ulp_distance(cp.asnumpy(actual.el), fields["el"])
-    assert int(distance.max()) <= 2, int(distance.max())
-    assert int((distance > 0).sum()) <= 6, int((distance > 0).sum())
+    # lane/mynn-exact: 0 on the RTX 5090 (sm_120, NVRTC 12.9) afte
+    # with the fork CSVs rebuilt on glibc 2.39 (mixlength2-gsd41-provenance.txt).
+    assert int(distance.max()) == 0, int(distance.max())
 
 
 @requires_gpu
@@ -242,9 +243,9 @@ def test_gsd41_mixlength2_differs_from_wrf461_option2():
 
 
 @requires_gpu
-def test_gsd41_option1_is_the_wrf461_option1():
-    # Option 1 is not part of the gsd_41 port: under gsd_41 it must be the
-    # v4.6.1 option 1 bit for bit (the HRRR namelist runs option 2).
+def test_gsd41_option1_does_not_substitute_the_wrf461_length():
+    # The family referee gate grades the fork's option 1 over twelve steps.
+    # This negative control catches the former stock-length substitution.
     import cupy as cp
     from gpuwm.core.mynn_pbl_gpu import mynn_mixlength_default_cuda
     fields = _gsd41_fields("mixlength2-gsd41-sq.csv")
@@ -254,8 +255,8 @@ def test_gsd41_option1_is_the_wrf461_option1():
     a_el = cp.asnumpy(a.el).copy()
     b = mynn_mixlength_default_cuda(values, bl_mynn_mixlength=1,
                                     bl_mynn_version="gsd_41")
-    assert np.array_equal(a_el.view(np.uint32),
-                          cp.asnumpy(b.el).view(np.uint32))
+    assert not np.array_equal(a_el.view(np.uint32),
+                              cp.asnumpy(b.el).view(np.uint32))
 
 
 # ---------------------------------------------------------------------------
@@ -561,4 +562,6 @@ def test_gsd41_turbulence_matches_its_fortran():
     # The interface arithmetic of this kernel is the v4.6.1 port's plain
     # operators (NVRTC may contract), as on the default path; MEASURED at
     # most 3 ULP on the RTX 4090 over 70 interfaces.
-    assert max(worst.values()) <= 4, worst
+    # lane/mynn-exact: 0 with the fork's a2den algebra, --fmad=false and the
+    # glibc 2.39 rebuild of turbulence2-gsd41-sq.csv.
+    assert max(worst.values()) == 0, worst

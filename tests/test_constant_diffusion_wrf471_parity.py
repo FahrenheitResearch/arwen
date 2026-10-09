@@ -58,12 +58,15 @@ def test_constant_fixture_is_the_compiled_wrf_driver_and_its_receipts():
 
 
 def test_constant_operator_divergences_are_declared_in_source():
+    # The Straka-form Laplacian is a utility, not the model's km_opt=1
+    # (which is WRF's isotropic_km package: tests/test_km1_wrf461_oracle.py).
     module=(ROOT/"gpuwm/core/diffusion.py").read_text()
     kernel=(ROOT/"gpuwm/core/kernels/diffusion.cu").read_text()
-    assert "on *every* RK stage" in module
+    assert "It is NOT WRF's" in module and "``km_opt = 1``.  It keeps Straka's definition" in module
     assert "khdif/prandtl" in module
     assert "3x the momentum" in module
     assert "base-state dz" in module
+    assert "add_diffusion_tendencies" not in module
     assert "zero-flux top/bottom boundaries" in kernel
     assert "all stencil" in kernel and "wrap over the core" in kernel
 

@@ -82,6 +82,9 @@ class MemberOutputCapture:
                 continue
             case = model._prepared_by_grid_id[node.cfg.grid_id]
             metadata = _metadata_frame(node.grid, case.static_fields)
+            file_grid = getattr(case, "wrf_file_grid", None)
+            if file_grid:
+                metadata = {**metadata, **file_grid}
             capture_due_counter(node, owner, self.member_id, calendar=calendar,
                 start_time=start_time, metadata=metadata, episode=episode,
                 streamed=getattr(node.state, "_streamed_domain", None))

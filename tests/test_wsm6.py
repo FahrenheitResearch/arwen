@@ -68,7 +68,7 @@ def test_wrf_wsm6_coefficients_and_restart_identity():
     assert hail.pvtg == pytest.approx(846.3231230270577, rel=2.0e-14)
     assert graupel.roqimax == pytest.approx(8.125e-5, rel=2.0e-15)
     assert MICROPHYSICS_ALGORITHM_IDENTITIES[6] == (
-        "wsm6-single-moment-six-class-wrf-v4.6.1-v1")
+        "wsm6-single-moment-six-class-wrf-v4.6.1-v2-real-clamp-product")
 
 
 def test_wsm6_state_preflight_nesting_and_diagnostics_inventory():

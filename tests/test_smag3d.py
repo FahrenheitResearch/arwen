@@ -549,11 +549,20 @@ def test_km_opt3_config_admission():
                 validate_run_config(RunConfig(**base, diff_opt=1,
                                               km_opt=option,
                                               **{name: 75.0}))
+    # km_opt=1 under diff_opt=2 with the PBL off runs WRF's
+    # vertical_diffusion_2 surface arms (isotropic_km into the same
+    # package), so it consumes the prescribed forcing; diff_opt=1 does not.
+    validate_run_config(RunConfig(**base, km_opt=1, isfflx=2,
+                                  tke_heat_flux=0.24))
+    validate_run_config(RunConfig(**base, km_opt=1, isfflx=0,
+                                  sf_sfclay_physics=0,
+                                  tke_drag_coefficient=0.0013))
     with pytest.raises(ValueError, match="isfflx=2"):
-        validate_run_config(RunConfig(**base, km_opt=1, isfflx=2))
+        validate_run_config(RunConfig(**base, km_opt=1, diff_opt=1,
+                                      isfflx=2))
     with pytest.raises(ValueError, match="isfflx=0"):
-        validate_run_config(RunConfig(**base, km_opt=1, isfflx=0,
-                                      sf_sfclay_physics=0))
+        validate_run_config(RunConfig(**base, km_opt=1, diff_opt=1,
+                                      isfflx=0, sf_sfclay_physics=0))
     with pytest.raises(ValueError, match="mix_isotropic"):
         validate_run_config(RunConfig(**base, km_opt=3, mix_isotropic=2))
 

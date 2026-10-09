@@ -123,7 +123,9 @@ def _gil_notice(ranks, report):
                % (report["python_gil_env"] or "unset, and an extension import"))
     else:
         why = ("Python %s is a GIL build; run under a free-threaded "
-               "python3.14t to step the cards at once" % report["python"])
+               "python3.14t to step the cards at once (install.sh and "
+               "install.ps1 make .venv on it by default; gpuwm doctor "
+               "prints the steps)" % report["python"])
     print(f"[devices] {ranks} rank threads share one interpreter lock, so the "
           f"cards take turns on the host: {why}", file=sys.stderr, flush=True)
 

@@ -2246,7 +2246,8 @@ def np_moist_physics_finish(th_after, th_saved, dt, *, no_mp_heating=0,
     theta", :5523-5526); ``th_after`` is the scheme's updated full theta.
     With ``no_mp_heating == 0`` (:5682) the theta increment ``mpten =
     th_after - th_saved`` (:5688) is clamped to ``+/- mp_tend_lim*dt``
-    (:5706-5707), applied ONCE directly to the prognostic theta
+    (:5706-5707), that product formed as WRF forms it from two REALs
+    (``float32(float32(mp_tend_lim) * float32(dt))``), applied ONCE directly to the prognostic theta
     (``t_new = t_new + mpten``, :5743), and stored as the heating rate
     ``h_diabatic = mpten/dt`` (:5745) for the NEXT step's RK tendencies.
     With ``no_mp_heating = 1`` theta is left untouched (:5775, commented
@@ -2257,9 +2258,12 @@ def np_moist_physics_finish(th_after, th_saved, dt, *, no_mp_heating=0,
     th_after = np.asarray(th_after, dtype=np.float64)
     th_saved = np.asarray(th_saved, dtype=np.float64)
     if no_mp_heating == 0:
+        # WRF's bound is the REAL product of two REALs: one float32
+        # rounding of float32 operands, not the double product rounded.
+        lim = float(np.float32(np.float32(mp_tend_lim) * np.float32(dt)))
         mpten = th_after - th_saved                       # :5688
-        mpten = np.minimum(mp_tend_lim * dt, mpten)       # :5706
-        mpten = np.maximum(-mp_tend_lim * dt, mpten)      # :5707
+        mpten = np.minimum(lim, mpten)                    # :5706
+        mpten = np.maximum(-lim, mpten)                   # :5707
         return th_saved + mpten, mpten / dt               # :5743, :5745
     return th_saved.copy(), np.zeros_like(th_saved)       # :5775-5776
 

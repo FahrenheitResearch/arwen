@@ -1460,7 +1460,10 @@ def mynn_predict_default(
 
         ust = F(scalars["ust"][column])
         vkz = F(F(0.4) * F(F(0.5) * dz[0]))
-        pdk1 = F(F(F(2.0) * F(ust ** 3)) * scalars["pmz"][column] / vkz)
+        # gfortran expands the integer power ust**3 as (ust*ust)*ust, two
+        # rounded multiplies; NumPy's float32 ** 3 is one powf call, and on
+        # the cold-pool family (ust = 0.08) the two land a ULP apart on qke.
+        pdk1 = F(F(F(2.0) * F(F(ust * ust) * ust)) * scalars["pmz"][column] / vkz)
         phm = F(F(F(2.0) / ust) * scalars["phh"][column] / vkz)
         pdt1 = F(F(phm * scalars["flt"][column]) * scalars["flt"][column])
         pdq1 = F(F(phm * scalars["flq"][column]) * scalars["flq"][column])

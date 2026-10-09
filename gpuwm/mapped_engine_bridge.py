@@ -1607,6 +1607,7 @@ def engine_command(
     input_manifest_sha256: str | None = None,
     atmospheric_window: bool = False,
     lead_batch: bool = False,
+    unpublished_fallbacks: Mapping[str, str] | None = None,
 ) -> list[str]:
     """The exact argv the seam contract defines, in a stable order.
 
@@ -1656,6 +1657,14 @@ def engine_command(
         # One lead batch of a window decoded as it posts: the window's
         # series rules are the caller's (see decode_composed_source).
         command.append("--lead-batch")
+    for field in sorted(unpublished_fallbacks or {}):
+        # A contributing binding whose files publish no record for its
+        # fields is recorded with these fallbacks instead of refused
+        # (gpuwm.runtime_surface_fetch.composition_unpublished_fallbacks).
+        command.extend((
+            "--unpublished-fallback",
+            f"{field}={(unpublished_fallbacks or {})[field]}",
+        ))
     return command
 
 
@@ -1802,6 +1811,7 @@ def run_engine(
     threads: int | None = None,
     lead_batch: bool = False,
     memory_budget_bytes: int | None = None,
+    unpublished_fallbacks: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Run one engine subcommand; refusals become Python exceptions.
 
@@ -1888,6 +1898,7 @@ def run_engine(
         input_manifest_sha256=input_manifest_sha256,
         atmospheric_window=window_enabled,
         lead_batch=lead_batch,
+        unpublished_fallbacks=unpublished_fallbacks,
     )
     environment = None
     if threads is not None or memory_budget_bytes is not None:

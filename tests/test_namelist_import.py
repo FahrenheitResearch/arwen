@@ -962,11 +962,15 @@ def test_rejects_idealized_input_from_file(tmp_path):
 
 
 def test_rejects_unmapped_namelist_key(tmp_path):
-    # tracer_opt has no gpuwm counterpart of any class (rk_ord, the old
-    # example here, is now a validated fixed-by-ArWen key).
+    # Exercise an actually unknown key. tracer_opt now has a validated
+    # SFIRE/native-fire contract and must report its concrete value refusal.
+    inp = INPUT_TEXT.replace(" hybrid_opt = 2,",
+                             " hybrid_opt = 2,\n unmapped_solver_option = 2,")
+    with pytest.raises(ValueError, match="unmapped key"):
+        import_namelists(*_pair(tmp_path, inp=inp))
     inp = INPUT_TEXT.replace(" hybrid_opt = 2,",
                              " hybrid_opt = 2,\n tracer_opt = 2,")
-    with pytest.raises(ValueError, match="unmapped key"):
+    with pytest.raises(ValueError, match="tracer_opt.*implements 0.*3"):
         import_namelists(*_pair(tmp_path, inp=inp))
 
 
@@ -3240,7 +3244,9 @@ def test_non_source_fixed_triplet_keeps_current_staging_importer_bytes(tmp_path)
     assert hashlib.sha256(text.encode()).hexdigest() == baseline["fixed_triplet_60"]
     assert "terrain_clock" not in text
     run = _load(tmp_path, text).root.run
-    assert run.terrain_clock == "measured"
+    # No terrain_clock written: the run reads the default, "local_face"
+    # from 2.8.8.
+    assert run.terrain_clock == "local_face"
     assert run.use_adaptive_time_step is True
     assert not any(row.key == "use_adaptive_time_step" for row in report.fixed)
 
@@ -3300,7 +3306,8 @@ def test_an_adaptive_clock_with_a_range_still_imports_as_adaptive(
     assert "terrain_clock" not in toml_text
     run = _load(tmp_path, toml_text).root.run
     assert run.use_adaptive_time_step is True
-    assert run.terrain_clock == "measured"
+    # Nothing written: the default, "local_face" from 2.8.8.
+    assert run.terrain_clock == "local_face"
 
 
 def test_a_nested_namelist_with_a_pinned_root_triplet_stays_adaptive(
@@ -3324,7 +3331,8 @@ def test_a_nested_namelist_with_a_pinned_root_triplet_stays_adaptive(
     assert "terrain_clock" not in toml_text
     exp = _load(tmp_path, toml_text)
     assert exp.root.run.use_adaptive_time_step is True
-    assert exp.root.run.terrain_clock == "measured"
+    # Nothing written: the default, "local_face" from 2.8.8.
+    assert exp.root.run.terrain_clock == "local_face"
 
 def _import_radiation_options(tmp_path, lines, *, mp_physics=55,
                               rrtmg_variant="rrtmg_legacy"):

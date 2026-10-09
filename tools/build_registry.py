@@ -114,6 +114,15 @@ IMPLEMENTED: dict[str, dict] = {
                      "conversion 0.5*q as written (no square); false, the "
                      "default, takes 0.5*q**2 as its option 1 and every "
                      "later generation do."]},
+    "cycling": {
+        "type": "boolean", "default": False,
+        "component_id": "pbl",
+        "read_when": {"bl_pbl_physics": 5, "bl_mynn_version": "gsd_41"},
+        "warnings": ["WRF &time_control cycling. true keeps the start's "
+                     "QKE (unless its lowest-level maximum is below "
+                     "0.0002), QC_BL and CLDFRA_BL at the first MYNN call, "
+                     "as the operational WRF 3.9 fork does. Refused with "
+                     "the v4.6.1 MYNN, whose cycled start zeroes them."]},
     "mynn_sfclay_variant": {
         "type": "string", "enum": ["wrf_461", "gsl_wrf39"],
         "default": "wrf_461",
@@ -1778,9 +1787,20 @@ def _surface_coupling_warnings(registry: dict) -> None:
 #: ``tests/test_physics_md_aerosol_claims.py::
 #: test_the_published_clean_counts_are_the_gates_own_counts``, so it cannot be
 #: a transcription that drifts.
+#:
+#: AND NOW 21 OF 22 (2.8.8).  ``aero-cold-overlap`` LEFT: it is the declared
+#: rain-graupel divergence (the gate's ``_G3_DECLARED_DIVERGENCE``).  WRF
+#: v4.6.1 reads its rain-graupel collision tables out of bounds when the
+#: scheme is not hail aware (dimNRHG = 1, idx_bg = 5;
+#: module_mp_thompson.F:465, :607-615, :2527-2545) and WOOF reads the one
+#: slab the tables hold.  This registry kept publishing the fixture as clean
+#: after the gate moved it; re-measured through the shipped adapter on an
+#: RTX 4090 (sm_89) and an RTX 5070 Ti (sm_120), the unexceptioned table
+#: reads 21 of 22 with that fixture the one miss, at exactly the values
+#: MP28_G3_RESIDUALS publishes.
 MP28_G3_CLEAN = (
     "aero-ccn-activate", "aero-ccn-sweep", "aero-cloud-freeze-nc",
-    "aero-cold-overlap", "aero-drop-evap",
+    "aero-drop-evap",
     "aero-ice-demott-dep", "aero-ice-demott-idxin", "aero-ice-koop",
     "aero-init-profile", "aero-nc-accrete", "aero-nc-auto", "aero-nc-cap",
     "aero-nc-effrad", "aero-nc-sed", "aero-reduces-to-classic",
@@ -1791,7 +1811,8 @@ MP28_G3_CLEAN = (
 
 #: Fixtures that do NOT clear 2e-6 on every field, with every field that
 #: misses and its measured maximum relative difference.  NONE of twenty-two
-#: since the 2.8.6 accumulator rework.
+#: from the 2.8.6 accumulator rework until 2.8.8 declared the rain-graupel
+#: divergence; ONE since (the note at the end of this comment).
 #:
 #: WHAT CLOSED THEM.  WRF's mp_thompson never writes a hydrometeor during the
 #: call: every process adds to a running tendency (qcten, qrten, nrten,
@@ -1882,7 +1903,23 @@ MP28_G3_CLEAN = (
 #: Level 0 nr went 2.724e-06 (34 ulp) to 4.006e-07 (5 ulp) on a card (RTX
 #: 4090 and RTX 5090 alike; 8.012e-08, 1 ulp, on the host build of the
 #: kernels) and the fixture left this table.
-MP28_G3_RESIDUALS: dict[str, dict[str, float]] = {}
+#:
+#: ONE ROW SINCE 2.8.8, AND IT IS THE DECLARED DIVERGENCE, not a rounding
+#: residual: ``aero-cold-overlap``, the one fixture carrying rain and graupel
+#: together, where WOOF reads the rain-graupel slab WRF's tables hold and WRF
+#: reads past it (see MP28_G3_CLEAN).  The values are the gate's own
+#: ``_G3_RESIDUALS`` in the 16-field contract shape, re-measured through the
+#: shipped adapter on an RTX 4090 (sm_89) and an RTX 5070 Ti (sm_120) and
+#: identical on both; its reflectivity misses by 1.585e-03 dB.  With WRF's
+#: read emulated in a measurement copy of the tree (never shipped) the
+#: fixture clears all 23 quantities, so nothing else in it differs.
+MP28_G3_RESIDUALS: dict[str, dict[str, float]] = {
+    "aero-cold-overlap": {
+        "qr": 5.070e-04, "qi": 1.618e-04,
+        "qg": 8.776e-05, "ni_per_kg": 1.464e-05, "nr_per_kg": 5.066e-04,
+        "effi_m": 5.394e-05, "effs_m": 6.574e-06,
+    },
+}
 
 #: The one fixture that clears the gate only through a carved-out bound, and
 #: the ONE FIELD that bound still covers.
@@ -2143,17 +2180,23 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
                 ],
                 # The two counts, stated separately, because conflating them
                 # is how a port claims a clean number it did not earn.
-                "clean_unexceptioned": 22,
-                "clean_as_gated": 22,
+                "clean_unexceptioned": len(MP28_G3_CLEAN),
+                "clean_as_gated": len(MP28_G3_CLEAN),
                 "clean_counts_note": (
-                    "22 of 22 clear a FLAT 2.0e-6 relative / 2.0e-4 dB gate "
+                    "21 of 22 clear a FLAT 2.0e-6 relative / 2.0e-4 dB gate "
                     "on all 23 quantities with no bounds dict, no excluded "
-                    "level and no per-fixture carve-out -- all 19 spec'd "
-                    "aero-* fixtures plus wp08-freeze, wp08-melt and "
-                    "wp08-nusweep -- since the 2.8.6 accumulator rework. "
-                    "The gated count is the same 22 of 22: there is no "
-                    "allowance left, and the three that ever existed are in "
-                    "retired_allowances. A clean column deck is not a "
+                    "level and no per-fixture carve-out -- 18 of the 19 "
+                    "spec'd aero-* fixtures plus wp08-freeze, wp08-melt and "
+                    "wp08-nusweep. The 22nd, aero-cold-overlap, misses by "
+                    "the declared rain-graupel divergence alone (WRF v4.6.1 "
+                    "reads its rain-graupel collision tables out of bounds "
+                    "when the scheme is not hail aware; WOOF reads the one "
+                    "slab the tables hold) and is published in "
+                    "residual_fixtures; with WRF's read emulated in a "
+                    "measurement copy of the tree it clears all 23 "
+                    "quantities. The gated count is the same 21 of 22: there "
+                    "is no allowance left, and the three that ever existed "
+                    "are in retired_allowances. A clean column deck is not a "
                     "forecast validation; the maturity stays "
                     "implemented-unverified on the forecast evidence."),
                 # No longer None.  docs/public/wrf-comparison/
@@ -2512,13 +2555,25 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "bounded is NOT correct: a scheme with a systematically wrong "
             "activation rate passes every one of those checks for two hours. "
             "The bounds are WRF's, but they are clamps, not answers.",
-            "THE COLUMN EVIDENCE IS CLEAN; THE FORECAST EVIDENCE IS NOT. "
+            "THE COLUMN EVIDENCE IS CLEAN BUT FOR ONE DECLARED DIVERGENCE; "
+            "THE FORECAST EVIDENCE IS NOT. "
             "Driven end to end through the shipped "
             "adapter, 22 fixtures x 23 quantities, at a flat 2.0e-6 relative "
-            "/ 2.0e-4 dB gate with nothing held out: 22 of 22 clear every "
-            "quantity (all 19 spec'd aero-* fixtures, plus wp08-freeze, "
-            "wp08-melt and wp08-nusweep), with no allowance anywhere, on an "
-            "RTX 5090 and an RTX 4090 identically. The 2.8.6 accumulator "
+            "/ 2.0e-4 dB gate with nothing held out: 21 of 22 clear every "
+            "quantity (18 of the 19 spec'd aero-* fixtures, plus "
+            "wp08-freeze, wp08-melt and wp08-nusweep), with no allowance "
+            "anywhere, on an RTX 4090 and an RTX 5070 Ti identically. The "
+            "22nd, aero-cold-overlap, the one fixture carrying rain and "
+            "graupel together, misses by the declared rain-graupel "
+            "divergence alone: WRF v4.6.1 reads its rain-graupel collision "
+            "tables out of bounds when the scheme is not hail aware "
+            "(dimNRHG = 1, idx_bg = 5; phys/module_mp_thompson.F:465, "
+            ":607-615, :2527-2545) and WOOF reads the one slab the tables "
+            "hold, so it reads qr 5.070e-04, nr 5.066e-04, qi 1.618e-04, qg "
+            "8.776e-05, effi 5.394e-05, ni 1.464e-05, effs 6.574e-06 and "
+            "1.585e-03 dB of reflectivity from WRF; with WRF's read emulated "
+            "in a measurement copy of the tree it clears all 23 quantities. "
+            "The 2.8.6 accumulator "
             "rework closed the last four: WRF's mp_thompson never writes a "
             "hydrometeor during the call -- every process adds to qcten, "
             "qrten, nrten, qiten or niten and the terminal apply "
@@ -2531,7 +2586,10 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "aero-cloud-freeze-nc qc 4.926e-06 -> bit-exact; "
             "aero-cold-overlap qc / nc / effc at level 4 (one float32 ulp "
             "of cloud flipping the qc1d <= R1 test at :4007) and nr "
-            "1.261e-04 / qr 4.443e-05 at level 6 -> bit-exact; "
+            "1.261e-04 / qr 4.443e-05 at level 6 -> bit-exact in 2.8.6, "
+            "before 2.8.8 moved rain collecting graupel onto the one slab "
+            "WRF's tables hold (the declared divergence above, which is "
+            "what the fixture misses by now); "
             "wp08-nusweep qr 4.642e-06 -> 5.532e-07; "
             "aero-reduces-to-classic level 6 bit-exact in qr and nr, which "
             "retired the port's last named allowance (32 ulps of the entry "
@@ -4354,7 +4412,10 @@ def _consumer_rows(registry: dict) -> None:
                 "km_opt and its constants are bound by the checkpoint's "
                 "configuration_sha256; there is deliberately no turbulence "
                 "identity table (a row would be a sixth turbulence "
-                "authority)"),
+                "authority); the mixing operators' implementation is bound "
+                "by the one string gpuwm.checkpoint_identity."
+                "DYCORE_MIXING_ALGORITHM_IDENTITY, recorded whenever the "
+                "domain mixes"),
         }
 
     # -- completeness: the build refuses a registry that violates the
@@ -4926,6 +4987,18 @@ def build(registry: dict) -> dict:
     # surface layer is legal with PBL off.  These declarative constraints
     # mirror the same 16-cell table used by runtime admission.
     pbl_options = registry["components"]["pbl"]["options"]
+    # Retire only the old ctopo-absent warning after the selected YSU repair.
+    # Keep its independent WRF comparison and all other qualification limits.
+    pbl_options["ysu"]["warnings"] = [
+        ("WRF's default surface-drag arm is implemented: module_bl_ysu.F:404 "
+         "passes ctopo and ctopo2 and bl_ysu.F90:1308 applies their drag. "
+         "The selected kernel carries the paj, GET_PBLH and Beljaars vconv "
+         "calculation; tests/test_ysu_wrf461_parity.py pins zero momentum ULP "
+         "against that arm and retains the separate 182 ULP comparison to "
+         "the historical ctopo-absent reference. This is column evidence, "
+         "not qualification against a WRF forecast.")
+        if "bl_ysu.F90:1315" in warning else warning
+        for warning in pbl_options["ysu"]["warnings"]]
     surface_options = registry["components"]["surface_layer"]["options"]
     pbl_options["ysu"]["constraints"]["requires_components"][
         "surface_layer"
@@ -5292,6 +5365,46 @@ def build(registry: dict) -> dict:
         "selectors": {"bl_pbl_physics": 9},
         "warnings": list(_UWPBL_WARNINGS),
     }
+    # The Eta surface layer carries its OWN evidence and has no divergence
+    # warning: its WRF column oracle is graded word for word, and the
+    # ground-relative height column _MYJ_DIVERGENCE_WARNING describes is
+    # gone from it (the kernel seeds ZINT(KTE+1)=HT as WRF does).
+    _MYJ_SFC_EVIDENCE_WARNING = (
+        "The Eta similarity surface layer is implemented-unverified because "
+        "no matched ArWen-versus-WRF forecast trajectory exists for it, but "
+        "its CUDA kernel (gpuwm/core/kernels/myjsfc.cu) and its host "
+        "similarity tables are BIT-IDENTICAL to WRF v4.6.1's own MYJSFC and "
+        "MYJSFCINIT. tools/myjsfc_wrf461_oracle compiles the byte-unmodified "
+        "phys/module_sf_myjsfc.F at gfortran 13.3 -O0 (WRF's own -O2 "
+        "-ftree-vectorize -funroll-loops build writes the same bytes; "
+        "neither has an FMA or a libmvec call) and drives 224 columns -- "
+        "convective and stable land, snow and sea ice, warm, cold and "
+        "storm-force ocean, terrain to 4.4 km, calm air, cloud water, a "
+        "TKE column that never drops below EPSQ2 and a dead one, a "
+        "boundary layer above 1000 m, extreme instability and stability, "
+        "a saturated cold column, a lowest layer under 4 m and the "
+        "two-level minimum column -- through MYJSFCINIT and three "
+        "consecutive MYJSFC calls (cold start at ITIMESTEP 1 and warm "
+        "seeded state across the three sea viscous regimes); the fixture "
+        "executes every line of MYJSFC and SFCDIF. Every word of all 35 "
+        "INOUT and output fields is identical, replayed and free-running, "
+        "under the strict build (GPUWM_WRF_EXACT=1) and under default "
+        "arithmetic, and all 4 x 10,001 PSIM/PSIH table words match "
+        "(tests/test_myjsfc_wrf461_parity.py). A further 8,192 columns "
+        "with randomly drawn regimes, four calls each (32,768 "
+        "column-calls, tools/myjsfc_wrf461_oracle/stress.sh), are "
+        "identical too, and so is the float32 CPU authority "
+        "(gpuwm/verify/myj_ref.py np_myjsfc_column, graded on CPU). The "
+        "kernel seeds "
+        "ZINT(KTE+1)=HT as WRF does (phys/module_sf_myjsfc.F:165), calls "
+        "WOOF's own float32 gfk_log/gfk_exp_fma/gfk_pow (graded against "
+        "the oracle host's C library over all 2**32 inputs by "
+        "tools/myjsfc_wrf461_oracle/libm_sweep.py: one input differs, 1 ULP "
+        "of POW at x = 0.00825 with exponent 1/CAPA, which needs a surface "
+        "pressure below 0.01 Pa) and compiles without FMA "
+        "contraction; the host tables use WOOF's own float32 "
+        "logf/atanf/expf. That is conformance evidence, not scientific "
+        "validation.")
     surface_options["eta-similarity"] = {
         "asset_requirements": [],
         "constraints": {
@@ -5326,9 +5439,8 @@ def build(registry: dict) -> dict:
         "reachability": {"state": "component-override"},
         "scientific_evidence": "none",
         "selectors": {"sf_sfclay_physics": 2},
-        "warnings": [_MYJ_EVIDENCE_WARNING, _MYJ_PAIR_WARNING,
-                     _MYJ_QUIRK_WARNING, _MYJ_DIVERGENCE_WARNING,
-                     _MYJ_SCOPE_WARNING],
+        "warnings": [_MYJ_SFC_EVIDENCE_WARNING, _MYJ_PAIR_WARNING,
+                     _MYJ_QUIRK_WARNING, _MYJ_SCOPE_WARNING],
     }
     # Grell-Freitas (cu_physics=3), the first cumulus option admitted
     # since KF and the first scale-aware one: sig = (1-frh)^2 is the
@@ -5854,6 +5966,21 @@ def build(registry: dict) -> dict:
             "column-locally with no vertical redistribution, so the run "
             "would not be the prognostic-TKE closure it names"),
     }
+    # Citation offsets follow the actual retained source declaration. Keep
+    # the claim's text and semantic anchor unchanged across source intake.
+    dycore_lines = (MODEL / "gpuwm/core/dycore.py").read_text(
+        encoding="utf-8").splitlines()
+    for option_id, anchor in {
+            "tke-1.5-order": "WRF v4.6.1 km_opt=2:",
+            "smagorinsky-3d": "WRF v4.6.1 km_opt=3:"}.items():
+        matches = [number for number, line in enumerate(dycore_lines, 1)
+                   if anchor in line]
+        if len(matches) != 1:
+            raise ValueError(f"registry citation needs one {anchor!r} declaration, got {matches}")
+        citation = f"gpuwm/core/dycore.py:{matches[0]}"
+        turbulence_options[option_id]["warnings"] = [
+            re.sub(r"gpuwm/core/dycore\.py:\d+", citation, warning)
+            for warning in turbulence_options[option_id]["warnings"]]
     for option_id, reason in _turbulence_reasons.items():
         constraints = turbulence_options[option_id].setdefault("constraints", {})
         if "pbl" in constraints.get("requires_components", {}):
@@ -6077,6 +6204,31 @@ def build(registry: dict) -> dict:
     # mym_condensation.  Radiation then consumes the previous interval's
     # carried MYNN clouds at module_radiation_driver.F:1403-1429.
     mynn = registry["components"]["pbl"]["options"]["mynn"]
+    # The exact-driver and cycling series replace the older rounded-leaf
+    # warnings. Keep their component evidence and corrected-referee scope
+    # distinct from a matched full WRF forecast.
+    mynn["warnings"] = [
+        "UNVERIFIED against a WRF forecast. MYNN PBL runs through the exact "
+        "production driver, with phim/phih evaluated on the device. Cold-column "
+        "fixtures are bitwise WRF v4.6.1 on every oracle in "
+        "tests/test_mynn_wrf461_exact_gpu.py; the stock and gsd_41 family "
+        "drivers and restart controls are described by the selected MYNN "
+        "review receipts. This is component qualification, not a matched "
+        "full WRF forecast or observation skill.",
+        "Cycled stock MYNN carries QKE, QC_BL and CLDFRA_BL by default. "
+        "Its column comparison uses the three-assignment repaired referee: "
+        "only the upstream assignments that erase these held arrays are "
+        "removed. Cold starts retain their stock behavior. "
+        "tests/test_mynn_wrf461_cycled_carry_gpu.py and "
+        "tests/test_mynn_restart_live_gpu.py retain the raw-word and "
+        "continuation checks; other columns and compiler platforms are "
+        "not qualified by this declaration.",
+        "An admitted option is limited by the actual MYNN configuration "
+        "and consumer tables. Unsupported closure, cloud-PDF and diagnostic "
+        "values still refuse before the driver; cycling and restart are "
+        "not blanket refusals.",
+    ]
+    from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
     # ``flag_qs_*_microphysics_selectors`` must partition EVERY implemented
     # microphysics selector -- tests/test_mynn_pbl.py asserts set equality
     # against the registry's own options -- so a new scheme lands here in the
@@ -6087,7 +6239,12 @@ def build(registry: dict) -> dict:
     mynn["extensions"]["supplied_moisture_species"] = {
         "supplied": ["qv", "qc", "qi", "qs"],
         "withheld": ["qnc", "qni", "qnwfa", "qnifa", "qnbca", "o3"],
-        "flag_qs_true_microphysics_selectors": [6, 8, 9, 10, 16, 18, 28],
+        # Named schemes (gpuwm/microphysics_schemes.py) join from their own
+        # rows: a scheme whose mass species carry qs is F_QS true.
+        "flag_qs_true_microphysics_selectors": sorted(
+            {6, 8, 9, 10, 16, 18, 28} | {
+                _s.mp_id for _s in _NAMED_MP_SCHEMES.values()
+                if "qs" in _s.ice_mass_species}),
         # mp_physics=50 (P3 one-category) is FALSE, and for the substantive
         # reason rather than because it is new: P3 has a single ice category
         # and its Registry package declares moist:qv,qc,qr,qi with NO qs
@@ -6099,7 +6256,8 @@ def build(registry: dict) -> dict:
             "phys/module_pbl_driver.F:873-878 derives flag_qs from F_QS; "
             "Registry.EM_COMMON declares qs for mp_physics 6, 8, 9, 10, 16, "
             "18 and 28, and does NOT declare it for 50 (P3 has one ice "
-            "category, :3038)"),
+            "category, :3038); a named scheme (gpuwm/microphysics_schemes.py, "
+            "when enabled) is true when its own mass species carry qs"),
         "gpuwm_runtime_source": (
             "gpuwm/core/mynn_pbl_runtime.py::MYNN_SNOW_MICROPHYSICS is the "
             "shipped set this list is checked against, selector by selector, "

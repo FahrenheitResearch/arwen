@@ -37,6 +37,41 @@ import threading
 NETCDF4_IO_LOCK = threading.Lock()
 
 
+class _DeferredNetCDF4:
+    """The ``netCDF4`` module, imported the first time it is used.
+
+    THE BREAKAGE THIS PREVENTS (D-10, 2.8.8 acceptance): netCDF4 has no
+    free-threaded build, and importing it switches a free-threaded
+    interpreter's lock back on for the rest of the process ("The global
+    interpreter lock (GIL) has been enabled to load module
+    'netCDF4._netCDF4'").  Six modules imported it at module scope, so a
+    preparation hosted in-process by the site's ``engine_prepare.py`` --
+    which reads every byte through the Rust route and never opens a
+    netCDF4 dataset -- turned the lock on just by importing the parser
+    (``gpuwm.downscale``), the domain-artifact reader
+    (``gpuwm.wrf_direct``) and the memory estimate (``gpuwm.core.rrtmgp``).
+
+    ``from gpuwm.io.netcdf_serialization import netCDF4`` is the spelling
+    for a module that uses netCDF4 on some path: its call sites read
+    ``netCDF4.Dataset(...)`` unchanged, and the import happens on the
+    first attribute asked for, which is the first real use.
+    """
+
+    __slots__ = ()
+
+    def __getattr__(self, name: str):
+        import netCDF4 as library
+
+        return getattr(library, name)
+
+    def __repr__(self) -> str:
+        return "<netCDF4, imported on first use>"
+
+
+#: ``netCDF4``, deferred to its first use (:class:`_DeferredNetCDF4`).
+netCDF4 = _DeferredNetCDF4()
+
+
 @contextlib.contextmanager
 def netcdf4_session():
     """Hold the process-wide netCDF4 lock for one open/read/close.

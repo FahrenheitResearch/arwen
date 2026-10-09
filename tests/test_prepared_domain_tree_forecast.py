@@ -436,7 +436,8 @@ def _synthetic_prepared_tree(tmp_path, monkeypatch, *, delayed=False):
         cache = bundle / "prepared-cache"
         cache.mkdir(parents=True)
         static_path = bundle / "native-static.npz"
-        np.savez(static_path, DUMMY=np.ones((1,), dtype=np.float32))
+        np.savez(static_path, DUMMY=np.ones((1,), dtype=np.float32),
+                 HGT_M=np.zeros((domain.run.ny, domain.run.nx), dtype=np.float32))
         geometry = {"geometry": {"grid_id": domain.grid_id}}
         geometry_path = bundle / "geometry-receipt.json"
         geometry_path.write_text(json.dumps(geometry), encoding="utf-8")
@@ -470,7 +471,7 @@ def _synthetic_prepared_tree(tmp_path, monkeypatch, *, delayed=False):
                 "path": "native-static.npz",
                 "bytes": static_path.stat().st_size,
                 "sha256": _sha(static_path),
-                "fields": ["DUMMY"],
+                "fields": ["DUMMY", "HGT_M"],
             },
             "geometry_receipt": {
                 "path": "geometry-receipt.json",
@@ -552,10 +553,12 @@ def _synthetic_prepared_tree(tmp_path, monkeypatch, *, delayed=False):
         runner, "grids_from_projection_config", lambda _exp: (object(), object())
     )
     monkeypatch.setattr(
-        runner, "verify_native_static_receipt", lambda *_args, **_kwargs: None
+        runner, "verify_native_static_receipt",
+        lambda receipt, *_args, **_kwargs: json.loads(Path(receipt).read_text(encoding="utf-8"))
     )
     monkeypatch.setattr(
-        runner, "load_native_static_cache", lambda *_args, **_kwargs: {}
+        runner, "load_native_static_cache",
+        lambda path, _grid, ny, nx: {"HGT_M": np.zeros((ny, nx), dtype=np.float32)}
     )
     monkeypatch.setattr(runner, "_validate_vertical", lambda *_args, **_kwargs: None)
     return prepared, receipt, config

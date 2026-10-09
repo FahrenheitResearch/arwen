@@ -1487,10 +1487,15 @@ def test_the_review_refuses_a_child_clock_that_is_not_whole_steps(
             "--accept-parent-cadence",
             "--out", str(tmp_path / out), "--dry-run"])
 
-    # dt is 5 s: 302 s of output interval is 60.4 steps.
-    uneven_output = _derive_child_run_config(
+    # dt is 5 s: 302 s of output interval, written into the file by hand,
+    # is 60.4 steps.  (A DERIVED child asked for 302 s takes a step that
+    # lands on it -- downscale.child_clock_step -- so the uneven clock is
+    # the hand-written file's own.)
+    uneven_output = dict(_derive_child_run_config(
         _PARENT_CONFIG, parent=parent, ratio=1, child_nx=12, child_ny=10,
-        run_seconds=600.0, output_interval_s=302.0)
+        run_seconds=600.0, output_interval_s=300.0),
+        output_interval_s=302.0)
+    assert uneven_output["dt"] == 5.0
     assert review(uneven_output, "uneven-output") == 2
     captured = capsys.readouterr()
     assert "output_interval_s/dt must be a positive integer" in captured.err

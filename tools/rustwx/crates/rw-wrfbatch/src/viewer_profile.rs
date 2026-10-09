@@ -188,6 +188,7 @@ impl ViewerProfile {
             viewer_2d: true,
             chart_selectors,
             named_products_only: false,
+            snow_since: None,
         }
         .normalized();
         Ok(Self {

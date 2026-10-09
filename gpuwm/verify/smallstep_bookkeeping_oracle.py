@@ -18,6 +18,18 @@ from gpuwm.verify.smallstep_oracle import ORACLE_DIR, word_metrics
 from gpuwm.verify.wrf471_fixtures import require_fixture_dir
 
 BOOKKEEPING_DIR = ORACLE_DIR / "bookkeeping"
+
+
+def _append_observer_parameters(source, entry, parameters):
+    """Append to every conditional signature, before the function body."""
+    match = re.search(r"void " + re.escape(entry) + r"\([^{}]*\{", source)
+    if match is None:
+        raise ValueError(f"missing kernel signature for {entry}")
+    head = match.group()[:-1]
+    if head.count(")") not in (1, 2):
+        raise ValueError(f"unsupported observer signature for {entry}")
+    head = head.replace(")", ", " + parameters + ")")
+    return source[:match.start()] + head + "{" + source[match.end():]
 OUTPUT_COVERAGE = {
     "small_step_prep": {
         "u_2": "u_pp", "v_2": "v_pp", "w_2": "w_pp", "t_2": "native_th_pp",
@@ -46,16 +58,16 @@ def _observed_module():
     finish_column_start = source.index("void small_step_finish_column(")
     uv = source[uv_start:column_start]
     column = source[column_start:finish_start]
-    uv = re.sub(r"(void small_step_init_uv\([\s\S]*?)(\)\s*\{)",
-                r"\1, real* oracle_muus, real* oracle_muvs\2", uv, count=1)
+    uv = _append_observer_parameters(uv, "small_step_init_uv",
+                                    "real* oracle_muus, real* oracle_muvs")
     needle = "real mtf = rn_mul(0.5f, rn_add(mt_a, mt_b));"
     assert uv.count(needle) == 2
     uv = uv.replace(needle, needle + "\n        if (k == 0) oracle_muus[(size_t)j * nxf + i] = mtf;", 1)
     offset = uv.index(needle, uv.index(needle) + len(needle))
     uv = uv[:offset] + uv[offset:].replace(
         needle, needle + "\n        if (k == 0) oracle_muvs[(size_t)j * nx + i] = mtf;", 1)
-    column = re.sub(r"(void small_step_init_column\([\s\S]*?)(\)\s*\{)",
-                    r"\1, real* oracle_muts, real* oracle_c2a\2", column, count=1)
+    column = _append_observer_parameters(column, "small_step_init_column",
+                                        "real* oracle_muts, real* oracle_c2a")
     needle = "real mus = rn_add(mub2d[c], mup[c]);"
     assert column.count(needle) == 1
     column = column.replace(needle, needle + "\n    oracle_muts[c] = mut;")
@@ -64,17 +76,16 @@ def _observed_module():
     column = column.replace(needle, needle + "\n        oracle_c2a[h] = c2a;")
     finish_uv = source[finish_start:finish_column_start]
     finish_column = source[finish_column_start:]
-    finish_uv = re.sub(r"(void small_step_finish_uv\([\s\S]*?)(\)\s*\{)",
-                       r"\1, real* oracle_muu, real* oracle_muus, real* oracle_muv, real* oracle_muvs\2",
-                       finish_uv, count=1)
+    finish_uv = _append_observer_parameters(finish_uv, "small_step_finish_uv",
+        "real* oracle_muu, real* oracle_muus, real* oracle_muv, real* oracle_muvs")
     needle = "real mnf = rn_mul(0.5f, rn_add(mna, mnb));"
     assert finish_uv.count(needle) == 2
     finish_uv = finish_uv.replace(needle, needle + "\n        if (k == 0) { oracle_muu[(size_t)j * nxf + i] = msf; oracle_muus[(size_t)j * nxf + i] = mnf; }", 1)
     offset = finish_uv.index(needle, finish_uv.index(needle) + len(needle))
     finish_uv = finish_uv[:offset] + finish_uv[offset:].replace(
         needle, needle + "\n        if (k == 0) { oracle_muv[(size_t)j * nx + i] = msf; oracle_muvs[(size_t)j * nx + i] = mnf; }", 1)
-    finish_column = re.sub(r"(void small_step_finish_column\([\s\S]*?)(\)\s*\{)",
-                           r"\1, real* oracle_mut, real* oracle_muts\2", finish_column, count=1)
+    finish_column = _append_observer_parameters(finish_column, "small_step_finish_column",
+                                              "real* oracle_mut, real* oracle_muts")
     needle = "real mun = rn_add(mus, mu_pp[c]);"
     assert finish_column.count(needle) == 1
     finish_column = finish_column.replace(needle, needle + "\n    oracle_mut[c] = mus; oracle_muts[c] = mun;")

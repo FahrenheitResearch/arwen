@@ -2790,3 +2790,115 @@ def test_a_single_mapped_domain_prepares_where_a_tree_is_refused(
 
     assert calls["build_static"] == 1
     assert args["output_root"].is_dir()
+
+
+# D-02 (2.8.8 acceptance, row I1): a RUC preparation whose layer-source
+# soil moisture floor fired (90ae5edc9) wrote ``soil_moisture_floor`` into
+# proof.json but not into the cache's user metadata, and the front door,
+# which binds every CONDITIONAL_PREPARATION_RECEIPTS key from the proof and
+# compares the user metadata EXACTLY, refused its own preparation with
+# "prepared cache user metadata differs from source/proof/experiment".
+# Every writer of the root's user metadata -- the single-domain head, the
+# one-shot tree, the chained tree's head binding and its seal -- carries
+# the identical receipt.
+_RUC_FLOOR_RECEIPT = {
+    "policy": "wrf-ruc-layer-source-smois-max-0.005",
+    "floored_values": 660, "floored_columns": 425,
+    "per_level": {"SMOIS_L1": 425, "SMOIS_L2": 235},
+    "min_pre_floor": -0.029,
+}
+
+
+def _fire_the_ruc_layer_floor(monkeypatch):
+    routed = mapped_direct.preprocess_land_surface_soil
+
+    def fired(*args, **kwargs):
+        routed(*args, **kwargs)
+        return SimpleNamespace(soil_moisture_floor=dict(_RUC_FLOOR_RECEIPT))
+
+    monkeypatch.setattr(mapped_direct, "preprocess_land_surface_soil", fired)
+
+
+def _assert_user_binds_the_proofs_receipts(user, proof):
+    from gpuwm.ingest.prepared_cache import CONDITIONAL_PREPARATION_RECEIPTS
+
+    assert proof["soil_moisture_floor"] == _RUC_FLOOR_RECEIPT
+    for key in CONDITIONAL_PREPARATION_RECEIPTS:
+        assert (key in user) == (key in proof), key
+        assert user.get(key) == proof.get(key), key
+
+
+def test_a_fired_ruc_floor_is_bound_in_the_single_domain_cache_header(
+        monkeypatch, tmp_path):
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    _fire_the_ruc_layer_floor(monkeypatch)
+
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+
+    _assert_user_binds_the_proofs_receipts(
+        calls["cache_stream"]["head"]["metadata"], proof)
+
+
+def test_a_healthy_single_domain_cache_header_is_unchanged(
+        monkeypatch, tmp_path):
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+
+    assert "soil_moisture_floor" not in proof
+    assert "soil_moisture_floor" not in calls["cache_stream"]["head"]["metadata"]
+
+
+def test_a_fired_ruc_floor_is_bound_in_the_one_shot_tree_root_metadata(
+        monkeypatch, tmp_path):
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=2, backend="cpu")
+    _fire_the_ruc_layer_floor(monkeypatch)
+
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+
+    (routed,) = calls["hierarchy"]
+    _assert_user_binds_the_proofs_receipts(routed["root_metadata"], proof)
+
+
+def test_a_fired_ruc_floor_is_bound_in_the_chained_tree_root_metadata(
+        monkeypatch, tmp_path):
+    """The chained tree binds d01's user metadata at the head, before the
+    proof exists, so the binding is held to the receipt the proof head
+    will record (the same soil state's)."""
+    args, _calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=2, backend="cpu")
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "1")
+    _fire_the_ruc_layer_floor(monkeypatch)
+    seen = {}
+
+    class Bound(Exception):
+        pass
+
+    def static_files(directory, *, domain, grid, static_fields):
+        return {"sha256": "c" * 64}, {}
+
+    def binding(**kwargs):
+        seen["root_metadata"] = kwargs["root_metadata"]
+        raise Bound
+
+    monkeypatch.setattr(
+        mapped_direct, "prepare_regular_source_hierarchy_head",
+        lambda **_kwargs: SimpleNamespace(
+            child_results=("d02 start",),
+            forcing_identity={"forcing_hours": [0, 1]},
+            bound_source_identity=lambda identity: dict(identity)))
+    monkeypatch.setattr(mapped_direct, "write_domain_static_files",
+                        static_files)
+    monkeypatch.setattr(mapped_direct, "write_child_domain_artifacts",
+                        lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(mapped_direct, "root_domain_artifact_binding",
+                        binding)
+
+    with pytest.raises(Bound):
+        mapped_direct.prepare_mapped_wrf(**args)
+
+    _assert_user_binds_the_proofs_receipts(
+        seen["root_metadata"], {"soil_moisture_floor": _RUC_FLOOR_RECEIPT})

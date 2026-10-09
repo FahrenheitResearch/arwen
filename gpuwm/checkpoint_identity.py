@@ -114,15 +114,29 @@ CONFIG_DIAGNOSTIC_FIELDS = frozenset(
 #: while invalidating every v2 checkpoint on disk, since any added key
 #: moves the physics-setup fingerprint.  The residual a row would close
 #: (same selector, differently transcribed kernels) is the whole dycore's,
-#: not km_opt's: no dycore option of any kind carries an identity string.
-#: If that binding is ever wanted it is ONE dycore-wide identity beside
-#: PHYSICS_DRIVER_ALGORITHM_IDENTITY, opened at a release boundary.
+#: not km_opt's, and it is closed by ONE string,
+#: :data:`DYCORE_MIXING_ALGORITHM_IDENTITY` below, not a per-option table.
 MICROPHYSICS_ALGORITHM_IDENTITIES = {
     0: "disabled",
-    1: "kessler-warm-rain-v1",
-    6: "wsm6-single-moment-six-class-wrf-v4.6.1-v1",
-    8: ("classic-thompson-wrf-v4.6.1-v4-cloud-fallout-"
-        "refl10cm-ng-shadow-snow-rime-mass-number-velocity-rain-density-condensation-history"),
+    # "real-clamp-product" (2.8.8) on every row whose scheme finishes
+    # through gpuwm.core.microphysics.moist_physics_finish (mp=1, 6, 9, 10,
+    # 16, 18, 28, 50): the finish now clamps the theta increment at WRF's
+    # REAL product float32(mp_tend_lim) * float32(dt) rather than the double
+    # product rounded once, which classic Thompson (mp=8) already did.  For
+    # some mp_tend_lim, dt pairs (HRRR's 0.07 K/s at dt = 12 s) the two
+    # bounds differ by one float32 unit, so every clamped cell's thp and
+    # h_diabatic move, and a checkpoint written before the change may not
+    # continue under it.
+    1: "kessler-warm-rain-v2-real-clamp-product",
+    6: "wsm6-single-moment-six-class-wrf-v4.6.1-v2-real-clamp-product",
+    # v5 (2.8.8): rain collecting graupel reads the one slab WRF builds
+    # (thompson_racg_index; WRF v4.6.1 subscripts it at idx_bg1=5, a
+    # declared divergence), and the finish clamps at the REAL product
+    # mp_tend_lim*dt.  Both move mp=8 trajectories, so a v4 checkpoint is
+    # refused before restore instead of resuming onto them.
+    8: ("classic-thompson-wrf-v4.6.1-v5-cloud-fallout-"
+        "refl10cm-ng-shadow-snow-rime-mass-number-velocity-rain-density-condensation-history-"
+        "one-slab-rain-graupel-real-clamp-product"),
     # Milbrandt-Yau two-moment (WRF v4.6.1 MILBRANDT2MOM).  Named at the
     # mp=8/28/50 granularity -- the trajectory-defining configuration,
     # not the scheme name --
@@ -143,12 +157,13 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # (:3618-3623).  A build that flipped any of them would integrate a
     # different trajectory while staying finite, so it advances this tag
     # rather than resuming onto it.
-    9: ("milbrandt-yau-wrf-v4.6.1-v1-six-category-2mom-ccntype2-"
-        "meyers-contact-nucl-nonspherical-snow-full-sedimentation"),
+    9: ("milbrandt-yau-wrf-v4.6.1-v2-six-category-2mom-ccntype2-"
+        "meyers-contact-nucl-nonspherical-snow-full-sedimentation-"
+        "real-clamp-product"),
     # Range-safe freezing, retained cleanup vapor and in-range number
     # preservation change subsequent tendencies even from finite inputs.
-    10: ("morrison-two-moment-v3-kf-number-seeding-finite-freezing-"
-         "final-vapor-in-range-number"),
+    10: ("morrison-two-moment-v4-kf-number-seeding-finite-freezing-"
+         "final-vapor-in-range-number-real-clamp-product"),
     # WDM6 (WRF v4.6.1 WDM6SCHEME, Registry/Registry.EM_COMMON:3031).  Named
     # at the mp=8/28 granularity -- the trajectory-defining pieces, not the
     # scheme name.  "prognostic-nc-nr-ccn" is the change everything else
@@ -167,11 +182,12 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # zero rate (rain with no number) into evaporation, which changes the
     # vapour, ice and theta trajectory wherever such rain meets
     # subsaturated air (docs/wdm6_oracle_known_deltas.md, section 6).
-    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v4-prognostic-nc-nr-ccn-"
+    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v5-prognostic-nc-nr-ccn-"
          "gamma-mu1-rain-ccn-activation-xland-autoconversion-ccn-conc-init-"
          "conservative-rain-interface-flux-bounded-transport-time-"
-         "zero-rate-rain-no-evaporation"),
-    18: "nssl-two-moment-state-transport-v1-process-boundary-fail-loud",
+         "zero-rate-rain-no-evaporation-real-clamp-product"),
+    18: ("nssl-two-moment-state-transport-v2-process-boundary-fail-loud-"
+         "real-clamp-product"),
     # Thompson AEROSOL-AWARE (WRF v4.6.1 THOMPSONAERO,
     # Registry/Registry.EM_COMMON:3036).  Named at the granularity the mp=8
     # row uses -- the trajectory-defining pieces, not the scheme name --
@@ -192,9 +208,26 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # fill (:493-551) and not from a WIF metgrid stream: a future
     # wif_input_opt ingest is a DIFFERENT initial condition and must advance
     # this tag rather than silently resume onto it.
-    28: ("thompson-aerosol-aware-wrf-v4.6.1-v1-prognostic-nc-nwfa-nifa-"
+    # v2 (2.8.8): "wrf-arithmetic" names the generation graded word for
+    # word on the 157-column WRF oracle.  Every EXP, LOG, LOG10 and ** takes
+    # WOOF's own libm words (kernels/thompson_aerosol_libm.cuh), the cold
+    # and warm process rates follow WRF's operation order, snow and graupel
+    # accumulation, fallout and final latent heating take WRF's terms, and
+    # a level at exactly 273.15 K no longer takes the wet-bulb melting
+    # branch.  "rain-graupel-slab1" names the read of rain collecting
+    # graupel from the one graupel-density slab WRF allocates, where 2.8.7
+    # reproduced WRF's out-of-bounds index 5.  Each moves the moments,
+    # theta and aerosol from finite inputs in both thompson_version
+    # generations (they share these kernels), so a 2.8.7 (v1) checkpoint
+    # may not continue under v2.  "real-clamp-product" names the finish
+    # clamp at WRF's REAL product (above mp=1); it joins the v2 string
+    # rather than opening a v3 because v2 has not shipped, and the string
+    # still changes, so a checkpoint an earlier 2.8.8 build wrote under the
+    # double-product clamp is refused like a 2.8.7 one.
+    28: ("thompson-aerosol-aware-wrf-v4.6.1-v2-prognostic-nc-nwfa-nifa-"
          "ccn-activate-table-demott-koop-scavenging-surface-emission-"
-         "synthetic-aerosol-init"),
+         "synthetic-aerosol-init-wrf-arithmetic-rain-graupel-slab1-"
+         "real-clamp-product"),
     # P3 (WRF v4.6.1 P3_1CATEGORY, Registry.EM_COMMON:3038).  Named at the
     # granularity the mp=8/28 rows use -- the trajectory-defining
     # configuration, not the scheme name -- because that is what makes an
@@ -209,21 +242,49 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # transporting them would integrate a DIFFERENT trajectory while
     # staying finite, which is exactly the silent resume this string is
     # here to refuse.
-    50: ("p3-one-category-wrf-v4.6.1-v1-2mom-ice-specified-nc-"
-         "diagnosed-ssat-rime-mass-volume-transported"),
+    50: ("p3-one-category-wrf-v4.6.1-v2-2mom-ice-specified-nc-"
+         "diagnosed-ssat-rime-mass-volume-transported-real-clamp-product"),
 }
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+MICROPHYSICS_ALGORITHM_IDENTITIES.update({
+    _s.mp_id: _s.algorithm_identity for _s in _NAMED_MP_SCHEMES.values()})
+
 SURFACE_LAYER_ALGORITHM_IDENTITIES = {
     0: "disabled",
-    1: "revised-mm5-surface-layer-v1",
+    # v2 (2.8.8): the sfclay unit compiles without FMA contraction and
+    # keeps denormal values instead of flushing them to zero
+    # (gpuwm.core.kernels.module_options) on WOOF's own float32
+    # log/exp/pow/atan; with isfflx = 0 it keeps the
+    # incoming CHS, CHS2 and CQS2 as WRF does instead of recomputing them;
+    # and an overflowing scalar-roughness exponential stops before FH goes
+    # infinite.  Each changes the exchange coefficients and fluxes the next
+    # step reads, so a 2.8.7 (v1) checkpoint may not continue under v2.
+    1: "revised-mm5-surface-layer-v2-no-fma-denormals-kept-flux-off-"
+       "keeps-chs-finite-scalar-roughness",
     # The Eta similarity surface layer.  The identity binds the WRF version
     # whose byte-frozen module_sf_myjsfc.F the port transcribes AND the
     # similarity tables it interpolates: MYJSFCINIT builds PSIM/PSIH by
     # accumulating ZETA in float32, so a different table construction is a
     # different scheme even at the same WRF version, and a checkpoint may
     # not resume across one.
-    2: "eta-similarity-surface-layer-wrf-v4.6.1-v1-myjsfcinit-tables",
-    5: "mynn-surface-layer-wrf-v4.6.1-v1",
-    91: "classic-mm5-surface-layer-v1",
+    # v2 (2.8.8): that is what happened.  The tables are now built with
+    # WOOF's own float32 log/atan/exp (gpuwm/core/myjsfc_tables.py), which
+    # moved 2,277 of 10,001 PSIM entries by up to 16 ULP and 1,382 PSIH
+    # entries, and the column compiles without FMA contraction or a flush
+    # of denormals to zero, on WOOF's libm words.  A 2.8.7 (v1) checkpoint
+    # may not continue under v2.
+    2: "eta-similarity-surface-layer-wrf-v4.6.1-v2-myjsfcinit-tables-"
+       "woof-libm-no-fma-denormals-kept",
+    # v2 (2.8.8): no FMA contraction, denormals kept rather than flushed to
+    # zero, WOOF's libm words (kernels/mynn_libm.cuh), and the first-step
+    # seed through the same unit.  It changes UST, MOL, QSFC and the fluxes
+    # the next step reads, so a 2.8.7 (v1) checkpoint may not continue
+    # under v2.
+    5: "mynn-surface-layer-wrf-v4.6.1-v2-no-fma-denormals-kept",
+    # v2 (2.8.8): the classic MM5 column (kernels/sfclay_classic.cuh) is in
+    # the sfclay unit and takes its arithmetic (no FMA, denormals kept), so
+    # a 2.8.7 (v1) checkpoint may not continue under v2.
+    91: "classic-mm5-surface-layer-v2-no-fma-denormals-kept",
 }
 #: WRF v4.7.1 lsm_mosaic; bound only for the enabled tile path.
 NOAH_MOSAIC_ALGORITHM_IDENTITY = "noah-mosaic-wrf-v4.7.1-v1"
@@ -259,15 +320,39 @@ LAND_SURFACE_ALGORITHM_IDENTITIES = {
     # headers omitted wrf_45, so interpreting those missing selectors as the
     # restored defaults would change their continuing trajectory. The new
     # identity refuses those checkpoints before restoring live forecast arrays.
-    3: "ruc-lsm-wrf-v4.6.1-v6-default-selection",
+    # v7 (2.8.8): every EXP, LOG, LOG10, TANH and REAL**REAL of the column
+    # takes WOOF's float32 words and the soil-resistance COS glibc's cosf
+    # (kernels/ruc.cu), where v6 rounded float64 stand-ins once; the
+    # sea-ice blend and skin reset run only under fractional_seaice = 1, as
+    # in WRF (kernels/ruc_fused_driver.cuh), where v6 ran them on every ice
+    # cell; and SFCEVP accumulates QFX*dt once, not WRF's duplicated twice.
+    # The first two change soil water, soil ice, fluxes and the ice-cell
+    # surface every step, so a 2.8.7 (v6) checkpoint may not continue
+    # under v7.  (The 2.8.8 RUC initialization carry and the real.exe soil
+    # moisture floor act at cold start only and need no identity.)
+    3: "ruc-lsm-wrf-v4.6.1-v7-woof-libm-fractional-seaice-gate",
     4: "noahmp-lsm-wrf-v4.6.1-v1",
 }
 PBL_ALGORITHM_IDENTITIES = {
     0: "disabled",
-    1: "ysu-v1",
-    # Ordinary mixing length now shares initialization's rounded column law.
-    # This changes prognostic tendencies, so continuation must name it.
-    5: "mynn-edmf-pbl-wrf-v4.6.1-v2-rounded-mixing-length",
+    # v2 (2.8.8): YSU compiles without FMA contraction on WOOF's float32
+    # pow/exp (gfk_pow/gfk_exp, kernels/ysu.cu), reads theta as WRF's
+    # driver hands it (th*pi/pi), makes the bulk Richardson sign test in
+    # double, and takes WRF's surface-drag form on every topo_wind = 0
+    # column.  Each moves the exchange coefficients and tendencies, so a
+    # 2.8.7 (v1) checkpoint may not continue under v2.
+    1: "ysu-wrf-v4.6.1-v2-no-fma-woof-libm-driver-theta-double-ri-"
+       "wrf-surface-drag",
+    # The exact driver changes the former rounded-length generation's
+    # diffusivities and tendencies in both stock and fork forms. A checkpoint
+    # from that generation cannot promise the same continuation here.
+    # v3 was opened in 2.8.8 and has never shipped, so it also names the
+    # rest of that release's MYNN generation: the gsd_41 fork's driver
+    # arithmetic and length-1 formulation, and the moisture variance that
+    # now keeps denormals rather than flushing them (kernels/mynn_pbl.cu).
+    # Every 2.8.7 (v2) checkpoint is refused by this one bump; a v4 would
+    # refuse nothing more that a release wrote.
+    5: "mynn-edmf-pbl-wrf-v4.6.1-v3-exact-driver",
     # Adding a scheme means adding its row, not relaxing the check.  The
     # identity binds the WRF version whose byte-frozen module_bl_shinhong.F
     # the certified CPU authority transcribes (max ULP 0, both arms); a
@@ -287,7 +372,11 @@ PBL_ALGORITHM_IDENTITIES = {
     # words (gpuwm/core/uwpbl_constants.py).  The identity binds the WRF
     # version the port transcribes, v4.7.1.
     9: "uw-moist-turbulence-pbl-wrf-v4.7.1-v1",
-    11: "shinhong-pbl-wrf-v4.6.1-v1",
+    # v2 (2.8.8): Shin-Hong compiles without FMA contraction on WOOF's
+    # float32 pow/exp (kernels/shinhong.cu), which moved its exchange
+    # coefficient by up to 8 ULP, so a 2.8.7 (v1) checkpoint may not
+    # continue under v2.
+    11: "shinhong-pbl-wrf-v4.6.1-v2-no-fma-woof-libm",
     # SASE carries no WRF version in its identity because there is no WRF
     # scheme it transcribes.  What the identity DOES have to bind is the
     # closure's constant registry: sase_config_id() is a SHA-256 over
@@ -377,6 +466,75 @@ CUMULUS_ALGORITHM_IDENTITIES = {
     # cross-resume this string exists to refuse.
     16: "new-tiedtke-wrf461-cumastrn-v1",
 }
+
+#: The implementation of the dycore's once-per-step mixing: WRF's diff_opt
+#: = 2 package (km_opt 1 to 4, gpuwm/core/dycore.py) and the sixth-order
+#: filter (kernels/diff6.cu).  Configuration proves which closure runs and
+#: with which constants (``configuration_sha256``); it cannot prove how the
+#: operators are transcribed, and 2.8.8 changed exactly that under the same
+#: selectors: the default build now compiles them with WRF's operation
+#: order and IEEE arithmetic (no FMA, no flush to zero, IEEE division and
+#: square root, gpuwm.core.kernels.DIFFUSION_OPTIONS), km_opt = 1 runs WRF's
+#: isotropic_km through the shared package, a PBL-off open boundary keeps
+#: its surface-flux ring, and the sixth-order filter accumulates in place
+#: within WRF's loop bounds.  Millions of tendency words moved on WRF's
+#: fixtures, so a checkpoint written before 2.8.8 under any of these would
+#: continue a trajectory that is not the one it claims.
+#:
+#: Recorded only for a domain that runs one of these operators
+#: (:func:`dycore_mixing_identity`), the way the urban row is recorded only
+#: when an urban model runs: a run without mixing (the default km_opt = 1
+#: with khdif = kvdif = 0 under a PBL scheme, and no sixth order) writes
+#: exactly the header it wrote before 2.8.8 and resumes across the
+#: release, because nothing it integrates moved.  A further change to the
+#: mixing operators advances this tag.
+DYCORE_MIXING_ALGORITHM_IDENTITY = (
+    "wrf-v4.6.1-diff-opt2-mixing-and-sixth-order-v1-wrf-order-ieee")
+
+
+def dycore_mixing_identity(cfg) -> str | None:
+    """The mixing identity this domain's checkpoint records, or ``None``.
+
+    ``None`` exactly when the dycore builds no mixing tendency at all:
+    :func:`gpuwm.config.wrf_mixing_package_active` is false and the
+    sixth-order filter is off -- the two predicates
+    ``gpuwm.core.dycore.prepare_fixed_tendencies`` reads as
+    ``include_smag`` and ``include_diff6``.
+    """
+    from gpuwm.config import wrf_mixing_package_active
+
+    if wrf_mixing_package_active(cfg) or int(
+            getattr(cfg, "diff_6th_opt", 0)) > 0:
+        return DYCORE_MIXING_ALGORITHM_IDENTITY
+    return None
+
+
+#: The implementation of the implicit upper damping layer (damp_opt = 3,
+#: inside WRF's advance_w).  2.8.8 forms its strength ``dampmag =
+#: dts*dampcoef`` as WRF's one float32 product in the default build
+#: (gpuwm.core.acoustic.damp_magnitude); 2.8.7 formed it as a double product
+#: rounded once, which is a different word for sound steps such as 4.5 s
+#: with dampcoef 0.2, and then every damped w and geopotential word moved
+#: by up to 2,401 ULP against WRF.  The selectors did not change, so a
+#: 2.8.7 checkpoint of a damp_opt = 3 run would continue a trajectory that
+#: is not the one it claims.
+#:
+#: Recorded only for a domain that runs the damper
+#: (:func:`upper_damping_identity`), the way the mixing row is: a run with
+#: damp_opt = 0 (the default) writes the header it wrote before 2.8.8 and
+#: resumes across the release.  A further change to the damper advances
+#: this tag.
+UPPER_DAMPING_ALGORITHM_IDENTITY = (
+    "wrf-v4.6.1-damp-opt3-advance-w-float32-dampmag-v1")
+
+
+def upper_damping_identity(cfg) -> str | None:
+    """The upper-damping identity this domain's checkpoint records, or
+    ``None`` when the implicit damper is off (damp_opt != 3), the one
+    predicate :func:`gpuwm.core.acoustic.damp_magnitude` reads."""
+    if int(getattr(cfg, "damp_opt", 0)) == 3:
+        return UPPER_DAMPING_ALGORITHM_IDENTITY
+    return None
 
 
 #: PLAN REVIEW: every identity table the checkpoint writer resolves from

@@ -12,18 +12,53 @@
 //   ctopo2 blends the 10 m wind toward the first-level wind on hill tops
 //          (:1402-1408), which the kernel writes to u10o/v10o.
 // Both come from gpuwm/core/kernels/terrain_drag.cu::topo_wind_static
-// (start_em.F:1579-1626).  The default kernel (TOPO = false) compiles from
-// exactly the statements it always had; everything in ysu.cu is
-// `if constexpr`.  This header holds the arm's own pieces so that ysu.cu's
+// (start_em.F:1579-1626).  Everything in ysu.cu is `if constexpr`; since
+// lane/parity-286 every entry point instantiates TOPO = true (see below).
+// This header holds the arm's own pieces so that ysu.cu's
 // lines before its momentum assembly keep their numbers (the physics
 // registry and the FTZ claim census cite them).
 // The new statements spell every product and sum as an IEEE intrinsic (WRF
 // rounds each; this module lets NVRTC fuse otherwise) and take glibc's powf
 // (gfk_pow) and the correctly rounded tanh glibc 2.43 ships.
+//
+// The DEFAULT kernel (ysu_column) takes this arm too, with ctopo = ctopo2 = 1:
+// WRF's driver passes both on every column of every run
+// (module_bl_ysu.F:404, Registry default 1.0), topo_wind or not, so
+// bl_ysu.F90:1308 is the surface-drag diagonal of every default WRF run and
+// the ctopo-absent :1315 (`ad(1) = 1+fric`) is reached by no WRF run at all.
+// A YsuTopo with null pointers means exactly that: ctopo reads as 1.0f and
+// the :1402-1408 blend, which is u10*1 + 0*ux(1) = u10, writes nothing.
 struct YsuTopo {
     const real *ctopo, *ctopo2;
     real *u10o, *v10o;
 };
+
+// WRF's thx, bl_ysu.F90:419 `thx(i,k) = tx(i,k)/pi2d(i,k)`, where the driver's
+// tx is phy_prep's t_phy = th_phy*pi_phy.  So WRF's YSU never sees the model's
+// theta: it sees (theta*pi)/pi, which can sit one ULP away, and its potential-
+// temperature tendency leaves as (ttend*pi2d)/pi2d (module_bl_ysu.F:452 with
+// bl_ysu.F90:1102).  The kernel spells both round trips so that, in the
+// model, every theta it reads and the tendency it writes are WRF's words.
+__device__ __forceinline__ real ysu_thx(const real *theta, const real *exner,
+                                        int q) {
+    return __fdiv_rn(__fmul_rn(theta[q], exner[q]), exner[q]);
+}
+
+// Subnormal-preserving float -> double (shinhong.cu sh_f2d, rrtmg_sw.cu
+// rsw_f2d).  bl_ysu.F90:613 `if(br(i).gt.0.0) sfcflg(i) = .false.` must see a
+// positive subnormal br as positive; sm_120 DAZes FP32 subnormals in every
+// float32 operation including compares, and the cvt.f64.f32 a plain
+// `(double)br > 0.0` emits DAZes its input too, so the subnormal is decoded
+// from its bits.  A NaN br compares false here, as in WRF, so sfcflg stays
+// true (WRF initialises it .true. and only clears it on br > 0).
+__device__ __forceinline__ double ysu_f2d(real x) {
+    unsigned int ix = __float_as_uint(x);
+    if (((ix >> 23) & 0xffu) == 0u) {     // zero or subnormal
+        double v = (double)(ix & 0x7fffffu) * 0x1p-149;
+        return (ix >> 31) ? -v : v;
+    }
+    return (double)x;                     // normal / inf / nan
+}
 
 // bl_ysu.F90 get_pblh (:1586-1693, "Copied from MYNN PBL"), one column, on
 // the kernel's 0-based workspace: thv[k] is thetav1d(k+1), tke[k] is
@@ -96,6 +131,7 @@ __device__ real ysu_get_pblh(Col thv, Col tke, Col zq, int nz, real landsea) {
 __device__ __forceinline__ void ysu_topo_blend_u10(
         const YsuTopo &topo, const real *u10, const real *v10, real u1,
         real v1, int col) {
+    if (topo.u10o == nullptr) return;   // ctopo2 = 1: u10*1 + 0*ux(1) = u10
     real c2 = topo.ctopo2[col];
     topo.u10o[col] = __fadd_rn(__fmul_rn(c2, u10[col]),
                                __fmul_rn(__fsub_rn(1.0f, c2), u1));

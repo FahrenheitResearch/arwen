@@ -287,6 +287,23 @@ def _record_adapter_call(monkeypatch, *, refl_due: bool = False,
         spy("device_drop_evaporation_number_table",
             lambda owner: owner.arrays["tnc_wev"]))
 
+    # The Exner kernel is recorded, and its arithmetic stood in for on the
+    # host so the temperature the adapter forms from it stays physical.
+    import gpuwm.core.thompson_aerosol_state as aerosol_state
+
+    def host_exner(pressure, pii):
+        pii[...] = np.power(pressure / f32(1.0e5),
+                            f32(f32(287.0) / f32(1004.5)))
+
+    monkeypatch.setattr(aerosol_state, "launch_aerosol_exner",
+                        spy("launch_aerosol_exner", host_exner))
+
+    # The warm network's entry mask, likewise: recorded, and its arithmetic
+    # (thompson_aa_entry_warm_mask, WRF's melting level at :1971-2013) stood
+    # in for on the host so the mask gates below read real values.
+    monkeypatch.setattr(aerosol_state, "launch_aa_entry_warm_mask",
+                        spy("launch_aa_entry_warm_mask",
+                            host_entry_warm_mask))
     monkeypatch.setattr(adapter, "cp", np)
     monkeypatch.setattr(
         adapter, "save_pre_mp_theta", spy("save_pre_mp_theta"))
@@ -303,6 +320,22 @@ def _record_adapter_call(monkeypatch, *, refl_due: bool = False,
     diagnostics = adapter._apply_thompson_aerosol(
         state, cfg, 10.0, refl_10cm_due=refl_due)
     return calls, state, diagnostics, classic_owner, aerosol_owner
+
+
+def host_entry_warm_mask(temperature, warm_mask):
+    """NumPy reference of thompson_aa_entry_warm_mask (:1971-2013).
+
+    0 below 273.15 K; at or above it, 1 where some level at or above has
+    tempc = temp - 273.15 > 0 (k <= k_melting, WRF re-forms twet) and 2
+    where none has (WRF keeps twet = temp).  Level 0 is the lowest.
+    """
+    t = np.asarray(temperature, f32)
+    hot = (t - f32(273.15)) > f32(0.0)
+    at_or_below = np.flip(np.logical_or.accumulate(np.flip(hot, 0), axis=0),
+                          0)
+    warm_mask[...] = np.where(t >= f32(273.15),
+                              np.where(at_or_below, f32(1.0), f32(2.0)),
+                              f32(0.0))
 
 
 def _names(calls):
@@ -327,17 +360,24 @@ def _index(calls, name):
 #: Every placement below is annotated in gpuwm/core/microphysics_aerosol.py
 #: with the module_mp_thompson.F line that forces it.
 _EXPECTED_ORDER = (
+    # pi_phy = (p/p1000mb)**rcp with WOOF's own powf word (phy_prep's REAL(4)
+    # power); CuPy's power is CUDA's powf, a different function.
+    "launch_aerosol_exner",
     "load_classic_device_tables",
     "load_aerosol_device_tables",
     "device_drop_evaporation_number_table",
     "zero_aerosol_accumulators",
+    # The warm network's entry mask on the ENTRY temperature, with WRF's
+    # melting level in it (:1971-2013), before the cold network heats it.
+    "launch_aa_entry_warm_mask",
     "save_pre_mp_theta",
     "launch_aerosol_entry_snapshot",
     "launch_aerosol_entry_cloud_number",
     # WRF's no-micro column flag, on the entry state after the entry rewrite
     # (:1646, :1827-1990), for the :2020 exit and the :3974 vapour floor.
     "launch_aerosol_micro_columns",
-    "launch_classic_graupel_number_init",
+    # mp_gt_driver :1266-1281, the private ng1d, mp=28's own kernel.
+    "launch_aa_graupel_number_init",
     "launch_aa_cold_network_from_owner",
     "launch_aerosol_warm_source_network_from_owner",
     "launch_ncten_balance",
@@ -354,12 +394,16 @@ _EXPECTED_ORDER = (
     "launch_aa_cloud_sedimentation",
     # :3664-3698 / :3838-3870 in WRF's tendency form, mp=28's own kernel.
     "launch_aa_ice_sedimentation_accumulate",
-    "launch_snow_sedimentation",
-    "launch_graupel_sedimentation",
+    # :3699-3733 / :3871-3902 and :3740-3773 / :3903-3937, mp=28's own.
+    "launch_aa_snow_sedimentation",
+    "launch_aa_graupel_sedimentation",
     # :3611-3640 / :3790-3812 likewise.
     "launch_aa_rain_sedimentation_accumulate",
+    # mp_gt_driver :1294-1308, the surface totals in the driver's order.
+    "launch_aa_surface_precipitation",
     "launch_aa_final_phase_cleanup",
-    "launch_classic_graupel_number_finalize",
+    # :4058-4077 on the terminal density.
+    "launch_aa_graupel_number_finalize",
     # :4023-4053: the rain and ice accumulators' one application, after the
     # cleanup's freeze, then the cloud and aerosol terminal apply.
     "launch_terminal_rain_ice",
@@ -651,6 +695,9 @@ def test_the_entry_mask_and_the_cold_gate_are_exact_complements(monkeypatch):
     mask = _one(calls, "launch_aerosol_warm_source_network_from_owner")[1][6]
     np.testing.assert_array_equal(
         mask.astype(bool), temperature >= f32(273.15))
+    # 274 K sits above the 273.15 K level, so that level is at or below
+    # WRF's melting level and re-forms twet (mask value 1, not 2).
+    np.testing.assert_array_equal(mask.ravel(), np.asarray([1, 0, 1], f32))
 
     source = (_REPO / "gpuwm" / "core" / "kernels"
               / "thompson_aerosol_cold.cu").read_text(encoding="utf-8")
@@ -885,7 +932,7 @@ def test_entry_hydrometeors_at_or_below_r1_are_zeroed_mass_and_number(
     # And the rewrite happens before the first process.
     names = _names(calls)
     assert names.index("launch_aerosol_entry_cloud_number") < names.index(
-        "launch_classic_graupel_number_init")
+        "launch_aa_graupel_number_init")
 
 
 def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
@@ -902,22 +949,17 @@ def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
     import gpuwm.core.thompson as thompson
     import gpuwm.core.thompson_runtime as classic_runtime
 
-    # mp=8 makes its entry graupel number and its post-source rain and
-    # graupel fallout column masks in its fused launch_adapter_entry and
-    # launch_adapter_masks, which write exactly what
-    # launch_classic_graupel_number_init, launch_hydrometeor_column_mask and
-    # launch_graupel_fallout_column_mask write
-    # (tests/test_thompson_speed_glue.py); mp=28 still calls those three,
-    # and the comparison below covers the launchers both adapters call.
-    # The v4.6.1 generation's rain and ice fallout are mp=28's own
-    # tendency-form kernels (launch_aa_rain/ice_sedimentation_accumulate),
-    # so they are no longer compared here; the snow fallout's melting blend
-    # now reads the working rain (entry plus tendency) from spent slots.
+    # mp=8 makes its post-source rain and graupel fallout column masks in
+    # its fused launch_adapter_masks, which writes exactly what
+    # launch_hydrometeor_column_mask and launch_graupel_fallout_column_mask
+    # write (tests/test_thompson_speed_glue.py); mp=28 still calls those, and
+    # the comparison below covers the launcher both adapters call.  The
+    # v4.6.1 generation's rain, ice, snow and graupel fallout and its
+    # graupel-number entry and exit are mp=28's own kernels
+    # (tests/test_thompson_aerosol_sedim_refl.py), so they are no longer
+    # compared here.
     reused = (
-        "launch_classic_graupel_number_finalize",
         "launch_hydrometeor_column_mask",
-        "launch_snow_sedimentation",
-        "launch_graupel_sedimentation",
     )
 
     def label(state, value):
@@ -966,29 +1008,6 @@ def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
     for name in reused:
         got = profile(aerosol_calls, aerosol_state, name)
         want = profile(classic_calls, classic_state, name)
-        if name == "launch_snow_sedimentation":
-            # Both rain evaporations write WRF's L_qr into the fallout's
-            # reference density (zero where :3236 failed, negative where
-            # :3568 rewrote the pair), and both adapters tell the
-            # melting-snow blend to read it there.
-            for calls in (got, want):
-                for _args, kwargs in calls:
-                    assert kwargs["melt_rain_density_carries_presence"] == (
-                        "True"), (name, kwargs)
-            # mp=28 hands the blend WRF's working rain, qr1d + qrten*DT, in
-            # the two slots spent by then; mp=8 hands its in-place state.
-            for calls in (got,):
-                for _args, kwargs in calls:
-                    assert kwargs["melt_rain_qr"] == (
-                        "scratch.mp_thompson_aero_condensation_rate"), kwargs
-                    assert kwargs["melt_rain_nr"] == (
-                        "scratch.mp_thompson_aero_tau1_density"), kwargs
-            got = [(args, {k: v for k, v in kwargs.items()
-                           if k not in ("melt_rain_qr", "melt_rain_nr")})
-                   for args, kwargs in got]
-            want = [(args, {k: v for k, v in kwargs.items()
-                            if k not in ("melt_rain_qr", "melt_rain_nr")})
-                    for args, kwargs in want]
         if name == "launch_hydrometeor_column_mask":
             # WRF's cloud fallout gate reads ANY(L_qc) as the adjustment
             # left it (:3485, :3645), so both adapters take the cloud
@@ -1176,8 +1195,13 @@ def _column(rows, key):
 
 
 def _pii_of(xp, pressure):
-    from gpuwm.core import constants as c
-    return xp.power(xp.asarray(pressure) / f32(c.P0), f32(c.RCP)).get()
+    """The Exner function exactly as the adapter forms it: WRF phy_prep's
+    REAL(4) power through WOOF's own powf word (launch_aerosol_exner)."""
+    from gpuwm.core.thompson_aerosol_state import launch_aerosol_exner
+    p = xp.ascontiguousarray(xp.asarray(pressure, dtype=xp.float32))
+    out = xp.empty_like(p)
+    launch_aerosol_exner(p, out)
+    return out.get()
 
 
 def _solve_theta(target, pii, window: int = 8):
@@ -1533,6 +1557,29 @@ _NEAR_CANCELLATION_ULPS = 32.0
 _G3_ALLOWANCES: tuple = ()
 
 
+#: THE DECLARED DIVERGENCE.  A fixture here misses the flat gate because WOOF
+#: deliberately does not reproduce a WRF defect, and the defect is named.  It
+#: is not an allowance: nothing about the gate moves for it, the gate is
+#: asserted to SEE it miss (a divergence that stops showing must be retired
+#: here), and every other fixture is held to the flat gate as before.
+_G3_DECLARED_DIVERGENCE: dict[str, str] = {
+    "aero-cold-overlap": (
+        "rain collecting graupel: WRF v4.6.1 reads its rain-graupel collision "
+        "tables out of bounds when the scheme is not hail aware (dimNRHG = 1 "
+        "and idx_bg = 5, module_mp_thompson.F:465, :607-615, :2527-2545), "
+        "and WOOF reads the one slab the tables hold "
+        "(thompson_aerosol_common.cuh, aaf_racg_index).  With WRF's read "
+        "emulated in a measurement copy of the tree (never shipped) this "
+        "fixture clears the flat gate on all 23 quantities."),
+}
+
+
+def _g3_conforming():
+    """The fixtures held to the flat gate: all but the declared divergence."""
+    return tuple(name for name in _FIXTURES
+                 if name not in _G3_DECLARED_DIVERGENCE)
+
+
 def _require_device():
     import cupy as cp
     try:
@@ -1653,7 +1700,7 @@ def test_entry_state_reconstruction_is_exact_in_temperature_and_dz():
         nz = len(before)
         thp = cp.asarray(theta.reshape(nz, 1, 1))
         p = cp.asarray(pressure.reshape(nz, 1, 1))
-        pii = cp.power(p / f32(c.P0), f32(c.RCP))
+        pii = cp.asarray(_pii_of(cp, p))
         temperature = cp.asnumpy(
             (cp.zeros((nz, 1, 1), cp.float32) + thp) * pii).ravel()
         z8w = cp.asnumpy(
@@ -2011,13 +2058,19 @@ def test_g3_end_to_end_against_all_nineteen_oracle_fixtures():
 
     table = {}
     failures = {}
+    declared_missed = set()
     for scenario in _FIXTURES:
         measured, _ = _run_g3(cp, scenario, widened=True)
         table[scenario] = measured
         bad = _g3_failures(scenario, measured)
-        if bad:
+        if bad and scenario in _G3_DECLARED_DIVERGENCE:
+            declared_missed.add(scenario)
+        elif bad:
             failures[scenario] = bad
     _print_g3_table("G3 (tree as it stands)", table)
+    # The declared divergence is visible, every one of it.
+    assert declared_missed == set(_G3_DECLARED_DIVERGENCE), sorted(
+        set(_G3_DECLARED_DIVERGENCE) - declared_missed)
 
     # The widening is part of the assertion, not part of the prose: if a
     # future edit narrows _run_g3 back to the sixteen fields this gate
@@ -2069,11 +2122,14 @@ def test_g3_end_to_end_against_all_nineteen_oracle_fixtures():
 #: REAL rain-conservation ratio closed them.  aero-reduces-to-classic no
 #: longer needs the near-cancellation allowance: its qr and nr are bit-exact
 #: against WRF at every level.
+#:
+#: AND NOW 21 OF 22: ``aero-cold-overlap`` is the declared rain-graupel
+#: divergence (:data:`_G3_DECLARED_DIVERGENCE`).  With WRF's out-of-bounds
+#: rain-graupel read emulated in a measurement copy it is clean again.
 _G3_UNEXCEPTIONED_CLEAN = (
     "aero-ccn-activate",
     "aero-ccn-sweep",
     "aero-cloud-freeze-nc",
-    "aero-cold-overlap",
     "aero-drop-evap",
     "aero-ice-demott-dep",
     "aero-ice-demott-idxin",
@@ -2334,7 +2390,32 @@ _G3_ALLOWANCE_ONLY_CLEAN: tuple[str, ...] = ()
 #: ratio REAL; a double ratio sat 3e-8 away), and wp08-nusweep level 12 by
 #: the tendency-form rain fallout (60 ulps to 6, under the gate).  The
 #: ratchet below now holds the table at empty.
-_G3_RESIDUALS: dict[str, dict[str, float]] = {}
+#:
+#: ONE ROW, AND IT IS THE DECLARED DIVERGENCE, NOT A ROUNDING RESIDUAL:
+#: :data:`_G3_DECLARED_DIVERGENCE` names it.  The values are the 16-field
+#: contract shape (``_run_g3(widened=False)``), measured on an RTX PRO 6000
+#: Blackwell (sm_120).
+#:
+#: RE-MEASURED 2026-10-07 by lane/mp28-exact, after WRF's qsten/qgten/ngten
+#: accumulators (snow and graupel applied once, :4054-4059): ``qs`` fell
+#: inside the gate (2.266e-06 -> 1.926e-06) and left the row, ``qg`` read
+#: 8.776e-05 (was 8.770e-05) and ``effs_m`` 6.574e-06 (was 4.697e-06).  Both
+#: moved because the divergence's rain-graupel rates now reach the snow and
+#: graupel through WRF's own once-applied sums; with WRF's read reproduced in
+#: the measurement copy the fixture clears every quantity, as before.
+_G3_RESIDUALS: dict[str, dict[str, float]] = {
+    "aero-cold-overlap": {
+        "qr": 5.070e-04, "qi": 1.618e-04,
+        "qg": 8.776e-05, "ni_per_kg": 1.464e-05, "nr_per_kg": 5.066e-04,
+        "effi_m": 5.394e-05, "effs_m": 6.574e-06,
+    },
+}
+
+#: The declared divergence's reflectivity residual, in dB.  Kept beside
+#: :data:`_G3_RESIDUALS` rather than in it because that table is the
+#: 16-field contract shape the registry republishes; the ratchet below holds
+#: the widened 23-quantity gate, reflectivity included.
+_G3_DECLARED_REFL_DB: dict[str, float] = {"aero-cold-overlap": 1.585e-03}
 
 
 _G3_TABLE: dict[str, dict[str, float]] = {}
@@ -2406,8 +2487,10 @@ def test_the_unexceptioned_g3_table_is_printed_and_its_count_pinned():
     fails here too, because a port whose evidence understates it is a port
     whose evidence nobody re-read.
 
-    MEASURED: 22 of 22 clean since the 2.8.6 accumulator rework (18 before
-    it); :data:`_G3_RESIDUALS` is empty.
+    MEASURED: 22 of 22 clean from the 2.8.6 accumulator rework (18 before
+    it) until 2.8.8 declared the rain-graupel divergence; 21 of 22 since,
+    with ``aero-cold-overlap`` the one miss and the one row of
+    :data:`_G3_RESIDUALS` (RTX 4090 and RTX 5070 Ti identical, 2026-10-09).
     """
     import cupy as cp
 
@@ -2438,11 +2521,13 @@ def test_the_unexceptioned_g3_table_is_printed_and_its_count_pinned():
         f"clean: {sorted(set(_G3_UNEXCEPTIONED_CLEAN) - set(clean))}.  "
         "Update _G3_UNEXCEPTIONED_CLEAN, _G3_RESIDUALS, the G3 docstring and "
         "tests/test_thompson_aerosol_gpu.py in ONE change.")
-    assert len(clean) == 22 and len(_FIXTURES) == 22, (
+    assert len(clean) == 21 and len(_FIXTURES) == 22, (
         len(clean), len(_FIXTURES))
+    # The one miss is the declared divergence.
+    assert set(missing) == set(_G3_DECLARED_DIVERGENCE), sorted(missing)
     # ...and the aero-only subtotal the public documents quote.
     aero = [name for name in clean if name.startswith("aero-")]
-    assert len(aero) == 19, aero
+    assert len(aero) == 18, aero
     assert len([n for n in _FIXTURES if n.startswith("aero-")]) == 19, (
         "the spec'd fixture set (ids 101-119) is no longer nineteen columns")
 
@@ -2693,42 +2778,48 @@ _G3_CLEAN_ULP_CEILING = 6.0
 #: cells the relative gate leaves unbounded AND the cells
 #: :data:`_G3_ULP_PINS` bounds, in one number a reader can scan.
 #:
-#: FIVE FIXTURES ARE BIT-EXACT AGAINST WRF ON EVERY COMPARED QUANTITY AT
+#: FIFTEEN FIXTURES ARE BIT-EXACT AGAINST WRF ON EVERY COMPARED QUANTITY AT
 #: EVERY LEVEL -- 0.0 ulps, not "0.0 to four figures": aero-ccn-activate,
-#: aero-ccn-sweep, aero-init-profile, aero-sfc-emit and (since the 2.8.6
-#: accumulator rework) wp08-melt.  That is stated here
-#: because it is the strongest single fact the deck contains and the relative
-#: table renders it as an unremarkable column of ``0.00e+00``.  It is asserted
-#: for EQUALITY (``measured == 0.0``), not as an upper bound.
+#: aero-ccn-sweep, aero-drop-evap, aero-init-profile, aero-nc-accrete,
+#: aero-nc-auto, aero-nc-cap, aero-nc-effrad, aero-nc-sed, aero-scav-frozen,
+#: aero-scav-rain, aero-sfc-emit, aero-warm-overlap, wp08-melt and
+#: wp08-nusweep.  The other six conforming fixtures differ from WRF by one
+#: ulp of temp_k and by nothing else.  That is stated here because it is the
+#: strongest single fact the deck contains and the relative table renders it
+#: as an unremarkable column of ``0.00e+00``.  A 0.0 entry is asserted for
+#: EQUALITY (``measured == 0.0``), not as an upper bound.
 _G3_WORST_ULP_BY_FIXTURE = {
-    # RE-MEASURED with the 2.8.6 accumulator rework on an RTX 5090 (sm_120).
-    # Every fixture held or tightened; wp08-melt joined the bit-exact set.
+    # RE-MEASURED at fed669e87 on an RTX 4090 (sm_89) and an RTX 5070 Ti
+    # (sm_120), identical cell for cell.  Tightened from the 2.8.6 pins
+    # (2.0, 3.0, 6.0 ...) to the measurement: every entry is the worst ULP
+    # the fixture reads over all 23 quantities at every level.
     "aero-ccn-activate": 0.0,
     "aero-ccn-sweep": 0.0,
-    "aero-cloud-freeze-nc": 2.0,
-    "aero-cold-overlap": 3.0,
-    "aero-drop-evap": 1.5,
-    "aero-ice-demott-dep": 3.0,
-    "aero-ice-demott-idxin": 3.0,
-    "aero-ice-koop": 3.0,
+    "aero-cloud-freeze-nc": 1.0,
+    # aero-cold-overlap is the declared rain-graupel divergence: a table
+    # read, not denominated in ulps.
+    "aero-drop-evap": 0.0,
+    "aero-ice-demott-dep": 1.0,
+    "aero-ice-demott-idxin": 1.0,
+    "aero-ice-koop": 1.0,
     "aero-init-profile": 0.0,
-    "aero-nc-accrete": 2.0,
-    "aero-nc-auto": 2.0,
-    "aero-nc-cap": 1.875,
-    "aero-nc-effrad": 2.0,
-    "aero-nc-sed": 1.75,
-    "aero-reduces-to-classic": 2.25,
-    "aero-scav-frozen": 3.0,
-    "aero-scav-rain": 2.0,
+    "aero-nc-accrete": 0.0,
+    "aero-nc-auto": 0.0,
+    "aero-nc-cap": 0.0,
+    "aero-nc-effrad": 0.0,
+    "aero-nc-sed": 0.0,
+    "aero-reduces-to-classic": 1.0,
+    "aero-scav-frozen": 0.0,
+    "aero-scav-rain": 0.0,
     "aero-sfc-emit": 0.0,
-    "aero-warm-overlap": 2.0,
-    "wp08-freeze": 2.0,
+    "aero-warm-overlap": 0.0,
+    "wp08-freeze": 1.0,
     "wp08-melt": 0.0,
-    "wp08-nusweep": 6.0,
+    "wp08-nusweep": 0.0,
 }
 
 #: The same ratchet per card class.  The table above is sm_120's (an RTX
-#: 5070 Ti re-read it on 2026-09-30).  Until A146 an RTX 4090 (sm_89) read
+#: 5070 Ti re-read it at fed669e87).  Until A146 an RTX 4090 (sm_89) read
 #: three fixtures one ulp apart from sm_120: ``aero-nc-effrad`` 2
 #: (``nr_per_kg``, 3 on sm_120), ``aero-nc-sed`` 4 (``nr_per_kg``, 3) and
 #: ``aero-reduces-to-classic`` 3 (``ni_per_kg`` 1 against 4 on sm_120, so
@@ -2799,8 +2890,10 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
           f"each column\n{header}\n{body}\n"
           "(companion to the relative table; the relative gate is unchanged)")
 
+    # The declared divergence is a table read, not a rounding residual; its
+    # cells are not denominated in ulps.
     above = {(fixture, field)
-             for fixture in _FIXTURES
+             for fixture in _g3_conforming()
              for field, value in _g3_table_unexceptioned(cp)[fixture].items()
              if not value <= (_REFL_DB_GATE if field == _REFL_FIELD
                               else _END_TO_END_DEFAULT_BOUND)}
@@ -2856,7 +2949,7 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
                     f"{final[index]:.8g} after), not the recorded {side}")
 
     worst_clean = []
-    for fixture in _FIXTURES:
+    for fixture in _g3_conforming():
         for field, (ulps, _primary) in rows[fixture].items():
             if (fixture, field) in pinned:
                 continue
@@ -2872,9 +2965,9 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
           f"({worst_clean[0][1]}.{worst_clean[0][2]} at level "
           f"{worst_clean[0][3]}); ceiling {_G3_CLEAN_ULP_CEILING}")
 
-    assert set(worst_by_fixture) == set(_FIXTURES), sorted(
-        set(worst_by_fixture) ^ set(_FIXTURES))
-    for fixture in _FIXTURES:
+    assert set(worst_by_fixture) == set(_g3_conforming()), sorted(
+        set(worst_by_fixture) ^ set(_g3_conforming()))
+    for fixture in _g3_conforming():
         measured = max(float(ulps.max())
                        for ulps, _primary in rows[fixture].values())
         pin = worst_by_fixture[fixture]
@@ -2888,8 +2981,12 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
 
     exact = sorted(name for name, pin in worst_by_fixture.items()
                    if pin == 0.0)
-    assert exact == ["aero-ccn-activate", "aero-ccn-sweep",
-                     "aero-init-profile", "aero-sfc-emit", "wp08-melt"], exact
+    assert exact == [
+        "aero-ccn-activate", "aero-ccn-sweep", "aero-drop-evap",
+        "aero-init-profile", "aero-nc-accrete", "aero-nc-auto", "aero-nc-cap",
+        "aero-nc-effrad", "aero-nc-sed", "aero-scav-frozen", "aero-scav-rain",
+        "aero-sfc-emit", "aero-warm-overlap", "wp08-melt", "wp08-nusweep",
+    ], exact
     print(f"BIT-EXACT ON EVERY COMPARED QUANTITY: {len(exact)}/22 -- {exact}")
 
 
@@ -2970,8 +3067,9 @@ def test_every_g3_allowance_is_retired_and_none_is_needed():
              if not _g3_failures(name, gated_table[name])}
     flat = {name for name in _FIXTURES
             if not _flat_failures(name, flat_table[name])}
-    assert gated == set(_G3_GATED_CLEAN) == set(_FIXTURES), sorted(gated)
-    assert flat == set(_G3_UNEXCEPTIONED_CLEAN) == set(_FIXTURES), sorted(flat)
+    conforming = set(_g3_conforming())
+    assert gated == set(_G3_GATED_CLEAN) == conforming, sorted(gated)
+    assert flat == set(_G3_UNEXCEPTIONED_CLEAN) == conforming, sorted(flat)
     assert _G3_ALLOWANCES == () and _G3_ALLOWANCE_ONLY_CLEAN == ()
     assert _NEAR_CANCELLATION_LEVELS == {}
     assert _END_TO_END_BOUNDS == {} and _REFL_DB_BOUNDS == {}
@@ -3013,6 +3111,9 @@ def test_the_g3_residual_ratchet_holds_in_both_directions():
         measured = table[scenario]
         offenders = {field: value for field, value in measured.items()
                      if not value <= _g3_bound(scenario, field)}
+        recorded = dict(recorded)
+        if scenario in _G3_DECLARED_REFL_DB:
+            recorded[_REFL_FIELD] = _G3_DECLARED_REFL_DB[scenario]
         assert set(offenders) == set(recorded), (
             f"{scenario}: the set of quantities above the gate changed; "
             f"measured { {k: f'{v:.4e}' for k, v in offenders.items()} }, "
@@ -3933,10 +4034,11 @@ def test_no_residual_survives_and_none_needs_a_regime():
 
     _require_device()
     _tables_or_skip()
-    assert _G3_RESIDUALS == {} and _RESIDUAL_ATTRIBUTION == ()
+    assert set(_G3_RESIDUALS) == set(_G3_DECLARED_DIVERGENCE)
+    assert _RESIDUAL_ATTRIBUTION == ()
     flat_table = _g3_table_unexceptioned(cp)
     above = {f"{fixture}.{field}": value
-             for fixture in _FIXTURES
+             for fixture in _g3_conforming()
              for field, value in _flat_failures(
                  fixture, flat_table[fixture]).items()}
     assert not above, above
@@ -4182,13 +4284,12 @@ def test_the_cuda_symbol_inventory_of_one_mp28_call_is_pinned():
         for module in patched:
             module.get_kernel = real
 
-    # The due call launches the SAME set through the Thompson module loader
-    # and nothing more: gpuwm/core/refl.py:453 loads calc_refl10cm through its
-    # own ``_column_kernel`` specialiser, not ``kernels.get_kernel``, so the
-    # reflectivity kernel is deliberately absent from this inventory.  What
-    # matters here is the negative: making the call due does not reach for a
-    # single extra Thompson kernel, Cooper-bearing or otherwise.
-    assert set(due) == set(not_due), sorted(
+    # The due call launches the SAME set plus mp=28's own calc_refl10cm
+    # (thompson_aerosol_state.cu) and nothing more: making the call due does
+    # not reach for a single extra Thompson kernel, Cooper-bearing or
+    # otherwise.
+    assert set(due) == set(not_due) | {
+        ("thompson_aerosol_state", "thompson_aa_refl10cm")}, sorted(
         set(due) ^ set(not_due))
     assert due_state.physics.refl_10cm is not None, (
         "the due call stashed no REFL_10CM frame, so the comparison above "
@@ -4206,12 +4307,10 @@ def test_the_cuda_symbol_inventory_of_one_mp28_call_is_pinned():
         "thompson", "thompson_aerosol_state", "thompson_aerosol_sat",
         "thompson_aerosol_cold", "thompson_aerosol_warm",
         "thompson_aerosol_sed"}, sorted(modules)
-    # The frozen translation unit contributes ONLY the graupel-number
-    # diagnostic, the two column masks and the four reused fallout kernels.
+    # The frozen translation unit contributes ONLY the two column masks.
     classic = sorted(f for m, f in launched if m == "thompson")
     for func in classic:
-        assert ("sediment" in func or "column_mask" in func
-                or "classic_graupel_number" in func), func
+        assert "column_mask" in func, func
 
 
 @requires_gpu

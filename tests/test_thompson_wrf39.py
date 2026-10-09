@@ -188,11 +188,32 @@ def _strip_fork_arms(text: str) -> str:
 #: flat 2e-6 bound); the fork arms themselves are untouched by it
 #: (test_the_fork_arms_were_pure_insertions_until_the_rework below holds
 #: the earlier claim at the last pre-rework staging commit, ed2b14e7d).
+#:
+#: MOVED AGAIN 2026-10-07 by lane/verify-thompson-aerosol-mp28: every
+#: EXP/LOG/LOG10/** in both arms calls WOOF's own libm words
+#: (thompson_aerosol_libm.cuh), graded by the 0 ULP column oracle
+#: (tools/thompson_aerosol_column_oracle) and tests/test_thompson_aerosol_libm.py.
+#:
+#: MOVED AGAIN 2026-10-07 by lane/mp28fix-sedim-refl: the v4.6.1 path's own
+#: snow and graupel fallout, surface totals, classic graupel number and
+#: calc_refl10cm (the frozen mp=8 kernels no longer reach mp=28), graded by
+#: the column oracle and tests/test_thompson_aerosol_sedim_refl.py.  The fork
+#: arms are untouched.  Previously 4f6bda7a20547e64 (state), e9b877b64b1f9624
+#: (sed).
+#:
+#: MOVED AGAIN 2026-10-07 by lane/mp28-exact: WRF's snow and graupel
+#: accumulators in the v4.6.1 snow and graupel fallout (:3871-3937,
+#: :4054-4059), the phase cleanup's latent heat into tten on WRF's
+#: ocp(k)/lvap(k) (:3943-3973), and the warm network's entry mask with
+#: WRF's melting level (thompson_aa_entry_warm_mask, :1971-2013), graded by
+#: tests/test_thompson_aerosol_column_oracle_gpu.py, including the separate
+#: exact-freezing fixture and legacy-mask negative control. The fork arms are
+#: untouched.  Previously c98df22af539c88e (state), 8a7f09658ba014b1 (sed).
 V461_STRIPPED_SHA256 = {
     "thompson_aerosol_state.cu":
-        "b8deeb182263313d91d4ddffbce283136ebe95f547f11a9917af0baf2ae60186",
+        "1d09b519d926d28a710e144555fb7cc81ee6af527ac6ed3e2f07b3b6053a24b3",
     "thompson_aerosol_sed.cu":
-        "5a0c8065fb7c3008aac0cd93efb2b1e7aeeaf25e26c7cbad17887b9064a9dedd",
+        "980288a1b5df4d2bd6ab1b3288ce7196805ef8e3fd4d2971c30f178e8400f7bc",
 }
 
 

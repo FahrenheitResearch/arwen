@@ -16,6 +16,12 @@ pub(crate) fn qpf_inches_levels() -> Vec<f64> {
     ]
 }
 
+pub(crate) fn snowfall_inches_scale() -> DiscreteColorScale {
+    palette_scale(WeatherPalette::Precip,
+        vec![0.1,0.5,1.,2.,3.,4.,6.,8.,10.,12.,18.,24.,30.,36.,48.,60.],
+        ExtendMode::Max, Some(0.1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

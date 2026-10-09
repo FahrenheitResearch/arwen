@@ -23,7 +23,16 @@ _MARKER = "// MF-EXPORT"
 #: Re-pinned for A146 (a98f2482e): the constant-divisor float divisions both
 #: siblings share are spelled __fdiv_rn.  Previously 9c5c9543.
 _FROZEN_SHA256 = (
-    "06cada42b47a4f7874641216e491917eabb53185abd7cd0465e946978ba56c76"
+    # RE-PINNED by lane/mynn-exact (the YSU recipe on MYNN), MOVES ANSWERS
+    # for bl_pbl_physics = 5: --fmad=false, glibc 2.39 expf/log10f and the
+    # FMA-ifunc logf/powf/expf in the unit, fdlibm tanhf at every site;
+    # under MYNN_GSD41 the fork's a2den algebra and 0.608 thetav.  Reading
+    # (RTX 5090 sm_120, NVRTC 12.9): every MYNN CUDA leaf and both drivers 0
+    # ULP against WRF v4.6.1, six column families x 12 steps free-running 0
+    # ULP (tests/test_mynn_wrf461_exact_gpu.py); gsd_41 0 ULP against the
+    # fork's driver (tests/test_mynn_gsd41_driver_exact_gpu.py). Previously
+    # 06cada42.
+    "da57d333a389fca3f07751e1433677cbf09b4c70d711889aadf07c5efb5feb69"
 )
 
 

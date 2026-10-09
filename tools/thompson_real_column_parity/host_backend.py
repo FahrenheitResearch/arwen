@@ -544,6 +544,8 @@ def install() -> None:
     # only; the column kernels they match bit for bit run here instead.
     from gpuwm.core import thompson
     thompson.LEVEL_PARALLEL_FALLOUT = False
+    from gpuwm.core import thompson_aerosol_sed
+    thompson_aerosol_sed.LEVEL_PARALLEL_FALLOUT = False
 
 
 __all__ = [

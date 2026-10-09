@@ -87,6 +87,7 @@ import weakref
 import cupy as cp
 import numpy as np
 
+from gpuwm.microphysics_schemes import scheme as _named_scheme
 from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel
@@ -424,7 +425,8 @@ def moist_physics_finish(state: DomainState, cfg: RunConfig, th_phy,
     ``state.h_diabatic`` holds the :func:`save_pre_mp_theta` full theta.
     With ``cfg.no_mp_heating == 0`` (:5682; Registry default) the theta
     increment ``mpten = th_phy - saved`` (:5688) is clamped to
-    ``+/- cfg.mp_tend_lim*dt`` (:5706-5707), added ONCE to the prognostic
+    ``+/- DTYPE(cfg.mp_tend_lim) * DTYPE(dt)``, the REAL product WRF forms
+    (:5706-5707), added ONCE to the prognostic
     perturbation theta (:5743), and retained as the heating rate
     ``h_diabatic = mpten/dt`` (:5745) that the NEXT step's RK loop feeds
     to the theta tendency.  With ``no_mp_heating = 1`` theta is left
@@ -432,7 +434,13 @@ def moist_physics_finish(state: DomainState, cfg: RunConfig, th_phy,
     moisture updates stand either way.
     """
     if cfg.no_mp_heating == 0:
-        lim = DTYPE(cfg.mp_tend_lim * dt)
+        # WRF multiplies the REAL mp_tend_lim by the REAL dt (:5706-5707),
+        # one float32 rounding of two float32 operands, as classic
+        # Thompson's fused finish does (thompson.py launch_adapter_finish).
+        # Rounding the double product instead moves a clamped increment by
+        # one float32 unit for some pairs (HRRR's 0.07 K/s at dt = 12 s:
+        # 0x3f570a3d, not WRF's 0x3f570a3e), and with it thp and h_diabatic.
+        lim = DTYPE(DTYPE(cfg.mp_tend_lim) * DTYPE(dt))
         mpten = state.h_diabatic
         cp.subtract(th_phy, mpten, out=mpten)        # :5688
         cp.minimum(lim, mpten, out=mpten)            # :5706
@@ -872,6 +880,13 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
         return _apply_thompson_aerosol(
             state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif _named_scheme(cfg.mp_physics) is not None:
+        # A NAMED scheme (gpuwm.microphysics_schemes): its adapter module is
+        # gpuwm.core.<name>, imported lazily so no other run compiles it.
+        import importlib
+        adapter = importlib.import_module(
+            "gpuwm.core." + _named_scheme(cfg.mp_physics).name)
+        return adapter.apply(state, cfg, dt, refl_10cm_due=refl_10cm_due)
     elif cfg.mp_physics == 50:
         # P3 one-category.  Lazy import for the reason the Morrison and
         # aerosol arms use one, plus a P3-specific one: importing this
@@ -956,6 +971,14 @@ def microphysics_init(state: DomainState, cfg: RunConfig) -> dict[str, object]:
     overwrite an advected, activated and scavenged aerosol field with the
     synthetic profile every step while leaving every bound intact.
     """
+    named = _named_scheme(cfg.mp_physics)
+    if named is not None and named.aerosol_aware:
+        # A named aerosol-aware scheme takes the same once-per-domain
+        # synthetic CCN/IN profile mp=28 takes when the analysis carries no
+        # aerosol (the named first-call init is inert when the host passes
+        # aerosol arrays, so the host must seed them).
+        from gpuwm.core.microphysics_aerosol import aerosol_profile_fill
+        return {"aerosol_profile": aerosol_profile_fill(state)}
     if cfg.mp_physics != 28:
         # Kessler/WSM6/Thompson/Morrison/NSSL have no domain-construction
         # step in gpuwm: their tables are loaded lazily at first launch and
@@ -1039,7 +1062,8 @@ def _apply_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         if refl_10cm_due:
             raise ValueError("REFL_10CM is due without active microphysics")
         return None
-    if cfg.mp_physics not in (1, 6, 8, 9, 10, 16, 18, 28, 50):
+    if (cfg.mp_physics not in (1, 6, 8, 9, 10, 16, 18, 28, 50)
+            and _named_scheme(cfg.mp_physics) is None):
         raise ValueError(f"unknown mp_physics={cfg.mp_physics} "
                          "(0 = none, 1 = Kessler, 6 = WSM6, "
                          "8 = Thompson, 9 = Milbrandt-Yau, "

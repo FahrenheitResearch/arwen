@@ -14,6 +14,17 @@ the stable range, with the float32 running ``ZETA`` accumulation that makes
 the literal upper bound.  Sea (``*1``) and land (``*2``) tables are built
 independently exactly as the Fortran builds them even though v4.6.1's
 ranges make them identical.  ``FH01 = FH02 = 1`` (:1177-1178).
+
+LOG, ATAN and EXP are WOOF's own float32 routines
+(:func:`gpuwm.core.noahmp_libm.logf`, ``atanf``, ``expf``), the ones every
+WRF column oracle in this tree is graded with -- not NumPy's.  NumPy's
+float32 ``log``/``arctan``/``exp`` are NumPy's own loops, which change with
+the host's CPU features; with them the tables differed from the words
+MYJSFCINIT builds on 2,277 of 10,001 PSIM entries (up to 16 ULP) and on
+1,382 PSIH entries (up to 2 ULP), and could differ again between two
+machines.  The WRF v4.6.1 column oracle (tools/myjsfc_wrf461_oracle)
+dumps MYJSFCINIT's own tables; tests/test_myjsfc_wrf461_parity.py holds
+these to them word for word.
 """
 
 from __future__ import annotations
@@ -22,6 +33,8 @@ from functools import lru_cache
 from types import MappingProxyType
 
 import numpy as np
+
+from gpuwm.core.noahmp_libm import atanf, expf, logf
 
 F = np.float32
 
@@ -44,17 +57,17 @@ def _build_pair(ztmin: np.float32, dzeta: np.float32):
             # Left-to-right exactly as the Fortran writes it (:1216):
             # (((-2*log((x+1)/2)) - log((x*x+1)/2)) + 2*atan(x)) - PIHF.
             psim[k] = F(F(F(F(F(-2.0)
-                              * F(np.log(F(F(x + F(1.0)) / F(2.0)))))
-                            - F(np.log(F(F(F(x * x) + F(1.0)) / F(2.0)))))
-                          + F(F(2.0) * F(np.arctan(x))))
+                              * logf(F(F(x + F(1.0)) / F(2.0))))
+                            - logf(F(F(F(x * x) + F(1.0)) / F(2.0))))
+                          + F(F(2.0) * atanf(x)))
                         - _PIHF)
             psih[k] = F(F(-2.0)
-                        * F(np.log(F(F(F(x * x) + F(1.0)) / F(2.0)))))
+                        * logf(F(F(F(x * x) + F(1.0)) / F(2.0))))
         else:
             psim[k] = F(F(F(0.7) * zeta)
                         + F(F(F(F(0.75) * zeta)
                               * F(F(6.0) - F(F(0.35) * zeta)))
-                            * F(np.exp(F(F(-0.35) * zeta)))))
+                            * expf(F(F(-0.35) * zeta))))
             psih[k] = psim[k]
         if k == KZTM - 1:
             ztmax = zeta

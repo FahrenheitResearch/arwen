@@ -301,6 +301,29 @@ A fixed 3 km step of 15 s or less (the domain wizard
 writes 15 s) reads as before. Over that CONUS ground a fixed 18 s or 20 s
 runs on six substeps at 30 m/s, and from 40 m/s is halved to 9 s or 10 s.
 
+From 2.8.8 the clock reads every terrain face, not just one number per
+domain (`terrain_clock = "local_face"`, the default;
+`gpuwm/terrain_clock_local.py`). The reading above takes the steepest
+slope, the highest ground and the strongest crest-level wind anywhere in
+the domain, even when they are hundreds of km apart. On NCAR's CONUS
+benchmarks that put a Plains jet on a mountain face far from it and halved
+both published steps, 72 s to 36 s at 12 km and 15 s to 7.5 s at 2.5 km,
+although both grids ran clean at NCAR's own steps. The local reading pairs
+each face with the crest and wind around it (the wind read at 2.3 times
+what the inputs carry there, never under 1.5 times, and never past the
+domain-wide wind), reads each pair on the map, and holds the domain to the
+least of them. It is never worse than the domain-wide reading: where the
+face-by-face reading finds no measured step, or would run a shorter first
+or longest step, the domain takes the domain-wide decision, and the run
+line and the `terrain_clock` receipt (`never_worse`) say so. On the six
+long cases it was checked on, NCAR 12 km now runs 72 s on four substeps,
+NCAR 2.5 km 15 s on six, SF Diablo's parent grid has no cap (13.5 s
+longest), and LA Santa Ana, Toronto and Boston run what they ran before;
+each of those settings held a 48 h or full-window run. `terrain_clock =
+"measured"` keeps the domain-wide reading, and a checkpoint written under
+it (any checkpoint from before 2.8.8 that did not name the clock) resumes
+only under it.
+
 Each `[[domain]]` may also carry an offset-free `start_time`. It defaults to
 `[experiment].start_time`; d01 must equal that root start. A delayed child is
 dormant until its timestamp, then follows the ordinary parent-state nest
@@ -470,7 +493,7 @@ wrong answer reported as a success. Put them in `[shared]`.
 |---|---|---|---|---|
 | `time_step_sound` | `time_step_sound` | 4 | even, > 0 | WRF 0 = auto imports as 4, recorded. A domain whose terrain is steeper than four substeps were measured stable on (a slope of 0.70 in any direction at `epssm` 0.5, lower at smaller `epssm`) runs 6 and the run says so; a larger value is never lowered (`gpuwm/acoustic_adaptation.py`). Under the adaptive clock the count follows the step, and the 6 is held as `min_time_step_sound` |
 | `min_time_step_sound` | -- (ArWen) | 0 | even, >= 0, per domain | under the adaptive clock, the fewest acoustic substeps per step: the count the clock derives from its step (WRF's `time_step_sound = 0` rule, 4 at any step under about 3.3 s at 1 km) is raised to this. 0 keeps WRF's count. The steep-terrain rules set it on each adaptive domain whose count they raise. Nothing reads it under a fixed clock |
-| `terrain_clock` | -- (ArWen) | `"measured"` | `"measured"`, `"pinned"` | whether the measured terrain rules may rewrite the clock at launch. `"measured"`: the terrain clock (`gpuwm/terrain_clock.py`) divides the step, raises the substep count or caps an adaptive step where its map saw a longer step stop under the domain's slope, crest and crest-level wind, and the steep-ground rule (`gpuwm/acoustic_adaptation.py`) raises four substeps to six where its map says four fail. `"pinned"`: these launch rules preserve the configured clock; `time_step` and `time_step_sound` integrate exactly as written with `use_adaptive_time_step = false`, while a selected adaptive controller still updates its live clock; both rules still read the domain and write what they would have done into the run's `terrain_clock` and `acoustic_substeps` receipts (`clock = "pinned"`, an `advice` entry with `applied = false`) and print it, but apply nothing. The off-centering floor (a chosen `epssm` the map holds no count at) is refused either way. Pinned is what an operational WRF namelist means by its clock; the maps were measured on generated ridges, never on an operational grid, so there their verdict is advice and the run's own stability evidence is the referee |
+| `terrain_clock` | -- (ArWen) | `"local_face"` | `"local_face"`, `"measured"`, `"pinned"` | whether the measured terrain rules may rewrite the clock at launch. `"local_face"` (the default from 2.8.8; `"measured"` before): the terrain clock reads every terrain face with the crest and crest-level wind around it (`gpuwm/terrain_clock_local.py`) and holds the domain to the least of them, never worse than `"measured"`: where that reading finds no measured step or would run a shorter first or longest step, the domain takes the `"measured"` decision and the receipt's `never_worse` entry says so. A checkpoint written under `"measured"` resumes only under `"measured"`. `"measured"`: the terrain clock (`gpuwm/terrain_clock.py`) divides the step, raises the substep count or caps an adaptive step where its map saw a longer step stop under the domain's slope, crest and crest-level wind, and the steep-ground rule (`gpuwm/acoustic_adaptation.py`) raises four substeps to six where its map says four fail. `"pinned"`: these launch rules preserve the configured clock; `time_step` and `time_step_sound` integrate exactly as written with `use_adaptive_time_step = false`, while a selected adaptive controller still updates its live clock; both rules still read the domain and write what they would have done into the run's `terrain_clock` and `acoustic_substeps` receipts (`clock = "pinned"`, an `advice` entry with `applied = false`) and print it, but apply nothing. The off-centering floor (a chosen `epssm` the map holds no count at) is refused either way. Pinned is what an operational WRF namelist means by its clock; the maps were measured on generated ridges, never on an operational grid, so there their verdict is advice and the run's own stability evidence is the referee |
 | `epssm` | `epssm` | 0.1 | per-domain | acoustic off-centering; scalar namelist assignment changes d01 only (Registry tail keeps 0.1), preserved per-domain |
 | `smdiv` | `smdiv` | 0.1 | finite | 3-D divergence damping |
 | `emdiv` | `emdiv` | 0.0 (ArWen legacy) | finite | WRF Registry default 0.01 is emitted explicitly on import |
@@ -878,9 +901,9 @@ stages it into `~/.gpuwm/wif` after verifying exact size and SHA-256
 `2f828eabd96a45f3872390f901240ea2259a1e9a629247010f42ce7a31cc46be`;
 `gpuwm fetch-tables --wif` alone downloads the fixed UCAR archive,
 decompresses it and verifies the raw bytes before installation. Named
-mirrors and offline `--from` copies remain supported. The native HRRR
-forecast chain acquires this dependency automatically during fetch when
-its selected physics needs monthly aerosol. Plan review and dry runs
+mirrors and offline `--from` copies remain supported. Every forecast chain that
+fetches its forcing (GFS, HRRR and the staged sources) acquires this dependency
+automatically during fetch when its selected physics needs monthly aerosol. Plan review and dry runs
 report the pending dependency without downloading it. `[fetch] wif = false`
 disables automatic acquisition and retains the missing-dataset refusal;
 `gpuwm fetch --wif` explicitly requests it. Any WRF tree that has ever run
@@ -990,6 +1013,30 @@ WRF namelists. See [Terrain drag](TERRAIN-DRAG.md) for the schemes, required
 WPS geography and preparation command.
 
 ## Terrain smoothing (`[[domain]] static`)
+
+Preparation automatically adds Rust 1-2-1 passes when a domain exceeds the
+measured slope envelope. It checks the final terrain after any high-resolution
+overlay, before building the vertical coordinate. Only that domain changes.
+Terrain already below the limit keeps its arrays and existing preparation keys.
+The limit comes from the local-face clock's combined measured map, capped by
+the acoustic stability map, not a location or source-specific threshold.
+At 500 m the acoustic cap is 0.85. The clock still checks crest, wind and step.
+
+The static receipt and forecast identity record the domain, additional pass
+count, slope before and after, bound, and full terrain hashes. Each changed
+domain prints a `terrain: dNN auto-smoothed ...` line. `gpuwm domain` also
+surveys an explicitly supplied, locally staged WPS_GEOG terrain tree and writes
+`*.terrain-autosmooth.json` when it needs smoothing. Preparation checks the
+final overlays again, so a domain survey is not an attestation of a later
+high-resolution overlay.
+
+After at most 32 additional passes, terrain still outside the limit is refused
+before GPU initialization. Use a coarser grid or smoother terrain input and
+prepare again. A previously prepared over-limit forecast is also refused and
+names re-preparation as the remedy. Moving domains that require independent
+footprint smoothing are refused before initialization: their shared edge
+heights would differ at relocation. Use a fixed domain or a shared statics
+corridor already below the slope limit.
 
 WPS smooths `HGT_M` with whatever its `GEOGRID.TBL` names; the stock table
 runs one `smth-desmth_special` pass, and so does ArWen unless a domain asks

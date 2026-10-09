@@ -111,6 +111,38 @@ fn field_specs() -> Vec<FieldSpec> {
             unit_slug: "ms",
             default_threshold: 25.0,
         },
+        // Window totals (importer env GPUWM_SNOW_SINCE): snowfall between
+        // a named start frame and the drawn frame, so storm and daily
+        // totals exist for members that started before the window.
+        FieldSpec {
+            name: "snowfall_win",
+            title: "snowfall over the window (land model)",
+            units: "mm",
+            unit_slug: "mm",
+            default_threshold: 152.4,
+        },
+        FieldSpec {
+            name: "snow10_win",
+            title: "10:1 snowfall over the window",
+            units: "mm",
+            unit_slug: "mm",
+            default_threshold: 152.4,
+        },
+        // 10 m gust (UPP method, importer) and the snow-level guide (ft MSL).
+        FieldSpec {
+            name: "gust",
+            title: "10 m wind gust",
+            units: "m s-1",
+            unit_slug: "ms",
+            default_threshold: 25.93,
+        },
+        FieldSpec {
+            name: "snowlevel",
+            title: "snow level guide (wet-bulb 0 C height)",
+            units: "ft",
+            unit_slug: "ft",
+            default_threshold: 5000.0,
+        },
     ]
 }
 
@@ -133,6 +165,16 @@ fn field_selector(field: &str) -> Option<FieldSelector> {
         "precip" => Some(FieldSelector::surface(CanonicalField::TotalPrecipitation)),
         "t2" => Some(FieldSelector::height_agl(CanonicalField::Temperature, 2)),
         "wspd10" => Some(FieldSelector::height_agl(CanonicalField::WindSpeed, 10)),
+        "gust" => Some(FieldSelector::height_agl(CanonicalField::WindGust, 10)),
+        "snowfall_win" => Some(FieldSelector::surface(CanonicalField::ModelSnowfall)),
+        "snow10_win" => Some(FieldSelector::surface(CanonicalField::Snowfall10to1)),
+        _ => None,
+    }
+}
+
+fn field_variable(field: &str) -> Option<&'static str> {
+    match field {
+        "snowlevel" => Some("wrf_snow_level_ft"),
         _ => None,
     }
 }
@@ -146,6 +188,9 @@ struct Args {
     field: String,
     products: Vec<String>,
     threshold: Option<f64>,
+    /// Extra probability thresholds (`--thresholds a,b,...`): one `prob`
+    /// panel per value from ONE member import.
+    thresholds: Vec<f64>,
     neighborhood_km: f64,
     frames: Option<usize>,
     nan_policy: NanPolicy,
@@ -186,6 +231,7 @@ fn parse_args() -> Result<Invocation, String> {
     let mut field = "refl".to_string();
     let mut products = "mean,spread,prob,pmm,paintball".to_string();
     let mut threshold: Option<f64> = None;
+    let mut thresholds: Vec<f64> = Vec::new();
     let mut neighborhood_km = 0.0f64;
     let mut frames: Option<usize> = None;
     let mut nan_policy = NanPolicy::Mask;
@@ -226,6 +272,15 @@ fn parse_args() -> Result<Invocation, String> {
             }
             "--field" => field = value()?,
             "--products" => products = value()?,
+            "--thresholds" => {
+                for item in value()?.split(',').filter(|t| !t.trim().is_empty()) {
+                    thresholds.push(
+                        item.trim()
+                            .parse()
+                            .map_err(|err| format!("invalid --thresholds: {err}"))?,
+                    );
+                }
+            }
             "--threshold" => {
                 threshold = Some(
                     value()?
@@ -314,7 +369,7 @@ fn parse_args() -> Result<Invocation, String> {
                     NUMBER=MEMBER_DIR (its whole series)"
             .to_string());
     }
-    if field_selector(&field).is_none() {
+    if field_selector(&field).is_none() && field_variable(&field).is_none() {
         return Err(format!(
             "unknown --field {field:?}; --list-fields prints the vocabulary"
         ));
@@ -342,6 +397,7 @@ fn parse_args() -> Result<Invocation, String> {
         field,
         products,
         threshold,
+        thresholds,
         neighborhood_km,
         frames,
         nan_policy,
@@ -676,7 +732,7 @@ fn run(args: Args) -> Result<(), String> {
         .iter()
         .find(|spec| spec.name == args.field)
         .ok_or_else(|| format!("unknown --field {}", args.field))?;
-    let selector = field_selector(&args.field).expect("validated at parse");
+    let selector = field_selector(&args.field);
     let threshold = args.threshold.unwrap_or(spec.default_threshold);
 
     // --- import every member into its OWN store -------------------------
@@ -700,7 +756,10 @@ fn run(args: Args) -> Result<(), String> {
         let task = spawn_process_paths(
             wrfouts.clone(),
             store_root.clone(),
-            WrfProcessOptions::default(),
+            WrfProcessOptions {
+                snow_since: std::env::var("GPUWM_SNOW_SINCE").ok().filter(|s| !s.trim().is_empty()),
+                ..Default::default()
+            },
         );
         let import = loop {
             match task
@@ -748,22 +807,26 @@ fn run(args: Args) -> Result<(), String> {
     for (number, store_root, model, run_slug, slot) in &member_stores {
         let source = StoreFieldSource::open(store_root, model, run_slug, *slot)
             .map_err(|err| format!("member {number}: open store: {err}"))?;
-        let Some(variable) = source.resolve(&selector).map(str::to_string) else {
+        let Some(variable) = field_variable(&args.field).map(str::to_string)
+            .or_else(|| selector.as_ref().and_then(|s| source.resolve(s).map(str::to_string))) else {
             return Err(format!(
                 "member {number}: no stored variable carries {}; the field \
                  '{}' is not in this member's wrfout",
-                selector.key(),
+                selector.as_ref().map(|s| s.key()).unwrap_or_else(|| args.field.clone()),
                 args.field
             ));
         };
-        let field = source
-            .fetch(&selector)
-            .map_err(|err| format!("member {number}: read {variable}: {err}"))?;
-        let (ny, nx) = (field.grid.shape.ny, field.grid.shape.nx);
+        let (field_grid, field_values) = match &selector {
+            Some(selector) => source.fetch(selector)
+                .map(|field| (field.grid, field.values)).map_err(|err| err.to_string()),
+            None => source.generic_grid(&variable)
+                .map(|field| (field.grid, field.values)).map_err(|err| err.to_string()),
+        }.map_err(|err| format!("member {number}: read {variable}: {err}"))?;
+        let (ny, nx) = (field_grid.shape.ny, field_grid.shape.nx);
         if geometry.is_none() {
             geometry = Some((
-                field.grid.lat_deg.clone(),
-                field.grid.lon_deg.clone(),
+                field_grid.lat_deg.clone(),
+                field_grid.lon_deg.clone(),
                 source.projection().cloned(),
             ));
             let meta = source
@@ -799,7 +862,7 @@ fn run(args: Args) -> Result<(), String> {
         }
         planes.push(MemberPlane {
             number: *number,
-            values: field.values.iter().map(|value| f64::from(*value)).collect(),
+            values: field_values.iter().map(|value| f64::from(*value)).collect(),
             ny,
             nx,
         });
@@ -853,7 +916,17 @@ fn run(args: Args) -> Result<(), String> {
     let mut rendered = 0usize;
     let mut failed = 0usize;
 
+    let mut jobs: Vec<(String, f64)> = Vec::new();
     for product in &args.products {
+        jobs.push((product.clone(), threshold));
+        if product == "prob" {
+            for extra in &args.thresholds {
+                jobs.push((product.clone(), *extra));
+            }
+        }
+    }
+    for (product, threshold) in &jobs {
+        let (product, threshold) = (product, *threshold);
         let outcome = render_product(
             product,
             &args,
@@ -962,8 +1035,8 @@ fn render_product(
             (
                 to_f32(&probability),
                 format!(
-                    "P({} > {threshold} {}){neighborhood} ({members} members)",
-                    spec.title, spec.units
+                    "Chance of {} > {}{neighborhood} ({members} members)",
+                    spec.title, threshold_label(spec, threshold)
                 ),
                 "fraction".to_string(),
                 scales::probability_scale(),
@@ -1045,8 +1118,8 @@ fn render_product(
             (
                 vec![f32::NAN; stack.points()],
                 format!(
-                    "Paintball {} > {threshold} {} ({members} members)",
-                    spec.title, spec.units
+                    "Paintball {} > {} ({members} members)",
+                    spec.title, threshold_label(spec, threshold)
                 ),
                 spec.units.to_string(),
                 scales::spread_scale(1.0),
@@ -1118,6 +1191,24 @@ fn coverage_line(
             args.nan_policy.as_str()
         )
     })
+}
+
+/// A threshold in the units its reader thinks in: snowfall (stored mm of
+/// snow) in inches, wind (stored m/s) in mph, anything else as stored.
+/// Breakage it prevents: a 6 in snowfall chance was titled "> 152.4 mm".
+fn threshold_label(spec: &FieldSpec, threshold: f64) -> String {
+    if spec.name.contains("snow") && spec.units == "mm" {
+        let inches = threshold / 25.4;
+        if (inches - inches.round()).abs() < 0.05 {
+            format!("{:.0} in", inches.round())
+        } else {
+            format!("{inches:.1} in")
+        }
+    } else if spec.units == "m s-1" {
+        format!("{:.0} mph", threshold * 2.236_94)
+    } else {
+        format!("{threshold} {}", spec.units)
+    }
 }
 
 fn to_f32(values: &[f64]) -> Vec<f32> {
@@ -1443,6 +1534,7 @@ mod tests {
             field: field.to_string(),
             products: vec![product.to_string()],
             threshold: None,
+            thresholds: Vec::new(),
             neighborhood_km: 0.0,
             frames: None,
             nan_policy: NanPolicy::Mask,

@@ -777,6 +777,15 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
     # real.exe derives aer_init_opt from use_aero_icbc.  Run-wide in WRF.
     wif_pair = (int(_run_wide(runs, "aer_init_opt")),
                 int(_run_wide(runs, "wif_input_opt"))) != (0, 0)
+    # WRF's &time_control cycling (Registry.EM_COMMON: `rconfig logical
+    # cycling namelist,time_control 1 .false.`, run-wide).  The importer
+    # reads it onto RunConfig.cycling, so a pair that omits it reads back
+    # as a fresh start: every imported operational HRRR namelist states
+    # .true. and was refused here by the round trip (acceptance defect
+    # D-04, 2.8.8).  Written on BOTH halves, only when .true., so stock
+    # WRF's MYNN first call runs the same cycled start and every uncycled
+    # emission keeps its bytes.
+    cycling = bool(_run_wide(runs, "cycling"))
     stock_deltas = _STOCK_DELTAS
     if int(getattr(root.run, "alb_sol", 0)) == 1:
         stock_deltas += ", native-only alb_sol=1 (absent from stock WRF 4.6.1)"
@@ -809,6 +818,8 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f" history_interval_s                  = "
         f"{_column(int(d.history_interval_s) for d in domains)}",
         f" frames_per_outfile                  = {_repeated(1, count)}",
+        *([" cycling                             = .true.,"]
+          if cycling else []),
         " restart                             = .false.,",
         " io_form_history                     = 2,",
         " io_form_restart                     = 2,",

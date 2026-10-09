@@ -1,0 +1,5 @@
+gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+glibc: ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+libmvec symbols, -O0 object:  0
+libmvec symbols, stock object: U _ZGVbN4v_atanf U _ZGVbN4v_logf U _ZGVbN4vv_powf 
+libmvec symbols, wrf.exe object: U _ZGVbN4v_atanf U _ZGVbN4v_logf U _ZGVbN4vv_powf 

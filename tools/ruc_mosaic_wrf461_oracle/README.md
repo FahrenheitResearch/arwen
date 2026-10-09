@@ -36,8 +36,11 @@ The CUDA runtime comparison separately exercises the ARW forcing path.
 Warm soil and no snow avoid the upstream undefined thin-snow stack state.
 This fixture does not remove the previously declared RUC snow/libm divergences.
 
-The fixture was generated with GNU Fortran 15.2.0, `-O0`, default REAL32,
-and the packaged WRF tables. Its byte counts and hashes are pinned in
+The fixture was generated with GNU Fortran 13.3.0 on glibc 2.39 (box W1,
+lane/verify-ruc-lsm), `-O0`, default REAL32, and the packaged WRF tables:
+the toolchain every RUC WRF oracle is pinned on, whose float32 libm words
+WOOF reproduces.  An earlier build with GNU Fortran 15.2.0 on another C
+library recorded that library's words instead. Its byte counts and hashes are pinned in
 `gpuwm.core.ruc_contract`. CPU and CUDA surface/column comparisons require
 bitwise equality; the runtime test compares every device field for three
 successive calls over mixed land, water, snow and ice columns.

@@ -1,0 +1,795 @@
+{
+  "what": "Exact word pins of the diff_opt=2 metric trajectories (3 steps, km_opt 2/4, open and periodic, dry and moist) and of the two legacy checkpoint resumes, re-measured on the 2.8.8 release line. The 2.8.7 pins (diff2-merged-baseline.npz, diff2-merged-legacy.npz) and their word attribution (diff2-merged-attribution.json) are kept unchanged as the record of what 2.8.7 ran.",
+  "why": "The 2.8.8 Group A integration deliberately moved the default dycore arithmetic: the diffusion units (smag2d, diffusion, diff_opt1, diff6, diff6_seam) compile with IEEE options and run WRF's diffusion order by default (54 intake), and verify-base4 moved the acoustic, diagnostics and bigstep arithmetic. The 2.8.7 tree reproduces the 2.8.7 pins exactly (0 moved words at 70e2d5c6f on this card); reverting only the 54 default diffusion route at the 2.8.8 tip does not restore them (30,947 words still move), so the move is the combined integration, not one lane. The individual intake commits do not import on their own, so a per-intake attribution is not measurable. The diffusion operators themselves are graded word for word against compiled WRF by tools/diffusion_default_check.py (km4, km2, km3, diff1, diff6, w_damp: 0 different words on this card in the default and strict arms).",
+  "engine_commit": "8beb02823a925c620d41d9edb15c294562070c83",
+  "device": "NVIDIA GeForce RTX 5070 Ti (sm_120)",
+  "legacy_resume": "terrain_clock = 'measured' (the clock the checkpoints ran)",
+  "baseline_sha256": "04a315d1cfe54e5f8d71d7822f6a802ea5f8cac406605a99d4a0cd905a7f2a5e",
+  "legacy_sha256": "c97ee7fceee5ebcbaf560323daa25ce627252409f2b4c3c5d94e0229635c3959",
+  "previous_baseline_sha256": "e8b209535b5f0601bda5d30fe621681ae7ce923fc7aeeff1454235a0be565ffc",
+  "previous_legacy_sha256": "cb2fb3952564d3c3a9e36aff4531ddd28b8c05334f378f9a6e64ddf3cade10c6",
+  "moved_vs_2_8_7": {
+    "baseline": 23563,
+    "legacy": 5160,
+    "baseline_fields": {
+      "diff2_k2_b0_m0_alt": {
+        "words": 648,
+        "moved": 1
+      },
+      "diff2_k2_b0_m0_mup": {
+        "words": 108,
+        "moved": 47
+      },
+      "diff2_k2_b0_m0_p": {
+        "words": 648,
+        "moved": 1
+      },
+      "diff2_k2_b0_m0_php": {
+        "words": 756,
+        "moved": 264
+      },
+      "diff2_k2_b0_m0_scratch_smag_kh": {
+        "words": 648,
+        "moved": 12
+      },
+      "diff2_k2_b0_m0_scratch_smag_khv": {
+        "words": 648,
+        "moved": 245
+      },
+      "diff2_k2_b0_m0_scratch_smag_km": {
+        "words": 648,
+        "moved": 14
+      },
+      "diff2_k2_b0_m0_scratch_smag_kmv": {
+        "words": 648,
+        "moved": 203
+      },
+      "diff2_k2_b0_m0_scratch_smag_mut": {
+        "words": 108,
+        "moved": 0
+      },
+      "diff2_k2_b0_m0_scratch_smag_rth": {
+        "words": 648,
+        "moved": 622
+      },
+      "diff2_k2_b0_m0_scratch_smag_rtke": {
+        "words": 648,
+        "moved": 323
+      },
+      "diff2_k2_b0_m0_scratch_smag_ru": {
+        "words": 702,
+        "moved": 301
+      },
+      "diff2_k2_b0_m0_scratch_smag_rv": {
+        "words": 720,
+        "moved": 273
+      },
+      "diff2_k2_b0_m0_scratch_smag_rw": {
+        "words": 756,
+        "moved": 376
+      },
+      "diff2_k2_b0_m0_scratch_smag_tke_tmp": {
+        "words": 648,
+        "moved": 376
+      },
+      "diff2_k2_b0_m0_thp": {
+        "words": 648,
+        "moved": 1
+      },
+      "diff2_k2_b0_m0_tke": {
+        "words": 648,
+        "moved": 43
+      },
+      "diff2_k2_b0_m0_u": {
+        "words": 702,
+        "moved": 199
+      },
+      "diff2_k2_b0_m0_v": {
+        "words": 720,
+        "moved": 151
+      },
+      "diff2_k2_b0_m0_w": {
+        "words": 756,
+        "moved": 288
+      },
+      "diff2_k2_b0_m1_alt": {
+        "words": 648,
+        "moved": 1
+      },
+      "diff2_k2_b0_m1_mup": {
+        "words": 108,
+        "moved": 36
+      },
+      "diff2_k2_b0_m1_p": {
+        "words": 648,
+        "moved": 9
+      },
+      "diff2_k2_b0_m1_php": {
+        "words": 756,
+        "moved": 243
+      },
+      "diff2_k2_b0_m1_qc": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b0_m1_qr": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b0_m1_qv": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b0_m1_scratch_smag_kh": {
+        "words": 648,
+        "moved": 8
+      },
+      "diff2_k2_b0_m1_scratch_smag_khv": {
+        "words": 648,
+        "moved": 243
+      },
+      "diff2_k2_b0_m1_scratch_smag_km": {
+        "words": 648,
+        "moved": 8
+      },
+      "diff2_k2_b0_m1_scratch_smag_kmv": {
+        "words": 648,
+        "moved": 216
+      },
+      "diff2_k2_b0_m1_scratch_smag_mut": {
+        "words": 108,
+        "moved": 0
+      },
+      "diff2_k2_b0_m1_scratch_smag_rqc": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b0_m1_scratch_smag_rqr": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b0_m1_scratch_smag_rqv": {
+        "words": 648,
+        "moved": 323
+      },
+      "diff2_k2_b0_m1_scratch_smag_rth": {
+        "words": 648,
+        "moved": 621
+      },
+      "diff2_k2_b0_m1_scratch_smag_rtke": {
+        "words": 648,
+        "moved": 346
+      },
+      "diff2_k2_b0_m1_scratch_smag_ru": {
+        "words": 702,
+        "moved": 295
+      },
+      "diff2_k2_b0_m1_scratch_smag_rv": {
+        "words": 720,
+        "moved": 271
+      },
+      "diff2_k2_b0_m1_scratch_smag_rw": {
+        "words": 756,
+        "moved": 344
+      },
+      "diff2_k2_b0_m1_scratch_smag_tke_tmp": {
+        "words": 648,
+        "moved": 436
+      },
+      "diff2_k2_b0_m1_thp": {
+        "words": 648,
+        "moved": 10
+      },
+      "diff2_k2_b0_m1_tke": {
+        "words": 648,
+        "moved": 34
+      },
+      "diff2_k2_b0_m1_u": {
+        "words": 702,
+        "moved": 181
+      },
+      "diff2_k2_b0_m1_v": {
+        "words": 720,
+        "moved": 177
+      },
+      "diff2_k2_b0_m1_w": {
+        "words": 756,
+        "moved": 289
+      },
+      "diff2_k2_b1_m0_alt": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m0_mup": {
+        "words": 108,
+        "moved": 12
+      },
+      "diff2_k2_b1_m0_p": {
+        "words": 648,
+        "moved": 1
+      },
+      "diff2_k2_b1_m0_php": {
+        "words": 756,
+        "moved": 110
+      },
+      "diff2_k2_b1_m0_scratch_smag_kh": {
+        "words": 648,
+        "moved": 7
+      },
+      "diff2_k2_b1_m0_scratch_smag_khv": {
+        "words": 648,
+        "moved": 164
+      },
+      "diff2_k2_b1_m0_scratch_smag_km": {
+        "words": 648,
+        "moved": 8
+      },
+      "diff2_k2_b1_m0_scratch_smag_kmv": {
+        "words": 648,
+        "moved": 142
+      },
+      "diff2_k2_b1_m0_scratch_smag_mut": {
+        "words": 108,
+        "moved": 0
+      },
+      "diff2_k2_b1_m0_scratch_smag_rth": {
+        "words": 648,
+        "moved": 410
+      },
+      "diff2_k2_b1_m0_scratch_smag_rtke": {
+        "words": 648,
+        "moved": 244
+      },
+      "diff2_k2_b1_m0_scratch_smag_ru": {
+        "words": 702,
+        "moved": 304
+      },
+      "diff2_k2_b1_m0_scratch_smag_rv": {
+        "words": 720,
+        "moved": 316
+      },
+      "diff2_k2_b1_m0_scratch_smag_rw": {
+        "words": 756,
+        "moved": 281
+      },
+      "diff2_k2_b1_m0_scratch_smag_tke_tmp": {
+        "words": 648,
+        "moved": 251
+      },
+      "diff2_k2_b1_m0_thp": {
+        "words": 648,
+        "moved": 1
+      },
+      "diff2_k2_b1_m0_tke": {
+        "words": 648,
+        "moved": 25
+      },
+      "diff2_k2_b1_m0_u": {
+        "words": 702,
+        "moved": 73
+      },
+      "diff2_k2_b1_m0_v": {
+        "words": 720,
+        "moved": 39
+      },
+      "diff2_k2_b1_m0_w": {
+        "words": 756,
+        "moved": 153
+      },
+      "diff2_k2_b1_m1_alt": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_mup": {
+        "words": 108,
+        "moved": 12
+      },
+      "diff2_k2_b1_m1_p": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_php": {
+        "words": 756,
+        "moved": 75
+      },
+      "diff2_k2_b1_m1_qc": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_qr": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_qv": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_scratch_smag_kh": {
+        "words": 648,
+        "moved": 8
+      },
+      "diff2_k2_b1_m1_scratch_smag_khv": {
+        "words": 648,
+        "moved": 157
+      },
+      "diff2_k2_b1_m1_scratch_smag_km": {
+        "words": 648,
+        "moved": 8
+      },
+      "diff2_k2_b1_m1_scratch_smag_kmv": {
+        "words": 648,
+        "moved": 143
+      },
+      "diff2_k2_b1_m1_scratch_smag_mut": {
+        "words": 108,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_scratch_smag_rqc": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_scratch_smag_rqr": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_scratch_smag_rqv": {
+        "words": 648,
+        "moved": 269
+      },
+      "diff2_k2_b1_m1_scratch_smag_rth": {
+        "words": 648,
+        "moved": 414
+      },
+      "diff2_k2_b1_m1_scratch_smag_rtke": {
+        "words": 648,
+        "moved": 248
+      },
+      "diff2_k2_b1_m1_scratch_smag_ru": {
+        "words": 702,
+        "moved": 313
+      },
+      "diff2_k2_b1_m1_scratch_smag_rv": {
+        "words": 720,
+        "moved": 313
+      },
+      "diff2_k2_b1_m1_scratch_smag_rw": {
+        "words": 756,
+        "moved": 277
+      },
+      "diff2_k2_b1_m1_scratch_smag_tke_tmp": {
+        "words": 648,
+        "moved": 271
+      },
+      "diff2_k2_b1_m1_thp": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k2_b1_m1_tke": {
+        "words": 648,
+        "moved": 26
+      },
+      "diff2_k2_b1_m1_u": {
+        "words": 702,
+        "moved": 60
+      },
+      "diff2_k2_b1_m1_v": {
+        "words": 720,
+        "moved": 44
+      },
+      "diff2_k2_b1_m1_w": {
+        "words": 756,
+        "moved": 139
+      },
+      "diff2_k4_b0_m0_alt": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m0_mup": {
+        "words": 108,
+        "moved": 42
+      },
+      "diff2_k4_b0_m0_p": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m0_php": {
+        "words": 756,
+        "moved": 205
+      },
+      "diff2_k4_b0_m0_scratch_smag_kh": {
+        "words": 648,
+        "moved": 251
+      },
+      "diff2_k4_b0_m0_scratch_smag_km": {
+        "words": 648,
+        "moved": 280
+      },
+      "diff2_k4_b0_m0_scratch_smag_rth": {
+        "words": 648,
+        "moved": 610
+      },
+      "diff2_k4_b0_m0_scratch_smag_ru": {
+        "words": 702,
+        "moved": 275
+      },
+      "diff2_k4_b0_m0_scratch_smag_rv": {
+        "words": 720,
+        "moved": 271
+      },
+      "diff2_k4_b0_m0_scratch_smag_rw": {
+        "words": 756,
+        "moved": 348
+      },
+      "diff2_k4_b0_m0_thp": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m0_u": {
+        "words": 702,
+        "moved": 151
+      },
+      "diff2_k4_b0_m0_v": {
+        "words": 720,
+        "moved": 103
+      },
+      "diff2_k4_b0_m0_w": {
+        "words": 756,
+        "moved": 273
+      },
+      "diff2_k4_b0_m1_alt": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m1_mup": {
+        "words": 108,
+        "moved": 37
+      },
+      "diff2_k4_b0_m1_p": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m1_php": {
+        "words": 756,
+        "moved": 248
+      },
+      "diff2_k4_b0_m1_qc": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m1_qr": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m1_qv": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m1_scratch_smag_kh": {
+        "words": 648,
+        "moved": 261
+      },
+      "diff2_k4_b0_m1_scratch_smag_km": {
+        "words": 648,
+        "moved": 286
+      },
+      "diff2_k4_b0_m1_scratch_smag_rqc": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m1_scratch_smag_rqr": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m1_scratch_smag_rqv": {
+        "words": 648,
+        "moved": 308
+      },
+      "diff2_k4_b0_m1_scratch_smag_rth": {
+        "words": 648,
+        "moved": 614
+      },
+      "diff2_k4_b0_m1_scratch_smag_ru": {
+        "words": 702,
+        "moved": 295
+      },
+      "diff2_k4_b0_m1_scratch_smag_rv": {
+        "words": 720,
+        "moved": 278
+      },
+      "diff2_k4_b0_m1_scratch_smag_rw": {
+        "words": 756,
+        "moved": 376
+      },
+      "diff2_k4_b0_m1_thp": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b0_m1_u": {
+        "words": 702,
+        "moved": 176
+      },
+      "diff2_k4_b0_m1_v": {
+        "words": 720,
+        "moved": 125
+      },
+      "diff2_k4_b0_m1_w": {
+        "words": 756,
+        "moved": 285
+      },
+      "diff2_k4_b1_m0_alt": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m0_mup": {
+        "words": 108,
+        "moved": 32
+      },
+      "diff2_k4_b1_m0_p": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m0_php": {
+        "words": 756,
+        "moved": 132
+      },
+      "diff2_k4_b1_m0_scratch_smag_kh": {
+        "words": 648,
+        "moved": 173
+      },
+      "diff2_k4_b1_m0_scratch_smag_km": {
+        "words": 648,
+        "moved": 191
+      },
+      "diff2_k4_b1_m0_scratch_smag_rth": {
+        "words": 648,
+        "moved": 418
+      },
+      "diff2_k4_b1_m0_scratch_smag_ru": {
+        "words": 702,
+        "moved": 283
+      },
+      "diff2_k4_b1_m0_scratch_smag_rv": {
+        "words": 720,
+        "moved": 252
+      },
+      "diff2_k4_b1_m0_scratch_smag_rw": {
+        "words": 756,
+        "moved": 276
+      },
+      "diff2_k4_b1_m0_thp": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m0_u": {
+        "words": 702,
+        "moved": 69
+      },
+      "diff2_k4_b1_m0_v": {
+        "words": 720,
+        "moved": 56
+      },
+      "diff2_k4_b1_m0_w": {
+        "words": 756,
+        "moved": 189
+      },
+      "diff2_k4_b1_m1_alt": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m1_mup": {
+        "words": 108,
+        "moved": 24
+      },
+      "diff2_k4_b1_m1_p": {
+        "words": 648,
+        "moved": 1
+      },
+      "diff2_k4_b1_m1_php": {
+        "words": 756,
+        "moved": 104
+      },
+      "diff2_k4_b1_m1_qc": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m1_qr": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m1_qv": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m1_scratch_smag_kh": {
+        "words": 648,
+        "moved": 147
+      },
+      "diff2_k4_b1_m1_scratch_smag_km": {
+        "words": 648,
+        "moved": 165
+      },
+      "diff2_k4_b1_m1_scratch_smag_rqc": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m1_scratch_smag_rqr": {
+        "words": 648,
+        "moved": 0
+      },
+      "diff2_k4_b1_m1_scratch_smag_rqv": {
+        "words": 648,
+        "moved": 292
+      },
+      "diff2_k4_b1_m1_scratch_smag_rth": {
+        "words": 648,
+        "moved": 410
+      },
+      "diff2_k4_b1_m1_scratch_smag_ru": {
+        "words": 702,
+        "moved": 284
+      },
+      "diff2_k4_b1_m1_scratch_smag_rv": {
+        "words": 720,
+        "moved": 284
+      },
+      "diff2_k4_b1_m1_scratch_smag_rw": {
+        "words": 756,
+        "moved": 268
+      },
+      "diff2_k4_b1_m1_thp": {
+        "words": 648,
+        "moved": 1
+      },
+      "diff2_k4_b1_m1_u": {
+        "words": 702,
+        "moved": 66
+      },
+      "diff2_k4_b1_m1_v": {
+        "words": 720,
+        "moved": 41
+      },
+      "diff2_k4_b1_m1_w": {
+        "words": 756,
+        "moved": 158
+      }
+    },
+    "legacy_fields": {
+      "k2_alt": {
+        "words": 648,
+        "moved": 0
+      },
+      "k2_mup": {
+        "words": 108,
+        "moved": 17
+      },
+      "k2_p": {
+        "words": 648,
+        "moved": 4
+      },
+      "k2_php": {
+        "words": 756,
+        "moved": 113
+      },
+      "k2_scratch_smag_kh": {
+        "words": 648,
+        "moved": 6
+      },
+      "k2_scratch_smag_khv": {
+        "words": 648,
+        "moved": 220
+      },
+      "k2_scratch_smag_km": {
+        "words": 648,
+        "moved": 7
+      },
+      "k2_scratch_smag_kmv": {
+        "words": 648,
+        "moved": 192
+      },
+      "k2_scratch_smag_mut": {
+        "words": 108,
+        "moved": 0
+      },
+      "k2_scratch_smag_rth": {
+        "words": 648,
+        "moved": 620
+      },
+      "k2_scratch_smag_rtke": {
+        "words": 648,
+        "moved": 343
+      },
+      "k2_scratch_smag_ru": {
+        "words": 702,
+        "moved": 262
+      },
+      "k2_scratch_smag_rv": {
+        "words": 720,
+        "moved": 247
+      },
+      "k2_scratch_smag_rw": {
+        "words": 756,
+        "moved": 219
+      },
+      "k2_scratch_smag_tke_tmp": {
+        "words": 648,
+        "moved": 378
+      },
+      "k2_thp": {
+        "words": 648,
+        "moved": 5
+      },
+      "k2_tke": {
+        "words": 648,
+        "moved": 33
+      },
+      "k2_u": {
+        "words": 702,
+        "moved": 81
+      },
+      "k2_v": {
+        "words": 720,
+        "moved": 77
+      },
+      "k2_w": {
+        "words": 756,
+        "moved": 111
+      },
+      "k4_alt": {
+        "words": 648,
+        "moved": 0
+      },
+      "k4_mup": {
+        "words": 108,
+        "moved": 18
+      },
+      "k4_p": {
+        "words": 648,
+        "moved": 0
+      },
+      "k4_php": {
+        "words": 756,
+        "moved": 118
+      },
+      "k4_scratch_smag_kh": {
+        "words": 648,
+        "moved": 247
+      },
+      "k4_scratch_smag_km": {
+        "words": 648,
+        "moved": 268
+      },
+      "k4_scratch_smag_rth": {
+        "words": 648,
+        "moved": 610
+      },
+      "k4_scratch_smag_ru": {
+        "words": 702,
+        "moved": 220
+      },
+      "k4_scratch_smag_rv": {
+        "words": 720,
+        "moved": 237
+      },
+      "k4_scratch_smag_rw": {
+        "words": 756,
+        "moved": 216
+      },
+      "k4_thp": {
+        "words": 648,
+        "moved": 0
+      },
+      "k4_u": {
+        "words": 702,
+        "moved": 90
+      },
+      "k4_v": {
+        "words": 720,
+        "moved": 64
+      },
+      "k4_w": {
+        "words": 756,
+        "moved": 137
+      }
+    }
+  }
+}

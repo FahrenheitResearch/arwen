@@ -223,7 +223,7 @@ def _probe_decade_index_double(value, first_exponent, table_size):
 #     going through ``thompson_aa_mul``/``thompson_aa_add``.
 #   * ``10.0**loga_`` is REAL(4)**REAL(4), which gfortran lowers to glibc's
 #     correctly-rounded powf.  ``np.float32(math.pow(...))`` is the same
-#     value, and so is the device's ``thompson_aa_powf_cr``.
+#     value, and so is the device's ``thompson_aa_powf``.
 #
 # VERIFIED, not assumed: this transcription was checked against a
 # ``gfortran -O2 -ffree-form -ffree-line-length-none`` program holding WRF's
@@ -1165,7 +1165,7 @@ extern "C" __global__ void snow_composite(
     const float a_ = thompson_field_a(tc0[i], 3.0f);
     const float b_ = thompson_field_b(tc0[i], 3.0f);
     smoc_plain[i] = a_ * powf(smob[i], b_);
-    smoc_cr[i]    = a_ * thompson_aa_powf_cr(smob[i], b_);
+    smoc_cr[i]    = a_ * thompson_aa_powf(smob[i], b_);
     ns_plain[i] = thompson_aa_snow_number(smob[i], smoc_plain[i]);
     ns_cr[i]    = thompson_aa_snow_number(smob[i], smoc_cr[i]);
 }
@@ -1185,7 +1185,7 @@ def test_snow_number_end_to_end_through_the_fits_is_the_cold_network_path():
     MEASURED on this grid, against the ``gfortran -O2`` reference, with the
     repaired fits in place:
         smoc  a_*powf(smob,b_)                367/391 exact, 1.491366e-07
-        smoc  a_*thompson_aa_powf_cr(smob,b_) 391/391 BIT-EXACT
+        smoc  a_*thompson_aa_powf(smob,b_) 391/391 BIT-EXACT
         ns    from the first                  371/391 exact, 4.933379e-07
         ns    from the second                 391/391 BIT-EXACT
 
@@ -1277,7 +1277,7 @@ def test_effect_rad_cloud_and_ice_match_the_real_calc_effect_rad():
     to glibc's correctly-rounded powf; CUDA's powf carries several ulp.  With
     thompson.cu's plain ``powf`` these sat at 373/378 and 374/378 exact over
     378 states each (worst 1.042121e-07 and 6.293743e-08); with
-    ``thompson_aa_powf_cr`` they are exact.
+    ``thompson_aa_powf`` they are exact.
 
     That improvement is small -- more than an order of magnitude under the
     2e-6 the end-to-end fixtures are gated at -- and it is NOT the cause of
@@ -1345,7 +1345,7 @@ def test_effect_rad_cloud_and_ice_diverge_from_mp8_by_one_ulp_on_purpose():
     ``tests/test_thompson_aerosol_state_gpu.py::
     test_effective_radius_is_bitwise_against_every_oracle_after_column``
     demands the opposite.  MEASURED BOTH WAYS on this GPU: with plain ``powf``
-    the oracle test fails; with ``thompson_aa_powf_cr`` it passes.  mp=28
+    the oracle test fails; with ``thompson_aa_powf`` it passes.  mp=28
     sides with WRF, per MP28_PORT_SPEC.md's finding that mp=8's pre-existing
     deviations must be RECORDED rather than propagated, and per the "THE
     SHARED FITS" note in the shared header.
@@ -1683,6 +1683,12 @@ _SHARED_HELPER_SIGNATURES = {
     # Promoted in wave 4 out of cold.cu:206-223 and warm.cu:272-289, which
     # held byte-identical copies.  See the promotion tests above.
     "thompson_aa_decade_index_double": r"int\s+{}\s*\(",
+    # Blossey's REAL re-enforcement of the rain-graupel and rain-snow pairs
+    # (:2945-2954), called by both networks.  The cold network's local form
+    # forced the rain rate negative and kept the double magnitude; the warm
+    # one kept the double magnitude: every rain-graupel level differed from
+    # WRF by up to half a float32 ulp of the rate.
+    "thompson_aa_reenforce_pair": r"void\s+{}\s*\(",
 }
 
 
@@ -1987,175 +1993,38 @@ def test_the_effective_radius_reimplementations_are_gone_and_stayed_gone():
                      "thompson_aa_eff_rad_snow"))
     assert block.count("thompson_aa_div(") >= 3, block
     assert block.count("thompson_aa_mul(") >= 6, block
-    assert block.count("thompson_aa_powf_cr(") == 3, block
+    assert block.count("thompson_aa_powf(") == 3, block
     assert " powf(" not in block, "a plain CUDA powf is back in eff_rad"
     # thompson_aa_cloud_dist is the fourth REAL(4)** site the same argument
     # covers, and it is bit-exact against WRF only with both properties.
     dist = _lift_device_function(_HEADER, "thompson_aa_cloud_dist")
-    assert "thompson_aa_powf_cr(" in dist and " powf(" not in dist
+    assert "thompson_aa_powf(" in dist and " powf(" not in dist
     assert dist.count("thompson_aa_mul(") >= 5, dist
     assert header.count("__device__ __forceinline__ float "
                         "thompson_aa_cloud_dist(") == 1
 
 
-#: PLAIN ``powf(`` calls in the measured WRF v4.6.1 arms.
-#: Every one of them was MEASURED, and every one of them is inert; the counts
-#: are pinned so a NEW plain ``powf`` cannot arrive un-measured.
-#: Fork-only powers are excluded from this classic inventory. Their separate
-#: source-bound Fortran/CUDA receipt below records 17,893 ice operands,
-#: including 4,018 saved real-column operands, and zero complete output
-#: changes under plain-to-CR power substitution.
-_PLAIN_POWF_INVENTORY = {
-    "thompson_aerosol_common.cuh": 6,
-    "thompson_aerosol_cold.cu": 17,
-    "thompson_aerosol_warm.cu": 9,
-    "thompson_aerosol_state.cu": 0,
-}
+def test_no_plain_powf_survives_in_any_mp28_arm():
+    """Every REAL(4) ``**`` in the mp=28 units is WOOF's own powf word.
 
-
-def _classic_powf_source(name, text):
-    from test_thompson_wrf39 import _strip_fork_arms
-
-    if name.endswith(".cuh"):
-        text = text.split("// THE OPERATIONAL WRF 3.9 FORK'S VARIANTS", 1)[0]
-    return _strip_fork_arms(text)
-
-
-def test_every_surviving_plain_powf_was_measured_and_is_inert():
-    """WRF's ``**`` on REAL(4) lowers to glibc's correctly-rounded ``powf``;
-    CUDA's carries several ulp.  ``thompson_aa_powf_cr`` is the faithful
-    lowering, and it is used wherever it MEASURED a difference.  It is not
-    used everywhere, and this test is why that is a decision rather than an
-    oversight.
-
-    MEASURED for the original wrf_461 paths, three ways:
-
-    * Recompiling ``thompson_aerosol_cold`` AND ``thompson_aerosol_warm`` with
-      EVERY remaining plain ``powf`` rewritten to ``thompson_aa_powf_cr`` and
-      re-running the whole end-to-end oracle gate moves ZERO of 22 fixtures x
-      23 compared quantities.  Not one number changes.
-    * The same substitution on ``thompson_aerosol_warm`` alone leaves all 18
-      fields of the frozen-collection Fortran probe identical -- 17 of which
-      are already BIT-EXACT against WRF, the 18th (``twet``) at 1.1003e-07
-      either way.
-    * Rewriting the two ``powf`` calls inside the shared terminal size bounds
-      ``thompson_aa_bound_rain_number`` / ``_bound_ice_number`` likewise moves
-      zero of the same 506 quantities.
-
-    So they stay as they are.  Four of the six original header calls are the
-    ``powf(10.0f, exponent)`` inside ``thompson_aa_decade_index``/``_double``,
-    which are a VERBATIM promotion of ``thompson.cu``:3084-3105 and are gated
-    bitwise against that copy by
-    ``test_promoted_decade_index_double_is_bitwise_identical_to_the_
-    local_copies``;
-    the other two are the terminal size bounds, which mp=8 and mp=28 share by
-    construction (see the header note above them).  Changing either would
-    create a NEW mp=8/mp=28 split for no measured gain, which is the opposite
-    of the tie-break MP28_PORT_SPEC.md sets out.
-
-    WHERE ``thompson_aa_powf_cr`` DID EARN ITS PLACE, all Fortran-gated:
-    ``thompson_aa_cloud_dist`` (791/975 -> 975/975 bit-exact), the five snow
-    moments in ``cold.cu`` and ``warm.cu`` (smoc 3489/3721 -> 3717/3721),
-    ``thompson_aa_snow_number``'s two powers, all three ``calc_effectRad``
-    branches, and ``activ_ncloud``/``iceKoop``/``Eff_aero``.
+    This replaces the plain-powf inventory that used to stand here.  That
+    inventory pinned the CUDA ``powf`` calls the classic and fork arms kept
+    because each had been measured inert against its Fortran oracle on the
+    fixtures then available (the fork's two sites carried the receipt
+    tests/data/thompson_fork_plain_powf_receipt.json).  The 0 ULP column
+    oracle (tools/thompson_aerosol_column_oracle) then showed that CUDA's
+    words, and the double-evaluated "_cr" helpers, are not the words WRF's
+    gfortran build calls, so every site now calls WOOF's own words
+    (gpuwm/core/kernels/thompson_aerosol_libm.cuh), which equal the oracle
+    host's C library (tests/test_thompson_aerosol_libm.py).  With no plain
+    powf left there is nothing for the inventory or the receipt to account
+    for: the guard retires with the defect it accepted.
     """
     pattern = re.compile(r"(?<![_A-Za-z0-9])powf\(")
-    counted = {}
-    for name in _PLAIN_POWF_INVENTORY:
-        path = _HEADER if name.endswith(".cuh") else _KERNELS / name
-        counted[name] = len(pattern.findall(_classic_powf_source(
-            name, path.read_text(encoding="utf-8"))))
-    assert counted == _PLAIN_POWF_INVENTORY, (
-        "the classic-arm plain-powf inventory changed. Every classic plain "
-        "powf must be measured against its Fortran oracle before "
-        "it lands; update the counts only with the measurement.\n"
-        f"got {counted}\nwant {_PLAIN_POWF_INVENTORY}")
-    # The original six sites are the two decade functions (two calls each)
-    # and the two terminal bounds. The seventh is the fork ice bound below.
-    header = _HEADER.read_text(encoding="utf-8")
-    # b0556bd76, lane/286-fork-thompson: retain both deliberate fork powf
-    # additions only with the source-bound numerical receipt, never a recount.
-    import hashlib
-    import json
-
-    receipt_path = (Path(__file__).parent / "data"
-                    / "thompson_fork_plain_powf_receipt.json")
-    assert hashlib.sha256(receipt_path.read_bytes()).hexdigest() == (
-        "e9a8ee7538da5d19dd7719e2da7fcf51bd1a19caa5f72831323d4eec789e6cd3")
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    assert receipt["owner_commit"] == "b0556bd76b1f1276e7d52ece6d96242bf3f90f48"
-    assert receipt["owner_lane"] == "lane/286-fork-thompson"
-    fork_start = header.index("__device__ __forceinline__ void "
-                              "thompson_aa_wrf39_bound_ice_number(")
-    fork_helper = header[fork_start:header.index("\n}\n", fork_start) + 3]
-    assert hashlib.sha256(fork_helper.encode()).hexdigest() == receipt["helper_sha256"]
-    cold = (_KERNELS / "thompson_aerosol_cold.cu").read_text(encoding="utf-8")
-    coefficient = re.search(
-        r"const float t2_qg_sd = 0\.28f \* powf\(0\.632f, 0\.33333334326744080f\)"
-        r"\s*\* sqrtf\(442\.0f\) \* 1\.9021706581115723f;", cold)
-    assert coefficient is not None
-    assert hashlib.sha256(coefficient[0].encode()).hexdigest() == receipt["coefficient_statement_sha256"]
-    probe_tool = (Path(__file__).parents[1] / "tools" / "thompson_fork_oracle"
-                  / "plain_powf_probe.py")
-    assert hashlib.sha256(probe_tool.read_bytes()).hexdigest() == receipt["probe_tool_sha256"]
-    ice = receipt["ice"]
-    assert ice["rows"] == 17893
-    assert ice["saved_real_columns"]["added_rows"] == 4018
-    assert ice["base_differences_vs_fortran"] == 0
-    assert ice["plain_branch_differences_vs_fortran"] == 0
-    assert ice["cr_branch_differences_vs_fortran"] == 0
-    assert ice["complete_helper_output_changes_under_cr"] == 0
-    assert ice["output_plain_sha256"] == ice["output_cr_sha256"]
-    scalar = receipt["sublimation_coefficient"]
-    assert scalar["complete_coefficient_changes_under_cr"] == 0
-    assert scalar["plain_coefficient_differences_vs_fortran"] == 0
-    assert scalar["cr_coefficient_differences_vs_fortran"] == 0
-    # The CPU entry point invokes this guard despite the module's GPU marker.
-    # Its receipt checks must also account for exactly the two fork-only sites.
-    test_fork_plain_powf_sites_have_their_own_explicit_source_inventory()
-
-    def body_of(name):
-        for kind in ("float", "int", "void", "bool", "double"):
-            marker = f"__device__ __forceinline__ {kind} {name}("
-            if marker in header:
-                start = header.index(marker)
-                return header[start:header.index("\n}\n", start) + 3]
-        return None
-
-    for name in ("thompson_aa_decade_index", "thompson_aa_decade_index_double",
-                 "thompson_aa_bound_rain_number",
-                 "thompson_aa_bound_ice_number"):
-        body = body_of(name)
-        assert body is not None and pattern.search(body), name
-    for name in ("thompson_aa_cloud_dist", "thompson_aa_snow_number",
-                 "thompson_aa_eff_rad_cloud", "thompson_aa_eff_rad_ice",
-                 "thompson_aa_eff_rad_snow",
-                 "thompson_aa_entry_rain_distribution"):
-        body = body_of(name)
-        assert body is not None, name
-        assert not pattern.search(body), (
-            f"{name} must use thompson_aa_powf_cr; a plain powf is back")
-
-
-def test_fork_plain_powf_sites_have_their_own_explicit_source_inventory():
-    """Fork operators have their own authority and cannot inherit inertness."""
-    pattern = re.compile(r"(?<![_A-Za-z0-9])powf\(")
-    header = _HEADER.read_text(encoding="utf-8")
-    cold = (_KERNELS / "thompson_aerosol_cold.cu").read_text(encoding="utf-8")
-    # Each raw-source increment is accounted for by one specific fork site.
-    assert len(pattern.findall(header)) == _PLAIN_POWF_INVENTORY[_HEADER.name] + 1
-    assert len(pattern.findall(cold)) == _PLAIN_POWF_INVENTORY["thompson_aerosol_cold.cu"] + 1
-    marker = "__device__ __forceinline__ void thompson_aa_wrf39_bound_ice_number("
-    start = header.index(marker)
-    helper = header[start:header.index("\n}\n", start) + 3]
-    assert len(pattern.findall(helper)) == 1
-    assert "am_i * 6.0f * ice_number / ice_mass, 0.33333334326744080f" in helper
-    assert "THOMPSON_AA_WRF39_NI_MAX" in helper
-    constant = "powf(0.632f, 0.33333334326744080f)"
-    assert cold.count(constant) == 1
-    assert constant not in _classic_powf_source("thompson_aerosol_cold.cu", cold)
-    assert "thompson_aa_wrf39_bound_ice_number" not in _classic_powf_source(
-        "thompson_aerosol_cold.cu", cold)
+    for path in sorted(_KERNELS.glob("thompson_aerosol_*.cu")) + [_HEADER]:
+        code = "\n".join(line.split("//", 1)[0] for line in
+                         path.read_text(encoding="utf-8").splitlines())
+        assert not pattern.search(code), path.name
 
 
 def test_nt_c_is_not_reachable_from_device_code():
@@ -2186,6 +2055,13 @@ def _host_entry_rain_distribution(qr_per_kg, nr_per_kg, rho):
     """module_mp_thompson.F:1878-1898 then :2146-2150, in the SAME arithmetic
     the device helper pins: every product/quotient separately rounded in
     float32, every power evaluated in double and rounded once.
+
+    Two forms here are WRF's since lane/mp28fix-warm-network, where this
+    reference used to carry the helper's old ones: (3.0 + mu_r + 0.672) is
+    the REAL sum, widened, over the DOUBLE lamr (not the DOUBLE literal
+    3.672), and crg(2)*org3*rr*lamr**bm_r/am_r is ((REAL prefix) times the
+    DOUBLE pow(lamr, 3.0)) over am_r, since gfortran folds no real exponent
+    but 2, 1 and -1 (not ((prefix/am_r) times a product chain)).
     """
     f32 = np.float32
     am_r = f32(5.235988159e+02)
@@ -2197,8 +2073,10 @@ def _host_entry_rain_distribution(qr_per_kg, nr_per_kg, rho):
     def power(base, exponent):
         return f32(math.pow(float(base), float(exponent)))
 
+    mvd_num = float(f32(f32(f32(3.0) + f32(0.0)) + f32(0.672)))
+
     def rebuild(rr, lam):
-        return f32(float(f32(f32(sixth * rr) / am_r)) * lam * lam * lam)
+        return f32(float(f32(sixth * rr)) * math.pow(lam, 3.0) / float(am_r))
 
     if f32(qr_per_kg) > r1:
         active = True
@@ -2207,7 +2085,7 @@ def _host_entry_rain_distribution(qr_per_kg, nr_per_kg, rho):
         if nr <= r2:
             nr = rebuild(rr, float(f32(f32(3.672) / f32(1.0e-3))))
         lamr = float(power(f32(f32(f32(am_r * f32(6.0)) * nr) / rr), obmr))
-        mvd = f32(3.672 / lamr)
+        mvd = f32(mvd_num / lamr)
         if mvd > f32(2.5e-3):
             mvd = f32(2.5e-3)
             lamr = float(f32(f32(3.672) / mvd))
@@ -2221,7 +2099,7 @@ def _host_entry_rain_distribution(qr_per_kg, nr_per_kg, rho):
         rr, nr = r1, r2
 
     lamr = float(power(f32(f32(f32(am_r * f32(6.0)) * nr) / rr), obmr))
-    return active, nr, lamr, f32(3.672 / lamr), float(nr) * lamr
+    return active, nr, lamr, f32(mvd_num / lamr), float(nr) * lamr
 
 
 #: qr [kg kg^-1], nr [kg^-1], rho.  Chosen so every branch of :1878-1898 runs:
@@ -2244,7 +2122,7 @@ _ENTRY_RAIN_CASES = (
 
 def test_entry_rain_distribution_is_bit_exact_against_the_pinned_reference():
     """MEASURED: bit-exact on every case.  That is only reachable because the
-    helper is contraction-pinned and uses thompson_aa_powf_cr; the plain-powf
+    helper is contraction-pinned and uses thompson_aa_powf; the plain-powf
     form cold.cu used to carry sits ~2.7e-7 away."""
     import cupy as cp
 

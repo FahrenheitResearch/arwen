@@ -87,5 +87,6 @@ def test_single_output_uses_current_store_without_reading_stale_device_fields(mo
         live["RAINNC"] += np.float32(1.0)
     assert [float(frame["T"].item()) for _, frame in observed] == [3.0, 13.0]
     assert [float(frame["RAINNC"].item()) for _, frame in observed] == [2.0, 3.0]
-    assert [float(frame["REFL_10CM"].item()) for _, frame in observed] == [15.0, 15.0]
+    assert [float(frame["REFL_10CM"].item()) for _, frame in observed] == (
+        [15.0, 15.0] if expect_refl else [0.0, 15.0])
     assert observed[0][0] != observed[1][0]

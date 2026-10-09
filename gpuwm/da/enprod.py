@@ -118,6 +118,16 @@ MANIFEST_SCHEMA = "gpuwm-ensemble-manifest.v1"
 #: The manifest's filename inside the ensemble root.
 MANIFEST_FILENAME = "ensemble-manifest.json"
 
+#: The schema ``gpuwm go --members`` writes, one manifest per domain at
+#: ``<run>/<domain>/ensemble-manifest.json``
+#: (:attr:`gpuwm.ensemble.batch_product_output.NativeDiagnosticSpool.CONTRACT`).
+#: It carries no per-member status: its roster is ``member_order`` and the
+#: members' retained histories are ``member_files``, paths relative to the
+#: run folder, present only under ``--keep-member-files``.  2.8.7 and the
+#: 2.8.8 candidate wrote it and this module read only v1, so enprod on such
+#: a run printed a schema warning and then the engine's usage line.
+V2_MANIFEST_SCHEMA = "gpuwm-ensemble-output.v2"
+
 #: Top-level keys inspected for the schema string.
 _SCHEMA_KEYS = ("schema", "schema_version", "format", "kind")
 
@@ -1058,18 +1068,69 @@ def _member_number(record: dict) -> int | None:
     return None
 
 
-def load_manifest(root, *, accept_status=DEFAULT_ACCEPT_STATUS
-                  ) -> EnsembleManifest:
-    """Read and VALIDATE ``ensemble-manifest.json`` under ``root``.
+def manifest_path(root, domain: str | None = None) -> Path:
+    """The ensemble manifest ``root`` names, wherever its writer put it.
+
+    ``root/ensemble-manifest.json`` (v1, and a v2 domain folder named
+    directly), else the one v2 domain manifest under a ``gpuwm go
+    --members`` run folder (``root/<domain>/ensemble-manifest.json``, the
+    folder go prints as "products under ...").  Several domains are
+    refused unless ``domain`` picks one, naming them, because reducing one
+    of them silently would answer for a nest nobody asked about.  When
+    nothing is found the v1 path is returned, which the caller refuses.
+
+    A manifest one folder down is a domain only when it declares
+    :data:`V2_MANIFEST_SCHEMA`.  A v1 manifest there is another ensemble
+    root (a DA cycle's ``cycle_NNN/``, written by
+    :mod:`gpuwm.ensemble.cycle`) whose ``member_dir`` entries are
+    relative to ITS folder: read from here it would resolve its members
+    against the outer folder, and two cycles would be offered as two
+    domains with ``--domain`` then filtering wrfout names by a cycle
+    folder.  Such a root is named directly, as before.
+    """
+
+    root = Path(root)
+    direct = root / MANIFEST_FILENAME
+    if direct.is_file():
+        return direct
+    found = sorted(path for path in root.glob(f"*/{MANIFEST_FILENAME}")
+                   if path.is_file()
+                   and _manifest_schema(path) == V2_MANIFEST_SCHEMA)
+    if domain is not None:
+        chosen = root / domain / MANIFEST_FILENAME
+        if chosen in found:
+            return chosen
+        if found:
+            raise EnsembleRefusal(
+                f"--domain {domain}: {root} holds ensemble manifests for "
+                f"{', '.join(path.parent.name for path in found)} only")
+        return direct
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        raise EnsembleRefusal(
+            f"{root} holds one ensemble manifest per domain "
+            f"({', '.join(path.parent.name for path in found)}); name the "
+            "one to reduce with --domain, since an ensemble product of "
+            "mixed nests is a picture of nothing")
+    return direct
+
+
+def load_manifest(root, *, accept_status=DEFAULT_ACCEPT_STATUS,
+                  domain: str | None = None) -> EnsembleManifest:
+    """Read and VALIDATE the ensemble manifest under ``root``.
 
     Every failure is an :class:`EnsembleRefusal` naming what is wrong and
     which member it is wrong for.  All member problems are collected and
     reported together: an operator fixing a 30-member ensemble should
-    learn about all six broken members in one run, not in six.
+    learn about all six broken members in one run, not in six.  Both
+    schemas are read: ``gpuwm-ensemble-manifest.v1`` and the
+    ``gpuwm-ensemble-output.v2`` that ``gpuwm go --members`` writes
+    (:func:`_load_v2_manifest`).
     """
 
     root = Path(root)
-    path = root / MANIFEST_FILENAME
+    path = manifest_path(root, domain)
     if not path.is_file():
         raise EnsembleRefusal(
             f"no ensemble manifest at {path}.  gpuwm enprod reads the "
@@ -1089,6 +1150,8 @@ def load_manifest(root, *, accept_status=DEFAULT_ACCEPT_STATUS
             f"{type(document).__name__}")
 
     schema = _schema_of(document)
+    if schema == V2_MANIFEST_SCHEMA:
+        return _load_v2_manifest(path, document)
     if schema is None:
         warn(f"{path.name} declares no schema string; reading it as "
              f"{MANIFEST_SCHEMA} (every field used is still validated)",
@@ -1218,6 +1281,130 @@ def load_manifest(root, *, accept_status=DEFAULT_ACCEPT_STATUS
         root=root, schema=schema, n_members=len(members),
         members=tuple(sorted(members, key=lambda m: m.number)),
         status=document_status if isinstance(document_status, str) else None)
+
+
+def _load_v2_manifest(path: Path, document: dict) -> EnsembleManifest:
+    """The roster of a ``gpuwm-ensemble-output.v2`` domain manifest.
+
+    The members are ``member_order``; each one's histories are the
+    ``member_files`` rows for this domain, relative to the run folder (the
+    manifest's grandparent), and each must exist at its recorded size.  A
+    run that kept no histories (``keep_member_files`` false, the default)
+    is refused naming where its own aggregate maps are and the flag that
+    keeps the histories: there is nothing here to reduce, and a member
+    missing its files would be a smaller ensemble than the one the run
+    describes.  The writer records no member status; a member is in the
+    roster because the run listed it, and its files are what admit it.
+    """
+
+    domain_dir = path.parent
+    run_root = domain_dir.parent
+    domain = domain_dir.name
+    order = document.get("member_order")
+    if (not isinstance(order, list) or not order
+            or any(isinstance(m, bool) or not isinstance(m, int)
+                   for m in order)
+            or len(set(order)) != len(order)):
+        raise EnsembleRefusal(
+            f"{path}: 'member_order' must list each member id once, got "
+            f"{order!r}")
+    files = document.get("member_files")
+    if not document.get("keep_member_files") or not files:
+        maps = run_root / "maps" / domain
+        raise EnsembleRefusal(
+            f"{path}: this {len(order)}-member ensemble kept no member "
+            f"histories (schema {V2_MANIFEST_SCHEMA}, keep_member_files "
+            f"{bool(document.get('keep_member_files'))}), so there is "
+            "nothing for enprod to reduce.  The run drew its own mean, "
+            f"spread, probability and paintball maps under {maps}.  To "
+            "reduce the members here, run the ensemble again with gpuwm "
+            "go --members N --keep-member-files")
+    if not isinstance(files, list):
+        raise EnsembleRefusal(
+            f"{path}: 'member_files' must be a list of file records")
+    by_member: dict[int, list[Path]] = {member: [] for member in order}
+    problems: list[str] = []
+    for index, record in enumerate(files):
+        if not isinstance(record, dict):
+            problems.append(f"member_files[{index}]: not an object")
+            continue
+        if record.get("domain", domain) != domain:
+            continue
+        member = record.get("member_id")
+        relative = record.get("path")
+        if member not in by_member or not isinstance(relative, str):
+            problems.append(
+                f"member_files[{index}]: member {member!r} is not in "
+                f"member_order {order} or has no path")
+            continue
+        file_path = run_root / relative
+        if not file_path.is_file():
+            problems.append(
+                f"member {member}: its history {file_path} is missing")
+            continue
+        recorded = record.get("bytes")
+        if isinstance(recorded, int) and not isinstance(recorded, bool) \
+                and file_path.stat().st_size != recorded:
+            problems.append(
+                f"member {member}: {file_path} holds "
+                f"{file_path.stat().st_size} bytes where the run recorded "
+                f"{recorded}")
+            continue
+        by_member[member].append(file_path)
+    counts = {member: len(paths) for member, paths in by_member.items()}
+    for member, count in counts.items():
+        if count == 0:
+            problems.append(f"member {member}: no {domain} history recorded")
+    expected = max(counts.values())
+    short = sorted(member for member, count in counts.items()
+                   if 0 < count < expected)
+    if short:
+        problems.append(
+            f"member(s) {', '.join(str(m) for m in short)} recorded fewer "
+            f"{domain} histories than the others ({expected}), so the "
+            "ensemble does not hold every member at every time")
+    members = []
+    for member, paths in sorted(by_member.items()):
+        directories = sorted({file_path.parent for file_path in paths})
+        if len(directories) > 1:
+            problems.append(
+                f"member {member}: its histories span {len(directories)} "
+                "directories, and a member is read from one")
+            continue
+        if directories:
+            members.append(EnsembleMember(
+                number=member, directory=directories[0], status="DONE",
+                declared_wrfout_count=len(paths)))
+    if problems:
+        raise EnsembleRefusal(
+            f"{path}: {len(problems)} problem(s), so this is not the "
+            f"{len(order)}-member ensemble the run describes:\n  "
+            + "\n  ".join(problems))
+    return EnsembleManifest(
+        root=run_root, schema=V2_MANIFEST_SCHEMA, n_members=len(members),
+        members=tuple(members), status=None)
+
+
+def engine_roster(manifest: EnsembleManifest, store_root: Path) -> Path:
+    """A v1 roster of ``manifest`` for ``rw_ensbatch``, in ``store_root``.
+
+    The engine reads ``gpuwm-ensemble-manifest.v1`` (``member`` and
+    ``member_dir`` per record); a v2 roster resolved above is handed to it
+    in that shape, every member directory absolute and every status the
+    engine's default ``DONE``, so the engine reduces exactly the members
+    this module validated.
+    """
+
+    target = Path(store_root) / "roster" / MANIFEST_FILENAME
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({
+        "schema": MANIFEST_SCHEMA,
+        "n_members": manifest.n_members,
+        "members": [{"member": member.number, "status": "DONE",
+                     "member_dir": str(Path(member.directory).resolve())}
+                    for member in manifest.members],
+    }, indent=2) + "\n", encoding="utf-8")
+    return target
 
 
 # ---------------------------------------------------------------------------
@@ -1907,7 +2094,7 @@ def run_suite(root, *, fields, products, thresholds, radii, domain,
     wrf = _import_wrf()
     plt = _pyplot()
     outdir = Path(outdir)
-    manifest = load_manifest(root, accept_status=accept_status)
+    manifest = load_manifest(root, accept_status=accept_status, domain=domain)
     indexed, stamps = index_ensemble(manifest, wrf=wrf, domain=domain)
     # Before ANY panel is drawn: a widened roster is checked against the
     # manifest's own inventory, not merely accepted as a status string.
@@ -2428,7 +2615,8 @@ def enprod_main(args: argparse.Namespace) -> int:
     # refuses it with its own sentence a moment later.
     if args.ens_root is not None:
         try:
-            roster = load_manifest(args.ens_root, accept_status=accept_status)
+            roster = load_manifest(args.ens_root, accept_status=accept_status,
+                                   domain=args.domain)
         except EnsembleRefusal:
             roster = None
         if roster is not None:
@@ -2602,7 +2790,11 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
     from gpuwm import render, render_layout, rustwx_lanes
 
     engine_path = rustwx_lanes.find_ensemble_bin()
-    manifest = Path(ens_root) / MANIFEST_FILENAME
+    try:
+        manifest = manifest_path(ens_root, domain)
+    except EnsembleRefusal as exc:
+        print(f"enprod: {exc}", file=sys.stderr)
+        return 2
     if not manifest.is_file():
         print(f"enprod: no ensemble manifest at {manifest}", file=sys.stderr)
         return 2
@@ -2613,10 +2805,17 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
     families: dict[str, str] = {}
     frames = None if timeidx is None else int(timeidx)
     try:
-        roster = load_manifest(ens_root, accept_status=accept_status)
+        roster = load_manifest(ens_root, accept_status=accept_status,
+                               domain=domain)
         domain_token_value, valid_day = _rust_delivery_facts(
             roster, domain=domain, frames=frames)
-    except EnsembleRefusal:
+    except EnsembleRefusal as exc:
+        roster = None
+        if _manifest_schema(manifest) == V2_MANIFEST_SCHEMA:
+            # The engine reads v1 only, so for a v2 run this module's
+            # refusal is the only one there is.
+            print(f"enprod: {exc}", file=sys.stderr)
+            return 2
         # The engine reads the same manifest and refuses the same roster
         # with its own sentence; this read is only for the delivered
         # path, so it must not become a second refusal.
@@ -2635,6 +2834,8 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
         # and the vendored crate stays byte-identical either way.
         engine_out = store_root / "png"
         engine_out.mkdir(parents=True, exist_ok=True)
+        if roster is not None and roster.schema == V2_MANIFEST_SCHEMA:
+            manifest = engine_roster(roster, store_root)
         for name in fields:
             # The ENGINE's own row when it could be asked: a threshold
             # and a unit slug kept in two places meant one panel's
@@ -2710,6 +2911,16 @@ def run_suite_rust(ens_root, *, fields, products, thresholds, radii,
     return 0
 
 
+def _manifest_schema(path: Path) -> str | None:
+    """The schema string a manifest file declares, or ``None``."""
+
+    try:
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return _schema_of(document) if isinstance(document, dict) else None
+
+
 def _rendered_pairs(report: dict, paths) -> list[tuple[str, object]]:
     """``(product, path)`` for each RENDERED event, in engine order."""
 
@@ -2764,7 +2975,9 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "ens_root", type=Path, nargs="?", metavar="ENS_ROOT",
         help=f"ensemble root holding member_NNN/ run directories and "
-             f"{MANIFEST_FILENAME} (schema {MANIFEST_SCHEMA})")
+             f"{MANIFEST_FILENAME} (schema {MANIFEST_SCHEMA}), or the run "
+             f"folder of gpuwm go --members --keep-member-files (schema "
+             f"{V2_MANIFEST_SCHEMA}, one manifest per domain)")
     parser.add_argument(
         "--field", default="refl", metavar="LIST",
         help=f"comma-separated product fields: {', '.join(FIELDS)}, or "
@@ -2847,7 +3060,8 @@ def register_cli(subparsers) -> None:
 
 __all__ = [
     "DEFAULT_ACCEPT_STATUS", "DEFAULT_NAN_POLICY", "DEFAULT_PMM_TIE_RULE",
-    "EXPERIMENTAL_STAMP", "FIELDS", "MANIFEST_FILENAME", "MANIFEST_SCHEMA",
+    "EXPERIMENTAL_STAMP", "FIELDS", "MANIFEST_FILENAME", "MANIFEST_SCHEMA",  # noqa: F822 -- module __getattr__
+    "V2_MANIFEST_SCHEMA", "engine_roster", "manifest_path",
     "experimental_stamp",
     "NAN_POLICIES", "PAINTBALL_PALETTE", "PMM_TIE_RULES", "PRODUCTS",
     "EnsembleManifest", "EnsembleMember", "EnsembleRefusal", "FieldSpec",

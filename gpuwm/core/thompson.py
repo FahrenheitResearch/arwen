@@ -1271,9 +1271,9 @@ def launch_rain_graupel_collection(
 
     ``tables`` is the ordered five-table ``qr_acr_qg_V4`` asset set from a
     validated classic Thompson bundle.  Every table is canonical FP64
-    Fortran order with shape ``(37, 37, 1, 37, 37)``.  The CUDA slice pins
-    WRF-v4.6.1 classic mp=8's observed legacy density-index alias without
-    performing an unsafe out-of-bounds read.
+    Fortran order with shape ``(37, 37, 1, 37, 37)``.  The CUDA slice reads
+    the one graupel-density slab the tables hold (thompson_racg_index), not
+    WRF v4.6.1's out-of-bounds idx_bg1=5 subscript: a declared divergence.
     """
     _, size = _validate_fields({
         "qr": qr,
@@ -2172,7 +2172,8 @@ def launch_adapter_finish(
 
     ``th = temperature / pii``; with ``cfg.no_mp_heating == 0`` the
     increment over the theta ``h_diabatic`` holds is clamped to
-    ``+/- DTYPE(cfg.mp_tend_lim * dt)``, added to ``thp`` and kept as
+    ``+/- DTYPE(cfg.mp_tend_lim) * DTYPE(dt)``, the REAL product WRF forms
+    (module_big_step_utilities_em.F:5706-5707), added to ``thp`` and kept as
     ``h_diabatic = increment / dt`` (gpuwm.core.microphysics.
     moist_physics_finish), else ``h_diabatic = 0``; then
     ``sr = where(rainncv > 1e-12, minimum(1, (snowncv + graupelncv) /
@@ -2189,7 +2190,11 @@ def launch_adapter_finish(
     get_kernel("thompson", "thompson_adapter_finish")(
         _element_grid(size), (_ELEMENT_TPB,),
         (temperature, pii, th, thp, h_diabatic, rainncv, snowncv,
-         graupelncv, sr, DTYPE(cfg.mp_tend_lim * dt), DTYPE(dt),
+         # WRF multiplies the REAL mp_tend_lim by the REAL dt.  Rounding
+         # the double product instead moves a clamped increment by one
+         # float32 unit (0.001 K/s at dt = 20 s: 0x3ca3d70a, not WRF's
+         # 0x3ca3d70b), and with it thp and h_diabatic.
+         graupelncv, sr, DTYPE(DTYPE(cfg.mp_tend_lim) * DTYPE(dt)), DTYPE(dt),
          np.int32(cfg.no_mp_heating != 0), np.int32(size),
          np.int32(ny * nx)))
 

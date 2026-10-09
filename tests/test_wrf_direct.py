@@ -1117,8 +1117,9 @@ def test_canonical_surface_bypasses_source_specific_soil_nodes():
         "ALBEDO12M": np.full((12, 2, 2), 20.0),
         "LAI12M": np.full((12, 2, 2), 2.0),
         "SNOALB": np.full((2, 2), 60.0),
+        "LANDMASK": np.ones((2, 2)),
     }
-    actual = _surface_fields(Cache(), static, 3)
+    actual = _surface_fields(Cache(), static, datetime(2024, 4, 15))
     np.testing.assert_array_equal(actual["TSLB"], values["TSLB"])
     np.testing.assert_array_equal(actual["SH2O"], values["SH2O"])
     np.testing.assert_allclose(actual["VEGFRA"], 50.0)
@@ -1169,13 +1170,13 @@ def test_frozen_soil_refusal_is_typed_export_representability():
     """
     cache, static = _frozen_soil_case(272.0)
     with pytest.raises(StockWrfExportUnsupported, match="frozen-soil SH2O"):
-        _surface_fields(cache, static, 3)
+        _surface_fields(cache, static, datetime(2024, 4, 15))
 
 
 def test_a_warm_column_still_exports_so_the_refusal_is_not_free():
     """Negative control: the same case above freezing writes SH2O."""
     cache, static = _frozen_soil_case(285.0)
-    fields = _surface_fields(cache, static, 3)
+    fields = _surface_fields(cache, static, datetime(2024, 4, 15))
     np.testing.assert_array_equal(fields["SH2O"], fields["SMOIS"])
 
 
@@ -1886,3 +1887,64 @@ def test_the_tree_export_states_each_domains_recorded_physics(
     # ...and the file check holds the written file to the same values.
     assert {key: validated["wrfinput_d02"].get(key)
             for key in expected} == expected
+
+
+class _VegetationCache:
+    """The two PreparedCache members the start-vegetation export reads."""
+
+    def __init__(self, arrays):
+        self._arrays = {name: None for name in arrays}
+        self._values = arrays
+
+    def array(self, name):
+        return self._values[name]
+
+
+def _vegetation_static(ny=6, nx=7):
+    rng = np.random.default_rng(20261007)
+    landmask = np.ones((ny, nx))
+    landmask[0, :] = 0.0
+    return {
+        "GREENFRAC": rng.uniform(0.05, 0.95, (12, ny, nx)),
+        "LAI12M": rng.uniform(0.1, 6.0, (12, ny, nx)),
+        "ALBEDO12M": rng.uniform(8.0, 25.0, (12, ny, nx)),
+        "LANDMASK": landmask,
+    }
+
+
+def test_the_export_writes_the_vegetation_the_run_starts_with():
+    """VEGFRA, LAI and ALBBCK are the forecast's own start values.
+
+    The export wrote the calendar month's raw GREENFRAC, LAI12M and
+    ALBEDO12M while the prepared forecast starts from the analyzed VEGFRA
+    (or GREENFRAC on the date) and date-interpolated LAI and albedo, so
+    stock WRF ran another land surface: 12 % RMS VEGFRA and 89 W m-2 RMS
+    latent heat after ten minutes on a HRRR-start crop.
+    """
+    from gpuwm.core.landuse import monthly_background_albedo, surface_leaf_area
+    from gpuwm.static.build import monthly_interp_to_date
+
+    static = _vegetation_static()
+    when = datetime(2024, 5, 21, 18)
+    ruc = {"sf_surface_physics": 3, "rdlai2d": True}
+    analyzed = np.full(static["LANDMASK"].shape, 42.5)
+    got = wrf_direct._run_start_vegetation(
+        _VegetationCache({"met/VEGFRA": analyzed}), static, when, ruc)
+    np.testing.assert_array_equal(got["VEGFRA"], analyzed)
+    np.testing.assert_array_equal(
+        got["LAI"], surface_leaf_area(SimpleNamespace(**ruc),
+                                      static["LAI12M"], when))
+    np.testing.assert_array_equal(
+        got["ALBBCK"], monthly_background_albedo(
+            static["ALBEDO12M"], static["LANDMASK"], when))
+    assert np.all(got["ALBBCK"][0] == np.float32(0.08))
+
+    climatology = wrf_direct._run_start_vegetation(
+        _VegetationCache({}), static, when, ruc)
+    np.testing.assert_allclose(
+        climatology["VEGFRA"],
+        100.0 * monthly_interp_to_date(static["GREENFRAC"], when))
+    # Not the calendar month's raw value the export used to write.
+    assert not np.allclose(climatology["VEGFRA"],
+                           100.0 * static["GREENFRAC"][4])
+    assert not np.allclose(climatology["LAI"], static["LAI12M"][4])

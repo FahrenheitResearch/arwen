@@ -98,6 +98,18 @@ def read_wrfinput_identity(path) -> WrfinputIdentity:
                             MappingProxyType(attributes), tuple(eta), float(top[0]), start)
 
 
+def written_etac(vertical) -> float:
+    """The ETAC header WRF writes for this vertical coordinate.
+
+    WRF's output header writes ``etac = 0.`` whenever ``hybrid_opt = 0``
+    (share/output_wrf.F:214-217), whatever the namelist's etac, because the
+    terrain-following coordinate never reads it.  Comparing the namelist's
+    0.2 with that 0. refused every hybrid_opt = 0 real.exe pair (37 runs of
+    the 2026-10-07 combo sweep).
+    """
+    return 0.0 if int(vertical.hybrid_opt) == 0 else float(vertical.etac)
+
+
 def check_wrfinput_identity(identity: WrfinputIdentity, *, domain, vertical,
                             start_time: datetime, soil_layers: int) -> None:
     """A namelist may describe file-defined state; it cannot reinterpret it."""
@@ -122,7 +134,7 @@ def check_wrfinput_identity(identity: WrfinputIdentity, *, domain, vertical,
                    for name, found, wanted in pairs if found != wanted]
     for name, found, wanted, tolerance in (
             ("P_TOP", identity.p_top, vertical.p_top, 1e-3),
-            ("ETAC", attributes["ETAC"], vertical.etac, 1e-7),
+            ("ETAC", attributes["ETAC"], written_etac(vertical), 1e-7),
             ("DX", attributes["DX"], cfg.dx, 1e-3),
             ("DY", attributes["DY"], cfg.dy, 1e-3)):
         if not np.isfinite(float(found)) or not np.isclose(

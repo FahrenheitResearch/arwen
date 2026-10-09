@@ -441,6 +441,8 @@ class PreparedEnsembleSession:
             # roster seals. Another card may otherwise retire pending packs
             # while this member's checkpoint is being hashed and carried.
             cards = cards[:1]
+            if isinstance(model, Mapping):
+                model = {card.device_id: model[card.device_id] for card in cards}
         resolved_request = replace(self.request, member_device_ids=tuple(card.device_id for card in cards))
         from gpuwm.ensemble.progress import (
             EnsembleProgressAdapter, MemberTerminalProgress, progress_host)

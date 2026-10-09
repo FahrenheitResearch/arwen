@@ -102,20 +102,40 @@ def _eta():
     return tuple(float(v) for v in _ETA_LEVELS)
 
 
+#: The dynamics settings a probe runs under.  ``generated`` is what the map
+#: was measured at (the domain wizard's generated dynamics).  ``ncar`` is
+#: NCAR's v4.4 CONUS benchmark namelist as WOOF's WRF-input door resolves
+#: it (receipts of the 2026-10-06 benchmark check: epssm unset, so WRF's
+#: 0.1; diff_6th_opt 0; damp_opt 3, zdamp 5000, dampcoef 0.2; w_damping
+#: 1).  The breakage the second arm exists for: the map that halved NCAR's
+#: steps was measured more damped (epssm 0.5, sixth-order filter on) than
+#: the runs it judged, so its entries said nothing about them.
+SETTINGS = {
+    "generated": {"epssm": 0.5, "smdiv": 0.1, "emdiv": 0.01, "damp_opt": 3,
+                  "zdamp": 5000.0, "dampcoef": 0.2, "w_damping": 1,
+                  "diff_6th_opt": 2, "diff_6th_factor": 0.12,
+                  "diff_6th_slopeopt": 1},
+    "ncar": {"epssm": 0.1, "smdiv": 0.1, "emdiv": 0.01, "damp_opt": 3,
+             "zdamp": 5000.0, "dampcoef": 0.2, "w_damping": 1,
+             "diff_6th_opt": 0, "diff_6th_factor": 0.12,
+             "diff_6th_slopeopt": 0},
+}
+
+
 def _config(ridge: Ridge, *, nx: int, dt: float, sound_steps: int,
-            etac: float, seconds: float, zadvect_implicit: int = 0):
+            etac: float, seconds: float, zadvect_implicit: int = 0,
+            settings: str = "generated"):
     from gpuwm.config import RunConfig
 
     eta = _eta()
     return RunConfig(
         nx=int(nx), ny=ROWS, nz=len(eta) - 1, dx=ridge.dx, dy=ridge.dx,
         ztop=20000.0, dt=float(dt), run_seconds=float(seconds),
-        time_step_sound=int(sound_steps), epssm=0.5, smdiv=0.1, emdiv=0.01,
-        damp_opt=3, zdamp=5000.0, dampcoef=0.2, w_damping=1, terrain_opt=1,
+        time_step_sound=int(sound_steps), terrain_opt=1,
         hill_height=ridge.crest, hill_halfwidth=ridge.halfwidth,
-        hybrid_opt=2, etac=float(etac), top_lid=False, diff_6th_opt=2,
-        diff_6th_factor=0.12, diff_6th_slopeopt=1, h_sca_adv_order=5,
-        eta_levels=eta, zadvect_implicit=int(zadvect_implicit))
+        hybrid_opt=2, etac=float(etac), top_lid=False, h_sca_adv_order=5,
+        eta_levels=eta, zadvect_implicit=int(zadvect_implicit),
+        **SETTINGS[settings])
 
 
 def _sounding(z):
@@ -158,27 +178,129 @@ def geometry(ridge: Ridge, *, nx: int | None = None) -> dict:
                                         else round(float(fraction), 4))}
 
 
+#: Under ``criterion="blowup"`` a run stops where w passes this many times
+#: the map's held bound (or is non-finite), so no less than 200 m/s, a
+#: vertical velocity no flow over these ridges carries.  Named breakage:
+#: in three-hour runs the map's bound stopped cells at every step down to
+#: 3 s/km with w only 1.00-1.06 x the bound at the stop and the WRF
+#: vertical Courant number falling with the step (2 km, 4.5 km crest,
+#: slope 0.09-0.15, 40-50 m/s, both settings arms, 2026-10-07): a wave
+#: grown past the bound and a run going unstable stop alike there.  This
+#: criterion runs such a cell the whole three hours to tell them apart;
+#: ``hourly_peak_w`` says whether w was still growing at the end.
+BLOWUP_FACTOR = 10.0
+
+#: Under ``criterion="blowup"`` (and "steady") a run also stops, and so
+#: does not hold, where peak |w| reaches this many m/s: a probe run holds
+#: only where it stayed finite AND its peak vertical velocity stayed under
+#: it (lead decision 3 after step 5, 2026-10-07).  Breakage it prevents:
+#: under :data:`BLOWUP_FACTOR` alone a run counted as held at any peak w
+#: up to ten times the old bound (200 m/s and more), and entries rested
+#: on runs that reached 108 to 388 m/s: LA Santa Ana's parent-grid cap
+#: came from a 70 m/s cell held at 119 m/s (3 km, 4500 m crest, ridge
+#: 0.40, 4 substeps, 4.5 s/km), and two adaptive entries on 203 to
+#: 276 m/s runs (fix/step5/RULINGS.md ruling 6).  Ten times the bound is
+#: never under 200 m/s, so this is the limit that acts.
+BLOWUP_PEAK_W = 100.0
+
+
+def stops(value: float, bound: float, criterion: str) -> bool:
+    """Whether a run's ``|w|`` of ``value`` stops it: non-finite, past the
+    map's ``bound`` under "map", and under "blowup" or "steady" past
+    :data:`BLOWUP_FACTOR` times it or at :data:`BLOWUP_PEAK_W` and up."""
+    if not math.isfinite(value):
+        return True
+    if criterion == "map":
+        return value > bound
+    return value > BLOWUP_FACTOR * bound or value >= BLOWUP_PEAK_W
+
+
+def held_under_peak_rule(run: dict) -> bool:
+    """A recorded blow-up-criterion run re-read under
+    :data:`BLOWUP_PEAK_W`: held only where it held and its peak |w| stayed
+    under that.  A run that held past it is the run the probe now stops
+    when w first reaches it, so the two say the same."""
+    peak = run.get("peak_w")
+    return bool(run["held"]) and peak is not None and math.isfinite(
+        float(peak)) and float(peak) < BLOWUP_PEAK_W
+
+#: Under ``criterion="steady"`` a run that stayed finite and under
+#: :data:`BLOWUP_FACTOR` times the bound still does not hold where its last
+#: hour's peak w is more than this factor over the hour before: it is
+#: still growing when the probe stops, and may run away past the probe's
+#: three hours.  Measured: over the 163 finite blow-up re-runs of
+#: 2026-10-07, the last-hour growth is at most 1.03 x on every steady cell
+#: and 1.13 to 1.47 x on the five still growing (2 km 3000 m crest slope
+#: 0.095-0.1 at 30 m/s; 3 km 3000 m crest slope 0.35-0.4 at 60 m/s;
+#: 12 km 4500 m crest slope 0.3 at 30 m/s), so 1.10 sat in the gap THERE.
+#: The full sweep under this criterion (236 rows, 2026-10-07 03:05-03:27Z,
+#: CLOCK-CHECK-NCAR-2026-10-06/fix/step2/rows-steady) showed it does not
+#: separate anything: on gentle 2 and 3 km ridges at 20 and 30 m/s the
+#: mountain wave is still spinning up from the impulsive start in hour 3
+#: (peak w 6 -> 18 -> 21 m/s), adjacent steps fall either side of 1.10
+#: with the same wave (21.1 and 21.4 m/s "growing" at 6.5 and 6.0 s/km,
+#: 19.7 "steady" at 5.5), so the walk's entry is set by noise around the
+#: threshold.  The terrain clock's local-face candidate does NOT use it:
+#: its rows read the blow-up criterion over every run
+#: (tools/terrain_clock_candidate.py --evidence).  The option stays only
+#: because its sweep's runs are evidence under that criterion.
+STEADY_GROWTH = 1.10
+
+#: Full levels above the ground whose geometric vertical Courant number is
+#: reported as "near ground" (the lowest four layers; on the probe's
+#: 49-level ladder they span roughly the lowest 250 m over the crest).
+NEAR_GROUND_LEVELS = 4
+
+
 def run_cell(ridge: Ridge, *, wind: float, per_km: float, sound_steps: int,
              seconds: float, etac: float | None = None,
-             zadvect_implicit: int = 0) -> dict:
-    """One ridge, one wind, one step through the production ``step()``."""
+             zadvect_implicit: int = 0, settings: str = "generated",
+             courant: bool = False, criterion: str = "map") -> dict:
+    """One ridge, one wind, one step through the production ``step()``.
+
+    With ``courant``, every step also records the dycore's own WRF-form
+    vertical Courant number (the one ``w_damping`` acts on above 1, read
+    from the ``w_cfl_stat`` fold), the count of cells it damped, and the
+    geometric Courant number ``|w| dt / dz`` from the actual vertical
+    velocity, over every level and over the lowest
+    :data:`NEAR_GROUND_LEVELS` full levels.
+
+    ``criterion`` "map" stops a run where the map's held bound is passed.
+    "blowup" stops it only where w is non-finite, passes
+    :data:`BLOWUP_FACTOR` times that bound or reaches
+    :data:`BLOWUP_PEAK_W`, and reports whether the map's
+    bound was passed (``over_map_bound``, ``first_over_map_bound_s``): it
+    re-checks a cell the map's bound stopped, to tell a run going unstable
+    from a finite wave that grew past the bound.  "steady" stops a run as
+    "blowup" does and, where it ran the whole time, still does not hold it
+    where the last hour's peak w is more than :data:`STEADY_GROWTH` times
+    the hour before (``stop`` "growing")."""
     import cupy as cp
 
     from gpuwm.acoustic_adaptation import steepest_slope
+    from gpuwm.core import constants as c
     from gpuwm.core.dycore import set_w_surface, step
     from gpuwm.core.state import init_at_rest
     from gpuwm.core.terrain import bell_hill
 
+    if courant:
+        from gpuwm.core.dycore import (enable_wrf_cfl_recording,
+                                       reset_wrf_cfl_recording,
+                                       take_wrf_cfl)
     if etac is None:
         etac = geometry(ridge)["etac_exact"]
     dt = float(per_km) * ridge.dx / 1000.0
     nx = ridge.columns(wind, seconds)
     cfg = _config(ridge, nx=nx, dt=dt, sound_steps=sound_steps, etac=etac,
-                  seconds=seconds, zadvect_implicit=zadvect_implicit)
+                  seconds=seconds, zadvect_implicit=zadvect_implicit,
+                  settings=settings)
     terrain = bell_hill(cfg)
     slope = steepest_slope(terrain, cfg.dx, cfg.dy, label="ridge").slope
     bound = 4.0 * float(wind) * float(slope) + 20.0
     coord, base = _base(cfg, etac, terrain)
+    if courant:
+        reset_wrf_cfl_recording()
+        enable_wrf_cfl_recording()
     state = init_at_rest(cfg, coord, base, terrain_z=base.terrain_z)
     state.u[...] = cp.float32(wind)
     set_w_surface(state, cfg)
@@ -189,28 +311,104 @@ def run_cell(ridge: Ridge, *, wind: float, per_km: float, sound_steps: int,
     started = time.perf_counter()
     stopped_at = None
     step_seconds = []
-    for index in range(steps):
-        cp.cuda.Device().synchronize()
-        tick = time.perf_counter()
-        step(state, cfg)
-        value = float(cp.abs(state.w).max())
-        step_seconds.append(time.perf_counter() - tick)
-        if not math.isfinite(value) or value > bound:
-            held = False
-            peak = value if math.isfinite(value) else float("inf")
-            stopped_at = (index + 1) * dt
-            break
-        peak = max(peak, value)
-    del state
-    cp.get_default_memory_pool().free_all_blocks()
+    wrf_vc = geo_vc = geo_vc_low = 0.0
+    wrf_vc_at = geo_vc_low_at = None
+    damped = 0
+    over_at = None
+    hourly: list[float] = []
+    if criterion not in ("map", "blowup", "steady"):
+        raise ValueError(f"criterion {criterion!r}: map, blowup or steady")
+    gravity = cp.float32(c.G)
+    try:
+        for index in range(steps):
+            cp.cuda.Device().synchronize()
+            tick = time.perf_counter()
+            step(state, cfg)
+            value = float(cp.abs(state.w).max())
+            step_seconds.append(time.perf_counter() - tick)
+            if courant:
+                vert, _horiz = take_wrf_cfl(int(cfg.grid_id))
+                if math.isfinite(vert) and vert > wrf_vc:
+                    wrf_vc, wrf_vc_at = vert, (index + 1) * dt
+                if not math.isfinite(vert):
+                    wrf_vc = float("inf")
+                damped += _damped_cells(int(cfg.grid_id))
+                phi = state.php + state.phb
+                dz = (phi[1:] - phi[:-1]) / gravity
+                # w on full level k against the thinner layer beside it.
+                thin = cp.minimum(dz[:-1], dz[1:])
+                ratio = cp.abs(state.w[1:-1]) * cp.float32(dt) / thin
+                every = float(ratio.max())
+                low = float(ratio[:NEAR_GROUND_LEVELS].max())
+                geo_vc = max(geo_vc, every) if math.isfinite(every) \
+                    else float("inf")
+                if not math.isfinite(low):
+                    geo_vc_low = float("inf")
+                elif low > geo_vc_low:
+                    geo_vc_low, geo_vc_low_at = low, (index + 1) * dt
+            if math.isfinite(value) and value > bound and over_at is None:
+                over_at = (index + 1) * dt
+            # (criterion "steady" stops where "blowup" does; its growth
+            # test is taken once the run is over.)
+            if stops(value, bound, criterion):
+                held = False
+                peak = value if math.isfinite(value) else float("inf")
+                stopped_at = (index + 1) * dt
+                break
+            peak = max(peak, value)
+            hour = int(index * dt // 3600.0)
+            while len(hourly) <= hour:
+                hourly.append(0.0)
+            hourly[hour] = max(hourly[hour], value)
+    finally:
+        if courant:
+            reset_wrf_cfl_recording()
+        del state
+        cp.get_default_memory_pool().free_all_blocks()
+    growing = (len(hourly) >= 2 and hourly[-2] > 0.0
+               and hourly[-1] > STEADY_GROWTH * hourly[-2])
+    stop = None if held else "runaway"
+    if held and criterion == "steady" and growing:
+        held, stop = False, "growing"
+    if criterion == "map" and stop is not None:
+        stop = "map bound"
     timed = sorted(step_seconds[1:]) or step_seconds
-    return {"held": held, "peak_w": peak, "bound": bound, "dt": dt,
-            "per_km": float(per_km), "wind": float(wind), "nx": nx,
-            "steps": steps, "stopped_at_s": stopped_at,
-            "zadvect_implicit": int(zadvect_implicit),
-            "median_step_ms": (round(1000.0 * timed[len(timed) // 2], 3)
-                               if timed else None),
-            "wall_s": round(time.perf_counter() - started, 2)}
+    record = {"held": held, "peak_w": peak, "bound": bound, "dt": dt,
+              "per_km": float(per_km), "wind": float(wind), "nx": nx,
+              "steps": steps, "stopped_at_s": stopped_at,
+              "zadvect_implicit": int(zadvect_implicit),
+              "settings": settings, "criterion": criterion,
+              "stop": stop, "growing_last_hour": bool(growing),
+              "over_map_bound": over_at is not None,
+              "first_over_map_bound_s": over_at,
+              "hourly_peak_w": [round(v, 3) for v in hourly],
+              "median_step_ms": (round(1000.0 * timed[len(timed) // 2], 3)
+                                 if timed else None),
+              "wall_s": round(time.perf_counter() - started, 2)}
+    if courant:
+        record.update({"peak_wrf_vertical_courant": wrf_vc,
+                       "peak_wrf_vertical_courant_at_s": wrf_vc_at,
+                       "w_damping_cell_visits": int(damped),
+                       "peak_geometric_vertical_courant": geo_vc,
+                       "peak_near_ground_vertical_courant": geo_vc_low,
+                       "peak_near_ground_vertical_courant_at_s":
+                           geo_vc_low_at})
+    return record
+
+
+def _damped_cells(grid_id: int) -> int:
+    """Cells above the w_damping onset in this step's CFL fold (word 1)."""
+    import cupy as cp
+
+    from gpuwm.core import dycore
+    from gpuwm.core.cfl_inventory import WRF_CFL_SLOTS
+
+    buf = dycore._wrf_cfl_bank("_WRF_CFL_STAT").get(int(grid_id))
+    calls = dycore._wrf_cfl_bank("_WRF_CFL_CALLS").get(int(grid_id), 0)
+    if buf is None or calls == 0:
+        return 0
+    slot = ((calls - 1) // 3) % WRF_CFL_SLOTS
+    return int(cp.asnumpy(buf[slot, 1]))
 
 
 def run_adaptive_cell(ridge: Ridge, *, wind: float, max_step: float,
@@ -218,7 +416,8 @@ def run_adaptive_cell(ridge: Ridge, *, wind: float, max_step: float,
                       target_cfl: float = 1.2, target_hcfl: float = 0.84,
                       increase_pct: int = 5, sound_floor: int = 0,
                       alarm_s: float = 3600.0,
-                      etac: float | None = None) -> dict:
+                      etac: float | None = None, criterion: str = "map",
+                      settings: str = "generated") -> dict:
     """One ridge, one wind, on the production adaptive clock.
 
     The loop is :class:`gpuwm.core.adaptive_clock.AdaptiveClockDriver`'s
@@ -229,7 +428,16 @@ def run_adaptive_cell(ridge: Ridge, *, wind: float, max_step: float,
     derives from it, raised to ``sound_floor`` (a terrain rule's
     ``min_time_step_sound``).  ``min_time_step`` is WRF's ``3 x dx``
     fill-in, as on a run that leaves it at -1.
+
+    ``criterion`` is :func:`run_cell`'s: "map" stops the run where the
+    map's held bound is passed, "blowup" only where w is non-finite,
+    passes :data:`BLOWUP_FACTOR` times it or reaches
+    :data:`BLOWUP_PEAK_W`.  Under either, the record keeps
+    the hourly peak w, whether the map's bound was passed and when, and
+    the peak WRF vertical Courant number the controller read.
     """
+    if criterion not in ("map", "blowup"):
+        raise ValueError(f"criterion {criterion!r}: map or blowup")
     from dataclasses import replace
     from fractions import Fraction
 
@@ -261,7 +469,7 @@ def run_adaptive_cell(ridge: Ridge, *, wind: float, max_step: float,
     lower = Fraction(wrf_default_clamps(ridge.dx, ridge.dx)[2])
     nx = ridge.columns(wind, seconds)
     cfg = _config(ridge, nx=nx, dt=float(start), sound_steps=count(start),
-                  etac=etac, seconds=seconds)
+                  etac=etac, seconds=seconds, settings=settings)
     terrain = bell_hill(cfg)
     slope = steepest_slope(terrain, cfg.dx, cfg.dy, label="ridge").slope
     bound = 4.0 * float(wind) * float(slope) + 20.0
@@ -283,12 +491,18 @@ def run_adaptive_cell(ridge: Ridge, *, wind: float, max_step: float,
     peak = 0.0
     held = True
     stopped_at = None
+    hourly: list[float] = []
+    over_at = None
+    peak_vert = 0.0
     started = time.perf_counter()
     reset_wrf_cfl_recording()
     enable_wrf_cfl_recording()
     try:
         while elapsed < total:
             vert, horiz = take_wrf_cfl(int(cfg.grid_id))
+            if ctl.started:
+                peak_vert = (max(peak_vert, float(vert))
+                             if math.isfinite(vert) else float("inf"))
             if (ctl.started and not ctl.stepping_to_time
                     and applied_before is not None
                     and applied_before != ctl.last_dt):
@@ -307,6 +521,7 @@ def run_adaptive_cell(ridge: Ridge, *, wind: float, max_step: float,
                 raise RuntimeError(f"the clock proposed {proposed} s")
             sound = count(dt)
             cfg = replace(cfg, dt=float(dt), time_step_sound=sound)
+            began = elapsed
             step(state, cfg)
             applied_before = dt
             ctl.accept(proposed, max_vert_cfl=vert, max_horiz_cfl=horiz,
@@ -315,12 +530,18 @@ def run_adaptive_cell(ridge: Ridge, *, wind: float, max_step: float,
             steps.append(float(dt))
             counts[sound] = counts.get(sound, 0) + 1
             value = float(cp.abs(state.w).max())
-            if not math.isfinite(value) or value > bound:
+            if math.isfinite(value) and value > bound and over_at is None:
+                over_at = float(elapsed)
+            if stops(value, bound, criterion):
                 held = False
                 peak = value if math.isfinite(value) else float("inf")
                 stopped_at = float(elapsed)
                 break
             peak = max(peak, value)
+            hour = int(began // 3600)
+            while len(hourly) <= hour:
+                hourly.append(0.0)
+            hourly[hour] = max(hourly[hour], value)
     finally:
         reset_wrf_cfl_recording()
         del state
@@ -339,7 +560,12 @@ def run_adaptive_cell(ridge: Ridge, *, wind: float, max_step: float,
                                 if abs(v - float(upper)) < 1e-9),
             "sound_steps_taken": {str(k): v for k, v in sorted(
                 counts.items())},
-            "stopped_at_s": stopped_at,
+            "stopped_at_s": stopped_at, "criterion": criterion,
+            "settings": settings, "seconds": float(seconds),
+            "over_map_bound": over_at is not None,
+            "first_over_map_bound_s": over_at,
+            "hourly_peak_w": [round(v, 3) for v in hourly],
+            "peak_wrf_vertical_courant": peak_vert,
             "wall_s": round(time.perf_counter() - started, 2)}
 
 
@@ -558,6 +784,309 @@ def merge(document: dict, rows, *, what: str | None = None,
     return document
 
 
+def sweep_row(ridge: Ridge, sound_steps: int, winds, rungs, *,
+              settings: str, seconds: float = CHECK_SECONDS,
+              log=print, on_run=None, criterion: str = "map") -> dict:
+    """One candidate row, measured from scratch at ``settings``.
+
+    Each wind, weakest first, walks ``rungs`` (s/km, longest first) from
+    the step the weaker wind held, each step run ``seconds`` (the map's
+    three-hour check) on a domain the flow cannot wrap, with the
+    per-step Courant numbers recorded; the entry is the first step that
+    held, ``None`` where none did, and past a wind that held none the
+    stronger winds are not run (``tried`` ``None``).  Every run is kept.
+
+    ``criterion`` is :func:`run_cell`'s: "map" holds a run whose w stays
+    under the map's bound, "blowup" one that stays finite, under
+    :data:`BLOWUP_FACTOR` times it and under :data:`BLOWUP_PEAK_W` for
+    the whole ``seconds``, "steady"
+    such a run whose w is not still growing at the end."""
+    shape = geometry(ridge)
+    runs = []
+    entries = []
+    tried = []
+    start = 0
+    for wind in winds:
+        if start is None:
+            entries.append(None)
+            tried.append(None)
+            continue
+        chosen = None
+        for index in range(start, len(rungs)):
+            result = run_cell(ridge, wind=wind, per_km=rungs[index],
+                              sound_steps=sound_steps, seconds=seconds,
+                              etac=shape["etac_exact"], settings=settings,
+                              courant=True, criterion=criterion)
+            runs.append(result)
+            if on_run is not None:
+                on_run(result)
+            log(f"  {settings} {ridge.dx:.0f} m {ridge.crest:.0f} m slope "
+                f"{ridge.ridge_slope:g} x{sound_steps} {wind:g} m/s "
+                f"{rungs[index]:.3f} s/km: "
+                f"{'held' if result['held'] else 'stopped'} (peak w "
+                f"{result['peak_w']:.2f}, bound {result['bound']:.1f}, "
+                f"vc {result['peak_wrf_vertical_courant']:.2f}, "
+                f"{result['wall_s']} s)")
+            if result["held"]:
+                chosen = index
+                break
+        tried.append(float(rungs[start]))
+        if chosen is None:
+            entries.append(None)
+            start = None
+        else:
+            entries.append(float(rungs[chosen]))
+            start = chosen
+    return {"dx_m": ridge.dx, "crest_m": ridge.crest,
+            "ridge_slope": ridge.ridge_slope,
+            "sound_steps": int(sound_steps), "slope": shape["slope"],
+            "etac": shape["etac"],
+            "thinnest_layer_fraction": shape["thinnest_layer_fraction"],
+            "settings": settings, "dynamics": dict(SETTINGS[settings]),
+            "criterion": criterion,
+            "seconds": float(seconds), "winds_m_s": [float(w) for w in winds],
+            "rungs_s_per_km": [float(r) for r in rungs],
+            "stable_s_per_km": entries, "top_s_per_km": tried,
+            "runs": runs}
+
+
+def sweep_key(job: dict, criterion: str = "map") -> str:
+    key = (f"{job['settings']}-dx{float(job['dx']):g}-c{float(job['crest']):g}"
+           f"-r{float(job['ridge_slope']):g}-x{int(job['sound_steps'])}")
+    # The map criterion keeps the keys its rows were written under.
+    return key if criterion == "map" else f"{key}-{criterion}"
+
+
+def _claim(claims: Path, key: str) -> bool:
+    """Atomic claim of one job on this host's file system (a directory
+    holding the claimant's pid); a claim whose pid is dead is taken
+    over, so a killed worker's job is re-run, never skipped."""
+    import os
+
+    target = claims / key
+    try:
+        target.mkdir()
+    except FileExistsError:
+        try:
+            pid = int((target / "pid").read_text().strip())
+            os.kill(pid, 0)
+            return False
+        except (OSError, ValueError):
+            pass
+    (target / "pid").write_text(str(os.getpid()))
+    return True
+
+
+def sweep_worker(jobs_path: Path, out_dir: Path, winds, rungs, *,
+                 deadline: float, seconds: float, provenance: dict,
+                 criterion: str = "map") -> int:
+    """Take unclaimed jobs from ``jobs_path`` until none is left or the
+    wall clock passes ``deadline`` (epoch seconds; no new job starts after
+    it).  Each finished job writes ``<out_dir>/<key>.json``; the runs of
+    an unfinished one stream to ``<key>.partial.jsonl``."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    claims = out_dir / "claims"
+    claims.mkdir(exist_ok=True)
+    jobs = [json.loads(line) for line in jobs_path.read_text(
+        encoding="utf-8").splitlines() if line.strip()]
+    done = 0
+    for job in jobs:
+        if time.time() > deadline:
+            break
+        key = sweep_key(job, criterion)
+        final = out_dir / f"{key}.json"
+        if final.exists() or not _claim(claims, key):
+            continue
+        partial = out_dir / f"{key}.partial.jsonl"
+        partial.write_text("", encoding="utf-8")
+
+        def keep(result, partial=partial):
+            with partial.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(result) + "\n")
+
+        began = time.time()
+        row = sweep_row(Ridge(float(job["dx"]), float(job["crest"]),
+                              float(job["ridge_slope"])),
+                        int(job["sound_steps"]), winds, rungs,
+                        settings=job["settings"], seconds=seconds,
+                        log=lambda text: print(text, flush=True),
+                        on_run=keep, criterion=criterion)
+        row["provenance"] = {**provenance, "key": key,
+                             "started_utc": time.strftime(
+                                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(began)),
+                             "finished_utc": time.strftime(
+                                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                             "wall_s": round(time.time() - began, 1)}
+        tmp = final.with_suffix(".tmp")
+        tmp.write_text(json.dumps(row, indent=1), encoding="utf-8")
+        tmp.replace(final)
+        partial.unlink()
+        done += 1
+    return done
+
+
+#: The ladder the shipped adaptive entries walked (the map's ``adaptive``
+#: block), and the rungs below it an adaptive sweep may go on to, down to
+#: WRF's ``3 x dx`` min_time_step fill-in, past which max_time_step would
+#: sit under the clock's own floor.
+SHIPPED_ADAPTIVE_LADDER = (15.0, 40.0 / 3.0, 12.0, 11.0, 10.0, 9.0, 8.0,
+                           22.0 / 3.0, 20.0 / 3.0, 6.0, 5.5, 5.0)
+ADAPTIVE_LADDER_BELOW = (4.5, 4.0, 3.5, 3.0)
+
+
+def _run_key(wind, per_km, pair) -> str:
+    return f"{float(wind):g}|{float(per_km):.6f}|{pair[0]:g}/{pair[1]:g}"
+
+
+def adaptive_sweep_row(ridge: Ridge, winds, ladder, *, seconds: float,
+                       criterion: str, settings: str = "generated",
+                       done: dict | None = None, on_run=None,
+                       deadline: float = float("inf"), log=print) -> dict:
+    """One row's adaptive entries, measured from scratch: per wind
+    (weakest first), the longest ``max_time_step`` from ``ladder`` (s/km,
+    longest first) that held ``seconds`` at every pair of
+    :data:`ADAPTIVE_TARGETS`, each wind walked from the step the weaker
+    wind held; past a wind that held none the stronger winds are not run.
+    The first step is the shipped measurement's (5 s/km, or the max where
+    that is shorter).  ``done`` holds runs already made (``_run_key``),
+    which are reused, so a killed job resumes; no new run starts after
+    ``deadline`` (the row is then returned with ``complete`` False)."""
+    shape = geometry(ridge)
+    km = ridge.dx / 1000.0
+    done = {} if done is None else done
+    runs = []
+    entries, tops = [], []
+    start = 0
+    complete = True
+    for wind in winds:
+        if start is None or not complete:
+            entries.append(None)
+            tops.append(None)
+            continue
+        chosen = None
+        for index in range(start, len(ladder)):
+            every = True
+            for pair in ADAPTIVE_TARGETS:
+                key = _run_key(wind, ladder[index], pair)
+                result = done.get(key)
+                if result is None:
+                    if time.time() > deadline:
+                        complete = False
+                        break
+                    upper = round(ladder[index] * km, 2)
+                    result = run_adaptive_cell(
+                        ridge, wind=wind, max_step=upper,
+                        start_step=min(round(5.0 * km, 2), upper),
+                        seconds=seconds, target_cfl=pair[0],
+                        target_hcfl=pair[1],
+                        increase_pct=ADAPTIVE_INCREASE_PCT,
+                        etac=shape["etac_exact"], criterion=criterion,
+                        settings=settings)
+                    result = {"key": key, "per_km": float(ladder[index]),
+                              **result}
+                    done[key] = result
+                    if on_run is not None:
+                        on_run(result)
+                runs.append(result)
+                log(f"  adaptive {ridge.dx:.0f} m {ridge.crest:.0f} m slope "
+                    f"{ridge.ridge_slope:g} {wind:g} m/s max "
+                    f"{ladder[index]:.3f} s/km cfl {pair[0]}/{pair[1]}: "
+                    f"{'held' if result['held'] else 'stopped'} (peak w "
+                    f"{result['peak_w']:.1f}, bound {result['bound']:.1f}, "
+                    f"mean step {result['mean_step_s']}, "
+                    f"{result['wall_s']} s)")
+                if not result["held"]:
+                    every = False
+                    break
+            if not complete:
+                break
+            if every:
+                chosen = index
+                break
+        if not complete:
+            entries.append(None)
+            tops.append(None)
+            continue
+        tops.append(float(ladder[start]))
+        if chosen is None:
+            entries.append(None)
+            start = None
+        else:
+            entries.append(float(ladder[chosen]))
+            start = chosen
+    return {"dx_m": ridge.dx, "crest_m": ridge.crest,
+            "ridge_slope": ridge.ridge_slope, "sound_steps": 4,
+            "slope": shape["slope"], "etac": shape["etac"],
+            "thinnest_layer_fraction": shape["thinnest_layer_fraction"],
+            "settings": settings, "criterion": criterion,
+            "seconds": float(seconds),
+            "winds_m_s": [float(w) for w in winds],
+            "ladder_s_per_km": [float(v) for v in ladder],
+            "targets": [list(pair) for pair in ADAPTIVE_TARGETS],
+            "increase_pct": ADAPTIVE_INCREASE_PCT,
+            "adaptive_s_per_km": entries, "adaptive_top_s_per_km": tops,
+            "complete": complete, "runs": runs}
+
+
+def adaptive_sweep_worker(jobs_path: Path, out_dir: Path, winds, ladder, *,
+                          deadline: float, seconds: float, criterion: str,
+                          provenance: dict, tag: str = "adaptive") -> int:
+    """:func:`sweep_worker` for adaptive rows: each job (dx, crest,
+    ridge_slope) writes ``<out_dir>/<key>.json`` when its walk is
+    complete; every run streams to ``<key>.partial.jsonl`` and is reused
+    when a later worker takes the job up again."""
+    import shutil
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    claims = out_dir / "claims"
+    claims.mkdir(exist_ok=True)
+    jobs = [json.loads(line) for line in jobs_path.read_text(
+        encoding="utf-8").splitlines() if line.strip()]
+    finished = 0
+    for job in jobs:
+        if time.time() > deadline:
+            break
+        key = (f"{tag}-{job.get('settings', 'generated')}-dx"
+               f"{float(job['dx']):g}-c{float(job['crest']):g}"
+               f"-r{float(job['ridge_slope']):g}-{criterion}")
+        final = out_dir / f"{key}.json"
+        if final.exists() or not _claim(claims, key):
+            continue
+        partial = out_dir / f"{key}.partial.jsonl"
+        done = {}
+        if partial.exists():
+            for line in partial.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    record = json.loads(line)
+                    done[record["key"]] = record
+
+        def keep(result, partial=partial):
+            with partial.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(result) + "\n")
+
+        began = time.time()
+        row = adaptive_sweep_row(
+            Ridge(float(job["dx"]), float(job["crest"]),
+                  float(job["ridge_slope"])), winds, ladder,
+            seconds=seconds, criterion=criterion,
+            settings=job.get("settings", "generated"), done=done,
+            on_run=keep, deadline=deadline,
+            log=lambda text: print(text, flush=True))
+        if not row["complete"]:
+            shutil.rmtree(claims / key, ignore_errors=True)
+            break
+        row["provenance"] = {**provenance, "key": key,
+                             "finished_utc": time.strftime(
+                                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                             "wall_s_this_worker": round(
+                                 time.time() - began, 1)}
+        tmp = final.with_suffix(".tmp")
+        tmp.write_text(json.dumps(row, indent=1), encoding="utf-8")
+        tmp.replace(final)
+        finished += 1
+    return finished
+
+
 def write_map(document: dict, path: Path = MAP_PATH) -> None:
     """The map's own layout: one row per line."""
     head = {key: value for key, value in document.items() if key != "rows"}
@@ -615,6 +1144,39 @@ def main(argv=None) -> int:
     a.add_argument("--ladder", type=_floats, required=True,
                    help="max_time_step values in s/km, longest first")
     a.add_argument("--out", type=Path, required=True)
+    w = sub.add_parser("sweep")
+    w.add_argument("--jobs", type=Path, required=True,
+                   help="JSON lines: dx, crest, ridge_slope, sound_steps, "
+                        "settings (generated or ncar)")
+    w.add_argument("--out-dir", type=Path, required=True)
+    w.add_argument("--winds", type=_floats, required=True)
+    w.add_argument("--rungs-per-km", type=_floats, required=True,
+                   help="steps to try, s/km, longest first")
+    w.add_argument("--seconds", type=float, default=CHECK_SECONDS)
+    w.add_argument("--deadline", type=float, default=float("inf"),
+                   help="epoch seconds after which no new job starts")
+    w.add_argument("--provenance", type=Path, default=None,
+                   help="a JSON file recorded on every row")
+    w.add_argument("--criterion", choices=("map", "blowup", "steady"),
+                   default="map",
+                   help="what holds: the map's bound; finite, under "
+                        "BLOWUP_FACTOR times it and under BLOWUP_PEAK_W m/s "
+                        "for the whole run; or that "
+                        "and not still growing (STEADY_GROWTH)")
+    v = sub.add_parser("adaptive-sweep")
+    v.add_argument("--jobs", type=Path, required=True,
+                   help="JSON lines: dx, crest, ridge_slope (settings)")
+    v.add_argument("--out-dir", type=Path, required=True)
+    v.add_argument("--winds", type=_floats, required=True)
+    v.add_argument("--ladder", type=_floats, default=None,
+                   help="max_time_step values, s/km, longest first "
+                        "(default: the shipped ladder and the rungs below)")
+    v.add_argument("--seconds", type=float, default=CHECK_SECONDS)
+    v.add_argument("--deadline", type=float, default=float("inf"))
+    v.add_argument("--provenance", type=Path, default=None)
+    v.add_argument("--criterion", choices=("map", "blowup"),
+                   default="blowup")
+    v.add_argument("--tag", default="adaptive")
     for name in ("fixed", "adaptive"):
         s = sub.add_parser(name)
         s.add_argument("--dx", type=float, required=True)
@@ -628,6 +1190,12 @@ def main(argv=None) -> int:
             s.add_argument("--steps", type=_floats, required=True,
                            help="fixed steps in seconds")
             s.add_argument("--sound-steps", type=_floats, default=[4, 6])
+            s.add_argument("--settings", choices=sorted(SETTINGS),
+                           default="generated")
+            s.add_argument("--criterion",
+                           choices=("map", "blowup", "steady"),
+                           default="map")
+            s.add_argument("--courant", action="store_true")
         else:
             s.add_argument("--max-steps", type=_floats, required=True,
                            help="max_time_step values in seconds")
@@ -643,6 +1211,27 @@ def main(argv=None) -> int:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
 
+    if args.command == "sweep":
+        provenance = ({} if args.provenance is None else json.loads(
+            args.provenance.read_text(encoding="utf-8")))
+        count = sweep_worker(args.jobs, args.out_dir, args.winds,
+                             args.rungs_per_km, deadline=args.deadline,
+                             seconds=args.seconds, provenance=provenance,
+                             criterion=args.criterion)
+        print(json.dumps({"sweep_jobs_finished": count}), flush=True)
+        return 0
+    if args.command == "adaptive-sweep":
+        provenance = ({} if args.provenance is None else json.loads(
+            args.provenance.read_text(encoding="utf-8")))
+        ladder = (list(SHIPPED_ADAPTIVE_LADDER + ADAPTIVE_LADDER_BELOW)
+                  if args.ladder is None else args.ladder)
+        count = adaptive_sweep_worker(
+            args.jobs, args.out_dir, args.winds, ladder,
+            deadline=args.deadline, seconds=args.seconds,
+            criterion=args.criterion, provenance=provenance, tag=args.tag)
+        print(json.dumps({"adaptive_sweep_jobs_finished": count}),
+              flush=True)
+        return 0
     if args.command == "adaptive-extend":
         document = json.loads(MAP_PATH.read_text(encoding="utf-8"))
         rows = []
@@ -675,7 +1264,10 @@ def main(argv=None) -> int:
                                 per_km=seconds_step * 1000.0 / ridge.dx,
                                 sound_steps=int(count),
                                 seconds=args.seconds,
-                                etac=shape["etac_exact"])
+                                etac=shape["etac_exact"],
+                                settings=args.settings,
+                                criterion=args.criterion,
+                                courant=args.courant)
                             record = {"arm": "fixed", **key,
                                       "sound_steps": int(count),
                                       "step_s": seconds_step, **result}

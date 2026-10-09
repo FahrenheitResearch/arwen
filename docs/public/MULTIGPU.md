@@ -139,18 +139,26 @@ CUDA call, about 3,900 times per slab in an ordinary HRRR step and about
 140,000 in a radiation step, so adding cards adds lock traffic. On a two-socket
 4-card box the radiation steps took 13-25 s under the lock and 5-8 s without it.
 
-Run multi-card forecasts under a free-threaded Python 3.14 (`python3.14t`),
-for example `GPUWM_PYTHON=python3.14t ./install.sh`, or a `uv venv --python
-3.14t` environment with `gpuwm[gpu-cu13]` installed. CuPy, NumPy and netCDF4
-publish free-threaded wheels; `cftime` 1.6.6 and the render extra's `wrf-rust`
-do not yet, so the install builds them from source and needs a C compiler and
-the Rust toolchain the installer already requires. The slab threads then run
-at once. Importing netCDF4 would switch the lock
-back on, so the `gpuwm` command line and the prepared runner re-execute once
-with `PYTHON_GIL=0` on a free-threaded build (every netCDF4 session in the
-process is already serialized by its own lock). An explicit `PYTHON_GIL` in
+Run multi-card forecasts under a free-threaded Python 3.14 (`python3.14t`).
+`install.sh` and `install.ps1` make `.venv` on it by default: a `python3.14t`
+already on PATH, or one uv finds or installs (`--python` / `-Python` picks
+another interpreter). For a pip install, make the environment with
+`uv venv --seed --python 3.14t` and install into it with
+`pip install --prefer-binary 'gpuwm[gpu-cu13]'`. CuPy, NumPy and netCDF4
+publish free-threaded wheels. `cftime` publishes one for 1.6.5 but not 1.6.6,
+so the installers pass `--prefer-binary`, and a pip install needs it too:
+without it pip builds cftime 1.6.6 from source, which needs a C compiler. The render
+extra's `wrf-rust` publishes none, so it builds from source with the Rust
+toolchain the installers already require. The slab threads then run at once.
+Importing netCDF4 would switch the lock back on, so the `gpuwm` command line
+and both prepared runners (single domain and domain tree) re-run once with
+`PYTHON_GIL=0` on a free-threaded build (every netCDF4 session in the
+process is already serialized by its own lock). On Windows, where `exec`
+cannot keep the process, the re-run is a child bound to the first process by
+a job object, so stopping either one stops both. An explicit `PYTHON_GIL` in
 the environment is respected, including `PYTHON_GIL=1`. A multi-card run on a
 locked interpreter prints one `[devices]` line saying so; the run continues.
+`gpuwm doctor` reports which build the environment runs.
 
 On a host with more than one NUMA node, each slab thread is bound to the CPUs
 sysfs lists as local to its card. Nothing is bound on a one-node host or when

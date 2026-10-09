@@ -27,8 +27,12 @@ def test_real_hrrr_go_dry_run_preserves_repeated_donors(tmp_path):
     for donor in donors:
         donor.write_bytes(b"donor")
         args += ["--supplement", f"PMSL={donor}"]
+    from _staged_geog import staged_case_data_env
+
+    # The dry run asks the default geography, as the launch does.
+    env = staged_case_data_env(tmp_path / "case-data")
     result = subprocess.run([sys.executable, "-m", "gpuwm.cli", *args],
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     command = next(line.removeprefix("Run: ") for line in result.stdout.splitlines()
                    if line.startswith("Run: "))
@@ -36,7 +40,7 @@ def test_real_hrrr_go_dry_run_preserves_repeated_donors(tmp_path):
     parsed = build_parser().parse_args(tokens)
     assert [Path(value.removeprefix("PMSL=")) for value in parsed.supplement] == donors
     replay = subprocess.run([sys.executable, "-m", "gpuwm.cli", *tokens, "--dry-run"],
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, env=env)
     assert replay.returncode == 0, replay.stdout + replay.stderr
     assert not (tmp_path / "weather area-go").exists()
 

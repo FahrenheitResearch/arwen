@@ -1,5 +1,11 @@
 # Rounded MYNN mixing length
 
+This is the historical v2 repair record. The later exact-driver work removed
+the remaining driver allowances and advances the checkpoint identity to
+`mynn-edmf-pbl-wrf-v4.6.1-v3-exact-driver`. Current raw-word gates include
+snow and ozone tendencies. The compiler-specific driver and condensation
+guards for the former residue have been retired.
+
 The ordinary `mynn_mixlength_default_columns` entry point used a second
 implementation of the law already owned by `mynn_mym_length_column` during
 initialization. Plain multiply/add expressions and device transcendental

@@ -88,7 +88,10 @@ parent_grid_ratio = 1
 parent_time_step_ratio = 1
 nx = 320
 ny = 256
-time_step = 60
+# The engine's clock, 5 s per km of dx outside the tropics
+# (gpuwm.domain_wizard.seconds_per_km): 60 s at 6 km put the 15 s acoustic
+# substep past the sound-wave limit and went non-finite in two steps.
+time_step = 30
 dx = 6000.0
 specified = true
 nested = false

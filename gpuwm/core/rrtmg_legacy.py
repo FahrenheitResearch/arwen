@@ -375,6 +375,10 @@ _MP_DECLARES_RADII = {
 }
 
 
+from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
+# Named schemes declare radii (their adapters write effc/effi/effs).
+_MP_DECLARES_RADII.update({_s.mp_id: True for _s in _NAMED_MP_SCHEMES.values()})
+
 def _require_agreement_with_the_registry() -> None:
     """``_MP_DECLARES_RADII`` is the registry's ``cloud_optics.legacy_declares_radii``.
 
@@ -483,6 +487,10 @@ def legacy_scheme_has_req(mp_physics, use_mp_re):
 #: pair through :func:`legacy_cloud_fraction_flags`, never by reading one
 #: boolean into both flags.
 _LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28))
+# Named schemes carrying both qi and qs (capability row).
+_LEGACY_ICE_ACTIVE_MICROPHYSICS = _LEGACY_ICE_ACTIVE_MICROPHYSICS | frozenset(
+    _s.mp_id for _s in _NAMED_MP_SCHEMES.values()
+    if {"qi", "qs"} <= set(_s.ice_mass_species))
 
 #: WRF Registry ``F_QI and not F_QS``: schemes whose package carries ``qi``
 #: in ``moist`` and no ``qs`` at all.  P3 one-category (mp=50) is the

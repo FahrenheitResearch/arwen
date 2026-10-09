@@ -224,14 +224,14 @@ def standalone_rte_storage_bytes(nz: int, columns: int, column_chunk: int,
     This bound stays monotone across chunk tails and SM coverage thresholds.
     """
     from gpuwm.core.rrtmgp import (
-        load_gas_tables, rrtmgp_above_model_layer_counts)
+        gas_table_shape, rrtmgp_above_model_layer_counts)
 
     c = min(int(columns), int(column_chunk))
     if c < 1:
         return {}
     ul, us = rrtmgp_above_model_layer_counts(p_top)
     nl, ns = nz + ul, nz + us
-    lw, sw = load_gas_tables("lw"), load_gas_tables("sw")
+    lw, sw = gas_table_shape("lw"), gas_table_shape("sw")
     planck = c * lw.ngpt * (nl + nl + 1 + 1) * 4
     return {
         "lw/gas_tau": c * nl * lw.ngpt * 4,

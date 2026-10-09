@@ -94,6 +94,9 @@ map_proj = 1
 sf_sfclay_physics = 5
 sf_surface_physics = 2
 bl_pbl_physics = 5
+# The operational fork's MYNN (GSD MYNN v4.1); this demo has no [fetch]
+# source for the load-time generation fill to read it from.
+bl_mynn_version = "gsd_41"
 wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"
 ra_rrtmg_variant = "rrtmg_legacy"
 ra_physics = 0

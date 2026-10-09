@@ -14,6 +14,7 @@ import numpy as np
 from gpuwm.core import acoustic as original
 from gpuwm.ensemble.batch_kernel import KernelSpec, PointerSpec, prepare_batch_kernel_launch
 from gpuwm.ensemble.batch_state import BatchedDomainState, BatchStateUnsupported
+from gpuwm.microphysics_schemes import mass_loading_species as _mass_loading_species
 
 _THREADS = 256
 _F32 = np.float32
@@ -143,6 +144,12 @@ def prepare_moist_cq(state, cfg):
     elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
         qi, qs, qg = state.qi, state.qs, state.qg
         n_mass = 7 if cfg.mp_physics in (9, 18) else 6
+    elif _mass_loading_species(cfg.mp_physics) == ("qi", "qs", "qg"):
+        # A NAMED scheme whose capability row declares the six-mass moist
+        # package: the same calc_cq call as the Thompson family.
+        qi = state.qi
+        qs, qg = state.qs, state.qg
+        n_mass = 6
     else:
         raise ValueError(f"unsupported mp_physics={cfg.mp_physics} for cq")
     qh = state.qh if cfg.mp_physics in (9, 18) else state.qv
@@ -217,8 +224,11 @@ def prepare_acoustic_substep_launch(state, cfg, dtau, coefficients, *, mudf=None
     uv_arrays = _fields(state, "u_pp v_pp ru_t rv_t p_pp p_pp_old ph_pp php phb alt al_pp pb mup mu_pp mub2d c1h c2h fnm fnp rdnw") + (cqu, cqv)
     uv_prefix = uv_arrays + (_I32(use_cq), state.cf1, state.cf2, state.cf3,
                              _I32(cfg.top_lid), rdx, rdy, dt)
-    uv_suffix = (spec_zone, base3d, nz_i, ny_i, nx_i)
+    uv_suffix = ((spec_zone, base3d, nz_i, ny_i, nx_i)
+                 + original._uv_emdiv_args(state, cfg, mudf))
     uv_pointers = _pairs("u_pp v_pp ru_t rv_t p_pp p_pp_old ph_pp php phb alt al_pp pb mup mu_pp mub2d c1h c2h fnm fnp rdnw cqu cqv", uv_arrays)
+    if original.WRF_EXACT:
+        uv_pointers += _pairs("mudf msfu msfv", uv_suffix[5:8])
     uv_first = bindings.bind("advance_uv", uv_prefix + (_F32(0.0),) + uv_suffix,
                              uv_pointers, uv_grid)
     uv_later = bindings.bind("advance_uv", uv_prefix + (_F32(cfg.smdiv),) + uv_suffix,
@@ -247,16 +257,17 @@ def prepare_acoustic_substep_launch(state, cfg, dtau, coefficients, *, mudf=None
     exact_frame = None
     if original.WRF_EXACT and int(mass_w_zone):
         arrays = _fields(state, "mu_pp th_pp rmu_t rth_t")
+        carrier = (original.wrf_acoustic_muts(state), state.mub2d, state.mup)
         exact_frame = bindings.bind("advance_exact_frame_mu_t", arrays + (
-            dt, mass_w_zone, _I32(not int(bx)), nz_i, ny_i, nx_i),
-            _pairs("mu_pp th_pp rmu_t rth_t", arrays), columns)
+            dt, mass_w_zone, _I32(not int(bx)), nz_i, ny_i, nx_i) + carrier,
+            _pairs("mu_pp th_pp rmu_t rth_t muts mub2d mup", arrays + carrier), columns)
 
     w_head = _fields(state, "w_pp ph_pp rw_t rph_t ww_pp mu_pp") + (
         mu_old, state.th_pp, th_old) + _fields(state, "thp thb php phb alt") + (
         c2a, a, alpha, gam) + _fields(state, "mup u_pp v_pp w ht rdn rdnw fnm fnp c1h c2h c1f c2f mub2d") + (cqw,)
     w_maps = (state.msft,) if state.has_msf else ()
     w_outputs = (state.p_pp, state.al_pp)
-    dampmag = dtau * cfg.dampcoef if cfg.damp_opt == 3 else 0.0
+    dampmag = original.damp_magnitude(cfg, dtau)
     w_args = w_head + (_I32(use_cq),) + w_maps + w_outputs + (
         state.cf1, state.cf2, state.cf3, rdx, rdy, dt, _F32(cfg.epssm),
         _F32(dampmag), _F32(cfg.zdamp), bx, by, mass_w_zone, base3d,
@@ -270,16 +281,18 @@ def prepare_acoustic_substep_launch(state, cfg, dtau, coefficients, *, mudf=None
                       defines=original.wphi_module_defines(nz))
 
     frame = None
+    carrier = (original.wrf_acoustic_muts(state),) if original.WRF_EXACT else ()
+    carrier_pointers = _pairs("muts_wrf", carrier) if carrier else ()
     if cfg.specified and not original._frame_takes_table_w(cfg):
         arrays = _fields(state, "ph_pp w_pp p_pp al_pp rph_t th_pp mup mu_pp mub2d rmu_t php thp thb alt") + (c2a,) + _fields(state, "rdnw c1h c2h c1f c2f")
         frame = bindings.bind("advance_specified_phi_w", arrays + (
-            dt, _I32(cfg.spec_zone), base3d, nz_i, ny_i, nx_i),
-            _pairs("ph_pp w_pp p_pp al_pp rph_t th_pp mup mu_pp mub2d rmu_t php thp thb alt c2a rdnw c1h c2h c1f c2f", arrays), columns)
+            dt, _I32(cfg.spec_zone), base3d, nz_i, ny_i, nx_i) + carrier,
+            _pairs("ph_pp w_pp p_pp al_pp rph_t th_pp mup mu_pp mub2d rmu_t php thp thb alt c2a rdnw c1h c2h c1f c2f", arrays) + carrier_pointers, columns)
     elif original._frame_takes_table_w(cfg):
         arrays = _fields(state, "ph_pp w_pp p_pp al_pp rph_t rw_t th_pp mup mu_pp mub2d rmu_t php thp thb alt") + (c2a,) + _fields(state, "rdnw c1h c2h c1f c2f")
         frame = bindings.bind("advance_nested_phi_w", arrays + (
-            dt, _I32(cfg.spec_zone), base3d, nz_i, ny_i, nx_i),
-            _pairs("ph_pp w_pp p_pp al_pp rph_t rw_t th_pp mup mu_pp mub2d rmu_t php thp thb alt c2a rdnw c1h c2h c1f c2f", arrays), columns)
+            dt, _I32(cfg.spec_zone), base3d, nz_i, ny_i, nx_i) + carrier,
+            _pairs("ph_pp w_pp p_pp al_pp rph_t rw_t th_pp mup mu_pp mub2d rmu_t php thp thb alt c2a rdnw c1h c2h c1f c2f", arrays) + carrier_pointers, columns)
 
     radiative_x = cfg.open_x and not original._boundary_forced(cfg)
     radiative_y = cfg.open_y and not original._boundary_forced(cfg)
@@ -288,6 +301,8 @@ def prepare_acoustic_substep_launch(state, cfg, dtau, coefficients, *, mudf=None
 
     def launch(*, first):
         import cupy as cp
+        if original.WRF_EXACT and first:
+            original.init_wrf_acoustic_muts(state)
         if radiative_x:
             sx[..., 0] = state.u_pp[:, :, :, 0]
             sx[..., 1] = state.u_pp[:, :, :, -1]
@@ -330,7 +345,10 @@ def prepare_emdiv_filter_launch(state, cfg, mudf, mu_prev=None):
     mu_prev_arg = mu_prev if save else mudf
     arrays = (state.u_pp, state.v_pp, mudf, state.mu_pp, mu_prev_arg,
               state.c1h, state.msfu, state.msfv)
-    args = arrays + (_F32(-cfg.emdiv * cfg.dx), _F32(-cfg.emdiv * cfg.dy),
+    # Strict damping has already entered advance_uv's statement. This
+    # launch only saves the previous mass, matching the scalar launcher.
+    args = arrays + (_F32(0.0) if original.WRF_EXACT else _F32(-cfg.emdiv * cfg.dx),
+                     _F32(0.0) if original.WRF_EXACT else _F32(-cfg.emdiv * cfg.dy),
                      _I32(state.has_msf), _I32(original._boundary_x(cfg)),
                      _I32(original._boundary_y(cfg)), _I32(original._boundary_forced(cfg)),
                      _I32(cfg.spec_zone), _I32(save), _I32(nz), _I32(ny), _I32(nx))

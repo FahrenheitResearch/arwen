@@ -654,3 +654,129 @@ def test_the_identity_route_maps_the_whole_native_grid_bit_for_bit():
                                to_water) == 19
     stencil = report["land_stencil"]
     assert stencil["fallback_target_count"] == len(to_land)
+
+
+# The native grid's own specified-boundary strips (acceptance D-05, 2.8.8):
+# the start state took the identity route, every boundary hour's strips
+# were interpolated, and the full 1800 x 1060 grid died in prepare with
+# "HRRR bridge window lacks the bilinear donor cell".
+
+_STRIP_WIDTH = 10
+
+
+def _native_strip_rectangles(ny=1059, nx=1799, width=_STRIP_WIDTH):
+    return {
+        "west": (0, ny, 0, width),
+        "east": (0, ny, nx - width, nx),
+        "south": (0, width, 0, nx),
+        "north": (ny - width, ny, 0, nx),
+    }
+
+
+def _native_strip_grid(grid, y0, y1, x0, x1):
+    """A strip exactly as tools/hrrr_single_domain_benchmark.py
+    ``_boundary_mapping_targets`` cuts it."""
+    return LambertGrid(
+        grid.ref_lat, grid.ref_lon, grid.truelat1, grid.truelat2,
+        grid.stand_lon, grid.dx, grid.dy, (x1 - x0) + 1, (y1 - y0) + 1,
+        known_x=grid.known_x - x0, known_y=grid.known_y - y0,
+        moad_cen_lat=grid.moad_cen_lat, moad_cen_lon=grid.moad_cen_lon)
+
+
+def test_the_native_grids_boundary_strips_take_the_identity_route_cell_for_cell():
+    from gpuwm.ingest.hrrr import _ProjectedCpuPlan
+    from gpuwm.ingest.hrrr_target import native_lattice_placement
+
+    grid = _native_target_grid()
+    snapshot = _full_window_snapshot()
+    full = {
+        "mass": _ProjectedCpuPlan(snapshot, *grid.latlon_mass(), None,
+                                  identity=True),
+        "u": _ProjectedCpuPlan(snapshot, *grid.latlon_u(), None,
+                               identity=True),
+        "v": _ProjectedCpuPlan(snapshot, *grid.latlon_v(), None,
+                               identity=True),
+    }
+    rows, cols = np.indices((1059, 1799))
+    field = (1.0 + cols + 3000.0 * rows).astype(np.float32)
+    for side, (y0, y1, x0, x1) in _native_strip_rectangles().items():
+        strip = _native_strip_grid(grid, y0, y1, x0, x1)
+        placement = native_lattice_placement(strip, parent=grid)
+        assert (placement.i0, placement.j0, placement.nx, placement.ny) == (
+            x0, y0, x1 - x0, y1 - y0), side
+        crops = {
+            "mass": (slice(y0, y1), slice(x0, x1)),
+            "u": (slice(y0, y1), slice(x0, x1 + 1)),
+            "v": (slice(y0, y1 + 1), slice(x0, x1)),
+        }
+        for stagger, (lat, lon) in (("mass", strip.latlon_mass()),
+                                    ("u", strip.latlon_u()),
+                                    ("v", strip.latlon_v())):
+            # What every boundary hour did before: the interpolated route,
+            # which the drift between the two spheres puts past the edge.
+            with pytest.raises(ValueError, match="bilinear donor cell"):
+                _ProjectedCpuPlan(snapshot, lat, lon, None)
+            plan = _ProjectedCpuPlan(snapshot, lat, lon, None, identity=True,
+                                     placement=placement)
+            whole = full[stagger]
+            crop = crops[stagger]
+            for name in ("ix", "iy", "fx", "fy", "nearest_ix", "nearest_iy",
+                         "x_host", "y_host"):
+                assert np.array_equal(getattr(plan, name),
+                                      getattr(whole, name)[crop]), (
+                    side, stagger, name)
+            for method in ("parabolic", "bilinear", "nearest"):
+                assert np.array_equal(
+                    plan.apply(field, method=method),
+                    whole.apply(field, method=method)[crop]), (
+                    side, stagger, method)
+
+
+@pytest.mark.requires_capability("masked_stencil_bridge")
+def test_the_native_grids_boundary_hour_maps_its_strips_as_crops_of_the_whole_map():
+    """The boundary-hour route as the HRRR preparation runs it, on the
+    native grid: each strip is a bit-for-bit crop of the start-state map
+    (before, the first strip was refused and preparation died)."""
+    from test_hrrr_island_donor import _HostBackend
+
+    from gpuwm.ingest.hrrr import interpolate_hrrr_to_lambert
+    from tools.hrrr_single_domain_benchmark import (
+        _boundary_mapping_targets, _map_boundary_snapshot)
+    from types import SimpleNamespace
+
+    grid = _native_target_grid()
+    snapshot = _identity_snapshot()
+    landmask, _to_land, _to_water = _identity_target_landmask(
+        snapshot.fields["LANDSEA"] >= 0.5)
+    whole = interpolate_hrrr_to_lambert(
+        snapshot, grid, target_landmask=landmask, soil_mapping_report={},
+        surface_fallback_radius=24, backend=_HostBackend(),
+        target_name="domain 1")
+    targets = _boundary_mapping_targets(
+        grid, {"LANDMASK": landmask}, SimpleNamespace(nx=1799, ny=1059),
+        width=_STRIP_WIDTH)
+    report: dict = {}
+    compact, _seconds = _map_boundary_snapshot(
+        snapshot, targets, report, surface_fallback_radius=24,
+        preprocess_backend=_HostBackend(), domain_grid=grid)
+    compared = 0
+    for side, (y0, y1, x0, x1) in _native_strip_rectangles().items():
+        strip = compact[side].fields
+        assert set(strip) == set(whole.fields), side
+        for name, value in whole.fields.items():
+            value = np.asarray(value)
+            tail = value.shape[-2:]
+            if tail == (1059, 1799):
+                crop = value[..., y0:y1, x0:x1]
+            elif tail == (1059, 1800):
+                crop = value[..., y0:y1, x0:x1 + 1]
+            elif tail == (1060, 1799):
+                crop = value[..., y0:y1 + 1, x0:x1]
+            else:
+                raise AssertionError((side, name, value.shape))
+            got = np.asarray(strip[name])
+            assert got.shape == crop.shape, (side, name)
+            assert got.tobytes() == np.ascontiguousarray(crop).tobytes(), (
+                side, name)
+            compared += 1
+    assert compared == 4 * len(whole.fields)

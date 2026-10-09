@@ -2,6 +2,7 @@
 
 import sys
 import inspect
+import ast
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -534,13 +535,27 @@ def test_acoustic_rk_finalizes_nested_state_once_after_rk_loop():
     import gpuwm.core.dycore as dycore
 
     source = inspect.getsource(dycore.step)
-    rk_start = source.index("for istage, (nsub, dtau) in enumerate(stages):")
-    final_call = source.index(
-        "apply_state_boundary_values(state, cfg,\n"
-        "                                state.elapsed_seconds + cfg.dt)",
-        rk_start)
-    rk_body = source[rk_start:final_call]
-    assert "apply_state_boundary_values(" not in rk_body
+    tree = ast.parse(source)
+    rk_loop = next(node for node in ast.walk(tree) if isinstance(node, ast.For)
+                   and isinstance(node.target, ast.Tuple)
+                   and isinstance(node.target.elts[0], ast.Name)
+                   and node.target.elts[0].id == "istage")
+    assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id == "apply_state_boundary_values"
+                   for node in ast.walk(rk_loop))
+    epilogues = {"_step_epilogue": dycore._step_epilogue,
+                 "_wrf_step_epilogue": dycore._wrf_step_epilogue}
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id in epilogues]
+    assert {node.func.id for node in calls} == set(epilogues)
+    assert len(calls) == 2
+    assert all(node.lineno > rk_loop.end_lineno for node in calls)
+    for helper in epilogues.values():
+        final = [node for node in ast.walk(ast.parse(inspect.getsource(helper)))
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                 and node.func.id == "apply_state_boundary_values"]
+        assert len(final) == 1
+        assert ast.unparse(final[0].args[2]) == "state.elapsed_seconds + cfg.dt"
 
 
 @requires_gpu
@@ -1369,6 +1384,71 @@ def test_state_boundary_frames_reject_the_same_geometry_faults():
         StateBoundaryFrames(spec_bdy_width=5, spec_zone=0)
     with pytest.raises(ValueError, match="spec_bdy_width must cover"):
         StateBoundaryFrames(spec_bdy_width=3, spec_zone=1, relax_zone=4)
+
+
+def test_state_boundary_frames_take_a_replaced_start_as_frame_zero():
+    """A start replaced after frame 0 was taken (``--initial-inputs``).
+
+    The mapped route takes frame 0 from the boundary source's own start and
+    then starts the run from a separate analysis.  Replacing frame 0 must
+    give exactly the boundary built from the analysis start: interval 0
+    begins at the start the run integrates and still ends at frame 1, and
+    every later interval is unchanged.  Origin: WOOF's prepared run against
+    stock WRF 4.6.1 on its own export, where the outer rows jumped by up to
+    9.7 K on the first step because frame 0 was another atmosphere.
+    """
+    snapshots = _multi_time_snapshots(count=4)
+    analysis = _multi_time_snapshots(count=1, seed=7)[0]
+    times = [0.0, 10800.0, 21600.0, 32400.0]
+    reference = build_lateral_boundaries(
+        [analysis] + snapshots[1:], times,
+        spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    original = build_lateral_boundaries(
+        snapshots, times, spec_bdy_width=5, spec_zone=1, relax_zone=4)
+
+    frames = StateBoundaryFrames(spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    frames.add_snapshot(snapshots[0], index=0)
+    frames.replace_snapshot(analysis, index=0)
+    for index in (1, 2, 3):
+        frames.add_snapshot(snapshots[index], index=index)
+    candidate = frames.build(times)
+
+    for number, (expected, other, actual) in enumerate(zip(
+            reference.intervals, original.intervals, candidate.intervals)):
+        for name in expected.fields:
+            for side in ("west", "east", "south", "north"):
+                want = getattr(expected.fields[name], side)
+                got = getattr(actual.fields[name], side)
+                assert got.value.tobytes() == want.value.tobytes()
+                assert got.tendency.tobytes() == want.tendency.tobytes()
+                # The end of every interval is the boundary source's.
+                end = got.value + got.tendency * (
+                    actual.end_seconds - actual.start_seconds)
+                was = getattr(other.fields[name], side)
+                np.testing.assert_allclose(
+                    end, was.value + was.tendency * (
+                        other.end_seconds - other.start_seconds),
+                    rtol=1e-5, atol=1e-4)
+        if number:
+            for name in other.fields:
+                for side in ("west", "east", "south", "north"):
+                    assert (getattr(actual.fields[name], side).value.tobytes()
+                            == getattr(other.fields[name], side).value.tobytes())
+
+
+def test_state_boundary_frames_refuse_a_replaced_start_too_late():
+    snapshots = _multi_time_snapshots(count=3)
+    frames = StateBoundaryFrames(spec_bdy_width=5)
+    with pytest.raises(ValueError, match="not held"):
+        frames.replace_snapshot(snapshots[0], index=0)
+    frames.add_snapshot(snapshots[0], index=0)
+    frames.add_snapshot(snapshots[1], index=1)
+    frames.interval(0, [0.0, 10800.0, 21600.0])
+    frames.release(0)
+    with pytest.raises(ValueError, match="already written"):
+        frames.replace_snapshot(snapshots[2], index=0)
+    with pytest.raises(ValueError, match="inventory differs"):
+        frames.replace_snapshot({"u": snapshots[2]["u"]}, index=1)
 
 
 def test_release_backend_memory_returns_cuda_blocks_and_spares_cpu():

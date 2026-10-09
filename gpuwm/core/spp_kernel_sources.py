@@ -103,7 +103,7 @@ def _mynn_surface(source: str) -> str:
     if (xland >= 1.5f) {
         if (isftcflx == 2) mynn_garratt_1992(z0, restar, xland, zt, zq);
         else {
-            zt = 5.5e-5f * powf(restar, -0.60f);
+            zt = 5.5e-5f * SL_POW(restar, -0.60f);
             zt = __fadd_rn(zt, __fmul_rn(__fmul_rn(zt, 0.5f), rstoch));
             zt = fmaxf(fminf(zt, 1.0e-4f), 2.0e-9f);
             zq = zt;
@@ -156,11 +156,23 @@ def load_spp_module(name: str, capacity: int = 40,
     from gpuwm.certify.kernel_manifest import record_module
     from gpuwm.core.kernels import _compile_observed
     source = specialized_source(name, capacity=capacity, defines=defines)
-    options = ("-std=c++17",)
-    module = cp.RawModule(code=source, options=options, name_expressions=None)
+    # The SPP MYNN PBL compiles as the deterministic unit does, without
+    # FMA contraction (gpuwm.core.kernels._NO_FMAD_MODULES, lane/mynn-exact):
+    # a zero pattern must give the native unit's words, which
+    # tests/test_spp_consumers_gpu.py measures.
+    from gpuwm.core.kernels import _NO_FTZ_MODULES, compile_noftz_module
     key = f"gpuwm.core.spp:{name}[capacity={capacity}]"
     if defines:
         key += "[" + ",".join(f"{k}={v}" for k, v in defines) + "]"
+    if name in _NO_FTZ_MODULES:
+        # The deterministic MYNN surface and PBL units compile without FTZ
+        # (gpuwm.core.kernels.compile_noftz_module): their headers keep WRF's
+        # subnormal words, and RawModule would append FTZ after the caller's
+        # options.  The SPP unit takes the same compile site and options, so
+        # a zero pattern still gives the native unit's words.
+        return compile_noftz_module(name, source, key)
+    options = ("-std=c++17",)
+    module = cp.RawModule(code=source, options=options, name_expressions=None)
     _compile_observed(module, key)
     record_module(key, source=source, options=options, module=module)
     return module

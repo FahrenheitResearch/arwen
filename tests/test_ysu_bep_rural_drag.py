@@ -116,12 +116,16 @@ def test_the_kernel_removes_the_whole_of_its_own_drag_under_bep():
     recorded beside it so the revert is one line."""
     text = (REPO / "gpuwm" / "core" / "kernels" / "ysu.cu").read_text(
         encoding="utf-8")
-    arm = text[text.index("diag[0] = 1.0f + fric;"):]
+    # Since lane/parity-286 the BEP entry point takes WRF's ctopo drag arm
+    # (ctopo = 1, as WRF's driver passes it), so the removal is spelled on
+    # WRF's own bracket, fric*vconvlim + ctopo*fric*(1-vconvlim).
+    arm = text[text.index("real ctopo = topo.ctopo ? topo.ctopo[col] : 1.0f;"):]
     arm = arm[:arm.index("rhs[0] = u0;")]
     assert "DECLARED DIVERGENCE FROM WRF v4.7.1" in arm
-    assert "diag[0] = diag[0] - fric;" in arm
-    assert "`diag[0] - __fmul_rn(bep.frc[col], fric)`" in arm
-    assert arm.count("diag[0] =") == 2
+    assert "diag[0] = __fsub_rn(diag[0], __fadd_rn(drag_v, drag_c));" in arm
+    assert ("`__fsub_rn(diag[0], __fmul_rn(bep.frc[col], "
+            "__fadd_rn(drag_v, drag_c)))`") in arm
+    assert "ysu_column_body<true, true>" in text
     physics = (REPO / "docs" / "public" / "PHYSICS.md").read_text(encoding="utf-8")
     assert "surface drag twice" in physics
 

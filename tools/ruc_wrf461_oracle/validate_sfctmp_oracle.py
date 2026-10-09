@@ -120,19 +120,11 @@ UNREACHABLE_ARGUMENTS = {
         "_stack_control() checks that pair on every run",
 }
 
-UPSTREAM_RESIDUE = {
-    ("dew", 0, 15): 22,
-    ("eeta", 0, 15): 28,
-    ("evapl", 0, 15): 28,
-    ("fltot", 0, 15): 16384,
-    ("qcg", 0, 15): 28,
-    ("qfx", 0, 15): 17,
-    ("qsg", 0, 15): 17,
-    ("qvg", 0, 15): 17,
-    ("s", 0, 15): 2,
-    ("soilice", 1, 8): 1,
-    ("soiliqw", 1, 8): 1,
-}
+#: Cells the port does not reproduce bitwise: none.  The eleven cells this
+#: held until lane/verify-ruc-lsm (case 15's dew/eeta/evapl/fltot/qcg/qfx/qsg/
+#: qvg/s and two level-8 soil partition words) were RUC's float64-rounded
+#: transcendentals; with WOOF's float32 libm the fixture is bitwise.
+UPSTREAM_RESIDUE = {}
 
 
 def _report(name: str, actual: np.ndarray, expected: np.ndarray) -> int:

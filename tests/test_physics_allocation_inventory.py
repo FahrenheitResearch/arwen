@@ -375,7 +375,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # selector seeds the field from P (gpuwm/ingest/wrfinput.py) before any
     # step.  Bound: 4 bytes per cell, once per state, never per step.
     'gpuwm/core/diagnostics.py': {
-        'update_diagnostics': 1,
+        # The carried-MUTS and ordinary strict arms are mutually exclusive.
+        # Either creates the same p_perturbation field once per state when
+        # absent, bounded by 4 bytes per cell; the first arm returns.
+        'update_diagnostics': 2,
     },
     # THE STREAMED SAFETY FOLD's two buffers, from feat-safety-observers.
     # ``StreamedStability.__init__`` allocates the per-tile partial record
@@ -690,7 +693,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     },
     'gpuwm/core/nssl2_qvexcess.py': {},
     'gpuwm/core/nssl2_radiation.py': {},
-    'gpuwm/core/refl.py': {},
+    # The resident tick-zero analysis field is one caller-owned FP32 mass
+    # volume, 4 bytes per cell. Streamed history selects host NumPy zeros
+    # instead, so the restored full-domain metadata path opens no GPU store.
+    'gpuwm/core/refl.py': {'analysis_refl_10cm': 1},
     # WRF v4.7.1 slope_rad / topo_shading (lane 281-namelist-gaps), only on a
     # domain that turns slope_rad on.  ``__init__`` allocates the carrier's
     # held planes once per domain -- diffuse_frac, topo_coszen, hrang and
@@ -799,7 +805,11 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'ruc_sfctmp_full_width_fused': 8,
     },
     'gpuwm/core/sfclay.py': {
-        '_allocate_result': 1,
+        # Three cold-start surface outputs now receive zeros before a
+        # flux-off call. They have the same caller surface shape as the
+        # returned outputs, replacing uninitialized values rather than
+        # adding a domain-volume workspace.
+        '_allocate_result': 2,
         '_surface_array': 1,
     },
     # Shin-Hong (bl_pbl_physics=11): the same shape as YSU's row below --
@@ -849,6 +859,12 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         '_empty_like_int': 1,
         'probe_cloud_dist': 1,
         'probe_constant_tables': 1,
+        # The libm-word probe (tests/test_thompson_aerosol_libm.py): one
+        # output plus two one-element dummies for the unused argument pair.
+        'probe_libm': 3,
+        # The pair re-enforcement probe
+        # (tests/test_thompson_aerosol_clipping_gpu.py): the two outputs.
+        'probe_reenforce_pair': 2,
     },
     'gpuwm/core/thompson_aerosol_sat.py': {
         'probe_droplet_evaporation_indices': 5,

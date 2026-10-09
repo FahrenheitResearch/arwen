@@ -107,9 +107,10 @@ def coupled_mass_factors(state, cfg):
     Moisture remains unforced by SKEBS and is never assigned theta's factor.
     """
     from gpuwm.core.physics import _couple_momentum_to_faces
+    from gpuwm.wrf_exact import ENABLED as WRF_EXACT
     mass = state.c1h[:, None, None] * state.total_mu()[None] + state.c2h[:, None, None]
     u, v = _couple_momentum_to_faces(state, cfg, mass, mass)
-    theta = mass / state.msft[None] if state.has_msf else mass
+    theta = mass / state.msft[None] if state.has_msf and not WRF_EXACT else mass
     return {"u": u, "v": v, "theta": theta}
 
 

@@ -75,6 +75,24 @@ class StaticBridgeError(RuntimeError):
 _REPORTED_FALLBACKS: set[str] = set()
 
 
+def floor_ruc_layer_moisture(values):
+    """Copy and floor f32 RUC values through the Rust initialization seam."""
+    result = np.array(values, dtype=np.float32, order="C", copy=True)
+    library = load()
+    try:
+        floor = library.gpuwm_static_ruc_layer_moisture_floor
+    except AttributeError:
+        raise StaticBridgeError(
+            "Rust static-fields lacks the RUC layer moisture floor; an old bridge "
+            "would leave negative extrapolated SMOIS for cold start. Rebuild with "
+            + _checkout_build_command()) from None
+    floor.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_size_t]
+    floor.restype = ctypes.c_int32
+    if floor(result.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), result.size) != 0:
+        raise StaticBridgeError("Rust RUC layer moisture floor refused its array")
+    return result
+
+
 def route(operation: str):
     """This module when the Rust seam is the active default, else None.
 

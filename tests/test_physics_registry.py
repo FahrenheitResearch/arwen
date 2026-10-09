@@ -335,7 +335,10 @@ def test_every_repo_local_registry_citation_still_says_what_the_claim_says():
     guard = [citation for citation, row in checker.RESOLVED.items()
              if row == ("gpuwm/core/kernels/ysu.cu", "kpbl < nz")]
     assert len(guard) == 1 and guard[0] in found, guard
-    assert "bl_ysu.F90:1315" in found
+    # bl_ysu.F90:1315 (the ctopo-absent drag arm) left the registry with the
+    # warning that cited it: lane/parity-286 put every YSU entry point on
+    # WRF's default ctopo arm, :1308.
+    assert "bl_ysu.F90:1315" not in found
     assert "bl_ysu.F90" in checker.EXTERNAL
     assert not [citation for citation in found
                 if citation in ("kernels/ysu.cu:252", "kernels/ysu.cu:1315")]
@@ -1643,11 +1646,10 @@ def test_mynn_is_implemented_and_warns_rather_than_blocking():
     """Both halves run, and both say what has not been verified.
 
     ``implemented: true`` is what puts a scheme in a user's picker, so the
-    warnings carry the three things a user has to know before choosing it:
-    that no gpuwm/WRF trajectory comparison exists, that four of the CUDA
-    leaves are not bitwise twins of their CPU references away from the oracle
-    fixtures, and that phim/phih still run on the host at 125 microseconds
-    per column.
+    warnings carry what a user has to know before choosing it: that no
+    gpuwm/WRF trajectory comparison exists, and -- since lane/mynn-exact --
+    that the CUDA scheme is bitwise WRF v4.6.1 on every oracle, with the
+    test that holds it named; phim/phih run on the device.
     """
     components = physics_registry()["components"]
     for component in ("pbl", "surface_layer"):
@@ -1658,8 +1660,9 @@ def test_mynn_is_implemented_and_warns_rather_than_blocking():
         assert any("UNVERIFIED against a WRF forecast" in warning
                    for warning in option["warnings"]), component
     pbl_warnings = " ".join(components["pbl"]["options"]["mynn"]["warnings"])
-    assert "125 microseconds per column" in pbl_warnings
-    assert "NOT bitwise twins" in pbl_warnings
+    assert "bitwise WRF v4.6.1 on every oracle" in pbl_warnings
+    assert "tests/test_mynn_wrf461_exact_gpu.py" in pbl_warnings
+    assert "evaluated on the device" in pbl_warnings
 
 
 def test_noahmp_is_implemented_and_warns_rather_than_blocking():
@@ -2164,9 +2167,12 @@ def test_mp28_publishes_its_measured_column_evidence_not_a_forecast_claim():
     """The column gate is green; the registry says so in numbers, and no more.
 
     ``implemented-unverified`` says "column-oracle-measured".  Since the 2.8.6
-    accumulator rework the column deck is also CLEAN -- 22 of 22 at the flat
-    gate with no allowance -- and the label still does not move, because a
-    clean single-call deck is not a forecast comparison.  The measurement
+    accumulator rework the column deck is also CLEAN but for the gate's
+    declared divergence -- 21 of 22 at the flat gate with no allowance since
+    2.8.8 moved rain collecting graupel onto the one slab WRF's tables hold,
+    the 22nd (``aero-cold-overlap``) missing by that divergence alone -- and
+    the label still does not move, because a clean single-call deck is not a
+    forecast comparison.  The measurement
     lives on the option where a user reads it rather than only in a test
     file.  The published partition must cover every committed fixture
     exactly once: a fixture that quietly leaves the residual list without
@@ -2175,7 +2181,20 @@ def test_mp28_publishes_its_measured_column_evidence_not_a_forecast_claim():
     This test was ``..._not_a_clean_claim`` and asserted a residual existed,
     which was the accurate claim until the rework closed the last four
     fixtures; it now asserts the opposite, with the same partition checks.
+    The one residual it admits is the gate's own declared divergence
+    (``_G3_DECLARED_DIVERGENCE``), read back from the gate rather than
+    retyped, so a residual that is not declared there still fails here.
     """
+    import importlib.util
+
+    gate_spec = importlib.util.spec_from_file_location(
+        "_mp28_adapter_partition",
+        ROOT / "tests" / "test_thompson_aerosol_adapter.py")
+    gate = importlib.util.module_from_spec(gate_spec)
+    sys.modules.setdefault("_mp28_adapter_partition", gate)
+    gate_spec.loader.exec_module(gate)
+    declared = set(gate._G3_DECLARED_DIVERGENCE)
+
     evidence = _mp28_option()["extensions"]["column_oracle_evidence"]
     committed = _committed_aerosol_fixture_ids()
     spec = _spec_aerosol_fixture_ids()
@@ -2230,11 +2249,11 @@ def test_mp28_publishes_its_measured_column_evidence_not_a_forecast_claim():
     assert not (clean & residual) and not (clean & carved) \
         and not (residual & carved)
 
-    # Every residual, while any existed, was published as a number rather
-    # than as an adjective.  Since the 2.8.6 accumulator rework there is none,
-    # and the clean list is the whole deck.
-    assert residual == set(), evidence["residual_fixtures"]
-    assert clean == committed
+    # Every residual is published as a number rather than as an adjective.
+    # Since the 2.8.6 accumulator rework the only one is the gate's declared
+    # divergence, and the clean list is the rest of the deck.
+    assert residual == declared, evidence["residual_fixtures"]
+    assert clean == committed - declared
     for name, fields in evidence["residual_fixtures"].items():
         assert fields, name
         for field, value in fields.items():
@@ -2271,9 +2290,11 @@ def test_mp28_publishes_its_measured_column_evidence_not_a_forecast_claim():
     # on the option and both are derived from the same partition here.
     assert evidence["clean_unexceptioned"] == len(clean)
     assert evidence["clean_as_gated"] == len(clean) + len(carved) + len(near)
-    assert evidence["clean_unexceptioned"] == evidence["fixtures"], (
-        "the gate clears the whole deck with nothing held out, so the "
-        "published unexceptioned count must be the deck size")
+    assert evidence["clean_unexceptioned"] == (
+        evidence["fixtures"] - len(declared)), (
+        "the gate clears the whole deck but its declared divergence with "
+        "nothing held out, so the published unexceptioned count must be the "
+        "deck size less that divergence")
     # ...and the clean deck did NOT raise the label, which is the claim this
     # row must never overstate.
     assert _mp28_option()["maturity"] == "implemented-unverified"
@@ -2637,7 +2658,8 @@ def test_mp28_plan_warns_at_every_deviation_rather_than_blocking():
     text = " ".join(emitted)
     for phrase in (
         "No matched REAL-DATA or NESTED WRF trajectory",
-        "THE COLUMN EVIDENCE IS CLEAN; THE FORECAST EVIDENCE IS NOT",
+        "THE COLUMN EVIDENCE IS CLEAN BUT FOR ONE DECLARED DIVERGENCE; "
+        "THE FORECAST EVIDENCE IS NOT",
         "AEROSOL INPUT LIMITS",
         "gpuwm/core/physics.py::initialize_physics",
         "HISTORICAL SYNTHETIC-PROFILE SENSITIVITY",
@@ -2655,8 +2677,9 @@ def test_mp28_plan_warns_at_every_deviation_rather_than_blocking():
     ):
         assert phrase in text, f"the mp=28 warnings no longer say: {phrase}"
     for retired_claim in (
-        # Retired by the 2.8.6 accumulator rework: 22 of 22 columns clear
-        # the flat gate, so the warning may no longer say they do not.
+        # Retired by the 2.8.6 accumulator rework: every column but the
+        # declared divergence clears the flat gate, so the warning may no
+        # longer say they do not.
         "THE COLUMN EVIDENCE IS NOT CLEAN",
         "carries NO aerosol inflow",
         "flag_qnc/flag_qnwfa/flag_qnifa to MYNN as literal False",

@@ -15,7 +15,7 @@ PHYSICS_SELECTOR_VALUES = {
     "thompson_version": ("wrf_461", "wrf_39_noaa"),
     "thompson_fork_snow_fall": ("blend", "wrf_39_noaa"),
     "mynn_sfclay_variant": ("wrf_461", "gsl_wrf39"),
-    "terrain_clock": ("measured", "pinned"),
+    "terrain_clock": ("measured", "pinned", "local_face"),
     "diff_6th_form": ("wrf_461", "noaa_wrf39"),
     "upper_wind_limiter_form": ("wrf_461", "noaa_wrf39"),
     "rrtmg_cloud_optics_form": ("wrf_461", "noaa_wrf39"),
@@ -112,6 +112,16 @@ def namelist_physics_defaults(path) -> dict:
     return _request_defaults("namelist_names", Path(path).name)
 
 
+def recipe_load_generations(source: str | None) -> dict:
+    """The generations a source declares for the load-time fill alone
+    (``[request.load_generations]``; see :data:`GENERATION_SELECTORS`)."""
+    if source is None:
+        return {}
+    from gpuwm.source_adapters import get_source_adapter
+    return _request_defaults("recipe_sources", get_source_adapter(source).source_id,
+                             scope="load_generations")
+
+
 def recipe_physics_defaults(source: str | None) -> dict:
     """An authored recipe declares its generation; ordinary loads do not."""
     if source is None:
@@ -138,7 +148,6 @@ LAND_SCOPED_RECIPE_SETTINGS = {"rdlai2d": (2, 3), "usemonalb": (2, 3)}
 MP_SCOPED_RECIPE_SETTINGS = {"thompson_version": (28,),
                              "thompson_fork_snow_fall": (28,)}
 
-
 def land_scoped_defaults(defaults: dict, sf_surface_physics,
                          mp_physics=None) -> dict:
     """``defaults`` without the settings the selected land and microphysics
@@ -149,6 +158,47 @@ def land_scoped_defaults(defaults: dict, sf_surface_physics,
                 or sf_surface_physics in LAND_SCOPED_RECIPE_SETTINGS[key])
             and (key not in MP_SCOPED_RECIPE_SETTINGS
                  or mp in MP_SCOPED_RECIPE_SETTINGS[key])}
+
+
+def gsd41_admitted(settings) -> bool:
+    """Whether one resolved domain can run ``bl_mynn_version = "gsd_41"``.
+
+    ``settings`` is the domain's resolved map (its own table over
+    ``[shared]``); a missing key reads its RunConfig default.  The answer
+    is no unless the domain runs the MYNN boundary layer
+    (``bl_pbl_physics = 5``, the only reader of the key), and no wherever
+    :func:`gpuwm.config.validate_run_config` refuses the generation, each
+    for the breakage that refusal names: radiation other than the legacy
+    RRTMG pair while ``icloud_bl > 0`` (only that pair merges the fork's
+    in-cloud QC_BL), ``spp_pbl = 1`` (the stochastic kernels are specialised
+    from the v4.6.1 source) and an active ``bl_mynn_mixscalars = 1`` (the
+    scalar plume transport carries the v4.6.1 cloud).  Filling the generation there
+    would make the domain refuse its own load, so it keeps the v4.6.1 MYNN
+    it ran before.  tests/test_mynn_generation_door.py binds this rule to
+    the validator.
+    """
+    from types import SimpleNamespace
+    from gpuwm.config import (RRTMG_VARIANT_LEGACY, RunConfig,
+                              mynn_mixscalars_active,
+                              radiation_scheme_ids_from_settings)
+
+    def value(name):
+        found = settings.get(name)
+        return getattr(RunConfig, name) if found is None else found
+
+    if int(value("bl_pbl_physics")) != 5 or int(value("spp_pbl")) == 1:
+        return False
+    if mynn_mixscalars_active(SimpleNamespace(
+            **{name: value(name) for name in (
+                "bl_mynn_mixscalars", "bl_pbl_physics", "mp_physics")})):
+        return False
+    radiation = radiation_scheme_ids_from_settings(
+        {name: value(name)
+         for name in ("ra_physics", "ra_lw_physics", "ra_sw_physics")})
+    if int(value("icloud_bl")) > 0 and any(radiation):
+        return (radiation == (4, 4)
+                and value("ra_rrtmg_variant") == RRTMG_VARIANT_LEGACY)
+    return True
 
 
 #: The scheme generations a loaded configuration takes from its declared
@@ -177,8 +227,20 @@ def land_scoped_defaults(defaults: dict, sf_surface_physics,
 #: woof-hour1-spinup).  It is filled only where the fork generation
 #: resolves, written or filled here, because gpuwm.config refuses it
 #: under ``wrf_461``.
+#: The MYNN boundary layer generation joined them in lane/mynn-exact:
+#: the WOOF-HRRR door's carried experiment.toml and the shipped HRRR demo
+#: configurations name MYNN and the legacy RRTMG pair but no
+#: ``bl_mynn_version``, so they ran WRF v4.6.1's MYNN against HRRR's own
+#: analysis while every authored HRRR door ran the GSD MYNN v4.1 the
+#: operational fork runs.  It is filled only on trees whose every domain
+#: admits it (:func:`gsd41_admitted`).  The row declares it under
+#: ``[request.load_generations]``, a scope only this fill reads: the
+#: authoring and import doors (:func:`recipe_physics_defaults`) cannot ask
+#: the per-domain admission question of one shared table, and they already
+#: state the generation where they mean it (the HRRR route's named suite,
+#: the HRRR recipes, the hrrr_wrf.nl namelist row).
 GENERATION_SELECTORS = ("mynn_sfclay_variant", "thompson_version",
-                        "thompson_fork_snow_fall")
+                        "thompson_fork_snow_fall", "bl_mynn_version")
 
 
 def _resolved_per_domain(key, shared, domain_tables, chosen) -> set:
@@ -197,6 +259,8 @@ def _resolved_per_domain(key, shared, domain_tables, chosen) -> set:
 def omitted_generation_selectors(shared: dict, domain_tables, source) -> dict:
     """The generation selectors ``source`` declares that ``shared`` omits.
 
+    ``bl_mynn_version`` is returned only when every domain admits the
+    declared generation (:func:`gsd41_admitted`).
     ``thompson_version`` is returned only when every domain resolves
     ``mp_physics = 28`` (gpuwm.config refuses the fork name under any other
     scheme), and ``thompson_fork_snow_fall`` only when, in addition, every
@@ -209,6 +273,7 @@ def omitted_generation_selectors(shared: dict, domain_tables, source) -> dict:
         return {}
     try:
         declared = recipe_physics_defaults(source)
+        declared.update(recipe_load_generations(source))
     except (KeyError, ValueError):
         return {}
     chosen = {key: value for key, value in declared.items()
@@ -221,6 +286,11 @@ def omitted_generation_selectors(shared: dict, domain_tables, source) -> dict:
         if _resolved_per_domain("thompson_version", shared, domain_tables,
                                 chosen) != {"wrf_39_noaa"}:
             chosen.pop("thompson_fork_snow_fall")
+    if "bl_mynn_version" in chosen:
+        tables = [table for table in (domain_tables or ())
+                  if isinstance(table, dict)] or [{}]
+        if not all(gsd41_admitted({**shared, **table}) for table in tables):
+            chosen.pop("bl_mynn_version")
     return chosen
 
 

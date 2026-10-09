@@ -693,9 +693,10 @@ def test_split_path_advects_the_explicit_share_at_the_configured_orders(monkeypa
     """Under the implicit-explicit split the four explicit launches take
     the EXPLICIT share of Omega (ctx.wwE) at the configured orders, scalars
     and w at v_sca_adv_order, u and v at v_mom_adv_order; the t0 offset
-    flux rejoins on the full Omega at the scalar order.  The breakage this
-    prevents: the split path left on order 3, or advecting the full flux,
-    while the explicit path runs 5."""
+    flux rejoins on the full Omega at the scalar order (default arithmetic
+    only: strict arithmetic balances t0 in its acoustic kernels).  The
+    breakage this prevents: the split path left on order 3, or advecting
+    the full flux, while the explicit path runs 5."""
     import cupy as cp
     from types import SimpleNamespace
     from gpuwm.core import dycore
@@ -730,8 +731,9 @@ def test_split_path_advects_the_explicit_share_at_the_configured_orders(monkeypa
         has_msf=False, rotational=False, p=cp.zeros((8, 8, 8), cp.float32))
     dycore._add_slow_tendencies_ieva(state, cfg, None, None, ww,
                                      SimpleNamespace(wwE=wwE, wwI=None), cq=object())
+    offset = [] if dycore.WRF_EXACT else [("scalar", "full", 5)]
     assert seen == [("scalar", "explicit", 5), ("u", "explicit", 3), ("v", "explicit", 3),
-                    ("w", "explicit", 5), ("scalar", "full", 5)], seen
+                    ("w", "explicit", 5)] + offset, seen
 
 
 def test_every_forecast_launch_passes_its_wrf_order():
@@ -769,5 +771,6 @@ def test_every_forecast_launch_passes_its_wrf_order():
                 where, ast.unparse(keywords["vorder"]))
             seen[name] = seen.get(name, 0) + 1
     # advection.py's Phase-1 path (4), dycore's explicit and split paths
-    # (8), moist's scalar, PD and TKE launches (6).
-    assert seen == {"advection.py": 4, "dycore.py": 8, "moist.py": 6}, seen
+    # (8), moist's scalar, PD and TKE launches including the selected
+    # expanded aerosol/species carry paths (8). Every site is checked above.
+    assert seen == {"advection.py": 4, "dycore.py": 8, "moist.py": 8}, seen

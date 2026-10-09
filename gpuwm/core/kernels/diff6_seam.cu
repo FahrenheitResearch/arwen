@@ -7,8 +7,8 @@
 // and v at j = jde-3 (:6381-6385/:6378-6380), whose dflux_p1 reads the
 // true boundary datum field(ide)/field(jde) (:6465-6467 x /:6547-6549 y)
 // -- a read the periodic-wrap stencil in diff6.cu cannot make (it would
-// substitute the OPPOSITE boundary's value), so the host masks that face
-// out of the main kernel's output and these kernels recompute it with
+// substitute the OPPOSITE boundary's value), so the host leaves that face
+// out of the main kernel's loop bounds and these kernels compute it with
 // honest unwrapped reads: 0-based, u face i = nx-3 and v face j = ny-3.
 //
 // The arithmetic uses WRF's REAL operation order and tendency map factors,
@@ -19,10 +19,10 @@
 // j bounds jds+3..jde-4 (0-based 3..ny-4) when y is also non-periodic
 // (bndc = 1), the full periodic row range otherwise; cross-axis (y)
 // stencil reads wrap exactly like the main kernel iff bndc = 0.
-// diff6_seam_v is the transpose.  The host zeroes the whole seam
-// column/row first, so the += here lands on zeros and rows/columns
-// outside h0..h1 stay zero (the caller's width-3 strip mask re-zeroes
-// its own share regardless).
+// diff6_seam_v is the transpose.  The main kernel's loop bounds exclude
+// the seam column/row, so the update here lands on the caller's incoming
+// tendency, (tend + tendency_x) + tendency_y as the Fortran forms it, and
+// rows/columns outside h0..h1 keep the incoming tendency untouched.
 
 extern "C" __global__
 void diff6_seam_u(const real* __restrict__ f,     // (nlev, ny, nx+1)

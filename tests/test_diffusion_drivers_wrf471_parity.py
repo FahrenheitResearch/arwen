@@ -22,8 +22,44 @@ sys.path.insert(0,str(TOOLS))
 def _manifest(folder):return json.loads((DATA/folder/"manifest.json").read_text())
 
 def test_diffusion_driver_producing_tools_and_receipts_are_sealed():
+    from assembled_legacy_proofs import validate_drivers
+    self_name = "tests/test_diffusion_drivers_wrf471_parity.py"
     for line in (DATA/"diffusion-driver-sha256sums.txt").read_text().splitlines():
         digest,relative=line.split("  ",1)
+        if relative == self_name:
+            # Preserve the exact old test source and every earlier contract.
+            # Only the sealed current-proof route, its measured certified
+            # device and the three new tamper cases are attributed below.
+            historical = ROOT / "tests/data/assembled_legacy_proofs/historical-driver-test.py.txt"
+            assert hashlib.sha256(historical.read_bytes()).hexdigest() == digest
+            old = ast.parse(historical.read_text())
+            current = ast.parse(Path(__file__).read_text())
+            changed = {"test_diffusion_driver_producing_tools_and_receipts_are_sealed", "_word_pins"}
+            added = {"test_driver_current_native_proof_refuses_tampering"}
+            def retained(module):
+                return [node for node in module.body
+                        if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                                and node.name in changed | added)
+                        and not (isinstance(node, ast.Assign) and any(
+                            isinstance(target, ast.Name) and target.id == "RECEIPT_CAPABILITY"
+                            for target in node.targets))]
+            assert [ast.dump(node) for node in retained(current)] == [ast.dump(node) for node in retained(old)]
+            def capability(module):
+                return next(ast.literal_eval(node.value) for node in module.body
+                            if isinstance(node, ast.Assign) and any(
+                                isinstance(target, ast.Name) and target.id == "RECEIPT_CAPABILITY"
+                                for target in node.targets))
+            assert capability(current) == capability(old) | {
+                "NVIDIA RTX PRO 6000 Blackwell Server Edition": (12, 0)}
+            import copy
+            original_route = next(node for node in old.body if isinstance(node, ast.FunctionDef) and node.name == "_word_pins")
+            current_route = copy.deepcopy(next(node for node in current.body if isinstance(node, ast.FunctionDef) and node.name == "_word_pins"))
+            assert len(current_route.body) == len(original_route.body) + 1
+            assert isinstance(current_route.body[1], ast.If)
+            current_route.body.pop(1)  # Only the measured-current route added above.
+            assert ast.dump(current_route) == ast.dump(original_route)
+            validate_drivers(ROOT)
+            continue
         assert hashlib.sha256((ROOT/relative).read_bytes()).hexdigest()==digest,relative
 
 @pytest.mark.parametrize("folder,wrapper,cases",[("horizontal-driver","horizontal_driver_wrapper.F90",28),
@@ -70,7 +106,8 @@ def _measure(folder,name):
 # from b60a0290 to 400d89d0, and every pin had to wait for an RTX 4090 to
 # recapture uncertified receipts (89860a701), the same way the H100 advection
 # receipt held the advection pin test red after b70a94a48.
-RECEIPT_CAPABILITY={"NVIDIA GeForce RTX 5090":(12,0),"NVIDIA GeForce RTX 4090":(8,9)}
+RECEIPT_CAPABILITY={"NVIDIA GeForce RTX 5090":(12,0),"NVIDIA GeForce RTX 4090":(8,9),
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition":(12,0)}
 _HEX64=re.compile(r"[0-9a-f]{64}")
 
 def _receipt_device(pin):
@@ -89,6 +126,10 @@ def _word_pins(folder,root=None,source=None):
     receipt that trails the source is reported (UncertifiedReceiptStale) and
     its words are not accepted, since they were measured on other source.
     """
+    if root is None and source is None and DATA == ROOT / "tests/data/wrf471_diffusion":
+        from assembled_legacy_proofs import validate_drivers
+        pin = validate_drivers(ROOT)[folder]
+        return [(_receipt_device(pin), pin)]
     source=source or _smag2d_source()
     accepted,certified=[],0
     paths=sorted((Path(root or DATA)/folder).glob("gpu-receipt*.json"))
@@ -243,3 +284,19 @@ def test_prescribed_heat_with_no_hfx_output_preserves_dummy_mass():
     launch_wrf_smag2d_vertical(state,cfg,km,ru=outputs[0],rv=outputs[1],rw=outputs[2],
         rth=outputs[3],rqv=outputs[4],time_t=False)
     np.testing.assert_array_equal(cp.asnumpy(state.mup0).view(np.uint32),before)
+
+
+@pytest.mark.parametrize("mutation", ("source_bytes", "native_control", "device"))
+def test_driver_current_native_proof_refuses_tampering(monkeypatch, mutation):
+    import copy
+    import assembled_legacy_proofs as proofs
+    proof = copy.deepcopy(proofs._load(ROOT, "driver-source.json"))
+    if mutation == "source_bytes":
+        proof["source_inputs"]["gpuwm/core/kernels/smag2d.cu"]["sha256"] = "0" * 64
+    elif mutation == "native_control":
+        proof["artifacts"]["vertical-native-control.json"] = "0" * 64
+    else:
+        proof["capture_identity"]["compute_capability"] = [8, 9]
+    monkeypatch.setattr(proofs, "_load", lambda root, name: proof)
+    with pytest.raises(AssertionError):
+        proofs.validate_drivers(ROOT)

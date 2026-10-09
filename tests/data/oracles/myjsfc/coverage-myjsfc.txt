@@ -1,0 +1,4 @@
+executable lines reached: 443; never reached: 3
+  never 1166: DO J=JTS,JTE
+  never 1167: DO I=ITS,ITF
+  never 1168: USTAR(I,J)=0.1

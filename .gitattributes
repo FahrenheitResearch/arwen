@@ -154,3 +154,7 @@ tools/rustwx/crates/rw-post/kernels/*.ptx -whitespace
 # merged diff_opt1 attribution); a whitespace edit would invalidate those receipts.
 gpuwm/core/kernels/sfire_moisture.cu -whitespace
 gpuwm/core/sfire_fuel_data.py -whitespace
+# Byte-exact fixtures: a compiled oracle's recorded toolchain lines and an imported WRF namelist keep
+# their own trailing spaces and final blank line; the 2.8.8 cut's export whitespace check refused them.
+tests/data/oracles/sfclay_classic/toolchain.txt -whitespace
+tests/fixtures/wrf461_door/namelist.input -whitespace

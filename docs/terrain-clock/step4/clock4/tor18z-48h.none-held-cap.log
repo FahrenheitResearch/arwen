@@ -1,0 +1,2 @@
+tor18z-48h.cand.toml none-held-cap d01 AS_CONFIGURED dt 3.0 max_step None from None arms ['ncar'] | adaptive: {'every_cell_measured': False, 'longest_step_held_s': None, 'longest_step_tried_s': None, 'shortest_entry_under_a_stop_s': None, 'a_cell_held_none_down_to_s': None}
+tor18z-48h.cand.toml none-held-cap d02 AS_CONFIGURED dt 1.5 max_step None from None arms ['generated', 'ncar'] | adaptive: {'every_cell_measured': False, 'longest_step_held_s': None, 'longest_step_tried_s': None, 'shortest_entry_under_a_stop_s': None, 'a_cell_held_none_down_to_s': None}

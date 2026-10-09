@@ -108,6 +108,11 @@ def _effective_options(options):
     return wrf_exact.effective_options(options) if wrf_exact.ENABLED else tuple(options)
 
 
+def _spec_options(spec):
+    from gpuwm.core.kernels import function_options
+    return _effective_options(function_options(spec.module, spec.entry, spec.options))
+
+
 def _option_macros(options):
     macros = {"__CUDACC__": "1", "__CUDACC_RTC__": "1"}
     for option in options:
@@ -492,7 +497,7 @@ def _entry_parts(source: str, spec: KernelSpec, options=None):
         if re.search(r"%(?:ctaid|nctaid)", original_definition):
             raise BatchKernelUnsupported(
                 f"{spec.entry}: macro PTX grid-coordinate reads bypass virtualization")
-    active_source = _active_source(source, _effective_options(spec.options) if options is None else options)
+    active_source = _active_source(source, _spec_options(spec) if options is None else options)
     masked = _masked(active_source)
     for variable in re.finditer(r"\b__device__\b([^;{}]*(?:;|\{))", masked):
         declaration_text = variable.group(1)
@@ -637,7 +642,7 @@ def generate_batch_source(source: str, spec: KernelSpec, members: int, *, audit_
     members = _members(members)
     if members == 1:
         return source
-    options = _effective_options(spec.options) if audit_options is None else tuple(audit_options)
+    options = _spec_options(spec) if audit_options is None else tuple(audit_options)
     _, start, end, body_start, _, pointer_types, _, active_signature = _entry_parts(source, spec, options)
     accessor_mode, replacements = _coordinate_rewrites(source, options)
     descriptor = f"__ensemble_strides_{spec.entry}"
@@ -741,7 +746,7 @@ def _runtime_audit_options(spec):
     if match is None:
         raise BatchKernelUnsupported("installed CuPy returned an unaudited NVRTC architecture flag")
     actual = int(match[1])
-    options = _effective_options(spec.options)
+    options = _spec_options(spec)
     for option in options:
         requested = re.fullmatch(r"(?:-arch|--gpu-architecture)=(?:compute|sm)_(\d+)", option)
         if requested and int(requested[1]) != actual:
@@ -852,10 +857,13 @@ def _compiled(spec: KernelSpec, members: int, defines: tuple[tuple[str, int], ..
     source = generate_batch_source(source, spec, members,
                                    audit_options=_runtime_audit_options(spec) if audit_options is None else audit_options)
     key = f"gpuwm.ensemble.batch_kernel:{spec.module}:{spec.entry}[members={members}]"
-    options = _effective_options(spec.options)
-    module = cp.RawModule(code=source, options=options, name_expressions=None)
-    kernels._compile_observed(module, key)
-    record_module(key, source=source, options=options, module=module)
+    options = _spec_options(spec)
+    if kernels.diffusion_kernel(spec.module, spec.entry):
+        module = kernels.compile_diffusion_source(source, key, options)
+    else:
+        module = cp.RawModule(code=source, options=options, name_expressions=None)
+        kernels._compile_observed(module, key)
+        record_module(key, source=source, options=options, module=module)
     return module.get_function(spec.entry)
 
 
@@ -924,7 +932,7 @@ def _finish_prepared_launch(spec, members, device, physical_grid, block,
     receipt = MappingProxyType({"module": spec.module, "entry": spec.entry,
                                "members": members, "device": device,
                                "grid": physical_grid, "block": block,
-                               "options": _effective_options(spec.options),
+                               "options": _spec_options(spec),
                                "audit_options": audit_options,
                                "arrays": array_rows, **(source_receipt or {})})
 
@@ -987,10 +995,13 @@ def _compiled_source(source, spec, members, audit_options):
     compiled_hash = sha256(compiled_source.encode("utf-8")).hexdigest()
     key = (f"gpuwm.ensemble.batch_source:{spec.module}:{spec.entry}"
            f"[members={members},source={source_hash}]")
-    options = _effective_options(spec.options)
-    module = cp.RawModule(code=compiled_source, options=options, name_expressions=None)
-    kernels._compile_observed(module, key)
-    record_module(key, source=compiled_source, options=options, module=module)
+    options = _spec_options(spec)
+    if kernels.diffusion_kernel(spec.module, spec.entry):
+        module = kernels.compile_diffusion_source(compiled_source, key, options)
+    else:
+        module = cp.RawModule(code=compiled_source, options=options, name_expressions=None)
+        kernels._compile_observed(module, key)
+        record_module(key, source=compiled_source, options=options, module=module)
     return module.get_function(spec.entry), source_hash, compiled_hash
 
 
