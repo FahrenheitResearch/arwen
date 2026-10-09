@@ -50,11 +50,17 @@ def test_narrow_intake_write_preserves_older_preparation_identities(tmp_path, mo
     path = tmp_path / "retained-history.json"
     path.write_text(json.dumps(previous), encoding="utf-8")
     monkeypatch.setattr(history, "REGISTRY_PHYSICS_HISTORY_PATH", path)
+    # The retained rows name the commits they were recorded at. A clone of
+    # the public repository holds none of the private ones, so check() on the
+    # retained history is environment-dependent (public CI 37981479846, cpu
+    # ubuntu-24.04: 116 rows unreachable there, 0 in the private tree). What
+    # this test owns is that the narrow write adds no failure of its own.
+    retained_failures = history.check()
     assert history.main(["--since", "HEAD", "--until", "HEAD", "--write"]) == 0
     after = json.loads(path.read_text(encoding="utf-8"))
     assert set(previous["documents"]) <= set(after["documents"])
     assert set(previous["physics"]) <= set(after["physics"])
-    assert history.check() == []
+    assert history.check() == retained_failures
 
 
 def test_retained_history_refuses_conflicting_physics_parts():

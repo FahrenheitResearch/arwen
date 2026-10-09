@@ -255,11 +255,23 @@ def test_reexec_keeps_the_binding(monkeypatch):
     monkeypatch.setattr(parent_death, "_ARMED_PARENT", 4242)
     assert parent_death.reexec_environment() == {parent_death.PARENT_ENV: "4242"}
     captured = {}
+
+    class _Execed(Exception):
+        pass
+
+    def fake_execve(exe, argv, env):
+        # A real execve never returns.  A fake that returned let the call
+        # fall through to the Windows bound-child path, which on a Windows
+        # host launched a real child with PYTHON_GIL=0 and ended the test in
+        # SystemExit (public CI 37981479846, cpu windows-2025, 2.8.8).
+        captured.update(env)
+        raise _Execed
+
     monkeypatch.setattr(free_threading, "reexec_command", lambda: ["python", "x"])
     monkeypatch.setattr(free_threading.os, "name", "posix")
-    monkeypatch.setattr(free_threading.os, "execve",
-                        lambda exe, argv, env: captured.update(env))
-    free_threading.keep_gil_disabled()
+    monkeypatch.setattr(free_threading.os, "execve", fake_execve)
+    with pytest.raises(_Execed):
+        free_threading.keep_gil_disabled()
     assert captured[parent_death.PARENT_ENV] == "4242"
     assert captured["PYTHON_GIL"] == "0"
 
