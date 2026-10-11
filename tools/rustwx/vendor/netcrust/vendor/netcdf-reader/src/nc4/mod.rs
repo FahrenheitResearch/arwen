@@ -343,6 +343,24 @@ impl Nc4File {
         dispatch_read_as_f64!(&dtype, |T| dataset.read_slice::<T>(&hdf5_sel))
     }
 
+    /// Read a slice with automatic type promotion to f64, decompressing the
+    /// overlapping chunks in parallel and each of them exactly once.
+    ///
+    /// Same values as [`Self::read_variable_slice_as_f64`] (same storage
+    /// type, same `as f64` promotion); only the chunk schedule differs.
+    #[cfg(feature = "rayon")]
+    pub fn read_variable_slice_as_f64_parallel(
+        &self,
+        path: &str,
+        selection: &crate::types::NcSliceInfo,
+    ) -> Result<ArrayD<f64>> {
+        let normalized = normalize_dataset_path(path)?;
+        let dataset = self.hdf5.dataset(normalized)?;
+        let hdf5_sel = selection.to_hdf5_slice_info();
+        let dtype = dataset_nc_type(&dataset)?;
+        dispatch_read_as_f64!(&dtype, |T| dataset.read_slice_parallel::<T>(&hdf5_sel))
+    }
+
     /// Read a typed slice of a variable (NC4 delegation).
     pub fn read_variable_slice<T: H5Type>(
         &self,

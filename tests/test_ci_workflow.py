@@ -497,6 +497,34 @@ def test_hosted_validation_stages_declared_external_tables_before_testing(lane):
     assert job.index("uses: ./.github/actions/build-native") < job.index(stage)
 
 
+def test_the_windows_cpu_leg_stages_tables_through_a_fetcher_it_built():
+    """fetch-tables pin-checks every table through rw_fetch, not Python.
+
+    The breakage, named: the windows-2025 cpu leg builds no natives, so its
+    staging step found no rw_fetch, refused every table (exit 2, measured
+    without a reachable native) and stopped the job before Stage 1; with the
+    tables staged, 58 cases in six Stage 1 files (table, fork-table,
+    geography, static-asset, DA object and dust-static staging) refused the
+    same way.  The leg builds the fetcher alone, outside the tree, and names
+    it to the staging step and to Stage 1.
+    """
+
+    job = "\n".join(_job("cpu"))
+    fetcher ="- name: the table fetcher for the leg that builds no natives"
+    stage = "- name: stage the declared external Thompson tables"
+    stage1 = "- name: the CPU-runnable estate"
+    assert job.index(fetcher) < job.index(stage) < job.index(stage1)
+    fetcher_block = job[job.index(fetcher):job.index(stage)]
+    assert "if: matrix.platform == 'windows'" in fetcher_block
+    assert "CARGO_TARGET_DIR: ${{ runner.temp }}/rw-fetch-target" in fetcher_block
+    build = _step_run("cpu", "the table fetcher for the leg that builds no natives")
+    assert "cargo build --release --locked --offline -p rw-fetch" in build
+    named = ("GPUWM_RW_FETCH: ${{ matrix.platform == 'windows' && format("
+             "'{0}/rw-fetch-target/release/rw_fetch.exe', runner.temp) || '' }}")
+    assert named in job[job.index(stage):job.index(stage1)]
+    assert named in job[job.index(stage1):]
+
+
 def test_rust_tests_run_the_battery_manifest_without_in_tree_target_mutation():
     body = _step_run("native", "offline Rust package gates with their existing coverage floors")
     assert "tools/battery/run_cargo_gates.py" in body

@@ -31,7 +31,6 @@ row, not a code path.
 """
 from __future__ import annotations
 
-import hashlib
 import math
 import os
 from dataclasses import dataclass
@@ -399,13 +398,14 @@ def verify_local_file(path: Path, row: StaticSourceRow) -> None:
             f"{path} holds {stat.st_size} bytes, the static source "
             f"{row.id!r} pins {row.bytes}; a truncated or other file would "
             "put other geography under the source's name")
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(block)
-    if digest.hexdigest() != row.sha256:
+    from gpuwm.geog_assets import sha256_file, GeogFetchError
+    try:
+        digest = sha256_file(path)
+    except GeogFetchError as error:
+        raise StaticSourceError(f"static source {row.id!r}: {error}; unverified geography must not be used") from error
+    if digest != row.sha256:
         raise StaticSourceError(
-            f"{path} has sha256 {digest.hexdigest()}, the static source "
+            f"{path} has sha256 {digest}, the static source "
             f"{row.id!r} pins {row.sha256}; refusing other bytes under the "
             "source's name")
 
@@ -456,19 +456,24 @@ def _fetch_static_source_locked(source_id: str, root: Path, *, progress,
     for url in (row.url, *row.mirrors):
         kwargs = {} if urlopen_fn is None else {"urlopen_fn": urlopen_fn}
         try:
-            geog_assets.download_archive(
+            record = geog_assets.download_archive(
                 url, partial, expected_bytes=row.bytes, progress=progress,
+                expected_sha256=row.sha256,
                 label=row.id, report_every_bytes=max(row.bytes // 10, 1),
                 **kwargs)
-            geog_assets.verify_archive(
-                partial, expected_sha256=row.sha256, expected_bytes=row.bytes,
-                source="hf", allow_drift=False, progress=progress,
-                label=row.id)
+            if record is None:
+                geog_assets.verify_archive(
+                    partial, expected_sha256=row.sha256, expected_bytes=row.bytes,
+                    source="hf", allow_drift=False, progress=progress,
+                    label=row.id)
         except (OSError, geog_assets.GeogFetchError) as error:
+            if "pin refused" in str(error) or "pinned object refused" in str(error):
+                raise geog_assets.GeogFetchError(f"static source {row.id}: {error}") from error
             errors.append(f"{url}: {error}")
             continue
         partial.replace(final)
-        verify_local_file(final, row)
+        if record is None:
+            verify_local_file(final, row)
         progress(f"fetch-geog: static source {row.id} staged at {final}")
         return final
     raise geog_assets.GeogFetchError(
@@ -522,6 +527,7 @@ def stage_required_static_sources(raw, geog_root, *, base_dir=None,
     (WOOF 1.0.3 GPU smoke, 2026-10-06).
     """
     fetch = fetch_static_source if fetch is None else fetch
+    Path(geog_root).mkdir(parents=True, exist_ok=True)
     staged = []
     for row in required_static_rows(raw, base_dir=base_dir):
         try:

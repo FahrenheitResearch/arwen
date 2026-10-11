@@ -456,7 +456,8 @@ pub fn render_hour_products(
     let presentation = hour_presentation(config, hour, store.exact_time())?;
 
     if !direct_slugs.is_empty() {
-        let direct_request = DirectBatchRequest {
+        let mut direct_request = DirectBatchRequest {
+            accumulation_window: None,
             geographic_overlays: config.geographic_overlays.clone(),
             panel_annotations: config.panel_annotations.clone(),
             model: config.model,
@@ -481,6 +482,27 @@ pub fn render_hour_products(
             subtitle_right_override: source_subtitle_override(config),
             title_provenance: config.title_provenance.clone(),
         };
+        if config.title_provenance.is_local_import() && direct_slugs.iter().any(|slug| {
+            matches!(slug.as_str(), "snowfall_window" | "snow_10to1_window" | "snow_kuchera_window")
+        }) {
+            let since = std::env::var("GPUWM_SNOW_SINCE").ok()
+                .filter(|value| !value.trim().is_empty());
+            if let Some(exact) = store.exact_time() {
+                if let Some(origin) = exact.origin_unix() {
+                    direct_request.accumulation_window = Some(
+                        rustwx_products::direct::local_accumulation_window(
+                            origin, exact.valid_unix, since.as_deref(),
+                        )?,
+                    );
+                }
+            } else {
+                direct_request.accumulation_window = Some(
+                    rustwx_products::direct::local_accumulation_window_from_cycle(
+                        &config.date_yyyymmdd, config.cycle_utc, hour, since.as_deref(),
+                    )?,
+                );
+            }
+        }
         let outcome = store_render::render_direct_recipes_from_store(
             store,
             &direct_request,

@@ -42,8 +42,14 @@ def test_each_child_preserves_root_backend_selection(
     monkeypatch.setattr(preprocess_backend, "ParallelCpuPreprocessBackend", Backend)
     monkeypatch.setattr(preprocess_backend, "CudaPreprocessBackend", Backend)
     monkeypatch.setattr(preprocess_backend, "_gpu_runtime_installed", lambda: True)
+    # The CUDA stack here is a stand-in, so this machine allows its card:
+    # since 083ac7cd0 the backend choice honours GPUWM_NO_LOCAL_GPU first,
+    # and the CPU legs set it.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+    # HGT_M: since c1227a11a the child door checks the terrain slope before
+    # building a coordinate; a flat plane needs no pass.
     monkeypatch.setattr(nest_init, "build_static_for_domain", lambda *_a: {
-        "LU_INDEX": np.ones((2, 2))})
+        "LU_INDEX": np.ones((2, 2)), "HGT_M": np.zeros((2, 2))})
     monkeypatch.setattr(nest_init, "geog_selection_from_catalog", lambda *_a:
                         SimpleNamespace(landuse_global_attrs=lambda: {"ISLAKE": 21}))
     monkeypatch.setattr(nest_init, "interpolate_era5_to_lambert", lambda *_a, **_k:
@@ -97,8 +103,14 @@ def test_a_child_on_another_backend_records_its_own_selection(
     monkeypatch.setattr(preprocess_backend, "CudaPreprocessBackend",
                         backend_named("cuda"))
     monkeypatch.setattr(preprocess_backend, "_gpu_runtime_installed", lambda: True)
+    # The CUDA stack here is a stand-in, so this machine allows its card:
+    # since 083ac7cd0 the backend choice honours GPUWM_NO_LOCAL_GPU first,
+    # and the CPU legs set it.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+    # HGT_M: since c1227a11a the child door checks the terrain slope before
+    # building a coordinate; a flat plane needs no pass.
     monkeypatch.setattr(nest_init, "build_static_for_domain", lambda *_a: {
-        "LU_INDEX": np.ones((2, 2))})
+        "LU_INDEX": np.ones((2, 2)), "HGT_M": np.zeros((2, 2))})
     monkeypatch.setattr(nest_init, "geog_selection_from_catalog", lambda *_a:
                         SimpleNamespace(landuse_global_attrs=lambda: {"ISLAKE": 21}))
     monkeypatch.setattr(nest_init, "interpolate_era5_to_lambert", lambda *_a, **_k:

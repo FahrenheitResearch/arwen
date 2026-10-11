@@ -318,7 +318,18 @@ class GeogSelection:
         selected dataset's category count instead of assuming the 21 of the
         MODIS default the writer falls back to.
         """
-        index = GeogDataset(self.path("landuse")).index
+        from .geog import parse_index
+        from .external_source import FIELD_GROUPS
+        from .geog import DEFAULT_LANDUSE_ATTRS as _DEFAULT_LANDUSE_ATTRS
+        path = self.path("landuse") / "index"
+        keys = ("MMINLU", "ISWATER", "ISLAKE", "ISICE", "ISURBAN", "NUM_LAND_CAT")
+        if not path.is_file() and self.static_source is not None:
+            attrs = self.static_source.row.attrs_map
+            if (self.landuse == _DEFAULT_GEOG_DIRS["landuse"]
+                    and set(FIELD_GROUPS["landuse"]) <= set(self.static_source.engine_names())
+                    and all(attrs.get(key) == _DEFAULT_LANDUSE_ATTRS[key] for key in keys)):
+                return {key: attrs[key] for key in keys}
+        index = parse_index(path)
         cmin, cmax = index.category_min, index.category_max
         required = {
             "MMINLU": index.mminlu,

@@ -296,6 +296,18 @@ def append_runtime_surface_records(path, *, adapter, cycle, lead, host,
         return []
     from gpuwm import rustwx_fetch
     if binary is None:
+        # Asked of a fetch on the Python transport.  The records are cut
+        # from the cycle's own surface file by the Rust backbone only, so
+        # without it the fetch cannot complete; the refusal says that
+        # rather than the "--engine rust" sentence, which named a flag the
+        # reader never passed.
+        if rustwx_fetch.find_fetch_bin() is None:
+            names = ", ".join(row[0] for row in rows)
+            raise ValueError(
+                f"{adapter.source_id}'s runtime surface fields ({names}) are "
+                "cut from the cycle's surface file by the rust fetch "
+                "backbone, which is not built, so this fetch cannot complete "
+                f"on the Python transport.\n  {rustwx_fetch.fetch_remedy()}")
         from gpuwm.fetch import select_fetch_engine
         binary = select_fetch_engine("rust", progress=progress).binary
     from gpuwm.fetch import RW_FETCH_SOURCES, count_grib2_messages

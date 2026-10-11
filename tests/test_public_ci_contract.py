@@ -284,6 +284,30 @@ def test_the_windows_partition_emulation_reaches_no_native_route(tmp_path):
     assert env["LANG"] == "C.UTF-8"
 
 
+def test_the_windows_partition_emulation_names_only_the_fetcher_the_job_builds(tmp_path):
+    """The Windows cpu leg builds rw_fetch alone, outside the tree, and names it.
+
+    Without it the job's fetch-tables refused every table (exit 2) and 58
+    staging cases in six Stage 1 files refused the same way; one inside the
+    clone would be a ``tools/*/target`` route every other row could find.
+    """
+    from tools.battery import emulate_windows_cpu_partition as emulation
+    clone, outside = tmp_path / "checkout", tmp_path / "rw-fetch-target" / "release"
+    clone.mkdir(), outside.mkdir(parents=True)
+    fetcher = outside / "rw_fetch"
+    with pytest.raises(emulation.Refusal, match="does not exist"):
+        emulation.fetcher_environment({}, fetcher, clone)
+    fetcher.write_bytes(b"")
+    env = emulation.fetcher_environment({"GPUWM_NO_LOCAL_GPU": "1"}, fetcher, clone)
+    assert env == {"GPUWM_NO_LOCAL_GPU": "1", "GPUWM_RW_FETCH": str(fetcher.resolve())}
+    inside = clone / "tools" / "rustwx" / "target" / "release" / "rw_fetch"
+    inside.parent.mkdir(parents=True)
+    inside.write_bytes(b"")
+    with pytest.raises(emulation.Refusal, match="inside the clone"):
+        emulation.fetcher_environment({}, inside, clone)
+    assert emulation.FETCHER_ENV in (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+
 def test_the_windows_partition_emulation_names_every_in_tree_native_directory(tmp_path):
     from tools.battery import emulate_windows_cpu_partition as emulation
     built = ["tools/rustwx/target", "tools/rw_wps/crates/target", "libexec/bridges", "gpuwm/libexec/bridges"]

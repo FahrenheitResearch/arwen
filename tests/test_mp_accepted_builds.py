@@ -58,7 +58,7 @@ def test_the_accepted_menu_is_the_loader_menu():
     from gpuwm import config as config_mod
 
     assert config_mod.MP_PHYSICS_ACCEPTED == (0, 1, 6, 8, 9, 10, 16, 18,
-                                              28, 50)
+                                              28, 30, 50, 900)
     # Every accepted value passes the loader's mp gate: the refusal for
     # an out-of-menu value recites the menu sentence, so an accepted
     # value must never produce it.
@@ -205,7 +205,7 @@ def test_accepted_mp_is_covered_by_the_cfg_keyed_route_tables(
                     mp, name)
 
 
-def test_every_moist_accepted_mp_is_a_refl_consumer():
+def test_each_moist_scheme_has_a_reflectivity_consumer_or_named_exclusion():
     """The REFL_10CM consume membership covers every moist scheme.
 
     The tree model stages ``refl_10cm_due`` on the history clock alone
@@ -222,7 +222,9 @@ def test_every_moist_accepted_mp_is_a_refl_consumer():
     from gpuwm import prepared_single_domain_forecast, runtime
     from gpuwm.verify.cases import nest_ideal_common
 
-    moist = tuple(mp for mp in MP_PHYSICS_ACCEPTED if mp)
+    moist = tuple(mp for mp in MP_PHYSICS_ACCEPTED if mp and mp != 30)
+    from gpuwm.core.refl import SCHEME_NATIVE_REFL_10CM
+    assert "polar-scattering" in SCHEME_NATIVE_REFL_10CM[30]
     assert runtime.REFL_10CM_MICROPHYSICS == moist
     assert prepared_single_domain_forecast.REFL_10CM_MICROPHYSICS == moist
     assert nest_ideal_common.REFL_10CM_MICROPHYSICS == moist

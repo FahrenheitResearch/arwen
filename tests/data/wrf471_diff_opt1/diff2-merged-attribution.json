@@ -5533,7 +5533,7 @@
       "merged_vs_original": {
         "words": 648,
         "different": 632,
-        "max_ulp": 3191726411,
+        "max_ulp": 1144114710,
         "max_abs": 711.2200927734375
       },
       "control_transitions": {
@@ -6635,7 +6635,7 @@
       "merged_vs_original": {
         "words": 648,
         "different": 305,
-        "max_ulp": 3489020249,
+        "max_ulp": 1585641184,
         "max_abs": 7.452779282601796e-09
       },
       "control_transitions": {
@@ -6727,7 +6727,7 @@
       "merged_vs_original": {
         "words": 648,
         "different": 630,
-        "max_ulp": 3191726470,
+        "max_ulp": 1144114562,
         "max_abs": 711.2110595703125
       },
       "control_transitions": {
@@ -9897,7 +9897,7 @@
       "merged_vs_original": {
         "words": 648,
         "different": 329,
-        "max_ulp": 3484131389,
+        "max_ulp": 1647656577,
         "max_abs": 3.922092162156332e-07
       },
       "control_transitions": {

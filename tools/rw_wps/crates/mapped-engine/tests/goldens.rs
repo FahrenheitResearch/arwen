@@ -105,7 +105,7 @@ fn run_case(name: &str, directory: PathBuf, prefix: &str, suffix: &str, limit: O
         return;
     }
 
-    let scratch = std::env::temp_dir().join(format!("gpuwm-mapped-engine-golden-{name}"));
+    let scratch = std::env::temp_dir().join(format!("gpuwm-mapped-engine-golden-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).expect("scratch directory");
     let listing = scratch.join("inputs.txt");
     let body: Vec<String> = files
@@ -129,6 +129,7 @@ fn run_case(name: &str, directory: PathBuf, prefix: &str, suffix: &str, limit: O
         &mut |_event| {},
     )
     .unwrap_or_else(|refusal| panic!("{name}: engine refused: {refusal}"));
+    let _ = std::fs::remove_dir_all(&scratch);
 
     assert_eq!(
         output["grid"]["fingerprint"], golden["grid"]["fingerprint"],
@@ -443,7 +444,7 @@ fn compare_streamed_against_whole(
     let names: Vec<String> = files.iter().map(|file| file.display().to_string()).collect();
     let digests = mapped_engine::engine::input_digests(&names).expect("inputs hash");
 
-    let scratch = std::env::temp_dir().join(format!("gpuwm-mapped-engine-stream-{name}"));
+    let scratch = std::env::temp_dir().join(format!("gpuwm-mapped-engine-stream-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
     let whole_out = scratch.join("whole");
     let streamed_out = scratch.join("streamed");

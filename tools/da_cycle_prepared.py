@@ -98,6 +98,7 @@ from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
+import os
 
 from gpuwm.da.iau import IAU_MODES, resolve_iau_mode
 
@@ -1627,12 +1628,17 @@ def main() -> int:
     nothing more.
     """
     import signal
+    ledger_path_before = os.environ.get("GPUWM_TIME_LEDGER")
 
     stages: list = []
     previous = _unwind_on_termination()
     try:
         return cycle(stages)
     finally:
+        if ledger_path_before is None:
+            os.environ.pop("GPUWM_TIME_LEDGER", None)
+        else:
+            os.environ["GPUWM_TIME_LEDGER"] = ledger_path_before
         for stage in stages:
             stage.clear()
         for number, handler in previous.items():
@@ -2532,6 +2538,11 @@ def cycle(stages: list) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("GPUWM_TIME_LEDGER", str(out / "timeline.jsonl"))
+    from gpuwm.da.member_transport import DAClock, member_barriers
+    run_clock = DAClock(out, resolve_card=False)
+    run_clock.emit("worker.claim", "mark", basis="da_run_wall_proxy",
+                   proxy=True, role="envelope")
     stage_root = Path(args.stage_dir) if args.stage_dir else out / "stage"
     stage = StagedRestarts(stage_root, default=args.stage_dir is None,
                            logs_dir=out / "packed-job-logs")
@@ -3450,6 +3461,9 @@ def cycle(stages: list) -> int:
     background = _Background(max_workers=2, thread_name_prefix="da-overlap")
     next_control = None
     control_card = forecast_cards[-1]["uuid"] if packed_forecasts else None
+    run_clock.emit("post.forecast.cards", "mark",
+                   card_count=len(forecast_cards) or None,
+                   gpu_uuids=[card["uuid"] for card in forecast_cards])
     analysis_cards = None
     if packed_forecasts:
         analysis_cards = cards_except(control_card)
@@ -3545,6 +3559,9 @@ def cycle(stages: list) -> int:
         stages.append(vts_cycle)
         args.spread_vts_socket = str(vts_cycle.server.path)
     for leg in range(legs):
+        cycle_started = time.monotonic()
+        cycle_clock = DAClock(out, cycle=leg_number(leg), resolve_card=False)
+        cycle_clock.transition("prep.cycle.inputs", at=cycle_started)
         li = leg_inputs(leg)
         for done_leg in [k for k in leg_input_cache if k < leg]:
             del leg_input_cache[done_leg]      # its observation document
@@ -3578,6 +3595,7 @@ def cycle(stages: list) -> int:
         # The public serial and packed routes use the same complete-tree leg.
         # Every result is accepted before any input is consumed or analysis runs.
         forecast_started = time.monotonic()
+        cycle_clock.transition("post.cycle.forecast", at=forecast_started)
         control = None
         if next_control is not None:
             control = next_control.result()
@@ -3622,6 +3640,9 @@ def cycle(stages: list) -> int:
         leg_record["forecast_barrier"] = forecast_receipt
         leg_record["forecast_plus_io_wall_seconds"] = time.monotonic() - forecast_started
         analysis_started = time.monotonic()
+        leg_record["member_barrier_seconds"] = member_barriers(
+            results, out, leg_number(leg), analysis_started)
+        cycle_clock.transition("post.cycle.analysis", at=analysis_started)
         # Wall clock of the driver's own stages around the solve, in run
         # order (the solve splits its own in stage_wall_seconds).
         driver_clock: dict = {}
@@ -3629,6 +3650,9 @@ def cycle(stages: list) -> int:
 
         def _driver_stage(name):
             now = time.monotonic()
+            cycle_clock.interval("post.analysis." + name,
+                                 driver_mark[0], now,
+                                 span_id=f"{leg_number(leg)}:{name}", role="detail")
             driver_clock[name] = round(driver_clock.get(name, 0.0)
                                        + now - driver_mark[0], 3)
             driver_mark[0] = now
@@ -4001,6 +4025,7 @@ def cycle(stages: list) -> int:
                     else composition.to_payload()),
             }
             _driver_stage("solve")
+            cycle_clock.emit("post.analysis.after_solve", "begin", role="envelope")
             inc_stats = {}
             for field in analysis_fields:
                 inc_stats[field] = ensemble_stats.increment_stats(
@@ -4158,9 +4183,11 @@ def cycle(stages: list) -> int:
                 hot_pending.clear()
             _driver_stage("merge_and_positivity_rebind")
             if pending.get(0):
-                write_member_increments(
-                    out / f"increments_m000_leg{leg_number(leg)}.npz",
-                    pending[0])
+                with cycle_clock.span("post.analysis.increment_write",
+                                      span_id=f"{leg_number(leg)}:member0"):
+                    write_member_increments(
+                        out / f"increments_m000_leg{leg_number(leg)}.npz",
+                        pending[0])
             shutil.rmtree(shm_leg, ignore_errors=True)
             # The analysis is over: ``pending`` owns the accepted increments.
             # The solver's whole-ensemble output and the members' background
@@ -4171,6 +4198,7 @@ def cycle(stages: list) -> int:
             increments = None
             checkpoints = None
             release_backgrounds(snapshots)
+            cycle_clock.emit("post.analysis.after_solve", "end", role="envelope")
 
         if analysis_due or verification_only:
             _driver_stage("member0_record_and_release")
@@ -4178,6 +4206,7 @@ def cycle(stages: list) -> int:
                 driver_clock)
         leg_record["analysis_plus_io_wall_seconds"] = time.monotonic() - analysis_started
         recovery_started = time.monotonic()
+        cycle_clock.transition("post.cycle.recovery", at=recovery_started)
         # -- carry the cycle across the process boundary ------------------
         # At the end of the last OBSERVED leg the staged state is exactly
         # what the next leg would have consumed: each trajectory's
@@ -4261,13 +4290,16 @@ def cycle(stages: list) -> int:
 
                 def write_and_prune(_dir=Path(generation_dir),
                                     _kwargs=generation_kwargs,
-                                    _written=written):
+                                    _written=written, _clock=cycle_clock,
+                                    _cycle=leg_number(leg)):
                     # The older ring slot goes the moment this generation's
                     # manifest lands, not at the next barrier: box L's
                     # 3-cycle run held both 76 GB slots through a whole
                     # leg and the disk fell to 37 GB free.
-                    generation = ens_state.write_generation(
-                        _dir, on_written=_written, **_kwargs)
+                    with _clock.span("post.analysis.generation_write",
+                                     span_id=f"{_cycle}:generation", asynchronous=True):
+                        generation = ens_state.write_generation(
+                            _dir, on_written=_written, **_kwargs)
                     removed = (prune_recovery_ring(_dir)
                                if _dir.parent == out / "packed-recovery"
                                else None)
@@ -4279,14 +4311,18 @@ def cycle(stages: list) -> int:
                 generation_job = (job, generation_record, generation_dir,
                                   time.monotonic())
             else:
-                generation = ens_state.write_generation(
-                    generation_dir, **generation_kwargs)
+                with cycle_clock.span("post.analysis.generation_write",
+                                      span_id=f"{leg_number(leg)}:generation",
+                                      asynchronous=False):
+                    generation = ens_state.write_generation(
+                        generation_dir, **generation_kwargs)
                 generation_record["written"] = generation["written"]
                 print(f"ensemble generation written to "
                       f"{generation_dir} at {t_end:.0f} s elapsed",
                       flush=True)
 
         leg_record["recovery_io_wall_seconds"] = time.monotonic() - recovery_started
+        cycle_clock.transition("post.cycle.bookkeeping")
         leg_record["cycle_wall_seconds"] = (leg_record["forecast_plus_io_wall_seconds"]
             + leg_record["analysis_plus_io_wall_seconds"] + leg_record["recovery_io_wall_seconds"])
         report["legs"].append(leg_record)
@@ -4318,6 +4354,9 @@ def cycle(stages: list) -> int:
 
         (out / "cycle-report.json").write_text(
             json.dumps(report, indent=2, default=str), encoding="utf-8")
+        cycle_finished = cycle_clock.transition()
+        leg_record["timeline_cycle_phase_seconds"] = dict(cycle_clock.seconds)
+        leg_record["timeline_cycle_wall_seconds"] = cycle_finished-cycle_started
 
     # -- the stage: nothing this run staged outlives it ------------------
     # The last leg's sets have no next leg to consume them.  A generation
@@ -4339,6 +4378,7 @@ def cycle(stages: list) -> int:
     (out / "cycle-report.json").write_text(
         json.dumps(report, indent=2, default=str), encoding="utf-8")
     print("CYCLE_DRIVER_DONE", flush=True)
+    run_clock.emit("finish", "mark", basis="da_run_wall_proxy", proxy=True)
     return 0
 
 

@@ -43,9 +43,13 @@ from gpuwm.ingest.real import (
 )
 
 #: The root domain the 16 GiB sizing emits at that centre, and its nest:
-#: 278x222 / 560x448 since A163 measured the forecast margin at 1.13 of
-#: the subtotal (276x220 / 552x440 on the plan's 1.15).
-SIZED_16GIB_LAYOUTS = [(278, 222), (560, 448)]
+#: 276x222 / 552x448 since dad24232a (via 76a3c1979) priced device items
+#: the estimate had left out, physics._prepare_atmosphere's rho transient
+#: among them (a first-parent bisect from the previous pin names that
+#: merge alone); 278x222 / 560x448 after
+#: A163 measured the forecast margin at 1.13 of the subtotal, and
+#: 276x220 / 552x440 on the plan's 1.15 before that.
+SIZED_16GIB_LAYOUTS = [(276, 222), (552, 448)]
 #: The plan whose run measured MEASURED_PEAK_BYTES: the 16 GiB sizing's
 #: layouts at the plan's 1.15 margin.
 MEASURED_16GIB_LAYOUTS = [(276, 220), (552, 440)]

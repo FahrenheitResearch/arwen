@@ -113,6 +113,61 @@ __device__ const float AER3_ASY[AER3_NRH][AER3_NB] = {
     {0.7296f, 0.8219f, 0.7651f, 0.7513f, 0.7404f, 0.7369f, 0.7386f, 0.7485f,
      0.7626f, 0.7724f, 0.7771f, 0.7789f, 0.7790f, 0.7760f}};
 
+// aer_type = 3 (maritime) rows, as the NOAA MPAS fork declares them
+// (RRFSx/MPAS-Model 1d6e370e physics_wrf/module_ra_rrtmg_sw_aerosols.F
+// :530-546, :677-693, :792-808).  Read only by rrtmg_aer3_typed_sw_optics.
+__device__ const float AER3_RAOD_MAR[AER3_NRH][AER3_NB] = {
+    {0.3053f, 0.3507f, 0.3932f, 0.4261f, 0.4681f, 0.5334f, 0.5797f, 0.6962f,
+     0.8583f, 1.0187f, 1.1705f, 1.3049f, 1.5205f, 0.2748f},
+    {0.3566f, 0.4023f, 0.4443f, 0.4765f, 0.5170f, 0.5792f, 0.6227f, 0.7298f,
+     0.8756f, 1.0162f, 1.1472f, 1.2614f, 1.4415f, 0.3256f},
+    {0.4359f, 0.4803f, 0.5203f, 0.5505f, 0.5879f, 0.6441f, 0.6828f, 0.7756f,
+     0.8985f, 1.0135f, 1.1198f, 1.2109f, 1.3518f, 0.4051f},
+    {0.5128f, 0.5544f, 0.5913f, 0.6187f, 0.6523f, 0.7020f, 0.7358f, 0.8149f,
+     0.9174f, 1.0115f, 1.0995f, 1.1740f, 1.2875f, 0.4835f},
+    {0.6479f, 0.6816f, 0.7108f, 0.7320f, 0.7575f, 0.7946f, 0.8193f, 0.8752f,
+     0.9455f, 1.0092f, 1.0728f, 1.1263f, 1.2061f, 0.6236f},
+    {0.7582f, 0.7831f, 0.8043f, 0.8196f, 0.8377f, 0.8636f, 0.8806f, 0.9184f,
+     0.9649f, 1.0080f, 1.0564f, 1.0973f, 1.1576f, 0.7399f},
+    {0.8482f, 0.8647f, 0.8785f, 0.8884f, 0.9000f, 0.9164f, 0.9272f, 0.9506f,
+     0.9789f, 1.0072f, 1.0454f, 1.0780f, 1.1256f, 0.8360f},
+    {0.8836f, 0.8965f, 0.9073f, 0.9149f, 0.9239f, 0.9365f, 0.9448f, 0.9626f,
+     0.9841f, 1.0069f, 1.0415f, 1.0712f, 1.1145f, 0.8741f}};
+__device__ const float AER3_SSA_MAR[AER3_NRH][AER3_NB] = {
+    {0.9697f, 0.9183f, 0.9749f, 0.9820f, 0.9780f, 0.9712f, 0.9708f, 0.9778f,
+     0.9831f, 0.9827f, 0.9826f, 0.9723f, 0.8763f, 0.9716f},
+    {0.9070f, 0.8491f, 0.9730f, 0.9816f, 0.9804f, 0.9742f, 0.9738f, 0.9802f,
+     0.9847f, 0.9841f, 0.9838f, 0.9744f, 0.8836f, 0.9546f},
+    {0.8378f, 0.7761f, 0.9797f, 0.9827f, 0.9829f, 0.9814f, 0.9812f, 0.9852f,
+     0.9882f, 0.9875f, 0.9871f, 0.9791f, 0.9006f, 0.9348f},
+    {0.7866f, 0.7249f, 0.9890f, 0.9822f, 0.9856f, 0.9917f, 0.9924f, 0.9932f,
+     0.9943f, 0.9938f, 0.9933f, 0.9887f, 0.9393f, 0.9204f},
+    {0.7761f, 0.7164f, 0.9959f, 0.9822f, 0.9834f, 0.9941f, 0.9955f, 0.9952f,
+     0.9960f, 0.9956f, 0.9951f, 0.9922f, 0.9538f, 0.9152f},
+    {0.7671f, 0.7114f, 0.9902f, 0.9786f, 0.9838f, 0.9954f, 0.9970f, 0.9965f,
+     0.9971f, 0.9968f, 0.9964f, 0.9943f, 0.9644f, 0.9158f},
+    {0.7551f, 0.7060f, 0.9890f, 0.9743f, 0.9807f, 0.9966f, 0.9989f, 0.9978f,
+     0.9982f, 0.9980f, 0.9978f, 0.9964f, 0.9757f, 0.9122f},
+    {0.7439f, 0.7000f, 0.9870f, 0.9695f, 0.9769f, 0.9970f, 1.0000f, 0.9984f,
+     0.9988f, 0.9986f, 0.9984f, 0.9975f, 0.9825f, 0.9076f}};
+__device__ const float AER3_ASY_MAR[AER3_NRH][AER3_NB] = {
+    {0.6620f, 0.7011f, 0.7111f, 0.7068f, 0.6990f, 0.6918f, 0.6883f, 0.6827f,
+     0.6768f, 0.6773f, 0.6863f, 0.6940f, 0.7245f, 0.6719f},
+    {0.6880f, 0.7394f, 0.7297f, 0.7240f, 0.7162f, 0.7083f, 0.7038f, 0.6957f,
+     0.6908f, 0.6917f, 0.6952f, 0.7035f, 0.7356f, 0.6977f},
+    {0.7266f, 0.7970f, 0.7666f, 0.7593f, 0.7505f, 0.7427f, 0.7391f, 0.7293f,
+     0.7214f, 0.7210f, 0.7212f, 0.7265f, 0.7519f, 0.7340f},
+    {0.7683f, 0.8608f, 0.8120f, 0.8030f, 0.7826f, 0.7679f, 0.7713f, 0.7760f,
+     0.7723f, 0.7716f, 0.7726f, 0.7767f, 0.7884f, 0.7768f},
+    {0.7776f, 0.8727f, 0.8182f, 0.8083f, 0.7985f, 0.7939f, 0.7953f, 0.7913f,
+     0.7846f, 0.7870f, 0.7899f, 0.7918f, 0.7969f, 0.7870f},
+    {0.7878f, 0.8839f, 0.8231f, 0.8130f, 0.8050f, 0.7977f, 0.7945f, 0.7932f,
+     0.7955f, 0.7992f, 0.8025f, 0.8035f, 0.8055f, 0.7956f},
+    {0.8005f, 0.8957f, 0.8273f, 0.8179f, 0.8105f, 0.8035f, 0.8010f, 0.8030f,
+     0.8081f, 0.8108f, 0.8143f, 0.8174f, 0.8174f, 0.8042f},
+    {0.8104f, 0.9034f, 0.8294f, 0.8212f, 0.8144f, 0.8087f, 0.8077f, 0.8118f,
+     0.8175f, 0.8202f, 0.8239f, 0.8265f, 0.8246f, 0.8095f}};
+
 // Thompson RSLF(P, T).
 static __device__ __forceinline__ float aer3_rslf(float p, float t)
 {
@@ -348,6 +403,74 @@ extern "C" __global__ void rrtmg_aer3_smoke_sw_optics(
             tau = FADD(tau, FMUL(FMUL(l, AER3_RAOD[jj - 1][b]), aod));
             ssa = FADD(ssa, FMUL(l, AER3_SSA[jj - 1][b]));
             asy = FADD(asy, FMUL(l, AER3_ASY[jj - 1][b]));
+        }
+        ztaua[base + (size_t)b * nlayers] = tau;
+        zasya[base + (size_t)b * nlayers] = asy;
+        zomga[base + (size_t)b * nlayers] = ssa;
+    }
+}
+
+// NOAA MPAS fork aerosol type per column (RRFSx/MPAS-Model 1d6e370e):
+// mpas_atmphys_driver_radiation_sw.F:583-586 sets taer_type 1 where
+// xland == 1 and 3 (maritime) where xland == 2, then runs the same gt_aod
+// (physics_wrf/module_mp_thompson_aerosols.F), Bolton RH and 3-D Lagrange
+// branches (physics_wrf/module_ra_rrtmg_sw_aerosols.F) with the same
+// PARAMETERs as the HRRR fork.  aer_type[c] is 1 or 3 (validated by the
+// host); a type-1 column reads the rural rows above and so is the same
+// words as rrtmg_aer3_sw_optics.  No smoke arm: the MPAS driver has none.
+extern "C" __global__ void rrtmg_aer3_typed_sw_optics(
+    int nc, int nz, int nlayers,
+    const float* __restrict__ p3d, const float* __restrict__ t3d,
+    const float* __restrict__ qv3d, const float* __restrict__ dz8w,
+    const float* __restrict__ nwfa, const float* __restrict__ nifa,
+    const int* __restrict__ aer_type,
+    float* __restrict__ ztaua, float* __restrict__ zasya,
+    float* __restrict__ zomga, float* __restrict__ taod)
+{
+    long long tid = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= (long long)nc * nlayers) return;
+    int c = (int)(tid / nlayers);
+    int k = (int)(tid - (long long)c * nlayers);
+    size_t base = (size_t)c * AER3_NB * nlayers + (size_t)k;
+    if (k >= nz) {
+        for (int b = 0; b < AER3_NB; ++b) {
+            ztaua[base + (size_t)b * nlayers] = 0.0f;
+            zasya[base + (size_t)b * nlayers] = 0.0f;
+            zomga[base + (size_t)b * nlayers] = 1.0f;
+        }
+        return;
+    }
+    const bool maritime = aer_type[c] == 3;
+    const float (*raod)[AER3_NB] = maritime ? AER3_RAOD_MAR : AER3_RAOD;
+    const float (*ssat)[AER3_NB] = maritime ? AER3_SSA_MAR : AER3_SSA;
+    const float (*asyt)[AER3_NB] = maritime ? AER3_ASY_MAR : AER3_ASY;
+    size_t ck = (size_t)c * nz + (size_t)k;
+    float p = p3d[ck], t = t3d[ck], qv = qv3d[ck];
+    float aod = aer3_gt_aod(p, dz8w[ck], t, qv, nwfa[ck], nifa[ck]);
+    taod[ck] = aod;
+    float rh = aer3_rh(p, t, qv);
+    int ii = 1;
+    while (ii <= AER3_NRH && rh > AER3_RHS[ii - 1]) ++ii;
+    int imin = max(1, ii - 2 - 1);
+    int imax = min(AER3_NRH, ii + 2);
+    float lj[6];
+    for (int jj = imin; jj <= imax; ++jj) {
+        float l = 1.0f;
+        for (int kk = imin; kk <= imax; ++kk) {
+            if (kk != jj) {
+                l = FDIV(FMUL(l, FSUB(rh, AER3_RHS[kk - 1])),
+                         FSUB(AER3_RHS[jj - 1], AER3_RHS[kk - 1]));
+            }
+        }
+        lj[jj - imin] = l;
+    }
+    for (int b = 0; b < AER3_NB; ++b) {
+        float tau = 0.0f, ssa = 0.0f, asy = 0.0f;
+        for (int jj = imin; jj <= imax; ++jj) {
+            float l = lj[jj - imin];
+            tau = FADD(tau, FMUL(FMUL(l, raod[jj - 1][b]), aod));
+            ssa = FADD(ssa, FMUL(l, ssat[jj - 1][b]));
+            asy = FADD(asy, FMUL(l, asyt[jj - 1][b]));
         }
         ztaua[base + (size_t)b * nlayers] = tau;
         zasya[base + (size_t)b * nlayers] = asy;

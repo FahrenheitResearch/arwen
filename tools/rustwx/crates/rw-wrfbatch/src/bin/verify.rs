@@ -12,7 +12,7 @@ use std::process::ExitCode;
 pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
-const ABI:&str="gpuwm.verify-visuals.request.v1\tgpuwm.verify-visuals.receipt.v1\tgpuwm.verify-visuals.inventory.v1\tstations\tradar\tartifacts\tnative-scoring\tnative-rendering";
+const ABI:&str="gpuwm.verify-visuals.request.v1\tgpuwm.verify-visuals.receipt.v1\tgpuwm.verify-visuals.inventory.v1\tstations\tradar\tartifacts\tnative-scoring\tnative-rendering\tcase-scorecard-inputs-v1";
 const USAGE:&str="rw_verify --request REQUEST.json --json RECEIPT.json [--image CARD.png]\nrw_verify --inventory REQUEST.json\nrw_verify --prepare REQUEST.json --json PREPARED_REQUEST.json\nrw_verify --help | --abi";
 
 fn prepare(request: &VerificationRequest) -> Result<Value, String> {
@@ -174,15 +174,33 @@ fn score(
     }
     request.validate()?;
     let observations = if let Some(path) = &request.stations_path {
+        let record = verification_io::read_json(path)?;
+        if record["schema"] == "gpuwm-obs.station-observations.v1" {
+            if record["source"].as_str() != Some(&request.station_source) {
+                return Err("generic station source differs from the request; network scores would be mislabeled".into());
+            }
+            for q in &request.station_quantities {
+                if record["units"][&q.quantity].as_str() != Some(&q.units) {
+                    return Err(format!("{} observation units differ from request units {}", q.quantity,q.units));
+                }
+            }
+        } else {
+            for q in &request.station_quantities {
+                let unit = match q.quantity.as_str() { "temperature_2m"|"dewpoint_2m" => "K", "wind_speed_10m"|"wind_gust_10m"=>"m s-1", "precipitation_1h"=>"mm", _=>return Err(format!("ASOS has no declared units for {}",q.quantity)) };
+                if q.units != unit { return Err(format!("{} ASOS values are {unit}, not {}",q.quantity,q.units)); }
+                if q.quantity == "precipitation_1h" && !q.exact_time { return Err("station 1 h precipitation requires exact_time to prevent comparing different interval end times".into()); }
+            }
+        }
         verification_io::load_station_observations(path, &request.valid_time)?
     } else {
         Vec::new()
     };
     let (stations, station_samples, station_drops) =
         verification::paired_station_scores(&request, &arms, &observations)?;
-    let mut receipt=VerificationReceipt{schema:verification::RECEIPT_SCHEMA.into(),valid_time:request.valid_time.clone(),domain:request.domain.clone(),request_sha256:format!("{:x}",Sha256::digest(request_bytes)),error_convention:"forecast minus observation".into(),station_interpolation:"bilinear native coordinate lattice; supplied point extracts preserve their extraction method".into(),temperature_method:"raw model temperature; no elevation adjustment; temperature_2m_raw preferred when present".into(),wind_metric:"scalar 10 m wind speed error, not vector wind error".into(),neighborhood_support:"complete square neighbourhoods on common observed and forecast finite coverage, native-grid nearest sampling".into(),sources:arms.iter().map(|a|a.provenance.clone()).collect(),stations,station_samples,station_drops,radar:Vec::new(),artifacts:Vec::new(),skipped:Vec::new()};
+    let mut receipt=VerificationReceipt{schema:verification::RECEIPT_SCHEMA.into(),valid_time:request.valid_time.clone(),domain:request.domain.clone(),request_sha256:format!("{:x}",Sha256::digest(request_bytes)),error_convention:"forecast minus observation".into(),station_interpolation:"bilinear native coordinate lattice; supplied point extracts preserve their extraction method".into(),temperature_method:"raw model temperature; no elevation adjustment; temperature_2m_raw preferred when present".into(),wind_metric:"scalar 10 m wind speed error, not vector wind error".into(),neighborhood_support:"complete square neighbourhoods on common observed and forecast finite coverage, native-grid nearest sampling".into(),sources:arms.iter().map(|a|a.provenance.clone()).collect(),stations,station_samples,station_drops,radar:Vec::new(),artifacts:Vec::new(),skipped:Vec::new(),scoring_request:serde_json::to_value(&request).map_err(|e|e.to_string())?,grid_errors:Vec::new()};
     if let Some(path) = &request.stations_path {
         receipt.sources.push(source_identity(path)?);
+        receipt.sources.push(serde_json::json!({"source":request.station_source,"observation_provenance":verification_io::read_json(path)?["provenance"]}));
     } else {
         receipt
             .skipped
@@ -261,6 +279,8 @@ fn score(
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
+        receipt.grid_errors.push(verification::paired_grid_errors(&spec.quantity,
+            if spec.quantity=="precipitation_1h" {"mm"} else {units},&observed,&valid,&forecasts)?);
         for &threshold in *thresholds {
             for &width in &request.widths_km {
                 receipt.radar.push(verification::paired_fss_rect(
@@ -280,6 +300,7 @@ fn score(
         }
         receipt.sources.push(source_identity(&spec.path)?);
         receipt.sources.push(source_identity(&spec.grid_path)?);
+        receipt.sources.push(serde_json::json!({"source":request.radar_source,"quantity":spec.quantity,"observation_provenance":radar.provenance}));
         radars.push(radar);
     }
     receipt.artifacts =

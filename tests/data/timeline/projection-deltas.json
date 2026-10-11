@@ -1,0 +1,4 @@
+[
+  {"lane": "first", "stage": "prep.head", "seconds_saved": 8, "measured": true, "evidence": "synthetic mechanical check"},
+  {"lane": "second", "stage": "prep.head", "seconds_saved": 5, "measured": true, "evidence": "synthetic mechanical check"}
+]

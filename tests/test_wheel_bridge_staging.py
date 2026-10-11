@@ -414,3 +414,75 @@ def test_staging_a_home_replaces_artifacts_and_keeps_everything_else(
         "a file this tool never staged was deleted from the user's home")
     assert stale.read_bytes() != b"an older build", (
         "a declared artifact already present was not replaced")
+
+
+#: Rewrites a synthetic wheel with ``setup.py``'s own code and measures the
+#: deflate level of what comes out.  A child interpreter for the reason the
+#: mode probe above gives.
+_WHEEL_LEVEL_PROBE = """
+import importlib.util, io, json, pathlib, random, sys, zipfile
+
+import setuptools
+setuptools.setup = lambda *args, **kwargs: None
+spec = importlib.util.spec_from_file_location("_gpuwm_setup_probe", sys.argv[1])
+setup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(setup)
+
+generator = random.Random(289)
+# One long repeated block: zlib's level 9 searches far enough back to code it
+# as long matches, and level 6 stops sooner and codes it larger.
+payload = (b"abcdefgh" * 50 + bytes(generator.randrange(256) for _ in range(20))) * 4000
+name = setup._STAGED_PREFIX + "rw_wrfbatch"
+
+def size(level):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        info = zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(info, payload, compresslevel=level)
+    with zipfile.ZipFile(buffer) as archive:
+        return archive.getinfo(name).compress_size
+
+wheel = pathlib.Path(sys.argv[2])
+with zipfile.ZipFile(wheel, "w", zipfile.ZIP_DEFLATED) as archive:
+    archive.writestr(name, payload)
+setup._force_executable_bits(wheel)
+with zipfile.ZipFile(wheel) as archive:
+    info = archive.getinfo(name)
+    intact = archive.read(name) == payload
+print(json.dumps({"level": setup._WHEEL_DEFLATE_LEVEL, "rewritten": info.compress_size,
+                  "at_6": size(6), "at_9": size(9), "intact": intact,
+                  "deflated": info.compress_type == zipfile.ZIP_DEFLATED}))
+"""
+
+
+def test_the_platform_wheel_is_rewritten_at_deflate_level_nine(tmp_path):
+    """Breakage (2.8.9 cut r1): both platform wheels were over the
+    100,000,000-byte per-file limit, and level 9 instead of zlib's default
+    6 is 0.77 MB of the way back on the Linux wheel.
+
+    The level is measured from the archive, not read from the constant: a
+    member written from a ``ZipInfo`` ignores the level its archive was
+    opened with, so the first form of this change set the level and
+    compressed at 6 all the same.
+    """
+
+    import subprocess
+
+    setup_py = Path(bridges.__file__).resolve().parent.parent / "setup.py"
+    if not setup_py.exists():      # an installed copy carries no setup.py
+        pytest.skip("setup.py is not present outside a source tree")
+    wheel = tmp_path / "gpuwm-0.0.0-py3-none-manylinux_2_28_x86_64.whl"
+    completed = subprocess.run(
+        [sys.executable, "-c", _WHEEL_LEVEL_PROBE, str(setup_py), str(wheel)],
+        capture_output=True, text=True, timeout=600)
+    assert completed.returncode == 0, completed.stderr
+    report = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert report["level"] == 9
+    assert report["intact"] and report["deflated"]
+    assert report["at_9"] < report["at_6"], (
+        "the fixture does not tell level 9 from level 6, so it proves nothing")
+    assert report["rewritten"] == report["at_9"], (
+        f"the rewritten member is {report['rewritten']} B; level 9 gives "
+        f"{report['at_9']} B and level 6 {report['at_6']} B")

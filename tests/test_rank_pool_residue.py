@@ -176,18 +176,25 @@ def test_full_hrrr_2x2_is_admitted_on_four_32gb_cards():
 
 def test_full_hrrr_1x4_prices_bound_the_measured_cards():
     """The layout the receipts measured: with the bound, every card's
-    price covers the peak that card measured, and the two end ranks are
-    admitted; the two middle ranks (two seams each) price 31.45 and
-    31.76 GiB, 0.6 and 0.9 GiB over the CPU receipts' 30.86 GiB budget,
-    and stay refused, 2.0 to 2.2 GiB above what they measured (29.44
-    and 29.54 GiB)."""
+    price covers the peak that card measured, and every rank is admitted.
+
+    The two middle ranks (two seams each) priced 31.45 and 31.76 GiB when
+    this was pinned and were refused.  A first-parent bisect to 2.8.8
+    names three moves that took them under the CPU receipts' 30.86 GiB
+    budget, none of them a cut below what a card measured: d2e8c94da
+    (the multicard radiation lane: halo cut R and spec_zone default-on,
+    narrower seams), cd2d67020 and 3ad7ac74d (the 2.8.7 clean-room post
+    and DA-line merges).  They now price 30.66-30.75 GiB, still above
+    the 29.44 and 29.54 GiB those ranks measured, and the four cards
+    the receipts ran are admitted."""
     estimate = _price("1x4")
     measured = {row[3]: row[6] for row in pf.RANK_POOL_RESIDUE_BATTERY}
     for card in estimate["cards"]:
         assert card["total_bytes"] >= measured[card["card"]], card
     gate = devices_gate(estimate, budgets={i: BUDGET for i in range(4)})
     admitted = [card["total_bytes"] <= BUDGET for card in estimate["cards"]]
-    assert admitted == [True, False, False, True], gate["verdict"]
+    assert admitted == [True, True, True, True], gate["verdict"]
+    assert not gate["refuse"], gate["verdict"]
 
 
 def test_the_loader_and_template_keep_the_ratio():
@@ -304,7 +311,12 @@ def test_the_bound_applies_only_to_suites_with_a_rank_receipt():
     # The default suite (A163 battery's), legacy RRTMG, on the ranked
     # road: no bound, the ratio's price to the byte, and the gate says
     # why.
-    default = replace(cfg, mp_physics=8, bl_pbl_physics=1,
+    # The default suite's Thompson is the v4.6.1 generation; the HRRR
+    # suite's wrf_39_noaa fork is refused off mp_physics = 28
+    # (config.validate), and the estimator prices the selected generation's
+    # tables since d534fe360.
+    default = replace(cfg, mp_physics=8, thompson_version="wrf_461",
+                      thompson_fork_snow_fall="blend", bl_pbl_physics=1,
                       sf_sfclay_physics=91, sf_surface_physics=2,
                       num_soil_layers=4)
     assert pf.forecast_pool_headroom([default]) == pf.FORECAST_POOL_HEADROOM

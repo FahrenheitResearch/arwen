@@ -81,6 +81,9 @@ def drop_default_spp_selectors(values: dict) -> None:
 #:   viscosity the run's own mixing producer computed; nothing reads them
 #:   back (tests/test_sase_gpu.py, every prognostic byte-identical with
 #:   the switch on, under both producers).
+#: * ``surface_energy_diag`` -- publishes the physics driver's existing
+#:   albedo, emissivity and GSW arrays to history and leaves the
+#:   configuration digest unchanged (tests/test_urban_history_energy.py).
 #:
 #: A newly switched-on diagnostic that a positive PBL cadence carries
 #: between steps restores as zeros, its cold value, and is refilled by
@@ -117,6 +120,7 @@ CONFIG_DIAGNOSTIC_FIELDS = frozenset(
 #: not km_opt's, and it is closed by ONE string,
 #: :data:`DYCORE_MIXING_ALGORITHM_IDENTITY` below, not a per-option table.
 MICROPHYSICS_ALGORITHM_IDENTITIES = {
+    30: "fast-sbm-wrf461-33bin-corrected-d1-d20-v1",
     0: "disabled",
     # "real-clamp-product" (2.8.8) on every row whose scheme finishes
     # through gpuwm.core.microphysics.moist_physics_finish (mp=1, 6, 9, 10,
@@ -464,6 +468,7 @@ CUMULUS_ALGORITHM_IDENTITIES = {
     # construction.  An implementation that delivered it would give the
     # same slot a different meaning, and that is exactly the kind of
     # cross-resume this string exists to refuse.
+    6: "tiedtke-wrf461-tiecnv-v1",
     16: "new-tiedtke-wrf461-cumastrn-v1",
 }
 

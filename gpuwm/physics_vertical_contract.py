@@ -73,6 +73,8 @@ def refuse_vertical_levels(label: str,
         "starts; reaching it here means the preparation gate was bypassed.")
 
 
+FAST_SBM_VERTICAL_LEVEL_BOUNDS = (2, None)
+
 MYNN_VERTICAL_LEVEL_BOUNDS = (5, None)
 #: YSU.  The ceiling is ``YSU_KMAX`` in ``kernels/ysu.cu``: one CUDA thread
 #: owns a whole column and holds it in per-thread local memory at that fixed
@@ -132,6 +134,10 @@ NSSL2_VERTICAL_LEVEL_BOUNDS = (3, 256)
 #: existed the gate SKIPPED mp=9 silently, so a 300-level Milbrandt-Yau run
 #: passed ``gpuwm check`` and died on its first microphysics call.
 MILBRANDT2_VERTICAL_LEVEL_BOUNDS = (3, 256)
+#: TEMPO (named scheme, gpuwm.microphysics_schemes): its sedimentation
+#: reads k-2..k+1 (semi-Lagrangian wi stencil) and needs nz >= 3; the GPU
+#: runtime compiles its column arrays for the domain's nz, capped here.
+TEMPO_VERTICAL_LEVEL_BOUNDS = (3, 256)
 #: WDM6 (mp_physics=16): the deepest compiled ``WDM6_KMAX`` tier, imported
 #: from the CuPy-free constants module at the top of this file rather than
 #: retyped as 80 (``WDM6_VERTICAL_LEVEL_BOUNDS``).
@@ -145,6 +151,9 @@ P3_VERTICAL_LEVEL_BOUNDS = (1, None)
 #: so a column needs four levels before the cloud-base search has one
 #: interior row; no fixed ceiling, the workspaces are ``(ncol, nz)``.
 NEW_TIEDTKE_VERTICAL_LEVEL_BOUNDS = (4, None)
+# Original cu6 reads the same interior cloud-base levels; global arenas
+# carry the full vertical dimension without a compiled level ceiling.
+TIEDTKE_VERTICAL_LEVEL_BOUNDS = (4, None)
 #: The dynamical core's own vertical bound, from the top ``WPHI_MAX_LEV``
 #: tier ``gpuwm.core.acoustic`` compiles the implicit w''-phi'' solve at.
 #: Bound to the launcher's ladder by

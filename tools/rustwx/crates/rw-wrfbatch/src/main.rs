@@ -16,7 +16,7 @@
 //! overwrote one forecast with the other.  The inputs' `GRID_ID` and `DX`
 //! become a `d02-3km` domain token in the slug position, and the same
 //! spacing appears as `Δx 3 km` in the plot subtitle.  Provenance is the
-//! local model (`--source-label`, default `ArWen`) rather than the GDEX
+//! local model (`--source-label`, default `WOOF` plus engine version) rather than the GDEX
 //! source inherited from the `wrf` store-model identity.
 
 #[path = "grib_import.rs"]
@@ -69,7 +69,7 @@ use wrf_process::{WrfProcessMessage, WrfProcessOptions, spawn_process_paths};
 /// `wrf`, whose only registered fetch source is GDEX -- a label this lane
 /// never fetched from.  `--source-label` renames it for stock-WRF files,
 /// which ArWen did not produce and must not claim.
-const DEFAULT_SOURCE_LABEL: &str = "ArWen";
+const DEFAULT_SOURCE_LABEL: &str = concat!("WOOF ", env!("GPUWM_ENGINE_VERSION"));
 
 /// The exact `--abi` line `gpuwm.rustwx.RENDERER_ABI_MARKER` pins.
 ///

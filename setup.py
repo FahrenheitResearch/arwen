@@ -231,6 +231,11 @@ _DEFAULT_MODE = 0o100644
 #: Archive prefix of the staged artifacts, as it appears in the wheel.
 _STAGED_PREFIX = "gpuwm/libexec/bridges/"
 
+#: Deflate level of the platform wheel's rewrite.  9 rather than zlib's
+#: default 6 is 0.77 MB on the Linux wheel, measured at 2.8.9, against
+#: the 100,000,000-byte per-file limit both platform wheels were over.
+_WHEEL_DEFLATE_LEVEL = 9
+
 
 def _force_executable_bits(wheel_path: Path) -> int:
     """Stamp 0755 on every staged artifact inside a built wheel.
@@ -250,7 +255,10 @@ def _force_executable_bits(wheel_path: Path) -> int:
     been assembled on a platform that happens to preserve it.
 
     Rewrites the archive, which RECORD tolerates: RECORD hashes member
-    CONTENT, and no content changes.
+    CONTENT, and no content changes.  The rewrite is also where the
+    platform wheel's deflate level is set (:data:`_WHEEL_DEFLATE_LEVEL`).
+    The level is given to ``writestr`` because a member written from a
+    ``ZipInfo`` ignores the level the archive was opened with.
     """
 
     import shutil
@@ -261,7 +269,9 @@ def _force_executable_bits(wheel_path: Path) -> int:
     with tempfile.TemporaryDirectory() as work:
         rebuilt = Path(work) / wheel_path.name
         with zipfile.ZipFile(wheel_path) as source:
-            with zipfile.ZipFile(rebuilt, "w", zipfile.ZIP_DEFLATED) as target:
+            # Level 9 keeps the platform wheel under the 100,000,000-byte per-file limit.
+            with zipfile.ZipFile(rebuilt, "w", zipfile.ZIP_DEFLATED,
+                                 compresslevel=_WHEEL_DEFLATE_LEVEL) as target:
                 for info in source.infolist():
                     payload = source.read(info.filename)
                     updated = zipfile.ZipInfo(info.filename, info.date_time)
@@ -274,7 +284,8 @@ def _force_executable_bits(wheel_path: Path) -> int:
                         stamped += 1
                     elif not info.external_attr >> 16:
                         updated.external_attr = (_DEFAULT_MODE << 16)
-                    target.writestr(updated, payload)
+                    target.writestr(updated, payload,
+                                    compresslevel=_WHEEL_DEFLATE_LEVEL)
         shutil.move(str(rebuilt), str(wheel_path))
     return stamped
 

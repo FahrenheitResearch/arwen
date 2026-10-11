@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 from datetime import datetime
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -135,7 +136,9 @@ def test_scalar_restart_refuses_instead_of_repeating_one_members_state(tmp_path,
 
 
 @pytest.mark.parametrize("sampled_ids", [(2,), (2, 5)])
-def test_checkpointed_roster_uses_one_selected_card_to_keep_its_diagnostic_snapshot_coherent(tmp_path, identity, sampled_ids):
+def test_collector_without_checkpoint_hold_keeps_its_roster_on_one_card(tmp_path, identity, sampled_ids, capsys):
+    # A collector that cannot hold member submissions across save and seal
+    # would let another card retire packs that collector.json still names.
     collector = Collector(tmp_path)
     run = session(tmp_path, collector)
     run.cards = tuple(CardBudget(device, 1000) for device in sampled_ids)
@@ -148,6 +151,104 @@ def test_checkpointed_roster_uses_one_selected_card_to_keep_its_diagnostic_snaps
     report = run.run_prepared(runner, prepared(0))
     assert report["packing"]["waves"] == 3
     assert set(devices) == {2}
+    if len(sampled_ids) > 1:
+        assert "members use one card" in capsys.readouterr().err
+
+
+class HeldCollector(Collector):
+    """Production collectors hold submissions while a roster seals."""
+
+    def __init__(self, root):
+        super().__init__(root)
+        import threading
+        self.lock, self.holds = threading.RLock(), 0
+
+    def checkpoint_hold(self):
+        self.holds += 1
+        return self.lock
+
+    def submit(self, **row):
+        with self.lock:
+            self.rows.append(row["member_id"])
+
+    def require_complete(self):
+        assert sorted(self.rows) == [0, 1, 2]
+
+
+def test_default_domain_restart_interval_keeps_every_selected_card(tmp_path, identity):
+    # `gpuwm domain` writes DEFAULT_RESTART_INTERVAL_S into every config, so
+    # a default multi-card ensemble is a checkpointed ensemble.
+    from gpuwm.domain_wizard import DEFAULT_RESTART_INTERVAL_S
+    assert DEFAULT_RESTART_INTERVAL_S > 0
+    collector = HeldCollector(tmp_path)
+    run = session(tmp_path, collector)
+    run.input_provider = lambda **kwargs: SimpleNamespace(**dict(vars(prepared(kwargs["member_id"])),
+        experiment=SimpleNamespace(**dict(vars(prepared(kwargs["member_id"]).experiment),
+            run_seconds=7200, restart_interval_s=DEFAULT_RESTART_INTERVAL_S))))
+    sampled_ids = (2, 5, 7)
+    run.cards = tuple(CardBudget(device, 1000) for device in sampled_ids)
+    run.memory_model = {device: run.memory_model for device in sampled_ids}
+    devices = []
+    run.device_scope = lambda device: devices.append(device) or nullcontext()
+    def runner(inputs, **options):
+        collector.submit(member_id=current_capture().member_id)
+        return {"status": "PASS"}
+    report = run.run_prepared(runner, prepared(0))
+    assert set(devices) == set(sampled_ids)
+    assert report["packing"]["waves"] == 1
+    assert collector.holds >= 3
+    document = json.loads((tmp_path / restart_roster.ROSTER).read_text())
+    assert [row["status"] for row in document["members"]] == ["completed"] * 3
+
+
+def test_production_collector_hold_blocks_other_member_submissions(tmp_path):
+    import threading
+    from gpuwm.ensemble.batch_product_output import HeadlineDiagnosticCollector
+    collector = HeadlineDiagnosticCollector(tmp_path, members=2, renderer="rw_wrfbatch",
+        start_time=datetime(2024, 1, 1), array_module=__import__("numpy"))
+    acquired = []
+    with collector.checkpoint_hold():
+        other = threading.Thread(target=lambda: acquired.append(collector._lock.acquire(timeout=0.2)))
+        other.start()
+        other.join()
+    assert acquired == [False]
+
+
+def test_seal_retries_when_another_member_retires_a_checkpoint_mid_pass(tmp_path, identity, monkeypatch):
+    from gpuwm.io import restart
+    from gpuwm import supervisor
+    collector = Collector(tmp_path)
+    member = tmp_path / "members" / "member-0001"
+    old = member / "gpuwmrst_d01_2024-01-01_00_00_30.npz"
+    new = member / "gpuwmrst_d01_2024-01-01_00_00_40.npz"
+    monkeypatch.setattr(restart, "read_restart_header",
+        lambda path: {"elapsed_seconds": 40 if "00_40" in Path(path).name else 30})
+    monkeypatch.setattr(supervisor, "validate_manifest_checkpoint", lambda path: path)
+    def interrupted(inputs, **options):
+        if current_capture().member_id == 1:
+            old.write_bytes(b"old")
+            options["progress_callback"](model_elapsed_seconds=30, outer_step=10, last_checkpoint=old)
+            new.write_bytes(b"new")
+            options["progress_callback"](model_elapsed_seconds=40, outer_step=12, last_checkpoint=new)
+            raise KeyboardInterrupt()
+        collector.submit(member_id=0)
+        return {"status": "PASS"}
+    with pytest.raises(KeyboardInterrupt):
+        session(tmp_path, collector).run_prepared(interrupted, prepared(0))
+    # Another card's runner retires the older set while this pass hashes it.
+    original, retired = restart_roster.digest_file, []
+    def digest_then_retire(path):
+        value = original(path)
+        if Path(path) == new and not retired:
+            new.unlink()
+            retired.append(path)
+        return value
+    monkeypatch.setattr(restart_roster, "digest_file", digest_then_retire)
+    document = restart_roster.seal(tmp_path, collector=collector)
+    assert retired
+    row = document["members"][1]
+    assert row["status"] == "checkpoint" and row["checkpoint"].endswith("00_00_30.npz")
+    assert all((tmp_path / item["path"]).is_file() for item in document["files"])
 
 
 def test_real_rust_collector_snapshot_retains_endpoint_words_and_skips_delivered_output(tmp_path):

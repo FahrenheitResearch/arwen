@@ -28,7 +28,8 @@ with open(os.environ['GPUWM_INSTALL_TEST_LOG'], 'a', encoding='utf8') as stream:
     stream.write(json.dumps({'kind': kind, 'args': args, 'cwd': str(cwd),
                              'path': os.environ.get('PATH', ''),
                              'python_gil': os.environ.get('PYTHON_GIL'),
-                             'uv_pref': os.environ.get('UV_PYTHON_PREFERENCE')}) + '\n')
+                             'uv_pref': os.environ.get('UV_PYTHON_PREFERENCE'),
+                             'rustup_toolchain': os.environ.get('RUSTUP_TOOLCHAIN')}) + '\n')
 def make_venv(venv, free_threaded):
     for name in ('bin', 'Scripts'):
         (venv / name).mkdir(parents=True, exist_ok=True)
@@ -83,6 +84,10 @@ if kind == 'git':
                  'tools/arwen-tui', 'tools/zarr_bridge', 'tools/rw_wps',
                  'tools/region_global_dealias'):
         (checkout / name).mkdir(parents=True, exist_ok=True)
+        if name.startswith('tools/'):
+            # The real manifests: the installers read their rust-version.
+            real = pathlib.Path(os.environ['GPUWM_INSTALL_TEST_ROOT']) / name / 'Cargo.toml'
+            (checkout / name / 'Cargo.toml').write_bytes(real.read_bytes())
     (checkout / 'pyproject.toml').write_text('# fixture checkout\n')
     if os.environ.get('GPUWM_INSTALL_TEST_FRESH') != '1':
         make_venv(checkout / '.venv', os.environ.get('GPUWM_INSTALL_TEST_FT') == '1')
@@ -171,6 +176,23 @@ elif kind == 'python' and args[:3] == ['-m', 'pip', 'install']:
         have = (cwd / '.venv/cupy.txt').read_text().split()
         if wanted not in have:
             (cwd / '.venv/cupy.txt').write_text(' '.join([*have, wanted]))
+elif kind == 'rustc':
+    # rustup's proxy: RUSTUP_TOOLCHAIN picks an installed toolchain, else the default.
+    assert args == ['--version'], args
+    chosen = os.environ.get('RUSTUP_TOOLCHAIN')
+    installed = pathlib.Path(os.environ['GPUWM_INSTALL_TEST_RUSTUPHOME'])
+    if chosen and (installed / chosen).exists():
+        version = chosen if chosen.count('.') == 2 else chosen + '.0'
+    else:
+        version = os.environ['GPUWM_INSTALL_TEST_RUSTC']
+    print(f'rustc {version} (0123456789 2026-01-01)')
+elif kind == 'rustup':
+    assert args[:2] == ['toolchain', 'install'] and args[3:] == ['--profile', 'minimal'], args
+    if os.environ.get('GPUWM_INSTALL_TEST_FAIL') == 'rustup-install':
+        sys.exit(5)
+    installed = pathlib.Path(os.environ['GPUWM_INSTALL_TEST_RUSTUPHOME'])
+    installed.mkdir(parents=True, exist_ok=True)
+    (installed / args[2]).touch()
 elif kind == 'cargo':
     assert args == ['build', '--release', '--locked', '--offline'], args
     if cwd.name == 'arwen-tui':
@@ -220,7 +242,7 @@ def _shell(platform):
 
 def _run(tmp_path, platform, *, no_render=False, failure='', companion_gate=True, doctor_exit=0, cupy=(),
          cuda='13', pip_warns=False, fresh=False, venv_ft=False, has_314t=False, has_uv=False,
-         uv_has_python=False, uv_sees_system=False, yes=True, extra=()):
+         uv_has_python=False, uv_sees_system=False, yes=True, extra=(), rustc='9.0.0', has_rustup=False):
     shell = _shell(platform)
     stage = tmp_path / 'new checkout with spaces'
     stage.mkdir()
@@ -229,7 +251,7 @@ def _run(tmp_path, platform, *, no_render=False, failure='', companion_gate=True
     log = tmp_path / 'commands.jsonl'
     env = dict(os.environ)
     for key in ('GPUWM_INSTALL_CUDA', 'GPUWM_INSTALL_NO_RENDER', 'GPUWM_INSTALL_YES',
-                'GPUWM_INSTALL_NO_FETCH_TABLES', 'GPUWM_PYTHON'):
+                'GPUWM_INSTALL_NO_FETCH_TABLES', 'GPUWM_PYTHON', 'RUSTUP_TOOLCHAIN'):
         env.pop(key, None)
     env.update({
         'GPUWM_REPO_URL': 'https://example.invalid/local-source-fixture',
@@ -248,6 +270,10 @@ def _run(tmp_path, platform, *, no_render=False, failure='', companion_gate=True
         'GPUWM_INSTALL_TEST_HAS_UV': '1' if has_uv else '',
         'GPUWM_INSTALL_TEST_UVHOME': str(tmp_path / 'uv-pythons'),
         'GPUWM_INSTALL_TEST_UV_SEES_SYSTEM': '1' if uv_sees_system else '',
+        'GPUWM_INSTALL_TEST_ROOT': str(ROOT),
+        'GPUWM_INSTALL_TEST_RUSTC': rustc,
+        'GPUWM_INSTALL_TEST_HAS_RUSTUP': '1' if has_rustup else '',
+        'GPUWM_INSTALL_TEST_RUSTUPHOME': str(tmp_path / 'rustup-toolchains'),
     })
     if uv_has_python:
         (tmp_path / 'uv-pythons').mkdir()
@@ -287,6 +313,16 @@ function global:git {
 function global:cargo {
     & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'cargo' @args
     $global:LASTEXITCODE = $LASTEXITCODE
+}
+function global:rustc {
+    & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'rustc' @args
+    $global:LASTEXITCODE = $LASTEXITCODE
+}
+if ($env:GPUWM_INSTALL_TEST_HAS_RUSTUP -eq '1') {
+    function global:rustup {
+        & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'rustup' @args
+        $global:LASTEXITCODE = $LASTEXITCODE
+    }
 }
 function global:.venv\Scripts\python.exe {
     & $env:GPUWM_INSTALL_TEST_PYTHON $env:GPUWM_INSTALL_TEST_BACKEND 'python' @args
@@ -337,6 +373,10 @@ exit $code
         harness.write_text('''#!/bin/sh
 git() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" git "$@"; }
 cargo() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" cargo "$@"; }
+rustc() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" rustc "$@"; }
+if [ "$GPUWM_INSTALL_TEST_HAS_RUSTUP" = 1 ]; then
+    rustup() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" rustup "$@"; }
+fi
 curl() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" curl "$@"; }
 if [ "$GPUWM_INSTALL_TEST_FRESH" = 1 ]; then
     python3() { "$GPUWM_INSTALL_TEST_PYTHON" "$GPUWM_INSTALL_TEST_BACKEND" py3 "$@"; }
@@ -915,3 +955,101 @@ def test_the_install_pages_state_the_rust_the_workspaces_require():
         text = ' '.join(page.read_text(encoding='utf8').split())
         for stated in re.findall(r'Rust (\d+\.\d+) or newer', text):
             assert stated == wanted, (page.relative_to(ROOT).as_posix(), stated, wanted)
+
+
+def _declared_minimum():
+    """The minimum the installers read: the newest top-level `rust-version`
+    of the roster workspaces' own Cargo.toml, as text and as a tuple."""
+    import re
+    newest, text = (0,), None
+    for name in _required_workspaces():
+        manifest = (ROOT / 'tools' / name / 'Cargo.toml').read_text(encoding='utf8')
+        for found in re.findall(r'^rust-version\s*=\s*"([0-9.]+)"', manifest, flags=re.M):
+            version = tuple(int(part) for part in found.split('.'))
+            if version > newest:
+                newest, text = version, found
+    return newest, text
+
+
+def test_each_workspace_declares_the_rust_its_own_packages_require():
+    """tools/rustwx declared rust-version 1.85 while its rw-simradar member
+    and the vendored radar writers declared 1.94, so the field the
+    installers read named a toolchain cargo then refused (node-1, default
+    Rust 1.93.1, 2026-10-10).  A workspace that declares a rust-version
+    declares at least every package inside it, and the newest top-level
+    declaration is the newest cargo enforces anywhere in the roster."""
+    import re
+    for name in _required_workspaces():
+        top = re.findall(r'^rust-version\s*=\s*"([0-9.]+)"',
+                         (ROOT / 'tools' / name / 'Cargo.toml').read_text(encoding='utf8'), flags=re.M)
+        if not top:
+            continue
+        declared = max(tuple(int(part) for part in found.split('.')) for found in top)
+        for directory, subdirs, files in os.walk(ROOT / 'tools' / name):
+            subdirs[:] = [sub for sub in subdirs if sub not in ('target', '.git')]
+            if 'Cargo.toml' not in files:
+                continue
+            text = Path(directory, 'Cargo.toml').read_text(encoding='utf8', errors='replace')
+            for found in re.findall(r'^rust-version\s*=\s*"([0-9.]+)"', text, flags=re.M):
+                inner = tuple(int(part) for part in found.split('.'))
+                assert inner[:2] <= declared[:2], (name, Path(directory).relative_to(ROOT).as_posix(), found)
+    assert _declared_minimum()[0][:2] == _rust_minimum()[:2]
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_current_rustc_builds_with_the_toolchain_it_has(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, has_rustup=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not [row for row in rows if row['kind'] == 'rustup']
+    cargo = [row for row in rows if row['kind'] == 'cargo']
+    assert cargo and all(row['rustup_toolchain'] is None for row in cargo)
+    assert f'meets the Rust {_declared_minimum()[1]}' in done.stdout
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_an_old_rustc_under_rustup_gets_the_declared_minimum_for_this_build(tmp_path, platform):
+    """Default 1.93.1 under rustup: the installer adds the declared minimum
+    with a minimal profile and builds every workspace on it through
+    RUSTUP_TOOLCHAIN, never touching the default."""
+    _, wanted = _declared_minimum()
+    done, rows = _run(tmp_path, platform, rustc='1.93.1', has_rustup=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [row['args'] for row in rows if row['kind'] == 'rustup'] == [
+        ['toolchain', 'install', wanted, '--profile', 'minimal']]
+    cargo = [row for row in rows if row['kind'] == 'cargo']
+    assert len(cargo) == 6
+    assert all(row['rustup_toolchain'] == wanted for row in cargo)
+    # Installed before the .venv, so pip's sdist builds use it too.
+    order = [row['kind'] for row in rows]
+    assert order.index('rustup') < order.index('python')
+    assert f'RUSTUP_TOOLCHAIN={wanted} cargo build' in done.stdout or (
+        platform == 'powershell' and f'RUSTUP_TOOLCHAIN={wanted} first' in done.stdout)
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_an_old_rustc_without_consent_stops_before_the_venv_and_names_the_command(tmp_path, platform):
+    _, wanted = _declared_minimum()
+    done, rows = _run(tmp_path, platform, rustc='1.93.1', has_rustup=True, yes=False)
+    assert done.returncode != 0
+    assert f'rustup toolchain install {wanted} --profile minimal' in ' '.join((done.stdout + done.stderr).split())
+    assert not [row for row in rows if row['kind'] in ('rustup', 'cargo', 'python', 'py314t', 'py3')]
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_a_failed_toolchain_install_stops_the_install(tmp_path, platform):
+    done, rows = _run(tmp_path, platform, rustc='1.93.1', has_rustup=True, failure='rustup-install')
+    assert done.returncode != 0
+    assert not [row for row in rows if row['kind'] == 'cargo']
+
+
+@pytest.mark.parametrize('platform', ['posix', 'powershell'])
+def test_an_old_rustc_without_rustup_stops_and_names_the_version(tmp_path, platform):
+    """A distribution's rustc with no rustup beside it: a remedy naming the
+    version, before the .venv, instead of cargo's refusal after it."""
+    _, wanted = _declared_minimum()
+    done, rows = _run(tmp_path, platform, rustc='1.93.1', fresh=True)
+    assert done.returncode != 0
+    said = ' '.join((done.stdout + done.stderr).split())
+    assert f'install Rust {wanted} or newer' in said, said[-600:]
+    assert 'rustc 1.93.1' in said
+    assert not [row for row in rows if row['kind'] in ('cargo', 'python', 'py314t', 'py3')]

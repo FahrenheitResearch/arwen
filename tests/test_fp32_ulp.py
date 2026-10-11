@@ -30,6 +30,12 @@ _TOTAL_ORDER_OWNERS = {
         " registered candidate-minus-reference sign, which an unsigned"
         " magnitude distance cannot express"
     ),
+    "gpuwm/ingest/horiz.py": (
+        "the uint32 ordered key a CUDA atomicMin/atomicMax reduces over"
+        " (08e32e923's parabolic undershoot floor) and its exact inverse;"
+        " the shared int64 key can be neither an atomic operand nor decoded"
+        " back to the float it ordered"
+    ),
 }
 
 #: Third-party sources are not ours to police.  ``work/`` holds frozen
@@ -317,7 +323,15 @@ def _rederivations_in_source(source: str) -> list[int]:
             if not isinstance(inner, ast.BinOp):
                 continue
             if isinstance(inner.op, ast.Sub):
-                reflects = reflects or _is_sign_bit(inner.left, scope)
+                # A reflection subtracts a VALUE from the sign bit.  With a
+                # constant on the right it is constant arithmetic -- the
+                # int32 limits ``2**31 - 1`` and ``-(1 << 31) - 1`` that
+                # bound a count or a CUDA stream priority -- and four such
+                # limits (e13abf285, 39a8130ce, 1d5d57d09, the seed-range
+                # test) read as orderings until this clause.
+                reflects = reflects or (
+                    _is_sign_bit(inner.left, scope)
+                    and _folded_int(inner.right, scope) is None)
             elif isinstance(inner.op, ast.BitXor):
                 xors = xors or _is_sign_bit(inner.left, scope) or (
                     _is_sign_bit(inner.right, scope)
@@ -539,6 +553,14 @@ SIGN_BIT = 0x80000000
 
 def pinned():
     return np.asarray(PINNED_BITS, dtype=np.uint32)
+""",
+    # The int32 limits are the sign bit minus a constant: a bound on a
+    # count, a CUDA grid or a stream priority, not a reflection of a value.
+    "int32_limits": """
+def bound(nobs, members, gx):
+    dtype = np.int32 if nobs < 2**31 - 1 else np.int64
+    assert gx * members <= (1 << 31) - 1
+    return dtype, -(1 << 31) - 1
 """,
     # A 2**32 unsigned wrap subtracts a different constant on the other side
     # of the operator; neither makes it a reflection.

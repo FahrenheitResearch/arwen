@@ -1,0 +1,8 @@
+{
+  "schema": "woof.scoreboard.madis-license.v1",
+  "checked_at": "2026-10-02",
+  "source": "https://madis.ncep.noaa.gov/mesonet_providers.shtml",
+  "category": 3,
+  "meaning": "Public - Full distribution",
+  "providers": ["AKDOT", "APRSWXNET", "ARLFRD", "AZDOT", "CA-Hydro", "CADOT", "CRN", "CRN2-al", "CoAgMet", "DEDOT", "DEOS", "FL-Meso", "GoMOOS", "HADS", "HCN", "HF-METAR", "IEM", "ILDOT", "INTERNET", "ITD", "KSDOT", "LCRA", "MADOT", "MAP", "MEDOT", "MISC", "MOComAgNet", "MesoWest", "NC-ECONet", "NDDOT", "NEPP", "NHDOT", "NJWxNet", "NOS-NWLON", "NOS-PORTS", "NonFedAWOS", "OHDOT", "PADOT", "RAWS", "SCDOT", "SDDOT", "SFWMD", "VADOT", "VTDOT"]
+}

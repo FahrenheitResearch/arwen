@@ -1,0 +1,22 @@
+[package]
+name = "rw-globe-pack"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rw_globe_pack"
+path = "src/main.rs"
+
+[dependencies]
+netcrust = { path = "../../vendor/netcrust" }
+serde.workspace = true
+serde_json.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
+base64 = "0.22"
+# A dynamically resolved system zlib preserves the existing compressor's
+# bytes. Rust still owns reading, deriving, encoding and the whole pack.
+libloading = "0.9"
+sha2 = "0.10"

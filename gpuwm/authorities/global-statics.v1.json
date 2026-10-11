@@ -1,0 +1,53 @@
+{
+  "schema": "woof-global-statics-rows/v1",
+  "rows": [
+    {
+      "woof_build": "engine-4d1079249ad0-global-0.1.3",
+      "truncation": 255,
+      "files": [
+        {
+          "name": "arwen-global-statics-T255-384x768-default.npz",
+          "key": "sha256:d12414b3df80a8921b83f3d51ae521c1fa11aa3e2a6907334dc039dc82ec7208",
+          "bytes": 10845290
+        },
+        {
+          "name": "arwen-global-statics-T255-384x768-default.json",
+          "key": "sha256:e370a51923d6091cd03395f1e8774449d9c596cd98dae8a0b1744aef0d227237",
+          "bytes": 1002776
+        }
+      ]
+    },
+    {
+      "woof_build": "engine-4d1079249ad0-global-0.1.3",
+      "truncation": 383,
+      "files": [
+        {
+          "name": "arwen-global-statics-T383-576x1152-default.npz",
+          "key": "sha256:e32ed6b3a1428e19946c774e8d66d1dd9be7b158e167a3d708f9f6bfcf0e7949",
+          "bytes": 22908043
+        },
+        {
+          "name": "arwen-global-statics-T383-576x1152-default.json",
+          "key": "sha256:d01c4e36c59758be26ea01cbdcb74c3171c7b8661654d33920c78daf8b6c485d",
+          "bytes": 1009459
+        }
+      ]
+    },
+    {
+      "woof_build": "engine-4d1079249ad0-global-0.1.3",
+      "truncation": 533,
+      "files": [
+        {
+          "name": "arwen-global-statics-T533-801x1602-default.npz",
+          "key": "sha256:fcf4d2bdeee13d4c730c6f80ffe524700d11cb30fc36cd8cd2935958413948ed",
+          "bytes": 41411581
+        },
+        {
+          "name": "arwen-global-statics-T533-801x1602-default.json",
+          "key": "sha256:c1b0faee19d2751dad11d24bf4908d29c815ef73a2479e7e9cd8940fb9ad793c",
+          "bytes": 1018492
+        }
+      ]
+    }
+  ]
+}

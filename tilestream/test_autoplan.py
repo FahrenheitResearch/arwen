@@ -888,17 +888,41 @@ def test_vram_model_against_a_real_allocation(rung: str = "dry",
     that the pool does not account for is refused BY NAME instead of being
     charged to the planner.  The check needs an idle or headless card; that
     is a property of the instrument, not a tolerance to widen.
+
+    THE BUILD DRAWS FROM A PRIVATE POOL, never the process's default one.
+    A battery process reaches this test after other GPU tests, and the
+    default pool then holds FREE CACHED blocks that ``free_all_blocks``
+    cannot return, because each shares a chunk with a block still live.
+    Our arrays are cut from that slack without a new device allocation, so
+    the device counter and the pool total under-count by the same amount
+    and the foreign check above cannot see it.  MEASURED 2026-10-09 on
+    node-2's RTX 5090 in the 2.8.9 shard's own file order: the default pool
+    entered this test at 1.223 GiB held, 0.355 GiB live, and the 1-buffer
+    reading came out 2.471 GiB (1.464x, pool 2.038 GiB) against 3.193 GiB
+    (1.133x, pool 2.740 GiB) for the same build alone in a process, on that
+    card and on node-4's RTX 5070 Ti alike.  The model was the same on both
+    cards; the reading was not of our allocation.  A fresh pool holds no
+    slack, so the reading is the allocation a fresh process would make.
     """
     import cupy as cp
 
     from tilestream import physics_inventory as physinv
 
-    pool = cp.get_default_memory_pool()
     warm = cp.zeros(1024, dtype=cp.float64)
     warm += 1.0
     cp.cuda.runtime.deviceSynchronize()
     del warm
+    cp.get_default_memory_pool().free_all_blocks()
+    pool = cp.cuda.MemoryPool()
+    with cp.cuda.using_allocator(pool.malloc):
+        _measure_against_the_card(cp, physinv, pool, rung, n)
     pool.free_all_blocks()
+
+
+def _measure_against_the_card(cp, physinv, pool, rung: str, n: int) -> None:
+    """The body of :func:`test_vram_model_against_a_real_allocation`, run
+    with every allocation drawn from ``pool``."""
+    assert pool.total_bytes() == 0, "the measurement pool must start empty"
 
     def used() -> int:
         free, total = cp.cuda.runtime.memGetInfo()

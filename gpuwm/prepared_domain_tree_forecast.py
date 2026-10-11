@@ -767,7 +767,7 @@ def _with_terrain_acoustics(inputs: PreparedTreeInputs) -> PreparedTreeInputs:
              else {"clock_basis": basis})
     return replace(inputs, experiment=adapted,
                    acoustic_substeps=MappingProxyType(
-                       acoustic_receipt(acoustic)),
+                       acoustic_receipt(acoustic, clock)),
                    terrain_clock=MappingProxyType(clock_receipt(clock)),
                    **extra)
 
@@ -2641,6 +2641,13 @@ def _verify_thompson_assets(exp) -> None:
 
     if not any(domain.run.mp_physics == 8 for domain in exp.domains):
         return
+    classic = [domain.run for domain in exp.domains if domain.run.mp_physics == 8]
+    from gpuwm.core.thompson_column import table_identity
+    for cfg in classic:
+        if cfg.thompson_version != "wrf_461":
+            table_identity(cfg)
+    if not any(cfg.thompson_version == "wrf_461" for cfg in classic):
+        return
     from gpuwm.core.thompson_contract import validate_table_assets
     from gpuwm.table_assets import require_thompson_tables
 
@@ -3012,6 +3019,24 @@ def _devices_tree_receipt(exp, split_ids, steppers, decisions, admission):
             "grids": grids}
 
 
+def _warm_start_resume(initialization, start_time):
+    """The step log's restart instant for a WRF warm start, else ``None``.
+
+    Read from the clocks the warm start opens the run at, so the run line
+    and the step totals count this run's steps from the restart instant
+    (NV recipe dry run, D7).
+    """
+
+    clocks = getattr(initialization, "warm_start_clocks", None)
+    if not clocks:
+        return None
+    root = clocks[min(clocks)]
+    return progress_log.StepLogResume.of({
+        "model_seconds": (root.valid_time - start_time).total_seconds(),
+        "steps": {int(grid): int(clock.itimestep)
+                  for grid, clock in clocks.items()}})
+
+
 def run_prepared_tree(
     inputs: PreparedTreeInputs,
     *,
@@ -3158,7 +3183,8 @@ def run_prepared_tree(
         # schema the stream declares.  Read from the ROOT because
         # use_adaptive_time_step is Registry scope 1 -- one scalar for
         # the whole run, not a per-domain choice.
-        adaptive_dt=bool(exp.root.run.use_adaptive_time_step))
+        adaptive_dt=bool(exp.root.run.use_adaptive_time_step),
+        resume=_warm_start_resume(initialization, exp.start_time))
     # The kernel cache as this run INHERITED it, before a single kernel
     # of this run's own is written into it.  Pure filesystem; asking
     # later reads a cache this run has already been filling, which is
@@ -4002,6 +4028,15 @@ def run_prepared_tree(
             checkpoint, model,
             sealed_forcing_extension=sealed_forcing_extension)
         model._resumed = True
+    elif getattr(initialization, "warm_start_clocks", None):
+        # A WRF warm start (gpuwm.wrfinput_forecast.WrfRestartInitialization):
+        # the state and physics were restored from the wrfrst files above,
+        # and the clocks open at the restart instant, as a resume opens
+        # them at its checkpoint's.  A gpuwm checkpoint taken later in the
+        # same run resumes through the branch above instead.
+        from gpuwm.ingest.wrfrst import apply_warm_start_clock
+        restart_info = apply_warm_start_clock(
+            model, nodes, initialization.warm_start_clocks)
     # Same ruling as the case-data route: a restore point that IS the
     # stop tick is a finished run, and the schedule executor refuses a
     # start period at the end of the schedule, so this route decides it

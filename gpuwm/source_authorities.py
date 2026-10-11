@@ -234,7 +234,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "hrrr-prs-grib2-v1": _profile(
         "rw-wps-hrrr-prs-grib2",
         source_format="grib2",
-        mapping="770b747a0a8eb62b281fe51a5853a4fa82a43512079615a60f1c385f9713ee0c",
+        mapping="8e86e27af452391159881059fbaae3ef6451e86538d5caec75f8ca639e12c6eb",
         composition="7e1739721286ed0c2bf0c44ef480bc80cf3a6c0f5fb032e46ae5c2a423544eb4",
         provenance="c7f2ea4142fe09c687f2b1ac0f4d4c462cb55398bfe5149fe9008d9d03ff2cc0",
         data_role="hrrr_prs_in_band_surface",
@@ -267,8 +267,8 @@ _PACKAGED_PROFILES = MappingProxyType({
     # nine-node soil column come from the same cycle's wrfprs analysis.
     "hrrr-native-grib2-v1": _profile(
         "rw-wps-hrrr-native-grib2", source_format="grib2",
-        mapping="aed7c836ca72dc951b827aab06f04803d3ff3f16cf576c20feca9f94bd269833",
-        composition="503852a8bfe955be9a844bc63de6d11bc6896a3817c15689bc30a5dc97ef427b",
+        mapping="b8227dfb5a30165661f8268bd2b8b45d7040d9f71dd49103054df14f82320a0d",
+        composition="ec1ac78cf4e301863bd0b8e7099d265e73c700a00be5c1c759cfa80a04f1015c",
         provenance="99c6f704b6c783bbd70672bcf2ecc23752a82a6d902a03f05b16c774d3ca4c77",
         data_role="soil_surface_data",
         provenance_role="soil_surface_provenance",
@@ -281,7 +281,7 @@ _PACKAGED_PROFILES = MappingProxyType({
         contributing_mappings={
             "soil_surface_mapping": {
                 "file": "rw-wps-hrrr-prs-grib2.mapping.json",
-                "sha256": "770b747a0a8eb62b281fe51a5853a4fa82a43512079615a60f1c385f9713ee0c",
+                "sha256": "8e86e27af452391159881059fbaae3ef6451e86538d5caec75f8ca639e12c6eb",
             },
             "vegetation_surface_mapping": {
                 "file": "rw-wps-hrrr-surface-vegetation-grib2.mapping.json",
@@ -1102,6 +1102,25 @@ def packaged_mapping_target(profile_id: str) -> Mapping[str, object]:
 ADMISSION_ONLY_TARGET_KEYS = frozenset({BOUNDARY_MULTIPLES_KEY,
                                         "boundary_interval_seconds"})
 
+#: Mapping ``grid`` keys that decide which files are admitted and nothing
+#: decoded, on the same rule:
+#:
+#: - ``published_first_points``: other encodings of the declared first
+#:   grid point that a publisher writes for the same grid (HRRRv1's
+#:   millidegree corner, 2.8.9).  A record matching one is admitted as the
+#:   declared grid; the frame header and every array come from the
+#:   declared ``parameters``, so a preparation made before the key existed
+#:   holds the same frames.
+ADMISSION_ONLY_GRID_KEYS = frozenset({"published_first_points"})
+
+#: Mapping ``fields.<name>`` keys of the same kind:
+#:
+#: - ``repeated_record``: which of two messages a publisher wrote for one
+#:   record the field reads (HRRRv1's repeated HGT, 2.8.9).  Without it a
+#:   repeat is refused, so every frame a preparation decoded before the
+#:   key existed had no repeat, and the key reads it the same way.
+ADMISSION_ONLY_FIELD_KEYS = frozenset({"repeated_record"})
+
 
 def mapping_decode_identity(document: Mapping[str, object]) -> str:
     """SHA-256 of a mapping document without its admission-only keys.
@@ -1109,7 +1128,9 @@ def mapping_decode_identity(document: Mapping[str, object]) -> str:
     Canonical JSON of the parsed document (sorted keys, no whitespace), so
     two documents with this digest equal parse to the same fields,
     derivations, grid and target, which is everything the engine decodes
-    from; only :data:`ADMISSION_ONLY_TARGET_KEYS` are left out.
+    from; only :data:`ADMISSION_ONLY_TARGET_KEYS`,
+    :data:`ADMISSION_ONLY_GRID_KEYS` and :data:`ADMISSION_ONLY_FIELD_KEYS`
+    are left out.
     """
 
     stripped = dict(document)
@@ -1117,6 +1138,17 @@ def mapping_decode_identity(document: Mapping[str, object]) -> str:
     if isinstance(target, Mapping):
         stripped["target"] = {key: value for key, value in target.items()
                               if key not in ADMISSION_ONLY_TARGET_KEYS}
+    grid = stripped.get("grid")
+    if isinstance(grid, Mapping):
+        stripped["grid"] = {key: value for key, value in grid.items()
+                            if key not in ADMISSION_ONLY_GRID_KEYS}
+    fields = stripped.get("fields")
+    if isinstance(fields, Mapping):
+        stripped["fields"] = {
+            name: ({key: value for key, value in field.items()
+                    if key not in ADMISSION_ONLY_FIELD_KEYS}
+                   if isinstance(field, Mapping) else field)
+            for name, field in fields.items()}
     canonical = json.dumps(stripped, sort_keys=True, separators=(",", ":"),
                            ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -1175,7 +1207,9 @@ def bound_mapping_refusal(profile_id: str, bound: bytes, *,
 
 
 __all__ = [
-    "ADMISSION_ONLY_TARGET_KEYS", "bound_mapping_refusal",
+    "ADMISSION_ONLY_FIELD_KEYS", "ADMISSION_ONLY_GRID_KEYS",
+    "ADMISSION_ONLY_TARGET_KEYS",
+    "bound_mapping_refusal",
     "mapping_decode_identity",
     "BOUNDARY_MULTIPLES_KEY", "boundary_interval_refusal",
     "boundary_interval_takes", "packaged_mapping_target",

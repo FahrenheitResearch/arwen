@@ -17,6 +17,10 @@ def source_absent_microphysics(cfg):
     mp = int(cfg.mp_physics)
     if mp in (0, 1, 6):
         return (), {}
+    if mp == 30:
+        from gpuwm.core.fast_sbm_contract import BIN_SPECIES,NUMBER_SPECIES
+        return (BIN_SPECIES+("QNCCN","QNCLOUD","QNRAIN","QNICE","QNSNOW","QNGRAUPEL"),
+                dict.fromkeys(BIN_SPECIES+NUMBER_SPECIES,0.0))
     if mp == 8:
         return ("QNICE", "QNRAIN"), {"ni": 0.0, "nr": 0.0}
     if mp == 9:

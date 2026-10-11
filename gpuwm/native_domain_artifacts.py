@@ -156,7 +156,7 @@ def _domain_files(domain: Path) -> tuple[Path, ...]:
     """The files :func:`write_native_domain_artifacts` leaves in ``domain``."""
 
     cache = domain / "prepared-cache"
-    return (domain / "receipt.json", domain / "native-static.npz",
+    return (domain / "receipt.json", domain / "preparation-runtime.json", domain / "native-static.npz",
             domain / "geometry-receipt.json", cache / "header.json",
             cache / "a00000.npy")
 
@@ -212,6 +212,7 @@ def hierarchy_bundle_write_paths(
         deepest_published_hierarchy_path(root / HIERARCHY_ARTIFACTS_DIRNAME),
         deepest_published_hierarchy_path(artifacts),
         _longest(_domain_files(domain_staging)),
+        domain_staging / "preparation-runtime.json.pending",
         cache_staging / HEADER_PARTIAL_NAME,
         domain_artifacts_manifest_temporary(
             tree_staging / "domain-artifacts.json",
@@ -486,12 +487,12 @@ def write_native_domain_artifacts(
     exporter.
 
     ``input_preparation_seconds``, the wall time the domain's inputs took,
-    is recorded in ``receipt.json`` beside the cache, never in the cache's
+    is recorded in ``preparation-runtime.json`` beside the cache, never in its
     hashed metadata: a timing there made two preparations of the same
     inputs differ in content digest (A138).  ``preprocess_receipt``, the
     domain's whole preprocessing receipt with what its preparation
-    measured, is recorded there too, for a child whose cache binds only
-    its identity.
+    measured, is recorded there too. The artifact receipt binds the same
+    scientific preprocessing identity as the child's prepared cache.
     """
 
     output = Path(output)
@@ -583,12 +584,14 @@ def write_native_domain_artifacts(
                 },
             },
             "verification": verified,
-            **({} if input_preparation_seconds is None else {
-                "input_preparation_seconds": float(
-                    input_preparation_seconds)}),
             **({} if preprocess_receipt is None else {
-                "preprocess_receipt": _receipt_json(preprocess_receipt)}),
+                "preprocess_receipt": _receipt_json(preprocess_reports_identity(
+                    preprocess_identity(preprocess_receipt)))}),
         }
+        if preprocess_receipt is not None or input_preparation_seconds is not None:
+            from gpuwm.ingest.preparation_evidence import write_runtime_preparation
+            write_runtime_preparation(staging, preprocessing=_receipt_json(preprocess_receipt or {}),
+                input_preparation_seconds=input_preparation_seconds)
         (staging / "receipt.json").write_text(
             json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False)
             + "\n", encoding="utf-8")
@@ -650,7 +653,7 @@ def write_child_domain_artifacts(
         # What the child's preparation ran, without what it measured
         # (A138): the root's device fit rides in its selection and a
         # native HRRR child's soil mapping carries its backend's
-        # receipt.  The child's receipt.json keeps the whole receipt,
+        # receipt. The adjacent runtime sidecar keeps the whole receipt,
         # since a child resolves its own backend and worker count.
         metadata = {
             "preprocess_receipt": preprocess_reports_identity(

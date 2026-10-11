@@ -236,6 +236,16 @@ def test_a_pooled_hrrr_fetch_gives_every_file_its_share_and_a_relay(
                 "selected_record_count": records, "probe": {}}
 
     monkeypatch.setattr(fetch, "_rw_fetch_hrrr", fake)
+    # Since 49f8a677f each soil file also takes the cycle's runtime surface
+    # records through the backbone; `rw_fetch` here is a name, not a
+    # binary, and the budget split is this cell's question, so that step
+    # records its fields without moving bytes.
+    from gpuwm import runtime_surface_fetch
+    monkeypatch.setattr(
+        runtime_surface_fetch, "append_runtime_surface_records",
+        lambda path, *, adapter, **kwargs: [
+            {"field": row[0], "units": row[3], "selector": row[2]}
+            for row in adapter.runtime_surface_fields])
     with progress_mod.event_sink(
             lambda event, **fields: events.append((event, fields))):
         fetch.fetch_hrrr(

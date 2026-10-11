@@ -61,6 +61,9 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
         kinds += ["qv", "qc", "qr"]
         if cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
             kinds += ["qi", "qs", "qg"]
+        if cfg.mp_physics == 30:
+            from gpuwm.core.fast_sbm_contract import EXTRA_SPECIES
+            kinds += list(EXTRA_SPECIES)
         if cfg.mp_physics == 9:
             # The inventory follows what is transported
             # (gpuwm/core/moist.py::MY2_SPECIES): hail mass plus all six
@@ -92,6 +95,16 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
             # scheme no qs and no qg (the docstring carries the
             # consequence of widening that tuple).
             kinds += ["qi", "ni", "nr", "qir", "qib"]
+        # A named scheme (gpuwm.microphysics_schemes): its capability row is
+        # the transported set, the same rows moist.extra_moist_species
+        # returns for it, so each crosses a nest edge with its masses.
+        from gpuwm.microphysics_schemes import scheme as _named_scheme
+        named = _named_scheme(int(cfg.mp_physics))
+        if named is not None:
+            kinds += [name for name in (named.ice_mass_species
+                                        + named.moment_species
+                                        + named.aerosol_species)
+                      if name not in kinds]
     # Chem species (gpuwm/core/chem_state.py), named by the chem table: WRF
     # declares every chem species with the nest interpolation and feedback
     # flags (registry.chem ``i0{12}rhusdf=(bdy_interp:dt)``) and forces a

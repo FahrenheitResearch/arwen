@@ -215,8 +215,13 @@ def main(argv=None):
             # The worker's context carries the run's arguments and the
             # leg's analysis flag: write_result reads both to decide
             # whether the member owes its shifted VTSM slots (4dcca7d16).
+            # It also carries the run's output root and leg number, which
+            # write_result's DA clock times the publication under
+            # (9daf25762), as the real worker context does.
             context = SimpleNamespace(t_start=0.0, t_end=t_end, restart=None,
-                                      args=cli, analysis_due=True)
+                                      args=cli, analysis_due=True,
+                                      out=root / "out",
+                                      absolute_leg_number=1)
             result = MemberLegResult(
                 restart=restart, snapshot=state, H_Z=hz[member],
                 H_surface=None, hot_pending=None,

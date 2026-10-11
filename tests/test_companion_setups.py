@@ -107,7 +107,8 @@ def test_save_copies_the_configuration_companion_and_metadata(tmp_path):
         assert saved[table] == original[table]
     assert saved.get("tiles") == original.get("tiles")
     assert saved["experiment"]["restart_interval_s"] == original["experiment"]["restart_interval_s"]
-    assert saved["fetch"]["out"] == str(Path("data/proof").expanduser().resolve())
+    # Relative to the saved-from configuration, as [case_data] is (D-11).
+    assert saved["fetch"]["out"] == str((source.parent / "data/proof").resolve())
     assert {change["field"] for change in result["changes"]} == {"fetch.out"}
     document = metadata(folder)
     assert document["schema"] == "arwen.saved-setup.v1"

@@ -657,7 +657,13 @@ def run_member_leg(context: MemberLegContext, name, *,
     ``wire_override`` and ``assemble_override`` are explicit in-process GPU
     fixture seams. No production manifest can name or import either one.
     """
+    import time
+    from gpuwm.da.member_transport import DAClock
+    construct_started = time.monotonic()
+    timing = DAClock(context.out, cycle=context.absolute_leg_number, member=name)
+    timing.transition("worker.claim", at=construct_started)
     context.validate(name)
+    timing.transition("prep.member.restore")
     vts_enabled = bool(getattr(context.args, "spread_repair_vtsm", False)
                        and context.analysis_due and name != CONTROL)
     if vts_enabled:
@@ -1330,15 +1336,21 @@ def run_member_leg(context: MemberLegContext, name, *,
                        t_start=float(t_start))
         try:
             phase("health_nest_composite_and_forcing")
+            timing.transition("post.member.integrate")
             execute_experiment(model, history_handler=history,
                                progress_callback=None,
                                validate_state=True,
                                skip_feedback_path=True,
-                               steppers=steppers)
+                               steppers=steppers,
+                               step_observer=timing.step)
         except BaseException:
+            timing.finish_steps(construct_started, complete=False)
             history_writer.abandon()
             raise
+        else:
+            timing.finish_steps(construct_started, complete=True)
         finally:
+            timing.transition("forecast.output.member")
             if tten_forcing is not None:
                 radar_tten.detach(state)
             if iau_forcing is not None:
@@ -1610,8 +1622,13 @@ def run_member_leg(context: MemberLegContext, name, *,
         wire = wire_override
     if assemble_override is not None:
         assemble = assemble_override
-    run_trajectory(name)
+    try:
+        run_trajectory(name)
+    finally:
+        ready_at = timing.transition()
     record = leg_record["trajectories"][str(name)]
+    record["da_timing"] = {"phase_seconds": dict(timing.seconds),
+                           "ready": timing.ready(at=ready_at)}
     if stage.consume_intent is not None:
         record["staged_set_consume_pending"] = True
     return MemberLegResult(

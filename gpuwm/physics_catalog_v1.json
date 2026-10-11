@@ -14,6 +14,7 @@
   "family_order": ["microphysics", "cumulus", "pbl", "surface_layer", "land_surface", "radiation", "turbulence", "urban"],
   "descriptions": {
     "microphysics": {
+      "fast-sbm-mp30": "Spectral bin scheme: droplets, ice and aerosol carried as size distributions, not bulk moments. Runs with legacy RRTMG.",
       "kessler-mp1": "Warm rain only: cloud water and rain, no ice. For tests, not real forecasts.",
       "milbrandt2mom-mp9": "Two-moment scheme with separate graupel and hail, predicting mass and number of each.",
       "morrison-mp10": "Two-moment ice, snow, rain and graupel, predicting mass and number.",
@@ -21,6 +22,7 @@
       "off": "No cloud or precipitation physics.",
       "p3-mp50": "One free ice category whose rime and density evolve, instead of fixed snow, graupel and hail classes.",
       "sase": "SASE microphysics. Registered as a plan; not in ArWen yet.",
+      "tempo": "NCAR TEMPO, the successor to aerosol-aware Thompson, adding graupel number and graupel volume.",
       "thompson-aerosol-mp28": "Thompson with water- and ice-friendly aerosol setting droplet and ice numbers.",
       "thompson-mp8": "Snow and graupel by mass, rain and cloud ice by mass and number; common for winter precipitation.",
       "wdm6-mp16": "WSM6 ice with two-moment warm rain and cloud condensation nuclei.",
@@ -30,7 +32,8 @@
       "grell-freitas": "Scale-aware ensemble convection that tapers itself off as the grid resolves storms.",
       "kain-fritsch": "Deep and shallow convection by mass flux, for grids coarser than about 4 km.",
       "new-tiedtke": "Mass-flux convection with deep, shallow and mid-level arms.",
-      "off": "No convection scheme: the grid makes its own storms. The usual choice below about 4 km."
+      "off": "No convection scheme: the grid makes its own storms. The usual choice below about 4 km.",
+      "tiedtke": "The original Tiedtke mass-flux convection (cu_physics = 6), the cumulus of WRF's CONUS suite."
     },
     "pbl": {
       "myj": "Local turbulent-energy boundary layer (Mellor-Yamada-Janjic). Needs the Eta surface layer.",

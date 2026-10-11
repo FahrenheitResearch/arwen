@@ -46,13 +46,22 @@ def test_timeout_keeps_old_roster_without_binding_new_checkpoint_or_step_retry(t
         def save_resume(self):
             calls.append(1)
             raise TimeoutError("busy product owner")
-    monkeypatch.setattr(restart_roster, "bind_checkpoint_member", lambda *args: bound.append(args))
-    monkeypatch.setattr(restart_roster, "seal", lambda *args: sealed.append(args))
+    def bind(root, checkpoint):
+        # The owner binding is written first; a deferred snapshot removes it.
+        bound.append(checkpoint)
+        checkpoint.with_suffix(".member.json").write_text("{}")
+    def seal(root, *, collector=None):
+        # seal saves the collector snapshot under its checkpoint hold before
+        # it writes a roster; a timeout there publishes nothing.
+        collector.save_resume()
+        sealed.append(root)
+    monkeypatch.setattr(restart_roster, "bind_checkpoint_member", bind)
+    monkeypatch.setattr(restart_roster, "seal", seal)
     progress = CheckpointProgress(lambda **event: events.append(event), collector=Collector(),
         root=tmp_path, manifest_lock=RLock())
     progress(last_checkpoint=tmp_path / "new.npz", outer_step=10)
     progress(last_checkpoint=tmp_path / "new.npz", outer_step=11)
-    assert calls == [1] and not bound and not sealed
+    assert calls == [1] and bound == [tmp_path / "new.npz"] and not sealed
     assert len(events) == 2 and "ensemble_checkpoint_deferred" in events[0]
     assert roster.read_bytes() == b"previous coherent member checkpoint"
     assert not (tmp_path / "new.member.json").exists()

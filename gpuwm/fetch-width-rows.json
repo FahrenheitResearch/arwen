@@ -1,0 +1,13 @@
+{
+  "schema": "gpuwm-fetch-width-rows-v1",
+  "default": "balanced",
+  "rows": [
+    {"id": "constrained", "provider": "*", "box": "*", "bandwidth_min_mbps": 0, "bandwidth_max_mbps": 15, "workers": 3, "stream_budget": 12, "evidence": "Initial constrained-link candidate. Requires labelled width sweep."},
+    {"id": "balanced", "provider": "*", "box": "*", "bandwidth_min_mbps": 15, "bandwidth_max_mbps": 100, "workers": 6, "stream_budget": 48, "evidence": "Existing default: 6 files; 48 streams filled a measured 24 to 34 MB/s off-site link (fetch_pool.py stream-budget evidence)."},
+    {"id": "wide", "provider": "*", "box": "*", "bandwidth_min_mbps": 100, "bandwidth_max_mbps": null, "workers": 12, "stream_budget": 48, "evidence": "Initial high-bandwidth candidate. Requires labelled width sweep."},
+    {"id": "aws-regional", "provider": "aws", "box": "*", "workers": 6, "stream_budget": 48, "evidence": {"files": 49, "wall_seconds": 150, "source": "Task-supplied transfer observation, 2026-10-03. Worker width and bandwidth were not supplied, so this row retains the existing width pending measurement."}},
+    {"id": "off-site", "provider": "off-site", "box": "*", "workers": 6, "stream_budget": 48, "evidence": "Existing measured off-site stream budget. Box-specific bandwidth rows may override it."},
+    {"id": "runpod", "provider": "runpod", "box": "*", "workers": 6, "stream_budget": 48, "evidence": "Unmeasured provider fallback. Supply bandwidth or a box-specific row; no measured provider speed is claimed."},
+    {"id": "aws-c7a-high-bandwidth", "provider": "aws", "box": "c7a.48xlarge", "bandwidth_min_mbps": 100, "bandwidth_max_mbps": null, "workers": 12, "stream_budget": 48, "evidence": {"files": 49, "bytes": 20412933311, "wall_seconds": 15.915787935256958, "scope": "S3, 2026-10-08, private tmpfs under memory gate; public inputs, independent digest PASS. Ordinary disk and other boxes were not qualified by this measurement.", "receipt": "ram-results-49/public-49/wide-r1-1-after/COLD-receipt.json"}}
+  ]
+}

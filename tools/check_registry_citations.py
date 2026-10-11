@@ -123,7 +123,11 @@ EXTERNAL: dict[str, str] = {
     "phys/module_bl_myjurb.F": _WRF,
     "phys/module_bl_mynn.F": _WRF,
     "module_mp_p3.F": _WRF,
-    "module_mp_thompson.F": _WRF,
+    # The bare module_mp_thompson.F row left with 2.8.9: the registry cites
+    # WRF's file as phys/module_mp_thompson.F, because the v4.4 Thompson
+    # oracle now vendors a module_mp_thompson.F of its own
+    # (tools/thompson_generation_oracle/upstream/), which a bare name would
+    # resolve to.
     "phys/module_mp_milbrandt2mom.F": _WRF,
     "phys/module_mp_thompson.F": _WRF,
     "module_mp_wdm6.F": _WRF,

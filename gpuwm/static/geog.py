@@ -32,6 +32,22 @@ from pathlib import Path
 
 import numpy as np
 
+
+#: The MODIS 21-class land-use attributes WRF writes when the geography
+#: names no other legend (wrfout and wrfinput globals). Lives here, in the
+#: preprocessing package, so static builds and geography selection read it
+#: without importing the forecast output writer (gpuwm/io/wrfout.py, which
+#: the standalone RW-WPS wheel must not carry).
+DEFAULT_LANDUSE_ATTRS = {
+    "MMINLU": "MODIFIED_IGBP_MODIS_NOAH",
+    "ISWATER": 17,
+    "ISLAKE": 21,
+    "ISICE": 15,
+    "ISURBAN": 13,
+    "ISOILWATER": 14,
+    "NUM_LAND_CAT": 21,
+}
+
 _TILE_RE = re.compile(r"^(\d{1,6})-(\d{1,6})\.(\d{1,6})-(\d{1,6})$")
 
 _TRUE_STRINGS = ("yes", "true", ".true.", "1")

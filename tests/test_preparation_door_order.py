@@ -69,9 +69,18 @@ def card(monkeypatch):
             name="cuda", array_module=module,
             receipt=lambda: {"backend": "cuda", "array_module": "stand-in"})
 
-    def cpu_backend(**kwargs):
-        return SimpleNamespace(name="cpu", workers=kwargs.get("workers"),
-                               receipt=lambda: {"backend": "cpu"})
+    class cpu_backend:
+        """A class, not a factory: since 7fe290cad the preparation's math
+        scope asks isinstance(backend, ParallelCpuPreprocessBackend)."""
+
+        name = "cpu"
+        _native = SimpleNamespace(path=None)
+
+        def __init__(self, **kwargs):
+            self.workers = kwargs.get("workers")
+
+        def receipt(self):
+            return {"backend": "cpu"}
 
     def read(**_kwargs):
         events.append("decision")
@@ -82,6 +91,10 @@ def card(monkeypatch):
     monkeypatch.setattr(backend, "_gpu_runtime_installed", lambda: True)
     monkeypatch.setattr(backend, "_ANNOUNCED_AUTO_REASONS", set())
     monkeypatch.delenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", raising=False)
+    # The card is a stand-in, so this machine allows it: since 083ac7cd0
+    # the backend choice honours GPUWM_NO_LOCAL_GPU first, and the CPU
+    # legs set it.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
     monkeypatch.setattr(device_probe, "device_memory_probe_subprocess", read)
 
     def allocates(owner, *names):

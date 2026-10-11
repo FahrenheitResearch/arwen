@@ -3473,3 +3473,11 @@ def test_parsed_source_text_carries_explicit_selectors_without_opening_labels():
     assert cfg.bl_mynn_version == "wrf_461"
     assert cfg.ra_rrtmg_variant == "rrtmg_legacy"
     assert cfg.rrtmg_cloud_optics_form == "noaa_wrf39"
+
+
+def test_fast_sbm_maps_without_substitution(tmp_path):
+    text=INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 30, 30")
+    toml_text,report=import_namelists(*_pair(tmp_path,inp=text),rrtmg_variant="rrtmg_legacy")
+    target=tmp_path/"fast-sbm.toml"; target.write_text(toml_text)
+    assert load_experiment(target).root.run.mp_physics==30
+    assert not any(row.key=="mp_physics" for row in report.substitutions)

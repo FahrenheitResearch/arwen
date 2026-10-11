@@ -406,11 +406,17 @@ def _ladder_answer(name: str, home: Path) -> Path:
     raise AssertionError("unreachable: the staged rung was just written")
 
 
-def test_prep_gfs_resolves_the_staged_bridge_without_the_flag(tmp_path):
+def test_prep_gfs_resolves_the_staged_bridge_without_the_flag(
+        tmp_path, monkeypatch):
     """FIRST-LIGHT's sentence, made true: omitted, --bridge resolves
     through the ladder to the bridge this install has -- the staged
     copy on a bare box, the checkout's own build where one exists."""
 
+    # The door runs under _clean_env, which drops every override rung;
+    # the prediction drops it the same way.  A box that exports its
+    # built bridges (the battery's tipbuild env does) is not a different
+    # ladder for the door.
+    monkeypatch.delenv(bridges.BRIDGE_ENV["gfs_grib2_bridge"], raising=False)
     home = tmp_path / "home"
     _staged_bridge(home, "gfs_grib2_bridge")
     expected = _ladder_answer("gfs_grib2_bridge", home)
@@ -422,7 +428,10 @@ def test_prep_gfs_resolves_the_staged_bridge_without_the_flag(tmp_path):
     assert str(expected).replace("\\", "/") in done.stdout.replace("\\", "/")
 
 
-def test_prep_era5_resolves_the_staged_bridge_without_the_flag(tmp_path):
+def test_prep_era5_resolves_the_staged_bridge_without_the_flag(
+        tmp_path, monkeypatch):
+    # As above: the door's environment carries no override rung.
+    monkeypatch.delenv(bridges.BRIDGE_ENV["grib1_bridge"], raising=False)
     home = tmp_path / "home"
     _staged_bridge(home, "grib1_bridge")
     expected = _ladder_answer("grib1_bridge", home)
@@ -446,7 +455,8 @@ def test_prep_era5_resolves_the_staged_bridge_without_the_flag(tmp_path):
     assert str(expected).replace("\\", "/") in done.stdout.replace("\\", "/")
 
 
-def test_prep_gfs_names_the_ladder_when_nothing_resolves(monkeypatch, capsys):
+def test_prep_gfs_names_the_ladder_when_nothing_resolves(
+        tmp_path, monkeypatch, capsys):
     """Genuinely unresolvable: the refusal names what it looked for,
     like the other ladder doors -- never a bare demand for a flag.
 
@@ -457,7 +467,13 @@ def test_prep_gfs_names_the_ladder_when_nothing_resolves(monkeypatch, capsys):
     resolver over the real candidate list."""
 
     monkeypatch.setattr(bridges, "find_bridge", lambda name: None)
-    rc = cli_main(_gfs_prep_argv())
+    # The override rung is the ladder's first, read by the door itself;
+    # an estate that exports it is not an empty one.
+    monkeypatch.delenv(bridges.BRIDGE_ENV["gfs_grib2_bridge"], raising=False)
+    # Prep reads the experiment's preprocessing choice before it resolves
+    # the bridge (bd4bf5968 gave the sibling cells a readable one); without
+    # it the refusal is about the missing experiment.toml instead.
+    rc = cli_main(_gfs_prep_argv(experiment=_experiment_config(tmp_path)))
     err = capsys.readouterr().err
     assert rc != 0
     assert "invalid or missing run arguments" not in err, err

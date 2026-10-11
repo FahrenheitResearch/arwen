@@ -63,17 +63,12 @@ is left exactly where it is.
 
 from __future__ import annotations
 
-import bz2
-import hashlib
-import http.client
 import os
 from pathlib import Path
 import shutil
-import socket
 import sys
-import time
-import urllib.error
-import urllib.request
+import tomllib
+import uuid
 
 from gpuwm import bridges
 from gpuwm import fetch_guard
@@ -83,12 +78,61 @@ from gpuwm.core.thompson_contract import (
     TableAsset,
     validate_table_assets,
 )
+from gpuwm.geog_assets import _rw_asset, GeogFetchError
+from gpuwm.timeline.ledger import span
+
+TABLE_SOURCE_PATH = Path(__file__).parent / "data" / "table_sources.v1.toml"
+
+
+def table_source_rows(asset: TableAsset) -> tuple[dict, ...]:
+    """Mirror choices are metadata. Every choice retains the canonical raw pin."""
+    with TABLE_SOURCE_PATH.open("rb") as source:
+        raw = tomllib.load(source)
+    if raw.get("schema") != "gpuwm-table-sources-v1":
+        raise TableAssetError("table source schema is unknown; source versions cannot be bound to the pinned coefficients")
+    return tuple(row for row in raw["source"] if row["filename"] == asset.filename
+                 and row["sha256"] == asset.sha256 and row["bytes"] == asset.bytes)
+
+
+def fetch_asset_from_sources(root: Path, asset: TableAsset) -> Path:
+    override = os.environ.get(ASSET_URL_BASE_ENV, "").strip()
+    if not override:
+        override = os.environ.get("GPUWM_BRIDGE_ASSET_URL_BASE", "").strip() if asset.filename not in EXTERNALIZED_TABLE_FILENAMES else ""
+    if override:
+        return _fetch_asset_from_url(root, asset, override.rstrip("/") + "/" + asset.filename)
+    rows = table_source_rows(asset)
+    if not rows:
+        raise TableAssetError(f"{asset.filename}: no source row; fetching an unspecified table version would change lookup coefficients")
+    errors = []
+    for row in rows:
+        try:
+            print(f"gpuwm fetch-tables: {asset.filename}: trying pinned source {row['url']}",
+                  file=sys.stderr)
+            url = row["url"]
+            if url.startswith("package://"):
+                import importlib
+                package, _, relative = url[len("package://"):].partition("/")
+                if not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
+                    raise TableAssetError(f"{asset.filename}: invalid packaged source path; it would read unrelated bytes outside the data package")
+                try:
+                    source = importlib.import_module(package).data_root() / relative
+                except (ImportError, AttributeError) as error:
+                    raise TableAssetError(f"{asset.filename}: {package} cannot locate its pinned data: {error}") from error
+                url = Path(source).resolve().as_uri()
+            return _fetch_asset_from_url(root, asset, url, compression=row.get("compression"))
+        except TableAssetError as error:
+            # Corruption is a refusal, never a reason to silently select another mirror.
+            if "pin refused" in str(error) or "pinned object refused" in str(error):
+                raise
+            errors.append(str(error))
+    raise TableAssetError(f"{asset.filename}: no declared source delivered the pinned bytes: " + "; ".join(errors))
 
 #: Externalized asset filenames: published as release assets and
 #: excluded from the wheel/sdist (freezeH2O.dat is additionally absent
 #: from the repository -- GitHub rejects blobs over 100 MiB).
-#: Everything else in CLASSIC_TABLE_ASSETS ships in the package, so its
-#: absence means a broken install (reinstall), not a pending download.
+#: Other classic files ship in the package. Their pinned source rows also
+#: support empty explicit roots; an undeclared gap still names an incomplete
+#: install rather than fetching unspecified lookup coefficients.
 EXTERNALIZED_TABLE_FILENAMES = frozenset({
     "freezeH2O.dat",
     "qr_acr_qg_V4.dat",
@@ -100,14 +144,6 @@ RELEASE_ASSET_BASE_URL = (
     "https://github.com/FahrenheitResearch/arwen/releases/download/v1.0.0")
 
 ASSET_URL_BASE_ENV = "GPUWM_TABLE_ASSET_URL_BASE"
-
-_BLOCK_BYTES = 8 * 1024 * 1024
-
-#: Transfer block, smaller than the hashing block on purpose: it is the
-#: resolution of the byte counter above, and an eight-MiB step over a
-#: slow link is a number that stands still for seconds at a time.
-_TRANSFER_BLOCK_BYTES = 1024 * 1024
-
 
 def asset_url_base() -> str:
     override = os.environ.get(ASSET_URL_BASE_ENV)
@@ -330,10 +366,16 @@ def _staging_path(root: Path, asset: TableAsset) -> Path:
     its bytes installed under the first writer's successful pin check --
     an install that never matched the pin it was blessed by.  A unique
     name means the bytes hashed are the bytes moved.
+
+    The name was the pid and ``time.time_ns()``.  Windows' clock advances
+    in coarse ticks, so writers in one process within one tick were given
+    one name (50 names asked in a row were 1 name on the windows-2025 box),
+    and two threads staging the same table wrote the same file.  A random
+    UUID per call is unique without a clock or a lock.
     """
 
     return root / (f".{asset.filename}.fetch-partial-"
-                   f"{os.getpid()}-{time.time_ns()}")
+                   f"{os.getpid()}-{uuid.uuid4().hex}")
 
 
 def _stage(temp: Path, final: Path, asset: TableAsset) -> None:
@@ -345,11 +387,7 @@ def _stage(temp: Path, final: Path, asset: TableAsset) -> None:
         raise TableAssetError(
             f"{asset.filename}: staged {actual_bytes} bytes, expected "
             f"{asset.bytes}; refused and deleted")
-    digest = hashlib.sha256()
-    with temp.open("rb") as stream:
-        while block := stream.read(_BLOCK_BYTES):
-            digest.update(block)
-    actual_sha256 = digest.hexdigest()
+    actual_sha256 = _table_hash(temp)
     if actual_sha256 != asset.sha256:
         temp.unlink(missing_ok=True)
         raise TableAssetError(
@@ -359,116 +397,59 @@ def _stage(temp: Path, final: Path, asset: TableAsset) -> None:
 
 
 def fetch_asset_from_url(root: Path, asset: TableAsset, url: str, *, compression=None) -> Path:
-    """Download ``url`` into ``root`` with pre-install verification.
+    rows = table_source_rows(asset)
+    if any(row["url"] == url for row in rows):
+        return fetch_asset_from_sources(root, asset)
+    return _fetch_asset_from_url(root, asset, url, compression=compression)
 
-    Held under the table-root lock: staging, verifying and installing is
-    one transaction, so a concurrent fetch into the same root queues
-    behind it instead of interleaving with it.
 
-    The transfer COUNTS ITS BYTES on stderr while it runs.  This is the
-    303 MiB that made ``gpuwm setup`` sit silent for 15.5 s of its 16.2
-    (UX finding N9). The transfer counter uses its wire length, including
-    compressed transfers; installation always verifies the raw asset pin.
-    stderr because ``gpuwm setup`` captures each step's
-    stdout; see :mod:`gpuwm.progress`.
-    """
-
-    if compression not in (None, "bz2"):
-        raise TableAssetError(f"unsupported asset compression {compression!r}")
+def _fetch_asset_from_url(root: Path, asset: TableAsset, url: str, *, compression=None) -> Path:
+    """Ranged Rust fetch and pin before the final atomic install."""
+    if compression not in (None, "bz2", "zstd"):
+        raise TableAssetError(f"{asset.filename}: unsupported compression {compression!r}; the raw table pin cannot be checked")
+    root.mkdir(parents=True, exist_ok=True)
     final = root / asset.filename
     with fetch_guard.hold("fetch-tables", root):
-        # Another fetch may have installed it while this caller waited.
-        # Verify under the same lock so a shared cache downloads once.
         if final.is_file():
             _verify_in_place(final, asset)
             return final
         temp = _staging_path(root, asset)
-        transfer_temp = temp if compression is None else temp.with_name(temp.name + ".bz2")
-        attempts = max(1, int(TRANSFER_ATTEMPTS))
-        for attempt in range(1, attempts + 1):
+        encoded = temp.with_name(temp.name + ".encoded") if compression else temp
+        attrs = {"bytes": 0, "datasets": [asset.filename]}
+        counter = ByteCounter(f"gpuwm fetch-tables: {asset.filename}", asset.bytes)
+        received_before = 0
+        def progress(received, total):
+            nonlocal received_before
+            if total:
+                counter.total = total
+            counter.advance(max(0, received - received_before))
+            received_before = received
+        with span("prep.tables.fetch", attrs=attrs):
             try:
-                _transfer(url, transfer_temp, asset)
-                break
-            except _TransientTransfer as stall:
-                transfer_temp.unlink(missing_ok=True)
-                if attempt == attempts:
-                    raise TableAssetError(
-                        f"{asset.filename}: download from {url} stalled "
-                        f"{attempts} times ({stall}); check the network "
-                        "connection and run gpuwm fetch-tables again, or "
-                        "stage the file from a local copy with --from")
-                print(f"gpuwm fetch-tables: {asset.filename}: {stall}; "
-                      f"retrying ({attempt + 1} of {attempts})",
-                      file=sys.stderr)
-                time.sleep(RETRY_PAUSE_SECONDS * attempt)
-            except (urllib.error.URLError, OSError) as error:
-                transfer_temp.unlink(missing_ok=True)
-                raise TableAssetError(
-                    f"{asset.filename}: download failed from {url}: {error}")
-        try:
-            if compression == "bz2":
-                with bz2.open(transfer_temp, "rb") as source, temp.open("wb") as sink:
-                    shutil.copyfileobj(source, sink, _TRANSFER_BLOCK_BYTES)
-            _stage(temp, final, asset)
-        except (OSError, EOFError) as error:
-            raise TableAssetError(f"{asset.filename}: cannot decompress {url}: {error}") from error
-        finally:
-            temp.unlink(missing_ok=True)
-            transfer_temp.unlink(missing_ok=True)
+                if compression is None:
+                    record = _rw_asset("asset", url=url, output=temp,
+                                       bytes=asset.bytes, sha256=asset.sha256,
+                                       on_progress=progress)
+                    progress(record["bytes"], record["bytes"])
+                    attrs["bytes"] = record["bytes"]
+                    os.replace(temp, final)
+                else:
+                    record = _rw_asset("encoded-asset", url=url, output=encoded,
+                                       on_progress=progress)
+                    progress(record["bytes"], record["bytes"])
+                    attrs["bytes"] = record["bytes"]
+                    # rw_fetch decodes in process: the host bzip2 and pzstd
+                    # this used to spawn are not on a stock Windows PATH,
+                    # so every compressed table refused there.
+                    _rw_asset("decode", input=encoded, output=temp, codec=compression)
+                    _stage(temp, final, asset)
+            except (GeogFetchError, OSError) as error:
+                raise TableAssetError(f"{asset.filename}: {url}: {error}") from error
+            finally:
+                counter.close()
+                temp.unlink(missing_ok=True)
+                encoded.unlink(missing_ok=True)
     return final
-
-
-#: Seconds one socket operation (connecting, or waiting for the next
-#: block of the body) may take before the transfer counts as stalled.
-#: There was no deadline at all: a host that answered 200 and then sent
-#: nothing held `gpuwm setup` forever with no progress and no message.
-SOCKET_TIMEOUT_SECONDS = 60.0
-#: Whole-transfer attempts before a stall is a refusal.
-TRANSFER_ATTEMPTS = 3
-#: Pause before a retry, times the attempt number.
-RETRY_PAUSE_SECONDS = 2.0
-
-
-class _TransientTransfer(Exception):
-    """A stall or a server-side failure worth one more try."""
-
-
-def _transfer(url: str, temp: Path, asset: TableAsset) -> None:
-    counter = None
-    try:
-        with urllib.request.urlopen(
-                url, timeout=SOCKET_TIMEOUT_SECONDS) as response, (
-                    temp.open("wb")) as sink:
-            try:
-                wire_bytes = int(getattr(response, "headers", {}).get("Content-Length", asset.bytes))
-            except (TypeError, ValueError):
-                wire_bytes = asset.bytes
-            counter = ByteCounter(f"gpuwm fetch-tables: {asset.filename}",
-                                  wire_bytes if wire_bytes > 0 else asset.bytes)
-            while True:
-                block = response.read(_TRANSFER_BLOCK_BYTES)
-                if not block:
-                    break
-                sink.write(block)
-                counter.advance(len(block))
-    except urllib.error.HTTPError as error:
-        if error.code >= 500:
-            raise _TransientTransfer(f"the server answered {error.code}") from None
-        raise
-    except (TimeoutError, socket.timeout):
-        raise _TransientTransfer(
-            f"no data for {SOCKET_TIMEOUT_SECONDS:g} s") from None
-    except urllib.error.URLError as error:
-        if isinstance(error.reason, (TimeoutError, socket.timeout,
-                                     ConnectionError)):
-            raise _TransientTransfer(str(error.reason) or "connection timed out") from None
-        raise
-    except (ConnectionError, http.client.HTTPException) as error:
-        # a connection dropped mid-body, or a body shorter than announced
-        raise _TransientTransfer(str(error) or type(error).__name__) from None
-    finally:
-        if counter is not None:
-            counter.close()
 
 
 def fetch_asset_from_dir(root: Path, asset: TableAsset,
@@ -588,9 +569,11 @@ def stage_classic_tables(args) -> int:
     # produce two half-roots and no runnable one.  Assets the package
     # does carry are copied across under the same pin verification.
     copied: list[TableAsset] = []
-    if root != packaged and staging_is_self_chosen(root):
+    if root != packaged:
         available = {asset.filename for asset in classify_assets(packaged)[0]}
         for asset in list(absent):
+            if asset.filename in EXTERNALIZED_TABLE_FILENAMES and not self_chosen:
+                continue
             if asset.filename not in available:
                 continue
             mib = asset.bytes / (1024 * 1024)
@@ -630,8 +613,10 @@ def stage_classic_tables(args) -> int:
                 return 2
             copied.append(asset)
 
+    declared = {asset.filename: table_source_rows(asset) for asset in absent}
     packaged_gaps = [asset for asset in absent
-                     if asset.filename not in EXTERNALIZED_TABLE_FILENAMES]
+                     if asset.filename not in EXTERNALIZED_TABLE_FILENAMES
+                     and not declared[asset.filename]]
     for asset in packaged_gaps:
         print(f"gpuwm fetch-tables: {asset.filename} is missing but ships "
               "inside the package itself; this install is incomplete -- "
@@ -640,7 +625,8 @@ def stage_classic_tables(args) -> int:
         return 2
 
     fetchable = [asset for asset in absent
-                 if asset.filename in EXTERNALIZED_TABLE_FILENAMES]
+                 if asset.filename in EXTERNALIZED_TABLE_FILENAMES
+                 or declared[asset.filename]]
     if not fetchable and not copied:
         if repaired:
             validate_table_assets(root)
@@ -665,7 +651,7 @@ def stage_classic_tables(args) -> int:
                 url = f"{base}/{asset.filename}"
                 print(f"gpuwm fetch-tables: downloading {asset.filename} "
                       f"({mib:.1f} MiB) from {url}")
-                final = fetch_asset_from_url(root, asset, url)
+                final = fetch_asset_from_sources(root, asset)
         except TableAssetError as error:
             print(f"gpuwm fetch-tables: REFUSED: {error}")
             return 2
@@ -775,7 +761,7 @@ def stage_wif_dataset(source_dir=None, root=None) -> int:
             url, compression = wif_asset_source()
             print(f"gpuwm fetch-tables --wif: downloading "
                   f"{WIF_DATASET_FILE} ({mib:.1f} MiB) from {url}")
-            fetch_asset_from_url(wif_root, WIF_DATASET_ASSET, url, compression=compression)
+            fetch_asset_from_sources(wif_root, WIF_DATASET_ASSET)
     except TableAssetError as error:
         print(f"gpuwm fetch-tables --wif: REFUSED: {error}")
         return 2
@@ -785,6 +771,13 @@ def stage_wif_dataset(source_dir=None, root=None) -> int:
     return 0
 
 
+def _table_hash(path: Path) -> str:
+    try:
+        return _rw_asset("hash", input=path)["sha256"]
+    except GeogFetchError as error:
+        raise TableAssetError(f"{path}: {error}") from error
+
+
 def _verify_in_place(path: Path, asset: TableAsset) -> None:
     """Size then SHA-256 of a file already in its final location."""
 
@@ -792,13 +785,10 @@ def _verify_in_place(path: Path, asset: TableAsset) -> None:
     if actual_bytes != asset.bytes:
         raise TableAssetError(
             f"{path}: {actual_bytes} bytes, expected {asset.bytes}")
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(_BLOCK_BYTES):
-            digest.update(block)
-    if digest.hexdigest() != asset.sha256:
+    digest = _table_hash(path)
+    if digest != asset.sha256:
         raise TableAssetError(
-            f"{path}: SHA-256 {digest.hexdigest()}, expected {asset.sha256}")
+            f"{path}: SHA-256 {digest}, expected {asset.sha256}; other lookup coefficients would change the selected physics")
 
 
 def register_cli(subparsers) -> None:

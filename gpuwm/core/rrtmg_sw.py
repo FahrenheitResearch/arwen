@@ -2957,6 +2957,12 @@ class CudaSW:
         self.ngb_gpu = cp.asarray(np.asarray(tab.ngb, dtype=np.int32))
         self._laysolfr_spec_gpu = cp.asarray(
             np.asarray(self._laysolfr_band_spec(), dtype=np.int32))
+        # These immutable arrays are shared across member streams. Publish
+        # their readiness after all three uploads, before the cached engine
+        # can be borrowed by another stream. Recording does not drain the GPU.
+        self._tables_ready = cp.cuda.Event(disable_timing=True)
+        self._tables_ready.record()
+        self._table_streams = {}
         self.max_nlay = None  # retained API attribute: workspace has no fixed layer ceiling
         #: Per-chunk device workspace of the batched chain (Section 11):
         #: every slot is allocated once and reused across the chunks of a
@@ -2973,6 +2979,14 @@ class CudaSW:
         self._chunk_by_nlayers = {}
 
     def _k(self, name):
+        current = self.cp.cuda.get_current_stream()
+        ptr = int(current.ptr)
+        if ptr not in self._table_streams:
+            current.wait_event(self._tables_ready)
+            # Keep the stream alive so a destroyed stream's pointer cannot be
+            # reused and mistaken for a queue that already waited. Each queue
+            # pays one wait, before its first scalar or batched SW kernel.
+            self._table_streams[ptr] = current
         return self.module.get_function(name)
 
     # ---- batched-chain workspace and chunk width ----------------------

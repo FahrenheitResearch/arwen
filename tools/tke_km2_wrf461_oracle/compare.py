@@ -25,9 +25,10 @@ FIELDS = ("kmh", "kmv", "khh", "khv", "bn2", "rtke", "d11", "d22", "d12",
 
 
 def _keys(a):
-    """Monotone integer keys for float32 words (gpuwm.core.fp32_ulp's map)."""
-    bits = np.ascontiguousarray(a, dtype=np.float32).view(np.int32).astype(np.int64)
-    return np.where(bits < 0, np.int64(-0x80000000) - bits, bits)
+    """Monotone integer keys for float32 words: gpuwm.core.fp32_ulp's map."""
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+
+    return monotone_fp32_key(a)
 
 
 def word_stats(got, ref):

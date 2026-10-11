@@ -146,7 +146,10 @@ def describe_install(package_root: Path, distribution) -> dict:
         outside = False
     marked = bool(_direct_url(distribution).get("dir_info", {})
                   .get("editable", False))
-    shape["editable"] = bool(marked or outside)
+    from gpuwm.provenance import editable_root, source_inventory
+
+    shape["editable"] = bool(marked or outside or editable_root(distribution)
+                             or source_inventory(distribution, source_root) is not None)
     return shape
 
 

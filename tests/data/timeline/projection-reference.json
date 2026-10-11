@@ -1,0 +1,13 @@
+{
+  "schema": "gpuwm.timeline.reference.v1",
+  "product": "regional",
+  "mode": "proxy",
+  "cards": 1,
+  "measured_ff": 0.8333333333333334,
+  "measured_wall_seconds": 120,
+  "nodes": [
+    {"id": "prep", "stage": "prep.head", "duration_seconds": 20, "evidence": "synthetic mechanical check"},
+    {"id": "side", "stage": "fetch.side", "duration_seconds": 10, "evidence": "synthetic mechanical check"},
+    {"id": "integrate", "stage": "forecast.integrate", "duration_seconds": 100, "depends_on": ["prep", "side"], "card": 0, "evidence": "synthetic mechanical check"}
+  ]
+}

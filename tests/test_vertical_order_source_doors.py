@@ -23,7 +23,10 @@ def test_explicit_order3_keeps_exact_current_staging_importer_bytes(tmp_path):
         extra_dynamics=" v_sca_adv_order = 3, 3,\n v_mom_adv_order = 3, 3,\n")
     omitted, _ = _import_with(tmp_path)
     assert explicit == omitted
-    assert hashlib.sha256(explicit.encode()).hexdigest() == baseline["explicit_order3"]
+    from wrf_clock_lines import WRF_CLOCK_BLOCK, without_wrf_clock_lines
+    assert WRF_CLOCK_BLOCK in explicit
+    assert hashlib.sha256(without_wrf_clock_lines(explicit).encode()
+                          ).hexdigest() == baseline["explicit_order3"]
 
 
 def test_root_recipe_defaults_preserve_explicit_shared_root_and_nest_choices():

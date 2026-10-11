@@ -120,8 +120,16 @@ def test_default_and_default_valued_sets_preserve_both_loader_source_routes():
         baseline[module] = expected
         assert kernels.module_source(module) == expected
         defines = (("PHYSICS_PARAMS_SOURCE_CONTROL", 1),)
-        defined = (kernels._preamble() + kernels._extra_header_text(module)
-                   + "#define PHYSICS_PARAMS_SOURCE_CONTROL 1\n" + raw)
+        tier = "#define PHYSICS_PARAMS_SOURCE_CONTROL 1\n"
+        if module == "thompson_column":
+            # thompson-v44 (effc0a99a): the integer tier sizes the generated
+            # header's arrays, so it precedes that header as well as the
+            # unit (tests/test_thompson_generation_selector.py pins it).
+            defined = (kernels._preamble() + tier
+                       + kernels._extra_header_text(module) + raw)
+        else:
+            defined = (kernels._preamble() + kernels._extra_header_text(module)
+                       + tier + raw)
         assert kernels.module_source_int_defines(module, defines) == defined
     pp.declare(pp.make_set("defaults", {
         name: row.default for name, row in pp.registry().items()}), source="isolation")

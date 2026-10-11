@@ -1,0 +1,15 @@
+{
+  "schema": "gpuwm.verify-visuals.request.v1",
+  "domain": "d01", "valid_time": "2026-09-29T03:00:00Z", "widths_km": [9.0],
+  "arms": [
+    {"label":"A","kind":"netcdf","path":"${DATA_ROOT}/case-01/A/wrfout_d01_2026-09-29_03_00_00","previous_path":"${DATA_ROOT}/case-01/A/wrfout_d01_2026-09-29_02_00_00"},
+    {"label":"B","kind":"netcdf","path":"${DATA_ROOT}/case-01/B/wrfout_d01_2026-09-29_03_00_00","previous_path":"${DATA_ROOT}/case-01/B/wrfout_d01_2026-09-29_02_00_00"}
+  ],
+  "station_quantities": [
+    {"quantity":"temperature_2m","label":"2 m temperature","units":"K","minimum":233.15,"maximum":328.15},
+    {"quantity":"dewpoint_2m","label":"2 m dewpoint","units":"K","minimum":233.15,"maximum":328.15},
+    {"quantity":"wind_speed_10m","label":"10 m wind speed","units":"m s-1","minimum":0.0,"maximum":75.0},
+    {"quantity":"wind_gust_10m","label":"10 m wind gust","units":"m s-1","minimum":0.0,"maximum":100.0},
+    {"quantity":"precipitation_1h","label":"1 h station precipitation","units":"mm","minimum":0.0,"maximum":750.0,"exact_time":true}
+  ]
+}

@@ -39,7 +39,14 @@ destination is emptied first (a wheel carrying two platforms is both
 wrong and over PyPI's cap); any other destination keeps everything this
 tool did not stage.
 
-What is NOT staged, and why: the renderer's basemap shapefiles.  They
+What is NOT staged into the package, and why: the on-demand artifacts
+(:func:`gpuwm.bridge_assets.on_demand_artifacts`).  They are in the
+release bundle and its pins and ``gpuwm fetch-bridges`` installs them;
+leaving them out of the wheel is what brought both platform wheels back
+under the 100,000,000-byte per-file limit at 2.8.9 (see
+:func:`staged_artifacts`).
+
+Also not staged: the renderer's basemap shapefiles.  They
 are 21.1 MB compressed, and there is no room for them.  They are also
 DATA (Natural Earth coastlines and county polygons), not a processing
 path.  Since 2.8.0 they ship in the ``gpuwm-data`` companion, which
@@ -198,8 +205,28 @@ def _is_packaged_destination(destination: Path) -> bool:
         return False
 
 
+def staged_artifacts(destination: Path
+                     ) -> tuple[bridge_assets.BundledArtifact, ...]:
+    """The artifacts this tool stages into ``destination``.
+
+    The in-package directory gets what a platform wheel carries
+    (:func:`gpuwm.bridge_assets.wheel_artifacts`): the on-demand
+    artifacts are left out of it, and so out of the ``BUNDLE.json``
+    written beside it, which must list exactly the files present.
+    Breakage this prevents (2.8.9 cut r1): with every artifact staged,
+    both platform wheels were over the 100,000,000-byte per-file limit
+    (Linux 107,777,663 bytes, Windows 102,503,274).  Any other
+    destination is a user's own bridge directory and gets the whole
+    roster, which is what ``gpuwm fetch-bridges`` installs too.
+    """
+
+    if _is_packaged_destination(destination):
+        return bridge_assets.wheel_artifacts()
+    return tuple(bridge_assets.BUNDLED_ARTIFACTS)
+
+
 def stage(platform: str, *, destination: Path | None = None) -> Path:
-    """Copy every declared artifact into ``destination``, or refuse.
+    """Copy every artifact ``destination`` takes into it, or refuse.
 
     Fail closed and fail COMPLETE: every missing artifact is collected
     and reported at once, because a build operator who has to re-run
@@ -217,9 +244,10 @@ def stage(platform: str, *, destination: Path | None = None) -> Path:
     """
 
     destination = destination or bridges.packaged_bridge_dir()
+    roster = staged_artifacts(destination)
     missing: list[str] = []
     plan: list[tuple[bridge_assets.BundledArtifact, Path, Path]] = []
-    for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+    for artifact in roster:
         origin = source_path(artifact, platform)
         if not origin.is_file():
             missing.append(f"  {artifact.name:24s} expected at {origin}")
@@ -229,13 +257,13 @@ def stage(platform: str, *, destination: Path | None = None) -> Path:
     if missing:
         raise SystemExit(
             f"stage_wheel_bridges: {len(missing)} of "
-            f"{len(bridge_assets.BUNDLED_ARTIFACTS)} declared artifacts are "
+            f"{len(roster)} declared artifacts are "
             f"not built for {platform}:\n" + "\n".join(missing) +
             "\n\nBuild them first, from the checkout root:\n"
             + "\n".join(
                 "  " + bridges.cargo_build_one_liner(crate)
                 for crate in dict.fromkeys(
-                    artifact.crate for artifact in bridge_assets.BUNDLED_ARTIFACTS)))
+                    artifact.crate for artifact in roster)))
 
     purge_build_staging()
     if _is_packaged_destination(destination) and destination.exists():
@@ -277,13 +305,14 @@ def stage_from_bundle(archive: Path, platform: str,
 
     Only the binaries are taken.  ``assets/`` members are the renderer's
     basemap shapefiles, deliberately not shipped in the wheel (see the
-    module docstring).
+    module docstring).  The on-demand artifacts are in the bundle and
+    are not copied into the package (:func:`staged_artifacts`).
     """
 
     destination = destination or bridges.packaged_bridge_dir()
     wanted = {
         bridge_assets.artifact_filename(artifact, platform): artifact
-        for artifact in bridge_assets.BUNDLED_ARTIFACTS
+        for artifact in staged_artifacts(destination)
     }
     purge_build_staging()
     if _is_packaged_destination(destination) and destination.exists():
@@ -319,6 +348,20 @@ def stage_from_bundle(archive: Path, platform: str,
     (destination / MANIFEST_NAME).write_text(
         json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return destination
+
+
+def _staged_count(destination: Path) -> str:
+    """What was staged, as the count the destination's own record holds."""
+
+    staged = len(json.loads(
+        (destination / MANIFEST_NAME).read_text(encoding="utf-8"))["artifacts"])
+    declared = len(bridge_assets.BUNDLED_ARTIFACTS)
+    if staged == declared:
+        return f"{staged} artifacts"
+    left_out = ", ".join(
+        artifact.name for artifact in bridge_assets.on_demand_artifacts())
+    return (f"{staged} of {declared} artifacts (on demand, installed by "
+            f"gpuwm fetch-bridges: {left_out})")
 
 
 def clean(destination: Path | None = None) -> None:
@@ -374,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
                                         destination=args.dest)
         total = sum(path.stat().st_size for path in destination.iterdir()
                     if path.is_file())
-        print(f"staged {len(bridge_assets.BUNDLED_ARTIFACTS)} artifacts for "
+        print(f"staged {_staged_count(destination)} for "
               f"{args.platform} from {args.from_bundle} into {destination} "
               f"({total / 1e6:.2f} MB)")
         return 0
@@ -387,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     destination = stage(args.platform, destination=args.dest)
     total = sum(path.stat().st_size for path in destination.iterdir()
                 if path.is_file())
-    print(f"staged {len(bridge_assets.BUNDLED_ARTIFACTS)} artifacts for "
+    print(f"staged {_staged_count(destination)} for "
           f"{args.platform} into {destination} ({total / 1e6:.2f} MB)")
     return 0
 

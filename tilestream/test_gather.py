@@ -565,8 +565,35 @@ def test_host_roundtrip_pinned():
 #:                        Both are plain 3-D mass-point fields; the round
 #:                        trip below is the measurement that the default
 #:                        stagger is their stagger.
+#:   ``volg``             TEMPO's (mp_physics = "tempo") graupel volume
+#:                        moment, the scheme's discriminator: graupel density
+#:                        is qg / volg, so a resume that dropped it would
+#:                        restart graupel at a different density.  It joined
+#:                        the contract with the RRFS v2 hex + TEMPO preset; a
+#:                        plain 3-D mass-point field like qvolg.
 NEW_SINCE_41 = ("qir", "qib", "th_old", "qv_old", "nh", "nn",
-                "rthften", "rqvften")
+                "rthften", "rqvften", "volg")
+
+#: FAST_SBM (mp_physics = 30) spectral bins: ff1/ff5/ff6 at 33 bins each and
+#: ff8 at 43, 142 names (``gpuwm.core.fast_sbm_contract.BIN_SPECIES``).  They
+#: joined the contract at 624bb29c4 ("fast-sbm: carry the spectral fields in
+#: native state and scalar transport", merged into 2.8.9 at b2b60eacb)
+#: without this gate moving, which is what turned the 2.8.9 cut gate red at
+#: a1388eae7 (192 names, gate knew 50).  WRF 4.6.1 Registry/registry.sbm
+#: declares all 142 with the restart flag (ff1i01 at line 3: IO "h3rusdf")
+#: and its line 318 package switches them on under mp_physics == 30, so
+#: they are in the restart stream: bin state is prognostic and cannot be
+#: rebuilt from the bulk mixing ratios, so a streamed resume that dropped
+#: them would restart the spectral scheme from empty bins.  Each is a 3-D
+#: mass-point view ``fast_sbm_bins[k]`` of one (nbin, nz, ny, nx) array
+#: (``DomainState`` mp30 arm), so the default stagger in _synthetic_shapes
+#: is their stagger; the round trip below is the measurement.  Spelled out
+#: here, not imported, so a change to the bin table moves this gate on
+#: purpose rather than silently.
+FSBM_BINS = tuple(f"{group}i{i:02d}"
+                  for group, count in (("ff1", 33), ("ff5", 33),
+                                       ("ff6", 33), ("ff8", 43))
+                  for i in range(1, count + 1))
 
 
 def test_all_49_names_device_and_host():
@@ -582,12 +609,14 @@ def test_all_49_names_device_and_host():
     set the product no longer serialized.
     """
     names = G.serialized_attrs()
-    assert len(names) == 49, (
-        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 49. "
+    assert len(names) == 192, (
+        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 192 "
+        "(50 bulk + 142 FAST_SBM bins). "
         "A new field joined (or left) the streamed serialization set: extend "
         "NEW_SINCE_41's justification block and this count TOGETHER, and "
         "check the new name's stagger against _synthetic_shapes")
-    for name in NEW_SINCE_41:
+    assert len(FSBM_BINS) == 142
+    for name in NEW_SINCE_41 + FSBM_BINS:
         assert name in names, (
             f"{name} left STATE_SERIALIZED_ATTRS; its restart consequence is "
             "documented above -- removing it needs an argument, not a tidy-up")
@@ -618,7 +647,7 @@ def test_all_49_names_device_and_host():
             # each was filled, gathered, scattered into a zeroed sink and
             # byte-compared -- the compare above walks all 47, and this pins
             # that the six were among them in both directions.
-            for name in NEW_SINCE_41:
+            for name in NEW_SINCE_41 + FSBM_BINS:
                 assert name in ref and name in sink, name
                 assert _bytes_of(sink[name]) == _bytes_of(ref[name]), name
             print(f"  [{key}] {len(names)}/{len(names)} fields, "

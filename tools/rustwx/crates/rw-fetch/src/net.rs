@@ -107,6 +107,131 @@ pub struct IdxPayload {
 }
 
 impl Fetcher {
+    /// Consume bounded range batches while the next batch is downloading.
+    /// wx-core still owns retries, length checks, cache and host pacing.
+    pub fn stream_ranges(&self, url: &str, ranges: &[(u64, u64)], path: &Path)
+        -> Result<crate::stream::Receipt, TransferFault> {
+        self.stream_ranges_kind(url, ranges, path, None)
+    }
+
+    fn stream_ranges_kind(&self, url: &str, ranges: &[(u64, u64)], path: &Path,
+        pin: Option<(u64, &str)>) -> Result<crate::stream::Receipt, TransferFault> {
+        // Preserve the established request size, especially for paced origins.
+        const CHUNK: u64 = 16 * 1024 * 1024;
+        let mut chunks = Vec::new();
+        for &(start, end) in ranges {
+            if end == u64::MAX {
+                chunks.push((start, end));
+                continue;
+            }
+            let mut offset = start;
+            while offset <= end {
+                let last = offset.saturating_add(CHUNK - 1).min(end);
+                chunks.push((offset, last));
+                offset = last + 1;
+            }
+        }
+        let transfer = |publisher: &mut crate::stream::Publisher| {
+            std::thread::scope(|scope| {
+                let (send, receive) = std::sync::mpsc::sync_channel(1);
+                scope.spawn(move || {
+                    for batch in chunks.chunks(self.client.streams().max(1)) {
+                        let result = self.client.get_ranges(url, batch).map_err(TransferFault::from);
+                        let failed = result.is_err();
+                        if send.send((result, crate::stream::unix_now())).is_err() || failed { break; }
+                    }
+                });
+                let mut last = 0.0_f64;
+                for (result, landed) in receive {
+                    let bytes = result?;
+                    last = last.max(landed);
+                    publisher.push(&bytes).map_err(TransferFault::Refused)?;
+                }
+                Ok(last)
+            })
+        };
+        match pin {
+            Some((bytes, sha256)) => crate::stream::publish_pinned_with(path, bytes, sha256, transfer),
+            None => crate::stream::publish_with(path, transfer),
+        }
+    }
+
+    /// Static objects have exact pins, never a GRIB envelope or an unpinned fallback.
+    pub fn stream_pinned_file(&self, url: &str, path: &Path, bytes: u64, sha256: &str)
+        -> Result<crate::stream::Receipt, TransferFault> {
+        if bytes == 0 { return Err(TransferFault::Refused("a static object pin cannot be empty".into())); }
+        let length = self.client.object_length(url)?.ok_or_else(|| TransferFault::Refused(
+            format!("{url}: object length is unavailable; the size pin cannot exclude appended or truncated static bytes")))?;
+        if bytes != length {
+            return Err(TransferFault::Refused(format!("{url}: pin refused: object has {length} bytes, expected {bytes}; appended or truncated static bytes must not be published")));
+        }
+        self.progress.set_total(bytes);
+        self.stream_ranges_kind(url, &[(0, bytes - 1)], path, Some((bytes, sha256)))
+    }
+
+    /// A compressed transport is checked against the raw pin after native decode.
+    pub fn stream_encoded_file(&self, url: &str, path: &Path)
+        -> Result<crate::stream::Receipt, TransferFault> {
+        let bytes = self.client.object_length(url)?.ok_or_else(|| TransferFault::Refused(
+            "encoded static object has no proven byte length; ranged transfer cannot detect truncation".into()))?;
+        self.stream_pinned_file(url, path, bytes, "")
+    }
+
+    pub fn stream_full_file(&self, url: &str, path: &Path)
+        -> Result<crate::stream::Receipt, TransferFault> {
+        if let Some(length) = self.client.object_length(url)? {
+            self.progress.set_total(length);
+            let receipt = self.stream_ranges(url, &[(0, length.saturating_sub(1))], path)?;
+            if receipt.bytes != length {
+                return Err(TransferFault::Refused(format!("{}: expected {length} bytes, received {}", path.display(), receipt.bytes)));
+            }
+            Ok(receipt)
+        } else {
+            // An origin without range totals keeps the client's full-body fallback.
+            crate::stream::publish_with(path, |publisher| {
+                let bytes = self.client.get_bytes(url)?;
+                let last = crate::stream::unix_now();
+                for chunk in bytes.chunks(4 * 1024 * 1024) {
+                    publisher.push(chunk).map_err(TransferFault::Refused)?;
+                }
+                Ok(last)
+            })
+        }
+    }
+
+    pub fn stream_idx_subset(&self, url: &str, payload: &IdxPayload,
+        selection: &[usize], path: &Path)
+        -> Result<(crate::stream::Receipt, Vec<RangeRecord>), TransferFault> {
+        let entries = parse_idx(&payload.text);
+        let chosen: Vec<_> = selection.iter().map(|index| &entries[*index]).collect();
+        let merged = coalesce_ranges(&byte_ranges(&entries, &chosen));
+        let ranges = if merged.iter().any(|(_, end)| *end == u64::MAX) {
+            let total = self.client.object_length(url)?;
+            merged.iter().map(|&(start, end)| (start,
+                if end == u64::MAX { total.map(|n| n - 1).unwrap_or(end) } else { end }))
+                .collect::<Vec<_>>()
+        } else { merged.clone() };
+        self.progress.reset();
+        if ranges.iter().all(|(_, end)| *end != u64::MAX) {
+            self.progress.set_total(ranges.iter().map(|(start, end)| end - start + 1).sum());
+        }
+        let receipt = self.stream_ranges(url, &ranges, path)?;
+        let finite: u64 = merged.iter().filter(|(_, end)| *end != u64::MAX)
+            .map(|(start, end)| end - start + 1).sum();
+        let records = merged.iter().map(|&(start, end)| {
+            let rows: Vec<_> = payload.rows.iter().filter(|row| row.offset >= start
+                && (end == u64::MAX || row.offset <= end)).collect();
+            let length = if end == u64::MAX { receipt.bytes.saturating_sub(finite) } else { end - start + 1 };
+            RangeRecord { start, end: start + length.saturating_sub(1), bytes: length,
+                first_index_row: rows.first().map(|r| r.sequence).unwrap_or_default(),
+                last_index_row: rows.last().map(|r| r.sequence).unwrap_or_default() }
+        }).collect::<Vec<_>>();
+        if records.iter().map(|r| r.bytes).sum::<u64>() != receipt.bytes {
+            return Err(TransferFault::Refused(format!("{}: range byte accounting does not add up", path.display())));
+        }
+        Ok((receipt, records))
+    }
+
     pub fn new(cache_dir: Option<&Path>) -> Result<Self, String> {
         let client = match cache_dir {
             Some(dir) => DownloadClient::new_with_cache(Some(

@@ -3,10 +3,15 @@
 A PLATFORM wheel now ships the compiled Rust itself: the artifacts below
 are staged into ``gpuwm/libexec/bridges`` by
 ``tools/stage_wheel_bridges.py`` before the wheel is built, so on a
-platform a bundle exists for, ``pip install gpuwm`` is already complete
-and this command has nothing left to do.
+platform a bundle exists for, ``pip install gpuwm`` already runs every
+default path.  Three artifacts are left to this command on such an
+install -- the on-demand ones (:func:`on_demand_artifacts`: the
+simulated radar, the ML dataset exporter and the global globe packer),
+which the wheel stopped carrying at 2.8.9 because with them both
+platform wheels were over the 100,000,000-byte per-file limit.  Their
+doors refuse by name with this command until it has run.
 
-It remains the route for everyone else: the ``py3-none-any`` fallback
+It also remains the route for everyone else: the ``py3-none-any`` fallback
 wheel, which pip resolves wherever no platform bundle is published,
 carries no binaries at all.  Before either existed, the only way to get
 the GRIB decoders, the CPU preprocessing library, the fetch backbone,
@@ -14,11 +19,12 @@ the batch renderer, the two radar front doors, the MRMS, Stage-IV,
 surface, GOES and European-composite front doors, the NetCDF decoder,
 the mapped decode engine, the Zarr reader, the observation remap, the
 isobaric-height reader, the radar superob, the native GRIB2 and ML dataset
-exporters, the nowcast frames converter, the
-simulated radar and the terminal workspace onto a
+exporters, the nowcast frames converter, the global globe packer, the
+observation scorecard, the forecast verification scorer, the simulated
+radar and the terminal workspace onto a
 wheel install was to clone the repository and run ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-forty-two files.
+forty-five files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -27,7 +33,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the forty-two artifacts of
+One bundle per platform, holding the forty-five artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges/<release>-<bundle digest>``)
 -- the staged rung of the resolution ladder every consumer already
@@ -226,6 +232,19 @@ class BundledArtifact:
     (:data:`gpuwm.bridges.BRIDGE_ABI_MARKERS`), which is a property of the
     bytes and names the ABI this release speaks, on top of the size and
     SHA-256 every artifact is pinned by.
+
+    ``on_demand`` says the platform wheel does not carry the artifact.
+    It stays in this roster, in the per-platform bundle and in the pins,
+    so ``gpuwm fetch-bridges`` installs it and every proof of the bundle
+    still covers it; only the copy inside the wheel is left out, and the
+    door that needs it refuses by name with that command until it has
+    run.  Breakage this prevents (2.8.9 cut r1): both platform wheels
+    were over the 100,000,000-byte per-file limit, Linux at 107,777,663
+    bytes and Windows at 102,503,274, so neither could be published.
+    Only an artifact that no default path reaches may be marked: a
+    decoder, a writer or the renderer marked here would make a bare
+    install refuse its own forecast.  :func:`wheel_artifacts` is the one
+    place the two sets are told apart.
     """
 
     name: str
@@ -234,6 +253,7 @@ class BundledArtifact:
     env_var: str
     consumer: str
     vendored: bool = False
+    on_demand: bool = False
 
 
 #: The artifacts a bundle carries (every BundledArtifact below), in build order: the five
@@ -325,6 +345,10 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_fetch", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_FETCH", "gpuwm fetch --engine rust"),
     BundledArtifact(
+        "rw_globe_pack", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_GLOBE_PACK", "global globe frames and verified statics publication",
+        on_demand=True),
+    BundledArtifact(
         "rw_wrfbatch", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_WRFBATCH", "gpuwm render --engine rust"),
     BundledArtifact(
@@ -337,6 +361,9 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_verify", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_VERIFY", "gpuwm verify-visuals and completed-run verification"),
+    BundledArtifact(
+        "rw_scorecard", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_SCORECARD", "gpuwm obs scorecard and paired case bootstrap"),
     # The simulated radar.  Beam tracing, field sampling, the Level II,
     # CfRadial and ODIM writers and the PPI images all run in it, so a
     # bundle without it is an install whose `[simulated_radar]` table and
@@ -345,7 +372,8 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     # Environment variable spelled to match gpuwm.rustwx's resolver.
     BundledArtifact(
         "rw_simradar", "executable", bridges.RUSTWX_CRATE_RELATIVE,
-        "GPUWM_RW_SIMRADAR", "WOOF simulated radar volumes and PPI images"),
+        "GPUWM_RW_SIMRADAR", "WOOF simulated radar volumes and PPI images",
+        on_demand=True),
     BundledArtifact(
         "rw_nexrad", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_NEXRAD", "radar observation ingest (the DA nowcast)"),
@@ -616,7 +644,11 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_mlexport", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MLEXPORT",
-        "machine-learning dataset export (gpuwm ml-export)"),
+        "machine-learning dataset export (gpuwm ml-export)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_scoreboard", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_SCOREBOARD", "incremental forecast verification (gpuwm scoreboard)"),
     BundledArtifact(
         "arwen-tui", "executable", "tools/arwen-tui",
         "GPUWM_TUI_BIN", "the Rust terminal workspace (gpuwm tui)"),
@@ -656,6 +688,27 @@ LIBRARY_ABI: dict[str, tuple[str, int]] = {
     # Matches gpuwm.obs.superob_bridge.SUPEROB_ABI; a test binds them.
     "rw_superob": ("gpuwm_superob_abi_version", 1),
 }
+
+
+def wheel_artifacts() -> tuple[BundledArtifact, ...]:
+    """The artifacts a platform wheel carries, in roster order.
+
+    Every declared artifact except the on-demand ones.  Staging into the
+    package, the packaged ``BUNDLE.json`` and every check of an installed
+    or built wheel's native inventory read this, so the set is decided
+    once.  The bundle and the pins are not narrowed by it: they carry
+    :data:`BUNDLED_ARTIFACTS` whole.
+    """
+
+    return tuple(artifact for artifact in BUNDLED_ARTIFACTS
+                 if not artifact.on_demand)
+
+
+def on_demand_artifacts() -> tuple[BundledArtifact, ...]:
+    """The artifacts ``gpuwm fetch-bridges`` installs and the wheel omits."""
+
+    return tuple(artifact for artifact in BUNDLED_ARTIFACTS
+                 if artifact.on_demand)
 
 
 def library_abi_for(name: str) -> tuple[str, int]:
@@ -1081,7 +1134,7 @@ def verify_source_revision(payload: bytes, *, expected: str,
 #: What it is for.  A release cut reuses a binary built at an earlier
 #: commit when every path listed for its crate is byte-identical (the
 #: same git object) at the commit being released, so a release that
-#: changed one Python file does not recompile forty-two unchanged
+#: changed one Python file does not recompile forty-five unchanged
 #: binaries.  A path missing from this table is a binary that could be
 #: reused while carrying a stale copy of that file, so
 #: ``tests/test_native_build_inputs.py`` re-derives the outside inputs
@@ -1098,7 +1151,11 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
                      # rw_wps and the Zarr bridge reach it through this
                      # workspace, so they list it too (the inputs test
                      # walks the closure).
-                     "tools/region_global_dealias"),
+                     "tools/region_global_dealias",
+                     # rw-wrfbatch's build.rs embeds the engine version it
+                     # reads from the root pyproject.toml (0c1fc01f9), so a
+                     # version bump must rebuild every crate that reaches it.
+                     "pyproject.toml"),
     # The shared NetCDF reader (netcrust and its HDF5 reader) lives under
     # tools/rustwx/vendor since the array-ceiling work; rw_wps and the Zarr
     # bridge build against it by path.
@@ -1106,7 +1163,12 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
                      "tools/preparation_resources.rs",
                      "tools/rustwx/vendor/netcrust",
                      "tools/sfire_wrf471_oracle/fixtures/debug",
-                     "tools/region_global_dealias"),
+                     "tools/region_global_dealias",
+                     # mapped-engine's grib.rs embeds the two packaged
+                     # HRRR mappings (2ed5afdc7's HRRRv1 corner test).
+                     "gpuwm/authorities/rw-wps-hrrr-prs-grib2.mapping.json",
+                     "gpuwm/authorities/rw-wps-hrrr-native-grib2.mapping.json",
+                     "pyproject.toml"),
     "tools/region_global_dealias": ("tools/region_global_dealias",),
     "tools/arwen-tui": (
         "tools/arwen-tui", "tools/arwen-ui-vendor", "gpuwm/tui_worker.py",
@@ -1118,7 +1180,10 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
         "tools/preparation_resources.rs",
         "tools/rustwx/vendor/netcrust",
         "tools/sfire_wrf471_oracle/fixtures/debug",
-        "tools/region_global_dealias"),
+        "tools/region_global_dealias",
+        "gpuwm/authorities/rw-wps-hrrr-prs-grib2.mapping.json",
+        "gpuwm/authorities/rw-wps-hrrr-native-grib2.mapping.json",
+        "pyproject.toml"),
 }
 
 
@@ -2372,4 +2437,5 @@ __all__ = [
     "stage_from_bundle", "stage_from_dir",
     "stage_from_loose_files", "staging_available", "verify_contract_marker",
     "verify_pinned_file", "verify_source_revision",
+    "on_demand_artifacts", "wheel_artifacts",
 ]

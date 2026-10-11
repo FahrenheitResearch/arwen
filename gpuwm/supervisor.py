@@ -1166,14 +1166,67 @@ def query_gpus() -> tuple[GPUIdentity, ...]:
     return tuple(identities)
 
 
+def _visible_single_gpu(identities, visibility: str | None) -> GPUIdentity | None:
+    """The one card ``CUDA_VISIBLE_DEVICES`` names, or None when it names none.
+
+    Named breakage: on a multi-GPU node (an 8-card H100 or a 4-card RTX
+    PRO 6000 box) ``CUDA_VISIBLE_DEVICES=<one card> gpuwm run ...`` was
+    refused with "--gpu-uuid is required", because nvidia-smi lists every
+    card whatever the mask says, so the standard way to pin a job to one
+    card did not count.  A mask that names exactly one card is that
+    choice.  A numeric entry is CUDA's ordinal, which equals nvidia-smi's
+    index under ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` and on a node of identical
+    cards (CUDA's fastest-first order ties them in bus order); on a mixed
+    node without PCI_BUS_ID the two can differ, so that case is refused
+    with the UUID spelling that cannot.
+    """
+
+    entries = [value.strip() for value in (visibility or "").split(",")
+               if value.strip()]
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise GPUPreflightError(
+            f"CUDA_VISIBLE_DEVICES={visibility!r} names {len(entries)} cards; "
+            "a single-card run needs one: set CUDA_VISIBLE_DEVICES to one "
+            "card or pass --gpu-uuid: "
+            + ", ".join(f"{gpu.index} {gpu.uuid}" for gpu in identities))
+    value = entries[0]
+    if value.isdigit():
+        ordered_by_bus = os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
+        if not ordered_by_bus and len({gpu.name for gpu in identities}) > 1:
+            raise GPUPreflightError(
+                f"CUDA_VISIBLE_DEVICES={value} is a CUDA ordinal on a node of "
+                "different card models, where CUDA's default fastest-first "
+                "order need not match nvidia-smi's index; name the card by "
+                "UUID (CUDA_VISIBLE_DEVICES=GPU-... or --gpu-uuid), or set "
+                "CUDA_DEVICE_ORDER=PCI_BUS_ID")
+        matches = [gpu for gpu in identities if gpu.index == int(value)]
+    elif value.startswith("GPU-"):
+        matches = [gpu for gpu in identities if gpu.uuid.startswith(value)]
+    else:
+        matches = []
+    if len(matches) != 1:
+        raise GPUPreflightError(
+            f"CUDA_VISIBLE_DEVICES={value!r} does not name exactly one card "
+            "nvidia-smi reports: "
+            + ", ".join(f"{gpu.index} {gpu.uuid}" for gpu in identities))
+    return matches[0]
+
+
 def select_gpu(requested_uuid: str | None = None) -> GPUIdentity:
     identities = query_gpus()
     if requested_uuid is None:
-        if len(identities) != 1:
+        if len(identities) == 1:
+            return identities[0]
+        visible = _visible_single_gpu(
+            identities, os.environ.get("CUDA_VISIBLE_DEVICES"))
+        if visible is None:
             raise GPUPreflightError(
-                "multiple GPUs are present; --gpu-uuid is required to avoid "
-                "ambiguous locking")
-        return identities[0]
+                "multiple GPUs are present; pass --gpu-uuid or set "
+                "CUDA_VISIBLE_DEVICES to one card to avoid ambiguous locking: "
+                + ", ".join(f"{gpu.index} {gpu.uuid}" for gpu in identities))
+        return visible
     matches = [gpu for gpu in identities if gpu.uuid == requested_uuid]
     if len(matches) != 1:
         raise GPUPreflightError(

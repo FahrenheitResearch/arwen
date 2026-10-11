@@ -157,6 +157,7 @@ fn nomads_runs_lanes_sequentially() {
 fn shared_non_ecape_plan_collapses_gfs_direct_and_pair_to_one_fetch_key() {
     let latest = latest_global(ModelId::Gfs);
     let direct_request = DirectBatchRequest {
+        accumulation_window: None,
         model: ModelId::Gfs,
         date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(latest.cycle.hour_utc),
@@ -213,6 +214,7 @@ fn shared_non_ecape_plan_strips_nomads_hrrr_direct_idx_patterns() {
         source: SourceId::Nomads,
     };
     let direct_request = DirectBatchRequest {
+        accumulation_window: None,
         model: ModelId::Hrrr,
         date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(latest.cycle.hour_utc),
@@ -260,6 +262,7 @@ fn shared_non_ecape_plan_strips_nomads_hrrr_direct_idx_patterns() {
 fn shared_non_ecape_plan_collapses_ecmwf_direct_and_pair_to_one_fetch_key() {
     let latest = latest_global(ModelId::EcmwfOpenData);
     let direct_request = DirectBatchRequest {
+        accumulation_window: None,
         model: ModelId::EcmwfOpenData,
         date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
         cycle_override_utc: Some(latest.cycle.hour_utc),

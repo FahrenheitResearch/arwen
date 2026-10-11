@@ -79,15 +79,17 @@ def test_run_plan_relays_the_compile_as_a_declared_warning(tmp_path,
 def test_the_loader_compiles_through_the_observer():
     """Every loader site compiles through it, so every get_kernel is seen.
 
-    The sites are load_module, the CLM lake's own --fmad=false site and the
-    integer-define tier: each RawModule the loader builds is observed beside
-    its compile.
+    The sites are load_module, the no-FMA site (the CLM lake and, since
+    01402fcb1, the YSU, Shin-Hong and MYNN oracle units), the integer-define
+    tier and, since 01402fcb1, the integer-define tier of a no-FMA unit
+    (the gsd_41 MYNN generation): each RawModule the loader builds is
+    observed beside its compile.
     """
 
     source = (Path(__file__).resolve().parents[1] / "gpuwm" / "core"
               / "kernels" / "__init__.py").read_text(encoding="utf-8")
     sites = source.count("cp.RawModule(")
-    assert sites == 3
+    assert sites == 4
     assert source.count("_compile_observed(mod, ") == sites
     assert "mod.compile()" not in source
 

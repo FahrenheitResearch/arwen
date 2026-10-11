@@ -14,6 +14,31 @@ def case():
             "forecast_fork_utc": "2026-10-04T03:00:00Z", "center_lat": 31, "center_lon": -89}
 
 
+def test_completed_background_truth_is_joined_before_score_plan(tmp_path, monkeypatch):
+    from tools import da_recent_observations as obs
+    case_path, run_path = tmp_path/'case.json', tmp_path/'run.json'
+    obs.save(case_path, case()); obs.save(run_path, manifest(tmp_path))
+    inv, fetched = {'objects': []}, {'objects': []}
+    inv_path, fetch_path = tmp_path/'inv.json', tmp_path/'fetch.json'
+    obs.save(inv_path, inv); obs.save(fetch_path, fetched)
+    truth_out = tmp_path/'truth'
+    truth_out.mkdir()
+    obs.save(truth_out/'truth-job.json', {'inventory_sha256': obs.document_sha(inv),
+        'fetch_receipt_sha256': obs.document_sha(fetched), 'center_lon': -89, 'center_lat': 31})
+    obs.save(truth_out/'truth.json', {'grid': {'equal_area_center': [-89, 31]}})
+    obs._truth_status(truth_out, 'COMPLETE', truth_sha256=obs.sha(truth_out/'truth.json'))
+    monkeypatch.setattr(score, 'command', lambda *a: pytest.fail('completed background job must not decode again'))
+    def planned(*args):
+        assert obs.join_truth(truth_out)['grid']['equal_area_center'] == [-89, 31]
+        return []
+    monkeypatch.setattr(score, 'plan', planned)
+    monkeypatch.setattr(score, 'execute', lambda *a, **k: {'scientific_gate': 'pending',
+        'rows': 0, 'complete_measurements': 0})
+    assert score.main(['--case', str(case_path), '--run-manifest', str(run_path),
+        '--inventory', str(inv_path), '--fetch-receipt', str(fetch_path),
+        '--truth-out', str(truth_out), '--out', str(tmp_path/'score')]) == 0
+
+
 def manifest(tmp_path):
     return {"out": str(tmp_path/"runs"), "slots": [{"analysis_time": stamp} for stamp in case()["analysis_times_utc"]]}
 

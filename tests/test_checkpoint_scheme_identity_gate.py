@@ -422,8 +422,10 @@ def test_a_mixed_radiation_pair_is_gated_on_the_split_tables(monkeypatch):
 
 def test_the_accepted_registries_are_the_loader_menus():
     """The tuples this suite iterates are the ones the loader gates on."""
+    from gpuwm.microphysics_schemes import NAMED_MP_IDS
+    # 30 is FAST_SBM, which joined with its own restart identity in 2.8.9.
     assert config_mod.MP_PHYSICS_ACCEPTED == (0, 1, 6, 8, 9, 10, 16, 18, 28,
-                                              50)
+                                              30, 50) + NAMED_MP_IDS
     assert config_mod.RA_LW_PHYSICS_ACCEPTED == (0, 1, 4, 90)
     assert config_mod.RA_SW_PHYSICS_ACCEPTED == (0, 1, 4, 90)
     with pytest.raises(ValueError, match="mp_physics must be"):

@@ -41,8 +41,8 @@ def test_matrix_covers_every_implemented_registry_row_and_dispatch_selector():
         values = {dict(row.selectors)[selector] for row in matrix if selector in dict(row.selectors)}
         assert values == set(dispatch)
     assert {dict(row.selectors)["mp_physics"] for row in matrix if row.component == "microphysics"} == {
-        0, 1, 6, 8, 9, 10, 16, 18, 28, 50}
-    assert {dict(row.selectors)["cu_physics"] for row in matrix if row.component == "cumulus"} == {0, 1, 3, 16}
+        0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50, 900}
+    assert {dict(row.selectors)["cu_physics"] for row in matrix if row.component == "cumulus"} == {0, 1, 3, 6, 16}
     assert all(row.receipt()["fallback"] == "original_member_operation" for row in matrix)
 
 

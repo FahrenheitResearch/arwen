@@ -79,6 +79,37 @@ def test_wrong_cache_is_preserved_and_not_replaced(transfers):
     assert not list(root.glob(".*fetch-partial*"))
 
 
+def _range(header, size):
+    """``(first, last)`` of a single ``bytes=a-b`` request, else None."""
+    if not header or not header.startswith("bytes="):
+        return None
+    first, _, last = header[len("bytes="):].partition("-")
+    first = int(first)
+    last = min(int(last), size - 1) if last else size - 1
+    return first, last
+
+
+def _answer(handler, payload, *, truncate_to=None):
+    """Answer like a release host: ranges get 206 with Content-Range.
+
+    The pinned table fetch reads the object length from a one-byte range
+    before it transfers (rw_fetch), as GitHub release assets, Hugging Face
+    and NCAR all answer. ``truncate_to`` sends a full length header and
+    then fewer bytes, a connection that drops mid-body.
+    """
+    span = _range(handler.headers.get("Range"), len(payload))
+    body = payload if span is None else payload[span[0]:span[1] + 1]
+    handler.send_response(200 if span is None else 206)
+    if span is not None:
+        handler.send_header("Content-Range", f"bytes {span[0]}-{span[1]}/{len(payload)}")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    handler.wfile.write(body if truncate_to is None else body[:truncate_to])
+    handler.close_connection = True
+    return span
+
+
 class _Server:
     def __init__(self, payloads, *, short_first=False):
         self.counts = {}
@@ -88,14 +119,15 @@ class _Server:
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 name = self.path.rsplit("/", 1)[-1]
-                parent.counts[name] = parent.counts.get(name, 0) + 1
                 payload = payloads[name]
-                if parent.short_first and parent.counts[name] == 1:
-                    payload = payload[:5]
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+                span = _range(self.headers.get("Range"), len(payload))
+                if span == (0, 0):
+                    _answer(self, payload)      # the length probe moves no file
+                    return
+                parent.counts[name] = parent.counts.get(name, 0) + 1
+                # While short_first is set every transfer drops after 5
+                # bytes, so a client retry cannot paper over it.
+                _answer(self, payload, truncate_to=5 if parent.short_first else None)
 
             def log_message(self, *args):
                 pass
@@ -131,7 +163,7 @@ def test_truncated_download_cannot_land_and_fresh_attempt_recovers(transfers, mo
     server = _Server(payloads, short_first=True)
     monkeypatch.setenv(fork.FORK_TABLE_ASSET_URL_BASE_ENV, server.url)
     try:
-        with pytest.raises(table_assets.TableAssetError, match="staged 5 bytes"):
+        with pytest.raises(table_assets.TableAssetError):
             fork.ensure_thompson_fork_tables(root)
         assert not list(root.glob("*.dat"))
         assert not list(root.glob(".*fetch-partial*"))
@@ -212,13 +244,16 @@ def test_standalone_staging_ships_the_exact_small_generation_harness(tmp_path, m
 
 
 def _published_server(directory, prefix):
-    """A real HTTP server publishing ``directory``'s files under ``prefix``."""
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def translate_path(self, path):
-            name = path.lstrip("/")
-            if not name.startswith(prefix):
-                return str(directory / "absent")
-            return str(directory / name[len(prefix):])
+    """A real HTTP server publishing ``directory``'s files under ``prefix``,
+    answering byte ranges as a release host does."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            name = self.path.lstrip("/")
+            path = directory / name[len(prefix):] if name.startswith(prefix) else None
+            if path is None or not path.is_file():
+                self.send_error(404)
+                return
+            _answer(self, path.read_bytes())
 
         def log_message(self, *args):
             pass

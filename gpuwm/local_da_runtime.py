@@ -22,6 +22,37 @@ import numpy as np
 from gpuwm.local_da import SCHEMA, PlanError, canonical, digest, utc
 
 
+def _analysis_fields_for_states(states, mp_physics, *, static):
+    """Select sampled prognostics without breaking species pairs."""
+    from gpuwm.da.letkf import _prior_anomalies_and_spread, _prior_spread_is_usable
+    from gpuwm.da.moments import analysis_fields, pairs_present
+    from gpuwm.da.radar_assimilation import _mass_field
+
+    samples = states[1:] if static else states
+    fields = analysis_fields(mp_physics, base=('u', 'v', 'thp', 'qv'), hydrometeors=True)
+    selected = []
+    for name in fields:
+        if not all(name in state for state in states):
+            continue
+        values = np.stack([_mass_field(name, state, where='local analysis') for state in samples])
+        if not np.all(np.isfinite(values)):
+            raise PlanError(f'Local analysis field {name!r} contains nonfinite prior values; '
+                            'repair the background before computing covariance.', code='NONFINITE_PRIOR')
+        # Nonzero ptp can still be negligible against the field magnitude.
+        # Use the filter owner's exact arithmetic and relative support gate.
+        # Keep ptp too: summing identical float32 members can round their mean.
+        if not np.any(np.ptp(values, axis=0) > 0):
+            continue
+        _, spread = _prior_anomalies_and_spread(values, np)
+        if _prior_spread_is_usable(float(spread.max()), float(np.abs(values).max())):
+            selected.append(name)
+    fields = selected
+    for pair in pairs_present(tuple(states[0]), mp_physics=mp_physics):
+        if not set(pair.fields) <= set(fields):
+            fields = [f for f in fields if f not in pair.fields]
+    return fields
+
+
 def _analysis_time(backend, index):
     origin = getattr(backend, '_continuous_epoch', None)
     if origin is not None:
@@ -650,7 +681,6 @@ class PreparedBackend:
             RadarAssimilationConfig, assimilate_radar_grid, scheme_reflectivity_provider, _mass_field)
         from gpuwm.da.static_covariance import covariance_states, static_analysis, perturbation_options
         from gpuwm.da.letkf import Localization
-        from gpuwm.da.moments import analysis_fields, pairs_present
         from gpuwm.da.obs_point import point_batches, state_columns
         from gpuwm.da.obs_surface import SurfaceObsConfig, surface_to_gridded_obs
         from gpuwm.da.obsop_cwp import checkpoint_cwp_provider
@@ -707,16 +737,10 @@ class PreparedBackend:
                     analysis_times=self.analysis_times)
                 extra.extend(replace(batch, name=f'{batch.name}:part{part}') for batch in batches)
                 receipts.append(report)
-        fields = analysis_fields(self.mp_physics, base=('u', 'v', 'thp', 'qv'), hydrometeors=True)
-        samples = states[1:] if len(background) == 1 else states
-        fields = [name for name in fields if all(name in state for state in states)
-                  and np.any(np.ptp(np.stack([_mass_field(name, state, where='local analysis')
-                                             for state in samples]), axis=0) > 0)]
-        # Never truncate a prognostic species pair merely because one of
-        # its fields happens to have zero sampled spread.
-        for pair in pairs_present(tuple(states[0]), mp_physics=self.mp_physics):
-            if not set(pair.fields) <= set(fields):
-                fields = [f for f in fields if f not in pair.fields]
+        fields = _analysis_fields_for_states(states, self.mp_physics,
+                                             static=len(background) == 1)
+        field_selection = dict(selected=list(fields),
+                               policy='sample variation and the filter usable-spread gate; species pairs stay whole')
         has_obs = bool(obs['radar'] is not None or obs['cwp'] is not None or any(np.any(b.mask) for b in extra))
         if not fields or not has_obs:
             return ({i: {'thp': np.zeros_like(background[slot]['thp'], dtype=float)} for slot, i in enumerate(index_list)},
@@ -757,7 +781,8 @@ class PreparedBackend:
         if len(background) == 1:
             increments = {index_list[0]: increments[0]}
             report.update(method='static-covariance-oi', members=1, static_covariance=static_receipt)
-        report.update(routes=obs['receipts'], point_observations=receipts)
+        report.update(routes=obs['receipts'], point_observations=receipts,
+                      analysis_field_selection=field_selection)
         report['cwp_assimilated'] = observation_usage(report)['cwp_accepted'] > 0
         return increments, report
 

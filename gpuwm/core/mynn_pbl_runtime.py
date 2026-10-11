@@ -104,7 +104,7 @@ VERTICAL_LEVEL_BOUNDS = (5, None)
 #: belongs here exactly when its mass species carry ``qs``.
 from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES  # noqa: E402
 
-MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28)) | frozenset(
+MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28, 30)) | frozenset(
     _s.mp_id for _s in _NAMED_MP_SCHEMES.values()
     if "qs" in _s.ice_mass_species)
 

@@ -564,7 +564,20 @@ fn run() -> Result<(), String> {
                 spacing.spacing_metres.len()
             ));
         }
-        let derived = Window::mesh_focus(
+        let source = netcrust::File::open(&mesh_path).map_err(|e| e.to_string())?;
+        let is_regional = if source.variable("bdyMaskCell").is_some() {
+            let mask = source.read_f64("bdyMaskCell").map_err(|e| e.to_string())?;
+            if mask.len() != mesh.n_cells()
+                || mask.iter().any(|v| !v.is_finite() || *v < 0.0 || *v > 7.0 || v.fract() != 0.0)
+            {
+                return Err("bdyMaskCell must contain one finite integer ring 0..7 per cell".to_string());
+            }
+            mask.iter().any(|v| *v > 0.0)
+        } else {
+            false
+        };
+        let derive = if is_regional { Window::regional_focus } else { Window::mesh_focus };
+        let derived = derive(
             &mesh.latitude_degrees,
             &mesh.longitude_degrees,
             &spacing.spacing_metres,

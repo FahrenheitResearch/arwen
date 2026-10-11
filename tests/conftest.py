@@ -960,10 +960,10 @@ def _the_default_geography_root_counts_as_staged(monkeypatch):
 
     real = go_cli.geography_refusal
 
-    def refusal(geog_root):
+    def refusal(geog_root, **kwargs):
         if pathlib.Path(geog_root) == default_geog_root():
             return None
-        return real(geog_root)
+        return real(geog_root, **kwargs)
 
     monkeypatch.setattr(go_cli, "geography_refusal", refusal)
 

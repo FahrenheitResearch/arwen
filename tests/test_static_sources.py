@@ -62,9 +62,15 @@ def test_every_row_has_a_source_outside_an_nco_version_folder():
         durable = [url for url in (row.url, *row.mirrors) if not _NCO_VERSION_FOLDER.search(url)]
         assert durable, f"{row.id}: every source is an NCO version folder: {(row.url, *row.mirrors)}"
     row = es.static_source_row("hrrr-conus-v4")
+    # The Hugging Face object is not published yet (it answers 404), so it
+    # sits last, behind NCO's folder and the release mirror.
+    assert row.url == (
+        "https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/hrrr.v4.1.21/fix/conus/hrrr_geo_em.d01.nc")
     assert row.mirrors == (
         "https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.7/"
-        "hrrr-conus-v4-hrrr_geo_em.d01.nc",)
+        "hrrr-conus-v4-hrrr_geo_em.d01.nc",
+        "https://huggingface.co/datasets/deepguess/wps-geog-arwen/resolve/main/"
+        "hrrr-conus-v4-hrrr_geo_em.d01.nc")
 
 
 def test_fetch_takes_the_release_mirror_when_the_nco_folder_is_gone(tmp_path, monkeypatch):
@@ -105,10 +111,10 @@ def test_fetch_takes_the_release_mirror_when_the_nco_folder_is_gone(tmp_path, mo
     attempted.clear()
     row = replace(row, sha256="0" * 64)
     from gpuwm import geog_assets
-    with pytest.raises(geog_assets.GeogFetchError, match="could not be fetched from any of its 2 URL"):
+    with pytest.raises(geog_assets.GeogFetchError, match=f"could not be fetched from any of its {1 + len(row.mirrors)} URL"):
         es.fetch_static_source("hrrr-conus-v4", tmp_path / "geog",
                                progress=lines.append, urlopen_fn=open_url)
-    assert attempted == [packaged.url, packaged.mirrors[0]]
+    assert attempted == [packaged.url, *packaged.mirrors]
     assert not final.exists()
 
 

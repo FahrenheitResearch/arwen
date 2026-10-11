@@ -1,6 +1,11 @@
 ArWen (Python package "gpuwm", preprocessor "rw-wps")
 Copyright 2026 ArWen contributors
 
+gpuwm/core/kernels/tiedtke.cu and tiedtke_routines.cuh implement the original
+cumulus scheme from WRF v4.6.1 phys/module_cu_tiedtke.F. The WRF public-domain
+notice below and licenses/LICENSE-WRF-public-domain.txt apply to those
+equations and tools/tiedtke_wrf461_oracle/oracle.F90.
+
 gpuwm/ensemble/stochastic.py and
 gpuwm/core/kernels/ensemble_stochastic.cu implement Philox4x32-10 using
 Random123's algorithm. Its BSD-3-Clause notice is reproduced in
@@ -873,9 +878,12 @@ below; a renderer shipped without it would satisfy clause 2 nowhere.
 
 Compiled artifacts (release bridge bundles and platform wheels)
 
-Forty-two Rust executables and libraries (gpuwm.bridge_assets
+Forty-five Rust executables and libraries (gpuwm.bridge_assets
 .BUNDLED_ARTIFACTS) are distributed in compiled form: as GitHub release
 bridge bundles, and staged into platform wheels at gpuwm/libexec/bridges/.
+A platform wheel carries all of them but the three that gpuwm fetch-bridges
+installs from the bundle on first use (gpuwm.bridge_assets
+.on_demand_artifacts).
 They are built from the three bridge dependency trees and the terminal
 dependency tree below, and from
 first-party crates that carry ported third-party expression of their own:
@@ -1187,3 +1195,11 @@ search in tools/rustwx/crates/static-fields/src/interp.rs follow WPS
 v4.6.0 GEOGRID.TBL.ARW and geogrid/src/interp_module.F. WPS's source
 download page points to the WRF public-domain notice reproduced above:
 https://www2.mmm.ucar.edu/wrf/site/wps_source.html.
+
+TEMPO (Thompson-Eidhammer Microphysics Parameterization for Operations)
+------------------------------------------------------------------------
+gpuwm/core/kernels/tempo/ and tools/rustwx/crates/rw-tempo port NCAR/TEMPO,
+https://github.com/NCAR/TEMPO, commit 9adf9ef2827104640125f0c322e1218fce74e94c
+(tag tempo_v3.0.3): Copyright 2026, NOAA, UCAR/NCAR CU/CIRES, licensed under
+the Apache License, Version 2.0.  The port's own notice, with the
+modification statement, is gpuwm/core/kernels/tempo/NOTICE-TEMPO.txt.

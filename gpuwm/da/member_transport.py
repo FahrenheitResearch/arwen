@@ -16,6 +16,9 @@ from pathlib import Path
 import sys
 import re
 import time
+import contextlib
+import functools
+import socket
 
 import numpy as np
 
@@ -44,6 +47,140 @@ from gpuwm.da.member_wave import atomic_json, sha256, SCHEMA as RESULT_SCHEMA
 
 COMMON_SCHEMA = "gpuwm-da.member-leg-common.v1"
 REQUEST_SCHEMA = "gpuwm-da.member-leg-request.v1"
+
+
+@functools.lru_cache(maxsize=32)
+def _timing_card(visible):
+    """Resolve telemetry identity only, without opening a CUDA context.
+
+    Workers see one physical UUID. The read-only driver query is cached
+    for the life of a card server. Unknown identities stay unknown.
+    """
+    if visible.isdecimal():
+        return int(visible)
+    from gpuwm.local_gpu import no_local_gpu
+    if no_local_gpu():
+        return None
+    if not visible.startswith("GPU-") or "," in visible:
+        return None
+    try:
+        import subprocess
+        rows = subprocess.run(
+            ["nvidia-smi", "--id=" + visible,
+             "--query-gpu=index,uuid", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=2, check=True).stdout
+        for row in rows.splitlines():
+            index, uuid = (part.strip() for part in row.split(",", 1))
+            if uuid == visible and index.isdecimal():
+                return int(index)
+    except Exception:
+        pass
+    return None
+
+
+class DAClock:
+    """Always-on metadata timers. No device sync and no field reads.
+
+    Sequential phases partition a caller's wall. Step-observer boundaries
+    separately define forecast.integrate. Overlapping members, barriers,
+    cycle envelopes and asynchronous writes must never be added together.
+    """
+    def __init__(self, out, *, cycle=None, member=None, card=None,
+                 gpu_uuid=None, resolve_card=True):
+        from gpuwm.timeline.ledger import Ledger
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        self.card = card if card is not None else (
+            _timing_card(visible) if resolve_card else None)
+        self.attrs = {"cycle": cycle, "member": member,
+                      "gpu_uuid": gpu_uuid or (visible if visible.startswith("GPU-") else None),
+                      "basis": "monotonic_wall", "card_busy": False}
+        self.ledger = Ledger(Path(out)/"timeline.jsonl", product="da", card=self.card)
+        self.offset = time.time() - time.monotonic()
+        self.active = None
+        self.seconds = {}
+        self.first_step = self.last_step = self.first_step_end = None
+
+    def emit(self, stage, phase, at=None, **attrs):
+        now = time.monotonic() if at is None else at
+        return self.ledger.emit(stage, phase, t_mono=now,
+                                t_unix=now+self.offset,
+                                attrs={**self.attrs, **attrs})
+
+    def interval(self, stage, start, end, **attrs):
+        self.emit(stage, "begin", start, **attrs)
+        self.emit(stage, "end", end, **attrs)
+
+    def transition(self, stage=None, *, at=None):
+        now = time.monotonic() if at is None else at
+        if self.active is not None:
+            previous, began = self.active
+            self.emit(previous, "end", now)
+            self.seconds[previous] = self.seconds.get(previous, 0.0) + now-began
+        self.active = None if stage is None else (stage, now)
+        if stage is not None:
+            self.emit(stage, "begin", now)
+        return now
+
+    @contextlib.contextmanager
+    def span(self, stage, **attrs):
+        # Independent spans also cover background writes. The caller supplies
+        # a span_id when concurrent operations share a stage and process.
+        self.emit(stage, "begin", **attrs)
+        try:
+            yield
+        finally:
+            self.emit(stage, "end", **attrs)
+
+    def step(self, *, step_wall_seconds, **metadata):
+        end = time.monotonic()
+        start = end-float(step_wall_seconds)
+        if self.first_step is None:
+            self.first_step, self.first_step_end = start, end
+        self.last_step = end
+
+    def finish_steps(self, construct_start, *, complete):
+        if self.first_step is None:
+            self.emit("post.member.step_coverage", "mark", complete=False,
+                      reason="no measured model step")
+            return
+        attrs = {"basis": "execute_experiment.step_observer", "complete": complete}
+        self.interval("forecast.construct", construct_start, self.first_step,
+                      role="envelope", **attrs)
+        self.interval("forecast.first_step", self.first_step, self.first_step_end, **attrs)
+        self.interval("forecast.integrate", self.first_step, self.last_step,
+                      card_busy=True, **attrs)
+
+    def ready(self, *, at=None):
+        now = time.monotonic() if at is None else at
+        return {"t_mono": now, "t_unix": now+self.offset,
+                "host": socket.gethostname(), "pid": os.getpid(),
+                "card": self.card, "attrs": dict(self.attrs)}
+
+
+def member_barriers(results, out, cycle, closed):
+    """Relay each ready-to-cycle-barrier wait on the controller's clock.
+
+    Packed readiness is sampled just before atomic result publication,
+    after its array writes and hashes. It excludes controller adoption
+    from member work. No scheduler callback or placement is changed.
+    """
+    waits = {}
+    for member, result in results.items():
+        ready = (result.record or {}).get("da_timing", {}).get("ready")
+        clock = DAClock(out, cycle=cycle, member=member,
+                        card=None if ready is None else ready["card"],
+                        resolve_card=False)
+        if ready is None or ready["host"] != socket.gethostname() or ready["t_mono"] > closed:
+            clock.emit("post.member.barrier_coverage", "mark", complete=False,
+                       reason="missing or incompatible member readiness clock")
+            continue
+        clock.attrs.update(ready["attrs"])
+        clock.offset = ready["t_unix"]-ready["t_mono"]
+        clock.interval("post.member.barrier", ready["t_mono"], closed,
+                       span_id=f"{cycle}:{member}", worker_pid=ready["pid"],
+                       basis="member_ready_to_complete_roster", card_busy=False)
+        waits[str(member)] = closed-ready["t_mono"]
+    return waits
 
 
 def plain(value):
@@ -554,6 +691,11 @@ def write_result(path, context, name, result, request_hash, *, timing=None):
         # the run finds it (the result file is cleared with the stage).
         document["record"] = dict(document["record"] or {},
                                   worker_seconds=timing)
+    clock = DAClock(context.out, cycle=context.absolute_leg_number, member=name)
+    document["record"] = dict(document["record"] or {})
+    document["record"]["da_timing"] = dict(
+        document["record"].get("da_timing", {}), ready=clock.ready())
+    result.record["da_timing"] = document["record"]["da_timing"]
     atomic_json(path, document)
     return document
 
@@ -599,11 +741,17 @@ def run_job(request_path, request_sha256, result_path, *, served_before=0,
     if result_path.resolve().parent != Path(request["output_root"]).resolve():
         raise ValueError("worker result must remain inside its immutable job directory")
     t_context = time.monotonic()
+    clock = DAClock(context.out, cycle=context.absolute_leg_number,
+                    member=request["member"])
+    clock.interval("worker.claim", t_main, t_context,
+                   prefetched=bound is not None)
     result = run_member_leg(context, request["member"])
     t_leg = time.monotonic()
-    if sha256(request_path) != request_sha256:
-        raise ValueError("immutable member request changed during the forecast leg")
-    write_result(result_path, context, request["member"], result, request_sha256,
+    clock.transition("forecast.output.publish", at=t_leg)
+    try:
+        if sha256(request_path) != request_sha256:
+            raise ValueError("immutable member request changed during the forecast leg")
+        write_result(result_path, context, request["member"], result, request_sha256,
                  timing={"exec_to_module_import_seconds": (
                              _SINCE_EXEC_AT_IMPORT if not served_before else None),
                          "process_start_to_main_seconds": (
@@ -614,6 +762,8 @@ def run_job(request_path, request_sha256, result_path, *, served_before=0,
                          "read_context_prefetched": bound is not None,
                          "member_leg_seconds": round(t_leg - t_context, 3),
                          "_publish_started": t_leg})
+    finally:
+        clock.transition()
     return 0
 
 
@@ -706,12 +856,19 @@ class _Prefetch:
             job = json.loads(job_path.read_text(encoding="utf-8"))
             if job.get("schema") != SERVER_JOB_SCHEMA:
                 return
+            claimed = time.monotonic()
             context, request = read_context(
                 Path(job["request"]), expected_hash=job["request_sha256"])
             for record in request.get("restart_files") or ():
                 with open(record["path"], "rb") as stream:
                     while stream.read(64 << 20):
                         pass
+            completed = time.monotonic()
+            clock = DAClock(getattr(context, "out", self.queue),
+                            cycle=getattr(context, "absolute_leg_number", None),
+                            member=request.get("member"))
+            clock.interval("prep.member.prefetch", claimed, completed,
+                           span_id=f"prefetch:{self.index}", asynchronous=True)
             self.value = (str(Path(job["request"]).resolve()),
                           job["request_sha256"], context, request)
         except Exception:
@@ -751,7 +908,11 @@ def serve(queue):
     import threading
 
     queue = Path(queue)
+    clock = DAClock(queue)
+    clock.emit("boot.member_server", "begin", role="envelope")
     _remember_manifest_arrays()
+    clock.emit("boot.member_server", "end", role="envelope")
+    clock.transition("linger.member_server")
     served = 0
     index = 0
     ahead = None
@@ -760,12 +921,15 @@ def serve(queue):
         if (queue / "stop").exists() and not job_path.exists():
             if ahead is not None:
                 ahead.cancel()
+            clock.transition()
+            clock.emit("post.member_server.stop", "mark", served=served)
             return 0
         if not job_path.exists():
             time.sleep(0.05)
             continue
         # This job's prefetch (started while the previous job ran), and the
         # next job's, started now so it reads while this one steps.
+        clock.transition()
         prefetched = ahead if ahead is not None and ahead.index == index else None
         ahead = _Prefetch(queue, index + 1, threading.Event())
         job = json.loads(job_path.read_text(encoding="utf-8"))
@@ -790,7 +954,8 @@ def serve(queue):
                     "traceback": traceback.format_exc()[-4000:]}
             print(done["traceback"], flush=True)
         finally:
-            _release_device_memory()
+            with clock.span("post.member_server.release", span_id=str(index)):
+                _release_device_memory()
             if saved is not None:
                 sys.stdout.flush(); sys.stderr.flush()
                 os.dup2(saved[0], 1); os.dup2(saved[1], 2)
@@ -803,6 +968,7 @@ def serve(queue):
             # another member: the server ends and the controller refuses.
             ahead.cancel()
             return 1
+        clock.transition("linger.member_server")
 
 
 def main():

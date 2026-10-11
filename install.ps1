@@ -13,7 +13,11 @@
 #   1. finds the checkout (or clones $env:GPUWM_REPO_URL into .\gpuwm);
 #   2. makes sure a Rust toolchain is present, offering to install
 #      rustup when `cargo` is missing (prompts first; -Yes or
-#      GPUWM_INSTALL_YES=1 consents non-interactively);
+#      GPUWM_INSTALL_YES=1 consents non-interactively), and that it is
+#      at least the newest `rust-version` tools\*\Cargo.toml declares:
+#      an older rustc under rustup gets that toolchain added beside it
+#      (same consent) and used for this install via RUSTUP_TOOLCHAIN;
+#      an older rustc without rustup stops with the version it needs;
 #   3. creates .venv if absent on free-threaded CPython 3.14t (see
 #      "Interpreter" below), installs the checkout's gpuwm-data
 #      companion, then installs -e ".[gpu-cuNN,render]" into it,
@@ -197,6 +201,96 @@ if ($cargo) {
     $env:Path = "$cargoBin;$env:Path"
     if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
         Fail 'rustup finished but cargo is still not on PATH'
+    }
+}
+
+# ------------------------------------------------------------ rust version
+# THE BREAKAGE THIS PREVENTS: a box whose default Rust was 1.93.1 ran the
+# installer past the .venv and then stopped in tools\rustwx with "rustc
+# 1.93.1 is not supported by the following packages: ... rw-simradar@0.1.0
+# requires rustc 1.94" (2.8.9 candidate, 2026-10-10); the same install
+# passed with RUSTUP_TOOLCHAIN=1.94.0.  The minimum is not a constant here:
+# it is the newest `rust-version` the workspaces below declare in their
+# tools\<name>\Cargo.toml, the same field cargo enforces, so this check and
+# cargo cannot disagree.  install.sh reads the same field the same way.
+$rustWorkspaces = @('grib1_bridge', 'rustwx', 'arwen-tui', 'zarr_bridge',
+                    'rw_wps', 'region_global_dealias')
+function ConvertTo-RustVersion([string]$Text) {
+    # '1.94', '1.94.0' or rustc's '1.95.0-nightly' as a comparable [version].
+    if ($Text -match '^(\d+)\.(\d+)(?:\.(\d+))?') {
+        $patch = 0
+        if ($Matches[3]) { $patch = [int]$Matches[3] }
+        return New-Object System.Version ([int]$Matches[1]), ([int]$Matches[2]), $patch
+    }
+    return $null
+}
+function Get-RustcVersion {
+    $out = $null
+    try { $out = & rustc --version 2>$null } catch { $out = $null }
+    if ("$out" -match '^rustc\s+(\S+)') { return $Matches[1] }
+    return $null
+}
+$rustMin = $null
+$rustMinText = $null
+foreach ($ws in $rustWorkspaces) {
+    $manifest = Join-Path 'tools' (Join-Path $ws 'Cargo.toml')
+    if (-not (Test-Path $manifest)) { continue }
+    foreach ($line in (Get-Content $manifest)) {
+        if ($line -match '^rust-version\s*=\s*"([0-9][0-9.]*)"') {
+            $text = $Matches[1]
+            $found = ConvertTo-RustVersion $text
+            if ($found -and ((-not $rustMin) -or $found -gt $rustMin)) {
+                $rustMin = $found
+                $rustMinText = $text
+            }
+        }
+    }
+}
+$rustPinned = $false
+$callerToolchain = $env:RUSTUP_TOOLCHAIN
+if ($rustMin) {
+    $rustcHave = Get-RustcVersion
+    $haveVersion = $null
+    if ($rustcHave) { $haveVersion = ConvertTo-RustVersion $rustcHave }
+    $shown = if ($rustcHave) { $rustcHave } else { '(none)' }
+    if ($haveVersion -and $haveVersion -ge $rustMin) {
+        Say "rustc $rustcHave meets the Rust $rustMinText the workspaces declare"
+    } elseif (Get-Command rustup -ErrorAction SilentlyContinue) {
+        Say "rustc $shown is older than Rust $rustMinText, the newest"
+        Say "rust-version in tools\*\Cargo.toml; rustup can add $rustMinText beside it."
+        $toolchainYes = $Yes
+        if (-not $toolchainYes) {
+            $answer = ''
+            try { $answer = Read-Host "install: install Rust $rustMinText with rustup now (your default stays as it is)? [y/N]" }
+            catch { $answer = '' }
+            if ($answer -match '^(y|yes)$') { $toolchainYes = $true }
+        }
+        if (-not $toolchainYes) {
+            Fail ("rustc $shown is older than the Rust $rustMinText the " +
+                  'workspaces need and consent to install it was not given; ' +
+                  're-run with -Yes (or GPUWM_INSTALL_YES=1), or run ' +
+                  "'rustup toolchain install $rustMinText --profile minimal' " +
+                  'yourself and re-run')
+        }
+        Say "installing Rust $rustMinText (rustup, minimal profile, default unchanged)"
+        Invoke-Step "rustup toolchain install $rustMinText" {
+            rustup toolchain install $rustMinText --profile minimal
+        }
+        $env:RUSTUP_TOOLCHAIN = $rustMinText
+        $rustPinned = $true
+        $rustcHave = Get-RustcVersion
+        $haveVersion = $null
+        if ($rustcHave) { $haveVersion = ConvertTo-RustVersion $rustcHave }
+        if (-not ($haveVersion -and $haveVersion -ge $rustMin)) {
+            Fail ("rustup installed Rust $rustMinText but rustc reports " +
+                  "'$rustcHave' under RUSTUP_TOOLCHAIN=$rustMinText")
+        }
+        Say "building with rustc $rustcHave (RUSTUP_TOOLCHAIN=$rustMinText, this install only)"
+    } else {
+        Fail ("rustc $shown is older than Rust $rustMinText, the minimum " +
+              'the workspaces in tools\ declare, and there is no rustup to ' +
+              "add it; install Rust $rustMinText or newer (https://rustup.rs) " +
+              'and re-run')
     }
 }
 
@@ -646,6 +740,13 @@ try {
     }
 } finally {
     Pop-Location
+}
+if ($rustPinned) {
+    Say "built with Rust $rustMinText; a later hand-run cargo build in tools\ needs"
+    Say "it too: set RUSTUP_TOOLCHAIN=$rustMinText first, or rustup default $rustMinText"
+    # The piped (iwr | iex) form runs in the caller's session: hand back
+    # the toolchain choice it came in with.
+    $env:RUSTUP_TOOLCHAIN = $callerToolchain
 }
 
 # ------------------------------------------------------------------ doctor

@@ -70,6 +70,13 @@ _CANONICAL_SURFACE_REQUIRED = frozenset({
 })
 
 
+def _creation_utc(directory):
+    if os.environ.get("GPUWM_BENCH_CHECKPOINT_TOKEN"):
+        from tools.bench.checkpoint_stamps import prepared_created
+        return prepared_created(directory)
+    return datetime.now(timezone.utc).isoformat()
+
+
 class PreparedCacheMismatchError(ValueError):
     """The cache is valid, but belongs to a different requested setup."""
 
@@ -734,6 +741,10 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     # start emission is recomputed after the prepared state is loaded.
     "run.thompson_version",
     "run.thompson_fork_snow_fall",
+    # The generation's table directory is read by the forecast's
+    # Thompson column only (gpuwm/core/thompson_column.py); preparation
+    # computes nothing from the tables.
+    "run.thompson_table_dir",
     # Only the MYNN column solver reads its generation and the gsd_41 TKE
     # option; preparation computes nothing from either.
     "run.bl_mynn_version",
@@ -745,6 +756,14 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     # Only the MYNN surface-layer column solver reads its generation;
     # preparation computes no surface exchange from it.
     "run.mynn_sfclay_variant",
+    # MYNN's split number-species mixing keys select which of the PBL
+    # solver's rates are coupled; preparation computes no PBL.
+    "run.bl_mynn_mixaerosols",
+    "run.bl_mynn_mixnumcon",
+    # TEMPO's optional coupling arms act inside the forecast's physics
+    # calls only; prepared fields and boundary tables do not read them.
+    "run.tempo_ml_for_bl_nc",
+    "run.tempo_surface_emission_before",
     # The sixth-order filter form and its second factor are read only by
     # the forecast's fixed tendencies (core/dycore.py), and mp_zero_out
     # only after the forecast's microphysics call (core/microphysics.py);
@@ -892,6 +911,8 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     # Sun-angle albedo reads live solar geometry on radiation steps; it
     # changes no prepared state or boundary table.
     "run.alb_sol", "run.rrtmg_cloud_optics_form",
+    # The aer_opt=3 aerosol type reads xland on radiation calls only.
+    "run.rrtmg_aer3_type_source",
     # Prescribed smoke acts only in radiation after prepared-state restore.
     # Its full member identity remains in forecast and restart identities.
     "run.rrtmg_smoke_manifest",
@@ -2328,7 +2349,7 @@ class PreparedCacheStream:
         header = {
             **basis,
             "status": "READY",
-            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "created_utc": _creation_utc(self.directory),
             # Outside `basis`, so the content digest of a cache means
             # exactly what it meant before this release.  Its job is to
             # let a refusal name the release that wrote the bundle
@@ -2779,7 +2800,7 @@ def extend_prepared_cache(path, *, predecessor, suffix, identity,
         header = {
             **basis,
             "status": "READY",
-            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "created_utc": _creation_utc(temporary),
             CACHE_WRITER_KEY: {"gpuwm_version": __version__},
             "content_sha256": hashlib.sha256(
                 _canonical(basis).encode("utf-8")).hexdigest(),

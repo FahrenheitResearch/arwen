@@ -73,6 +73,25 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     names = names[:-len(FIRE_RUN_FIELDS)]
     assert names[-len(CHEM_RUN_FIELDS):] == list(CHEM_RUN_FIELDS)
     names = names[:-len(CHEM_RUN_FIELDS)]
+    # The Thompson generation's table directory, appended at None: every
+    # earlier configuration reads the tables it read.
+    assert names.pop() == "thompson_table_dir"
+    assert RunConfig.__dataclass_fields__["thompson_table_dir"].default is None
+    # TEMPO's optional coupling arms, appended off.
+    assert names.pop() == "tempo_surface_emission_before"
+    assert RunConfig.__dataclass_fields__["tempo_surface_emission_before"].default is False
+    assert names.pop() == "tempo_ml_for_bl_nc"
+    assert RunConfig.__dataclass_fields__["tempo_ml_for_bl_nc"].default is False
+    # MYNN-EDMF's split number-species mixing keys, appended at 0: every
+    # earlier configuration mixes exactly what it mixed before.
+    assert names.pop() == "bl_mynn_mixnumcon"
+    assert RunConfig.__dataclass_fields__["bl_mynn_mixnumcon"].default == 0
+    assert names.pop() == "bl_mynn_mixaerosols"
+    assert RunConfig.__dataclass_fields__["bl_mynn_mixaerosols"].default == 0
+    # The aer_opt=3 aerosol type source, appended at rural (the HRRR
+    # fork's type 1): every earlier configuration runs the same optics.
+    assert names.pop() == "rrtmg_aer3_type_source"
+    assert RunConfig.__dataclass_fields__["rrtmg_aer3_type_source"].default == "rural"
     # WRF's &time_control cycling (the gsd_41 MYNN cycled start).
     assert names.pop() == "cycling"
     assert RunConfig.__dataclass_fields__["cycling"].default is False
@@ -719,6 +738,12 @@ def test_every_existing_legacy_toml_resolves_identically():
         assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
         assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
         assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
+        assert actual.pop("rrtmg_aer3_type_source") == "rural"
+        assert actual.pop("bl_mynn_mixaerosols") == 0
+        assert actual.pop("bl_mynn_mixnumcon") == 0
+        assert actual.pop("tempo_ml_for_bl_nc") is False
+        assert actual.pop("tempo_surface_emission_before") is False
+        assert actual.pop("thompson_table_dir") is None
         assert actual.pop("rrtmg_smoke_manifest") == ""
         assert actual.pop("cycling") is False
         assert actual.pop("alb_sol") == 0
@@ -781,6 +806,12 @@ def test_frozen_case_constructed_configs_resolve_identically():
         assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
         assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
         assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
+        assert actual.pop("rrtmg_aer3_type_source") == "rural"
+        assert actual.pop("bl_mynn_mixaerosols") == 0
+        assert actual.pop("bl_mynn_mixnumcon") == 0
+        assert actual.pop("tempo_ml_for_bl_nc") is False
+        assert actual.pop("tempo_surface_emission_before") is False
+        assert actual.pop("thompson_table_dir") is None
         assert actual.pop("rrtmg_smoke_manifest") == ""
         assert actual.pop("cycling") is False
         assert actual.pop("alb_sol") == 0

@@ -17,6 +17,7 @@ from typing import Mapping, Sequence
 import uuid
 
 import numpy as np
+from gpuwm.ingest.preparation_evidence import scientific_preprocessing
 
 from gpuwm.boundary_fields import mapping_boundary_species
 from gpuwm.config import soil_layer_count
@@ -2551,7 +2552,7 @@ def prepare_mapped_wrf(
                     "composition_sha256": bundle.composition_sha256,
                     "input_manifest_sha256": published_manifest_sha256,
                     "decoder_sha256": dict(bundle.decoder_sha256),
-                    "preprocessing": preprocess_receipt,
+                    "preprocessing": scientific_preprocessing(preprocess_receipt),
                     "mapped_target_contract": target_contract,
                 },
                 artifact_manifest_reference=(
@@ -2618,7 +2619,7 @@ def prepare_mapped_wrf(
                 # the single-domain proof.
                 **({"source_vertical_ladder": vertical_ladder}
                    if vertical_ladder is not None else {}),
-                "preprocessing": preprocess_receipt,
+                "preprocessing": scientific_preprocessing(preprocess_receipt),
                 "hierarchy_workers": selected_workers,
                 "root_static": static_output_receipt,
                 "root_geometry": geometry_receipt,
@@ -2669,6 +2670,9 @@ def prepare_mapped_wrf(
                     "total": time.perf_counter() - started,
                 },
             }
+            from gpuwm.ingest.preparation_evidence import write_runtime_preparation
+            write_runtime_preparation(staging, preprocessing=preprocess_receipt,
+                parallelism={"hierarchy_workers": selected_workers})
             proof["proof_content_sha256"] = hashlib.sha256(
                 _canonical(proof).encode("utf-8")
             ).hexdigest()
@@ -2748,7 +2752,7 @@ def prepare_mapped_wrf(
             # full-ladder preparation's receipt is unchanged.
             **({"source_vertical_ladder": vertical_ladder}
                if vertical_ladder is not None else {}),
-            "preprocessing": preprocess.receipt(),
+            "preprocessing": scientific_preprocessing(preprocess.receipt()),
             # WHETHER THIS INITIALIZATION MODIFIED VAPOUR ON THE WAY IN.
             # Unconditional, and stated even when no floor fired.
             **moisture_floor_proof_entry(
@@ -2918,8 +2922,6 @@ def prepare_mapped_wrf(
             raise ValueError("mapped run-control bytes changed during preparation")
         proof = {
             **proof_head,
-            "preparation_parallelism": worker_policy,
-            "forcing_stage_timings": forcing_timings,
             # As posted, the leads the preparation waited for (DESIGN A136
             # 2.4 item 6); a preparation of a complete window has none.
             **({"posting": posted_proof.get("posting")}
@@ -2936,6 +2938,12 @@ def prepare_mapped_wrf(
                 "total": time.perf_counter() - started,
             },
         }
+        # Runtime headroom and inherited thread defaults vary between identical
+        # preparations. Keep the existing scientific preprocessing identity in
+        # proof/head and retain all measurements in the adjacent runtime receipt.
+        from gpuwm.ingest.preparation_evidence import write_runtime_preparation
+        write_runtime_preparation(writer.root, preprocessing=preprocess.receipt(),
+                                  parallelism=worker_policy, forcing_stage_timings=forcing_timings)
         # The seal-authored receipt keys, from every lead batch as one
         # decode (the head left them out).
         proof.update({key: posted_proof[key] for key in _AS_POSTED_SEAL_KEYS
@@ -3018,7 +3026,7 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
         "composition_sha256": bundle.composition_sha256,
         "input_manifest_sha256": manifest_sha256,
         "decoder_sha256": dict(bundle.decoder_sha256),
-        "preprocessing": c.preprocess_receipt,
+        "preprocessing": scientific_preprocessing(c.preprocess_receipt),
         "mapped_target_contract": c.target_contract,
     }
     writer = None
@@ -3125,7 +3133,7 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
             # unchained tree.
             **({"source_vertical_ladder": c.vertical_ladder}
                if c.vertical_ladder is not None else {}),
-            "preprocessing": c.preprocess_receipt,
+            "preprocessing": scientific_preprocessing(c.preprocess_receipt),
             "hierarchy_workers": selected_workers,
             "root_static": c.static_output_receipt,
             "root_geometry": c.geometry_receipt,
@@ -3361,6 +3369,9 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
         proof["proof_content_sha256"] = hashlib.sha256(
             _canonical(proof).encode("utf-8")
         ).hexdigest()
+        from gpuwm.ingest.preparation_evidence import write_runtime_preparation
+        write_runtime_preparation(writer.root, preprocessing=c.preprocess_receipt,
+            parallelism={"hierarchy_workers": selected_workers})
         writer.publish(proof)
     except BaseException as error:
         if writer is not None:

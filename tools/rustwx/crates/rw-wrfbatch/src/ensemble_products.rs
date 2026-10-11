@@ -400,7 +400,7 @@ pub fn try_cli(args: &[String]) -> Option<Result<(), String>> {
     Some((|| {
         let input = args.get(1).ok_or("--ensemble-products requires a CDF5 path")?;
         let mut out = None; let mut fields = Vec::new(); let mut domain = "d01".to_string();
-        let mut source = "ArWen".to_string(); let mut width = 1200; let mut height = 900;
+        let mut source = concat!("WOOF ", env!("GPUWM_ENGINE_VERSION")).to_string(); let mut width = 1200; let mut height = 900;
         let mut products = vec!["mean", "spread", "min", "max", "prob", "paintball", "postage"].into_iter().map(str::to_string).collect::<Vec<_>>();
         let mut i = 2;
         while i < args.len() {

@@ -143,8 +143,14 @@ def fixture(tmp_path, monkeypatch):
     return plan, slots, fetched, paths, kwargs, calls, inputs
 
 
-def test_finalize_binds_real_file_bytes_and_calls_public_readers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("receipt_version", [1, 2])
+def test_finalize_binds_real_file_bytes_and_calls_public_readers(tmp_path, monkeypatch, receipt_version):
     plan, slots, fetched, paths, kwargs, calls, inputs = fixture(tmp_path, monkeypatch)
+    if receipt_version == 2:
+        fetched.update(schema="da-rerun.recent-fetch.v2", scope="forecast", deferred_objects=[], deferred_truth=[])
+        paths["fetch"].write_text(json.dumps(fetched))
+        slots["fetch_receipt_sha256"] = case.document_sha(fetched)
+        paths["slots"].write_text(json.dumps(slots))
     doc = case.finalize(paths["plan"], **kwargs)
     assert doc["members"] == 4 and doc["free_forecast_seconds"] == 120
     assert doc["source"] == "rap-native" and doc["history_interval_seconds"] == 120

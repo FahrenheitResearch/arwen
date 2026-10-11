@@ -20,11 +20,9 @@ import numpy as np
 def _ulp_distance(a, b):
     """Units in the last place between two float32 arrays, counted through
     zero when the signs differ."""
-    ia = a.view(np.int32).astype(np.int64)
-    ib = b.view(np.int32).astype(np.int64)
-    ia = np.where(ia < 0, np.int64(-2147483648) - ia, ia)
-    ib = np.where(ib < 0, np.int64(-2147483648) - ib, ib)
-    return np.abs(ia - ib)
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+
+    return np.abs(monotone_fp32_key(a) - monotone_fp32_key(b))
 
 
 def _classes(slot):

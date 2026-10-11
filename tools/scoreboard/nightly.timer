@@ -1,0 +1,10 @@
+[Unit]
+Description=Score final observations once each UTC night
+
+[Timer]
+OnCalendar=*-*-* 12:00:00 UTC
+Persistent=true
+Unit=nightly.service
+
+[Install]
+WantedBy=timers.target

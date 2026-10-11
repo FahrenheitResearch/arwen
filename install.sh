@@ -12,7 +12,11 @@
 #   1. finds the checkout (or clones $GPUWM_REPO_URL into ./gpuwm);
 #   2. makes sure a Rust toolchain is present, offering to install
 #      rustup when `cargo` is missing (prompts first; --yes or
-#      GPUWM_INSTALL_YES=1 consents non-interactively);
+#      GPUWM_INSTALL_YES=1 consents non-interactively), and that it is
+#      at least the newest `rust-version` tools/*/Cargo.toml declares:
+#      an older rustc under rustup gets that toolchain added beside it
+#      (same consent) and used for this install via RUSTUP_TOOLCHAIN;
+#      an older rustc without rustup stops with the version it needs;
 #   3. creates .venv if absent on free-threaded CPython 3.14t (see
 #      "Interpreter" below), installs the checkout's gpuwm-data
 #      companion, then installs -e '.[gpu-cuNN,render]' into it,
@@ -158,6 +162,75 @@ toolchain yourself and re-run"
         | sh -s -- -y --no-modify-path
     command -v cargo >/dev/null 2>&1 \
         || fail "rustup finished but cargo is still not on PATH"
+fi
+
+# ------------------------------------------------------------ rust version
+# THE BREAKAGE THIS PREVENTS: a box whose default Rust was 1.93.1 ran
+# this script past the .venv and then stopped in tools/rustwx with
+# "rustc 1.93.1 is not supported by the following packages: ...
+# rw-simradar@0.1.0 requires rustc 1.94" (2.8.9 candidate,
+# 2026-10-10); the same install passed with RUSTUP_TOOLCHAIN=1.94.0.
+# The minimum is not a constant here: it is the newest `rust-version`
+# the workspaces below declare in their tools/<name>/Cargo.toml, the
+# same field cargo enforces, so this check and cargo cannot disagree.
+RUST_WORKSPACES='grib1_bridge rustwx arwen-tui zarr_bridge rw_wps region_global_dealias'
+rust_minimum() {
+    for ws in $RUST_WORKSPACES; do
+        [ -f "tools/$ws/Cargo.toml" ] || continue
+        sed -n 's/^rust-version[[:space:]]*=[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' \
+            "tools/$ws/Cargo.toml"
+    done | awk -F. '{ v = $1 * 1000000 + $2 * 1000 + $3
+                      if (v > best) { best = v; text = $0 } }
+                    END { print text }'
+}
+# version_ok HAVE NEED: rustc's HAVE (x.y.z) is NEED (x.y or x.y.z) or newer.
+version_ok() {
+    awk -v have="$1" -v need="$2" 'BEGIN {
+        split(have, h, "."); split(need, n, ".")
+        exit !(h[1] * 1000000 + h[2] * 1000 + h[3] >= n[1] * 1000000 + n[2] * 1000 + n[3]) }'
+}
+rustc_version() { rustc --version 2>/dev/null | awk '{ print $2 }'; }
+RUST_MIN="$(rust_minimum)"
+RUST_PINNED=0
+if [ -n "$RUST_MIN" ]; then
+    RUSTC_HAVE="$(rustc_version || true)"
+    if version_ok "${RUSTC_HAVE:-0}" "$RUST_MIN"; then
+        say "rustc $RUSTC_HAVE meets the Rust $RUST_MIN the workspaces declare"
+    elif command -v rustup >/dev/null 2>&1; then
+        say "rustc ${RUSTC_HAVE:-(none)} is older than Rust $RUST_MIN, the newest"
+        say "rust-version in tools/*/Cargo.toml; rustup can add $RUST_MIN beside it."
+        TOOLCHAIN_YES="$YES"
+        if [ "$TOOLCHAIN_YES" != 1 ]; then
+            if [ -r /dev/tty ]; then
+                printf 'install: install Rust %s with rustup now (your default stays as it is)? [y/N] ' "$RUST_MIN"
+                read -r answer < /dev/tty || answer=""
+                case "$answer" in
+                    y|Y|yes|YES) TOOLCHAIN_YES=1 ;;
+                esac
+            fi
+        fi
+        if [ "$TOOLCHAIN_YES" != 1 ]; then
+            fail "rustc ${RUSTC_HAVE:-(none)} is older than the Rust $RUST_MIN \
+the workspaces need and consent to install it was not given; re-run with \
+--yes (or GPUWM_INSTALL_YES=1), or run 'rustup toolchain install $RUST_MIN \
+--profile minimal' yourself and re-run"
+        fi
+        say "installing Rust $RUST_MIN (rustup, minimal profile, default unchanged)"
+        rustup toolchain install "$RUST_MIN" --profile minimal
+        RUSTUP_TOOLCHAIN="$RUST_MIN"
+        export RUSTUP_TOOLCHAIN
+        RUST_PINNED=1
+        RUSTC_HAVE="$(rustc_version || true)"
+        version_ok "${RUSTC_HAVE:-0}" "$RUST_MIN" \
+            || fail "rustup installed Rust $RUST_MIN but rustc reports \
+'${RUSTC_HAVE:-nothing}' under RUSTUP_TOOLCHAIN=$RUST_MIN"
+        say "building with rustc $RUSTC_HAVE (RUSTUP_TOOLCHAIN=$RUST_MIN, this install only)"
+    else
+        fail "rustc ${RUSTC_HAVE:-(none)} is older than Rust $RUST_MIN, the \
+minimum the workspaces in tools/ declare, and there is no rustup to add it; \
+install Rust $RUST_MIN or newer (https://rustup.rs, or a newer distribution \
+package) and re-run"
+    fi
 fi
 
 # -------------------------------------------------------------------- venv
@@ -495,6 +568,10 @@ say "building the mapped-source decode engine in tools/rw_wps (offline, locked)"
 ( cd tools/rw_wps && cargo build --release --locked --offline )
 say "building the velocity dealiasing library (offline, locked)"
 ( cd tools/region_global_dealias && cargo build --release --locked --offline )
+if [ "$RUST_PINNED" = 1 ]; then
+    say "built with Rust $RUST_MIN; a later hand-run cargo build in tools/ needs"
+    say "it too: RUSTUP_TOOLCHAIN=$RUST_MIN cargo build, or rustup default $RUST_MIN"
+fi
 
 # ------------------------------------------------------------------ doctor
 # Doctor judges the environment this script just made, as it stands once

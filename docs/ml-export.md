@@ -20,6 +20,11 @@ gpuwm ml-export run/wrfout --out ml/x --levels model --variables +vertical_veloc
 gpuwm ml-export --list                                            # level sets, variables, naming schemes
 ```
 
+The exporter is fetched on first use: run `gpuwm fetch-bridges` once after
+installing, because the platform wheel does not carry it (with it the wheel
+was over the package index's 100 MB per-file limit). Until then
+`gpuwm ml-export` exits 3 with a message naming that command.
+
 Inputs can be history files, folders holding them (searched for
 `wrfout_dNN_*`), gzip-compressed history files, or ZIPs whose members are
 history files. A compressed or archived frame is unpacked just before it is

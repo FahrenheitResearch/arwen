@@ -152,6 +152,93 @@ def test_observed_grid_cross_check_names_both_vocabularies():
             earth_relative, declared, Path("hrrr.grib2"))
 
 
+HRRRV1_FIRST_POINT = {"lat1": 21.138, "lon1": 237.28}
+
+
+def test_a_published_first_point_admits_the_hrrrv1_archive_corner():
+    """HRRRv1 wrfprs/wrfnat (to 2016-08-23) publish the corner in millidegrees.
+
+    The packaged HRRR mappings declare that encoding; a record carrying it
+    is on the declared grid, half of it is not, and the frame still keeps
+    the declared parameters.  Without the declaration the 2016-05-24 and
+    2015-06-01 cycles were refused on the pressure route.
+    """
+
+    row = {
+        "index": "0", "nx": "1799", "ny": "1059",
+        "lat1": "21.138", "lon1": "237.28",
+        "dx": "3000", "dy": "3000",
+        "latin1": "38.5", "latin2": "38.5", "lov": "262.5",
+        "shape_of_earth": "6", "resolution_flags": "0x08",
+    }
+    with pytest.raises(ValueError, match="lat1"):
+        ms._require_declared_grib2_grid(row, _declaration(), Path("v1.grib2"))
+    declared = _declaration(published_first_points=[HRRRV1_FIRST_POINT])
+    assert declared["published_first_points"] == [HRRRV1_FIRST_POINT]
+    assert declared["parameters"] == HRRR_PARAMETERS
+    ms._require_declared_grib2_grid(row, declared, Path("v1.grib2"))
+    ms._require_declared_grib2_grid(
+        dict(row, lat1="21.138123", lon1="237.280472"), declared,
+        Path("v4.grib2"))
+    for half in ({"lon1": "237.280472"}, {"lat1": "21.139"},
+                 {"lon1": "237.281"}):
+        with pytest.raises(ValueError, match="lat1|lon1"):
+            ms._require_declared_grib2_grid(
+                dict(row, **half), declared, Path("v1.grib2"))
+    for name in ("prs", "native"):
+        packaged = json.loads((
+            Path(ms.__file__).parent / "authorities"
+            / f"rw-wps-hrrr-{name}-grib2.mapping.json").read_text("utf-8"))
+        assert ms._validate_grid_declaration(packaged["grid"], "grib2")[
+            "published_first_points"] == [HRRRV1_FIRST_POINT], name
+
+
+@pytest.mark.parametrize("points", [
+    [{"lat1": 21.2, "lon1": 237.28}],
+    [{"lat1": 21.138}],
+    {"lat1": 21.138, "lon1": 237.28},
+    [{"lat1": 21.138, "lon1": 237.28, "note": "x"}],
+])
+def test_a_published_first_point_off_the_declared_grid_is_refused(points):
+    with pytest.raises((ValueError, TypeError), match="published_first_points"):
+        _declaration(published_first_points=points)
+    with pytest.raises(ValueError, match="published_first_points"):
+        ms._validate_grid_declaration(
+            {"family": "regular_latitude_longitude",
+             "published_first_points": [HRRRV1_FIRST_POINT]}, "grib2")
+
+
+def test_the_hrrrv1_declarations_are_admission_only():
+    """A preparation bound to the mapping before the keys keeps its source.
+
+    ``published_first_points`` and ``repeated_record`` admit files the
+    mapping refused before and decode nothing a successful preparation
+    decoded differently.
+    """
+
+    from gpuwm.source_authorities import (
+        bound_mapping_refusal, mapping_decode_identity,
+        packaged_authorities)
+
+    path = packaged_authorities("hrrr-prs-grib2-v1")["mapping"]
+    document = json.loads(path.read_text("utf-8"))
+    before = dict(document, grid={
+        key: value for key, value in document["grid"].items()
+        if key != "published_first_points"}, fields={
+        name: {key: value for key, value in field.items()
+               if key != "repeated_record"}
+        for name, field in document["fields"].items()})
+    assert before != document
+    assert mapping_decode_identity(before) == mapping_decode_identity(document)
+    old_bytes = (json.dumps(before, indent=1) + "\n").encode("utf-8")
+    assert bound_mapping_refusal("hrrr-prs-grib2-v1", old_bytes) is None
+    shifted = dict(before, grid=dict(before["grid"], parameters=dict(
+        before["grid"]["parameters"], lat1=21.138)))
+    assert bound_mapping_refusal(
+        "hrrr-prs-grib2-v1",
+        (json.dumps(shifted, indent=1) + "\n").encode("utf-8")) is not None
+
+
 def test_projected_axes_are_regular_far_below_one_period():
     y, x = ms._projected_axes(HRRR_PARAMETERS)
     assert y.size == 1059 and x.size == 1799
@@ -246,6 +333,34 @@ def test_grid_relative_winds_rotate_to_the_earth_basis_at_decode():
         collection.direct[key_u].values, u_grid * cosa, rtol=0.0, atol=1e-12)
     np.testing.assert_allclose(
         collection.direct[key_v].values, u_grid * sina, rtol=0.0, atol=1e-12)
+
+
+def test_a_repeated_record_reads_its_later_message_only_where_declared():
+    """HRRRv1 wrfprs writes HGT at the surface and at 1000 hPa twice.
+
+    The 1000 hPa pair differs, and only the later record survives into
+    HRRRv2 and current files, so a field declaring ``repeated_record:
+    "last"`` reads the later message; without the declaration a repeat is
+    still refused.
+    """
+
+    mapping = _lambert_mapping()
+    parameters = mapping["grid"]["parameters"]
+    latitude, longitude = ms._projected_axes(parameters)
+    shape = (parameters["ny"], parameters["nx"])
+    records = [
+        _record(0, 2, np.full(shape, 5.0), latitude, longitude),
+        _record(1, 3, np.zeros(shape), latitude, longitude),
+        _record(2, 2, np.full(shape, 7.0), latitude, longitude),
+    ]
+    with pytest.raises(ValueError, match="duplicate GRIB messages"):
+        ms._assemble_grib(mapping, records)
+    mapping["fields"]["eastward_wind_10m"]["repeated_record"] = "last"
+    collection = ms._assemble_grib(mapping, records)
+    key_u = (datetime(2026, 8, 15, 0), None, "eastward_wind_10m")
+    sina, cosa = ms._declared_grid_rotation(parameters)
+    np.testing.assert_allclose(
+        collection.direct[key_u].values, 7.0 * cosa, rtol=0.0, atol=1e-12)
 
 
 def test_rotation_refuses_half_a_vector():

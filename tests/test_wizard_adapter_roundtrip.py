@@ -227,7 +227,7 @@ def test_the_emitted_config_passes_the_launch_time_forcing_agreement(
     data = build_case_data(raw["case_data"], source=str(out),
                            base_dir=out.parent, require_inputs=False,
                            require_met_inputs=False)
-    arguments = runplan.declared_forcing_fetch(raw, data)
+    arguments = runplan.declared_forcing_fetch(raw, data, base_dir=out.parent)
     assert arguments is not None
     assert "--era5-provider" in arguments
     assert arguments[arguments.index("--era5-provider") + 1] == provider
@@ -253,7 +253,7 @@ def test_the_launch_time_refusal_names_the_file_the_provider_publishes(
                            base_dir=out.parent, require_inputs=False,
                            require_met_inputs=False)
     with pytest.raises(runplan.PlanError) as refusal:
-        runplan.declared_forcing_fetch(raw, data)
+        runplan.declared_forcing_fetch(raw, data, base_dir=out.parent)
     message = str(refusal.value)
     assert ERA5_COMBINED_NAMES["arco"] in message
     assert ERA5_COMBINED_NAMES["cds"] in message

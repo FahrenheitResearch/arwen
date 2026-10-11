@@ -895,7 +895,7 @@ fn build_projected_basemap(
                         .map(|bounds| ring.iter().any(|&(lon, lat)| bounds.contains(lat, lon)))
                         .unwrap_or(true)
                 })
-                .map(|ring| project_densified_ring(projector, &ring, polygon_densify_step_deg))
+                .flat_map(|ring| project_densified_ring(projector, &ring, polygon_densify_step_deg))
                 .filter(|ring| ring_overlaps_bbox(ring, polygon_bbox))
                 .collect();
             if !rings.is_empty() {
@@ -1230,15 +1230,32 @@ fn projected_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// Projects one lon/lat ring, densified, into one or more projected rings.
+///
+/// D-08 (2.8.8 acceptance row CY1): a ring that straddles the projection's
+/// cut meridian (`central + 180`) used to come back as ONE ring whose
+/// vertices jump from one edge of the projected plane to the other.  Its
+/// projected bounding box then spans the whole plane, so it passed
+/// `ring_overlaps_bbox` and the scanline fill painted every row the ring
+/// covers across the full width of the map.  On the cyclone d01 Mercator
+/// grid (central meridian -89.3) the Tibetan lakes Nam Co and Yamdrok Tso
+/// sit on the cut at 90.7E and drew two full-width lake-coloured bands at
+/// their own latitudes (about 30.7N and 29.0N), over the Gulf coast.
+///
+/// A ring that crosses the cut is therefore split there: each piece runs
+/// from the cut back to the cut on one side of the plane and is closed
+/// along the cut itself, which is where the true boundary of the visible
+/// half lies.  A piece far from the frame is then culled like any other
+/// ring.  A ring that never crosses the cut is projected exactly as before.
 fn project_densified_ring(
     projector: ProjectionProjector,
     ring: &[(f64, f64)],
     max_step_deg: f64,
-) -> Vec<(f64, f64)> {
+) -> Vec<Vec<(f64, f64)>> {
     if ring.is_empty() {
         return Vec::new();
     }
-    let mut projected = Vec::with_capacity(ring.len());
+    let mut dense = Vec::with_capacity(ring.len());
     let mut previous_lonlat: Option<(f64, f64)> = None;
     for &(lon, lat) in ring {
         if let Some((prev_lon, prev_lat)) = previous_lonlat {
@@ -1247,20 +1264,86 @@ fn project_densified_ring(
                 let t = step as f64 / steps as f64;
                 let point_lon = interpolate_longitude(prev_lon, lon, t);
                 let point_lat = prev_lat + (lat - prev_lat) * t;
-                let point = projector.project(point_lat, point_lon);
-                if point.0.is_finite() && point.1.is_finite() {
-                    projected.push(point);
-                }
+                dense.push((point_lon, point_lat));
             }
         } else {
-            let point = projector.project(lat, lon);
-            if point.0.is_finite() && point.1.is_finite() {
-                projected.push(point);
-            }
+            dense.push((lon, lat));
         }
         previous_lonlat = Some((lon, lat));
     }
-    projected
+    let project_all = |points: &[(f64, f64)]| -> Vec<(f64, f64)> {
+        points
+            .iter()
+            .map(|&(lon, lat)| projector.project(lat, lon))
+            .filter(|point| point.0.is_finite() && point.1.is_finite())
+            .collect()
+    };
+    let pieces = projector
+        .seam_longitude_deg()
+        .and_then(|seam| split_lonlat_ring_at_seam(&dense, seam));
+    match pieces {
+        None => vec![project_all(&dense)],
+        Some(pieces) => pieces
+            .iter()
+            .map(|piece| project_all(piece))
+            .filter(|piece| piece.len() >= 3)
+            .collect(),
+    }
+}
+
+/// How far inside the cut a seam vertex is placed, in degrees, so it
+/// projects onto the intended edge of the plane.
+const SEAM_EDGE_EPSILON_DEG: f64 = 1.0e-9;
+
+/// Splits a densified lon/lat ring where it crosses the cut meridian
+/// `seam_deg`.  Returns `None` when it never does (the caller keeps the
+/// ring untouched), otherwise one closed-along-the-cut piece per side run.
+fn split_lonlat_ring_at_seam(
+    dense: &[(f64, f64)],
+    seam_deg: f64,
+) -> Option<Vec<Vec<(f64, f64)>>> {
+    if dense.len() < 2 || !seam_deg.is_finite() {
+        return None;
+    }
+    let central = seam_deg - 180.0;
+    let mut walk = dense.to_vec();
+    if dense.first() != dense.last() {
+        walk.push(dense[0]);
+    }
+    let mut pieces: Vec<Vec<(f64, f64)>> = vec![vec![walk[0]]];
+    for pair in walk.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let rel_a = normalize_longitude_deg(a.0 - central);
+        let delta = wrapped_longitude_delta_deg(a.0, b.0);
+        let reached = rel_a + delta;
+        let (bound, exit_rel, enter_rel) = if reached > 180.0 {
+            (180.0, 180.0 - SEAM_EDGE_EPSILON_DEG, -180.0 + SEAM_EDGE_EPSILON_DEG)
+        } else if reached <= -180.0 {
+            (-180.0, -180.0 + SEAM_EDGE_EPSILON_DEG, 180.0 - SEAM_EDGE_EPSILON_DEG)
+        } else {
+            pieces.last_mut().expect("one piece is always open").push(b);
+            continue;
+        };
+        let t = if delta.abs() > 0.0 {
+            ((bound - rel_a) / delta).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let lat = a.1 + (b.1 - a.1) * t;
+        pieces
+            .last_mut()
+            .expect("one piece is always open")
+            .push((central + exit_rel, lat));
+        pieces.push(vec![(central + enter_rel, lat), b]);
+    }
+    if pieces.len() < 2 {
+        return None;
+    }
+    // The walk is closed, so the last run continues straight into the first.
+    let first = pieces.remove(0);
+    let last = pieces.last_mut().expect("at least one crossing");
+    last.extend(first.into_iter().skip(1));
+    Some(pieces)
 }
 
 fn point_in_bbox(point: (f64, f64), bbox: (f64, f64, f64, f64)) -> bool {
@@ -1537,7 +1620,145 @@ mod tests {
         let ring = vec![(0.0, 0.0), (20.0, 10.0)];
         let projected = project_densified_ring(projector, &ring, 2.0);
 
-        assert!(projected.len() > ring.len());
+        assert_eq!(projected.len(), 1);
+        assert!(projected[0].len() > ring.len());
+    }
+
+    fn mercator_gulf_projector() -> ProjectionProjector {
+        // The 2.8.8 acceptance CY1 d01 grid: Mercator, stand_lon -89.3, so
+        // the projection is cut at 90.7E.
+        ProjectionSpec::Mercator {
+            latitude_of_true_scale_deg: 24.4,
+            central_meridian_deg: -89.3,
+        }
+        .build_projector(None, None, &[15.0, 33.0], &[-100.0, -78.0])
+        .expect("projector")
+    }
+
+    /// The width of the projected plane: from just west of the cut at 90.7E
+    /// (its east edge) to just east of it (its west edge).
+    fn projected_plane_width(projector: ProjectionProjector) -> f64 {
+        projector.project(0.0, 90.7 - 1.0e-6).0 - projector.project(0.0, 90.7 + 1.0e-6).0
+    }
+
+    fn ring_x_span(ring: &[(f64, f64)]) -> f64 {
+        let min = ring.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let max = ring.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        max - min
+    }
+
+    /// D-08: a ring straddling the projection cut must not come back as one
+    /// ring spanning the whole plane (it drew a full-width lake band).
+    #[test]
+    fn ring_straddling_the_projection_cut_is_split_at_the_cut() {
+        let projector = mercator_gulf_projector();
+        assert!((projector.seam_longitude_deg().unwrap() - 90.7).abs() < 1.0e-9);
+        // A lake-sized box across 90.7E at the latitude of Nam Co.
+        let ring = vec![
+            (90.2, 30.5),
+            (91.0, 30.5),
+            (91.0, 30.9),
+            (90.2, 30.9),
+            (90.2, 30.5),
+        ];
+        let pieces = project_densified_ring(projector, &ring, 1.0);
+        assert_eq!(pieces.len(), 2, "one piece per side of the cut");
+        let world = projected_plane_width(projector);
+        for piece in &pieces {
+            assert!(
+                ring_x_span(piece) < 0.01 * world,
+                "a piece spans {} of a {} wide plane",
+                ring_x_span(piece),
+                world
+            );
+            let all_east = piece.iter().all(|p| p.0 > 0.0);
+            let all_west = piece.iter().all(|p| p.0 < 0.0);
+            assert!(all_east || all_west, "a piece stays on one side: {piece:?}");
+        }
+    }
+
+    #[test]
+    fn ring_clear_of_the_projection_cut_is_projected_unchanged() {
+        let projector = mercator_gulf_projector();
+        // Lake Pontchartrain-sized box, nowhere near 90.7E.
+        let ring = vec![
+            (-90.4, 30.0),
+            (-89.7, 30.0),
+            (-89.7, 30.35),
+            (-90.4, 30.35),
+            (-90.4, 30.0),
+        ];
+        let pieces = project_densified_ring(projector, &ring, 1.0);
+        assert_eq!(pieces.len(), 1);
+        let expected: Vec<(f64, f64)> = ring
+            .iter()
+            .map(|&(lon, lat)| projector.project(lat, lon))
+            .collect();
+        assert_eq!(pieces[0], expected);
+    }
+
+    #[test]
+    fn polar_stereographic_has_no_cut() {
+        let projector = ProjectionSpec::PolarStereographic {
+            true_latitude_deg: 60.0,
+            central_meridian_deg: -105.0,
+            south_pole_on_projection_plane: false,
+        }
+        .build_projector(None, None, &[50.0, 70.0], &[-120.0, -90.0])
+        .expect("projector");
+        assert!(projector.seam_longitude_deg().is_none());
+    }
+
+    /// The widest horizontal step between consecutive vertices of a ring,
+    /// its implicit closing edge included.  A ring that jumps across the
+    /// projection cut has one step about as wide as the whole plane.
+    fn ring_widest_x_step(ring: &[(f64, f64)]) -> f64 {
+        (0..ring.len())
+            .map(|i| (ring[(i + 1) % ring.len()].0 - ring[i].0).abs())
+            .fold(0.0, f64::max)
+    }
+
+    /// D-08 end to end: no basemap ring built for the CY1 d01 frame jumps
+    /// across the projection cut.  Before the fix the Nam Co and Yamdrok Tso
+    /// rings (and the ocean ring) each carried an edge spanning the whole
+    /// Mercator plane, and the lake rings filled as full-width bands.
+    #[test]
+    fn gulf_mercator_basemap_has_no_plane_spanning_lake_rings() {
+        let mut lat = Vec::new();
+        let mut lon = Vec::new();
+        for row in 0..19 {
+            for col in 0..26 {
+                lat.push(15.0 + row as f32);
+                lon.push(-101.0 + col as f32);
+            }
+        }
+        let projected = build_projected_map_with_options(
+            &lat,
+            &lon,
+            &ProjectedMapBuildOptions {
+                domain: ProjectedDomainBuildOptions::full_domain(1.4).with_projection(
+                    ProjectionSpec::Mercator {
+                        latitude_of_true_scale_deg: 24.4,
+                        central_meridian_deg: -89.3,
+                    },
+                ),
+                basemap: Some(ProjectedBasemapBuildOptions::default()),
+            },
+        )
+        .expect("map");
+        let projector = mercator_gulf_projector();
+        let plane = projected_plane_width(projector);
+        assert!(!projected.polygons.is_empty(), "the frame has lakes to fill");
+        for polygon in &projected.polygons {
+            for ring in &polygon.rings {
+                assert!(
+                    ring_widest_x_step(ring) < 0.5 * plane,
+                    "a basemap ring steps {:.0} m sideways on a {:.0} m wide plane",
+                    ring_widest_x_step(ring),
+                    plane
+                );
+            }
+        }
     }
 
     #[test]

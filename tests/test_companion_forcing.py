@@ -68,7 +68,7 @@ def test_existing_eda_forcing_still_reaches_verified_reuse(tmp_path):
     forcing = tmp_path / fetch.ERA5_COMBINED_NAME; forcing.write_bytes(b"unverified")
     hints = dict(source="era5", cycle="2013-05-31T18", hours=3, cadence=3, area="35.5,-98.5,36.5,-97.5",
         out=str(tmp_path), era5_provider="cds", era5_product="ensemble_members", member=0, retrieve=True)
-    args = runplan.declared_forcing_fetch({"fetch": hints}, SimpleNamespace(forcing=[forcing]))
+    args = runplan.declared_forcing_fetch({"fetch": hints}, SimpleNamespace(forcing=[forcing]), base_dir=tmp_path)
     assert args[args.index("--member")+1] == "0" and "--retrieve" in args
     command = go_cli.fetch_command({**hints, "data": tmp_path})
     assert command[command.index("--member")+1] == "0" and "--retrieve" in command

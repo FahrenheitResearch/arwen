@@ -50,11 +50,16 @@ unsafe fn value(desc: &HealthDescriptor, index: usize) -> f64 {
     else { original + auxiliary }
 }
 
-fn bad(desc: &HealthDescriptor, value: f64) -> bool {
+fn bad(desc: &HealthDescriptor, value: f64, index: usize, rim: &[usize]) -> bool {
     if !value.is_finite() { return true; }
     let lower = if desc.result_type == 1 { (desc.lower as f32) as f64 } else { desc.lower };
     let upper = if desc.result_type == 1 { (desc.upper as f32) as f64 } else { desc.upper };
-    ((desc.flags & LOWER != 0) && if desc.flags & STRICT_LOWER != 0 {
+    let (ny, nx, width) = (rim[0], rim[1], rim[2]);
+    let on_rim = if width > 0 && ny > 0 && nx > 0 {
+        let (j, i) = ((index / nx) % ny, index % nx);
+        i < width || nx - 1 - i < width || j < width || ny - 1 - j < width
+    } else { false };
+    ((desc.flags & LOWER != 0) && !on_rim && if desc.flags & STRICT_LOWER != 0 {
         value <= lower
     } else { value < lower }) || ((desc.flags & UPPER != 0) && value > upper)
 }
@@ -71,6 +76,25 @@ pub unsafe extern "C" fn gpuwm_validate_health_fields(
     descriptors: *const HealthDescriptor, count: usize, workers: usize,
     result: *mut HealthResult,
 ) -> i32 {
+    scan(descriptors, count, workers, result, std::ptr::null())
+}
+
+/// Rim-aware additive ABI. Geometry holds (ny, nx, rim_width) per field.
+/// Only lower bounds are skipped. Unknown geometry retains every bound.
+///
+/// # Safety
+/// The old entry's contract applies; geometry holds count * 3 usize words.
+#[no_mangle]
+pub unsafe extern "C" fn gpuwm_validate_health_fields_rim(
+    descriptors: *const HealthDescriptor, count: usize, workers: usize,
+    result: *mut HealthResult, geometry: *const usize,
+) -> i32 {
+    if geometry.is_null() { return ERR_NULL; }
+    scan(descriptors, count, workers, result, geometry)
+}
+
+unsafe fn scan(descriptors: *const HealthDescriptor, count: usize, workers: usize,
+               result: *mut HealthResult, geometry: *const usize) -> i32 {
     catch_unwind(AssertUnwindSafe(|| {
         if descriptors.is_null() || result.is_null() { return ERR_NULL; }
         if workers == 0 || count >= 1 << (64 - INDEX_BITS) { return ERR_DIMENSION; }
@@ -94,15 +118,19 @@ pub unsafe extern "C" fn gpuwm_validate_health_fields(
         let status = AtomicU32::new(0);
         let first = AtomicU64::new(u64::MAX);
         let addresses = descriptors.as_ptr() as usize;
+        let geometry_address = geometry as usize;
         parallel::run_ranges(*starts.last().unwrap(), workers, |start, stop| {
             let descriptors = std::slice::from_raw_parts(addresses as *const HealthDescriptor, count);
             for chunk in start..stop {
                 let field = starts.partition_point(|&offset| offset <= chunk) - 1;
                 let desc = &descriptors[field];
+                let rim = if geometry_address == 0 { &[0usize, 0, 0][..] }
+                    else { std::slice::from_raw_parts(
+                        (geometry_address as *const usize).add(3 * field), 3) };
                 let begin = (chunk - starts[field]) * CHUNK;
                 let end = desc.size.min(begin + CHUNK);
                 for index in begin..end {
-                    if bad(desc, value(desc, index)) {
+                    if bad(desc, value(desc, index), index, rim) {
                         status.fetch_or(desc.status_bit, Ordering::Relaxed);
                         first.fetch_min(((field as u64) << INDEX_BITS) | index as u64,
                                         Ordering::Relaxed);
@@ -128,6 +156,38 @@ pub unsafe extern "C" fn gpuwm_validate_health_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rim_allowance_never_skips_interior_finiteness_or_ceiling() {
+        let mut values = vec![0.0f32; 3 * 7 * 9];
+        for width in [0usize, 1, 2] {
+            for (j, i) in [(0usize, 4usize), (6, 4), (3, 0), (3, 8), (1, 4), (3, 4)] {
+                let index = 2 * 63 + j * 9 + i;
+                let distance = j.min(6 - j).min(i).min(8 - i);
+                for v in [-1.0e-7, f32::NAN, f32::INFINITY, 2.0] {
+                    values.fill(0.0);
+                    values[index] = v;
+                    let desc = HealthDescriptor { values: values.as_ptr() as *const u8,
+                        auxiliary: std::ptr::null(), size: values.len(), plane: 0,
+                        value_type: 1, auxiliary_type: 0, result_type: 1,
+                        auxiliary_mode: 0, flags: LOWER | UPPER, status_bit: 128,
+                        lower: 0.0, upper: 1.0 };
+                    let mut result = HealthResult { status_bits: 0, first_field: 0,
+                        first_index: 0, first_value: 0.0 };
+                    let geometry = [7usize, 9, width];
+                    assert_eq!(unsafe { gpuwm_validate_health_fields_rim(&desc, 1,
+                        2, &mut result, geometry.as_ptr()) }, OK);
+                    let ok = v == -1.0e-7 && distance < width;
+                    assert_eq!(result.status_bits == 0, ok);
+                    if !ok { assert_eq!(result.first_index, index); }
+                    // The old ABI has no rim geometry, so its floor remains.
+                    assert_eq!(unsafe { gpuwm_validate_health_fields(&desc, 1,
+                        2, &mut result) }, OK);
+                    assert_eq!(result.status_bits, 128);
+                }
+            }
+        }
+    }
 
     #[test]
     fn earliest_field_and_index_and_all_status_classes_are_stable() {

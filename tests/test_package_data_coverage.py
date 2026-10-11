@@ -530,12 +530,19 @@ def test_externalized_assets_match_the_fetch_contract() -> None:
     # toolchain test (its campaign harness, tools/n5s/**, is not a package
     # and never shipped) and the branch-dispositions gate (its ledger,
     # docs/branch-dispositions.md, is branch bookkeeping of the development
-    # tree).  tests/test_operational_package_excludes_probes.py measures
-    # that the sdist really lacks the first.
+    # tree), and the three tests that import the 2.8.9 speed-lane bench
+    # harness (tools/bench/**, RELEASE-EXCLUDE'd with them; without the
+    # MANIFEST.in rows the sdist shipped them without the harness they
+    # import).
+    # tests/test_operational_package_excludes_probes.py measures that the
+    # sdist really lacks them.
     root_excludes = [rule for rule in rules if rule.startswith("exclude ")]
     assert root_excludes == [
         "exclude tests/test_n5s_toolchain.py",
         "exclude tests/test_branch_dispositions.py",
+        "exclude tests/test_obs_parallel_native.py",
+        "exclude tests/test_regional_packing_bench.py",
+        "exclude tests/test_timeline_qualification.py",
     ], (
         "the root MANIFEST.in's `exclude` lines drifted.  Size- and "
         "license-driven excludes belong in gpuwm-data/MANIFEST.in with the "

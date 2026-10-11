@@ -379,7 +379,8 @@ def test_reflectivity_for_a_scheme_with_no_hx_route_is_refused_at_config_time():
     rows = consumer_rows_by_selector("microphysics", "radar_da")
     routes = {mp: row["reflectivity_route"] for mp, row in rows.items()}
     assert set(routes.values()) <= {
-        "operator", "scheme-diagnostic", "native-not-separable", "none"}, routes
+        "operator", "scheme-diagnostic", "native-not-separable", "none",
+        "unrouted"}, routes
     fused = [mp for mp, route in routes.items()
              if route == "native-not-separable"]
     # NO SCHEME IS "unrouted" ANY MORE, and mp=50 is the only fused one.
@@ -389,12 +390,25 @@ def test_reflectivity_for_a_scheme_with_no_hx_route_is_refused_at_config_time():
     # is routed as a scheme diagnostic.  The gate that refuses an unrouted
     # scheme is exercised below on a synthesised row, because a positive
     # control that can only run while the defect exists is not a control.
-    assert not [mp for mp, route in routes.items() if route == "unrouted"]
+    #
+    # FAST_SBM (30) is the one unrouted scheme: it writes no REFL_10CM (its
+    # polar-scattering diagnostic is not ported), so there is no H(x) over
+    # its bin spectra.  The gate refuses it here, at configuration, which is
+    # the shipped positive control the synthesised row below stood in for.
+    assert [mp for mp, route in routes.items() if route == "unrouted"] == [30]
+    with pytest.raises(RadarAssimilationError, match=r"no H\(x\) route"):
+        _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                positivity_policy="clip", mp_physics=30)
     # NOR is any scheme fused any more: mp=50's Z was lifted into
     # gpuwm/core/kernels/p3_zdiag.cu (audit S14) and is a scheme
     # diagnostic.  The fused arm of the gate is driven on a probe row
     # (_fused_probe) by the tests below.
-    assert not fused, routes
+    # The named schemes are the fused ones now: TEMPO (900) computes its Z
+    # inside its own step (obsop.NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP), so a
+    # reflectivity cycle on it is refused by name below, the positive
+    # control this arm lacked.
+    from gpuwm.microphysics_schemes import NAMED_MP_IDS
+    assert set(fused) == set(NAMED_MP_IDS), routes
     assert routes[50] == "scheme-diagnostic", routes
     for mp in fused:
         with pytest.raises(RadarAssimilationError,

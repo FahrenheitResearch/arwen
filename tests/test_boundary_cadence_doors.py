@@ -168,8 +168,11 @@ def test_the_door_writes_a_three_hour_hrrr_prs_cadence_the_preparation_takes(
     from gpuwm.experiment import load_experiment
 
     out = tmp_path / "coarse.toml"
+    # 8gb: since 4193eb0da hrrr-prs binds the GSD MYNN 4.1 suite, which
+    # needs about 5.25 GiB at the minimum 3 km layout; the 5gb tier this
+    # cell used is refused by the memory fit before the cadence is written.
     rc = cli_main([
-        "domain", "--point=35.5,-97.5", "--root-dx", "3", "--card", "5gb",
+        "domain", "--point=35.5,-97.5", "--root-dx", "3", "--card", "8gb",
         "--hours", "6", "--cadence", "3", "--source", "hrrr-prs",
         "--cycle", "2026-09-30T12", "--out", str(out)])
     assert rc == 0
@@ -225,13 +228,18 @@ def test_every_table_route_takes_a_spacing_unless_a_breakage_refuses_it(
 
     route = fetch_routes.route_for(source)
     adapter = get_source_adapter(route.prep.get("source", source))
-    target = packaged_mapping_target(adapter.packaged_profile)
+    # A fetch-only route (86dfe06f0's rrfs-ens: its registry row is
+    # explicit_composition_required) has no packaged preparation, so no
+    # decode refuses a spacing and only the ladder decides.
+    target = (None if adapter.packaged_profile is None
+              else packaged_mapping_target(adapter.packaged_profile))
     for cycle in fetch_routes.planning_cycles(route):
         published = set(fetch_routes.ladder_for(route, cycle))
         for cadence in range(1, 25):
             wanted = (0, cadence, 2 * cadence)
             on_ladder = all(lead in published for lead in wanted)
-            taken = boundary_interval_refusal(target, cadence * 3600) is None
+            taken = (target is None
+                     or boundary_interval_refusal(target, cadence * 3600) is None)
             if on_ladder and taken:
                 assert fetch_routes.resolve_leads(
                     route, cycle, 2 * cadence, cadence=cadence) == wanted
@@ -337,6 +345,11 @@ def test_a_bare_gdas_fetch_takes_the_row_spacing():
 # A173: the spacings the retired cadences lists refused naming no breakage
 # --------------------------------------------------------------------------
 
+#: The routes added after 2.8.0: 69a0baec1 (rap-native, hrrr-native) and
+#: 86dfe06f0 (rrfs-ens, ecmwf-ens).  They had no 2.8.0 behaviour to keep,
+#: and are pinned so a further route is a decision rather than a skip.
+ROUTES_AFTER_280 = ("ecmwf-ens", "hrrr-native", "rap-native", "rrfs-ens")
+
 #: The per-route cadences lists 2.8.0 shipped, kept only to show that a
 #: window which names no cadence resolves exactly as it did then.
 RETIRED_CADENCES = {
@@ -366,14 +379,19 @@ def _retired_window_cadence(route, start_hour, hours, *, cycle, floor,
     return None
 
 
-@pytest.mark.parametrize("source", sorted(fetch_routes.route_ids()))
+def test_every_route_is_a_280_route_or_pinned_as_added_after():
+    assert set(RETIRED_CADENCES) | set(ROUTES_AFTER_280) == set(
+        fetch_routes.route_ids())
+    assert not set(RETIRED_CADENCES) & set(ROUTES_AFTER_280)
+
+
+@pytest.mark.parametrize("source", sorted(RETIRED_CADENCES))
 def test_a_window_that_names_no_cadence_resolves_as_it_did(source):
     """Defaults stay: every window 2.8.0 resolved without a named cadence
     resolves to the same spacing, on every cycle hour, start lead and
     length swept, and through the door's rounding too.  Only windows it
     could not resolve may now find a spacing."""
 
-    assert set(RETIRED_CADENCES) == set(fetch_routes.route_ids())
     route = fetch_routes.route_for(source)
     floor = route.default_cadence
     for cycle in fetch_routes.planning_cycles(route):

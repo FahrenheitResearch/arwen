@@ -83,7 +83,7 @@ def launch_seams(monkeypatch):
     monkeypatch.setattr(capabilities, "require_for_command", lambda *a, **k: None)
     monkeypatch.setattr(capabilities, "require", lambda *a, **k: None)
     monkeypatch.setattr(go_cli, "_require_forecast_device", lambda: None)
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda path: None)
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda path, **_: None)
     monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
     monkeypatch.setattr(runplan, "_run_fetch", lambda *a, **k: pytest.fail("unexpected fetch"))
     calls = []
@@ -219,7 +219,7 @@ def test_actual_first_frame_worker_and_finalizer_share_the_experiment_output(
     monkeypatch.setattr(capabilities, "require_for_command", lambda *a, **k: None)
     monkeypatch.setattr(capabilities, "require", lambda *a, **k: None)
     monkeypatch.setattr(go_cli, "_require_forecast_device", lambda: None)
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda path: None)
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda path, **_: None)
     monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
     monkeypatch.setattr(first_products, "_run_render", _stand_in_renderer())
     monkeypatch.setattr(runtime, "run_experiment", _stub_run_experiment(frames=1))

@@ -18,7 +18,13 @@
    "ny": 1059,
    "earth_radius_m": 6371229.0,
    "shape_of_earth": 6
-  }
+  },
+  "published_first_points": [
+   {
+    "lat1": 21.138,
+    "lon1": 237.28
+   }
+  ]
  },
  "coordinates": {
   "horizontal": {
@@ -380,7 +386,8 @@
    "staggering": "none",
    "missing": {
     "kind": "reject"
-   }
+   },
+   "repeated_record": "last"
   },
   "air_pressure": {
    "selectors": [],
@@ -461,7 +468,8 @@
    "staggering": "none",
    "missing": {
     "kind": "reject"
-   }
+   },
+   "repeated_record": "last"
   },
   "skin_temperature": {
    "selectors": [

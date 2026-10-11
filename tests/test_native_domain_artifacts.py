@@ -377,8 +377,10 @@ def test_a_childs_timing_and_measured_receipt_leave_its_cache_digest(tmp_path):
                 for domain in build_result.receipt["domains"]]
 
     assert digests(first) == digests(second)
-    assert first.receipt["domains"][1]["input_preparation_seconds"] == 0.25
-    assert second.receipt["domains"][1]["input_preparation_seconds"] == 9.5
+    assert first.receipt["domains"][1] == second.receipt["domains"][1]
+    from gpuwm.ingest.boundary_stream import head_sha256
+    assert head_sha256({"basis": {"child": first.receipt["domains"][1]}}) == \
+        head_sha256({"basis": {"child": second.receipt["domains"][1]}})
     header = json.loads(
         (tmp_path / "first" / "domains" / "d02" / "prepared-cache"
          / "header.json").read_text(encoding="utf-8"))
@@ -388,11 +390,14 @@ def test_a_childs_timing_and_measured_receipt_leave_its_cache_digest(tmp_path):
         "requested": "auto", "backend": "cuda"}
     assert user["preprocess_receipt"]["soil_mapping"]["preprocess_backend"][
         "selection"] == {"requested": "auto", "backend": "cuda"}
-    # What the child measured stays in its receipt.json, whole.
+    # Runtime values stay adjacent, outside the receipt that a head binds.
     for build_result, free, workers, name in (
             (first, 15_000_000_000, 24, "first"),
             (second, 11_000_000_000, 8, "second")):
-        kept = build_result.receipt["domains"][1]["preprocess_receipt"]
+        runtime = json.loads((tmp_path / name / "domains" / "d02" /
+            "preparation-runtime.json").read_text())
+        assert runtime["input_preparation_seconds"] == (0.25 if name == "first" else 9.5)
+        kept = runtime["preprocessing"]
         assert kept["selection"]["device_fit"]["free_bytes"] == free
         assert kept["selection"]["reason"] == "the card is certified"
         assert kept["masked_surface_chain"]["workers"] == workers
@@ -401,7 +406,7 @@ def test_a_childs_timing_and_measured_receipt_leave_its_cache_digest(tmp_path):
         on_disk = json.loads(
             (tmp_path / name / "domains" / "d02" / "receipt.json"
              ).read_text(encoding="utf-8"))
-        assert on_disk["preprocess_receipt"] == kept
+        assert on_disk["preprocess_receipt"] == user["preprocess_receipt"]
     assert "preprocess_receipt" not in first.receipt["domains"][0]
 
 

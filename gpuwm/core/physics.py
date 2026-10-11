@@ -46,6 +46,7 @@ from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           NOAHMP_OPTIONS_WITHOUT_CONSUMER,
                           RUC_OPTION_IDENTITY,
                           SASE_PBL_SCHEME, UW_PBL_SCHEME, RunConfig,
+                          mynn_mixed_number_species,
                           mynn_mixscalars_active,
                           mynn_mixscalars_driver_value,
                           radiation_enabled, radiation_scheme_ids,
@@ -482,7 +483,7 @@ def _cumulus_optional_tendency_components(
     """
     if not cfg.cu_physics:
         return ()
-    if cfg.cu_physics == 16:
+    if cfg.cu_physics in (6, 16):
         return ("rqi",) if cfg.mp_physics in PBL_RQI_MICROPHYSICS else ()
     from gpuwm.core.kf import KFPhaseMode, kf_phase_mode_for_microphysics
 
@@ -578,7 +579,7 @@ def microphysics_scheme_sr_available(mp_physics: int) -> bool:
     wrapper computes it as the solid-to-total precipitation ratio
     ``pcprt_sol/(pcprt_liq+pcprt_sol+1.e-12)`` (module_mp_p3.F:898).
     """
-    if int(mp_physics) in (1, 6, 8, 9, 10, 16, 18, 28, 50):
+    if int(mp_physics) in (1, 6, 8, 9, 10, 16, 18, 28, 30, 50):
         return True
     from gpuwm.microphysics_schemes import scheme as _named_scheme
     named = _named_scheme(mp_physics)
@@ -4157,9 +4158,19 @@ class PhysicsDriver:
                    * self.state.total_mu()[None]
                    + self.state.c2h[:, None, None])
             extra: dict[str, cp.ndarray] = {}
+            # The family solve ran for all four; only the species a
+            # selected key names are coupled (config.MYNN_QN_MIX_KEYS).
+            # The rest keep WRF's skipped-solve zero by being absent:
+            # scalar_for returns None and no tendency is added.
+            # scalar_pblmix (exclusive with every key) diffuses all four.
+            coupled_species = (mynn_mixed_number_species(cfg)
+                               if mynn_mixscalars_active(cfg)
+                               else ("nc", "ni", "nwfa", "nifa"))
             for state_name, out_name in (
                     ("nc", "dnc"), ("ni", "dni"),
                     ("nwfa", "dnwfa"), ("nifa", "dnifa")):
+                if state_name not in coupled_species:
+                    continue
                 coupled = chm * out[out_name]
                 if cfg.specified or cfg.nested:
                     _specified_mass_mask(coupled)
@@ -5892,7 +5903,7 @@ def initialize_physics(
     if cfg.cu_physics not in CU_SCHEMES:
         raise ValueError(
             f"cu_physics must be one of {CU_SCHEMES} -- 0 (off), "
-            "1 (Kain-Fritsch), 3 (Grell-Freitas) or 16 (New Tiedtke)")
+            "1 (Kain-Fritsch), 3 (Grell-Freitas), 6 (original cu6) or 16 (New Tiedtke)")
     if radiation_active and radiation is None:
         missing = [name for name, value in (
             ("radiation_start_time", radiation_start_time),
@@ -5920,6 +5931,9 @@ def initialize_physics(
         # through the parity suites, never from a RunConfig.
         from gpuwm.core.gf import GrellFreitas
         cumulus = GrellFreitas()
+    elif cfg.cu_physics == 6 and cumulus is None:
+        from gpuwm.core.tiedtke import Tiedtke
+        cumulus = Tiedtke()
     elif cfg.cu_physics == 16 and cumulus is None:
         # cu_physics=16 resolves to the New Tiedtke adapter around the
         # twenty-one ntiedtke.cu stages. The adapter does WRF's cumulus-

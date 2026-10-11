@@ -302,8 +302,9 @@ def test_the_front_door_guard_and_the_transfer_share_one_lock(monkeypatch,
     # and its transfer is the (whole or as-posted) _legacy_transfer call.
     source = inspect.getsource(fetch._fetch_main)
     guard_index = source.index("require_matching_request(args.out, source=source")
-    hold_index = source.rindex('fetch_guard.hold("fetch-out", args.out)',
-                               0, guard_index)
+    # _fetch_out is the fetch-out lock plus the release of held payloads.
+    assert 'fetch_guard.hold("fetch-out", out' in inspect.getsource(fetch._fetch_out)
+    hold_index = source.rindex('_fetch_out(args.out)', 0, guard_index)
     assert source.index("return fetch_gfs(") > hold_index
     assert source.index("manifest = _legacy_transfer(") > hold_index
 
@@ -762,7 +763,11 @@ def test_a_concurrent_fetchs_entries_are_merged_not_dropped(tmp_path,
              "datasets": {"other_ds": {"files": 2, "bytes": 40}},
              "fetched_at": "2026-07-30T00:00:00Z"}
 
-    real_extract = geog_assets.extract_datasets
+    # Since 9daf25762 an archive served by a fixture transport (any
+    # urlopen_fn but the default) is unpacked by _extract_datasets_serial,
+    # so the competing writer is injected there; extract_datasets is the
+    # default transport's path and is never reached from this cell.
+    real_extract = geog_assets._extract_datasets_serial
 
     def extract_then_let_the_other_writer_finish(*args, **kwargs):
         counts = real_extract(*args, **kwargs)
@@ -771,7 +776,7 @@ def test_a_concurrent_fetchs_entries_are_merged_not_dropped(tmp_path,
         geog_assets._write_manifest(root, manifest)
         return counts
 
-    monkeypatch.setattr(geog_assets, "extract_datasets",
+    monkeypatch.setattr(geog_assets, "_extract_datasets_serial",
                         extract_then_let_the_other_writer_finish)
     geog_assets.fetch_geog(root=root, datasets=("alpha_ds",), source="hf",
                            progress=lambda *_: None,

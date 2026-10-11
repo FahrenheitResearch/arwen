@@ -195,3 +195,14 @@ def test_an_unreadable_major_names_both_pins_and_defaults_to_neither(
     assert '"nvidia-cusolver==13.*"' in check.remedy
     # The one command it leads with is the lookup, not an install.
     assert check.action.startswith("nvidia-smi")
+
+
+def test_a_full_card_is_not_judged_as_a_missing_solver(monkeypatch):
+    """Named breakage: the V12 box's card 0 was full and both solvers read
+    as absent, with a cuSOLVER install line (2026-10-09)."""
+    check = _check(monkeypatch, {
+        "jacobi": "OutOfMemoryError: Out of memory allocating 2,560 bytes",
+        "library": "OutOfMemoryError: Out of memory allocating 2,560 bytes"})
+    assert check.status == "info"
+    assert "not judged" in check.detail
+    assert "cusolver" not in (check.remedy or "").lower()

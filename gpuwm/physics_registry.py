@@ -3174,6 +3174,15 @@ def validate_physics_plan(
                     )
                 )
 
+        # Parameters an option of a CHANGED component set: the override's
+        # own values, which the template layer re-applied below must not
+        # take back.  b9a01da37 re-applies the template over its UNCHANGED
+        # components' option defaults (the GSD MYNN 4.1 suite's pins); over
+        # a changed component it handed the replaced scheme's receipt token
+        # back to the replacement -- a radiation override away from the
+        # RRTMG 4/4 pair kept wrf_rrtmg_compatibility, passed plan review,
+        # and was refused at run start.
+        overridden: set[str] = set()
         for component_id in sorted(components):
             option_id = resolved_components.get(component_id)
             component = components.get(component_id)
@@ -3224,6 +3233,8 @@ def validate_physics_plan(
                     if (template_components.get(component_id) != option_id
                             or name not in template_parameters):
                         settings[name] = value
+                    if template_components.get(component_id) != option_id:
+                        overridden.add(name)
             requirements = option.get("asset_requirements", [])
             if isinstance(requirements, list):
                 for requirement in requirements:
@@ -3237,9 +3248,11 @@ def validate_physics_plan(
                     if index not in asset_domains[key][2]:
                         asset_domains[key][2].append(index)
 
-        # Template, then per-depth template columns, over component options;
-        # explicit domain parameters below still win over both.
-        settings.update(template_layer)
+        # Template, then per-depth template columns, over component options
+        # the template itself carries; explicit domain parameters below
+        # still win over both.
+        settings.update({name: value for name, value in template_layer.items()
+                         if name not in overridden})
 
         for name, value in domain_parameters.items():
             spec = parameter_specs.get(name)

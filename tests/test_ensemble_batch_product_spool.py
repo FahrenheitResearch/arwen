@@ -10,6 +10,24 @@ from gpuwm.ensemble.batch_product_output import NativeDiagnosticSpool, HeadlineD
 from gpuwm.ensemble.batch_product_output import replay_memory_plan_for_shape
 
 
+def test_async_host_history_retains_native_words_with_gpu_replay(tmp_path):
+    from gpuwm.netcdf_bridge import Dataset
+    coords = np.zeros((3, 5), np.float32)
+    spool = NativeDiagnosticSpool(tmp_path, members=2,
+        requests=(FieldProducts('wind10', 'm s-1', (25,)),),
+        latitude=coords, longitude=coords, renderer='rw_wrfbatch', gpu_replay=True)
+    valid = '2026-10-02_00:00:00'
+    for member in range(2):
+        words = np.full((1, 3, 5), member + 0.5, np.float32)
+        complete = spool.submit({'wind10': words}, member_ids=(member,),
+            valid_time=valid, array_module=np)
+        assert complete is (member == 1)
+        with Dataset(spool.frames[valid]['packs'][-1]['path']) as reader:
+            assert np.array_equal(np.asarray(reader.variables['wind10'][:]), words)
+    assert spool.gpu_replay is True
+    assert spool.frames[valid]['members_received'] == [0, 1]
+
+
 def test_headline_table_keeps_production_field_identities_and_units():
     requests, missing = default_product_requests({"refl", "wind10", "temperature2"},
                                                 thresholds={"refl": (40,)})

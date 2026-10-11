@@ -667,6 +667,10 @@ FROZEN_MODULE_DIGESTS = {
         'b5bcc35a129fdf130f0473adc7d4500938d28007815f34c7645990b410343b20',
         '64157bc4a97aed6e4654f34ef2b4f60479be28623c24c45b3db4b8f3b155c1fe'),
     'health': (
+        # The full-state scanner now carries specified-rim geometry. It
+        # changes a strict boundary residual's verdict only, never a model
+        # word. NumPy/native/CUDA corruption twins keep interior floors,
+        # finiteness and ceilings; NCAR default files stay byte-identical.
         # RECOMPUTED at the tilestream port, over the MERGED health.cu that
         # carries both re-pins below.  The pin that arrived with the port
         # was the integration side's alone and described a source that does
@@ -702,8 +706,8 @@ FROZEN_MODULE_DIGESTS = {
         # own proof is tilestream/test_obsfold.py; the whole-gate evidence is
         # that tilestream/test_gate.py passes 233/233 across the change,
         # negative controls included.
-        'c904e487cbf3cf0b6f6bbf6acad56158d2c3392d3c2a8a2e3ec6200d89f0cb03',
-        '5f01ec47943352f0239f690945ec20924a23a70bbba6b5ca2437724871314b0c'),
+        '7a49b886f883cc95453ac30ee4d4ebf30ef347968df5317991fadf141054da9c',
+        'a512b39fd3d468d2fbecdbbabc92a263e403e2fb0e826723ca15dea5e4bff7c7'),
     'kessler': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
@@ -2064,6 +2068,9 @@ SCRATCH_SLOT_REGISTRY_MP8 = {
     'integration_health_partial': (1, 9),
     'integration_health_planes': (1024,),
     'integration_health_result': (8,),
+    # Read-only gate geometry, 12 KiB per domain; physics slots retain
+    # their shapes and lifetime aliases.
+    'integration_health_rim': (1024, 3),
     'integration_health_status_bits': (2048,),
     'integration_health_validation': (4,),
     'moist_pd_q0': (4, 6, 8),
@@ -2124,8 +2131,10 @@ STATE_ARRAY_SHAPES_DIGEST = (
 # baseline and this lane reproduce the new 59-slot layout.  The numerical
 # kernel pins and every other allocation contract are preserved.  Was
 # f00b1b1748fba27988bdedfde16ed05f3559a5e0bbd33cad474d7bef35d41949.
+# Re-pinned for the scanner's 12 KiB geometry slot. Every physics slot
+# and alias retains its previous shape; the scanner never writes state.
 SCRATCH_SLOT_REGISTRY_DIGEST = (
-    'c4f040d8b21dc81d64c9725c8b3e061580b359144f70c705b466ab8a4e4ef4c2')
+    '9cd991b5ed8d3c05232de382ec2ecc3b2ecc42667fe3c53783c858c214345bf8')
 ORACLE_FIXTURE_COUNT = 92
 #: RE-PINNED with the corrected oracle, not with an edit.  The Thompson
 #: oracle lane found that five committed fixtures were the output of a

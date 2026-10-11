@@ -701,6 +701,58 @@ def same_case_data_path(first, second) -> bool:
     return identity(first) == identity(second)
 
 
+def resolve_fetch_out(value, *, base_dir: Path, forcing=()) -> Path:
+    """``[fetch].out`` as a directory, anchored where ``[case_data]`` is.
+
+    A relative ``[fetch].out`` is relative to the configuration's own
+    folder, exactly as ``[case_data].forcing`` is, so a configuration
+    works from any working directory.  D-11 (2.8.8 acceptance): the out
+    key was read against the working directory while forcing was read
+    against the configuration, so an ERA5 configuration written to
+    ``sub/experiment.toml`` ran only from the folder it was written in.
+
+    Configurations written by ``gpuwm domain`` before 2.8.8 carry an out
+    relative to the folder the wizard ran in. Such a file still names
+    its own forcing. If an ancestor of the configuration folder resolves
+    the old out to that declared forcing directory, use that directory.
+    This compatibility reading depends on the configuration and forcing,
+    never on the launch working directory or whether files already exist.
+    """
+
+    path = Path(str(value)).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    anchored = (Path(base_dir) / path).resolve()
+    parents = [Path(entry).resolve().parent for entry in forcing]
+    if parents and not any(same_case_data_path(anchored, parent) for parent in parents):
+        for ancestor in Path(base_dir).resolve().parents:
+            legacy = (ancestor / path).resolve()
+            if all(same_case_data_path(legacy, parent) for parent in parents):
+                return legacy
+    return anchored
+
+
+def config_fetch_out(raw: Mapping, *, base_dir: Path) -> Path | None:
+    """A configuration's ``[fetch].out``, absolute (:func:`resolve_fetch_out`).
+
+    ``None`` when the configuration names no out.  The configuration's
+    own ``[case_data].forcing`` is the evidence a pre-2.8.8 out is read
+    by; forcing that does not resolve is refused by the input gate of
+    whatever reads it next, and only stops serving as evidence here.
+    """
+
+    fetch = raw.get("fetch")
+    if not isinstance(fetch, Mapping) or not fetch.get("out"):
+        return None
+    try:
+        data = optional_case_data_from_tables(
+            dict(raw), source=str(base_dir), base_dir=Path(base_dir))
+    except (OSError, ValueError, TypeError, KeyError):
+        data = None
+    return resolve_fetch_out(fetch["out"], base_dir=Path(base_dir),
+                             forcing=data.forcing if data is not None else ())
+
+
 def _resolve_forcing(base_dir: Path, value, source: str, *,
                      require_match: bool = True) -> tuple[Path, ...]:
     entries = value if isinstance(value, list) else [value]

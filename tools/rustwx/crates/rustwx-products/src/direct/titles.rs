@@ -110,7 +110,7 @@ fn direct_title_for_request(
     planned_product: Option<&str>,
     base_title: &str,
 ) -> String {
-    let mut title = base_title.to_string();
+    let mut title = accumulation_title(base_title, request.accumulation_window);
     if let Some(stat_label) = native_stat_label_for_request(request, planned_product) {
         title = apply_native_stat_title_prefix(request.model, &stat_label, &title);
     }
@@ -143,6 +143,70 @@ fn direct_title_for_request(
         })
         .unwrap_or("d612005");
     static_title_with_suffix(format!("{title} ({dataset})"))
+}
+
+fn accumulation_title(base_title: &str, window: Option<super::types::AccumulationWindow>) -> String {
+    let Some(name) = base_title.strip_suffix(", window total") else { return base_title.into(); };
+    let Some(window) = window else { return base_title.into(); };
+    let (Some(start), Some(end)) = (
+        chrono::DateTime::from_timestamp(window.start_unix, 0),
+        chrono::DateTime::from_timestamp(window.end_unix, 0),
+    ) else { return base_title.into(); };
+    let seconds = window.end_unix - window.start_unix;
+    if seconds < 0 { return base_title.into(); }
+    let stamp = |time: chrono::DateTime<chrono::Utc>| {
+        if time.timestamp().rem_euclid(3600) == 0 {
+            time.format("%a %-d %b %HZ").to_string()
+        } else {
+            time.format("%a %-d %b %H:%M:%SZ").to_string()
+        }
+    };
+    if !window.since_initialization && seconds % 3600 == 0 {
+        format!("{} h {name} ending {}", seconds / 3600, stamp(end))
+    } else {
+        format!("{name} since {}", stamp(start))
+    }
+}
+
+/// Retire the old caller workaround when it repeats the resolved interval.
+/// Other annotations and explicit caller titles keep their exact meaning.
+pub(super) fn product_annotations(request: &DirectBatchRequest, base_title: &str)
+    -> Option<crate::geographic_overlays::PanelAnnotations>
+{
+    let mut annotations = request.panel_annotations.clone()?;
+    if annotations.title.is_none() && base_title.ends_with(", window total") {
+        if let (Some(window), Some(suffix)) = (request.accumulation_window, annotations.title_suffix.as_deref()) {
+            let caption = accumulation_title(", window total", Some(window))
+                .split_whitespace().collect::<Vec<_>>().join(" ");
+            if suffix.trim().trim_start_matches(',').trim() == caption {
+                annotations.title_suffix = None;
+            }
+        }
+    }
+    Some(annotations)
+}
+
+/// Resolve the same exact timestamp spelling accepted by the local importer.
+pub fn local_accumulation_window(origin_unix: i64, end_unix: i64, since: Option<&str>)
+    -> Result<super::types::AccumulationWindow, String>
+{
+    let start_unix = match since {
+        Some(value) => chrono::NaiveDateTime::parse_from_str(&value.replace(':', "_"), "%Y-%m-%d_%H_%M_%S")
+            .map_err(|err| format!("invalid snowfall baseline: {err}"))?.and_utc().timestamp(),
+        None => origin_unix,
+    };
+    Ok(super::types::AccumulationWindow { start_unix, end_unix, since_initialization: since.is_none() })
+}
+
+/// Whole-hour stores carry their physical origin in the run's cycle.
+pub fn local_accumulation_window_from_cycle(date: &str, cycle_utc: u8, hour: u16, since: Option<&str>)
+    -> Result<super::types::AccumulationWindow, String>
+{
+    let origin = chrono::NaiveDate::parse_from_str(date, "%Y%m%d")
+        .map_err(|err| format!("invalid accumulation cycle date: {err}"))?
+        .and_hms_opt(u32::from(cycle_utc), 0, 0).ok_or("invalid accumulation cycle hour")?
+        .and_utc().timestamp();
+    local_accumulation_window(origin, origin + i64::from(hour) * 3600, since)
 }
 
 fn is_local_wrf_netcdf_request(request: &DirectBatchRequest) -> bool {

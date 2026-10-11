@@ -665,14 +665,41 @@ def adapt_experiment_to_terrain(exp, readings: Mapping[int, SlopeReading]):
         caution=lambda sentence: warn(sentence, _WHY))
 
 
-def acoustic_receipt(adaptations) -> dict:
+def acoustic_receipt(adaptations, clock=None) -> dict:
     """The derivation for the run document: every domain read, changed or
     not, because a record that appears only when something changed cannot
-    show that nothing did."""
+    show that nothing did.
 
+    ``clock`` is the terrain clock's adaptations
+    (:func:`gpuwm.terrain_clock.clock_for_domains`), which run after this
+    rule and can raise a domain's count again.  Given, each row's
+    ``time_step_sound`` is the count that runs.  The breakage this
+    prevents: NCAR's CONUS 12 km restart receipt said
+    ``time_step_sound: 4, status: AS_CONFIGURED`` here while the terrain
+    clock section said 6 and ``ADAPTED``, and 6 is what ran.  A row the
+    clock raised keeps this rule's own count as
+    ``slope_rule_time_step_sound`` and says ``set_by: "terrain_clock"``.
+    """
+
+    runs = {}
+    for adaptation in clock or ():
+        runs[int(adaptation.grid_id)] = int(adaptation.time_step_sound)
+    rows = []
+    for adaptation in adaptations:
+        row = adaptation.receipt()
+        count = runs.get(int(adaptation.grid_id))
+        if count is not None and count != int(row["time_step_sound"]):
+            row["slope_rule_time_step_sound"] = int(row["time_step_sound"])
+            row["time_step_sound"] = count
+            row["set_by"] = "terrain_clock"
+            if row.get("adaptive"):
+                row["min_time_step_sound"] = count
+            if row["status"] == "AS_CONFIGURED":
+                row["status"] = "ADAPTED"
+        rows.append(row)
     return {
         "schema": ACOUSTIC_ADAPTATION_SCHEMA,
-        "domains": [adaptation.receipt() for adaptation in adaptations],
+        "domains": rows,
         "measured_map": [
             {"epssm": row[0], "four_substeps_stable_below": row[1],
              "six_substeps_stable_below": row[2]}

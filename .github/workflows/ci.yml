@@ -103,6 +103,21 @@ jobs:
         run: python -m pip install -e ./gpuwm-data -e ".[dev]" numpy==${{ matrix.numpy }}
       - uses: ./.github/actions/build-native
         if: matrix.platform == 'linux'
+      # Every staged table and static asset is pin-checked by rw_fetch (its
+      # hash and asset commands) since 2.8.9, not by Python, and this Windows
+      # leg builds no other natives: without a fetcher fetch-tables refused
+      # every table (exit 2) and stopped the job before Stage 1, and 58
+      # staging cases in six Stage 1 files refused the same way. The leg
+      # builds the fetcher alone, outside the tree, and names it by
+      # GPUWM_RW_FETCH to the staging step and to Stage 1, the way a Windows
+      # install's bridge bundle carries rw_fetch.exe.
+      - name: the table fetcher for the leg that builds no natives
+        if: matrix.platform == 'windows'
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal
+          cd tools/rustwx && rustup run 1.94.0 cargo build --release --locked --offline -p rw-fetch
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/rw-fetch-target
       # Thompson validation checks the declared table pins before preparation.
       # The large freezeH2O table is fetched separately from the companion;
       # this command keeps matching staged files and verifies downloads.
@@ -110,11 +125,13 @@ jobs:
         run: python -m gpuwm.cli fetch-tables
         env:
           GPUWM_NO_LOCAL_GPU: "1"
+          GPUWM_RW_FETCH: ${{ matrix.platform == 'windows' && format('{0}/rw-fetch-target/release/rw_fetch.exe', runner.temp) || '' }}
       # The release Stage 1 list, publication files and CI selection controls
       # run together. Its maintained census guards detect lost file coverage.
       # Linux runs the full list and all Python/native integration. Windows
       # excludes only the annotated native-dependent entries and retains the
-      # publication/CI controls; the separate Windows native Rust job remains.
+      # publication/CI controls, with the table fetcher above as its one
+      # native; the separate Windows native Rust job remains.
       # The extra static marker exclusion is accounted for by the separate
       # static_qualification job, which executes and reports those exact tests.
       - name: the CPU-runnable estate
@@ -126,6 +143,7 @@ jobs:
             --junitxml="$RUNNER_TEMP/stage1.xml" --basetemp="$RUNNER_TEMP/b"
         env:
           GPUWM_NO_LOCAL_GPU: "1"
+          GPUWM_RW_FETCH: ${{ matrix.platform == 'windows' && format('{0}/rw-fetch-target/release/rw_fetch.exe', runner.temp) || '' }}
 
   oracles:
     strategy:

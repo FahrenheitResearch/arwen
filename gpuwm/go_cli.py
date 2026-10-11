@@ -771,12 +771,12 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # `[fetch].out` is deliberately NOT used, and this is not an
     # oversight in either direction.
     #
-    # The wizard writes that key relative to the directory IT was run in
-    # (`_relative_or_absolute(data_dir, Path.cwd())`), not relative to
-    # the config file, so a config emitted from one directory records a
-    # download path that means something else -- or nothing -- read from
-    # another.  A config emitted from a checkout root and read from
-    # /tmp resolved to `C:/AppData/...`, six `..` hops having walked
+    # Configurations written before 2.8.8 carry that key relative to the
+    # directory the wizard was run in, not to the config file (D-11 made
+    # it config-relative), so a config emitted from one directory could
+    # record a download path that means something else -- or nothing --
+    # read from another.  A config emitted from a checkout root and read
+    # from /tmp resolved to `C:/AppData/...`, six `..` hops having walked
     # past the drive root and clamped there.
     #
     # The table declares itself "advisory ... validated, not executed",
@@ -4259,7 +4259,7 @@ def _planner_machine(probe, profile=None):
         name="gpuwm go probe", device_profile=profile)
 
 
-def geography_refusal(geog_root: Path) -> str | None:
+def geography_refusal(geog_root: Path, *, config=None) -> str | None:
     """Why the prepare stage cannot build static fields, or ``None``.
 
     The prepare stage builds every domain's terrain, land use, soil and
@@ -4286,6 +4286,30 @@ def geography_refusal(geog_root: Path) -> str | None:
     install; that is a statement about the INSTALL.  This is a
     statement about a RUN, and the two answers differ accurately.
     """
+
+    if config is not None:
+        from gpuwm.geog_assets import geography_for_run
+        required = geography_for_run(Path(config))["datasets"]
+        # The tree is named once in the platform's own spelling, the way
+        # `gpuwm doctor` names it; each missing index is named inside it
+        # as `<dataset>/index`, the spelling the WPS tree and every pin
+        # use, so a Windows reader and a Linux reader see the same names.
+        missing = [f"{name}/index" for name in required
+                   if not (Path(geog_root) / name / "index").is_file()]
+        if not missing:
+            return None
+        return layered(
+            "the selected static fields require missing geography indexes "
+            f"in {geog_root}: " + ", ".join(missing) + "; preparation cannot "
+            "build those fields.\n"
+            f"  remedy: gpuwm fetch-geog --config {config}\n"
+            f"  # stages only the datasets this configuration reads into {geog_root}\n"
+            "  # gpuwm go CONFIG --geog-root DIR uses a tree staged elsewhere",
+            "Refusing here, before the fetch stage downloads the forcing "
+            "data, rather than in preprocessing after it.\n\n"
+            "`gpuwm doctor` can report the install complete and still exits 0 "
+            "here: it describes the install, while this message describes a "
+            "RUN whose configuration reads datasets the tree lacks.")
 
     from gpuwm.doctor import geography_gaps
 
@@ -4403,8 +4427,113 @@ def static_source_note(payload: dict, geog_root: Path, *, base_dir: Path) -> str
         for row in missing)
 
 
-def _registered_launch(args, *, config: Path, payload: dict) -> int:
-    """Adapt the human command to the existing executable run-plan contract."""
+#: Where a ``gpuwm go`` run folder keeps what its forecast was bound to:
+#: the checkpoints it writes, the prepared bundle and the authority stage's
+#: generated experiment config and WPS namelist (with the receipt naming
+#: the configuration they were generated from).
+_RUN_FOLDER_CHECKPOINTS = "run"
+_RUN_FOLDER_PREPARED = "prepared"
+_RUN_FOLDER_AUTHORITY = "authority"
+
+
+def _checkpoint_run_bindings(args, config: Path) -> Path | None:
+    """The bindings of the run folder that wrote ``--restart``'s checkpoint.
+
+    A ``gpuwm go`` run of a ``gpuwm domain`` configuration writes its
+    checkpoints to ``<run>/run/``, prepares into ``<run>/prepared/`` and
+    binds that bundle to the authority stage's GENERATED experiment config
+    and WPS namelist (``<run>/authority/``), not to the configuration the
+    user launched.  A resume therefore needed three paths out of the run
+    folder (``--prepared-root``, ``--wps-namelist`` and the generated
+    config in place of the user's own), and with the user's own config the
+    restore refused "supplied experiment_config differs from the portable
+    source manifest".  Breakage this closes: ``gpuwm go dom.toml --restart
+    CHECKPOINT`` on a custom domain refused at every spelling a user could
+    reach, so a killed run could only start over.
+
+    When the checkpoint sits in such a run folder and ``config`` is the
+    configuration that folder's authority stage ran (or its generated
+    copy), the missing ``--prepared-root`` and ``--wps-namelist`` are
+    filled from the folder and the generated config is returned for the
+    run plan.  Explicit flags are kept as given.  Anything else returns
+    ``None`` and the run plan's own checks speak, unchanged.
+    """
+
+    import hashlib
+
+    restart = getattr(args, "restart", None)
+    if restart is None:
+        return None
+    checkpoint = Path(restart).resolve()
+    if checkpoint.parent.name != _RUN_FOLDER_CHECKPOINTS:
+        return None
+    folder = checkpoint.parent.parent
+    authority = folder / _RUN_FOLDER_AUTHORITY
+    prepared = folder / _RUN_FOLDER_PREPARED
+    receipt_path = authority / "authority-receipt.json"
+    if not (receipt_path.is_file() and prepared.is_dir()):
+        return None
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        base = receipt["base"]["experiment_config"]
+        generated = receipt["generated"]
+        generated_config = Path(generated["experiment_config"]["path"])
+        generated_wps = Path(generated["wps_namelist"]["path"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    # The receipt was written in place; a moved folder still holds the
+    # same two files beside it.
+    generated_config = authority / generated_config.name
+    generated_wps = authority / generated_wps.name
+
+    def digest(path: Path) -> str | None:
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    if (digest(generated_config) != generated["experiment_config"]["sha256"]
+            or digest(generated_wps) != generated["wps_namelist"]["sha256"]):
+        # Breakage it prevents: resuming against authority files edited
+        # after the run would bind the checkpoint to a configuration it was
+        # not written under.  The restore's manifest check refuses the same
+        # thing; this names the folder.
+        raise GoRefusal(
+            f"--restart {checkpoint.name} was written by the run in {folder}, "
+            f"and that run's {_RUN_FOLDER_AUTHORITY}/ files no longer match "
+            "the digests its authority receipt recorded, so the checkpoint "
+            "cannot be bound to the configuration it was written under. "
+            "Next: start a fresh run.")
+    launched = digest(Path(config))
+    if launched not in {base.get("sha256"),
+                        generated["experiment_config"]["sha256"]}:
+        # Breakage it prevents: a checkpoint resumed under a different
+        # configuration than the one that wrote it.
+        raise GoRefusal(
+            f"--restart {checkpoint.name} was written by the run in {folder}, "
+            f"which ran {base.get('path')} (sha256 {base.get('sha256')}); "
+            f"{config} is not that configuration (sha256 {launched}): it was "
+            "edited since, or it is another one. Next: resume with the "
+            "configuration that wrote the checkpoint, or start a fresh run.")
+    explicit_root = getattr(args, "prepared_root", None)
+    if explicit_root is not None and Path(explicit_root).resolve() != prepared.resolve():
+        return None
+    if explicit_root is None:
+        args.prepared_root = prepared
+    if getattr(args, "wps_namelist", None) is None:
+        args.wps_namelist = generated_wps
+    return generated_config
+
+
+def _registered_launch(args, *, config: Path, payload: dict,
+                       plan_config: Path | None = None) -> int:
+    """Adapt the human command to the existing executable run-plan contract.
+
+    ``plan_config`` is the experiment config the run plan binds when it is
+    not the launched one: a resumed run folder's generated config
+    (:func:`_checkpoint_run_bindings`).  Output placement still follows
+    the launched ``config``.
+    """
     import contextlib
     import hashlib
     import io
@@ -4513,6 +4642,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
         options["data_dir"] = str(Path(args.data_dir).resolve())
     if getattr(args, "devices", None) is not None:
         options["devices"] = args.devices
+    if getattr(args, "tiles", None) is not None and _prepared_launch(args):
+        options["forecast_tiles"] = args.tiles
     for key in ("restart", "prepared_root", "wps_namelist"):
         value = getattr(args, key, None)
         if value is not None:
@@ -4524,7 +4655,7 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
         options["supplement"] = bindings(args.supplement, base=Path.cwd())
     raw = {"schema": runplan.PLAN_SCHEMA, "name": config.stem,
            "route": "experiment" if declared_inputs else "prepared",
-           "config": {"path": str(config.resolve())},
+           "config": {"path": str((plan_config or config).resolve())},
            "output_root": str(output.resolve()), "run_options": options}
     identity = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
     plan = runplan.build_plan(raw, source=f"gpuwm go {config}",
@@ -4534,7 +4665,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     resolution, exp, data = runplan.resolve_plan(plan, require_inputs=False)
     bundle = runplan._existing_prepared_bundle(plan)
     if bundle is None:
-        acquisition = runplan.declared_forcing_fetch(payload, data)
+        acquisition = runplan.declared_forcing_fetch(
+            payload, data, base_dir=config.resolve().parent)
         if acquisition is not None:
             raw["fetch"] = {"args": acquisition}
             identity = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
@@ -4624,7 +4756,7 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                  else Path(args.geog_root) if args.geog_root is not None
                  else default_geog_root())
     if bundle is None:
-        geography = geography_refusal(geog_root)
+        geography = geography_refusal(geog_root, config=config)
         if geography is not None:
             raise GoRefusal(geography)
     else:
@@ -4826,6 +4958,111 @@ def download_depth(fetch_table: dict) -> int | None:
     return _CACHE_FRAME + len(key) + max(len(obj.relpath) for obj in plan.objects)
 
 
+#: ``gpuwm go --tiles``'s choices: :class:`gpuwm.core.streaming.StreamingOptions`
+#: modes.
+TILES_MODES = ("off", "auto", "on")
+
+
+def _prepared_launch(args) -> bool:
+    """A launch that runs an existing prepared bundle (no fetch, no prepare)."""
+
+    return (getattr(args, "prepared_root", None) is not None
+            or getattr(args, "restart", None) is not None)
+
+
+def _at_flag_tiles(args, config: Path, payload: dict) -> tuple[Path, dict]:
+    """The config with ``gpuwm go --tiles`` applied, when the launch prepares.
+
+    A launch that runs an existing prepared bundle takes the mode as the
+    forecast runner's own ``--tiles`` (:func:`_registered_launch` relays it;
+    ``gpuwm.runplan._prepared_launch_tiles``), because that bundle's
+    experiment config is hash-bound and has no [tiles] by design.  A
+    launch that fetches and prepares reads [tiles] from its config, so the
+    config is re-stated under ``<outdir>/tiles/<mode>/`` with its route
+    files (the --cycle mechanism, at the config's own cycle) and the mode
+    written into its [tiles] table; the launch continues on that file.
+    Breakage this closes: the memory refusal's remedy, "[tiles] mode =
+    'auto' (or --tiles auto)", named a flag ``gpuwm go`` did not have.
+    """
+
+    import tomllib
+
+    mode = getattr(args, "tiles", None)
+    if mode is None or _prepared_launch(args):
+        return config, payload
+    if "case_data" in payload:
+        # Breakage it prevents: a [case_data] config cannot be re-stated in
+        # another folder (its forcing paths are its own), so the flag
+        # would be read by nothing.
+        raise GoRefusal(
+            f"--tiles {mode} re-states the config's [tiles] in a copy, and "
+            "this config names its input files in [case_data], which a copy "
+            "cannot carry. Next: set [tiles] mode = "
+            f"'{mode}' in {config} and launch it again.")
+    fetch_table = payload.get("fetch")
+    if not isinstance(fetch_table, dict) or not {"source", "cycle"} <= fetch_table.keys():
+        raise GoRefusal(
+            f"--tiles {mode} re-states a fetching config's [tiles], and "
+            f"{config} has no [fetch] source and cycle. Next: set [tiles] "
+            f"mode = '{mode}' in it, or launch its prepared bundle with "
+            "--prepared-root.")
+    declared = payload.get("tiles")
+    if isinstance(declared, dict) and declared.get("mode") == mode:
+        return config, payload
+    from gpuwm.companion_setups import retime_to_cycle
+    from gpuwm.fetch import parse_cycle
+    from gpuwm.toml_document import emit_experiment_toml
+
+    if getattr(args, "outdir", None) is None:
+        args.outdir = config.parent / f"{config.stem}-go"
+    out = Path(args.outdir) / "tiles" / mode / config.name
+    source = str(fetch_table["source"])
+    try:
+        retime_to_cycle(config, parse_cycle(str(fetch_table["cycle"]), source), out)
+    except ValueError as error:
+        raise GoRefusal(f"--tiles {mode}: {error}") from error
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    # Pinned tilings and store choices ride along under 'on'; 'auto' and
+    # 'off' take the bare mode, which is what the planner decides from.
+    table = dict(raw.get("tiles") or {}) if mode == "on" else {}
+    table["mode"] = mode
+    raw["tiles"] = table
+    text = emit_experiment_toml(raw)
+    if out.read_text(encoding="utf-8") != text:
+        out.write_text(text, encoding="utf-8")
+    print(f"go: --tiles {mode}: {config} re-stated with [tiles] mode = "
+          f"'{mode}', as {out}")
+    args.config = out
+    return out, tomllib.loads(text)
+
+
+#: The execution request a ``--prepare-only`` launch leaves beside the
+#: bundle it prepared: the launch config's [tiles], which the preparation
+#: binds no identity to (``hrrr_configuration.resolve_root_experiment``
+#: drops it) and which the bundle's own hash-bound config cannot carry.
+#: ``gpuwm.runplan._prepared_launch_tiles`` reads it when the forecast leg
+#: names no mode of its own.
+LAUNCH_TILES_NAME = "launch-tiles.json"
+
+
+def _record_launch_tiles(prepared_root: Path, exp, config: Path) -> None:
+    """Carry an enabled launch [tiles] to the prepared bundle's forecast leg."""
+
+    tiles = getattr(exp, "tiles", None)
+    if tiles is None or not tiles.enabled:
+        return
+    document = {"schema": "gpuwm-launch-tiles-v1",
+                "tiles": tiles.to_mapping(),
+                "launch_config": str(Path(config).resolve()),
+                "binds_identity": False}
+    (Path(prepared_root) / LAUNCH_TILES_NAME).write_text(
+        json.dumps(document, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"go: the launch config asks for [tiles] mode = '{tiles.mode}'; "
+          f"recorded beside the prepared bundle ({LAUNCH_TILES_NAME}), so "
+          "`gpuwm go ... --prepared-root` streams its forecast the same way "
+          "(--tiles on that launch overrides it)")
+
+
 def _extend_outdir(args, config: Path, payload: dict) -> None:
     """Hand a deep output folder to the chain in its extended spelling."""
     requested = (Path(args.outdir) if getattr(args, "outdir", None) is not None
@@ -4887,7 +5124,9 @@ def _flag_cycle(args, payload: dict) -> str | None:
                 allow_pending=(data is not None
                                and not getattr(args, "readiness", False)
                                and not getattr(args, "no_probe", False)
-                               and declared_forcing_fetch(payload, data) is not None))
+                               and declared_forcing_fetch(
+                                   payload, data, base_dir=Path(args.config).resolve().parent)
+                               is not None))
         except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
             message = str(error)
             if input_cycle.refusal(value) not in message:
@@ -4970,6 +5209,9 @@ def _readiness_answer(payload: dict, options: dict, pinned: str | None, *,
     from gpuwm.fetch import readiness_for_fetch
 
     hints = pin_request(config_fetch_request(payload), pinned)
+    local = _local_input_readiness(hints)
+    if local is not None:
+        return local
     for key in ("as_posted", "late_after_minutes"):
         if options.get(key) is not None:
             hints[key] = options[key]
@@ -4983,6 +5225,47 @@ def _readiness_answer(payload: dict, options: dict, pinned: str | None, *,
         return readiness_for_fetch(parsed, no_probe=no_probe)
     except ValueError as error:
         raise GoRefusal(f"--readiness: {error}") from error
+
+
+def _local_input_readiness(hints: dict) -> tuple[dict, int] | None:
+    """Local-file sources do not have a gpuwm fetch argument list."""
+    from gpuwm import runplan, source_readiness as readiness
+    from datetime import datetime, timezone
+
+    source = str(hints.get("source") or "")
+    verdict = runplan.drivability_for(source) or {}
+    if not verdict.get("requires_source_root"):
+        return None
+    root = hints.get("source_root")
+    why = (f"{source} requires local input bytes; no acquisition route can obtain them. "
+           "Supply the directory containing the input files with --data-dir DIR "
+           "or [fetch].source_root.")
+    if root is not None:
+        why = (f"Local input source directory {root} does not exist. "
+               "Supply the directory containing the input files with --data-dir DIR "
+               "or [fetch].source_root.") if not Path(root).is_dir() else (
+               f"Local input directory {root} exists, but its required fields and time "
+               "coverage have not been validated. A directory alone cannot prove that "
+               "this forecast has every input. Run gpuwm go CONFIG --data-dir DIR "
+               "--prepare-only, then query its --prepared-root with --readiness.")
+    checked = datetime.now(timezone.utc)
+    document = readiness._refusal_document(
+        source, None, "local-inputs", hints.get("hours"), False, why or "", checked)
+    document["cycle"] = str(hints.get("cycle") or "")
+    return document, readiness.REFUSED_EXIT
+
+
+def _prepared_readiness(args, *, config: Path, payload: dict) -> int:
+    from gpuwm import stage_cli, source_readiness as readiness
+
+    document, code = stage_cli.readiness_for_bundle(Path(args.prepared_root),
+        experiment_config=config, wps_namelist=getattr(args, "wps_namelist", None),
+        physics_profile=getattr(args, "physics_profile", None),
+        restart=getattr(args, "restart", None), devices=getattr(args, "devices", None))
+    readiness.print_document(document)
+    why = document.get("refusal")
+    print(f"go: readiness {document['state']}" + (f" ({why})" if why else ""), file=sys.stderr)
+    return code
 
 
 def _go_readiness(payload: dict, options: dict, pinned: str | None, *,
@@ -5000,6 +5283,38 @@ def _go_readiness(payload: dict, options: dict, pinned: str | None, *,
     return code
 
 
+class SpeedHooks:
+    """Wave-1 seams. All five are inert on SPD-BASE, including with flags.
+
+    Owners replace only their hook bodies. Do not edit the shared parser or
+    main flow. Hook arguments are orchestration objects, never model arrays.
+    """
+
+    @staticmethod
+    def stage_only(args, plan):
+        return None
+
+    @staticmethod
+    def warm_kernels_spawn(args, plan):
+        return None
+
+    @staticmethod
+    def static_cache(args, plan):
+        return None
+
+    @staticmethod
+    def readiness_fold(args, payload):
+        return None
+
+    @staticmethod
+    def live_products_width(args, plan):
+        return None
+
+
+from gpuwm.stage_timing import ledger_main as _ledger_main
+
+
+@_ledger_main
 def go_main(args, *, observer=None) -> int:
     """Launch through the source's existing native preparation chain.
 
@@ -5008,6 +5323,11 @@ def go_main(args, *, observer=None) -> int:
     go's own gate skipped.  It used to stop at go's gate, and the runner
     then refused that envelope again after the fetch and the preparation.
     """
+    # A future stage-only owner can answer before GPU admission. None is
+    # the frozen no-op result; all existing callers take the same route.
+    stage_result = SpeedHooks.stage_only(args, None)
+    if stage_result is not None:
+        return stage_result
     from gpuwm.core.resident_admission import memory_gate_override
     from gpuwm.verification_visuals import verification_scope
     enabled = getattr(args, "verify_visuals", None)
@@ -5321,6 +5641,7 @@ def _go_launch(args, *, observer=None) -> int:
                 else "does not exist")
         raise GoRefusal(f"{config} {what}. Next: gpuwm domain --help")
     payload = tomllib.loads(config.read_text(encoding="utf-8"))
+    SpeedHooks.readiness_fold(args, payload)
     cycle = _flag_cycle(args, payload)
     if getattr(args, "readiness", False) or getattr(args, "no_probe", False):
         # Every route answers the same question here, before any gate or
@@ -5328,6 +5649,11 @@ def _go_launch(args, *, observer=None) -> int:
         # --cycle when it names one (``latest`` is the readiness
         # document's own cycle_basis).
         _posting_options(args)
+        if getattr(args, "prepared_root", None) is not None:
+            return _prepared_readiness(args, config=config, payload=payload)
+        if getattr(args, "data_dir", None) is not None:
+            payload = {**payload, "fetch": {**payload.get("fetch", {}),
+                       "source_root": str(args.data_dir)}}
         if cycle is not None:
             payload = {**payload, "fetch": {**payload["fetch"], "cycle": cycle}}
         fetch_table = payload.get("fetch")
@@ -5346,6 +5672,7 @@ def _go_launch(args, *, observer=None) -> int:
             pinned, no_probe=getattr(args, "no_probe", False))
     if cycle is not None:
         config, payload = _at_flag_cycle(args, config, payload, cycle)
+    config, payload = _at_flag_tiles(args, config, payload)
     _extend_outdir(args, config, payload)
     if getattr(args, "prepare_only", False):
         # Decided before ANY other branch.  The registered run-plan
@@ -5357,10 +5684,12 @@ def _go_launch(args, *, observer=None) -> int:
         # or --prepared-root, because that branch sat above this one.
         return _prepare_only_launch(args, config=config, payload=payload,
                                     observer=observer)
+    resumed_config = _checkpoint_run_bindings(args, config)
     if ("case_data" in payload or getattr(args, "prepared_root", None) is not None
             or getattr(args, "restart", None) is not None
             or getattr(args, "wps_namelist", None) is not None):
-        return _registered_launch(args, config=config, payload=payload)
+        return _registered_launch(args, config=config, payload=payload,
+                                  plan_config=resumed_config)
     fetch = payload.get("fetch")
     source = fetch.get("source") if isinstance(fetch, dict) else None
     if not source:
@@ -5487,8 +5816,9 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
         events = _SaidEvents(output / "preparation-events.jsonl", mirror=None)
         observer = runplan.RunObserver(events)
     operation = runplan._hrrr_chain if chain == "prepared:hrrr" else runplan._staged_chain
+    launch_exp = load_experiment(config)
     try:
-        result = operation(plan, config_path=config, exp=load_experiment(config),
+        result = operation(plan, config_path=config, exp=launch_exp,
                            observer=observer, run_dir=output, prepare_only=True)
     except GoStageFailed as failure:
         # The stage's own words are already on the terminal above; a
@@ -5502,7 +5832,9 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
         raise GoRefusal(str(refused)) from None
     finally:
         if events is not None:
+            observer.close()
             events.close()
+    _record_launch_tiles(Path(result["prepared_root"]), launch_exp, config)
     print(json.dumps({"status": "PREPARED", "prepared_root": result["prepared_root"]}, sort_keys=True))
     return 0
 
@@ -5817,7 +6149,7 @@ def _go_prepared_main(args, *, observer=None) -> int:
         if not _prepare_only_needs_no_card(args):
             _require_forecast_device()
         # Same rule as the memory gate, same side of the download.
-        geography = geography_refusal(geog_root)
+        geography = geography_refusal(geog_root, config=args.config)
         if geography is not None:
             raise GoRefusal(geography)
         # A published static file the config reads ([static] source),
@@ -5857,6 +6189,18 @@ def _go_prepared_main(args, *, observer=None) -> int:
         # And the run folder is CLAIMED here, on the same side of the
         # gates and for the same reason: the plan above only named it.
         claim_run_root(plan)
+        from gpuwm.stage_timing import bind_ledger, LedgerObserver
+        # The launch root owns diagnostics. The forecast subdirectory must
+        # stay empty until the runner takes its existing create-only claim.
+        ledger = bind_ledger(plan["root"])
+        bind_timeline = getattr(observer, "bind_timeline", None)
+        if callable(bind_timeline):
+            bind_timeline(plan["run"], ledger)
+        else:
+            observer = LedgerObserver(observer, ledger, plan["run"])
+        SpeedHooks.warm_kernels_spawn(args, plan)
+        SpeedHooks.static_cache(args, plan)
+        SpeedHooks.live_products_width(args, plan)
         if plan["root"] != predicted_root:
             # The claim landed on a different stamp than the plan named
             # (two chains racing the same second allocate neighbours):
@@ -6260,12 +6604,29 @@ def _checkpoint_sets(text: str) -> int:
 
 
 def register_cli(subparsers) -> None:
+    import argparse
     parser = subparsers.add_parser(
         "go", aliases=["ensemble"],
         help="prepare, run and render a forecast, fetching inputs when needed")
     parser.add_argument("config", type=Path, metavar="CONFIG",
                         help="an experiment TOML from gpuwm domain; its source and "
                              "domain tree choose the preparation route")
+    # Frozen parser slots for the benchmark harness. Each is accepted and
+    # ignored until its owner implements the corresponding SpeedHooks method,
+    # so none is shown in --help: a user flag that does nothing is not a
+    # feature (they arrived with the 2.8.9 speed-lane merges).
+    parser.add_argument("--stage-only", default=None, metavar="STAGE",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--warm-kernels", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--static-cache-root", type=Path, default=None,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--static-cache-key", default=None,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--readiness-fold", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--live-products-width", type=int, default=None,
+                        help=argparse.SUPPRESS)
     from gpuwm.ensemble.door import add_arguments, add_recipe_arguments
     add_arguments(parser)
     add_recipe_arguments(parser)
@@ -6278,10 +6639,21 @@ def register_cli(subparsers) -> None:
         parser, artifacts="forecast files, pictures and diagnostics",
         option="--outdir")
     parser.add_argument("--restart", type=Path, default=None, metavar="CHECKPOINT",
-                        help="continue an existing checkpoint; prepared-cache runs "
-                             "also need --prepared-root, and use fresh output")
+                        help="continue an existing checkpoint into fresh output; a "
+                             "checkpoint gpuwm go wrote resumes from its own run "
+                             "folder's prepared bundle, other prepared-cache "
+                             "checkpoints also need --prepared-root")
     parser.add_argument("--prepare-only", action="store_true",
                         help="fetch and stream prepared inputs without starting a forecast")
+    parser.add_argument("--tiles", choices=TILES_MODES, default=None,
+                        help="[tiles] mode for this launch's forecast: 'auto' "
+                             "streams a domain the card cannot hold through "
+                             "host memory, 'on' always streams, 'off' runs "
+                             "resident. A prepared bundle (--prepared-root, "
+                             "--restart) takes it as an execution control, "
+                             "never into its hash-bound config; a fetching "
+                             "launch runs a copy of the config with the mode "
+                             "re-stated, as --cycle does")
     parser.add_argument("--prepared-root", type=Path, default=None, metavar="DIR",
                         help="run this existing prepared bundle without fetch or "
                              "preparation; add --restart to continue its checkpoint")

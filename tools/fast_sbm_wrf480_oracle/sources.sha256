@@ -1,0 +1,31 @@
+# Pins for the fast SBM oracle harness (tools/fast_sbm_wrf480_oracle).
+# Format: <kind> <sha256> <bytes or -> <path>
+# kind "source": WRF v4.8.0 file, SHA-256 of its LF-normalized content (the
+#   science-refs checkout is CRLF; upstream blobs are LF). Line numbers quoted
+#   anywhere in this harness refer to these files.
+# kind "archive": NCAR SBM_input_33.tgz as served at ARCHIVE_URL.
+# kind "member": the 18 members FAST_HUCMINIT and BREAKINIT_KS open, as
+#   extracted from that archive (all LF text).
+# Source of the pins: fast-sbm-DESIGN.md section 3.1 and appendix A.
+url https://www2.mmm.ucar.edu/wrf/src/wrf_files/SBM_input_33.tgz
+source fd72158202a98d4ad618ebb608eeadffd50852a9875f8bfd9bb8ad63c15f1a2e - phys/module_mp_fast_sbm.F
+source dffddfbbca15b575aa2948482f34ce996896657b2b0809d3e3746c1c5a1bdf40 - phys/module_mp_SBM_polar_radar.F
+archive 25ed63ab3550aed110ae24df229faece20eafedfdf21cde01d8973826a7294bf 1339105 SBM_input_33.tgz
+member 6992497ee5b95f0fd215b762ad4af8611079d1e13dbe3db78687fe04a128abf2 2280 SBM_input_33/BLKD_SDC.dat
+member 33759dbb0e238b37403ce2ad62759cca57c03538d72d34c2cc04bb7b2547c951 3042 SBM_input_33/capacity33.asc
+member f53d3acdaa0a3e2a265272fa22a2a0bd54292f51815149370bbf315e3fa1bee4 3042 SBM_input_33/masses33.asc
+member bf4209175492a3019563671676787afc3befd948fddc6435db58f7a8d7f702e3 3042 SBM_input_33/termvels33_corrected.asc
+member d3d7cf345ebf850fa12376a7f173ea12b169f6413910939682494bcc5874a4fa 3911 SBM_input_33/constants33.asc
+member ce4e140595ff6db2434ecd5376a16c50ea410d03ddc1700bfa95a3490c15106f 43016 SBM_input_33/kernLL_z33.asc
+member 59ce82054f29df7d9f982249b915201f3f0385ae559c5ef2b7cdb1907a46f81a 129047 SBM_input_33/ckli_33_300mb_500mb_750mb.asc
+member f3e8149a7e1bac947706f945a1d2ed0fb81ef2737404a0ef8c8c0c682fb4290f 43016 SBM_input_33/cklg_33_300mb_500mb_750mb.asc
+member a2ffe0b96e4acfcd06dc1a0b10cb28f60601ebe255f8e00a70ce1797705fb50e 43016 SBM_input_33/cklh_33_300mb_500mb_750mb.asc
+member ae282329a306d384bd6de958f1e0bf745c496d286237e8d22c85926081e0456a 43016 SBM_input_33/ckls_33_300mb_500mb_750mb.asc
+member 546777c064e7687bbaaaf30ab417dfc146e2decaabc41b270439e33328a75c7f 387140 SBM_input_33/ckii_33_300mb_500mb_750mb.asc
+member 657428fd7bbc0dcf5e7810bb0e25af42645f6122a4b24313404b805cfcdec44d 129047 SBM_input_33/ckis_33_300mb_500mb_750mb.asc
+member 85b5fd667242ad216dd1b06f0f1c5ddfe15d797ae6c14dcc45e1097743bb37b9 43016 SBM_input_33/cksg_33_300mb_500mb_750mb.asc
+member 1946554a0e1341cd12c9ae6be2cd2c786bfc3e4622b8fe87f2e85fcc64373847 43016 SBM_input_33/ckss_33_300mb_500mb_750mb.asc
+member a5607b3d0b9eb1fcdba30e50b714e348a81aabb64d963b0a00ff4f7b2a24caa6 3042 SBM_input_33/bulkdens33.asc
+member d432d8eed8760f5000c6c86ac1b602687feb0783f558adbf10811fe7040a9de0 3512 SBM_input_33/bulkradii33.asc
+member 0fc78f82cfed4033eab9bcaf3f5d6bf07a4f1bbbbf3aff708ede6a0b2e921e34 107730 SBM_input_33/coeff_p_new_33.dat
+member cbda1e0fb2c604d6c8d61ad0abc22be7b1552be93bf5daed10b5186c4ba07d9e 9396 SBM_input_33/coeff_q_new_33.dat

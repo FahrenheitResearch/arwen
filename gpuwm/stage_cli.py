@@ -1025,6 +1025,75 @@ def sim_command(bundle: dict, *, experiment_config: Path,
 _RUN_ARTIFACTS = ("report.json", "wrfout", "progress.jsonl", "receipts")
 
 
+def preflight_bundle(bundle: dict, *, experiment_config: Path,
+                     wps_namelist: Path | None = None, physics_profile=None,
+                     restart: Path | None = None, devices=None):
+    """The forecast's actual CPU validation, before a query or a launch.
+
+    Compose the shipped command and use its parser to keep digest bindings
+    identical to sim. This performs no output allocation or device contact.
+    """
+    command = sim_command(bundle, experiment_config=experiment_config,
+                          wps_namelist=wps_namelist, physics_profile=physics_profile,
+                          restart=restart, devices=devices,
+                          outdir=Path(bundle["document"]).parent / ".readiness-unused")
+    if bundle["layout"] == "tree":
+        from gpuwm import prepared_domain_tree_forecast as runner
+
+        args = runner.build_parser().parse_args(command[3:])
+        inputs = runner.preflight_prepared_tree(
+            prepared_root=args.prepared_root,
+            preparation_receipt_sha256=args.preparation_receipt_sha256,
+            prepared_head_sha256=args.prepared_head_sha256,
+            experiment_config=args.experiment_config,
+            experiment_config_sha256=args.experiment_config_sha256,
+            physics_profile=args.physics_profile, devices=args.devices)
+    else:
+        from gpuwm import prepared_single_domain_forecast as runner
+
+        args = runner.build_parser().parse_args(command[3:])
+        inputs = runner.preflight_prepared_forecast(
+            source=args.source, prepared_root=args.prepared_root,
+            proof_sha256=args.proof_sha256,
+            source_manifest_sha256=args.source_manifest_sha256,
+            prepared_content_sha256=args.prepared_content_sha256,
+            prepared_head_sha256=args.prepared_head_sha256,
+            experiment_config=args.experiment_config, wps_namelist=args.wps_namelist,
+            physics_profile=args.physics_profile,
+            expert_acknowledgements=tuple(args.ack),
+            run_seconds=args.run_seconds, history_interval_seconds=args.history_interval_seconds,
+            domain_bundle=args.domain_bundle, devices=args.devices)
+    if restart is not None:
+        # The standalone preparation package intentionally carries no
+        # restart/forecast runtime. Keep that dependency on its optional runner.
+        single = runner if bundle["layout"] == "single" else runner.prepared_single
+        single.preflight_restart_algorithms(restart, inputs.experiment.root.run)
+    return inputs
+
+
+def readiness_for_bundle(prepared_root: Path, *, experiment_config: Path,
+                         wps_namelist=None, physics_profile=None, restart=None,
+                         devices=None) -> tuple[dict, int]:
+    from datetime import datetime, timezone
+    from gpuwm import source_readiness as readiness
+
+    source, why = "prepared", None
+    try:
+        bundle = resolve_bundle(Path(prepared_root))
+        source = str(bundle["source"])
+        preflight_bundle(bundle, experiment_config=experiment_config,
+                         wps_namelist=wps_namelist, physics_profile=physics_profile,
+                         restart=restart, devices=devices)
+    except (ValueError, OSError) as refused:
+        why = str(refused)
+    document = readiness._refusal_document(source, None, "prepared-inputs", None,
+                                         False, why or "", datetime.now(timezone.utc))
+    if why is None:
+        document.update(state="ready", ready=True, refusal=None)
+    document["prepared_root"] = str(prepared_root)
+    return document, readiness.REFUSED_EXIT if why else readiness.READY_EXIT
+
+
 def _occupied_by(outdir: Path) -> list[str]:
     """Which run artifacts already sit in ``outdir``."""
 

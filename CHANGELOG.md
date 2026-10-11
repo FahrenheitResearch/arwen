@@ -1,6 +1,56 @@
 # Changelog
 
-## 2.8.8 (2026-10-09)
+## 2.8.9 (2026-10-10)
+
+2.8.8 was not released. Its changes ship in 2.8.9 and are listed under 2.8.8 below.
+
+New:
+- New preset `rrfs-v2-hex-tempo`: NOAA's RRFS v2 configuration with TEMPO microphysics on the MPAS hex dycore (conus12km), with five declared divergences; its 6 h observation scores match NOAA's own run.
+- `gpuwm obs scorecard MANIFEST --out DIR` scores finished runs against observations: `rw_scorecard` pools station residuals across leads within each case, averages FSS across leads and compares two arms by resampling independent case blocks; a missing required metric writes an incomplete scorecard and exits 3. `gpuwm scoreboard --request` runs the Rust nightly scorer (`rw_scoreboard`), which matches the forecast to each station report at the report's own time. Both binaries ship in the bundle, which now carries forty-five Rust executables and libraries; the platform wheel carries forty-two of them, and `gpuwm doctor` checks them. Formats: `docs/obs-scorecard.md`, `docs/scoreboard-nightly.md`.
+- WRF's FAST_SBM spectral bin microphysics (`mp_physics = 30`) runs on the card, bit for bit with WRF's own column calls, warm and cold, on every recorded call. It carries its 142 bin fields through state, transport, restart and data-assimilation positivity, starts from bulk HRRR or RAP moisture through a bulk-to-bin start, and is admitted with legacy RRTMG; RTE+RRTMGP and a mixed-scheme nest edge are refused before step 0 by name. No preset selects it yet; `gpuwm domain --physics-choices` and an imported WRF namelist do.
+- WRF v4.4's Thompson microphysics is selectable as its own generation (`thompson_version = "wrf_44"`, or `--thompson-version wrf_44` on a WRF folder), matching v4.4's Fortran word for word on every recorded column output. A WRF folder whose input or restart says `V4.4` selects it automatically; every other run keeps the v4.6.1 default unchanged.
+- `gpuwm run --benchmark` times a WRF-input run the way WRF's `rsl.out` does: no products and no post-run verification, then one summary of read, init, first step, steps, write, finish and the process total, also written to `benchmark-timing.json`.
+
+Changed:
+- Simulated radar (`gpuwm simulated-radar` and the `[simulated_radar]` table), ML export (`gpuwm ml-export`) and the globe packer are fetched with `gpuwm fetch-bridges` on first use instead of arriving inside the platform wheel. With them the Linux and Windows wheels were over the package index's 100 MB per-file limit and could not be published. Until the command has run, each of those doors stops with a message naming it, and `gpuwm doctor` lists the three as opt-in.
+
+Faster:
+- Cold setup downloads only the geography and tables a configuration uses, through Rust ranged requests checked by SHA-256 while streaming: on a 3 km case, 499 s to 21 s, with the same prepared fields.
+- Ensemble members that share a source run its decode and composition once: preparation took 246 s less for an eight-member San Francisco roster and 801 s less for twenty Los Angeles members, with identical prepared arrays.
+- Ensemble members using legacy RRTMG shortwave pack two per card. They ran one at a time because a second member could read the shared shortwave tables before their upload finished; each member stream now waits for it.
+- Data assimilation downloads its public observations through `rw_fetch` (511 objects in 4.8 s instead of 168 s cold, same bytes) and prepares them concurrently: 40 s less on a 3 km case, 140 s less over CONUS.
+- A streamed model download publishes each file as its last byte range verifies: 16 to 23 s less for a 49-file window, with the same bytes.
+- `rw-globe-pack` and the global statics bake and check tools let the global worker resolve verified baked statics instead of building them: T255 statics in 0.04 s instead of about 2,016 s, every field unchanged.
+- `rw_mpas_mesh` and `rw_mpas_static` can cull to a regional parent, skip unreached geography tiles and overlay parent terrain for hex regional placement; mesh edge stencils derive in parallel with unchanged bytes.
+- A run's first step no longer recompiles the diffusion kernels: they compile through the persistent NVRTC image cache like every other module, with the same source, options and image. On NCAR's CONUS 12 km restart the first step took 22.6 to 37.2 s and now takes 1.3 to 1.9 s; the 1 h restart leg ran 45.2 s and now runs 8.7 to 10.4 s.
+- NetCDF-4 inputs decompress each chunk once and in parallel, and a warm start decodes its restart in batches instead of one process per variable. Each 3D field of NCAR's CONUS 2.5 km restart re-inflated its chunks once per read slab (about 60 s a field, against 1 s in netCDF-C), and the warm start spent 44 minutes in import. Every value read is identical to netCDF-C's.
+- A WRF run's first step no longer waits on the diffusion compile, which runs in the background while the input is read. `GPUWM_KERNEL_PREWARM=0` turns this off.
+
+Fixed:
+- An ensemble with a restart interval runs its members on every selected card. Any `restart_interval_s` above 0, which `gpuwm domain` writes by default, held the whole roster on the first card so a member checkpoint could not seal a diagnostic snapshot that another card was retiring. The roster seal now holds member submissions only while it saves and hashes that snapshot, and repeats a pass in which another member retires a checkpoint it was hashing.
+- Ensemble products run when the output folder is reached through a symlink. Every product hour of such a run was refused as escaping its own output folder, because the worker compared the resolved folder with the unresolved paths it was handed; both sides are now compared resolved, and paths outside the folder and symlinks inside it are still refused.
+- `install.sh` and `install.ps1` bring Rust up to the version the Rust tools need (1.94). A box with an older default Rust stopped partway through the install when cargo refused the radar crates; under rustup the installers now install that version with the same consent as the rustup install and build with it, leaving the default toolchain alone, and without rustup they stop with a remedy naming the version.
+- `CUDA_VISIBLE_DEVICES` naming exactly one card (an index, a GPU UUID or a UUID prefix) selects that card on a multi-GPU node. A run pinned this way was refused with "multiple GPUs are present; --gpu-uuid is required" because the card check read nvidia-smi, which lists every card whatever the mask says. An index on a node with mixed card models and no `CUDA_DEVICE_ORDER=PCI_BUS_ID` is refused with the UUID spelling; `--gpu-uuid` still wins.
+- `gpuwm doctor` reads a card another process has filled as "not judged", not as a broken install: an out-of-memory failure in the cuBLAS, NVRTC or eigensolver probe names the card, prints its nvidia-smi line and a `CUDA_VISIBLE_DEVICES` re-run, and no longer makes `install.sh` exit 1 on a correct install.
+- A warm start compares the restart's radiation, cumulus and boundary-layer cadences (`STEPRA`, `STEPCU`, `STEPBL`) only for schemes this run calls, and compares them before reading any field. NCAR's CONUS 2.5 km benchmark, which runs no cumulus, was refused on `STEPCU` after 44 minutes of reading its 11.6 GB restart; it now starts, and a running scheme on another cadence is refused in seconds.
+- A WRF folder on a fixed step runs the acoustic substep count wrf.exe runs: its `time_step_sound`, or WRF's own rule for 0. NCAR's CONUS 12 km restart ran 6 substeps where WRF ran 4. The terrain clock stays the default where the namelist is adaptive or states `terrain_clock` itself, and a checkpoint written under the terrain clock names the selector that resumes it.
+- A warm start's run line and step totals count only that run's steps, so steps per second read from the log are right; the step records keep WRF's own step numbers.
+- `gpuwm go --readiness` refuses a local source it cannot read with exit 2 and a readable message, and no longer reports an unvalidated local directory as ready. A prepared resume names the right door, a restart mismatch exits 2, and a stale physics proof says to prepare again.
+- `gpuwm render` and `gpuwm enprod` accept the output folder `gpuwm go` prints and refuse an empty one before rendering; ensemble members in a wrapped manifest resolve relative to it. `gpuwm doctor` reports a probe's real timeout and does not read a child interrupt as an import failure.
+- Product titles name the snowfall accumulation window, and panel grids carry the same source label as single maps. Default labels now read WOOF with the running version.
+- A refused `mp_physics` value lists FAST_SBM among the accepted schemes.
+- Local data assimilation uses the surface reports it fetched. Each report is decoded at its own minute inside the fetch window; before, only reports within ten minutes of the analysis time were kept, so a 22:01 report was dropped from a 22:15 analysis and no surface reports were used.
+- Local data assimilation selects analysis fields by the same usable-spread rule the filter applies, retries a withheld crop that loses its covariance on the full validated domain, and refuses a background with non-finite values by name (`NONFINITE_PRIOR`) before the filter runs.
+- Forcing downloads resolve `fetch.out` against the configuration's own folder, legacy exports included, not against the working directory.
+- `gpuwm enprod` names the restore and retention remedies when member histories have been removed.
+- Projected basemaps split coastline and lake rings at the projection seam, so a Mercator map no longer draws bands across the plot.
+- In `wrf_exact` mode the health gate accepts WRF's tiny negative number and particle-volume residuals on the specified boundary rim only, where a strict run stopped at step 4; default runs keep every floor and their output is byte-identical.
+- A multi-run child decides between a recipe ensemble and a single forecast from the configuration captured at launch, not from the file as edited since.
+- The 85 shipped recipes' disk figures count the larger history files and the nine products added to local runs, so the event page's disk check no longer understates what a recipe writes (24.3 GiB stated against 26.4 GiB written on one 8 GB recipe).
+- An HRRR fetch on the Python transport without the Rust backbone names the surface fields it cannot cut and how to build the backbone, instead of pointing at an `--engine rust` flag the user never passed.
+- The tile planner measures its VRAM model from a private memory pool, so memory left in the process by earlier work is not charged to the model.
+
+## 2.8.8 (2026-10-09, not released; shipped in 2.8.9)
 
 New:
 - `gpuwm verify-exact` replays recorded stock WRF runs through WOOF on one card and scores every recorded step word for word: one line per run, `PASS` or the first differing step, field and max ULP, and a nonzero exit on any failure. It reads the combo-sweep recording layout, scores each run against every recorded WRF build (the scalar build, or its Thompson-fixed variant, decides PASS), keeps WOOF's replays for a rescore without a card, and also scores per-scheme column fixtures. Formats: `docs/dev/verify-exact.md`.

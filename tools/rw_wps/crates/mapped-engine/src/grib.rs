@@ -716,6 +716,17 @@ pub fn alias_records(aliases: &[RecordAlias], records: &mut [GribRecord]) {
     }
 }
 
+/// Whether an observed first point is one of the mapping's published
+/// encodings of its declared first point (`mapping.grid.published_first_points`),
+/// both coordinates at the grid check's own 1e-6.
+fn published_first_point(declaration: &GridDeclaration, lat1: f64, lon1: f64) -> bool {
+    let close = |observed: f64, declared: f64| (observed - declared).abs() <= 1e-6;
+    declaration
+        .published_first_points
+        .iter()
+        .any(|&(lat, lon)| close(lat1, lat) && close(lon1, lon))
+}
+
 /// `mapped_source._require_declared_grib2_grid`.
 fn require_declared_grid(
     message: &Grib2Message,
@@ -734,8 +745,12 @@ fn require_declared_grid(
             mismatched.push(format!("{key}: declared {declared}, observed {observed}"));
         }
     };
-    compare_float("lat1", grid.lat1, parameters.lat1);
-    compare_float("lon1", grid.lon1, parameters.lon1);
+    // The first point is one coordinate pair: the declared one, or one of
+    // the mapping's published encodings of it, both halves together.
+    if !published_first_point(declaration, grid.lat1, grid.lon1) {
+        compare_float("lat1", grid.lat1, parameters.lat1);
+        compare_float("lon1", grid.lon1, parameters.lon1);
+    }
     compare_float("dx_m", grid.dx, parameters.dx_m);
     compare_float("dy_m", grid.dy, parameters.dy_m);
     compare_float("latin1", grid.latin1, parameters.latin1);
@@ -1011,6 +1026,30 @@ fn record_from(
 mod tests {
     use super::*;
     use crate::node::Node;
+
+    #[test]
+    fn the_hrrr_mappings_admit_the_hrrrv1_millidegree_corner_and_nothing_else() {
+        // HRRRv1 wrfprs/wrfnat (to 2016-08-23) publish 21.138, 237.28 for
+        // the grid current files publish as 21.138123, 237.280472.
+        for text in [
+            include_str!("../../../../../gpuwm/authorities/rw-wps-hrrr-prs-grib2.mapping.json"),
+            include_str!("../../../../../gpuwm/authorities/rw-wps-hrrr-native-grib2.mapping.json"),
+        ] {
+            let bytes = text.as_bytes().to_vec();
+            let mapping = crate::model::Mapping {
+                sha256: crate::digest::bytes_sha256(&bytes),
+                doc: Node::parse(&bytes).unwrap(),
+                path: "<packaged>".to_owned(),
+            };
+            let declaration = mapping.grid_declaration().unwrap();
+            assert_eq!(declaration.published_first_points, vec![(21.138, 237.28)]);
+            assert!(published_first_point(&declaration, 21.138, 237.28));
+            // Half an encoding is not the encoding.
+            assert!(!published_first_point(&declaration, 21.138, 237.280472));
+            assert!(!published_first_point(&declaration, 21.139, 237.28));
+            assert!(!published_first_point(&declaration, 21.138, 237.281));
+        }
+    }
 
     #[test]
     fn a_grib2_selector_without_a_second_surface_admits_only_the_missing_code() {

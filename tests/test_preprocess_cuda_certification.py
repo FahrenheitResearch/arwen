@@ -115,6 +115,10 @@ def test_every_certified_major_names_the_extra_that_installs_its_cupy():
 def fresh(monkeypatch):
     monkeypatch.setattr(backend_module, "_ANNOUNCED_AUTO_REASONS", set())
     monkeypatch.delenv("GPUWM_NATIVE_DISTRIBUTION_MANIFEST", raising=False)
+    # The CUDA stack here is a stand-in, so this machine allows its card:
+    # since 083ac7cd0 the backend choice honours GPUWM_NO_LOCAL_GPU first,
+    # and the CPU legs set it.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
 
 
 class _FakeNative:

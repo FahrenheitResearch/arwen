@@ -197,7 +197,7 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
         qi = state.qi
         qs = qg = absent_mass_plane(state)
         n_mass = 6
-    elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
+    elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28, 30):
         # mp=28 is numerically IDENTICAL to mp=8 here.  WRF's calc_cq sums
         # the Registry ``moist`` package only, and Registry.EM_COMMON:3036
         # gives aerosol-aware Thompson

@@ -193,7 +193,8 @@ def test_combined_grib_source_declares_real_forcing_and_wps(tmp_path):
     data = raw["case_data"]
     from gpuwm.fetch import era5_combined_name
     # The declared file is the one the declared provider publishes.
-    expected = (Path(raw["fetch"]["out"]).resolve()
+    # [fetch].out is relative to the configuration, as forcing is (D-11).
+    expected = ((out.parent / raw["fetch"]["out"]).resolve()
                 / era5_combined_name(raw["fetch"].get("era5_provider")))
     assert (out.parent / data["forcing"][0]).resolve() == expected
     assert data["forcing_interval_s"] == raw["fetch"]["cadence"]*3600

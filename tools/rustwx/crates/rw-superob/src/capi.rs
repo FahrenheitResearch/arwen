@@ -44,6 +44,14 @@ fn dispatch(request: &[u8], arrays: &Arrays) -> Result<Value> {
         .to_string();
     let parse_error = |error: serde_json::Error| SuperobFailure::request(format!("{op}: {error}"));
     match op.as_str() {
+        "thread_budget" => {
+            let threads = value.get("threads").and_then(Value::as_u64)
+                .filter(|count| (1..=4096).contains(count))
+                .ok_or_else(|| SuperobFailure::request("thread budget must be 1..4096; prevents exhausting native worker resources"))? as usize;
+            let initialized = rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().is_ok();
+            Ok(json!({"ok": true, "threads": rayon::current_num_threads(),
+                      "requested_threads": threads, "initialized": initialized}))
+        }
         "window" => {
             #[derive(serde::Deserialize)]
             struct WindowRequest {
@@ -144,5 +152,18 @@ pub unsafe extern "C" fn gpuwm_superob_call(
 pub unsafe extern "C" fn gpuwm_superob_free(answer: *mut c_char) {
     if !answer.is_null() {
         drop(unsafe { CString::from_raw(answer) });
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn native_budget_initializes_without_exposing_a_buffer() {
+        let arrays = Arrays::new(&[]);
+        let answer = dispatch(br#"{"op":"thread_budget","threads":2}"#, &arrays).unwrap();
+        assert_eq!(answer["requested_threads"], 2);
+        assert!(answer["threads"].as_u64().unwrap() > 0);
+        assert!(dispatch(br#"{"op":"thread_budget","threads":0}"#, &arrays).is_err());
     }
 }

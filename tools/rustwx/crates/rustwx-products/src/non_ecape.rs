@@ -484,6 +484,7 @@ fn prepare_non_ecape_hour(
         Vec::new()
     } else {
         let direct_request = DirectBatchRequest {
+            accumulation_window: None,
             model: request.model,
             date_yyyymmdd: pinned_date,
             cycle_override_utc: pinned_cycle,
@@ -696,6 +697,7 @@ fn prepare_non_ecape_hour(
             None
         } else if let Some(direct_loaded_ref) = direct_loaded.as_ref() {
             let direct_request = DirectBatchRequest {
+                accumulation_window: None,
                 model: request.model,
                 date_yyyymmdd: latest.cycle.date_yyyymmdd.clone(),
                 cycle_override_utc: Some(latest.cycle.hour_utc),
@@ -976,6 +978,7 @@ fn run_prepared_non_ecape_domain(
     let derived_loaded_ref = prepared.derived_loaded.as_deref();
     let direct_request =
         (!prepared.normalized.direct_recipe_slugs.is_empty()).then(|| DirectBatchRequest {
+            accumulation_window: None,
             model: request.model,
             date_yyyymmdd: pinned_date.clone(),
             cycle_override_utc: pinned_cycle,

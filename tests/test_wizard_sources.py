@@ -55,10 +55,39 @@ def _plan_point(source: str) -> tuple[float, float]:
     return _GLOBAL_POINT if centre is None else centre
 
 
+_PLAN_CYCLE = "2026-08-17T00"
+
+
+def _plan_cycle(source: str) -> str:
+    """A cycle inside SOURCE's own published period, from its fetch contract.
+
+    Table-driven like _plan_point.  Since 5ecd0d4a9 a native CF source
+    (20crv3-cf) is fetched from an archive that ends in 2015, and the plan
+    door checks the window against it, so a 2026 cycle is refused there
+    for a reason that is not the one under test.
+    """
+
+    from datetime import datetime, timedelta
+
+    from gpuwm.fetch import native_cf_fetch_contract
+
+    try:
+        contract = native_cf_fetch_contract(source)
+    except (KeyError, ValueError):
+        contract = None
+    if contract is None:
+        return _PLAN_CYCLE
+    from gpuwm.cf_archive_fetch import row
+    end = datetime.fromisoformat(row(get_source_adapter(source).source_id)[
+        "coverage_end"])
+    return f"{(end - timedelta(days=1)):%Y-%m-%dT00}"
+
+
 def _emit(tmp_path: Path, source: str, *extra: str,
           point: tuple[float, float] | None = None,
-          cycle: str = "2026-08-17T00", hours: str = "6",
+          cycle: str | None = None, hours: str = "6",
           extra_card: str = "16gb") -> tuple[int, Path]:
+    cycle = _plan_cycle(source) if cycle is None else cycle
     lat, lon = point if point is not None else _plan_point(source)
     out = tmp_path / f"{source.replace('-', '_')}.toml"
     rc = cli_main([
@@ -208,7 +237,33 @@ def test_fetch_table_is_emitted_exactly_where_the_fetch_door_reaches(
         assert "NO [fetch] TABLE" in text
 
 
-@pytest.mark.parametrize("source", sorted(_sources_with_public_bytes()))
+def _planable_sources_with_public_bytes() -> list[str]:
+    """The fetchable sources the wizard plans.
+
+    86dfe06f0 added a route whose registry row the wizard does not plan
+    (rrfs-ens, explicit_composition_required): a fetch-only source.  Its
+    own cell below asserts the wizard refuses it by name.
+    """
+
+    return sorted(_sources_with_public_bytes() & set(wizard_planable_source_ids()))
+
+
+@pytest.mark.parametrize(
+    "source", sorted(_sources_with_public_bytes() - set(wizard_planable_source_ids())))
+def test_a_fetch_only_source_is_refused_by_the_wizard_naming_its_state(
+        tmp_path, capsys, source):
+    """A route can download what no preparation can start from yet; the
+    wizard says so by the registry row's state instead of writing a
+    configuration nothing could prepare."""
+
+    assert get_source_adapter(source).status is AdapterStatus.COMPOSITION_REQUIRED
+    rc, out = _emit(tmp_path / source, source)
+    err = capsys.readouterr().err
+    assert rc == 2 and not out.exists(), err
+    assert "explicit_composition_required" in err, err
+
+
+@pytest.mark.parametrize("source", _planable_sources_with_public_bytes())
 def test_routed_source_prints_a_runnable_fetch_next_step(
         tmp_path, capsys, source):
     """Automatic routes print go; separate acquisition routes retain fetch."""
@@ -239,7 +294,8 @@ def test_routed_source_prints_a_runnable_fetch_next_step(
     assert config["fetch"]["source"] == source
 
 
-@pytest.mark.parametrize("source", sorted(_ROUTED_SOURCES))
+@pytest.mark.parametrize(
+    "source", sorted(_ROUTED_SOURCES & set(wizard_planable_source_ids())))
 def test_printed_fetch_step_plans_through_the_real_planner(
         tmp_path, capsys, source):
     """Step 1 is RUN, not read: its argv goes through the real planner.
@@ -301,6 +357,11 @@ def _stop_at_remote_acquisition(monkeypatch):
     monkeypatch.setattr(acquisition, "require_published_cycle", remote_boundary)
     monkeypatch.setattr(era5_acquisition, "_client", remote_boundary)
     monkeypatch.setattr(era5_arco, "retrieve_era5_arco", remote_boundary)
+    # The annual CF archives (20crv3-cf, fetchable since 5ecd0d4a9) reach
+    # their publisher through cf_archive_fetch's own transport, not the
+    # cycle-publication probe; without this the cell fetched from PSL.
+    from gpuwm import cf_archive_fetch
+    monkeypatch.setattr(cf_archive_fetch, "_download", remote_boundary)
 
 
 def test_printed_fetch_arguments_include_indented_supplements():
@@ -346,7 +407,8 @@ def test_printed_chain_parses_with_matching_acquisition(
     config = tomllib.loads(out.read_text(encoding="utf-8"))
     fetch = commands["fetch"]
     assert fetch.source == config["fetch"]["source"]
-    assert fetch.out.resolve() == Path(config["fetch"]["out"]).resolve()
+    # [fetch].out is relative to the config, the printed --out to the cwd (D-11).
+    assert fetch.out.resolve() == (out.parent / config["fetch"]["out"]).resolve()
     assert commands["check"].config.resolve() == out.resolve()
     launch = commands.get("go", commands.get("run"))
     assert launch.config.resolve() == out.resolve()
@@ -378,7 +440,7 @@ def test_template_source_retrieves_by_default(tmp_path, capsys, monkeypatch, sou
     # Automatic launches consume the same hints without printing a separate fetch.
     if not commands:
         commands = [["fetch", *_fetch_arguments_from_hints(
-            config["fetch"], out=Path(config["fetch"]["out"]))]]
+            config["fetch"], out=out.parent / config["fetch"]["out"])]]
     for argv in commands:
         assert "--retrieve" in argv
         with pytest.raises(RemoteAcquisitionReached):
@@ -413,7 +475,7 @@ def test_printed_reanalysis_fetch_retrieves_by_default(
     assert calls[0][0] == transport
     config = tomllib.loads(out.read_text(encoding="utf-8"))
     assert config["fetch"]["retrieve"] is True
-    assert calls[0][1]["out"].resolve() == Path(config["fetch"]["out"]).resolve()
+    assert calls[0][1]["out"].resolve() == (out.parent / config["fetch"]["out"]).resolve()
     assert calls[0][1]["hours"] == config["fetch"]["hours"]
     assert calls[0][1]["cadence"] == config["fetch"]["cadence"]
     assert calls[0][1].get("member") == config["fetch"].get("member")

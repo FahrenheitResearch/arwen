@@ -1406,6 +1406,23 @@ ROUTE_FORECAST_TOML_FIELDS: Mapping[str, str] = MappingProxyType({
     "rrtmg_smoke_manifest": (
         "gpuwm/core/rrtmg_smoke_manifest.py, prescribed smoke in the "
         "radiation call"),
+    # The five RRFS v2 switches 809cdc87b added: no WRF namelist key the
+    # importer spells, each read by the forecast from the bound TOML.
+    # Without these entries the round trip compared them against the
+    # importer's defaults, so a TOML on this route that set one was
+    # refused for a value the forecast does read.
+    "rrtmg_aer3_type_source": (
+        "gpuwm/core/rrtmg_legacy.py, the aer_opt=3 shortwave aerosol type"),
+    "bl_mynn_mixaerosols": (
+        "gpuwm/config.py mynn_mixed_number_species (MYNN_QN_MIX_KEYS), the "
+        "aerosol numbers the MYNN solve couples"),
+    "bl_mynn_mixnumcon": (
+        "gpuwm/config.py mynn_mixed_number_species (MYNN_QN_MIX_KEYS), the "
+        "cloud numbers the MYNN solve couples"),
+    "tempo_ml_for_bl_nc": (
+        "gpuwm/core/tempo.py, TEMPO's boundary-layer cloud number"),
+    "tempo_surface_emission_before": (
+        "gpuwm/core/tempo.py, TEMPO's surface emission order"),
     # WRF has no namelist key for it (calc_cq runs whenever water vapor
     # exists), and only the forecast's acoustic and big-step drivers read
     # it.  The importer states the physics_compat answer, True, for every
@@ -1419,6 +1436,49 @@ ROUTE_FORECAST_TOML_FIELDS: Mapping[str, str] = MappingProxyType({
     "moist_cq": (
         "gpuwm/core/acoustic.py prepare_moist_cq, the acoustic and "
         "big-step moisture coefficients"),
+    # THE CHEM OPERATOR'S SWITCHES (gpuwm/config.py CHEM_RUN_FIELDS).  The
+    # importer runs no WRF-Chem: a pair's &chem group is a declared
+    # divergence, dropped whole, so no pair can spell these.  The
+    # forecast's chem step is built from the bound TOML (chem_sets decides
+    # whether it runs at all, and is compared in its own right), and each
+    # switch below is read there.  Before these entries the route compared
+    # them against the importer's defaults, so a TOML that set any of them
+    # on a chem run was refused at emission for a value the forecast does
+    # read.  The three whose only reader is the chem door's validation
+    # (gpuwm/config.py validate_chem_config) are read there: it refuses
+    # dmsemis_opt != 0 and chem_conv_tr != 0 under a cumulus scheme, and
+    # type-checks biomass_burn_opt, which the smoke set's own
+    # fire_emission_mode and plume rise supersede.
+    "aerosol_mp_coupling": (
+        "gpuwm/core/chem_mp_coupling.py, aerosol to aerosol-aware Thompson"),
+    "biomass_burn_opt": (
+        "gpuwm/config.py validate_chem_config, the chem door"),
+    "chem_conv_tr": (
+        "gpuwm/config.py validate_chem_config, the chem door"),
+    "chem_mix2_off": (
+        "gpuwm/core/chem_transport.py, the chem array's horizontal mixing"),
+    "chemdt": "gpuwm/core/chem_driver.py, the chem step cadence",
+    "dmsemis_opt": (
+        "gpuwm/config.py validate_chem_config, the chem door"),
+    "dust_alpha": "gpuwm/core/chem_dust.py, AFWA dust tuning",
+    "dust_gamma": "gpuwm/core/chem_dust.py, AFWA dust tuning",
+    "dust_opt": "gpuwm/core/chem_dust.py, the dust emission scheme",
+    "dust_smtune": "gpuwm/core/chem_dust.py, AFWA dust tuning",
+    "dust_ustune": "gpuwm/core/chem_dust.py, AFWA dust tuning",
+    "fire_emission_mode": (
+        "gpuwm/core/chem_fire.py, fire emission timing"),
+    "kemit": "gpuwm/core/chem_inventory.py, the emission layer count",
+    "mynn_chem_vertmx": (
+        "gpuwm/core/chem_vertmx.py, the chem vertical mixing"),
+    "plume_fire_properties": (
+        "gpuwm/core/chem_plumerise.py, plume-rise fire properties"),
+    "plumerisefire_frq": (
+        "gpuwm/core/chem_plumerise.py, the plume-rise cadence"),
+    "seas_opt": "gpuwm/core/chem_seasalt.py, the sea-salt emission scheme",
+    "vertmix_onoff": (
+        "gpuwm/core/chem_vertmx.py, the chem vertical mixing"),
+    "wetscav_onoff": (
+        "gpuwm/core/chem_wetdep.py, large-scale washout"),
 })
 
 

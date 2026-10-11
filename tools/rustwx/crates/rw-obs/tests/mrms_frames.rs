@@ -108,6 +108,75 @@ fn write_archive(dir: &Path) {
     std::fs::write(dir.join("archive").join("README.txt"), b"not a frame").unwrap();
 }
 
+#[test]
+fn batch_matches_scalar_packs_for_every_truth_product_and_geometry() {
+    let dir = scratch("decode-batch-identity");
+    let bin = env!("CARGO_BIN_EXE_rw_mrms");
+    let products = [
+        ("MergedReflectivityQCComposite_00.50", 10u8, 0u8, 20.0f32),
+        ("PrecipRate_00.00", 6, 1, 2.0),
+        ("RadarQualityIndex_00.00", 8, 0, 0.8),
+    ];
+    let mut jobs: Vec<Vec<String>> = Vec::new();
+    let mut outputs = Vec::new();
+    for (index, (product, category, parameter, value)) in products.iter().enumerate() {
+        let mut raw = composite_grib(&vec![*value; NX * NY]);
+        let mut offset = 16;
+        while offset < raw.len() - 4 {
+            let length = u32::from_be_bytes(raw[offset..offset + 4].try_into().unwrap()) as usize;
+            if raw[offset + 4] == 4 {
+                raw[offset + 9] = *category;
+                raw[offset + 10] = *parameter;
+                if *category != 10 {
+                    raw[offset + 24..offset + 28].copy_from_slice(&0u32.to_be_bytes());
+                }
+                break;
+            }
+            offset += length;
+        }
+        let source = dir.join(format!("MRMS_{product}_20261001-181037.grib2"));
+        std::fs::write(&source, raw).unwrap();
+        let scalar = dir.join(format!("scalar-{index}.obspack"));
+        let batch = dir.join(format!("batch-{index}.obspack"));
+        let mut args = vec!["decode".to_string(), "--product".into(), product.to_string(),
+            "--file".into(), source.display().to_string(), "--out".into(), scalar.display().to_string(),
+            "--fetched-at".into(), "2026-10-08T00:00:00Z".into()];
+        let scalar_run = Command::new(bin).args(&args).output().unwrap();
+        assert!(scalar_run.status.success(), "{}", String::from_utf8_lossy(&scalar_run.stderr));
+        let out_index = args.iter().position(|arg| arg == "--out").unwrap() + 1;
+        args[out_index] = batch.display().to_string();
+        jobs.push(args);
+        outputs.push((scalar, batch));
+        if index == 1 {
+            let scalar_geo = dir.join("scalar.geopack");
+            let batch_geo = dir.join("batch.geopack");
+            let mut args = vec!["grid".into(), "--product".into(), product.to_string(),
+                "--file".into(), source.display().to_string(), "--out".into(), scalar_geo.display().to_string()];
+            assert!(Command::new(bin).args(&args).status().unwrap().success());
+            *args.last_mut().unwrap() = batch_geo.display().to_string();
+            jobs.push(args);
+            outputs.push((scalar_geo, batch_geo));
+        }
+    }
+    let manifest = dir.join("jobs.json");
+    std::fs::write(&manifest, serde_json::to_vec(&jobs).unwrap()).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let run = Command::new(bin).arg("decode-batch").arg("--files").arg(&manifest).output().unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    let receipt: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(receipt["status"], "COMPLETE");
+    for (index, (scalar, batch)) in outputs.iter().enumerate() {
+        assert_eq!(std::fs::read(scalar).unwrap(), std::fs::read(batch).unwrap());
+        assert_eq!(receipt["records"][index]["index"], index);
+    }
+    let mut duplicate = jobs.clone();
+    duplicate.push(jobs[0].clone());
+    std::fs::write(&manifest, serde_json::to_vec(&duplicate).unwrap()).unwrap();
+    let failed = Command::new(bin).arg("decode-batch").arg("--files").arg(&manifest).output().unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("duplicate batch output"));
+}
+
 fn frames(dir: &Path, issue: &str, end: &str, out: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_rw_mrms"))
         .args([

@@ -260,6 +260,22 @@ def test_every_implemented_option_is_selected_by_a_registered_suite() -> None:
             "score yet, so no preset recommends it; a config asks for it "
             "directly (bl_pbl_physics = 9, per domain too) and an imported "
             "WRF namelist carries it",
+        ("microphysics", "tempo"):
+            "TEMPO is asked for by name through the rrfs-v2-hex-tempo model "
+            "preset (gpuwm preset run), an RRFS configuration on the hex "
+            "dycore with declared divergences, not a WRF-side template; a "
+            "config asks for it directly (mp_physics = \"tempo\")",
+        ("cumulus", "tiedtke"):
+            "WRF's original Tiedtke (cu_physics = 6) is checked against an "
+            "independent column oracle but has no forecast or observation "
+            "score yet, so no preset recommends it; a config asks for it "
+            "directly (cu_physics = 6)",
+        ("microphysics", "fast-sbm-mp30"):
+            "WRF's FAST_SBM bin scheme (mp_physics = 30) is graded bit for "
+            "bit against WRF's own column calls but has no forecast or "
+            "observation score yet, so no preset recommends it; `gpuwm "
+            "domain --physics-choices` swaps it into any legacy-RRTMG suite "
+            "and an imported WRF namelist carries it",
     }
 
     missing = sorted(

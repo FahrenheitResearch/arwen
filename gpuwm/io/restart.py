@@ -121,6 +121,7 @@ from gpuwm.checkpoint_identity import (
     unidentifiable_checkpoint_schemes,
 )
 from gpuwm.config import (MIX_ISOTROPIC_RESTART_BREAK_NOTICE,
+                          TERRAIN_CLOCK_PINNED_RESTART_NOTICE,
                           TERRAIN_CLOCK_RESTART_BREAK_NOTICE,
                           radiation_scheme_ids)
 from gpuwm.supervisor import _fsync_directory, fsync_file, unique_temp_path
@@ -442,6 +443,9 @@ def _resolve_physics_asset(relative: Path) -> Path:
 #: ``state_array_shapes`` and the allocation-equals-classification gate in
 #: tests/test_preflight.py names them from here.
 STRICT_LAZY_STATE_ATTRS = frozenset({"p_perturbation"})
+
+from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
+
 STATE_REBUILT_ATTRS = frozenset({
     # GPUWM_WRF_EXACT_DIAGNOSTICS' stored perturbation pressure: written by
     # update_diagnostics with p/al/alt at every step entry, before the
@@ -452,6 +456,7 @@ STATE_REBUILT_ATTRS = frozenset({
     "u0", "v0", "w0", "thp0", "php0", "mup0",
     "qv0", "qc0", "qr0", "qi0", "qs0", "qg0", "nr0", "ni0", "ns0", "ng0",
     "qh0", "qndrop0", "qnr0", "qni0", "qns0", "qng0", "qnh0",
+    "volg0",
     "qnn0", "qvolg0", "qvolh0",
     # mp_physics=9 (Milbrandt-Yau) hail-number RK time-t copy, and
     # mp_physics=16 (WDM6) CCN + droplet-number RK time-t copies.  Written
@@ -485,7 +490,7 @@ STATE_REBUILT_ATTRS = frozenset({
     # so it must retain domain-owned values between acoustic loops.
     "u_pp", "v_pp", "w_pp", "th_pp", "ph_pp", "mu_pp",
     "p_pp", "p_pp_old", "al_pp",
-})
+}) | frozenset(n+"0" for n in _FSBM_BIN_SPECIES)
 
 #: Deterministic setup arrays covered by the header fingerprint.
 #: Setup scalars folded into the fingerprint alongside the arrays.
@@ -496,6 +501,8 @@ STATE_INFRA_ATTRS = frozenset({
     # prognostic. Stage entry rebuilds it; a fresh standalone caller seeds
     # the buffer when the marker is absent. Checkpoints are step-boundary.
     "_wrf_acoustic_muts_initialized",
+    # Spectral backing is serialized through its 142 named field views.
+    "fast_sbm_bins", "fast_sbm_itimestep",
     # Cached launch descriptors are rebuilt from the live state buffers.
     "_rk_copy_launch", "_rk_zero_launch", "_glue_add_launch",
     # Used only by analysis snapshot producers. The published LBC field
@@ -504,6 +511,9 @@ STATE_INFRA_ATTRS = frozenset({
     "_external_scalar_boundary_fields",
     "_scratch", "_scratch_arena", "_phb_host", "_dz_min",
     "_host_setup_state",
+    # Rebuilt from specified/nested and spec_zone on DomainState creation.
+    # It is health descriptor geometry, not integrated model state.
+    "_health_spec_zone",
     # CanonicalStoreState borrows full host carriers and geography instead
     # of owning a resident DomainState. These references and proxy caches
     # hold no independent prognostics: store carriers and setup fingerprints
@@ -741,6 +751,7 @@ RESTART_ONLY_DRIVER_SLOTS = frozenset({
 REBUILT_SCRATCH_SLOTS = frozenset({
     "diff1_theta_work",
     "mp_th", "mp_rho", "mp_pii", "mp_z", "mp_dz8w", "mp_z8w",
+    "mp_tempo_temperature", "mp_tempo_w", "mp_tempo_qb",
     "mp_thompson_temperature",
     "mp_thompson_frozen_reference_density",
     "mp_thompson_frozen_reference_temperature",
@@ -849,6 +860,8 @@ REBUILT_SCRATCH_SLOTS = frozenset({
 })
 
 REBUILT_SCRATCH_PREFIXES = (
+    # Every FAST_SBM workspace is rewritten inside a call. Its spectral state is explicit.
+    "fsbm_",
     "rk_", "adv_", "smag_", "diff_", "diff6_", "acoustic_", "openbc_",
     "moist_", "pd_", "morr_", "wsm6_", "wdm6_", "refl_", "physics_", "lbc_",
     "integration_health_", "nest_",
@@ -1264,6 +1277,7 @@ class RestartManifestError(RuntimeError):
 
 class RestartMismatchError(ValueError):
     """The restart file does not match the resuming configuration/setup."""
+    exit_code = 2
 
 
 def producer_identity() -> dict[str, str]:
@@ -2551,6 +2565,16 @@ def _drop_default_off_run_keys(values: dict) -> None:
         values.pop("surface_energy_diag", None)
     if not values.get("scalar_pblmix", 0):
         values.pop("scalar_pblmix", None)
+    # MYNN-EDMF's split mixing keys (lane rrfs288-gap1): off mixes nothing
+    # beyond what bl_mynn_mixscalars already selects, every earlier header.
+    for key in ("bl_mynn_mixaerosols", "bl_mynn_mixnumcon"):
+        if not values.get(key, 0):
+            values.pop(key, None)
+    # TEMPO's optional coupling arms (lane rrfs-hex-tempo-preset): off is
+    # what every earlier header ran; an enabled arm still binds.
+    for key in ("tempo_ml_for_bl_nc", "tempo_surface_emission_before"):
+        if values.get(key, False) is False:
+            values.pop(key, None)
     # use_rap_aero_icbc: off is the aerosol start every earlier header ran.
     if not values.get("use_rap_aero_icbc", False):
         values.pop("use_rap_aero_icbc", None)
@@ -2578,6 +2602,8 @@ def _drop_default_off_run_keys(values: dict) -> None:
     # The Thompson generation: wrf_461 is what every earlier header ran.
     if values.get("thompson_version", "wrf_461") == "wrf_461":
         values.pop("thompson_version", None)
+    if values.get("thompson_table_dir") is None:
+        values.pop("thompson_table_dir", None)
     if values.get("thompson_fork_snow_fall", "blend") == "blend":
         values.pop("thompson_fork_snow_fall", None)
     # The MYNN generation: wrf_461 is what every earlier header ran.
@@ -2646,6 +2672,9 @@ def _drop_default_off_run_keys(values: dict) -> None:
     # The frozen cloud wrapper every earlier checkpoint ran.
     if values.get("rrtmg_cloud_optics_form", "wrf_461") == "wrf_461":
         values.pop("rrtmg_cloud_optics_form", None)
+    # The rural aer_opt=3 aerosol type every earlier checkpoint ran.
+    if values.get("rrtmg_aer3_type_source", "rural") == "rural":
+        values.pop("rrtmg_aer3_type_source", None)
     # Disabled radiation-driver options retain the trajectory and header
     # identity from before their fields were added.
     for key in ("swint_opt", "aer_opt", "alb_sol"):
@@ -2850,7 +2879,7 @@ def _p3_setup_identity() -> dict:
     }
 
 
-def _thompson_setup_identity() -> dict:
+def _thompson_setup_identity(cfg=None) -> dict:
     """Resolved implementation/table identity for ``mp_physics=8``.
 
     The table root resolves exactly as the forecast adapter resolves it
@@ -2865,6 +2894,10 @@ def _thompson_setup_identity() -> dict:
     equality check rather than silently continuing across the promotion.
     """
     from gpuwm.physics_compat import thompson_table_root
+
+    if cfg is not None and getattr(cfg,"thompson_version","wrf_461") != "wrf_461":
+        from gpuwm.core.thompson_column import table_identity
+        return table_identity(cfg)
 
     root = thompson_table_root()
     try:
@@ -3102,7 +3135,7 @@ def physics_setup_identity(state, cfg) -> dict:
             "cg": float(constants.cg),
         }
     if int(cfg.mp_physics) == 8:
-        microphysics["thompson"] = _thompson_setup_identity()
+        microphysics["thompson"] = _thompson_setup_identity(cfg)
     if int(cfg.mp_physics) == 28:
         microphysics["thompson_aerosol"] = _thompson_aerosol_setup_identity()
     if int(cfg.mp_physics) == 18:
@@ -3865,10 +3898,15 @@ def _restart_payload(path, state, cfg, *, run_trackers=None,
         array_manifest[key] = {"shape": list(host.shape),
                                "dtype": str(host.dtype)}
     config_echo = configuration_echo(cfg)
+    repeat_stamps = None
+    if os.environ.get("GPUWM_BENCH_CHECKPOINT_TOKEN") is not None:
+        from tools.bench.checkpoint_stamps import stamps
+        repeat_stamps = stamps(path, state.elapsed_seconds)
     header = {
         "format_version": RESTART_FORMAT_VERSION,
         "case": cfg.case,
-        "created": datetime.now(timezone.utc).isoformat(),
+        "created": (datetime.now(timezone.utc).isoformat() if repeat_stamps is None
+                    else repeat_stamps[0]),
         # The producer's own identity, so a checkpoint separated from its
         # logs can still say which build wrote it.  ``gpuwm.__version__``
         # comes from installed distribution metadata, so this is the release
@@ -4156,6 +4194,11 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # Earlier checkpoints ran the WRF v4.6.1 cloud wrapper.
             stored = "wrf_461" if stored is absent else stored
             live = "wrf_461" if live is absent else live
+        if key == "rrtmg_aer3_type_source":
+            # Earlier checkpoints ran rural type 1; a flip changes the
+            # shortwave over water and is refused below.
+            stored = "rural" if stored is absent else stored
+            live = "rural" if live is absent else live
         if key == "thompson_version":
             # A header omits the default, which every checkpoint written
             # before the selector ran; a flip between the two generations
@@ -4163,6 +4206,11 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # differently from the same state.
             stored = "wrf_461" if stored is absent else stored
             live = "wrf_461" if live is absent else live
+        if key == "thompson_table_dir":
+            # An unset directory is omitted from the header. Treat its
+            # absence as the same neutral value; explicit paths still bind.
+            stored = None if stored is absent else stored
+            live = None if live is absent else live
         if key == "thompson_fork_snow_fall":
             # Omitted at its default, which every earlier header ran.
             stored = "blend" if stored is absent else stored
@@ -4212,6 +4260,17 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
         if key == "scalar_pblmix":
             # Off is omitted by configuration_echo. Old checkpoints also
             # had no post-PBL scalar diffusion. An enabled value still binds.
+            stored = 0 if stored is absent else stored
+            live = 0 if live is absent else live
+        if key in ("tempo_ml_for_bl_nc", "tempo_surface_emission_before"):
+            # Off is omitted by configuration_echo and is what every older
+            # checkpoint ran; an enabled arm still binds.
+            stored = False if stored is absent else stored
+            live = False if live is absent else live
+        if key in ("bl_mynn_mixaerosols", "bl_mynn_mixnumcon"):
+            # Off is omitted by configuration_echo and is what every older
+            # checkpoint mixed (nothing beyond bl_mynn_mixscalars). An
+            # enabled key still binds.
             stored = 0 if stored is absent else stored
             live = 0 if live is absent else live
         if key == "terrain_clock":
@@ -4362,6 +4421,9 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
         if (stored_config.get("terrain_clock", "measured") == "measured"
                 and live_config.get("terrain_clock") == "local_face"):
             message += "\n" + TERRAIN_CLOCK_RESTART_BREAK_NOTICE
+        if (stored_config.get("terrain_clock", "measured") != "pinned"
+                and live_config.get("terrain_clock") == "pinned"):
+            message += "\n" + TERRAIN_CLOCK_PINNED_RESTART_NOTICE
         raise RestartMismatchError(message)
 
 
@@ -5002,8 +5064,11 @@ def _mix_isotropic_autoswitch_flip(stored, live) -> bool:
     return False
 
 
-def _terrain_clock_default_flip(stored, live) -> bool:
+def _terrain_clock_default_flip(stored, live, *, to="local_face") -> bool:
     """Did any domain go "measured"-in-the-checkpoint to "local_face"-live?
+
+    ``to="pinned"``: did any domain go from either terrain clock in the
+    checkpoint to "pinned" live (the 2.8.9 WRF-folder default, D8)?
 
     Read off the ``experiment_identity`` components exactly as
     :func:`_mix_isotropic_autoswitch_flip` reads them; an absent stored key
@@ -5024,8 +5089,12 @@ def _terrain_clock_default_flip(stored, live) -> bool:
             counterpart = stored_domains.get(domain.get("grid_id"))
             if counterpart is None:
                 continue
-            if (counterpart.get("terrain_clock", "measured") == "measured"
-                    and domain["run"].get("terrain_clock") == "local_face"):
+            stored_clock = counterpart.get("terrain_clock", "measured")
+            live_clock = domain["run"].get("terrain_clock")
+            if to == "pinned":
+                if stored_clock != "pinned" and live_clock == "pinned":
+                    return True
+            elif stored_clock == "measured" and live_clock == "local_face":
                 return True
     except (AttributeError, TypeError):
         return False
@@ -5159,6 +5228,9 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     if ("experiment_identity" in differing
             and _terrain_clock_default_flip(stored, live)):
         reason += "\n" + TERRAIN_CLOCK_RESTART_BREAK_NOTICE
+    if ("experiment_identity" in differing
+            and _terrain_clock_default_flip(stored, live, to="pinned")):
+        reason += "\n" + TERRAIN_CLOCK_PINNED_RESTART_NOTICE
     return reason
 
 
@@ -5975,6 +6047,9 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 path=directory / f"d{int(node.cfg.grid_id):02d}",
                 elapsed=sealed_elapsed)
     checkpoint_set_id = uuid.uuid4().hex
+    if os.environ.get("GPUWM_BENCH_CHECKPOINT_TOKEN") is not None:
+        from tools.bench.checkpoint_stamps import stamps
+        checkpoint_set_id = stamps(directory, (ticks, tick_den, sorted(ids)))[1]
     published: list[Path] = []
     members: list = []
     lenders: list = []

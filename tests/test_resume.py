@@ -209,7 +209,10 @@ def test_cli_resume_resolves_then_dispatches_as_run(tmp_path, monkeypatch,
     tree = _tree(tmp_path, "1974-04-03_15_00_00", "abc123",
                  written_mode={"mode": "resident", "shape": [2, 3]})
     config = tmp_path / "exp.toml"
-    config.write_text("[experiment]\n")  # sniffed as experiment-shaped
+    # Experiment-shaped with its [case_data] table: an experiment TOML
+    # without one is a prepared-route config, which resume refuses toward
+    # `gpuwm go --restart` (tests/test_cli_refusals_289.py D13).
+    config.write_text("[experiment]\n\n[case_data]\n")
 
     seen = {}
 
@@ -952,7 +955,7 @@ def test_cli_resume_loads_the_config_the_run_recorded(tmp_path, monkeypatch,
     install = tmp_path / "install"
     install.mkdir()
     (tmp_path / "captured-config-0001.toml").write_text(
-        "[experiment]\n", encoding="utf-8")
+        "[experiment]\n\n[case_data]\n", encoding="utf-8")
 
     seen = {}
 

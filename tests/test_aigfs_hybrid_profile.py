@@ -70,8 +70,9 @@ def test_the_hybrid_profile_pins_a_fourth_authority_the_donor_mapping():
     observed = hashlib.sha256(path.read_bytes()).hexdigest()
     assert observed == declared[MAPPING_ROLE]["sha256"]
     # A profile with no bindings has no contributing mappings, and says so
-    # as an empty mapping rather than an error.
-    assert packaged_contributing_mappings("hrrr-prs-grib2-v1") == {}
+    # as an empty mapping rather than an error.  (rap-awip32, since
+    # 6a69b356f gave hrrr-prs a vegetation field source binding.)
+    assert packaged_contributing_mappings("rap-awip32-grib2-v1") == {}
 
 
 def test_the_composition_binds_the_donor_by_the_packaged_pin():

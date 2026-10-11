@@ -305,7 +305,10 @@ def _stub_prepared_single_door(monkeypatch, tmp_path, exp, *, intervals,
         file_sha256={"experiment_config": "0" * 64}, physics_receipt=None,
         source=source, cache_reader=reader, stream_head=None,
         prepared_cache_path=tmp_path / "prepared", cache_identity={},
-        static={}, boundary_interval_seconds=3600)
+        static={}, boundary_interval_seconds=3600,
+        # 1ceea7ff6: the door holds any [radar_heating] windows to the
+        # prepared root before a card is taken; this experiment has none.
+        prepared_root=tmp_path / "prepared")
     return psdf, inputs
 
 

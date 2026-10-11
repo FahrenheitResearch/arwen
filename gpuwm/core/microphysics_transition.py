@@ -282,7 +282,7 @@ _DUAL_RIMED_SELECTORS = (9, 18)
 #: scheme-independent, it is held to its two tables by the import-time
 #: check below, and it is how the next scheme with a genuinely missing
 #: closure gets named instead of falling into the generic message.
-UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = ()
+UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (30,)
 
 _DYNAMIC_FIELDS = ("u", "v", "w", "t", "ph", "mu")
 _MASS_FIELDS = {
@@ -342,7 +342,8 @@ _MOMENT_FIELDS = {
 #: Thompson-aerosol, both schemes' nr/ni/nc reusing 6/7/22), which is what
 #: ratification means -- the append discipline this comment describes was
 #: followed and no pre-existing code moved.
-UNVALIDATED_MIXED_EDGE_MOMENTS: dict[int, tuple[str, ...]] = {}
+from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
+UNVALIDATED_MIXED_EDGE_MOMENTS: dict[int, tuple[str, ...]] = {30: _FSBM_BIN_SPECIES}
 
 #: The scheme's own name, and the paragraph that says why ITS closure is
 #: missing.  One row per :data:`UNVALIDATED_MIXED_EDGE_SELECTORS` entry: the
@@ -359,7 +360,7 @@ UNVALIDATED_MIXED_EDGE_MOMENTS: dict[int, tuple[str, ...]] = {}
 #: LATERAL boundary of a domain running that very scheme.  The closures
 #: they asked for are now on :data:`PORTED_MP_PHYSICS`, with the WRF lines
 #: that define them.
-_UNVALIDATED_MIXED_EDGE_REASONS: dict[int, tuple[str, str]] = {}
+_UNVALIDATED_MIXED_EDGE_REASONS: dict[int, tuple[str, str]] = {30: ("FAST_SBM", "142 spectral distributions have no validated cross-scheme entry closure; transferring bulk moisture would not specify their shape") }
 
 # Named schemes (gpuwm.microphysics_schemes) run same-scheme nests; a mixed
 # edge into or out of one has no validated entry closure for its moments

@@ -46,10 +46,10 @@ Two download sources serve byte-identical archives:
   host that can be slow.  NCAR publishes no checksums, so the same pins
   apply; they were computed from a TLS download from UCAR on
   2026-07-29, which is the accurate limit of first-download integrity for
-  this source (see docs/public/DATA.md).  If NCAR republishes an
-  archive the pin mismatch refuses loudly; ``--allow-upstream-drift``
-  accepts the new bytes when the size stays inside a sanity band, and
-  records the archive as unpinned in the local manifest.
+  this source (see docs/public/DATA.md). If NCAR republishes an
+  archive the pin mismatch refuses loudly. The native production route
+  refuses ``--allow-upstream-drift`` because another dataset version
+  would change the prepared fields.
 
 The optional lake-depth and BNU soil archives are available from NCAR only. Source
 availability is declared per archive; a request through the mirror uses
@@ -61,7 +61,9 @@ tarballs and extracts only the requested datasets from it.  The bundle
 exists only on NCAR.  The per-dataset route downloads half as many
 bytes (~1.3 GB) and is the default.
 
-Downloads are resumable (HTTP Range against the recorded partial), a
+Rust retries stalled or interrupted HTTP ranges during a transfer. A new
+process restarts an incomplete object; explicit injected legacy transports
+retain their recorded on-disk resume contract. A
 complete verified archive or an already-valid dataset directory is
 never re-downloaded, and every fetch appends to a local
 ``geog-fetch-manifest.json`` recording url/bytes/sha256 per archive for
@@ -72,7 +74,6 @@ No case is named here; WPS_GEOG is a public static dataset, not a case.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -81,10 +82,12 @@ from pathlib import Path
 import shutil
 import tarfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from gpuwm import fetch_guard
+from gpuwm.timeline.ledger import span
 
 GEOG_FETCH_MANIFEST_SCHEMA = "gpuwm-geog-fetch-manifest-v1"
 GEOG_FETCH_MANIFEST_NAME = "geog-fetch-manifest.json"
@@ -484,11 +487,7 @@ def default_geog_root() -> Path:
 # ---------------------------------------------------------------------------
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(_BLOCK_BYTES):
-            digest.update(block)
-    return digest.hexdigest()
+    return _rw_asset("hash", input=path)["sha256"]
 
 
 def dataset_corpus(root: Path, dataset: str) -> tuple[int, int]:
@@ -696,7 +695,66 @@ def _content_range_start(value: str) -> int | None:
         return None
 
 
+def _rw_asset(kind: str, *, on_progress=None, **options) -> dict:
+    """Drive the existing Rust bridge; no transport or hashing in Python."""
+    from gpuwm.rustwx_fetch import find_fetch_bin, fetch_remedy, _run
+    binary = find_fetch_bin()
+    if binary is None:
+        raise GeogFetchError("rw_fetch is missing; static downloads cannot be "
+                             "verified and published through Rust. " + fetch_remedy())
+    command = [os.fspath(binary), kind]
+    for name, value in options.items():
+        command.extend(["--" + name.replace("_", "-"), str(value)])
+    try:
+        return _run(command, what=kind, on_progress=on_progress)
+    except (RuntimeError, OSError) as error:
+        if "unknown subcommand" in str(error):
+            raise GeogFetchError("the installed rw_fetch predates pinned static assets; "
+                                 "unverified Python fallback would bypass the static pin. "
+                                 + fetch_remedy()) from error
+        raise GeogFetchError(str(error)) from error
+
+
 def download_archive(url: str, dest: Path, *, expected_bytes: int,
+                     progress, label: str, strict_size: bool = True,
+                     urlopen_fn=_default_urlopen,
+                     report_every_bytes: int | None = None,
+                     expected_sha256: str | None = None) -> dict | None:
+    """Default transport: bounded Rust range GETs with an in-stream pin."""
+    # Retain the explicit injected legacy transport for pre-existing callers.
+    # Production callers always supply the hash and use the Rust door.
+    if urlopen_fn is not _default_urlopen:
+        return _download_archive_serial(
+            url, dest, expected_bytes=expected_bytes, progress=progress,
+            label=label, strict_size=strict_size, urlopen_fn=urlopen_fn,
+            report_every_bytes=report_every_bytes)
+    if not strict_size:
+        raise GeogFetchError(f"{label}: --allow-upstream-drift is refused by "
+                             "the pinned static transport; unpinned geography "
+                             "would change the prepared fields under the same dataset version")
+    if expected_sha256 is None:
+        raise GeogFetchError(f"{label}: no SHA-256 pin was supplied; "
+                             "unverified geography would change the prepared run")
+    if dest.exists():
+        try:
+            return _rw_asset("hash", input=dest, bytes=expected_bytes,
+                             sha256=expected_sha256)
+        except GeogFetchError:
+            _quarantine(dest, progress, label)
+    with span("prep.geog.fetch", attrs={"bytes": expected_bytes,
+                                       "datasets": [label]}):
+        try:
+            record = _rw_asset("asset", url=url, output=dest,
+                               bytes=expected_bytes, sha256=expected_sha256,
+                               on_progress=lambda received, total: progress(
+                                   f"fetch-geog {label}: {received:,} of {total or expected_bytes:,} B"))
+        except GeogFetchError as error:
+            raise GeogFetchError(f"{label}: {url}: {error}") from error
+    progress(f"fetch-geog {label}: pin-verified {record['bytes']:,} B through rw_fetch")
+    return record
+
+
+def _download_archive_serial(url: str, dest: Path, *, expected_bytes: int,
                      progress, label: str, strict_size: bool = True,
                      urlopen_fn=_default_urlopen,
                      report_every_bytes: int | None = None) -> None:
@@ -982,6 +1040,31 @@ def _extraction_staging(root: Path) -> Path:
 
 def extract_datasets(archive: Path, root: Path, datasets: tuple[str, ...],
                      *, progress, label: str) -> dict[str, dict]:
+    """Native codec and safe Rust tar reader, then validated atomic rename."""
+    tmp = _extraction_staging(root)
+    with span("prep.geog.unpack", attrs={"bytes": archive.stat().st_size,
+                                        "datasets": list(datasets)}):
+        try:
+            counts = _rw_asset("unpack", input=archive, output=tmp,
+                               datasets=",".join(datasets))
+            for dataset in datasets:
+                ok, detail = validate_dataset_dir(tmp, dataset, check_receipt=False)
+                if not ok:
+                    raise GeogFetchError(f"{label}: {detail}; incomplete tiles must not be published")
+            for dataset in datasets:
+                final = root / dataset
+                if final.exists():
+                    _quarantine(final, progress, label)
+                os.replace(tmp / dataset, final)
+                progress(f"fetch-geog {label}: staged {final} ({counts[dataset]['bytes']:,} B)")
+            return counts
+        finally:
+            if tmp.exists():
+                shutil.rmtree(tmp)
+
+
+def _extract_datasets_serial(archive: Path, root: Path, datasets: tuple[str, ...],
+                     *, progress, label: str) -> dict[str, dict]:
     """Extract ``datasets`` from ``archive`` into ``root``.
 
     Members stream into a temporary directory beside the target; each
@@ -1263,8 +1346,7 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
 
     def run_archive(filename: str, expected_bytes: int,
                     expected_sha256: str, targets: tuple[str, ...],
-                    label: str, actual_source: str = source) -> None:
-        nonlocal staged
+                    label: str, actual_source: str = source):
         url = archive_url(filename, actual_source)
         dest = archive_dir / filename
         if dest.exists() and dest.stat().st_size == expected_bytes \
@@ -1273,30 +1355,43 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
                      "and pin-verified -- reusing")
             observed, pinned = expected_sha256, True
         else:
-            download_archive(url, dest, expected_bytes=expected_bytes,
+            record = download_archive(url, dest, expected_bytes=expected_bytes,
                              progress=progress, label=label,
                              strict_size=not (allow_drift
                                               and actual_source == "ncar"),
-                             urlopen_fn=urlopen_fn)
-            observed, pinned = verify_archive(
+                             urlopen_fn=urlopen_fn,
+                             expected_sha256=expected_sha256)
+            if record is not None:
+                observed, pinned = record["sha256"], True
+            else:
+                observed, pinned = verify_archive(
                 dest, expected_sha256=expected_sha256,
                 expected_bytes=expected_bytes, source=actual_source,
                 allow_drift=allow_drift, progress=progress, label=label)
-        counts = extract_datasets(dest, root, targets,
+        extract = (extract_datasets if urlopen_fn is _default_urlopen
+                   else _extract_datasets_serial)
+        counts = extract(dest, root, targets,
                                   progress=progress, label=label)
-        staged += len(targets)
         # Published NOW, before the verified archive is removed: the
         # receipt is the only record of where these tiles came from, and
         # holding it in memory until every archive finished meant a kill
         # in between lost it with nothing able to rebuild it.
-        publish_archive_entry(root, filename, {
+        entry = {
             "url": url, "source": actual_source,
             "archive_bytes": dest.stat().st_size,
             "archive_sha256": observed, "pinned": pinned,
             "datasets": {target: counts[target] for target in targets},
             "fetched_at": datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"),
-        })
+        }
+        return filename, entry, dest, label, len(targets)
+
+    def publish_finished(result):
+        nonlocal staged
+        filename, entry, dest, label, count = result
+        # The main thread owns the re-entrant root lock. Workers never reacquire it.
+        publish_archive_entry(root, filename, entry)
+        staged += count
         if keep_archives:
             progress(f"fetch-geog {label}: kept archive {dest}")
         else:
@@ -1305,18 +1400,29 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
                      f"{dest.name} (--keep-archives retains it)")
 
     if bundle:
-        run_archive(MANDATORY_BUNDLE_FILENAME, MANDATORY_BUNDLE_BYTES,
-                    MANDATORY_BUNDLE_SHA256, tuple(needed), "bundle")
+        publish_finished(run_archive(MANDATORY_BUNDLE_FILENAME, MANDATORY_BUNDLE_BYTES,
+                    MANDATORY_BUNDLE_SHA256, tuple(needed), "bundle"))
     else:
-        for name in needed:
+        def stage_one(name):
             archive = archive_for(name)
             actual_source = (source if source in archive.available_sources
                              else archive.available_sources[0])
             if actual_source != source:
                 progress(f"fetch-geog {name}: unavailable on {source}; "
                          f"using {actual_source}")
-            run_archive(archive.filename, archive.archive_bytes,
+            return run_archive(archive.filename, archive.archive_bytes,
                         archive.archive_sha256, (name,), name, actual_source)
+        # Four codecs and four bounded network pools. No unbounded CPU fanout.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(stage_one, name) for name in needed]
+            failure = None
+            for future in as_completed(futures):
+                try:
+                    publish_finished(future.result())
+                except Exception as error:
+                    failure = failure or error
+            if failure is not None:
+                raise failure
 
     failures = []
     for name in datasets:
@@ -1333,7 +1439,97 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
     return staged
 
 
+def geography_for_run(config_path: Path) -> dict:
+    """Read the same selectors and grid applicability as the static builder.
+
+    A complete published source supplies the unchanged default legend metadata.
+    Partial sources retain the entire baseline because the builder builds it all.
+    """
+    from gpuwm.case_data import optional_case_data_from_tables
+    from gpuwm.experiment import load_experiment
+    from gpuwm.static.build import GeogSelection, _DEFAULT_GEOG_DIRS, _BASE_STATIC_FIELDS
+    from gpuwm.static.external_source import sampling_window, served_names
+    from gpuwm.static.projection import grids_from_wps_namelist, grids_from_projection_config
+    from gpuwm.static.highres_production import resolve_static_highres
+    from gpuwm.wps_domain_ids import domain_ids_from_wps_text
+    from types import SimpleNamespace
+    import tomllib
+
+    config_path = Path(config_path).resolve()
+    raw = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
+    data = optional_case_data_from_tables(raw, source=str(config_path), base_dir=config_path.parent)
+    fetch = raw.get("fetch", {})
+    carrier = resolve_static_highres(raw, source=str(fetch.get("source") or "configuration"), base_dir=config_path.parent)
+    experiment = load_experiment(config_path)
+    if data is not None:
+        data = SimpleNamespace(geog_root=data.geog_root, wps_namelist=data.wps_namelist,
+                               static_highres=carrier)
+        grids = grids_from_wps_namelist(data.wps_namelist)
+        ids = domain_ids_from_wps_text(Path(data.wps_namelist).read_text(encoding="utf-8-sig"), len(grids))
+    else:
+        # The run door emits default WPS selectors for a declarative experiment.
+        grids = grids_from_projection_config(experiment)
+        ids = [domain.grid_id for domain in experiment.domains]
+    domains = {domain.grid_id: domain for domain in experiment.domains}
+    required, statics = set(), set()
+    for domain_id, grid in zip(ids, grids):
+        if data is not None:
+            selection = GeogSelection.from_case_data(data, domain_id=domain_id)
+        else:
+            from dataclasses import replace
+            from gpuwm.static.external_source import static_source_for
+            selection = replace(GeogSelection.fallback(Path(".")), static_source=static_source_for(carrier))
+        source = selection.static_source
+        served = frozenset()
+        if source is not None and sampling_window(source.row, grid) is not None:
+            served = served_names(source)
+            statics.add(source.row.id)
+        if _BASE_STATIC_FIELDS <= served:
+            from gpuwm.static.geog import DEFAULT_LANDUSE_ATTRS as _DEFAULT_LANDUSE_ATTRS
+            attrs = source.row.attrs_map
+            keys = ("MMINLU", "ISWATER", "ISLAKE", "ISICE", "ISURBAN", "NUM_LAND_CAT")
+            if (selection.landuse != _DEFAULT_GEOG_DIRS["landuse"]
+                    or any(attrs.get(key) != _DEFAULT_LANDUSE_ATTRS[key] for key in keys)):
+                required.add(selection.landuse)
+        else:
+            required.update(getattr(selection, role) for role in _DEFAULT_GEOG_DIRS)
+        cfg = domains[domain_id].run
+        if getattr(cfg, "sf_lake_physics", 0) and "LAKE_DEPTH" not in served:
+            required.add("lake_depth")
+        from gpuwm.static.orographic import required_static_fields, orographic_paths
+        drag = tuple(name for name in required_static_fields(
+            getattr(cfg, "topo_wind", 0), getattr(cfg, "gwd_opt", 0)) if name not in served)
+        if drag:
+            paths = orographic_paths(drag, selection.root, selection.resolution_tokens)
+            required.update(path.relative_to(selection.root).as_posix() for path in paths.values())
+            required.add(selection.landuse)
+    missing = required - set(geog_datasets())
+    if missing:
+        raise GeogFetchError(f"selected datasets {sorted(missing)} have no archive pins; fetching another resolution would change the static fields")
+    datasets = [a.dataset for a in GEOG_ARCHIVES if a.dataset in required]
+    from gpuwm.static.external_source import static_source_row
+    return {"datasets": datasets, "static_sources": sorted(statics),
+            "archive_bytes": sum(archive_for(name).archive_bytes for name in datasets),
+            "static_bytes": sum(static_source_row(name).bytes for name in statics)}
+
+
 def fetch_geog_main(args) -> int:
+    config_path = getattr(args, "config", None)
+    if config_path is not None:
+        plan = geography_for_run(Path(config_path))
+        root = Path(args.root) if args.root is not None else default_geog_root()
+        root.mkdir(parents=True, exist_ok=True)
+        if getattr(args, "list", False):
+            print(json.dumps(plan, indent=2))
+            return 0
+        from gpuwm.static.external_source import fetch_static_source
+        for source_id in plan["static_sources"]:
+            fetch_static_source(source_id, root)
+        fetch_geog(root=root, datasets=tuple(plan["datasets"]),
+                   source=resolve_source(args.source, args.bundle),
+                   bundle=args.bundle, keep_archives=args.keep_archives,
+                   allow_drift=args.allow_upstream_drift)
+        return 0
     static_source = getattr(args, "static_source", None)
     if static_source is not None:
         # A published static file a configuration names with [static]
@@ -1377,6 +1573,9 @@ def register_cli(subparsers) -> None:
              "the packaged pins, resumable, idempotent when everything is "
              "already staged")
     parser.add_argument(
+        "--config", type=Path, default=None, metavar="FILE",
+        help="resolve only the geography this experiment's domains read; includes selected published static sources")
+    parser.add_argument(
         "--root", type=Path, default=None, metavar="DIR",
         help="geog root to stage into (default: "
              "$GPUWM_CASE_DATA_ROOT/WPS_GEOG, exactly what gpuwm doctor "
@@ -1414,9 +1613,9 @@ def register_cli(subparsers) -> None:
              "one after its datasets validate)")
     parser.add_argument(
         "--allow-upstream-drift", action="store_true",
-        help="accept an NCAR archive whose bytes no longer match the "
-             "packaged pin (recorded as unpinned; refused outside a "
-             "sanity size band); never applies to the mirror")
+        help="legacy spelling; refused by the native production route "
+             "because unpinned geography changes prepared fields under "
+             "the same dataset version")
     parser.add_argument(
         "--static-source", default=None, metavar="ID",
         help="stage only the published static file of this static-source "

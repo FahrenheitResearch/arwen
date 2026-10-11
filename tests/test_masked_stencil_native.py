@@ -336,8 +336,13 @@ def test_a_receipt_names_no_entry_its_library_lacks():
     assert live["workers"] == 3
 
 
-def test_the_cuda_backend_takes_host_workers_for_its_host_steps():
+def test_the_cuda_backend_takes_host_workers_for_its_host_steps(monkeypatch):
     from gpuwm.ingest import preprocess_backend
+
+    # The argument check is asked of a machine that allows its card: since
+    # 083ac7cd0 a cuda request meets GPUWM_NO_LOCAL_GPU first, and the CPU
+    # legs set it.  Nothing here constructs a device context.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
 
     backend = preprocess_backend.CudaPreprocessBackend(host_workers=5)
     native, workers = backend.wps_masked_chain_engine()

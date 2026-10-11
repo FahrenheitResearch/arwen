@@ -223,7 +223,7 @@ sha256\tgpuwm-obs.obs-grid.v1\tcomposite_reflectivity\tdBZ\t\
 precipitation_accumulation\tmm\taccumulation_seconds";
 
 const USAGE: &str = "\
-usage: rw_mrms <list|nearest|fetch|decode|grid|verify|frames> [OPTIONS]
+usage: rw_mrms <list|nearest|fetch|decode|decode-batch|grid|verify|frames> [OPTIONS]
        rw_mrms --version | --help | --abi | --list-products
 
   list     report the MRMS objects a window resolves to, moving no payload
@@ -320,11 +320,49 @@ fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
         "nearest" => cmd_nearest(&options),
         "fetch" => cmd_fetch(&options),
         "decode" => cmd_decode(&options),
+        "decode-batch" => cmd_decode_batch(&options),
         "grid" => cmd_grid(&options),
         "verify" => cmd_verify(&options),
         "frames" => cmd_frames(&options),
         other => Err(err(format!("unknown subcommand {other:?}\n\n{USAGE}"))),
     }
+}
+
+// One process, unchanged native decode/grid implementations, stable input order.
+fn cmd_decode_batch(options: &Options) -> Result<String, Box<dyn Error>> {
+    let manifest = options.files.as_ref().ok_or_else(|| err("decode-batch requires --files containing local decode/grid argument arrays"))?;
+    let jobs: Vec<Vec<String>> = serde_json::from_slice(&std::fs::read(manifest)?)?;
+    if jobs.is_empty() {
+        return Err(err("empty MRMS batch would produce no verification truth"));
+    }
+    let mut parsed = Vec::with_capacity(jobs.len());
+    let mut destinations = std::collections::HashSet::new();
+    for job in &jobs {
+        let kind = job.first().ok_or_else(|| err("empty batch job"))?;
+        if kind != "decode" && kind != "grid" {
+            return Err(err("MRMS batch permits only local decode and grid; fetching would escape the frozen input inventory"));
+        }
+        let options = Options::parse(&job[1..])?;
+        let destination = out_pack_path(&options)?;
+        if !destination.is_absolute() || destination.components().any(|part| matches!(part, Component::ParentDir)) {
+            return Err(err("batch outputs must be absolute without parent traversal; duplicate aliases could overwrite truth packs"));
+        }
+        if !destinations.insert(destination) {
+            return Err(err("duplicate batch output would overwrite a truth product"));
+        }
+        parsed.push((kind.as_str(), options));
+    }
+    let mut records = Vec::with_capacity(parsed.len());
+    for (index, (kind, options)) in parsed.into_iter().enumerate() {
+        let started = std::time::Instant::now();
+        let raw = if kind == "decode" { cmd_decode(&options)? } else { cmd_grid(&options)? };
+        let receipt: serde_json::Value = serde_json::from_str(&raw)?;
+        records.push(serde_json::json!({"index": index, "operation": kind,
+            "out": options.out, "native_receipt": receipt,
+            "decode_wall_seconds": started.elapsed().as_secs_f64()}));
+    }
+    Ok(format!("{}\n", serde_json::json!({"schema": "gpuwm-obs.mrms-decode-batch.v1",
+        "status": "COMPLETE", "records": records})))
 }
 
 // ---------------------------------------------------------------- options
@@ -349,6 +387,7 @@ struct Options {
     issue: Option<String>,
     step_minutes: Option<i64>,
     files: Option<PathBuf>,
+    fetched_at: Option<String>,
 }
 
 impl Options {
@@ -369,6 +408,7 @@ impl Options {
                 "--product" => options.product = Some(value()?),
                 "--start" => options.start = Some(value()?),
                 "--end" => options.end = Some(value()?),
+                "--fetched-at" => options.fetched_at = Some(seam_time(parse_time(&value()?)?)),
                 "--valid-time" => options.valid_time = Some(value()?),
                 "--window-seconds" => {
                     let raw = value()?;
@@ -1322,7 +1362,8 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
     let (payload, arrays) = builder.finish();
 
     let mut provenance = serde_json::to_value(Provenance::new(
-        "mrms", options.product()?, rw_obs::absolute_uri(&path), sha256, seam_time(Utc::now()),
+        "mrms", options.product()?, rw_obs::absolute_uri(&path), sha256,
+        options.fetched_at.clone().unwrap_or_else(|| seam_time(Utc::now())),
     ))?;
     provenance["source_units"] = serde_json::json!(field.source_units);
     provenance["canonical_units"] = serde_json::json!(field.units);

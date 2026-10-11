@@ -279,6 +279,56 @@ def test_nvidia_smi_success_still_requires_an_actual_gpu_identity(monkeypatch):
         GPUIdentity("GPU-test", "610.74", "RTX 5090", 0),)
 
 
+_FOUR_CARDS = tuple(GPUIdentity(f"GPU-{i}aaa-card", "615.71", "RTX PRO 6000", i)
+                    for i in range(4))
+
+
+@pytest.mark.parametrize("mask, expected", [
+    ("2", 2), ("GPU-3aaa-card", 3), ("GPU-1aaa", 1), (" 0 ", 0)])
+def test_one_card_cuda_mask_selects_that_card_on_a_multi_gpu_node(
+        monkeypatch, mask, expected):
+    # Named breakage: `CUDA_VISIBLE_DEVICES=<card> gpuwm run` on a 4-card
+    # node was refused with "--gpu-uuid is required", nvidia-smi listing
+    # every card whatever the mask said.
+    monkeypatch.setattr(supervisor, "query_gpus", lambda: _FOUR_CARDS)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
+    assert supervisor.select_gpu() == _FOUR_CARDS[expected]
+
+
+@pytest.mark.parametrize("mask", [None, "", "0,1", "7", "GPU-nope", "MIG-x"])
+def test_multi_gpu_node_without_one_named_card_still_refuses(monkeypatch, mask):
+    monkeypatch.setattr(supervisor, "query_gpus", lambda: _FOUR_CARDS)
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    with pytest.raises(GPUPreflightError) as refused:
+        supervisor.select_gpu()
+    assert "GPU-0aaa-card" in str(refused.value)
+
+
+def test_cuda_ordinal_on_a_mixed_node_needs_bus_order(monkeypatch):
+    mixed = (GPUIdentity("GPU-a", "615.71", "RTX 5090", 0),
+             GPUIdentity("GPU-b", "615.71", "RTX 3080", 1))
+    monkeypatch.setattr(supervisor, "query_gpus", lambda: mixed)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
+    with pytest.raises(GPUPreflightError, match="PCI_BUS_ID"):
+        supervisor.select_gpu()
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    assert supervisor.select_gpu() == mixed[1]
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-b")
+    monkeypatch.delenv("CUDA_DEVICE_ORDER")
+    assert supervisor.select_gpu() == mixed[1]
+
+
+def test_explicit_uuid_wins_over_the_cuda_mask(monkeypatch):
+    monkeypatch.setattr(supervisor, "query_gpus", lambda: _FOUR_CARDS)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
+    assert supervisor.select_gpu("GPU-1aaa-card") == _FOUR_CARDS[1]
+
+
 @pytest.mark.parametrize("output", ["", "Failed to initialize NVML\n"])
 def test_nvidia_smi_zero_exit_with_no_inventory_is_not_success(
         monkeypatch, output):

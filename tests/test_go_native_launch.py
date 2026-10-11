@@ -381,7 +381,7 @@ def allow_launch_resources(monkeypatch):
     monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: SimpleNamespace(status="verified"))
     monkeypatch.setattr(go_cli, "memory_gate", lambda *a, **k: {
         "verdict": "fits", "refuse": False, "warn": False})
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda *a: None)
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda *a, **_: None)
     monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
     monkeypatch.setattr(capabilities, "require_for_command", lambda *a, **k: None)
     monkeypatch.setattr(capabilities, "require", lambda *a, **k: None)
@@ -395,7 +395,7 @@ def test_native_launch_checks_resources_before_fetch(tmp_path, monkeypatch, caps
         monkeypatch.setattr(go_cli, "memory_gate", lambda *a, **k: {
             "verdict": "forecast needs 40 GiB", "refuse": True, "warn": False})
     elif missing == "geography":
-        monkeypatch.setattr(go_cli, "geography_refusal", lambda *a: "Missing geography. Next: gpuwm fetch-geog")
+        monkeypatch.setattr(go_cli, "geography_refusal", lambda *a, **_: "Missing geography. Next: gpuwm fetch-geog")
     else:
         monkeypatch.setattr(go_cli, "render_extra_missing", lambda: "ABI mismatch")
     monkeypatch.setattr(runplan, "execute_plan", lambda *a, **k: pytest.fail("must refuse before executing"))

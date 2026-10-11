@@ -137,8 +137,12 @@ def validate_engine_inputs(engine: Path, data: Path, bundle: Path, revision: str
         prefix = 'gpuwm/libexec/bridges/'
         manifest = json.loads(z.read(prefix + 'BUNDLE.json'))
         pins = json.loads(z.read('gpuwm/data/bridges/bridge-pins.json'))['platforms']['win-x86_64']
-        expected = {a.name: a for a in bridge_assets.BUNDLED_ARTIFACTS}
+        # The wheel carries the declared artifacts less the on-demand ones; the
+        # bundle and its pins carry every one (gpuwm fetch-bridges installs the rest).
+        expected = {a.name: a for a in bridge_assets.wheel_artifacts()}
         rows = manifest['artifacts']
+        if {r['artifact'] for r in pins['binaries']} != {a.name for a in bridge_assets.BUNDLED_ARTIFACTS}:
+            raise ValueError('Engine wheel pins do not name every declared native artifact')
         if manifest['platform'] != 'win-x86_64' or len(rows) != len(expected) or {r['artifact'] for r in rows} != set(expected):
             raise ValueError('Incomplete Windows engine native inventory')
         for row in rows:
@@ -156,7 +160,7 @@ def validate_engine_inputs(engine: Path, data: Path, bundle: Path, revision: str
             raise ValueError('Native/map bundle does not match the exact engine wheel pins')
         with zipfile.ZipFile(bundle) as native:
             assets = pins['assets']
-            expected_names = {r['filename'] for r in rows} | {r['path'] for r in assets}
+            expected_names = {r['filename'] for r in pins['binaries']} | {r['path'] for r in assets}
             if len(native.namelist()) != len(expected_names) or set(native.namelist()) != expected_names:
                 raise ValueError('Native/map bundle member set differs from engine pins')
             for row in rows:

@@ -253,7 +253,10 @@ def edit_schedule(request):
         if interval is not None:
             raw["case_data"]["forcing_interval_s"] = interval
         if hints and hints.get("out"):
-            hints["out"] = str(Path(hints["out"]).expanduser().resolve())
+            # Relative to the original configuration (D-11); the edited
+            # copy sits elsewhere, so it carries that meaning absolute.
+            from gpuwm.case_data import config_fetch_out
+            hints["out"] = str(config_fetch_out(original, base_dir=authority.base_dir))
     elif source is not None:
         if required_seconds is None or required_seconds % 3600:
             raise ValueError("The saved fetch route requires a whole-hour closing boundary")

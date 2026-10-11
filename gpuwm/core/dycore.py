@@ -1622,25 +1622,12 @@ def launch_wrf_smag2d_hd(state: DomainState, cfg: RunConfig, f, xk, tend,
             raise ValueError("v Smagorinsky stress requires deformation")
         _d11, d22, d12 = deformation
         payload = [xk, d22, d12, tend]
-    elif WRF_EXACT or DIFFUSION_ENABLED:
-        payload = [xk, tend]
     else:
-        flux_x = state.scratch((nz, ny, nx + 1), "diff6_x")
-        flux_y = state.scratch((nz, ny + 1, nx), "diff6_y")
-        # One W stress route on every GPU architecture (xnode-identity,
-        # 2026-10-04).  4d3c26f87 sent sm_120 through the stress kernels and
-        # every other target through wrf_smag_w_primitives/_hd_w_cached, a
-        # different operation order, so an RTX 4090 and an RTX 5090 left the
-        # same forecast at step 1's first acoustic stage.  The stress route is
-        # the sm_120 (Blackwell) answer and is now the only ordinary route.
-        stress_grid = ((nx + 1 + _TPB - 1) // _TPB, ny + 1, nz)
-        get_kernel("smag2d", "wrf_smag_w_stress")(
-            stress_grid, (_TPB, 1, 1),
-            tuple(common + [xk, flux_x, flux_y] + tail))
-        get_kernel("smag2d", "wrf_smag_hd_w_stress")(
-            grid, (_TPB, 1, 1),
-            tuple(common + [flux_x, flux_y, tend] + tail))
-        return
+        # W takes wrf_smag_hd_w in every mode.  449e3d697 made
+        # DIFFUSION_ENABLED true whenever WRF_EXACT is off, so the former
+        # wrf_smag_w_stress/wrf_smag_hd_w_stress route could no longer run
+        # and is retired.
+        payload = [xk, tend]
     kernel = (_wrf_smag_scalar_kernel(_WRF_SMAG_HD[stagger], nz, ny, nx)
               if stagger == "" else get_kernel("smag2d", _WRF_SMAG_HD[stagger]))
     kernel(

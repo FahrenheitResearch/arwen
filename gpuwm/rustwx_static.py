@@ -43,7 +43,8 @@ __getattr__ = lazy_build_hints(
 #: written against plus the progress grammar :func:`run_static` parses.
 STATIC_ABI_MARKER = (
     "rw_mpas_static --grid GRID.nc --out STATIC.nc [--geog DIR] "
-    "[--nominal-dx-m M] [--valid-time YYYY-MM-DD_hh:mm:ss] "
+    "[--terrain-only] [--nominal-dx-m M] "
+    "[--valid-time YYYY-MM-DD_hh:mm:ss] "
     "[--receipt JSON] [--clobber] "
     "| --compare REFERENCE.nc CANDIDATE.nc [--report JSON]\n"
     "GRID\tNOMINALDX\tVECTORS\tOPERATORS\tGEOGGRID\tGWDBAND\tWROTE\tFINISHED")

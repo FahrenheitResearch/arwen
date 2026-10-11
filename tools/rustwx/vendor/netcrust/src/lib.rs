@@ -64,6 +64,12 @@ pub enum Error {
     UnprovenRecordAxis { name: String, shape: Vec<u64> },
 }
 
+/// DEFLATE streams (NetCDF-4 zlib chunks) this process has inflated; see
+/// `hdf5_reader::filters::deflate::inflated_streams`.
+pub fn inflated_streams() -> u64 {
+    hdf5_reader::filters::deflate::inflated_streams()
+}
+
 /// Open a NetCDF file.
 pub fn open(path: impl AsRef<Path>) -> Result<File> {
     File::open(path)
@@ -371,6 +377,25 @@ impl File {
                 })?;
                 checked_selection_elements(name, dataset.shape(), selection)?;
                 return self.read_hdf5_dataset_slice(name, selection);
+            }
+            if matches!(self.inner.format(), NcFormat::Nc4 | NcFormat::Nc4Classic) {
+                // One pass over the selection, each overlapping chunk
+                // decompressed once and in parallel.  The row-major slabs
+                // below cut through chunks: NCAR's 2.5 km restart stores
+                // U_2 as 1 x 49 x 600 x 750 zlib chunks (88 MB each,
+                // larger than the 64 MiB chunk cache, so never cached),
+                // and the ~1M-element slabs re-inflated every chunk once
+                // per level per slab, ~60 s for one 3D variable against
+                // ~1 s for netCDF-C.  The slab loop bounds only the
+                // intermediate typed array; the f64 result is the full
+                // selection either way.
+                checked_selection_elements(name, &shape, selection)?;
+                return match self.inner.read_variable_slice_as_f64_parallel(name, selection) {
+                    Ok(array) => Ok(DataArray::from_ndarray(array)),
+                    Err(err) => self
+                        .read_hdf5_dataset_slice(name, selection)
+                        .map_err(|_| err.into()),
+                };
             }
             return match read_in_slabs(name, &shape, selection, |selection| {
                 Ok(self.inner.read_variable_slice_as_f64(name, selection)?)
@@ -984,7 +1009,18 @@ fn read_hdf5_dataset_as_f64(
                 .collect(),
         })
         .unwrap_or_else(|| full_selection(dataset.ndim()));
-    let array = read_in_slabs(dataset.name(), dataset.shape(), &selection, |selection| {
+    // A chunked dataset is read in one pass so each chunk is decompressed
+    // once (see `File::read_array_f64_slice`); other layouts keep the slabs.
+    let chunked = dataset.chunks().is_some();
+    let read_whole = |name: &str, shape: &[u64], selection: &NcSliceInfo, read: &mut dyn FnMut(&NcSliceInfo) -> Result<ArrayD<f64>>| {
+        if chunked {
+            checked_selection_elements(name, shape, selection)?;
+            read(selection)
+        } else {
+            read_in_slabs(name, shape, selection, |slab| read(slab))
+        }
+    };
+    let array = read_whole(dataset.name(), dataset.shape(), &selection, &mut |selection| {
         let selection = hdf5_selection(selection);
         // Integer decoders validate width but not signedness. Select the
         // storage type so every numeric width and sign promotes correctly.
@@ -1019,8 +1055,8 @@ fn read_hdf5_array<T: hdf5_reader::H5Type>(
     selection: Option<&H5SliceInfo>,
 ) -> std::result::Result<ArrayD<T>, hdf5_reader::error::Error> {
     match selection {
-        Some(selection) => dataset.read_slice::<T>(selection),
-        None => dataset.read_array::<T>(),
+        Some(selection) => dataset.read_slice_parallel::<T>(selection),
+        None => dataset.read_array_parallel::<T>(),
     }
 }
 

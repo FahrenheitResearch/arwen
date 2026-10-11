@@ -65,7 +65,7 @@ as ``Δx 3 km``, and plots are labelled with the model that produced
 them (``--source-label``, default :func:`default_source_label`) rather
 than the GDEX fetch source the rust engine's ``wrf`` store identity
 inherits.  That default carries the version of the code that is
-EXECUTING (``ArWen 1.8.7``), which is not the same number as
+EXECUTING (``WOOF 1.8.7``), which is not the same number as
 ``gpuwm.__version__``: see :func:`default_source_label`.
 
 Every derived quantity comes from the mandated ``wrf`` package (pip
@@ -141,7 +141,7 @@ _WRFOUT_DOMAIN = re.compile(r"wrfout_(d\d{2})")
 #:
 #: The BRAND half only.  What actually reaches a plot is
 #: :func:`default_source_label`, which appends the executing version.
-DEFAULT_SOURCE_LABEL = "ArWen"
+DEFAULT_SOURCE_LABEL = "WOOF"
 
 
 
@@ -163,7 +163,7 @@ def _netcdf_read(path):
             yield dataset
 
 def default_source_label() -> str:
-    """``ArWen 1.8.7`` -- the brand plus the version that is EXECUTING.
+    """``WOOF 1.8.7`` -- the brand plus the version that is EXECUTING.
 
     THE product stamp, and the reason it is a function rather than a
     constant.  Both engines put this string on the plot verbatim: the
@@ -187,7 +187,7 @@ def default_source_label() -> str:
 
     An install that genuinely cannot name its version contributes
     nothing rather than the ``0+unknown`` sentinel: a plot is not a
-    diagnostics channel, and a bare ``ArWen`` is the accurate label there.
+    diagnostics channel, and a bare ``WOOF`` is the accurate label there.
     ``gpuwm version`` and the render receipt carry the full story.
     """
 
@@ -3327,7 +3327,7 @@ def _fold_render_inputs(args: argparse.Namespace) -> str | None:
 
     source = getattr(args, "inputs_from", None)
     if source is None:
-        return None
+        return _expand_render_folders(args)
     try:
         record = json.loads(Path(source).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
@@ -3348,6 +3348,17 @@ def _fold_render_inputs(args: argparse.Namespace) -> str | None:
                            *lists["context_wrfout"]]
     args.inputs_from = None
     _respell_invocation(lists)
+    return _expand_render_folders(args)
+
+
+def _expand_render_folders(args) -> str | None:
+    from gpuwm.render_compare import expand_inputs
+
+    try:
+        args.wrfout = expand_inputs(getattr(args, "wrfout", ()) or ())
+        args.context_wrfout = expand_inputs(getattr(args, "context_wrfout", ()) or ())
+    except (OSError, ValueError) as error:
+        return str(error)
     return None
 
 
@@ -3752,7 +3763,7 @@ def register_cli(subparsers) -> None:
              "radiation in W m-2)")
     parser.add_argument(
         "wrfout", type=Path, nargs="*", metavar="WRFOUT",
-        help="wrfout NetCDF file(s) written by gpuwm run")
+        help="wrfout NetCDF files, a wrfout directory, or the output folder printed by gpuwm go")
     parser.add_argument("--grib2-out", type=Path, metavar="DIR",
                         help="also export every input frame as native surface and pressure-level GRIB2")
     parser.add_argument(

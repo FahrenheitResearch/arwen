@@ -34,6 +34,33 @@ from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 # two ceiling with substantial headroom so scheduled physics can add state
 # without invalidating a run after it has already advanced.
 MAX_HEALTH_FIELDS = 1024
+
+#: The ceiling of a FAST_SBM (mp_physics=30) domain.  The scheme transports
+#: 142 spectral fields plus its bulk and number diagnostics, and a nested
+#: child walks every one of them again as its nest boundary tables: a nested
+#: 3 km + 1 km FAST_SBM tree measured 2,889 descriptors (RTX PRO 6000,
+#: 2026-10-09) and stopped at its first health validation against 1024.
+#: Taken ONLY where the state carries the bins, so every other domain keeps
+#: its footprint.  48 B per descriptor: 192 KiB per FAST_SBM domain.
+FSBM_HEALTH_FIELDS = 4096
+
+
+def health_field_ceiling(state: Any) -> int:
+    """The descriptor ceiling of one domain: :data:`FSBM_HEALTH_FIELDS`
+    where the state carries FAST_SBM bins, else :data:`MAX_HEALTH_FIELDS`."""
+    if getattr(state, "fast_sbm_bins", None) is not None:
+        return FSBM_HEALTH_FIELDS
+    return MAX_HEALTH_FIELDS
+
+
+def health_field_ceiling_for_config(cfg: Any) -> int:
+    """The same ceiling from a RunConfig (preflight pricing): FAST_SBM bins
+    are allocated exactly when ``mp_physics == 30``."""
+    if int(getattr(cfg, "mp_physics", 0) or 0) == 30:
+        return FSBM_HEALTH_FIELDS
+    return MAX_HEALTH_FIELDS
+
+
 _INDEX_MASK = (1 << 48) - 1
 
 # Stable status classes.  The individual failing field remains available in
@@ -253,6 +280,11 @@ class FieldRule:
     #: silently loosened gate, which is the thing a reader must be able to
     #: rule out.  Never uploaded to the device: the kernel compares numbers.
     bound_note: str | None = None
+    # Strict transport can copy a signed rounding residual to the outflow
+    # rim before microphysics clamps the interior. Unknown geometry keeps
+    # every floor, and finiteness and ceilings always cover the whole field.
+    allow_lower_rim: bool = False
+    rim_width: int = 0
 
     @property
     def status_bit(self) -> int:
@@ -326,6 +358,9 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
     """
     lower_name = name.lower()
     leaf = _leaf(name)
+    from gpuwm.core.fast_sbm_contract import BIN_SPECIES
+    if leaf in BIN_SPECIES:
+        return FieldRule("moment",0.0,1.e15) if leaf.startswith("ff8") else FieldRule("moisture",0.0,1.0)
     if lower_name.startswith("lbc."):
         return FieldRule("lateral_boundary")
     if lower_name.startswith("nest."):
@@ -426,8 +461,18 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
                 # run: raising it would only have moved where the runaway
                 # was noticed.
                 "nwfa", "nifa"):
+        if WRF_EXACT:
+            return FieldRule(
+                "moment", 0.0, 1.0e15, allow_lower_rim=True,
+                bound_note=("strict mode permits below-zero scalar residuals "
+                            "on the specified rim only"))
         return FieldRule("moment", 0.0, 1.0e15)
     if leaf in ("qvolg", "qvolh"):
+        if WRF_EXACT:
+            return FieldRule(
+                "particle_volume", 0.0, 1.0, allow_lower_rim=True,
+                bound_note=("strict mode permits below-zero scalar residuals "
+                            "on the specified rim only"))
         return FieldRule("particle_volume", 0.0, 1.0)
     if leaf.startswith("chem_"):
         # A chem species (ug kg-1 or ppmv of dry air).  Non-negative, as
@@ -581,6 +626,11 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
                     p_top=p_top))
         else:
             result.append(field_from_array(name, value, p_top=p_top))
+    if getattr(state,"fast_sbm_bins",None) is not None:
+        from gpuwm.core.fast_sbm_contract import BIN_SPECIES
+        for name in BIN_SPECIES:
+            value=getattr(state,name)
+            result.append(field_from_array(name,value,p_top=p_top))
     # Chem species fields and float32 process arrays, named by the chem
     # table; absent on a chem-off state, so every other census is unchanged.
     # The float64 ledger vectors are sums of these fields and carry no
@@ -687,11 +737,17 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
         for name, value in sorted(extra_tables.items()):
             result.extend(_walk_arrays(value, f"nest.{name}"))
 
-    if len(result) > MAX_HEALTH_FIELDS:
+    ceiling = health_field_ceiling(state)
+    if len(result) > ceiling:
+        name = ("FSBM_HEALTH_FIELDS" if ceiling == FSBM_HEALTH_FIELDS
+                else "MAX_HEALTH_FIELDS")
         raise ValueError(
             f"health field inventory has {len(result)} descriptors; "
-            f"MAX_HEALTH_FIELDS={MAX_HEALTH_FIELDS} must be raised explicitly")
-    return tuple(result)
+            f"{name}={ceiling} must be raised explicitly")
+    width = max(0, int(getattr(state, "_health_spec_zone", 0)))
+    return tuple(dataclasses.replace(
+        field, rule=dataclasses.replace(field.rule, rim_width=width))
+        if field.rule.allow_lower_rim else field for field in result)
 
 
 def _cpu_values(field: HealthField) -> np.ndarray:
@@ -717,19 +773,36 @@ def _cpu_values(field: HealthField) -> np.ndarray:
 def _bad_mask(values: np.ndarray, rule: FieldRule) -> np.ndarray:
     bad = ~np.isfinite(values)
     if rule.lower is not None:
-        bad |= values <= rule.lower if rule.strict_lower else values < rule.lower
+        low = values <= rule.lower if rule.strict_lower else values < rule.lower
+        if rule.allow_lower_rim and rule.rim_width > 0 and values.ndim >= 2:
+            width = rule.rim_width
+            low[..., :width, :] = False
+            low[..., -width:, :] = False
+            low[..., :, :width] = False
+            low[..., :, -width:] = False
+        bad |= low
     if rule.upper is not None:
         bad |= values > rule.upper
     return bad
 
 
-def _reason(value: float, rule: FieldRule) -> str:
+def _reason(value: float, rule: FieldRule, *, shape=(), flat=0) -> str:
     if not math.isfinite(value):
         return f"non-finite value {value!r}"
     if rule.lower is not None and (
             value <= rule.lower if rule.strict_lower else value < rule.lower):
         op = ">" if rule.strict_lower else ">="
-        return f"value {value!r} violates lower bound {op} {rule.lower!r}"
+        reason = f"value {value!r} violates lower bound {op} {rule.lower!r}"
+        if rule.allow_lower_rim:
+            if len(shape) >= 2:
+                ny, nx = shape[-2:]
+                j, i = (flat // nx) % ny, flat % nx
+                distance = min(i, j, nx - 1 - i, ny - 1 - j)
+                reason += f" at (i, j)=({i}, {j}), edge distance {distance}"
+            reason += ("; interior negatives are not WRF behaviour and point "
+                       "to a transport or microphysics defect; below-zero "
+                       "residuals are permitted on the specified rim only")
+        return reason
     if rule.upper is not None and value > rule.upper:
         reason = f"value {value!r} exceeds upper bound {rule.upper!r}"
         return reason if rule.bound_note is None else (
@@ -762,7 +835,7 @@ def _validate_fields_numpy(fields: Mapping[str, Any] | Sequence[HealthField],
     return ValidationReport(
         False, status, field.name,
         tuple(int(i) for i in np.unravel_index(flat, values.shape)),
-        flat, value, _reason(value, field.rule), phase)
+        flat, value, _reason(value, field.rule, shape=values.shape, flat=flat), phase)
 
 
 class _HostHealthDescriptor(ctypes.Structure):
@@ -782,14 +855,29 @@ class _HostHealthResult(ctypes.Structure):
 def _native_health_entry():
     from gpuwm.core import portable_math
     try:
-        entry = getattr(portable_math._load(), "gpuwm_validate_health_fields", None)
+        library = portable_math._load()
+        entry = getattr(library, "gpuwm_validate_health_fields_rim", None)
+        supports_rim = entry is not None
+        if entry is None:
+            entry = getattr(library, "gpuwm_validate_health_fields", None)
     except (OSError, RuntimeError, FileNotFoundError):
         return None
     if entry is not None:
         entry.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
                           ctypes.POINTER(_HostHealthResult)]
+        entry.supports_rim = supports_rim
+        if supports_rim:
+            entry.argtypes += [ctypes.c_void_p]
         entry.restype = ctypes.c_int32
     return entry
+
+
+def _rim_geometry(field: HealthField) -> tuple[int, int, int]:
+    shape = field.values.shape
+    if (not field.rule.allow_lower_rim or field.rule.rim_width <= 0
+            or len(shape) < 2 or not all(shape[-2:])):
+        return 0, 0, 0
+    return int(shape[-2]), int(shape[-1]), field.rule.rim_width
 
 
 def _native_health_descriptor(field):
@@ -859,6 +947,11 @@ def validate_fields_cpu(fields: Mapping[str, Any] | Sequence[HealthField],
         return _validate_fields_numpy(fields, phase=phase)
     descriptors = (tuple(field_from_array(name, value) for name, value in fields.items())
                    if isinstance(fields, Mapping) else tuple(fields))
+    if (not getattr(entry, "supports_rim", False)
+            and any(_rim_geometry(field)[2] for field in descriptors)):
+        # An older ABI cannot represent the allowance. The NumPy path
+        # retains the floor and applies the same known domain geometry.
+        return _validate_fields_numpy(descriptors, phase=phase)
     native, indices, keepalive, fallback = [], [], [], []
     for index, field in enumerate(descriptors):
         prepared = _native_health_descriptor(field)
@@ -880,7 +973,12 @@ def validate_fields_cpu(fields: Mapping[str, Any] | Sequence[HealthField],
         from gpuwm.core import portable_math
         jobs = (_HostHealthDescriptor * len(native))(*native)
         result = _HostHealthResult()
-        code = int(entry(jobs, len(native), portable_math._workers(None), ctypes.byref(result)))
+        args = [jobs, len(native), portable_math._workers(None), ctypes.byref(result)]
+        if getattr(entry, "supports_rim", False):
+            geometry = np.asarray([_rim_geometry(descriptors[i]) for i in indices],
+                                  dtype=np.uintp)
+            args.append(geometry.ctypes.data)
+        code = int(entry(*args))
         if code:
             # An additive ABI cannot weaken the existing checked interface.
             return _validate_fields_numpy(descriptors, phase=phase)
@@ -907,7 +1005,7 @@ def validate_fields_cpu(fields: Mapping[str, Any] | Sequence[HealthField],
     field = descriptors[index]
     return ValidationReport(False, status, field.name,
         tuple(int(i) for i in np.unravel_index(flat, shape)), flat, value,
-        _reason(value, field.rule), phase)
+        _reason(value, field.rule, shape=shape, flat=flat), phase)
 
 
 def validate_state_cpu(state: Any, *, phase: str | None = None,
@@ -1086,21 +1184,25 @@ class StateHealthValidator:
         self.extra_tables = extra_tables
         # The restart classifier already treats integration_health_* scratch
         # as rebuilt.  Metadata is bit-packed into FP32 storage because the
-        # state scratch API intentionally has one model dtype.
-        self._ptr = state.scratch((MAX_HEALTH_FIELDS * 2,),
+        # state scratch API intentionally has one model dtype.  The
+        # descriptor ceiling is the domain's own (health_field_ceiling).
+        self._ceiling = health_field_ceiling(state)
+        self._ptr = state.scratch((self._ceiling * 2,),
                                   "integration_health_field_ptr")
-        self._aux = state.scratch((MAX_HEALTH_FIELDS * 2,),
+        self._aux = state.scratch((self._ceiling * 2,),
                                   "integration_health_aux_ptr")
-        self._size = state.scratch((MAX_HEALTH_FIELDS * 2,),
+        self._size = state.scratch((self._ceiling * 2,),
                                    "integration_health_field_size")
-        self._bounds = state.scratch((MAX_HEALTH_FIELDS, 2),
+        self._bounds = state.scratch((self._ceiling, 2),
                                      "integration_health_bounds")
-        self._flags = state.scratch((MAX_HEALTH_FIELDS,),
+        self._flags = state.scratch((self._ceiling,),
                                     "integration_health_flags")
-        self._planes = state.scratch((MAX_HEALTH_FIELDS,),
+        self._planes = state.scratch((self._ceiling,),
                                      "integration_health_planes")
-        self._status = state.scratch((MAX_HEALTH_FIELDS * 2,),
+        self._status = state.scratch((self._ceiling * 2,),
                                      "integration_health_status_bits")
+        self._rim = state.scratch((self._ceiling, 3),
+                                  "integration_health_rim")
         self._result = state.scratch((4,), "integration_health_validation")
         self._chunk = _MIN_CHUNK_ELEMENTS
         self._chunk_count = 1
@@ -1144,17 +1246,19 @@ class StateHealthValidator:
             storage_flags.append(flag)
             pointers_by_field.append(pointer)
         fields_tuple = tuple(fields)
-        pointers = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint64)
-        auxiliaries = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint64)
-        sizes = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint64)
-        bounds = np.zeros((MAX_HEALTH_FIELDS, 2), dtype=np.float32)
-        flags = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint32)
-        planes = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint32)
-        bits = np.zeros(MAX_HEALTH_FIELDS, dtype=np.uint64)
+        pointers = np.zeros(self._ceiling, dtype=np.uint64)
+        auxiliaries = np.zeros(self._ceiling, dtype=np.uint64)
+        sizes = np.zeros(self._ceiling, dtype=np.uint64)
+        bounds = np.zeros((self._ceiling, 2), dtype=np.float32)
+        flags = np.zeros(self._ceiling, dtype=np.uint32)
+        planes = np.zeros(self._ceiling, dtype=np.uint32)
+        bits = np.zeros(self._ceiling, dtype=np.uint64)
+        rims = np.zeros((self._ceiling, 3), dtype=np.uint32)
         for index, field in enumerate(fields):
             pointers[index] = pointers_by_field[index]
             sizes[index] = int(field.values.size)
             rule = field.rule
+            rims[index] = _rim_geometry(field)
             flags[index] |= storage_flags[index]
             if rule.lower is not None:
                 flags[index] |= _LOWER
@@ -1186,6 +1290,7 @@ class StateHealthValidator:
         self._flags.set(_word_floats(flags))
         self._planes.set(_word_floats(planes))
         self._status.set(_word_floats(_u64_words(bits)))
+        self._rim.set(rims.view(np.float32))
         initial = np.asarray([0, (1 << 64) - 1], dtype=np.uint64)
         self._result.set(_word_floats(_u64_words(initial)))
         scanned = sizes[:len(fields)]
@@ -1208,7 +1313,7 @@ class StateHealthValidator:
         kernel = get_kernel("health", "validate_full_state")
         kernel((self._chunk_count, nfield), (256,), (
             self._ptr, self._aux, self._size, self._bounds, self._flags,
-            self._planes, self._status, self._result, np.int32(nfield),
+            self._planes, self._status, self._rim, self._result, np.int32(nfield),
             np.uint64(self._chunk)))
         words = cp.asnumpy(self._result).view(np.uint64)
         status, packed = (int(words[0]), int(words[1]))
@@ -1232,7 +1337,8 @@ class StateHealthValidator:
             False, status, field.name,
             tuple(int(i) for i in np.unravel_index(
                 flat, tuple(field.values.shape))),
-            flat, value, _reason(value, field.rule), phase)
+            flat, value, _reason(value, field.rule,
+                                 shape=field.values.shape, flat=flat), phase)
 
     def require_healthy(self, *, phase: str | None = None
                         ) -> ValidationReport:
@@ -1278,12 +1384,13 @@ def benchmark_validator(state: Any, *, repeats: int = 20,
 
 
 __all__ = [
-    "FieldRule", "HealthCheckError", "HealthField", "MAX_HEALTH_FIELDS",
-    "STATUS_BITS", "StateHealthValidator",
+    "FieldRule", "FSBM_HEALTH_FIELDS", "HealthCheckError", "HealthField",
+    "MAX_HEALTH_FIELDS", "STATUS_BITS", "StateHealthValidator",
     "THETA_CEILING_AT_REFERENCE_LID_K", "THETA_CEILING_REFERENCE_LID_PA",
     "ValidationReport",
     "benchmark_validator", "collect_state_fields", "cuda_source",
-    "field_from_array", "gpu_integer_policy", "rule_for_field",
+    "field_from_array", "gpu_integer_policy", "health_field_ceiling",
+    "health_field_ceiling_for_config", "rule_for_field",
     "theta_ceiling_for_lid",
     "validate_fields_cpu", "validate_state_cpu", "validate_store_fields",
 ]

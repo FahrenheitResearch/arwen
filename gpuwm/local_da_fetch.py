@@ -117,11 +117,20 @@ def _surface_fetch(route, directory, when, cadence):
         # Do not fetch after the analysis time. The decoder records each
         # report's own observation_time beside the slot it serves; when the
         # archive received the report is still not known here.
-        fetched = ASOS.run('fetch', ['--stations', str(stations), '--start', _stamp(when - timedelta(seconds=cadence)),
+        start = when - timedelta(seconds=cadence)
+        fetched = ASOS.run('fetch', ['--stations', str(stations), '--start', _stamp(start),
             '--end', _stamp(when), '--out', str(observations)], schema='gpuwm-obs.asos-fetch.v1')
+        # Decode over the SAME window the fetch covered, one slot per
+        # minute, so every report fetched keeps its own minute and the
+        # surface adapter routes and ages it by its observation_time.
+        # D-09 (2.8.8 acceptance): decoding the single slot `when` with
+        # the hourly stride kept only reports within the decoder's 600 s
+        # match window of the analysis instant, so a 22:01 METAR was
+        # dropped from a 22:15 analysis and 0 surface reports were used.
         decoded = ASOS.run('decode', ['--stations', str(stations), '--obs', str(observations),
-            '--start', _stamp(when), '--end', _stamp(when), '--step-hours', '1',
-            '--min-report-rate', '0', '--out', str(record)], schema='gpuwm-obs.asos-surface.v2')
+            '--start', _stamp(start), '--end', _stamp(when), '--step-minutes', '1',
+            '--match-seconds', '30', '--min-report-rate', '0', '--out', str(record)],
+            schema='gpuwm-obs.asos-surface.v2')
         write_json_atomically(out / 'fetch-receipt.json', dict(stations=frozen, fetched=fetched,
             decoded=decoded, time_policy='past-only fetch; each report carries its observation_time beside the slot it serves; arrival at the archive unverified'))
         if not record.is_file():

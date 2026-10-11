@@ -12,7 +12,7 @@ tool keeps that route and its rules unchanged and widens only the roster:
   same decode (REF, VEL, RHO, censor flags), the same region-global
   dealias, dual-pol QC and clear-air-from-censor superob, merged into one
   ``gpuwm-obs.radar-grid`` file per cycle on the grid the analysis runs.
-  Sites run in parallel processes; one site's bad hour is a refusal row,
+  Native site stages run in parallel threads; one site's bad hour is a refusal row,
   never the cycle's failure.
 * surface: METAR through ``rw_asos`` (stations, fetch, decode, verify) for
   every ASOS network whose extent overlaps the grid.
@@ -251,6 +251,14 @@ def site_cycle(task):
 
 
 def radar(args):
+    from tools.da_recent_observations import ObservationRss
+    with ObservationRss() as rss:
+        result = _radar(args)
+    save(Path(args.out) / 'peak-rss.json', rss.receipt())
+    return result
+
+
+def _radar(args):
     from gpuwm.obs.coverage import read_site_table, sites_covering
     from gpuwm.obs.dealias import engine_unavailable_reason
     from gpuwm.obs.nexrad import find_nexrad_bin
@@ -258,6 +266,9 @@ def radar(args):
     from gpuwm.obs.superob import merge_contributions
     from gpuwm.obs.target_grid import TargetGrid
     t_all = time.perf_counter()
+    from tools.da_recent_observations import (require_native_observations,
+        observation_workers, observation_memory, observation_stage, ObservationRss)
+    require_native_observations()
     binary = find_nexrad_bin()
     reason = engine_unavailable_reason("region-global")
     if binary is None or reason is not None:
@@ -319,33 +330,46 @@ def radar(args):
     print(f"radar: inventory {inventory_seconds:.1f} s, {len(tasks)} site-cycles", flush=True)
 
     t0 = time.perf_counter()
-    results = {i: [] for i in range(len(analyses))}
-    # spawn, not fork: the listing threads above leave locks a forked
-    # child can inherit held (measured: every forked worker parked on a
-    # futex with zero CPU).
-    import multiprocessing
-    with cf.ProcessPoolExecutor(max_workers=args.workers, initializer=_worker_init,
-                                initargs=(str(grid_path),),
-                                mp_context=multiprocessing.get_context("spawn")) as pool:
-        jobs = {pool.submit(site_cycle, task): (index, task[0]) for index, task in tasks}
-        done = 0
-        for job in cf.as_completed(jobs):
-            index, s = jobs[job]
+    # One read-only grid, no grid copy or contribution pickle per process.
+    # Drain each slot after its ordered merge instead of retaining every cycle.
+    # Only Rust kernels and subprocesses are pooled.
+    global _GRID
+    _GRID = grid
+    from tools.da_recent_observations import native_observation_threads
+    native_threads = native_observation_threads(len(sites), len(analyses), args.workers)
+    retained = observation_memory(grid, [table[s] for s in sites], _deck_params())
+    def native_task(index, task):
+        with observation_stage('prep.obs.radar', out, slot=index, site=task[0]):
             try:
-                contribution, record = job.result()
-            except Exception as error:  # noqa: BLE001
-                contribution, record = None, {"site": s, "status": "worker-failed", "reason": repr(error)}
-            results[index].append((s, contribution, record))
-            done += 1
-            if done % 50 == 0:
-                print(f"radar: {done}/{len(tasks)} site-cycles, {time.perf_counter() - t0:.0f} s", flush=True)
-    ingest_seconds = time.perf_counter() - t0
-
+                return site_cycle(task)
+            except Exception as error:  # noqa: BLE001 - preserve per-site refusal
+                return None, {'site': task[0], 'status': 'worker-failed', 'reason': repr(error)}
+    observation_workers(len(sites), requested=args.workers, retained_slot_bytes=retained)
+    first_index, first_task = tasks[0]
+    with ObservationRss() as calibration:
+        first_result = native_task(first_index, first_task)
+    initial_radar = cf.Future()
+    initial_radar.set_result(first_result)
+    first_result = None
+    scratch = max(2 * 2**30, calibration.receipt()['incremental_peak_bytes'] * 2)
+    sizing = observation_workers(len(sites), len(analyses), requested=args.workers, worker_bytes=scratch,
+                                 retained_slot_bytes=retained)
+    sizing['calibration'] = calibration.receipt()
+    sizing['native_threads'] = native_threads
+    sizing['calibration_policy'] = 'first required site reused; twice measured incremental RSS, minimum 2 GiB'
+    save(out / 'worker-receipt.json', sizing)
     params = _deck_params()
-    slots = []
-    for index, analysis in enumerate(analyses):
-        t0 = time.perf_counter()
-        rows = sorted(results[index], key=lambda r: sites.index(r[0]))
+    slot_tasks = {index: [task for i, task in tasks if i == index] for index in range(len(analyses))}
+    def slot_work(index):
+        with observation_stage('prep.obs.slot', out, slot=index):
+            jobs = [(task[0], initial_radar if index == first_index and task == first_task
+                     else pool.submit(native_task, index, task)) for task in slot_tasks[index]]
+            rows = [(site, *job.result()) for site, job in jobs]
+            return write_slot(index, rows)
+
+    def write_slot(index, rows):
+        analysis = analyses[index]
+        merge_started = time.perf_counter()
         contributions = [c for _, c, _ in rows if c is not None]
         records = [r for _, _, r in rows]
         work = out / f"slot-{index:02d}"
@@ -353,7 +377,6 @@ def radar(args):
         save(work / "radar-attempts.json", {"sites": records})
         if len(contributions) < 2:
             raise SystemExit(f"slot {index}: only {len(contributions)} radars contributed")
-        merged = merge_contributions(contributions, grid, params=params)
         sources = [{k: r.get(k) for k in ("site", "key", "volume_sha256", "pack_sha256",
                                          "measured_end_utc", "last_modified")}
                    for r in records if r.get("status") == "contributed"]
@@ -364,9 +387,11 @@ def radar(args):
                    "publication_policy": "archive-replay; LastModified is object metadata, not first publication proof",
                    "publication_gate": getattr(args, "publication_gate", "last-modified"),
                    "causal_measurement_cutoff_utc": iso(analysis)}
-        receipt = write_radar_grid(work / "radar.nc", merged, grid, valid_time=iso(analysis),
-                                   params=params, provenance=context, overwrite=True)
-        merge_seconds = time.perf_counter() - t0
+        with observation_stage('prep.obs.merge', out, slot=index):
+            merged = merge_contributions(contributions, grid, params=params)
+            receipt = write_radar_grid(work / "radar.nc", merged, grid, valid_time=iso(analysis),
+                                      params=params, provenance=context, overwrite=True)
+        merge_seconds = time.perf_counter() - merge_started
         save(work / "radar-receipt.json", receipt)
         slot = {"slot": index, "analysis_time": iso(analysis), "obs": str(work / "radar.nc"),
                 "obs_sha256": receipt.get("sha256"), "bytes": receipt.get("bytes"),
@@ -375,12 +400,21 @@ def radar(args):
                 "site_seconds_sum": {k: round(sum(r.get("seconds", {}).get(k, 0.0) for r in records), 1)
                                      for k in ("fetch", "decode", "superob")},
                 "bytes_fetched": sum(r.get("bytes_fetched", 0) for r in records)}
-        slots.append(slot)
         print(f"radar slot {index}: {len(contributions)}/{len(sites)} radars, merge+write {merge_seconds:.1f} s", flush=True)
+        return slot
+
+    slots = []
+    with cf.ThreadPoolExecutor(max_workers=sizing['total_workers']) as pool, \
+            cf.ThreadPoolExecutor(max_workers=sizing['slot_workers']) as slot_pool:
+        for slot in slot_pool.map(slot_work, range(len(analyses))):
+            slots.append(slot)
+            if len(slots) == 1:
+                initial_radar = None
+    ingest_seconds = time.perf_counter() - t0
     doc = {"schema": "conus-da.radar-slots.v1", "grid_wrfout": str(grid_path),
            "grid_wrfout_sha256": sha(grid_path), "grid_identity_sha256": grid.identity_sha256(),
            "superob_parameters": params.to_payload(), "superob_engine": superob_engine,
-           "workers": args.workers,
+           "workers": sizing['workers'],
            "seconds": {"inventory": round(inventory_seconds, 1), "ingest": round(ingest_seconds, 1),
                        "total": round(time.perf_counter() - t_all, 1)},
            "native_radar_binary_sha256": sha(binary), "slots": slots}
@@ -411,6 +445,12 @@ def grid_bbox(grid):
 
 
 def surface(args):
+    from tools.da_recent_observations import observation_stage
+    with observation_stage('prep.obs.surface', Path(args.out)):
+        return _surface(args)
+
+
+def _surface(args):
     from tools.da_recent_observations import combine_surfaces, validate_surface
     from gpuwm.obs.frontdoor import ASOS
     from gpuwm.obs.surface_networks import networks_for_domain
@@ -855,14 +895,25 @@ def roster(args):
     print(json.dumps({k: v for k, v in result.items() if k != "batches"}, default=str), flush=True)
 
 
+def prepare(args):
+    """Overlap independent native ASOS and radar work, join in output order."""
+    # Its package facade imports the radar/dealias graph. Initialize it on
+    # the parent thread before either independent stage enters that graph.
+    import gpuwm.obs  # noqa: F401
+    with cf.ThreadPoolExecutor(max_workers=2) as pool:
+        surface_job = pool.submit(surface, args)
+        radar(args)
+        surface_job.result()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("radar", help="every reaching NEXRAD, deck route, one radar-grid file per cycle")
+    p = sub.add_parser("radar", aliases=['prepare'], help="native radar preparation; prepare also overlaps ASOS")
     p.add_argument("--grid-wrfout", required=True)
     p.add_argument("--cycles", nargs="+", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--workers", type=int, default=32)
+    p.add_argument("--workers", type=int, default=None, help="native site workers (default: site count bounded by RAM)")
     p.add_argument("--limit-sites", type=int, default=0, help="smoke only")
     p.add_argument("--raw-cache", help="read-only tree of already fetched objects (bucket/key layout)")
     p.add_argument("--publication-gate", choices=("last-modified", "measured-end"), default="last-modified",
@@ -902,7 +953,7 @@ def main(argv=None):
     p.add_argument("--digest", action="store_true", help="sha256 of the built roster")
     p.add_argument("--out", required=True)
     args = parser.parse_args(argv)
-    {"radar": radar, "surface": surface, "raob": raob, "count": count,
+    {"radar": radar, "prepare": prepare, "surface": surface, "raob": raob, "count": count,
      "roster": roster}[args.command](args)
 
 

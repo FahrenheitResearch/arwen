@@ -344,9 +344,7 @@ class PreparedTileMemory:
             nx, ny = self.cfg.nx, self.cfg.ny
             fixed = {
                 "k_tables_bytes": pf.k_distribution_bytes(),
-                "physics_tables_bytes": (pf.thompson_coefficient_bytes(
-                    int(self.cfg.mp_physics) == 28)
-                    if int(self.cfg.mp_physics) in (8, 28) else 0),
+                "physics_tables_bytes": pf.thompson_generation_coefficient_bytes(self.cfg),
                 "cuda_context_bytes": self.profile.cuda_context_bytes,
                 "local_memory_bytes": pf.kernel_local_memory_bytes(exp, profile=self.profile),
                 "unmodelled_bytes": pf.ENVELOPE_UNMODELLED_BYTES,

@@ -193,6 +193,10 @@ cpu  tools/rustwx  rusty-weather  30
 # Fetch: the HTTP/S3 side of the ingest path, offline-testable parts.
 cpu  tools/rustwx  rw-fetch  44
 
+# The global globe packer (2.8.9): native-grid reads, derived columns and
+# the zlib-ABI encoder the global worker's frames are written through.
+cpu  tools/rustwx  rw-globe-pack  3
+
 # The verification instruments: `rw_fieldcmp`, the paired-FRAME judge
 # that prints the campaign metric table, and `rw_runscore`, the
 # paired-RUN judge that reduces two run directories to one distance per
@@ -250,6 +254,13 @@ cpu  tools/rustwx  rw-netcdf  43
 
 # Surface and upper-air observations.
 cpu  tools/rustwx  rw-obs  115
+
+# The forecast verification scorer behind `gpuwm scoreboard --request`
+# (scoreboard-v1 and the obs-match-v2 interpolate_to_reports action).
+# Floor is its first green run in this list, 2026-10-09: 4 lib + 12 bin +
+# 3 cli_roundtrip + 1 large_arrays (a 213,578,750-value volume, about a
+# minute in debug and a 0.9 GB scratch frame it deletes) + 7 nightly.
+cpu  tools/rustwx  rw-scoreboard  27
 
 # The ATMS front door: HDF5 inventory, SDR/GEO decode and the ring-cell
 # thinning the global microwave leg reads.  Its own tests hold the stamp
@@ -328,6 +339,20 @@ cpu  tools/rustwx  rw-mpas  418
 # different wind basis or scheme. Keep this target visible independently of
 # the larger mesh suite so its three controls cannot disappear under its floor.
 cpu  tools/rustwx  rw-mpas  3  --test radar_history_contract
+
+# rw-tempo: the Rust port of NCAR/TEMPO 9adf9ef's table builders
+# (params/utils), loaded through librw_tempo by gpuwm/tempo_assets.py when
+# the RRFS v2 hex TEMPO preset builds its collection and freezing tables.  A
+# wrong table entry does not crash; it moves every TEMPO rate.  Floor is the
+# delivered Rust suite: the three unit tests in src/lib.rs (layout size,
+# libgcc powi order, decade table sizes), which is what da2496f45 reported
+# ("cargo test 3 passed").  809cdc87b wrote 4 here, the count of the
+# Python side tests/test_tempo_rust_init.py, which no cargo run can meet;
+# the 2.8.9 E3 public CI reproduction ran the crate at 3 passed and the
+# leg went UNDER-RAN.  The Python four are the field-by-field check against
+# TEMPO's own tempo_init; they need a gfortran dump that does not ship
+# (declared in tools/battery/must_run_gates.txt) and were never cargo tests.
+cpu  tools/rustwx  rw-tempo  3
 
 # rw-isobaric: THIS project's crate.  The log-pressure column walk the
 # renderer's pressure-level charts and the ML exporter both interpolate

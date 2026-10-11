@@ -342,7 +342,7 @@
   "soil_surface": {
    "source_id": "noaa-hrrr-conus-pressure-grib2-native",
    "mapping_role": "soil_surface_mapping",
-   "mapping_sha256": "770b747a0a8eb62b281fe51a5853a4fa82a43512079615a60f1c385f9713ee0c",
+   "mapping_sha256": "8e86e27af452391159881059fbaae3ef6451e86538d5caec75f8ca639e12c6eb",
    "data_role": "soil_surface_data",
    "provenance_role": "soil_surface_provenance",
    "fields": [

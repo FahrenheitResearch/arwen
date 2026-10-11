@@ -326,7 +326,8 @@ def preserve_child_receipts(root, head):
         if ({key: value for key, value in old_cache.items() if key != "created_utc"}
                 != {key: value for key, value in new_cache.items() if key != "created_utc"}):
             raise stream.BoundaryStreamError(f"continuation changes {label}'s prepared cache")
-        excluded = {Path("receipt.json"), Path("prepared-cache/header.json")}
+        excluded = {Path("receipt.json"), Path("prepared-cache/header.json"),
+                    Path("preparation-runtime.json")}
         def payloads(directory):
             return {path.relative_to(directory) for path in directory.rglob("*")
                     if path.is_file() and path.relative_to(directory) not in excluded}

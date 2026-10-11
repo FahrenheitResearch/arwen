@@ -346,6 +346,12 @@ def test_production_binds_root_boundary_clock_at_sanctioned_sites_only():
         package_root / "prepared_domain_tree_forecast.py",
         package_root / "prepared_single_domain_forecast.py",
         package_root / "runtime.py",
+        # Adjudicated (stale-tests-289, 2026-10-10): the VTSM future
+        # continuation (4dcca7d16) binds each specified root's mirror to
+        # the continuation's resolved clock and binds the previous one back
+        # afterwards; same binder, same recurrence
+        # (tests/test_davies_clock_bind.py states it in full).
+        package_root / "da" / "spread_vts.py",
     }
     referencing = set()
     for path in sorted(package_root.rglob("*.py")):

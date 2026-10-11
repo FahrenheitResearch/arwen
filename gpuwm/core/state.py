@@ -435,6 +435,10 @@ class DomainState:
         if xp is not np and xp is not cp:
             raise TypeError("array_module must be numpy or cupy")
         self._host_setup_state = array_module is np
+        # Same definition as acoustic._spec_zone/_boundary_forced. Stored
+        # geometry lets all health scans keep the interior scalar floor.
+        self._health_spec_zone = (max(0, int(cfg.spec_zone))
+                                  if cfg.specified or cfg.nested else 0)
         # Analysis-producer metadata only. Once coupled snapshots are made,
         # their immutable field inventory owns forcing through cache/restart.
         from gpuwm.boundary_fields import external_scalar_fields
@@ -557,6 +561,18 @@ class DomainState:
                 self.effi[...] = DTYPE(25.0)
                 for name in ("qi0", "ni0", "nr0", "qir0", "qib0"):
                     setattr(self, name, rebuilt(name, nz, ny, nx))
+            elif cfg.mp_physics == 30:
+                from gpuwm.core.fast_sbm_contract import (BIN_SPECIES,EXTRA_SPECIES,
+                                                         NUMBER_SPECIES)
+                self.fast_sbm_bins=zeros(len(BIN_SPECIES),nz,ny,nx)
+                for index,name in enumerate(BIN_SPECIES):
+                    setattr(self,name,self.fast_sbm_bins[index])
+                for name in ("qi","qs","qg",*NUMBER_SPECIES,"th_old","qv_old",
+                             "effc","effi","effs"):
+                    setattr(self,name,zeros(nz,ny,nx))
+                for name in EXTRA_SPECIES:
+                    setattr(self,name+"0",rebuilt(name+"0",nz,ny,nx))
+                self.effc.fill(DTYPE(10.)); self.effi.fill(DTYPE(25.)); self.effs.fill(DTYPE(50.))
             elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
                 common = ("qi", "qs", "qg", "effc", "effi", "effs")
                 number_and_radius = (

@@ -43,9 +43,13 @@ _SMALL_CARD_REQUEST = ["domain", "--point", "35.5,-97.5", "--root-dx", "3",
 @pytest.mark.parametrize("choices", [
     None,
     # Scheme choices stay on the request that follows the advice, over the
-    # suite it names, so a suite is priced with them.  Thompson over every
-    # lighter suite leaves none within the budget; no cumulus leaves some.
-    '{"microphysics": "thompson-mp8"}',
+    # suite it names, so a suite is priced with them.  The microphysics
+    # row is aerosol-aware Thompson: since 4193eb0da the HRRR default is
+    # the gsd41 template, whose scalar_pblmix=1 reads Thompson-aerosol
+    # fields only, so any other microphysics over it is refused by name
+    # before any pricing (2f65da582); the row's question, a scheme pinned
+    # over every lighter suite, is asked with the one it accepts.
+    '{"microphysics": "thompson-aerosol-mp28"}',
     '{"cumulus": "off"}',
 ])
 def test_every_advised_suite_is_admitted_on_the_same_card(
@@ -247,8 +251,11 @@ def test_the_unnamed_default_names_the_shallower_ladder_its_own_default_fits(
         tmp_path, capsys):
     """Below 1 km the unnamed default is the spacing table's suite.
 
-    Its kernel set alone overflows a 4.6 GiB card, so the 500 m ladder
-    has no layout at all.  A shallower ladder finishes at 1 km or coarser
+    It does not fit a 4.6 GiB card even at the 500 m ladder's minimum
+    layout.  (Until dad24232a priced the Thompson kernels at the shallow
+    exports nz <= 64 launches, its kernel set alone overflowed this card
+    and the refusal said the ladder had no budget at all; it now prices
+    the minimum layout and refuses that.)  A shallower ladder finishes at 1 km or coarser
     and binds the lighter source default, so it can be a way out: the
     refusal prices each shallower ladder with the suite it would run and
     names the deepest one whose minimum layout fits, and that is the
@@ -265,7 +272,8 @@ def test_the_unnamed_default_names_the_shallower_ladder_its_own_default_fits(
 
     rc, message = _run("--ladder", "12-3-1-0.5", out=tmp_path / "deep.toml")
     assert rc == 2, message
-    assert "has no budget for ladder" in message, message
+    assert ("ladder 12-3-1-0.5 does not fit" in message
+            and "even at the minimum layout" in message), message
     assert "no smaller layout on any ladder can help" not in message
     named = _named_shallower(message)
     deepest_admitted = None
@@ -322,7 +330,12 @@ def test_the_source_default_is_named_first_when_it_fits():
 
 def test_a_small_card_names_the_source_default_and_prints_no_candidate_warnings(
         tmp_path, capsys):
-    """6 GiB, the 500 m ladder, no suite named.
+    """5.5 GiB, the 500 m ladder, no suite named.
+
+    (6 GiB until dad24232a priced the Thompson kernels at the shallow
+    exports nz <= 64 launches: the sub-km default's 4.68 GiB envelope now
+    fits a 6 GiB card's 4.75 GiB budget, and 5.5 GiB is the card this
+    refusal is still about.)
 
     The sub-km default does not fit the card at the ladder's minimum
     layout.  The refusal names the source's own default, which fits, and
@@ -333,7 +346,7 @@ def test_a_small_card_names_the_source_default_and_prints_no_candidate_warnings(
 
     from gpuwm.physics_menu import default_profile_for
 
-    request = ["domain", "--point", "39.1,-94.6", "--vram-gib", "6",
+    request = ["domain", "--point", "39.1,-94.6", "--vram-gib", "5.5",
                "--ladder", "12-3-1-0.5", "--source", "gfs", "--hours", "6",
                "--cycle", "2026-08-12T00"]
     rc = cli_main([*request, "--out", str(tmp_path / "refused.toml")])

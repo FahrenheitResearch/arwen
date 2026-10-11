@@ -9,6 +9,7 @@ from gpuwm.domain_wizard import render_config
 from gpuwm.experiment import build_experiment_from_config_tables
 from gpuwm.namelist_import import import_namelists
 from test_audit_parent_generic_bytes import assert_old_bytes, controls
+from test_tolerance_parent_generic_bytes import without_recipe_generation
 
 
 VEG_AUDIT_PARENT = "1077c6e8abe502aab59de103d7e6d70dbb8588a1"
@@ -57,5 +58,6 @@ def test_generic_vegetation_recipe_bytes_match_original_parent(source):
         case_data=None, profile=recipe["profile"],
     )
     assert set(SWITCHES).isdisjoint(tomllib.loads(emitted)["shared"])
-    assert_old_bytes(VEG_AUDIT_PARENT, pins, "recipe/" + source, emitted)
+    assert_old_bytes(VEG_AUDIT_PARENT, pins, "recipe/" + source,
+                     without_recipe_generation(source, emitted))
     assert_generic_runtime_off(emitted)

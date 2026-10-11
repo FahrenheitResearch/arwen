@@ -119,6 +119,24 @@ def offline_index(monkeypatch):
 @pytest.fixture
 def python_engine(monkeypatch):
     monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
+    # Since 49f8a677f every HRRR soil file also carries the cycle's runtime
+    # surface records, which only the Rust backbone cuts; with the
+    # backbone hidden here that step is not this file's question (request
+    # identity), so it appends nothing and records each table field as
+    # appended.  The record matters: fetch_hrrr reuses a soil file only
+    # when its receipt names every runtime surface field, so an empty
+    # binding would fetch every soil file again.
+    # tests/test_fetch.py and tests/test_runtime_surface_fallback.py own
+    # the step itself.
+    from gpuwm import runtime_surface_fetch
+
+    def recorded(path, *, adapter, **kwargs):
+        return [{"field": name, "units": units, "selector": selector}
+                for name, _product, selector, units, *_ in
+                adapter.runtime_surface_fields]
+
+    monkeypatch.setattr(runtime_surface_fetch,
+                        "append_runtime_surface_records", recorded)
 
 
 def _with_probe(monkeypatch, name: str, probe, **fixed):
@@ -857,7 +875,7 @@ def test_a_fullfile_rerun_reads_no_index_and_keeps_the_serving_host(
 
 
 def test_a_skipped_hrrr_file_keeps_the_host_that_served_it(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, python_engine):
     downloads: list[str] = []
     monkeypatch.setattr(hrrr_transport, "_download_product",
                         _dated_hrrr_product(downloads))
@@ -1003,7 +1021,10 @@ def test_an_hrrr_host_that_does_not_serve_a_product_is_refused_in_words(
     assert rc == 2, err
     assert "Traceback" not in err
     assert "s3 answered HTTP 404" in err
-    assert "HRRR cycle 2026-02-01T06Z f00" in err
+    # Both hours 404 on s3 here and the pool fetches f00 and f01 at once,
+    # so the sentence names whichever failed first: f00 alone, f01 under
+    # load (seen on node-4's full CPU leg).  Either names this cycle.
+    assert re.search(r"HRRR cycle 2026-02-01T06Z f0[01] ", err), err
 
 
 def test_a_404_past_the_hosts_retention_names_the_host_that_keeps_it():

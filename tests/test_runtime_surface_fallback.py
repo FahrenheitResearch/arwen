@@ -52,6 +52,27 @@ def _append(tmp_path, declared=frozenset()):
     return soil, rows
 
 
+def test_a_python_transport_fetch_names_the_backbone_its_runtime_surface_needs(
+        tmp_path, monkeypatch):
+    """No backbone and no binary: the refusal names the runtime surface
+    fields the Python transport cannot cut, not an --engine flag the reader
+    never passed."""
+    from gpuwm import rustwx_fetch
+
+    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: None)
+    soil = tmp_path / "hrrr.t18z.soilf02.grib2"
+    soil.write_bytes(b"GRIB-soil")
+    with pytest.raises(ValueError) as refusal:
+        rsf.append_runtime_surface_records(
+            soil, adapter=get_source_adapter("hrrr"), cycle=CYCLE, lead=2,
+            host="s3", progress=lambda *a: None)
+    said = str(refusal.value)
+    assert "runtime surface fields" in said and "--engine rust" not in said
+    for row in get_source_adapter("hrrr").runtime_surface_fields:
+        assert row[0] in said
+    assert soil.read_bytes() == b"GRIB-soil"
+
+
 def test_default_field_absent_from_cycle_records_climatology_fallback(
         tmp_path, monkeypatch):
     _fake_fetch(monkeypatch, published=False)

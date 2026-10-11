@@ -52,9 +52,8 @@ def inputs():
 
 
 def metric(a,b):
-    ai,bi = a.view(np.int32).astype(np.int64),b.view(np.int32).astype(np.int64)
-    ai = np.where(ai<0,-0x80000000-ai,ai)
-    bi = np.where(bi<0,-0x80000000-bi,bi)
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+    ai,bi = monotone_fp32_key(a),monotone_fp32_key(b)
     finite=np.isfinite(a)&np.isfinite(b)
     d=np.abs(ai-bi)
     idx=np.unravel_index(np.argmax(d),d.shape)

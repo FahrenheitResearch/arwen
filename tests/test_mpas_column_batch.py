@@ -343,10 +343,14 @@ def test_the_species_rows_are_pinned_per_scheme():
         "p3": ("qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"),
         "thompson_aero": ("qv", "qc", "qr", "qi", "qs", "qg",
                           "ni", "nr", "nc", "nwfa", "nifa"),
+        # TEMPO (NCAR/TEMPO 9adf9ef): Thompson-aero's set plus graupel
+        # number and volume, thirteen transported scalars.
+        "tempo": ("qv", "qc", "qr", "qi", "qs", "qg", "ni", "nr", "nc",
+                  "nwfa", "nifa", "ng", "volg"),
     }
     assert mcb._SPECIES == mcb._SPECIES_BY_SCHEME["wsm6"]
     assert mcb._MP_PHYSICS_BY_SCHEME == {
-        "wsm6": 6, "p3": 50, "thompson_aero": 28}
+        "wsm6": 6, "p3": 50, "thompson_aero": 28, "tempo": 900}
     assert set(mcb._MP_PHYSICS_BY_SCHEME) == set(mcb._SPECIES_BY_SCHEME)
 
 
@@ -387,6 +391,7 @@ def test_the_restart_state_rows_are_pinned_per_scheme():
         "p3": ("effc", "effi", "h_diabatic", "th_old", "qv_old"),
         "thompson_aero": ("effc", "effi", "effs", "h_diabatic",
                           "nwfa2d", "nifa2d"),
+        "tempo": ("effc", "effi", "effs", "h_diabatic", "nwfa2d", "nifa2d"),
     }
 
 
@@ -417,7 +422,7 @@ def test_the_graupel_bearing_rows_are_pinned():
     (gpuwm/core/physics_inventory.py's mp=50 surface-slot row), so a
     permanent zero key would let a consumer claim a field P3 never has.
     """
-    assert mcb._GRAUPEL_SCHEMES == frozenset({"wsm6", "thompson_aero"})
+    assert mcb._GRAUPEL_SCHEMES == frozenset({"wsm6", "thompson_aero", "tempo"})
     assert set(mcb._RHO_DRY_REFUSAL_BY_SCHEME) == (
         set(mcb._SPECIES_BY_SCHEME) - {"wsm6"}), (
             "every non-WSM6 row must name why it refuses rho_dry")

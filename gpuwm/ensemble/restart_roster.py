@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 CONTRACT = "gpuwm-ensemble-restart.v1"
@@ -28,22 +29,37 @@ class CheckpointProgress:
         if checkpoint is not None and str(checkpoint) != self.last_attempted_checkpoint:
             self.last_attempted_checkpoint = str(checkpoint)
             with self.lock:
-                save = getattr(self.collector, "save_resume", None)
-                if not callable(save):
+                if not callable(getattr(self.collector, "save_resume", None)):
                     raise ValueError("checkpointed ensemble requires a durable diagnostic collector")
+                bind_checkpoint_member(self.root, checkpoint)
                 try:
-                    save()
+                    # The collector snapshot is taken inside seal, under the
+                    # collector checkpoint hold, so members on other cards
+                    # cannot retire the packs it names before they are hashed.
+                    seal(self.root, collector=self.collector)
                 except TimeoutError:
+                    # A deferred snapshot leaves this checkpoint unbound, as
+                    # before; the previous roster stays the durable one.
+                    Path(checkpoint).with_suffix(".member.json").unlink(missing_ok=True)
                     event["ensemble_checkpoint_deferred"] = "product drain exceeded bounded checkpoint hold"
                     return self.callback(**event)
-                bind_checkpoint_member(self.root, checkpoint)
-                seal(self.root)
                 self.last_checkpoint = str(checkpoint)
             event["ensemble_restart_roster"] = str(self.root / ROSTER)
         return self.callback(**event)
 
     def __getattr__(self, name):
         return getattr(self.callback, name)
+
+
+def checkpoint_hold(collector):
+    """Hold every member submission and pack retirement while a roster seals.
+
+    Members on other cards keep submitting diagnostics while one member's
+    checkpoint seals. Without this hold a submission could complete a frame
+    and retire the pending packs that the just-saved collector.json names.
+    """
+    hold = getattr(collector, "checkpoint_hold", None)
+    return hold() if callable(hold) else nullcontext()
 
 
 def bind_checkpoint_member(root, checkpoint):
@@ -207,8 +223,29 @@ def resume_prepared_roster(args, request, *, observer=None):
         return runner.main(sim[3:], observer=observer)
 
 
-def seal(root, output=None, *, collector_files=()):
-    """Publish a roster only after its member checkpoints and output spool exist."""
+#: Whole seal passes tried when a file vanishes mid-pass. Another member's
+#: runner, on another card, retires its superseded checkpoint sets
+#: (retire_superseded_checkpoints) while this member's roster is being hashed.
+SEAL_ATTEMPTS = 8
+
+
+def seal(root, output=None, *, collector_files=(), collector=None):
+    """Publish a roster only after its member checkpoints and output spool exist.
+
+    With ``collector``, its snapshot is saved under :func:`checkpoint_hold`
+    and the files it names are hashed before the hold is released. A pass in
+    which any listed file disappears is repeated, so a published roster never
+    names a file that was already gone when it was hashed.
+    """
+    for attempt in range(SEAL_ATTEMPTS):
+        try:
+            return _seal_once(root, output, collector_files=collector_files, collector=collector)
+        except FileNotFoundError:
+            if attempt == SEAL_ATTEMPTS - 1:
+                raise
+
+
+def _seal_once(root, output, *, collector_files, collector):
     from gpuwm.io.restart import read_restart_header, tree_restart_members
     from gpuwm.supervisor import validate_manifest_checkpoint
     from gpuwm.resume import discover_checkpoint_sets
@@ -222,12 +259,7 @@ def seal(root, output=None, *, collector_files=()):
     if (root / INPUTS).is_file():
         files.add(root / INPUTS)
     files.update(resolve_file(root, name) for name in collector_files)
-    collector_manifest = root / ".ensemble-resume" / "collector.json"
-    if collector_manifest.is_file():
-        document = json.loads(collector_manifest.read_text(encoding="utf-8"))
-        files.add(collector_manifest)
-        files.update(resolve_file(root, name) for name in document.get("files", ()))
-    rows = []
+    rows, hashed = [], {}
     for identity in identities["members"]:
         member = identity["member_id"]
         row = {"member_id": member, "identity_sha256": identity["identity_sha256"], "status": "pending",
@@ -262,14 +294,28 @@ def seal(root, output=None, *, collector_files=()):
                     continue
                 files.update(members.values())
                 files.add(binding_path)
+                hashed.update({path: known[relative_file(root, path)] for path in members.values()})
                 row.update(status="checkpoint", checkpoint=relative_file(root, candidate.handle),
                            model_elapsed_seconds=elapsed)
                 break
         rows.append(row)
-    record = {"schema": CONTRACT, "created_time_ns": time.time_ns(), "identities": identities, "members": rows,
-        "files": [{"path": relative_file(root, path), "bytes": path.stat().st_size,
-                   "sha256": digest_file(path)} for path in sorted(files)]}
-    atomic_json(output or root / ROSTER, record)
+    with checkpoint_hold(collector):
+        if collector is not None:
+            collector.save_resume()
+        collector_manifest = root / ".ensemble-resume" / "collector.json"
+        if collector_manifest.is_file():
+            document = json.loads(collector_manifest.read_text(encoding="utf-8"))
+            files.add(collector_manifest)
+            files.update(resolve_file(root, name) for name in document.get("files", ()))
+        # Every file is present when the roster is written. A member checkpoint
+        # retired during this pass raises FileNotFoundError and the pass repeats.
+        record = {"schema": CONTRACT, "created_time_ns": time.time_ns(), "identities": identities, "members": rows,
+            "files": [{"path": relative_file(root, path), "bytes": path.stat().st_size,
+                       "sha256": hashed[path] if path in hashed else digest_file(path)} for path in sorted(files)]}
+        missing = [path for path in hashed if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(str(missing[0]))
+        atomic_json(output or root / ROSTER, record)
     return record
 
 

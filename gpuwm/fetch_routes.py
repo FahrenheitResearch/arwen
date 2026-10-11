@@ -2675,7 +2675,7 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
                                      progress=progress)
                         if lead_steps else [])
         composed_so_far.extend(composed_now)
-        _write_json(out / MANIFEST_NAME, _plan_manifest(
+        _write_route_manifest(out, _plan_manifest(
             plan, list(admitted), list(composed_so_far), None,
             complete=False))
         _write_sha256sums(out, admitted, composed_so_far)
@@ -2694,7 +2694,7 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     payload = _plan_manifest(plan, entries, composed, receipt,
                              probe_receipt=probe_receipt,
                              complete=True if on_lead is not None else None)
-    _write_json(out / MANIFEST_NAME, payload)
+    _write_route_manifest(out, payload)
     _write_sha256sums(out, entries, composed)
     return payload
 
@@ -2800,6 +2800,24 @@ def _run_compose(plan: FetchPlan, out: Path, *, progress=print) -> list[dict]:
                  f"time{'' if len(composed) == 1 else 's'} from "
                  f"{sum(len(item['parts']) for item in composed)} objects")
     return composed
+
+
+def _write_route_manifest(out: Path, payload: Mapping[str, object]) -> None:
+    # Preparation binds the bytes of this authority document. Transfer timing
+    # and pool width are observations, not input content: putting them here
+    # invalidates an otherwise identical preparation on every cached fetch.
+    material = dict(payload)
+    receipt = material.pop("concurrency", None)
+    # A cached object has the same authority as a freshly acquired object.
+    # Keep reuse observations in the returned payload and recovery receipts.
+    if "files" in material:
+        material["files"] = [
+            {key: value for key, value in entry.items() if key != "reused"}
+            for entry in material["files"]
+        ]
+    if receipt is not None:
+        _write_json(out / "fetch-pool-receipt.json", receipt)
+    _write_json(out / MANIFEST_NAME, material)
 
 
 def _write_json(path: Path, payload: Mapping[str, object]) -> None:

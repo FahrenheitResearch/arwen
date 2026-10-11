@@ -110,9 +110,11 @@ def _retain(directory: Path, *, text: str, requested_path: Path, stage: Path,
                                     base_dir=requested_path.parent)
         if config is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(config.cache_root.resolve())
-    # fetch.out is owned by the fetch command's working directory.
+    # fetch.out is relative to the configuration it was written into
+    # (D-11), so the retained draft carries it absolute.
     if raw.get("fetch", {}).get("out"):
-        raw["fetch"]["out"] = str(Path(raw["fetch"]["out"]).expanduser().resolve())
+        from gpuwm.case_data import config_fetch_out
+        raw["fetch"]["out"] = str(config_fetch_out(raw, base_dir=requested_path.parent))
     draft = ("# Memory admission refused. Review Fit domain or Tile streaming before running.\n"
              + emit_experiment_toml(raw)).encode("utf-8")
     # The draft is a configuration, and Fit/Tile open it to save a copy

@@ -542,14 +542,20 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # RULINGS 1 (history CLDFRA, 2.8.7): the driver's held (nz, ny, nx)
     # radiation cloud-fraction buffer is priced too, another 4*49*550*550 =
     # 59,290,000 B, or 66,997,700 B with the margin, on every number below.
-    assert payload["peak_envelope_bytes"] == 15298325513
-    assert payload["observed_peak_envelope_bytes"] == 15298325513
-    assert payload["alloc_estimate_bytes"] == 12132060169
+    # The strict health gate's rim geometry table (strict-ncar-health,
+    # a677ad4e1) is the integration_health_rim scratch slot, (1024, 3) FP32
+    # words = 12,288 B per domain, 13,885 B of estimate and of envelope with
+    # the 1.13 pool margin.  With only that slot removed from
+    # scratch_slot_registry this config reproduces every previous pin.
+    assert payload["peak_envelope_bytes"] == 15298339398
+    assert payload["observed_peak_envelope_bytes"] == 15298339398
+    assert payload["alloc_estimate_bytes"] == 12132074054
     # The reserve's 0.03 retention term follows the estimate: A163 moved
     # it by 0.03 x -212,355,128 = -6,370,653 B.
     # The density addition raises its retention reserve by 2,009,931 B, and
-    # the CLDFRA buffer by the same 2,009,931 B again.
-    assert payload["reserve_bytes"] == 3530227150
+    # the CLDFRA buffer by the same 2,009,931 B again; the rim table by
+    # 416 B.
+    assert payload["reserve_bytes"] == 3530227566
     assert payload["budget_bytes"] == _FITS_STREAMED_GIB * GIB
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
     assert rc == 1
@@ -602,11 +608,11 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # with the same refusal: they are narrower than Morrison, so they
     # change nothing this configuration is charged. The density allocation
     # and its unchanged pool and retention margins remain present in both,
-    # as does the priced CLDFRA buffer.
-    assert old_payload["peak_envelope_bytes"] == 15298325513
-    assert old_payload["observed_peak_envelope_bytes"] == 15298325513
-    assert old_payload["alloc_estimate_bytes"] == 12132060169
-    assert old_payload["reserve_bytes"] == 3530227150
+    # as does the priced CLDFRA buffer, and the strict-rim health table.
+    assert old_payload["peak_envelope_bytes"] == 15298339398
+    assert old_payload["observed_peak_envelope_bytes"] == 15298339398
+    assert old_payload["alloc_estimate_bytes"] == 12132074054
+    assert old_payload["reserve_bytes"] == 3530227566
     assert old_rc == rc == 1
     assert old_estimate == estimate
     for key in ("peak_envelope_bytes", "observed_peak_envelope_bytes",

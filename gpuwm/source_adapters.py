@@ -613,6 +613,27 @@ _RAP_ARCHIVE = ArchiveWindow(
     checked_at="2026-09-25",
     early_start="2021-02-22T00", early_hours=tuple(range(10)),
 )
+#: MEASURED 2026-10-10 the same way, on the native-level product this
+#: route reads (rap.tHHz.awp130bgrbf00.grib2): none on 2021-02-21; from
+#: 2021-02-22 the 00 to 08 UTC runs every day and 09 UTC on some days only
+#: (absent 02-22, 02-23 and 02-26, present 02-24, 02-25 and 03-01), so
+#: the early hours named are the ones every day holds; every hour from
+#: 2021-04-26 00 UTC (2021-04-25 holds 00 to 09 only).
+_RAP_NATIVE_ARCHIVE = ArchiveWindow(
+    "aws", "2021-04-26T00",
+    "The mirror's rap.YYYYMMDD awp130bgrb objects begin on 2021-02-22 with "
+    "the 00 to 08 UTC runs (09 UTC on some days only); every hour of the "
+    "day begins on 2021-04-26 00 UTC. 2021-02-21 holds none. Older RAP "
+    "runs are kept only by NCEI, which this route does not read.",
+    ("https://noaa-rap-pds.s3.amazonaws.com/rap.20210221/rap.t00z.awp130bgrbf00.grib2",
+     "https://noaa-rap-pds.s3.amazonaws.com/rap.20210222/rap.t08z.awp130bgrbf00.grib2",
+     "https://noaa-rap-pds.s3.amazonaws.com/rap.20210222/rap.t09z.awp130bgrbf00.grib2",
+     "https://noaa-rap-pds.s3.amazonaws.com/rap.20210425/rap.t10z.awp130bgrbf00.grib2",
+     "https://noaa-rap-pds.s3.amazonaws.com/rap.20210426/rap.t10z.awp130bgrbf00.grib2",
+     "https://registry.opendata.aws/noaa-rap/"),
+    checked_at="2026-10-10",
+    early_start="2021-02-22T00", early_hours=tuple(range(9)),
+)
 _RRFS_OPS_ARCHIVE = ArchiveWindow(
     "aws", "2026-08-13T00",
     "The operational RRFS bucket begins on 2026-08-13, the day after the "
@@ -1386,6 +1407,7 @@ _ADAPTERS = (
         stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
         runnable=True, runner="mapped_composition_v1",
         packaged_profile="rap-native-grib2-v1",
+        archives=(_RAP_NATIVE_ARCHIVE,),
         forcing_interval_seconds=3600.0, coverage=_CONUS_13KM_LAMBERT,
         boundary_species=("qc", "qr", "qi", "qs", "qg"),
         notes=(
@@ -1405,6 +1427,12 @@ _ADAPTERS = (
         default_physics_profile=(
             "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"
         ),
+        # The route reads the AWS mirror's wrfnat, wrfsfc and same-cycle
+        # wrfprs objects, all three first present at 2014-07-30 18Z
+        # (measured 2026-10-10: 17Z holds none), the hrrr-prs row's window.
+        archives=(ArchiveWindow("aws", _HRRR_NATIVE_ARCHIVE.start,
+                                _HRRR_NATIVE_ARCHIVE.note,
+                                _HRRR_NATIVE_ARCHIVE.documentation),),
         name="HRRR native hybrid analysis (mapped)",
         aliases=("hrrr-mapped-native",), upstream_model_id="hrrr",
         default_product="wrfnat", max_hour=48,

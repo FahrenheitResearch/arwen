@@ -1385,3 +1385,38 @@ Held by `crates/rw-wrfbatch/tests/global_latlon_panels.rs` (a U of rain
 crossing the date line leaves the southern ocean between its arms dry; a
 regional crop draws both halves of the pressure and precipitation pair
 across the same frame), both of which fail with this line removed.
+
+## Basemap rings that cross the projection cut are split there (2026-10-09, engine 2.8.8, D-08)
+
+`crates/rustwx-render/src/projected_map.rs::project_densified_ring` now
+returns one or more projected rings per lon/lat ring.  A ring that
+crosses the projection's cut meridian (`central + 180`, named by the new
+`ProjectionProjector::seam_longitude_deg` in `projection.rs`; polar
+stereographic has no cut) is split at the crossing.  Each piece closes
+along the cut on its own side of the plane.
+
+What this fixes, seen in 2.8.8 acceptance row CY1: on a Mercator grid
+centred at -89.3 the plane is cut at 90.7E, where Nam Co and Yamdrok Tso
+sit.  Each lake came back as a single ring whose vertices jumped from one
+edge of the plane to the other.  Its bbox spanned the whole plane, so it
+passed `ring_overlaps_bbox`, and the scanline fill drew two full-width
+lake-coloured bands at 30.7N and 29.0N over the Gulf coast, on every d01
+frame including f000.  The ocean ring crossed the cut the same way, its
+fill cancelled, and these Mercator maps never drew the ocean fill that
+Lambert maps carry.
+
+A ring that never crosses the cut projects exactly as before.  This was
+MEASURED: base 93ca22f69 and this commit rendered byte-identical
+`composite_reflectivity`, `total_qpf`, `2m_temperature` and
+`10m_wind_speed_and_direction` f000 PNGs for six acceptance wrfouts (HRRR
+CONUS, Oklahoma, El Paso, Iowa ERA5, ICON-EU, GEM-GDPS; 24 of 24).  The
+cyclone Mercator maps change: the bands are gone and the ocean fills.
+The fix is held by `projected_map::tests::gulf_mercator_basemap_has_no_plane_spanning_lake_rings`,
+which fails at 93ca22f69 with a 36,448 km sideways step on a 36,449 km
+plane, plus unit tests for the split, the unchanged path and the polar
+case.
+
+    Per-file SHA-256 delta (first 16 hex), 93ca22f69 -> this line:
+
+        crates/rustwx-render/src/projected_map.rs     ece8ccac8bd1af1a -> 0c294f9bcec74369
+        crates/rustwx-render/src/projection.rs        bc71b76c59b0e10f -> 06967ef494453ae0

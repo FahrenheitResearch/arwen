@@ -714,6 +714,10 @@ MAPPED_PREPARATION_TELEMETRY_KEYS = frozenset({
 #: horiz.declared_grid_pairing); without it here the runner refused every
 #: such bundle as an unknown top-level inventory.
 MAPPED_OPTIONAL_PROOF_KEYS = frozenset({
+    # The mapped writer records the existing preparation-time land floor.
+    # Its absence remains valid; rejecting the present receipt prevents a
+    # correctly prepared land column from reaching the forecast reader.
+    "soil_moisture_floor",
     "statics_corridor", "source_vertical_ladder", "soil_temperature_repair",
     "soil_moisture_floor",
     "initial_perturbation", "posting", "initial_source", "source_pairing"})
@@ -4515,7 +4519,9 @@ def _validate_front_door_physics_proof(
             else "")
         raise ValueError(
             f"{label} v3 preparation proof physics selection differs from "
-            f"the hash-bound experiment/profile: {shown}")
+            f"the hash-bound experiment/profile: {shown}. Prepare again with this build "
+            "to bind the current scheme implementations; the old prepared state "
+            "cannot be integrated under different physics.")
     return expected
 
 
@@ -6635,7 +6641,6 @@ def _terrain_derivations(exp, static, grid, reader, physics_receipt, *,
     exp, acoustic = adapt_experiment_to_terrain(
         exp, readings_from_static(exp, {root: static},
                                   grids_by_grid_id={root: grid}))
-    physics_receipt["acoustic_substeps"] = acoustic_receipt(acoustic)
     if basis_out is not None:
         from gpuwm.ingest.boundary_stream import ClockBasis
 
@@ -6646,6 +6651,8 @@ def _terrain_derivations(exp, static, grid, reader, physics_receipt, *,
     exp, clock = clock_for_prepared_cache(
         exp, acoustic, readers={root: reader}, statics={root: static})
     physics_receipt["terrain_clock"] = clock_receipt(clock)
+    # Written after the clock, so its count is the one that runs.
+    physics_receipt["acoustic_substeps"] = acoustic_receipt(acoustic, clock)
     return exp
 
 
@@ -6784,6 +6791,13 @@ def _retained_preflight_payload(reader, *, layout, head):
         return None
     from gpuwm.ingest.prepared_store import _CachePayload
     return _CachePayload(reader, log=lambda _: None)
+
+
+def preflight_restart_algorithms(restart: Path, cfg) -> None:
+    """Check the checkpoint's scheme identities without restoring a device."""
+    from gpuwm.io.restart import read_restart_header, _require_current_algorithm_identities
+
+    _require_current_algorithm_identities(read_restart_header(restart), cfg, restart)
 
 
 def preflight_prepared_forecast(
@@ -11496,6 +11510,7 @@ def main(argv=None, *, observer=None) -> int:
     # this run inherited rather than the cache this run has been
     # filling.  Pure filesystem; the device is not touched here.
     kernel_cache_census = scan_kernel_cache()
+    preflight_complete = False
     try:
         # Timed, because it was dark and it is not free: every digest in
         # the preparation receipt is re-checked against the bytes on
@@ -11520,6 +11535,7 @@ def main(argv=None, *, observer=None) -> int:
             **({} if simulated_radar is None else {"simulated_radar": simulated_radar}),
             **({} if radar_heating is None else {"radar_heating": radar_heating}))
         preflight_seconds = time.perf_counter() - preflight_started
+        preflight_complete = True
         verification = dict(inputs.physics_receipt).get("verification")
         if (isinstance(verification, dict)
                 and verification.get("status") != "wrf-verified"
@@ -11663,6 +11679,14 @@ def main(argv=None, *, observer=None) -> int:
             # sentence with the terms and the remedy, not a traceback.
             print(f"prepared_single_domain_forecast: {error}",
                   file=sys.stderr)
+            return 2
+        if not preflight_complete and isinstance(error, (ValueError, OSError)):
+            print(f"prepared_single_domain_forecast: refused: {error}", file=sys.stderr)
+            return 2
+        from gpuwm.io.restart import RestartMismatchError
+
+        if isinstance(error, RestartMismatchError):
+            print(f"prepared_single_domain_forecast: refused: {error}", file=sys.stderr)
             return 2
         if isinstance(error, PreparationProofDigestMismatch):
             # A run that never started, not one that failed: the door

@@ -572,6 +572,10 @@ def test_the_plot_label_carries_the_executing_version():
     label = default_source_label()
     assert label.startswith(f"{DEFAULT_SOURCE_LABEL} ")
     assert label.endswith(provenance_gate.executing_version())
+    # The ensemble product door builds the same stamp without importing
+    # gpuwm.render (the RW-WPS wheel ships rustwx.py, not render.py).
+    from gpuwm.rustwx import product_source_label
+    assert product_source_label() == label
 
 
 def test_the_wrfout_producer_stamp_is_the_executing_version():

@@ -104,6 +104,11 @@ EXPECTED_SITE_COUNT = 31
 #: anywhere else fails the census below until it is either made a site or
 #: explained here.
 RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
+    "gpuwm/core/tempo_runtime.py": (
+        "the TEMPO column unit's own compile site; TEMPO_SOURCE_FINGERPRINT binds "
+        "every included header's bytes into the compile key, and the unit is "
+        "graded word for word in strict and default arithmetic by "
+        "tests/test_tempo_adapter_oracle_gpu.py"),
     "gpuwm/core/urban_bem.py": (
         "the BEP+BEM composed unit's own compile site (sf_urban_physics = 3, "
         "-fmad=false --ftz=false); it records through record_module in the "

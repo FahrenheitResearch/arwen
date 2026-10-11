@@ -232,7 +232,10 @@ test refuses any drift between the two.
 | `aigefs` | `ai-gefs` |
 | `hgefs` | `hybrid-gefs` |
 | `ecmwf-open-data` | `ecmwf`, `ifs` |
+| `ecmwf-ens` | `ifs-ens`, `ecmwf-ensemble` |
 | `aifs` | `aifs-v2`, `aifs-single` |
+| `rap-native` | `rap-awp130bgrb` |
+| `hrrr-native` | `hrrr-mapped-native` |
 | `rap` | `rap-awip32` |
 | `nam` | -- |
 | `hiresw` | `hires` |
@@ -242,6 +245,7 @@ test refuses any drift between the two.
 | `urma` | -- |
 | `nbm` | `blend` |
 | `rrfs` | `rrfs-ops` |
+| `rrfs-ens` | `rrfsens` |
 | `rrfs-a` | `rrfsa` |
 | `rrfs-public` | -- |
 | `refs` | `rrfs-ensemble` |
@@ -561,6 +565,16 @@ record-for-record byte-identical to GFS `pgrb2.0p25` -- only the
 acquisition path says which model a file came from.  The route is not
 yet accepted by unchanged stock WRF.
 
+## Source-pinned model specifications
+
+`gpuwm preset list|show|check|export|verify-sources` reads the packaged model
+preset registry. The `rrfs-v2-hex-tempo` entry records the native MPAS settings
+and source pins, including TEMPO, and runs on the hex dycore through
+`gpuwm preset run`. `check` reports any unmet runtime requirement and every
+declared divergence from the NOAA pins, and `export` retains the requested
+physics switches. See [model-presets.md](model-presets.md)
+for the exact commands and limits.
+
 ## The RRFS route
 
 `gpuwm prep --source rrfs` reads RRFS -- HRRR's operational successor,
@@ -811,3 +825,13 @@ directory. Exit 0 when a bundle was written or listed; a refusal only
 when no location accepts the write.
 
 See `public/REPORTING-A-PROBLEM.md` for the user-facing page.
+
+## Tools fetched on first use
+
+Three Rust tools are not inside the platform wheel and are installed by
+`gpuwm fetch-bridges`: the simulated radar engine (`gpuwm simulated-radar`
+and the `[simulated_radar]` table), the ML dataset exporter
+(`gpuwm ml-export`) and the globe packer. With them the wheel was over the
+package index's 100 MB per-file limit. Run the command once; until then each
+of those doors stops with a message naming it, and `gpuwm doctor` lists the
+three as opt-in.

@@ -308,6 +308,7 @@ def _t8w_columns(t3d, z_at_w, fnm, fnp):
 #: for the campaign's nssl_2moment_on=1 configuration (the only NSSL
 #: form gpuwm runs).
 _MP_DECLARES_RADII = {
+    30: False,
     0: False,
     1: False,
     6: True,     # WSM6
@@ -486,7 +487,7 @@ def legacy_scheme_has_req(mp_physics, use_mp_re):
 #: would assert a ``qs`` its Registry package never declares.  Resolve the
 #: pair through :func:`legacy_cloud_fraction_flags`, never by reading one
 #: boolean into both flags.
-_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28))
+_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28, 30))
 # Named schemes carrying both qi and qs (capability row).
 _LEGACY_ICE_ACTIVE_MICROPHYSICS = _LEGACY_ICE_ACTIVE_MICROPHYSICS | frozenset(
     _s.mp_id for _s in _NAMED_MP_SCHEMES.values()
@@ -1261,7 +1262,8 @@ class RRTMGLegacyRadiation:
     def __init__(self, start_time, latitude_deg, longitude_deg, *,
                  p_top=None, column_chunk=None, ozone_parent=None,
                  o3input=2, longwave=True, shortwave=True, trace_gas_overrides=None,
-                 ozone_routing=None, aer_opt=0, smoke_provider=None):
+                 ozone_routing=None, aer_opt=0, smoke_provider=None,
+                 aer3_type_source="rural"):
         if not isinstance(start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
         self.start_time = start_time
@@ -1285,6 +1287,23 @@ class RRTMGLegacyRadiation:
                              "longwave-only adapter carries aer_opt=0")
         if smoke_provider is not None and not (self.shortwave and self.aer_opt == 3):
             raise ValueError("prescribed smoke requires legacy shortwave with aer_opt=3")
+        #: aer_opt = 3 aerosol type per column: ``rural`` (the HRRR fork's
+        #: type 1) or ``landmask`` (the NOAA MPAS fork: 1 over land, 3 over
+        #: water, from the same xland the shortwave reads).
+        if aer3_type_source not in _aer3.AER3_TYPE_SOURCES:
+            raise ValueError(
+                f"aer3_type_source must be one of {_aer3.AER3_TYPE_SOURCES}, "
+                f"got {aer3_type_source!r}")
+        if aer3_type_source != "rural" and self.aer_opt != 3:
+            raise ValueError(
+                "aer3_type_source='landmask' selects the aer_opt=3 shortwave "
+                "aerosol type; this adapter runs aer_opt="
+                f"{self.aer_opt}, where it would never be read")
+        if aer3_type_source != "rural" and smoke_provider is not None:
+            raise ValueError(
+                "prescribed smoke follows the HRRR fork's rural optics; the "
+                "NOAA MPAS land/water aerosol type has no smoke coupling")
+        self.aer3_type_source = aer3_type_source
         self._smoke_provider = smoke_provider
         self.publishes_olr = self.longwave
         from gpuwm.core.trace_gases import (
@@ -1507,6 +1526,14 @@ class RRTMGLegacyRadiation:
         if self.aer_opt == 3:
             from gpuwm.core.rrtmg_aerosol_optics import AER3_TABLES_SHA256
             identity["aer3_tables_sha256"] = AER3_TABLES_SHA256
+            if getattr(self, "aer3_type_source", "rural") != "rural":
+                # Only a land/water run binds the maritime rows, so every
+                # rural identity is the bytes it always was.
+                from gpuwm.core.rrtmg_aerosol_optics import (
+                    AER3_MARITIME_TABLES_SHA256)
+                identity["aer3_type_source"] = self.aer3_type_source
+                identity["aer3_maritime_tables_sha256"] = (
+                    AER3_MARITIME_TABLES_SHA256)
         if getattr(self, "_smoke_provider", None) is not None:
             identity["prescribed_smoke"] = self._smoke_provider.identity()
         if self.o3input == 2:
@@ -1548,6 +1575,14 @@ class RRTMGLegacyRadiation:
                 f"adapter was constructed for aer_opt={self.aer_opt} but the "
                 f"run config requests aer_opt={aer_opt}; rebuild the adapter "
                 "so its shortwave aerosol and restart identity match")
+        requested_type = getattr(cfg, "rrtmg_aer3_type_source", "rural")
+        if self.shortwave and requested_type != getattr(
+                self, "aer3_type_source", "rural"):
+            raise ValueError(
+                "adapter was constructed for rrtmg_aer3_type_source="
+                f"{getattr(self, 'aer3_type_source', 'rural')!r} but the run "
+                f"config requests {requested_type!r}; rebuild the adapter so "
+                "its shortwave aerosol type and restart identity match")
         if self.shortwave and bool(getattr(cfg, "rrtmg_smoke_manifest", "")) != (
                 getattr(self, "_smoke_provider", None) is not None):
             raise ValueError("prescribed smoke configuration differs from the bound radiation adapter")
@@ -2106,6 +2141,11 @@ class RRTMGLegacyRadiation:
                 smoke_options = {}
                 if smoke_gather is not None:
                     smoke_options = dict(smoke_aod=smoke_gather(sel)[0], smoke_feedback=True)
+                if self.aer3_type_source == "landmask":
+                    # NOAA MPAS driver :583-586, from the xland this
+                    # shortwave call reads.
+                    smoke_options["aer_type"] = _aer3.aer_type_from_xland_device(
+                        surf["xland"][sel])
                 aerosol_result = _aer3.aer3_sw_optics_device(
                     kw["p3d"], kw["t3d"], kw["qv3d"], kw["dz8w"], nwfa_c,
                     nifa_c, nz + 1, **smoke_options)

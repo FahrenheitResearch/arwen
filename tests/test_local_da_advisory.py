@@ -96,7 +96,7 @@ def test_live_estimate_above_free_memory_is_advisory_before_preparation(tmp_path
     monkeypatch.setattr(go_cli, 'plan_from_config', lambda *args, **kwargs: {})
     monkeypatch.setattr(go_cli, 'resolve_bridge', lambda: tmp_path)
     monkeypatch.setattr(geog_assets, 'default_geog_root', lambda: tmp_path)
-    monkeypatch.setattr(go_cli, 'geography_refusal', lambda *args: None)
+    monkeypatch.setattr(go_cli, 'geography_refusal', lambda *args, **_: None)
     devices = []
     monkeypatch.setattr(go_cli, '_require_forecast_device', lambda: devices.append(True))
     monkeypatch.setitem(sys.modules, 'cupy', SimpleNamespace(cuda=SimpleNamespace(

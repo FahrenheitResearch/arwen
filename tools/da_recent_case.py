@@ -623,7 +623,7 @@ def finalize(plan_path, *, prepared_root, slots_path, fetch_receipt_path,
     if inputs.experiment.start_time.replace(tzinfo=timezone.utc) != origin:
         raise ValueError("prepared model origin differs from authored case")
     fetched = read_json(fetch_receipt_path)
-    if (fetched.get("schema") != "da-rerun.recent-fetch.v1"
+    if (fetched.get("schema") not in ("da-rerun.recent-fetch.v1", "da-rerun.recent-fetch.v2")
             or fetched.get("status") != "complete" or fetched.get("fetch_processes") != 1):
         raise ValueError("one-process complete public fetch receipt required")
     objects = fetched.get("objects", [])

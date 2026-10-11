@@ -302,6 +302,12 @@ _TOP_LEVEL_EXCLUDES = {
 }
 _CORE_MODULES = {
     "__init__.py",
+    # The FAST_SBM (mp_physics=30) Registry state contract: tuples of bin,
+    # mass and number names transcribed from WRF registry.sbm:318, no
+    # imports at all.  device_inventory, wrf_direct, wrfinput, lateral_bc,
+    # state and the WRF physics inventory (all staged) read it at module
+    # scope; without it the wheel refused staging on ten unresolved imports.
+    "fast_sbm_contract.py",
     # The namelist importer collapses equal adaptive-clock bounds using
     # wrf_num_sound_steps. Its module imports adaptive_timestep at module
     # scope; both use stdlib and numpy without initializing a forecast.
@@ -705,6 +711,8 @@ _IO_MODULES = {"__init__.py", "classic_product.py", "classic_tape.py",
                "netcdf_serialization.py",
                "wrf_output_schema.py", "sfire_schema.py"}
 _ROOT_DATA = {
+    # gpuwm.fetch_pool sizes its transfer pool from this table at import (2.8.9).
+    "fetch-width-rows.json",
     "native_wrf_support_v1.json",
     "physics_params_registry_v1.json",
     "physics_registry_v2.json",
@@ -742,7 +750,40 @@ _FORBIDDEN_STAGED_FILES = {
     "gpuwm/io/wrfout.py",
 }
 
+#: The forecast-only half of gpuwm/ingest/wrfrst.py, shared by its six rows
+#: below: apply_warm_start_physics and apply_warm_start_clock overlay a WRF
+#: restart file onto a LIVE forecast state, driver and model clock
+#: (gpuwm/wrfinput_forecast.py and gpuwm/prepared_domain_tree_forecast.py,
+#: neither staged).  Preparation reads and checks a wrfrst
+#: (discover_restart_files, read_wrfrst, check_restart_physics) without
+#: building a state, so none of these imports runs here.
+_WRFRST_LIVE_OVERLAY = ("apply_warm_start_physics and apply_warm_start_clock "
+                        "overlay a WRF restart file onto a live forecast "
+                        "state; preparation only reads and checks the file")
+
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/ingest/wrfrst.py", "gpuwm.io.restart"):
+        "the checkpoint manifest carriers the overlay fills, inside apply_warm_start_physics; "
+        + _WRFRST_LIVE_OVERLAY,
+    ("gpuwm/ingest/wrfrst.py", "gpuwm.core.physics"):
+        "the held-tendency coupling and physics cadence, inside apply_warm_start_physics; "
+        + _WRFRST_LIVE_OVERLAY,
+    ("gpuwm/ingest/wrfrst.py", "gpuwm.core.physics_inventory"):
+        "the PBL composition predicate (apply_warm_start_physics) and the restart-instant REFL_10CM microphysics roster (apply_warm_start_clock); "
+        + _WRFRST_LIVE_OVERLAY,
+    ("gpuwm/ingest/wrfrst.py", "gpuwm.core.radiation_carriers"):
+        "the held radiation carriers, inside apply_warm_start_physics; "
+        + _WRFRST_LIVE_OVERLAY,
+    ("gpuwm/ingest/wrfrst.py", "gpuwm.core.model"):
+        "the model clock's period marker, inside apply_warm_start_clock; "
+        + _WRFRST_LIVE_OVERLAY,
+    ("gpuwm/ingest/wrfrst.py", "gpuwm.core.refl"):
+        "the restart-instant REFL_10CM frame, inside apply_warm_start_clock; "
+        + _WRFRST_LIVE_OVERLAY,
+    ("gpuwm/ingest/prepared_cache.py", "tools.bench.checkpoint_stamps"):
+        "benchmark harness only, behind GPUWM_BENCH_CHECKPOINT_TOKEN, which "
+        "fixes the prepared-cache creation stamp for repeat-identity arms; an "
+        "ordinary preparation stamps the current time",
     ("gpuwm/ingest/lateral_bc.py", "gpuwm.core.dycore"):
         "WRF_MUTS_SLOT inside _wrf_final_muts_arg, called only by the CUDA "
         "_launch_finalize_field forecast boundary finalizer in strict mode; "
@@ -993,6 +1034,11 @@ _OPTIONAL_STAGED_IMPORTS = {
         "inside the loader and only for a module whose name starts with "
         "noahmp_; RW-WPS stages no forecast executor and compiles no CUDA "
         "module, so the loader never takes that branch here",
+    ("gpuwm/core/kernels/__init__.py", "gpuwm.core.fast_sbm_cuda"):
+        "FAST_SBM's own direct NVRTC loader (709a2e078), reached only "
+        "after the CuPy import inside load_module and only when the name "
+        "is fast_sbm; RW-WPS stages no forecast executor and compiles no "
+        "CUDA module, so the loader never takes that branch here",
     ("gpuwm/core/nest_interp.py", "gpuwm.certify.kernel_manifest"):
         "certification kernel-manifest recording, reached only after the "
         "CuPy import inside the loader; RW-WPS stages no forecast executor "
@@ -1515,6 +1561,10 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
         # observation files is preprocessing, which is what this wheel is.
         ("obs", _OBS_EXCLUDES),
         ("static", set()),
+        # The rental time ledger (2.8.9): fetch, geography, table and
+        # composition stages emit timing records through it. Stdlib only;
+        # the waterfall's matplotlib import is function-local.
+        ("timeline", set()),
     ):
         for source in sorted((REPO / "gpuwm" / subpackage).glob("*.py")):
             if source.name not in excludes:

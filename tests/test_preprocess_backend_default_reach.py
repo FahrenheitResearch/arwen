@@ -371,6 +371,11 @@ def test_the_hrrr_root_budget_is_the_count_the_cpu_backend_runs(monkeypatch):
     monkeypatch.delenv(preparation_workers.PREPARATION_THREADS_ENV, raising=False)
     monkeypatch.setattr(preparation_workers, "cpu_budget", lambda: {
         "affinity_cpus": 256, "cgroup_cpus": 245, "available_cpus": 245})
+    # ac988f1fd reuses an automatic count for five seconds; this box's own
+    # count, read by an earlier test in the process, must not answer for
+    # the budget patched above.
+    from gpuwm.ingest import cpu_backend
+    monkeypatch.setattr(cpu_backend, "_AUTOMATIC_WORKERS", {})
     monkeypatch.setattr(preparation_workers, "memory_worker_limit", lambda: None)
     named = SimpleNamespace(preprocess_backend="cpu",
                             preprocess_workers=None, cpu_preprocess_bridge=None)

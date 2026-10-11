@@ -1,0 +1,28 @@
+[package]
+name = "rw-scoreboard"
+version = "0.1.0"
+build = "build.rs"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "rw_scoreboard"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+netcrust = { path = "../../vendor/netcrust" }
+obs-regrid = { path = "../obs-regrid" }
+rustwx-core = { path = "../rustwx-core" }
+rustwx-io = { path = "../rustwx-io" }
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+sha2 = "0.10"
+zstd = "0.13"
+grib-core = { path = "../../../grib1_bridge/vendor/grib-core" }
+
+[dev-dependencies]
+netcdf-writer = { path = "../netcdf-writer" }

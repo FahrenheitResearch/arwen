@@ -2137,17 +2137,25 @@ def measure_footprint(rung: str = "dry", sizes: Sequence[int] = (128, 256),
     for n in sizes:
         cfg = _config_for_rung(n, n, nz, rung)
         keep = []
-        base = used()
         deltas = []
-        for _ in range(max(2, int(buffers))):
-            state, drv = physinv.default_builder(cfg, 4242)
-            if warmup:
-                _harness.run_steps(state, cfg, int(warmup))
-            cp.cuda.runtime.deviceSynchronize()
-            keep.append(state)
-            now = used()
-            deltas.append(now - base)
-            base = now
+        # Each size builds from a PRIVATE, empty pool.  A pool that already
+        # holds free cached blocks it cannot return (they share a chunk with
+        # a live block) cuts the new arrays from that slack with no device
+        # allocation, and cudaMemGetInfo under-counts them: MEASURED 0.70 GiB
+        # short on a 2.74 GiB dry build at 640^2 x49 (RTX 5090, 2026-10-09).
+        # Under-counting here is an under-predicting row, a tile that OOMs.
+        pool = cp.cuda.MemoryPool()
+        with cp.cuda.using_allocator(pool.malloc):
+            base = used()
+            for _ in range(max(2, int(buffers))):
+                state, drv = physinv.default_builder(cfg, 4242)
+                if warmup:
+                    _harness.run_steps(state, cfg, int(warmup))
+                cp.cuda.runtime.deviceSynchronize()
+                keep.append(state)
+                now = used()
+                deltas.append(now - base)
+                base = now
         calls = dict(drv.call_counts) if drv is not None else {}
         marg = sum(deltas[1:]) / len(deltas[1:])
         marginal[n * n * nz] = marg
@@ -2158,6 +2166,7 @@ def measure_footprint(rung: str = "dry", sizes: Sequence[int] = (128, 256),
                f"   -> one-time {(deltas[0] - marg) / MIB:.0f} MiB"
                f"   physics fired {calls or '{}'}")
         del keep, state, drv
+        pool.free_all_blocks()
         cp.get_default_memory_pool().free_all_blocks()
 
     (c0, m0), (c1, m1) = sorted(marginal.items())[:2]

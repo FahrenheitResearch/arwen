@@ -219,6 +219,18 @@ def unavailable_reason() -> str | None:
     return None
 
 
+def configure_threads(threads: int) -> dict:
+    """Initialize the shared native pool without changing subprocess budgets."""
+    try:
+        answer = library().call({'op': 'thread_budget', 'threads': int(threads)}, [])
+    except SuperobBridgeError as error:
+        raise SuperobBridgeMissing('native thread-budget operation is unavailable; the legacy two-thread shared pool prevents site parallelism. Rebuild rw-superob.') from error
+    if not answer.get('ok'):
+        raise SuperobBridgeMissing('native thread-budget operation refused: ' + str(answer.get('message'))
+            + '; the legacy shared pool prevents site parallelism. Rebuild rw-superob.')
+    return answer
+
+
 # ---------------------------------------------------------------------------
 # request building
 # ---------------------------------------------------------------------------

@@ -20,6 +20,17 @@
 use std::process::Command;
 
 fn main() {
+    let declaration = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../pyproject.toml");
+    println!("cargo:rerun-if-changed={}", declaration.display());
+    let text = std::fs::read_to_string(&declaration).expect("engine version declaration");
+    let project = text.split("[project]").nth(1).expect("project metadata")
+        .split("\n[").next().unwrap();
+    let version = project.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "version").then(|| value.trim().trim_matches('"'))
+    }).expect("declared engine version");
+    println!("cargo:rustc-env=GPUWM_ENGINE_VERSION={version}");
     println!("cargo:rerun-if-env-changed=GPUWM_BRIDGE_SOURCE_REV");
     let rev = std::env::var("GPUWM_BRIDGE_SOURCE_REV")
         .ok()

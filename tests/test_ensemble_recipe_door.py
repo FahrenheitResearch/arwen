@@ -158,15 +158,31 @@ def stages(monkeypatch):
     """
     from gpuwm import prepared_single_domain_forecast, regional_preparation, stage_cli
     from gpuwm.ensemble import door as door_module
+    from gpuwm.ensemble import canary
+    # Paid GPU launch is replaced in this CPU door fixture, like the
+    # forecast runner below. The artifact canary has separate GPU proofs.
+    class _Canaries:
+        def __init__(self, *unused, **kwargs):
+            self.bindings = {}
+        def watch(self, *unused, **kwargs):
+            return (lambda: None), (lambda: None)
+        def submit(self, binding):
+            self.bindings.setdefault(binding["source"], binding)
+            record.canaries.append(binding)
+        def close(self, **unused):
+            pass
+    monkeypatch.setattr(canary, "HeadCanaries", _Canaries)
 
-    record = SimpleNamespace(prepared=[], admitted=[], forecast=[], fail={},
+    record = SimpleNamespace(prepared=[], admitted=[], forecast=[], fail={}, canaries=[],
                              forecast_result=0, session=None, sim=[])
 
     def owner(plan, *, config_path, exp, observer, run_dir, prepare_only):
+        from gpuwm.mapped_composition import _SHARED_COMPOSITION
         index = int(Path(run_dir).parent.name.rsplit("-", 1)[1])
         record.prepared.append({
             "member": index, "config": Path(config_path), "prepare_only": prepare_only,
             "run_options": dict(plan.run_options),
+            "composition_binding": _SHARED_COMPOSITION.get(),
             "fetch": tomllib.loads(Path(config_path).read_text(encoding="utf-8"))["fetch"]})
         if index in record.fail:
             raise record.fail[index]
@@ -773,6 +789,12 @@ def test_named_roster_prepares_two_banks_and_shares_one_source_acquisition(
     assert len({row["prepared_root"] for row in receipt["members"][:6]}) == 1
     assert len({row["prepared_root"] for row in receipt["members"][6:]}) == 1
     assert receipt["members"][0]["prepared_root"] != receipt["members"][6]["prepared_root"]
+    assert receipt["members"][0]["source_binding_sha256"] == receipt["members"][6]["source_binding_sha256"]
+    assert receipt["members"][0]["physics_tail_sha256"] != receipt["members"][6]["physics_tail_sha256"]
+    assert stages.prepared[0]["composition_binding"] == stages.prepared[1]["composition_binding"]
+    source_key, bank_root = stages.prepared[0]["composition_binding"]
+    assert source_key == receipt["members"][0]["source_binding_sha256"]
+    assert not bank_root.exists()
     assert [row["variant"]["name"] for row in receipt["members"]] == [
         item["name"] for item in receipt["request"]["member_variants"]]
     assert stages.session.request.member_device_ids == (0, 1, 2, 3)
@@ -783,6 +805,35 @@ def test_named_roster_prepares_two_banks_and_shares_one_source_acquisition(
     assert provider(shared_inputs=shared, member_id=2, request=stages.session.request) is shared
     assert provider(shared_inputs=shared, member_id=8, request=stages.session.request) == "noah"
     assert bound[0]["prepared_root"] == receipt["members"][6]["prepared_root"]
+
+
+def test_shared_composition_admission_prices_retained_source_once_per_source(tmp_path, monkeypatch):
+    from gpuwm import disk_budget
+    from gpuwm.ensemble.door import request_for_config
+
+    gib = 2 ** 30
+    config = _roster_case(tmp_path)
+    request = request_for_config(config)
+    _recipe, plans = _reviewed(config, request, tmp_path / "review")
+    seen = []
+    monkeypatch.setattr(disk_budget, "projected_run_bytes", lambda *a, **k: {
+        "download_bytes": 10 * gib, "preparation_bytes": gib, "history_bytes": 0,
+        "compose_scratch_bytes": 3 * gib, "compose_scratch_min_bytes": 3 * gib,
+        "compose_scratch": {}, "download": {"basis": "fixture"}})
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda *a: 2 ** 60)
+    monkeypatch.setattr(disk_budget, "disk_refusal", lambda projection, *a, **k: seen.append(projection))
+    assert recipe_door.disk_refusal(plans, case_root=tmp_path / "out", request=request) is None
+    assert seen[0]["preparation_bytes"] == 5 * gib  # Two prepared tails plus one retained stream.
+    assert seen[0]["download_bytes"] == 10 * gib
+
+
+def test_single_tail_sources_do_not_retain_roster_frame_banks(tmp_path, door, stages):
+    result = door("ensemble", _case(tmp_path), *RECIPE_FLAGS, "--outdir", tmp_path / "out")
+    assert result.code == 0, result.text
+    assert len(stages.prepared) == 2
+    bindings = [row["composition_binding"] for row in stages.prepared]
+    assert all(binding[1] is None for binding in bindings)
+    assert bindings[0][0] != bindings[1][0]
 
 
 def test_named_roster_refuses_effectively_identical_loaded_member_states_before_fetch(
@@ -1151,6 +1202,9 @@ def test_forecast_failure_reuses_prepared_members_on_relaunch(tmp_path, door, st
     relaunched = json.loads((runs[-1] / recipe_door.RECEIPT_NAME).read_text())
     assert relaunched["status"] == "complete"
     assert [row["preparation_reused_from_run"] for row in relaunched["members"]] == [str(run)] * 2
+    # An ordinary request retains its clock. The fixed-clock source-head
+    # diagnostic is supplied only by a qualified orchestration caller.
+    assert not stages.canaries
 
 
 def test_relaunch_does_not_reuse_changed_preparation_context(tmp_path, door, stages, monkeypatch):
@@ -1376,7 +1430,7 @@ def _admit_arguments(tmp_path, monkeypatch, *, members=2, free=None):
     monkeypatch.setattr(go_cli, "memory_gate", lambda plan, experiment=None: asked.append(
         ("memory", plan["source"], Path(plan["config"]).is_file())) or {
             "verdict": "fits", "refuse": False, "warn": False})
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda root: asked.append(("geography", root)))
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda root, **_: asked.append(("geography", root)))
     monkeypatch.setattr(rustwx, "find_renderer", lambda: asked.append(("renderer",)) or Path("rw_wrfbatch"))
     monkeypatch.setattr(go_cli, "admit_render_products",
                         lambda spec, section=None: asked.append(("products", spec)))
@@ -1419,7 +1473,7 @@ def test_each_gate_refuses_before_the_run_folder_is_claimed(gate, words, tmp_pat
         "device": (go_cli, "_require_forecast_device", lambda: None),
         "memory": (go_cli, "memory_gate", lambda plan, experiment=None: {
             "verdict": "fits", "refuse": False, "warn": False}),
-        "geography": (go_cli, "geography_refusal", lambda root: None),
+        "geography": (go_cli, "geography_refusal", lambda root, **_: None),
         "renderer": (rustwx, "find_renderer", lambda: Path("rw_wrfbatch")),
         "products": (go_cli, "admit_render_products", lambda spec, section=None: None),
         "disk": (disk_budget, "free_bytes", lambda path: 2 ** 60)}
@@ -1755,12 +1809,12 @@ def test_prepare_only_admission_needs_geography_and_disk_but_no_forecast_device(
     monkeypatch.setattr(rustwx, "find_renderer", forecast_gate)
     geography = []
     disk = []
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda root: geography.append(root))
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda root, **_: geography.append(root))
     monkeypatch.setattr(recipe_door, "disk_refusal", lambda *a, **k: disk.append(k))
     recipe_door.admit([], config=tmp_path / "case.toml", geog_root=tmp_path,
                       case_root=tmp_path, request=None, options={"prepare_only": True})
     assert geography == [tmp_path] and len(disk) == 1
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda root: "geography is missing")
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda root, **_: "geography is missing")
     with pytest.raises(recipe_door.RecipeRefusal, match="geography is missing"):
         recipe_door.admit([], config=tmp_path / "case.toml", geog_root=tmp_path,
                           case_root=tmp_path, request=None, options={"prepare_only": True})

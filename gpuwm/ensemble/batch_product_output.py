@@ -355,11 +355,12 @@ class NativeDiagnosticSpool:
         unavailable = set(unavailable_fields)
         if set(fields) | unavailable != names or set(fields) & unavailable:
             raise ValueError("diagnostic fields and explicit unavailable fields must partition the requested output contract")
-        device = int(xp.cuda.runtime.getDevice())
+        host = xp is np
+        device = None if host else int(xp.cuda.runtime.getDevice())
         for name, array in fields.items():
             if (not isinstance(array, xp.ndarray) or array.dtype != np.dtype("float32")
                     or array.shape != (len(ids),) + self.shape or not array.flags.c_contiguous
-                    or int(array.device.id) != device):
+                    or (not host and int(array.device.id) != device)):
                 raise ValueError(f"{name} needs resident contiguous float32 (pack_member,y,x) diagnostics")
         valid = str(valid_time)
         frame = self.frames.setdefault(valid, {"valid_time": valid, "domain": self.domain,
@@ -392,7 +393,7 @@ class NativeDiagnosticSpool:
                     continue
                 variable = writer.createVariable(request.field, "float32", ("pack_member", "south_north", "west_east"))
                 variable.units = request.units
-                variable[:] = xp.asnumpy(fields[request.field])
+                variable[:] = fields[request.field] if host else xp.asnumpy(fields[request.field])
         pending.replace(path)
         frame["packs"].append({"path": path, "member_ids": ids,
             "sha256": _sha(path), "bytes": path.stat().st_size})
@@ -884,6 +885,15 @@ class HeadlineDiagnosticCollector:
             self.product_consumer.wait_idle(timeout=timeout)
             from gpuwm.ensemble.collector_resume import save
             return save(self)
+
+    def checkpoint_hold(self):
+        """Hold member submissions and pack retirement while a roster seals.
+
+        Every submit, frame completion and product scheduling takes this
+        lock, so checkpointed members can run on several cards: no other
+        card retires a pack between save_resume and the roster hash.
+        """
+        return self._lock
 
     def restore_resume(self):
         with self._lock:

@@ -93,13 +93,15 @@ _PLUMBING_OR_BLOCKED = {
     # `radar_valid_time`, and the global attributes, which the bridge
     # silently drops from a legacy HDF5 product (see "char+attrs").
     "gpuwm/obs/radar_grid.py": "char+attrs",
+    # The process-wide netCDF4 session lock and the deferred import every
+    # other user here takes since 0b680cac1 (D-10): it opens no dataset.
+    "gpuwm/io/netcdf_serialization.py": "plumbing",
     "gpuwm/offline_child.py": "plumbing",
     "gpuwm/offline_child_run.py": "plumbing",
     "gpuwm/render.py": "plumbing",
-    # One global attribute (SIMULATION_START_DATE) off a wrfout, and None
-    # on any failure -- it decodes no field, so it is identity plumbing.
-    "gpuwm/run_stamp.py": "plumbing",
-    "gpuwm/core/rrtmgp.py": "char",
+    # gpuwm/run_stamp.py and gpuwm/core/rrtmgp.py left this list at D-10
+    # (2.8.8: 0b680cac1 and 1a90daab3): both read through the Rust bridge
+    # now.
     "gpuwm/verify/cases/real74_d01.py": "plumbing",
     "gpuwm/verify/cases/real74_d02.py": "bytes",
     "gpuwm/verify/cases/real74_n5b.py": "plumbing",
@@ -135,6 +137,15 @@ _OPEN_FINDINGS: dict[str, str] = {}
 _BANNED = {"netCDF4", "xarray", "h5py", "h5netcdf"}
 
 
+#: The deferred netCDF4 proxy 0b680cac1 (2.8.8, D-10) made the one
+#: spelling for a module that uses netCDF4: ``from
+#: gpuwm.io.netcdf_serialization import netCDF4``.  Its call sites still read
+#: ``netCDF4.Dataset(...)``, so importing the proxy IS importing netCDF4 for
+#: this sweep; read as an import of ``gpuwm`` alone, every user of the
+#: library went invisible to it at once.
+_DEFERRED_PROXY = ("gpuwm.io.netcdf_serialization", "netCDF4")
+
+
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
     found: set[str] = set()
@@ -143,6 +154,9 @@ def _imports(path: Path) -> set[str]:
             found.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             found.add(node.module.split(".")[0])
+            if node.module == _DEFERRED_PROXY[0] and any(
+                    alias.name == _DEFERRED_PROXY[1] for alias in node.names):
+                found.add(_DEFERRED_PROXY[1])
     return found
 
 

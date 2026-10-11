@@ -136,12 +136,19 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     # is gated by tests/test_mp_accepted_builds.py.
     my2_cfg = dataclasses.replace(d01_cfg, mp_physics=9)
     wdm6_cfg = dataclasses.replace(d01_cfg, mp_physics=16)
+    # FAST_SBM owns the 142 spectral bins, six number moments and their
+    # time-t copies (gpuwm/core/state.py mp==30 arm), classified in the
+    # restart manifest, so it joins the union.
+    fsbm_cfg = dataclasses.replace(d01_cfg, mp_physics=30)
     # Grell-Freitas owns the two names in
     # gpuwm.config.CUMULUS_ADVECTIVE_FORCING_SCHEMES' allocation -- the
     # dycore's exported advective forcing pair (WRF RTHFTEN/RQVFTEN) --
     # and no other configuration allocates them, so the arm joins for the
     # same reason NSSL, P3, MY2 and WDM6 do.
     gf_cfg = dataclasses.replace(d01_cfg, cu_physics=3)
+    # TEMPO (a named scheme) owns the graupel volume pair (volg/volg0) no
+    # ported WRF scheme allocates, so its arm joins the union too.
+    tempo_cfg = dataclasses.replace(d01_cfg, mp_physics=900)
     names = (set(pf.state_array_shapes(d01_cfg))
              | set(pf.state_array_shapes(nssl_cfg))
              | set(pf.state_array_shapes(les_cfg))
@@ -150,7 +157,9 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
              | set(pf.state_array_shapes(p3_cfg))
              | set(pf.state_array_shapes(my2_cfg))
              | set(pf.state_array_shapes(wdm6_cfg))
-             | set(pf.state_array_shapes(gf_cfg)))
+             | set(pf.state_array_shapes(fsbm_cfg))
+             | set(pf.state_array_shapes(gf_cfg))
+             | set(pf.state_array_shapes(tempo_cfg)))
     # Strict WRF arithmetic attaches its own carriers at first write, outside
     # DomainState's allocation list (c501f4d34, lane/wrf-exact-start); they
     # are classified, so they join the union by name.
@@ -471,6 +480,7 @@ def test_scratch_registry_feature_matrix(d01_cfg):
     assert d01["integration_health_flags"] == (1024,)
     assert d01["integration_health_planes"] == (1024,)
     assert d01["integration_health_status_bits"] == (2048,)
+    assert d01["integration_health_rim"] == (1024, 3)
     assert d01["integration_health_validation"] == (4,)
     assert d01["physics_validation_status"] == (1,)
     assert d01["lbc_old_mup_frame_1"] == (
@@ -3269,8 +3279,10 @@ def test_estimate_domain_itemization_pins(exp1):
         # co-located vertical-CFL reduction field: one extra FP32 word in
         # each of the 256 `integration_health_partial` blocks and in the
         # single `health_final` block, 4 * (256 + 1) = 1,028 B.  Batched YSU
-        # validation adds one four-byte scratch status word.
-        "scratch": 596974580,
+        # validation adds one four-byte scratch status word.  The strict
+        # health gate's rim geometry table (a677ad4e1) adds
+        # integration_health_rim, (1024, 3) FP32 words = 12,288 B.
+        "scratch": 596986868,
         "lbc": 67091504,
         "nest": 0,
         # _prepare_atmosphere also allocates rho: 4*49*200*250 bytes.
@@ -3278,7 +3290,7 @@ def test_estimate_domain_itemization_pins(exp1):
     }
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1523330992
+    assert d01.resident_bytes == 1523343280
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 451062500
 
@@ -4117,8 +4129,9 @@ def test_check_cli_legacy_config_wraps(capsys):
     # a further 200,000 B, and the EOS base-thickness correction plus the
     # coefficient drops 9,800,392 B (itemization-pin derivation). The
     # default-on CQ faces add 29,688,200 B, and the held CLDFRA buffer
-    # 9,800,000 B (RULINGS 1).
-    assert payload["domains"]["d01"]["resident_bytes"] == 1523330992
+    # 9,800,000 B (RULINGS 1). The strict health rim table (a677ad4e1) adds
+    # 12,288 B.
+    assert payload["domains"]["d01"]["resident_bytes"] == 1523343280
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,

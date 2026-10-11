@@ -38,7 +38,11 @@ def test_static_owner_uses_captured_bytes_and_original_path_base(tmp_path, monke
 
 
 def test_absent_or_disabled_prepared_overlay_preserves_objects(tmp_path, monkeypatch):
-    baseline, receipt = object(), object()
+    # Since c1227a11a an inert overlay still finalizes terrain
+    # (terrain_autosmooth.prepare_fields reads HGT_M) before preparation;
+    # flat terrain is inside every slope limit, so the objects come back
+    # untouched, which is this cell's question.
+    baseline, receipt = {"HGT_M": np.zeros((4, 5))}, object()
     monkeypatch.setattr(owner, "apply_highres_statics", lambda *a, **k: pytest.fail("inert overlay ran"))
     for config in (None, owner.load_static_highres(_config(tmp_path, enabled=False))):
         fields, evidence = owner.apply_prepared_highres(baseline, None,

@@ -79,6 +79,14 @@ extern "C" __global__ void ensemble_geometry_repeat_words(
 '''
 
 
+#: How many times RRTMGLegacyRadiation.__call__ subscripts each shared surface
+#: field, every one of them as ``surf[field][sel]``: xland at the shortwave call
+#: and again for the aer_opt=3 land/water aerosol type (rrtmg_aer3_type_source =
+#: "landmask").  The audit below refuses on any other count, because an
+#: unrewritten site would read one member's columns for the whole batch.
+_LEGACY_SHARED_SURFACE_SITES = {"xland": 2}
+
+
 def prepare_legacy_member_radiation(original, *, members, available_bytes,
                                    array_module=None, shared_surface_fields=()):
     """Reuse one legacy table/geometry owner and batch both spectra.
@@ -207,7 +215,7 @@ def prepare_legacy_member_radiation(original, *, members, available_bytes,
     tree = MemberColumns().visit(tree)
     if counts != {"shape": 1, "ozone_shape": 1, "lat": 1, "coszen": 1,
                   "day": 1, "night": 1, "lw_selector": 1, "lw_chunk": 1, "sw_chunk": 1, "result": 1,
-                  "surface": len(shared_surface_fields)}:
+                  "surface": sum(_LEGACY_SHARED_SURFACE_SITES[field] for field in shared_surface_fields)}:
         raise ValueError(f"legacy radiation member call-site audit changed: {counts}")
     ast.fix_missing_locations(tree)
     namespace = dict(legacy.RRTMGLegacyRadiation.__call__.__globals__)

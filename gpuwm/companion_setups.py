@@ -329,11 +329,11 @@ def save_setup(*, config_path, library, name):
     raw = copy.deepcopy(original)
     extra_files = {}
     if raw.get("fetch", {}).get("out"):
-        # [fetch].out is relative to the folder the wizard ran in, not to
-        # the TOML, so a verbatim copy would name a different place once
-        # the file sits in the library. Its meaning at save time is what
-        # is preserved.
-        raw["fetch"]["out"] = str(Path(raw["fetch"]["out"]).expanduser().resolve())
+        # [fetch].out is relative to the TOML (D-11), so a verbatim copy
+        # would name a different place once the file sits in the library.
+        # Its meaning at save time is what is preserved.
+        from gpuwm.case_data import config_fetch_out
+        raw["fetch"]["out"] = str(config_fetch_out(original, base_dir=authority.base_dir))
     if resolved_case_data is not None:
         if raw["case_data"].get("wps_namelist"):
             raw["case_data"]["wps_namelist"] = SETUP_WPS
@@ -775,9 +775,10 @@ def retime_to_cycle(config_path, cycle: datetime, out) -> dict:
             f"{new_start:%Y-%m-%dT%H}. Regenerate the config for that cycle "
             "with `gpuwm domain --cycle`.")
     if retimed["fetch"].get("out"):
-        # [fetch].out is relative to the folder the wizard ran in; its
-        # meaning is kept, as saving a setup keeps it.
-        retimed["fetch"]["out"] = str(Path(retimed["fetch"]["out"]).expanduser().resolve())
+        # [fetch].out is relative to the TOML (D-11); its meaning is
+        # kept, as saving a setup keeps it.
+        from gpuwm.case_data import config_fetch_out
+        retimed["fetch"]["out"] = str(config_fetch_out(original, base_dir=authority.base_dir))
     _guard(original, retimed, {"fetch.cycle", "fetch.out", *moved},
            "Moving the cycle changed a setting it must keep: {field}.")
     timed = [{"field": field, "before": str(before), "after": str(after)}

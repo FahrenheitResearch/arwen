@@ -70,8 +70,12 @@ def test_non_fork_import_is_byte_identical_to_the_previous_importer(tmp_path):
     paths = _pair(tmp_path)
     actual, report = import_namelists(*paths, name="same")
     expected, old_report = module.import_namelists(*paths, name="same")
-    assert actual.encode() == expected.encode()
-    assert report.format() == old_report.format()
+    from wrf_clock_lines import (WRF_CLOCK_BLOCK, without_wrf_clock_lines,
+                                 without_wrf_clock_report)
+    # The pinned-clock block and its report lines are 2.8.9's D8 ruling.
+    assert WRF_CLOCK_BLOCK in actual
+    assert without_wrf_clock_lines(actual).encode() == expected.encode()
+    assert without_wrf_clock_report(report.format()) == old_report.format()
 
 
 @pytest.mark.parametrize("name", ["hrrr_configuration_cut.toml",

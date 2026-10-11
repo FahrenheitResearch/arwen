@@ -22,14 +22,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use rw_mpas::static_builder::{
-    build_static_reporting, StaticBuildConfig, StaticGeogPaths, DEFAULT_VALID_TIME,
+    build_static_reporting, build_terrain_reporting, StaticBuildConfig, StaticGeogPaths, DEFAULT_VALID_TIME,
     NOMINAL_DX_CROSS_CHECK_RELATIVE,
 };
 use rw_mpas::staticfile;
 
 /// The literal a bridge contract handshakes on.
 pub const ABI_MARKER: &str = "rw_mpas_static --grid GRID.nc --out STATIC.nc [--geog DIR] \
-[--nominal-dx-m M] [--valid-time YYYY-MM-DD_hh:mm:ss] [--receipt JSON] [--clobber] \
+[--terrain-only] [--nominal-dx-m M] [--valid-time YYYY-MM-DD_hh:mm:ss] [--receipt JSON] [--clobber] \
 | --compare REFERENCE.nc CANDIDATE.nc [--report JSON]";
 
 /// Progress tokens this binary prints, one per stage, tab separated.
@@ -113,6 +113,8 @@ fn usage() -> String {
          THE OUTPUT\n\
          --out            static file to write\n\
          --receipt        write the build receipt as JSON here\n\
+         --terrain-only   write the exact terrain and operator overlay for the vertical\n\
+        \x20                 authority; only the terrain archive is read, no runnable static\n\
          --clobber        replace an existing --out\n\n\
          GRADING\n\
          --compare A B    read two statics and report every field's agreement. Prints one line\n\
@@ -297,6 +299,24 @@ fn main() -> ExitCode {
     };
 
     let started = std::time::Instant::now();
+    if argv.iter().any(|a| a == "--terrain-only") {
+        let receipt = match build_terrain_reporting(&cfg, &|line| println!("{line}")) {
+            Ok(r) => r,
+            Err(e) => { eprintln!("{e}"); return ExitCode::FAILURE; }
+        };
+        println!("WROTE\t{}\t{}\t{}\t{}", receipt.output_path, receipt.output_bytes, receipt.variables.len(), receipt.sha256);
+        if let Some(path) = value(&argv, "--receipt") {
+            let result = serde_json::to_vec_pretty(&receipt)
+                .map_err(|e| e.to_string())
+                .and_then(|json| std::fs::write(&path, json).map_err(|e| e.to_string()));
+            if let Err(error) = result {
+                eprintln!("cannot write {path}: {error}"); return ExitCode::FAILURE;
+            }
+            println!("RECEIPT\t{path}");
+        }
+        println!("FINISHED\t{:.2}", started.elapsed().as_secs_f64());
+        return ExitCode::SUCCESS;
+    }
     let receipt = match build_static_reporting(&cfg, &|line| println!("{line}")) {
         Ok(r) => r,
         Err(e) => {

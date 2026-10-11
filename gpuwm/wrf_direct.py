@@ -401,6 +401,14 @@ _PACKAGE_FIELD_METADATA = {
     "QNIFA2D": ("ice-friendly aerosol number tendency", "# kg(-1) s(-1)"),
 }
 
+# Pure WRF FAST_SBM spectral fields, Registry/registry.sbm:318.
+from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
+_PACKAGE_FIELD_METADATA.update({"EFF_RADIUS":("Effective Radius","Microns"),"ICE_EFF_RADIUS":("Ice Effective Radius","Microns"),"TOT_EFF_RADIUS":("Tot Effective Radius","Microns")})
+_PACKAGE_FIELD_METADATA.update({
+    name:("Spectral bin " + name, "  kg-1" if name.startswith("ff8") else "  kg kg-1")
+    for name in _FSBM_BIN_SPECIES
+})
+
 #: Inventoried wrfinput members ``_PACKAGE_FIELD_METADATA`` has NO row for,
 #: each with the defect that leaves it out.  ``_physics_contract_bundle``
 #: skips an inventoried member this dict does not name WITHOUT A WORD, so a

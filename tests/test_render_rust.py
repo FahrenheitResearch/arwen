@@ -668,7 +668,7 @@ def test_source_label_reaches_the_renderer_invocation(monkeypatch,
     # release cut.
     assert (command[command.index("--source-label") + 1]
             == render_module.default_source_label())
-    assert command[command.index("--source-label") + 1].startswith("ArWen ")
+    assert command[command.index("--source-label") + 1].startswith("WOOF ")
 
     seen.clear()
     render_module.render_wrfouts_rust(

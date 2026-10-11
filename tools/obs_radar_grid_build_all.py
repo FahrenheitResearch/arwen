@@ -88,17 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
                            "coverage (default: 4)")
 
     fetch = p.add_argument_group("fetch")
-    fetch.add_argument("--workers", type=int, default=16,
-                       help="concurrent per-site pipelines (default: 16). "
-                            "Level-II fetch is latency-bound, not "
-                            "bandwidth-bound, so this is the throughput "
-                            "knob that matters and it should exceed the "
-                            "core count")
+    fetch.add_argument("--workers", type=int, default=None,
+                       help="native site pipelines (default: site count bounded by RAM)")
     fetch.add_argument("--compute-workers", type=int, default=None,
-                       help="concurrent superob stages (default: the core "
-                            "count). Bounded separately from --workers "
-                            "because superob is CPU-bound and running it "
-                            "at fetch concurrency only oversubscribes")
+                       help="optional lower bound on concurrent native superob stages")
     fetch.add_argument("--source", default="auto",
                        choices=("archive", "auto", "live"))
     fetch.add_argument("--bucket", default=None)
@@ -173,6 +166,20 @@ def main(argv=None) -> int:
     print(f"discovered {len(coverages)} sites covering the domain",
           file=sys.stderr)
 
+    from tools.da_recent_observations import (require_native_observations,
+        observation_workers, observation_memory, native_observation_threads)
+    from gpuwm.obs.coverage import read_site_table
+    require_native_observations()
+    site_table = read_site_table(binary)
+    native_threads = native_observation_threads(len(coverages), requested=args.workers)
+    retained = observation_memory(grid, [site_table[c.site] for c in coverages], params)
+    sizing = observation_workers(len(coverages), requested=args.workers,
+                                 retained_slot_bytes=retained)
+    sizing['native_threads'] = native_threads
+    compute_workers = min(sizing['workers'], args.compute_workers or sizing['workers'])
+    if compute_workers < 1:
+        raise ValueError('compute workers must be positive; zero would suppress radar processing')
+
     def _progress(outcome):
         mark = "ok " if outcome.contributed else "FAIL"
         print(f"  [{mark}] {outcome.site} {outcome.status}"
@@ -181,8 +188,8 @@ def main(argv=None) -> int:
 
     result = ingest_domain(
         binary, coverages, grid=grid, work_dir=args.work_dir,
-        valid_time=target, params=params, workers=args.workers,
-        compute_workers=args.compute_workers,
+        valid_time=target, params=params, workers=sizing['workers'],
+        compute_workers=compute_workers,
         z_reduce=args.z_reduce, progress=_progress,
         source=args.source, bucket=args.bucket,
         live_bucket=args.live_bucket, cache_dir=args.cache_dir,
@@ -191,6 +198,7 @@ def main(argv=None) -> int:
         max_elevation_deg=args.max_elevation_deg)
 
     payload = result.to_payload()
+    payload['worker_sizing'] = sizing
     payload["requested_valid_time"] = _iso(target)
     payload["domain"] = domain
     payload["range_authority_km"] = range_km

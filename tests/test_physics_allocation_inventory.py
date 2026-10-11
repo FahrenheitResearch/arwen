@@ -170,6 +170,11 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # their empty rows reject any future raw allocation.
     'gpuwm/core/chem_vertmx.py': {},
     'gpuwm/core/ieva.py': {},
+    # The WRF v4.4 Thompson column (thompson_version = "wrf_44") draws its
+    # working fields from state.scratch slots and its coefficient tables
+    # from the per-device table owner; the empty row rejects any future raw
+    # allocation in its step.
+    'gpuwm/core/thompson_column.py': {},
     # Public Jacobi returns two fresh caller-owned arrays and reduces one
     # transient status vector. The CPU witness below checks actual shapes,
     # bytes, input-copy ownership and repeat-call independence.

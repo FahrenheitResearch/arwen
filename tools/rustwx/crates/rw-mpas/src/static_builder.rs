@@ -303,6 +303,12 @@ pub struct DatasetReceipt {
     pub supersample: usize,
     pub destination_bytes: u64,
     pub elapsed_seconds: f64,
+    /// How many neighbour rings this field carried a value across to reach a
+    /// cell with no pixel of its own ([`spread_to_unsampled`]); 0 when every
+    /// cell had one. A cell's value depends on cells up to this many rings
+    /// away, so a static built on a cut of a mesh equals the whole mesh's
+    /// inside the cut only where the cut's rim is farther than this.
+    pub spread_rounds: usize,
 }
 
 /// What goes INTO the static: identity, never duration and never a PATH.
@@ -1059,7 +1065,10 @@ impl KdTree {
         let idx = self.order[mid] as usize;
         let p = self.points[idx];
         let d = (p[0] - t[0]).powi(2) + (p[1] - t[1]).powi(2) + (p[2] - t[2]).powi(2);
-        if d < best.1 {
+        // A cull preserves parent cell order. Choosing the first cell on an
+        // exact tie therefore keeps the same source-pixel owner after a
+        // subset changes the kd tree's traversal order.
+        if d < best.1 || (d == best.1 && idx < best.0) {
             *best = (idx, d);
         }
         let a = self.axis[mid] as usize;
@@ -1070,7 +1079,7 @@ impl KdTree {
             (mid + 1, hi, lo, mid)
         };
         self.search(nlo, nhi, t, best);
-        if delta * delta < best.1 {
+        if delta * delta <= best.1 {
             self.search(flo, fhi, t, best);
         }
     }
@@ -1599,6 +1608,22 @@ impl GeogContext<'_> {
     }
 }
 
+/// True when no pixel of a tile reaches a cell of this mesh.
+///
+/// THE COST THIS REMOVES. Every geography pass used to read every tile of
+/// its dataset whatever the mesh covered, because the destination map is
+/// built per tile and the data was read beside it. On a regional mesh most
+/// tiles map entirely to nobody: measured on a 66,886-cell cut 1,735 km in
+/// radius, the build read the whole 27 GB archive (52.65 million 512-byte
+/// blocks) from a cold disk, 227 s of a 125 MB/s volume, for a region that
+/// covers about 2 % of the globe. A tile whose map is all refusals adds
+/// nothing to any sum, count or category tally, so not reading it changes no
+/// value in the static; the map itself is still built, from geometry alone.
+#[inline]
+fn map_reaches_no_cell(map: &[i32]) -> bool {
+    map.iter().all(|&cell| cell < 0)
+}
+
 /// Add a run of equal-cell contributions with one atomic operation.
 ///
 /// Consecutive source pixels overwhelmingly land in the same destination
@@ -1661,6 +1686,9 @@ fn categorical(
 
     ctx.for_each_tile(&ds.tiles, |tile| {
         let map = ctx.tile_map(&ds, tile, factor)?;
+        if map_reaches_no_cell(&map) {
+            return Ok(());
+        }
         let plane = ds.read_plane(tile, 0)?;
         let sub = factor * factor;
         // One atomic per (cell, category) run rather than per subpixel.
@@ -1778,7 +1806,9 @@ fn spread_to_unsampled(
     let mut used: Vec<usize> = Vec::new();
     let mut accumulator = vec![0.0f64; nz];
     let mut settled: Vec<usize> = Vec::new();
+    let mut rounds = 0usize;
     while wants > 0 {
+        rounds += 1;
         let mut still: Vec<usize> = Vec::with_capacity(pending.len());
         settled.clear();
         for &c in &pending {
@@ -1819,7 +1849,30 @@ fn spread_to_unsampled(
         }
         pending = still;
     }
+    SPREAD_ROUNDS.with(|most| most.set(most.get().max(rounds)));
     Ok(used)
+}
+
+thread_local! {
+    /// The most rings any [`spread_to_unsampled`] on this thread carried a
+    /// value across since [`take_spread_rounds`] last read it. The spread runs
+    /// on the thread that called the pass (after its tile loop), which is the
+    /// thread `build_static_reporting` records each dataset's receipt on.
+    static SPREAD_ROUNDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Read and reset this thread's [`SPREAD_ROUNDS`].
+///
+/// THE BREAKAGE THIS NAMES. A value carried across `r` rings makes a cell
+/// depend on cells `r` rings away, so a static built on a cut of a mesh (the
+/// hex door's halo, which builds geography only around the region it keeps)
+/// equals the whole mesh's static inside the region only where the cut's rim
+/// is more than `r` rings out. Where land holds no valid pixel of a field
+/// (the Antarctic sea-ice margin's albedo, above), `r` can reach hundreds
+/// of rings across open water, and nothing in the file says so. The receipt
+/// carries `r` per dataset, so the door can prove its halo or not use it.
+fn take_spread_rounds() -> usize {
+    SPREAD_ROUNDS.with(|most| most.replace(0))
 }
 
 fn continuous_mean(
@@ -1844,6 +1897,9 @@ fn continuous_mean(
 
     ctx.for_each_tile(&ds.tiles, |tile| {
         let map = ctx.tile_map(&ds, tile, factor)?;
+        if map_reaches_no_cell(&map) {
+            return Ok(());
+        }
         let sub = factor * factor;
         // Count destination mappings once; all planes share the same footprint.
         let mut run_cell = -1i32;
@@ -2008,6 +2064,9 @@ fn soilcomp(
 
     ctx.for_each_tile(&ds.tiles, |tile| {
         let map = ctx.tile_map(&ds, tile, factor)?;
+        if map_reaches_no_cell(&map) {
+            return Ok(());
+        }
         let mut planes = Vec::with_capacity(nz);
         for z in 0..nz {
             planes.push(ds.read_plane(tile, z)?);
@@ -3200,7 +3259,9 @@ pub fn build_static_reporting(
     let mut time_field = |field: &str, path: &Path, factor: usize, f: &mut dyn FnMut() -> MpasResult<(u64, u64)>| -> MpasResult<()> {
         let started = Instant::now();
         memory.event(field, Some(path), "before dataset", None, None, None, vec![]);
+        take_spread_rounds();
         let (plane_bytes, dest_bytes) = f()?;
+        let spread_rounds = take_spread_rounds();
         memory.event(
             field,
             Some(path),
@@ -3228,6 +3289,7 @@ pub fn build_static_reporting(
             supersample: factor,
             destination_bytes: dest_bytes,
             elapsed_seconds: elapsed,
+            spread_rounds,
         });
         Ok(())
     };
@@ -3537,6 +3599,182 @@ pub fn build_static_reporting(
     Ok(receipt)
 }
 
+
+/// The sparse overlay the global vertical authority needs, without unrelated
+/// land, soil, climatology or gravity-wave-drag geography. This is not a
+/// runnable static. Each stored value is produced by the full static's own
+/// terrain and operator paths at the full static's binary32 precision.
+#[derive(Debug, serde::Serialize)]
+pub struct TerrainBuildReceipt {
+    pub schema: String,
+    pub grid_path: String,
+    pub grid_sha256: String,
+    pub output_path: String,
+    pub output_bytes: u64,
+    pub sha256: String,
+    pub datasets: Vec<DatasetReceipt>,
+    pub parallel: TileParallelPlan,
+    pub variables: Vec<String>,
+}
+
+fn write_terrain_overlay(
+    cfg: &StaticBuildConfig,
+    mesh: &Mesh,
+    terrain: &[f32],
+    operators: &OperatorFields,
+) -> MpasResult<()> {
+    if terrain.len() != mesh.n_cells {
+        return Err(MpasError::Refusal("terrain overlay has the wrong cell count".to_string()));
+    }
+    let dims = vec![
+        NcDim::fixed("nCells", mesh.n_cells),
+        NcDim::fixed("nEdges", mesh.n_edges),
+        NcDim::fixed("TWO", 2),
+        NcDim::fixed("FIFTEEN", FIFTEEN),
+        NcDim::fixed("nVertices", mesh.n_vertices),
+        NcDim::fixed("vertexDegree", mesh.vertex_degree),
+        NcDim::fixed("maxEdges2", mesh.max_edges2),
+    ];
+    let float = |name: &str, dimensions: Vec<usize>, units: &str| {
+        NcVarDef::new(name, NcType::Float, dimensions)
+            .with_attrs(vec![NcAttr::text("units", units)])
+    };
+    let mut variables = vec![
+        float("ter", vec![0], "m"),
+        float("areaCell", vec![0], "m^2"),
+        float("dvEdge", vec![1], "m"),
+        float("dcEdge", vec![1], "m"),
+        float("deriv_two", vec![1, 2, 3], "unitless"),
+    ];
+    variables.extend([
+        float("areaTriangle", vec![4], "m^2"),
+        float("kiteAreasOnVertex", vec![4, 5], "m^2"),
+        float("weightsOnEdge", vec![1, 6], "unitless"),
+        float("nominalMinDc", vec![], "m"),
+    ]);
+    for (entity, dimension) in [("Cell", 0), ("Edge", 1), ("Vertex", 4)] {
+        for axis in ["lat", "lon", "x", "y", "z"] {
+            variables.push(NcVarDef::new(&format!("{axis}{entity}"), cfg.coordinates.nc_type(), vec![dimension]));
+        }
+    }
+    let mut attrs = vec![
+        NcAttr::text("rw_mpas_terrain_schema", "rw-mpas-terrain-overlay/v1"),
+        NcAttr::text("rw_mpas_terrain_grid_sha256", crate::sha256_file(&cfg.grid_path)?),
+        NcAttr::text("rw_mpas_terrain_role", "vertical-authority-overlay-not-runnable-static"),
+    ];
+    attrs.push(NcAttr::text("on_a_sphere", "YES"));
+    attrs.push(NcAttr::floats("sphere_radius", vec![mesh.sphere_radius as f32]));
+    attrs.extend(cfg.coordinates.declaration_attributes(mesh.sphere_radius));
+    let mut writer = NcClassicWriter::create(
+        &cfg.out_path, NcFormat::Offset64, dims, attrs, variables, 0,
+    )?;
+    writer.put("ter", NcData::Floats(terrain))?;
+    writer.put("areaCell", NcData::Floats(&f32_from_f64(&mesh.area_cell)))?;
+    writer.put("dvEdge", NcData::Floats(&f32_from_f64(&mesh.dv_edge)))?;
+    writer.put("dcEdge", NcData::Floats(&f32_from_f64(&mesh.dc_edge)))?;
+    writer.put("deriv_two", NcData::Floats(&operators.deriv_two))?;
+    writer.put("areaTriangle", NcData::Floats(&f32_from_f64(&mesh.area_triangle)))?;
+    writer.put("kiteAreasOnVertex", NcData::Floats(&f32_from_f64(&mesh.kite_areas_on_vertex)))?;
+    writer.put("weightsOnEdge", NcData::Floats(&f32_from_f64(&mesh.weights_on_edge)))?;
+    writer.put("nominalMinDc", NcData::Floats(&[cfg.nominal_dx_m.unwrap_or(mesh.nominal_min_dc) as f32]))?;
+    for (name, values) in [
+        ("latCell", &mesh.lat_cell), ("lonCell", &mesh.lon_cell),
+        ("xCell", &mesh.x_cell), ("yCell", &mesh.y_cell), ("zCell", &mesh.z_cell),
+        ("latEdge", &mesh.lat_edge), ("lonEdge", &mesh.lon_edge),
+        ("xEdge", &mesh.x_edge), ("yEdge", &mesh.y_edge), ("zEdge", &mesh.z_edge),
+        ("latVertex", &mesh.lat_vertex), ("lonVertex", &mesh.lon_vertex),
+        ("xVertex", &mesh.x_vertex), ("yVertex", &mesh.y_vertex), ("zVertex", &mesh.z_vertex),
+    ] {
+        if cfg.coordinates.is_binary64() {
+            writer.put(name, NcData::Doubles(values))?;
+        } else {
+            writer.put(name, NcData::Floats(&f32_from_f64(values)))?;
+        }
+    }
+    writer.finish()?;
+    Ok(())
+}
+
+/// Build the full parent terrain and vertical operator overlay exactly,
+/// while omitting every geography field the vertical authority never reads.
+pub fn build_terrain_reporting(
+    cfg: &StaticBuildConfig,
+    progress: &dyn Fn(&str),
+) -> MpasResult<TerrainBuildReceipt> {
+    if cfg.out_path.exists() && !cfg.clobber {
+        return Err(MpasError::Refusal(format!(
+            "{} exists; pass --clobber to replace the terrain overlay", cfg.out_path.display()
+        )));
+    }
+    if !cfg.geog.terrain.join("index").is_file() {
+        return Err(MpasError::Refusal(format!(
+            "terrain overlay needs the terrain dataset {}; the vertical authority cannot invent terrain",
+            cfg.geog.terrain.display()
+        )));
+    }
+    let mesh = Mesh::read(&cfg.grid_path)?;
+    progress(&format!("GRID\t{}\t{}\t{}\t{}", mesh.n_cells, mesh.n_edges, mesh.n_vertices, mesh.sphere_radius));
+    let footprint = dataset_footprint(&cfg.geog.terrain, cfg.supersample, 1)?;
+    // The same conservative mesh/operator resident term used by a full static.
+    let resident = ((mesh.n_cells * (12 + 8 + 4) * 8)
+        + (mesh.n_cells * mesh.max_edges * 4 * 4)
+        + (mesh.n_edges * 2 * FIFTEEN * 4)
+        + (mesh.n_edges * 32)
+        + (mesh.n_vertices * 32)) as u64;
+    let writer_slab = (mesh.n_edges * 2 * FIFTEEN * 4) as u64;
+    let plan = plan_tile_parallelism(
+        "terrain-overlay", resident, footprint.tile_bytes, writer_slab,
+        1024 * 1024 * 1024, resolve_tile_workers(cfg.tile_workers),
+        footprint.map_bytes.min(TILE_MAP_CACHE_CAP_BYTES), cfg.host_memory_limit_bytes,
+    )?;
+    let tree = KdTree::new(&mesh);
+    let cache = TileMapCache::new(plan.tile_map_cache_bytes);
+    let pool = if plan.workers > 1 {
+        Some(rayon::ThreadPoolBuilder::new().num_threads(plan.workers).build()
+            .map_err(|e| MpasError::Refusal(format!("cannot start terrain tile workers: {e}")))?)
+    } else { None };
+    let ctx = GeogContext {
+        mesh: &mesh, tree: &tree, max_d2: mesh.max_search_distance2(),
+        workers: plan.workers, pool: pool.as_ref(), cache: &cache,
+    };
+    let started = Instant::now();
+    take_spread_rounds();
+    let (terrain, dataset) = continuous_mean(&ctx, &cfg.geog.terrain, cfg.supersample, None, false)?;
+    let spread_rounds = take_spread_rounds();
+    if dataset.index.nz() != 1 {
+        return Err(MpasError::Refusal("terrain source must have one plane".to_string()));
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    progress(&format!("GEOGGRID\tter\t{}\t{}\t{}\t{elapsed:.2}",
+        cfg.geog.terrain.display(), dataset.tiles.len(), cfg.supersample));
+    drop(ctx);
+    drop(pool);
+    let operators = build_operator_fields(&mesh.operator_view())?;
+    progress(&format!("OPERATORS\tderiv_two\t{}\t{}", operators.deriv_two.len(), FIFTEEN));
+    write_terrain_overlay(cfg, &mesh, &terrain, &operators)?;
+    let receipt = TerrainBuildReceipt {
+        schema: "rw-mpas-terrain-overlay.build/v1".to_string(),
+        grid_path: cfg.grid_path.display().to_string(),
+        grid_sha256: crate::sha256_file(&cfg.grid_path)?,
+        output_path: cfg.out_path.display().to_string(),
+        output_bytes: std::fs::metadata(&cfg.out_path)?.len(),
+        sha256: crate::sha256_file(&cfg.out_path)?,
+        datasets: vec![DatasetReceipt {
+            field: "ter".to_string(), path: cfg.geog.terrain.display().to_string(),
+            tiles: dataset.tiles.len(), source_plane_bytes: dataset.plane_bytes(),
+            supersample: cfg.supersample, destination_bytes: (terrain.len() * 4) as u64,
+            elapsed_seconds: elapsed, spread_rounds,
+        }],
+        parallel: plan,
+        variables: ["ter", "areaCell", "dvEdge", "dcEdge", "deriv_two", "areaTriangle", "kiteAreasOnVertex", "weightsOnEdge", "nominalMinDc", "latCell", "lonCell", "xCell", "yCell", "zCell", "latEdge", "lonEdge", "xEdge", "yEdge", "zEdge", "latVertex", "lonVertex", "xVertex", "yVertex", "zVertex"].iter().map(|s| s.to_string()).collect(),
+    };
+    if let Some(path) = &cfg.receipt_path {
+        std::fs::write(path, serde_json::to_vec_pretty(&receipt)
+            .map_err(|e| MpasError::Refusal(format!("cannot serialize terrain receipt: {e}")))?)?;
+    }
+    Ok(receipt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3774,6 +4012,31 @@ mod tests {
         assert_eq!(out[1], 100.0);
         assert_eq!(out[3], 100.0);
         assert_eq!(out[2], 100.0, "a uniform source stays uniform");
+    }
+
+    #[test]
+    fn the_rings_a_value_was_carried_across_are_counted_for_the_receipt() {
+        // A ring of 6 with only cell 0 sampled: 1 and 5 settle in the first
+        // round, 2 and 4 in the second, 3 in the third. Cell 3's value comes
+        // from three rings away, and the receipt has to say so: a static
+        // built on a cut whose rim is nearer than that is not the whole
+        // mesh's static there.
+        let n_cells = 6;
+        let (n_edges, cells) = ring(n_cells);
+        let mut out = vec![6.0f32, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut filled = vec![true, false, false, false, false, false];
+        take_spread_rounds();
+        spread_to_unsampled(
+            &mut out, &mut filled, 1, &[1, 2, 3, 4, 5], Vec::new(), n_cells, 2, &n_edges, &cells,
+        )
+        .expect("reachable");
+        assert_eq!(take_spread_rounds(), 3);
+        assert_eq!(take_spread_rounds(), 0, "reading the count resets it");
+        // Nothing to carry: nothing counted.
+        let mut done = vec![true; n_cells];
+        spread_to_unsampled(&mut out, &mut done, 1, &[], Vec::new(), n_cells, 2, &n_edges, &cells)
+            .expect("no work");
+        assert_eq!(take_spread_rounds(), 0);
     }
 
     #[test]
@@ -4536,6 +4799,64 @@ mod tests {
     }
 
     #[test]
+    fn an_equal_split_bound_still_visits_the_lower_indexed_cell() {
+        // The root is cell 1 at x=0,y=0.5. Its nearer branch reaches cell
+        // 2, one unit from the target. Cell 0 in the farther branch is also
+        // one unit away, exactly on the split bound, and has the lower ID.
+        let mut mesh = synthetic_mesh(3);
+        mesh.x_cell = vec![0.0, 0.0, 2.0];
+        mesh.y_cell = vec![0.0, 0.5, 0.0];
+        mesh.z_cell = vec![0.0; 3];
+        assert_eq!(KdTree::new(&mesh).nearest([1.0, 0.0, 0.0]), (0, 1.0));
+    }
+
+    #[test]
+    fn nearest_cell_ties_keep_the_same_owner_after_a_parent_subset() {
+        // These are three distinct centres on a sphere. A source pixel at
+        // (1,0,0) is exactly equidistant from the first two. Removing the
+        // farther third centre changes the kd root and used to change the
+        // pixel's owner, even though both nearest centres are retained.
+        let mut parent = synthetic_mesh(3);
+        let k = std::f64::consts::FRAC_1_SQRT_2;
+        parent.x_cell = vec![0.0, 0.0, -k];
+        parent.y_cell = vec![1.0, -1.0, k];
+        parent.z_cell = vec![0.0; 3];
+        let mut subset = synthetic_mesh(2);
+        subset.x_cell = parent.x_cell[..2].to_vec();
+        subset.y_cell = parent.y_cell[..2].to_vec();
+        subset.z_cell = parent.z_cell[..2].to_vec();
+        let target = [1.0, 0.0, 0.0];
+        let whole = KdTree::new(&parent).nearest(target);
+        let cut = KdTree::new(&subset).nearest(target);
+        assert_eq!(whole, cut, "removing a farther cell moved a tied source pixel");
+        assert_eq!(whole, (0, 2.0), "ties must choose the first retained cell");
+    }
+
+    #[test]
+    fn terrain_overlay_values_are_the_full_static_values_bit_for_bit() {
+        let case = SyntheticCase::build("terrain-overlay");
+        let mesh = synthetic_mesh(120);
+        let (full, _) = run_case(&case, &mesh, 2, 0, "terrain-overlay-full");
+        let overlay = std::env::temp_dir().join(format!("rw-mpas-terrain-overlay-{}.nc", std::process::id()));
+        let _ = std::fs::remove_file(&overlay);
+        let mut config = case.config(overlay.clone(), 2);
+        config.grid_path = full.clone();
+        let full_file = netcrust::File::open(&full).unwrap();
+        let terrain: Vec<f32> = f64v(&full_file, "ter").unwrap().iter().map(|&v| v as f32).collect();
+        write_terrain_overlay(&config, &mesh, &terrain, &zero_operators(&mesh)).unwrap();
+        let overlay_file = netcrust::File::open(&overlay).unwrap();
+        for name in ["ter", "areaCell", "dvEdge", "dcEdge", "deriv_two", "areaTriangle", "kiteAreasOnVertex", "weightsOnEdge", "nominalMinDc", "latCell", "lonCell", "xCell", "yCell", "zCell", "latEdge", "lonEdge", "xEdge", "yEdge", "zEdge", "latVertex", "lonVertex", "xVertex", "yVertex", "zVertex"] {
+            let actual: Vec<u64> = f64v(&overlay_file, name).unwrap().iter().map(|v| v.to_bits()).collect();
+            let expected: Vec<u64> = f64v(&full_file, name).unwrap().iter().map(|v| v.to_bits()).collect();
+            assert_eq!(actual, expected, "terrain overlay {name} moved a stored bit");
+        }
+        assert!(overlay_file.variable("landmask").is_none(), "the terrain overlay must not claim a runnable static");
+        drop(overlay_file);
+        drop(full_file);
+        std::fs::remove_file(overlay).unwrap();
+    }
+
+    #[test]
     fn a_parallel_build_is_byte_identical_to_a_serial_one() {
         // THE GATE. Splitting the tile loop across workers changes the order
         // contributions reach a destination cell.  If any accumulator were
@@ -4559,6 +4880,95 @@ mod tests {
         assert!(
             std::fs::metadata(&serial).expect("serial static").len() > 4096,
             "the comparison must be of a real static, not an empty file"
+        );
+    }
+
+    /// Cells on a 4 degree lattice inside a small lat/lon window, each with
+    /// its vertex 0.02 rad away, so the search radius is a few pixels and the
+    /// far tiles of a global source map to nobody.
+    fn synthetic_regional_mesh() -> Mesh {
+        let mut mesh = synthetic_mesh(50);
+        let (mut lat, mut lon) = (Vec::new(), Vec::new());
+        for j in 0..5 {
+            for i in 0..10 {
+                lat.push((10.0 + 4.0 * j as f64).to_radians());
+                lon.push((2.0 + 4.0 * i as f64).to_radians());
+            }
+        }
+        let r = MPAS_EARTH_RADIUS_M;
+        for c in 0..50 {
+            let p = xyz(r, lat[c], lon[c]);
+            mesh.x_cell[c] = p[0];
+            mesh.y_cell[c] = p[1];
+            mesh.z_cell[c] = p[2];
+            let v = xyz(r, lat[c] + 0.02, lon[c]);
+            mesh.x_vertex[c] = v[0];
+            mesh.y_vertex[c] = v[1];
+            mesh.z_vertex[c] = v[2];
+        }
+        mesh.lat_cell = lat;
+        mesh.lon_cell = lon;
+        mesh
+    }
+
+    #[test]
+    fn a_tile_no_cell_reaches_is_never_read_and_moves_no_byte() {
+        // The breakage this would be: skipping a tile some pixel of which
+        // reaches a cell. Every tile the regional mesh does not reach is
+        // replaced by an empty file in a copy of the archive; reading one
+        // would fail, so the copy builds only if those tiles are skipped,
+        // and it must write the same bytes as the intact archive.
+        let case = SyntheticCase::build("skip");
+        let mesh = synthetic_regional_mesh();
+        let (intact, _) = run_case(&case, &mesh, 4, 0, "skip-intact");
+
+        let tree = KdTree::new(&mesh);
+        let cache = TileMapCache::new(0);
+        let ctx = GeogContext {
+            mesh: &mesh,
+            tree: &tree,
+            max_d2: mesh.max_search_distance2(),
+            workers: 1,
+            pool: None,
+            cache: &cache,
+        };
+        let copy = |from: &PathBuf, tag: &str| -> (PathBuf, usize, usize) {
+            let to = std::env::temp_dir().join(format!(
+                "rw-mpas-static-{}-gutted-{tag}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&to);
+            std::fs::create_dir_all(&to).expect("copy directory");
+            for entry in std::fs::read_dir(from).expect("fixture listing") {
+                let entry = entry.expect("fixture entry");
+                std::fs::copy(entry.path(), to.join(entry.file_name())).expect("fixture copy");
+            }
+            let ds = GeogDataset::open(&to).expect("copy opens");
+            let (mut emptied, mut kept) = (0usize, 0usize);
+            for tile in &ds.tiles {
+                if map_reaches_no_cell(&ctx.tile_map(&ds, tile, 2).expect("tile map"))
+                    && map_reaches_no_cell(&ctx.tile_map(&ds, tile, 1).expect("tile map"))
+                {
+                    std::fs::write(&tile.path, b"").expect("empty the tile");
+                    emptied += 1;
+                } else {
+                    kept += 1;
+                }
+            }
+            (to, emptied, kept)
+        };
+        let (cont12, emptied, kept) = copy(&case.cont12, "cont12");
+        let (cat, _, _) = copy(&case.cat, "cat");
+        let (comp, _, _) = copy(&case.comp, "comp");
+        assert!(emptied > 0 && kept > 0, "the case reaches every tile or none: {emptied} emptied, {kept} kept");
+        // cont1 also feeds the soil temperature, which samples whole planes,
+        // so it stays intact; the other three cover every skipping pass.
+        let gutted = SyntheticCase { cont1: case.cont1.clone(), cont12, cat, comp };
+        let (skipped, _) = run_case(&gutted, &mesh, 4, 0, "skip-gutted");
+        assert_eq!(
+            sha256_file(&intact).expect("intact digest"),
+            sha256_file(&skipped).expect("gutted digest"),
+            "emptying tiles no cell reaches moved the static"
         );
     }
 

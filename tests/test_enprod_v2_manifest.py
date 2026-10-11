@@ -125,6 +125,30 @@ def test_a_damaged_member_is_refused_by_name(tmp_path, damage, words):
     assert "2-member ensemble" in str(caught.value)
 
 
+def test_removed_member_histories_name_the_retention_and_restore_remedies(tmp_path):
+    run, _ = _v2_run(tmp_path, members=(0, 1, 2, 3), frames=4)
+    for history in (run / "members").rglob("wrfout_d01_*"):
+        history.unlink()
+    with pytest.raises(enprod.EnsembleRefusal) as caught:
+        enprod.load_manifest(run)
+    message = str(caught.value)
+    assert "4-member ensemble" in message
+    assert "member 0: its history" in message
+    assert "member 3: no d01 history recorded" in message
+    assert "restore" in message.lower()
+    assert "--keep-member-files" in message
+
+
+def test_size_damage_does_not_claim_member_histories_were_removed(tmp_path):
+    run, _ = _v2_run(tmp_path)
+    history = run / "members/member-0001/wrfout/wrfout_d01_2026-10-08_07_00_00"
+    history.write_bytes(b"stale")
+    with pytest.raises(enprod.EnsembleRefusal) as caught:
+        enprod.load_manifest(run)
+    assert "where the run recorded" in str(caught.value)
+    assert "--keep-member-files" not in str(caught.value)
+
+
 def test_the_engine_gets_a_v1_roster_of_the_validated_members(tmp_path):
     run, _ = _v2_run(tmp_path)
     roster = enprod.load_manifest(run)

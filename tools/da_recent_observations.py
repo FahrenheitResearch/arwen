@@ -18,7 +18,8 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+import tempfile
+from concurrent.futures import Future, ThreadPoolExecutor
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +28,8 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from tools.da_object_fetch import timed
+from gpuwm.filesystem_paths import replace_file_with_retry
 UTC = dt.timezone.utc
 NS = {"s": "http://s3.amazonaws.com/doc/2006-03-01/"}
 BUCKETS = {"unidata-nexrad-level2", "noaa-nexrad-level2", "noaa-mrms-pds",
@@ -103,7 +106,18 @@ def case_surface_networks(case):
 def save(path, doc):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(doc, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    content = json.dumps(doc, indent=2, allow_nan=False) + "\n"
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="."+path.name+".", suffix=".partial", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+        # A Windows reader holding the receipt refuses a plain os.replace.
+        replace_file_with_retry(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
 
 
 def validate_case(doc):
@@ -159,22 +173,12 @@ def truth_bbox(doc):
 def list_objects(bucket, prefix, *, timeout=30):
     if bucket not in BUCKETS:
         raise ValueError("not an allowed anonymous public bucket")
-    token = None
-    while True:
-        query = {"list-type": "2", "prefix": prefix, "max-keys": 1000}
-        if token:
-            query["continuation-token"] = token
-        url = f"https://{bucket}.s3.amazonaws.com/?" + urllib.parse.urlencode(query)
-        with urllib.request.urlopen(url, timeout=timeout) as response:
-            tree = ET.fromstring(response.read())
-        for row in tree.findall("s:Contents", NS):
-            yield {"bucket": bucket, "key": row.findtext("s:Key", namespaces=NS),
-                   "bytes": int(row.findtext("s:Size", namespaces=NS)),
-                   "etag": row.findtext("s:ETag", namespaces=NS),
-                   "last_modified": row.findtext("s:LastModified", namespaces=NS)}
-        token = tree.findtext("s:NextContinuationToken", namespaces=NS)
-        if not token:
-            break
+    from tools.da_object_fetch import events
+    for event in events("inventory", {"sources": [{"bucket": bucket, "prefix": prefix}], "timeout_seconds": timeout}):
+        if event["phase"] == "object":
+            yield {key: event[key] for key in ("bucket", "key", "bytes", "etag", "last_modified")}
+        elif event["phase"] == "source" and event["status"] == "unavailable":
+            raise ValueError(event["error"])
 
 
 def object_time(key):
@@ -185,7 +189,8 @@ def object_time(key):
     return dt.datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").replace(tzinfo=UTC)
 
 
-def inventory(doc, *, listing=list_objects, first_slot_only=False, model_requests=None):
+@timed("fetch.inventory")
+def inventory(doc, *, listing=list_objects, first_slot_only=False, model_requests=None, on_object=None):
     origin, analyses = validate_case(doc)
     if first_slot_only:
         analyses = analyses[:1]
@@ -194,6 +199,33 @@ def inventory(doc, *, listing=list_objects, first_slot_only=False, model_request
     age = doc.get("radar_max_age_seconds", 900)
     dates = sorted({stamp.date() for stamp in [origin, *analyses]})
     radar_rows = {site: [] for site in doc["radar_sites"]}
+    model_requests = model_request_rows(([] if first_slot_only else doc.get("model_requests", []))
+                                       if model_requests is None else model_requests)
+    if listing is list_objects:
+        from tools.da_object_fetch import events
+        plans = {(bucket, f"{day:%Y/%m/%d}/{site}/") for day in dates for site in radar_rows}
+        if not first_slot_only:
+            for day in {(analyses[-1]+dt.timedelta(hours=h)).date() for h in range(7)}:
+                plans.update(("noaa-mrms-pds", f"CONUS/{product}/{day:%Y%m%d}/") for product in TRUTH_PRODUCTS)
+        for request in model_requests:
+            raw_path(Path("."), request)
+            key = request["key"]
+            prefix = key.rsplit("/", 1)[0] + "/" + ".".join(Path(key).name.split(".")[:2]) + "."
+            plans.add((request["bucket"], prefix))
+        cached = {identity: [] for identity in plans}
+        faults = {}
+        for event in events("inventory", {"sources": [{"bucket": b, "prefix": p} for b, p in sorted(plans)], "timeout_seconds": 30}):
+            if event["phase"] == "object":
+                row = {key: event[key] for key in ("bucket", "key", "bytes", "etag", "last_modified")}
+                cached[(event["bucket"], event["source"])].append(row)
+                if on_object is not None:
+                    on_object(row)
+            elif event["phase"] == "source" and event["status"] == "unavailable":
+                faults[(event["bucket"], event["prefix"])] = event["error"]
+        def listing(bucket, prefix):
+            if (bucket, prefix) in faults:
+                raise ValueError(faults[(bucket, prefix)])
+            return iter(cached[(bucket, prefix)])
     for day in dates:
         for site in radar_rows:
             prefix = f"{day:%Y/%m/%d}/{site}/"
@@ -233,7 +265,6 @@ def inventory(doc, *, listing=list_objects, first_slot_only=False, model_request
                     rows[(row["bucket"], row["key"])] = row
             except (urllib.error.URLError, OSError, ValueError) as error:
                 sources.append({"bucket": "noaa-mrms-pds", "prefix": prefix, "status": "unavailable", "error": str(error)})
-    model_requests = model_request_rows(([] if first_slot_only else doc.get("model_requests", [])) if model_requests is None else model_requests)
     grouped = {}
     for request in model_requests:
         bucket, key = request["bucket"], request["key"]
@@ -273,41 +304,40 @@ def raw_path(root, row):
     return path
 
 
+@timed("fetch.object")
 def _download(row, path):
-    url = f"https://{row['bucket']}.s3.amazonaws.com/" + urllib.parse.quote(row["key"], safe="/")
-    temporary = path.with_name(path.name + ".partial")
-    if temporary.exists():
-        raise ValueError("owned incomplete fetch already exists")
-    with urllib.request.urlopen(url, timeout=60) as source, temporary.open("xb") as target:
-        if row.get("etag") and source.headers.get("ETag") != row["etag"]:
-            raise ValueError("object ETag differs from frozen inventory")
-        received = 0
-        for block in iter(lambda: source.read(1 << 20), b""):
-            received += len(block)
-            if received > row["bytes"]:
-                raise ValueError("object grew beyond frozen inventory")
-            target.write(block)
-    if temporary.stat().st_size != row["bytes"]:
-        raise ValueError("object size differs from frozen inventory")
-    temporary.replace(path)
-    return {**row, "path": str(path), "sha256": sha(path), "fetched_at_utc": iso(dt.datetime.now(UTC))}
+    from tools.da_object_fetch import download
+    result = list(download([{**row, "destination": str(path)}]))
+    if len(result) != 1:
+        raise ValueError("Rust fetch did not verify exactly one frozen object")
+    return result[0]
 
 
+@timed("fetch.inputs")
 def fetch(doc, root, receipt, max_gib, *, reuse_receipt=None, reuse_receipt_sha256=None, streams=1):
     if not math.isfinite(max_gib) or max_gib <= 0:
         raise ValueError("positive finite size cap required")
-    objects = doc["objects"]
-    if any(type(row.get("bytes")) is not int or row["bytes"] < 1 for row in objects):
+    all_objects = doc["objects"]
+    forecast = bool(doc.get("slots") and doc.get("case"))
+    radar_keys = {(doc["case"].get("radar_bucket", "unidata-nexrad-level2"), key)
+                  for slot in doc.get("slots", []) for keys in slot["radar_candidates"].values() for key in keys}
+    deferred = [row for row in all_objects if forecast and (row["bucket"], row["key"]) in radar_keys]
+    truth_rows = [row for row in all_objects if forecast and row["bucket"] == "noaa-mrms-pds"]
+    objects = [row for row in all_objects if row not in deferred and row not in truth_rows]
+    if type(streams) is not int or not 1 <= streams <= 64:
+        raise ValueError("fetch streams must be 1..64; Rust chooses the bounded transfer count")
+    if any(type(row.get("bytes")) is not int or row["bytes"] < 1 for row in all_objects):
         raise ValueError("invalid object size")
-    if sum(row["bytes"] for row in objects) > max_gib * 2**30:
+    if sum(row["bytes"] for row in all_objects) > max_gib * 2**30:
         raise ValueError("inventory exceeds fetch size cap")
     root = Path(root).resolve()
+    all_paths = [raw_path(root, row) for row in all_objects]
     paths = [raw_path(root, row) for row in objects]
-    if len(set(paths)) != len(paths):
+    if len(set(all_paths)) != len(all_paths):
         raise ValueError("duplicate public object destination")
     ancestors = {}
     if reuse_receipt is not None:
-        if (reuse_receipt.get("schema") != "da-rerun.recent-fetch.v1" or reuse_receipt.get("status") != "complete"
+        if (reuse_receipt.get("schema") not in ("da-rerun.recent-fetch.v1", "da-rerun.recent-fetch.v2") or reuse_receipt.get("status") != "complete"
                 or not isinstance(reuse_receipt_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", reuse_receipt_sha256) is None):
             raise ValueError("reuse needs a COMPLETE ancestor fetch receipt and its file SHA256")
         for row in reuse_receipt.get("objects", []):
@@ -326,21 +356,41 @@ def fetch(doc, root, receipt, max_gib, *, reuse_receipt=None, reuse_receipt_sha2
     lock = root / ".recent-observation-fetch.lock"
     fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(fd)
-    if type(streams) is not int or not 1 <= streams <= 64:
-        raise ValueError("fetch streams must be 1..64")
     rows, reused, downloaded = [], 0, 0
     order = {(row["bucket"], row["key"]): index for index, row in enumerate(objects)}
-    guard = threading.Lock()
+    truth = None
+    deferred_rows = [{**row, "destination": str(raw_path(root, row))} for row in deferred]
+    def validate_deferred():
+        for row in deferred_rows:
+            path = Path(row["destination"])
+            old = ancestors.get((row["bucket"], row["key"]))
+            if path.exists():
+                if (old is None or path.is_symlink() or path.stat().st_size != row["bytes"]
+                        or any(old.get(field) != row.get(field) for field in ("bytes", "etag", "last_modified"))
+                        or sha(path) != old.get("sha256")):
+                    raise ValueError("deferred radar cache is not verified by a complete ancestor")
+                row.update(path=str(path), sha256=old["sha256"], fetched_at_utc=old["fetched_at_utc"])
+            elif old is not None:
+                raise ValueError("tracked ancestor radar object is missing")
     def write_fetch(status):
         # Rows keep the frozen inventory order whatever order streams finish.
         rows.sort(key=lambda row: order[(row["bucket"], row["key"])])
-        save(receipt, {"schema": "da-rerun.recent-fetch.v1", "objects": rows,
-                       "status": status, "fetch_processes": 1, "fetch_streams": streams,
+        value = {"schema": "da-rerun.recent-fetch.v2" if forecast else "da-rerun.recent-fetch.v1", "objects": rows,
+                       "status": status, "fetch_processes": 1, "fetch_streams": min(32, len(objects)),
                        "inventory_sha256": document_sha(doc),
                        "ancestor_receipt_sha256": reuse_receipt_sha256,
-                       "reused_objects": reused, "downloaded_objects": downloaded})
+                       "reused_objects": reused, "downloaded_objects": downloaded}
+        if forecast:
+            value.update(scope="forecast", deferred_objects=deferred_rows,
+                         deferred_truth=truth_rows, truth=truth,
+                         raw_root=str(root), receipt_path=str(Path(receipt).resolve()))
+        save(receipt, value)
     pending = []
     try:
+        validate_deferred()
+        if truth_rows:
+            from tools.da_object_fetch import start_truth
+            truth = start_truth(doc, root, Path(receipt).with_name(Path(receipt).name + ".truth.json"), max_gib)
         for row, path in zip(objects, paths):
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.exists():
@@ -358,16 +408,12 @@ def fetch(doc, root, receipt, max_gib, *, reuse_receipt=None, reuse_receipt_sha2
             if (row["bucket"], row["key"]) in ancestors:
                 raise ValueError("tracked ancestor raw object is missing; refusing to fabricate reuse")
             pending.append((row, path))
-        def one(item):
-            nonlocal downloaded
-            done = _download(*item)
-            with guard:
+        if pending:
+            from tools.da_object_fetch import download
+            for done in download([{**row, "destination": str(path)} for row, path in pending]):
                 rows.append(done)
                 downloaded += 1
                 write_fetch("in-progress")
-        with ThreadPoolExecutor(max_workers=streams) as pool:
-            for result in pool.map(one, pending):
-                pass
         write_fetch("complete")
     finally:
         lock.unlink()
@@ -471,16 +517,38 @@ def validate_contribution(contribution):
         raise ValueError("requested dual-pol QC did not produce its account")
 
 
-def validate_fetched(inv, fetched):
-    if (fetched.get("schema") != "da-rerun.recent-fetch.v1"
+def validate_fetched(inv, fetched, *, purpose="forecast"):
+    if fetched.get("scope") == "truth" and purpose != "truth":
+        raise ValueError("truth-only fetch receipt cannot feed forecast observations; required radar/model sources are absent")
+    if (fetched.get("schema") not in ("da-rerun.recent-fetch.v1", "da-rerun.recent-fetch.v2")
             or fetched.get("status") != "complete"
             or fetched.get("inventory_sha256") != document_sha(inv)):
         raise ValueError("complete hash-bound public fetch receipt required")
-    expected = {(row["bucket"], row["key"]): row for row in inv["objects"]}
+    expected = {(row["bucket"], row["key"]): row for row in inv["objects"]
+                if fetched.get("scope") != "truth" or row["bucket"] == "noaa-mrms-pds"}
     actual = {(row["bucket"], row["key"]): row for row in fetched["objects"]}
-    if len(actual) != len(fetched["objects"]) or actual.keys() != expected.keys():
+    planned = fetched.get("deferred_objects", []) + fetched.get("deferred_truth", [])
+    if planned:
+        if fetched.get("schema") != "da-rerun.recent-fetch.v2" or fetched.get("scope") != "forecast":
+            raise ValueError("deferred observations require the explicit forecast receipt contract")
+        allowed_radar = {(inv["case"].get("radar_bucket", "unidata-nexrad-level2"), key)
+                         for slot in inv["slots"] for keys in slot["radar_candidates"].values() for key in keys}
+        for row in planned:
+            key = row["bucket"], row["key"]
+            if key in actual or key not in expected or any(row.get(field) != expected[key].get(field)
+                    for field in ("bytes", "etag", "last_modified")):
+                raise ValueError("deferred source metadata differs from frozen inventory")
+            if row in fetched.get("deferred_objects", []):
+                if key not in allowed_radar or Path(row["destination"]).resolve() != raw_path(fetched["raw_root"], row):
+                    raise ValueError("deferred radar destination or candidate roster differs from frozen inventory")
+            elif row["bucket"] != "noaa-mrms-pds":
+                raise ValueError("only scoring truth may be deferred outside radar candidates")
+            actual[key] = row
+    if len(actual) != len(fetched["objects"])+len(planned) or actual.keys() != expected.keys():
         raise ValueError("fetch receipt object roster differs from frozen inventory")
     for key, row in actual.items():
+        if row in planned and "path" not in row:
+            continue
         path = Path(row["path"])
         if (any(row.get(field) != expected[key].get(field) for field in ("bytes", "etag", "last_modified"))
                 or path.stat().st_size != row["bytes"] or sha(path) != row["sha256"]):
@@ -501,13 +569,15 @@ def _site_volume(site, keys, raw, case, analysis, work, binary, grid, params, de
                  superob):
     """Newest complete causal volume of one site: (contribution, source, refusals)."""
     refusals = []
-    for key in keys:
+    for key in sorted(keys, key=lambda value: object_time(value) or dt.datetime.min.replace(tzinfo=UTC), reverse=True):
         row = raw[(case.get("radar_bucket", "unidata-nexrad-level2"), key)]
         try:
             causal_object(row, analysis)
         except ValueError as error:
             refusals.append({"site": site, "key": key, "reason": str(error)})
             continue
+        if "path" not in row:
+            row.update(_download(row, Path(row["destination"])))
         pack = work / (Path(key).name + ".pack")
         decode(binary, volume=Path(row["path"]), out=pack, moments=("REF", "VEL", "RHO"),
                max_range_km=250.0, max_elevation_deg=20.0, censor_flags=True)
@@ -536,7 +606,240 @@ def _site_volume(site, keys, raw, case, analysis, work, binary, grid, params, de
     return None, None, refusals
 
 
-def prepare(inv, fetched, grid_path, out, *, workers=1):
+def available_memory_bytes():
+    """Available host RAM, bounded by the current cgroup's remaining RAM."""
+    values = []
+    try:
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            if line.startswith('MemAvailable:'):
+                values.append(int(line.split()[1]) * 1024)
+        # A v2 container can have less memory than the host advertises.
+        group = next(line.split(':', 2)[2] for line in
+                     Path('/proc/self/cgroup').read_text().splitlines()
+                     if line.startswith('0::'))
+        mount = Path('/sys/fs/cgroup')
+        roots = [mount]
+        root = (mount / group.lstrip('/')).resolve()
+        while root.is_relative_to(mount) and root != mount:
+            roots.append(root)
+            root = root.parent
+        for root in roots:
+            try:
+                limit = (root / 'memory.max').read_text().strip()
+                if limit != 'max':
+                    values.append(max(0, int(limit) - int((root / 'memory.current').read_text())))
+            except (OSError, ValueError):
+                continue
+    except (OSError, StopIteration, ValueError):
+        pass
+    if not values:
+        raise ValueError('cannot measure available RAM; unbounded observation workers could exhaust memory')
+    return min(values)
+
+
+def observation_workers(site_count, slot_count=1, *, requested=None,
+                        available_bytes=None, worker_bytes=2 * 2**30,
+                        retained_slot_bytes=0):
+    """Size native work, including results retained until the ordered merge.
+
+    worker_bytes is a conservative scratch allowance, replaceable by a measured
+    peak in callers. Retained outputs are separately reserved for every slot.
+    """
+    if site_count < 1 or slot_count < 1 or worker_bytes < 1 or retained_slot_bytes < 0:
+        raise ValueError('positive site, slot and worker sizes required')
+    if requested is not None and requested < 1:
+        raise ValueError('workers must be positive; zero would suppress observations')
+    available = available_memory_bytes() if available_bytes is None else int(available_bytes)
+    budget = available * 4 // 5
+    slots = min(slot_count, budget // (retained_slot_bytes + worker_bytes))
+    if slots < 1:
+        raise ValueError('available RAM cannot hold one observation slot and native worker; prevents OOM and incomplete observations')
+    wanted = min(site_count, requested if requested is not None else site_count)
+    count = min(wanted, (budget - slots * retained_slot_bytes) // (slots * worker_bytes))
+    return {'workers': int(count), 'slot_workers': int(slots),
+            'total_workers': int(count * slots),
+            'site_count': site_count, 'slot_count': slot_count,
+            'available_bytes': available, 'budget_bytes': budget,
+            'worker_scratch_bytes': worker_bytes, 'retained_slot_bytes': retained_slot_bytes,
+            'reserve_fraction': 0.2}
+
+
+def native_observation_threads(site_count, slot_count=1, requested=None):
+    from gpuwm.obs import superob_bridge
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else (os.cpu_count() or 1)
+    per_worker = max(1, int(os.environ.get('RAYON_NUM_THREADS', '2')))
+    wanted = min(site_count, requested if requested is not None else site_count)
+    return superob_bridge.configure_threads(min(cores, max(1, wanted * slot_count * per_worker)))
+
+
+def observation_memory(grid, sites, params):
+    """Reserve native accumulator and merge buffers from Rust reach windows."""
+    from gpuwm.obs.superob import horizontal_window
+    cells = []
+    for site in sites:
+        j0, j1, i0, i1 = horizontal_window(grid, site, params)
+        cells.append(grid.nz * (j1 - j0 + 1) * (i1 - i0 + 1))
+    # 16 eight-byte accumulator planes plus windowed merge outputs and copies.
+    # Full-grid output/writer buffers are also live during the merge.
+    retained = 256 * sum(cells) + 256 * grid.nz * grid.ny * grid.nx
+    return retained
+
+
+def require_native_observations():
+    from gpuwm.obs import superob_bridge
+    if superob_bridge.python_reference_requested():
+        raise ValueError('parallel observation preparation requires Rust superob; the Python reference cannot be pooled')
+    superob_bridge.library()
+
+
+def process_tree_rss_bytes():
+    """RSS of this process and its children, without reading command lines."""
+    pending, seen, total = [os.getpid()], set(), 0
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        root = Path('/proc') / str(pid)
+        try:
+            for line in (root / 'status').read_text().splitlines():
+                if line.startswith('VmRSS:'):
+                    total += int(line.split()[1]) * 1024
+            # A subprocess can belong to any thread, not just the main thread.
+            for task in (root / 'task').iterdir():
+                try:
+                    pending.extend(int(value) for value in (task / 'children').read_text().split())
+                except (OSError, ValueError):
+                    pass
+        except (OSError, ValueError):
+            pass
+    return total
+
+
+class ObservationRss:
+    """Sample the native process tree. Short-lived peaks can fall between samples."""
+    def __enter__(self):
+        self.before = self.peak = process_tree_rss_bytes()
+        self.stop = threading.Event()
+        def sample():
+            while not self.stop.wait(.05):
+                self.peak = max(self.peak, process_tree_rss_bytes())
+        self.thread = threading.Thread(target=sample, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop.set()
+        self.thread.join()
+        self.peak = max(self.peak, process_tree_rss_bytes())
+
+    def receipt(self):
+        return {'before_tree_rss_bytes': self.before, 'peak_tree_rss_bytes': self.peak,
+                'incremental_peak_bytes': max(0, self.peak - self.before),
+                'sample_seconds': .05, 'basis': 'sampled RSS; shared pages counted per process'}
+
+
+def observation_stage(stage, out, **attrs):
+    from gpuwm.timeline.ledger import Ledger, span
+    thread = threading.get_ident()
+    attrs = {**attrs, 'thread': thread,
+             'span_id': f"{stage}:{attrs.get('slot', '')}:{attrs.get('site', '')}:{thread}"}
+    return span(stage, ledger=Ledger(Path(out) / 'timeline.jsonl', product='da'), attrs=attrs)
+
+
+def _truth_status(out, status, **fields):
+    """Publish the completion marker only after truth.json is complete."""
+    target = Path(out) / 'truth-job-status.json'
+    temporary = target.with_suffix('.tmp')
+    save(temporary, {'schema': 'da-rerun.truth-job.v1', 'status': status, **fields})
+    replace_file_with_retry(temporary, target)
+
+
+def start_truth(inv, fetched, out, center_lon, center_lat, *, wait_claim=True):
+    """Start optional verification work without making forecast wait for it.
+
+    The scorer must call join_truth on this directory before reading truth.json.
+    A failed decode leaves a terminal receipt, not a forecast failure.
+    """
+    out = Path(out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    job = out / 'truth-job.json'
+    from tools.da_object_fetch import fetch_binding
+    identity = {'inventory_sha256': document_sha(inv),
+                'fetch_receipt_sha256': fetch_binding(fetched),
+                'center_lon': center_lon, 'center_lat': center_lat}
+    # An exclusive job claim prevents duplicate writers to the same packs.
+    try:
+        with job.open('x', encoding='utf-8') as stream:
+            json.dump(identity, stream, sort_keys=True)
+    except FileExistsError:
+        # Another creator can hold the exclusive file open before its buffered
+        # JSON reaches disk. Do not mistake that short startup window for stale
+        # truth, and never launch a second writer while waiting for its claim.
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                existing = json.loads(job.read_text())
+                break
+            except json.JSONDecodeError:
+                if not wait_claim:
+                    raise ValueError('truth input claim is incomplete; duplicate pack writers are refused')
+                if time.monotonic() >= deadline:
+                    raise ValueError('truth input claim is incomplete; duplicate pack writers are refused')
+                time.sleep(.01)
+        if existing != identity:
+            raise ValueError('truth output belongs to different inputs; prevents scoring against stale truth')
+        return {'out': str(out), **identity}
+    save(out / 'background-inventory.json', inv)
+    save(out / 'background-fetch.json', fetched)
+    command = [sys.executable, str(Path(__file__).resolve()), 'truth',
+        '--inventory', str(out / 'background-inventory.json'),
+        '--fetch-receipt', str(out / 'background-fetch.json'), '--out', str(out),
+        '--center-lon', str(center_lon), '--center-lat', str(center_lat), '--background-worker']
+    _truth_status(out, 'RUNNING', command=command)
+    try:
+        with (out / 'background-truth.log').open('w', encoding='utf-8') as log:
+            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                       start_new_session=(os.name != 'nt'))
+        # The child publishes terminal status. Do not race it by rewriting RUNNING.
+        save(out / 'truth-process.json', {'pid': process.pid, 'command': command})
+    except OSError as error:
+        _truth_status(out, 'FAILED', error=f'{type(error).__name__}: {error}')
+        print(f'truth preparation failed to start; verification unavailable: {error}; see {out}', file=sys.stderr)
+    return {'out': str(out), **identity}
+
+
+def join_truth(out, *, timeout_seconds=1800):
+    """Scoring-only join. Never interpret a partial pack tree as truth."""
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError('positive finite truth join timeout required')
+    from gpuwm.ingest.boundary_stream import read_replaced_json
+    out = Path(out).resolve()
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        status_path = out / 'truth-job-status.json'
+        # The truth job replaces this receipt while it runs; on Windows a
+        # read that meets the replace is refused for a moment.
+        status = read_replaced_json(status_path) if status_path.exists() else {}
+        if status.get('status') == 'COMPLETE':
+            path = out / 'truth.json'
+            if not path.is_file() or sha(path) != status.get('truth_sha256'):
+                raise ValueError('completed truth hash mismatch; prevents scoring partial or changed truth')
+            return json.loads(path.read_text())
+        if status.get('status') == 'FAILED':
+            raise RuntimeError(f"truth decode failed; verification unavailable: {status.get('error')}; see {out / 'background-truth.log'}")
+        time.sleep(0.1)
+    raise TimeoutError(f'truth decode did not complete; scoring partial truth is refused; see {out}')
+
+
+def prepare(inv, fetched, grid_path, out, *, workers=None, truth_out=None):
+    with ObservationRss() as rss:
+        result = _prepare(inv, fetched, grid_path, out, workers=workers, truth_out=truth_out)
+    save(Path(out) / 'peak-rss.json', rss.receipt())
+    return result
+
+
+def _prepare(inv, fetched, grid_path, out, *, workers=None, truth_out=None):
     from gpuwm.obs.cc_qc import CcQcParams
     from gpuwm.obs.dealias import DealiasParams, engine_unavailable_reason
     from gpuwm.obs.frontdoor import ASOS
@@ -553,28 +856,75 @@ def prepare(inv, fetched, grid_path, out, *, workers=1):
     if len(inv["slots"]) != len(analyses):
         raise ValueError("inventory slot roster differs from declared full/smoke scope")
     validate_fetched(inv, fetched)
+    require_native_observations()
     binary = find_nexrad_bin()
     reason = engine_unavailable_reason("region-global")
     if binary is None or reason is not None:
         raise ValueError("required native radar/dealias door unavailable: " + str(reason))
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
+    if not smoke:
+        from tools.da_object_fetch import launch_truth_for_forecast
+        west, south, east, north = case['bbox']
+        definition = case.get('truth_padding_provenance', {}).get('model_grid_definition', {})
+        launch_truth_for_forecast(inv, fetched, truth_out or out / 'truth',
+                    case.get('center_lon', definition.get('ref_lon', (west + east) / 2)),
+                    case.get('center_lat', definition.get('ref_lat', (south + north) / 2)))
     grid_path = Path(grid_path).resolve()
     grid = TargetGrid.from_wrfout(grid_path)
     params = SuperobParams(max_range_km=250.0, max_elevation_deg=20.0,
                           dealias=DealiasParams(engine="region-global"), cc_qc=CcQcParams())
     params.validate()
-    raw = {(row["bucket"], row["key"]): row for row in fetched["objects"]}
+    raw = {(row["bucket"], row["key"]): row for row in fetched["objects"]+fetched.get("deferred_objects", [])}
     native_asos = ASOS.find()
     if native_asos is None:
         raise ValueError("native rw_asos is required")
     bbox = ",".join(str(v) for v in case["bbox"])
     table_path = out / "stations.json"
     networks = surface_networks_argument(case_surface_networks(case))
-    run_json([str(native_asos), "stations", "--networks", networks,
-              "--bbox", bbox, "--out", str(table_path)], out/"logs/stations.txt")
-    slots, surface_paths = [], []
-    for index, (metadata, analysis) in enumerate(zip(inv["slots"], analyses)):
+    station_ready = Future()
+    from gpuwm.obs.coverage import read_site_table
+    table = read_site_table(binary)
+    native_threads = native_observation_threads(len(case['radar_sites']), len(analyses), workers)
+    retained = observation_memory(grid, [table[site] for site in case['radar_sites']], params)
+
+    def surface_slot(index, analysis, work):
+        with observation_stage('prep.obs.surface', out, slot=index):
+            if index == 0:
+                try:
+                    run_json([str(native_asos), 'stations', '--networks', networks,
+                              '--bbox', bbox, '--out', str(table_path)], out/'logs/stations.txt')
+                except BaseException as error:
+                    station_ready.set_exception(error)
+                    raise
+                station_ready.set_result(True)
+            else:
+                station_ready.result()
+            csv = work / 'surface.csv'
+            seam = work / 'surface.json'
+            before = analysis - dt.timedelta(seconds=900)
+            format_asos = lambda stamp: stamp.strftime('%Y-%m-%dT%H:%M:%S')
+            run_json([str(native_asos), 'fetch', '--stations', str(table_path), '--start', format_asos(before),
+                      '--end', format_asos(analysis), '--out', str(csv), '--product', 'metar'], work/'surface-fetch.txt')
+            run_json([str(native_asos), 'decode', '--stations', str(table_path), '--obs', str(csv),
+                      '--start', format_asos(analysis), '--end', format_asos(analysis), '--match-seconds', '900',
+                      '--min-report-rate', '0.8', '--out', str(seam), '--product', 'metar'], work/'surface-decode.txt')
+            validate_surface(json.loads(seam.read_text()), analysis)
+            run_json([str(native_asos), 'verify', '--file', str(seam)], work/'surface-verify.txt')
+            return seam
+
+    def radar_site(index, site, metadata, analysis, work):
+        with observation_stage('prep.obs.radar', out, slot=index, site=site):
+            return _site_volume(
+                site, metadata['radar_candidates'][site], raw, case, analysis, work, binary, grid, params,
+                run_decode, run_verify, read_sweep_pack, superob_volume)
+
+    def slot_work(item):
+        index, (metadata, analysis) = item
+        with observation_stage('prep.obs.slot', out, slot=index):
+            return build_slot(index, metadata, analysis)
+
+    def build_slot(index, metadata, analysis):
         if metadata["analysis_time"] != iso(analysis):
             raise ValueError("inventory slot clock differs from case")
         contributions, sources, refusals = [], [], []
@@ -584,12 +934,12 @@ def prepare(inv, fetched, grid_path, out, *, workers=1):
         # superob/dealias kernels are native, so threads overlap them.  Results
         # are merged in roster order, so the merged grid does not depend on
         # which site finished first.
-        site_work = lambda site: _site_volume(
-            site, metadata["radar_candidates"][site], raw, case, analysis, work, binary, grid, params,
-            run_decode, run_verify, read_sweep_pack, superob_volume)
-        with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
-            results = list(pool.map(site_work, case["radar_sites"]))
-        for contribution, source, site_refusals in results:
+        surface_job = initial_surface if index == 0 else surface_pool.submit(surface_slot, index, analysis, work)
+        jobs = [initial_radar if index == 0 and site == case['radar_sites'][0]
+                else radar_pool.submit(radar_site, index, site, metadata, analysis, work)
+                for site in case['radar_sites']]
+        for job in jobs:
+            contribution, source, site_refusals = job.result()
             refusals.extend(site_refusals)
             if contribution is not None:
                 contributions.append(contribution)
@@ -601,28 +951,49 @@ def prepare(inv, fetched, grid_path, out, *, workers=1):
         context = {"builder": "tools/da_recent_observations.py", "requested_valid_time": iso(analysis),
                    "sources": sources, "refusals": refusals, "publication_policy": inv["publication_policy"],
                    "causal_measurement_cutoff_utc": iso(analysis)}
-        receipt = write_radar_grid(obs, merge_contributions(contributions, grid, params=params), grid,
-                                  valid_time=iso(analysis), params=params, provenance=context)
+        with observation_stage('prep.obs.merge', out, slot=index):
+            receipt = write_radar_grid(obs, merge_contributions(contributions, grid, params=params), grid,
+                                      valid_time=iso(analysis), params=params, provenance=context)
         save(work/"radar-receipt.json", receipt)
-        csv = work / "surface.csv"
-        seam = work / "surface.json"
-        before = analysis - dt.timedelta(seconds=900)
-        format_asos = lambda stamp: stamp.strftime("%Y-%m-%dT%H:%M:%S")
-        run_json([str(native_asos), "fetch", "--stations", str(table_path), "--start", format_asos(before),
-                  "--end", format_asos(analysis), "--out", str(csv), "--product", "metar"], work/"surface-fetch.txt")
-        run_json([str(native_asos), "decode", "--stations", str(table_path), "--obs", str(csv),
-                  "--start", format_asos(analysis), "--end", format_asos(analysis), "--match-seconds", "900",
-                  "--min-report-rate", "0.8", "--out", str(seam), "--product", "metar"], work/"surface-decode.txt")
-        surface = json.loads(seam.read_text())
-        validate_surface(surface, analysis)
-        run_json([str(native_asos), "verify", "--file", str(seam)], work/"surface-verify.txt")
-        surface_paths.append(str(seam))
-        slots.append({"obs": str(obs), "grid_wrfout": str(grid_path), "leg_seconds": 3600,
+        seam = surface_job.result()
+        return {"obs": str(obs), "grid_wrfout": str(grid_path), "leg_seconds": 3600,
                       "analysis_time": iso(analysis), "obs_sha256": sha(obs),
                       "grid_wrfout_sha256": sha(grid_path), "surface_seam": str(seam),
-                      "surface_sha256": sha(seam), "radar_sources": sources, "refusals": refusals})
-        save(out/"slots.json", {"schema": "da-rerun.recent-slots.v1", "status": "preparing",
-                                "slots": slots, "surface_seams": surface_paths})
+                      "surface_sha256": sha(seam), "radar_sources": sources, "refusals": refusals}
+
+    slots, surface_paths = [], []
+    with ThreadPoolExecutor(max_workers=len(analyses)) as surface_pool:
+        initial_work = out / 'slot-00'
+        initial_work.mkdir(exist_ok=True)
+        # This required site is processed once and reused. A first-volume RSS
+        # measurement can increase the conservative scratch allowance before
+        # any site fan-out. ASOS already runs beside the calibration volume.
+        observation_workers(len(case['radar_sites']), retained_slot_bytes=retained)
+        initial_surface = surface_pool.submit(surface_slot, 0, analyses[0], initial_work)
+        with ObservationRss() as calibration:
+            first = radar_site(0, case['radar_sites'][0], inv['slots'][0], analyses[0], initial_work)
+        initial_radar = Future()
+        initial_radar.set_result(first)
+        first = None
+        scratch = max(2 * 2**30, calibration.receipt()['incremental_peak_bytes'] * 2)
+        sizing = observation_workers(len(case['radar_sites']), len(analyses),
+                                     requested=workers, worker_bytes=scratch,
+                                     retained_slot_bytes=retained)
+        sizing['calibration'] = calibration.receipt()
+        sizing['native_threads'] = native_threads
+        sizing['calibration_policy'] = 'first required site reused; twice measured incremental RSS, minimum 2 GiB'
+        save(out / 'worker-receipt.json', sizing)
+        with ThreadPoolExecutor(max_workers=sizing['total_workers']) as radar_pool, \
+                ThreadPoolExecutor(max_workers=sizing['slot_workers']) as slot_pool:
+            for slot in slot_pool.map(slot_work, enumerate(zip(inv['slots'], analyses))):
+                slots.append(slot)
+                if len(slots) == 1:
+                    # The calibration contribution has already been merged.
+                    # Its completed Future must not retain it across later slots.
+                    initial_radar = None
+                surface_paths.append(slot['surface_seam'])
+                save(out/'slots.json', {'schema': 'da-rerun.recent-slots.v1', 'status': 'preparing',
+                                       'slots': slots, 'surface_seams': surface_paths})
     # Merge metadata rows only. The native decoder owns all quantities and QC.
     combined = combine_surfaces([json.loads(Path(path).read_text()) for path in surface_paths])
     source_manifest = out/"surface-source-manifest.json"
@@ -639,6 +1010,11 @@ def prepare(inv, fetched, grid_path, out, *, workers=1):
            "station_table_sha256": sha(table_path), "grid_wrfout_sha256": sha(grid_path),
            "model_start_utc": iso(origin), "forecast_fork_utc": iso(analyses[-1]),
            "publication_policy": inv["publication_policy"], "scientific_gate": "pending"}
+    if fetched.get("schema") == "da-rerun.recent-fetch.v2":
+        landed = [row for row in fetched["deferred_objects"] if "sha256" in row]
+        fetched["objects"].extend(landed)
+        fetched["deferred_objects"] = [row for row in fetched["deferred_objects"] if "sha256" not in row]
+        save(fetched["receipt_path"], fetched)
     doc.update(inventory_sha256=document_sha(inv), fetch_receipt_sha256=document_sha(fetched),
                observation_builder_sha256=sha(Path(__file__)), superob_parameters=params.to_payload(),
                native_radar_binary_sha256=sha(binary), native_surface_binary_sha256=sha(native_asos))
@@ -650,7 +1026,10 @@ def prepare_truth(inv, fetched, out, center_lon, center_lat):
     from gpuwm.obs.frontdoor import MRMS
     from tools.regional_rain_manifest import truth as build_truth
     from types import SimpleNamespace
-    validate_fetched(inv, fetched)
+    if fetched.get("schema") == "da-rerun.recent-fetch.v2":
+        from tools.da_object_fetch import truth_receipt
+        fetched = truth_receipt(inv, fetched, wait=True)
+    validate_fetched(inv, fetched, purpose="truth")
     if inv.get("scope") == "smoke-first-slot":
         raise ValueError("first-slot smoke has no six-hour truth inventory")
     out = Path(out).resolve()
@@ -659,7 +1038,7 @@ def prepare_truth(inv, fetched, out, center_lon, center_lat):
     truth_bounds = truth_bbox(inv["case"])
     bbox = ",".join(str(value) for value in truth_bounds)
     first_rate = None
-    receipts = []
+    receipts, jobs, records = [], [], []
     for row in fetched["objects"]:
         if row["bucket"] != "noaa-mrms-pds":
             continue
@@ -669,19 +1048,34 @@ def prepare_truth(inv, fetched, out, center_lon, center_lat):
         folder = dirs[product]
         folder.mkdir(parents=True, exist_ok=True)
         pack = folder / (Path(row["key"]).name + ".obspack")
-        log = out/"logs"/(pack.name+".txt")
-        receipt, elapsed = run_json([str(binary), "decode", "--product", product, "--file", row["path"],
-                                     "--bbox", bbox, "--out", str(pack)], log)
-        receipts.append({"key": row["key"], "source_sha256": row["sha256"], "pack_sha256": sha(pack),
-                         "native_receipt": receipt, "decode_wall_seconds": elapsed})
+        jobs.append(['decode', '--product', product, '--file', row['path'],
+                     '--bbox', bbox, '--out', str(pack)])
+        if row.get('fetched_at_utc'):
+            jobs[-1] += ['--fetched-at', row['fetched_at_utc']]
+        records.append((row, pack))
         if product == TRUTH_PRODUCTS[0] and first_rate is None:
             first_rate = row["path"]
-        save(out/"decode-receipts.json", {"status": "in-progress", "records": receipts})
     if first_rate is None:
         raise ValueError("truth inventory contains no primary rate product")
     geo = out/"grid.geopack"
-    run_json([str(binary), "grid", "--product", TRUTH_PRODUCTS[0], "--file", first_rate,
-              "--bbox", bbox, "--out", str(geo)], out/"logs/grid.txt")
+    jobs.append(['grid', '--product', TRUTH_PRODUCTS[0], '--file', first_rate,
+                 '--bbox', bbox, '--out', str(geo)])
+    batch_path = out / 'decode-jobs.json'
+    save(batch_path, jobs)
+    batch, elapsed = run_json([str(binary), 'decode-batch', '--files', str(batch_path)],
+                               out / 'logs/decode-batch.txt')
+    if (batch.get('schema') != 'gpuwm-obs.mrms-decode-batch.v1'
+            or batch.get('status') != 'COMPLETE' or len(batch.get('records', [])) != len(jobs)):
+        raise ValueError('native MRMS batch did not complete every pinned product; partial truth cannot be scored')
+    if (batch['records'][-1].get('out') != str(geo)
+            or batch['records'][-1].get('operation') != 'grid'):
+        raise ValueError('native MRMS batch geometry mismatch; wrong coordinates cannot be scored')
+    for index, ((row, pack), native) in enumerate(zip(records, batch['records'])):
+        if native.get('index') != index or native.get('out') != str(pack):
+            raise ValueError('native MRMS batch order/output mismatch; prevents binding the wrong product to truth')
+        receipts.append({'key': row['key'], 'source_sha256': row['sha256'], 'pack_sha256': sha(pack),
+                         'native_receipt': native['native_receipt'],
+                         'decode_wall_seconds': native['decode_wall_seconds']})
     manifest = build_truth(SimpleNamespace(rate_packs=dirs[TRUTH_PRODUCTS[0]], echo_packs=dirs[TRUTH_PRODUCTS[1]],
         geo_pack=geo, analysis_end=inv["case"]["analysis_times_utc"][-1], center_lon=center_lon, center_lat=center_lat))
     manifest["inventory_sha256"] = document_sha(inv)
@@ -693,7 +1087,8 @@ def prepare_truth(inv, fetched, out, center_lon, center_lat):
     manifest["footprint_coverage_policy"] = "native observed footprint before model intersection; cropped or uncovered objects remain pending"
     save(out/"truth.json", manifest)
     save(out/"decode-receipts.json", {"status": "decoded-primary-fields", "records": receipts,
-                                     "scientific_gate": "pending", "native_binary_sha256": sha(binary)})
+                                     "scientific_gate": "pending", "native_binary_sha256": sha(binary),
+                                     'native_processes': 1, 'batch_wall_seconds': elapsed})
     return manifest
 
 
@@ -753,24 +1148,27 @@ def main(argv=None):
     get.add_argument("--receipt", type=Path, required=True)
     get.add_argument("--max-gib", type=float, default=40)
     get.add_argument("--reuse-receipt", type=Path, help="reuse only unchanged raw files from this COMPLETE ancestor receipt")
-    get.add_argument("--streams", type=int, default=1, help="concurrent download streams inside the one fetch process")
+    get.add_argument("--streams", type=int, default=1, help="compatibility value; Rust uses min(32, objects) streams")
     prep = sub.add_parser("prepare")
     prep.add_argument("--inventory", type=Path, required=True)
     prep.add_argument("--fetch-receipt", type=Path, required=True)
     prep.add_argument("--grid-wrfout", type=Path, required=True)
     prep.add_argument("--out", type=Path, required=True)
-    prep.add_argument("--workers", type=int, default=1, help="radar sites decoded and superobbed concurrently")
+    prep.add_argument("--workers", type=int, default=None, help="native site workers (default: site count bounded by available RAM)")
+    prep.add_argument('--truth-out', type=Path, help='background truth directory (default: <out>/truth); scorer joins this directory')
     truth = sub.add_parser("truth")
     truth.add_argument("--inventory", type=Path, required=True)
     truth.add_argument("--fetch-receipt", type=Path, required=True)
     truth.add_argument("--out", type=Path, required=True)
     truth.add_argument("--center-lon", type=float, required=True)
     truth.add_argument("--center-lat", type=float, required=True)
+    truth.add_argument('--background-worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.mode == "inventory":
         requests = json.loads(args.model_requests.read_text(encoding="utf-8-sig")) if args.model_requests else None
         result = inventory(json.loads(args.case.read_text(encoding="utf-8-sig")),
-                           first_slot_only=args.first_slot_only, model_requests=requests)
+                           first_slot_only=args.first_slot_only, model_requests=requests,
+                           on_object=lambda row: print(json.dumps({"phase": "object", **row}), flush=True))
         save(args.out, result)
         print(json.dumps({"objects": len(result["objects"]), "bytes": result["bytes"], "out": str(args.out)}))
     elif args.mode == "fetch":
@@ -782,11 +1180,29 @@ def main(argv=None):
               streams=args.streams)
     elif args.mode == "prepare":
         result = prepare(json.loads(args.inventory.read_text()), json.loads(args.fetch_receipt.read_text()), args.grid_wrfout, args.out,
-                         workers=args.workers)
+                         workers=args.workers, truth_out=args.truth_out)
         print(json.dumps({"status": result["status"], "slots": len(result["slots"])}))
     else:
-        result = prepare_truth(json.loads(args.inventory.read_text()), json.loads(args.fetch_receipt.read_text()),
-                               args.out, args.center_lon, args.center_lat)
+        if (args.out / 'truth-job.json').exists() and not args.background_worker:
+            from tools.da_object_fetch import fetch_binding
+            identity = json.loads((args.out / 'truth-job.json').read_text())
+            expected = {'inventory_sha256': document_sha(json.loads(args.inventory.read_text())),
+                'fetch_receipt_sha256': fetch_binding(json.loads(args.fetch_receipt.read_text())),
+                'center_lon': args.center_lon, 'center_lat': args.center_lat}
+            if identity != expected:
+                raise ValueError('background truth identity differs from scoring request; prevents stale truth scoring')
+            result = join_truth(args.out)
+        else:
+            try:
+                with observation_stage('prep.obs.truth', args.out):
+                    result = prepare_truth(json.loads(args.inventory.read_text()), json.loads(args.fetch_receipt.read_text()),
+                                           args.out, args.center_lon, args.center_lat)
+                if args.background_worker:
+                    _truth_status(args.out, 'COMPLETE', truth_sha256=sha(args.out / 'truth.json'))
+            except Exception as error:
+                if args.background_worker:
+                    _truth_status(args.out, 'FAILED', error=f'{type(error).__name__}: {error}')
+                raise
         print(json.dumps({"status": "decoded-primary-fields", "truth": str(args.out/"truth.json")}))
     return 0
 

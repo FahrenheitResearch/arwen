@@ -29,7 +29,7 @@ def _args(out, *, member=None):
     return parser.parse_args(args)
 
 
-def test_complete_bound_cache_never_probes_expired_remote_objects(tmp_path, monkeypatch):
+def test_complete_bound_cache_never_probes_expired_remote_objects(tmp_path, monkeypatch, capsys):
     plan = _cached(tmp_path)
     before = {(tmp_path / obj.relpath): (tmp_path / obj.relpath).read_bytes() for obj in plan.objects}
     def forbidden(*args, **kwargs):
@@ -37,10 +37,17 @@ def test_complete_bound_cache_never_probes_expired_remote_objects(tmp_path, monk
     monkeypatch.setattr(fetch, 'require_published_cycle', forbidden)
     monkeypatch.setattr(fetch_endpoints, 'object_available', forbidden)
     monkeypatch.setattr(fetch_routes, '_download_object', forbidden)
+    capsys.readouterr()
     assert fetch.fetch_main(_args(tmp_path)) == 0
     assert all(path.read_bytes() == body for path, body in before.items())
+    # Since 4286a8e32 the manifest is input authority and carries no reuse
+    # observation (a cached object has the same authority as a fresh one);
+    # the reuse is said in the run's own lines instead.
     receipt = json.loads((tmp_path / fetch_routes.MANIFEST_NAME).read_text())
-    assert all(row['reused'] for row in receipt['files'])
+    assert all('reused' not in row for row in receipt['files'])
+    said = capsys.readouterr().out
+    assert f"{len(plan.objects)} already present" in said
+    assert said.count(" already present") == len(plan.objects) + 1
 
 
 @pytest.mark.parametrize('mutation', ['missing', 'same-size-mtime', 'wrong-cycle', 'wrong-member'])

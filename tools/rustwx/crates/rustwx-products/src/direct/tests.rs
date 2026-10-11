@@ -173,6 +173,7 @@ fn prepared_projected_maps_use_composite_components_as_projection_sample() {
 
 fn sample_direct_request(model: ModelId) -> DirectBatchRequest {
     DirectBatchRequest {
+        accumulation_window: None,
         model,
         date_yyyymmdd: "20260414".to_string(),
         cycle_override_utc: Some(23),
@@ -197,6 +198,45 @@ fn sample_direct_request(model: ModelId) -> DirectBatchRequest {
         geographic_overlays: None,
         panel_annotations: None,
     }
+}
+
+#[test]
+fn snowfall_titles_name_the_resolved_window_before_the_domain() {
+    let mut request = sample_direct_request(ModelId::WrfGdex);
+    request.title_provenance = TitleProvenance::LocalImport { grid_label: Some("d02 750 m".into()) };
+    let parse = |value: &str| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d_%H:%M:%S")
+        .unwrap().and_utc().timestamp();
+    let init = parse("2026-10-08_18:00:00");
+    let end = parse("2026-10-12_18:00:00");
+    let whole_hour = local_accumulation_window_from_cycle("20261008", 18, 96, Some("2026-10-11_18:00:00")).unwrap();
+    assert_eq!((whole_hour.start_unix, whole_hour.end_unix), (parse("2026-10-11_18:00:00"), end));
+    request.accumulation_window = Some(local_accumulation_window(init, end, Some("2026-10-11_18:00:00")).unwrap());
+    for (base, expected) in [
+        ("Kuchera snowfall, window total", "24 h Kuchera snowfall ending Mon 12 Oct 18Z (d02 750 m)"),
+        ("10:1 snowfall, window total", "24 h 10:1 snowfall ending Mon 12 Oct 18Z (d02 750 m)"),
+        ("Model snowfall, window total", "24 h Model snowfall ending Mon 12 Oct 18Z (d02 750 m)"),
+    ] {
+        assert_eq!(direct_title_for_planned_product(&request, "native_grid", base), expected);
+    }
+    request.panel_annotations = Some(serde_json::from_str(
+        r#"{"title_suffix":", 24 h ending Mon 12 Oct 18Z","subtitle_center":"keep"}"#,
+    ).unwrap());
+    let annotations = titles::product_annotations(&request, "Kuchera snowfall, window total").unwrap();
+    assert!(annotations.title_suffix.is_none(), "the legacy caption now repeats the resolved window");
+    assert_eq!(annotations.subtitle_center.as_deref(), Some("keep"));
+    request.panel_annotations.as_mut().unwrap().title = Some("Caller title".into());
+    assert!(titles::product_annotations(&request, "Kuchera snowfall, window total").unwrap().title_suffix.is_some());
+    request.panel_annotations.as_mut().unwrap().title = None;
+    request.panel_annotations.as_mut().unwrap().title_suffix = Some("EXPERIMENTAL".into());
+    assert_eq!(titles::product_annotations(&request, "Kuchera snowfall, window total").unwrap().title_suffix.as_deref(), Some("EXPERIMENTAL"));
+    request.accumulation_window = Some(local_accumulation_window(init, end, None).unwrap());
+    assert_eq!(direct_title_for_planned_product(&request, "native_grid", "Kuchera snowfall, window total"),
+        "Kuchera snowfall since Thu 8 Oct 18Z (d02 750 m)");
+    request.accumulation_window = Some(local_accumulation_window(init, end, Some("2026-10-11_18:00:30")).unwrap());
+    assert_eq!(direct_title_for_planned_product(&request, "native_grid", "Kuchera snowfall, window total"),
+        "Kuchera snowfall since Sun 11 Oct 18:00:30Z (d02 750 m)");
+    assert_eq!(direct_title_for_planned_product(&request, "native_grid", "2 m temperature"),
+        "2 m temperature (d02 750 m)");
 }
 
 #[test]

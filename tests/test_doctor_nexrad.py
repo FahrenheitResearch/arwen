@@ -181,11 +181,13 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
     brought it to thirty-seven artifacts with the UPP-derived GRIB2
     exporter held out; 2.8.7's clean-room exporter and the radar superob
     bring it to thirty-nine, the nowcast frames converter to forty, and the
-    air-quality program's AirNow reader and ensemble reducer to forty-two.
+    air-quality program's AirNow reader and ensemble reducer to forty-two,
+    2.8.9's global globe packer to forty-three, and the scoreboard lane's
+    observation scorecard and forecast verification scorer to forty-five.
     """
 
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 42
-    assert "forty-two artifacts" in bridge_assets.__doc__
+    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 45
+    assert "forty-five artifacts" in bridge_assets.__doc__
     for stale in ("eight artifacts", "nine artifacts", "nine files",
                   "ten artifacts", "ten files", "eleven artifacts",
                   "eleven files", "fourteen artifacts", "fourteen files",
@@ -208,7 +210,10 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
                   "thirty-seven artifacts", "thirty-seven files",
                   "thirty-eight artifacts", "thirty-eight files",
                   "thirty-nine artifacts", "thirty-nine files",
-                  "forty artifacts", "forty files"):
+                  "forty artifacts", "forty files",
+                  "forty-two artifacts", "forty-two files",
+                  "forty-three artifacts", "forty-three files",
+                  "forty-four artifacts", "forty-four files"):
         # Match the complete count, so "eight" does not reject "twenty-eight".
         assert re.search(r"(?<![a-z-])" + re.escape(stale) + r"(?![a-z-])",
                          bridge_assets.__doc__) is None

@@ -309,6 +309,8 @@ class Timeline:
             self.receipt(child, evidence, pending, child_key)
 
     def read(self, path: Path, *, date: str | None = None) -> None:
+        if str(path) in self.inputs:
+            return
         self.inputs.append(str(path))
         if path.suffix.lower() == ".gz":
             with gzip.open(path, "rt", encoding="utf-8-sig", errors="replace") as stream:
@@ -322,6 +324,10 @@ class Timeline:
             value = None
         if value is not None:
             self.receipt(value, str(path), pending)
+            if path.name in {"proof.json", "receipt.json"}:
+                runtime = path.with_name("preparation-runtime.json")
+                if runtime.is_file():
+                    self.read(runtime, date=date)
             return
         day = datetime.fromisoformat(date).date() if date else None
         last_clock: float | None = None
@@ -545,7 +551,15 @@ def csv_text(report: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Preserve the existing startup-only interface. Forecast fraction has
+    # one implementation in the public timeline door, reached explicitly.
+    import sys
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    if "--ledger" in tokens:
+        from gpuwm.cli import main as timeline_main
+        return timeline_main(["timeline", "report"] + [token for token in tokens if token != "--ledger"])
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.epilog = "For forecast fraction and a waterfall: --ledger LEDGER [--output JSON]; delegates to gpuwm timeline. Existing startup arguments are unchanged."
     parser.add_argument("--log", action="append", type=Path, default=[], help="explicit text or JSONL log; repeatable")
     parser.add_argument("--receipt", action="append", type=Path, default=[], help="explicit JSON receipt; repeatable")
     parser.add_argument("--date", help="UTC date for bracketed clock-only logs, YYYY-MM-DD")

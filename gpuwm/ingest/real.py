@@ -421,6 +421,8 @@ HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE = {
          "retained": HRRR_ANALYZED_HYDROMETEORS},
     28: {"registry_citation": "Registry/Registry.EM_COMMON:3036",
          "retained": HRRR_ANALYZED_HYDROMETEORS},
+    30: {"registry_citation": "Registry/registry.sbm:318",
+         "retained": HRRR_ANALYZED_HYDROMETEORS},
     50: {"registry_citation": "Registry/Registry.EM_COMMON:3038",
          "retained": ("QC", "QR", "QI")},
 }
@@ -459,7 +461,7 @@ HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE = {
 #: integer sets and would go blind on a comprehension -- can still see this
 #: site.  ``test_the_analyzed_inventory_tuple_and_its_moist_packages_agree``
 #: pins the two equal.
-HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
+HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 30, 50)
 # Named schemes with the six-mass moist package retain every analysed
 # hydrometeor (capability row, gpuwm.microphysics_schemes).
 from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES

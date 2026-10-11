@@ -1451,7 +1451,11 @@ mod tests {
     use super::*;
 
     fn write(name: &str, body: &str) -> String {
-        let directory = std::env::temp_dir().join("gpuwm-mapped-engine-compose-test");
+        // One folder per test process: a fixed name let two test binaries
+        // running at once on one machine overwrite each other's documents
+        // mid-read ("c5.json is not JSON: EOF", node-1, 2026-10-09).
+        let directory = std::env::temp_dir()
+            .join(format!("gpuwm-mapped-engine-compose-test-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join(name);
         std::fs::write(&path, body).unwrap();

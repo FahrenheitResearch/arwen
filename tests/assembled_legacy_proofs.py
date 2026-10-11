@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 
 PROOF_SHAS = {
-    "acoustic-published.json": "eaa4aa22945ca9318d6c78fc602e67078217ceb8ec9a4ecddff3879af21159e5",
-    "coordinate-native.json": "cc2b60d79350baef396495621d77909b98d1df1cf9b21eebae930b7d4b9af2e0",
-    "coordinate-negative.json": "b34dc1c6bc836e39451f01a4b77031e0d75ac467ca8af842eb6b396e5d5bc653",
-    "driver-source.json": "2afbd55a644e549a9b8a0a2a77cdd184423b523065d3156133dbe17b5b48a546",
+    "acoustic-published.json": "a87236d1940de34920102e86cbfc57ddafb0cabb103c4d891923385cf9c2e1e9",
+    "coordinate-native.json": "e444d6d4eed8a6c875a1970d0ac8d97f255357df6874ef5c915b1c0cfcefc070",
+    "coordinate-negative.json": "b27d2342e986363910c29a38baff9a7adf1b7d8d4652f60d5404670ef13a49ba",
+    "driver-source.json": "30597673b9cb04a53ec297f20df5050fdb0bfa7b6ef025c2b0c7020bae6a54bb",
 }
 
 

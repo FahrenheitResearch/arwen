@@ -1,21 +1,23 @@
-"""Deferred named physics ports cannot enter a default release run."""
+"""Named physics ports that enter the 2.8.8 release, and only those.
 
-import pytest
+2.8.8 ships one named microphysics port, TEMPO (WOOF id 900), because the
+RRFS v2 hex preset is TEMPO.  Any other named scheme stays out of a release
+run until its own intake admits it.
+"""
 
 from gpuwm.config import MP_PHYSICS_ACCEPTED, RunConfig, validate_run_config
 from gpuwm.microphysics_schemes import NAMED_SCHEMES, resolve_mp_physics, scheme
 
 
-def test_deferred_named_microphysics_is_not_admitted():
-    assert NAMED_SCHEMES == {}
-    assert scheme(900) is None
-    assert 900 not in MP_PHYSICS_ACCEPTED
-    with pytest.raises(ValueError, match="not a scheme name"):
-        resolve_mp_physics("tempo")
-    with pytest.raises(ValueError, match="mp_physics"):
-        validate_run_config(RunConfig(
-            nx=12, ny=12, nz=16, dx=2000., dy=2000., ztop=8000.,
-            dt=2., run_seconds=2., moist=True, mp_physics=900))
+def test_tempo_is_the_only_named_microphysics_admitted():
+    assert set(NAMED_SCHEMES) == {"tempo"}
+    assert scheme(900).name == "tempo"
+    assert 900 in MP_PHYSICS_ACCEPTED
+    assert resolve_mp_physics("tempo") == 900
+    cfg = validate_run_config(RunConfig(
+        nx=12, ny=12, nz=16, dx=2000., dy=2000., ztop=8000.,
+        dt=2., run_seconds=2., moist=True, mp_physics="tempo"))
+    assert cfg.mp_physics == 900
 
 
 def test_existing_pbl_900_is_preserved():

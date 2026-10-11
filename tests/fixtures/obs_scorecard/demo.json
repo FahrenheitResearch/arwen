@@ -1,0 +1,42 @@
+{
+  "schema": "gpuwm.obs-scorecard.manifest.v1",
+  "candidate": "WOOF",
+  "reference": "operational-reference",
+  "bootstrap": {"replicates": 5000, "confidence": 0.95, "seed": 107, "minimum_blocks": 4},
+  "notes": [
+    "Recorded station receipt replay. These two forecast cycles share one event and valid time, so they share one bootstrap block.",
+    "Candidate is each recorded WOOF cycle. Reference is the matching recorded operational forecast. This is not a matched physics A/B experiment.",
+    "CSV support and QC were frozen by scoreboard-v2. Original model, observation and reference hashes remain in every retained row.",
+    "Missing gust, precipitation, radar, profile and snow measurements are explicit. This fixture does not qualify the complete observation referee."
+  ],
+  "cases": [
+    {"id": "cycle-12", "block": "event-20261003", "pairs": {
+      "source": "asos",
+      "path": "cycle-12-pairs.csv", "sha256": "b010fa9957db0e137508ed2d92e943c206c327604ea8da0397e0ac8c1596c30a",
+      "station_column": "stationId", "time_column": "validTime", "quantity_column": "variable", "units_column": "units",
+      "observed_column": "observed", "candidate_column": "woof", "reference_column": "baseline",
+      "quantity_map": {"t2": "temperature_2m", "td2": "dewpoint_2m", "wind10": "wind_speed_10m"},
+      "filters": {"baselineModel": "hrrr-prs", "qcScope": "native_selected_values"}
+    }},
+    {"id": "cycle-18", "block": "event-20261003", "pairs": {
+      "source": "asos",
+      "path": "cycle-18-pairs.csv", "sha256": "db3dd92097d2a079a8c48f0da7cde61cbde38e4a4d12dba9cb90c3565fe7bf56",
+      "station_column": "stationId", "time_column": "validTime", "quantity_column": "variable", "units_column": "units",
+      "observed_column": "observed", "candidate_column": "woof", "reference_column": "baseline",
+      "quantity_map": {"t2": "temperature_2m", "td2": "dewpoint_2m", "wind10": "wind_speed_10m"},
+      "filters": {"baselineModel": "hrrr-prs", "qcScope": "native_selected_values"}
+    }}
+  ],
+  "metrics": [
+    {"id": "asos-temperature-rmse", "source": "asos", "quantity": "temperature_2m", "units": "K", "required": true},
+    {"id": "asos-temperature-bias", "source": "asos", "quantity": "temperature_2m", "units": "K", "statistic": "bias", "direction": "diagnostic"},
+    {"id": "asos-dewpoint-rmse", "source": "asos", "quantity": "dewpoint_2m", "units": "K", "required": true},
+    {"id": "asos-wind-rmse", "source": "asos", "quantity": "wind_speed_10m", "units": "m/s", "required": true},
+    {"id": "asos-gust-rmse", "source": "asos", "quantity": "wind_gust_10m", "units": "m/s"},
+    {"id": "asos-precipitation-rmse", "source": "asos", "quantity": "precipitation_1h", "units": "mm"},
+    {"id": "mrms-reflectivity-fss", "source": "mrms", "quantity": "composite_reflectivity", "units": "dBZ", "statistic": "fss", "direction": "higher", "threshold": 35.0, "width_km": 9.0},
+    {"id": "mrms-qpe-fss", "source": "mrms", "quantity": "precipitation_1h", "units": "mm h-1", "statistic": "fss", "direction": "higher", "threshold": 1.0, "width_km": 9.0},
+    {"id": "sonde-temperature-rmse", "source": "rawinsonde", "quantity": "temperature", "units": "K"},
+    {"id": "snotel-swe-rmse", "source": "snotel", "quantity": "snow_water_equivalent", "units": "mm"}
+  ]
+}

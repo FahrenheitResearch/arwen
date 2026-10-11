@@ -21,8 +21,11 @@ def test_portable_reader_preserves_native_source_cache_and_member(tmp_path, monk
     monkeypatch.setattr(reader, 'validate_native_lambert_contract',
                         lambda exp, path, *, source_name: SimpleNamespace(source=source))
     monkeypatch.setattr(reader, 'verify_native_static_receipt', lambda *args: {'status': 'PASS'})
+    # HGT_M: since c1227a11a the reader verifies the terrain auto-smoothing
+    # receipt against the static terrain; a flat plane carries none.
     monkeypatch.setattr(reader, 'load_native_static_cache',
-                        lambda path, grid, ny, nx: {'STATIC': np.ones((ny, nx))})
+                        lambda path, grid, ny, nx: {'STATIC': np.ones((ny, nx)),
+                                                    'HGT_M': np.zeros((ny, nx))})
     exp = load_experiment(fixture.experiment)
     inputs = read_prepared(fixture.prepared, fixture.experiment, fixture.wps,
                           source=source, run_seconds=fixture.run_seconds,
@@ -97,8 +100,11 @@ def test_stale_owned_preparation_preserves_old_files_and_rebuilds_before_members
     monkeypatch.setattr(reader, 'validate_native_lambert_contract',
                         lambda exp, path, *, source_name: SimpleNamespace(source=source_name))
     monkeypatch.setattr(reader, 'verify_native_static_receipt', lambda *args: {'status': 'PASS'})
+    # HGT_M: since c1227a11a the reader verifies the terrain auto-smoothing
+    # receipt against the static terrain; a flat plane carries none.
     monkeypatch.setattr(reader, 'load_native_static_cache',
-                        lambda path, grid, ny, nx: {'STATIC': np.ones((ny, nx))})
+                        lambda path, grid, ny, nx: {'STATIC': np.ones((ny, nx)),
+                                                    'HGT_M': np.zeros((ny, nx))})
     exp = load_experiment(fixture.experiment)
     initial = exp.start_time.replace(tzinfo=timezone.utc)
     selected = select('gfs', init=initial, now=datetime(2026, 9, 12, tzinfo=timezone.utc),

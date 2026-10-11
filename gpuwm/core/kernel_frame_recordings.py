@@ -709,8 +709,16 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
     nvrtc_build='13.4.92',
     platform_family='linux',
     measured='2026-10-05',
-    complete=True,
+    # FAST_SBM and the full-column Thompson generation arrived after this
+    # full reading; their own rows (G2, V12) do not back-fill a measurement
+    # on this compile platform.
+    complete=False,
     frames=MappingProxyType({
+        # The original cu6 kernel (cu_physics = 6), read 2026-10-09 on V9's
+        # RTX 5090 (driver 13.1) through the production loader with
+        # cupy-cuda13x 14.2.0 and nvidia-cuda-nvrtc 13.4.92: tiedtke_column
+        # holds 16 B (255 registers), so this recording stays complete.
+        'tiedtke': 16,
         # Three standalone units the 2.8.6 staging line added without a row
         # (so this recording stopped being complete): the fork's order-five
         # vertical scalar flux pd_vertical_sl (f82847049), the fork's
@@ -1158,6 +1166,11 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
         'wsm6': 7216,
         'ysu': 0,
         'ysu_validation': 0,
+        # The original cu6 kernel (cu_physics = 6), read 2026-10-09 on V9's
+        # RTX 5090 (driver 13.1) through the production loader at this
+        # build: tiedtke_column holds 24 B (255 registers). Its column
+        # arrays live in a per-call global arena, not in the frame.
+        'tiedtke': 24,
     }),
 )
 
@@ -1367,6 +1380,25 @@ SM89_NVRTC_13_4_59_COLD_START = KernelFrameRecording(
 )
 
 KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
+    # Direct NVRTC production loader on G2, f84cd9bf7. Driver local-size
+    # attributes: f32 prepare 16656, columns 17968, tile 18016;
+    # f64 columns 26576, tile 26736. Receipt: local-frame-fixed.log.
+    # Partial: no other module was re-read in this measurement.
+    KernelFrameRecording(
+        box='G2', device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
+        compute_capability='120', nvrtc_build='12.9.86',
+        platform_family='linux', measured='2026-10-08', complete=False,
+        frames=MappingProxyType({'fast_sbm': 26736}),
+    ),
+    KernelFrameRecording(
+        box='V12', device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
+        compute_capability='120', nvrtc_build='12.8.93',
+        platform_family='linux', measured='2026-10-09', complete=False,
+        # Production loader, tools/thompson_generation_oracle/frame.py.
+        # The source default is 64 levels; the 128/256 specializations
+        # are priced separately from their measured driver readings.
+        frames=MappingProxyType({'thompson_column': 50016}),
+    ),
     # The 2026-10-03 RTX PRO 6000 / NVRTC 12.8.93 lake reading (14,400 B)
     # described the local-frame source that the device arena replaced on
     # 2026-10-05, so it is retired rather than kept as a ceiling for code

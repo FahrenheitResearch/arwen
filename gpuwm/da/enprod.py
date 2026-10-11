@@ -1093,6 +1093,15 @@ def manifest_path(root, domain: str | None = None) -> Path:
     direct = root / MANIFEST_FILENAME
     if direct.is_file():
         return direct
+    # go's printed output folder wraps the forecast under run/ or chain/run/.
+    # Only those declared layouts are followed, never arbitrary ensembles
+    # such as a DA cycle or a member folder.
+    for relative in ("run", "chain/run"):
+        forecast = root / relative
+        if ((forecast / MANIFEST_FILENAME).is_file()
+                or any(_manifest_schema(path) == V2_MANIFEST_SCHEMA
+                       for path in forecast.glob(f"*/{MANIFEST_FILENAME}"))):
+            return manifest_path(forecast, domain)
     found = sorted(path for path in root.glob(f"*/{MANIFEST_FILENAME}")
                    if path.is_file()
                    and _manifest_schema(path) == V2_MANIFEST_SCHEMA)
@@ -1140,6 +1149,9 @@ def load_manifest(root, *, accept_status=DEFAULT_ACCEPT_STATUS,
             f"ensemble.  Write one of schema {MANIFEST_SCHEMA}, or "
             f"generate a synthetic ensemble to try the suite against "
             f"with: gpuwm enprod --make-fixture {root}")
+    # Member paths in v1 are relative to the manifest, including when
+    # the outer go output folder was supplied. V2 uses the same basis.
+    root = path.parent
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -1324,6 +1336,7 @@ def _load_v2_manifest(path: Path, document: dict) -> EnsembleManifest:
             f"{path}: 'member_files' must be a list of file records")
     by_member: dict[int, list[Path]] = {member: [] for member in order}
     problems: list[str] = []
+    missing_histories = False
     for index, record in enumerate(files):
         if not isinstance(record, dict):
             problems.append(f"member_files[{index}]: not an object")
@@ -1339,6 +1352,7 @@ def _load_v2_manifest(path: Path, document: dict) -> EnsembleManifest:
             continue
         file_path = run_root / relative
         if not file_path.is_file():
+            missing_histories = True
             problems.append(
                 f"member {member}: its history {file_path} is missing")
             continue
@@ -1376,10 +1390,16 @@ def _load_v2_manifest(path: Path, document: dict) -> EnsembleManifest:
                 number=member, directory=directories[0], status="DONE",
                 declared_wrfout_count=len(paths)))
     if problems:
+        remedy = (
+            "\nRestore the missing member history files, or run the ensemble "
+            "again with gpuwm go --members N --keep-member-files and retain "
+            "those files until enprod has finished. The existing aggregate "
+            f"maps are under {run_root / 'maps' / domain}."
+            if missing_histories else "")
         raise EnsembleRefusal(
             f"{path}: {len(problems)} problem(s), so this is not the "
             f"{len(order)}-member ensemble the run describes:\n  "
-            + "\n  ".join(problems))
+            + "\n  ".join(problems) + remedy)
     return EnsembleManifest(
         root=run_root, schema=V2_MANIFEST_SCHEMA, n_members=len(members),
         members=tuple(members), status=None)

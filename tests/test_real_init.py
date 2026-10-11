@@ -1428,8 +1428,12 @@ def test_the_analyzed_inventory_tuple_and_its_moist_packages_agree():
         assert tuple(
             name for name in HRRR_ANALYZED_HYDROMETEORS if name in retained
         ) == tuple(retained), f"mp={mp_physics} retention is not decoded order"
+        # A named scheme cites its own capability row; it has no WRF
+        # Registry package.  FAST_SBM's package line lives in WRF's
+        # registry.sbm (:318).
         assert package["registry_citation"].startswith(
-            "Registry/Registry.EM_COMMON:")
+            ("Registry/Registry.EM_COMMON:", "gpuwm.microphysics_schemes:",
+             "Registry/registry.sbm:"))
 
 
 def test_mp50_real_ingest_retains_the_condensate_p3_can_hold():

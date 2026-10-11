@@ -1,8 +1,5 @@
 """A recent case at another spacing and forcing, its fine companion grid and its run plan."""
-import io
 import json
-import threading
-import time
 
 import pytest
 
@@ -108,28 +105,23 @@ def test_run_plan_reads_the_case_localization_and_scales(tmp_path):
 
 
 def test_concurrent_fetch_streams_keep_one_process_and_inventory_order(tmp_path, monkeypatch):
-    class Reply(io.BytesIO):
-        headers = {"ETag": "\"e\""}
-    active, peak, guard = [0], [0], threading.Lock()
-
-    def get(url, timeout):
-        with guard:
-            active[0] += 1
-            peak[0] = max(peak[0], active[0])
-        time.sleep(0.05 if url.endswith("0") else 0.01)
-        with guard:
-            active[0] -= 1
-        return Reply(b"abc")
-    monkeypatch.setattr(obs.urllib.request, "urlopen", get)
+    # Since 775f8c6b9 the transfer is the Rust public-object seam, not
+    # urllib: the executable is driven against a loopback origin (the
+    # fixture tests/test_da_recent_observations.py uses), and `streams` is
+    # a compatibility value -- Rust takes min(32, objects) streams.
+    from da_fetch_origin import origin
     rows = [{"bucket": "noaa-mrms-pds", "key": f"a/data{index}", "bytes": 3, "etag": "\"e\"",
              "last_modified": "2026-10-01T00:00:00Z"} for index in range(8)]
     inv = {"objects": rows}
     receipt_path = tmp_path / "fetch.json"
-    obs.fetch(inv, tmp_path / "raw", receipt_path, 1, streams=4)
+    with origin(monkeypatch) as server:
+        server.delay = 0.05
+        obs.fetch(inv, tmp_path / "raw", receipt_path, 1, streams=4)
     receipt = json.loads(receipt_path.read_text())
-    assert receipt["fetch_processes"] == 1 and receipt["fetch_streams"] == 4 and receipt["status"] == "complete"
+    assert receipt["fetch_processes"] == 1 and receipt["status"] == "complete"
+    assert receipt["fetch_streams"] == min(32, len(rows))
     assert [row["key"] for row in receipt["objects"]] == [row["key"] for row in rows]
-    assert peak[0] > 1
+    assert server.peak > 1
     obs.validate_fetched(inv, receipt)
 
 

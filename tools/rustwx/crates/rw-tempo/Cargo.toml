@@ -1,0 +1,27 @@
+# TEMPO microphysics initialization (NCAR/TEMPO 9adf9ef, tempo_v3.0.3, the
+# RRFS v2 pin; Apache-2.0, see src/lib.rs): every parameter, derived
+# constant, bin set and computed lookup table of tempo_init, plus the four
+# table-file readers, producing the flat float64 blob the GPU TEMPO port
+# reads (layout: gpuwm/core/kernels/tempo/tempo_common.cuh TEMPO_FIELDS).
+#
+# Parity contract: bitwise against TEMPO's own tempo_init built with
+# gfortran -fdefault-real-8 (tools/tempo_ref/tempo_ref_driver.F90 dump).
+# libm calls (exp, log, pow, atan, tgamma) go to the platform C library,
+# as gfortran's do, so parity is per platform C library.
+#
+# No dependencies.
+
+[package]
+name = "rw-tempo"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish.workspace = true
+rust-version.workspace = true
+description = "TEMPO microphysics tempo_init port: parameters, bins, computed tables and table readers"
+
+[lib]
+name = "rw_tempo"
+# cdylib: the ctypes seam gpuwm/core/tempo_rust.py loads (src/capi.rs).
+# rlib:   Rust callers and the crate's own tests.
+crate-type = ["cdylib", "rlib"]

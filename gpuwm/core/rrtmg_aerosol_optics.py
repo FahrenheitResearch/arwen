@@ -59,6 +59,19 @@ twenty orders of magnitude, and exactly zero on the layer above the model
 top.  tests/test_rrtmg_aerosol_optics.py measures the three factor floors
 and the bound.
 
+Aerosol type.  The HRRR fork fixes rural type 1.  The NOAA MPAS fork RRFS
+v2 runs (RRFSx/MPAS-Model 1d6e370e) uses the same gt_aod, Bolton RH and
+Lagrange bodies (physics_wrf/module_mp_thompson_aerosols.F gt_aod,
+physics_wrf/module_ra_rrtmg_sw_aerosols.F calc_aerosol_rrtmg_sw, RSLF from
+mpas_atmphys_functions.F) with the same PARAMETERs (mpas_atmphys_vars.F
+:840-854), but its driver sets the type per column from the land/water
+flag: 1 over land, 3 (maritime) over water.  ``aer_type`` selects that;
+``rrtmg_aer3_type_source = "landmask"`` (gpuwm.config) reaches it through
+the legacy RRTMG adapter.  tests/test_rrtmg_aer3_landmask_type.py holds the
+twin and kernel to that fork's Fortran on a mixed land/water deck
+(tools/rrfs_mpas_aer3_oracle).  The maritime rows meet the range argument
+below too: their smallest Lagrange factors are measured by that test.
+
 Two implementations, one statement order: the NumPy float32 functions here
 are the oracle twin of ``gpuwm/core/kernels/rrtmg_aer3.cu``; both use glibc's
 own ``expf`` (gpuwm.core.noahmp_libm / glibc_flt32.cuh, the function
@@ -165,6 +178,69 @@ ASY_RURAL = np.array([
      0.7724, 0.7771, 0.7789, 0.7790, 0.7760],
 ], F)
 
+#: aer_type = 3 (maritime, Shettle and Fenn 1979) rows of raod_lut, ssa_lut
+#: and asy_lut, [rh node][band], as the NOAA MPAS fork declares them
+#: (RRFSx/MPAS-Model 1d6e370e, src/core_atmosphere/physics/physics_wrf/
+#: module_ra_rrtmg_sw_aerosols.F:530-546, :677-693 and :792-808).  NOAA's
+#: radiation driver selects them over water (mpas_atmphys_driver_radiation_sw.F
+#: :583-586 and :637-640: xland == 2 gives taer_type 3, xland == 1 gives 1);
+#: see aer_type_from_xland.  The rural rows above are the same words in
+#: that file (:494-511, :641-658, :756-773).
+RAOD_MARITIME = np.array([
+    [0.3053, 0.3507, 0.3932, 0.4261, 0.4681, 0.5334, 0.5797, 0.6962, 0.8583,
+     1.0187, 1.1705, 1.3049, 1.5205, 0.2748],
+    [0.3566, 0.4023, 0.4443, 0.4765, 0.5170, 0.5792, 0.6227, 0.7298, 0.8756,
+     1.0162, 1.1472, 1.2614, 1.4415, 0.3256],
+    [0.4359, 0.4803, 0.5203, 0.5505, 0.5879, 0.6441, 0.6828, 0.7756, 0.8985,
+     1.0135, 1.1198, 1.2109, 1.3518, 0.4051],
+    [0.5128, 0.5544, 0.5913, 0.6187, 0.6523, 0.7020, 0.7358, 0.8149, 0.9174,
+     1.0115, 1.0995, 1.1740, 1.2875, 0.4835],
+    [0.6479, 0.6816, 0.7108, 0.7320, 0.7575, 0.7946, 0.8193, 0.8752, 0.9455,
+     1.0092, 1.0728, 1.1263, 1.2061, 0.6236],
+    [0.7582, 0.7831, 0.8043, 0.8196, 0.8377, 0.8636, 0.8806, 0.9184, 0.9649,
+     1.0080, 1.0564, 1.0973, 1.1576, 0.7399],
+    [0.8482, 0.8647, 0.8785, 0.8884, 0.9000, 0.9164, 0.9272, 0.9506, 0.9789,
+     1.0072, 1.0454, 1.0780, 1.1256, 0.8360],
+    [0.8836, 0.8965, 0.9073, 0.9149, 0.9239, 0.9365, 0.9448, 0.9626, 0.9841,
+     1.0069, 1.0415, 1.0712, 1.1145, 0.8741],
+], F)
+SSA_MARITIME = np.array([
+    [0.9697, 0.9183, 0.9749, 0.9820, 0.9780, 0.9712, 0.9708, 0.9778, 0.9831,
+     0.9827, 0.9826, 0.9723, 0.8763, 0.9716],
+    [0.9070, 0.8491, 0.9730, 0.9816, 0.9804, 0.9742, 0.9738, 0.9802, 0.9847,
+     0.9841, 0.9838, 0.9744, 0.8836, 0.9546],
+    [0.8378, 0.7761, 0.9797, 0.9827, 0.9829, 0.9814, 0.9812, 0.9852, 0.9882,
+     0.9875, 0.9871, 0.9791, 0.9006, 0.9348],
+    [0.7866, 0.7249, 0.9890, 0.9822, 0.9856, 0.9917, 0.9924, 0.9932, 0.9943,
+     0.9938, 0.9933, 0.9887, 0.9393, 0.9204],
+    [0.7761, 0.7164, 0.9959, 0.9822, 0.9834, 0.9941, 0.9955, 0.9952, 0.9960,
+     0.9956, 0.9951, 0.9922, 0.9538, 0.9152],
+    [0.7671, 0.7114, 0.9902, 0.9786, 0.9838, 0.9954, 0.9970, 0.9965, 0.9971,
+     0.9968, 0.9964, 0.9943, 0.9644, 0.9158],
+    [0.7551, 0.7060, 0.9890, 0.9743, 0.9807, 0.9966, 0.9989, 0.9978, 0.9982,
+     0.9980, 0.9978, 0.9964, 0.9757, 0.9122],
+    [0.7439, 0.7000, 0.9870, 0.9695, 0.9769, 0.9970, 1.0000, 0.9984, 0.9988,
+     0.9986, 0.9984, 0.9975, 0.9825, 0.9076],
+], F)
+ASY_MARITIME = np.array([
+    [0.6620, 0.7011, 0.7111, 0.7068, 0.6990, 0.6918, 0.6883, 0.6827, 0.6768,
+     0.6773, 0.6863, 0.6940, 0.7245, 0.6719],
+    [0.6880, 0.7394, 0.7297, 0.7240, 0.7162, 0.7083, 0.7038, 0.6957, 0.6908,
+     0.6917, 0.6952, 0.7035, 0.7356, 0.6977],
+    [0.7266, 0.7970, 0.7666, 0.7593, 0.7505, 0.7427, 0.7391, 0.7293, 0.7214,
+     0.7210, 0.7212, 0.7265, 0.7519, 0.7340],
+    [0.7683, 0.8608, 0.8120, 0.8030, 0.7826, 0.7679, 0.7713, 0.7760, 0.7723,
+     0.7716, 0.7726, 0.7767, 0.7884, 0.7768],
+    [0.7776, 0.8727, 0.8182, 0.8083, 0.7985, 0.7939, 0.7953, 0.7913, 0.7846,
+     0.7870, 0.7899, 0.7918, 0.7969, 0.7870],
+    [0.7878, 0.8839, 0.8231, 0.8130, 0.8050, 0.7977, 0.7945, 0.7932, 0.7955,
+     0.7992, 0.8025, 0.8035, 0.8055, 0.7956],
+    [0.8005, 0.8957, 0.8273, 0.8179, 0.8105, 0.8035, 0.8010, 0.8030, 0.8081,
+     0.8108, 0.8143, 0.8174, 0.8174, 0.8042],
+    [0.8104, 0.9034, 0.8294, 0.8212, 0.8144, 0.8087, 0.8077, 0.8118, 0.8175,
+     0.8202, 0.8239, 0.8265, 0.8246, 0.8095],
+], F)
+
 #: RSLF's polynomial (module_mp_thompson.F RSLF): C0..C8.
 RSLF_C = np.array([.611583699E03, .444606896E02, .143177157E01,
                    .264224321E-1, .299291081E-3, .203154182E-5,
@@ -185,6 +261,65 @@ def tables_sha256() -> str:
 #: Pinned at transcription; tests/test_rrtmg_aerosol_optics.py recomputes it.
 AER3_TABLES_SHA256 = (
     "9962257443d94d4e71341d29165dbb40ece68b61f21b92c8b83c520cf03ae2b8")
+
+
+def maritime_tables_sha256() -> str:
+    """SHA-256 over the three maritime tables, float32 little-endian.
+
+    Kept apart from :func:`tables_sha256` so a run on the rural optics
+    (every WRF and HRRR configuration) keeps the identity it always had;
+    only a run that selects the land/water type records this one."""
+    h = hashlib.sha256()
+    for table in (RAOD_MARITIME, SSA_MARITIME, ASY_MARITIME):
+        h.update(np.ascontiguousarray(table, "<f4").tobytes())
+    return h.hexdigest()
+
+
+#: Pinned at transcription; tests/test_rrtmg_aer3_landmask_type.py
+#: recomputes it and checks the words against the NOAA source text.
+AER3_MARITIME_TABLES_SHA256 = (
+    "16ef3c5062969b054350ac5299691f9b5504031af4c9c8d86a4b3b484d18b1d6")
+
+#: Where the per-column aerosol type comes from.  ``rural``: type 1
+#: everywhere, the HRRR fork's PARAMETER taer_type = 1
+#: (module_radiation_driver.F:769), the default.  ``landmask``: the NOAA
+#: MPAS fork's driver, type 1 where xland == 1 and type 3 (maritime)
+#: where xland == 2 (mpas_atmphys_driver_radiation_sw.F:583-586).
+AER3_TYPE_SOURCES = ("rural", "landmask")
+
+
+def aer_type_from_xland(xland):
+    """NOAA MPAS taer_type from the land/water flag: 1 over land (xland 1),
+    3 over water (xland 2), int32.
+
+    The NOAA driver assigns nothing for any other xland value, so the type
+    would be whatever the array held from an earlier call (uninitialized on
+    the first): a value outside {1, 2} is refused rather than given a type
+    the source never assigns."""
+    xland = np.asarray(xland, np.float32)
+    land = xland == F(1.0)
+    water = xland == F(2.0)
+    if not np.all(land | water):
+        bad = np.unique(xland[~(land | water)])[:4]
+        raise ValueError(
+            "rrtmg_aer3_type_source='landmask' needs xland 1 (land) or 2 "
+            f"(water) in every column, got {bad.tolist()}: NOAA's driver "
+            "assigns no aerosol type to any other value "
+            "(mpas_atmphys_driver_radiation_sw.F:583-586)")
+    return np.where(water, 3, 1).astype(np.int32)
+
+
+def _type_array(aer_type, shape):
+    """Validate a per-column aerosol type against the column shape."""
+    aer_type = np.asarray(aer_type)
+    if aer_type.shape != tuple(shape) or not np.issubdtype(aer_type.dtype, np.integer):
+        raise ValueError(
+            f"aer_type must be an integer array of shape {tuple(shape)}, got "
+            f"{aer_type.dtype} {aer_type.shape}")
+    if not np.all((aer_type == 1) | (aer_type == 3)):
+        raise ValueError("aer_type admits 1 (rural) and 3 (maritime) only, "
+                         "the two types NOAA's driver assigns")
+    return aer_type
 
 
 # ---------------------------------------------------------------------------
@@ -374,14 +509,28 @@ def _smoke_selection_numpy(shape, *, smoke_aod, smoke_feedback):
 
 
 def aer3_sw_optics(p, t, qv, dz8w, nwfa, nifa, *, smoke_aod=None,
-                  smoke_feedback=False):
+                  smoke_feedback=False, aer_type=None):
     """The fork's aer_opt = 3 shortwave optics on (..., nz) float32 arrays.
 
     Returns ``(tauaer, ssaaer, asyaer, taod5503d)``: the first three
     (..., nz, 14) as RRTMG_SWRAD hands them to rrtmg_sw for the model
     layers, the last the layer AOD at 550 nm gt_aod produced.
+
+    ``aer_type`` (None, or an integer array of the column shape
+    ``p.shape[:-1]`` holding 1 or 3) selects the Shettle-Fenn rows per
+    column as the NOAA MPAS fork does; None is rural type 1 everywhere,
+    the HRRR fork.  Every element's arithmetic reads only its own table,
+    so a type-1 column is the same words either way.
     """
-    smoke = _smoke_selection_numpy(np.asarray(p).shape, smoke_aod=smoke_aod,
+    shape = np.asarray(p).shape
+    types = None if aer_type is None else _type_array(aer_type, shape[:-1])
+    if types is not None and smoke_feedback:
+        raise ValueError(
+            "prescribed smoke follows the HRRR fork's rural optics; the NOAA "
+            "MPAS land/water aerosol type has no smoke coupling in its driver "
+            "(mpas_atmphys_driver_radiation_sw.F:573-683), so the pair has "
+            "no source behavior to reproduce")
+    smoke = _smoke_selection_numpy(shape, smoke_aod=smoke_aod,
                                    smoke_feedback=smoke_feedback)
     taod = gt_aod(p, dz8w, t, qv, nwfa, nifa)
     if smoke is not None:
@@ -392,6 +541,11 @@ def aer3_sw_optics(p, t, qv, dz8w, nwfa, nifa, *, smoke_aod=None,
     tau = _lagrange(rh, RAOD_RURAL, scale=taod)
     ssa = _lagrange(rh, SSA_RURAL)
     asy = _lagrange(rh, ASY_RURAL)
+    if types is not None and np.any(types == 3):
+        water = (types == 3)[..., None, None]
+        tau = np.where(water, _lagrange(rh, RAOD_MARITIME, scale=taod), tau)
+        ssa = np.where(water, _lagrange(rh, SSA_MARITIME), ssa)
+        asy = np.where(water, _lagrange(rh, ASY_MARITIME), asy)
     return tau, ssa, asy, taod
 
 
@@ -497,8 +651,28 @@ def smoke_dry_mixing_ratio_from_posted_density_device(pm_kgm3, donor_p, donor_t)
     return _smoke_array_device("smoke_ugkg", result, shape, upper=11000)
 
 
+def aer_type_from_xland_device(xland):
+    """Device twin of :func:`aer_type_from_xland`: int32 (nc,), 1 where
+    xland == 1, 3 where xland == 2, any other value refused by name."""
+    import cupy as cp
+    if not isinstance(xland, cp.ndarray) or xland.ndim != 1:
+        raise ValueError("aer_type_from_xland_device needs a 1-D device xland")
+    x = xland.astype(cp.float32, copy=False)
+    land = x == F(1.0)
+    water = x == F(2.0)
+    if not bool(cp.all(land | water).item()):
+        bad = cp.unique(x[~(land | water)])[:4].get().tolist()
+        raise ValueError(
+            "rrtmg_aer3_type_source='landmask' needs xland 1 (land) or 2 "
+            f"(water) in every column, got {bad}: NOAA's driver assigns no "
+            "aerosol type to any other value "
+            "(mpas_atmphys_driver_radiation_sw.F:583-586)")
+    return cp.where(water, cp.int32(3), cp.int32(1)).astype(cp.int32)
+
+
 def aer3_sw_optics_device(p3d, t3d, qv3d, dz8w, nwfa, nifa, nlayers,
-                         *, smoke_aod=None, smoke_feedback=False):
+                         *, smoke_aod=None, smoke_feedback=False,
+                         aer_type=None):
     """The batched SW engine's aerosol slabs on the device.
 
     Inputs are (nc, nz) float32 device arrays of one adapter chunk (the
@@ -506,6 +680,10 @@ def aer3_sw_optics_device(p3d, t3d, qv3d, dz8w, nwfa, nifa, nlayers,
     Returns ``(ztaua, zasya, zomga, taod)``: the first three
     (nc, 14, nlayers) in rsw_spcvmc_gpt_b's per-column band-major layout,
     the layers from nz up at 0/0/1, and the (nc, nz) layer AOD at 550 nm.
+
+    ``aer_type`` (None or an int32 (nc,) device array of 1 and 3) runs the
+    NOAA MPAS per-column type through ``rrtmg_aer3_typed_sw_optics``; None
+    launches the rural kernel exactly as before.
     """
     import cupy as cp
     nc, nz = (int(s) for s in p3d.shape)
@@ -524,6 +702,32 @@ def aer3_sw_optics_device(p3d, t3d, qv3d, dz8w, nwfa, nifa, nlayers,
         arrays.append(cp.ascontiguousarray(a))
     if type(smoke_feedback) is not bool:
         raise ValueError("smoke_feedback must be an explicit boolean")
+    if aer_type is not None:
+        if smoke_feedback or smoke_aod is not None:
+            raise ValueError(
+                "prescribed smoke follows the HRRR fork's rural optics; the "
+                "NOAA MPAS land/water aerosol type has no smoke coupling in "
+                "its driver (mpas_atmphys_driver_radiation_sw.F:573-683), so "
+                "the pair has no source behavior to reproduce")
+        if not isinstance(aer_type, cp.ndarray) or aer_type.dtype != cp.int32                 or aer_type.shape != (nc,):
+            raise ValueError(
+                f"aer_type must be an int32 device array of shape {(nc,)}, "
+                f"got {getattr(aer_type, 'dtype', None)} "
+                f"{getattr(aer_type, 'shape', None)}")
+        if not bool(cp.all((aer_type == 1) | (aer_type == 3)).item()):
+            raise ValueError("aer_type admits 1 (rural) and 3 (maritime) "
+                             "only, the two types NOAA's driver assigns")
+        ztaua = cp.empty((nc, NBNDSW, nlayers), dtype=cp.float32)
+        zasya = cp.empty((nc, NBNDSW, nlayers), dtype=cp.float32)
+        zomga = cp.empty((nc, NBNDSW, nlayers), dtype=cp.float32)
+        taod = cp.empty((nc, nz), dtype=cp.float32)
+        total = nc * nlayers
+        if total:
+            _module().get_function("rrtmg_aer3_typed_sw_optics")(
+                ((total + 127) // 128,), (128,),
+                (np.int32(nc), np.int32(nz), np.int32(nlayers), *arrays,
+                 cp.ascontiguousarray(aer_type), ztaua, zasya, zomga, taod))
+        return ztaua, zasya, zomga, taod
     if smoke_feedback:
         smoke = _smoke_array_device("smoke_aod", smoke_aod, (nc, nz))
     elif smoke_aod is not None:

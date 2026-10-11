@@ -470,6 +470,13 @@ def test_a_cycle_nomads_has_not_created_is_waited_on_not_failed(
     from gpuwm.fetch_endpoints import Endpoint
     from datetime import timedelta
 
+    # The replay serves stand-in bytes, not GRIB2 messages, and a built
+    # rw_fetch refuses a GRIB2 route payload without the indicator; the
+    # posting schedule is under test, so keep the Python object transport,
+    # as tests/test_fetch_as_posted.py does for the same replay.
+    monkeypatch.setattr(fetch, "_route_stream_downloader",
+                        lambda plan, args: None)
+
     start = rows.expected_at(REPLAY_SOURCE, REPLAY_CYCLE, 0) \
         - timedelta(minutes=10)
     clock = Clock(start)

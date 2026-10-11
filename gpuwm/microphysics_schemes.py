@@ -1,6 +1,7 @@
 """Named microphysics schemes and their capabilities (CuPy-free).
 
-A scheme WOOF adds that WRF does not number is selected by name and carries a WOOF-side numeric id outside WRF's
+A scheme WOOF adds that WRF does not number is selected by NAME (TOML
+``mp_physics = "tempo"``) and carries a WOOF-side numeric id outside WRF's
 ``mp_physics`` range, so a WRF namelist number never means something
 different in WOOF.  WOOF-side ids start at 900 (the ``bl_pbl_physics = 900``
 SASE precedent).  Everything else about a scheme is a capability row here:
@@ -47,14 +48,30 @@ class MicrophysicsScheme:
     discriminator: str
 
 
-# New physics ports are deferred from this release.
-NAMED_SCHEMES: dict[str, MicrophysicsScheme] = {}
+TEMPO = MicrophysicsScheme(
+    name="tempo",
+    mp_id=900,
+    label="TEMPO (NCAR/TEMPO 9adf9ef, tempo_v3.0.3, RRFS v2), aerosol- and hail-aware",
+    ice_mass_species=("qi", "qs", "qg"),
+    moment_species=("nc", "nr", "ni", "ng", "volg"),
+    aerosol_species=("nwfa", "nifa"),
+    surface_fields=("nwfa2d",),
+    native_reflectivity=True,
+    sr_available=True,
+    cloud_optics_family="thompson",
+    predicts_graupel_volume=True,
+    aerosol_aware=True,
+    algorithm_identity="tempo-9adf9ef-gpu-f64-v1",
+    discriminator="volg",
+)
+
+NAMED_SCHEMES: dict[str, MicrophysicsScheme] = {TEMPO.name: TEMPO}
 SCHEMES_BY_ID: dict[int, MicrophysicsScheme] = {s.mp_id: s for s in NAMED_SCHEMES.values()}
 NAMED_MP_IDS: tuple[int, ...] = tuple(sorted(SCHEMES_BY_ID))
 
 
 def resolve_mp_physics(value):
-    """Resolve enabled names; integers and numeric strings pass through as int."""
+    """``"tempo"`` -> 900; integers and numeric strings pass through as int."""
     if isinstance(value, bool):
         raise ValueError(f"mp_physics must be a scheme number or name, got {value!r}")
     if isinstance(value, int):

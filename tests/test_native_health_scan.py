@@ -7,6 +7,38 @@ import pytest
 from gpuwm.core import health
 
 
+@pytest.mark.parametrize("name", ["nr", "qvolg"])
+@pytest.mark.parametrize("width", [0, 1, 2])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_native_rim_entry_checks_floor_without_numpy_rescue(native, name, width, dtype):
+    import ctypes
+    from types import SimpleNamespace
+    from gpuwm.wrf_exact import ENABLED
+
+    assert getattr(native, "supports_rim", False), "build the rim-aware CPU bridge"
+    values = np.zeros((3, 7, 9), dtype)
+    for j, i in [(0, 4), (6, 4), (3, 0), (3, 8), (1, 4), (3, 4)]:
+        values.fill(0)
+        state = SimpleNamespace(**{name: values}, _health_spec_zone=width)
+        fields = health.collect_state_fields(state)
+        descriptor, _, _ = health._native_health_descriptor(fields[0])
+        geometry = np.asarray([health._rim_geometry(fields[0])], np.uintp)
+        for value in (-1.0e-7, np.nan, np.inf, fields[0].rule.upper * 2):
+            values[2, j, i] = value
+            result = health._HostHealthResult()
+            code = native(ctypes.byref(descriptor), 1, 2, ctypes.byref(result),
+                          geometry.ctypes.data)
+            assert code == 0
+            expected_ok = (value == -1.0e-7 and ENABLED
+                           and min(j, 6 - j, i, 8 - i) < width)
+            assert (result.status_bits == 0) == expected_ok
+            if not expected_ok:
+                assert result.first_field == 0
+                assert result.first_index == 2 * 63 + j * 9 + i
+            same_report(health._validate_fields_numpy(fields),
+                        health.validate_fields_cpu(fields))
+
+
 @pytest.fixture
 def native():
     entry = health._native_health_entry()

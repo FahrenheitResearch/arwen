@@ -255,6 +255,9 @@ def extra_moist_species(state: DomainState) -> tuple[str, ...]:
     ``qs``/``qg`` -- see :data:`P3_SPECIES`.  It is independent of the mp=9
     arm beside it: no state allocates both ``nh`` and ``qir``.
     """
+    if getattr(state,"fast_sbm_bins",None) is not None:
+        from gpuwm.core.fast_sbm_contract import EXTRA_SPECIES
+        return EXTRA_SPECIES
     if getattr(state, "qi", None) is None:
         return ()
     if getattr(state, "qir", None) is not None:

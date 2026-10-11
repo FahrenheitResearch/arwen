@@ -12,7 +12,11 @@
 #   python tools/battery/emulate_windows_cpu_partition.py --work-dir <scratch>/winpart
 # which runs the Windows selection of Stage 1 from a fresh clone and virtual
 # environment with every GPUWM_* variable cleared and HOME empty, so no
-# native artifact is reachable. It is not a Stage 1 entry (it runs Stage 1);
+# native artifact is reachable but the table fetcher (rw_fetch, built outside
+# the tree and named by GPUWM_RW_FETCH), the one native the Windows cpu job
+# builds, because every staged table is pin-checked through it. A row that
+# needs only rw_fetch therefore stays off this list and runs on Windows.
+# It is not a Stage 1 entry (it runs Stage 1);
 # the integrator runs it on the candidate beside the Stage 1 leg and requires
 # 0 failures.
 

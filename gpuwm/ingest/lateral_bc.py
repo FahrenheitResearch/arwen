@@ -27,6 +27,8 @@ from gpuwm.grid_requirements import boundary_axis
 #: inventory, not kernel behaviour.  The accepted-implies-builds
 #: instrument pins this set against every accepted scheme's
 #: ``nest_field_kinds``.
+from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
+
 COUPLED_SCALAR_STATE_FIELDS = frozenset({
     "qv", "qc", "qr", "qi", "qs", "qg",
     "nr", "ni", "ns", "ng", "nc", "nwfa", "nifa",
@@ -38,7 +40,10 @@ COUPLED_SCALAR_STATE_FIELDS = frozenset({
     # mp=50 (P3): rime mass and rime volume, transported with qi.
     "qir", "qib",
     "qh", "qndrop", "qnr",
-    "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"})
+    "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh",
+    # TEMPO's graupel volume (a named scheme's row); a dry-mass mixing
+    # ratio like NSSL's qvolg, generic coupling code 7.
+    "volg"}) | frozenset(_FSBM_BIN_SPECIES)
 
 
 

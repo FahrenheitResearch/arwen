@@ -14,6 +14,7 @@ import pytest
 
 from gpuwm.domain_wizard import render_config
 from gpuwm.namelist_import import import_namelists
+from wrf_clock_lines import without_wrf_clock_lines
 
 
 FIXTURES = Path(__file__).parent / "fixtures/generic_byte_controls"
@@ -49,7 +50,9 @@ def assert_old_bytes(parent, pins, key, candidate):
     old = (FIXTURES / parent / path).read_bytes()
     assert len(old) == expected["bytes"]
     assert hashlib.sha256(old).hexdigest() == expected["sha256"]
-    assert candidate.encode("utf-8") == old
+    # A fixed-step WRF namelist gained the D8 pinned-clock block in 2.8.9;
+    # everything else is the parent's bytes.
+    assert without_wrf_clock_lines(candidate).encode("utf-8") == old
 
 
 #: Lines a recipe emission gained after these parents were pinned, by

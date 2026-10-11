@@ -22,6 +22,12 @@ azimuth_step_deg = 1.0
 volume_duration_s = 300.0
 ```
 
+The radar engine is fetched on first use: run `gpuwm fetch-bridges` once
+after installing, because the platform wheel does not carry it (with it the
+wheel was over the package index's 100 MB per-file limit). Until then a
+forecast asking for radar and `gpuwm simulated-radar` stop with a message
+naming that command.
+
 An absent table disables this optional product. A present table enables it
 unless `enabled = false`. The table changes output products only; it does not
 change forecast state or restart identity. The option works through the

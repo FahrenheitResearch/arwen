@@ -238,7 +238,7 @@ fn parse_args() -> Result<Invocation, String> {
     let mut tie_rule = PmmTieRule::FlatIndex;
     let mut width = 1_200u32;
     let mut height = 900u32;
-    let mut source_label = "ArWen".to_string();
+    let mut source_label = concat!("WOOF ", env!("GPUWM_ENGINE_VERSION")).to_string();
     let mut accept_status: Vec<String> =
         DEFAULT_ACCEPT_STATUS.iter().map(|s| s.to_string()).collect();
     let mut overlays_path: Option<PathBuf> = None;

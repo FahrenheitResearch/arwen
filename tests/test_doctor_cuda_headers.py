@@ -656,3 +656,16 @@ def test_the_docs_guard_would_catch_the_line_that_shipped():
     # A prose mention carries no install and must NOT be flagged.
     prose = "`nvidia-cusolver-cu12` resolves as a deprecation tombstone."
     assert "pip install" not in prose
+
+
+def test_a_full_card_is_not_judged_as_missing_headers(monkeypatch):
+    """Named breakage: the V12 box's card 0 was full and this line read
+    "MISSING CUDA kernel headers: CUDA compile failed" (2026-10-09)."""
+    check = _check(monkeypatch, {
+        "self_contained": "CUDARuntimeError: cudaErrorMemoryAllocation: "
+                          "out of memory",
+        "self_contained_stage": "compile",
+        "toolkit_headers": "did not run", "cuda_path": ""})
+    assert check.status == "info"
+    assert not check.blocking
+    assert "not judged" in check.detail

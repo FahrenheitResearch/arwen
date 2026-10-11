@@ -30,6 +30,40 @@ from gpuwm.cli import main
 REPO_ROOT = fixtures.REPO_ROOT
 
 
+@pytest.fixture(autouse=True)
+def _a_witnessed_compile_platform(monkeypatch):
+    """The compile platform both sides read, on a process that has none.
+
+    These cells ask what the verdict binds and refuses, not what the
+    compile platform is; tests/test_certify_compile_platform.py owns the
+    live measurement and its refusals.  A process with no visible card
+    (the CPU legs run with CUDA hidden) measures no compute capability,
+    so the matched fixture is born un-witnessed and every passing cell
+    here collapsed to the compile-platform refusal (2373cc6a7 wired that
+    check in).  There, the fixture and certify read one synthetic,
+    complete fingerprint -- marked as such in every value -- instead of
+    the live one; a witnessing process keeps its live measurement.
+    """
+    if fixtures.this_process_can_witness_the_compile_platform():
+        return
+    from gpuwm.certify import compile_platform
+    import numpy
+    synthetic = {
+        "nvrtc_build": "0.0.0",
+        "nvrtc_build_id": "CL-fixture",
+        "nvrtc_library_sha256": "f" * 64,
+        "cuda_driver_version": "0",
+        "device_compute_capability": "fixture",
+        "cupy_version": "0+fixture",
+        "numpy_version": numpy.__version__,
+    }
+    assert set(synthetic) == set(compile_platform.FINGERPRINT_KEYS)
+    measure = lambda: dict(synthetic)  # noqa: E731
+    monkeypatch.setattr(fixtures, "compile_platform_fingerprint", measure)
+    monkeypatch.setattr(verdict_module, "compile_platform_fingerprint",
+                        measure)
+
+
 def _run_certify(paths, out_verdict: Path | None = None) -> int:
     argv = ["certify",
             "--run-capsule", str(paths["capsule"]),

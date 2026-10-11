@@ -436,10 +436,18 @@ class PreparedEnsembleSession:
                         model[card.device_id] = priced
                         ordinary_admissions[card.device_id] = (external, margin)
         cards = tuple(cards)
-        if checkpoint_members:
-            # One member owns the durable diagnostic snapshot until its
-            # roster seals. Another card may otherwise retire pending packs
-            # while this member's checkpoint is being hashed and carried.
+        if (checkpoint_members and len(cards) > 1
+                and not callable(getattr(self.collector, "checkpoint_hold", None))):
+            # A roster seal hashes the files the collector snapshot names.
+            # Members on other cards could retire those pending packs between
+            # the snapshot and the hash unless the collector holds their
+            # submissions (restart_roster.checkpoint_hold). The production
+            # collector does; a collector without that hold stays on one card.
+            import sys
+            print(f"ensemble: checkpointed members use one card (device {cards[0].device_id}) of "
+                  f"{len(cards)}: this diagnostic collector has no checkpoint_hold, so its snapshot "
+                  "could name packs another card retires. Set restart_interval_s = 0 to use every card, "
+                  "or use the default ensemble diagnostic collector.", file=sys.stderr, flush=True)
             cards = cards[:1]
             if isinstance(model, Mapping):
                 model = {card.device_id: model[card.device_id] for card in cards}
@@ -513,9 +521,11 @@ class PreparedEnsembleSession:
                 with scope(card.device_id):
                     cp.cuda.get_current_stream().synchronize()
                     cp.get_default_memory_pool().free_all_blocks()
+        from gpuwm.ensemble.packing_policy import ordinary_member_policy
+        ordinary_cap, cap_policy = ordinary_member_policy(self.request, concurrent=concurrent_ordinary)
         packing = pack_members(self.request.members, tuple(cards), model, batched=native,
             concurrent_ordinary=concurrent_ordinary,
-            max_ordinary_members_per_device=self.request.max_ordinary_members_per_device,
+            max_ordinary_members_per_device=ordinary_cap,
             reason=("qualified native member executor" if native else
                     "posted member sources retain original native initialization and streaming seals"
                     if self.source_execution is not None else
@@ -558,6 +568,7 @@ class PreparedEnsembleSession:
                     **({} if decision is None else {"memory": decision.reservation.receipt()})})
         manifest = {"schema": "gpuwm-ensemble-run.v1", "status": "running",
                     "request": self.request.receipt(), "packing": packing.receipt(),
+                    "ordinary_member_cap_policy": cap_policy,
                     **({} if not self.request.member_variants else {"member_variants": [
                         self._variant_receipt(member) for member in self.member_order]}),
                     # Stated only by an engine gate that runs copies on purpose.
@@ -847,9 +858,7 @@ class PreparedEnsembleSession:
                 if checkpoint_members:
                     from gpuwm.ensemble.restart_roster import seal
                     save = getattr(self.collector, "save_resume", None)
-                    if callable(save):
-                        save()
-                    seal(out)
+                    seal(out, collector=self.collector if callable(save) else None)
             return record
 
         def execute_admitted(batch):
@@ -903,7 +912,9 @@ class PreparedEnsembleSession:
                         member_out.mkdir(parents=True, exist_ok=self.restart_roster is not None)
                         # Every original member retains its own model until
                         # its queue completes, including concurrent waves.
-                        with finished_member_release(cp), member_output_scope(capture):
+                        from gpuwm.ensemble.timeline import member_timeline
+                        with finished_member_release(cp), member_output_scope(capture), member_timeline(
+                                member_out, member=member, card=batch.device_id):
                             if self.source_execution is None:
                                 result = runner(member_inputs, output_directory=member_out, **options)
                             else:
@@ -1026,8 +1037,7 @@ class PreparedEnsembleSession:
                 from gpuwm.ensemble.restart_roster import seal
                 save = getattr(self.collector, "save_resume", None)
                 if callable(save):
-                    save()
-                    seal(out)
+                    seal(out, collector=self.collector)
             raise
 
     def completed_products(self):

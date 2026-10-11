@@ -647,8 +647,12 @@ def test_install_script_quotes_paths_with_spaces(tmp_path, monkeypatch):
     last = _shlex.split(script[-1], posix=True)
     assert last[0] == str(workspace / "venv" / "bin" / "python") and last[-1] == f"{wheel}[gpu-cu13]"
     driver = (workspace / "install" / "install.sh").read_text()
+    # Since 170adbb33 and c985bb5c3 a venv line is a shell clause ("if
+    # $base -m venv PATH; then", "python3 -m venv PATH || { ...; }"), so
+    # the path is the word after "venv", not the line's last word.
     venv_lines = [_shlex.split(line, posix=True) for line in driver.splitlines() if " -m venv " in line]
-    assert venv_lines and all(words[-1] == str(workspace / "venv") for words in venv_lines)
+    assert venv_lines and all(words[words.index("venv") + 1].rstrip(";") == str(workspace / "venv")
+                              for words in venv_lines)
     assert _shlex.quote(str(workspace / "install" / "install-steps.sh")) in driver
 
 

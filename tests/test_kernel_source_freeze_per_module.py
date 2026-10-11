@@ -125,6 +125,14 @@ RE_PINNED_DRIFT: dict[str, tuple[str, str]] = {
 MP28_ACCUMULATOR_REWORK = "lane/cut286-mp28-g3 (2.8.6)"
 
 BASELINE_PINNED: dict[str, str] = {
+    # WRF FAST_SBM (mp_physics=30), joined with the port merge for 2.8.9:
+    # bit for bit with WRF on every recorded column call (80 of 80 Fortran
+    # streams).  These bytes carry the one-column-per-thread launch (64 per
+    # block); the public 600 s case and a nested HRRR winter tree write
+    # byte-identical history at every block width measured.
+    "fast_sbm": "cd0ca83c22d3252bcd669ca16f4b7181c8e151a93a9ec0947777c617c7980881",
+    # Generated classic generation; full output-word oracles cover its numerics.
+    "thompson_column": "340467a1fb2e50b9b6b8341aeb5aac98a19d0a1abf3afb43d16f4746fcd37be8",
     # Already-staged vertical order kernel (f82847049); lane/ec-pd-upwind-286
     # confined its downstream cell at Courant <= 1 to the strict WRF
     # verification build (it manufactured scalar mass).
@@ -972,8 +980,13 @@ BASELINE_PINNED: dict[str, str] = {
     # layer cap 3.0 and no RH enhancement. The pinned smoke_aer3_oracle
     # fixture and node4 smoke optical/provider gates grade these bytes;
     # zero smoke remains an exact control. No forecast skill is inferred.
+    # Re-pinned for the NOAA MPAS land/water aerosol type (RRFS hex gap 2):
+    # maritime rows and a separate rrtmg_aer3_typed_sw_optics entry point;
+    # the rural and smoke kernels are unchanged text, and
+    # tests/test_rrtmg_aer3_landmask_type.py holds the new kernel to the
+    # NOAA MPAS fork's Fortran word for word on a mixed deck.
     "rrtmg_aer3":
-        "8f428e8d7d2f02ef174880b24c4e7c09cba5fb89ca6138b24ebab519d80ecccf",
+        "0ab8dab99a9b49c93699c0e3ce6778d63a6e8e1eb39966a1db49d4847db10dd3",
     # Explicit prescribed profiles only: device finite/unit guards,
     # bounded UTC interpolation and congruent-grid slab gathering.
     # The node4 8-test adapter/provider gate binds this exact raw source.
@@ -981,6 +994,12 @@ BASELINE_PINNED: dict[str, str] = {
         "ac810c4ffc873f084882adb695eccdbf84d8c7d28af1654c3d01755770460ece",
     "swint":
         "ced1a30cd19b61b749add691522d134cf2cee7b2cb818ebe175b1bd5112620f7",
+    # cu_physics = 6, WRF v4.6.1's original Tiedtke (module_cu_tiedtke.F) as
+    # one column kernel; tools/tiedtke_wrf461_oracle/check.py --gpu holds
+    # it word for word to the Fortran in default and strict arithmetic
+    # (tests/test_tiedtke_cu6_gpu.py).  PINNED at 2.8.9 when it joined.
+    "tiedtke":
+        "6064a2a351da878a0d6292c08bf82eb19af8996e2d0cee9ac16211d8363dca91",
 }
 
 _FROZEN = _frozen_module()
@@ -995,6 +1014,16 @@ PINNED.update(BASELINE_PINNED)
 # docs/gf_gamma_known_delta.md and tests/test_gf_gamma_correctly_rounded.py;
 # header assembly is independently checked by test_kernel_loader_inert.py.
 PINNED_HEADERS = {
+    "thompson_column_support.cuh": "3c1c267c853d22fe67c327a105145d6e2200000209fe30dbfef353b70ba86b4f",
+    # Re-pinned at 2.8.9: the blank line after the closing brace at EOF
+    # (ddda6dabc) is gone; the 2.8.9 cut's export whitespace check refused it.
+    "thompson_column_radar.cuh": "30658defe41421cade975ef6456adaf0540bf13ad09d3cdea6227573c6e623f5",
+    # Re-pinned at 2.8.9: translate.py no longer emits a blank after an
+    # if-then brace, so 187 trailing blanks left the regenerated header (the
+    # 2.8.9 cut's export whitespace check refused them). Only line-end bytes
+    # changed; every statement and table literal is the same.
+    "thompson_column_generated.cuh": "f07dd881fbec30952ba3d17b16012693e4ea689f50dcefde350c0222473fb552",
+
     # Lake lower bounds, REAL kinds and division rounding are part of the
     # column contract; test_lake_contract regenerates the WRF statements.
     # ABS sign clearing includes negative zero, subnormals and signed NaNs;
@@ -1042,6 +1071,12 @@ PINNED_HEADERS = {
     # asinf/acosf/atanf) for the urban BEP column, generated and proven by
     # tools/glibc_trig_flt32_proof/.
     "glibc_trig_flt32.cuh": "bbdb54c85d361d208ea9b1a7cb49a33132026d17694ad0f42c8b0bf5460baaf0",
+    # cu6's prepended headers (_EXTRA_HEADERS["tiedtke"]): the rounded
+    # arithmetic and column arena, and the routines transcribed from
+    # module_cu_tiedtke.F by tools/tiedtke_wrf461_oracle/transcribe.py,
+    # graded with tiedtke.cu.  PINNED at 2.8.9.
+    "tiedtke_support.cuh": "555385246fe3c17fbe9bb0594bc14295109755dd88dad62d0ef2c6ee7646c84f",
+    "tiedtke_routines.cuh": "ec1fbc12102836c26cb24d11f172947ccb4d59b1744e208624a2e4a6dbac5b6c",
     # lane/282-terrain-drag: YSU's topo_wind arm (get_pblh, the hill-top 10 m
     # blend), prepended to ysu.cu by _EXTRA_HEADERS["ysu"]; graded with it by
     # tests/test_terrain_drag_wrf471_parity.py.
@@ -1113,6 +1148,17 @@ COMPOSED_HEADERS = {
     "sfire_phys.cuh": "8424f3793b152c96d68ee9b6f112ac19e65d5f823f3deb9a6ff9c44436caa0ae",
 
     "urban_bem.cuh": "b4cb2ac2ed49d7e8aeb71193a191eefbe4a6247624772428dd9ac322a89cdb99",
+
+    # FAST_SBM's direct NVRTC composition (gpuwm/core/fast_sbm_cuda.py
+    # compiles fast_sbm.cu with this directory on its include path).
+    "fast_sbm_aux.cuh": "b271ebf1b4f82b24178f1c503fc05ffbf73c38d4f05bd0f1cf1c3be93826bd6f",
+    "fast_sbm_coll.cuh": "c3d848392ac0d3394b5a22e8faf7865d62e1328e5f45f156fc28cdabee31d9da",
+    "fast_sbm_column.cuh": "57884373b33a166c5d99c62f92bf8a4f7d380bef84bd1d7627c48abcaf19c998",
+    "fast_sbm_common.cuh": "40b390032f6fcace433ccdd5d2043a4fabf63e4682b9faf31f6acf0ddb55d5a2",
+    "fast_sbm_core.cuh": "c3195dd6a93fbb6189645c6c97711dcb676313da3b33c19bcb344f2817513894",
+    "fast_sbm_driver.cuh": "492f0a9530bf899b74ae935dd028bffee8f32a7177067dc8b54334fa98cc083e",
+    "fast_sbm_init.cuh": "5f3e2136b6afba94edd2fc36145880eb3dc6ebd902a16b3ddc938d715991fa30",
+    "fast_sbm_nucl.cuh": "8cd18b15d7deb2087320e935ef767470dabd801f4e61faeeeaa3bea3c67a05ac",
 }
 PINNED_HEADERS["sfire_libm.cuh"] = COMPOSED_HEADERS["sfire_libm.cuh"]
 

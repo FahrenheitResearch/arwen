@@ -72,6 +72,8 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
+
 #: Provenance schema for the receipt this module produces.
 POSITIVITY_SCHEMA = "gpuwm-da.positivity.v1"
 
@@ -122,6 +124,19 @@ NON_NEGATIVE_FIELDS = (
     # rime mass goes negative, so a negative rime moment is not a state
     # P3 has.
     "qir", "qib",
+    # TEMPO (WOOF mp 900) graupel volume, prognostic and carried by the
+    # restart contract (STATE_SERIALIZED_ATTRS) like NSSL qvolg; the scheme
+    # divides graupel mass by it (gpuwm/core/kernels/tempo/tempo_diags.cuh:175),
+    # so an analysis that drives it below zero hands the next step a state
+    # TEMPO does not have.
+    "volg",
+    # mp 30 (FAST_SBM) spectral bins: ff1/ff5/ff6 hydrometeor mass per bin
+    # (kg/kg) and ff8 aerosol number per bin, 142 prognostic fields the
+    # restart contract carries and a full-moment analysis moves, and the
+    # policy had no opinion about any of them.  A negative bin is not a
+    # state the scheme has: its column kernel stops with a status code on
+    # one (gpuwm/core/kernels/fast_sbm_core.cuh, status 8610 for ff1r).
+    *_FSBM_BIN_SPECIES,
 )
 
 

@@ -5396,11 +5396,17 @@ def _public_config_value(value):
                                   ("swint_opt", 0), ("aer_opt", 0),
                                   ("alb_sol", 0),
                                   ("thompson_version", "wrf_461"),
+                                  ("thompson_table_dir", None),
                                   ("thompson_fork_snow_fall", "blend"),
                                   ("rrtmg_cloud_optics_form", "wrf_461"),
+                                  ("rrtmg_aer3_type_source", "rural"),
                                   ("rrtmg_smoke_manifest", ""),
                                   ("surface_energy_diag", False),
-                                  ("cycling", False)):
+                                  ("cycling", False),
+                                  ("bl_mynn_mixaerosols", 0),
+                                  ("bl_mynn_mixnumcon", 0),
+                                  ("tempo_ml_for_bl_nc", False),
+                                  ("tempo_surface_emission_before", False)):
                 if run_document.get(name, default) == default:
                     run_document.pop(name, None)
         return document

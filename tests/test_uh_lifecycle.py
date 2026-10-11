@@ -404,6 +404,12 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
     }
     assert hits == {
         "gpuwm/core/uh_diag.py",      # owner: update/reset/mirror
+        # The WRF warm start's closed-world carrier census names the slot as
+        # REBUILT, never restored: WRF's UP_HELI_MAX running maximum starts a
+        # new window at the restart instant, as after every history write.
+        # A reason-table string (SCRATCH_REBUILT); nothing is read into the
+        # trajectory or the slot.
+        "gpuwm/ingest/wrfrst.py",
         "gpuwm/core/state.py",        # eager allocation under the knob
         "gpuwm/core/dycore.py",       # calls update_up_heli_max only
         "gpuwm/core/preflight.py",    # pricing registry + lifetime audit

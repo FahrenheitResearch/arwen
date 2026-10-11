@@ -34,14 +34,20 @@
   {"source": "era5", "mode": "cds", "same_as": "arco",
    "why": "the Copernicus service delivers the same fields cropped and packed, so the ARCO figures, floating point on disk and whole chunks over the network, are its upper bound"},
   {"source": "hrrr-prs", "mode": "full-file",
-   "objects": {"wrfprs": 428000000},
-   "measured": "the same wrfprs objects as the hrrr row's soil role, 75 measured"},
+   "objects": {"wrfprs": 428000000, "vegetation_surface": 151555510},
+   "measured": "the same wrfprs objects as the hrrr row's soil role, 75 measured; vegetation_surface: the wrfsfcf00 object 6a69b356f added to the route, HEAD Content-Length at 2021-12-10 18Z, 2023-06-21 18Z, 2026-09-26 00Z and 06Z and 2026-10-08 12Z: 134680416 to 151555510 bytes, larger retained"},
   {"source": "rap-native", "mode": "full-file",
    "objects": {"awp130bgrb": 40052891},
    "measured": "2026-10-02 18Z f00 and f03 awp130bgrb objects: 39996024 and 40052891 bytes, larger retained"},
   {"source": "hrrr-native", "mode": "full-file",
-   "objects": {"wrfnat": 738600000},
-   "measured": "the hrrr full-file row native-atmosphere measurement; the same-cycle hrrr-prs soil donor is priced separately"},
+   "objects": {"wrfnat": 738600000, "vegetation_surface": 151555510},
+   "measured": "the hrrr full-file row native-atmosphere measurement; the same-cycle hrrr-prs soil donor is priced separately; vegetation_surface: the wrfsfcf00 object 6a69b356f added to the route, HEAD Content-Length at 2021-12-10 18Z, 2023-06-21 18Z, 2026-09-26 00Z and 06Z and 2026-10-08 12Z: 134680416 to 151555510 bytes, larger retained"},
+  {"source": "rrfs-ens", "mode": "full-file",
+   "objects": {"prslevnomads": 177966793, "2dfldnomads": 53704346},
+   "measured": "HEAD Content-Length of the members m001 and m003 at f000, f003 and f006 of 2026-10-02 00Z and 2026-10-08 12Z on noaa-rrfs-ops-pds (12 objects of each product): prslevnomads 162177885 to 177966793 bytes, 2dfldnomads 41303780 to 53704346 bytes, larger retained"},
+  {"source": "ecmwf-ens", "mode": "full-file",
+   "objects": {"enfo-ef": 138404343},
+   "measured": "the one member's records the member index selects, summed from the enfo-ef .index files of 2026-10-02 00Z, 2026-10-08 00Z and 12Z at 0, 3 and 6 h, all 50 perturbed members: 121082092 to 138404343 bytes per member object, larger retained"},
   {"source": "rap", "mode": "full-file",
    "objects": {"awip32": 19880000},
    "measured": "mean of 14 awip32 objects, 2026-09-26 00Z f00 to f06, two fetches"},
@@ -128,6 +134,17 @@
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 838,897,920 bytes per valid time"
    },
+   "ecmwf-ens": {
+    "mapping": "rw-wps-ecmwf-ens-open-grib2.mapping.json",
+    "grid": "1440 x 721, 0.25 degree global",
+    "grid_points": 1038240,
+    "layers_per_valid_time": 101,
+    "soil_layers": 8,
+    "windowed_layers": 84,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.25, "nx": 1440, "ny": 721},
+    "bytes_per_value": 8,
+    "measured": "the member mapping's fields and ladder counted as the engine counts them: the same 93 planes and 8 soil layers on the same 0.25 degree grid as the ecmwf-open-data row, whose 838,897,920 bytes per valid time the engine measured on 2026-09-28"
+   },
    "aifs": {
     "mapping": "rw-wps-aifs-single-grib2.mapping.json",
     "grid": "1440 x 721, 0.25 degree global",
@@ -176,22 +193,22 @@
     "mapping": "rw-wps-gdas-pgrb2-0p25-grib2.mapping.json",
     "grid": "1440 x 721, 0.25 degree global, or the area a cropping transport requests",
     "grid_points": 1038240,
-    "layers_per_valid_time": 214,
+    "layers_per_valid_time": 379,
     "soil_layers": 8,
-    "windowed_layers": 198,
+    "windowed_layers": 363,
     "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.25, "nx": 1440, "ny": 721},
     "bytes_per_value": 8,
-    "measured": "the 0.25 degree product grid; the layers are its mapping's fields and ladder and the soil column its product publishes, counted as the engine counts them (the count matched the engine on the ten routes measured)"
+    "measured": "the 0.25 degree product grid; the layers are its mapping's fields and ladder and the soil column its product publishes, counted as the engine counts them (the count matched the engine on the ten routes measured); 379 since 0c188ff73 added the five analysed hydrometeors on the 33-level ladder"
    },
    "hrrr-prs": {
     "mapping": "rw-wps-hrrr-prs-grib2.mapping.json",
     "grid": "1799 x 1059, 3 km CONUS Lambert",
     "grid_points": 1905141,
-    "layers_per_valid_time": 458,
+    "layers_per_valid_time": 459,
     "soil_layers": 18,
     "windowed_layers": 429,
     "bytes_per_value": 8,
-    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28 with no atmospheric window: 6,980,436,624 bytes per valid time"
+    "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28 with no atmospheric window: 6,980,436,624 bytes per valid time at 458 layers; 6a69b356f then added one surface plane (vegetation_fraction from the wrfsfcf00 field source), so 459 layers and 6,995,677,752 bytes, derived from that measurement and not composed again"
    },
    "rrfs": {
     "mapping": "rw-wps-rrfs-prslev-2dfld-grib2.mapping.json",
@@ -209,19 +226,19 @@
     "grid_points": 151987,
     "layers_per_valid_time": 879,
     "soil_layers": 18,
-    "windowed_layers": 850,
+    "windowed_layers": 800,
     "bytes_per_value": 8,
-    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64."
+    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64.  The atmospheric window crops sixteen of the seventeen: pressure_vertical_velocity (79d9f5284) is not a canonical atmospheric field and stays whole."
    },
    "hrrr-native": {
     "mapping": "rw-wps-hrrr-native-grib2.mapping.json",
     "grid": "1799 x 1059 Lambert native vertical source",
     "grid_points": 1905141,
-    "layers_per_valid_time": 879,
+    "layers_per_valid_time": 880,
     "soil_layers": 18,
-    "windowed_layers": 850,
+    "windowed_layers": 800,
     "bytes_per_value": 8,
-    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64."
+    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, twelve surfaces (vegetation_fraction since 6a69b356f), eighteen soil planes; decoded values are float64.  The atmospheric window crops sixteen of the seventeen: pressure_vertical_velocity (79d9f5284) is not a canonical atmospheric field and stays whole."
    },
    "rap": {
     "mapping": "rw-wps-rap-awip32-grib2.mapping.json",

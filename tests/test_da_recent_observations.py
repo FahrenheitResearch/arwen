@@ -288,16 +288,13 @@ def test_fetch_receipt_binds_inventory_and_actual_bytes(tmp_path):
 
 
 def test_one_fetch_controller_checks_etag_size_and_retains_input_inventory(tmp_path, monkeypatch):
-    class Reply(io.BytesIO):
-        headers = {"ETag": '"e"'}
-    calls = []
-    def get(url, timeout):
-        calls.append(url); return Reply(b"abc")
-    monkeypatch.setattr(obs.urllib.request, "urlopen", get)
+    from da_fetch_origin import origin
     inv = {"objects": [obj("noaa-mrms-pds", "a/data")]}
     original = deepcopy(inv)
     receipt_path = tmp_path/"fetch.json"
-    obs.fetch(inv, tmp_path/"raw", receipt_path, 1)
+    with origin(monkeypatch) as server:
+        obs.fetch(inv, tmp_path/"raw", receipt_path, 1)
+        calls = server.gets
     receipt = json.loads(receipt_path.read_text())
     assert receipt["fetch_processes"] == 1 and len(calls) == 1
     assert inv == original
@@ -367,8 +364,9 @@ def test_new_fetch_receipt_cannot_overwrite_ancestor(tmp_path):
     assert obs.sha(ancestor_path) == fingerprint
 
 
-@pytest.mark.parametrize("workers", [1, 4])
-def test_full_prepare_smoke_dispatch_uses_public_doors_and_hashes(tmp_path, monkeypatch, workers):
+@pytest.mark.parametrize("workers", [None, 1, 4])
+@pytest.mark.parametrize("receipt_version", [1, 2])
+def test_full_prepare_smoke_dispatch_uses_public_doors_and_hashes(tmp_path, monkeypatch, workers, receipt_version):
     """Exercise orchestration, not scientific numerics or network availability."""
     import gpuwm.obs.cc_qc
     import gpuwm.obs.dealias
@@ -394,7 +392,27 @@ def test_full_prepare_smoke_dispatch_uses_public_doors_and_hashes(tmp_path, monk
     for index, row in enumerate(rows):
         path = tmp_path/f"raw-{index}"; path.write_bytes(b"abc")
         fetched["objects"].append({**row, "path": str(path), "sha256": obs.sha(path)})
+    if receipt_version == 2:
+        root = tmp_path / "raw"
+        planned = []
+        for row in rows:
+            target = obs.raw_path(root, row)
+            planned.append({**row, "destination": str(target)})
+        fetched.update(schema="da-rerun.recent-fetch.v2", scope="forecast", objects=[],
+                       deferred_objects=planned, deferred_truth=[], raw_root=str(root),
+                       receipt_path=str(tmp_path / "fetch.json"), truth=None)
+        def download(row, path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"abc")
+            return {**row, "path": str(path), "sha256": obs.sha(path)}
+        monkeypatch.setattr(obs, "_download", download)
     binary = tmp_path/"native.exe"; binary.write_bytes(b"native fixture")
+    monkeypatch.setattr(obs, 'require_native_observations', lambda: None)
+    monkeypatch.setattr(obs, 'observation_memory', lambda *args: 0)
+    monkeypatch.setattr(obs, 'available_memory_bytes', lambda: 32 * 2**30)
+    import gpuwm.obs.coverage
+    monkeypatch.setattr(gpuwm.obs.coverage, 'read_site_table',
+                        lambda binary: {site: None for site in doc['radar_sites']})
     grid = tmp_path/"grid.nc"; grid.write_bytes(b"prepared georeference fixture")
     monkeypatch.setattr(gpuwm.obs.nexrad, "find_nexrad_bin", lambda: binary)
     monkeypatch.setattr(gpuwm.obs.dealias, "engine_unavailable_reason", lambda engine: None)
@@ -430,6 +448,11 @@ def test_full_prepare_smoke_dispatch_uses_public_doors_and_hashes(tmp_path, monk
     assert result["requested_full_case_fork_utc"] == doc["analysis_times_utc"][-1]
     assert len(result["slots"]) == 1 and result["scientific_gate"] == "pending"
     assert result["inventory_sha256"] == obs.document_sha(inv)
+    if receipt_version == 2:
+        saved = json.loads((tmp_path / "fetch.json").read_text())
+        assert saved["deferred_objects"] == []
+        assert result["fetch_receipt_sha256"] == obs.document_sha(saved)
+        obs.validate_fetched(inv, saved)
     assert result["slots"][0]["grid_wrfout_sha256"] == obs.sha(grid)
     assert all(call["censor_flags"] and call["moments"] == ("REF", "VEL", "RHO") for call in decoded)
     fetch = next(command for command in calls if command[1] == "fetch")

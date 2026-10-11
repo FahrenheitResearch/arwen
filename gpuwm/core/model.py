@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from gpuwm.core.physics_inventory import REFL_10CM_MICROPHYSICS
+
 from collections.abc import Iterator, Mapping
 from contextlib import nullcontext
 import dataclasses
@@ -18,6 +20,7 @@ from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
 
 from gpuwm.core.clock import DomainClock, Schedule
+from gpuwm.core.restart_handler_traits import durable_waiter, orders_history_itself
 from gpuwm.config import (SURFACE_RADIATION_POLICY_REQUIRED,
                           radiation_scheme_ids)
 from gpuwm.core.state import DomainState
@@ -855,6 +858,10 @@ def restart_identity_payload(exp) -> dict:
                 run.pop(key, None)
         if run.get("rrtmg_cloud_optics_form", "wrf_461") == "wrf_461":
             run.pop("rrtmg_cloud_optics_form", None)
+        # Earlier runs took rural aerosol type 1 everywhere; only the
+        # land/water type binds.
+        if run.get("rrtmg_aer3_type_source", "rural") == "rural":
+            run.pop("rrtmg_aer3_type_source", None)
         # Source members, not a path alone, identify prescribed radiation.
         from gpuwm.core.rrtmg_smoke_identity import bind_smoke_source_identity
         if run.get("rrtmg_smoke_manifest", ""):
@@ -2051,6 +2058,7 @@ def execute_experiment(
                     # stage a field that can never be consumed.
                     refl_10cm_due=(
                         history_handler is not None
+                        and node.cfg.run.mp_physics in REFL_10CM_MICROPHYSICS
                         and clock.history_rings_within_step()),
                     **({"fire_history_due": clock.history_rings_within_step()}
                        if node.cfg.run.ifire == 2 else {}))
@@ -2243,8 +2251,8 @@ def execute_experiment(
         # A handler that orders its checkpoint after the history frames
         # itself (the prepared single-domain door's background checkpoint
         # writer) is not made to wait here for frames still being written.
-        if io_manager is not None and not getattr(
-                restart_handler, "orders_history_itself", False):
+        if io_manager is not None and not orders_history_itself(
+                restart_handler):
             io_manager.drain()
             status.pending_d2h = int(io_manager.pending)
         if restart_handler is not None:
@@ -2252,7 +2260,7 @@ def execute_experiment(
             if requested_restart[0]:
                 # A worker's request is acknowledged only once the
                 # checkpoint it asked for is durable.
-                wait = getattr(restart_handler, "wait_durable", None)
+                wait = durable_waiter(restart_handler)
                 if wait is not None:
                     wait()
                 restart_request.acknowledge()

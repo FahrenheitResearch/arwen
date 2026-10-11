@@ -245,7 +245,9 @@ def test_an_intent_plan_fetches_what_its_generated_configuration_declares(tmp_pa
                  'era5_provider = "arco"\n')
     plan = SimpleNamespace(config_intent={"source": "era5"})
     document = _config_for_declared_fetch(plan, {"generated_config": generated}, tmp_path / "run")
-    assert document["fetch"]["out"] == str(tmp_path / "data/box")
+    # The generated config lives in the run directory and its out is
+    # relative to it, as its [case_data] is (D-11).
+    assert document["fetch"]["out"] == str((tmp_path / "run" / "data/box").resolve())
     assert document["fetch"]["era5_provider"] == "arco"
 
 

@@ -164,9 +164,12 @@ def test_nested_input_catalog_preserves_era5_soilgeo_units_through_mapping(
         grid_id=2, start_time=valid_time,
         run=SimpleNamespace(moist=True, terrain_opt=1))
     grid = object()
+    # HGT_M: since c1227a11a the child door checks the terrain slope before
+    # building a coordinate; a flat plane needs no pass.
     static = {
         "LANDMASK": np.ones((2, 2)),
         "LU_INDEX": np.ones((2, 2)),
+        "HGT_M": np.zeros((2, 2)),
     }
     backend = SimpleNamespace(receipt=lambda: {"backend": "cpu"})
     monkeypatch.setattr(
@@ -506,9 +509,12 @@ def test_prepare_child_input_dispatches_hrrr_on_own_static_landmask(
         run=SimpleNamespace(moist=True, terrain_opt=1))
     grid = object()
     landmask = np.asarray([[1.0, 1.0], [0.0, 1.0]])
+    # HGT_M: since c1227a11a the child door checks the terrain slope before
+    # building a coordinate; a flat plane needs no pass.
     static = {
         "LANDMASK": landmask,
         "LU_INDEX": np.asarray([[21, 1], [16, 21]]),
+        "HGT_M": np.zeros((2, 2)),
     }
     horizontal = HorizontalSnapshot(
         valid_time=valid_time, levels_hpa=np.asarray([1000.0]), fields={

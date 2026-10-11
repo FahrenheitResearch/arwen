@@ -525,25 +525,70 @@ def native_wheel_fixture(tmp_path, *, platform="linux-x86_64", mutation=None):
 @pytest.mark.parametrize("platform", ["linux-x86_64", "win-x86_64"])
 def test_embedded_native_files_match_the_platform_pins(publication, tmp_path, platform):
     wheel, pins = native_wheel_fixture(tmp_path, platform=platform)
-    assert isinstance(publication.check_embedded_natives(wheel, pins, platform), dict)
+    assert isinstance(publication.check_embedded_natives(wheel, pins, platform, set()), dict)
+
+
+def _pin_bundle_only(pins, platform="linux-x86_64"):
+    """Pin one more binary that the wheel fixture does not embed."""
+    payload = b"fixture native bytes: fetched on demand"
+    pins["platforms"][platform]["binaries"].append({
+        "artifact": "rw_simradar", "filename": "rw_simradar", "kind": "executable",
+        "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()})
+    return pins
+
+
+def test_an_on_demand_artifact_is_pinned_in_the_bundle_and_absent_from_the_wheel(publication, tmp_path):
+    """2.8.9 r1: both platform wheels were over the 100,000,000-byte per-file
+    limit, so three artifacts stay in the bundle and its pins and leave the wheel."""
+    wheel, pins = native_wheel_fixture(tmp_path)
+    pins = _pin_bundle_only(pins)
+    result = publication.check_embedded_natives(wheel, pins, "linux-x86_64", {"rw_simradar"})
+    assert result == {"platform": "linux-x86_64", "artifacts": 2}
+
+
+def test_a_wheel_missing_a_pinned_artifact_is_not_excused_unless_the_source_declares_it(publication, tmp_path):
+    wheel, pins = native_wheel_fixture(tmp_path)
+    pins = _pin_bundle_only(pins)
+    with pytest.raises(publication.PublicationError, match="wheel-carried part of the proven bundle"):
+        publication.check_embedded_natives(wheel, pins, "linux-x86_64", set())
+
+
+def test_an_on_demand_artifact_must_be_pinned_or_fetch_cannot_install_it(publication, tmp_path):
+    wheel, pins = native_wheel_fixture(tmp_path)
+    with pytest.raises(publication.PublicationError, match="not pinned in the bundle"):
+        publication.check_embedded_natives(wheel, pins, "linux-x86_64", {"rw_simradar"})
+
+
+def test_a_wheel_embedding_an_on_demand_artifact_is_refused(publication, tmp_path):
+    """The size the omission bought would silently come back."""
+    wheel, pins = native_wheel_fixture(tmp_path)
+    with pytest.raises(publication.PublicationError, match="wheel-carried part of the proven bundle"):
+        publication.check_embedded_natives(wheel, pins, "linux-x86_64", {"netcdf_writer"})
+
+
+def test_the_on_demand_set_is_read_from_the_tagged_declaration(publication):
+    from gpuwm import bridge_assets
+    repo = Path(__file__).resolve().parents[1]
+    assert publication.on_demand_artifacts(repo) == {a.name for a in bridge_assets.on_demand_artifacts()}
+    assert publication.on_demand_artifacts(repo) == {"rw_simradar", "rw_mlexport", "rw_globe_pack"}
 
 
 @pytest.mark.parametrize("mutation", ["missing-native", "changed-native", "extra-native", "missing-manifest", "wrong-platform", "wrong-artifact", "wrong-kind", "changed-manifest-hash", "duplicate-manifest-row"])
 def test_embedded_native_gate_rejects_wheel_bundle_disagreement(publication, tmp_path, mutation):
     wheel, pins = native_wheel_fixture(tmp_path, mutation=mutation)
     with pytest.raises(publication.PublicationError):
-        publication.check_embedded_natives(wheel, pins, "linux-x86_64")
+        publication.check_embedded_natives(wheel, pins, "linux-x86_64", set())
 
 
 def test_pure_wheel_must_not_hide_a_native_payload(publication, tmp_path):
     wheel, pins = native_wheel_fixture(tmp_path)
     with pytest.raises(publication.PublicationError):
-        publication.check_embedded_natives(wheel, pins, None)
+        publication.check_embedded_natives(wheel, pins, None, set())
 
 
 def test_pure_wheel_without_staged_native_files_passes(publication, tmp_path):
     repo, wheel = metadata_fixture(tmp_path)
-    assert isinstance(publication.check_embedded_natives(wheel, {"platforms": {}}, None), dict)
+    assert isinstance(publication.check_embedded_natives(wheel, {"platforms": {}}, None, set()), dict)
 
 
 def python_inventory_fixture(tmp_path, mutation=None):

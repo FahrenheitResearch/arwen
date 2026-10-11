@@ -8,6 +8,7 @@ import pytest
 
 from gpuwm.domain_wizard import render_config
 from gpuwm.namelist_import import import_namelists
+from wrf_clock_lines import without_wrf_clock_lines
 
 
 FIXTURES = Path(__file__).parent / "fixtures/tolerance_parent_byte_controls"
@@ -18,6 +19,27 @@ NAMELISTS = (
 )
 SOURCES = ("gfs", "era5", "rap", "rrfs")
 PROFILE = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
+
+#: What a recipe source's own request row adds to an ordinary emission
+#: since the parent was pinned.  e19441c1e gave rap the operational fork's
+#: surface-layer generation (gpuwm/data/physics_sources/
+#: request-defaults.v1.toml, request gsl_wrf39_rap), which every RAP-sourced
+#: configuration declares whatever its surface layer; its Thompson
+#: generation is mp_physics=28-scoped and does not reach this profile.
+#: Everything else in these bytes is still the parent's.
+RECIPE_GENERATION_LINES = {
+    "rap": ("wsm6_hail_opt = 0\n",
+            'wsm6_hail_opt = 0\nmynn_sfclay_variant = "gsl_wrf39"\n'),
+}
+
+
+def without_recipe_generation(source, emitted):
+    """``emitted`` with the source row's declared generation taken back out."""
+    if source not in RECIPE_GENERATION_LINES:
+        return emitted
+    parent, now = RECIPE_GENERATION_LINES[source]
+    assert emitted.count(now) == 1, (source, emitted)
+    return emitted.replace(now, parent)
 
 
 def _controls(group, matrix_name):
@@ -36,7 +58,7 @@ def _assert_old_bytes(group, pins, key, emitted):
     old = (FIXTURES / group / relative).read_bytes()
     assert len(old) == row["bytes"]
     assert hashlib.sha256(old).hexdigest() == row["sha256"]
-    assert emitted.encode("utf-8") == old
+    assert without_wrf_clock_lines(emitted).encode("utf-8") == old
 
 
 @pytest.mark.parametrize("case", NAMELISTS)
@@ -63,4 +85,5 @@ def test_ordinary_ysu_noah_recipe_bytes_match_tolerance_original_parent(source):
         root_dx_m=recipe["root_dx_m"], fetch_hints={"source": source},
         case_data=None, profile=recipe["profile"],
     )
-    _assert_old_bytes("stable-recipes", pins, "recipe/" + source, emitted)
+    _assert_old_bytes("stable-recipes", pins, "recipe/" + source,
+                      without_recipe_generation(source, emitted))

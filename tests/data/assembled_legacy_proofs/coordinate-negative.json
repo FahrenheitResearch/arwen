@@ -1,11 +1,11 @@
 {
   "schema": "current-coordinate-donor-negative-control-v1",
-  "positive_proof_sha256": "cc2b60d79350baef396495621d77909b98d1df1cf9b21eebae930b7d4b9af2e0",
+  "positive_proof_sha256": "e444d6d4eed8a6c875a1970d0ac8d97f255357df6874ef5c915b1c0cfcefc070",
   "capture_receipt_sha256": "f5edc34b9926fb7f0e6071057de72038c7afd983a26a93ccd425ccea15376a6a",
   "native_archive_sha256": "461e735c1105391e5b9f095e0a1d188d80d36624b6d18ba38b685b1355c09788",
   "control_archive_sha256": "6369403303188248585adbcbf63fc7c69f95ea509e26c5108469e4177a691a43",
   "measurement_tool_sha256": "d5ae25f2e91e5457cd551684b9b94b3c0ccabba2ff01b27a7eebae78a22364f2",
-  "capture_tool_sha256": "6ffdd709917ecab58ce9d581f3379aada96cf63ef2cbe5b177bf1a54709c9654",
+  "capture_tool_sha256": "aedbec22cffb8ae351d92be9afe24780cccc847323bd59783f01fea476ab6df7",
   "capture_identity": {
     "engine_commit": "6cbd5d8eb250378f06e5e8e46951920623c957eb",
     "device": "b'NVIDIA RTX PRO 6000 Blackwell Server Edition'",
@@ -1377,16 +1377,16 @@
       "bytes": 332
     },
     "gpuwm/core/kernels/__init__.py": {
-      "sha256": "1f10e380c6307f1e50c0e9a42cf9aad250bbd0684558fe4fdb2eec0e34ed43b3",
-      "bytes": 27376
+      "sha256": "e44a76e72880e6cbacee4a3cf299ab7e1a0b418e737355b3b64bfd60358b67cc",
+      "bytes": 28570
     },
     "gpuwm/core/constants.py": {
       "sha256": "76c8c11d1a75d17fd54d0a80646cec9dde04f649247ec2347d3d32e6c0500e9e",
       "bytes": 2979
     },
     "gpuwm/core/dycore.py": {
-      "sha256": "2c855dbe57cad8d966c1e3dfde5c273fbd3370d155d5979b8a773db5f951c8dc",
-      "bytes": 248064
+      "sha256": "d4cc20c6a23c94f169228d19937724bb678b51b4e597495af09a1672ce8c263b",
+      "bytes": 247314
     },
     "gpuwm/nvrtc_ptx_cache.py": {
       "sha256": "78c42865a01763a13d0349321699913de51ba2465508900bbfc4c64794e61134",
@@ -1409,8 +1409,8 @@
       "bytes": 22340
     },
     "tools/wrf_diffopt1_oracle/capture.py": {
-      "sha256": "6ffdd709917ecab58ce9d581f3379aada96cf63ef2cbe5b177bf1a54709c9654",
-      "bytes": 9589
+      "sha256": "aedbec22cffb8ae351d92be9afe24780cccc847323bd59783f01fea476ab6df7",
+      "bytes": 9788
     },
     "tools/wrf_diffopt1_oracle/model_case.py": {
       "sha256": "2cda07b2ca5a32e60f4ac6032e0f0231c01dff99abbad17894b09a75313dadc1",

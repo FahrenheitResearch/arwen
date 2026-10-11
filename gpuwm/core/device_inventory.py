@@ -295,6 +295,20 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
             for name in ("qi", "qs", "qg", "qi0", "qs0", "qg0",
                          "effc", "effi", "effs"):
                 shapes[name] = m
+        elif cfg.mp_physics == 30:
+            # FAST_SBM (Registry/registry.sbm:318, and the mp==30 arm of
+            # gpuwm/core/state.py): the six-mass moist package, the 142
+            # spectral bins and six number moments as scalars, the two
+            # cross-step carriers and three effective radii, with every
+            # transported field's RK time-t copy.  Chained after the
+            # six-mass arm so that arm stays the mp==50 arm's only sibling
+            # (tests/test_preflight.py pins the chain).
+            from gpuwm.core.fast_sbm_contract import BIN_SPECIES,EXTRA_SPECIES,NUMBER_SPECIES
+            for name in (*BIN_SPECIES,"qi","qs","qg",*NUMBER_SPECIES,
+                         "th_old","qv_old","effc","effi","effs"):
+                shapes[name]=m
+            for name in EXTRA_SPECIES:
+                shapes[name+"0"]=m
         if cfg.mp_physics == 9:
             # Milbrandt-Yau two-moment: hail mass beside graupel plus a
             # number moment for EVERY one of the six hydrometeors

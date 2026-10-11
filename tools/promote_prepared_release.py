@@ -533,7 +533,31 @@ def check_python_inventory(path: Path, repo: Path, project: str) -> None:
             f"wheel Python inventory differs from tagged source: missing={sorted(expected - set(sources))}, extra={sorted(set(sources) - expected)}")
 
 
-def check_embedded_natives(path: Path, pins: dict, platform: str | None) -> dict:
+def on_demand_artifacts(repo: Path) -> set[str]:
+    """Names the tagged gpuwm/bridge_assets.py declares ``on_demand=True``.
+
+    They are in each platform bundle and its pins and are not in the platform
+    wheel; ``gpuwm fetch-bridges`` installs them. Read from the tagged source
+    rather than from the wheel under test, so a wheel cannot excuse its own
+    missing file.
+    """
+    path = repo / "gpuwm/bridge_assets.py"
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        target = getattr(node, "target", None)
+        if not (isinstance(node, ast.AnnAssign) and getattr(target, "id", None) == "BUNDLED_ARTIFACTS"):
+            continue
+        calls = getattr(node.value, "elts", [])
+        require(bool(calls) and all(isinstance(call, ast.Call) and getattr(call.func, "id", None) == "BundledArtifact"
+                                    and call.args and isinstance(getattr(call.args[0], "value", None), str)
+                                    for call in calls), "BUNDLED_ARTIFACTS is not a literal roster of declarations")
+        return {call.args[0].value for call in calls
+                if any(keyword.arg == "on_demand" and getattr(keyword.value, "value", None) is True
+                       for keyword in call.keywords)}
+    raise PublicationError(f"no BUNDLED_ARTIFACTS declaration in {path}")
+
+
+def check_embedded_natives(path: Path, pins: dict, platform: str | None, on_demand: set[str]) -> dict:
+    """The platform wheel embeds the pinned bundle's binaries less the on-demand ones, byte for byte."""
     prefix = "gpuwm/libexec/bridges/"
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
@@ -542,9 +566,14 @@ def check_embedded_natives(path: Path, pins: dict, platform: str | None) -> dict
         if platform is None:
             require(not held, "pure wheel contains embedded native artifacts")
             return {"platform": None, "artifacts": 0}
-        rows = pins["platforms"][platform]["binaries"]
+        pinned = pins["platforms"][platform]["binaries"]
+        _rows(pinned, "native bundle pins")
+        require(on_demand <= {row.get("artifact") for row in pinned},
+                "an on-demand native artifact is not pinned in the bundle, so gpuwm fetch-bridges cannot install it")
+        rows = [row for row in pinned if row.get("artifact") not in on_demand]
         expected = _rows(rows, "native bundle pins")
-        require(held == set(expected) | {"BUNDLE.json"}, "embedded native inventory differs from the proven bundle")
+        require(held == set(expected) | {"BUNDLE.json"},
+                "embedded native inventory differs from the wheel-carried part of the proven bundle")
         document = json_bytes(archive.read(prefix + "BUNDLE.json"))
         require(document.get("schema") == "gpuwm-wheel-bridge-bundle-v1" and document.get("platform") == platform, "embedded native manifest has the wrong platform/schema")
         declared = _rows(document.get("artifacts"), "embedded native manifest")
@@ -634,7 +663,8 @@ def verify(args) -> None:
                 check_python_inventory(assets / row["filename"], repo, project)
                 if project == "gpuwm":
                     platform = "win-x86_64" if row["filename"].endswith("-win_amd64.whl") else "linux-x86_64" if row["filename"].endswith("-manylinux_2_28_x86_64.whl") else None
-                    check_embedded_natives(assets / row["filename"], read_json(pins), platform)
+                    check_embedded_natives(assets / row["filename"], read_json(pins), platform,
+                                           on_demand_artifacts(repo))
     files = [assets / row["filename"] for project in PROJECTS for row in plan["pypi"][project]]
     checked_run([sys.executable, "-m", "twine", "check", "--strict", *map(str, files)], log=args.out / "twine-check.log")
     for row in plan["pypi"]["gpuwm"]:

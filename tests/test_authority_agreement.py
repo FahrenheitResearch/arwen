@@ -923,7 +923,9 @@ def test_every_install_state_code_is_raised_by_a_run_door(
     empty.mkdir()
     monkeypatch.setenv(physics_compat.THOMPSON_TABLE_ROOT_ENV, str(empty))
     mp8_tree = SimpleNamespace(domains=(
-        SimpleNamespace(grid_id=1, run=SimpleNamespace(mp_physics=8)),))
+        SimpleNamespace(grid_id=1, run=SimpleNamespace(
+            mp_physics=8, thompson_version="wrf_461",
+            thompson_table_dir=None)),))
     with pytest.raises(FileNotFoundError) as missing:
         prepared_domain_tree_forecast._verify_thompson_assets(mp8_tree)
     said = str(missing.value)
@@ -1305,12 +1307,28 @@ def _observed_and_absences(consumer: str):
             0: "no land surface, no parameter bundle"}
     if consumer == "microphysics_transition.PORTED_MP_PHYSICS":
         from gpuwm.core import microphysics_transition as mt
+        from gpuwm.microphysics_schemes import NAMED_MP_IDS
         return "microphysics", mt.PORTED_MP_PHYSICS, {
-            0: "no hydrometeors to close a mixed edge over"}
+            0: "no hydrometeors to close a mixed edge over",
+            30: ("FAST_SBM's mixed edge would build 142 spectral "
+                 "distributions from another scheme's bulk moments and no "
+                 "such entry closure is validated "
+                 "(microphysics_transition.UNVALIDATED_MIXED_EDGE_SELECTORS); "
+                 "its same-scheme edge runs"),
+            **{mp: "named scheme: its mixed nest edge is refused by name "
+               "(microphysics_transition.UNVALIDATED_MIXED_EDGE_SELECTORS)"
+               for mp in NAMED_MP_IDS}}
     if consumer == "obsop.CLEAR_AIR_FLOOR_DBZ":
         from gpuwm.da import obsop
+        from gpuwm.microphysics_schemes import NAMED_MP_IDS
         return "microphysics", obsop.CLEAR_AIR_FLOOR_DBZ, {
-            0: "no microphysics, no operator"}
+            0: "no microphysics, no operator",
+            30: ("FAST_SBM writes no REFL_10CM, so radar DA has no H(x) and "
+                 "no clear-air floor to read on mp_physics=30 (the cited "
+                 "absence in gpuwm.da.obsop._require_agreement_with_the_registry)"),
+            **{mp: "named scheme: its Z is fused with the step "
+               "(obsop.NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP), radar DA "
+               "refuses it, no floor is read" for mp in NAMED_MP_IDS}}
     if consumer == "refl.REFL_10CM_INPUT_SPECIES + SCHEME_NATIVE_REFL_10CM":
         from gpuwm.core import refl
         return "microphysics", (set(refl.REFL_10CM_INPUT_SPECIES)
@@ -1330,8 +1348,11 @@ def _observed_and_absences(consumer: str):
         return "microphysics", offline_child.OFFLINE_CHILD_MP_PHYSICS, absences
     if consumer == "wrf_physics_inventory._INVENTORIES":
         from gpuwm.wrf_physics_inventory import supported_stock_wrf_mp_physics
+        from gpuwm.microphysics_schemes import NAMED_MP_IDS
         return "microphysics", supported_stock_wrf_mp_physics(), {
-            mp: "export-only scope (audit R-014)" for mp in (0, 1, 9, 16)}
+            **{mp: "export-only scope (audit R-014)" for mp in (0, 1, 9, 16)},
+            **{mp: "named WOOF scheme with no WRF v4.6.1 mp_physics number"
+               for mp in NAMED_MP_IDS}}
     if consumer == "physics_compat._GLW_CONSUMING_SURFACE_SCHEMES":
         from gpuwm.physics_compat import _GLW_CONSUMING_SURFACE_SCHEMES
         return "land_surface", _GLW_CONSUMING_SURFACE_SCHEMES, {
@@ -1510,7 +1531,8 @@ def test_the_consumer_row_gate_refuses_a_missing_row_before_step_0(monkeypatch):
 
 
 def test_every_implemented_scheme_couples_to_rte_rrtmgp_at_plan_review():
-    """No cloud_optics row publishes a null coupling any more, and every
+    """No cloud_optics row publishes a null coupling except the one judged
+    exclusion (FAST_SBM, refused at the run door), and every other
     implemented scheme passes the 4/4 RTE+RRTMGP pairing on the DEFAULT
     variant at plan review.
 
@@ -1529,9 +1551,15 @@ def test_every_implemented_scheme_couples_to_rte_rrtmgp_at_plan_review():
     assert rows, "no cloud_optics rows published"
     uncoupled = sorted(mp for mp, row in rows.items()
                        if row["rte_rrtmgp_coupling"] is None)
-    assert uncoupled == [], (
-        "a scheme publishes a null RTE+RRTMGP coupling again; the last one "
-        f"(mp=9) was retired by writing its row: {uncoupled}")
+    # FAST_SBM (mp=30) is the one JUDGED exclusion: its bin effective-radius
+    # integrals are not qualified, so gpuwm.core.rrtmgp records it in
+    # _NO_CLOUD_OPTICS_COUPLING and both authorities refuse the RTE+RRTMGP
+    # pairing (measured below) with the legacy-RRTMG remedy.  Any other
+    # null is a gap, as it was when mp=9 was retired by writing its row.
+    assert uncoupled == [30], (
+        "a scheme publishes a null RTE+RRTMGP coupling other than the "
+        f"judged FAST_SBM exclusion: {uncoupled}")
+    assert rows[30]["rte_rrtmgp_refusal"] is not None
     assert rows[9]["rte_rrtmgp_coupling"] == "milbrandt2"
     assert rows[9]["rte_rrtmgp_refusal"] is None
     # The legacy arm's declaration is WRF's fact and did not move: WRF
@@ -1546,7 +1574,12 @@ def test_every_implemented_scheme_couples_to_rte_rrtmgp_at_plan_review():
                       bl_pbl_physics=1, sf_sfclay_physics=91,
                       sf_surface_physics=2, num_soil_layers=4)
         refusal = _config_refusal(dict(kwargs), nested=False)
-        assert refusal is None, (mp, refusal)
+        if rows[mp]["rte_rrtmgp_coupling"] is None:
+            # The run door refuses before step 0, naming the remedy.
+            assert refusal is not None and "cloud-optics" in refusal, (mp, refusal)
+            assert "rrtmg_legacy" in refusal, (mp, refusal)
+        else:
+            assert refusal is None, (mp, refusal)
         legacy = _config_refusal(
             dict(kwargs, ra_rrtmg_variant="rrtmg_legacy"), nested=False)
         assert legacy is None, (mp, legacy)

@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly public forecast observation scores on the CPU
+
+[Service]
+Type=oneshot
+WorkingDirectory=/work/pool-hv-nightly-obs-scoreboard/src
+Environment=CUDA_VISIBLE_DEVICES=
+Environment=GPUWM_NO_LOCAL_GPU=1
+ExecStart=/work/venv/bin/python tools/scoreboard/nightly_job.py --catalog /work/pool-hv-nightly-obs-scoreboard/catalog.json --out /work/pool-hv-nightly-obs-scoreboard/nightly
+Nice=10
+CPUQuota=100%
+MemoryMax=3G
+PrivateTmp=true
+NoNewPrivileges=true

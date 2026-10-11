@@ -44,6 +44,30 @@ fn default_radar_window() -> i64 {
 fn default_mode() -> String {
     "observed".into()
 }
+fn default_source() -> String { "asos".into() }
+fn default_radar_source() -> String { "mrms".into() }
+fn default_station_quantities() -> Vec<StationQuantity> {
+    STATION_QUANTITIES.iter().map(|(quantity, label, units)| StationQuantity {
+        quantity: (*quantity).into(), label: (*label).into(), units: (*units).into(),
+        minimum: if *quantity == "wind_speed_10m" { 0.0 } else { 233.15 },
+        maximum: if *quantity == "wind_speed_10m" { 75.0 } else { 328.15 },
+        exact_time: false,
+    }).collect()
+}
+
+/// Optional networks and quantities are metadata. Profile point ids must
+/// include their level, and their forecast extracts must be made in Rust.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StationQuantity {
+    pub quantity: String,
+    pub label: String,
+    pub units: String,
+    pub minimum: f64,
+    pub maximum: f64,
+    /// Accumulations need identical interval end times, not a nearest METAR.
+    #[serde(default)] pub exact_time: bool,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VerificationRequest {
@@ -71,6 +95,12 @@ pub struct VerificationRequest {
     pub out_root: Option<PathBuf>,
     #[serde(default = "default_mode")]
     pub station_mode: String,
+    #[serde(default = "default_source")]
+    pub station_source: String,
+    #[serde(default = "default_radar_source")]
+    pub radar_source: String,
+    #[serde(default = "default_station_quantities")]
+    pub station_quantities: Vec<StationQuantity>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -105,6 +135,34 @@ pub struct RadarArmScore {
     pub fss: Option<f64>,
     pub count: usize,
     pub event_cells: usize,
+}
+#[derive(Clone,Debug,Serialize)]
+pub struct GridArmScore {
+    pub label: String,
+    pub count: usize,
+    pub sum_error: f64,
+    pub sum_squared_error: f64,
+    pub sum_absolute_error: f64,
+}
+#[derive(Clone,Debug,Serialize)]
+pub struct GridErrorScore {
+    pub quantity: String,
+    pub units: String,
+    pub arms: Vec<GridArmScore>,
+}
+
+/// Continuous errors stay meaningful on an observed dry grid. The same
+/// finite coverage serves every arm, including when FSS has no events.
+pub fn paired_grid_errors(quantity:&str,units:&str,observed:&[f64],valid:&[bool],forecasts:&[(String,Vec<f64>)]) -> Result<GridErrorScore,String> {
+    if observed.len()!=valid.len() || forecasts.iter().any(|(_,v)|v.len()!=observed.len()) {return Err("continuous observation score shapes differ".into());}
+    let paired=(0..observed.len()).filter(|&i|valid[i] && observed[i].is_finite() && forecasts.iter().all(|(_,v)|v[i].is_finite())).collect::<Vec<_>>();
+    let arms=forecasts.iter().map(|(label,values)| {
+        let mut s=GridArmScore{label:label.clone(),count:paired.len(),sum_error:0.0,sum_squared_error:0.0,sum_absolute_error:0.0};
+        for &i in &paired {let e=values[i]-observed[i];s.sum_error+=e;s.sum_squared_error+=e*e;s.sum_absolute_error+=e.abs();}
+        if !s.sum_error.is_finite() || !s.sum_squared_error.is_finite() || !s.sum_absolute_error.is_finite() {return Err("continuous observation residuals overflow float64".into());}
+        Ok(s)
+    }).collect::<Result<Vec<_>,String>>()?;
+    Ok(GridErrorScore{quantity:quantity.into(),units:units.into(),arms})
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct RadarScore {
@@ -159,6 +217,25 @@ pub struct VerificationReceipt {
     pub radar: Vec<RadarScore>,
     pub artifacts: Vec<Artifact>,
     pub skipped: Vec<String>,
+    pub scoring_request: Value,
+    pub grid_errors: Vec<GridErrorScore>,
+}
+
+pub fn default_station_request(time: &str, domain: &str) -> VerificationRequest {
+    serde_json::from_value(serde_json::json!({"schema":REQUEST_SCHEMA,"valid_time":time,"domain":domain,"arms":[]})).unwrap()
+}
+
+pub fn observation_valid(request: &VerificationRequest, quantity: &str, values: &Value) -> Result<bool,String> {
+    let Some(q) = request.station_quantities.iter().find(|q|q.quantity==quantity) else { return Ok(false) };
+    let Some(v) = values[quantity].as_f64() else { return Ok(false) };
+    Ok(v.is_finite() && v>=q.minimum && v<=q.maximum && !(quantity=="dewpoint_2m" && values["temperature_2m"].as_f64().is_some_and(|t|v>t)))
+}
+pub fn observation_valid_at(request:&VerificationRequest,quantity:&str,values:&Value,observation_time:&str) -> Result<bool,String> {
+    if !observation_valid(request,quantity,values)? {return Ok(false);}
+    if request.station_quantities.iter().any(|q|q.quantity==quantity && q.exact_time) {
+        return Ok(parse_time(observation_time)?==parse_time(&request.valid_time)?);
+    }
+    Ok(true)
 }
 
 pub fn parse_time(text: &str) -> Result<DateTime<Utc>, String> {
@@ -198,6 +275,14 @@ impl VerificationRequest {
         }
         if self.station_mode != "observed" && self.station_mode != "error" {
             return Err("station_mode must be observed or error".into());
+        }
+        if self.station_source.trim().is_empty() || self.radar_source.trim().is_empty() { return Err("observation source metadata is required to keep networks distinct".into()); }
+        let mut quantities=std::collections::BTreeSet::new();
+        for q in &self.station_quantities {
+            if q.quantity.is_empty() || q.units.is_empty() || !quantities.insert(&q.quantity)
+                || !q.minimum.is_finite() || !q.maximum.is_finite() || q.minimum>=q.maximum {
+                return Err("station quantity metadata needs unique names, declared units and finite increasing QC bounds".into());
+            }
         }
         for (i, arm) in self.arms.iter().enumerate() {
             if arm.label.trim().is_empty() || self.arms[..i].iter().any(|a| a.label == arm.label) {
@@ -257,13 +342,14 @@ pub fn paired_station_scores(
                 continue;
             }
             let mut values = BTreeMap::new();
-            for &(q, _, _) in STATION_QUANTITIES {
+            for metadata in &request.station_quantities {
+                let q=metadata.quantity.as_str();
                 let value = arm
                     .points
                     .get(&observation.station_id)
                     .and_then(|p| {
                         if q == "temperature_2m" {
-                            p.values.get("temperature_2m_raw").copied()
+                            p.values.get("temperature_2m_raw").or_else(||p.values.get(q)).copied()
                         } else {
                             p.values.get(q).copied()
                         }
@@ -290,21 +376,13 @@ pub fn paired_station_scores(
         });
     }
     let mut scores = Vec::new();
-    for &(q, _, units) in STATION_QUANTITIES {
-        let low = if q == "wind_speed_10m" { 0.0 } else { 233.15 };
-        let high = if q == "wind_speed_10m" { 75.0 } else { 328.15 };
+    for metadata in &request.station_quantities {
+        let q=metadata.quantity.as_str();
+        let units=metadata.units.as_str();
         let paired: Vec<_> = samples
             .iter()
             .filter(|s| {
-                s.observation
-                    .values
-                    .get(q)
-                    .is_some_and(|v| v.is_finite() && *v >= low && *v <= high)
-                    && !(q == "dewpoint_2m"
-                        && s.observation
-                            .values
-                            .get("temperature_2m")
-                            .is_some_and(|t| s.observation.values[q] > *t))
+                observation_valid_at(request,q,&serde_json::to_value(&s.observation.values).unwrap(),&s.observation.observation_time).unwrap_or(false)
                     && s.forecast.iter().all(|f| f.values.contains_key(q))
             })
             .collect();
@@ -313,14 +391,12 @@ pub fn paired_station_scores(
             .iter()
             .enumerate()
             .map(|(i, a)| {
-                let (sum, squares) = paired.iter().fold((0.0, 0.0), |(sum, squares), s| {
-                    let error = s.forecast[i].values[q] - s.observation.values[q];
-                    (sum + error, squares + error * error)
-                });
+                let mut stats=rw_scoreboard::Stats::default();
+                for s in &paired { stats.add(s.forecast[i].values[q],s.observation.values[q]); }
                 StationArmScore {
                     label: a.label.clone(),
-                    bias: (count > 0).then(|| sum / count as f64),
-                    rmse: (count > 0).then(|| (squares / count as f64).sqrt()),
+                    bias: stats.metric("bias"),
+                    rmse: stats.metric("rmse"),
                     count,
                 }
             })
@@ -371,22 +447,6 @@ fn unique_winner(values: &[(String, Option<f64>)], higher: bool) -> Option<Strin
         .filter(|(_, v)| (v.unwrap() - best_value).abs() <= 1e-12)
         .count();
     (tied == 1).then(|| best.0.clone())
-}
-
-fn integral(values: &[f64], ny: usize, nx: usize) -> Vec<f64> {
-    let mut out = vec![0.0; (ny + 1) * (nx + 1)];
-    for y in 0..ny {
-        let mut row = 0.0;
-        for x in 0..nx {
-            row += values[y * nx + x];
-            out[(y + 1) * (nx + 1) + x + 1] = out[y * (nx + 1) + x + 1] + row;
-        }
-    }
-    out
-}
-fn rectangle(sums: &[f64], nx: usize, x0: usize, y0: usize, x1: usize, y1: usize) -> f64 {
-    sums[y1 * (nx + 1) + x1] - sums[y0 * (nx + 1) + x1] - sums[y1 * (nx + 1) + x0]
-        + sums[y0 * (nx + 1) + x0]
 }
 
 /// FSS uses a common finite/coverage mask across every arm. Only complete
@@ -452,58 +512,14 @@ pub fn paired_fss_rect(
     let observed_event_cells = (0..cells)
         .filter(|&i| common[i] && observed[i] >= threshold)
         .count();
-    let mask = integral(
-        &common.iter().map(|&v| f64::from(v)).collect::<Vec<_>>(),
-        ny,
-        nx,
-    );
-    let obs = integral(
-        &(0..cells)
-            .map(|i| f64::from(common[i] && observed[i] >= threshold))
-            .collect::<Vec<_>>(),
-        ny,
-        nx,
-    );
-    let arm_integrals: Vec<_> = forecasts
-        .iter()
-        .map(|(_, values)| {
-            integral(
-                &(0..cells)
-                    .map(|i| f64::from(common[i] && values[i] >= threshold))
-                    .collect::<Vec<_>>(),
-                ny,
-                nx,
-            )
-        })
-        .collect();
-    let mut numerator = vec![0.0; forecasts.len()];
-    let mut denominator = vec![0.0; forecasts.len()];
-    let mut count = 0;
-    if width <= nx && height <= ny {
-        for y in half_y..ny - half_y {
-            for x in half..nx - half {
-                let (x0, y0, x1, y1) = (x - half, y - half_y, x + half + 1, y + half_y + 1);
-                let area = (width * height) as f64;
-                if rectangle(&mask, nx, x0, y0, x1, y1) != area {
-                    continue;
-                }
-                count += 1;
-                let o = rectangle(&obs, nx, x0, y0, x1, y1) / area;
-                for (i, a) in arm_integrals.iter().enumerate() {
-                    let f = rectangle(a, nx, x0, y0, x1, y1) / area;
-                    numerator[i] += (f - o).powi(2);
-                    denominator[i] += f * f + o * o;
-                }
-            }
-        }
-    }
+    let stats:Vec<_>=forecasts.iter().map(|(_,values)|rw_scoreboard::fractions(values,observed,&common,nx,ny,threshold,&vec![half;ny],half_y,true)).collect();
+    let count=stats.first().map_or(0,|s|s.count as usize);
     let arms: Vec<_> = forecasts
         .iter()
         .enumerate()
         .map(|(i, (label, values))| RadarArmScore {
             label: label.clone(),
-            fss: (count > 0 && denominator[i] > 0.0)
-                .then(|| (1.0 - numerator[i] / denominator[i]).clamp(0.0, 1.0)),
+            fss: stats[i].metric("fss").map(|v|v.clamp(0.,1.)),
             count,
             event_cells: (0..cells)
                 .filter(|&j| common[j] && values[j] >= threshold)
@@ -593,6 +609,12 @@ pub fn mapped_fields(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn continuous_grid_errors_use_common_support_even_when_dry() {
+        let score=super::paired_grid_errors("precipitation_1h","mm",&[0.,0.,0.],&[true,true,true],&[("A".into(),vec![1.,2.,3.]),("B".into(),vec![0.,f64::NAN,2.])]).unwrap();
+        assert_eq!(score.arms[0].count,2);assert_eq!(score.arms[1].count,2);
+        assert_eq!(score.arms[0].sum_squared_error,10.);assert_eq!(score.arms[1].sum_squared_error,4.);
+    }
     use super::*;
     #[test]
     fn naive_packaged_times_are_utc_with_either_separator() {

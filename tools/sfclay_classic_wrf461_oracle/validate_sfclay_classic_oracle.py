@@ -80,11 +80,12 @@ def load_wrf(path):
 
 def ulp_distance(a_words, b_words):
     """|a - b| in float32 ULPs on the ordered integer line; NaN pairs equal."""
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+
     a = np.asarray(a_words, np.uint32).astype(np.int64)
     b = np.asarray(b_words, np.uint32).astype(np.int64)
-    oa = np.where(a >= 2**31, 2**31 - a, a)
-    ob = np.where(b >= 2**31, 2**31 - b, b)
-    d = np.abs(oa - ob)
+    d = np.abs(monotone_fp32_key(_f32(a.astype(np.uint32)))
+               - monotone_fp32_key(_f32(b.astype(np.uint32))))
     both_nan = np.isnan(_f32(a.astype(np.uint32))) & np.isnan(_f32(b.astype(np.uint32)))
     return np.where(both_nan, 0, d)
 

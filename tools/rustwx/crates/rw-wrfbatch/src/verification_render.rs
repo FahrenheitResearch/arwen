@@ -194,6 +194,7 @@ fn style(quantity: &str) -> Result<rustwx_products::viewer::StoreVariableStyle, 
             FieldSelector::height_agl(CanonicalField::WindSpeed, 10),
             "m/s",
         ),
+        "wind_gust_10m" => (FieldSelector::height_agl(CanonicalField::WindGust,10),"m/s"),
         "composite_reflectivity" => (
             FieldSelector::entire_atmosphere(CanonicalField::CompositeReflectivity),
             "dBZ",
@@ -235,7 +236,8 @@ pub fn map_sheets(
     let products = STATION_QUANTITIES
         .iter()
         .map(|(q, t, _)| (*q, *t))
-        .chain(RADAR_QUANTITIES.iter().map(|(q, t, _, _)| (*q, *t)));
+        .chain(RADAR_QUANTITIES.iter().map(|(q, t, _, _)| (*q, *t)))
+        .chain(std::iter::once(("wind_gust_10m","10 m wind gust")));
     let mut artifacts = Vec::new();
     for (quantity, title) in products {
         if !arms
@@ -299,6 +301,9 @@ pub fn map_sheets(
                 .station_samples
                 .iter()
                 .filter_map(|s| {
+                    if !crate::verification::observation_valid_at(request,quantity,&serde_json::to_value(&s.observation.values).ok()?,&s.observation.observation_time).ok()? {
+                        return None;
+                    }
                     let observed = *s.observation.values.get(quantity)?;
                     if !s.forecast.iter().all(|f| f.values.contains_key(quantity)) {
                         return None;
@@ -335,7 +340,7 @@ pub fn map_sheets(
         }
         let header = crate::compare::SheetHeader {
             title: format!("{title} ({})", style.display_units),
-            subtitle: if STATION_QUANTITIES.iter().any(|(q, _, _)| *q == quantity) {
+            subtitle: if request.station_quantities.iter().any(|q|q.quantity==quantity) {
                 format!(
                     "Valid {} UTC | {} | {} station dots",
                     request.valid_time.trim_end_matches('Z'),
@@ -352,7 +357,7 @@ pub fn map_sheets(
         };
         let sheet = crate::compare::compose_sheet(&images, &header)?;
         let sheet = if request.station_mode == "error"
-            && STATION_QUANTITIES.iter().any(|(q, _, _)| *q == quantity)
+            && request.station_quantities.iter().any(|q|q.quantity==quantity)
         {
             crate::station_overlay::append_error_key(
                 &sheet,

@@ -55,7 +55,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from gpuwm.da.letkf import (LetkfDiagnostics, LetkfError, _batch_reach_box,
+from gpuwm.da.letkf import (LetkfDiagnostics, LetkfError, LetkfPriorSpreadError, _batch_reach_box,
                             _geodesic_m, _horizontal_stencil,
                             _vertical_stencil, _validate_obs, gaspari_cohn)
 
@@ -1278,7 +1278,7 @@ def analyze_device(prior, obs, grid, config, diagnostics=None, *,
                 f"prior field {f!r} contains non-finite values; the filter"
                 " will not launder them into an analysis.")
         if maxsig[fi] <= 1e-12 * maxabs[fi]:
-            raise LetkfError(
+            raise LetkfPriorSpreadError(
                 f"prior field {f!r} has no usable ensemble spread anywhere"
                 f" (largest pointwise spread {maxsig[fi]!r} against a field"
                 f" magnitude of {maxabs[fi]!r}): the members are identical to"

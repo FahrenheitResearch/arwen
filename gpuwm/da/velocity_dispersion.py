@@ -581,7 +581,10 @@ def withhold(solve: Callable[[Mapping, list, tuple, object], Mapping], prior,
     ``localization``, the analysis's default cutoff), and the prior, the
     batches and the grid are cut to the box around that reach
     (:func:`_crop`), so its cost follows the zone and not the domain, and
-    in the zone it is the whole-domain solve.  A zone no kept batch
+    in the zone it is the whole-domain solve. If the crop loses all usable
+    covariance for a field, retry on the full prior with the same local
+    batches. A valid global ensemble must not be refused because its
+    constant region was used as the entire support check. A zone no kept batch
     reaches, whether batches are left elsewhere or none is, is solved on
     no observation over the box around the zone: the filter's transform of
     an unobserved column, zero at prior inflation 1 and not otherwise.
@@ -627,10 +630,24 @@ def withhold(solve: Callable[[Mapping, list, tuple, object], Mapping], prior,
         # because the filter's transform of an unobserved column is not
         # zero under prior inflation, and the zone must hold what the
         # whole-domain solve without its batches holds there.
-        j0, j1, i0, i1 = box
+        initial_box = box
         sub_prior, sub_batches, sub_geometry = _crop(
             {name: prior[name] for name in these}, kept, geometry, box)
-        solved = solve(sub_prior, sub_batches, these, sub_geometry)
+        from gpuwm.da.letkf import LetkfPriorSpreadError
+        try:
+            solved = solve(sub_prior, sub_batches, these, sub_geometry)
+        except LetkfPriorSpreadError:
+            full_box = (0, ny - 1, 0, nx - 1)
+            if box == full_box:
+                raise
+            # This changes the extent, never the covariance or observations.
+            # The original support guard still runs on the full prior. Its
+            # refusal, or any unrelated solver error, is propagated.
+            box = full_box
+            sub_prior, sub_batches, sub_geometry = _crop(
+                {name: prior[name] for name in these}, kept, geometry, box)
+            solved = solve(sub_prior, sub_batches, these, sub_geometry)
+        j0, j1, i0, i1 = box
         inside = where[j0:j1 + 1, i0:i1 + 1]
         keep = _zone_keep(withheld)
         for name in these:
@@ -647,6 +664,9 @@ def withhold(solve: Callable[[Mapping, list, tuple, object], Mapping], prior,
             "batches_kept": len(kept),
             "batches_out_of_reach": dropped,
             "wall_seconds": round(time.perf_counter() - started, 3)})
+        if box != initial_box:
+            receipt['solves'][-1].update(initial_box=list(initial_box),
+                                         crop_expanded_for_prior_spread=True)
     return out, receipt
 
 

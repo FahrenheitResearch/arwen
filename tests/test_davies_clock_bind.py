@@ -61,6 +61,13 @@ SANCTIONED_BINDER_MODULES = (
     Path("runtime.py"),
     Path("verify") / "cases" / "real74_n5s.py",
     Path("offline_child_run.py"),
+    # Adjudicated (stale-tests-289, 2026-10-10): da/spread_vts.py, added by
+    # 4dcca7d16.  The VTSM future continuation replaces each node's clock
+    # with the continuation's resolve_clock clocks (the same scheduled
+    # recurrence) and binds every specified root's external mirror to it
+    # through this binder, then binds the previous clocks back in its
+    # finally -- the restart-restore shape, no new clock semantics.
+    Path("da") / "spread_vts.py",
 )
 
 

@@ -34,6 +34,7 @@ def test_injection_cpu(mode):
     vol, plane = injection_inputs(case)
     chem = vol.pop("initial")
     coef = np.ones((1,20),np.float32); hist = coef.copy()
+    carry = None  # Written by the first step before any carry is consumed.
     for step in range(1,7):
         if step>1:
             vol["ebu"]=carry_ebu(carry,coef,True)

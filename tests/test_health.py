@@ -482,3 +482,26 @@ def test_gpu_gate_scans_an_aliased_buffer_once_and_still_attributes_it(
     assert not report.ok
     assert report.first_bad_field == "held.cu_rates.rthcuten"
     assert report.first_bad_flat_index == 4
+
+
+def test_a_fast_sbm_domain_takes_the_fsbm_ceiling():
+    """A nested FAST_SBM (mp_physics=30) tree measured 2,889 descriptors
+    and stopped at its first validation against 1024.  A state carrying the
+    bins gets FSBM_HEALTH_FIELDS, the config rule preflight prices by
+    agrees, and every other state and config is unchanged."""
+    from gpuwm.core.health import (FSBM_HEALTH_FIELDS,
+                                   health_field_ceiling,
+                                   health_field_ceiling_for_config)
+
+    one = np.ones((1,), dtype=np.float32)
+    fsbm = SimpleNamespace(fast_sbm_bins=one, physics=None,
+                           lateral_boundaries=None, _scratch={})
+    plain = SimpleNamespace(qvolg=one, physics=None, lateral_boundaries=None,
+                            _scratch={})
+    assert FSBM_HEALTH_FIELDS == 4096
+    assert health_field_ceiling(fsbm) == FSBM_HEALTH_FIELDS
+    assert health_field_ceiling(plain) == MAX_HEALTH_FIELDS
+    for mp, want in ((30, FSBM_HEALTH_FIELDS), (28, MAX_HEALTH_FIELDS),
+                     (8, MAX_HEALTH_FIELDS), (0, MAX_HEALTH_FIELDS)):
+        cfg = SimpleNamespace(mp_physics=mp)
+        assert health_field_ceiling_for_config(cfg) == want

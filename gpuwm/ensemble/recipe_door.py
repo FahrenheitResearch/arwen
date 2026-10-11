@@ -64,12 +64,21 @@ def configured(config) -> bool:
     """Does the config's own ``[ensemble]`` table select a recipe?"""
     import tomllib
 
+    from gpuwm.config_authority import CONFIG_SOURCE_ENV, read_config_authority
+
     path = Path(config)
-    if not path.is_file():
+    # Read through the config authority, as the run itself reads it.  A
+    # multi-run child is bound to the bytes its supervisor captured; the
+    # original file may have been edited since, and reading it here let
+    # those later bytes decide whether the child runs as a recipe
+    # ensemble or as one forecast.  Outside a capture the authority reads
+    # the file itself.
+    if not os.environ.get(CONFIG_SOURCE_ENV) and not path.is_file():
         return False
     try:
-        table = tomllib.loads(path.read_text(encoding="utf-8-sig")).get("ensemble")
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        payload = read_config_authority(path).payload
+        table = tomllib.loads(payload.decode("utf-8-sig")).get("ensemble")
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
         return False
     return isinstance(table, dict) and (table.get("recipe") is not None
         or bool(table.get("trajectories")) or bool(table.get("member_variants")))
@@ -363,6 +372,8 @@ class MemberPlan:
     preparation_key: str = ""
     variant_name: str | None = None
     memory_key: str = ""
+    source_key: str = ""
+    physics_tail: str = ""
 
     @property
     def line(self) -> str:
@@ -426,16 +437,18 @@ def review_members(raw, config, wps, recipe, *, scratch, options=None):
         except ValueError as error:
             raise RecipeRefusal(
                 f"{member_label(member)} cannot be prepared: {error}") from error
-        from gpuwm.ensemble.member_variants import preparation_binding_key
-        binding = preparation_binding_key(member.trajectory.identity, document, experiment=experiment)
+        from gpuwm.ensemble.member_variants import preparation_binding_key, preparation_binding_parts
+        binding = preparation_binding_parts(member.trajectory.identity, document, experiment=experiment)
         variant_name = None
         if recipe.member_variants:
             variant = recipe.member_variants[member.index]
             variant_name = variant["name"]
         plans.append(MemberPlan(member, table, chain,
                                  recipe.acquisition_window(member.trajectory)[0],
-                                 experiment, target, binding, variant_name,
-                                 preparation_binding_key(source, document, experiment=experiment)))
+                                 experiment, target, binding.key, variant_name,
+                                 preparation_binding_key(source,
+                                     {key: value for key, value in document.items() if key != "fetch"},
+                                     experiment=experiment), binding.source_key, binding.physics_tail))
     if recipe.member_variants:
         from gpuwm.ensemble.member_variants import require_distinct_variants
         try:
@@ -447,7 +460,8 @@ def review_members(raw, config, wps, recipe, *, scratch, options=None):
 
 
 def prepare_member(config, experiment, *, source, directory, downloads, geog_root,
-                   recipe_sha256, options=None):
+                   recipe_sha256, options=None, composition_bank=None,
+                   composition_source_key=None):
     """Prepare every domain from one trajectory through its ordinary source chain.
 
     The chain consumes this member's complete experiment, including its
@@ -469,16 +483,41 @@ def prepare_member(config, experiment, *, source, directory, downloads, geog_roo
     request = pin_request(fetch_request(hints, p_top=experiment.vertical.p_top), pinned)
     run_options = {"geog_root": str(geog_root), "supplement": [],
                    "data_dir": str(managed_download_dir(downloads, request)), **posting}
+    if os.environ.get('GPUWM_BENCH_MEMBER_INPUTS_JSON'):
+        from tools.bench.member_inputs import directory_for
+        run_options['data_dir'] = directory_for(hints)
     plan = SimpleNamespace(run_options=run_options, config_intent={}, sha256=recipe_sha256)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    events = runplan.EventStream(directory / "prepare-events.jsonl", mirror=None)
+    from contextlib import nullcontext
+    from gpuwm.mapped_composition import shared_composition_source
+    scope = (nullcontext() if composition_source_key is None else
+             shared_composition_source(composition_source_key, composition_bank))
+    canaries = (options or {}).get("_head_canaries")
+    check, stop_watch = ((lambda: None), (lambda: None))
+    if canaries is not None:
+        check, stop_watch = canaries.watch(directory, source=source, config=config,
+                                          namelist=(options or {}).get("_canary_namelist"))
+    class _CanaryEvents(runplan.EventStream):
+        def emit(self, event, **fields):
+            # A deterministic canary refusal stops the producer at its next
+            # progress event instead of paying for every remaining boundary.
+            check()
+            return super().emit(event, **fields)
+    events = _CanaryEvents(directory / "prepare-events.jsonl", mirror=None)
     try:
-        result = owner(plan, config_path=Path(config), exp=experiment,
-                       observer=runplan.RunObserver(events), run_dir=directory / "prepare",
-                       prepare_only=True)
+        with scope:
+            result = owner(plan, config_path=Path(config), exp=experiment,
+                           observer=runplan.RunObserver(events), run_dir=directory / "prepare",
+                           prepare_only=True)
     finally:
+        stop_watch()
         events.close()
+    if canaries is not None:
+        check()
+        # Sources that publish only a seal retain the same launch check.
+        canaries.submit({"source": source, **{key: result[key] for key in
+                         ("prepared_root", "experiment_config", "wps_namelist")}})
     return {key: result[key] for key in ("prepared_root", "experiment_config", "wps_namelist")}
 
 
@@ -533,7 +572,7 @@ def disk_refusal(plans, *, case_root, request, options=None) -> str | None:
     from gpuwm.go_cli import fetch_request, managed_download_dir, pin_request, pinned_transport
 
     posting = _posting(options or {})
-    rows, basis, distinct, preparation_banks = [], [], {}, {}
+    rows, basis, distinct, preparation_banks, source_tails, source_streams = [], [], {}, {}, {}, {}
     for plan in plans:
         pinned, _basis = pinned_transport(plan.fetch, posting.get("transport"))
         fetch = pin_request(fetch_request(plan.fetch, p_top=plan.experiment.vertical.p_top), pinned)
@@ -548,17 +587,25 @@ def disk_refusal(plans, *, case_root, request, options=None) -> str | None:
         rows.append(row)
         distinct.setdefault(plan.member.trajectory.identity, row)
         preparation_banks.setdefault(plan.preparation_key or plan.member.trajectory.identity, row)
+        source_key = getattr(plan, "source_key", "") or plan.member.trajectory.identity
+        source_tails.setdefault(source_key, set()).add(plan.preparation_key or plan.member.trajectory.identity)
+        source_streams[source_key] = max(source_streams.get(source_key, 0),
+                                       int(row.get("compose_scratch_min_bytes") or 0))
         basis.append(f"member {plan.member.index}: {row['download']['basis']}")
     stream = max(rows, key=lambda row: int(row.get("compose_scratch_min_bytes") or 0))
     members = len(rows)
     projection = {
         "download_bytes": sum(int(row["download_bytes"]) for row in distinct.values()),
-        "preparation_bytes": sum(int(row["preparation_bytes"]) for row in preparation_banks.values()),
+        # Shared frame streams sit beside output, even if the caller's
+        # ordinary scratch override is on another disk. Conservatively price
+        # every multi-tail source, including streams released early below.
+        "preparation_bytes": (sum(int(row["preparation_bytes"]) for row in preparation_banks.values()) +
+                              sum(size for source, size in source_streams.items() if len(source_tails[source]) > 1)),
         "history_bytes": (sum(int(row["history_bytes"]) for row in rows)
                           if request.keep_member_files else 0),
         "checkpoint_bytes": 0, "picture_bytes": 0,
-        # One preparation runs at a time and removes its frame stream
-        # before the next starts, so the largest stream is the peak.
+        # Ordinary transient decode scratch is still one stream. Retained
+        # source banks on output are accounted for in preparation_bytes.
         "compose_scratch_bytes": int(stream.get("compose_scratch_bytes") or 0),
         "compose_scratch_min_bytes": int(stream.get("compose_scratch_min_bytes") or 0),
         "compose_scratch": stream.get("compose_scratch") or {},
@@ -923,6 +970,17 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     publish()
     prepared = {}
     prepared_banks = {}
+    source_bindings = {}
+    for plan in plans:
+        source_bindings.setdefault(plan.source_key, set()).add(plan.physics_tail)
+    # Single-tail sources need no retained stream. Each multi-tail source is
+    # spent and removed immediately after its last distinct tail is sealed.
+    composition_banks = {key: tempfile.TemporaryDirectory(prefix="source-bank-", dir=root)
+                         for key, tails in source_bindings.items() if len(tails) > 1}
+    # The caller may supply a qualified source-head diagnostic. Automatic
+    # installation belongs to the preparation integrator: the delivered
+    # fixed-clock canary cannot certify ordinary adaptive-clock requests.
+    canaries = options.get("_head_canaries")
     try:
         for plan in plans:
             member = plan.member
@@ -934,22 +992,34 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                 "gpuwm", command, str(config), "#", member_label(member)])
             member_config, member_wps, member_experiment = member_configuration(
                 raw, config, wps, recipe, member, directory / "source")
-            from gpuwm.ensemble.member_variants import preparation_binding_key
+            from gpuwm.ensemble.member_variants import preparation_binding_parts
             member_document = tomllib.loads(Path(member_config).read_text(encoding="utf-8"))
-            identity = preparation_binding_key(member.trajectory.identity, member_document,
-                                               experiment=member_experiment)
-            original_member = prepared_banks.get(identity)
+            binding = preparation_binding_parts(member.trajectory.identity, member_document,
+                                                 experiment=member_experiment)
+            identity = binding.key
+            source_banks = prepared_banks.setdefault(binding.source_key, {})
+            original_member = source_banks.get(binding.physics_tail)
             reused_run = None
             if original_member is None:
                 if identity in reusable:
                     prepared[member.index], reused_run = reusable[identity]
                     _say(f"member {member.index} reuses its ready preparation from {reused_run}")
+                    if canaries is not None:
+                        canaries.submit({"source": member.trajectory.source,
+                                         **prepared[member.index]})
                 else:
                     prepared[member.index] = prepare_member(
                         member_config, member_experiment, source=member.trajectory.source,
                         directory=directory, downloads=case_root, geog_root=geog_root,
-                        recipe_sha256=recipe.sha256, options=options)
-                prepared_banks[identity] = member.index
+                        composition_bank=(composition_banks[binding.source_key].name
+                                          if binding.source_key in composition_banks else None),
+                        composition_source_key=binding.source_key,
+                        recipe_sha256=recipe.sha256, options={**options,
+                        "_head_canaries": canaries, "_canary_namelist": member_wps})
+                source_banks[binding.physics_tail] = member.index
+                if (binding.source_key in composition_banks and
+                        len(source_banks) == len(source_bindings[binding.source_key])):
+                    composition_banks[binding.source_key].cleanup()
             else:
                 # Seeded surface members share their unchanged source
                 # trajectory. Each initialized tree applies its own GPU
@@ -964,6 +1034,8 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                 "source_member": member.trajectory.member,
                 "trajectory_sha256": member.trajectory.identity,
                 "preparation_binding_sha256": identity,
+                "source_binding_sha256": binding.source_key,
+                "physics_tail_sha256": binding.physics_tail,
                 "start_lead_hours": plan.start_lead,
                 **({} if not recipe.member_variants else
                    {"variant": recipe.member_variants[member.index]}),
@@ -975,6 +1047,11 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
             _notify(observer, "stage_end", label="prepare", exit_code=0, ok=True,
                     elapsed_seconds=time.monotonic() - where["started"], progress=None)
 
+        for bank in composition_banks.values():
+            bank.cleanup()
+        if canaries is not None:
+            canaries.close()
+            receipt["canary_sources"] = list(canaries.bindings)
         base = recipe.members[0].index
         receipt["preparation_status"] = "ready"
         if options["prepare_only"]:
@@ -1057,6 +1134,8 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
         _notify(observer, "stage_end", label="forecast", exit_code=0, ok=True,
                 elapsed_seconds=time.monotonic() - where["started"], progress=None)
     except BaseException as error:  # noqa: BLE001 - every exit is recorded in the receipt
+        if canaries is not None:
+            canaries.close(raise_error=False)
         code = _exit_code(error)
         from gpuwm.ensemble.execution import failed_member_rows
         what = subject(forecast_members(failed_member_rows(error))
@@ -1099,6 +1178,9 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
         if explain_enabled(args):
             traceback.print_exc()
         return 1
+    finally:
+        for bank in composition_banks.values():
+            bank.cleanup()
     receipt["status"] = "complete"
     receipt["products"] = products_receipt
     publish()

@@ -63,6 +63,12 @@ path = "tests/proptest_tests.rs"
 
 [dependencies.flate2]
 version = "1"
+# Not "zlib-rs" here: tools/rw_wps path-depends on this crate from its own
+# offline vendor tree, which carries no zlib-rs, so naming it broke rw_wps's
+# `cargo build --release --locked --offline` and install.sh stopped there
+# (rc 101, "no matching package named `zlib-rs` found"). A whole
+# tools/rustwx build still inflates through zlib-rs: zip selects it
+# ("deflate-flate2-zlib-rs") and the feature unifies onto this flate2.
 features = ["rust_backend"]
 default-features = false
 

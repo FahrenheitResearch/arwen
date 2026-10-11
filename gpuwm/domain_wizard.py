@@ -5566,8 +5566,18 @@ def verify_polygon_containment(exp: ExperimentConfig,
 def _fit_source_projection(projection: dict, source: str,
                            root_dx_m: float) -> dict:
     """Fit about the projection and cell center exact-source emission uses."""
+    from gpuwm.source_adapters import source_coverage_window
+    from gpuwm.source_coverage import points_outside
     from gpuwm.static.source_defaults import align_source_projection
 
+    # A point the source does not cover has no source cells to align to,
+    # and the coverage refusal below names the source, where the target
+    # lands in its index space and the way out.  Aligned first (0eae0f675),
+    # such a point met the static source's "N cells off the source's mass
+    # points" instead, which names none of them.
+    if bool(points_outside(source_coverage_window(source),
+                           projection["ref_lat"], projection["ref_lon"])):
+        return projection
     # 6a69b356f, lane/hrrr-statics, aligns exact-spacing emission to the
     # source projection and lattice. Root dimensions have an even quantum,
     # so a 2x2 planning window establishes their half-cell center before
@@ -7033,6 +7043,14 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     if emitted_fetch_hints is not None and local_source:
         emitted_fetch_hints = {k: v for k, v in emitted_fetch_hints.items()
                                if k != "out"}
+    # The TOML's out is relative to the TOML, as [case_data].forcing is;
+    # the printed fetch command below keeps the working-directory form,
+    # because it is pasted here.  D-11 (2.8.8 acceptance): writing the
+    # working-directory form into the file made a config emitted to
+    # sub/experiment.toml run only from the folder it was written in.
+    if emitted_fetch_hints is not None and "out" in emitted_fetch_hints:
+        emitted_fetch_hints = {**emitted_fetch_hints,
+                               "out": _relative_or_absolute(data_dir, out.parent)}
     # Prove every emitted hint against the REAL fetch validators before
     # anything is written.  A config the wizard cannot fetch is a config
     # whose printed step 1 exits 2, and that shipped twice: any lead not

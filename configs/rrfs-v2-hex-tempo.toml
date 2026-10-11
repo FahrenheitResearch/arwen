@@ -1,0 +1,9 @@
+# This is a model preset specification, not an ARW RunConfig.
+# Inspect with: gpuwm preset show rrfs-v2-hex-tempo
+# Export with: gpuwm preset export rrfs-v2-hex-tempo --start UTC --seconds SECONDS
+# The preset's check door reports its declared divergences without any GPU use.
+[model_preset]
+schema = "gpuwm-model-presets-v1"
+id = "rrfs-v2-hex-tempo"
+status = "rrfs-configuration-with-declared-divergences"
+registry = "gpuwm/data/model_presets/registry.v1.json"

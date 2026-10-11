@@ -22,6 +22,15 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+quick-xml = { version = "0.39", features = ["serialize"] }
+# Static archives and compressed tables decode in process: the host's
+# pzstd, bzip2 and gzip are not on a stock Windows PATH. All three crates
+# are already in this workspace's vendored closure, at the versions and
+# backends rw-store, wx-radar and rustwx-io use.
+zstd = "0.13"
+bzip2 = "0.5"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 rustwx-core = { path = "../rustwx-core" }
 rustwx-models = { path = "../rustwx-models" }
 # The version is pinned beside the path deliberately: a governorless

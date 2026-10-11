@@ -102,7 +102,7 @@ def test_go_case_data_restart_reaches_existing_experiment_runtime(
     checkpoint.write_bytes(b"checkpoint operand")
     called = []
     stub = _stub_run_experiment()
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda path: None)
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda path, **_: None)
 
     def execute(exp, data, outdir, **kwargs):
         called.append(kwargs["restart"])

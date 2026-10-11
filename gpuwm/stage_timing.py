@@ -26,6 +26,306 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+import contextlib
+import functools
+from contextvars import ContextVar
+import json
+import os
+from pathlib import Path
+import threading
+import time
+
+from gpuwm.timeline.ledger import Ledger, span
+from gpuwm.timeline.taxonomy import GO_STAGES
+
+_observers = ContextVar("time_ledger_observers", default=None)
+_entry_clock = ContextVar("time_ledger_entry_clock", default=None)
+_bound_ledger = ContextVar("time_ledger_bound_ledger", default=None)
+_first_binding = True
+
+
+def register_ledger_observer(observer):
+    owners = _observers.get()
+    if owners is not None:
+        owners.append(observer)
+
+
+def current_ledger(default):
+    return _bound_ledger.get() or default
+
+
+def end_admission(ledger):
+    if getattr(ledger, "_admission_open", False):
+        ledger.emit("boot.engine_admission", "end")
+        ledger._admission_open = False
+
+
+@contextlib.contextmanager
+def ledger_environment():
+    """Restore ledger routing after a main-flow call; children inherit it."""
+    keys = ("GPUWM_TIME_LEDGER", "GPUWM_RUN_ID", "GPUWM_PRODUCT")
+    before = {key: os.environ.get(key) for key in keys}
+    try:
+        yield
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def ledger_main(function):
+    """Scope default routing without changing any arguments or return value."""
+    @functools.wraps(function)
+    def call(*args, **kwargs):
+        with ledger_environment():
+            owned = []
+            token = _observers.set(owned)
+            clock_token = _entry_clock.set((time.monotonic(), time.time()))
+            ledger_token = _bound_ledger.set(None)
+            try:
+                return function(*args, **kwargs)
+            finally:
+                try:
+                    for observer in owned:
+                        observer.close()
+                    bound = _bound_ledger.get()
+                    if bound is not None:
+                        end_admission(bound)
+                        if not owned:
+                            bound.emit("finish", "mark")
+                finally:
+                    _observers.reset(token)
+                    _entry_clock.reset(clock_token)
+                    _bound_ledger.reset(ledger_token)
+    return call
+
+
+def bind_ledger(run, *, product=None):
+    """Called after the existing run-root claim, before any stages spawn."""
+    global _first_binding
+    run = Path(run)
+    if not os.environ.get("GPUWM_TIME_LEDGER"):
+        os.environ["GPUWM_TIME_LEDGER"] = str((run / "timeline.jsonl").resolve())
+    os.environ.setdefault("GPUWM_RUN_ID", run.name)
+    if product is not None:
+        os.environ.setdefault("GPUWM_PRODUCT", product)
+    ledger = Ledger(run / "timeline.jsonl", run_id=os.environ["GPUWM_RUN_ID"])
+    if _entry_clock.get() is not None:
+        start_mono, start_unix = _entry_clock.get()
+        if _first_binding:
+            from gpuwm import LAUNCH_MONOTONIC, LAUNCH_UNIX_MS
+            start_mono, start_unix = LAUNCH_MONOTONIC, LAUNCH_UNIX_MS / 1000.0
+            _first_binding = False
+        ledger.emit("boot.engine_admission", "begin", t_mono=start_mono, t_unix=start_unix)
+        ledger._admission_open = True
+        _bound_ledger.set(ledger)
+    return ledger
+
+
+def stage_timer(stage, *, ledger=None, attrs=None):
+    """Existing orchestration timers can share the default-on C1 pair."""
+    return span(stage, ledger=ledger, attrs=attrs)
+
+
+class ForecastLedger:
+    """Relay existing progress.jsonl metadata, never open forecast fields.
+
+    The runner keeps its process isolation and exact command. Step boundaries
+    use its existing per-domain timer and millisecond UTC publication clock.
+    This is a retrospective relay, with its basis stated on every boundary.
+    Missing/thinned/off progress is reported, never replaced with guessed work.
+    """
+
+    def __init__(self, ledger, run):
+        self.ledger = ledger
+        self.run = Path(run)
+        self.stop = threading.Event()
+        self.thread = None
+        self.offset = 0
+        self.first = False
+        self.last = None
+        self.pending = b""
+        self.construct_open = False
+        self.identity = None
+        self.attempt = 1
+        self.next_poll = 0.0
+
+    def start(self, *, watch=True):
+        self.ledger.emit("forecast.construct", "begin", attrs={"basis": "runner_startup"})
+        self.construct_open = True
+        if watch:
+            self.thread = threading.Thread(target=self._watch, name="time-ledger", daemon=True)
+            self.thread.start()
+
+    def _watch(self):
+        while not self.stop.wait(0.25):
+            self.read()
+
+    def poll(self):
+        """Batch hosted callback metadata reads; final drains bypass this clock."""
+        now = time.monotonic()
+        if now >= self.next_poll:
+            self.next_poll = now + 0.25
+            self.read()
+
+    def read(self):
+        try:
+            with (self.run / "progress.jsonl").open("rb") as stream:
+                stat = os.fstat(stream.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                if self.identity is not None and (self.identity != identity or stat.st_size < self.offset):
+                    self._finish_attempt()
+                    self.offset = 0
+                    self.pending = b""
+                    self.first, self.last = False, None
+                    self.attempt += 1
+                    self.ledger.emit("forecast.construct", "begin", attrs={"attempt": self.attempt,
+                        "basis": "progress_log_replaced", "coverage": "startup_boundary_unknown"})
+                    self.construct_open = True
+                self.identity = identity
+                stream.seek(self.offset)
+                raw = stream.read(1024 * 1024)
+                self.offset += len(raw)
+            lines = (self.pending + raw).split(b"\n")
+            self.pending = lines.pop()
+            for line in lines:
+                try:
+                    self.record(json.loads(line))
+                except (ValueError, TypeError, KeyError):
+                    continue
+        except OSError:
+            pass
+
+    def record(self, record):
+        unix = float(record["emitted_unix_ms"]) / 1000.0
+        # Same-host clock conversion; readers sort timestamps, not file order.
+        mono = time.monotonic() + unix - time.time()
+        attrs = {"basis": "progress.jsonl.step_timer", "domain": record.get("domain"),
+                 "attempt": self.attempt}
+        if record["event"] == "step":
+            duration = record.get("step_wall_seconds")
+            if not isinstance(duration, (int, float)) or duration <= 0:
+                self.ledger.emit("forecast.integrate", "mark", attrs={
+                    "coverage": "unknown", "reason": "step timer absent in thinned progress"})
+                return
+            if not self.first:
+                start_unix, start_mono = unix - duration, mono - duration
+                self.ledger.emit("forecast.construct", "end", attrs=attrs,
+                                 t_mono=start_mono, t_unix=start_unix)
+                self.construct_open = False
+                self.ledger.emit("forecast.integrate", "begin", attrs=attrs,
+                                 t_mono=start_mono, t_unix=start_unix)
+                self.ledger.emit("forecast.first_step", "begin", attrs=attrs,
+                                 t_mono=start_mono, t_unix=start_unix)
+                self.ledger.emit("forecast.first_step", "end", attrs=attrs,
+                                 t_mono=mono, t_unix=unix)
+                self.first = True
+            self.last = (mono, unix, attrs)
+        elif record["event"] in ("output_written", "restart_written"):
+            stage = "forecast.output." + ("history" if record["event"] == "output_written" else "restart")
+            duration = record.get("wall_seconds")
+            if isinstance(duration, (int, float)) and duration > 0:
+                self.ledger.emit(stage, "begin", attrs={**attrs, "basis": "progress.jsonl.output_latency"},
+                                 t_mono=mono - duration, t_unix=unix - duration)
+                self.ledger.emit(stage, "end", attrs={**attrs, "basis": "progress.jsonl.output_latency"},
+                                 t_mono=mono, t_unix=unix)
+            else:
+                self.ledger.emit(stage, "mark", attrs={**attrs, "coverage": "duration_unknown"},
+                                 t_mono=mono, t_unix=unix)
+
+    def finish(self):
+        self.stop.set()
+        if self.thread is not None:
+            self.thread.join()
+        # Drain the remaining metadata, including the last committed step.
+        while True:
+            before = self.offset
+            self.read()
+            if self.offset == before:
+                break
+        self._finish_attempt()
+
+    def _finish_attempt(self):
+        if self.last is not None:
+            mono, unix, attrs = self.last
+            self.ledger.emit("forecast.integrate", "end", attrs=attrs, t_mono=mono, t_unix=unix)
+        if self.construct_open:
+            self.ledger.emit("forecast.construct", "end", attrs={"coverage": "unknown",
+                "reason": "no measured step in progress.jsonl"})
+            self.construct_open = False
+
+
+class LedgerObserver:
+    """Add C1 to an existing go observer without changing hosting behavior."""
+
+    def __init__(self, observer, ledger, run):
+        self.observer, self.ledger, self.run = observer, ledger, run
+        self.hosts_forecast = getattr(observer, "hosts_forecast", True)
+        self.forecast = None
+        self.open_stages = set()
+        self.closed = False
+        self.idle = True
+        self.ledger.emit("post.orchestration", "begin")
+        register_ledger_observer(self)
+
+    def __getattr__(self, name):
+        return getattr(self.observer, name)
+
+    def _forward(self, name, **fields):
+        hook = getattr(self.observer, name, None)
+        if hook is not None:
+            return hook(**fields)
+
+    def stage_begin(self, *, label, command):
+        end_admission(self.ledger)
+        if self.idle:
+            self.ledger.emit("post.orchestration", "end")
+            self.idle = False
+        stage = GO_STAGES.get(label, "prep." + label.replace(" ", "_"))
+        self.ledger.emit(stage, "begin", attrs={"label": label})
+        self.open_stages.add(label)
+        if label == "forecast":
+            self.forecast = ForecastLedger(self.ledger, self.run)
+            self.forecast.start()
+        return self._forward("stage_begin", label=label, command=command)
+
+    def stage_end(self, *, label, **fields):
+        self._end(label, fields)
+        return self._forward("stage_end", label=label, **fields)
+
+    def stage_secondary_end(self, *, label, **fields):
+        self._end(label, fields)
+        return self._forward("stage_secondary_end", label=label, **fields)
+
+    def _end(self, label, fields):
+        if label == "forecast" and self.forecast is not None:
+            self.forecast.finish()
+            self.forecast = None
+        if label in self.open_stages:
+            self.ledger.emit(GO_STAGES.get(label, "prep." + label.replace(" ", "_")), "end",
+                             attrs={"label": label, "ok": fields.get("ok"),
+                                    "exit_code": fields.get("exit_code")})
+            self.open_stages.discard(label)
+        if not self.open_stages and not self.idle:
+            self.ledger.emit("post.orchestration", "begin")
+            self.idle = True
+
+    def __call__(self, **fields):
+        return self.observer(**fields)
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        for label in list(self.open_stages):
+            self._end(label, {"ok": False})
+        if self.idle:
+            self.ledger.emit("post.orchestration", "end")
+            self.idle = False
+        self.ledger.emit("finish", "mark")
+
 #: The key every receipt's ``timing_seconds`` uses for its own wall.
 TOTAL_KEY = "total"
 

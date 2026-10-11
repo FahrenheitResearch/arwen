@@ -49,6 +49,11 @@ a different SM count therefore gives the same numbers.
 
 ## The deep closure, and the flag
 
+`ntiedtke_tiedtke_closure=true` is an emulation inside cu16. It does not run
+WRF's original `module_cu_tiedtke.F` and cannot establish bitwise cu6 parity.
+WRF's original scheme itself is selected with `cu_physics=6`; its column
+parity with the Fortran is stated in [cumulus-cu6.md](cumulus-cu6.md).
+
 New Tiedtke's deep first guess carries no thermodynamics. It is one tenth of the
 mass-flux cap, and the cap is the pressure thickness of the model layer holding
 cloud base divided by `g dt`. Classic Tiedtke (`cu_physics = 6`) uses moisture

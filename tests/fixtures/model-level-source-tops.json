@@ -51,6 +51,44 @@
         "ny": 37
       },
       "frames_sha256": "dbf2600074da4fb6591aa84ddbfbf35b8ff8d395ba1092c6ed11ab4433e6bdde"
+    },
+    "hrrr-native-grib2-v1": {
+      "source_cycles": [
+        "2026-01-15T12:00:00Z",
+        "2026-07-15T18:00:00Z",
+        "2026-08-12T00:00:00Z",
+        "2026-09-27T00:00:00Z",
+        "2026-10-08T12:00:00Z"
+      ],
+      "forecast_hours": [
+        0
+      ],
+      "measurement": "Minimum, mean and maximum of PRES on hybrid level 50 (the top mass level the mapping reads) in the real f000 record of each cycle, read with ecCodes grib_get from the record the .idx byte range names; the three were equal in every cycle.",
+      "measurement_source": "node-4, 2026-10-10, single-record range reads",
+      "record_url_template": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{YYYYMMDD}/conus/hrrr.t{HH}z.wrfnatf00.grib2",
+      "measured_maximum_pa": 1731.48,
+      "declared_model_top_pressure_pa": 1500.0,
+      "coverage_rule": "measured top-level pressure of a pressure-based hybrid coordinate",
+      "basis": "The coordinate is pure pressure at its top, so the top level's pressure is the same constant at every column and in every season measured (January, July, August, September, October); no height-to-pressure climatology enters the bound."
+    },
+    "rap-native-grib2-v1": {
+      "source_cycles": [
+        "2026-01-15T12:00:00Z",
+        "2026-07-15T18:00:00Z",
+        "2026-08-12T00:00:00Z",
+        "2026-09-27T00:00:00Z",
+        "2026-10-08T12:00:00Z"
+      ],
+      "forecast_hours": [
+        0
+      ],
+      "measurement": "Minimum, mean and maximum of PRES on hybrid level 50 (the top mass level the mapping reads) in the real f000 record of each cycle, read with ecCodes grib_get from the record the .idx byte range names; the three were equal in every cycle.",
+      "measurement_source": "node-4, 2026-10-10, single-record range reads",
+      "record_url_template": "https://noaa-rap-pds.s3.amazonaws.com/rap.{YYYYMMDD}/rap.t{HH}z.awp130bgrbf00.grib2",
+      "measured_maximum_pa": 1232.65,
+      "declared_model_top_pressure_pa": 1000.0,
+      "coverage_rule": "measured top-level pressure of a pressure-based hybrid coordinate",
+      "basis": "The coordinate is pure pressure at its top, so the top level's pressure is the same constant at every column and in every season measured (January, July, August, September, October); no height-to-pressure climatology enters the bound."
     }
   }
 }

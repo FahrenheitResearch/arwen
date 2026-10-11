@@ -545,6 +545,7 @@ def test_the_permitted_keys_are_the_ones_the_help_text_publishes():
     prepared routes even before the fingerprint was consulted.
     """
 
+    from gpuwm.checkpoint_identity import CONFIG_DIAGNOSTIC_FIELDS
     from gpuwm.core.model import (
         RESTART_TOLERATED_DOMAIN_FIELDS, RESTART_TOLERATED_RUN_FIELDS)
     from gpuwm.ingest.prepared_cache import NON_TRAJECTORY_IDENTITY_FIELDS
@@ -553,7 +554,14 @@ def test_the_permitted_keys_are_the_ones_the_help_text_publishes():
     # The single-domain route's allow-list and the experiment-level one
     # describe the same three user-facing knobs under their two spellings
     # (`output_interval_s` is `history_interval_s` on a RunConfig).
-    assert set(RESTART_TOLERATED_RUN_FIELDS) == set(CONFIG_RUN_LENGTH_FIELDS)
+    # ae393b7c3 added one output-only diagnostic toggle,
+    # surface_energy_diag, to the single-domain list; it is a member of
+    # the shared diagnostic table the experiment-level walk tolerates, so
+    # the run-length knobs still have to agree exactly and nothing else
+    # may ride along.
+    run_fields = set(RESTART_TOLERATED_RUN_FIELDS)
+    assert run_fields - CONFIG_DIAGNOSTIC_FIELDS == set(CONFIG_RUN_LENGTH_FIELDS)
+    assert run_fields & CONFIG_DIAGNOSTIC_FIELDS == {"surface_energy_diag"}
     # WRF's history window (history_begin_s / history_end_s, cb8af5ccb)
     # chooses which frames are written, like the cadence beside it, and
     # both published --restart texts now name it.

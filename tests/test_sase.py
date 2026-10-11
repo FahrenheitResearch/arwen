@@ -751,11 +751,14 @@ def test_km_opt_zero_acknowledgement_opens_nothing_else():
         validate_run_config(_min_cfg(
             bl_pbl_physics=1, km_opt=2, sf_sfclay_physics=1, moist=True,
             km_opt_zero_acknowledgement=KM_OPT_ZERO_ACK))
-    # The constant-K stacking refusal is untouched by it.
-    with pytest.raises(ValueError, match="km_opt=4"):
+    # The constant-K stacking refusal is untouched by it.  Since f586d1128
+    # it stands under diff_opt=1 only, where WRF's vertical diffusion
+    # reads kvdif whatever km_opt is; under diff_opt=2 WRF ignores
+    # khdif/kvdif outside km_opt=1, so the pair imports as WRF runs it.
+    with pytest.raises(ValueError, match="diff_opt=1 with km_opt=4"):
         validate_run_config(_min_cfg(
             bl_pbl_physics=1, km_opt=4, sf_sfclay_physics=1, moist=True,
-            khdif=75.0))
+            khdif=75.0, diff_opt=1))
 
 
 def test_km_opt_zero_control_reaches_the_loader_from_a_config_file(tmp_path):
@@ -1454,11 +1457,16 @@ def test_sase_moist_n2_is_not_exempt_from_the_restart_config_match(tmp_path):
     # sase_flux_diag JOINS it rather than founding a second one; the
     # closed-world assertion below therefore names every member.
     assert restart.CONFIG_DIAGNOSTIC_FIELDS == frozenset(
-        {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag"}), (
+        {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag",
+         "surface_energy_diag"}), (
         # tke_budget joined on the LES lane with its own inertness proof
         # (tests/test_tke_budget.py); hmix_k_diag joined with its own
         # (tests/test_sase_gpu.py, both producers, every prognostic
-        # byte-identical); the closed world stays closed.
+        # byte-identical); surface_energy_diag joined at ae393b7c3 with
+        # its own (tests/test_urban_history_energy.py: it publishes the
+        # physics driver's existing albedo, emissivity and GSW arrays to
+        # history and leaves the configuration digest unchanged); the
+        # closed world stays closed.
         "the output-selector exemption gained a member -- every member "
         "must be provably absent from the model")
     # Functional: the stored/live mismatch is a hard restart failure.

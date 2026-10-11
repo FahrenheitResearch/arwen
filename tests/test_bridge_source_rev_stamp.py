@@ -309,6 +309,7 @@ _STAMP_SOURCES = {
     "grib2_dump": "src/bin/grib2_dump.rs",
     "gpuwm_preprocess_cpu": "src/lib.rs",
     "rw_fetch": "crates/rw-fetch/src/main.rs",
+    "rw_globe_pack": "crates/rw-globe-pack/src/main.rs",
     "rw_wrfbatch": "crates/rw-wrfbatch/src/main.rs",
     "rw_compare": "crates/rw-wrfbatch/src/bin/compare.rs",
     # The ensemble reducer the AQ line bundled: same crate, same build.rs
@@ -338,6 +339,11 @@ _STAMP_SOURCES = {
     # The nowcast frames converter: a bin of rw-wrfbatch, stamped by that
     # crate's build.rs with rw_compare and rw_verify.
     "rw_nowcast_frames": "crates/rw-wrfbatch/src/bin/nowcast_frames.rs",
+    # The observation scorecard and the scoreboard scorer, bundled by the
+    # scoreboard lane: rw_scorecard is a bin of rw-wrfbatch (that crate's
+    # build.rs stamps it); rw_scoreboard is its own crate with its own build.rs.
+    "rw_scorecard": "crates/rw-wrfbatch/src/bin/scorecard.rs",
+    "rw_scoreboard": "crates/rw-scoreboard/src/main.rs",
     # The GDT-101 remapper, added to BUNDLED_ARTIFACTS by the icon-global
     # lane.  It lives in the bridge crate, so `tools/grib1_bridge/build.rs`
     # stamps it with its five siblings, and its `main` black_boxes the
@@ -387,7 +393,8 @@ _STAMP_BUILDS = {
                                     "crates/obs-regrid/build.rs",
                                     "crates/obs-score/build.rs",
                                     "crates/rw-isobaric/build.rs",
-                                    "crates/rw-superob/build.rs"),
+                                    "crates/rw-superob/build.rs",
+                                    "crates/rw-scoreboard/build.rs"),
     # The engine workspace carries one gpuwm-authored crate beside the
     # donor snapshot (tools/rw_wps/VENDOR.md); the snapshot's own crate
     # ships nothing, so it is stamped by nothing.

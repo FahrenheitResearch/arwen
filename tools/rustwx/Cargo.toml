@@ -38,13 +38,16 @@ members = [
     "crates/rw-odim",
     "crates/rw-post",
     "crates/rw-obs",
+    "crates/rw-scoreboard",
     "crates/rw-post",
     "crates/rw-sat",
     "crates/rw-simradar",
     "crates/rw-goes",
+    "crates/rw-globe-pack",
     "crates/rw-grib2export",
     "crates/rw-store",
     "crates/rw-superob",
+    "crates/rw-tempo",
     "crates/rw-wrfbatch",
     "crates/static-fields",
 ]
@@ -76,7 +79,12 @@ resolver = "2"
 edition = "2024"
 license = "MIT"
 publish = false
-rust-version = "1.85"
+# 1.94, not the 1.85 edition 2024 alone needs: crates/rw-simradar and the
+# vendored radar volume writers under vendor/ declare 1.94, so cargo
+# refuses this workspace below it anyway.  Stating it here makes the
+# declaration match what the workspace builds on; install.sh and install.ps1
+# read this field to pick the toolchain before they build.
+rust-version = "1.94"
 
 [workspace.dependencies]
 rayon = "1"

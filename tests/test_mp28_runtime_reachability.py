@@ -138,7 +138,13 @@ STALE_REFL_ADMISSION = frozenset({1, 6, 8, 10, 18})
 #: (nr1d, :2957) -- that is a producer-side difference (the port gives it its
 #: own kernel, gpuwm/core/kernels/wdm6_refl.cu) and changes nothing about
 #: admission.
-REFL_ADMISSION = frozenset({1, 6, 8, 9, 10, 16, 18, 28, 50})
+#:
+#: The named schemes (gpuwm.microphysics_schemes, TEMPO = 900 with the RRFS v2
+#: intake) join every admission gate through NAMED_MP_IDS: each computes its
+#: own 10 cm reflectivity (``native_reflectivity``), so the carrier is due on
+#: the same cadence.
+from gpuwm.microphysics_schemes import NAMED_MP_IDS  # noqa: E402
+REFL_ADMISSION = frozenset({1, 6, 8, 9, 10, 16, 18, 28, 50} | set(NAMED_MP_IDS))
 
 #: The deliberate exceptions -- NONE remain.  This ledger is the census of
 #: sites that are stale ON PURPOSE, so it is the last place that may itself
@@ -361,12 +367,18 @@ def test_no_new_scheme_keyed_dict_omits_28():
     from gpuwm.core import microphysics_transition as mt
 
     # One row per refused selector, and EVERY refused selector has one.
-    # Both tables are EMPTY: 50, then 16 and 28, left them as each entry
-    # closure was ratified into PORTED_MP_PHYSICS -- the retired refusals
-    # died with their defect, per the guard-retirement law.
+    # 50, then 16 and 28, left these tables as each entry closure was
+    # ratified into PORTED_MP_PHYSICS -- the retired refusals died with their
+    # defect, per the guard-retirement law.  What remains is FAST_SBM (30),
+    # whose mixed edge would have to build 142 spectral distributions from
+    # another scheme's bulk moments with no validated closure, and the named
+    # schemes (TEMPO, 900): same-scheme nests run, and a mixed edge is
+    # refused by name because no cross-scheme closure for their moments
+    # (graupel number and volume) has been written or measured.
     assert (set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS)
             == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS)
-            == set(mt._UNVALIDATED_MIXED_EDGE_REASONS) == set())
+            == set(mt._UNVALIDATED_MIXED_EDGE_REASONS)
+            == {30} | set(NAMED_MP_IDS))
     # WDM6 is double-moment in cloud AND rain and carries a CCN reservoir:
     # ncr(:,:,1)=nn, ncr(:,:,2)=nc, ncr(:,:,3)=nr (module_mp_wdm6.F:238-240),
     # all three prognostic scalars in the WRF Registry.  It has no ni/ns/ng.
@@ -448,9 +460,15 @@ def test_the_hrrr_route_admission_is_derived_not_respelled():
     # 16 and 28 were APPENDED next, with their own entry closures, so the
     # ported set is the stale admission plus 50, 9, 16 and 28.
     assert set(mt.PORTED_MP_PHYSICS) == STALE_REFL_ADMISSION | {50, 9, 16, 28}
-    assert not mt.UNVALIDATED_MIXED_EDGE_SELECTORS, (
-        "a selector is refused for a missing closure again; every mixed "
-        "edge in this release runs with its mapping named")
+    # FAST_SBM (30) is refused for a genuine missing closure (no
+    # bulk-to-spectrum entry closure is validated for a mixed edge), and the
+    # named schemes are refused by name; both are therefore outside
+    # PORTED_MP_PHYSICS and this route's admission.  Any other refused
+    # selector is a regression.
+    assert set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {30} | set(NAMED_MP_IDS), (
+        "a selector other than FAST_SBM or a named scheme is refused for a "
+        "missing closure again; every other mixed edge in this release runs "
+        "with its mapping named")
 
 
 def _unpreparable_mp28_config(tmp_path, monkeypatch):
@@ -582,12 +600,14 @@ def test_the_run_plan_door_refuses_before_it_fetches(tmp_path, monkeypatch,
               if line.strip()]
     assert not [event for event in events
                 if event.get("stage") == "fetch"], events
-    # Nothing under the run root but the front door's own two records:
-    # the event stream and the manifest that names it.  No fetch
-    # directory, no prepared root, no forecast output.
+    # Nothing under the run root but the front door's own records: the
+    # event stream, the manifest that names it, and the time ledger the
+    # run observer keeps beside the events.  No fetch directory, no
+    # prepared root, no forecast output.
     assert sorted(path.name for path in run_root.rglob("*")
                   if path.is_file()) == sorted(
-                      [runplan.EVENTS_FILENAME, runplan.MANIFEST_FILENAME]), (
+                      [runplan.EVENTS_FILENAME, runplan.MANIFEST_FILENAME,
+                       "timeline.jsonl"]), (
                           sorted(str(path) for path in run_root.rglob("*")))
     failed = [event for event in events if event.get("event") == "failed"]
     assert len(failed) == 1, events
@@ -825,7 +845,11 @@ def test_every_refl_10cm_admission_constant_admits_28():
     producer = frozenset(REFL_10CM_INPUT_SPECIES)
     assert producer == frozenset({1, 6, 8, 10, 16, 28})
     assert "cfg.mp_physics not in REFL_10CM_INPUT_SPECIES" in refl_source
-    assert REFL_ADMISSION - producer == {9, 18, 50}
+    # The named schemes stash their own native reflectivity (TEMPO's,
+    # ``native_reflectivity``), so they sit on 18's side as well.
+    from gpuwm.microphysics_schemes import SCHEMES_BY_ID
+    assert REFL_ADMISSION - producer == {9, 18, 50} | {
+        mp for mp, scheme in SCHEMES_BY_ID.items() if scheme.native_reflectivity}
     assert "elif cfg.mp_physics in (8, 28):" in refl_source, (
         "mp=28 no longer shares mp=8's calc_refl10cm branch; WRF has ONE "
         "such routine with no aerosol-aware arm (module_mp_thompson.F:"
@@ -902,7 +926,9 @@ def test_the_runtime_refl_gates_are_reached_through_the_named_constant():
                        and len(node.ops) == 1
                        and isinstance(node.ops[0], ast.In)
                        for node in comparisons), function.name
-    assert gates == {"write_case_output": 3, "integrate_prepared_case": 1,
+    # write_case_output's fourth gate (01402fcb1): the analysis frame
+    # writes WRF's initial all-zero REFL_10CM for a scheme that stashes one.
+    assert gates == {"write_case_output": 4, "integrate_prepared_case": 1,
                      "_submit_tree_history_frame": 1}
 
 
@@ -931,7 +957,14 @@ def test_the_prepared_runner_consumes_the_mp28_refl_handoff():
             qv=np.zeros(1),
             physics=SimpleNamespace(mp_physics=mp_physics))
         assert _consume_due_native_refl_10cm(state, 1, consumer) is sentinel
-        assert _consume_due_native_refl_10cm(state, 0, consumer) is None
+        # Tick 0 takes no stash.  Since 01402fcb1 it writes WRF's initial
+        # array instead (refl.analysis_refl_10cm, all zero), so the
+        # analysis frame carries the field a stock WRF frame 0 carries.
+        analysis = _consume_due_native_refl_10cm(state, 0, consumer,
+                                                 shape=(1, 1, 1))
+        assert analysis is not sentinel
+        assert np.asarray(analysis).shape == (1, 1, 1)
+        assert not np.asarray(analysis).any()
     assert len(calls) == len(REFL_ADMISSION)
 
     # A scheme with no native field must still take nothing.
@@ -971,14 +1004,20 @@ def test_the_runtime_tree_history_frame_consumes_the_mp28_refl_handoff():
         consume_refl_10cm = staticmethod(lambda state: field)
         refl_10cm_stash_is_due = staticmethod(refl.refl_10cm_stash_is_due)
         domain_start_ticks_of = staticmethod(refl.domain_start_ticks_of)
+        # The analysis-frame writer (01402fcb1) is the real one too.
+        analysis_refl_10cm = staticmethod(refl.analysis_refl_10cm)
 
     class _UhDiag:
         @staticmethod
         def reset_up_heli_max(state):
             return None
 
-    node = SimpleNamespace(state=SimpleNamespace(
-        qv=np.zeros(1), physics=SimpleNamespace(mp_physics=28)))
+    node = SimpleNamespace(
+        state=SimpleNamespace(qv=np.zeros(1),
+                              physics=SimpleNamespace(mp_physics=28)),
+        # The analysis frame sizes WRF's initial array off the domain's
+        # own run (01402fcb1).
+        cfg=SimpleNamespace(run=SimpleNamespace(nz=2, ny=3, nx=4)))
 
     monkey = pytest.MonkeyPatch()
     try:
@@ -986,12 +1025,15 @@ def test_the_runtime_tree_history_frame_consumes_the_mp28_refl_handoff():
         monkey.setitem(sys.modules, "gpuwm.core.uh_diag", _UhDiag)
         runtime._submit_tree_history_frame(_Writers, node, ticks=6)
         # tick 0 is not a period boundary: nothing was stashed, so nothing
-        # may be consumed.
+        # is consumed; the domain's analysis frame writes WRF's initial
+        # all-zero array instead (01402fcb1).
         runtime._submit_tree_history_frame(_Writers, node, ticks=0)
     finally:
         monkey.undo()
 
-    assert submitted == [(6, field), (0, None)], submitted
+    assert [ticks for ticks, _ in submitted] == [6, 0], submitted
+    assert submitted[0][1] is field
+    assert submitted[1][1] is not field and not np.asarray(submitted[1][1]).any()
 
 
 def test_the_missing_28_refl_admission_was_a_crash_not_a_missing_field():
@@ -1134,8 +1176,17 @@ def test_the_restart_identity_names_the_scheme_and_its_provenance():
     # identity is its own string rather than a re-use, and every
     # pre-existing row is byte-unchanged -- the same two properties 16 and
     # 50 are held to below.
+    #
+    # RE-DERIVED with the RRFS v2 intake: the named schemes (TEMPO, 900)
+    # carry their own identity rows.  RE-DERIVED for 2.8.9: 30 (FAST_SBM)
+    # registered its own identity with the port, held to the same two
+    # properties below.  The WRF-numbered rows are otherwise unchanged.
     assert set(restart.MICROPHYSICS_ALGORITHM_IDENTITIES) == {
-        0, 1, 6, 8, 9, 10, 16, 18, 28, 50}
+        0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50} | set(NAMED_MP_IDS)
+    fsbm_identity = restart.MICROPHYSICS_ALGORITHM_IDENTITIES[30]
+    assert fsbm_identity not in {
+        value for key, value in restart.MICROPHYSICS_ALGORITHM_IDENTITIES.items()
+        if key != 30}
     milbrandt_identity = restart.MICROPHYSICS_ALGORITHM_IDENTITIES[9]
     assert milbrandt_identity.startswith("milbrandt-yau-wrf-v4.6.1-")
     assert milbrandt_identity not in {

@@ -10,13 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import json
-import os
 from pathlib import Path
 
 import numpy as np
 
 from gpuwm.core.chem_context import ChemAllocation
 from gpuwm.core.chem_plumerise_cache import PlumeParameters, plume_call_due, distribute_cached
+from gpuwm.local_gpu import no_local_gpu
 
 KEY = 'plumerise.freitas'
 LEDGER = 'emitted'
@@ -53,7 +53,7 @@ def fire_group_properties():
 
 
 def _device():
-    if os.environ.get('GPUWM_NO_LOCAL_GPU','') not in ('','0'):
+    if no_local_gpu():
         raise RuntimeError('GPUWM_NO_LOCAL_GPU forbids plume launch; launching would use the protected local device')
     import cupy
     return cupy

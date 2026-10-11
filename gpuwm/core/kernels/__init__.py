@@ -38,6 +38,9 @@ _ENCODING = "utf-8"
 # This table must stay a literal name -> filenames mapping.  Do not give it
 # filesystem probing, globbing, or any implicit fallback.
 _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
+    "thompson_column": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                        "thompson_aerosol_libm.cuh", "thompson_column_support.cuh", "thompson_column_radar.cuh",
+                        "thompson_column_generated.cuh"),
     "acoustic": ("glibc_trig_flt32.cuh",),
     "upper_wind_limiter": ("glibc_flt32.cuh",),
     # Reuse the scalar high-order helpers without moving the order-3 unit.
@@ -115,6 +118,9 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # New Tiedtke: scale_fac reads log(dxref/dx), and glibc's logf is not
     # CUDA's.  Prep stage only so far; cumastrn will add exp and pow.
     "ntiedtke": ("glibc_flt32.cuh",),
+    # Original cu6 uses WOOF's own scalar math routines.
+    "tiedtke": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh",
+                "tiedtke_support.cuh", "tiedtke_routines.cuh"),
     # The single-layer urban canopy model (sf_urban_physics=1): EXP, ALOG
     # and every REAL**REAL in module_sf_urban.F are glibc calls in its WRF
     # v4.7.1 column oracle, graded bitwise.
@@ -227,7 +233,7 @@ _NO_FMAD_MODULES = frozenset({"lake", "ysu", "shinhong", "mynn_pbl",
                               "mynn_dmp_sibling"})
 
 
-_NO_FTZ_MODULES = frozenset({"sfclay", "myjsfc", "mynn_surface", "mynn_pbl"})
+_NO_FTZ_MODULES = frozenset({"sfclay", "myjsfc", "mynn_surface", "mynn_pbl", "thompson_column"})
 
 
 def module_options(name: str) -> tuple[str, ...]:
@@ -277,7 +283,7 @@ def function_options(name: str, function: str, options) -> tuple[str, ...]:
 def compile_diffusion_source(source: str, key: str, options):
     """Load and record an IEEE diffusion image, including batch witnesses."""
     import cupy as cp
-    from cupy.cuda import compiler
+    from gpuwm import nvrtc_ptx_cache as compiler
     from gpuwm.kernel_compile_notice import observe_module_compile
     from gpuwm.certify.kernel_manifest import record_module
     from types import SimpleNamespace
@@ -394,6 +400,14 @@ def load_module(name: str):
                 and len(NOAHMP_TRANSLATION_UNITS[name]) == 1
                 and name != "noahmp_vegeflux"):
             return compile_runtime_unit(name, module_key=f"{MODULE_KEY_ROOT}:{name}")
+    if name == "fast_sbm":
+        # FAST_SBM compiles through its own direct NVRTC loader (its own
+        # options and include path), the one the forecast launches and
+        # the G2 frame recording was read from; the plain route below
+        # cannot build it, so a census through this function measured
+        # nothing for the module the preflight table prices.
+        from gpuwm.core.fast_sbm_cuda import module as _fast_sbm_module
+        return _fast_sbm_module(cp.cuda.Device().id)
     src = module_source(name)
     if name in _NO_FTZ_MODULES:
         return compile_noftz_module(name, src, f"{MODULE_KEY_ROOT}:{name}")
@@ -495,6 +509,10 @@ def module_source_int_defines(
     """
     if prefix is None:
         prefix = "\n".join(f"#define {key} {value}" for key, value in defines)
+    if name == "thompson_column":
+        # This tier sizes the generated header's arrays as well as the unit.
+        return (_preamble(kernel_dir) + prefix + "\n" + _extra_header_text(name,kernel_dir)
+                + _unit_text(name,kernel_dir))
     return (_preamble(kernel_dir) + _extra_header_text(name, kernel_dir)
             + prefix + "\n"
             + _unit_text(name, kernel_dir))

@@ -55,6 +55,11 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import contextlib
+import functools
+import json
+import math
+import os
+from pathlib import Path
 from dataclasses import dataclass
 import threading
 import time
@@ -63,11 +68,65 @@ from urllib.parse import urlsplit
 
 from gpuwm import fetch_endpoints
 
+
+@functools.lru_cache(maxsize=1)
+def _width_table():
+    table = json.loads(Path(__file__).with_name("fetch-width-rows.json").read_text(encoding="utf-8"))
+    if table.get("schema") != "gpuwm-fetch-width-rows-v1":
+        raise ValueError("fetch width table has an unknown schema; an unbounded transfer pool would exhaust connections")
+    ids = set()
+    for row in table["rows"]:
+        if row["id"] in ids or any(type(row[key]) is not int or row[key] < 1
+                                   for key in ("workers", "stream_budget")):
+            raise ValueError("fetch width table has duplicate ids or nonpositive budgets; the transfer pool cannot be scheduled")
+        ids.add(row["id"])
+    if table["default"] not in ids:
+        raise ValueError("fetch width table has no default row; the transfer pool cannot be scheduled")
+    return table
+
+
+def worker_profile() -> dict:
+    """Select a packaged row using optional deployment/network hints.
+
+    GPUWM_FETCH_ROW pins a row. GPUWM_FETCH_PROVIDER and GPUWM_FETCH_BOX
+    match rows, and GPUWM_FETCH_BANDWIDTH_MBPS is megabytes per second.
+    No metadata request or provider-specific adapter is involved.
+    """
+    table = _width_table()
+    pin = os.environ.get("GPUWM_FETCH_ROW")
+    if pin:
+        matches = [row for row in table["rows"] if row["id"] == pin]
+        if not matches:
+            raise ValueError(f"GPUWM_FETCH_ROW {pin!r} is not in fetch-width-rows.json; the requested transfer budget is unknown")
+        return dict(matches[0])
+    provider = os.environ.get("GPUWM_FETCH_PROVIDER", "").lower()
+    box = os.environ.get("GPUWM_FETCH_BOX", "").lower()
+    raw = os.environ.get("GPUWM_FETCH_BANDWIDTH_MBPS")
+    bandwidth = None if raw is None else float(raw)
+    if bandwidth is not None and (not math.isfinite(bandwidth) or bandwidth < 0):
+        raise ValueError("GPUWM_FETCH_BANDWIDTH_MBPS must be finite and nonnegative; an invalid link budget cannot size transfers")
+    matches = []
+    for row in table["rows"]:
+        if row["provider"] not in ("*", provider) or row["box"] not in ("*", box):
+            continue
+        bounded = "bandwidth_min_mbps" in row
+        if bounded and (bandwidth is None or bandwidth < row["bandwidth_min_mbps"]
+                        or (row.get("bandwidth_max_mbps") is not None
+                            and bandwidth >= row["bandwidth_max_mbps"])):
+            continue
+        # A measured link hint wins over an unmeasured provider fallback.
+        score = (int(row["box"] != "*"), int(bounded), int(row["provider"] != "*"))
+        matches.append((score, row))
+    row = max(matches, key=lambda item: item[0])[1] if matches else next(
+        row for row in table["rows"] if row["id"] == table["default"])
+    return dict(row)
+
 #: The engine default: how many file transfers are in flight at once.
 #: Chosen against the measured fetch shape -- per-file service latency
 #: dominates, so a handful of overlapped requests recovers most of the
 #: idle pipe without presenting as a burst to any provider.
-DEFAULT_FILE_WORKERS = 6
+DEFAULT_FILE_WORKERS = next(row["workers"] for row in _width_table()["rows"]
+                            if row["id"] == _width_table()["default"])
 
 #: Hosts with a politeness cap tighter than the pool size, and the cap
 #: each one gets.  TABLE DATA, read from ``host_policy`` in the packaged
@@ -87,6 +146,23 @@ NOMADS_FILE_WORKER_CAP = HOST_FILE_WORKER_CAPS["nomads.ncep.noaa.gov"]
 #: Schema of the receipt :func:`run_transfers` returns.
 POOL_RECEIPT_SCHEMA = "gpuwm-fetch-pool-receipt-v1"
 
+_COMPLETION_LOCAL = threading.local()
+
+
+@contextlib.contextmanager
+def completion_hook(callback):
+    """Caller-scoped handoff hook, including routes with an ordered callback.
+
+    This observes verified completions without changing their ordered
+    admission contract. Nested calls restore their caller's hook.
+    """
+    prior = getattr(_COMPLETION_LOCAL, "callback", None)
+    _COMPLETION_LOCAL.callback = callback
+    try:
+        yield
+    finally:
+        _COMPLETION_LOCAL.callback = prior
+
 #: Chunk streams one fetch keeps open at once, across all of its files.
 #:
 #: A file the Rust backbone moves is itself split into 16 MiB chunks
@@ -101,7 +177,8 @@ POOL_RECEIPT_SCHEMA = "gpuwm-fetch-pool-receipt-v1"
 #: stream carries about 1 MB/s, and six HRRR files in flight moved at
 #: 6 MB/s on 6 streams, 12 MB/s on 12 and 24, and the link's 24 to 34 MB/s
 #: from 36 streams up to 144; 48 fills that link with room to spare.
-FETCH_STREAM_BUDGET = 48
+FETCH_STREAM_BUDGET = next(row["stream_budget"] for row in _width_table()["rows"]
+                            if row["id"] == _width_table()["default"])
 
 
 def chunk_streams_per_file(workers: int | None, *, files: int,
@@ -118,7 +195,7 @@ def chunk_streams_per_file(workers: int | None, *, files: int,
     in_flight = min(pool, max(1, files))
     if host:
         in_flight = min(in_flight, host_worker_cap(host, pool))
-    return max(1, FETCH_STREAM_BUDGET // max(1, in_flight))
+    return max(1, worker_profile()["stream_budget"] // max(1, in_flight))
 
 
 @dataclass(frozen=True)
@@ -186,7 +263,7 @@ def resolve_file_workers(requested: int | None) -> int:
     """
 
     if requested is None:
-        return DEFAULT_FILE_WORKERS
+        return worker_profile()["workers"]
     workers = int(requested)
     if workers < 1:
         raise ValueError(
@@ -346,7 +423,7 @@ class TransferContext:
     give up at its next chunk, once another file has failed the request.
     """
 
-    __slots__ = ("name", "_stop", "_shared")
+    __slots__ = ("name", "_stop", "_shared", "byte_relay")
 
     def __init__(self, name: str, stop: _Stop, *, shared: bool = True) -> None:
         self.name = name
@@ -355,6 +432,7 @@ class TransferContext:
         #: so another file's failure can stop it.  False on the serial
         #: transport, where a failure ends the request by raising.
         self._shared = shared
+        self.byte_relay = None
 
     @property
     def stopped(self) -> bool:
@@ -478,6 +556,8 @@ def _receipt(*, entries: list[dict], workers_requested: int,
         "bytes": total_bytes,
         "workers_requested": workers_requested,
         "workers_effective": workers_effective,
+        "worker_row": worker_profile()["id"],
+        "stream_budget": worker_profile()["stream_budget"],
         "host_caps": dict(host_caps),
         "wall_seconds": round(wall_seconds, 6),
         "modeled_serial_seconds": round(serial_seconds, 6),
@@ -501,6 +581,8 @@ def _watch(monitor, job: TransferJob, stop: _Stop, index: int,
 
     def watched() -> dict:
         context = TransferContext(job.name, stop, shared=shared)
+        context.byte_relay = (None if monitor is None else
+                              lambda: monitor.relay(job.name))
         # Stopped while this job waited for a worker or a host slot: it
         # never started, so it is not announced either.
         context.raise_if_stopped()
@@ -570,6 +652,7 @@ def _raise_first_failure(futures, origin: int | None) -> None:
 
 def run_transfers(jobs, *, workers: int,
                   on_admitted: Callable[[int, dict], None] | None = None,
+                  on_completed: Callable[[int, dict], None] | None = None,
                   monitor=None) -> tuple[list[dict], dict]:
     """Run every job; return ``(entries, receipt)`` in submission order.
 
@@ -577,6 +660,10 @@ def run_transfers(jobs, *, workers: int,
     submission order, as each verified file joins the contiguous
     admitted prefix -- publish receipts there exactly as the serial
     loop did after each file.
+
+    ``on_completed`` fires on the caller's thread as verified jobs finish,
+    before ordered admission. It may bind supplements while earlier files
+    still land; it must not publish a complete forecast or an ordered prefix.
 
     ``monitor`` is a :class:`gpuwm.progress.TransferMonitor` that hears
     the whole request up front and then the start and the end of every
@@ -617,6 +704,13 @@ def run_transfers(jobs, *, workers: int,
         monitor.begin(files=[(job.name, job.expected_bytes)
                              for job in jobs])
     started = time.perf_counter()
+    completion = getattr(_COMPLETION_LOCAL, "callback", None)
+
+    def completed(index, entry):
+        if completion is not None:
+            completion(index, entry)
+        if on_completed is not None:
+            on_completed(index, entry)
 
     def admit(index: int, entry: dict) -> None:
         entries.append(entry)
@@ -637,6 +731,7 @@ def run_transfers(jobs, *, workers: int,
                                     queued=len(jobs) - index - 1)
                 raise
             serial_seconds += time.perf_counter() - job_started
+            completed(index, entry)
             admit(index, entry)
         return entries, _receipt(
             entries=entries, workers_requested=workers,
@@ -721,6 +816,10 @@ def run_transfers(jobs, *, workers: int,
         pending = set(futures)
         while pending and not stop.fired:
             _finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            if on_completed is not None or completion is not None:
+                for future in _finished:
+                    if not future.cancelled() and _failure(future) is None:
+                        completed(futures.index(future), future.result())
             admit_prefix()
         if stop.fired:
             # The failing worker fired the stop before its own future

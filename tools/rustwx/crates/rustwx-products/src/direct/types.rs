@@ -43,6 +43,9 @@ fn default_native_fill_level_multiplier() -> usize {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectBatchRequest {
+    /// Physical accumulation interval of supplied local snowfall planes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accumulation_window: Option<AccumulationWindow>,
     pub model: ModelId,
     pub date_yyyymmdd: String,
     pub cycle_override_utc: Option<u8>,
@@ -87,6 +90,13 @@ pub struct DirectBatchRequest {
     /// Caller-supplied title/subtitle overrides, applied last.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panel_annotations: Option<crate::geographic_overlays::PanelAnnotations>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AccumulationWindow {
+    pub start_unix: i64,
+    pub end_unix: i64,
+    pub since_initialization: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

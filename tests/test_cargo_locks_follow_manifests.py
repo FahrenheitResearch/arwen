@@ -28,6 +28,9 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 WORKSPACES = (
+    # The ALBSOL measurement scorer's workspace, with its own retained
+    # lock since 5da356400 (2.8.6).
+    "tools/albsol_score",
     "tools/arwen-launchpad",
     "tools/arwen-tui",
     "tools/grib1_bridge",

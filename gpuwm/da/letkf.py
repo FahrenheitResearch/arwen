@@ -193,6 +193,7 @@ import numpy as np
 
 __all__ = [
     "LetkfError",
+    "LetkfPriorSpreadError",
     "RELAXATION_MODES",
     "EIGENSOLVER_MODES",
     "Localization",
@@ -208,8 +209,27 @@ __all__ = [
 ]
 
 
+def _prior_anomalies_and_spread(values, xp):
+    """The represented prior spread, shared with local field selection.
+
+    Preserve the original dtype, operations and reduction order.
+    """
+    mean = values.mean(axis=0, keepdims=True)
+    anomalies = values - mean
+    return anomalies, xp.sqrt((anomalies ** 2).sum(axis=0) / (values.shape[0] - 1))
+
+
+def _prior_spread_is_usable(widest, scale):
+    """The filter's existing relative support criterion."""
+    return widest > 1e-12 * scale
+
+
 class LetkfError(ValueError):
     """Any refusal by this module.  Never raised for a merely hard problem."""
+
+
+class LetkfPriorSpreadError(LetkfError):
+    """This spatial prior has no usable covariance in an analysed field."""
 
 
 class LetkfCapacityError(LetkfError):
@@ -2150,9 +2170,7 @@ def analyze(
     # operation is the one a field-at-a-time loop performs, so the bytes are
     # the same; only whole fields run concurrently (letkf_host_parallel).
     def _perturbations(f):
-        m = pri[f].mean(axis=0, keepdims=True)
-        x = pri[f] - m
-        return x, xp.sqrt((x ** 2).sum(axis=0) / (members - 1))
+        return _prior_anomalies_and_spread(pri[f], xp)
 
     xb, sigma_b = {}, {}
     for f, (x, s) in zip(fields, _host_field_map(xp, _perturbations, fields)):
@@ -2170,8 +2188,8 @@ def analyze(
         # ensemble arrives here with a spread around 1e-16 and sails
         # straight through an exact test.  The accurate question is whether
         # the spread is negligible against the field's own magnitude.
-        if widest <= 1e-12 * scale:
-            raise LetkfError(
+        if not _prior_spread_is_usable(widest, scale):
+            raise LetkfPriorSpreadError(
                 f"prior field {f!r} has no usable ensemble spread anywhere"
                 f" (largest pointwise spread {widest!r} against a field"
                 f" magnitude of {scale!r}): the members are identical to"

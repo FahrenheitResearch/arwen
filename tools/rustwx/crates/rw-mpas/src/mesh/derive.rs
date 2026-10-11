@@ -15,6 +15,8 @@
 //! the canonical numbering is a pure function of the cell centres and removes
 //! that entirely.
 
+use rayon::prelude::*;
+
 use crate::error::{MpasError, MpasResult};
 use crate::mesh::geom::{
     self, V3, add, arc, circumcenter, cross, dot, east_north, polygon_area, sub, tangent_at,
@@ -385,12 +387,18 @@ impl MpasMesh {
         let mut n_edges_on_edge = vec![0i32; n_edges];
         let mut edges_on_edge = vec![-1i32; n_edges * max_edges2];
         let mut weights_on_edge = vec![0.0f64; n_edges * max_edges2];
-        for e in 0..n_edges {
+        // Each edge owns one output row. Keep both cell walks and their sums
+        // in their original order while independent edges run concurrently.
+        n_edges_on_edge.par_iter_mut()
+            .zip(edges_on_edge.par_chunks_mut(max_edges2))
+            .zip(weights_on_edge.par_chunks_mut(max_edges2))
+            .enumerate()
+            .for_each(|(e, ((count, neighbours), weights))| {
             let c0 = cells_on_edge[e * 2] as usize;
             let c1 = cells_on_edge[e * 2 + 1] as usize;
             let n0 = rings.degree(c0);
             let n1 = rings.degree(c1);
-            n_edges_on_edge[e] = (n0 + n1) as i32 - 2;
+            *count = (n0 + n1) as i32 - 2;
             let mut slot = 0usize;
             for &c in &[c0, c1] {
                 let n = rings.degree(c);
@@ -423,13 +431,13 @@ impl MpasMesh {
                     run += kite_areas_on_vertex[vr * 3 + kslot];
                     let w =
                         -sign_e * sign_c(er) * (run / area_cell[c] - 0.5) * dv_edge[er] / dc_edge[e];
-                    edges_on_edge[e * max_edges2 + slot] = er as i32;
-                    weights_on_edge[e * max_edges2 + slot] = w;
+                    neighbours[slot] = er as i32;
+                    weights[slot] = w;
                     slot += 1;
                 }
             }
-            debug_assert_eq!(slot, n_edges_on_edge[e] as usize);
-        }
+            debug_assert_eq!(slot, *count as usize);
+        });
 
         Ok(MpasMesh {
             n_cells,

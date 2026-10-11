@@ -1115,15 +1115,182 @@ pub struct CullReceipt {
     pub output_sha256: String,
     pub graph_file: Option<String>,
     pub graph_sha256: Option<String>,
+    /// The upstream build identity, retained here rather than falsely stamped
+    /// as the identity of the final regional grid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_static_provenance: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance_grid_sha256: Option<String>,
+}
+
+/// The outermost-ring value a culled file stores in `bdyMaskCell`.
+const PARENT_OUTERMOST_RING: i32 = NUM_BOUNDARY_LAYERS - 1;
+
+/// Make a culled parent walkable, or return `None` for a whole-sphere one.
+///
+/// WHY A CULLED PARENT IS ADMITTED AT ALL. A limited-area mesh is cut from a
+/// global parent, and so are its static and its vertical grid. Computing the
+/// static or the vertical grid over the whole parent costs minutes of global
+/// geography; computing them over a WIDER cut of the parent and then cutting
+/// that down to the region costs seconds, and gives the same bytes on every
+/// cell the region keeps when the wider cut leaves the region far enough
+/// inside it. The second cut is a cull of a culled file, which this function
+/// makes possible.
+///
+/// WHAT MAKES THE RESULT THE SAME AS CULLING THE WHOLE SPHERE. Marking reads
+/// the neighbour rows of the cells it marks; every other step copies or
+/// renumbers the rows of marked cells and of their edges and vertices. If no
+/// marked cell lies on the parent's outermost ring, every row read has all of
+/// its neighbours in this file, and a neighbour that is missing here is
+/// outside the region and its rings, which is exactly what it is on the whole
+/// sphere. [`refuse_cut_reaching_parent_rim`] holds that condition.
+///
+/// A culled file stores 0 where a neighbour was cut away, and only on its
+/// outermost ring. This function refuses a 0 anywhere else (a torn file),
+/// then points each 0 back at a cell that exists: a cell row at the cell
+/// itself, an edge row at its other cell, a vertex row at one of its other
+/// cells. Only the marking walks read the closed arrays; every variable is
+/// still copied from the parent's own bytes.
+#[allow(clippy::too_many_arguments)]
+fn close_regional_parent(
+    parent: &RawNc,
+    n_cells: usize,
+    max_edges: usize,
+    vertex_degree: usize,
+    n_edges_on_cell: &[i32],
+    cells_on_cell: &mut [i32],
+    cells_on_edge: &mut [i32],
+    cells_on_vertex: &mut [i32],
+) -> MpasResult<Option<Vec<bool>>> {
+    if parent.var("bdyMaskCell").is_none() {
+        return Ok(None);
+    }
+    let mask = parent.read_i32("bdyMaskCell")?;
+    if mask.len() != n_cells {
+        return Err(MpasError::Refusal(format!(
+            "parent bdyMaskCell has {} values where nCells={n_cells}; the rings \
+             it declares cannot be matched to its cells",
+            mask.len()
+        )));
+    }
+    if mask.iter().all(|&m| m == 0) {
+        return Ok(None);
+    }
+    let rim: Vec<bool> = mask.iter().map(|&m| m == PARENT_OUTERMOST_RING).collect();
+    if cells_on_cell.len() != n_cells * max_edges {
+        return Err(MpasError::Refusal(format!(
+            "parent cellsOnCell has {} values where nCells x maxEdges is {}",
+            cells_on_cell.len(),
+            n_cells * max_edges
+        )));
+    }
+    for c in 0..n_cells {
+        let deg = n_edges_on_cell[c].clamp(0, max_edges as i32) as usize;
+        for s in 0..deg {
+            let slot = c * max_edges + s;
+            if cells_on_cell[slot] != 0 {
+                continue;
+            }
+            if !rim[c] {
+                return Err(MpasError::Refusal(format!(
+                    "this regional parent stores no neighbour in cellsOnCell[cell={c},slot={s}] \
+                     although bdyMaskCell there is {}, not its outermost ring {PARENT_OUTERMOST_RING}; \
+                     a culled file loses neighbours on that ring only, so this file is torn and \
+                     cutting it would mark cells by a graph that is not the mesh's",
+                    mask[c]
+                )));
+            }
+            cells_on_cell[slot] = c as i32 + 1;
+        }
+    }
+    for pair in cells_on_edge.chunks_mut(2) {
+        if pair.len() != 2 {
+            break;
+        }
+        match (pair[0], pair[1]) {
+            (0, 0) => {
+                return Err(MpasError::Refusal(
+                    "this regional parent has an edge with no cell on either side; \
+                     the file is torn"
+                        .to_string(),
+                ))
+            }
+            (0, other) => pair[0] = other,
+            (other, 0) => pair[1] = other,
+            _ => {}
+        }
+    }
+    for row in cells_on_vertex.chunks_mut(vertex_degree.max(1)) {
+        let present = row.iter().copied().find(|&v| v != 0).ok_or_else(|| {
+            MpasError::Refusal(
+                "this regional parent has a vertex with no cell around it; the file \
+                 is torn"
+                    .to_string(),
+            )
+        })?;
+        for v in row.iter_mut() {
+            if *v == 0 {
+                *v = present;
+            }
+        }
+    }
+    Ok(Some(rim))
+}
+
+/// Refuse a cut whose region or rings reach a culled parent's outermost ring.
+///
+/// THE BREAKAGE THIS PREVENTS. Beyond that ring the parent holds no cells, so
+/// a ring grown there would stop where the file stops instead of where the
+/// rings stop on the whole sphere, and the cut would differ from a cull of
+/// the whole sphere without anything saying so. A cut that stays inside is
+/// the same cut either way (see [`close_regional_parent`]).
+fn refuse_cut_reaching_parent_rim(
+    cell_mask: &[i32],
+    rim: &[bool],
+    lat: &[f64],
+    lon: &[f64],
+) -> MpasResult<()> {
+    let reached: Vec<usize> = (0..cell_mask.len())
+        .filter(|&c| cell_mask[c] != 0 && rim[c])
+        .collect();
+    if let Some(&c) = reached.first() {
+        return Err(MpasError::Refusal(format!(
+            "the region and its {} boundary rings reach this regional parent's own outermost \
+             ring at {} cell(s), the first at {:.4} N {:.4} E. The parent holds no cells beyond \
+             that ring, so the rings there would not be the rings a cull of the whole sphere \
+             grows. Cut the parent from a wider region, or narrow this one",
+            NUM_BOUNDARY_LAYERS - 1,
+            reached.len(),
+            lat[c].to_degrees(),
+            lon[c].to_degrees()
+        )));
+    }
+    Ok(())
 }
 
 /// Cull `parent` (grid or static, classic netCDF) to the region `shape`,
 /// writing the regional file and, when asked, the METIS `graph.info`.
+///
+/// The parent may itself be a cull, provided the region and its rings stay
+/// inside the parent's outermost ring; the result is then the same file a cull
+/// of the whole sphere writes (see [`close_regional_parent`]).
 pub fn cull_file(
     parent_path: &Path,
     shape: &Shape,
     out_path: &Path,
     graph_path: Option<&Path>,
+) -> MpasResult<CullReceipt> {
+    cull_file_with_provenance(parent_path, shape, out_path, graph_path, None)
+}
+
+/// Cull a static or vertical artifact with provenance bound to the final
+/// regional grid. The upstream build identity remains in the cull receipt.
+pub fn cull_file_with_provenance(
+    parent_path: &Path,
+    shape: &Shape,
+    out_path: &Path,
+    graph_path: Option<&Path>,
+    provenance_grid: Option<&Path>,
 ) -> MpasResult<CullReceipt> {
     let parent = RawNc::open(parent_path)?;
 
@@ -1151,9 +1318,25 @@ pub fn cull_file(
     let lat_cell = parent.read_coords("latCell")?;
     let lon_cell = parent.read_coords("lonCell")?;
     let n_edges_on_cell = parent.read_i32("nEdgesOnCell")?;
-    let cells_on_cell = parent.read_i32("cellsOnCell")?;
-    let cells_on_edge = parent.read_i32("cellsOnEdge")?;
-    let cells_on_vertex = parent.read_i32("cellsOnVertex")?;
+    let mut cells_on_cell = parent.read_i32("cellsOnCell")?;
+    let mut cells_on_edge = parent.read_i32("cellsOnEdge")?;
+    let mut cells_on_vertex = parent.read_i32("cellsOnVertex")?;
+
+    // A parent that is itself a cull carries its own outermost ring, whose
+    // connectivity holds the 0 sentinel where a neighbour was cut away.
+    // `close_regional_parent` points every such slot back at a cell that
+    // exists, so the walks below read only cells this file holds, and returns
+    // the parent's outermost ring so the cut can be refused if it reaches it.
+    let parent_rim = close_regional_parent(
+        &parent,
+        n_cells,
+        max_edges,
+        vertex_degree,
+        &n_edges_on_cell,
+        &mut cells_on_cell,
+        &mut cells_on_edge,
+        &mut cells_on_vertex,
+    )?;
 
     let topo = CellTopo {
         n_cells,
@@ -1166,6 +1349,9 @@ pub fn cull_file(
 
     let (loops, seed) = boundary_from_shape(shape)?;
     let (cell_mask, mark) = mark_region_cells(&topo, &loops, seed)?;
+    if let Some(rim) = &parent_rim {
+        refuse_cut_reaching_parent_rim(&cell_mask, rim, &lat_cell, &lon_cell)?;
+    }
 
     if cell_mask.iter().filter(|&&m| m != 0).count() == n_cells {
         return Err(MpasError::Refusal(format!(
@@ -1327,6 +1513,122 @@ pub fn cull_file(
         if parent_says.is_some() {
             gattrs.extend(rep.declaration_attributes(radius));
         }
+    }
+
+    let mut upstream_static_provenance = None;
+    let mut provenance_grid_sha256 = None;
+    if let Some(path) = provenance_grid {
+        let provenance = parent.gattrs.iter().find(|a| a.name == "rw_static_provenance_json")
+            .ok_or_else(|| MpasError::Refusal(
+                "--cull-provenance-grid requires a static or vertical artifact with rw_static_provenance_json; a grid has no static build to identify".to_string()
+            ))?;
+        let source = match attr_value(provenance)? {
+            NcAttrValue::Text(text) => serde_json::from_str::<serde_json::Value>(&text)
+                .map_err(|e| MpasError::Refusal(format!("static provenance is not JSON: {e}")))?,
+            _ => return Err(MpasError::Refusal("static provenance is not text".to_string())),
+        };
+        let target = RawNc::open(path)?;
+        validate_provenance_dimensions(&target, [cell_ids.len(), edge_ids.len(), vertex_ids.len()])?;
+        let radius_scale = stored_sphere_radius(&parent)? / stored_sphere_radius(&target)?;
+        for (name, ids) in [("Cell", &cell_ids), ("Edge", &edge_ids), ("Vertex", &vertex_ids)] {
+            for axis in ["lat", "lon", "x", "y", "z"] {
+                let field = format!("{axis}{name}");
+                let scale = if matches!(axis, "x" | "y" | "z") { radius_scale } else { 1.0 };
+                let before = parent.read_coords(&field)?;
+                let after = target.read_coords(&field)?;
+                let narrow = parent.var(&field).map(|v| v.nc_type == raw::NC_FLOAT).unwrap_or(false);
+                if ids.iter().enumerate().any(|(k, &i)| {
+                    if narrow { (before[i] as f32).to_bits() != ((after[k] * scale) as f32).to_bits() }
+                    else { before[i].to_bits() != (after[k] * scale).to_bits() }
+                }) {
+                    return Err(MpasError::Refusal(format!("provenance grid {field} differs from the regional cut; its hash would identify another mesh")));
+                }
+            }
+        }
+        for (field, family, power) in [
+            ("dcEdge", "Edge", 1), ("dvEdge", "Edge", 1),
+            ("areaCell", "Cell", 2), ("areaTriangle", "Vertex", 2),
+            ("kiteAreasOnVertex", "Vertex", 2), ("weightsOnEdge", "Edge", 0),
+            ("angleEdge", "Edge", 0), ("meshDensity", "Cell", 0),
+        ] {
+            let (ids, before_count) = match family {
+                "Cell" => (&cell_ids, n_cells), "Edge" => (&edge_ids, n_edges),
+                _ => (&vertex_ids, n_vertices),
+            };
+            let before = parent.read_coords(field)?;
+            let after = target.read_coords(field)?;
+            if before.len() % before_count != 0 || after.len() != ids.len() * (before.len() / before_count) {
+                return Err(MpasError::Refusal(format!("provenance grid {field} has a different shape")));
+            }
+            let width = before.len() / before_count;
+            let scale = match power { 1 => radius_scale, 2 => radius_scale * radius_scale, _ => 1.0 };
+            let narrow = parent.var(field).map(|v| v.nc_type == raw::NC_FLOAT).unwrap_or(false);
+            for (k, &id) in ids.iter().enumerate() {
+                for slot in 0..width {
+                    let original = before[id * width + slot];
+                    let final_grid = after[k * width + slot] * scale;
+                    let same = if narrow { (original as f32).to_bits() == (final_grid as f32).to_bits() }
+                        else { original.to_bits() == final_grid.to_bits() };
+                    if !same {
+                        return Err(MpasError::Refusal(format!("provenance grid {field} differs from the regional cut; its hash would identify another metric")));
+                    }
+                }
+            }
+        }
+        if parent.read_coords("nominalMinDc")?.first().map(|&v| (v as f32).to_bits())
+            != target.read_coords("nominalMinDc")?.first().map(|&v| ((v * radius_scale) as f32).to_bits()) {
+            return Err(MpasError::Refusal("provenance grid nominalMinDc identifies another nominal spacing".to_string()));
+        }
+
+        for (field, family, map) in [
+            ("indexToCellID", "Cell", Some(&cell_map)),
+            ("indexToEdgeID", "Edge", Some(&edge_map)),
+            ("indexToVertexID", "Vertex", Some(&vertex_map)),
+            ("nEdgesOnCell", "Cell", None), ("nEdgesOnEdge", "Edge", None),
+            ("cellsOnCell", "Cell", Some(&cell_map)),
+            ("edgesOnCell", "Cell", Some(&edge_map)),
+            ("verticesOnCell", "Cell", Some(&vertex_map)),
+            ("cellsOnEdge", "Edge", Some(&cell_map)),
+            ("verticesOnEdge", "Edge", Some(&vertex_map)),
+            ("edgesOnEdge", "Edge", Some(&edge_map)),
+            ("cellsOnVertex", "Vertex", Some(&cell_map)),
+            ("edgesOnVertex", "Vertex", Some(&edge_map)),
+        ] {
+            let (ids, before_count) = match family {
+                "Cell" => (&cell_ids, n_cells), "Edge" => (&edge_ids, n_edges),
+                _ => (&vertex_ids, n_vertices),
+            };
+            let before = parent.read_i32(field)?;
+            if before.len() % before_count != 0 {
+                return Err(MpasError::Refusal(format!("parent {field} has an invalid row width")));
+            }
+            let width = before.len() / before_count;
+            let mut expected = Vec::with_capacity(ids.len() * width);
+            for &id in ids {
+                for &value in &before[id * width..(id + 1) * width] {
+                    expected.push(if let Some(map) = map { remap(value, map, field)? } else { value });
+                }
+            }
+            if target.read_i32(field)? != expected {
+                return Err(MpasError::Refusal(format!("provenance grid {field} differs from the regional cut; its hash would identify another topology")));
+            }
+        }
+        for (field, mask, ids) in [
+            ("bdyMaskCell", &cell_mask, &cell_ids),
+            ("bdyMaskEdge", &edge_mask, &edge_ids),
+            ("bdyMaskVertex", &vertex_mask, &vertex_ids),
+        ] {
+            let expected: Vec<i32> = ids.iter().map(|&i| mask[i] - 1).collect();
+            if target.read_i32(field)? != expected {
+                return Err(MpasError::Refusal(format!("provenance grid {field} differs from the regional cut; its boundary rings identify another mesh")));
+            }
+        }
+        let hash = crate::sha256_file(path)?;
+        let canonical = canonical_static_provenance(&source, &hash, [cell_ids.len(), edge_ids.len(), vertex_ids.len()])?;
+        gattrs.push(NcAttr::text("rw_static_provenance_json", serde_json::to_string(&canonical)
+            .map_err(|e| MpasError::Refusal(format!("cannot serialize regional static provenance: {e}")))?));
+        upstream_static_provenance = Some(source);
+        provenance_grid_sha256 = Some(hash);
     }
 
     // Variables: the three masks first, then the parent's variables in parent
@@ -1553,7 +1855,51 @@ pub fn cull_file(
         output_sha256: crate::sha256_file(out_path)?,
         graph_file: graph_path.map(|p| p.display().to_string()),
         graph_sha256,
+        upstream_static_provenance,
+        provenance_grid_sha256,
     })
+}
+
+fn stored_sphere_radius(file: &RawNc) -> MpasResult<f64> {
+    let attribute = file.gattrs.iter().find(|a| a.name == "sphere_radius")
+        .ok_or_else(|| MpasError::Refusal("provenance grid has no sphere_radius".to_string()))?;
+    let radius = match attr_value(attribute)? {
+        NcAttrValue::Floats(values) => values.first().map(|&v| v as f64),
+        NcAttrValue::Doubles(values) => values.first().copied(),
+        _ => None,
+    }.filter(|v| v.is_finite() && *v > 0.0)
+        .ok_or_else(|| MpasError::Refusal("provenance sphere_radius is not a positive floating value".to_string()))?;
+    Ok(radius)
+}
+
+fn validate_provenance_dimensions(target: &RawNc, counts: [usize; 3]) -> MpasResult<()> {
+    for (dimension, count) in [("nCells", counts[0]), ("nEdges", counts[1]), ("nVertices", counts[2])] {
+        if target.dim_len(dimension)? != count {
+            return Err(MpasError::Refusal(format!(
+                "provenance grid has the wrong {dimension}; its hash would identify another regional mesh"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn canonical_static_provenance(
+    source: &serde_json::Value,
+    grid_sha256: &str,
+    counts: [usize; 3],
+) -> MpasResult<serde_json::Value> {
+    let mut canonical = source.as_object().cloned().ok_or_else(||
+        MpasError::Refusal("static provenance must be a JSON object".to_string()))?;
+    // This count belongs to the working mesh, not to the retained cut. Its
+    // truthful value is kept with the upstream identity in the sidecar.
+    canonical.remove("gwd_variance_smoothed_cells");
+    canonical.insert("schema".to_string(), serde_json::json!("rw-mpas-static/cull-v1"));
+    canonical.insert("grid_sha256".to_string(), serde_json::json!(grid_sha256));
+    for (key, count) in [("n_cells", counts[0]), ("n_edges", counts[1]), ("n_vertices", counts[2])] {
+        canonical.insert(key.to_string(), serde_json::json!(count));
+    }
+    canonical.insert("upstream_build_provenance".to_string(), serde_json::json!("cull-receipt"));
+    Ok(serde_json::Value::Object(canonical))
 }
 
 fn wr(e: rw_store::error::RwStoreError) -> MpasError {
@@ -1722,4 +2068,45 @@ fn write_graph_info(
     f.write_all(&out)?;
     f.flush()?;
     Ok(())
+}
+
+
+#[cfg(test)]
+mod canonical_static_provenance_tests {
+    use super::{canonical_static_provenance, validate_provenance_dimensions, RawNc};
+    use rw_store::netcdf_classic::{NcClassicWriter, NcDim, NcFormat};
+
+    #[test]
+    fn a_netcdf_grid_uses_nvertices_and_rejects_a_different_element_count() {
+        let path = std::env::temp_dir().join(format!("rw-mpas-provenance-dimensions-{}.nc", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut writer = NcClassicWriter::create(&path, NcFormat::Offset64,
+            vec![NcDim::fixed("nCells", 10), NcDim::fixed("nEdges", 30), NcDim::fixed("nVertices", 21)],
+            Vec::new(), Vec::new(), 0).unwrap();
+        writer.finish().unwrap();
+        let grid = RawNc::open(&path).unwrap();
+        validate_provenance_dimensions(&grid, [10, 30, 21]).unwrap();
+        let wrong = validate_provenance_dimensions(&grid, [10, 30, 22]).unwrap_err();
+        assert!(wrong.to_string().contains("wrong nVertices"));
+        std::fs::remove_file(&path).unwrap();
+    }
+
+
+    #[test]
+    fn final_identity_is_independent_of_the_working_mesh_and_keeps_invariants() {
+        let a = serde_json::json!({"schema":"old", "grid_sha256":"global",
+            "n_cells":1000, "n_edges":3000, "n_vertices":2002,
+            "gwd_variance_smoothed_cells":20, "engine":"rw-mpas", "nominal_dx_m":937.5});
+        let mut b = a.clone();
+        b["grid_sha256"] = serde_json::json!("halo");
+        b["n_cells"] = serde_json::json!(100);
+        b["gwd_variance_smoothed_cells"] = serde_json::json!(4);
+        let out = canonical_static_provenance(&a, "final-grid", [10, 30, 21]).unwrap();
+        assert_eq!(out, canonical_static_provenance(&b, "final-grid", [10, 30, 21]).unwrap());
+        assert_eq!(out["grid_sha256"], "final-grid");
+        assert_eq!(out["n_cells"], 10);
+        assert_eq!(out["nominal_dx_m"], 937.5);
+        assert!(out.get("gwd_variance_smoothed_cells").is_none());
+        assert_eq!(a["gwd_variance_smoothed_cells"], 20);
+    }
 }

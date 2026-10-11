@@ -2272,6 +2272,7 @@ class PreparedTreeWriter:
             heartbeat = _Heartbeat(self.stream_path, self)
             self._publish_tree(self.staging, self.output_root)
             self.published = True
+            self._record_source_head_publication()
             self._cache.move(self.cache_path)
             heartbeat.path = self.stream_path
             self._heartbeat = heartbeat
@@ -2280,6 +2281,15 @@ class PreparedTreeWriter:
                  "forecast may start while the remaining boundary "
                  "intervals are built")
         return self.head_sha256
+
+    def _record_source_head_publication(self) -> None:
+        # Observe the existing atomic publication; no stream or array changes.
+        from gpuwm.mapped_composition import _SHARED_COMPOSITION
+        binding = _SHARED_COMPOSITION.get()
+        if binding is not None:
+            from gpuwm.timeline.ledger import emit
+            emit("prep.head.publish", attrs={"source_key": binding[0],
+                "head_sha256": self.head_sha256, "path": str(self.output_root)}, product="ensemble")
 
     def note_build_seconds(self, seconds: float) -> None:
         """Record one forcing time's build wall (sizes the silence limit)."""
@@ -2658,6 +2668,7 @@ class PreparedTreeWriter:
         if not self.published:
             self._publish_tree(self.staging, self.output_root)
             self.published = True
+            self._record_source_head_publication()
         self._stop_heartbeat(final="sealed")
         return proof
 

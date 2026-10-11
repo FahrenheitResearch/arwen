@@ -237,8 +237,10 @@ def _replay_route(monkeypatch, clock, probe, downloads):
     monkeypatch.setattr(fetch_as_posted, "now_utc", clock.now)
     monkeypatch.setattr(fetch_as_posted, "pause", clock.sleep)
     real = fetch_routes.run_plan
+    # The replay's fixture transport replaces whatever downloader the fetch
+    # chose (the Rust stream door on a GRIB2 route).
     monkeypatch.setattr(fetch_routes, "run_plan", lambda plan, **kw: real(
-        plan, downloader=_fixture_downloader(downloads, clock), probe=probe, **kw))
+        plan, **{**kw, "downloader": _fixture_downloader(downloads, clock), "probe": probe}))
 
 
 @pytest.mark.parametrize("missing_lead", [24, 48])

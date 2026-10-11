@@ -530,7 +530,7 @@ _MP_CLOUD_OPTICS_SCHEME.update({
 # the radii from a gamma distribution that is not this scheme's", which
 # was true and was the argument for a row of the scheme's own, not for
 # refusing the pairing.  P3's entry went the same way before it.
-_NO_CLOUD_OPTICS_COUPLING: dict[int, str] = {}
+_NO_CLOUD_OPTICS_COUPLING: dict[int, str] = {30: "the spectral effective-radius integration has not been qualified; reusing bulk radii would replace the size-distribution optics"}
 
 #: The two adapters that DO serve these selectors, named by every refusal
 #: so none of them is a dead end.  One copy: a user told different things

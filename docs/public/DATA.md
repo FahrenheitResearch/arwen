@@ -8,8 +8,9 @@ geography tree `gpuwm fetch-geog` downloads and stages. `gpuwm fetch
 | | sources |
 |---|---|
 | hand-written transports (this page, in detail) | `gfs`, `gdas`, `hrrr`, `era5` |
-| [packaged route table](#every-other-source-the-packaged-route-table) | `hrrr-prs`, `hrrr-native`, `rap`, `rap-native`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
-| refused by name, with a remedy | `era5-l137`, `20crv3`, `20crv3-cf`, `mapped` -- no bytes at a path a fetch can resolve; the refusal prints the `gpuwm prep` line that runs on a folder you fill (`--source-root DIR`), or for `mapped` on your own mapping (see [SOURCES.md](SOURCES.md#sources-with-no-fetch-door)) |
+| [packaged route table](#every-other-source-the-packaged-route-table) | `hrrr-prs`, `hrrr-native`, `rap`, `rap-native`, `rrfs`, `rrfs-ens`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `ecmwf-ens`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
+| native CF subset (NOAA PSL THREDDS, annual per-variable files, 1836 to 2015) | `20crv3-cf` |
+| refused by name, with a remedy | `era5-l137`, `20crv3`, `mapped` -- no bytes at a path a fetch can resolve; the refusal prints the `gpuwm prep` line that runs on a folder you fill (`--source-root DIR`), or for `mapped` on your own mapping (see [SOURCES.md](SOURCES.md#sources-with-no-fetch-door)) |
 
 Registry aliases work everywhere a source id does: `gdps`, `ifs`,
 `hrrr-wrfprs`, `20cr`, `ai-gfs`. A registered source that is not

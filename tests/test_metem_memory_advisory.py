@@ -202,6 +202,10 @@ def test_metem_preparation_is_priced_and_decided_before_it_allocates(
     monkeypatch.setattr(device_probe, 'device_memory_probe_subprocess', lambda **_: {
         'free_bytes': 2**20, 'total_bytes': 24 * 2**30,
         'utilization_gpu_percent': 0})
+    # The CUDA stack here is a stand-in, so this machine allows its card:
+    # since 083ac7cd0 the backend choice honours GPUWM_NO_LOCAL_GPU first,
+    # and the CPU legs set it.
+    monkeypatch.delenv('GPUWM_NO_LOCAL_GPU', raising=False)
     if requested == 'cuda':
         with pytest.raises(preprocess_backend.PreparationDeviceRefused,
                            match='--preprocess-backend cpu'):

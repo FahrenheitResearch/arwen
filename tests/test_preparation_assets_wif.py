@@ -74,13 +74,28 @@ def _staged_case(tmp_path, source):
     return plan, config
 
 
+def _intercept_transfers(monkeypatch, transfer):
+    """Route the table fetch's transfers (Rust rw_fetch ``asset`` and
+    ``encoded-asset`` calls) to ``transfer(url, output)``; a hash of a file
+    already on disk still runs the real tool."""
+    from gpuwm import table_assets
+
+    real = table_assets._rw_asset
+
+    def routed(kind, *, on_progress=None, **options):
+        if kind in ("asset", "encoded-asset"):
+            return transfer(options["url"], options["output"])
+        return real(kind, on_progress=on_progress, **options)
+    monkeypatch.setattr(table_assets, "_rw_asset", routed)
+
+
 def _forbid_acquisition(monkeypatch):
     from gpuwm import table_assets
 
     def unexpected(*args, **kwargs):
         pytest.fail("planning or dispatch acquired an actual asset")
     monkeypatch.setattr(table_assets, "stage_wif_dataset", unexpected)
-    monkeypatch.setattr(table_assets, "_transfer", unexpected)
+    _intercept_transfers(monkeypatch, unexpected)
 
 
 @pytest.mark.parametrize("source", ("hrrr-prs", "hrrr-native", "rap-native", "ecmwf-open-data"))
@@ -231,11 +246,12 @@ def test_a_shared_asset_cache_downloads_only_once(tmp_path, monkeypatch):
     payload = b"pinned input transaction"
     asset = TableAsset("asset.dat", len(payload), hashlib.sha256(payload).hexdigest())
     calls = []
-    def transfer(url, temp, pinned):
+    def transfer(url, temp):
         calls.append(url)
         time.sleep(0.05)
         temp.write_bytes(payload)
-    monkeypatch.setattr(table_assets, "_transfer", transfer)
+        return {"bytes": len(payload)}
+    _intercept_transfers(monkeypatch, transfer)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: table_assets.fetch_asset_from_url(tmp_path, asset, "https://example.invalid/asset"), range(2)))
     assert results == [tmp_path / asset.filename] * 2
@@ -250,7 +266,7 @@ def test_a_corrupt_cached_asset_is_refused_and_preserved(tmp_path, monkeypatch):
     asset = TableAsset("asset.dat", len(payload), hashlib.sha256(payload).hexdigest())
     file = tmp_path / asset.filename
     file.write_bytes(b"changed")
-    monkeypatch.setattr(table_assets, "_transfer", lambda *args: pytest.fail("corrupt cache overwritten"))
+    _intercept_transfers(monkeypatch, lambda *args: pytest.fail("corrupt cache overwritten"))
     with pytest.raises(table_assets.TableAssetError, match="SHA-256"):
         table_assets.fetch_asset_from_url(tmp_path, asset, "https://example.invalid/asset")
     assert file.read_bytes() == b"changed"

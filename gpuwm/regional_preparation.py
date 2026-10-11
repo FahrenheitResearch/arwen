@@ -210,7 +210,13 @@ def review_background(request, rung, *, now=None, probe=None):
         binding['files'] += _files((request.source_inputs or {}).values())
         binding['experiment'] = _experiment_identity(inputs.experiment)
     elif request.source_root:
-        if not facts['requires_source_root']:
+        # A staged root stays usable when its source gains acquisition
+        # (f17bdb8c3, gpuwm.source_drivability.local_input_requested): the
+        # fetch, go and run-plan doors took that rule and this one kept
+        # asking whether the source REQUIRES a root, so a local 20CRv3 CF
+        # archive was refused here once the source could also be fetched.
+        from gpuwm.source_drivability import local_input_requested
+        if not local_input_requested({'source': source, 'source_root': request.source_root}):
             raise ValueError('This source uses its automatic chain or a prepared bundle; supply prepared_root for an existing preparation.')
         from gpuwm.local_preparation import inspect_local_inputs
         interval = request.forcing_cadence_hours or int(adapter.forcing_interval_seconds / 3600)

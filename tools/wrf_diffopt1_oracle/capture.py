@@ -11,8 +11,11 @@ else:
 
 
 def stats(actual,expected):
-    a=actual.view("i4").astype("i8");b=expected.view("i4").astype("i8")
-    a=np.where(a<0,0x80000000-a,a);b=np.where(b<0,0x80000000-b,b)
+    # The shared key: the inline form here reflected the negative half
+    # through +2**31, which put -0.0 and +0.0 2**32 apart (the sign error
+    # gpuwm.core.fp32_ulp documents) and over-reported every sign crossing.
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+    a=monotone_fp32_key(actual);b=monotone_fp32_key(expected)
     return dict(words=int(a.size),different=int(np.count_nonzero(actual.view("u4")!=expected.view("u4"))),
                 max_ulp=int(np.max(np.abs(a-b))),max_abs=float(np.max(np.abs(actual.astype("f8")-expected))))
 

@@ -195,7 +195,10 @@ def walk(tmp_path_factory):
 
     data = root / "data"
     data.mkdir()
-    for name in ("hrrr.t21z.wrfprsf00.grib2", "hrrr.t21z.wrfprsf01.grib2"):
+    # wrfsfcf00: the vegetation field source 6a69b356f added to the
+    # hrrr-prs composition, a supplement every prep line now carries.
+    for name in ("hrrr.t21z.wrfprsf00.grib2", "hrrr.t21z.wrfprsf01.grib2",
+                 "hrrr.t21z.wrfsfcf00.grib2"):
         (data / name).write_bytes(b"GRIB-fixture-bytes-" + name.encode())
     (data / "inputs.txt").write_text(
         "".join(f"{data / name}\n" for name in (
@@ -206,7 +209,8 @@ def walk(tmp_path_factory):
     return root
 
 
-def _prep(walk: Path, *, config: str, out: str) -> subprocess.CompletedProcess:
+def _prep(walk: Path, *, config: str, out: str,
+          vegetation: bool = True) -> subprocess.CompletedProcess:
     data = walk / "data"
     manifest = data / f"inputs-{out}.json"
     return _run(
@@ -217,6 +221,9 @@ def _prep(walk: Path, *, config: str, out: str) -> subprocess.CompletedProcess:
             f"hrrr_prs_in_band_surface={data / 'hrrr.t21z.wrfprsf00.grib2'}",
             "--supplement",
             f"hrrr_prs_in_band_surface={data / 'hrrr.t21z.wrfprsf01.grib2'}",
+            *(["--supplement",
+                f"vegetation_surface_data={data / 'hrrr.t21z.wrfsfcf00.grib2'}"]
+              if vegetation else []),
             "--author-input-manifest", str(manifest),
             "--wps-namelist", str(walk / "namelist.wps"),
             "--experiment-config", str(walk / config),
@@ -225,6 +232,22 @@ def _prep(walk: Path, *, config: str, out: str) -> subprocess.CompletedProcess:
         ],
         cwd=walk,
     )
+
+
+def test_a_missing_supplement_role_is_named(walk):
+    """A prep line short of a role the composition binds names that role.
+
+    Before, it said only "supplement role inventory differs from the
+    composition contract", so a hand-written hrrr-prs line from before
+    6a69b356f gave no word of the vegetation source it lacked.
+    """
+
+    result = _prep(walk, config="mycase.toml", out="no-vegetation",
+                   vegetation=False)
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode != 0
+    assert "missing vegetation_surface_data" in result.stderr, result.stderr
+    assert "--supplement ROLE=PATH" in result.stderr, result.stderr
 
 
 def test_missing_experiment_config_is_a_named_refusal(walk):

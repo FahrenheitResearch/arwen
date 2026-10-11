@@ -356,6 +356,7 @@ impl Mapping {
                  Earth radius in metres",
             ));
         }
+        let published_first_points = published_first_points(grid, &lambert)?;
         let span_units = (lambert.nx as f64 * lambert.dx_m).max(lambert.ny as f64 * lambert.dy_m)
             / PROJECTED_AXIS_UNIT_M;
         if span_units >= 180.0 {
@@ -370,8 +371,56 @@ impl Mapping {
             wind_basis: wind_basis.to_owned(),
             parameters: Some(lambert),
             same_grid_pairing,
+            published_first_points,
         })
     }
+}
+
+/// `mapping.grid.published_first_points`: other encodings of the DECLARED
+/// first grid point that a publisher writes for this same grid
+/// (`mapped_source._validate_published_first_points`).
+///
+/// HRRRv1 wrfprs and wrfnat files (to 2016-08-23) publish HRRR's corner
+/// rounded to millidegrees, 21.138, 237.28, under an otherwise identical
+/// grid definition; current files publish 21.138123, 237.280472.  The
+/// declaration admits such a record and decodes nothing differently: the
+/// frame keeps the declared parameters.  An encoding farther than a tenth
+/// of a cell from the declared point is a different grid, not a spelling
+/// of this one, and is refused here.
+fn published_first_points(grid: &Node, lambert: &LambertParameters) -> Result<Vec<(f64, f64)>> {
+    let Some(node) = grid.get("published_first_points") else {
+        return Ok(Vec::new());
+    };
+    if !node.is_array() {
+        return Err(mapping_invalid(
+            "mapping.grid.published_first_points must be an array of {lat1, lon1}",
+        ));
+    }
+    let tenth_cell_deg = 0.1 * lambert.dx_m.min(lambert.dy_m) / 111_000.0;
+    let mut points = Vec::new();
+    for item in node.items() {
+        let coordinate = |key: &str| -> Result<f64> {
+            item.get(key)
+                .and_then(Node::as_f64)
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| {
+                    mapping_invalid(format!(
+                        "mapping.grid.published_first_points[].{key} must be a finite number"
+                    ))
+                })
+        };
+        let (lat1, lon1) = (coordinate("lat1")?, coordinate("lon1")?);
+        if (lat1 - lambert.lat1).abs() > tenth_cell_deg
+            || (lon1 - lambert.lon1).abs() > tenth_cell_deg
+        {
+            return Err(mapping_invalid(format!(
+                "mapping.grid.published_first_points entry ({lat1}, {lon1}) is                  more than a tenth of a cell from the declared first point                  ({}, {}): that is a different grid, not an encoding of this one",
+                lambert.lat1, lambert.lon1
+            )));
+        }
+        points.push((lat1, lon1));
+    }
+    Ok(points)
 }
 
 /// The normalized `mapping.grid` block.
@@ -381,6 +430,9 @@ pub struct GridDeclaration {
     pub wind_basis: String,
     pub parameters: Option<LambertParameters>,
     pub same_grid_pairing: Option<String>,
+    /// Other encodings of the declared first point (lat1, lon1) that a
+    /// publisher writes for this same grid; admission only.
+    pub published_first_points: Vec<(f64, f64)>,
 }
 
 impl GridDeclaration {
@@ -390,6 +442,7 @@ impl GridDeclaration {
             wind_basis: "earth_relative".to_owned(),
             parameters: None,
             same_grid_pairing: None,
+            published_first_points: Vec::new(),
         }
     }
 
@@ -483,6 +536,21 @@ impl<'a> FieldSpec<'a> {
     /// authoring rules (which fields, which formats, a strict subset of
     /// `vertical.levels`) are `load_mapping`'s; what the decode needs is
     /// that the value is the one it implements.
+    /// `fields.<name>.repeated_record`: `"last"` declares that a record
+    /// the publisher writes twice at one level and valid time is read from
+    /// its later message (`mapped_source` reads the same key).  Absent, a
+    /// repeat is refused.
+    pub fn repeated_record_last(&self) -> Result<bool> {
+        match self.raw.field("repeated_record") {
+            None => Ok(false),
+            Some(node) if node.as_str() == Some("last") => Ok(true),
+            Some(_) => Err(mapping_invalid(format!(
+                "fields.{}.repeated_record must be 'last'",
+                self.name
+            ))),
+        }
+    }
+
     pub fn published_levels(&self) -> Result<Option<Vec<f64>>> {
         let Some(declaration) = self.raw.field("published_levels") else {
             return Ok(None);
@@ -645,6 +713,46 @@ mod tests {
             assert_eq!(refusal.class, crate::refusal::class::MAPPING_INVALID);
             assert!(refusal.message.contains("same_grid_pairing"));
         }
+    }
+
+    #[test]
+    fn a_published_first_point_far_from_the_declared_one_is_a_different_grid() {
+        let grid = |points: &str| {
+            format!(
+                r#"{{"grid": {{"family": "lambert_conformal",
+                "wind_basis": "grid_relative_with_rotation",
+                "parameters": {{"latin1": 38.5, "latin2": 38.5, "lov": 262.5,
+                  "lat1": 21.138123, "lon1": 237.280472, "dx_m": 3000.0,
+                  "dy_m": 3000.0, "nx": 1799, "ny": 1059,
+                  "earth_radius_m": 6371229.0, "shape_of_earth": 6}},
+                "published_first_points": {points}}}}}"#
+            )
+        };
+        let accepted = mapping_from(&grid(r#"[{"lat1": 21.138, "lon1": 237.28}]"#))
+            .grid_declaration()
+            .unwrap();
+        assert_eq!(accepted.published_first_points, vec![(21.138, 237.28)]);
+        for points in [
+            r#"[{"lat1": 21.2, "lon1": 237.28}]"#,
+            r#"[{"lat1": 21.138}]"#,
+            r#"{"lat1": 21.138, "lon1": 237.28}"#,
+        ] {
+            let refusal = mapping_from(&grid(points)).grid_declaration().unwrap_err();
+            assert_eq!(refusal.class, crate::refusal::class::MAPPING_INVALID);
+            assert!(refusal.message.contains("published_first_points"), "{}", refusal.message);
+        }
+    }
+
+    #[test]
+    fn a_repeated_record_declaration_is_last_or_refused() {
+        let mapping = mapping_from(
+            r#"{"fields": {"a": {}, "b": {"repeated_record": "last"}, "c": {"repeated_record": "first"}}}"#,
+        );
+        assert!(!mapping.field("a").unwrap().repeated_record_last().unwrap());
+        assert!(mapping.field("b").unwrap().repeated_record_last().unwrap());
+        let refusal = mapping.field("c").unwrap().repeated_record_last().unwrap_err();
+        assert_eq!(refusal.class, crate::refusal::class::MAPPING_INVALID);
+        assert!(refusal.message.contains("repeated_record"));
     }
 
     #[test]

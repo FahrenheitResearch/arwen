@@ -240,7 +240,7 @@ def test_native_future_extended_forcing_remains_a_literal_acquisition_output(tmp
     from gpuwm.runplan import declared_forcing_fetch
     acquisition = declared_forcing_fetch({"fetch": {"source":"era5", "cycle":"2026-09-07T18",
         "hours":6, "cadence":1, "era5_provider":"cds", "out":str(tmp_path / "future-cache")}},
-        SimpleNamespace(forcing=(Path(missing),)))
+        SimpleNamespace(forcing=(Path(missing),)), base_dir=tmp_path)
     assert "--retrieve" in acquisition
     assert acquisition[acquisition.index("--out")+1] == str((tmp_path / "future-cache").resolve())
 

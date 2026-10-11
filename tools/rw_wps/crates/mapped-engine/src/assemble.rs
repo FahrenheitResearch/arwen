@@ -568,6 +568,11 @@ fn assemble_one_field(
         }
         let selectors = field.selectors();
         let policy = field.missing_kind()?;
+        // `repeated_record: "last"`: a record the publisher writes twice at
+        // one level and valid time is read from its later message (HRRRv1
+        // wrfprs repeats HGT at 1000 hPa and at the surface; only the later
+        // 1000 hPa record survives into HRRRv2 and current files).
+        let repeated_last = field.repeated_record_last()?;
         let stacking_axis = if source_axes.iter().any(|axis| axis == "vertical") {
             Some("vertical")
         } else if source_axes.iter().any(|axis| axis == "half_level") {
@@ -612,12 +617,16 @@ fn assemble_one_field(
             None => {
                 let ranks: Vec<usize> = group.iter().map(|position| rank(*position)).collect();
                 let best = ranks.iter().copied().min().unwrap_or(0);
-                let chosen: Vec<usize> = group
+                let mut chosen: Vec<usize> = group
                     .iter()
                     .zip(&ranks)
                     .filter(|(_position, rank)| **rank == best)
                     .map(|(position, _rank)| *position)
                     .collect();
+                if chosen.len() > 1 && repeated_last {
+                    let later = *chosen.iter().max().expect("non-empty");
+                    chosen = vec![later];
+                }
                 if chosen.len() != 1 {
                     return Err(frame_invalid(format!(
                         "duplicate GRIB messages for scalar field {field_name} at {valid_time}"
@@ -643,7 +652,16 @@ fn assemble_one_field(
                     if best[&level.to_bits()] != *rank {
                         continue;
                     }
-                    if by_level.insert(level.to_bits(), (*position, *rank)).is_some() {
+                    let earlier = by_level.insert(level.to_bits(), (*position, *rank));
+                    if let Some((earlier_position, earlier_rank)) = earlier {
+                        if repeated_last {
+                            // The later message stands, whichever order the
+                            // group lists them in.
+                            if earlier_position > *position {
+                                by_level.insert(level.to_bits(), (earlier_position, earlier_rank));
+                            }
+                            continue;
+                        }
                         return Err(frame_invalid(format!(
                             "duplicate {field_name} GRIB level {level} at {valid_time}"
                         )));

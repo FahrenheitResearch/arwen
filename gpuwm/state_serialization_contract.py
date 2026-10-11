@@ -13,6 +13,8 @@ import hashlib
 import numpy as np
 
 
+from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
+
 STATE_SERIALIZED_ATTRS = (
     "u", "v", "w", "thp", "php", "mup",
     "p", "al", "alt",
@@ -44,6 +46,7 @@ STATE_SERIALIZED_ATTRS = (
     "qi", "qs", "qg", "nc", "nr", "ni", "ns", "ng",
     "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh", "qnn",
     "qvolg", "qvolh",
+    "volg",
     # mp_physics=9 (Milbrandt-Yau) hail number and mp_physics=16 (WDM6)
     # CCN concentration.  Both are transported prognostics (MY2_SPECIES /
     # WDM6_NUMBER_SPECIES in gpuwm/core); a restart that dropped either
@@ -92,7 +95,7 @@ STATE_SERIALIZED_ATTRS = (
     # did not select the closure, and the manifest walk skips what is not
     # there -- so adding it moves no existing restart.
     "e_sgs",
-)
+) + _FSBM_BIN_SPECIES
 
 # STATE_SETUP_ARRAYS is deliberately NOT extended with nwfa2d/nifa2d, even
 # though they are per-domain constants and read like setup: ``setup_fingerprint``

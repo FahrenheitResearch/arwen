@@ -6,7 +6,7 @@
     "product": "iem-asos-metar",
     "uri": "tests/fixtures/asos_surface_real/observations_subset.csv",
     "sha256": "c67c94c6f54ca6d1bf38c7c1d8f8934cdecf4a04d01a5ca691c148587de42462",
-    "fetched_at": "2026-09-21T04:32:09",
+    "fetched_at": "2026-10-10T03:32:27",
     "is_stub": false,
     "stub_reason": ""
   },
@@ -113,6 +113,7 @@
       "observation_time": "2024-05-21T12:03:00",
       "values": {
         "dewpoint_2m": 289.81666666666666,
+        "precipitation_1h": 0.254,
         "temperature_2m": 290.92777777777775,
         "wind_speed_10m": 0.0
       },
@@ -124,6 +125,7 @@
       "observation_time": "2024-05-21T13:02:00",
       "values": {
         "dewpoint_2m": 289.26111111111106,
+        "precipitation_1h": 0.0,
         "temperature_2m": 290.92777777777775,
         "wind_speed_10m": 4.630000000000001
       },
@@ -135,7 +137,9 @@
       "observation_time": "2024-05-21T13:57:00",
       "values": {
         "dewpoint_2m": 288.7055555555555,
+        "precipitation_1h": 1.016,
         "temperature_2m": 290.3722222222222,
+        "wind_gust_10m": 14.91888888888889,
         "wind_speed_10m": 8.231111111111112
       },
       "flags": []
@@ -146,6 +150,7 @@
       "observation_time": "2024-05-21T11:55:00",
       "values": {
         "dewpoint_2m": 290.15,
+        "precipitation_1h": 5.842,
         "temperature_2m": 290.15,
         "wind_speed_10m": 8.231111111111112
       },
@@ -157,6 +162,7 @@
       "observation_time": "2024-05-21T12:55:00",
       "values": {
         "dewpoint_2m": 290.15,
+        "precipitation_1h": 3.8099999999999996,
         "temperature_2m": 290.15,
         "wind_speed_10m": 5.144444444444445
       },
@@ -168,6 +174,7 @@
       "observation_time": "2024-05-21T13:55:00",
       "values": {
         "dewpoint_2m": 289.15,
+        "precipitation_1h": 6.095999999999999,
         "temperature_2m": 289.15,
         "wind_speed_10m": 5.658888888888889
       },
@@ -180,6 +187,7 @@
       "values": {
         "dewpoint_2m": 290.3722222222222,
         "mslp": 100290.0,
+        "precipitation_1h": 0.7619999999999999,
         "temperature_2m": 292.0388888888889,
         "wind_speed_10m": 7.202222222222223
       },
@@ -192,6 +200,7 @@
       "values": {
         "dewpoint_2m": 289.81666666666666,
         "mslp": 100320.0,
+        "precipitation_1h": 0.0,
         "temperature_2m": 292.0388888888889,
         "wind_speed_10m": 4.115555555555556
       },
@@ -215,6 +224,7 @@
       "observation_time": "2024-05-21T11:55:00",
       "values": {
         "dewpoint_2m": 291.3722222222222,
+        "precipitation_1h": 0.0,
         "temperature_2m": 294.15,
         "wind_speed_10m": 4.630000000000001
       },
@@ -226,6 +236,7 @@
       "observation_time": "2024-05-21T12:55:00",
       "values": {
         "dewpoint_2m": 290.3722222222222,
+        "precipitation_1h": 0.0,
         "temperature_2m": 292.92777777777775,
         "wind_speed_10m": 3.6011111111111114
       },
@@ -237,6 +248,7 @@
       "observation_time": "2024-05-21T13:55:00",
       "values": {
         "dewpoint_2m": 290.76111111111106,
+        "precipitation_1h": 0.0,
         "temperature_2m": 293.15,
         "wind_speed_10m": 3.6011111111111114
       },
@@ -248,6 +260,7 @@
       "observation_time": "2024-05-21T11:55:00",
       "values": {
         "dewpoint_2m": 291.15,
+        "precipitation_1h": 0.508,
         "temperature_2m": 291.15
       },
       "flags": []
@@ -258,6 +271,7 @@
       "observation_time": "2024-05-21T12:55:00",
       "values": {
         "dewpoint_2m": 290.15,
+        "precipitation_1h": 0.0,
         "temperature_2m": 291.15,
         "wind_speed_10m": 2.057777777777778
       },
@@ -269,6 +283,7 @@
       "observation_time": "2024-05-21T13:55:00",
       "values": {
         "dewpoint_2m": 291.15,
+        "precipitation_1h": 0.0,
         "temperature_2m": 291.15
       },
       "flags": []
@@ -280,7 +295,9 @@
       "values": {
         "dewpoint_2m": 289.26111111111106,
         "mslp": 100280.0,
+        "precipitation_1h": 2.794,
         "temperature_2m": 290.3722222222222,
+        "wind_gust_10m": 12.861111111111112,
         "wind_speed_10m": 7.202222222222223
       },
       "flags": []
@@ -291,6 +308,7 @@
       "observation_time": "2024-05-21T12:58:00",
       "values": {
         "dewpoint_2m": 289.81666666666666,
+        "precipitation_1h": 0.0,
         "temperature_2m": 291.4833333333333,
         "wind_speed_10m": 5.658888888888889
       },
@@ -303,6 +321,7 @@
       "values": {
         "dewpoint_2m": 289.81666666666666,
         "mslp": 100410.0,
+        "precipitation_1h": 0.0,
         "temperature_2m": 291.4833333333333,
         "wind_speed_10m": 0.0
       },
@@ -314,7 +333,9 @@
       "observation_time": "2024-05-21T11:55:00",
       "values": {
         "dewpoint_2m": 289.15,
+        "precipitation_1h": 0.0,
         "temperature_2m": 292.15,
+        "wind_gust_10m": 9.260000000000002,
         "wind_speed_10m": 3.6011111111111114
       },
       "flags": []
@@ -325,6 +346,7 @@
       "observation_time": "2024-05-21T12:55:00",
       "values": {
         "dewpoint_2m": 290.15,
+        "precipitation_1h": 0.0,
         "temperature_2m": 292.15,
         "wind_speed_10m": 2.5722222222222224
       },
@@ -336,6 +358,7 @@
       "observation_time": "2024-05-21T13:55:00",
       "values": {
         "dewpoint_2m": 290.15,
+        "precipitation_1h": 0.0,
         "temperature_2m": 293.15,
         "wind_speed_10m": 2.057777777777778
       },
@@ -347,6 +370,7 @@
       "observation_time": "2024-05-21T11:55:00",
       "values": {
         "dewpoint_2m": 291.15,
+        "precipitation_1h": 3.0479999999999996,
         "temperature_2m": 291.15,
         "wind_speed_10m": 3.6011111111111114
       },
@@ -358,6 +382,7 @@
       "observation_time": "2024-05-21T12:55:00",
       "values": {
         "dewpoint_2m": 291.15,
+        "precipitation_1h": 0.0,
         "temperature_2m": 291.15,
         "wind_speed_10m": 1.5433333333333334
       },
@@ -369,6 +394,7 @@
       "observation_time": "2024-05-21T13:55:00",
       "values": {
         "dewpoint_2m": 291.15,
+        "precipitation_1h": 0.0,
         "temperature_2m": 291.15,
         "wind_speed_10m": 2.5722222222222224
       },

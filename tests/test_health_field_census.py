@@ -178,9 +178,11 @@ EARLY_WARNING_COUNT = 768
 CALIBRATION_SELECTION = "mp18-lsm2-pbl0-sfclay1-cu0-km1"
 CALIBRATION_CHILD_COUNT = 528
 
-#: What ``MAX_HEALTH_FIELDS`` costs: seven fixed ``integration_health_*``
-#: device slots per DomainState.  48 KiB per domain at 1024.
-CEILING_METADATA_BYTES_PER_DOMAIN = 49152
+#: What ``MAX_HEALTH_FIELDS`` costs: eight fixed ``integration_health_*``
+#: device slots per DomainState.  48 KiB per domain at 1024 for the seven
+#: descriptor tables, plus 12 KiB for the strict gate's rim geometry table
+#: (``integration_health_rim``, (1024, 3) FP32 words, a677ad4e1): 60 KiB.
+CEILING_METADATA_BYTES_PER_DOMAIN = 61440
 
 
 @pytest.fixture(scope="module")
@@ -942,9 +944,11 @@ def test_the_ceiling_costs_fixed_metadata_not_field_storage(
         four_domain_census):
     """Record what raising ``MAX_HEALTH_FIELDS`` would actually cost.
 
-    Seven ``integration_health_*`` slots are sized by the ceiling rather than
-    by the measured count, and they are per ``DomainState``: 48 KiB per domain
-    at 1024, 192 KiB across a four-domain nest.  Doubling the ceiling adds
+    Eight ``integration_health_*`` slots are sized by the ceiling rather than
+    by the measured count, and they are per ``DomainState``: 60 KiB per domain
+    at 1024 (48 B of descriptor tables plus 12 B of strict-rim geometry per
+    descriptor, a677ad4e1), 240 KiB across a four-domain nest.  Doubling the
+    ceiling adds
     that much again.  VRAM is a correctness bar on this hardware, so the cost
     had to be established rather than assumed -- and having established it,
     nobody should argue the ceiling cannot move for VRAM reasons.  It is a
@@ -956,6 +960,6 @@ def test_the_ceiling_costs_fixed_metadata_not_field_storage(
     assert report["max_health_fields"] == 1024
     per_descriptor = (report["ceiling_metadata_bytes_per_domain"]
                       / report["max_health_fields"])
-    assert per_descriptor == 48.0, (
+    assert per_descriptor == 60.0, (
         "the per-descriptor metadata footprint changed; re-derive the cost of "
         "the ceiling before quoting it")

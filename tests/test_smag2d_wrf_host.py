@@ -142,7 +142,12 @@ def test_step_refreshes_density_before_first_smag_evaluation():
     """A fresh dry state leaves ``alt`` zero until the first EOS refresh."""
     source = (Path(__file__).parents[1] / "gpuwm" / "core" / "dycore.py").read_text()
     step_source = source[source.index("def step("):]
-    refresh = "update_diagnostics(state, cfg.hypsometric_opt)\n    prepare_fixed_tendencies"
+    # Since 01402fcb1 the refresh passes WRF's own muts (_wrf_muts) and runs
+    # whenever a WRF mixing package is active; it still sits immediately
+    # before the time-t fixed tendencies the first Smagorinsky K reads.
+    refresh = ("update_diagnostics(state, cfg.hypsometric_opt,\n"
+               "                           muts=_wrf_muts(state))\n"
+               "    prepare_fixed_tendencies")
     assert refresh in step_source
 
 

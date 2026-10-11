@@ -346,6 +346,11 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
         # which the scatter carries into the domain field like any other
         # carrier.
         "gpuwm/core/streaming.py",
+        # The VTSM native retention (4dcca7d16, gpuwm/da/spread_vts.py)
+        # also consumes only to CLEAR: its history drain has no output
+        # writer, and an unconsumed stash would refuse the next due frame.
+        # The field is discarded, never read back into the model.
+        "gpuwm/da/spread_vts.py",
         # The hex column-batch seam (6e333822e, phase two of the mpas
         # seam: WRF's history-step diagflag).  On a due step it consumes
         # the handoff inside the same transaction that builds the step
@@ -678,7 +683,13 @@ def test_native_reflectivity_table_is_the_consumer_minus_producer_set():
 
     producer = frozenset({1, 6, 8, 10, 16, 28})
     consumer = frozenset(runtime.REFL_10CM_MICROPHYSICS)
-    assert frozenset(SCHEME_NATIVE_REFL_10CM) == consumer - producer
+    # FAST_SBM (30) is recorded here without being a consumer: it writes no
+    # REFL_10CM at all (gpuwm.core.fast_sbm_runtime.apply refuses a due
+    # frame, so the history lane never asks it), and its row is the reason
+    # the generic bulk operator must never be dispatched for it either.
+    refused = frozenset({30})
+    assert not (refused & consumer)
+    assert frozenset(SCHEME_NATIVE_REFL_10CM) == (consumer - producer) | refused
     assert not (frozenset(SCHEME_NATIVE_REFL_10CM) & producer)
     for scheme, reason in SCHEME_NATIVE_REFL_10CM.items():
         assert len(reason) > 80, f"mp={scheme} has a reason in name only"

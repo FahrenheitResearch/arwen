@@ -1,0 +1,321 @@
+{
+    "schema":  "gpuwm-model-presets-v1",
+    "presets":  [
+                    {
+                        "id":  "rrfs-v2-hex-tempo",
+                        "status":  "rrfs-configuration-with-declared-divergences",
+                        "description":  "RRFS v2 configuration (workflow 45ace1bf, NOAA MPAS fork 1d6e370e, TEMPO 9adf9ef) on the MPAS hex dycore with TEMPO. It runs with the declared divergences named below; its verification of record is observation skill (2026-08-20 ruling). It does not claim equivalence to NOAA's RRFS v2.",
+                        "workflow_commit":  "45ace1bf97776ea51d257249b843da34cabdebde",
+                        "mpas_commit":  "1d6e370e7b43a332074809f170532a216c2212fb",
+                        "tempo_commit":  "9adf9ef2827104640125f0c322e1218fce74e94c",
+                        "mesh":  {
+                                     "name":  "conus3km",
+                                     "nominal_spacing_m":  3000,
+                                     "cells":  2341818,
+                                     "edges":  7031657,
+                                     "vertices":  4689840,
+                                     "grid_url":  "https://noaa-gsl-experimental-pds.s3.amazonaws.com/fix_rrfs2/v2.1.4-3.4/main/meshes/conus3km.20251017/conus3km.grid.nc",
+                                     "invariant_url":  "https://noaa-gsl-experimental-pds.s3.amazonaws.com/fix_rrfs2/v2.1.4-3.4/main/meshes/conus3km.20260319/conus3km.invariant.nc_L60_GFS",
+                                     "orography_url":  "https://noaa-gsl-experimental-pds.s3.amazonaws.com/fix_rrfs2/v2.1.4-3.4/main/meshes/conus3km.20251017/conus3km.ugwp_oro_data.nc",
+                                     "dimension_evidence":  "Inherited header measurements in HEX-FIRST-CLASS-PHYSICS-2026-10/RRFSV2-DEV.md:78. Not remeasured by this lane."
+                                 },
+                        "vertical":  {
+                                         "layers":  59,
+                                         "interfaces_m":  [
+                                                              0,
+                                                              17.9503453,
+                                                              38.2458341,
+                                                              61.1849965,
+                                                              87.1023027,
+                                                              116.371945,
+                                                              149.412021,
+                                                              186.687974,
+                                                              228.717396,
+                                                              276.074174,
+                                                              329.392298,
+                                                              389.370786,
+                                                              456.777667,
+                                                              532.451603,
+                                                              617.304279,
+                                                              712.32086,
+                                                              818.559073,
+                                                              937.146107,
+                                                              1069.27399,
+                                                              1216.19032,
+                                                              1379.18775,
+                                                              1559.58787,
+                                                              1758.72268,
+                                                              1977.91114,
+                                                              2218.43268,
+                                                              2481.49661,
+                                                              2768.21048,
+                                                              3079.54519,
+                                                              3416.30196,
+                                                              3779.08033,
+                                                              4168.25032,
+                                                              4583.93023,
+                                                              5025.97142,
+                                                              5493.95307,
+                                                              5987.18549,
+                                                              6504.72411,
+                                                              7045.39193,
+                                                              7607.81208,
+                                                              8190.4464,
+                                                              8791.63721,
+                                                              9409.65509,
+                                                              10042.7445,
+                                                              10689.1703,
+                                                              11349.0814,
+                                                              12031.2314,
+                                                              12736.7556,
+                                                              13465.4977,
+                                                              14217.4942,
+                                                              14993.0201,
+                                                              15792.6449,
+                                                              16617.2976,
+                                                              17468.5102,
+                                                              18348.6137,
+                                                              19260.8685,
+                                                              20209.8504,
+                                                              21204.7084,
+                                                              22255.2887,
+                                                              23372.9194,
+                                                              24573.2753,
+                                                              25878.712
+                                                          ],
+                                         "top_m":  25878.712,
+                                         "soil_levels":  9,
+                                         "source_url":  "https://github.com/NOAA-EMC/rrfs-workflow/blob/45ace1bf97776ea51d257249b843da34cabdebde/fix/vert_levels/L60.txt"
+                                     },
+                        "forcing":  {
+                                        "source":  "gfs",
+                                        "boundary_interval_s":  3600,
+                                        "cold_start":  "Public 0.25-degree pressure-level pair; not the cycled NOAA analysis",
+                                        "aerosol_source":  "QNWFA_QNIFA_SIGMA_MONTHLY.dat",
+                                        "qualification":  "Specification only. No initial fields have been prepared by this lane."
+                                    },
+                        "sources":  [
+                                        {
+                                            "lines":  "2-70",
+                                            "url":  "https://github.com/NOAA-EMC/rrfs-workflow/blob/45ace1bf97776ea51d257249b843da34cabdebde/parm/hrrrv5/namelist.atmosphere",
+                                            "sha256":  "70ad70cec7354baa75fd8a670151b915a792f11f2b2c1625d76ccbde6489f299"
+                                        },
+                                        {
+                                            "lines":  "88-91",
+                                            "url":  "https://github.com/NOAA-EMC/rrfs-workflow/blob/45ace1bf97776ea51d257249b843da34cabdebde/workflow/config_resources/config.meshdep",
+                                            "sha256":  "31759085db5e8b5a4f1451c0d268c6a7071a6f523dfe5690936909f82ee5346a"
+                                        },
+                                        {
+                                            "lines":  "19,30-35",
+                                            "url":  "https://github.com/NOAA-EMC/rrfs-workflow/blob/45ace1bf97776ea51d257249b843da34cabdebde/workflow/config_resources/config.base",
+                                            "sha256":  "515b7b1fda9c86a5b11707b60c6c7a476795c25bd383df37524b6250f7e634c3"
+                                        },
+                                        {
+                                            "lines":  "1-60",
+                                            "url":  "https://github.com/NOAA-EMC/rrfs-workflow/blob/45ace1bf97776ea51d257249b843da34cabdebde/fix/vert_levels/L60.txt",
+                                            "sha256":  "ca3b4be1aa1f2ac8b1e9e833ae6dc452e91100a965377634430cd59703cb8390"
+                                        },
+                                        {
+                                            "lines":  "158-168",
+                                            "url":  "https://github.com/RRFSx/MPAS-Model/blob/1d6e370e7b43a332074809f170532a216c2212fb/src/core_atmosphere/physics/mpas_atmphys_control.F",
+                                            "sha256":  "45ba9079055ae8da19bae9fb40f79264e0e3fb5d37bc8ec057667f1b553ab8f7"
+                                        },
+                                        {
+                                            "lines":  "295-307,2658-2666,2778",
+                                            "url":  "https://github.com/RRFSx/MPAS-Model/blob/1d6e370e7b43a332074809f170532a216c2212fb/src/core_atmosphere/Registry.xml",
+                                            "sha256":  "dc6a801a054bdc39d2c0faaf9eab91ea2a404bddb49ad8070c4f3cb8c2b30b9b"
+                                        }
+                                    ],
+                        "namelist":  {
+                                         "nhyd_model":  {
+                                                            "config_time_integration_order":  2,
+                                                            "config_dt":  20,
+                                                            "config_split_dynamics_transport":  true,
+                                                            "config_number_of_sub_steps":  4,
+                                                            "config_dynamics_split_steps":  3,
+                                                            "config_horiz_mixing":  "2d_smagorinsky",
+                                                            "config_visc4_2dsmag":  0.05,
+                                                            "config_scalar_advection":  true,
+                                                            "config_monotonic":  true,
+                                                            "config_coef_3rd_order":  0.25,
+                                                            "config_epssm":  0.1,
+                                                            "config_smdiv":  0.1
+                                                        },
+                                         "damping":  {
+                                                         "config_mpas_cam_coef":  2,
+                                                         "config_rayleigh_damp_u":  true,
+                                                         "config_zd":  16000,
+                                                         "config_xnutr":  0.2,
+                                                         "config_number_cam_damping_levels":  8,
+                                                         "config_rayleigh_damp_u_timescale_days":  5,
+                                                         "config_number_rayleigh_damp_u_levels":  6
+                                                     },
+                                         "limited_area":  {
+                                                              "config_apply_lbcs":  true
+                                                          },
+                                         "physics":  {
+                                                         "config_physics_suite":  "hrrrv5",
+                                                         "config_microp_scheme":  "mp_tempo",
+                                                         "config_convection_scheme":  "off",
+                                                         "config_pbl_scheme":  "bl_mynnedmf",
+                                                         "config_sfclayer_scheme":  "sf_mynnsfclay",
+                                                         "config_lsm_scheme":  "sf_ruc",
+                                                         "num_soil_layers":  9,
+                                                         "config_gwdo_scheme":  "bl_ugwp_gwdo",
+                                                         "config_radt_lw_scheme":  "rrtmg_lw",
+                                                         "config_radt_sw_scheme":  "rrtmg_sw",
+                                                         "config_radt_cld_scheme":  "cld_fraction_mynn",
+                                                         "config_radtlw_interval":  "00:15:00",
+                                                         "config_radtsw_interval":  "00:15:00",
+                                                         "config_sst_update":  false,
+                                                         "config_gvf_update":  false,
+                                                         "config_sstdiurn_update":  false,
+                                                         "config_deepsoiltemp_update":  false,
+                                                         "config_frac_seaice":  true,
+                                                         "config_bucket_update":  "none",
+                                                         "config_mynn_mixscalars":  0,
+                                                         "config_mynn_mixaerosols":  1,
+                                                         "config_mynn_mixnumcon":  0,
+                                                         "config_o3climatology":  true,
+                                                         "config_microp_re":  true,
+                                                         "config_ngw_scheme":  false
+                                                     },
+                                         "physics_mp_tempo":  {
+                                                                  "config_tempo_aerosolaware":  true,
+                                                                  "config_tempo_hailaware":  true,
+                                                                  "config_tempo_ml_for_bl_nc":  true
+                                                              },
+                                         "nam_stochy":  {
+                                                            "do_sppt":  false,
+                                                            "do_skeb":  false
+                                                        }
+                                     },
+                        "requirements":  [
+                                             {
+                                                 "breakage":  "TEMPO now carries thirteen transported scalars, the native number and volume units, and post-RK vertical velocity through the MPAS column seam.",
+                                                 "site":  "gpuwm/core/mpas_column_batch.py; tree/src/hexcore/species_row.py; tests/test_mpas_tempo_species.py",
+                                                 "id":  "tempo-hex-species",
+                                                 "implemented":  true
+                                             },
+                                             {
+                                                 "breakage":  "The optional ML subgrid-cloud radius path and pre-physics surface emission match all defined column-output words in strict and default modes. Whole-model coupling remains measured separately.",
+                                                 "site":  "gpuwm/core/kernels/tempo/tempo_cloud_ml.cuh; tools/tempo_ref/oracle/adapter; tests/test_tempo_adapter_oracle_gpu.py",
+                                                 "id":  "tempo-boundary-layer-cloud",
+                                                 "implemented":  true
+                                             },
+                                             {
+                                                 "breakage":  "MYNN mixes nwfa and nifa under config_mynn_mixaerosols=1 (mixnumcon=0, mixscalars=0) and the column seam returns the rates as scalar_rates, which hex couples by dry mass like every other species. The solves are the engine wrf_461 ones; the c942418 clip and height-profile bounds belong to the mynn-edmf-revision divergence.",
+                                                 "site":  "gpuwm/config.py MYNN_QN_MIX_KEYS; gpuwm/core/mpas_column_suite.py run_phase1; tree/src/hexcore/cuda_arwen_physics_v841.py begin_step; tests/test_mpas_mynn_aerosol_mixing.py",
+                                                 "id":  "mixed-aerosol-tendencies",
+                                                 "implemented":  true
+                                             },
+                                             {
+                                                 "breakage":  "aer_opt=3 shortwave optics take NOAA MPAS's land/water aerosol type, rural type 1 over land and maritime type 3 over water (rrtmg_aer3_type_source=landmask). Twin and CUDA kernel match the fork's Fortran at 1d6e370e word for word in strict and default modes on a mixed land/water column deck.",
+                                                 "site":  "gpuwm/core/rrtmg_aerosol_optics.py; gpuwm/core/kernels/rrtmg_aer3.cu; tools/rrfs_mpas_aer3_oracle; tests/test_rrtmg_aer3_landmask_type.py",
+                                                 "id":  "radiation-aerosol-direct-effect",
+                                                 "implemented":  true
+                                             },
+                                             {
+                                                 "breakage":  "The experimental preset completed a same-input six-hour GPU forecast with native-cell NOAA comparisons and Rust-rendered NOAA and HRRR sheets. This is a measured demonstration, not a native equivalence claim. Whole-model restart identity remains unchecked.",
+                                                 "site":  "docs/model-presets.md:35",
+                                                 "id":  "matched-state-and-demo",
+                                                 "implemented":  true
+                                             }
+                                         ],
+                        "declared_divergences":  [
+                                             {
+                                                 "id":  "pinned-dycore",
+                                                 "component":  "MPAS dycore",
+                                                 "pinned":  "NOAA MPAS fork RRFSx/MPAS-Model 1d6e370e7b43a332074809f170532a216c2212fb (MPAS 8.3.1-noaa)",
+                                                 "runs":  "the hex MPAS-A v8.4.1 dycore, held byte-identical to native MPAS-A v8.4.1",
+                                                 "reason":  "The 2026-08-20 ruling pins the hex dycore to MPAS-A v8.4.1 byte identity, its correctness anchor. Acoustic solve and deformation operation order differ from 8.3.1-noaa; the same-input six-hour comparison records nonzero native-field differences, including an initial surface-pressure mismatch.",
+                                                 "follow_up":  "none: the dycore stays pinned to MPAS-A v8.4.1 by ruling; physics skill is graded against observations (ASOS, MRMS)"
+                                             },
+                                             {
+                                                 "id":  "mynn-sfc-revision",
+                                                 "component":  "MYNN surface layer",
+                                                 "pinned":  "NCAR/MYNN-SFC b66187f54a0c169e36592552634867474e603ac0 (config_mynn_sfcflux_land=1, config_mynn_sfcflux_water=0)",
+                                                 "runs":  "the engine's wrf_461 MYNN surface-layer generation",
+                                                 "reason":  "The wrf_480 generation that runs the pinned revision (port-mynn-sfc48-generation, qualified word for word against its WRF 4.8 column oracle and against the NOAA fork's own MPAS-side driver) is a new physics port, and 2.8.8 ships no new physics port.",
+                                                 "follow_up":  "land port-mynn-sfc48-generation with the RRFS row selecting wrf_480 and the two roughness selectors (rrfs288 gap 3 series) in 2.8.9"
+                                             },
+                                             {
+                                                 "id":  "mynn-edmf-revision",
+                                                 "component":  "MYNN-EDMF",
+                                                 "pinned":  "NCAR/MYNN-EDMF c942418a47a29dee09b51b377286da6bb25160e3",
+                                                 "runs":  "the engine's wrf_461 MYNN-EDMF generation",
+                                                 "reason":  "No engine generation is the pinned revision. The WRF 4.7 port pins 90f36c25 (97 commits earlier); the WRF 4.8 port pins 8f8e8b59 (48 commits later, with downdraft, mass-flux cloud, marine wfa and ESS cloud-fraction changes; module_bl_mynnedmf.F90 differs by 945 insertions and 889 deletions ignoring whitespace).",
+                                                 "follow_up":  "a c942418 generation derived from the WRF 4.8 port by its 48 intervening commits, with the MPAS driver at that revision"
+                                             },
+                                             {
+                                                 "id":  "ruc-mpas-code-line",
+                                                 "component":  "RUC land surface",
+                                                 "pinned":  "NOAA-GSL/RUCLSM 8c9f1a8bb2cfb5fb8d115440fced566361fe0f20 MPAS/module_ruc_land.F90 and MPAS/module_ruc_ice.F90",
+                                                 "runs":  "WRF v4.6.1 module_sf_ruclsm.F as the engine ports it (RUCLSM's own WRF/module_sf_ruclsm.F at the pin is the same code, comments aside)",
+                                                 "reason":  "The MPAS units are a separate code line imported from the MPAS standalone RUC, split into land and ice modules, with its restart and cycling changes; no engine port exists.",
+                                                 "follow_up":  "port the RUCLSM MPAS units at 8c9f1a8 as a RUC generation selector"
+                                             },
+                                             {
+                                                 "id":  "ugwp-orographic-drag",
+                                                 "component":  "Orographic gravity-wave drag",
+                                                 "pinned":  "NOAA-GSL/UGWP c1c893edcf171af5639af60e3a3a528816f6cc2b bl_ugwp.F (config_gwdo_scheme bl_ugwp_gwdo, config_ngw_scheme false)",
+                                                 "runs":  "WRF v4.7.1 module_bl_gwdo_gsl.F (gwd_opt=3) on the mesh's ugwp_oro_data.nc statistics",
+                                                 "reason":  "bl_ugwp_run is a different generation of the GSL drag suite: it removes the small-scale grid-length taper, adds a mesospheric reduction above 70 Pa and reorganises the blocking and form-drag terms. The engine's UGWP v1 port carries only the non-stationary arm, which RRFS turns off.",
+                                                 "follow_up":  "port bl_ugwp_run at c1c893ed as a drag generation, with dx_p = len_disp/meshDensity**0.25 per cell"
+                                             }
+                                         ],
+                        "physics_pins":  [
+                                             {
+                                                 "path":  "src/core_atmosphere/physics/physics_noaa/MYNN-EDMF",
+                                                 "sha":  "c942418a47a29dee09b51b377286da6bb25160e3"
+                                             },
+                                             {
+                                                 "path":  "src/core_atmosphere/physics/physics_noaa/MYNN-SFC",
+                                                 "sha":  "b66187f54a0c169e36592552634867474e603ac0"
+                                             },
+                                             {
+                                                 "path":  "src/core_atmosphere/physics/physics_noaa/RUCLSM",
+                                                 "sha":  "8c9f1a8bb2cfb5fb8d115440fced566361fe0f20"
+                                             },
+                                             {
+                                                 "path":  "src/core_atmosphere/physics/physics_noaa/TEMPO",
+                                                 "sha":  "9adf9ef2827104640125f0c322e1218fce74e94c"
+                                             },
+                                             {
+                                                 "path":  "src/core_atmosphere/physics/physics_noaa/UGWP",
+                                                 "sha":  "c1c893edcf171af5639af60e3a3a528816f6cc2b"
+                                             }
+                                         ],
+                        "runtime":  {
+                                        "physics_suite":  "rrfs_v2_tempo_candidate",
+                                        "experimental":  true,
+                                        "forecast_options":  {
+                                                                 "time-integration-order":  2,
+                                                                 "monotonic":  true,
+                                                                 "cam-coefficient":  2,
+                                                                 "cam-damping-levels":  8,
+                                                                 "rayleigh-u":  true,
+                                                                 "damping-start-m":  16000
+                                                             },
+                                        "meshes":  {
+                                                       "conus12km":  {
+                                                                         "dt_seconds":  60,
+                                                                         "forecast_options":  {
+                                                                                                  "acoustic-substeps":  2,
+                                                                                                  "radiation-seconds":  1800,
+                                                                                                  "convection":  "ntiedtke"
+                                                                                              }
+                                                                     },
+                                                       "conus3km":  {
+                                                                        "dt_seconds":  20,
+                                                                        "forecast_options":  {
+                                                                                                 "acoustic-substeps":  4,
+                                                                                                 "radiation-seconds":  900,
+                                                                                                 "convection":  "off"
+                                                                                             }
+                                                                    }
+                                                   }
+                                    }
+                    }
+                ]
+}

@@ -677,7 +677,7 @@ def test_the_global_terrain_window_keeps_unpublished_squares_as_no_data(
 
 
 def test_an_unpublished_tile_over_land_takes_the_baseline_not_a_refusal(
-        tmp_path):
+        tmp_path, monkeypatch):
     """RETIRES test_absent_tile_cross_check_counts_land_cells.
 
     One published terrain tile and one unpublished one over a domain the
@@ -685,8 +685,20 @@ def test_an_unpublished_tile_over_land_takes_the_baseline_not_a_refusal(
     ``terrain-tile-absent-over-land``.  Now the published square gives
     its relief, the unpublished square keeps the baseline's, and the two
     meet across the ramp.  Real tiles, the real Rust window and warp.
+
+    Since c1227a11a the overlay ends in the default terrain slope gate
+    (gpuwm/static/terrain_autosmooth.py, its own cells in
+    tests/test_terrain_autosmooth.py).  This 17 x 13 grid at 250 m puts
+    real Alpine relief beside a flat 200 m baseline, a cliff the gate
+    rightly refuses, so the coverage question is asked with the gate
+    held aside and the gate's refusal of the same field is asserted at
+    the end: neither answer hides the other.
     """
     _bridge_or_fail()
+    from gpuwm.static import terrain_autosmooth
+    real_prepare_fields = terrain_autosmooth.prepare_fields
+    monkeypatch.setattr(terrain_autosmooth, "prepare_fields",
+                        lambda fields, grid, **_kw: fields)
     meta = json.loads(_fixture("meta.json").read_text(encoding="utf-8"))
     west_tile = meta["mosaic_clip_west"]["source_tile"]
     published = west_tile.split("_COG_10_")[1].removesuffix("_DEM.tif")
@@ -720,6 +732,9 @@ def test_an_unpublished_tile_over_land_takes_the_baseline_not_a_refusal(
     np.testing.assert_array_equal(hgt[east], 200.0)
     # The published square carries real alpine relief.
     assert hgt.max() > 2000.0
+    # And the default gate refuses this cliff by name before GPU time.
+    with pytest.raises(ValueError, match="outside the measured-stable limit"):
+        real_prepare_fields(fields, grid, domain_id=1, announce=lambda *_: None)
 
 
 # ---------------------------------------------------------------------------

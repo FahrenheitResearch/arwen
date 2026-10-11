@@ -343,7 +343,10 @@ def test_the_reader_and_the_writer_agree_on_the_mapped_proof_inventory():
         "gpuwm/mapped_direct.py no longer publishes one direct proof and "
         "two hierarchy proofs (one-shot and chained); teach this gate the "
         "new document")
-    assert literals["PROOF_SCHEMA"] == [set(runner.MAPPED_DIRECT_PROOF_KEYS)], (
+    # Current writers retain measurements in preparation-runtime.json.
+    # The reader still accepts the older optional in-proof telemetry.
+    assert literals["PROOF_SCHEMA"] == [set(runner.MAPPED_DIRECT_PROOF_KEYS)
+                                       - runner.MAPPED_PREPARATION_TELEMETRY_KEYS], (
         "the mapped direct proof the writer publishes and the inventory "
         "the forecast runner accepts have drifted apart")
     # The chained tree's proof is the runner's whole inventory; the
@@ -354,7 +357,9 @@ def test_the_reader_and_the_writer_agree_on_the_mapped_proof_inventory():
         [sorted(hierarchy), sorted(hierarchy - {"boundary_stream"})]), (
         "the mapped hierarchy proofs the writer publishes and the "
         "inventory the forecast runner accepts have drifted apart")
-    # The conditional half, bound the same way. A key the writer can add
+    # Conditional keys include the default RUC layer moisture-floor receipt.
+    # Bind the real writer's inventory so a fired floor cannot break preflight.
+    # The opted-in half, bound the same way.  A key the writer can add
     # conditionally that the runner does not tolerate is the same dead
     # last leg as a required key it does not know -- it just waits for
     # someone to turn the option on.
@@ -2662,7 +2667,8 @@ def test_a_proof_prepared_under_the_280_registry_resolves_at_preflight(
         _preflight_fixture(fixture, physics_profile=physics_profile)
     prefix = "physics selection differs from the hash-bound experiment/profile: "
     assert prefix in str(caught.value)
-    assert str(caught.value).split(prefix, 1)[1] \
+    assert "Prepare again" in str(caught.value)
+    assert str(caught.value).split(prefix, 1)[1].split(". Prepare again", 1)[0] \
         == "; ".join(_EXPECTED_280_PREFLIGHT_REFUSALS[physics_profile])
 
     for receipt in (proof["physics"], proof["export"]["physics"]):
@@ -2679,7 +2685,8 @@ def test_a_proof_prepared_under_the_280_registry_resolves_at_preflight(
     if physics_profile is not None:
         expected_unknown.insert(0,
             "resolved.moist_cq (prepared False, this build True)")
-    assert str(caught.value).split(prefix, 1)[1] == "; ".join(expected_unknown)
+    assert "Prepare again" in str(caught.value)
+    assert str(caught.value).split(prefix, 1)[1].split(". Prepare again", 1)[0] == "; ".join(expected_unknown)
 
 
 @pytest.mark.parametrize("physics_profile", [runner.PHYSICS_PROFILE, None])

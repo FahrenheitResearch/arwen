@@ -230,6 +230,7 @@ void validate_full_state(
         const unsigned* __restrict__ rule_flags,
         const unsigned* __restrict__ plane_sizes,
         const unsigned* __restrict__ status_bit_words,
+        const unsigned* __restrict__ rim_geometry,
         unsigned long long* __restrict__ result,
         int nfields, unsigned long long chunk)
 {
@@ -263,7 +264,16 @@ void validate_full_state(
             value += auxiliary[aux_index];
         }
         bool bad = !isfinite(value);
-        if (flags & VALIDATE_LOWER)
+        unsigned ny = rim_geometry[3 * field];
+        unsigned nx = rim_geometry[3 * field + 1];
+        unsigned width = rim_geometry[3 * field + 2];
+        bool rim = false;
+        if (width && nx && ny) {
+            unsigned i = index % nx, j = (index / nx) % ny;
+            rim = (i < width || nx - 1 - i < width
+                   || j < width || ny - 1 - j < width);
+        }
+        if ((flags & VALIDATE_LOWER) && !rim)
             bad |= ((flags & VALIDATE_STRICT_LOW)
                     ? value <= lower : value < lower);
         if (flags & VALIDATE_UPPER)

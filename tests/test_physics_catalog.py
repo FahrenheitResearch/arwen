@@ -825,7 +825,16 @@ def test_a_mix_from_hrrr_is_written_as_the_route_runs_it_and_passes_its_round_tr
     from gpuwm.experiment import load_experiment
     from gpuwm.hrrr_route_inputs import route_input_paths, verify_round_trip
 
-    verdict = pc.check({"choices": THOMPSON_MYJ_ETA, "dx_km": 3, "source": "hrrr"})
+    # The mix is made over the suite HRRR bound by default until 4193eb0da
+    # made it the GSD MYNN 4.1 suite, whose scalar_pblmix=1 the run door
+    # couples to MYNN or YSU and mp_physics=28.  Over that default the same
+    # mix is refused by name, asserted first; the round trip below is asked
+    # of the suite the mix can run over.
+    over_default = pc.check({"choices": THOMPSON_MYJ_ETA, "dx_km": 3, "source": "hrrr"})
+    assert over_default["valid"] is False
+    assert "scalar_pblmix=1" in over_default["refusal"]["message"]
+    base = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
+    verdict = pc.check({"suite": base, "choices": THOMPSON_MYJ_ETA, "dx_km": 3, "source": "hrrr"})
     assert verdict["valid"] and verdict["named_suite"] is None
     assert verdict["changed_from_suite"].get("moist_cq", True) is True
     # A route that reads the configuration itself runs the row's value.
@@ -836,6 +845,7 @@ def test_a_mix_from_hrrr_is_written_as_the_route_runs_it_and_passes_its_round_tr
     with contextlib.redirect_stdout(printed):
         rc = _domain(["--source", "hrrr", "--cycle", "2026-07-29T18", "--hours", "1", "--root-dx", "3",
                       "--chain", "3", "--card", "32gb", "--point", "38.0,-98.0",
+                      "--physics-profile", base,
                       "--physics-choices", json.dumps(THOMPSON_MYJ_ETA), "--out", str(out)])
     assert rc == 0, printed.getvalue()
     exp = load_experiment(out)

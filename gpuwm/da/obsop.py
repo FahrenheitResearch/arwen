@@ -1090,9 +1090,13 @@ STATE_REFLECTIVITY_OPERATORS: dict[int, str] = {
 from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
 # Named schemes compute Z inside their column call in this port; a pure
 # H(x) entry is not wired yet, so the radar operator refuses them by name.
+#: Where each named scheme's own reflectivity is defined, at its pin.
+_NAMED_Z_AUTHORITY = {
+    "tempo": "NCAR/TEMPO 9adf9ef module_mp_tempo_diags.F90:59-121 (reflectivity_10cm)",
+}
 NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP.update({
-    _s.mp_id: (f"{_s.label}: Z is computed inside the scheme's column call "
-               "in this port; no standalone H(x) entry is wired yet")
+    _s.mp_id: (f"mp_physics={_s.mp_id} ({_s.label}): Z is computed inside the scheme's column call "
+               f"in this port ({_NAMED_Z_AUTHORITY[_s.name]}); no standalone H(x) entry is wired yet")
     for _s in _NAMED_MP_SCHEMES.values() if _s.native_reflectivity})
 
 def _refuse_unrouted_reflectivity(mp_physics: int) -> None:
@@ -1672,6 +1676,10 @@ def _require_agreement_with_the_registry() -> None:
         "microphysics", "radar_da", observed, project=project,
         cited_absences={
             0: "no microphysics, no reflectivity operator",
+            30: ("FAST_SBM writes no REFL_10CM (gpuwm.core.fast_sbm_runtime."
+                 "apply refuses a due frame), so radar DA has no H(x) on "
+                 "mp_physics=30 until a reflectivity operator over the bin "
+                 "spectra is wired"),
         })
 
 

@@ -1583,10 +1583,15 @@ def load_mapping(
                 "selectors", "derivation", "units", "source_axes", "target_axes",
                 "location", "staggering", "missing", "selector_stack_axis",
                 "time_binding", "provider", "when_absent", "dependency_only",
-                "published_levels",
+                "published_levels", "repeated_record",
             },
             required={"units", "source_axes", "target_axes", "location", "missing"},
         )
+        if field.get("repeated_record", "last") != "last":
+            raise ValueError(
+                f"fields.{name}.repeated_record must be 'last'; it declares "
+                "that a record the publisher writes twice at one level and "
+                "valid time is read from its later message")
         # ``dependency_only``: the field is decoded for a derivation to
         # read and is not published on the frame (``_published_fields``).
         if not isinstance(field.get("dependency_only", False), bool):
@@ -1804,6 +1809,11 @@ def load_mapping(
         if field.get("published_levels") is not None:
             _validate_published_levels(
                 field_name, field, numeric_levels, str(source_format))
+        if (field.get("repeated_record") is not None
+                and str(source_format) != "grib2"):
+            raise ValueError(
+                f"fields.{field_name}.repeated_record is a GRIB2 record "
+                "declaration; other formats have no repeated messages")
 
     if vertical["kind"] == "hybrid_sigma_pressure":
         pressure_field = str(vertical["surface_pressure_field"])
@@ -3753,7 +3763,8 @@ def _validate_grid_declaration(
     grid = _object(
         raw,
         "mapping.grid",
-        allowed={"family", "parameters", "wind_basis", "same_grid_pairing"},
+        allowed={"family", "parameters", "wind_basis", "same_grid_pairing",
+                 "published_first_points"},
         required={"family"},
     )
     family = grid["family"]
@@ -3764,6 +3775,10 @@ def _validate_grid_declaration(
             "mapping.grid.same_grid_pairing must be 'identity' on a "
             "declared Lambert grid; other sources retain projected pairing")
     if family == GRID_FAMILY_REGULAR:
+        if grid.get("published_first_points") is not None:
+            raise ValueError(
+                "mapping.grid.published_first_points is not used by "
+                f"{GRID_FAMILY_REGULAR}: the grid is read from the data")
         if grid.get("parameters") is not None:
             raise ValueError(
                 "mapping.grid.parameters is not used by "
@@ -3835,13 +3850,60 @@ def _validate_grid_declaration(
             f"{span_units * PROJECTED_AXIS_UNIT_M / 1000.0:.0f} km; the "
             "projected-axis representation covers grids below 18,000 km"
         )
+    published = _validate_published_first_points(
+        grid.get("published_first_points"), parameters)
     return {
         "family": GRID_FAMILY_LAMBERT,
         "wind_basis": wind_basis,
         "parameters": parameters,
         **({"same_grid_pairing": same_grid_pairing}
            if same_grid_pairing is not None else {}),
+        **({"published_first_points": published} if published else {}),
     }
+
+
+def _validate_published_first_points(
+    raw: object, parameters: Mapping[str, object],
+) -> list[dict[str, float]]:
+    """``mapping.grid.published_first_points``: other encodings of the
+    DECLARED first grid point that a publisher writes for this same grid.
+
+    HRRRv1 wrfprs and wrfnat files (to 2016-08-23) publish HRRR's corner
+    rounded to millidegrees, 21.138, 237.28, under an otherwise identical
+    grid definition; current files publish 21.138123, 237.280472.  The
+    declaration admits such a record and decodes nothing differently: the
+    frame keeps the declared parameters (the Rust engine's
+    ``model::published_first_points`` is the twin).  An encoding farther
+    than a tenth of a cell from the declared point is a different grid,
+    not a spelling of this one, and is refused.
+    """
+
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(
+            "mapping.grid.published_first_points must be an array of "
+            "{lat1, lon1}")
+    tenth_cell_deg = 0.1 * min(
+        float(parameters["dx_m"]), float(parameters["dy_m"])) / 111_000.0
+    points = []
+    for index, item in enumerate(raw):
+        entry = _object(
+            item, f"mapping.grid.published_first_points[{index}]",
+            allowed={"lat1", "lon1"}, required={"lat1", "lon1"})
+        lat1 = _number(entry["lat1"],
+                       f"mapping.grid.published_first_points[{index}].lat1")
+        lon1 = _number(entry["lon1"],
+                       f"mapping.grid.published_first_points[{index}].lon1")
+        if (abs(lat1 - float(parameters["lat1"])) > tenth_cell_deg
+                or abs(lon1 - float(parameters["lon1"])) > tenth_cell_deg):
+            raise ValueError(
+                f"mapping.grid.published_first_points entry ({lat1}, {lon1}) "
+                "is more than a tenth of a cell from the declared first point "
+                f"({parameters['lat1']}, {parameters['lon1']}): that is a "
+                "different grid, not an encoding of this one")
+        points.append({"lat1": lat1, "lon1": lon1})
+    return points
 
 
 def _mapping_grid_declaration(
@@ -3948,14 +4010,23 @@ def _require_declared_grib2_grid(
         "shape_of_earth": int(row["shape_of_earth"]),
     }
     declared = {key: parameters[key] for key in observed}
+
+    def close(observed_value, declared_value) -> bool:
+        return math.isclose(float(observed_value), float(declared_value),
+                            rel_tol=0.0, abs_tol=1e-6)
+
     mismatched = {
         key for key in observed
         if (observed[key] != declared[key]
             if isinstance(declared[key], int)
-            else not math.isclose(
-                float(observed[key]), float(declared[key]),
-                rel_tol=0.0, abs_tol=1e-6))
+            else not close(observed[key], declared[key]))
     }
+    # The first point is one coordinate pair: the declared one, or one of
+    # the mapping's published encodings of it, both halves together.
+    if any(close(observed["lat1"], point["lat1"])
+           and close(observed["lon1"], point["lon1"])
+           for point in declaration.get("published_first_points", ())):
+        mismatched -= {"lat1", "lon1"}
     if mismatched:
         raise ValueError(
             f"GRIB2 field {row['index']} in {source} is not on the "
@@ -4806,10 +4877,19 @@ def _assemble_grib(
 
         used: list[_GribRecord] = list(group)
         absent_levels = 0
+        # ``repeated_record: "last"``: the publisher writes this field's
+        # record twice at one level and valid time (HRRRv1 wrfprs repeats
+        # HGT at 1000 hPa and at the surface; the 1000 hPa pair differs,
+        # and only the later one survives into HRRRv2 and every current
+        # file), and the later message is the one this mapping means.
+        # Without it a repeat is still refused.
+        repeated_last = field.get("repeated_record") == "last"
         if stacking_axis is None:
             ranks = [rank_of(record) for record in group]
             best = min(ranks)
             chosen = [record for record, rank in zip(group, ranks) if rank == best]
+            if len(chosen) > 1 and repeated_last:
+                chosen = chosen[-1:]
             if len(chosen) != 1:
                 raise ValueError(f"duplicate GRIB messages for scalar field {field_name} at {valid_time}")
             used = chosen
@@ -4826,7 +4906,7 @@ def _assemble_grib(
             for record, rank in zip(group, ranks):
                 if best_rank[record.level_value] != rank:
                     continue
-                if record.level_value in by_level:
+                if record.level_value in by_level and not repeated_last:
                     raise ValueError(
                         f"duplicate {field_name} GRIB level {record.level_value} at {valid_time}"
                     )

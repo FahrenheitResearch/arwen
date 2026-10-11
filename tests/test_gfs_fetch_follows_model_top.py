@@ -206,7 +206,26 @@ def test_the_download_folder_is_keyed_on_the_top(tmp_path, capsys):
     assert deep_plan["data"] != shallow_plan["data"]
 
 
-def test_the_download_price_counts_the_added_records():
+@pytest.fixture
+def budget_cycle_is_recent(monkeypatch):
+    """Read the fixture's 2026-09-26T06 cycle on a clock six hours later.
+
+    The price below is the grib-filter crop's, and the filter host keeps
+    a rolling window: on a wall clock past that window the real table
+    answers "archive only" and prices whole files, so these tests began
+    failing by date alone.  The endpoint table and its retention rule
+    are still the real ones; only "now" is pinned.
+    """
+
+    real = fetch.archive_only_cycle
+
+    def at_fixture_time(source, cycle, now=None):
+        return real(source, cycle, now=datetime(2026, 9, 26, 12))
+
+    monkeypatch.setattr(fetch, "archive_only_cycle", at_fixture_time)
+
+
+def test_the_download_price_counts_the_added_records(budget_cycle_is_recent):
     import tomllib
 
     hints = tomllib.loads(_BUDGET.read_text(encoding="utf-8"))["fetch"]
@@ -268,7 +287,8 @@ def test_the_preparation_memory_estimate_counts_the_levels_the_fetch_takes(
 
 
 def test_run_plan_prices_the_download_its_chain_makes(tmp_path, capsys,
-                                                       monkeypatch):
+                                                       monkeypatch,
+                                                       budget_cycle_is_recent):
     from gpuwm.runplan import PLAN_SCHEMA, run_plan_main
 
     monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")

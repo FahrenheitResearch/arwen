@@ -905,6 +905,13 @@ def apply_to_experiment(text: str, request: Mapping[str, Any], *, load: bool = T
     missing = [f"{key} = {_toml_value(full[key])}" for key in sorted(in_shared) if key not in seen_shared]
     out[shared_end:shared_end] = missing
     result = "\n".join(out) + "\n"
+    # Both catalog --into and domain --physics-choices write this file.
+    # The root's final switches, including its cumulus choice, own the header.
+    from gpuwm.domain_wizard import mix_physics_summary
+
+    result = re.sub(r"^# PHYSICS: .*$",
+                    lambda _: f"# PHYSICS: {mix_physics_summary(result, request)}.",
+                    result, flags=re.MULTILINE)
     if not load:
         return result
     with tempfile.TemporaryDirectory() as folder:

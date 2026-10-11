@@ -22,7 +22,7 @@ def _run(tmp_path, monkeypatch, *, fail=False, async_outputs=False):
     monkeypatch.setattr(capabilities, "require", lambda *a, **k: None)
     monkeypatch.setattr(capabilities, "require_for_command", lambda *a, **k: None)
     monkeypatch.setattr(go_cli, "_require_forecast_device", lambda: None)
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda *a: None)
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda *a, **_: None)
     monkeypatch.setattr(go_cli, "memory_gate", lambda *a, **k: {
         "verdict": "CPU test fixture", "refuse": False, "warn": False})
     monkeypatch.setattr(runplan, "_run_fetch", lambda *a, **k: pytest.fail("No test fetch is authorized"))

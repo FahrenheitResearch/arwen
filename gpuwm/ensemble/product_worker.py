@@ -22,17 +22,39 @@ REQUEST_SCHEMA = "gpuwm-ensemble-product-worker.request.v1"
 RESULT_SCHEMA = "gpuwm-ensemble-product-worker.v1"
 
 
+def _relative_to_root(root, path):
+    """Return ``path`` relative to ``root`` however either one spells the root.
+
+    The parent spells owned paths through its own output folder, which may
+    sit under a symlink (``/scratch -> /data/scratch``), while the worker
+    holds the resolved root: a plain ``relative_to`` then refused every
+    owned file of a symlinked output folder (fix289/ens-symlink).  Both
+    sides are compared resolved.  Only the outermost ancestor of ``path``
+    that resolves to the root counts, so every component below the root is
+    still walked by the symlink refusal in ``_owned_path`` and anything
+    outside the root still escapes.
+    """
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        pass
+    canonical = root.resolve()
+    for ancestor in reversed(path.parents):
+        if ancestor.resolve() == canonical:
+            return path.relative_to(ancestor)
+    raise ValueError("product worker path escapes its owned output root")
+
+
 def _owned_path(root, value, *, existing=True):
     if not isinstance(value, str) or not value or ".." in Path(value).parts:
         raise ValueError("product worker path must stay in its owned output root")
+    root = Path(os.path.abspath(root))
     path = Path(value)
     if not path.is_absolute():
         path = root / path
     path = Path(os.path.abspath(path))
-    try:
-        relative = path.relative_to(root)
-    except ValueError as error:
-        raise ValueError("product worker path escapes its owned output root") from error
+    relative = _relative_to_root(root, path)
+    path = root / relative
     current = root
     for part in relative.parts:
         current = current / part

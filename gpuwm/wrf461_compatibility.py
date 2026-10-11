@@ -74,7 +74,7 @@ class WRFCompatibilityCell:
 # verdict count by 10/6 and the pinned counts in
 # tests/test_wrf461_compatibility.py were re-measured off the enlarged
 # matrix rather than projected.
-MP_OPTIONS = (0, 1, 6, 8, 9, 10, 16, 18, 28, 50)
+MP_OPTIONS = (0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50)
 # 11 (Shin-Hong) joined the PBL axis with the Shin-Hong port: an implemented
 # scheme with a certified oracle (max ULP 0 CPU authority against the
 # byte-frozen WRF v4.6.1 module_bl_shinhong.F,
@@ -112,7 +112,7 @@ RADIATION_OPTIONS = (
 # the drift was latent rather than a live refusal; it is closed here, and
 # test_authority_agreement now holds every axis of this transcription
 # equal to the selectable set so the next one cannot be latent either.
-CUMULUS_OPTIONS = (0, 1, 3, 16)
+CUMULUS_OPTIONS = (0, 1, 3, 6, 16)
 
 #: Values ``gpuwm.config`` lets a user select that this transcription does
 #: NOT represent, each with the reason it is absent.  The table exists
@@ -129,6 +129,10 @@ CUMULUS_OPTIONS = (0, 1, 3, 16)
 #: transcription's silence means, which is what stops the next reader from
 #: mistaking absence for illegality.
 AXIS_EXCLUSIONS = MappingProxyType({
+    ("mp_physics", 900): (
+        "TEMPO is a WOOF named scheme (gpuwm.microphysics_schemes, id 900, "
+        "outside WRF's mp_physics range): WRF v4.6.1 has no TEMPO option, so "
+        "there is no WRF surface-layer or PBL pairing law to transcribe."),
     ("bl_pbl_physics", 2): (
         "MYJ's WRF law is stronger than a matrix cell and is implemented "
         "directly: phys/module_physics_init.F:3770-3772 fatals the MYJ "
@@ -170,6 +174,8 @@ MATRIX_CELL_COUNT = (
 
 
 _MP_CITATION = MappingProxyType({
+    30: WRFCitation("Registry/registry.sbm", "318",
+        "the fast spectral bin package binds mp_physics=30"),
     0: WRFCitation(
         "Registry/Registry.EM_COMMON", "3014",
         "the passiveqv package binds mp_physics=0 and allocates qv alone"),
@@ -227,6 +233,9 @@ _CUMULUS_CITATION = MappingProxyType({
     3: WRFCitation(
         "Registry/Registry.EM_COMMON", "3192",
         "the gfscheme package binds cu_physics=3"),
+    6: WRFCitation(
+        "Registry/Registry.EM_COMMON", "3195",
+        "the tiedtkescheme package binds cu_physics=6"),
     16: WRFCitation(
         "Registry/Registry.EM_COMMON", "3201",
         "the ntiedtkescheme package binds cu_physics=16"),

@@ -531,6 +531,13 @@ def _stub_sealed_root(monkeypatch, chain, root: Path):
                         lambda **kwargs: SimpleNamespace(**kwargs))
     monkeypatch.setattr(module, "initialize_and_export_native_hierarchy",
                         lambda **kwargs: result)
+    # Since 890e2523a the hierarchy publishes its experiment.toml and
+    # namelist.wps companions from the resolved experiment, which the
+    # stubbed _native_experiment above does not carry; the corridor is
+    # this file's question, so the publication is stubbed as
+    # tests/test_hrrr_hierarchy_direct.py stubs it.
+    monkeypatch.setattr(module, "publish_hierarchy_forecast_companions",
+                        lambda *a, **k: {})
     # The one selection check the stubbed slice would have skipped:
     # keep the REAL comparison satisfied rather than removed.
     monkeypatch.setattr(module, "verified_static_catalog",

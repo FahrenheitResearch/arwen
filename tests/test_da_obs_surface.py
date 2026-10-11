@@ -689,4 +689,9 @@ def test_a_fully_configured_run_declines_only_the_seam_quantities():
         _record(), target_grid=grid, analysis_time=T12, config=_config(),
         simulated_t2=t2, simulated_u10=u10, simulated_v10=v10)
     declined = provenance["counts"]["values_declined_by_quantity"]
-    assert set(declined) == {"dewpoint_2m", "mslp"}
+    # Since 8df32e3b1 the writer also carries gust and hourly
+    # precipitation for the standing scorecard; they are verification
+    # quantities, not assimilated ones, so this operator declines them
+    # beside the two it always declined.
+    assert set(declined) == {"dewpoint_2m", "mslp",
+                             "wind_gust_10m", "precipitation_1h"}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -967,17 +968,29 @@ def test_the_windowed_donor_carries_nothing_it_is_not_asked_for():
 # --------------------------------------------------------------------------
 
 def test_no_selector_is_refused_for_a_missing_closure():
-    """The two tables that carried the refusal are empty, and stay empty.
+    """Only a genuinely missing closure stays in the two refusal tables.
 
     An entry here is a refusal whose only reason is that a closure has
-    not been validated, which this release does not ship.  The machinery
-    survives for a scheme whose closure is genuinely missing; nothing is
-    in that state.
+    not been validated.  The machinery survives for a scheme whose closure
+    is genuinely missing, and FAST_SBM (mp=30) is the one scheme in that
+    state: a mixed edge would have to build 142 spectral distributions
+    from another scheme's bulk moments, and no such entry closure is
+    validated.  Every bulk scheme stays out.
     """
     from gpuwm.core import microphysics_transition as mt
+    from gpuwm.core.fast_sbm_contract import BIN_SPECIES
+    from gpuwm.microphysics_schemes import NAMED_SCHEMES
 
-    assert mt.UNVALIDATED_MIXED_EDGE_SELECTORS == ()
-    assert mt.UNVALIDATED_MIXED_EDGE_MOMENTS == {}
+    # Every ported WRF scheme has its closure.  FAST_SBM (30) is refused at
+    # a mixed edge for its 142 bins.  The named WOOF schemes (2.8.8: TEMPO,
+    # for the RRFS v2 hex preset) run same-scheme nests and are refused at
+    # a mixed edge by name, with their own moment list.
+    named = tuple(s.mp_id for s in NAMED_SCHEMES.values())
+    assert mt.UNVALIDATED_MIXED_EDGE_SELECTORS == (30,) + named
+    assert mt.UNVALIDATED_MIXED_EDGE_MOMENTS == {
+        30: BIN_SPECIES,
+        **{s.mp_id: s.moment_species + s.aerosol_species
+           for s in NAMED_SCHEMES.values()}}
 
 
 def test_the_wdm6_and_aerosol_entry_closures_seed_the_ported_values():

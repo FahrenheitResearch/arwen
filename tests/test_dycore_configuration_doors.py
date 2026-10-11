@@ -30,7 +30,10 @@ def test_generic_namelist_keeps_current_staging_bytes_and_legacy_defaults(tmp_pa
     from test_namelist_import import _pair
     text, _ = import_namelists(*_pair(tmp_path), name="dycore-control")
     baseline = json.loads((FIXTURE / "identity-e62a72e48-dycore.json").read_text())
-    assert hashlib.sha256(text.encode()).hexdigest() == baseline["namelist"]
+    from wrf_clock_lines import WRF_CLOCK_BLOCK, without_wrf_clock_lines
+    assert WRF_CLOCK_BLOCK in text
+    assert hashlib.sha256(without_wrf_clock_lines(text).encode()
+                          ).hexdigest() == baseline["namelist"]
     raw = tomllib.loads(text)
     emitted = set(raw["shared"]) | {key for row in raw["domain"] for key in row}
     assert not emitted.intersection(FORK_VALUES)

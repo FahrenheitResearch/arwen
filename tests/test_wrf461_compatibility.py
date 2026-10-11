@@ -99,7 +99,7 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     each increment was read off the enlarged matrix rather than derived.
     """
     cells = tuple(iter_compatibility_matrix())
-    assert len(cells) == MATRIX_CELL_COUNT == 12800
+    assert len(cells) == MATRIX_CELL_COUNT == 17600
     assert len({
         (
             cell.mp_physics,
@@ -134,18 +134,18 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     # verdict scaled by exactly 4/3 and then 10/6, and each count below was
     # read off the enlarged matrix, not derived.
     assert Counter(cell.verdict for cell in cells) == {
-        WRFVerdict.LEGAL: 5280,
-        WRFVerdict.LEGAL_RECONFIGURED: 1760,
-        WRFVerdict.FATAL: 4000,
-        WRFVerdict.NOT_EXPRESSIBLE: 1760,
+        WRFVerdict.LEGAL: 7260,
+        WRFVerdict.LEGAL_RECONFIGURED: 2420,
+        WRFVerdict.FATAL: 5500,
+        WRFVerdict.NOT_EXPRESSIBLE: 2420,
     }
     # Every represented cumulus value carries its own Registry citation,
     # on the same terms the mp assertion below states.
-    assert {cell.cu_physics for cell in cells} == {0, 1, 3, 16}
+    assert {cell.cu_physics for cell in cells} == {0, 1, 3, 6, 16}
     # Every represented mp value carries its own Registry citation, so the
     # matrix cannot grow an axis value that is admitted without one.
     assert {cell.mp_physics for cell in cells} == {
-        0, 1, 6, 8, 9, 10, 16, 18, 28, 50}
+        0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50}
     assert WRF_COMMIT == "d66e442fccc04111067e29274c9f9eaccc3cef28"
 
 
@@ -206,6 +206,17 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
                     "cu_physics=3 .* requires a PBL scheme")):
                 validate_run_config(cfg)
             observed["arwen-structural-gf-pbl"] += 1
+        elif cell.mp_physics == 30 and cell.radiation == "rrtmg-rte-rrtmgp":
+            # A JUDGED cloud-optics exclusion, not a WRF rule: WRF pairs
+            # FAST_SBM with RRTMG, but its bin effective-radius integrals
+            # are not qualified for the RTE+RRTMGP substitution
+            # (gpuwm.core.rrtmgp._NO_CLOUD_OPTICS_COUPLING), so the run door
+            # refuses before step 0 and names the legacy-RRTMG remedy; the
+            # rrtmg-legacy cells of the same tuples are admitted.
+            with pytest.raises(NotImplementedError, match=(
+                    "cloud-optics coupling.*rrtmg_legacy")):
+                validate_run_config(cfg)
+            observed["arwen-judged-cloud-optics"] += 1
         else:
             assert validate_run_config(cfg) is cfg
             observed["admitted"] += 1
@@ -244,9 +255,23 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
     # mp=9 cell reaches the same verdict its neighbours do.  wrf-fatal, the
     # LSM seam and the GF/PBL seam therefore all scaled by exactly 10/6,
     # and every count below was read off the enlarged walk.
+    #
+    # Re-measured for 2.8.9 when the run door began refusing FAST_SBM on the
+    # RTE+RRTMGP pair (the registry already did): 151 mp=30 cells move from
+    # admitted to the judged cloud-optics refusal -- every mp=30 RTE+RRTMGP
+    # cell that no earlier WRF-fatal or structural rule refuses.  Nothing
+    # else moved.
+    #
+    # Re-measured at the 2.8.9 integration, where FAST_SBM (mp 30) and
+    # Original cu6 (cu 6) meet: 17600 cells, 12800 * 11/10 * 5/4.
+    # wrf-fatal, the LSM seam and the GF/PBL seam scale by both factors
+    # exactly; the cloud-optics refusal reaches 192 mp=30 RTE+RRTMGP cells
+    # (the 151 measured on the four cumulus values the lane saw, plus 41 at
+    # cu=6 that no earlier rule refuses), read off the merged tree's sweep.
     assert observed == {
-        "admitted": 7550,
-        "arwen-structural": 600,
-        "arwen-structural-gf-pbl": 650,
-        "wrf-fatal": 4000,
+        "admitted": 10368,
+        "arwen-judged-cloud-optics": 192,
+        "arwen-structural": 825,
+        "arwen-structural-gf-pbl": 715,
+        "wrf-fatal": 5500,
     }

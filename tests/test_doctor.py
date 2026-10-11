@@ -794,7 +794,15 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
                      # The ensemble reducer builds in tools/rustwx and
                      # resolves through GPUWM_ENSEMBLE_RENDERER, so it is
                      # off BRIDGE_ENV for the MPAS binaries' reason.
-                     "rw_ensbatch"}
+                     "rw_ensbatch",
+                     # The global globe packer (2.8.9) builds in tools/rustwx
+                     # and resolves through GPUWM_RW_GLOBE_PACK, likewise.
+                     "rw_globe_pack",
+                     # The observation scorecard and the forecast
+                     # verification scorer build in tools/rustwx and resolve
+                     # through GPUWM_RW_SCORECARD / GPUWM_RW_SCOREBOARD, so
+                     # they are off BRIDGE_ENV for the same reason.
+                     "rw_scorecard", "rw_scoreboard"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(
@@ -3259,3 +3267,22 @@ def test_the_long_path_row_is_in_the_default_estate():
 
     names = [c.name for c in doctor.collect_checks(sources=())]
     assert "Windows long paths (install root depth)" in names
+
+
+def test_a_full_card_is_not_judged_and_never_sent_to_reinstall_cupy(
+        monkeypatch):
+    """Named breakage: a correct install on a 4-card node whose card 0
+    another process had filled was told "MISSING cupy -> pip install
+    'gpuwm[gpu-cu13]'" and `install.sh` exited 1.  The words are the V12
+    box's own (2026-10-09)."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    check = _pairing(
+        monkeypatch, [("cupy-cuda13x", 13)],
+        {"wheel_runtime": 13000, "driver": 13020, "devices": 4,
+         "cublas": "OutOfMemoryError: Out of memory allocating 512 bytes "
+                   "(allocated so far: 0 bytes)."})
+    assert check.status == "present"
+    assert not check.blocking
+    assert "not judged" in check.detail
+    assert "CUDA_VISIBLE_DEVICES=0" in check.detail
+    assert "pip install" not in (check.remedy or "")

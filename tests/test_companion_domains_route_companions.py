@@ -530,6 +530,36 @@ def test_an_authored_following_nest_configuration_carries_the_route_files(
 _PROBE_VALUE = {"bldt": 0.5, "diff_6th_opt": 0, "isfflx": 0,
                 "mp_physics": 6, "sf_sfclay_physics": 1}
 
+#: The route-held keys that are per-domain keys of the schema: the ones
+#: whose per-domain edit reaches the route's own refusal and its measured
+#: way out.  The tuple grew past them at the fork-lane merges below, so the
+#: cells that drive a per-domain edit are parametrized over this part.
+PER_DOMAIN_ROUTE_KEYS = tuple(_PROBE_VALUE)
+
+#: The route-held keys no [[domain]] table can set, added to
+#: ROUTE_SHARED_DOMAIN_KEYS at the fork-lane merges: bbf87e3e7 (the GSL
+#: surface layer), 08af6a3cd (the fork dynamics and its clock), 88f7ab4d2
+#: (RUC) and 9540c1857 (the Thompson fork).  Every one but terrain_clock is
+#: a [shared] key of the schema, so the door refuses a one-domain edit of
+#: it with the schema's own tree-wide sentence before the route is asked;
+#: terrain_clock is no physics key of the schema at all, and the route
+#: sentence refuses it.  Pinned, so a further addition is a decision.
+TREE_WIDE_ROUTE_KEYS = ("mynn_sfclay_variant", "terrain_clock",
+                        "diff_6th_form", "upper_wind_limiter_form",
+                        "mp_zero_out", "mp_zero_out_thresh",
+                        "mp_zero_out_all", "ruc_irrigation", "ruc_snow",
+                        "ruc_qvg_cold_start", "ruc_2m_diagnostic",
+                        "thompson_version", "thompson_fork_snow_fall")
+
+#: The per-domain route keys with no tree-wide way out on this emission.
+#: 4193eb0da selects the GSD MYNN form at the HRRR doors, whose template
+#: writes scalar_pblmix=1, and the configuration parser couples that to
+#: bldt=0 and to mp_physics=28 (the implemented scalar mixing reads the
+#: aerosol-aware Thompson fields).  So bldt=0.5 or mp_physics=6 at every
+#: domain is refused by the parser itself, and the door says so instead of
+#: naming a remedy.
+NO_TREE_WIDE_WAY_OUT = ("bldt", "mp_physics")
+
 
 def _all_domains_publishes(base, tmp_path, settings, name):
     """Does this edit, at every domain, leave a candidate that runs?
@@ -549,13 +579,38 @@ def _all_domains_publishes(base, tmp_path, settings, name):
 
 
 def test_every_route_shared_key_is_one_the_door_takes_per_domain():
-    """A key the schema does not scope per domain needs no route reading."""
+    """Every route-held key is either probed here or pinned as tree-wide.
+
+    The per-domain ones each carry a probe value; the rest are exactly
+    the pinned set, none of them a per-domain key of the schema.
+    """
 
     from gpuwm.case_catalog import _native_contract
 
     _, _, domain_keys = _native_contract()
-    assert set(ROUTE_SHARED_DOMAIN_KEYS) <= set(domain_keys)
-    assert set(_PROBE_VALUE) == set(ROUTE_SHARED_DOMAIN_KEYS)
+    per_domain = [key for key in ROUTE_SHARED_DOMAIN_KEYS if key in domain_keys]
+    assert per_domain == list(PER_DOMAIN_ROUTE_KEYS)
+    assert [key for key in ROUTE_SHARED_DOMAIN_KEYS
+            if key not in domain_keys] == list(TREE_WIDE_ROUTE_KEYS)
+
+
+@pytest.mark.parametrize("key", TREE_WIDE_ROUTE_KEYS)
+def test_a_tree_wide_route_key_is_refused_on_a_nest(tmp_path, key):
+    """A one-domain edit of a key no [[domain]] table carries is refused.
+
+    Asked with the value the emission already holds: the scope is refused
+    whatever the value, and nothing is written.
+    """
+
+    base = _emit(tmp_path)
+    value = getattr(load_experiment(base).domain(2).run, key)
+    candidate = tmp_path / f"{key}-nest.toml"
+    with pytest.raises(ValueError) as refusal:
+        _edit(base, candidate, {"kind": "set_physics", "grid_id": 2,
+                                "settings": {key: value}})
+    assert key in str(refusal.value)
+    assert "Select All domains to change them" in str(refusal.value)
+    assert not candidate.exists()
 
 
 def test_a_microphysics_change_on_one_domain_is_refused_with_its_way_out(
@@ -597,7 +652,7 @@ def test_the_same_microphysics_change_still_publishes_on_another_route(
     assert not paths["namelist_input"].exists()
 
 
-@pytest.mark.parametrize("key", ROUTE_SHARED_DOMAIN_KEYS)
+@pytest.mark.parametrize("key", PER_DOMAIN_ROUTE_KEYS)
 def test_a_route_shared_key_is_refused_on_a_nest_with_its_way_out(
         tmp_path, key):
     base = _emit(tmp_path)
@@ -610,7 +665,7 @@ def test_a_route_shared_key_is_refused_on_a_nest_with_its_way_out(
     assert not candidate.exists()
 
 
-@pytest.mark.parametrize("key", ROUTE_SHARED_DOMAIN_KEYS)
+@pytest.mark.parametrize("key", PER_DOMAIN_ROUTE_KEYS)
 def test_the_way_out_the_refusal_names_publishes_a_candidate_that_runs(
         tmp_path, key):
     """The remedy is FOLLOWED, not restated.
@@ -629,6 +684,15 @@ def test_the_way_out_the_refusal_names_publishes_a_candidate_that_runs(
                "settings": {key: _PROBE_VALUE[key]}})
 
     remedy = refusal.value.all_domains_settings
+    if key in NO_TREE_WIDE_WAY_OUT:
+        # No remedy is claimed, and the sentence says why: the All domains
+        # edit it would have named is refused by the parser, driven here.
+        assert remedy is None
+        assert "Selecting All domains is refused here as well" in str(
+            refusal.value)
+        assert not _all_domains_publishes(
+            base, tmp_path, {key: _PROBE_VALUE[key]}, f"{key}-refused")
+        return
     assert remedy is not None and remedy[key] == _PROBE_VALUE[key]
     for field in remedy:
         assert field in str(refusal.value)
@@ -651,10 +715,12 @@ def test_the_way_out_the_refusal_names_publishes_a_candidate_that_runs(
 def test_the_second_step_is_named_only_where_the_route_needs_one(tmp_path):
     """Which keys need more than the scope, measured one door call each.
 
-    All five are carried tree-wide by the namelist columns alone.
-    Selecting another moist suite keeps CQ enabled, so the MP and
-    surface-layer edits no longer require a second setting to repair
-    a profile's retired CQ-off guard.
+    The three with a tree-wide way out are carried tree-wide by the
+    namelist columns alone.  Selecting another moist suite keeps CQ
+    enabled, so the surface-layer edit no longer requires a second
+    setting to repair a profile's retired CQ-off guard.  bldt and
+    mp_physics have no tree-wide way out on the GSD MYNN emission
+    (NO_TREE_WIDE_WAY_OUT), so they name no step at all.
     """
 
     base = _emit(tmp_path)
@@ -664,14 +730,17 @@ def test_the_second_step_is_named_only_where_the_route_needs_one(tmp_path):
             _edit(base, tmp_path / f"{key}-scope.toml",
                   {"kind": "set_physics", "grid_id": 2,
                    "settings": {key: value}})
-        beyond[key] = sorted(set(refusal.value.all_domains_settings) - {key})
+        remedy = refusal.value.all_domains_settings
+        beyond[key] = None if remedy is None else sorted(set(remedy) - {key})
 
-    assert beyond == {"bldt": [], "diff_6th_opt": [], "isfflx": [],
-                      "mp_physics": [], "sf_sfclay_physics": []}
-    for key in ("mp_physics", "sf_sfclay_physics"):
-        assert _all_domains_publishes(base, tmp_path,
-                                     {key: _PROBE_VALUE[key]},
-                                     f"{key}-alone")
+    assert beyond == {"bldt": None, "diff_6th_opt": [], "isfflx": [],
+                      "mp_physics": None, "sf_sfclay_physics": []}
+    assert _all_domains_publishes(
+        base, tmp_path, {"sf_sfclay_physics": _PROBE_VALUE["sf_sfclay_physics"]},
+        "sf_sfclay_physics-alone")
+    assert not _all_domains_publishes(
+        base, tmp_path, {"mp_physics": _PROBE_VALUE["mp_physics"]},
+        "mp_physics-alone")
 
 
 def test_a_per_domain_key_the_route_does_carry_still_reaches_its_namelist(
@@ -735,7 +804,7 @@ def _availability(config, action):
         "action": action})
 
 
-@pytest.mark.parametrize("key", ROUTE_SHARED_DOMAIN_KEYS)
+@pytest.mark.parametrize("key", PER_DOMAIN_ROUTE_KEYS)
 def test_the_panel_claims_the_all_domains_remedy_only_where_it_works(
         tmp_path, key):
     """The remedy field is a measurement, so it has to match the door.
@@ -766,9 +835,17 @@ def test_the_panel_claims_the_all_domains_remedy_only_where_it_works(
     else:
         assert reasons[0]["remedy"] is None
         assert len(reasons) > 1
-        assert "moist_cq" in " ".join(
-            reason["reason"] + " " + (reason["detail"] or "")
-            for reason in reasons[1:])
+        # The reason after the scope is the All domains door's own
+        # refusal, driven here (it named moist_cq until 4193eb0da made the
+        # emission's suite the GSD MYNN one, whose scalar_pblmix coupling
+        # now refuses first).
+        with pytest.raises((ValueError, NotImplementedError)) as door:
+            _edit(base, tmp_path / f"{key}-door.toml",
+                  {"kind": "set_physics", "grid_id": 0,
+                   "settings": {key: _PROBE_VALUE[key]}})
+        said = " ".join(reason["reason"] + " " + (reason["detail"] or "")
+                        for reason in reasons[1:])
+        assert " ".join(str(door.value).split())[:80] in " ".join(said.split())
 
 
 def test_every_all_domains_remedy_a_cell_carries_is_driven(tmp_path):
@@ -784,8 +861,12 @@ def test_every_all_domains_remedy_a_cell_carries_is_driven(tmp_path):
     from gpuwm import companion_physics
 
     base = _emit(tmp_path)
+    # A draft whose own All domains edit publishes.  It was mp_physics=6
+    # until 4193eb0da: on the GSD MYNN emission the parser refuses that at
+    # every domain (NO_TREE_WIDE_WAY_OUT), so no cell beside it could hold
+    # the remedy and this cell measured nothing.
     action = {"kind": "set_physics", "grid_id": 2,
-              "settings": {"mp_physics": 6}}
+              "settings": {"sf_sfclay_physics": 1}}
     installed = {component["id"]: {option["id"]: option["settings"]
                                    for option in component["options"]}
                  for component in companion_domains.physics_components()}

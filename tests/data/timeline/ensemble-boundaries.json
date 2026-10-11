@@ -1,0 +1,16 @@
+﻿{
+    "schema":  "gpuwm.timeline.sources.v1",
+    "boundaries":  {
+                       "legacy.rental.launched":  {
+                                                      "at":  "2026-10-04T03:00:34Z",
+                                                  "evidence":  "Downloads/SF-ENSEMBLE-2026-10-04/REPORT.md:74"
+                                                  },
+                       "rental.terminated":  {
+                                                 "at":  "2026-10-04T04:19:03Z",
+                                                 "evidence":  "Downloads/SF-ENSEMBLE-2026-10-04/REPORT.md:116"
+                                             }
+                   },
+    "warnings":  [
+                     "Member scheduler intervals include preparation. No first-step and last-step events were retained, so SF integration FF is unavailable."
+                 ]
+}

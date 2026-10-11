@@ -295,6 +295,14 @@ def test_a_fresh_object_on_a_freed_address_is_not_a_double_buffer():
     lifetimes = ObjectLifetimes()
     addresses, prints = [], []
     for _ in range(64):
+        # The previous bundle is dropped before the next is made, so its
+        # freed block is the first one of that size the allocator has: a
+        # rebinding assignment frees the old object only after the new one
+        # exists, and the allocations in between (the fingerprint's own
+        # among them) can take the freed block first: on CPython 3.13 on
+        # node-4 and on Windows no address came back in 64 captures, so
+        # the precondition below never held.
+        state.physics.tendencies = None
         state.physics.tendencies = Bundle()
         addresses.append(id(state.physics.tendencies))
         prints.append(host_fingerprint(state, identity=lifetimes.serial))

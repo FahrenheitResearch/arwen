@@ -659,7 +659,7 @@ def resolve_clock(exp: ExperimentConfig, *,
                 run.dt, _physics_interval_steps,
                 adaptive=run.use_adaptive_time_step)
         cudt_ticks = stepcu = None
-        if run.cu_physics in (1, 3, 16):
+        if run.cu_physics in (1, 3, 6, 16):
             # GF pins cudt_minutes = 0: the calendar records the every-step
             # cadence the physics driver actually runs, same as radt = 0.
             # New Tiedtke pins it for the same reason and one more -- its

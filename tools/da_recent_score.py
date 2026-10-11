@@ -293,18 +293,44 @@ def main(argv=None):
         parser.error("positive finite shared scoring budget required")
     campaign_started = time.monotonic()
     truth_command_receipt = None
+    # Preparation starts truth independently. Bind its directory from the slot
+    # artifacts when the caller did not pass an explicit scoring truth path.
+    if args.truth is None and args.truth_out is None and run.get('slots'):
+        candidate = Path(run['slots'][0]['obs']).parent.parent / 'truth'
+        if (candidate / 'truth-job.json').is_file():
+            args.truth_out = candidate
+    if args.truth is None and args.truth_out is not None and (args.truth_out / 'truth-job.json').is_file():
+        if args.inventory is None:
+            args.inventory = args.truth_out / 'background-inventory.json'
+        if args.fetch_receipt is None:
+            args.fetch_receipt = args.truth_out / 'background-fetch.json'
     if args.truth is None:
         if any(value is None for value in (args.inventory, args.fetch_receipt, args.truth_out)):
             parser.error("provide --truth or all of --inventory --fetch-receipt --truth-out")
         args.truth = args.truth_out/"truth.json"
         if not args.plan_only:
-            if args.truth.exists():
+            background = (args.truth_out / 'truth-job.json').is_file()
+            if args.truth.exists() and not background:
                 raise ValueError("fresh truth preparation output required")
+            if background:
+                from tools.da_recent_observations import join_truth, document_sha
+                from tools.da_object_fetch import fetch_binding
+                identity = json.loads((args.truth_out / 'truth-job.json').read_text())
+                if (identity['inventory_sha256'] != document_sha(json.loads(args.inventory.read_text()))
+                        or identity['fetch_receipt_sha256'] != fetch_binding(json.loads(args.fetch_receipt.read_text()))):
+                    raise ValueError('background truth inputs differ from scoring authority; stale truth cannot be scored')
+                manifest = join_truth(args.truth_out, timeout_seconds=args.time_budget_seconds)
+                expected_center = [case.get('center_lon', case.get('longitude', identity['center_lon'])),
+                                   case.get('center_lat', case.get('latitude', identity['center_lat']))]
+                if manifest['grid']['equal_area_center'] != expected_center:
+                    raise ValueError('background truth center differs from scoring case; incompatible geometry cannot be scored')
+                truth_command_receipt = {'status': 'complete', 'background_join': True}
             truth_command = [sys.executable, str(ROOT/"tools/da_recent_observations.py"), "truth",
                 "--inventory", str(args.inventory), "--fetch-receipt", str(args.fetch_receipt),
                 "--out", str(args.truth_out), "--center-lon", str(case.get("center_lon", case.get("longitude", -89))),
                 "--center-lat", str(case.get("center_lat", case.get("latitude", 31)))]
-            truth_command_receipt = command(truth_command, args.out/"truth-preparation.log", args.time_budget_seconds)
+            if not background:
+                truth_command_receipt = command(truth_command, args.out/"truth-preparation.log", args.time_budget_seconds)
             save(args.out/"truth-command-receipt.json", truth_command_receipt)
     saved = json.loads(args.saved_inputs.read_text()) if args.saved_inputs else None
     jobs = plan(case, run, args.truth, args.out, args.seeds, args.members, args.domain, saved, control_run)

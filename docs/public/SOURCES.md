@@ -31,6 +31,7 @@ List the whole registry with `gpuwm prep --list-sources`, or one row with
 | `aigfs` | `ai-gfs` | 6 h | f384 | global |
 | `aigefs` | `ai-gefs` | 6 h | f384 | global |
 | `ecmwf-open-data` | `ecmwf`, `ifs` | 3 h | f360 | global |
+| `ecmwf-ens` | `ifs-ens`, `ecmwf-ensemble` | 3 h | f360 | global, one perturbed member (`p01`..`p50`) |
 | `aifs` | `aifs-v2`, `aifs-single` | 6 h | f360 | global |
 | `rap` | `rap-awip32` | 1 h | f051 | AWIPS 221, 349x277 Lambert at 32 km (North America) |
 | `rap-native` | `rap-awp130bgrb` | 1 h | f051 | AWIPS 130, 451x337 Lambert at 13.545 km, 50 native hybrid levels (CONUS) |
@@ -103,16 +104,23 @@ bare grid rectangle would accept.
 
 ## Which sources `gpuwm fetch` downloads
 
-Every row in the table above except `era5-l137`, `20crv3` and
-`20crv3-cf` (see "Sources with no fetch door" below). Fourteen of them are
-rows in the packaged acquisition-route document
+Every row in the table above except `era5-l137` and `20crv3` (see
+"Sources with no fetch door" below). Fifteen of them are rows in the
+packaged acquisition-route document
 (`gpuwm/authorities/rw-wps-fetch-routes.v1.json`), read by the one engine
 in `gpuwm/fetch_routes.py`; four keep the hand-written transports that
-predate it. `docs/public/DATA.md` publishes the working command for each.
+predate it, and `20crv3-cf` reads the NOAA PSL annual CF archive through
+the native CF subset contract (`gpuwm/authorities/native-cf-fetch.v1.json`,
+1836 to 2015, 3-hourly). The route document has a sixteenth row,
+`rrfs-ens`: `gpuwm fetch` downloads its public member subset, and the
+wizard does not plan it, because that column stops at 250 hPa and carries
+no land state (its registry row is `explicit_composition_required`).
+`docs/public/DATA.md` publishes the working command for each.
 
 | how the bytes arrive | sources |
 |---|---|
-| table route (whole published objects, in parallel) | `hrrr-prs`, `hrrr-native`, `rap`, `rap-native`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
+| table route (whole published objects, in parallel) | `hrrr-prs`, `hrrr-native`, `rap`, `rap-native`, `rrfs`, `rrfs-ens`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `ecmwf-ens`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
+| native CF subset (the publisher's own subsetting service) | `20crv3-cf` (NOAA PSL THREDDS, annual per-variable files) |
 | hand-written transport (publisher-side subsetting) | `gfs`, `gdas` (NOMADS grib-filter or the S3 archive), `hrrr` (`.idx` byte ranges, live-cycle wait), `era5` (the public ARCO Zarr store with no key, or a Copernicus CDS retrieval under your own key) |
 
 `gpuwm domain` emits the `[fetch]` table and the runnable step 1 for every
@@ -134,14 +142,13 @@ domain, which is a different question from how many bytes come down.
 
 ## Sources with no fetch door
 
-Four runnable rows refuse a download by name, and the refusal states the
+Three runnable rows refuse a download by name, and the refusal states the
 breakage rather than reporting a gap:
 
 | source | why there is no route | what to do instead |
 |---|---|---|
 | `era5-l137` | ERA5 model-level data is a queued Copernicus CDS MARS request (dataset `reanalysis-era5-complete`, `levtype=ml`), not files at a predictable URL, and the request runs under your own CDS account | submit the model-level request yourself into a folder DIR, fetch the same hours' surface analysis beside it with `gpuwm fetch --source era5 --cycle CYCLE --hours HOURS --area AREA --retrieve --out DIR`, then `gpuwm prep --source era5-l137 --source-root DIR --experiment-config CONFIG.toml --wps-namelist CONFIG.namelist.wps` |
 | `20crv3` | the every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean | stage the member's files in DIR, then `gpuwm prep --source 20crv3 --source-root DIR --author-only --author-input-manifest DIR/member-manifest.json`, which prints the `--source-manifest` pair the run binds |
-| `20crv3-cf` | the NOAA PSL NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so `--cycle`/`--hours` describe nothing in it | fill DIR with `tools/download_20crv3_native_subset.py` and its window flags plus `--output DIR` (it rebuilds the missing orography and land mask into `invariant.nc`), then `gpuwm prep --source 20crv3-cf --source-root DIR --experiment-config CONFIG.toml --wps-namelist CONFIG.namelist.wps` |
 | `mapped` | the generic declarative adapter is not a product: it names no publisher, no bucket and no file grammar, so there is nothing to resolve | it *is* the door for bytes you already have -- supply the mapping and composition documents with the files (`--mapping`, `--composition`, `--provenance`, `--input`, `--supplement`) |
 
 `--source-root` binds the folder by the source's own row in
@@ -159,7 +166,7 @@ one and says which one it replaced. Each preparation keeps its own copy
 of the manifest it was made from. Adding a hand-staged source is a row
 there, not a code path.
 
-For `era5-l137`, `20crv3` and `20crv3-cf`, `gpuwm domain` emits a
+For `era5-l137` and `20crv3`, `gpuwm domain` emits a
 `[fetch]` table carrying the source, cycle, hours and the folder the
 bytes go in, and step 1 of the printed
 next-steps block is the staging note rather than a `gpuwm fetch` line

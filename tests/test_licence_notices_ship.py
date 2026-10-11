@@ -471,6 +471,7 @@ UPSTREAM_TOKENS = {
     "WPS": "WRF Preprocessing System",
     "WRF": "public domain",
     "UPP": "NOAA EMC Unified Post Processor (UPP)",
+    "TEMPO": "NCAR/TEMPO",
 }
 
 #: Cited Fortran sources with NO counterpart in the WRF distribution, so they
@@ -489,6 +490,14 @@ _WPS_ONLY = frozenset({
 #: share/output_wrf.F: the renderer's local import reads SIMULATION_START_DATE
 #: as WRF's history writer defines it (A137, rw-wrfbatch local_import.rs).
 _WRF_OTHER = frozenset({"output_wrf.F"})
+
+#: NCAR/TEMPO's own source files, cited bare (src/params.F90 and so on) by
+#: the rw-tempo crate that ports its table builders.
+_TEMPO = frozenset({"driver.F90", "params.F90", "utils.F90"})
+
+#: This repository's own Fortran: the TEMPO column reference driver under
+#: tools/tempo_ref, which the crate reads the records of.  No upstream.
+_FIRST_PARTY_FORTRAN = frozenset({"tempo_ref_driver.F90"})
 
 _FORTRAN_CITATION = re.compile(r"\b([A-Za-z0-9_]+\.(?:F90|F))\b")
 
@@ -514,6 +523,10 @@ def test_every_upstream_a_first_party_crate_transcribes_is_notified() -> None:
             projects.add("UPP")
         elif name in _WPS_ONLY:
             projects.add("WPS")
+        elif name in _TEMPO or name.startswith("module_mp_tempo"):
+            projects.add("TEMPO")
+        elif name in _FIRST_PARTY_FORTRAN:
+            continue
         elif (name.startswith("module_") or name.startswith("mp_")
               or name in _WRF_OTHER):
             projects.add("WRF")
@@ -807,8 +820,17 @@ def test_simulated_radar_vendor_inventory_is_complete_and_exportable(vendor) -> 
         assert re.fullmatch(r"[0-9a-f]{40}", record["source_commit"])
         assert record["source_commit"] in scope
         assert record["local_commits"][-1] == revision
+    # The inventory is the vendored SOURCE.  ci.yml's syntax step,
+    # `python -m compileall -q -j 0 gpuwm tilestream tools tests
+    # conftest.py`, writes __pycache__ beside the Python scripts bowecho
+    # vendors (nexrad_io's fixture generators, the pytmatrix LUT tools);
+    # .gitignore keeps that bytecode out of every commit and so out of
+    # every export, and SOURCE.json rightly does not list it.  Counting it
+    # turned this gate red in any checkout that had run the syntax step,
+    # the 2.8.9 E3 a1388eae7 public CI reproduction among them.
     expected = {p.relative_to(source).as_posix() for p in source.rglob("*")
-                if p.is_file() and p.name != "SOURCE.json"}
+                if p.is_file() and p.name != "SOURCE.json"
+                and "__pycache__" not in p.relative_to(source).parts}
     entries = record["files"]
     assert entries and len(entries) == len({entry["path"] for entry in entries})
     assert {entry["path"] for entry in entries} == expected

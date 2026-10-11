@@ -316,6 +316,10 @@ def test_grid_relative_winds_rotate_through_earth_basis(monkeypatch):
     # preflight must read the same estate rather than the host installation.
     monkeypatch.setattr(
         "gpuwm.ingest.preprocess_backend._gpu_runtime_installed", lambda: True)
+    # The CUDA stack here is a stand-in, so this machine allows its card:
+    # since 083ac7cd0 the backend choice honours GPUWM_NO_LOCAL_GPU first,
+    # and the CPU legs set it.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
     # This fixture supplies host arrays; stub the device launch at that seam.
     monkeypatch.setattr(horiz, "_rotate_gpu_fused", lambda u, v, sina, cosa, inverse:
                         (u * cosa - v * sina, v * cosa + u * sina) if inverse else

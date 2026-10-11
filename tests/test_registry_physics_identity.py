@@ -92,6 +92,9 @@ _REAL_CLAMP = (
     "gfix/288-mp-clamp): the shared microphysics finish clamps the heating "
     "at WRF's REAL product mp_tend_lim*dt, as classic Thompson already did")
 PHYSICS_CHANGES_SINCE_280 = {
+    "components.cumulus.options.tiedtke": (
+        "a new cumulus option, WRF's original Tiedtke (cu_physics = 6); "
+        "no earlier option or receipt changes"),
     "templates.thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1": (
         "a new named configuration selects the prescribed monthly surface "
         "fields and fractional sea ice; earlier templates keep their settings"),
@@ -111,6 +114,9 @@ PHYSICS_CHANGES_SINCE_280 = {
         "exact prior option declarations remain compatible at admitted old "
         "settings. " + _REAL_CLAMP)
        for option in ("milbrandt2mom-mp9", "morrison-mp10", "nssl2-mp18")},
+    "components.microphysics.options.fast-sbm-mp30": (
+        "a new option: WRF FAST_SBM spectral bin microphysics (mp_physics 30); "
+        "no earlier selection names it"),
     "components.microphysics.options.thompson-mp8": (
         "new analyzed-aerosol controls are forbidden under this package; "
         "exact prior option declarations remain compatible at admitted old "
@@ -146,6 +152,9 @@ PHYSICS_CHANGES_SINCE_280 = {
     "components.microphysics.options.wsm6-mp6": (
         "WSM6 profiles apply WRF's moisture pressure correction "
         "instead of the retired launch guard. " + _REAL_CLAMP),
+    "components.microphysics.options.tempo": (
+        "a new named microphysics scheme (TEMPO, selected as \"tempo\", "
+        "WOOF id 900); every earlier option keeps its settings"),
     "templates.p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1": (
         "its explicit CQ-on setting now equals the enabled default, "
         "so template identity normalization removes that redundant pin"),
@@ -265,6 +274,10 @@ PHYSICS_CHANGES_SINCE_280 = {
         "WRF's cycled start, a knob 2.8.0 did not have: false (default) "
         "cold-starts the MYNN; true keeps the start's QKE, QC_BL and "
         "CLDFRA_BL in the gsd_41 MYNN, as the operational fork does"),
+    "parameters.rrtmg_aer3_type_source": (
+        "the aer_opt=3 shortwave aerosol type, a knob 2.8.0 did not have: "
+        "rural (default) is type 1 everywhere as every earlier build ran; "
+        "landmask is the NOAA MPAS fork's rural-over-land, maritime-over-water"),
     "parameters.bl_mynn_version": (
         "the MYNN generation, a knob 2.8.0 did not have: wrf_461 (default) "
         "is WRF v4.6.1, gsd_41 the GSD MYNN v4.1 of the NOAA-EMC WRF 3.9 "
@@ -1267,7 +1280,7 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
         "registry physics of parameters.use_rap_aero_icbc (absent from the prepared registry)", *[
         f"registry physics of parameters.{knob} (absent from the prepared "
         "registry)"
-        for knob in ('aer_opt', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'cycling', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'lake_min_elev', 'lakedepth_default', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'sf_lake_physics', 'sf_surface_mosaic', 'slope_rad', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'zadvect_implicit', 'zadvect_implicit_variant')])
+        for knob in ('aer_opt', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'cycling', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'lake_min_elev', 'lakedepth_default', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'rrtmg_aer3_type_source', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'sf_lake_physics', 'sf_surface_mosaic', 'slope_rad', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'zadvect_implicit', 'zadvect_implicit_variant')])
 
 
 def test_a_new_receipt_resolves_to_its_own_parts():

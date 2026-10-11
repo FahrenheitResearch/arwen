@@ -728,6 +728,7 @@ class NativeReflectivityScheme(ValueError):
 #: none of them has a routine here to dispatch to, and the fall-through arm
 #: is Kessler's rain-only Marshall-Palmer form.
 SCHEME_NATIVE_REFL_10CM: dict[int, str] = {
+    30: "FAST_SBM spectral polar-scattering diagnostics require the native bin operator; the generic bulk operator cannot reproduce it",
     9: (
         "Milbrandt-Yau two-moment carries Zet as an INOUT dummy that WRF's "
         "driver binds straight to refl_10cm (module_microphysics_driver.F:"

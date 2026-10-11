@@ -102,13 +102,21 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
         "bl_mynn_cloud_tendency_form", "swint_opt", "aer_opt", "alb_sol",
         "thompson_version", "thompson_fork_snow_fall",
         "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest",
-        "surface_energy_diag", "cycling"]
+        "surface_energy_diag", "cycling", "rrtmg_aer3_type_source",
+        "bl_mynn_mixaerosols", "bl_mynn_mixnumcon", "tempo_ml_for_bl_nc",
+        "tempo_surface_emission_before", "thompson_table_dir"]
     assert _cfg().cycling is False
     assert "cycling" not in restart.configuration_echo(_cfg())
     for name, default in {"thompson_version": "wrf_461",
             "thompson_fork_snow_fall": "blend", "rrtmg_cloud_optics_form": "wrf_461",
-            "rrtmg_smoke_manifest": ""}.items():
+            "rrtmg_smoke_manifest": "", "rrtmg_aer3_type_source": "rural"}.items():
         assert RunConfig.__dataclass_fields__[name].default == default
+    # The land/water aerosol type binds only when moved off rural.
+    assert "rrtmg_aer3_type_source" not in restart.configuration_echo(
+        _cfg(aer_opt=3, **_HRRR))
+    echo = restart.configuration_echo(
+        _cfg(aer_opt=3, rrtmg_aer3_type_source="landmask", **_HRRR))
+    assert echo["rrtmg_aer3_type_source"] == "landmask"
 
 
 @pytest.mark.parametrize("kind,words", [

@@ -6,12 +6,13 @@ https://github.com/ufs-community/ccpp-physics/blob/3e6660c6df54e95a0871e990c2294
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from functools import lru_cache
 import math
 
 import numpy as np
+
+from gpuwm.local_gpu import no_local_gpu
 
 
 #: The plume translation unit's compile options.  ``--ftz=false`` because
@@ -121,7 +122,7 @@ def distribute_cached(columns, k_min, k_max, flam_frac, ebu_in, z_at_w, ebu):
     Bounds retain one-based GSL indices and exclusive k_max. Scratch storage
     is O(nfire) for validation, plus a gathered w-level array O(nfire*nz).
     """
-    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+    if no_local_gpu():
         raise RuntimeError("GPUWM_NO_LOCAL_GPU forbids cached injection launch; "
                            "launching would use the protected local device")
     import cupy as cp

@@ -608,7 +608,7 @@ Takes no options of its own.
 | `--out DIR` | output directory for the PNGs (default out/enprod) |
 | `--pmm-tie-rule {flat-index,average}` | how the probability-matched mean resolves equal means (default flat-index): 'flat-index' is Ebert's algorithm exactly and paints a deterministic but meaningless row-major gradient across a plateau; 'average' gives every point in a tie the group's mean intensity and gives up the exact pooled distribution |
 | `--products LIST` | comma-separated products: mean, spread, prob, paintball, pmm, or 'all' (default) |
-| `--source-label TEXT` | model/provenance label stamped on every plot (default ArWen) |
+| `--source-label TEXT` | model/provenance label stamped on every plot (default WOOF) |
 | `--threshold LIST` | comma-separated exceedance thresholds in the field's own units; default is the field's own (refl 40 dBZ, uh 75 m2 s-2). Every threshold gets its own probability and paintball plot |
 | `--timeidx N\|all` | index into the valid times every member shares, or 'all' (default) |
 
@@ -630,6 +630,7 @@ Takes no options of its own.
 | `--keep-checkpoints N` | how many complete checkpoint sets the run keeps in its folder (default 1, enough to resume); 0 keeps every hourly set, which a later branch or downscale from an earlier checkpoint needs |
 | `--keep-member-files` | also retain every member's full history files |
 | `--late-after-minutes MIN` | download routes only: how far past its scheduled time a lead may be before the run stops with exit 75; wins over the config's [fetch] late_after_minutes and the source row's budget |
+| `--live-products-width` | _(accepted, but not listed by --help)_ |
 | `--members N` | make an N-member ensemble with aggregate products |
 | `--no-memory-gate` | skip the before-launch memory check that refuses a configuration whose binding phase cannot fit this card's free VRAM, and the forecast runner's own check of the same envelope; a model state too big to build at all is still refused |
 | `--no-probe` | with --readiness: compute the schedule from the source table only and ask no host |
@@ -639,14 +640,20 @@ Takes no options of its own.
 | `--prepared-root DIR` | run this existing prepared bundle without fetch or preparation; add --restart to continue its checkpoint |
 | `--products LIST` | which products the render stage draws: a comma-separated list of catalog slugs, 'all' (the default -- the renderer's whole catalog), or 'none' to stop after the forecast. The same spelling `gpuwm render --products` takes |
 | `--readiness` | print gpuwm.readiness.v1 for the config's fetch window on stdout and run nothing: exit 0 ready, 75 not yet, 2 refused |
+| `--readiness-fold` | _(accepted, but not listed by --help)_ |
 | `--recipe {time-lagged,multi-model,surface-state,member-roster}` | take each ensemble member from a real source trajectory: time-lagged runs earlier cycles of the config's own source over the same window, multi-model runs the trajectories --trajectories lists, surface-state runs seeded soil moisture scales and SST offsets from [ensemble.perturbation], member-roster runs named land and fixed surface arms from [ensemble.member_variants] |
-| `--restart CHECKPOINT` | continue an existing checkpoint; prepared-cache runs also need --prepared-root, and use fresh output |
+| `--restart CHECKPOINT` | continue an existing checkpoint into fresh output; a checkpoint gpuwm go wrote resumes from its own run folder's prepared bundle, other prepared-cache checkpoints also need --prepared-root |
 | `--restart-roster JSON` | continue the exact original members from a durable ensemble restart roster |
 | `--run-stamp {on,off}` | put this run's forecast files, pictures and diagnostics in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--section lat,lon,lat,lon\|FILE.json` | the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products) are cut along, the same value `gpuwm render --section` takes; a JSON file gives {start, end} or a {points, extend_km} polyline. Spell a line that starts with a minus sign as --section=-33.9,151.2,-34.1,151.3. An xsec: product with no line is refused before anything is fetched |
+| `--stage-only STAGE` | _(accepted, but not listed by --help)_ |
+| `--static-cache-key` | _(accepted, but not listed by --help)_ |
+| `--static-cache-root` | _(accepted, but not listed by --help)_ |
 | `--supplement ROLE=PATH` | explicit preparation donor; repeat for multiple files. HRRR accepts PMSL=GRIB inside --data-dir and binds its bytes in the preparation source manifest |
+| `--tiles {off,auto,on}` | [tiles] mode for this launch's forecast: 'auto' streams a domain the card cannot hold through host memory, 'on' always streams, 'off' runs resident. A prepared bundle (--prepared-root, --restart) takes it as an execution control, never into its hash-bound config; a fetching launch runs a copy of the config with the mode re-stated, as --cycle does |
 | `--trajectories FILE` | the multi-model member list: a JSON or TOML file of {source, cycle[, member]} entries, one per member (selects --recipe multi-model) |
 | `--transport {auto,aws,dwd,ecmwf,google,msc,nomads,s3}` | download routes only: pin the fetch stage to one host of the source's endpoint ladder, the value `gpuwm fetch --transport` takes; wins over the config's [fetch] transport, and the plan says which it used |
+| `--warm-kernels` | _(accepted, but not listed by --help)_ |
 | `--whole-cycle` | download routes only: the fetch stage waits for the whole cycle (the old rule) instead of taking each lead as it posts; wins over the config's [fetch] as_posted |
 | `--wps-namelist PATH` | with --prepared-root: the exact WPS authority required by a single-domain portable bundle |
 
@@ -741,8 +748,9 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
-| `--allow-upstream-drift` | accept an NCAR archive whose bytes no longer match the packaged pin (recorded as unpinned; refused outside a sanity size band); never applies to the mirror |
+| `--allow-upstream-drift` | legacy spelling; refused by the native production route because unpinned geography changes prepared fields under the same dataset version |
 | `--bundle` | fetch NCAR's single geog_high_res_mandatory.tar.gz (2.6 GiB) instead of the per-dataset tarballs and extract the requested datasets from it (fallback; NCAR only) |
+| `--config FILE` | resolve only the geography this experiment's domains read; includes selected published static sources |
 | `--datasets default\|all\|CONSUMER\|NAME,NAME` | which datasets to stage (default keeps the WRF and mesh set; chem-dust opts into the three upstream dust datasets; all selects every pin). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~12 GiB Noah-MP soil archive that only gpuwm mesh reads |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--keep-archives` | keep the verified tarballs under <root>/.fetch-geog after extraction (default: remove each one after its datasets validate) |
@@ -815,6 +823,7 @@ Takes no options of its own.
 | `--keep-checkpoints N` | how many complete checkpoint sets the run keeps in its folder (default 1, enough to resume); 0 keeps every hourly set, which a later branch or downscale from an earlier checkpoint needs |
 | `--keep-member-files` | also retain every member's full history files |
 | `--late-after-minutes MIN` | download routes only: how far past its scheduled time a lead may be before the run stops with exit 75; wins over the config's [fetch] late_after_minutes and the source row's budget |
+| `--live-products-width` | _(accepted, but not listed by --help)_ |
 | `--members N` | make an N-member ensemble with aggregate products |
 | `--no-memory-gate` | skip the before-launch memory check that refuses a configuration whose binding phase cannot fit this card's free VRAM, and the forecast runner's own check of the same envelope; a model state too big to build at all is still refused |
 | `--no-probe` | with --readiness: compute the schedule from the source table only and ask no host |
@@ -824,14 +833,20 @@ Takes no options of its own.
 | `--prepared-root DIR` | run this existing prepared bundle without fetch or preparation; add --restart to continue its checkpoint |
 | `--products LIST` | which products the render stage draws: a comma-separated list of catalog slugs, 'all' (the default -- the renderer's whole catalog), or 'none' to stop after the forecast. The same spelling `gpuwm render --products` takes |
 | `--readiness` | print gpuwm.readiness.v1 for the config's fetch window on stdout and run nothing: exit 0 ready, 75 not yet, 2 refused |
+| `--readiness-fold` | _(accepted, but not listed by --help)_ |
 | `--recipe {time-lagged,multi-model,surface-state,member-roster}` | take each ensemble member from a real source trajectory: time-lagged runs earlier cycles of the config's own source over the same window, multi-model runs the trajectories --trajectories lists, surface-state runs seeded soil moisture scales and SST offsets from [ensemble.perturbation], member-roster runs named land and fixed surface arms from [ensemble.member_variants] |
-| `--restart CHECKPOINT` | continue an existing checkpoint; prepared-cache runs also need --prepared-root, and use fresh output |
+| `--restart CHECKPOINT` | continue an existing checkpoint into fresh output; a checkpoint gpuwm go wrote resumes from its own run folder's prepared bundle, other prepared-cache checkpoints also need --prepared-root |
 | `--restart-roster JSON` | continue the exact original members from a durable ensemble restart roster |
 | `--run-stamp {on,off}` | put this run's forecast files, pictures and diagnostics in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--section lat,lon,lat,lon\|FILE.json` | the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products) are cut along, the same value `gpuwm render --section` takes; a JSON file gives {start, end} or a {points, extend_km} polyline. Spell a line that starts with a minus sign as --section=-33.9,151.2,-34.1,151.3. An xsec: product with no line is refused before anything is fetched |
+| `--stage-only STAGE` | _(accepted, but not listed by --help)_ |
+| `--static-cache-key` | _(accepted, but not listed by --help)_ |
+| `--static-cache-root` | _(accepted, but not listed by --help)_ |
 | `--supplement ROLE=PATH` | explicit preparation donor; repeat for multiple files. HRRR accepts PMSL=GRIB inside --data-dir and binds its bytes in the preparation source manifest |
+| `--tiles {off,auto,on}` | [tiles] mode for this launch's forecast: 'auto' streams a domain the card cannot hold through host memory, 'on' always streams, 'off' runs resident. A prepared bundle (--prepared-root, --restart) takes it as an execution control, never into its hash-bound config; a fetching launch runs a copy of the config with the mode re-stated, as --cycle does |
 | `--trajectories FILE` | the multi-model member list: a JSON or TOML file of {source, cycle[, member]} entries, one per member (selects --recipe multi-model) |
 | `--transport {auto,aws,dwd,ecmwf,google,msc,nomads,s3}` | download routes only: pin the fetch stage to one host of the source's endpoint ladder, the value `gpuwm fetch --transport` takes; wins over the config's [fetch] transport, and the plan says which it used |
+| `--warm-kernels` | _(accepted, but not listed by --help)_ |
 | `--whole-cycle` | download routes only: the fetch stage waits for the whole cycle (the old rule) instead of taking each lead as it posts; wins over the config's [fetch] as_posted |
 | `--wps-namelist PATH` | with --prepared-root: the exact WPS authority required by a single-domain portable bundle |
 
@@ -1185,6 +1200,19 @@ Takes no options of its own.
 |---|---|
 | `--dir DIR` | directory of ODIM .h5 files, not searched recursively |
 
+## `gpuwm obs scorecard`
+
+| argument | what it does |
+|---|---|
+| `manifest` | versioned cases, arms, observation sources and metrics |
+
+| option | what it does |
+|---|---|
+| `--acquire` | fetch and decode public sources named by acquisition metadata; delete these private inputs after scoring |
+| `--data-root` | recorded input root substituted for ${DATA_ROOT} in request paths |
+| `--out` | output folder for the JSON receipt, the case and campaign tables and the native sheets |
+| `--timeout` | seconds allowed for each existing observation door |
+
 ## `gpuwm obs stage4`
 
 | argument | what it does |
@@ -1287,6 +1315,75 @@ Takes no options of its own.
 | `--vtable` | ERA5 GRIB1 Vtable |
 | `--wps-namelist` | standard WPS geometry/static-selection namelist |
 | `--wrf-version {3,4}` | with --namelist-support-report: the WRF line the namelist was written for, which selects only the Registry default an omitted &dynamics/use_theta_m takes (3: 0, dry theta, the line operational HRRR v4 runs; 4, the default: 1, moist theta) |
+
+## `gpuwm preset`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm preset check`
+
+| argument | what it does |
+|---|---|
+| `name` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm preset export`
+
+| argument | what it does |
+|---|---|
+| `name` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--out` | _(the parser declares no help text for this option)_ |
+| `--seconds` | _(the parser declares no help text for this option)_ |
+| `--start` | UTC YYYY-MM-DD_HH:MM:SS |
+
+## `gpuwm preset list`
+
+Takes no options of its own.
+
+## `gpuwm preset run`
+
+| argument | what it does |
+|---|---|
+| `name` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--card` | _(the parser declares no help text for this option)_ |
+| `--experimental` | run despite unmet requirements; a preset with none launches without it |
+| `--fingerprint-every` | full-field hash cadence in steps; defaults to each history endpoint |
+| `--grid` | _(the parser declares no help text for this option)_ |
+| `--history-every-minutes` | _(the parser declares no help text for this option)_ |
+| `--hours` | _(the parser declares no help text for this option)_ |
+| `--init` | _(the parser declares no help text for this option)_ |
+| `--init-source` | _(the parser declares no help text for this option)_ |
+| `--invariant` | _(the parser declares no help text for this option)_ |
+| `--lbc-dir` | _(the parser declares no help text for this option)_ |
+| `--mesh` | _(the parser declares no help text for this option)_ |
+| `--out` | _(the parser declares no help text for this option)_ |
+| `--start-time` | _(the parser declares no help text for this option)_ |
+| `--static` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm preset show`
+
+| argument | what it does |
+|---|---|
+| `name` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm preset verify-sources`
+
+| argument | what it does |
+|---|---|
+| `name` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
 
 ## `gpuwm remote`
 
@@ -1581,7 +1678,7 @@ Takes no options of its own.
 
 | argument | what it does |
 |---|---|
-| `[WRFOUT ...]` | wrfout NetCDF file(s) written by gpuwm run |
+| `[WRFOUT ...]` | wrfout NetCDF files, a wrfout directory, or the output folder printed by gpuwm go |
 
 | option | what it does |
 |---|---|
@@ -1623,7 +1720,7 @@ Takes no options of its own.
 | `--section-top-km N` | rust engine: the ceiling of a section's height axis, 1-40 km; absent, the engine fits up to 14 km, which draws a shallow feature in the bottom fourteenth of the frame -- give it 3 for a boundary-layer cut |
 | `--series` | render compatible files from each run/domain/episode as one timeline, including multi-hour products |
 | `--size WxH\|auto` | output pixels, rust engine; 'auto' (the default) sizes each canvas from its domain's shape, WxH draws a fixed canvas |
-| `--source-label TEXT` | model/provenance label stamped on every plot (default 'ArWen <the executing version>'); set it when rendering wrfout files this model did not produce, so the sheet does not claim them |
+| `--source-label TEXT` | model/provenance label stamped on every plot (default 'WOOF <the executing version>'); set it when rendering wrfout files this model did not produce, so the sheet does not claim them |
 | `--streamlines` | rust engine: draw the wind as STREAMLINES instead of barbs on every product that carries a wind layer. Without either flag the engine keeps its automatic choice (streamlines on curvilinear and projected grids, barbs on plain lat/lon), and the RUSTWX_WIND_STREAMLINES environment variable still works; this flag and --barbs outrank it |
 | `--theme NAME\|FILE.json` | rust engine: the render theme -- a built-in name (default, dark) or a JSON theme file naming the surface, the inks, the basemap linework, the colorbar chrome, the fonts and the colormap overrides (schema in tools/rustwx/crates/rustwx-render/src/theme.rs; RUSTWX_THEME is the environment spelling). Omitted, the engine draws its own look and the PNGs are byte-identical |
 | `--timeidx N\|all` | frame index within each file (within each timeline with --series), or 'all' (default) |
@@ -1729,6 +1826,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--allow-shared-gpu` | UNSUPPORTED: permit another substantial CUDA compute context; device verification and the GPUWM UUID lock remain enforced |
+| `--benchmark` | WRF inputs: time the forecast as a benchmark. Draws no products and runs no post-run verification, then prints the read, init, first step, steps and write times WRF's rsl.out reports, and the process total (also OUTDIR/benchmark-timing.json) |
 | `--directory-input-hash {inventory,content}` | how declared directory inputs (the static geography tree) are bound to this run's identity: 'inventory' (default) uses relative path, size, and mtime; 'content' reads every file and uses its SHA-256. Use 'content' when two runs being compared for byte identity stage their geography separately, and when an mtime-preserving change to that tree must not go unnoticed (docs/public/DETERMINISM.md). Also settable as GPUWM_DIRECTORY_INPUT_HASH. |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
@@ -1743,11 +1841,13 @@ Takes no options of its own.
 | `--preprocess-backend {cuda,cpu,auto}` | CONFIG: where the root domain's preparation runs, overriding [case_data] preprocess_backend (default: that key, else auto, which prepares on the CPU when the card reads busy or cannot hold it); pin it so two runs you compare start from the same preparation. Nests prepare on the card either way |
 | `--recipe {time-lagged,multi-model,surface-state,member-roster}` | take each ensemble member from a real source trajectory: time-lagged runs earlier cycles of the config's own source over the same window, multi-model runs the trajectories --trajectories lists, surface-state runs seeded soil moisture scales and SST offsets from [ensemble.perturbation], member-roster runs named land and fixed surface arms from [ensemble.member_variants] |
 | `--restart RST` | resume from a gpuwmrst restart file written by an earlier run of the SAME config (only the forecast length / output and restart cadence and each domain's history window, history_begin_s / history_end_s, may differ); restart writing itself is the restart_interval_s config key |
+| `--restart-from WRFRST` | continue a WRF run from its restart file (wrfrst_d01_<time>, any suffix): the state, physics and clock are the file's, and the namelist.input and wrfbdy_d01 beside it (or in --wrfinput DIR) supply the settings and the lateral forcing. With --run-seconds, the window after the restart instant |
 | `--restart-roster JSON` | continue the exact original members from a durable ensemble restart roster |
 | `--rrtmg-variant {rrtmg_legacy,rte-rrtmgp}` | WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation |
 | `--run-seconds` | shorten a --wrfinput or --met-em run inside its forcing coverage |
 | `--soil-source DIR` | WRF inputs: original met_em and Vtable directory for automatic soil-water recovery; defaults to the input directory |
 | `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
+| `--thompson-version {wrf_461,wrf_44}` | WRF inputs: override the classic Thompson generation selected from producer TITLE |
 | `--trajectories FILE` | the multi-model member list: a JSON or TOML file of {source, cycle[, member]} entries, one per member (selects --recipe multi-model) |
 | `--vertical-grid` | met_em: native, wrf-auto, or explicit:PATH eta grid |
 | `--vertical-levels` | met_em: requested level count for the selected vertical grid |
@@ -1771,6 +1871,13 @@ Takes no options of its own.
 | `--readiness` | print gpuwm.readiness.v1 for the window this plan fetches and run nothing: exit 0 ready (or nothing to probe), 75 not yet (with expected_ready_at and retry_after_seconds), 2 refused (the window can never start) |
 | `--resolve` | print the fully resolved configuration plus every automatic resolution as one JSON document, and run nothing |
 | `--sources` | print the source registry as one JSON document -- every registered source, what each one's row declares, and which run-plan route can drive it from an intent -- and run nothing; needs no plan |
+
+## `gpuwm scoreboard`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--request` | woof.scoreboard.request.v1 JSON request for the Rust scorer |
 
 ## `gpuwm setup`
 
@@ -2010,6 +2117,40 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm timeline`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm timeline project`
+
+| option | what it does |
+|---|---|
+| `--deltas` | measured lane delta JSON; repeatable, omitted for baseline |
+| `--output` | _(the parser declares no help text for this option)_ |
+| `--png` | projected waterfall, for one product |
+| `--reference` | gpuwm.timeline.reference.v1 JSON; repeat per product |
+
+## `gpuwm timeline report`
+
+| argument | what it does |
+|---|---|
+| `ledger [ledger ...]` | explicit timing JSON/JSONL paths; .jsonl.gz accepted |
+
+| option | what it does |
+|---|---|
+| `--cards` | allocated card count, including idle cards |
+| `--output` | JSON path; defaults to timeline.json |
+| `--png` | waterfall path; defaults to the JSON path with .png suffix |
+| `--product` | select product metadata; no product-specific accounting |
+| `--proxy-end` | explicit measured boundary as zoned UTC or Unix seconds |
+| `--proxy-start` | explicit measured boundary as zoned UTC or Unix seconds |
+| `--rental-id` | select one rental when a source has multiple rentals |
+| `--rental-requested` | explicit measured boundary as zoned UTC or Unix seconds |
+| `--rental-terminated` | explicit measured boundary as zoned UTC or Unix seconds |
+| `--run-id` | select a run while retaining its rental boundaries |
 
 ## `gpuwm tui`
 

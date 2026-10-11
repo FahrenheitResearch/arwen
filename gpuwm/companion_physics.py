@@ -433,7 +433,9 @@ def availability(request):
                 # these sentences, from this inventory, so the panel
                 # reports what a prepared run will meet instead of
                 # discovering it after the save.
-                unmet = run_preparation_preconditions(domain.run)
+                unmet = [sentence for sentence
+                         in run_preparation_preconditions(domain.run)
+                         if sentence not in standing_preconditions]
                 if unmet:
                     return (PRECONDITION, ValueError(unmet[0]),
                             AT_RUN_PREPARATION)
@@ -456,6 +458,21 @@ def availability(request):
     #: configuration is already running came back unavailable.
     standing_route = str(candidate_route_blocker(raw, original, original,
                                                  authority.source) or "")
+
+    #: The machine preconditions the configuration AS IT STANDS already
+    #: does not meet -- an mp=28 tree on a machine with no WIF aerosol
+    #: climatology staged, say.  They are the configuration's and this
+    #: machine's, exactly as the standing route refusal above is the
+    #: configuration's, and the save door never asks them (they are run
+    #: preparation's, and each names its one-line way out).  Counting one
+    #: against every edit withdrew "select All domains" from every
+    #: route-shared cell of an HRRR mp=28 configuration whose All domains
+    #: save publishes, so the panel and the door's own refusal, which
+    #: carries that remedy, answered differently about one cell.  A
+    #: precondition an option or edit INTRODUCES is still reported.
+    standing_preconditions = frozenset(
+        sentence for domain in original.domains
+        for sentence in run_preparation_preconditions(domain.run))
 
     def run_wide(settings):
         """The values here that no single domain owns and that differ."""

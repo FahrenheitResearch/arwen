@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 from gpuwm.ensemble import product_worker as worker
 
@@ -210,6 +211,76 @@ class ProductWorkerTest(unittest.TestCase):
                 except ProcessLookupError:
                     pass
                 process.wait(timeout=5)
+
+
+
+# fix289/ens-symlink: an ensemble output folder reached through a symlink.
+# The parent spells request, result and spill paths through its own output
+# folder while the worker holds the resolved root, so every product hour of
+# such a run was refused as escaping the output root.
+
+
+def _symlinked_output(tmp_path):
+    """Return (resolved real output folder, symlink that reaches it)."""
+    real = tmp_path / "real-output"
+    real.mkdir()
+    alias = tmp_path / "linked-output"
+    try:
+        os.symlink(real, alias, target_is_directory=True)
+    except OSError as error:
+        # Windows without Developer Mode or the symlink privilege refuses
+        # os.symlink (WinError 1314); every other platform must create it.
+        if os.name != "nt":
+            raise
+        pytest.skip(f"this Windows account may not create symlinks: {error}")
+    return real.resolve(), alias
+
+
+def _patched_worker():
+    return patch.multiple(worker, _parent_guard=lambda pid: None, _cpu_policy=lambda: None,
+        execute_request=lambda value: {"schema": worker.RESULT_SCHEMA, "root": value["root"]})
+
+
+def test_worker_accepts_request_spelled_through_symlinked_output_folder(tmp_path):
+    root, alias = _symlinked_output(tmp_path)
+    request = ProductWorkerTest().fixture(root)
+    work = root / ".ensemble-diagnostics" / "d01" / "product-process-x"
+    work.mkdir(parents=True)
+    (work / "request.json").write_text(json.dumps(request), encoding="utf-8")
+    spelled = alias / ".ensemble-diagnostics" / "d01" / "product-process-x"
+    with _patched_worker():
+        assert worker.main([str(spelled / "request.json"), "--result", str(spelled / "result.json")]) == 0
+    assert json.loads((work / "result.json").read_text())["root"] == str(root)
+    owned = worker._owned_path(root, str(alias / "coordinates.nc"))
+    assert owned == root / "coordinates.nc"
+    assert worker._owned_path(alias, str(root / "coordinates.nc")) == alias / "coordinates.nc"
+
+
+def test_symlinked_output_folder_keeps_every_outside_the_folder_refusal(tmp_path):
+    root, alias = _symlinked_output(tmp_path)
+    foreign = tmp_path / "foreign.nc"
+    foreign.write_bytes(b"not owned")
+    with pytest.raises(ValueError, match="escapes"):
+        worker._owned_path(root, str(alias.parent / "foreign.nc"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "spill.nc").write_bytes(b"not owned")
+    os.symlink(outside, root / "inner", target_is_directory=True)
+    with pytest.raises(ValueError, match="cannot traverse symlinks"):
+        worker._owned_path(root, str(alias / "inner" / "spill.nc"))
+    # A link inside the folder back onto the folder itself is still a
+    # traversed symlink, not a second spelling of the root.
+    (root / "spill.nc").write_bytes(b"owned")
+    os.symlink(root, root / "loop", target_is_directory=True)
+    with pytest.raises(ValueError, match="cannot traverse symlinks"):
+        worker._owned_path(root, str(alias / "loop" / "spill.nc"))
+    request = ProductWorkerTest().fixture(root)
+    (outside / "request.json").write_text(json.dumps(request), encoding="utf-8")
+    with _patched_worker(), pytest.raises(ValueError, match="escapes"):
+        worker.main([str(outside / "request.json"), "--result", str(alias / "result.json")])
+    assert not (root / "result.json").exists()
+    with pytest.raises(ValueError, match="output root cannot be a symlink"):
+        worker.execute_request(dict(request, root=str(alias)))
 
 
 if __name__ == "__main__":

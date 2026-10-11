@@ -1281,8 +1281,11 @@ def test_the_runtime_history_lane_admits_28_for_refl_10cm():
     # shipped through the hand-typed set that used to sit here.
     from gpuwm.config import MP_PHYSICS_ACCEPTED
 
+    # FAST_SBM (30) is the one moist scheme out: its polar-scattering
+    # diagnostic is not ported, and gpuwm.core.fast_sbm_runtime.apply
+    # refuses a due frame, so the history lane never asks it for one.
     assert (set(runtime.REFL_10CM_MICROPHYSICS)
-            == {mp for mp in MP_PHYSICS_ACCEPTED if mp})
+            == {mp for mp in MP_PHYSICS_ACCEPTED if mp} - {30})
     # ... and the set is cross-checked against the estimator's own
     # admission set rather than left as one hand-typed tuple, which is how
     # this pin went stale.  The two sets are no longer EQUAL, and the
@@ -1304,9 +1307,11 @@ def test_the_runtime_history_lane_admits_28_for_refl_10cm():
 
     assert (set(pf._REFLECTIVITY_MICROPHYSICS)
             <= set(runtime.REFL_10CM_MICROPHYSICS))
+    # FAST_SBM's row in that table records the third answer: it neither
+    # loads refl.cu nor fills the slot, and the history lane leaves it out.
     assert (set(runtime.REFL_10CM_MICROPHYSICS)
             - set(pf._REFLECTIVITY_MICROPHYSICS)
-            == set(pf._SELF_REFLECTIVITY_MICROPHYSICS) == {9, 18, 50})
+            == set(pf._SELF_REFLECTIVITY_MICROPHYSICS) - {30} == {9, 18, 50, 900})
 
     runtime_source = (pathlib.Path(__file__).resolve().parent.parent
                       / "gpuwm" / "runtime.py").read_text(encoding="utf-8")

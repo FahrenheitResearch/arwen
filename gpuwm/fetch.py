@@ -98,6 +98,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
+import contextlib
 import functools
 
 from gpuwm import (explain, fetch_bars, fetch_endpoints, fetch_guard,
@@ -2553,6 +2554,127 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# Only fresh Rust publications enter this memo. Existing/resumed files still
+# undergo independent identity checks. Mutation, append and rename change keys.
+_STREAM_FACTS = OrderedDict()
+_STREAM_FACTS_LOCK = threading.Lock()
+
+
+def _stream_entry(identity):
+    # Stat clocks can have coarser resolution on overlay filesystems. A
+    # same-size write must invalidate the stream digest even inside one tick.
+    with _STREAM_FACTS_LOCK:
+        entry = _STREAM_FACTS.get(identity)
+        if entry is not None and entry['_change_watch'].unchanged():
+            return entry
+        if entry is not None:
+            _STREAM_FACTS.pop(identity)['_change_watch'].close()
+    return None
+
+
+def _publication(identity: tuple) -> dict:
+    """The fields of a :func:`_stat_identity` a Rust receipt's ``publication`` names."""
+    return dict(zip(("dev", "ino", "bytes", "mtime_ns", "ctime_ns"), identity[1:]))
+
+
+#: Output holds open in this process; see :func:`_fetch_out`.
+_FETCH_OUT_HOLDS = 0
+
+
+@contextlib.contextmanager
+def _fetch_out(out, **options):
+    """The ``fetch-out`` lock; the last one to end closes held payload files.
+
+    A Windows mutation notice keeps its payload open, and an open file
+    refuses a rename of any folder above it and a MoveFileEx replacement
+    of itself.  The fetch that published a payload owns its folder until
+    it lets go.  When no fetch in this process holds an output any more,
+    the fresh facts that keep a file open are dropped, and later checks
+    read the disk as a resumed process does.  An inotify watch holds no
+    file and stays.
+    """
+    global _FETCH_OUT_HOLDS
+    with fetch_guard.hold("fetch-out", out, **options):
+        with _STREAM_FACTS_LOCK:
+            _FETCH_OUT_HOLDS += 1
+        try:
+            yield
+        finally:
+            with _STREAM_FACTS_LOCK:
+                _FETCH_OUT_HOLDS -= 1
+                if not _FETCH_OUT_HOLDS:
+                    for identity in [key for key, value in _STREAM_FACTS.items()
+                                     if value['_change_watch'].holds_file]:
+                        _STREAM_FACTS.pop(identity)['_change_watch'].close()
+
+
+def _remember_stream_facts(path: Path, entry: dict, *, emit_last_byte=True) -> None:
+    if (not isinstance(entry.get("grib2_messages"), int)
+            or not isinstance(entry.get("sha256"), str)):
+        return  # Compatibility with a backbone predating stream receipts.
+    published = entry.get("publication")
+    watch = None
+    if isinstance(published, dict):
+        # Watch before the identity is read, so a change after the read is
+        # noticed even when it lands inside the same change-time tick.
+        from gpuwm.file_change_watch import FileChangeWatch
+        watch = FileChangeWatch(path)
+    try:
+        identity = _stat_identity(path)
+        if entry.get("bytes") != identity[3]:
+            raise ValueError(f"{path.name}: Rust stream receipt byte count differs from the published file; refuses a changed payload")
+        if watch is not None and any(published.get(key) != value
+                                     for key, value in _publication(identity).items()):
+            raise ValueError(f"{path.name}: payload identity changed after Rust publication; refuses binding a digest to changed bytes")
+    except BaseException:
+        if watch is not None:
+            watch.close()
+        raise
+    if watch is not None:
+        with _STREAM_FACTS_LOCK:
+            previous = _STREAM_FACTS.pop(identity, None)
+            if previous is not None:
+                previous['_change_watch'].close()
+            _STREAM_FACTS[identity] = {**entry, '_change_watch': watch}
+            while len(_STREAM_FACTS) > 4096:
+                _STREAM_FACTS.popitem(last=False)[1]['_change_watch'].close()
+    # Platforms without a change-time identity retain independent disk checks.
+    if emit_last_byte and isinstance(entry.get("last_byte_unix"), (int, float)):
+        from gpuwm.timeline.ledger import emit
+        emit("fetch.last_byte", attrs={"name": path.name,
+             "range_completed_unix": entry["last_byte_unix"],
+             "receipt_delay_seconds": time.time() - entry["last_byte_unix"],
+             "boundary": "verified range response completion"})
+
+
+def _rename_stream_payload(landed: Path, dest: Path, entry: dict) -> None:
+    """Verify the published inode, rename it, then rebind its identity.
+
+    A rename changes ctime on Unix and ChangeTime on Windows. It may
+    change neither the bytes nor the inode, so every other identity
+    component must survive it.
+    """
+    _remember_stream_facts(landed, entry, emit_last_byte=False)
+    os.replace(landed, dest)
+    published = entry.get("publication")
+    if isinstance(published, dict):
+        actual = _publication(_stat_identity(dest))
+        if any(actual[key] != published.get(key) for key in actual if key != "ctime_ns"):
+            raise ValueError(f"{dest.name}: payload identity changed during rename; refuses binding changed bytes")
+        entry = {**entry, "publication": actual}
+    _remember_stream_facts(dest, entry)
+
+
+def _fetched_digest(path: Path) -> str:
+    entry = _stream_entry(_stat_identity(path))
+    return entry["sha256"] if entry is not None else sha256_file(path)
+
+
+def _fetched_records(path: Path) -> int:
+    entry = _stream_entry(_stat_identity(path))
+    return entry["grib2_messages"] if entry is not None else count_grib2_messages(path)
+
+
 #: sha256 of files this process has already read whole, keyed by every
 #: stat field that moves when a file's bytes can.  A finished folder's
 #: re-run asks "are these still the bytes the receipt recorded?" at the
@@ -2571,9 +2693,10 @@ _digest_clock_ns = time.time_ns
 
 
 def _stat_identity(path: Path) -> tuple:
-    status = os.stat(path)
-    return (os.path.abspath(path), status.st_dev, status.st_ino,
-            status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+    # Not os.stat on Windows, whose st_ctime is the creation time; see
+    # gpuwm.file_change_watch.stat_identity.
+    from gpuwm.file_change_watch import stat_identity
+    return (os.path.abspath(path), *stat_identity(path))
 
 
 def existing_file_digest(path: Path) -> str:
@@ -2589,6 +2712,12 @@ def existing_file_digest(path: Path) -> str:
     """
 
     identity = _stat_identity(path)
+    # Same-process manifest and supplement binding may ask again immediately
+    # after publication. The trusted stream already hashed these bytes. A
+    # resumed process has no stream facts, and any file mutation changes the key.
+    streamed = _stream_entry(identity)
+    if streamed is not None:
+        return streamed["sha256"]
     with _DIGEST_MEMO_LOCK:
         known = _DIGEST_MEMO.get(identity)
         if known is not None:
@@ -3458,7 +3587,7 @@ def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
     See :func:`_fetch_gfs_locked` for the transfer itself.
     """
 
-    with fetch_guard.hold("fetch-out", out, progress=progress):
+    with _fetch_out(out, progress=progress):
         return _fetch_gfs_locked(
             cycle=cycle, hours=hours, area=area,
             out=deep_io_path(out, DOWNLOAD_DEPTH_BUDGET), progress=progress,
@@ -3880,6 +4009,7 @@ def _rw_fetch_gfs_fullfile(*, binary: Path, cycle: datetime, hour: int,
             f"rw_fetch returned {len(record['files'])} files for one "
             "forecast hour")
     entry = record["files"][0]
+    _remember_stream_facts(out / entry["name"], entry)
     progress(f"fetch {source} f{hour:03d}: {entry['name']} "
              f"{entry['bytes']:,} B in {entry['wall_seconds']:.1f} s "
              f"({entry['source']}, {entry['mode']} -- "
@@ -3913,7 +4043,7 @@ def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
     """
 
     transport = fetch_endpoints.policy_transport(source, transport)
-    with fetch_guard.hold("fetch-out", out, progress=progress):
+    with _fetch_out(out, progress=progress):
         return _fetch_gfs_fullfile_locked(
             cycle=cycle, hours=hours, area=area,
             out=deep_io_path(out, DOWNLOAD_DEPTH_BUDGET), progress=progress,
@@ -4220,7 +4350,7 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                 raise RuntimeError(str(error)) from None
             endpoint_name = chosen.name
             url = chosen.url(key)
-            observed = count_grib2_messages(path)
+            observed = _fetched_records(path)
             if idx_records is not None and observed != idx_records:
                 _quarantine_rejected(path, progress,
                                      f"{source} full-file")
@@ -4229,7 +4359,7 @@ def _fetch_gfs_fullfile_locked(*, cycle: datetime, hours: tuple[int, ...],
                     f"messages where its live .idx lists "
                     f"{idx_records}; the file has been moved aside, "
                     "nothing was deleted")
-            digest = sha256_file(path)
+            digest = _fetched_digest(path)
             if engine != "rust":
                 progress(f"fetch {source} f{hour:03d}: {name} "
                          f"{path.stat().st_size:,} B in "
@@ -4608,7 +4738,7 @@ def author_gfs_front_door_manifest(
         "schema": GFS_FRONT_DOOR_MANIFEST_SCHEMA,
         "source": identity,
         "files": {
-            role: {"name": path.name, "sha256": sha256_file(path)}
+            role: {"name": path.name, "sha256": _fetched_digest(path)}
             for role, path in roles.items()
         },
     }
@@ -5299,7 +5429,9 @@ def _download_one_hrrr_product(
         if landed != dest:
             # Only the soil product needs renaming: it is carved out of
             # wrfprs and ArWen files it under its own name.
-            os.replace(landed, dest)
+            _rename_stream_payload(landed, dest, entry)
+        else:
+            _remember_stream_facts(dest, entry)
         # The census can only be read after the object has landed, so a
         # tripped tripwire here refuses AFTER a payload exists.  Quarantine
         # it first, then let the refusal say what is actually on disk --
@@ -5322,7 +5454,7 @@ def _download_one_hrrr_product(
             # count, not the selection's.
             expected_messages = (
                 entry.get("probe", {}).get("idx_record_count") or None)
-        observed = count_grib2_messages(dest)
+        observed = _fetched_records(dest)
         if expected_messages is not None and observed != expected_messages:
             _quarantine_rejected(dest, progress, f"hrrr {label}")
             raise ValueError(
@@ -5455,7 +5587,7 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
     if fetch_endpoints.policy_uses_aws("hrrr"):
         transport = fetch_endpoints.policy_transport("hrrr", transport)
         transport_fallback = ()
-    with fetch_guard.hold("fetch-out", out, progress=progress):
+    with _fetch_out(out, progress=progress):
         return _fetch_hrrr_locked(
             cycle=cycle, hours=hours, area=area,
             out=deep_io_path(out, DOWNLOAD_DEPTH_BUDGET), workers=workers,
@@ -5832,7 +5964,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                     binary=engine_bin if engine == "rust" else None,
                     cache_dir=cache_dir, progress=progress, streams=streams,
                     declared=runtime_declared)
-            digest = sha256_file(dest)
+            digest = _fetched_digest(dest)
             if engine != "rust":
                 # The Rust route has already said this, with the
                 # transport it used; a second line per file said it
@@ -5845,7 +5977,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
             "name": dest_name, "role": kind, "forecast_hour": hour,
             "bytes": dest.stat().st_size, "sha256": digest,
             "url": url, "transport": chosen,
-            "records": count_grib2_messages(dest),
+            "records": _fetched_records(dest) if downloaded else count_grib2_messages(dest),
             "seconds": round(time.perf_counter() - file_started, 6),
             # Said, not inferred.  Without it `fetch_throughput` read
             # every HRRR fetch as zero downloads -- so a re-run that
@@ -6637,6 +6769,66 @@ _LEGACY_ONLY_FLAGS = {
 }
 
 
+@functools.lru_cache(maxsize=32)
+def _stream_capable(binary, identity):
+    import subprocess
+    try:
+        result = subprocess.run([str(binary), "--help"], capture_output=True,
+                                text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and "rw_fetch object --url URL --output FILE" in result.stdout
+
+
+_ROUTE_OBJECT_TRANSPORT = fetch_routes._download_object
+
+
+def _route_stream_downloader(plan, args):
+    """Use the Rust streaming door for a declared GRIB2 profile.
+
+    Other formats retain their established transport. No source names or
+    provider-specific URL algebra appear in this data path.
+    """
+    adapter = source_adapters.get_source_adapter(plan.source_id)
+    # Preserve a caller's substituted transport, including offline replays.
+    if fetch_routes._download_object is not _ROUTE_OBJECT_TRANSPORT:
+        return None
+    if "grib2" not in str(adapter.packaged_profile).lower():
+        return None
+    from gpuwm import rustwx_fetch
+    binary = rustwx_fetch.find_fetch_bin()
+    if binary is None:
+        return None
+    # Older installed artifacts keep their former route until rebuilt.
+    # The new object door is additive to the existing fetch ABI.
+    if not _stream_capable(binary, _stat_identity(binary)):
+        return None
+    streams = fetch_pool.chunk_streams_per_file(args.fetch_workers, files=len(plan.objects),
+        host=fetch_pool.host_key(plan.objects[0].url) if plan.objects else None)
+
+    def download(url, dest, *, magic, opener=None):
+        if opener is not None or magic != "GRIB":
+            return fetch_routes._download_object(url, dest, magic=magic, opener=opener)
+        env = dict(os.environ)
+        env["RUSTWX_DOWNLOAD_STREAMS"] = str(streams)
+        dest = Path(dest)
+        if dest.exists():
+            _quarantine_rejected(dest, print,
+                "verified reuse failed; prevents replacing changed input bytes")
+        job = fetch_pool.current_job()
+        relay = getattr(job, "byte_relay", None)
+        entry = rustwx_fetch._run([str(binary), "object", "--url", url,
+            "--output", str(dest)], what="object", out=dest.parent, env=env,
+            on_progress=None if relay is None else relay())
+        _remember_stream_facts(dest, entry)
+        # Preparation binds the durable source manifest. Publication identity
+        # and transfer clocks belong to the memo/ledger, not that content key.
+        return {"name": dest.name, "bytes": entry["bytes"],
+                "sha256": entry["sha256"], "url": url}
+
+    return download
+
+
 def _route_fetch_main(args, source: str) -> int:
     """Fetch a table route with the same cycle/member/window used by its probe."""
     supplied = []
@@ -6687,7 +6879,7 @@ def _route_fetch_main(args, source: str) -> int:
         cycle = parse_cycle(args.cycle, source)
     plan = fetch_routes.resolve_request(source, cycle=cycle, hours=args.hours,
         cadence=args.cadence, start_hour=start, host=args.transport, member=args.member, out=args.out)
-    with fetch_guard.hold("fetch-out", args.out):
+    with _fetch_out(args.out):
         if not args.force_refetch:
             fetch_routes.check_prior_request(args.out, plan)
         loop = None
@@ -6722,8 +6914,27 @@ def _route_fetch_main(args, source: str) -> int:
                         f"--source {source} takes part of its start from the "
                         f"{donor.source.upper()} analysis of its own cycle, "
                         f"and {error}") from None
-        fetch_routes.run_plan(plan, out=args.out, force=args.force_refetch, file_workers=args.fetch_workers)
         donor_files = _fetch_route_donors(plan, args)
+        bound = False
+
+        def bind_ready(lead, entries, composed):
+            nonlocal bound
+            if not bound:
+                fetch_routes.write_handoff(plan, args.out, donor_files=donor_files)
+                bound = True
+
+        def bind_completed(index, entry):
+            # Probes also use the pool, but carry no payload digest.
+            if entry.get("sha256"):
+                bind_ready(None, None, None)
+
+        # Lead callbacks compose and publish verified prefixes while later
+        # inputs download. The handoff carries planned paths; complete=true
+        # remains the preparation barrier for an ordinary whole-window run.
+        with fetch_pool.completion_hook(bind_completed):
+            fetch_routes.run_plan(plan, out=args.out, force=args.force_refetch,
+                file_workers=args.fetch_workers, on_lead=bind_ready,
+                downloader=_route_stream_downloader(plan, args))
         fetch_routes.write_handoff(plan, args.out, donor_files=donor_files)
     print(f"fetch {source}: manifest {args.out / fetch_routes.MANIFEST_NAME}")
     for line in fetch_routes.handoff_lines(plan, args.out):
@@ -6789,6 +7000,7 @@ def _route_fetch_as_posted(plan, args, loop, *, last: int, options: dict) -> int
 
         fetch_routes.run_plan(plan, out=args.out, force=False,
                               file_workers=args.fetch_workers,
+                              downloader=_route_stream_downloader(plan, args),
                               lead_gate=None if whole else loop,
                               on_lead=published)
     finally:
@@ -6902,7 +7114,8 @@ def _fetch_route_donors(plan, args) -> dict:
             donor_plan = _donor_route_plan(donor, args)
             fetch_routes.run_plan(donor_plan, out=donor_out,
                                   force=args.force_refetch,
-                                  file_workers=args.fetch_workers)
+                                  file_workers=args.fetch_workers,
+                                  downloader=_route_stream_downloader(donor_plan, args))
             donor_files[donor.role] = donor_out / _donor_route_primary(
                 donor_plan, donor)
             continue
@@ -6933,12 +7146,17 @@ def fetch_main(args) -> int:
     """``gpuwm fetch``; exit 75 when an as-posted source fell behind its budget."""
 
     from gpuwm.fetch_as_posted import SourceBehind
+    from gpuwm.timeline.ledger import emit
 
+    emit("fetch.request", "begin", attrs={"source": args.source,
+         "worker_row": fetch_pool.worker_profile()["id"]})
     try:
         return _fetch_main(args)
     except SourceBehind as error:
         print(f"fetch {args.source}: {error}", file=sys.stderr)
         return error.exit_code
+    finally:
+        emit("fetch.request", "end", attrs={"source": args.source})
 
 
 def _fetch_main(args) -> int:
@@ -7303,7 +7521,7 @@ def _fetch_main(args) -> int:
         # call re-enters the same lock (it is re-entrant per process).
         requested_gfs_mode = ("full-file" if gfs_fullfile
                               else "nomads-cgi-subset")
-        with fetch_guard.hold("fetch-out", args.out):
+        with _fetch_out(args.out):
             if not args.force_refetch:
                 require_matching_request(args.out, source=source,
                                          cycle=cycle, area=area,
@@ -7431,7 +7649,7 @@ def _fetch_main(args) -> int:
         hours = hrrr_forecast_hours(args.hours, cycle, start_hour)
         # One lock over the guard and the transfer it authorises; see the
         # GFS branch above.
-        with fetch_guard.hold("fetch-out", args.out):
+        with _fetch_out(args.out):
             if not args.force_refetch:
                 require_matching_request(args.out, source="hrrr",
                                          cycle=cycle, area=area)

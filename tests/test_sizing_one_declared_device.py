@@ -114,9 +114,14 @@ def test_a_measured_card_still_prices_its_own_workspace(tmp_path):
     profile in, and a 128-SM card must not be priced on the 170-SM
     reference: that is the mixing this repair exists to stop, in the
     other direction.
+
+    Emitted for ERA5: since 4193eb0da the HRRR default is the gsd41
+    template (MYNN, no cumulus), which selects no per-column scheme
+    workspace, so an HRRR emission prices none on either card.  ERA5's
+    default carries YSU and Kain-Fritsch, both priced per SM.
     """
 
-    _, out = _emit(tmp_path)
+    _, out = _emit(tmp_path, source="era5")
     exp = load_experiment(out)
     measured = DeviceLocalMemoryProfile(
         name="present card", multiprocessor_count=128,

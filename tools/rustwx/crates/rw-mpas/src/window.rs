@@ -20,6 +20,30 @@ use std::f64::consts::PI;
 
 use crate::error::{MpasError, MpasResult};
 
+#[cfg(test)]
+mod regional_focus_tests {
+    use super::Window;
+
+    #[test]
+    fn uniform_regional_footprint_derives_a_finite_window() {
+        let lat = [35.0, 35.0, 40.0, 40.0];
+        let lon = [-100.0, -92.0, -100.0, -92.0];
+        let spacing = [12000.0; 4];
+        assert!(Window::mesh_focus(&lat, &lon, &spacing).is_err());
+        let window = Window::regional_focus(&lat, &lon, &spacing).unwrap();
+        let (grid_lat, grid_lon) = window.coordinates().unwrap();
+        assert!(!grid_lat.is_empty());
+        assert!(grid_lat.iter().chain(&grid_lon).all(|v| v.is_finite()));
+        assert!(window.description().contains("limited-area"));
+    }
+
+    #[test]
+    fn unbounded_or_invalid_regional_footprint_is_refused() {
+        assert!(Window::regional_focus(&[f64::NAN], &[0.0], &[12000.0]).is_err());
+        assert!(Window::regional_focus(&[0.0; 4], &[0.0, 90.0, 180.0, -90.0], &[12000.0; 4]).is_err());
+    }
+}
+
 /// WRF's spherical earth. These windows emulate a WRF domain, so they use
 /// WRF's radius and not a WGS84 mean radius, or the emitted coordinates would
 /// disagree with the projection attributes the renderer reads.
@@ -404,6 +428,44 @@ impl Window {
             MESH_FOCUS_MARGIN_FRACTION,
             &selection,
             "mesh-derived focus window",
+        )
+    }
+
+    /// A limited-area window covers all supplied cells at their median spacing.
+    /// The caller verifies a nonempty boundary mask before choosing this path.
+    pub fn regional_focus(
+        latitude_degrees: &[f64],
+        longitude_degrees: &[f64],
+        cell_spacing_m: &[f64],
+    ) -> MpasResult<Window> {
+        let n = latitude_degrees.len();
+        if n == 0 || longitude_degrees.len() != n || cell_spacing_m.len() != n {
+            return Err(MpasError::Refusal(
+                "a regional render window needs one position and spacing per cell".to_string(),
+            ));
+        }
+        for i in 0..n {
+            if !latitude_degrees[i].is_finite()
+                || !longitude_degrees[i].is_finite()
+                || latitude_degrees[i].abs() > 90.0
+                || !cell_spacing_m[i].is_finite()
+                || cell_spacing_m[i] <= 0.0
+            {
+                return Err(MpasError::Refusal(format!(
+                    "regional cell {i} has an invalid position or spacing; the window cannot be projected"
+                )));
+            }
+        }
+        let selected: Vec<usize> = (0..n).collect();
+        let spacing = Self::median_spacing_of(cell_spacing_m, &selected);
+        Self::window_over_selected_cells(
+            latitude_degrees,
+            longitude_degrees,
+            &selected,
+            spacing,
+            MESH_FOCUS_MARGIN_FRACTION,
+            "all cells of the verified limited-area mesh",
+            "mesh-derived limited-area window",
         )
     }
 

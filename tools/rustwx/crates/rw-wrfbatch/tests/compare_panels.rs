@@ -162,6 +162,7 @@ fn a_file_panel_is_the_panel_the_two_input_sheet_draws_for_that_file() {
     assert_eq!(columns[0]["name"], "hrrr");
     assert_eq!(columns[1]["label"], "Member A");
     assert_eq!(columns[2]["label"], "Member B");
+    assert_eq!(columns[1]["kind"], "model");
     assert_eq!(columns[2]["op"], "field");
 }
 

@@ -22,9 +22,10 @@ imports no device code. It is an oracle reference, not an ingest path.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 
 import numpy as np
+
+from gpuwm.local_gpu import no_local_gpu
 
 F = np.float32
 
@@ -223,7 +224,7 @@ def np_advect_mono(q, q0, ru, rv, rw, mut, mu_old, coord, dx, dy, dt,
 
 
 def _cupy():
-    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+    if no_local_gpu():
         raise RuntimeError("GPUWM_NO_LOCAL_GPU forbids a local CUDA launch")
     import cupy as cp
     return cp

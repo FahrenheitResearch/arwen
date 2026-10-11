@@ -455,14 +455,17 @@ def test_the_mynn_matrix_is_the_same_in_every_land_surface_column(
 #: evaluated over the transported number moments -- so the pairing
 #: resolves, and gpuwm.config.validate_milbrandt2_options no longer
 #: carries the refusal.
-MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 6, 8, 9, 10, 16, 18, 28, 50]
+MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 6, 8, 9, 10, 16, 18, 28, 50, 900]
 
-#: The admitted microphysics values the MYNN slice does not reach.  EMPTY:
-#: every admitted scheme composes with MYNN under RTE+RRTMGP.  50 was here
-#: from the 1.9 gate until the P3 cloud-optics row landed, and 9 until
-#: the Milbrandt-Yau one did; see MYNN_MICROPHYSICS_ACCEPTED.  The tuple
-#: stays so the test below keeps asserting the partition is exact.
-MYNN_MICROPHYSICS_EXCLUDED = ()
+#: The admitted microphysics values the MYNN slice does not reach.  50 was
+#: here from the 1.9 gate until the P3 cloud-optics row landed, and 9 until
+#: the Milbrandt-Yau one did; see MYNN_MICROPHYSICS_ACCEPTED.  FAST_SBM (30)
+#: is here by a JUDGED exclusion, not a gap: its bin effective-radius
+#: integrals are not qualified for RTE+RRTMGP cloud optics
+#: (gpuwm.core.rrtmgp._NO_CLOUD_OPTICS_COUPLING), so the slice's RTE+RRTMGP
+#: anchor refuses it at the run door; its legacy-RRTMG pairing accepts
+#: (measured below).
+MYNN_MICROPHYSICS_EXCLUDED = (30,)
 
 
 def test_mynn_composes_with_every_microphysics_and_cumulus_scheme(
@@ -505,6 +508,14 @@ def test_mynn_composes_with_every_microphysics_and_cumulus_scheme(
             anchor, mp_physics=mp_physics,
             ra_lw_physics=0, ra_sw_physics=1))
         assert on_dudhia.verdict == "ACCEPTED", (mp_physics, on_dudhia.message)
+    # FAST_SBM: refused on the RTE+RRTMGP anchor with the legacy remedy
+    # named, and accepted on the legacy RRTMG pair that remedy names.
+    on_rrtmgp = walk.attempt(dict(anchor, mp_physics=30))
+    assert on_rrtmgp.verdict == "REFUSED", on_rrtmgp.message
+    assert "rrtmg_legacy" in on_rrtmgp.message
+    on_legacy = walk.attempt(dict(anchor, mp_physics=30,
+                                  ra_rrtmg_variant="rrtmg_legacy"))
+    assert on_legacy.verdict == "ACCEPTED", on_legacy.message
 
 
 def _radiation_bearing(switches) -> bool:

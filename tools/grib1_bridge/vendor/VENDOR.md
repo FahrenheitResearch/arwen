@@ -141,9 +141,16 @@ auditable local deltas required by the native GFS bridge:
   a bitmap-free JPEG2000 message whose main header declares the reversible
   5/3 wavelet (the only case whose area integers are the whole decode's),
   and unpacked whole and cropped for every other message.
+  3405946bb (2026-10-04) extends the all-missing case to complex packing
+  (Templates 5.2 and 5.3): a field whose Section 5 declares zero coded
+  values, zero groups and canonical zero descriptors, under a bitmap that
+  marks every point missing (exactly the grid, or padded with zero bits
+  to the final octet), decodes as all-missing; data bytes, a malformed
+  bitmap or a nonempty group table are still decode errors
+  (`tests/all_missing_complex.rs`).
   Patched-file SHA-256 values are respectively
   `22254047da83fafcc06816170b7687127cb9f64bc7e82e4de2d239861c149547`
-  and `c84981a99a5f1ca5baa31fa3da83d3a1c488c5953e4da3e970af349005a1745b`.
+  and `be1485f980301df6c99a91b8b7d1440fc6c90da526627e36494d92662bdc6297`.
 - `src/grib2/grid.rs` fails closed on a grid-definition template it has no
   point placement for: `grid_latlon` returns `crate::Result` and refuses
   naming the template number (and that supporting it needs the template's

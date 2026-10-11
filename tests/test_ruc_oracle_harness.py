@@ -26,9 +26,33 @@ def test_comparator_keeps_signed_zero_words_and_rejects_nonfinite():
     assert np.all(np.isinf(absolute[2:]))
 
 
+def _posix_bash():
+    """A bash that runs the harness script, or None.
+
+    On Windows the first bash on PATH can be System32's WSL launcher, which
+    is no shell without an installed distribution (public CI 38002026864,
+    cpu windows-2025: "Windows Subsystem for Linux has no installed
+    distributions"). Git for Windows ships the bash the harness is run with.
+    """
+    if os.name != "nt":
+        return shutil.which("bash")
+    git = shutil.which("git")
+    if git:
+        # git.exe sits in Git\cmd, Git\bin or Git\mingw64\bin; bash.exe in Git\bin.
+        for root in list(Path(git).resolve().parents)[:3]:
+            for candidate in (root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe"):
+                if candidate.is_file():
+                    return str(candidate)
+    found = shutil.which("bash")
+    if found and Path(found).resolve().parent.name.lower() != "system32":
+        return found
+    return None
+
+
 @pytest.mark.parametrize("arm", ["free", "replay"])
 def test_shell_comparison_failure_exits_nonzero(tmp_path, arm):
-    if not shutil.which("bash"):
+    bash = _posix_bash()
+    if bash is None:
         pytest.skip("requires bash")
     sys.path.insert(0, str(TOOL))
     import layout
@@ -54,7 +78,7 @@ def test_shell_comparison_failure_exits_nonzero(tmp_path, arm):
             np.savez(tmp_path / ("woof-replay.npz" if replay else "woof.npz"), **arrays)
     script = (TOOL / "run_case.sh").read_text()
     comparisons = script[script.rindex('cd "$out"'):]
-    result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + comparisons],
+    result = subprocess.run([bash, "-c", "set -euo pipefail\n" + comparisons],
                             env=os.environ | {"out": str(tmp_path), "tool": str(TOOL)},
                             text=True, capture_output=True)
     assert "hfx" in result.stdout, result.stdout + result.stderr

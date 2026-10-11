@@ -84,6 +84,12 @@ exclude tests/test_n5s_toolchain.py
 # The branch-dispositions gate is development bookkeeping and RELEASE-EXCLUDE.txt
 # drops it from the public tree, so the sdist drops it too.
 exclude tests/test_branch_dispositions.py
+# The three tests c358db8e5 dropped from the public tree with the 2.8.9
+# speed-lane bench harness (tools/bench/**) they import; the sdist drops
+# them too, or it carries tests without the harness they drive.
+exclude tests/test_obs_parallel_native.py
+exclude tests/test_regional_packing_bench.py
+exclude tests/test_timeline_qualification.py
 
 # Keep the user manuals and their directly linked workflow references
 # available to readers of the source distribution.

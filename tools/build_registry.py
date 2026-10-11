@@ -253,6 +253,13 @@ IMPLEMENTED: dict[str, dict] = {
         "read_when": {"ra_rrtmg_variant": "rrtmg_legacy"},
         "consuming_read": "gpuwm/core/rrtmg_legacy.py",
         "description": "Source form of the legacy RRTMG cloud wrapper: WRF v4.6.1 or the NOAA WRFV3.9 fork's shortwave radius defaults, snow ice fraction and Thompson cold-start radii."},
+    "rrtmg_aer3_type_source": {
+        "type": "string", "enum": ["rural", "landmask"],
+        "default": "rural", "component_id": "radiation",
+        "read_when": {"aer_opt": 3, "ra_sw_physics": 4,
+                      "ra_rrtmg_variant": "rrtmg_legacy"},
+        "consuming_read": "gpuwm/core/rrtmg_legacy.py",
+        "description": "Aerosol type of the aer_opt=3 shortwave optics: rural type 1 everywhere (the NOAA WRFV3.9 HRRR fork) or the NOAA MPAS fork's land/water type, rural over land and maritime over water."},
     # WRF v4.7.1 sub-grid terrain drag (gpuwm.core.terrain_drag, lane
     # 282-terrain-drag), off by default: topo_wind under YSU, gwd_opt under
     # every PBL scheme.
@@ -2717,7 +2724,7 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "not a defect on either side. mp=28's RSLF/RSIF saturation Horner "
             "chains are contraction-pinned while mp=8's stay FMA-contracted, "
             "so the two schemes' saturation vapour pressures differ by one "
-            "ulp. That matters because module_mp_thompson.F:3401 opens the "
+            "ulp. That matters because phys/module_mp_thompson.F:3401 opens the "
             "whole condensation/CCN-activation block on ssatw > 1.E-15 (:185) "
             "-- one ulp flips a branch. mp=28 matches WRF's own gfortran "
             "-O2 arithmetic; mp=8 retains its FMA-contracted saturation "
@@ -3409,6 +3416,95 @@ def _milbrandt2mom_mp9(registry: dict) -> None:
 WDM6_OPTION_ID = "wdm6-mp16"
 
 
+TEMPO_OPTION_ID = "tempo"
+
+
+def _tempo_named(registry: dict) -> None:
+    """Register TEMPO, the first NAMED microphysics scheme.
+
+    Selected by name (TOML ``mp_physics = "tempo"``); its selector value 900
+    is the WOOF-side id from gpuwm.microphysics_schemes, outside WRF's
+    mp_physics range, so a WRF namelist number never means something else in
+    WOOF.  Everything a consumer needs is the scheme's capability row there.
+
+    ``maturity: implemented-unverified``: the column port is bitwise against
+    TEMPO's own Fortran on the CPU and within 1.9e-10 on the GPU, but no
+    forecast-trajectory comparison against a reference model exists.
+    ``reachability: component-override``: no template selects it.
+    """
+    from gpuwm.microphysics_schemes import TEMPO
+    from gpuwm.tempo_assets import TEMPO_RELEASE_URL_BASE, TEMPO_TABLE_ASSETS
+
+    options = registry["components"]["microphysics"]["options"]
+    options[TEMPO_OPTION_ID] = {
+        "asset_requirements": [{
+            "id": "ncar-tempo-v3-tables-v1",
+            "kind": "downloaded-table-set",
+            "assets": [{"filename": a.filename, "bytes": a.bytes, "sha256": a.sha256}
+                       for a in TEMPO_TABLE_ASSETS],
+            "redistributed_by_gpuwm": False,
+            "source": TEMPO_RELEASE_URL_BASE,
+            "search_root": "~/.gpuwm/tables/tempo-v3",
+            "root_environment_override": "GPUWM_TEMPO_TABLE_ROOT",
+            "path_environment_override": "GPUWM_TEMPO_TABLE_SOURCE_ROOT",
+            "regenerable": True,
+            "note": (
+                "TEMPO's published tempo_v3.1.0 table assets (Apache-2.0), "
+                "pinned by size and SHA-256 in gpuwm/tempo_assets.py and "
+                "fetched on first use. Tables built from the pinned TEMPO "
+                "source 9adf9ef agree with them to 2.2e-12 relative."),
+        }],
+        "constraints": {"required_settings": {"moist": True}},
+        "extensions": {
+            "woof_named_scheme": {
+                "name": TEMPO.name, "woof_id": TEMPO.mp_id,
+                "capability_row": "gpuwm.microphysics_schemes.TEMPO"},
+            "source": {
+                "repository": "https://github.com/NCAR/TEMPO",
+                "commit": "9adf9ef2827104640125f0c322e1218fce74e94c",
+                "tag": "tempo_v3.0.3",
+                "pinned_by": ("RRFS v2 (rrfs-workflow rrfs-mpas-jedi, "
+                              "RRFSx/MPAS-Model 1d6e370e)"),
+                "licence": "Apache-2.0"},
+            "prognostic_species": {
+                "transported": list(TEMPO.ice_mass_species + TEMPO.moment_species
+                                    + TEMPO.aerosol_species),
+                "surface_emission_2d": list(TEMPO.surface_fields),
+                "not_ported": ["ml_for_nc", "ml_for_bl_nc", "refl10cm_from_melting"],
+                "note": (
+                    "Aerosol-aware and hail-aware (prognostic graupel number "
+                    "and volume, 9 density classes). The machine-learning "
+                    "droplet number and melting reflectivity options are off "
+                    "in RRFS and not wired."),
+            },
+            "column_oracle_evidence": {
+                "authority": ("unmodified TEMPO 9adf9ef, gfortran 13.3 "
+                              "-fdefault-real-8, through tempo_run"),
+                "fixtures": 6,
+                "cpu_float64": "bitwise on the five default-sedimentation fixtures",
+                "gpu": "bitwise reproducible; worst relative difference 1.9e-10",
+                "init": "Rust tempo_init bitwise on all 249 blob fields",
+                "record": "docs/TEMPO-PORT.md",
+            },
+        },
+        "implemented": True,
+        "label": 'TEMPO (Thompson-Eidhammer, RRFS v2) / named scheme "tempo"',
+        "maturity": "implemented-unverified",
+        "parameters": {"moist": True, "moist_cq": True},
+        "reachability": {"state": "component-override"},
+        "scientific_evidence": "none",
+        "selectors": {"mp_physics": TEMPO.mp_id},
+        "warnings": [
+            'NAMED SCHEME. mp_physics = "tempo" resolves to the WOOF-side '
+            "id 900; WRF has no TEMPO option, so no WRF namelist selects it "
+            "and WRF-matched comparisons do not apply.",
+            "TEMPO's optional semi-Lagrangian sedimentation amplifies a "
+            "1e-15 perturbation to order one in TEMPO itself; it is off "
+            "here, as in RRFS v2.",
+        ],
+    }
+
+
 def _wdm6_mp16(registry: dict) -> None:
     """Register WDM6 (mp_physics=16) at exactly the maturity it has earned.
 
@@ -3546,6 +3642,7 @@ def _wdm6_mp16(registry: dict) -> None:
 #: STOPS THE BUILD -- that is the whole point, and it is what mp=50 needed
 #: and did not get.
 _NO_RTE_RRTMGP_CLOUD_OPTICS_REASON: dict[int, str] = {
+    30: "the bin effective-radius integrals are not qualified; a bulk radius closure would replace the spectral distribution optics",
     # EMPTY: every implemented scheme has a cloud-optics row.  The table
     # stays because the pass below still needs it the day a scheme is
     # implemented without one, and because tests/test_rrtmgp_coupling.py
@@ -3797,6 +3894,7 @@ _STOCK_CALLABLE_CLASSES: dict[str, dict[str, object]] = {
         "kain-fritsch": "gpuwm.core.kf.KainFritsch",
         "grell-freitas": "gpuwm.core.gf.GrellFreitas",
         "new-tiedtke": "gpuwm.core.ntiedtke.NewTiedtke",
+        "tiedtke": "gpuwm.core.tiedtke.Tiedtke",
     },
     "radiation": {
         "off": None,
@@ -3835,6 +3933,7 @@ _VERTICAL_BOUND_SOURCES: dict[str, dict[str, tuple[str, str]]] = {
                               "MILBRANDT2_VERTICAL_LEVEL_BOUNDS"),
         "wdm6-mp16": ("WDM6 microphysics", "WDM6_VERTICAL_LEVEL_BOUNDS"),
         "p3-mp50": ("P3 microphysics", "P3_VERTICAL_LEVEL_BOUNDS"),
+        "tempo": ("TEMPO microphysics", "TEMPO_VERTICAL_LEVEL_BOUNDS"),
     },
     "pbl": {
         "mynn": ("MYNN PBL", "MYNN_VERTICAL_LEVEL_BOUNDS"),
@@ -3849,6 +3948,7 @@ _VERTICAL_BOUND_SOURCES: dict[str, dict[str, tuple[str, str]]] = {
         "grell-freitas": ("Grell-Freitas cumulus", "GF_VERTICAL_LEVEL_BOUNDS"),
         "new-tiedtke": ("New Tiedtke cumulus",
                         "NEW_TIEDTKE_VERTICAL_LEVEL_BOUNDS"),
+        "tiedtke": ("Original cu6 cumulus", "TIEDTKE_VERTICAL_LEVEL_BOUNDS"),
     },
 }
 
@@ -3927,6 +4027,16 @@ _MOMENT_ROWS: dict[int, dict | None] = {
          "unpaired": ["nwfa", "nifa"],
          "repair_authority": _THOMPSON_REPAIR_AUTHORITY,
          "q_threshold": 1.0e-12, "zero_number_below_threshold": True},
+    # TEMPO: two-moment cloud, rain, ice and graupel with graupel volume and
+    # the two aerosol tracers; its own entry block repairs number moments
+    # inside the scheme, so the analysis detects and refuses (no token).
+    900: {"name": "TEMPO", "mass_only": ["qv", "qs"],
+          "pairs": [{"species": "cloud", "mass": "qc", "number": "nc"},
+                    {"species": "rain", "mass": "qr", "number": "nr"},
+                    {"species": "ice", "mass": "qi", "number": "ni"},
+                    {"species": "graupel", "mass": "qg", "number": "ng"}],
+          "unpaired": ["volg", "nwfa", "nifa"],
+          "repair_authority": None, "q_threshold": 1.0e-12},
     # P3 one-category: rain and the single ice category are two-moment; the
     # rime pair rides with the ice mass and has no number partner.
     50: {"name": "P3 one-category", "mass_only": ["qv", "qc"],
@@ -3966,6 +4076,12 @@ _OFFLINE_CHILD_ROWS: dict[int, dict] = {
     18: {"same_scheme": True, "refusal": None},
     28: {"same_scheme": True, "refusal": None},
     50: {"same_scheme": True, "refusal": None},
+    # TEMPO (named scheme, WOOF id 900): the offline-child lane has no
+    # wrfout map for its graupel volume yet, so a same-scheme child is
+    # refused by name rather than zero-filling volg.
+    900: {"same_scheme": False, "refusal": (
+        "the offline-child lane has no wrfout-to-state map for TEMPO's "
+        "graupel volume (QVGRAUPEL -> volg) yet")},
 }
 
 #: The specified-zone ring guard's snapshot family per microphysics
@@ -4003,6 +4119,11 @@ _RING_STATE_ROWS: dict[int, list[str]] = {
     # previous-step carriers, and the cloud/ice radii pair only.
     50: ["thp", "qv", "qc", "qr", "qi", "qir", "qib", "ni", "nr",
          "th_old", "qv_old", "effc", "effi"],
+    # TEMPO: the six masses, cloud/rain/ice/graupel numbers, graupel
+    # volume, the two aerosol tracers and the three radii (the capability
+    # row in gpuwm.microphysics_schemes).
+    900: ["thp", "qv", "qc", "qr", "qi", "qs", "qg", "nc", "nr", "ni", "ng",
+          "volg", "nwfa", "nifa", "effc", "effi", "effs"],
 }
 _RING_SURFACE_ROWS: dict[int, list[str]] = {
     1: ["mp_rainnc", "mp_rainncv", "mp_kessler_sr"],
@@ -4016,6 +4137,7 @@ _RING_SURFACE_ROWS: dict[int, list[str]] = {
     # P3's wrapper writes RAINNC/RAINNCV/SNOWNC/SNOWNCV/SR and nothing else
     # (module_mp_p3.F:894-898); no graupel category.
     50: ["mp_rainnc", "mp_rainncv", "mp_snownc", "mp_snowncv", "mp_sr"],
+    900: list(_RING_SURFACE_STANDARD),
 }
 
 #: Which wrfout precipitation accumulator each ring surface slot fills, for
@@ -4039,6 +4161,31 @@ _REFLECTIVITY_SCHEME_DIAGNOSTIC = {
         "gpuwm/core/kernels/p3_zdiag.cu because the forecast loop also "
         "updates the state; that file carries the WRF citation)",
 }
+
+
+
+def _fast_sbm_admission(registry):
+    """Scheme admission and explicit boundaries for its spectral consumers."""
+    from gpuwm.core.fast_sbm_contract import BIN_SPECIES,NUMBER_SPECIES,MASS_SPECIES
+    _MOMENT_ROWS[30]={"name":"FAST_SBM spectral distributions","mass_only":list(MASS_SPECIES),
+                     "pairs":[],"unpaired":list(BIN_SPECIES)+list(NUMBER_SPECIES),
+                     "repair_authority":None,"q_threshold":1.e-13}
+    _OFFLINE_CHILD_ROWS[30]={"same_scheme":False,"refusal":"the offline forcing writer does not export the 142 spectral distributions; bulk fields cannot reconstruct a bin state"}
+    _RING_STATE_ROWS[30]=["thp",*MASS_SPECIES,*BIN_SPECIES,*NUMBER_SPECIES,"th_old","qv_old","effc","effi","effs"]
+    _RING_SURFACE_ROWS[30]=list(_RING_SURFACE_STANDARD)
+    _VERTICAL_BOUND_SOURCES["microphysics"]["fast-sbm-mp30"]=("FAST_SBM microphysics","FAST_SBM_VERTICAL_LEVEL_BOUNDS")
+    registry["components"]["microphysics"]["options"]["fast-sbm-mp30"]={
+        "label":"FAST_SBM spectral bin / MP30","selectors":{"mp_physics":30},
+        "implemented":True,"maturity":"implemented-unverified","scientific_evidence":"none",
+        "parameters":{"moist":True,"moist_cq":True},"asset_requirements":[],
+        "constraints":{"required_settings":{"moist":True},"required_settings_reasons":{"moist":"the scheme advances vapor and 142 spectral distributions and needs a moist state"}},
+        "warnings":["The corrected default fixes declared WRF defects, including cell-depth sedimentation and collision mass conservation. Column oracle and water-budget gates are implementation checks; a matched forecast and observation-based skill remain separate qualifications."]}
+    # A direct component override makes mp30 normally selectable without a case template.
+    for route in registry["runner_routes"].values():
+        allowed=route.get("allowed_component_options",{})
+        if isinstance(allowed,dict) and "microphysics" in allowed and isinstance(allowed["microphysics"],list):
+            if "fast-sbm-mp30" not in allowed["microphysics"]:
+                allowed["microphysics"].append("fast-sbm-mp30")
 
 
 def _consumer_rows(registry: dict) -> None:
@@ -4586,6 +4733,15 @@ _ASSET_RESOLUTION_LADDERS = {
     "gpuwm-kf-lutab-v1": {
         "data_relative": "kf_lutab",
     },
+    # TEMPO's four tables (NCAR release assets, not redistributed): the
+    # adapter fetches them into the staged root on first use
+    # (gpuwm.tempo_assets.ensure_tempo_tables), so a fresh install reports
+    # them missing at plan review and still runs.
+    "ncar-tempo-v3-tables-v1": {
+        "data_relative": "tempo/tables",
+        "root_environment_override": "GPUWM_TEMPO_TABLE_ROOT",
+        "staged_root": "~/.gpuwm/tables/tempo-v3",
+    },
 }
 
 
@@ -4932,10 +5088,12 @@ def build(registry: dict) -> dict:
     _thompson_aerosol_mp28(registry)
     _milbrandt2mom_mp9(registry)
     _wdm6_mp16(registry)
+    _tempo_named(registry)
     from tools.morrison_wrf461_oracle.patch_registry_morrison import (
         MORRISON_WARNINGS)
     registry["components"]["microphysics"]["options"]["morrison-mp10"][
         "warnings"] = list(MORRISON_WARNINGS)
+    _fast_sbm_admission(registry)
     # After every microphysics option is registered, because it walks them.
     _rte_rrtmgp_cloud_optics_constraints(registry)
     _tke_nest_child(registry)
@@ -5640,6 +5798,36 @@ def build(registry: dict) -> dict:
             "SASE, the UW PBL or no PBL scheme for this surface layer, all "
             "of which read only fields it publishes"),
     }
+    cumulus_options["tiedtke"] = {
+        "label": "Original cu6 cumulus", "implemented": True,
+        "maturity": "implemented-unverified", "scientific_evidence": "none",
+        "selectors": {"cu_physics": 6}, "parameters": {"cudt_minutes": 0.0},
+        "constraints": {
+            "required_settings": {"moist": True, "cudt_minutes": 0.0},
+            "required_settings_reasons": {
+                "moist": "the original cu6 kernel requires qv, qc and qi column arrays",
+                "cudt_minutes": "per-call precipitation has no NCA hold; holding it would reapply that rain each step"},
+            "requires_components": {}},
+        "asset_requirements": [], "extensions": {},
+        "reachability": {"state": "component-override"},
+        "warnings": [
+            "Original WRF v4.6.1 module_cu_tiedtke.F, the cumulus of WRF's "
+            "CONUS physics suite. Its distance from WRF is MEASURED at the "
+            "driver boundary: tools/tiedtke_wrf461_oracle runs the unmodified "
+            "Fortran (gfortran -O0, glibc 2.43 libm) over 72 synthetic columns "
+            "x 4 vertical grids x 3 configurations, and the GPU kernel matches "
+            "every word of all six tendencies, RAINCV, PRATEC and CU_ACT_FLAG "
+            "under GPUWM_WRF_EXACT=1 and without it, also with many j rows per "
+            "launch. NAMED RESIDUAL: a WRF linked to glibc 2.40 or older has a "
+            "tanf that is not correctly rounded; F:2939's tangent then differs "
+            "by 1 ULP on 1,079,656 of the 1,070,141,404 reachable arguments, "
+            "moving RTHCUTEN by at most 6.6e-7 K/s on the fixture "
+            "(docs/cumulus-cu6.md). That is conformance evidence, not "
+            "scientific validation: no matched gpuwm/WRF forecast trajectory "
+            "grades this scheme, which is why it is 'implemented-unverified'. "
+            "The cu16 ntiedtke_tiedtke_closure option remains an emulation "
+            "and does not select this scheme."]}
+
     # ---- New Tiedtke (cu_physics=16) -------------------------------------
     # THE PBL REQUIREMENT IS RETIRED, and this row is owned here now so
     # the retirement cannot be undone by a carried-through JSON row.  It
@@ -6242,7 +6430,7 @@ def build(registry: dict) -> dict:
         # Named schemes (gpuwm/microphysics_schemes.py) join from their own
         # rows: a scheme whose mass species carry qs is F_QS true.
         "flag_qs_true_microphysics_selectors": sorted(
-            {6, 8, 9, 10, 16, 18, 28} | {
+            {6, 8, 9, 10, 16, 18, 28, 30} | {
                 _s.mp_id for _s in _NAMED_MP_SCHEMES.values()
                 if "qs" in _s.ice_mass_species}),
         # mp_physics=50 (P3 one-category) is FALSE, and for the substantive
@@ -6255,7 +6443,8 @@ def build(registry: dict) -> dict:
         "wrf_flag_source": (
             "phys/module_pbl_driver.F:873-878 derives flag_qs from F_QS; "
             "Registry.EM_COMMON declares qs for mp_physics 6, 8, 9, 10, 16, "
-            "18 and 28, and does NOT declare it for 50 (P3 has one ice "
+            "18 and 28, Registry/registry.sbm:318 declares it for 30, and "
+            "does NOT declare it for 50 (P3 has one ice "
             "category, :3038); a named scheme (gpuwm/microphysics_schemes.py, "
             "when enabled) is true when its own mass species carry qs"),
         "gpuwm_runtime_source": (

@@ -709,6 +709,9 @@ tests/test_rrtmg_lw_batched_layout.py
 # count executed writers and compare poisoned chunks and tails with WRF.
 tests/test_rrtmg_lw_gpoint_ownership.py
 tests/test_rrtmg_sw_layout_identity.py
+# Shared legacy SW tables are uploaded once and read by every member stream:
+# each stream waits on the upload event before its first kernel (K=2 packing).
+tests/test_rrtmg_sw_stream_order.py
 tests/test_rrtmgp_night.py
 tests/test_rrtmgp_mcica.py
 tests/test_surface_w_fused.py
@@ -1197,6 +1200,18 @@ tests/test_upper_damping_wrf461_oracle.py
 # oracle families.)
 tests/test_myjsfc_wrf461_parity.py
 tests/test_myj_port.py
+# Original Tiedtke (cu_physics = 6): the engine route and many j rows per
+# launch against one launch per row (F:960 row-wide early return).
+tests/test_tiedtke_cu6_gpu.py
+
+# FAST_SBM (mp_physics=30) on the card: the production CUDA gates against the
+# WRF 4.6.1 Fortran streams, the device column tests and the SR bound. Breakage:
+# the scheme joined in 2.8.9 on no battery list, so a broken kernel, launch width
+# or SR above 1 (which stopped every winter mp30 run at its first snowing step)
+# would have passed every leg.
+tests/test_fast_sbm_bulk_start.py
+tests/test_fast_sbm_device.py
+tests/test_fast_sbm_production_cuda.py
 
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py

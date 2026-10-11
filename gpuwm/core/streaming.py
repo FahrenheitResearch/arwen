@@ -4801,6 +4801,7 @@ def _twin_rrtmg_legacy(scheme, cls, lat, lon):
                # of the restart identity, and what _check_pins holds against
                # the run config on every call.
                aer_opt=scheme.aer_opt,
+               aer3_type_source=getattr(scheme, "aer3_type_source", "rural"),
                trace_gas_overrides=getattr(scheme, "trace_gas_overrides", None),
                **smoke_options)
 
@@ -4872,7 +4873,8 @@ _TWIN_RECIPES = {
         reproduces=frozenset({"start_time", "latitude_deg", "longitude_deg",
                               "p_top", "column_chunk", "ozone_parent",
                               "ozone_routing", "o3input", "longwave",
-                              "shortwave", "aer_opt", "trace_gas_overrides", "smoke_provider"}),
+                              "shortwave", "aer_opt", "trace_gas_overrides", "smoke_provider",
+                              "aer3_type_source"}),
         # WRF's radiation call counter; the domain's adapter has stepped
         # when a buffer is built mid-run, a fresh twin has not, and that
         # difference is not dropped policy.

@@ -155,7 +155,7 @@ def kf_phase_mode_for_microphysics(mp_physics: int) -> KFPhaseMode:
     that package changes nothing here: KF's feedback pair is F_QI/F_QS and
     hail is not one of them.
     """
-    if int(mp_physics) in (6, 8, 9, 10, 16, 18, 28):
+    if int(mp_physics) in (6, 8, 9, 10, 16, 18, 28, 30):
         return KFPhaseMode.SEPARATE_ICE_SNOW
     if int(mp_physics) == 1:
         return KFPhaseMode.WARM_RAIN

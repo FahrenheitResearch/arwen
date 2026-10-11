@@ -225,6 +225,9 @@ optional operator and lets other streams continue.
 `CONTINUOUS_WINDOW_FAILED` means a continuous window's operation failed;
 `error` names the window, the stage and the reason, `details` carries them
 as fields, and launching the plan again resumes that window.
+`NONFINITE_PRIOR` means a background field contains nonfinite values before
+covariance selection. The field is named in the error. Repair the background
+before resuming; dropping the field would conceal an invalid analysis input.
 
 `refusal_codes.fallback` (`LOCAL_DA_ERROR`) carries anything the door did
 not raise itself, so a switch on `code` always has an arm to land in. Its

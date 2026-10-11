@@ -34,10 +34,11 @@ RUN_LABEL = "WOOF"
 #: ``wrfout_d01_2026-10-03_06:00:00`` and ``wrfout_d01_2026-10-03_06_00_00``.
 _WRFOUT_NAME = re.compile(
     r"^wrfout_(?P<domain>d\d{2})_"
-    r"(?P<stamp>\d{4}-\d{2}-\d{2}_\d{2}[:_]\d{2}[:_]\d{2})")
+    r"(?P<stamp>\d{4}-\d{2}-\d{2}_\d{2}[:_-]\d{2}[:_-]\d{2})")
 
 #: Where a run folder keeps its history frames, tried in order.
-_RUN_FOLDER_FRAMES = ("", "wrfout", "out/wrfout", "forecast/wrfout")
+_RUN_FOLDER_FRAMES = ("", "wrfout", "run/wrfout", "chain/run/wrfout",
+                      "out/wrfout", "forecast/wrfout")
 
 
 def frame_identity(path: Path):
@@ -82,8 +83,8 @@ def expand_inputs(inputs) -> list[Path]:
         if not found:
             raise ValueError(
                 f"{path} holds no wrfout_dNN_YYYY-MM-DD_HH:MM:SS history "
-                "frames (looked in it and in its wrfout, out/wrfout and "
-                "forecast/wrfout folders)")
+                f"frames (looked in {', '.join(name or '.' for name in _RUN_FOLDER_FRAMES)}). "
+                "Supply a completed run folder, its wrfout directory, or explicit history files.")
         frames.extend(found)
     return frames
 

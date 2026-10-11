@@ -2361,13 +2361,18 @@ dependencies = [
 name = "rw-fetch"
 version = "0.1.0"
 dependencies = [
+ "bzip2 0.5.2",
  "chrono",
+ "flate2",
+ "quick-xml",
+ "reqwest",
  "rustwx-core",
  "rustwx-models",
  "serde",
  "serde_json",
  "sha2",
  "wx-core 0.3.10",
+ "zstd",
 ]
 
 [[package]]
@@ -2379,6 +2384,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "rw-globe-pack"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "libloading",
+ "netcrust",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -2609,6 +2627,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-scoreboard"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "flate2",
+ "grib-core",
+ "netcdf-writer",
+ "netcrust",
+ "obs-regrid",
+ "rustwx-core",
+ "rustwx-io",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zstd",
+]
+
+[[package]]
 name = "rw-store"
 version = "0.1.0"
 dependencies = [
@@ -2635,6 +2671,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-tempo"
+version = "0.1.0"
+
+[[package]]
 name = "rw-wrfbatch"
 version = "0.1.0"
 dependencies = [
@@ -2657,6 +2697,7 @@ dependencies = [
  "rw-isobaric",
  "rw-nexrad",
  "rw-obs",
+ "rw-scoreboard",
  "rw-store",
  "serde",
  "serde_json",

@@ -23,6 +23,9 @@
 mod net;
 mod plan;
 mod record;
+mod stream;
+mod assets;
+mod objects;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -37,7 +40,7 @@ use wx_core::download::TransferProgress;
 
 use rustwx_core::{CycleSpec, ModelId, ModelRunRequest, ResolvedUrl, SourceId};
 
-use net::{grib_framed, hex_digest, publish, select_contains, select_exact, Fetcher};
+use net::{publish, select_contains, select_exact, Fetcher};
 use plan::{decide, Decision, Mode, ModeRequest};
 use record::{
     CycleRecord, DedupRecord, FetchRecord, FileRecord, LatestReport, ProbeHour, ProbeRecord,
@@ -58,11 +61,20 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 const USAGE: &str = "\
 usage: rw_fetch <fetch|probe|latest> [OPTIONS]
+       rw_fetch object --url URL --output FILE
+       rw_fetch asset --url URL --output FILE --bytes N --sha256 HEX
+       rw_fetch encoded-asset --url URL --output FILE
+       rw_fetch hash --input FILE [--bytes N --sha256 HEX]
+       rw_fetch unpack --input ARCHIVE --output NEW_DIR --datasets NAME,NAME
+       rw_fetch unpack-audit --input ARCHIVE --output NEW_DIR --datasets NAME,NAME
+       rw_fetch decode --input FILE --output NEW_FILE --codec <zstd|bz2|gz>
+       rw_fetch <inventory|objects> --request JSON   (public-object NDJSON)
        rw_fetch --version | --help | --abi
 
   fetch    download a model-run window and print a fetch record
   probe    report the transport decision for each hour, moving no payload
   latest   report the newest cycle serving every hour through --through
+  object   stream a GRIB2 object and print its digest and envelope receipt
 
 common options
   --model NAME            hrrr, gfs, gdas, rap, nam, ... (rustwx model id)
@@ -185,6 +197,15 @@ fn failure_text(failure: &Failure) -> String {
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("inventory" | "objects")) {
+        return match objects::run(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(reason) => {
+                eprintln!("rw_fetch: {reason}");
+                ExitCode::from(EXIT_REFUSED)
+            }
+        };
+    }
     match run(&args) {
         Ok(document) => {
             println!("{document}");
@@ -216,6 +237,8 @@ fn run(args: &[String]) -> Result<String, Failure> {
         // is in the built image.
         "--abi" => Ok(FETCH_RECORD_ABI.to_string()),
         "fetch" => command_fetch(&options()?),
+        "object" => command_object(&options()?),
+        "asset" | "encoded-asset" | "hash" | "unpack" | "unpack-audit" | "decode" => assets::command(&args[0], &args[1..]),
         "probe" => Ok(command_probe(&options()?)?),
         "latest" => Ok(command_latest(&options()?)?),
         other => Err(Failure::Usage(format!("unknown subcommand {other:?}"))),
@@ -242,6 +265,8 @@ struct Options {
     out: Option<PathBuf>,
     cache_dir: Option<PathBuf>,
     keep_idx: bool,
+    url: Option<String>,
+    output: Option<PathBuf>,
 }
 
 impl Default for ModeRequest {
@@ -309,6 +334,8 @@ impl Options {
                 "--out" => options.out = Some(PathBuf::from(value!())),
                 "--cache-dir" => options.cache_dir = Some(PathBuf::from(value!())),
                 "--keep-idx" => options.keep_idx = true,
+                "--url" => options.url = Some(value!()),
+                "--output" => options.output = Some(PathBuf::from(value!())),
                 other => return Err(format!("unknown option {other:?}")),
             }
             index += 1;
@@ -640,10 +667,10 @@ fn command_fetch(options: &Options) -> Result<String, Failure> {
             // The probes above moved a few bytes of their own; the count
             // a reader sees is this object's payload.
             reporter.object(hour);
-            let (bytes, ranges, selected, idx_sidecar) = match mode {
+            let (receipt, ranges, selected, idx_sidecar) = match mode {
                 Mode::FullFile => (
                     fetcher
-                        .get_full_file(&candidate.grib_url)
+                        .stream_full_file(&candidate.grib_url, &destination)
                         .map_err(Failure::from)?,
                     Vec::new(),
                     None,
@@ -671,25 +698,14 @@ fn command_fetch(options: &Options) -> Result<String, Failure> {
                         }
                         chosen
                     };
-                    let (bytes, ranges) = fetcher
-                        .get_idx_subset(&candidate.grib_url, payload, &selection)
+                    let (receipt, ranges) = fetcher
+                        .stream_idx_subset(&candidate.grib_url, payload, &selection, &destination)
                         .map_err(Failure::from)?;
                     let idx_name = format!("{name}.idx");
                     write_idx(&out, &idx_name, &payload.text)?;
-                    (bytes, ranges, Some(selection.len()), Some(idx_name))
+                    (receipt, ranges, Some(selection.len()), Some(idx_name))
                 }
             };
-
-            if !grib_framed(&bytes) {
-                return Err(format!(
-                    "{name}: the assembled payload is not a complete GRIB2 stream \
-                     ({} bytes, mode {})",
-                    bytes.len(),
-                    mode.as_str()
-                )
-                .into());
-            }
-            publish(&destination, &bytes)?;
 
             if options.keep_idx && idx_sidecar.is_none() {
                 if let Some(payload) = payload.as_ref() {
@@ -701,8 +717,11 @@ fn command_fetch(options: &Options) -> Result<String, Failure> {
                 forecast_hour: hour,
                 name: name.clone(),
                 path: destination.display().to_string(),
-                bytes: bytes.len() as u64,
-                sha256: hex_digest(&bytes),
+                bytes: receipt.bytes,
+                sha256: receipt.sha256,
+                grib2_messages: receipt.grib2_messages,
+                last_byte_unix: receipt.last_byte_unix,
+                publication: receipt.publication,
                 source: candidate.source.to_string(),
                 grib_url: candidate.grib_url.clone(),
                 idx_url: candidate.idx_url.clone(),
@@ -767,6 +786,18 @@ fn command_fetch(options: &Options) -> Result<String, Failure> {
         wall_seconds: started.elapsed().as_secs_f64(),
     };
     Ok(serde_json::to_string_pretty(&document).map_err(|error| format!("{error}"))?)
+}
+
+fn command_object(options: &Options) -> Result<String, Failure> {
+    let url = options.url.as_deref().ok_or_else(|| Failure::Usage("object needs --url".into()))?;
+    let path = options.output.as_deref().ok_or_else(|| Failure::Usage("object needs --output".into()))?;
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| Failure::Refused(e.to_string()))?; }
+    let fetcher = Fetcher::new(options.cache_dir.as_deref())?;
+    let reporter = ProgressReporter::start(fetcher.progress(), Box::new(|line| eprint!("{line}")));
+    reporter.object(0);
+    let receipt = fetcher.stream_full_file(url, path)?;
+    reporter.finish();
+    serde_json::to_string(&receipt).map_err(|e| Failure::Refused(e.to_string()))
 }
 
 /// The `rw_fetch-progress` lines `fetch` prints while an object moves.

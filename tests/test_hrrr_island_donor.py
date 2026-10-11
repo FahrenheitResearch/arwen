@@ -216,8 +216,16 @@ def _window_snapshot():
 
 
 @pytest.mark.requires_capability("masked_stencil_bridge")
-def test_the_nest_prepares_and_its_receipt_names_the_island(capsys):
+def test_the_nest_prepares_and_its_receipt_names_the_island(capsys, monkeypatch):
     """The whole mapping of d02's island, as the hierarchy stage runs it."""
+    # The warning is said once per process for a (domain, cells) key, and
+    # tests/test_masked_stencil_native.py maps this island too: run before
+    # this file on the same worker it used the announcement up, and this
+    # cell read no warning (node-4's full CPU leg; reproduced by running
+    # the two files in that order).  The cell asks for the first
+    # announcement, so it starts from none.
+    from gpuwm.ingest import hrrr as hrrr_ingest
+    monkeypatch.setattr(hrrr_ingest, "_DISTANT_DONORS_ANNOUNCED", set())
     snapshot = _window_snapshot()
     landmask = np.zeros((216, 222))
     for row, col in _ISLAND:

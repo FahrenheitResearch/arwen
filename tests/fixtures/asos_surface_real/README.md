@@ -55,3 +55,15 @@ lane's real writer, never against its own fixture-making code.
    relative source path exactly as the v1 record's is; nothing else was
    edited.  `rw_asos verify` reads it PASS with `observation_times_proved`
    true.  sha256 `b3b699eca0a7a7249edd0533934f9abddd0a3a0bbc3555f01ad227facdbd8e53`.
+
+5. `surface_subset.v2.json` re-read 2026-10-10 by the same command, because
+   8df32e3b1 (the native standing scorecard) taught the writer to carry each
+   report's `wind_gust_10m` and `precipitation_1h` where the archive row has
+   them.  rw_asos 0.1.0 from the shared build f2ea04ca486f302d, binary sha256
+   `4c18f4e6d3df8299b79ade19914aae05319410384ee9b1e0765487c80e602be2`.  The
+   24 reports are the same (station, slot, observation_time) sequence with
+   every earlier value unchanged; the only difference is the two added keys
+   (23 reports carry `precipitation_1h`).  `provenance.uri` was set to the
+   repository-relative source path as before; nothing else was edited.
+   `rw_asos verify` reads it PASS with `observation_times_proved` true.
+   sha256 `c664af9b6b9865c1846b72ee2ff5b0cf546ec64aa980b1b958bcd1fbf9d671bc`.

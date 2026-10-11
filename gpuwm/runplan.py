@@ -113,6 +113,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from gpuwm.explain import layered, split as _split_message
+from gpuwm.stage_timing import (ledger_main, bind_ledger, ForecastLedger,
+                               register_ledger_observer, current_ledger, end_admission)
+from gpuwm.timeline.ledger import Ledger
+from gpuwm.timeline.taxonomy import RUN_STAGES, GO_STAGES
 
 
 #: The plan document a caller writes.
@@ -626,7 +630,6 @@ class PlanError(ValueError):
     geography tree never set up on the computer told the page to fix
     its plan document, which could not help.
     """
-
     memory: dict[str, Any] | None = None
 
     def __init__(self, message: object = "", *, remedy: str | None = None):
@@ -1250,6 +1253,12 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
     # A concrete assertion for supplied inputs, checked after acquisition.
     # Unlike cycle, this never retimes a config or changes a fetch request.
     "input_cycle": None,
+    # `gpuwm go --tiles` on a launch of an existing prepared bundle: the
+    # [tiles] mode its single-domain forecast runs under, relayed as the
+    # runner's own --tiles (the bundle's config is hash-bound and carries
+    # no [tiles]).  Absent: the launch config's enabled [tiles], else the
+    # one its --prepare-only launch recorded beside the bundle, else none.
+    "forecast_tiles": None,
 }
 
 
@@ -1292,6 +1301,10 @@ def _run_option(key: str, value: object, base: Path) -> Any:
         raise PlanError(
             f"{label} must be a nonnegative GPU index or full GPU UUID, "
             f"got {selector!r}")
+    if key == "forecast_tiles":
+        if value is not None and value not in ("off", "auto", "on"):
+            raise PlanError(f"{label} must be 'off', 'auto' or 'on'")
+        return value
     if key == "keep_checkpoints":
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise PlanError(f"{label} must be a whole number of checkpoint "
@@ -2330,6 +2343,26 @@ class RunObserver:
         #: tree runner does not publish it at all.
         self._last_model_seconds: float | None = None
         self._render_summary: dict[str, Any] | None = None
+        # An events sink without a file (an embedding caller, a test double)
+        # gets a ledger that records only when GPUWM_TIME_LEDGER names one.
+        events_path = getattr(events, "path", None)
+        self._timeline = current_ledger(Ledger(
+            None if events_path is None else Path(events_path).parent / "timeline.jsonl"))
+        self._timeline_forecast = None
+        self._timeline_idle = False
+        self._timeline_closed = False
+        register_ledger_observer(self)
+
+    def close(self):
+        """C1 closes any failed stage and records the main-flow finish."""
+        if self._timeline_closed:
+            return
+        self.finish_stage()
+        if self._timeline_idle:
+            self._timeline.emit("post.orchestration", "end")
+            self._timeline_idle = False
+        self._timeline.emit("finish", "mark")
+        self._timeline_closed = True
 
     # -- stage bookkeeping --------------------------------------------
 
@@ -2356,6 +2389,10 @@ class RunObserver:
         if stage == self._stage:
             return
         self.finish_stage()
+        end_admission(self._timeline)
+        if self._timeline_idle:
+            self._timeline.emit("post.orchestration", "end")
+            self._timeline_idle = False
         self._stage = stage
         self._stage_phases = [] if phase is None else [phase]
         self._stage_started_wall = time.perf_counter()
@@ -2363,6 +2400,14 @@ class RunObserver:
         if phase is not None:
             payload["phase"] = phase
         self._events.emit("stage_started", **payload)
+        self._timeline.emit(RUN_STAGES[stage], "begin", attrs={"phase": phase, "role": "envelope"})
+        if stage == "forecast":
+            # Native prepared routes use <run>/chain/run. Hosted go uses
+            # its plan's run directory, attached by the main flow below.
+            forecast_dir = getattr(self, "_timeline_forecast_dir",
+                                   self._events.path.parent / "chain" / "run")
+            self._timeline_forecast = ForecastLedger(self._timeline, forecast_dir)
+            self._timeline_forecast.start(watch=False)
 
     def finish_stage(self, **fields: Any) -> None:
         """Close the open stage, if any."""
@@ -2371,6 +2416,12 @@ class RunObserver:
             return
         stage = self._stage
         self._stage = None
+        if self._timeline_forecast is not None:
+            self._timeline_forecast.finish()
+            self._timeline_forecast = None
+        self._timeline.emit(RUN_STAGES[stage], "end", attrs={"phase": list(self._stage_phases), "role": "envelope"})
+        self._timeline.emit("post.orchestration", "begin")
+        self._timeline_idle = True
         if stage == "finalize" and self._render_summary is not None:
             fields.setdefault("render_summary", self._render_summary)
         self._events.emit(
@@ -2504,6 +2555,8 @@ class RunObserver:
         self.source_behind_record = dict(details)
 
     def finalizing(self, phase: str, *, work_bytes: int | None = None) -> None:
+        if self._timeline_forecast is not None:
+            self._timeline_forecast.read()
         hook = getattr(self._heartbeat, "finalizing", None)
         if hook is not None:
             hook(phase, work_bytes=work_bytes)
@@ -2512,6 +2565,8 @@ class RunObserver:
                  last_durable_wrfout=None, last_checkpoint=None,
                  phase: str = "synchronized-step",
                  step_wall_seconds: float = 0.0, **extra: Any) -> None:
+        if self._timeline_forecast is not None:
+            self._timeline_forecast.poll()
         if self._heartbeat is not None:
             self._heartbeat(
                 model_elapsed_seconds=model_elapsed_seconds,
@@ -3515,7 +3570,8 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
         # from the same projection execute_plan refuses on before its
         # download.
         "disk": _disk_projection(plan, exp, raw=raw, data=data,
-                                 fetch_arguments=plan.fetch_arguments),
+                                 fetch_arguments=plan.fetch_arguments,
+                                 base_dir=base_dir),
         "automatic_resolutions": resolutions,
         "warnings": warnings,
     }, exp, data
@@ -3600,7 +3656,8 @@ def _recipe_plan_refusal(plan: RunPlan, raw: Mapping[str, Any],
 
 def _planned_download(plan: RunPlan, raw: Mapping[str, Any], data, *,
                       fetch_arguments: Sequence[str] | None,
-                      run_dir: Path | None = None
+                      run_dir: Path | None = None,
+                      base_dir: Path | None = None
                       ) -> tuple[dict[str, Any] | None, Path | None, bool]:
     """The request this plan's run downloads with, where it lands, and whether that folder is keyed to it.
 
@@ -3650,7 +3707,7 @@ def _planned_download(plan: RunPlan, raw: Mapping[str, Any], data, *,
         except (OSError, ValueError):
             return request, root / "downloads", False
     try:
-        arguments = declared_forcing_fetch(raw, data)
+        arguments = declared_forcing_fetch(raw, data, base_dir=base_dir)
     except PlanError:
         # The run refuses these inputs itself, before its fetch; the table
         # still says what would be downloaded.
@@ -3750,7 +3807,8 @@ def _present_download_bytes(request: Mapping[str, Any] | None, directory: Path |
 def _disk_projection(plan: RunPlan, exp, *, raw: Mapping[str, Any], data,
                      fetch_arguments: Sequence[str] | None,
                      run_dir: Path | None = None,
-                     download_keyed: bool | None = None) -> dict[str, Any]:
+                     download_keyed: bool | None = None,
+                     base_dir: Path | None = None) -> dict[str, Any]:
     """What this plan's run writes, from :func:`gpuwm.disk_budget.projected_run_bytes`.
 
     ``download_keyed`` overrides whether the download folder is keyed to
@@ -3762,7 +3820,8 @@ def _disk_projection(plan: RunPlan, exp, *, raw: Mapping[str, Any], data,
 
     keep = int(plan.run_options.get("keep_checkpoints") or 0)
     request, directory, keyed = _planned_download(
-        plan, raw, data, fetch_arguments=fetch_arguments, run_dir=run_dir)
+        plan, raw, data, fetch_arguments=fetch_arguments, run_dir=run_dir,
+        base_dir=base_dir)
     if download_keyed is not None and directory is not None:
         keyed = bool(download_keyed)
     return dict(disk_budget.projected_run_bytes(
@@ -4058,6 +4117,7 @@ class _GoObserver:
 
     def __init__(self, observer: RunObserver, *, door: str = "go"):
         self._observer = observer
+        self._timeline = getattr(observer, "_timeline", Ledger())
         #: The command the reader typed, for the one warning below that
         #: quotes it.  `gpuwm downscale` runs this same render stage,
         #: and a warning in ITS event stream naming `gpuwm go` sends a
@@ -4078,7 +4138,14 @@ class _GoObserver:
 
     # -- gpuwm go's chain hooks ---------------------------------------
 
+    def bind_timeline(self, run, ledger):
+        self._timeline = ledger
+        self._observer._timeline = ledger
+        self._observer._timeline_forecast_dir = Path(run)
+
     def stage_begin(self, *, label: str, command) -> None:
+        self._timeline.emit(GO_STAGES.get(label, "prep." + label.replace(" ", "_")),
+                                      "begin", attrs={"label": label})
         self.current_stage = label
         if label == "forecast":
             # From here the forecast says its own waits (its seams).
@@ -4201,6 +4268,8 @@ class _GoObserver:
 
     def stage_end(self, *, label: str, exit_code: int, ok: bool,
                   elapsed_seconds: float, progress) -> None:
+        self._timeline.emit(GO_STAGES.get(label, "prep." + label.replace(" ", "_")),
+                                      "end", attrs={"label": label, "ok": bool(ok), "exit_code": exit_code})
         if label == "render" and isinstance(progress, dict) and progress.get("schema") == "gpuwm.render-summary.v1":
             self._observer._render_summary = dict(progress)
         if label == "prepare" and ok and self._head_ready:
@@ -4387,25 +4456,38 @@ def _config_for_declared_fetch(plan: RunPlan, resolution: Mapping[str, Any],
     plan's own bytes skipped every intent: an ERA5 intent on the
     config-driven route was accepted, wrote a [fetch] recipe naming its
     forcing, and then refused at the input gate for the file that recipe
-    was never asked to download.  The wizard writes the generated
-    [fetch].out relative to the directory the run was started from (unlike
-    [case_data], which is relative to the configuration), so it is anchored
-    there; anchoring it at the run directory put the download one "out"
-    level too deep and the input gate refused the run for a file that
-    had landed beside the one it named.
+    was never asked to download.  A relative [fetch].out is relative to
+    the configuration's folder, as [case_data] is (D-11), so it is
+    anchored there and returned absolute: the generated config of an
+    intent lives in the run directory, a named config in its own folder.
+    The working directory the run was started from does not decide where
+    the download lands.
     """
 
     if plan.config_intent is None:
-        return tomllib.loads(plan.config_bytes().decode("utf-8"))
-    document = tomllib.loads(str(resolution.get("generated_config") or ""))
+        document = tomllib.loads(plan.config_bytes().decode("utf-8"))
+        base_dir = (plan.config_path.parent if plan.config_path is not None
+                    else plan.config_base_dir)
+    else:
+        document = tomllib.loads(str(resolution.get("generated_config") or ""))
+        base_dir = run_dir
     hints = document.get("fetch")
-    if isinstance(hints, dict) and hints.get("out") and not Path(hints["out"]).is_absolute():
-        hints["out"] = str(Path.cwd() / hints["out"])
+    if isinstance(hints, dict) and hints.get("out"):
+        from gpuwm.case_data import config_fetch_out
+        hints["out"] = str(config_fetch_out(document, base_dir=Path(base_dir)))
     return document
 
 
-def declared_forcing_fetch(payload: Mapping[str, Any], data) -> list[str] | None:
-    """Acquire missing declared forcing through the config's own fetch recipe."""
+def declared_forcing_fetch(payload: Mapping[str, Any], data, *,
+                           base_dir: Path | None) -> list[str] | None:
+    """Acquire missing declared forcing through the config's own fetch recipe.
+
+    ``base_dir`` is the configuration's folder, which a relative
+    ``[fetch].out`` is relative to (D-11).  It has no default, so no
+    caller can fall back to the working directory by omission; ``None``
+    is for a payload whose out the caller has already made absolute, and
+    a relative out with ``None`` is refused rather than guessed.
+    """
     if data is None:
         return None
     hints = payload.get("fetch")
@@ -4424,9 +4506,15 @@ def declared_forcing_fetch(payload: Mapping[str, Any], data) -> list[str] | None
                         + " or ".join(repr(name) for name in sorted(ERA5_COMBINED_NAMES)) + ".")
     if not hints.get("out"):
         raise PlanError("ERA5 data is missing. Set [fetch].out to the directory containing the declared forcing file.")
-    # fetch.out is relative to the launch working directory; the case-data
-    # loader has already resolved forcing relative to the configuration.
-    out = Path(hints["out"]).expanduser().resolve()
+    # A relative fetch.out is relative to the configuration's folder, as
+    # the forcing the case-data loader resolved is (D-11).
+    from gpuwm.case_data import resolve_fetch_out
+    if base_dir is None and not Path(str(hints["out"])).expanduser().is_absolute():
+        raise PlanError("[fetch].out is relative, and this caller did not say which "
+                        "configuration it belongs to; resolve it against the "
+                        "configuration's folder before asking for the fetch.")
+    out = resolve_fetch_out(hints["out"], base_dir=Path(base_dir or "."),
+                            forcing=data.forcing)
     expected = (out / era5_combined_name(provider)).resolve()
     from gpuwm.case_data import same_case_data_path
     if len(data.forcing) != 1 or not same_case_data_path(data.forcing[0], expected):
@@ -4636,14 +4724,57 @@ def _existing_prepared_bundle(plan: RunPlan) -> dict | None:
     return bundle
 
 
+def _prepared_launch_tiles(plan: RunPlan, exp, bundle: Mapping[str, Any]):
+    """The [tiles] an existing single-domain bundle's forecast runs under.
+
+    In order: ``run_options.forecast_tiles`` (``gpuwm go --tiles``), the launch
+    config's own enabled [tiles], then the table a ``--prepare-only``
+    launch recorded beside the bundle (``gpuwm.go_cli.LAUNCH_TILES_NAME``).
+    None of them enters the bundle's identity: the runner takes the mode
+    as its own ``--tiles``.  Breakage this closes: the two-step form
+    (``--prepare-only``, then ``--prepared-root``) of a domain the card
+    cannot hold resident was refused at the forecast with "[tiles] mode =
+    'auto'" as its remedy, and nothing on that launch could say it (a full
+    1800x1060 HRRR grid at 107 GiB on a 96 GiB card).  A tree bundle is
+    refused by name if a mode is asked of it (``stage_cli.streaming_flags``):
+    its [tiles] lives in its experiment table.
+    """
+
+    from gpuwm.core.streaming import StreamingOptions
+
+    mode = plan.run_options.get("forecast_tiles")
+    if mode is not None:
+        return StreamingOptions.from_mapping({"mode": mode}, source="gpuwm go --tiles")
+    if bundle.get("layout") != "single":
+        return None
+    declared = getattr(exp, "tiles", None)
+    if declared is not None and declared.enabled:
+        return declared
+    from gpuwm.go_cli import LAUNCH_TILES_NAME
+
+    recorded = Path(bundle["document"]).parent / LAUNCH_TILES_NAME
+    if not recorded.is_file():
+        return None
+    try:
+        document = json.loads(recorded.read_text(encoding="utf-8"))
+        options = StreamingOptions.from_mapping(document["tiles"], source=str(recorded))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise PlanError(f"{recorded} is not a launch [tiles] record: {error}") from error
+    print(f"go: [tiles] mode = '{options.mode}' from {recorded} (the "
+          "--prepare-only launch's config); --tiles overrides it")
+    return options if options.enabled else None
+
+
 def _existing_prepared_forecast(plan: RunPlan, *, config_path: Path,
-                                observer: RunObserver, run_dir: Path) -> Mapping[str, Any]:
+                                observer: RunObserver, run_dir: Path,
+                                exp=None) -> Mapping[str, Any]:
     """Run the existing sim operation without a fetch or preparation retry."""
     from gpuwm import stage_cli
 
     _validate_prepared_output(plan)
     bundle = _existing_prepared_bundle(plan)
     assert bundle is not None
+    tiles = _prepared_launch_tiles(plan, exp, bundle)
     restart = plan.run_options.get("restart")
     wps = plan.run_options.get("wps_namelist")
     forecast_dir = run_dir / "chain" / "run"
@@ -4654,7 +4785,8 @@ def _existing_prepared_forecast(plan: RunPlan, *, config_path: Path,
         progress_format="jsonl", restart=None if restart is None else Path(restart),
         **({"devices": plan.run_options["devices"]}
            if plan.run_options.get("devices") is not None else {}),
-        health_debug=bool(plan.run_options.get("health_debug")))
+        health_debug=bool(plan.run_options.get("health_debug")),
+        tiles=tiles)
     observer.arm_first_products(_chain_render_plan(
         plan, forecast_dir=forecast_dir, run_dir=run_dir))
     observer.enter_stage("forecast", phase="restore" if restart else "forecast")
@@ -6819,7 +6951,8 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     run_dir = chain_io_root(plan.run_dir, downloads=False)
     if _existing_prepared_bundle(plan) is not None:
         return _existing_prepared_forecast(
-            plan, config_path=Path(config_path), observer=observer, run_dir=run_dir)
+            plan, config_path=Path(config_path), observer=observer, run_dir=run_dir,
+            exp=exp)
 
     from gpuwm.go_cli import go_main
 
@@ -6957,7 +7090,7 @@ ROUTES: dict[str, Route] = {
                 "this process (what `gpuwm run CONFIG` executes)",
         run_options=frozenset(_RUN_OPTION_DEFAULTS)
         - {"data_dir", "physics_profile", "prepared_root", "wps_namelist", "supplement",
-           "transport", "as_posted", "late_after_minutes", "cycle"},
+           "transport", "as_posted", "late_after_minutes", "cycle", "forecast_tiles"},
         execute=_execute_experiment_route),
 }
 
@@ -7299,6 +7432,7 @@ def missing_inputs_refusal(missing: Sequence[Mapping[str, Any]], *,
                      remedy=remedy)
 
 
+@ledger_main
 def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
     """Run one plan to completion, or to its ``failed`` event.
 
@@ -7321,6 +7455,8 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
     run_id = hashlib.sha256(
         f"{plan.sha256}:{started_at_utc}:{os.getpid()}".encode("utf-8")
     ).hexdigest()[:16]
+    os.environ.setdefault("GPUWM_RUN_ID", run_id)
+    bind_ledger(run_dir)
     manifest_path = write_manifest(
         plan, run_dir=run_dir, events_path=events.path, run_id=run_id,
         started_at_utc=started_at_utc)
@@ -7407,7 +7543,8 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
                                  resolution.get("generated_config"))
         if fetch_arguments is None:
             fetch_arguments = declared_forcing_fetch(
-                _config_for_declared_fetch(plan, resolution, run_dir), data)
+                _config_for_declared_fetch(plan, resolution, run_dir), data,
+                base_dir=None)
             if fetch_arguments is not None:
                 cycle_resolutions.append({"scope": "fetch", "key": "args",
                     "value": fetch_arguments, "basis": "configuration.fetch"})
@@ -7635,6 +7772,15 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             return INTERRUPT_EXIT_CODE
         if behind is not None:
             return SOURCE_BEHIND_EXIT_CODE
+        # A prepared forecast refused before integration is an argument/input
+        # refusal, not a failed forecast. Other chain failures keep their
+        # established exit 1; their stage status remains in the failed event.
+        if isinstance(error, StageExitError) and error.stage == "forecast" and exit_code == 2:
+            return 2
+        from gpuwm.io.restart import RestartMismatchError
+
+        if isinstance(error, RestartMismatchError):
+            return 2
         return 1
 
 
@@ -7870,6 +8016,16 @@ def plan_readiness(plan: RunPlan, *, no_probe: bool = False
 
     from gpuwm.fetch import readiness_for_fetch
 
+    if plan.run_options.get("prepared_root") is not None:
+        from gpuwm.stage_cli import readiness_for_bundle
+
+        if plan.config_path is None:
+            raise PlanError("Prepared readiness requires its bound config file.")
+        return readiness_for_bundle(Path(plan.run_options["prepared_root"]),
+            experiment_config=plan.config_path,
+            wps_namelist=plan.run_options.get("wps_namelist"),
+            physics_profile=plan.run_options.get("physics_profile"),
+            restart=plan.run_options.get("restart"), devices=plan.run_options.get("devices"))
     arguments = (list(plan.fetch_arguments)
                  if plan.fetch_arguments is not None else None)
     cycle = plan.run_options.get("cycle")
@@ -7921,6 +8077,11 @@ def plan_readiness(plan: RunPlan, *, no_probe: bool = False
                 raise PlanError(f"--readiness: {error}") from error
         arguments = _fetch_arguments_from_hints(
             _pinned_fetch_hints(plan, hints), out=Path("readiness"))
+        from gpuwm.go_cli import _local_input_readiness
+
+        local = _local_input_readiness(hints)
+        if local is not None:
+            return local
     parsed = _parse_fetch_arguments(arguments)
     try:
         return readiness_for_fetch(parsed, no_probe=no_probe)

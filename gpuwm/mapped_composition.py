@@ -39,6 +39,8 @@ source with its hashes.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections.abc import Sequence as _ABCSequence
 from dataclasses import dataclass, field as dataclass_field, replace as _dataclass_replace
 from datetime import datetime
@@ -49,6 +51,120 @@ from types import MappingProxyType
 from typing import Mapping, Sequence
 
 import numpy as np
+
+
+_SHARED_COMPOSITION = ContextVar("shared_composition", default=None)
+
+
+@contextmanager
+def shared_composition_source(source_key, bank_root):
+    """Bind a roster-owned bank in this worker without changing process env.
+
+    The roster removes the bank after its last preparation. The context is
+    local to this thread/task; process workers must receive the same two
+    arguments. Native decoding remains entirely in the Rust engine.
+    """
+    token = _SHARED_COMPOSITION.set((str(source_key),
+        None if bank_root is None else Path(bank_root).resolve()))
+    try:
+        yield
+    finally:
+        _SHARED_COMPOSITION.reset(token)
+
+
+def _shared_composition_key(arguments, source_key):
+    """Bind exact decode operands as well as the planner's source partition."""
+    before = arguments["before"]
+    def bound(path):
+        # Source references carry these paths. Reusing a different spelling
+        # would change the frame/proof even when the source words matched.
+        return {"path": str(path), "sha256": before[str(path)]}
+
+    identity = {
+        "schema": "ensemble-composition-v1", "source_key": source_key,
+        "mapping": before[str(arguments["mapping_path"])],
+        "composition": before[str(arguments["composition_path"])],
+        # Both manifests were fully validated before this seam. Relative
+        # paths depend on their location, so bind their verified role values
+        # below instead of their serialized location-dependent digest.
+        "primary": [bound(path) for path in arguments["primary"]],
+        "supplements": {role: [bound(path) for path in paths]
+                        for role, paths in arguments["supplements"].items()},
+        "provenance": {role: bound(path) for role, path in arguments["provenance"].items()},
+        "contributing": {role: bound(path) for role, path in arguments["contributing"].items()},
+        "decoders": {role: bound(path) for role, path in arguments["decoders"].items()},
+        "engine": _snapshot_authority(arguments["engine"]).sha256,
+        "implementation": _snapshot_authority(Path(__file__)).sha256,
+        "member": arguments["member"], "member_identity": arguments["member_identity"],
+        "grids": [grid.definition() for grid in arguments["atmospheric_grids"]],
+        "lead_batch": arguments["lead_batch"],
+        "memory_budget_bytes": arguments["memory_budget_bytes"],
+        # A fallback the engine substitutes for an unpublished field changes
+        # the composed frames, so two members that differ only here must not
+        # share one bank entry.  Bound only when present, so a composition
+        # without fallbacks keeps its key.
+        **({"unpublished_fallbacks": dict(sorted(arguments["unpublished_fallbacks"].items()))}
+           if arguments.get("unpublished_fallbacks") else {}),
+    }
+    return _canonical_sha256(identity)
+
+
+def _shared_engine_composition(arguments, binding):
+    """One writer per source; later members open their own lazy frame reader."""
+    import shutil
+
+    from gpuwm.remote_artifact_cache import Lease
+    from gpuwm.timeline.ledger import emit
+
+    source_key, bank_root = binding
+    key = _shared_composition_key(arguments, source_key)
+    bank_root.mkdir(parents=True, exist_ok=True)
+    directory = bank_root / key
+    with Lease(bank_root / f"{key}.lock", timeout=3600) as lock:
+        if lock.file is None:
+            raise TimeoutError("shared source composition writer did not release its lease within 3600 s; refusing concurrent writes to the same frames")
+        marker = directory / "READY.json"
+        hit = marker.is_file()
+        if not hit:
+            # Only this bank entry, created by this roster, can be unfinished.
+            # No ready entry is silently repaired or demoted to a warning.
+            if directory.exists():
+                shutil.rmtree(directory)
+            directory.mkdir()
+        attrs = {"source_key": source_key, "composition_key": key, "cache_hit": hit}
+        if hit:
+            ready = json.loads(marker.read_text(encoding="utf-8"))
+            if ready.get("key") != key or ready.get("schema") != "ensemble-composition-v1":
+                raise ValueError("shared composition marker differs from its source binding; refusing wrong-source frames")
+            for name, digest in ready["documents"].items():
+                if name not in ("frames.json", "composition.json") or _snapshot_authority(
+                        directory / "composed" / name).sha256 != digest:
+                    raise ValueError("shared composition metadata changed after seal; refusing unbound frame values")
+            if set(ready["documents"]) != {"frames.json", "composition.json"}:
+                raise ValueError("shared composition seal lacks frame evidence; refusing unbound frame values")
+            emit("prep.compose", "mark", product="ensemble", attrs=attrs)
+        else:
+            # Rust compose performs both decode and composition. These spans
+            # overlap deliberately; timeline unions them rather than adding.
+            emit("prep.decode", "begin", product="ensemble", attrs=attrs)
+            emit("prep.compose", "begin", product="ensemble", attrs=attrs)
+        try:
+            bundle = _compose_through_engine(**{
+                **arguments, "_shared_directory": directory / "composed", "_shared_hit": hit})
+            if not hit:
+                pending = directory / "READY.pending"
+                pending.write_text(json.dumps({"schema": "ensemble-composition-v1", "key": key,
+                    "decode_memory": bundle.native_decode_memory,
+                    "documents": {name: _snapshot_authority(directory / "composed" / name).sha256
+                                  for name in ("frames.json", "composition.json")}},
+                    sort_keys=True) + "\n", encoding="utf-8")
+                pending.replace(marker)
+            return bundle
+        finally:
+            if not hit:
+                attrs["complete"] = marker.is_file()
+                emit("prep.compose", "end", product="ensemble", attrs=attrs)
+                emit("prep.decode", "end", product="ensemble", attrs=attrs)
 
 from gpuwm.mapped_source import (
     MappedSourceFrame,
@@ -1754,6 +1870,8 @@ def _compose_through_engine(
     lead_batch: bool = False,
     memory_budget_bytes: int | None = None,
     unpublished_fallbacks: Mapping[str, str] | None = None,
+    _shared_directory: Path | None = None,
+    _shared_hit: bool = False,
 ) -> MappedSourceBundle:
     """Compose on the Rust engine, keeping every policy check on this side.
 
@@ -1782,39 +1900,50 @@ def _compose_through_engine(
     A failure before the bundle exists deletes it here.
     """
 
+    if _shared_directory is None and (binding := _SHARED_COMPOSITION.get()) is not None and binding[1] is not None:
+        arguments = dict(locals())
+        arguments.pop("binding")
+        return _shared_engine_composition(arguments, binding)
+
     import os
     import tempfile
 
     from gpuwm import mapped_engine_bridge
 
     scratch_base = _compose_scratch_base(scratch_destination)
-    work = tempfile.TemporaryDirectory(
+    work = None if _shared_directory is not None else tempfile.TemporaryDirectory(
         prefix="gpuwm-mapped-compose-",
         dir=None if scratch_base is None else os.fspath(scratch_base),
     )
     try:
-        directory = Path(work.name) / "composed"
+        directory = _shared_directory if work is None else Path(work.name) / "composed"
         try:
-            execution = mapped_engine_bridge.run_engine(
-                "compose",
-                mapping=mapping_path,
-                files=primary,
-                output=directory,
-                composition=composition_path,
-                supplements=supplements,
-                provenance=provenance,
-                contributing_mappings=contributing,
-                input_manifest=manifest_path,
-                input_manifest_sha256=manifest_sha256,
-                engine=engine,
-                atmospheric_grids=atmospheric_grids,
-                threads=workers,
-                lead_batch=lead_batch,
-                **({} if memory_budget_bytes is None else {
-                    "memory_budget_bytes": memory_budget_bytes}),
-                **({"unpublished_fallbacks": unpublished_fallbacks}
-                   if unpublished_fallbacks else {}),
-            )
+            if _shared_hit:
+                ready = json.loads((directory.parent / "READY.json").read_text(encoding="utf-8"))
+                execution = {"decode_memory": ready["decode_memory"]}
+            else:
+                from gpuwm.timeline.ledger import emit
+                measured = _SHARED_COMPOSITION.get()
+                measured = measured if measured is not None and measured[1] is None else None
+                attrs = {"source_key": measured[0], "cache_hit": False} if measured else None
+                if measured:
+                    emit("prep.decode", "begin", product="ensemble", attrs=attrs)
+                    emit("prep.compose", "begin", product="ensemble", attrs=attrs)
+                try:
+                    execution = mapped_engine_bridge.run_engine(
+                        "compose", mapping=mapping_path, files=primary, output=directory,
+                        composition=composition_path, supplements=supplements, provenance=provenance,
+                        contributing_mappings=contributing, input_manifest=manifest_path,
+                        input_manifest_sha256=manifest_sha256, engine=engine,
+                        atmospheric_grids=atmospheric_grids, threads=workers, lead_batch=lead_batch,
+                        **({} if memory_budget_bytes is None else {"memory_budget_bytes": memory_budget_bytes}),
+                        **({"unpublished_fallbacks": unpublished_fallbacks}
+                           if unpublished_fallbacks else {}),
+                    )
+                finally:
+                    if measured:
+                        emit("prep.compose", "end", product="ensemble", attrs=attrs)
+                        emit("prep.decode", "end", product="ensemble", attrs=attrs)
         except ScratchDiskRefusal as refusal:
             raise scratch_disk_refusal(refusal, scratch_base) from refusal
         evidence = mapped_engine_bridge.read_composition_evidence(directory)
@@ -1863,7 +1992,8 @@ def _compose_through_engine(
             execution.get("decode_memory") if isinstance(execution, Mapping) else None),
             _native_decode_control=decode_control)
     except BaseException:
-        work.cleanup()
+        if work is not None:
+            work.cleanup()
         raise
 
 

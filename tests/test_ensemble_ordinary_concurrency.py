@@ -20,14 +20,13 @@ def _experiment(*configs):
                                         for number, cfg in enumerate(configs)))
 
 
-def test_legacy_shortwave_routes_to_sequential_members_without_changing_the_suite():
+def test_legacy_shortwave_admits_packing_without_changing_the_suite():
     cfg = _config(ra_lw_physics=4, ra_sw_physics=4, ra_rrtmg_variant="rrtmg_legacy")
     before = vars(cfg).copy()
     plan = plan_ordinary_concurrency(_experiment(cfg))
-    assert not plan.eligible
-    assert len(plan.reasons) == 1 and "upload-ready event" in plan.reasons[0]
-    assert plan.bindings[0]["binding"] == "legacy_rrtmg_shortwave_table_upload"
-    assert plan.receipt()["fallback"] == "ordinary_members_in_sequence_per_card"
+    assert plan.eligible
+    assert not plan.reasons and not plan.bindings
+    assert plan.receipt()["fallback"] is None
     assert vars(cfg) == before
 
 
@@ -40,15 +39,13 @@ def test_other_selected_bindings_do_not_inherit_the_shortwave_cache_reason(lw, s
     assert plan.receipt()["cfl_owner_policy"] == "member_scope_required_in_every_ordinary_wave"
 
 
-def test_child_legacy_shortwave_is_diagnosed_under_its_own_domain():
+def test_child_legacy_shortwave_admits_packing():
     parent = _config(ra_lw_physics=4, ra_sw_physics=4, ra_rrtmg_variant="rte-rrtmgp")
     child = replace(parent, ra_rrtmg_variant="rrtmg_legacy")
     plan = plan_ordinary_concurrency(_experiment(parent, child))
-    assert not plan.eligible
-    assert len(plan.reasons) == 1 and plan.reasons[0].startswith("domain 2:")
-    assert plan.bindings[0]["grid_id"] == 2
+    assert plan.eligible and not plan.reasons and not plan.bindings
 
 
 def test_radiation_alias_resolves_the_actual_legacy_shortwave_selection():
     cfg = _config(ra_physics=4, ra_rrtmg_variant="rrtmg_legacy")
-    assert not plan_ordinary_concurrency(_experiment(cfg)).eligible
+    assert plan_ordinary_concurrency(_experiment(cfg)).eligible

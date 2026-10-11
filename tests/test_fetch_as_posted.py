@@ -30,6 +30,18 @@ from gpuwm import source_posting as rows
 from gpuwm import source_readiness as readiness
 from gpuwm.fetch_endpoints import Endpoint
 
+
+@pytest.fixture(autouse=True)
+def _python_route_transport(monkeypatch):
+    """These replays serve stand-in bytes, not GRIB2 messages.
+
+    Where a built rw_fetch is present, a GRIB2 route streams through it and
+    it refuses a payload without a GRIB2 indicator; the stream door has its
+    own suite (tests/test_fetch_stream_tail.py). The posting schedule is what
+    is under test here, so the replays keep the Python object transport.
+    """
+    monkeypatch.setattr(fetch, "_route_stream_downloader", lambda plan, args: None)
+
 SOURCE = "gefs"
 CYCLE = datetime(2026, 9, 29, 12)
 
@@ -444,7 +456,10 @@ def test_as_posted_manifest_equals_the_one_shot_manifest(replay, tmp_path):
     assert not (whole / "posting").exists()
     one = json.loads((posted / "fetch-manifest.json").read_text())
     two = json.loads((whole / "fetch-manifest.json").read_text())
-    assert "complete" not in two
+    # Since 2.8.9 every route publishes verified lead prefixes while later
+    # inputs download, so a whole-cycle manifest is written by the same
+    # lead path and closes with complete=true; it never says false.
+    assert two.get("complete", True) is True
     assert comparable(one) == comparable(two)
     assert (posted / "SHA256SUMS").read_bytes() == (whole / "SHA256SUMS").read_bytes()
 

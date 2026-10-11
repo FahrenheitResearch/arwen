@@ -127,15 +127,36 @@ def test_the_horizon_is_the_cycles_own_not_the_registry_ceiling():
                               forcing_source=source, start_hour=horizon + 3)
 
 
+def _analysis_moment(source):
+    """MOMENT, or the last day a source's own published period holds.
+
+    Read from the source's fetch contract: since 5ecd0d4a9 20crv3-cf is
+    fetched from an archive that ends in 2015, and the configuration
+    checks its window against it, so a 2026 analysis is refused there for
+    a reason this cell is not about.
+    """
+
+    from gpuwm.fetch import native_cf_fetch_contract
+
+    if native_cf_fetch_contract(source) is None:
+        return MOMENT
+    from gpuwm.cf_archive_fetch import row
+    end = datetime.fromisoformat(row(get_source_adapter(source).source_id)[
+        "coverage_end"])
+    return (end - timedelta(days=1)).replace(hour=0)
+
+
 @pytest.mark.parametrize("source", analysis_only_sources())
 def test_an_analysis_only_source_refuses_a_lead_and_names_why(source):
     with pytest.raises(ValueError, match="max_forecast_hour = 0"):
         tc.configuration_text(cycle=CYCLE, point=tc_point(source), hours=6,
                               forcing_source=source, start_hour=6)
     # And still authors its analysis configuration, unchanged.
-    text, exp = tc.configuration_text(cycle=CYCLE, point=tc_point(source),
+    moment = _analysis_moment(source)
+    text, exp = tc.configuration_text(cycle=f"{moment:%Y%m%d%H}",
+                                      point=tc_point(source),
                                       hours=6, forcing_source=source)
-    assert exp.start_time == MOMENT
+    assert exp.start_time == moment
     assert "forecast_start_hour" not in tomllib.loads(text)["fetch"]
 
 

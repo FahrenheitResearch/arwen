@@ -153,7 +153,7 @@ def test_short_eda_schedule_retains_the_full_member_request_identity(tmp_path, m
     from gpuwm.case_data import build_case_data
     data = build_case_data(raw["case_data"], source=changed["config_path"],
                            base_dir=tmp_path, require_inputs=False, require_met_inputs=False)
-    fetch_args = runplan.declared_forcing_fetch(raw, data)
+    fetch_args = runplan.declared_forcing_fetch(raw, data, base_dir=Path(changed["config_path"]).parent)
     assert fetch_args[fetch_args.index("--hours") + 1] == "15"
     assert fetch_args[fetch_args.index("--member") + 1] == "7"
 

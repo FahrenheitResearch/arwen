@@ -1931,9 +1931,30 @@ def require_ensemble_diagnostic_reducer(renderer: Path | None = None) -> Path:
     return renderer
 
 
+def product_source_label() -> str:
+    """``WOOF <executing version>``, the stamp gpuwm.render.default_source_label
+    puts on a plot, built here without importing gpuwm.render.
+
+    Breakage it prevents: this module ships in the RW-WPS preparation wheel,
+    which leaves gpuwm.render out, so an import of it here made
+    tools/build_rw_wps_release.py refuse the wheel for an unresolved internal
+    import.  tests/test_provenance_gate.py holds the two labels equal.
+    """
+    from gpuwm.provenance import UNKNOWN_VERSION
+    from gpuwm.provenance_gate import executing_version
+
+    try:
+        version = executing_version()
+    except Exception:                                   # noqa: BLE001
+        return "WOOF"
+    if not version or version == UNKNOWN_VERSION:
+        return "WOOF"
+    return f"WOOF {version}"
+
+
 def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
                                   out_dir: Path, fields=(), domain="d01",
-                                  width=1200, height=900, source_label="ArWen",
+                                  width=1200, height=900, source_label=None,
                                   products=("mean", "spread", "min", "max", "prob", "paintball", "postage")):
     """Draw pre-reduced resident probability planes without member histories.
 
@@ -1941,6 +1962,8 @@ def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
     imports a fabricated WRF frame or recalculates ensemble reductions.
     """
     renderer = find_ensemble_product_renderer(renderer)
+    if source_label is None:
+        source_label = product_source_label()
     probe = subprocess.run([str(renderer), "--ensemble-products-abi"],
                            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S,
                            env=renderer_env())

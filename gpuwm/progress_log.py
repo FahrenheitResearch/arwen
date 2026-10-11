@@ -87,7 +87,8 @@ import time
 import weakref
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 #: One JSONL line per event, at this schema.
 #:
@@ -544,9 +545,20 @@ class StepLog:
 
     def __init__(self, *, start_time: datetime, run_seconds: float,
                  text_stream=None, jsonl_path=None, frame_marker_dir=None,
-                 every: int = 1, adaptive_dt: bool = False):
+                 every: int = 1, adaptive_dt: bool = False, resume=None):
         self._start_time = start_time
         self._run_seconds = float(run_seconds) if run_seconds else 0.0
+        #: Where this run picks up a run that an earlier process began
+        #: (a WRF warm start from wrfrst), or ``None`` for a run that
+        #: starts at its own start time.  The step records keep the
+        #: model's own counters (WRF's itimestep continues across a
+        #: restart, and so does ``step``); the run line, ``domain_end``
+        #: and ``run_end`` count only the steps THIS run took.  Breakage
+        #: it prevents: the 50-step restart leg of NCAR's CONUS 12 km
+        #: benchmark said "STARTING SIMULATION at 12:00 for 43200 model
+        #: seconds" and "600 steps", so steps per second read from the
+        #: log were 12 times too high (NV recipe dry run, D7).
+        self._resume = None if resume is None else StepLogResume.of(resume)
         self._text = text_stream
         self._every = max(1, int(every))
         #: Fixed by the run's configuration and never reconsidered: the
@@ -629,14 +641,23 @@ class StepLog:
         # unregister this and it never fires.
         self._at_exit = lambda ref=weakref.ref(self): _close_dangling(ref)
         atexit.register(self._at_exit)
-        self._emit("run_start", self._run_start_line(), {
+        fields = {
             "start_time": format_model_time(start_time),
             "run_seconds": self._run_seconds,
             "pid": os.getpid(),
             "frame_marker_dir": (None if self._marker_dir is None
                                  else str(self._marker_dir.resolve())),
             "progress_every": self._every,
-        })
+        }
+        if self._resume is not None:
+            fields["restart"] = {
+                "valid_time": self._valid(self._resume.model_seconds),
+                "model_seconds": self._resume.model_seconds,
+                "window_seconds": self._window_seconds(),
+                "steps": {str(grid): steps for grid, steps
+                          in sorted(self._resume.steps.items())},
+            }
+        self._emit("run_start", self._run_start_line(), fields)
 
     # -- the per-step hook the executor calls ------------------------
 
@@ -678,7 +699,7 @@ class StepLog:
         window = self._first_steps.setdefault(grid_id, [])
         if len(window) <= _FIRST_STEP_WINDOW:
             window.append(float(step_wall_seconds))
-        if step_count != 1 and step_count % self._every:
+        if step_count != self._first_step(grid_id) and step_count % self._every:
             return
         state[2] = step_count
         valid = self._valid(model_seconds)
@@ -693,8 +714,7 @@ class StepLog:
             "valid_time": valid,
             "model_seconds": model_seconds,
             "step_wall_seconds": float(step_wall_seconds),
-            "fraction": (round(model_seconds / self._run_seconds, 6)
-                         if self._run_seconds > 0.0 else None),
+            "fraction": self._fraction(model_seconds),
         }
         if shown_dt is not None:
             fields["dt"] = shown_dt
@@ -1073,16 +1093,17 @@ class StepLog:
                         "valid_time": self._valid(model_seconds),
                         "model_seconds": model_seconds,
                         "step_wall_seconds": None,
-                        "fraction": (
-                            round(model_seconds / self._run_seconds, 6)
-                            if self._run_seconds > 0.0 else None),
+                        "fraction": self._fraction(model_seconds),
                         "final": True,
                     })
             valid = self._valid(model_seconds)
+            taken = self._steps_taken(grid_id, steps)
+            fields = {"domain": grid_id, "steps": taken, "valid_time": valid,
+                      "model_seconds": model_seconds}
+            if self._resume is not None:
+                fields["last_step"] = steps
             self._emit("domain_end", format_domain_end_line(
-                domain=grid_id, valid_time=valid, steps=steps), {
-                    "domain": grid_id, "steps": steps, "valid_time": valid,
-                    "model_seconds": model_seconds})
+                domain=grid_id, valid_time=valid, steps=taken), fields)
         # BEFORE run_end, so a consumer replaying the stream in order
         # learns what the compile cost before it learns the run is over.
         excess = self._first_step_excess_seconds()
@@ -1096,7 +1117,8 @@ class StepLog:
                        measured_as="step 1 wall minus the median of the "
                                    "steps that follow it")
         wall = time.perf_counter() - self._started_wall
-        total = sum(state[0] for state in self._domains.values())
+        total = sum(self._steps_taken(grid_id, state[0])
+                    for grid_id, state in self._domains.items())
         self._emit("run_end", format_run_end_line(
             status=status, steps=total, wall_seconds=wall), {
                 "status": str(status),
@@ -1129,9 +1151,39 @@ class StepLog:
     # -- internals ----------------------------------------------------
 
     def _run_start_line(self) -> str:
+        if self._resume is None:
+            return (f"gpuwm: STARTING SIMULATION at "
+                    f"{format_model_time(self._start_time)} for "
+                    f"{self._run_seconds:.0f} model seconds")
+        steps = self._resume.steps
+        at_step = "" if not steps else f" at step {steps[min(steps)]}"
         return (f"gpuwm: STARTING SIMULATION at "
-                f"{format_model_time(self._start_time)} for "
-                f"{self._run_seconds:.0f} model seconds")
+                f"{self._valid(self._resume.model_seconds)} for "
+                f"{self._window_seconds():.0f} model seconds, a restart"
+                f"{at_step} of the run from "
+                f"{format_model_time(self._start_time)}")
+
+    def _window_seconds(self) -> float:
+        """The model seconds THIS run integrates."""
+        resumed = 0.0 if self._resume is None else self._resume.model_seconds
+        return max(0.0, self._run_seconds - resumed)
+
+    def _fraction(self, model_seconds: float):
+        window = self._window_seconds()
+        if window <= 0.0:
+            return None
+        resumed = 0.0 if self._resume is None else self._resume.model_seconds
+        return round((float(model_seconds) - resumed) / window, 6)
+
+    def _first_step(self, grid_id: int) -> int:
+        """The model step number of this run's first step on ``grid_id``."""
+        if self._resume is None:
+            return 1
+        return int(self._resume.steps.get(int(grid_id), 0)) + 1
+
+    def _steps_taken(self, grid_id: int, step_count: int) -> int:
+        """Steps this run took on ``grid_id``, its last being ``step_count``."""
+        return int(step_count) - (self._first_step(grid_id) - 1)
 
     def _valid(self, model_seconds: float) -> str:
         """One model instant as its WRF string.
@@ -1188,6 +1240,33 @@ class StepLog:
                     self._text.flush()
                 except (OSError, ValueError):
                     pass
+
+
+@dataclasses.dataclass(frozen=True)
+class StepLogResume:
+    """Where a run continues a run an earlier process began.
+
+    ``model_seconds`` is the restart instant measured from the run's
+    start time; ``steps`` is each domain's step count at that instant
+    (WRF's ITIMESTEP for a warm start from wrfrst).
+    """
+
+    model_seconds: float
+    steps: Mapping[int, int]
+
+    @classmethod
+    def of(cls, value) -> "StepLogResume":
+        if isinstance(value, cls):
+            return value
+        seconds = float(value["model_seconds"])
+        steps = {int(grid): int(count)
+                 for grid, count in dict(value.get("steps") or {}).items()}
+        if not math.isfinite(seconds) or seconds < 0.0:
+            raise ValueError(f"resume model_seconds {seconds!r} is not a "
+                             "non-negative model time")
+        if any(count < 0 for count in steps.values()):
+            raise ValueError(f"resume steps {steps!r} include a negative count")
+        return cls(model_seconds=seconds, steps=MappingProxyType(steps))
 
 
 class _NullStepLog:
@@ -1296,7 +1375,7 @@ def open_step_log(*, outdir, start_time, run_seconds,
                   progress_format: str = "text",
                   progress_output=None, progress_every: int = 1,
                   frame_markers: bool = True, text_stream=None,
-                  adaptive_dt: bool = False):
+                  adaptive_dt: bool = False, resume=None):
     """Build the log a simulation front door runs with.
 
     DEFAULT-ON, and that is the point.  ``progress_format="text"``
@@ -1344,7 +1423,7 @@ def open_step_log(*, outdir, start_time, run_seconds,
         jsonl_path=jsonl_path,
         frame_marker_dir=(outdir / FRAME_MARKER_DIRNAME
                           if frame_markers else None),
-        every=progress_every, adaptive_dt=adaptive_dt)
+        every=progress_every, adaptive_dt=adaptive_dt, resume=resume)
 
 
 class LandingFanout:
@@ -1435,14 +1514,14 @@ class ProgressOptions:
         return flags
 
     def open(self, *, outdir, start_time, run_seconds, text_stream=None,
-             adaptive_dt: bool = False):
+             adaptive_dt: bool = False, resume=None):
         return open_step_log(
             outdir=outdir, start_time=start_time, run_seconds=run_seconds,
             progress_format=self.progress_format,
             progress_output=self.progress_output,
             progress_every=self.progress_every,
             frame_markers=self.frame_markers, text_stream=text_stream,
-            adaptive_dt=adaptive_dt)
+            adaptive_dt=adaptive_dt, resume=resume)
 
 
 def _positive_cadence(value: str) -> int:
@@ -1517,7 +1596,7 @@ __all__ = [
     "FIRST_STEP_EXCESS_FACTOR", "FRAME_MARKER_DIRNAME", "FRAME_MARKER_SCHEMA",
     "NEST_EVENTS", "NULL_STEP_LOG", "PROGRESS_FORMATS", "STDOUT_SENTINEL",
     "STEP_LOG_EVENTS", "STEP_LOG_FILENAME", "STEP_LOG_SCHEMA",
-    "STEP_LOG_SCHEMAS", "LandingFanout", "ProgressOptions", "StepLog",
+    "STEP_LOG_SCHEMAS", "LandingFanout", "ProgressOptions", "StepLog", "StepLogResume",
     "add_progress_arguments", "centre_latlon", "format_domain_end_line",
     "format_domain_start_line", "format_model_time", "format_nest_line",
     "format_output_line", "format_phase_line", "format_position",

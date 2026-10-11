@@ -263,13 +263,15 @@ _SPECIES_BY_SCHEME = {
     "p3": ("qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"),
     "thompson_aero": ("qv", "qc", "qr", "qi", "qs", "qg",
                       "ni", "nr", "nc", "nwfa", "nifa"),
+    "tempo": ("qv", "qc", "qr", "qi", "qs", "qg",
+              "ni", "nr", "nc", "nwfa", "nifa", "ng", "volg"),
 }
 _SPECIES = _SPECIES_BY_SCHEME["wsm6"]
 
 #: gpuwm ``mp_physics`` selector per scheme row.  One table, so the
 #: RunConfig the seam builds and the species row it enforces cannot
 #: drift apart.
-_MP_PHYSICS_BY_SCHEME = {"wsm6": 6, "p3": 50, "thompson_aero": 28}
+_MP_PHYSICS_BY_SCHEME = {"wsm6": 6, "p3": 50, "thompson_aero": 28, "tempo": 900}
 
 #: Scheme rows whose driver arm binds a GRAUPEL accumulator, and so
 #: report ``graupelncv`` in the per-call receipt and ``GRAUPELNC`` in
@@ -277,7 +279,7 @@ _MP_PHYSICS_BY_SCHEME = {"wsm6": 6, "p3": 50, "thompson_aero": 28}
 #: (gpuwm/core/physics_inventory.py's mp=50 surface-slot row), and a
 #: permanent zero key would let a consumer claim a field the scheme
 #: never has.
-_GRAUPEL_SCHEMES = frozenset({"wsm6", "thompson_aero"})
+_GRAUPEL_SCHEMES = frozenset({"wsm6", "thompson_aero", "tempo"})
 
 #: The one scheme row whose phase-2 adapter consumes ``rho_dry``, and
 #: the reason each other row refuses it BY NAME rather than accepting
@@ -285,6 +287,7 @@ _GRAUPEL_SCHEMES = frozenset({"wsm6", "thompson_aero"})
 #: (gpuwm/core/wsm6.py:109-112); P3 and aerosol-aware Thompson both
 #: build density from the EOS pressure inside their own kernels.
 _RHO_DRY_REFUSAL_BY_SCHEME = {
+    "tempo": "TEMPO derives its density from pressure, temperature and vapour",
     "p3": ("P3's kernels derive density from the EOS pressure where "
            "the authority does (module_mp_p3.F)"),
     "thompson_aero": ("mp_gt_driver builds its own rho from the EOS "
@@ -308,6 +311,7 @@ _RHO_DRY_REFUSAL_BY_SCHEME = {
 #: nothing refills either afterwards, so they are cross-step constants
 #: a resume cannot rebuild from the caller's transported state.
 _STATE_RESTART_FIELDS_BY_SCHEME = {
+    "tempo": ("effc", "effi", "effs", "h_diabatic", "nwfa2d", "nifa2d"),
     "wsm6": ("effc", "effi", "effs", "h_diabatic"),
     "p3": ("effc", "effi", "h_diabatic", "th_old", "qv_old"),
     "thompson_aero": ("effc", "effi", "effs", "h_diabatic",
@@ -374,9 +378,10 @@ def resolve_column_batch_cadences(*, dt, radiation_seconds,
       slot (``cumulus_seconds`` must then be None too).
     """
     dt = _require_positive("dt", dt)
-    if cumulus_scheme not in ("gf", "kf", None):
+    schemes = {"gf": 3, "kf": 1, "ntiedtke": 16, None: 0}
+    if cumulus_scheme not in schemes:
         raise ValueError(
-            f"cumulus_scheme must be 'gf', 'kf' or None, got "
+            f"cumulus_scheme must be 'gf', 'kf', 'ntiedtke' or None, got "
             f"{cumulus_scheme!r}")
     stepra = _cadence_steps("radiation_seconds", radiation_seconds, dt)
     stepbl = _cadence_steps("surface_pbl_seconds", surface_pbl_seconds, dt)
@@ -386,7 +391,7 @@ def resolve_column_batch_cadences(*, dt, radiation_seconds,
         "bldt_minutes": stepbl * dt / 60.0,
         "stepra": stepra,
         "stepbl": stepbl,
-        "cu_physics": {"gf": 3, "kf": 1, None: 0}[cumulus_scheme],
+        "cu_physics": schemes[cumulus_scheme],
     }
     if cumulus_scheme is None:
         if cumulus_seconds is not None:
@@ -395,11 +400,11 @@ def resolve_column_batch_cadences(*, dt, radiation_seconds,
         resolved["stepcu"] = 0
         return resolved
     stepcu = _cadence_steps("cumulus_seconds", cumulus_seconds, dt)
-    if cumulus_scheme == "gf":
+    if cumulus_scheme in ("gf", "ntiedtke"):
         if stepcu != 1:
             raise ValueError(
-                f"cumulus_scheme='gf' requires cumulus_seconds == dt "
-                f"({dt} s): WRF pins cudt=0 for Grell-Freitas (STEPCU=1, "
+                f"cumulus_scheme={cumulus_scheme!r} requires cumulus_seconds == dt "
+                f"({dt} s): this scheme pins cudt=0 (STEPCU=1, "
                 f"no NCA hold); got {cumulus_seconds} s")
         # GF carries WRF's pinned cudt=0 spelling; the effective cadence
         # is every step.
@@ -507,6 +512,9 @@ class _ColumnBatchState:
         self.php = zeros(nz + 1, ny, nx)
         self.alt = zeros(*shape3)
         self.w = zeros(nz + 1, ny, nx)
+        if cfg.mp_physics == 900:
+            # Per-domain SAVE state is needed for transactional retry/restart.
+            self.tempo_first_call = True
         for name in species:
             setattr(self, name, zeros(*shape3))
         if cfg.mp_physics == 50:
@@ -545,7 +553,7 @@ class _ColumnBatchState:
                                 dtype=np.float32)
             self.effs = xp.full(shape3, np.float32(9.99),
                                 dtype=np.float32)
-        if cfg.mp_physics == 28:
+        if cfg.mp_physics in (28, 900):
             # QNWFA2D / QNIFA2D: WRF's SURFACE aerosol emission
             # TENDENCIES (# kg-1 s-1, Registry.EM_COMMON:492-493).  They
             # are INTENT(IN) to mp_gt_driver (module_mp_thompson.F:1098;
@@ -972,7 +980,7 @@ class MpasColumnBatchPhysics:
     def run_phase1(self, *, dt, u, v, theta, pressure, pressure_interface,
                    z_interface, w, rho_dry, qv, qc, qr, qi, qs=None,
                    qg=None, ni=None, nr=None, qir=None, qib=None,
-                   nc=None, nwfa=None, nifa=None,
+                   nc=None, nwfa=None, nifa=None, ng=None, volg=None,
                    exner=None, rthdynten=None,
                    rqvdynten=None) -> MpasColumnPhysicsTendencies:
         """Run the due phase-1 chain; return the held raw tendency set.
@@ -1015,7 +1023,7 @@ class MpasColumnBatchPhysics:
         inputs.update(self._require_species(
             "run_phase1", qv=qv, qc=qc, qr=qr, qi=qi, qs=qs, qg=qg,
             ni=ni, nr=nr, qir=qir, qib=qib, nc=nc, nwfa=nwfa,
-            nifa=nifa))
+            nifa=nifa, ng=ng, volg=volg))
         for name in ("u", "v", "theta", "pressure",
                      "rho_dry") + self._species:
             self._require_input(name, inputs[name], level)
@@ -1143,8 +1151,8 @@ class MpasColumnBatchPhysics:
     # ------------------------------------------------------------------
     def run_phase2(self, *, theta, qv, qc, qr, qi, qs=None, qg=None,
                    ni=None, nr=None, qir=None, qib=None, nc=None,
-                   nwfa=None, nifa=None, pressure,
-                   rho_dry=None, z_interface,
+                   nwfa=None, nifa=None, ng=None, volg=None, pressure,
+                   rho_dry=None, z_interface, w=None,
                    refl_10cm_due: bool = False) -> dict:
         """Run the phase-2 scheme in place on the caller's arrays.
 
@@ -1198,7 +1206,13 @@ class MpasColumnBatchPhysics:
         species = self._require_species(
             "run_phase2", qv=qv, qc=qc, qr=qr, qi=qi, qs=qs, qg=qg,
             ni=ni, nr=nr, qir=qir, qib=qib, nc=nc, nwfa=nwfa,
-            nifa=nifa)
+            nifa=nifa, ng=ng, volg=volg)
+        if scheme == "tempo":
+            if w is None:
+                raise ValueError("run_phase2: TEMPO requires post-RK vertical velocity; held pre-RK velocity is a different cloud input")
+            self._require_input("w", w, iface)
+        elif w is not None:
+            raise ValueError(f"run_phase2: {scheme!r} does not consume a post-RK w argument")
         if wsm6 and rho_dry is None:
             raise ValueError(
                 "run_phase2: microphysics_scheme='wsm6' requires "
@@ -1218,6 +1232,8 @@ class MpasColumnBatchPhysics:
         self._require_input("z_interface", z_interface, iface)
 
         state, cfg, driver = self._state, self._cfg, self._driver
+        if scheme == "tempo":
+            state.w[...] = w.reshape(nz + 1, 1, ncol)
 
         def v3(a):
             return a.reshape(a.shape[0], 1, ncol)
@@ -1248,6 +1264,24 @@ class MpasColumnBatchPhysics:
                 # the state WRF's init would test -- the caller's own
                 # arrays, the caller's own geometry.
                 self._aerosol_init = self._thompson_first_contact()
+            if scheme == "tempo" and self._aerosol_init is None:
+                if not bool(cp.any(state.nwfa)) or not bool(cp.any(state.nifa)):
+                    raise ValueError("TEMPO column seam requires supplied water-friendly and ice-friendly aerosol initial fields; an absent climatology must not become a synthetic real forecast")
+                # The existing MPAS column geometry uses bottom interfaces.
+                # Record the emission convention separately from port parity.
+                if cfg.tempo_surface_emission_before:
+                    area = getattr(self, "_cell_area_m2", None)
+                    if area is None:
+                        raise ValueError("native TEMPO surface emission initialization requires cell areas")
+                    from gpuwm.core.tempo import _runtime
+                    _runtime(cfg, nz).initialize_mpas_surface_emission(
+                        state.nwfa[0], z_interface[1] - z_interface[0], area, state.nwfa2d)
+                else:
+                    state.nwfa2d[...] = state.nwfa[0] * cp.float32(0.000196)
+                self._aerosol_init = {"ccn": False, "in": False,
+                                      "source": "supplied", "surface_emission":
+                                      "native MPAS area and depth scaling" if cfg.tempo_surface_emission_before
+                                      else "lowest-level times 0.000196"}
             # THE ARW POST-RK PAIR (gpuwm/core/dycore.py:2507-2510):
             # microphysics dispatch, then the driver's bucket/RAINBL
             # acceptance.
@@ -1446,13 +1480,15 @@ class MpasColumnBatchPhysics:
             # and when rides here.
             "carriers": driver.carriers.state(),
         }
-        if self._microphysics_scheme == "thompson_aero":
+        if self._microphysics_scheme in ("thompson_aero", "tempo"):
             # Scheme-asymmetric like the identity's "microphysics" key:
             # the wsm6/p3 payloads stay byte-identical.  A restored
             # mp=28 seam must know first contact already happened, or
             # its next run_phase2 would re-run thompson_init's presence
             # tests on a checkpointed field.
             scalars["aerosol_init"] = self.aerosol_init_receipt
+        if self._microphysics_scheme == "tempo":
+            scalars["tempo_first_call"] = bool(self._state.tempo_first_call)
         return {
             "identity": dict(self._identity),
             "arrays": arrays,
@@ -1529,7 +1565,7 @@ class MpasColumnBatchPhysics:
         adapter = driver.cumulus_callable
         if adapter is not None and hasattr(adapter, "_history_time"):
             adapter._history_time = scalars["kf_history_time"]
-        if self._microphysics_scheme == "thompson_aero":
+        if self._microphysics_scheme in ("thompson_aero", "tempo"):
             if "aerosol_init" not in scalars:
                 raise ValueError(
                     "restart payload lacks scalars['aerosol_init']: an "
@@ -1539,6 +1575,10 @@ class MpasColumnBatchPhysics:
             receipt = scalars["aerosol_init"]
             self._aerosol_init = (None if receipt is None
                                   else dict(receipt))
+        if self._microphysics_scheme == "tempo":
+            if type(scalars.get("tempo_first_call")) is not bool:
+                raise ValueError("TEMPO restart needs its first-call SAVE flag to prevent reseeding a resumed or retried domain")
+            state.tempo_first_call = scalars["tempo_first_call"]
         # Carrier provenance (schema v2): the held radiation buffers were
         # restored as driver arrays above; this restores WHO wrote them
         # and WHEN, so the first radiation-not-due step's LSM consumption

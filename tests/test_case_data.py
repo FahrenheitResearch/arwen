@@ -189,9 +189,21 @@ def test_committed_configs_declare_no_machine_path():
     path.  Machine paths in a source distribution are both unportable and
     a privacy leak, and one config re-introducing one is exactly how the
     previous state came about."""
+    # What ships is the release snapshot, and RELEASE-EXCLUDE.txt names
+    # what it leaves out.  7fa2b574c put the recent DA deck's per-machine
+    # authorings there (tools.da_recent_case writes their plan and receipt
+    # paths absolute by design; a reader re-authors on the execution box),
+    # so a development checkout keeps those eight files and no release
+    # carries them.  Every other committed config is still held to this.
+    excluded = {
+        line.strip() for line in (REPO / "RELEASE-EXCLUDE.txt").read_text(
+            encoding="utf-8").splitlines()
+        if line.strip().startswith("configs/")}
     offenders = []
     for path in sorted((REPO / "configs").rglob("*")):
         if path.suffix.lower() not in {".toml", ".json"} or not path.is_file():
+            continue
+        if path.relative_to(REPO).as_posix() in excluded:
             continue
         for number, line in enumerate(
                 path.read_text(encoding="utf-8").splitlines(), start=1):

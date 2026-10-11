@@ -22,6 +22,7 @@ pub mod coverage;
 pub mod nowcast_frames;
 pub mod da_sheet;
 pub mod verification;
+pub mod scorecard;
 pub mod verification_io;
 pub mod verification_render;
 pub mod station_overlay;

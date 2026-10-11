@@ -50,15 +50,12 @@ def set_names(fixture: dict) -> list[str]:
                    if key.endswith("/meta")})
 
 
-def _ordered(bits: np.ndarray) -> np.ndarray:
-    signed = bits.astype(np.int64)
-    return np.where(signed & 0x80000000, 0x80000000 - signed, signed)
-
-
 def ulp_distance(got: np.ndarray, want: np.ndarray) -> np.ndarray:
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+
     got = np.ascontiguousarray(got, dtype=F)
     want = np.ascontiguousarray(want, dtype=F)
-    dist = np.abs(_ordered(got.view(np.uint32)) - _ordered(want.view(np.uint32)))
+    dist = np.abs(monotone_fp32_key(got) - monotone_fp32_key(want))
     both_nan = np.isnan(got) & np.isnan(want)
     return np.where(both_nan, 0, dist)
 

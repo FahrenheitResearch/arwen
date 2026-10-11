@@ -475,13 +475,19 @@ pub fn load_station_observations(
     valid_time: &str,
 ) -> Result<Vec<StationObservation>, String> {
     let record = read_json(path)?;
-    if !record["schema"]
+    let generic = record["schema"] == "gpuwm-obs.station-observations.v1";
+    if (!record["schema"]
         .as_str()
         .unwrap_or("")
         .starts_with("gpuwm-obs.asos-surface.v")
+        && !generic)
         || record["provenance"]["is_stub"].as_bool() == Some(true)
     {
         return Err("station verification requires decoded real surface observations".into());
+    }
+    if generic && (record["source"].as_str().is_none() || record["units"].as_object().is_none()
+        || record["provenance"]["sha256"].as_str().is_none()) {
+        return Err("generic station observations require source, per-quantity units and original-source SHA256 to prevent unbound profile or snow scores".into());
     }
     let stations = record["stations"]
         .as_array()

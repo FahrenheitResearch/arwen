@@ -60,7 +60,8 @@ N5S_SOIL_LAYERS = 4
 #: adapter stages the field through the identical seam.  It takes a rain
 #: NUMBER argument (nr1d, :2957) where Thompson's does not, which changes
 #: the producer kernel and nothing about admission.
-REFLECTIVITY_MICROPHYSICS = frozenset((1, 6, 8, 9, 10, 16, 18, 28, 50))
+REFLECTIVITY_MICROPHYSICS = frozenset((1, 6, 8, 9, 10, 16, 18, 28, 50) + tuple(
+    __import__("gpuwm.microphysics_schemes", fromlist=["NAMED_MP_IDS"]).NAMED_MP_IDS))
 
 # Every science-field entry below has one explicit gpuwm consumer.  The
 # importer is intentionally closed-world: variables outside these inventories

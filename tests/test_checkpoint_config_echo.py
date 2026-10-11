@@ -101,12 +101,17 @@ MOVED = {
     "aer_opt": (dict(aer_opt=3, mp_physics=28, moist=True,
                      ra_physics=4, ra_rrtmg_variant="rrtmg_legacy"),
                 {"aer_opt"}),
+    "rrtmg_aer3_type_source": (
+        dict(aer_opt=3, mp_physics=28, moist=True, ra_physics=4,
+             ra_rrtmg_variant="rrtmg_legacy",
+             rrtmg_aer3_type_source="landmask"),
+        {"aer_opt", "rrtmg_aer3_type_source"}),
     "alb_sol": (dict(alb_sol=1), {"alb_sol"}),
 }
 
 #: The keys an echo at every default leaves out.
 DEFAULT_OFF = frozenset({
-    "thompson_version", "thompson_fork_snow_fall",
+    "thompson_version", "thompson_fork_snow_fall", "thompson_table_dir",
     "upper_wind_limiter_form",
     "adaptive_nest_lattice", "zadvect_implicit", "w_crit_cfl", "slope_rad",
     "topo_shading", "shadlen", "topo_wind", "gwd_opt", "sf_surface_mosaic",
@@ -116,12 +121,16 @@ DEFAULT_OFF = frozenset({
     # CLM lake quartet, each absent at its default as in a 2.8.4 header.
     "scalar_pblmix", "use_rap_aero_icbc", "sf_lake_physics", "use_lakedepth",
     "lakedepth_default", "lake_min_elev",
+    # MYNN-EDMF's split number-species mixing keys, absent at 0.
+    "bl_mynn_mixaerosols", "bl_mynn_mixnumcon",
     "spp_conv", "spp_pbl",
     "ruc_soilprop",
     # terrain_clock left this set in 2.8.8: its default, "local_face",
     # is echoed, and "measured" (every earlier header's clock) drops out.
     "bl_mynn_version", "bl_mynn_gsd41_unsquared_qtke", "bl_mynn_cloud_tendency_form",
     "mynn_sfclay_variant",
+    # TEMPO's optional coupling arms, absent while off.
+    "tempo_ml_for_bl_nc", "tempo_surface_emission_before",
     # The RUC sea-ice threshold switch, absent at 0 as in a 2.8.5 header.
     "fractional_seaice",
     # The WRF v4.6.1 sixth-order filter form and no mp_zero_out pass.
@@ -133,7 +142,7 @@ DEFAULT_OFF = frozenset({
     # defaults (3, 3, 5) as in a header written before they existed.
     "v_sca_adv_order", "v_mom_adv_order", "h_mom_adv_order",
     "swint_opt", "aer_opt", "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest",
-    "alb_sol",
+    "alb_sol", "rrtmg_aer3_type_source",
     # Output-only surface energy carriers, dropped by the echo when off.
     "surface_energy_diag",
     "cycling",

@@ -117,7 +117,7 @@ def test_cu_schemes_admits_16_and_every_co_requisite_landed():
     # 1. a real workspace term, not the refusal
     assert ntiedtke_column_workspace_bytes(_exp(16)) > 0
     # 2. the cumulus calendar, so the F14 three-way check runs at all
-    assert "cu_physics in (1, 3, 16)" in inspect.getsource(clock)
+    assert "cu_physics in (1, 3, 6, 16)" in inspect.getsource(clock)
     # 3. the cudt law
     from gpuwm import config as cfgmod
     assert "cu_physics == 16" in inspect.getsource(cfgmod)
@@ -127,7 +127,7 @@ def test_cu_schemes_admits_16_and_every_co_requisite_landed():
     assert _CUMULUS_KERNEL_MODULES.get(16) == ("ntiedtke",)
     # 6. the optional tendency components
     from gpuwm.core import physics
-    assert "cu_physics == 16" in inspect.getsource(
+    assert "cu_physics in (6, 16)" in inspect.getsource(
         physics._cumulus_optional_tendency_components)
 
 
@@ -318,7 +318,7 @@ def test_the_cumulus_calendar_includes_16():
     """
     import inspect
     from gpuwm.core import clock
-    assert "cu_physics in (1, 3, 16)" in inspect.getsource(clock)
+    assert "cu_physics in (1, 3, 6, 16)" in inspect.getsource(clock)
 
 
 def test_the_cudt_law_for_16_exists_and_refuses_a_hold():
@@ -421,8 +421,12 @@ def test_the_prepared_cache_identity_needs_no_scheme_entry():
                "ruc_irrigation": "wrf_461", "ruc_qvg_cold_start": "wrf",
                "ruc_2m_diagnostic": "flux", "ruc_snow": "wrf_461",
                "swint_opt": 0, "aer_opt": 0, "alb_sol": 0,
-               "thompson_version": "wrf_461", "thompson_fork_snow_fall": "blend",
-               "rrtmg_cloud_optics_form": "wrf_461", "rrtmg_smoke_manifest": ""}
+               "thompson_version": "wrf_461", "thompson_table_dir": None,
+               "thompson_fork_snow_fall": "blend",
+               "rrtmg_cloud_optics_form": "wrf_461", "rrtmg_smoke_manifest": "",
+               "rrtmg_aer3_type_source": "rural", "bl_mynn_mixaerosols": 0,
+               "bl_mynn_mixnumcon": 0, "tempo_ml_for_bl_nc": False,
+               "tempo_surface_emission_before": False}
     for name, default in neutral.items():
         assert expected_run.pop(name) == default
     assert cached["run"] == expected_run

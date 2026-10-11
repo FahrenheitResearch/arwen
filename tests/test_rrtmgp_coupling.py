@@ -11,16 +11,18 @@ import pytest
 #: production validator over range(0, 60), exactly as
 #: ``test_the_accepted_selector_list_this_module_uses_is_the_real_one``
 #: does; not hand-extended.
-_ACCEPTED_MP_PHYSICS = (0, 1, 6, 8, 9, 10, 16, 18, 28, 50)
+_ACCEPTED_MP_PHYSICS = (0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50, 900)
 
-#: The admitted selectors without a cloud-optics coupling.  EMPTY, and
-#: measured empty below.  P3 (50) left this tuple when its single-ice
+#: The admitted selectors without a cloud-optics coupling: FAST_SBM (30)
+#: alone, refused against the 4/4 pair with the legacy-RRTMG remedy until
+#: its bin effective-radius integrals are qualified.  Before it this was
+#: empty.  P3 (50) left this tuple when its single-ice
 #: remap row landed; Milbrandt-Yau (9) left it when its own-radii row
 #: landed (``9: "milbrandt2"``: the block WRF ships commented out at
 #: module_mp_milbrandt2mom.F:3351-3378, evaluated over the transported
 #: number moments).  The tuple stays so the partition checks below keep
 #: asserting that nothing is admitted and uncoupled.
-_NO_RTE_RRTMGP_CLOUD_OPTICS = ()
+_NO_RTE_RRTMGP_CLOUD_OPTICS = (30,)
 
 #: The selectors the RTE+RRTMGP cross-checks below may actually drive.
 #: Derived, so a scheme cannot be dropped from coverage by hand.
@@ -48,9 +50,9 @@ def test_every_accepted_selector_is_judged():
     assert coupled | uncoupled == set(_ACCEPTED_MP_PHYSICS), (
         "these accepted selectors are neither coupled nor refused: "
         f"{sorted(set(_ACCEPTED_MP_PHYSICS) - coupled - uncoupled)}")
-    assert uncoupled == set(), (
-        "an accepted selector is refused against RTE+RRTMGP again; the "
-        "last two (50, then 9) were retired by writing their rows")
+    assert uncoupled == {30}, (
+        "the only accepted selector refused against RTE+RRTMGP is FAST_SBM; "
+        "50, then 9, were retired by writing their rows")
 
     # Every coupled selector validates against the 4/4 pair on the DEFAULT
     # variant -- the pairing every bare configuration lands on.  mp=9 is
@@ -84,8 +86,8 @@ def test_the_uncoupled_selectors_are_a_decision_in_the_module_that_raises():
         f"{sorted(set(_ACCEPTED_MP_PHYSICS) - coupled - recorded)}")
     assert (tuple(sorted(_NO_CLOUD_OPTICS_COUPLING))
             == tuple(sorted(_NO_RTE_RRTMGP_CLOUD_OPTICS)))
-    assert _NO_CLOUD_OPTICS_COUPLING == {}, (
-        "a recorded exclusion is back; the last one (mp=9) was retired by "
+    assert set(_NO_CLOUD_OPTICS_COUPLING) == {30}, (
+        "the one recorded exclusion is FAST_SBM; mp=9 was retired by "
         "writing the scheme's own row")
 
     # 2. The remedy sentence still exists for the refusal path an UNJUDGED
@@ -177,7 +179,8 @@ def test_the_accepted_selector_list_this_module_uses_is_the_real_one():
             return False
         return True
 
-    admitted = tuple(mp for mp in range(0, 60) if admits(mp))
+    from gpuwm.microphysics_schemes import NAMED_MP_IDS
+    admitted = tuple(mp for mp in (*range(0, 60), *NAMED_MP_IDS) if admits(mp))
     assert admitted == _ACCEPTED_MP_PHYSICS
     # The named refusals are the reason the helper cannot key on one
     # sentence; pin that they exist, so a lane cannot "fix" a future

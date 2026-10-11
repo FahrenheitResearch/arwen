@@ -113,6 +113,10 @@ def test_finish_removes_only_retained_staging_after_canonical_publish(tmp_path):
     signals.mkdir()
     (staging / "atmosphere-f00" / "TT.f32le").write_bytes(b"staging")
     (output / "atmosphere-f00" / "TT.f32le").write_bytes(b"canonical")
+    # A canonical publication carries the bridge's gate; since 9d4d64928
+    # finish() reads its aerosol fill counters into the receipt.  This
+    # gate predates the counters (no aerosol_missing_policy).
+    (output / "gate.txt").write_text("status\tPASS\n", encoding="ascii")
     (signals / "complete.ready").write_text(
         "status\tPASS\nseries_count\t2\nstaging_retained\ttrue\n"
         f"canonical_output\t{output}\nproducer_elapsed_seconds\t1.5\n",
@@ -134,6 +138,7 @@ def test_finish_removes_only_retained_staging_after_canonical_publish(tmp_path):
     receipt = producer.finish()
 
     assert receipt["staging_cleanup"] == "removed"
+    assert receipt["aerosol_missing"] is None
     assert not staging.exists()
     assert (output / "atmosphere-f00" / "TT.f32le").read_bytes() \
         == b"canonical"

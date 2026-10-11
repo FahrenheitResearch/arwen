@@ -28,10 +28,19 @@ import gpuwm.cli as cli
 from gpuwm import go_cli, render_receipts, runplan, rustwx, tui_products
 from gpuwm.render_layout import NESTED
 
-#: The three products the default preset used to ask for and no local run
-#: can draw: no wrfout import writes a gust, a precipitation category or a
-#: total cloud fraction.
-NEVER_ON_WRFOUT = ("10m_wind_gusts", "precipitation_type", "cloud_cover")
+#: The three products the default preset used to ask for when no local run
+#: could draw them (a7b32a707 took them out of it): no wrfout import wrote a
+#: gust, a precipitation category or a total cloud fraction.  The preset and
+#: closing-note cells below still use them as that run's undrawn three.
+PRESET_DROPPED = ("10m_wind_gusts", "precipitation_type", "cloud_cover")
+
+#: What the real renderer's wrfout lane says today.  90ae5edc9 taught it to
+#: derive two of the three itself (rw-wrfbatch wrf_process.rs: the UPP
+#: CALGUST 10 m gust and the categorical precipitation type), so a local
+#: run draws them from hour 0; a total cloud fraction is still never on a
+#: wrfout.
+NEVER_ON_WRFOUT = ("cloud_cover",)
+DERIVED_ON_WRFOUT = ("10m_wind_gusts", "precipitation_type")
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +52,7 @@ def test_the_default_preset_asks_for_nothing_a_local_run_cannot_draw():
     document = tui_products.presets()
     general = next(row for row in document["presets"]
                    if row["id"] == document["default"])
-    for slug in NEVER_ON_WRFOUT:
+    for slug in PRESET_DROPPED:
         assert slug not in general["products"], slug
     # The cloud panel a wrfout DOES carry: low, middle and high layers.
     assert "cloud_cover_levels" in general["products"]
@@ -138,9 +147,9 @@ def test_the_picker_offers_the_local_run_list_and_keeps_the_vocabulary(
         "local_run": runplan.local_run_catalog(_ROWS)})
     document = tui_products.catalog_document()
     offered = {row["name"] for row in document["products"]}
-    assert offered.isdisjoint(NEVER_ON_WRFOUT)
+    assert offered.isdisjoint(PRESET_DROPPED)
     assert {row["name"] for row in document["vocabulary"]} >= set(
-        NEVER_ON_WRFOUT) - {"precipitation_type"}
+        PRESET_DROPPED) - {"precipitation_type"}
 
 
 # ---------------------------------------------------------------------------
@@ -161,11 +170,11 @@ def _live_and_finalize_receipts(root: Path) -> None:
     (skipping the three and, on its lone frame, qpf_1h), then a windowed
     pass that drew qpf_1h and skipped nothing."""
 
-    spec = "2m_temperature,qpf_1h," + ",".join(NEVER_ON_WRFOUT)
+    spec = "2m_temperature,qpf_1h," + ",".join(PRESET_DROPPED)
     for lead in range(3):
         frame = f"/run/wrfout/wrfout_d01_2026-09-26_{6 + lead:02d}_00_00"
         skipped = [(slug, f"{frame}: not stored: a field")
-                   for slug in NEVER_ON_WRFOUT]
+                   for slug in PRESET_DROPPED]
         skipped.append(("qpf_1h", f"{frame}: windowed accumulations need "
                                   "more than one stored whole-hour frame"))
         render_receipts.publish_invocation(
@@ -184,10 +193,10 @@ def test_the_summary_counts_every_product_that_drew_nothing_in_any_pass(
     _live_and_finalize_receipts(root)
     summary = render_receipts.read_summary(root)
     undrawn = [row["name"] for row in summary["undrawn_families"]]
-    assert sorted(undrawn) == sorted(NEVER_ON_WRFOUT)
+    assert sorted(undrawn) == sorted(PRESET_DROPPED)
     assert summary["undrawn_family_count"] == 3
     headline, detail = render_receipts.undrawn_note(summary)
-    for slug in NEVER_ON_WRFOUT:
+    for slug in PRESET_DROPPED:
         assert slug in headline and slug in detail
     # qpf_1h drew two pictures; its lone-frame skips are not a zero.
     assert "qpf_1h" not in headline
@@ -201,7 +210,7 @@ def test_the_render_stage_closes_with_every_product_that_drew_nothing(
                         lambda: ("rust", "declared by the test"))
     plan = {"run": tmp_path / "run", "render": tmp_path / "png",
             "render_products": "2m_temperature,qpf_1h," +
-                               ",".join(NEVER_ON_WRFOUT)}
+                               ",".join(PRESET_DROPPED)}
     frame = tmp_path / "run" / "wrfout" / "wrfout_d01_2026-09-26_06_00_00"
     frame.parent.mkdir(parents=True)
     frame.write_bytes(b"one frame")
@@ -217,7 +226,7 @@ def test_the_render_stage_closes_with_every_product_that_drew_nothing(
     closing = [line for line in printed.splitlines()
                if "drew no picture in this run" in line]
     assert len(closing) == 1, printed
-    for slug in NEVER_ON_WRFOUT:
+    for slug in PRESET_DROPPED:
         assert slug in closing[0]
     assert "qpf_1h" not in closing[0]
 
@@ -340,6 +349,8 @@ def test_every_preset_product_is_one_the_wrfout_lane_draws():
     rows = _wrfout_rows()
     for slug in NEVER_ON_WRFOUT:
         assert rows[slug][0] == "missing", (slug, rows[slug])
+    for slug in DERIVED_ON_WRFOUT:
+        assert rows[slug] == ("drawable", "0"), (slug, rows[slug])
     for preset in tui_products.presets()["presets"]:
         for slug in preset["products"]:
             if slug.startswith("var:"):
@@ -362,6 +373,8 @@ def test_the_catalog_for_a_plan_offers_nothing_a_wrfout_lacks(
     for slug in NEVER_ON_WRFOUT:
         assert slug not in offered
         assert "writes no" in local["unavailable"][slug], local["unavailable"][slug]
+    for slug in DERIVED_ON_WRFOUT:
+        assert slug in offered and slug not in local["unavailable"]
     assert all(row["minimum_hour"] <= hours for row in offered.values())
     assert "2m_temperature" in offered and "cloud_cover_levels" in offered
     # The vocabulary still carries every model's products for the doors

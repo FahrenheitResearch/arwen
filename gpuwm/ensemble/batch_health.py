@@ -183,6 +183,7 @@ def state_health_memory_plan():
         ("size", (MAX_HEALTH_FIELDS * 2,), "uint32"), ("bounds", (MAX_HEALTH_FIELDS, 2), "float32"),
         ("flags", (MAX_HEALTH_FIELDS,), "uint32"), ("planes", (MAX_HEALTH_FIELDS,), "uint32"),
         ("status", (MAX_HEALTH_FIELDS * 2,), "uint32"), ("result", (2,), "uint64"),
+        ("rim", (MAX_HEALTH_FIELDS, 3), "uint32"),
         ("strides", (MAX_HEALTH_FIELDS, 12), "uint64")))
     return BatchMemoryPlan(declarations, reserved_bytes=0)
 
@@ -229,6 +230,9 @@ class PreparedBatchStateHealth:
         if self.field_provider is not None:
             return self.field_provider(member)
         view = member_domain_view(self.state, member)
+        cfg = self.state.cfg
+        view._health_spec_zone = (max(0, int(cfg.spec_zone))
+                                 if cfg.specified or cfg.nested else 0)
         if self.driver is not None:
             view.physics = _member_driver(self.driver, member, self.state.members, self.state.cfg.ny, self.state.cfg.nx)
         if self.tables is not None:
@@ -270,6 +274,7 @@ class PreparedBatchStateHealth:
                 host["size"][member].view(np.uint64)[number] = int(field.values.size)
                 host["strides"][member, number, :6] = _layout_words(field.values)
                 rule = field.rule
+                host["rim"][member, number] = native._rim_geometry(field)
                 host["flags"][member, number] = flag
                 if rule.lower is not None:
                     host["flags"][member, number] |= native._LOWER
@@ -316,9 +321,9 @@ class PreparedBatchStateHealth:
         if not nfields:
             return tuple(native.ValidationReport(True, 0, phase=phase) for _ in self.fields)
         names = ("field_pointer_words", "auxiliary_pointer_words", "field_size_words", "bounds", "rule_flags",
-                 "plane_sizes", "status_bit_words", "result")
-        slots = ("ptr", "aux", "size", "bounds", "flags", "planes", "status", "result")
-        types = ("uint32", "uint32", "uint32", "float32", "uint32", "uint32", "uint32", "uint64")
+                 "plane_sizes", "status_bit_words", "rim_geometry", "result")
+        slots = ("ptr", "aux", "size", "bounds", "flags", "planes", "status", "rim", "result")
+        types = ("uint32", "uint32", "uint32", "float32", "uint32", "uint32", "uint32", "uint32", "uint64")
         pointers = tuple(PointerSpec(name, "member", dtype) for name, dtype in zip(names, types))
         arrays = tuple(self.storage.arrays["health:validate:" + slot] for slot in slots)
         strides = {name: self.storage.pointer_stride_bytes("health:validate:" + slot) for name, slot in zip(names, slots)}
@@ -350,7 +355,7 @@ class PreparedBatchStateHealth:
                 auxiliary_location = location if field.aux_mode == "direct" else (flat // field.plane_size,)
                 value += float(field.auxiliary[auxiliary_location].get())
             reports.append(native.ValidationReport(False, status, field.name, location, flat, value,
-                                                   native._reason(value, field.rule), phase))
+                                                   native._reason(value, field.rule, shape=field.values.shape, flat=flat), phase))
         self.receipt["fields_per_member"] = nfields
         self.receipt["elements_per_member"] = sum(int(field.values.size) for field in self.fields[0])
         self.receipt["field_names"] = [field.name for field in self.fields[0]]

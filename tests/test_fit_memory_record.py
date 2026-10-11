@@ -550,6 +550,12 @@ def test_new_forecast_says_how_big_a_too_big_hrrr_draft_is(tmp_path, monkeypatch
         server.server_close()
     assert response.status == 422, body
     memory = body["memory"]
-    assert memory["fits"] is False and memory["budget_gib"] == 6.75 and 340 < memory["need_gib"] < 360, memory
+    # 348 GiB when pinned (340-360).  A first-parent bisect to 2.8.8 reads
+    # 416.61 GiB after HRRR-suite pricing moves, the large ones bf8a9a71d
+    # (the HRRR default suite became MYNN PBL and surface layer with RUC,
+    # 346 to 398), 0542178eb (the GSD MYNN generation, to 408.7),
+    # a64145961 (the sixth-order filter's workspace priced, to 414.7) and
+    # cd2d67020 (to 416.6).
+    assert memory["fits"] is False and memory["budget_gib"] == 6.75 and 405 < memory["need_gib"] < 425, memory
     assert body["message"] == (f"Too big for the 8 GB card: this grid needs about {memory['need_gib']:.1f} GiB "
                                "and 6.8 GiB is usable."), body

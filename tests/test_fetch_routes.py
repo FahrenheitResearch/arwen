@@ -22,6 +22,7 @@ import shlex
 import pytest
 
 from gpuwm import fetch_routes, source_adapters
+from gpuwm.filesystem_paths import io_path
 
 
 # --------------------------------------------------------------------------
@@ -404,7 +405,10 @@ def test_the_aifs_handoff_binds_the_step0_object_and_lists_only_the_window(tmp_p
             encoding="utf-8"))["argv"]
     bindings = [argv[index + 1] for index, token in enumerate(argv)
                 if token == "--supplement"]
-    step0 = (tmp_path / "20260929120000-0h-oper-fc.grib2").resolve()
+    # write_handoff binds through the I/O spelling (9e3980670: a deep cache
+    # must stay openable on Windows), so on Windows the binding is the
+    # extended-length path (prefix \\?\); elsewhere io_path is the path itself.
+    step0 = io_path(tmp_path / "20260929120000-0h-oper-fc.grib2").resolve()
     assert bindings == [f"aifs_single_in_band_surface={step0}"]
 
 

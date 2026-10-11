@@ -230,16 +230,11 @@ def test_a_near_miss_runs_resident_inside_the_margin(free_gib):
         declined = decision.detail["tile_road_declined"]
         assert decision.budget_bytes == int(free_gib * GIB)
         assert decision.detail["inside_external_margin_bytes"] == envelope - budget
-        if free_gib == 3.74:
-            # The only tiling that fits 3.74 GiB, 6x6 under an 18-cell
-            # halo, left two columns of the east relaxation zone in the
-            # halo of a tile that does not own that edge, where they ran
-            # unrelaxed (tilestream.spec.edge_band_unowned).  No legal
-            # tile fits, and the reason says what a legal one needs.
-            assert "redundancy" not in declined
-            assert declined["resource"] == "vram"
-            assert "zone + halo = 22" in decision.reason
-            return
+        # At 3.74 GiB the only tiling that fit was 6x6, whose seam left
+        # east relaxation-zone cells unrelaxed, so no legal tile fitted.
+        # Since 06a93aa31 (the startup-speed merge) a tile costs less and
+        # the legal 8x6 fits there, so 3.74 is declined on redundancy
+        # (884 tiles, 38.87x) like the other readings.
         assert declined["redundancy"] > autoplan.MAX_REDUNDANCY
         # It names what it declined and what that would have cost.
         assert "tiles" in decision.reason and "x the necessary work" in decision.reason
@@ -278,11 +273,11 @@ def test_an_explicit_max_redundancy_false_still_streams_the_slow_tiling():
     plan's 1.15, which leaves each buffer more room).
 
     It never hands back a tiling that runs relaxation-zone cells
-    unrelaxed.  At the recorded 3.74 GiB the only tiling that fits is
-    6x6, which puts a seam 20 cells from the east edge, so the halo of the
-    tile before it reads east-zone cells in a window that does not reach
-    that edge.  There is no slow tiling to ask for, and the domain runs
-    resident inside the margin.
+    unrelaxed.  At the recorded 3.74 GiB the only tiling that fitted was
+    6x6, which put a seam 20 cells from the east edge, so there was no
+    slow tiling to ask for.  Since 06a93aa31 (the startup-speed merge) a
+    tile costs less and the legal 8x6 fits at 3.74 GiB, so asking for the
+    slow tiling there streams it: 884 tiles at 38.87x.
     """
     exp = _recorded()
     exp = replace(exp, tiles=replace(exp.tiles, max_redundancy=False))
@@ -292,8 +287,9 @@ def test_an_explicit_max_redundancy_false_still_streams_the_slow_tiling():
     assert f"{decision.ntiles:,} tiles" in decision.explain()
     assert (decision.ntiles, round(decision.redundancy, 2)) == (494, 24.31)
     decision, _ = _decide(exp, 3.74)
-    assert not decision.stream
-    assert "zone + halo = 22" in decision.reason
+    assert decision.stream
+    assert (decision.tile_nx, decision.tile_ny) == (8, 6)
+    assert (decision.ntiles, round(decision.redundancy, 2)) == (884, 38.87)
 
 
 # ---------------------------------------------------------------------------
@@ -385,15 +381,16 @@ def test_the_low_end_quotes_back_the_run_it_was_fitted_from():
 def test_the_near_miss_line_quotes_a_step_that_holds_the_measured_one():
     """The sentence the forecast stage printed for the low end's run.
 
-    With 3.95 GiB free auto runs the 208x204 domain resident inside the
+    With 3.89 GiB free auto runs the 208x204 domain resident inside the
     external margin and names the tiling it declined with what a step at
     that tiling costs.  That tiling is the one the low end's run streamed,
     so the step it names has to hold the step that run measured.  (3.97
-    GiB on the plan's 1.15 margin; A163 measured it at 1.13 of the
-    subtotal, and read at 0.01 GiB steps from 3.86 to 3.98 the declined
-    tiling is 8x9 from 3.93 to 3.96, 6x12 above and 6x9 below.)
+    GiB on the plan's 1.15 margin; 3.95 after A163 measured it at 1.13 of
+    the subtotal.  Since 06a93aa31 a tile costs less, and read at 0.01 GiB
+    steps from 3.60 to 3.99 the declined tiling is 8x9 from 3.88 to 3.90,
+    6x12 above and 6x9 below.)
     """
-    decision, _ = _decide(_wide(), 3.95, _card_5070ti(3.95))
+    decision, _ = _decide(_wide(), 3.89, _card_5070ti(3.89))
     assert not decision.stream, decision.explain()
     declined = decision.detail["tile_road_declined"]
     assert "8x9 tiles (halo 18, 598 of them)" in decision.reason, (

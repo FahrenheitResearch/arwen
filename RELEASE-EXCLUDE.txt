@@ -328,3 +328,33 @@ tools/heat_eval/lib.sh
 tools/heat_eval/make_kit.sh
 tools/heat_eval/run_arm.sh
 tools/heat_eval/dryrun/**
+
+# The MPAS hex source tree the RRFS v2 hex TEMPO preset runs (tree/, the
+# source-only gpuwm-hex baseline the rrfs-hex-tempo-preset lane carries).  The
+# hex code ships through gpuwm-hex with its own register; its campaign
+# drivers name the boxes they ran on, and its FTZ claims are that project's.
+tree/**
+
+# The speed-lane benchmark harness merged for 2.8.9: sealed sprint-box case
+# pins, queue and lane-root wrappers, and identity tooling that names the
+# rented boxes it ran on. It measures the product; it is not the product.
+# The engine reaches it only behind GPUWM_BENCH_* variables. The three test
+# files below import it and are on no battery list.
+tools/bench/**
+tests/test_obs_parallel_native.py
+tests/test_regional_packing_bench.py
+tests/test_timeline_qualification.py
+
+# The same speed lanes' global statics bake and image staging, merged for
+# 2.8.9 beside tools/bench and missed when that harness was dropped above.
+# qualify.py, warm_pair.py and stage_replay.py drive the sealed GL1 replay
+# through tools/bench on the rented boxes' benchmark roots and card queues,
+# unrunnable once tools/bench is out of the tree; check.py and qualify.py
+# import the hosted site worker's own modules, which this tree does not
+# carry; image_context.py, layers.toml and the README write and document
+# that site image's settings, whose variable names carry the hosting
+# company's prefix.  Nothing in the tree imports or links any of it, and no
+# test reads it.  The row table it produced, gpuwm/authorities/
+# global-statics.v1.json, and the rw-globe-pack bridge it stages are
+# product files and still ship.
+tools/global_statics/**

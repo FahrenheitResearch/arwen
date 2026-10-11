@@ -1832,10 +1832,21 @@ enum Stage<'a> {
     Panicked(Box<dyn std::any::Any + Send>),
 }
 
-// Per-invocation test control for completion order. It is absent from
+// Per-invocation test control for arrival order. It is absent from
 // production builds and cannot affect the decoded fields or stream bytes.
+//
+// Called on the ordered thread with each frame's index as its prepared
+// result arrives.  Returning true withholds that result, still counted
+// as in flight, until it is the only work in flight; the writer then
+// takes it as if it had just arrived.  That is a slow frame without a
+// slow job.  The control used to block inside the frame's pool job
+// instead, which deadlocks: a pool worker waiting on the stolen half of
+// a decode's parallel step runs queued jobs meanwhile, so the blocked
+// job could sit on top of the very decode it was waiting for (public CI
+// 37981479846, native windows-2025; 8 of 100 runs of the whole test
+// binary on four cores of node-1).
 #[cfg(test)]
-type PipelinePreparedHook = std::sync::Arc<dyn Fn(usize, bool) + Send + Sync>;
+type PipelinePreparedHook = std::sync::Arc<dyn Fn(usize) -> bool + Send + Sync>;
 #[cfg(test)]
 std::thread_local! {
     static PIPELINE_PREPARED_HOOK: std::cell::RefCell<Option<PipelinePreparedHook>> =
@@ -1948,6 +1959,8 @@ fn pipeline<'s>(
     let mut halted: Option<(usize, crate::refusal::Refusal)> = None;
     #[cfg(test)]
     let prepared_hook = PIPELINE_PREPARED_HOOK.with(|hook| hook.borrow().clone());
+    #[cfg(test)]
+    let mut withheld: Option<Stage<'s>> = None;
     let outcome = loop {
         while halted.is_none() && started < count && decoded < lanes && started - committed < depth {
             let (index, sender) = (started, sender.clone());
@@ -1984,8 +1997,26 @@ fn pipeline<'s>(
             break Err(frame_invalid(format!(
                 "the frame writer stalled at valid time {committed} of {count} with no work in flight")));
         }
-        let Ok(stage) = receiver.recv() else {
-            break Err(frame_invalid("the frame writer lost its workers"));
+        #[cfg(test)]
+        let released = if outstanding == 1 { withheld.take() } else { None };
+        #[cfg(not(test))]
+        let released = None;
+        #[cfg(test)]
+        let arriving = released.is_none();
+        let stage = match released {
+            Some(stage) => stage,
+            None => match receiver.recv() {
+                Ok(stage) => stage,
+                Err(_) => break Err(frame_invalid("the frame writer lost its workers")),
+            },
+        };
+        #[cfg(test)]
+        let stage = match (&prepared_hook, stage) {
+            (Some(hook), Stage::Prepared(frame)) if arriving && hook(frame.index) && withheld.is_none() => {
+                withheld = Some(Stage::Prepared(frame));
+                continue;
+            }
+            (_, stage) => stage,
         };
         outstanding -= 1;
         match stage {
@@ -2011,19 +2042,12 @@ fn pipeline<'s>(
             match outcome.and_then(|frame| committer.window_for(&frame).map(|window| (frame, window))) {
                 Ok((frame, window)) => {
                     let sender = sender.clone();
-                    #[cfg(test)]
-                    let prepared_hook = prepared_hook.clone();
                     scope.spawn(move |_| {
                         if abandoned.load(Ordering::Relaxed) { return; }
                         let stage = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            let prepared = prepare_frame(plan, frame, window, decode_window);
-                            #[cfg(test)]
-                            if let Some(hook) = &prepared_hook { hook(index, true); }
-                            Stage::Prepared(prepared)
+                            Stage::Prepared(prepare_frame(plan, frame, window, decode_window))
                         })).unwrap_or_else(Stage::Panicked);
                         let _ = sender.send(stage);
-                        #[cfg(test)]
-                        if let Some(hook) = &prepared_hook { hook(index, false); }
                     });
                     outstanding += 1;
                 }
@@ -2500,7 +2524,7 @@ mod tests {
 
     #[test]
     fn a_full_prepared_batch_reopens_admission_after_its_last_commit() {
-        use std::sync::{Arc, Condvar, Mutex};
+        use std::sync::{Arc, Mutex};
         let (mapping, mut collection, _) = netcdf_golden();
         let first = collection.source_cycles.keys().next().unwrap().clone();
         let template = crate::engine::carve_valid_time(&mut collection, &first);
@@ -2527,44 +2551,18 @@ mod tests {
         write_frameset_core(&one, &mapping, &series, &BTreeMap::new(), false,
             None, &|_| None, 1, &serial).unwrap();
 
-        // Four lanes allow six decoded/prepared frames in all. Hold frame
-        // zero's prepared result until the other five have been sent, so
-        // the writer must commit a full batch with no work left in flight.
-        // There are seven further frames to admit after that batch.
-        //
-        // Frame zero's job waits on the engine's pool, and that pool can
-        // be one thread wide: threads::tests narrows the process-wide pool
-        // to one worker for good, and this test may build its pool after
-        // that.  A job that only blocked then held the one worker frames
-        // four and five need, and its 10 s wait expired whenever the test
-        // order fell that way (public CI 37665304517, native ubuntu-24.04;
-        // 2 of 6 runs on node-4).  So the waiting job runs the pool's
-        // queued work itself until the five have been sent, and sleeps on
-        // the condition only while nothing is queued; the 10 ms there is
-        // how often it looks for newly queued work, which does not signal
-        // this condition, not a deadline.
-        let sent = Arc::new((Mutex::new(0usize), Condvar::new()));
-        let signal = sent.clone();
-        let hook: PipelinePreparedHook = Arc::new(move |index, before_send| {
-            let (count, changed) = &*signal;
-            if index == 0 && before_send {
-                // Reached only if a regression never admits frames four
-                // and five; it turns that hang into a named failure.
-                let backstop = std::time::Instant::now() + std::time::Duration::from_secs(300);
-                while *count.lock().unwrap() < 5 {
-                    if !matches!(rayon::yield_now(), Some(rayon::Yield::Executed)) {
-                        let waiting = count.lock().unwrap();
-                        drop(changed.wait_timeout_while(waiting,
-                            std::time::Duration::from_millis(10), |n| *n < 5).unwrap());
-                    }
-                    assert!(std::time::Instant::now() < backstop,
-                        "the controlled prepared batch did not finish: frames four and five were never admitted");
-                }
-                assert_eq!(*count.lock().unwrap(), 5, "the controlled prepared batch did not finish");
-            } else if (1..=5).contains(&index) && !before_send {
-                *count.lock().unwrap() += 1;
-                changed.notify_all();
-            }
+        // Four lanes allow six decoded/prepared frames in all. Withhold
+        // frame zero's prepared result until it is the only work in
+        // flight, so it arrives after frames one to five (four and five
+        // admitted while it was out) and the writer must commit a full
+        // batch with no work left in flight.  There are seven further
+        // frames to admit after that batch.  The writer does the
+        // withholding on its own thread; no pool job waits on another.
+        let arrivals = Arc::new(Mutex::new(Vec::new()));
+        let seen = arrivals.clone();
+        let hook: PipelinePreparedHook = Arc::new(move |index| {
+            seen.lock().unwrap().push(index);
+            index == 0
         });
         PIPELINE_PREPARED_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
         let outcome = write_frameset_core(&many, &mapping, &series, &BTreeMap::new(), false,
@@ -2573,7 +2571,11 @@ mod tests {
             });
         PIPELINE_PREPARED_HOOK.with(|slot| *slot.borrow_mut() = None);
         outcome.unwrap();
-        assert_eq!(*sent.0.lock().unwrap(), 5);
+        let mut arrived = arrivals.lock().unwrap().clone();
+        let batch: BTreeSet<usize> = arrived[..6].iter().copied().collect();
+        assert_eq!(batch, (0..6).collect(), "frames after the batch were admitted before it committed");
+        arrived.sort_unstable();
+        assert_eq!(arrived, (0..13).collect::<Vec<_>>(), "every frame's prepared result arrived once");
         for name in ["frames.json", "frames.f64"] {
             assert_eq!(std::fs::read(one.join(name)).unwrap(),
                 std::fs::read(many.join(name)).unwrap(), "{name} differs from serial output");

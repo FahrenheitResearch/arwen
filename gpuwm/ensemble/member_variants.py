@@ -8,7 +8,7 @@ match; different soil layouts never borrow each other's prepared cache.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, fields
 import hashlib
 import json
 from numbers import Real
@@ -99,18 +99,36 @@ def _canonical(value):
                       default=lambda item: item.isoformat()).encode("utf-8")
 
 
-def preparation_binding_key(trajectory_identity, raw, *, experiment=None):
-    """A complete ordinary preparation authority, independent of surface arms.
+# RunConfig geometry and clock fields stay in the source half. All other
+# registered run fields belong to the member half. Unknown configuration
+# fields stay source-bound, so adding a field cannot silently widen sharing.
+SOURCE_RUN_FIELDS = frozenset({
+    "nx", "ny", "nz", "dx", "dy", "ztop", "dt", "clock_dt", "run_seconds",
+    "p_surf", "hybrid_opt", "etac", "specified", "periodic_x", "periodic_y",
+})
 
-    Prepared domain identities bind land selectors and soil count. Include
-    all scientific config tables so a different four-layer/six-layer state,
-    grid, clock, static choice or source window cannot be aliased. Fetch
-    details are already bound by the source trajectory and common recipe
-    window; the ensemble table belongs to execution, not preparation.
+
+@dataclass(frozen=True)
+class PreparationBinding:
+    source_key: str
+    physics_tail: str
+
+    @property
+    def key(self):
+        return hashlib.sha256(_canonical({"schema": "ensemble-preparation-v2",
+            "source_key": self.source_key, "physics_tail": self.physics_tail})).hexdigest()
+
+
+def preparation_binding_parts(trajectory_identity, raw, *, experiment=None):
+    """Separate immutable source composition from member initialization.
+
+    The pair still binds every scientific table. Only registered run
+    selectors leave the source half; geometry, vertical coordinates, fetch
+    inputs and the complete time window remain there. A land arm can reuse
+    composed source words, but cannot borrow another arm's prepared arrays.
     """
     authority = deepcopy(raw)
     authority.pop("ensemble", None)
-    authority.pop("fetch", None)
     if experiment is not None:
         from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
         # Resolve inherited and explicit selectors through the same identity
@@ -120,8 +138,35 @@ def preparation_binding_key(trajectory_identity, raw, *, experiment=None):
         authority["resolved_domains"] = [prepared_domain_config_identity(domain)
                                            for domain in experiment.domains]
         authority["resolved_vertical"] = asdict(experiment.vertical)
-    return hashlib.sha256(_canonical({"trajectory": trajectory_identity,
-                                     "configuration": authority})).hexdigest()
+    from gpuwm.config import RunConfig
+    tail_fields = {item.name for item in fields(RunConfig)} - SOURCE_RUN_FIELDS
+    tail = {}
+
+    def split(table, label):
+        selected = {key: table.pop(key) for key in tuple(table) if key in tail_fields}
+        if selected:
+            tail[label] = selected
+
+    if experiment is None:
+        split(authority.get("shared", {}), "shared")
+        for number, domain in enumerate(authority.get("domain", ())):
+            split(domain, f"domain-{number}")
+    else:
+        for number, domain in enumerate(authority["resolved_domains"]):
+            split(domain.get("run", {}), f"domain-{number}")
+            # These stamps are derived exclusively from member run selectors.
+            for name in ("chem_table_identity", "orographic_sampling_contract"):
+                if name in domain:
+                    tail[f"domain-{number}.{name}"] = domain.pop(name)
+    return PreparationBinding(
+        hashlib.sha256(_canonical({"schema": "ensemble-source-v1",
+            "trajectory": trajectory_identity, "configuration": authority})).hexdigest(),
+        hashlib.sha256(_canonical(tail)).hexdigest())
+
+
+def preparation_binding_key(trajectory_identity, raw, *, experiment=None):
+    """Complete source plus physics/land binding for prepared-bank consumers."""
+    return preparation_binding_parts(trajectory_identity, raw, experiment=experiment).key
 
 
 def surface_binding_key(surface):
@@ -148,4 +193,5 @@ def require_distinct_variants(raw, variants, *, experiments):
 
 
 __all__ = ["normalize_member_variants", "member_surface_options", "variant_configuration",
-           "preparation_binding_key", "surface_binding_key", "require_distinct_variants"]
+           "PreparationBinding", "preparation_binding_parts", "preparation_binding_key",
+           "surface_binding_key", "require_distinct_variants"]

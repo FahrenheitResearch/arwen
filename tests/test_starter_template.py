@@ -476,7 +476,7 @@ def test_tiles_copy_uses_real_planner_preserves_science_and_publishes_only_on_wr
     assert receipt["launch_performed"] is False and receipt["download_performed"] is False
     assert receipt["output_sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
     assert receipt["wps_sha256"] == hashlib.sha256(out.with_suffix(".namelist.wps").read_bytes()).hexdigest()
-    assert "working directory" in receipt["fetch_out_path_basis"]
+    assert "configuration's folder" in receipt["fetch_out_path_basis"]
     assert main(arguments + ["--write"]) == 2
     assert tile_machine["calls"] == 2
 

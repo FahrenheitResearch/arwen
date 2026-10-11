@@ -52,6 +52,11 @@ _ALLOWED_AEROSOL_MODULES = frozenset({
 #: at max_ulp 0, which is a stronger gate than source identity and the only
 #: reason the trade was takeable.
 _EXPECTED_HEADERS = {
+    # A new full-column generation unit; existing classic and aerosol units
+    # keep their assembled source bytes and their published oracle gates.
+    "thompson_column": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                        "thompson_aerosol_libm.cuh", "thompson_column_support.cuh",
+                        "thompson_column_radar.cuh", "thompson_column_generated.cuh"),
     # Selected diffusion and surface sources have independently pinned headers.
     "acoustic": ("glibc_trig_flt32.cuh",),
     "myjsfc": ("glibc_flt32.cuh", "flt32_expf_fma.cuh"),
@@ -90,6 +95,10 @@ _EXPECTED_HEADERS = {
     "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
     "gf": ("glibc_flt32.cuh",),
     "ntiedtke": ("glibc_flt32.cuh",),
+    # The original cu6 kernel: a new module whose GPU column oracle
+    # (tools/tiedtke_wrf461_oracle/check.py --gpu) grades it bitwise.
+    "tiedtke": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh",
+                "tiedtke_support.cuh", "tiedtke_routines.cuh"),
     # A new module, so no pre-hook source to stay identical to; its WRF
     # v4.7.1 parity suites grade it bitwise.
     "urban_ucm": ("glibc_flt32.cuh",),
@@ -141,7 +150,7 @@ def test_lake_compile_options_do_not_change_existing_modules():
     # particular MYNN PBL carries both the no-FMA and no-FTZ requirements.
     # A global option change must still fail for every other actual module.
     no_fmad = {"lake", "ysu", "shinhong", "mynn_pbl", "mynn_dmp_sibling"}
-    no_ftz = {"sfclay", "myjsfc", "mynn_surface", "mynn_pbl"}
+    no_ftz = {"sfclay", "myjsfc", "mynn_surface", "mynn_pbl", "thompson_column"}
     diffusion = {"smag2d", "diffusion", "diff_opt1", "diff6", "diff6_seam"}
     expected = {name: ("-std=c++17", "--fmad=false") for name in no_fmad}
     expected.update({name: ("-std=c++17", "--fmad=false", "--ftz=false")

@@ -740,9 +740,9 @@ class RunConfig:
     #: Run cu_physics = 16's kernels with cu_physics = 6's DEEP closure:
     #: fixed ztau = 2400 s (module_cu_tiedtke.F:105) and the moisture-
     #: convergence first guess (:855-866) in place of scale_fac scaling and
-    #: the geometric 0.1*zmfmax.  Those two substitutions are the entire
-    #: difference between the two schemes' deep arms, so this makes the
-    #: ported New Tiedtke run Tiedtke's closure without a second port.
+    #: the geometric 0.1*zmfmax. This is an emulation inside cu16, not
+    #: WRF's original cu6 scheme. It does not reproduce module_cu_tiedtke.F.
+    #: Select cu_physics=6 for the separate original-scheme implementation.
     #: False leaves every cu16 result bit-identical.
     #:
     #: APPENDED LAST, as every field since the freeze is.  d0c23dad0 (2.6.4)
@@ -1197,6 +1197,10 @@ class RunConfig:
     #: model (hrrr*, rap*) under mp_physics = 28 on every domain when this
     #: key is omitted (gpuwm.physics_source_defaults.GENERATION_SELECTORS);
     #: a written value is kept.  Appended last.
+    #: Classic mp=8 also registers ``wrf_44``: WRF v4.4's complete
+    #: column statements and coefficient records. A WRF-folder import
+    #: selects from the matching model TITLE; an explicit value wins.
+    #: Inputs without registered provenance retain wrf_461.
     thompson_version: str = "wrf_461"
     #: How melting snow falls under thompson_version = "wrf_39_noaa".
     #: ``blend`` (the default): the rain-share blend of WRF v4.6.1, which the
@@ -1229,7 +1233,6 @@ class RunConfig:
     #: Appended after rrtmg_smoke_manifest, ahead of the chem block (which
     #: stays the last positional block) and the keyword-only fire block.
     surface_energy_diag: bool = False
-
     #: WRF &time_control ``cycling`` (Registry default .false.): the start
     #: carries a previous forecast's scheme state, so the first MYNN call
     #: keeps the input QKE (unless its lowest-level maximum is below
@@ -1237,8 +1240,43 @@ class RunConfig:
     #: fork) and the input QC_BL and CLDFRA_BL, which the first radiation
     #: call and the first cloud decay also read. Both MYNN generations
     #: carry these fields; wrf_461 repairs the source's lost-carry zeroing.
-    #: Appended last.
+    #: Appended after surface_energy_diag (2.8.8).
     cycling: bool = False
+    #: Where the aer_opt = 3 shortwave aerosol type comes from.  ``rural``
+    #: (the default): type 1 everywhere, the HRRR fork's PARAMETER
+    #: (module_radiation_driver.F:769); every earlier configuration runs it.
+    #: ``landmask``: the NOAA MPAS fork RRFS v2 runs, type 1 where xland is
+    #: 1 and maritime type 3 where it is 2
+    #: (mpas_atmphys_driver_radiation_sw.F:583-586 at RRFSx/MPAS-Model
+    #: 1d6e370e).  Appended after cycling, ahead of the chem block, which
+    #: stays the last positional block.
+    rrtmg_aer3_type_source: str = "rural"
+    # MYNN number-species mixing split by family, the MYNN-EDMF namelist
+    # pair (NCAR/MYNN-EDMF c942418 module_bl_mynnedmf.F90: qni :4975 and
+    # qnc :5064 gate on bl_mynn_mixnumcon, qnwfa :5151, qnifa :5241 and
+    # qnbca :5331 on bl_mynn_mixaerosols).  RRFS v2 runs mixscalars=0,
+    # mixaerosols=1, mixnumcon=0 (rrfs-workflow 45ace1bf
+    # parm/hrrrv5/namelist.atmosphere:61-63).  Each key selects which of
+    # this solver's own qn solves are coupled (MYNN_QN_MIX_KEYS); the
+    # solve arithmetic stays the selected bl_mynn_version's.  Defaults 0:
+    # every existing configuration mixes exactly what it mixed before.
+    # They follow rrtmg_aer3_type_source and sit before the chem block,
+    # the last of the positional fields (tests/test_chem_config.py holds
+    # chem, then the keyword-only fire block, at the end).
+    bl_mynn_mixaerosols: int = 0
+    bl_mynn_mixnumcon: int = 0
+    # Optional TEMPO coupling arms (named microphysics TEMPO only): the ML
+    # subgrid-cloud radii and the pre-physics aerosol surface emission.
+    # Off is the historical adapter behaviour.  Appended after the mixing
+    # keys, ahead of the chem block.
+    tempo_ml_for_bl_nc: bool = False
+    tempo_surface_emission_before: bool = False
+    #: Optional directory of generation-specific Thompson table records.
+    #: The WRF-folder door supplies its own directory for a known generation.
+    #: Appended at None after the TEMPO arms, ahead of the chem block, so
+    #: positional construction keeps every earlier field where it was
+    #: (tests/test_config_freeze.py); a header at None drops it.
+    thompson_table_dir: str | None = None
 
     #: Turbulent Prandtl number of the km_opt = 1 constants: xkhh =
     #: khdif/prandtl and xkhv = kvdif/prandtl (isotropic_km,
@@ -1513,6 +1551,18 @@ TERRAIN_CLOCK_RESTART_BREAK_NOTICE = (
     "can give a domain a longer step. To resume this checkpoint, write "
     "terrain_clock = \"measured\" explicitly; otherwise restart from t = 0.")
 
+#: The same accuracy for the 2.8.9 WRF-folder default (D8): a fixed-step
+#: WRF namelist now imports with terrain_clock = "pinned", WRF's own
+#: acoustic count, so a checkpoint integrated under the terrain clock from
+#: an earlier import of the same folder meets a run whose count can differ.
+TERRAIN_CLOCK_PINNED_RESTART_NOTICE = (
+    "note: the checkpoint was integrated under the terrain clock, and this "
+    "run reads terrain_clock = \"pinned\": from 2.8.9 a fixed-step WRF "
+    "namelist runs the acoustic substep count wrf.exe runs. To resume this "
+    "checkpoint, put ! gpuwm-physics-selectors-v1: "
+    "{\"terrain_clock\":\"local_face\"} (or the clock the checkpoint names) "
+    "first in namelist.input; otherwise restart from t = 0.")
+
 
 #: WRF vertical advection orders the kernels carry (module_advect_em.F
 #: ``vert_order`` branches 3 and 5; 2, 4 and 6 are not transcribed).
@@ -1658,10 +1708,33 @@ MYNN_PBL_OPTION_IDENTITY: dict[str, object] = {
 
 #: Microphysics schemes whose state carries the WHOLE qn family this
 #: port's mixscalars solve runs (nc/ni/nwfa/nifa, qnbca as an exact zero):
-#: the aerosol-aware Thompson scheme only.  The solve admits the key with
-#: all five of WRF's flags true or not at all (mynn_pbl_gpu.py qn_flags;
-#: the anchored oracle fixture family was generated at exactly that combo).
-MYNN_QN_FAMILY_SCHEMES: tuple[int, ...] = (28,)
+#: aerosol-aware Thompson (28) and aerosol-aware TEMPO (900, whose row
+#: transports nc/ni/nwfa/nifa beside ng/volg; NOAA MPAS 1d6e370e
+#: mpas_atmphys_todynamics.F:394-405 couples MYNN's nc/nifa/nwfa rates
+#: for mp_tempo with config_tempo_aerosolaware, the only TEMPO value the
+#: engine carries).  The solve admits the key with all five of WRF's flags
+#: true or not at all (mynn_pbl_gpu.py qn_flags; the anchored oracle
+#: fixture family was generated at exactly that combo).
+MYNN_QN_FAMILY_SCHEMES: tuple[int, ...] = (28, 900)
+
+#: Which number species each MYNN mixing key couples, by state name.  The
+#: family solve runs every qn species whenever any key is on; a species no
+#: selected key names keeps WRF's skipped-solve answer, a zero tendency
+#: (``qn2 = qn``).  Every solve reads only its own column and plume flux,
+#: so dropping one changes no other species' rate by a bit.
+#: ``bl_mynn_mixscalars`` keeps its WRF v4.6.1 meaning (the whole qn
+#: family, module_bl_mynn.F:4654-4860); the other two are the MYNN-EDMF
+#: split (see RunConfig.bl_mynn_mixaerosols).  A new key is a row here.
+MYNN_QN_MIX_KEYS: dict[str, tuple[str, ...]] = {
+    "bl_mynn_mixscalars": ("nc", "ni", "nwfa", "nifa"),
+    "bl_mynn_mixnumcon": ("nc", "ni"),
+    "bl_mynn_mixaerosols": ("nwfa", "nifa"),
+}
+
+#: State species name -> WRF qn flag name, for the partial-scheme refusal.
+_MYNN_QN_STATE_TO_FLAG: dict[str, str] = {
+    "nc": "qnc", "ni": "qni", "nwfa": "qnwfa", "nifa": "qnifa",
+}
 
 #: The number species WRF v4.6.1's MYNN mixes under ``bl_mynn_mixscalars=1``
 #: for each ported microphysics selector: the scalar members of the
@@ -1671,7 +1744,9 @@ MYNN_QN_FAMILY_SCHEMES: tuple[int, ...] = (28,)
 #: package lines: thompson (8) scalar:qni,qnr; milbrandt2mom (9)
 #: qnc,qnr,qni,...; morr_two_moment (10) qni,...; wdm6scheme (16)
 #: qnn,qnc,qnr; nssl_2mom (18) qni,... through nssl2mconc; thompsonaero
-#: (28) qni,qnr,qnc,qnwfa,qnifa,qnbca; p3_1category (50) qni,...  The
+#: (28) qni,qnr,qnc,qnwfa,qnifa,qnbca; p3_1category (50) qni,...;
+#: fast_khain_lynn_shpund (30, Registry/registry.sbm:318)
+#: qnn,qnc,qnr,qni,qns,qng, so F_QNC and F_QNI are true for it.  The
 #: moist-only schemes (kessler 1, wsm6 6, and 0) carry none: there every
 #: flag is false, ``mynn_bl_driver`` hands the solves zero columns and the
 #: key is WRF's no-op.  Any scheme not listed here is a new table row, not
@@ -1680,48 +1755,87 @@ MYNN_QN_FLAG_SPECIES: dict[int, tuple[str, ...]] = {
     0: (), 1: (), 6: (),
     8: ("qni",), 9: ("qnc", "qni"), 10: ("qni",), 16: ("qnc",),
     18: ("qni",), 28: ("qnc", "qni", "qnwfa", "qnifa", "qnbca"),
-    50: ("qni",),
+    30: ("qnc", "qni"), 50: ("qni",),
+    # TEMPO aerosol-aware: f_nc/f_ni/f_nwfa/f_nifa true, no nbca (NOAA
+    # MPAS 1d6e370e mpas_atmphys_driver_pbl.F:1119 stages nc/nifa/nwfa
+    # together; the engine's TEMPO row carries no nbca scalar).
+    900: ("qnc", "qni", "qnwfa", "qnifa"),
 }
 
 
+def _mynn_qn_requested_species(cfg) -> tuple[str, ...]:
+    """State species the MYNN mixing keys ask for, in family order.
+
+    The union over :data:`MYNN_QN_MIX_KEYS` of every key set to 1, before
+    any scheme or PBL gate.  ``getattr`` defaults keep duck-typed
+    configurations that predate the split keys reading as key-off.
+    """
+    wanted = set()
+    for key, species in MYNN_QN_MIX_KEYS.items():
+        if int(getattr(cfg, key, 0)) == 1:
+            wanted.update(species)
+    return tuple(name for name in MYNN_QN_MIX_KEYS["bl_mynn_mixscalars"]
+                 if name in wanted)
+
+
+def mynn_mixed_number_species(cfg) -> tuple[str, ...]:
+    """The number species MYNN couples on this configuration (state names).
+
+    Non-empty only under MYNN itself (bl_pbl_physics=5) with a scheme in
+    ``MYNN_QN_FAMILY_SCHEMES``; then it is the union of the species each
+    selected key names (:data:`MYNN_QN_MIX_KEYS`).  The family solve runs
+    for every qn species and the coupling keeps only these, so the rate of
+    a species no key selects is WRF's skipped-solve zero.
+    """
+    if int(cfg.bl_pbl_physics) != 5:
+        return ()
+    if int(cfg.mp_physics) not in MYNN_QN_FAMILY_SCHEMES:
+        return ()
+    return _mynn_qn_requested_species(cfg)
+
+
 def mynn_mixscalars_active(cfg) -> bool:
-    """Whether ``bl_mynn_mixscalars=1`` mixes anything on this configuration.
+    """Whether any MYNN number-species mixing key mixes on this configuration.
 
     WRF v4.6.1 gates every scalar solve on the key AND the species flag
     (``phys/module_bl_mynn.F`` mynn_tendencies: ``bl_mynn_mixscalars > 0
     .AND. FLAG_QNI`` at :4654 and the same shape for qnc :4695, qnwfa
     :4736, qnifa :4778, qnbca :4820), and ``mynn_bl_driver`` zeroes each
-    column whose flag is false.  This port's solve runs the whole family
-    or nothing, so the key is active only under MYNN itself with a scheme
-    in ``MYNN_QN_FAMILY_SCHEMES``; the runtime stages the family, the
-    preflight prices its storage and the bldt=0 restart invariant applies
-    in exactly that case.  Inactive is one of two things, which
-    ``validate_run_config`` tells apart with ``MYNN_QN_FLAG_SPECIES``: a
-    scheme WRF gives no number species, where the key is WRF's no-op and
-    the run records it and mixes nothing; or a scheme WRF would mix in
-    part, which is refused by name.
+    column whose flag is false.  MYNN-EDMF splits the key by family
+    (``bl_mynn_mixnumcon``/``bl_mynn_mixaerosols``, MYNN_QN_MIX_KEYS).
+    This port's solve runs the whole family or nothing, so mixing is
+    active only under MYNN itself with a scheme in
+    ``MYNN_QN_FAMILY_SCHEMES`` and at least one key on; the runtime
+    stages the family, the preflight prices its storage and the
+    every-step restart invariant applies in exactly that case.  Inactive
+    is one of two things, which ``validate_run_config`` tells apart with
+    ``MYNN_QN_FLAG_SPECIES``: a scheme WRF gives no number species, where
+    the key is WRF's no-op and the run records it and mixes nothing; or a
+    scheme WRF would mix in part, which is refused by name.
     """
-    return (int(cfg.bl_mynn_mixscalars) == 1
-            and int(cfg.bl_pbl_physics) == 5
-            and int(cfg.mp_physics) in MYNN_QN_FAMILY_SCHEMES)
+    return bool(mynn_mixed_number_species(cfg))
 
 
 def mynn_mixscalars_unported_species(cfg) -> tuple[str, ...]:
-    """The number species WRF would mix under this key that the port cannot.
+    """The number species WRF would mix under these keys that the port cannot.
 
-    Empty when the key is off, when the key is active (mp=28 carries the
-    whole family) and when the microphysics carries no number species at
-    all (WRF's no-op).  Non-empty names the concrete divergence the
-    validator refuses: WRF v4.6.1 runs the listed flag-gated solves on
-    this scheme (Thompson's qni, WDM6's qnc, ...) and this port's solve
-    cannot run a subset of the family, so a run that recorded the key
-    would claim a mixing it does not perform.
+    Empty when every key is off, when mixing is active (the scheme carries
+    the whole family) and when the microphysics carries none of the
+    requested species (WRF's no-op).  Non-empty names the concrete
+    divergence the validator refuses: WRF runs the listed flag-gated
+    solves on this scheme (Thompson's qni, WDM6's qnc, ...) and this
+    port's solve cannot run on a state that lacks the rest of the family,
+    so a run that recorded the key would claim a mixing it does not
+    perform.
     """
-    if int(cfg.bl_mynn_mixscalars) != 1 or int(cfg.bl_pbl_physics) != 5:
+    if int(cfg.bl_pbl_physics) != 5:
         return ()
     if int(cfg.mp_physics) in MYNN_QN_FAMILY_SCHEMES:
         return ()
-    return tuple(MYNN_QN_FLAG_SPECIES.get(int(cfg.mp_physics), ()))
+    requested = {_MYNN_QN_STATE_TO_FLAG[name]
+                 for name in _mynn_qn_requested_species(cfg)}
+    return tuple(name for name in MYNN_QN_FLAG_SPECIES.get(
+        int(cfg.mp_physics), ()) if name in requested)
 
 
 def mynn_mixscalars_driver_value(cfg) -> int:
@@ -1959,7 +2073,7 @@ def validate_urban_config(cfg) -> None:
 # double-count radiative and PBL heating for Grell-Freitas and move
 # run_myj -- the baseline every intensity number is graded against. The
 # fold therefore belongs in the New Tiedtke adapter and nowhere else.
-CUMULUS_ADVECTIVE_FORCING_SCHEMES = frozenset({3, 16})
+CUMULUS_ADVECTIVE_FORCING_SCHEMES = frozenset({3, 6, 16})
 #: ``bl_pbl_physics`` value selecting the SASE closure.
 #:
 #: SASE is an ArWen-only scheme -- a Scale-Adaptive Stress-Energetics
@@ -2048,7 +2162,7 @@ PBL_SCHEMES = (0, 1, MYJ_PBL_SCHEME, 5, UW_PBL_SCHEME, 11, SASE_PBL_SCHEME)
 # physics.py's optional tendency components. Each was a refusal that cost
 # nothing while 16 was unreachable and would have been a silent wrong
 # answer the moment it was not.
-CU_SCHEMES = (0, 1, 3, 16)
+CU_SCHEMES = (0, 1, 3, 6, 16)
 
 #: The cumulus scheme that reads the Grell-family keys below.
 GRELL_FREITAS_CU_PHYSICS = 3
@@ -2517,8 +2631,9 @@ _MP_PHYSICS_SCHEMA_MENU = (
     "mp_physics must be 0 (off), 1 (Kessler), 6 (WSM6), 8 "
     "(Thompson), 9 (Milbrandt-Yau two-moment), 10 (Morrison "
     "two-moment), 16 (WDM6 double-moment warm rain), 18 (NSSL "
-    "two-moment), 28 (Thompson aerosol-aware), 50 (P3 "
-    "one-category)"
+    "two-moment), 28 (Thompson aerosol-aware), 30 (FAST_SBM "
+    "spectral bin), 50 (P3 one-category), or \"tempo\" (TEMPO, WOOF "
+    "id 900)"
 )
 
 #: Every ``mp_physics`` value the config loader admits, as the importable
@@ -2528,7 +2643,7 @@ _MP_PHYSICS_SCHEMA_MENU = (
 #: membership against this tuple and recites the menu when it refuses, so
 #: a new scheme is added in both places in the same edit or the loader
 #: and its refusal text disagree in front of a user.
-MP_PHYSICS_ACCEPTED = (0, 1, 6, 8, 9, 10, 16, 18, 28, 50)
+MP_PHYSICS_ACCEPTED = (0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50, 900)
 
 
 #: WDM6's two unported siblings, held as a table for the reason
@@ -2845,6 +2960,29 @@ def validate_radiation_driver_options(cfg: RunConfig) -> None:
             "(ra_sw_physics=4, ra_rrtmg_variant='rrtmg_legacy'), aer_opt=3 "
             "and mp_physics=28: another path would discard the prescribed "
             "smoke or omit its Thompson aerosol background")
+    type_source = cfg.rrtmg_aer3_type_source
+    if type_source not in ("rural", "landmask"):
+        raise ValueError(
+            f"rrtmg_aer3_type_source={type_source!r} must be 'rural' (the "
+            "HRRR fork's type 1 everywhere) or 'landmask' (the NOAA MPAS "
+            "fork's type 1 over land, maritime type 3 over water)")
+    if type_source != "rural":
+        if aer != 3 or int(sw) != 4 or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY:
+            raise ValueError(
+                "rrtmg_aer3_type_source='landmask' selects the aer_opt=3 "
+                "shortwave aerosol type and needs aer_opt=3 with legacy RRTMG "
+                "shortwave (ra_sw_physics=4, ra_rrtmg_variant="
+                f"'{RRTMG_VARIANT_LEGACY}'); got aer_opt={aer}, "
+                f"ra_sw_physics={int(sw)}, ra_rrtmg_variant="
+                f"{cfg.ra_rrtmg_variant!r}, where the selector would be "
+                "recorded and never read")
+        if smoke:
+            raise ValueError(
+                "rrtmg_aer3_type_source='landmask' with rrtmg_smoke_manifest: "
+                "prescribed smoke follows the HRRR fork's rural optics and the "
+                "NOAA MPAS driver has no smoke arm "
+                "(mpas_atmphys_driver_radiation_sw.F:573-683), so the pair has "
+                "no source behavior to reproduce")
     if cloud_form != "wrf_461" and (
             4 not in (int(lw), int(sw))
             or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY):
@@ -2870,10 +3008,16 @@ def validate_radiation_driver_options(cfg: RunConfig) -> None:
             "is not wired ahead of the fit here, so the direct-beam fit "
             "would run on a zero SWDDIR")
     if aer == 3:
-        if int(cfg.mp_physics) != 28:
+        from gpuwm.microphysics_schemes import SCHEMES_BY_ID
+        named = SCHEMES_BY_ID.get(int(cfg.mp_physics))
+        carries_numbers = (int(cfg.mp_physics) == 28 or
+                           (named is not None and {"nwfa", "nifa"} <= set(named.aerosol_species)))
+        if not carries_numbers:
             raise ValueError(
-                f"aer_opt=3 needs the Thompson aerosol-aware numbers "
-                f"(mp_physics=28); with mp_physics={int(cfg.mp_physics)} "
+                f"aer_opt=3 needs water-friendly and ice-friendly aerosol numbers "
+                f"(Thompson aerosol-aware mp_physics=28, or a named aerosol-aware "
+                f"scheme that carries nwfa and nifa); "
+                f"with mp_physics={int(cfg.mp_physics)} "
                 "there is no QNWFA/QNIFA and WRF's driver would run zero "
                 "aerosol under a configuration claiming aerosol-aware "
                 "radiation")
@@ -5697,6 +5841,11 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
     # with a non-default Grell key through validate_run_config.  The
     # BASELINE RE-RUN caught it, which is the whole reason the group is
     # re-run rather than argued inert.
+    if cfg.cu_physics == 6 and cfg.cudt_minutes != 0.0:
+        raise ValueError(
+            "cu_physics=6 requires cudt_minutes=0: the original scheme "
+            "returns per-call precipitation and carries no NCA hold; "
+            "holding it would reapply that precipitation each step.")
     if cfg.cu_physics == 16:
         # NEW TIEDTKE PINS cudt_minutes = 0 for the same reason GF does,
         # and one it does not share.
@@ -5765,11 +5914,14 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "scalars only for exactly 1, so any other value would run "
             "without the mixing its configuration names.")
     if cfg.scalar_pblmix == 1:
-        if cfg.bl_mynn_mixscalars == 1:
-            raise ValueError(
-                "scalar_pblmix=1 and bl_mynn_mixscalars=1 cannot be combined: "
-                "WRF disables scalar_pblmix for MYNN scalar plume mixing "
-                "(module_check_a_mundo.F:2497-2511). Select one mixing path.")
+        for key in MYNN_QN_MIX_KEYS:
+            if getattr(cfg, key) == 1:
+                raise ValueError(
+                    f"scalar_pblmix=1 and {key}=1 cannot be combined: "
+                    "WRF disables scalar_pblmix for MYNN scalar plume mixing "
+                    "(module_check_a_mundo.F:2497-2511), and both would "
+                    "write the same number-species rate. Select one mixing "
+                    "path.")
         validate_scalar_pblmix_consumer(cfg)
         if cfg.bldt != 0.0:
             raise NotImplementedError(
@@ -5796,45 +5948,62 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
     # the restart TENDENCY_COMPONENTS manifest, which is restart-exact only
     # when every compute() replaces them before any read
     # (gpuwm/core/physics.py scalar_for); the inert case holds none.
-    if cfg.bl_mynn_mixscalars not in (0, 1) or \
-            type(cfg.bl_mynn_mixscalars) is not int:
-        raise ValueError(
-            f"bl_mynn_mixscalars={cfg.bl_mynn_mixscalars!r} is outside the "
-            "admitted MYNN option identity; gpuwm implements 0 (off) and 1 "
-            "(the fixture-anchored stock qn mixing) only."
-        )
-    if cfg.bl_mynn_mixscalars == 1:
-        if cfg.bl_pbl_physics != 5:
+    # The MYNN-EDMF split keys (bl_mynn_mixaerosols, bl_mynn_mixnumcon)
+    # follow the same rules, each over its own species (MYNN_QN_MIX_KEYS).
+    for key in MYNN_QN_MIX_KEYS:
+        value = getattr(cfg, key)
+        if value not in (0, 1) or type(value) is not int:
+            raise ValueError(
+                f"{key}={value!r} is outside the admitted MYNN option "
+                "identity; gpuwm implements 0 (off) and 1 (the "
+                "fixture-anchored stock qn mixing of "
+                f"{', '.join(MYNN_QN_MIX_KEYS[key])}) only."
+            )
+        if value == 1 and cfg.bl_pbl_physics != 5:
             raise NotImplementedError(
-                "bl_mynn_mixscalars=1 requires bl_pbl_physics=5 (MYNN), "
+                f"{key}=1 requires bl_pbl_physics=5 (MYNN), "
                 f"got bl_pbl_physics={cfg.bl_pbl_physics}. The mixscalars "
                 "arms are MYNN's own qn solves (module_bl_mynn.F:4654-4860) "
                 "and no other PBL scheme reads the key -- accepting it "
                 "would record a mixing option no code performs."
             )
-        unported = mynn_mixscalars_unported_species(cfg)
-        if unported:
-            raise NotImplementedError(
-                f"bl_mynn_mixscalars=1 with mp_physics={cfg.mp_physics}: WRF "
-                f"v4.6.1 mixes {', '.join(unported)} under this key on that "
-                "scheme (module_bl_mynn.F mynn_tendencies, the flag-gated "
-                "solves at :4654-4860), and this port's mixscalars solve "
-                "runs the whole nc/ni/nwfa/nifa family or nothing "
-                "(mynn_pbl_gpu.py qn_flags; config.MYNN_QN_FLAG_SPECIES). "
-                "Accepting the key would record a number-concentration "
-                "mixing WRF performs and this run does not.  Select "
-                "mp_physics=28 (the whole family), bl_mynn_mixscalars=0, "
-                "or a microphysics with no number species, where the key "
-                "is WRF's no-op and is admitted."
-            )
+    unported = mynn_mixscalars_unported_species(cfg)
+    if unported:
+        keys = [key for key in MYNN_QN_MIX_KEYS if getattr(cfg, key) == 1]
+        raise NotImplementedError(
+            f"{'/'.join(f'{key}=1' for key in keys)} with "
+            f"mp_physics={cfg.mp_physics}: WRF mixes "
+            f"{', '.join(unported)} under this key on that scheme "
+            "(module_bl_mynn.F mynn_tendencies, the flag-gated solves at "
+            ":4654-4860), and this port's mixscalars solve runs the whole "
+            "nc/ni/nwfa/nifa family or nothing (mynn_pbl_gpu.py qn_flags; "
+            "config.MYNN_QN_FLAG_SPECIES). Accepting the key would record "
+            "a number-concentration mixing WRF performs and this run does "
+            "not.  Select mp_physics=28 or mp_physics=900 (the whole "
+            f"family), {', '.join(f'{key}=0' for key in keys)}, or a "
+            "microphysics with no number species, where the key is WRF's "
+            "no-op and is admitted."
+        )
     if mynn_mixscalars_active(cfg):
-        if cfg.bldt != 0.0:
+        # Restart-exact only when every compute() replaces the held qn
+        # extras before any read: bldt=0, or a fixed clock whose WRF
+        # STEPBL (MAX(NINT(bldt*60/dt),1), gpuwm/core/physics.py
+        # _physics_interval_seconds) is 1, where every step is a PBL step
+        # (_surface_pbl_step_due).  The MPAS column seams run that second
+        # form: a positive bldt equal to the model step.
+        every_step = cfg.bldt == 0.0 or (
+            not cfg.use_adaptive_time_step and cfg.bldt > 0.0
+            and max(int(math.floor(cfg.bldt * 60.0 / cfg.dt + 0.5)), 1) == 1)
+        if not every_step:
             raise NotImplementedError(
-                f"bl_mynn_mixscalars=1 requires bldt=0, got {cfg.bldt!r}. "
+                "MYNN number-species mixing "
+                f"({', '.join(mynn_mixed_number_species(cfg))}) requires "
+                "bldt=0 or a PBL call every model step, got "
+                f"bldt={cfg.bldt!r} min at dt={cfg.dt!r} s. "
                 "The qn tendencies are held outside the restart "
                 "TENDENCY_COMPONENTS manifest and are restart-exact only "
                 "when recomputed every step (physics.py scalar_for, the rw "
-                "precedent); a positive cadence would make a mid-interval "
+                "precedent); a longer cadence would make a mid-interval "
                 "restart silently drop them."
             )
     for name, (admitted, evidence) in \
@@ -5904,10 +6073,10 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "the water and ice columns at or above it, and a threshold "
             "that is not a finite number selects none of them, or every "
             "one with the ocean among them.")
-    if cfg.thompson_version not in ("wrf_461", "wrf_39_noaa"):
+    if cfg.thompson_version not in ("wrf_461", "wrf_39_noaa", "wrf_44"):
         raise ValueError(
             f"thompson_version={cfg.thompson_version!r} must be 'wrf_461' "
-            "(WRF v4.6.1's Thompson) or 'wrf_39_noaa' (the operational WRF "
+            "(WRF v4.6.1's Thompson), 'wrf_44' (classic WRF v4.4), or 'wrf_39_noaa' (the operational WRF "
             "3.9 fork's): the two size graupel, snow and ice differently, "
             "so an unknown name cannot select either.")
     if cfg.thompson_fork_snow_fall not in ("blend", "wrf_39_noaa"):
@@ -5924,7 +6093,9 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             f"thompson_version={cfg.thompson_version!r} would ignore it.  "
             "Set thompson_version = 'wrf_39_noaa' as well, or leave the "
             "snow fall at 'blend'.")
-    if cfg.thompson_version != "wrf_461" and cfg.mp_physics != 28:
+    if cfg.thompson_version == "wrf_44" and cfg.mp_physics != 8:
+        raise ValueError("thompson_version='wrf_44' requires mp_physics=8; its classic column has no aerosol or hail state")
+    if cfg.thompson_version == "wrf_39_noaa" and cfg.mp_physics != 28:
         raise ValueError(
             f"thompson_version={cfg.thompson_version!r} is ported for the "
             f"aerosol-aware scheme (mp_physics = 28) only; mp_physics="
@@ -6086,6 +6257,33 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
         # was told use_mp_re was a problem too.  Each names the operation
         # the RTE+RRTMGP arm substitutes for it, which is the fact that
         # decides whether the remedy is worth taking.
+        #
+        # A JUDGED cloud-optics exclusion refuses here, before step 0.
+        # Breakage prevented: mp_physics=30 (FAST_SBM) on the default
+        # RTE+RRTMGP arm passed this door, which the registry's
+        # component-conditional refusal does not, and died at its first
+        # radiation call in gpuwm.core.rrtmgp.cloud_optics_scheme with a
+        # forecast already allocated.  The row is the registry's
+        # cloud_optics consumer row, generated from the adapter's own
+        # tables, so a scheme that gains its coupling stops refusing with no
+        # edit here; it is read from the registry rather than the adapter
+        # so a preparation-only install (the RW-WPS wheel) never imports
+        # the radiation module.
+        if cfg.moist:
+            from gpuwm.physics_registry import consumer_row_for_selector
+
+            optics = consumer_row_for_selector(
+                "microphysics", "cloud_optics", int(cfg.mp_physics))
+            if (isinstance(optics, dict)
+                    and optics.get("rte_rrtmgp_coupling") is None
+                    and optics.get("rte_rrtmgp_refusal")):
+                raise NotImplementedError(
+                    f"mp_physics={int(cfg.mp_physics)} has no RTE+RRTMGP "
+                    "cloud-optics coupling, deliberately: "
+                    f"{optics['rte_rrtmgp_refusal']}. Set "
+                    f"ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}' (which "
+                    "computes its own radii the way WRF does), or select "
+                    "ra_lw_physics=0/ra_sw_physics=1 (Dudhia).")
         if cfg.o3input != 2:
             raise ValueError(
                 f"o3input={cfg.o3input} is not implemented by "
@@ -6188,7 +6386,7 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
     if cfg.cu_physics not in CU_SCHEMES:
         raise ValueError(
             f"cu_physics must be one of {CU_SCHEMES} -- 0 (off), "
-            f"1 (Kain-Fritsch), 3 (Grell-Freitas) or 16 (New Tiedtke), "
+            f"1 (Kain-Fritsch), 3 (Grell-Freitas), 6 (original cu6) or 16 (New Tiedtke), "
             f"got {cfg.cu_physics}."
         )
     if cfg.hypsometric_opt not in (1, 2):
@@ -6250,6 +6448,11 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "wsm6_hail_opt must be 0 (graupel, the WRF WSM6 default) or "
             f"1 (hail), got {cfg.wsm6_hail_opt}."
         )
+    for option in ("tempo_ml_for_bl_nc", "tempo_surface_emission_before"):
+        if type(getattr(cfg, option)) is not bool:
+            raise ValueError(f"{option} must be logical; interpreting a string would select the wrong TEMPO coupling")
+        if getattr(cfg, option) and cfg.mp_physics != 900:
+            raise ValueError(f"{option} selects TEMPO behavior but mp_physics={cfg.mp_physics} does not execute it")
     _NSSL_SELECTOR_DEFAULTS = {
         "nssl_2moment_on": -1, "nssl_hail_on": -1, "nssl_ccn_on": -1,
         "nssl_density_on": -1, "nssl_3moment": 0,

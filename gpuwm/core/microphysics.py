@@ -525,6 +525,11 @@ def _apply_thompson(
     overrides it, and ``load_classic_device_tables`` still byte-validates
     every asset before GPU setup -- a wrong or missing root fails closed.
     """
+    from gpuwm.thompson_generations import CLASSIC_GENERATIONS
+    generation = CLASSIC_GENERATIONS[getattr(cfg,"thompson_version","wrf_461")]
+    if generation.backend == "column":
+        from gpuwm.core.thompson_column import apply_generated
+        return apply_generated(state,cfg,dt,refl_10cm_due=refl_10cm_due)
     table_root = _thompson_table_root()
     required = ("qc", "qi", "ni", "qs", "qg", "qr", "nr")
     missing = [name for name in required
@@ -880,6 +885,9 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
         return _apply_thompson_aerosol(
             state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics == 30:
+        from gpuwm.core.fast_sbm_runtime import apply as apply_fast_sbm
+        return apply_fast_sbm(state,cfg,dt,refl_10cm_due=refl_10cm_due)
     elif _named_scheme(cfg.mp_physics) is not None:
         # A NAMED scheme (gpuwm.microphysics_schemes): its adapter module is
         # gpuwm.core.<name>, imported lazily so no other run compiles it.
@@ -1062,7 +1070,7 @@ def _apply_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         if refl_10cm_due:
             raise ValueError("REFL_10CM is due without active microphysics")
         return None
-    if (cfg.mp_physics not in (1, 6, 8, 9, 10, 16, 18, 28, 50)
+    if (cfg.mp_physics not in (1, 6, 8, 9, 10, 16, 18, 28, 30, 50)
             and _named_scheme(cfg.mp_physics) is None):
         raise ValueError(f"unknown mp_physics={cfg.mp_physics} "
                          "(0 = none, 1 = Kessler, 6 = WSM6, "
@@ -1115,6 +1123,7 @@ def _apply_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
 #: other scalar takes the threshold.  A scheme with no scalar array has no
 #: entry.
 WRF_FIRST_SCALAR_SPECIES: dict[int, str] = {
+    30: "ff1i01",
     8: "ni", 10: "ni", 28: "ni", 50: "ni",   # qni
     9: "nc",                                 # qnc (milbrandt2mom)
     16: "nn",                                # qnn (wdm6scheme)

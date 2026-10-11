@@ -113,10 +113,12 @@ BRIDGE_OPTIONAL_ABI_MARKERS = {
 }
 
 BRIDGE_ABI_MARKERS = {
+    "rw_globe_pack": b"gpuwm-rw-globe-pack-v1",
     "rw_ensbatch": (
         b"gpuwm-ensemble-diagnostic-reduce.v1\tf32-words\tf64-two-pass\t"
         b"member-order\tsha256"),
     "rw_verify": b"gpuwm.verify-visuals.request.v1",
+    "rw_scorecard": b"gpuwm.obs-scorecard.manifest.v1",
     "rw_compare": b"gpuwm.reference-input.v1",
     # The nowcast frames converter's ``--abi`` line, which its main()
     # prints from the one constant it compiles in.  Spelled to match
@@ -316,6 +318,9 @@ BRIDGE_ABI_MARKERS = {
     # changes when the contract does: a build predating it would read a
     # request it does not speak.  Spelled to match
     # gpuwm.ml_export.ABI_MARKER and rw_mlexport::ABI; a test binds them.
+    "rw_scoreboard": (b"rw_scoreboard --request JSON schema=woof.scoreboard.request.v1 "
+                      b"method=scoreboard-v1 actions=extract,observe,score,plan,merge,interpolate,accumulate,"
+                      b"interpolate_to_reports columns=WFSBCOL1"),
     "rw_mlexport": (
         b"rw_mlexport --request REQUEST.json schema=ml-export.request/v1 "
         b"modes=run,append,finalize progress=jsonl"),
@@ -2194,6 +2199,51 @@ def bridge_abi_matches(name: str, path: Path) -> tuple[bool, str]:
         "correctly; rebuild it from a matching checkout")
 
 
+def fetched_on_demand(artifact: str | None) -> bool:
+    """Is ``artifact`` one the platform wheel leaves to ``gpuwm fetch-bridges``?
+
+    True for the artifacts :func:`gpuwm.bridge_assets.on_demand_artifacts`
+    declares: they are in the release bundle and its pins and not in the
+    wheel, so on a fresh pip install their absence is the expected state
+    and one command ends it.  A refusal and a doctor line both read this,
+    so neither calls that state a broken install.
+    """
+
+    if artifact is None:
+        return False
+    try:
+        from gpuwm import bridge_assets
+        return any(entry.name == artifact
+                   for entry in bridge_assets.on_demand_artifacts())
+    except Exception:                                # noqa: BLE001
+        return False
+
+
+def on_demand_fetch_offered(artifact: str | None,
+                            crate_relative: str = RUSTWX_CRATE_RELATIVE) -> bool:
+    """Would ``gpuwm fetch-bridges`` install the absent ``artifact`` HERE?
+
+    True only where :func:`artifact_remedy` leads with the fetch for an
+    on-demand artifact: the artifact is declared on demand, this install
+    carries no Rust sources for its crate, and the pins this install
+    carries name a bundle for this platform that holds it.  Breakage this
+    prevents: doctor read the roster flag alone, so in a source checkout,
+    on an install without pins and on a platform with no bundle it called
+    the absence ``opt-in`` and said ``gpuwm fetch-bridges`` installs it,
+    where that command refuses or the remedy printed beside it is a cargo
+    build.  That is the circular remedy :func:`prebuilt_bundle_offer`
+    exists to stop.
+    """
+
+    if not fetched_on_demand(artifact):
+        return False
+    try:
+        return (not sources_present(crate_relative)
+                and _offer_for(artifact) is not None)
+    except Exception:                                # noqa: BLE001
+        return False
+
+
 def artifact_remedy(*, env_var: str, filename: str, subject: str,
                     crate_relative: str = CRATE_RELATIVE,
                     one_liner: str = "", artifact: str | None = None) -> str:
@@ -2274,6 +2324,18 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
             f"# so {subject} must be built from a clone.  About two "
             "minutes, once:\n"
             f"{source_route}")
+    if fetched_on_demand(artifact):
+        # The expected state of a fresh pip install, so it is said as one:
+        # nothing is broken, and the download is the whole remedy.
+        return (
+            f"# {subject} is fetched on demand: the platform wheel does not\n"
+            "# carry it, and this one command installs it with the rest of\n"
+            "# this release's prebuilt bundle:\n"
+            + "\n".join(offer) + "\n"
+            "  # Or build it from source instead -- the route that works on\n"
+            "  # every platform, including ones with no published bundle.\n"
+            "  # Uncomment these to take it:\n"
+            + _as_comments(source_route))
     return (
         "# this install carries no Rust sources -- the wheel ships none --\n"
         f"# so there are two routes to {subject}: the prebuilt bundle\n"

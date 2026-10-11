@@ -69,8 +69,14 @@ def test_surface_cold_start_corrections_survive_the_generic_restore(tmp_path, mo
     expected = {name: value.copy() for name, value in fields.items()}
     driver = SimpleNamespace(fields=fields, rainc=None)
     monkeypatch.setitem(sys.modules, "cupy", np)
+    # Since 01402fcb1 the door first asks gpuwm.core.physics whether any
+    # scheme needs a driver (the re-export of the inventory's predicate),
+    # so the stand-in module carries the real predicate beside the fake
+    # initializer.
+    from gpuwm.core.physics_inventory import physics_driver_required
     monkeypatch.setitem(sys.modules, "gpuwm.core.physics", SimpleNamespace(
-        initialize_physics=lambda *args, **kwargs: driver))
+        initialize_physics=lambda *args, **kwargs: driver,
+        physics_driver_required=physics_driver_required))
     wi.initialize_wrfinput_physics(object(), restored, cfg)
     for name in expected:
         np.testing.assert_array_equal(fields[name], expected[name])

@@ -101,6 +101,7 @@ LAUNCH_REFUSAL_CODES = ("CONFIGURATION_CHANGED",
                         "MISSING_GEOGRAPHY", "OBSERVATION_CHANGED",
                         "PLAN_SCHEMA", "REVIEW_CHANGED", "ROSTER_CHANGED")
 RUN_REFUSAL_CODES = ("ANALYSIS_ROSTER", "CONTINUOUS_WINDOW_FAILED", "CWP_OPERATOR_UNAVAILABLE", "MISSING_MANIFEST", "MISSING_SURFACE",
+                     "NONFINITE_PRIOR",
                      "OBSERVATION_WINDOW_CHANGED", "OUTPUT_CHANGED",
                      "PREPARATION_CHANGED", "REFERENCE_CHANGED",
                      "SURFACE_CHANGED")
@@ -367,7 +368,11 @@ def configuration(request: Request, rung: dict, *, background_probe=None):
         from gpuwm.fetch import fetch_accepts_area
         if background['inputs']['kind'] == 'automatic':
             background['fetch_hints'] = dict(background['fetch_hints'], out='data/background')
-        if fetch_accepts_area(source):
+        # Local inputs take no crop (prep maps the files onto the namelist
+        # geometry, and the [fetch] check refuses an area beside a staged
+        # root).  Asked of the binding, not of the source: since f17bdb8c3
+        # a source with local inputs can also be one that fetches.
+        if fetch_accepts_area(source) and background['inputs']['kind'] != 'local':
             background['fetch_hints']['area'] = area
     text = dw.render_config(name="Local rapid cycling", start_time=stamp,
         hours=max(1, math.ceil(duration / 3600)), projection=rung['projection'],
@@ -445,7 +450,15 @@ def price_rung(request: Request, rung: dict, exp, streams, *, forcing_interval_s
     from gpuwm.ensemble.state_sha import serialized_state_attrs
     from gpuwm.da.letkf import GridGeometry, Localization, _horizontal_stencil
     from gpuwm import domain_wizard as dw
-    fields = len(serialized_state_attrs())
+    # The fields the analysis holds per member are the serialized attributes
+    # THIS configuration allocates -- the runtime reads exactly those
+    # (gpuwm/local_da_runtime.py takes every serialized attribute present on
+    # the state).  Breakage prevented: pricing the union over every scheme
+    # counted FAST_SBM's 142 spectral bins on every rung once mp_physics=30
+    # joined the contract, and a 10 GiB card refused a bulk-scheme analysis.
+    from gpuwm.core.device_inventory import state_array_shapes
+    allocated = state_array_shapes(exp.domains[0].run)
+    fields = sum(1 for name in serialized_state_attrs() if name in allocated)
     stored_members = n + 1 if rung['members'] == 1 else n
     batches = max(1, sum(int(row.get('batch_bound', 4)) for row in streams
                          if row['status'] in ('candidate', 'ready')))

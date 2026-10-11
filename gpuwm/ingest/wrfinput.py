@@ -94,6 +94,10 @@ NSSL_MOISTURE_MAP = {
     "QNSNOW": "qns", "QNGRAUPEL": "qng", "QNHAIL": "qnh",
     "QNCCN": "qnn", "QVGRAUPEL": "qvolg", "QVHAIL": "qvolh",
 }
+from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
+MOISTURE_MAP.update({name:name for name in _FSBM_BIN_SPECIES})
+MOISTURE_MAP.update({"EFF_RADIUS":"effc","ICE_EFF_RADIUS":"effi","TOT_EFF_RADIUS":"effs"})
+
 ALL_MOISTURE_WRFINPUT = frozenset(MOISTURE_MAP) | frozenset(
     NSSL_MOISTURE_MAP)
 
@@ -148,7 +152,7 @@ WDM6_NUMBER_WRFINPUT = ("QNCCN", "QNCLOUD", "QNRAIN")
 #: 9 belongs for the same reason 16 does: Milbrandt-Yau PREDICTS the
 #: droplet number (its ``scalar:qnc,...`` package), so QNCLOUD is a
 #: prognostic there, not Morrison's diagnosed convenience field.
-REQUIRED_QNCLOUD_MICROPHYSICS = frozenset({9, 16, 28})
+REQUIRED_QNCLOUD_MICROPHYSICS = frozenset({9, 16, 28, 30})
 #: mp_physics=50 (P3 one-category).  ``Registry.EM_COMMON:3038`` declares
 #: the package as ``moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib`` -- ONE ice
 #: mass, and no snow and no graupel anywhere in the package, because P3
@@ -312,6 +316,8 @@ def _mapped_wrfinput_names() -> set[str]:
         alias for aliases in PHYSICS_FIELD_ALIASES.values() for alias in aliases)
     return names
 
+
+WRFINPUT_DIMENSIONS.update({name:WRFINPUT_DIMENSIONS["QVAPOR"] for name in _FSBM_BIN_SPECIES + ("EFF_RADIUS","ICE_EFF_RADIUS","TOT_EFF_RADIUS")})
 
 MAPPED_WRFINPUT = frozenset(_mapped_wrfinput_names())
 # Registry writes QNBCA for mp28 even when wif_input_opt != 2. In that
@@ -491,6 +497,7 @@ SUPPORTED_MICROPHYSICS: Mapping[int, str] = MappingProxyType({
     16: "WDM6 double-moment warm rain",
     18: "NSSL double-moment",
     28: "Thompson aerosol-aware",
+    30: "FAST_SBM warm and cold spectral bin",
     50: "P3 one-category",
 })
 
@@ -515,7 +522,6 @@ UNSUPPORTED_MICROPHYSICS: Mapping[int, str] = MappingProxyType({
     22: "NSSL 2-moment, no hail",
     24: "WSM7",
     26: "WDM7",
-    30: "HUJI spectral bin (fast)",
     32: "HUJI spectral bin (full)",
     40: "Morrison + CESM aerosol",
     51: "P3 with prognostic droplet number",
@@ -688,6 +694,12 @@ class RestoredDomain:
         default_factory=lambda: MappingProxyType({}))
     soil_recovery: Mapping[str, object] = field(
         default_factory=lambda: MappingProxyType({}))
+    #: Set only for a domain read from a WRF-written restart file
+    #: (:mod:`gpuwm.ingest.wrfrst`): the restart instant, the clock and the
+    #: per-variable dispositions.  ``None`` is a real.exe cold start.  The
+    #: shared restore functions read it to take WRF's restart branch: the
+    #: file's own base state and vertical velocity, no cold-start rebuild.
+    warm_start: object | None = None
 
     def wrf_frame(self) -> dict[str, np.ndarray]:
         """CPU inverse of the restored atmospheric mapping."""
@@ -903,8 +915,10 @@ def active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
     # 16 belongs with the ice-carrying set: wdm6scheme's moist inventory
     # (Registry.EM_COMMON:3031) is qv,qc,qr,qi,qs,qg -- WSM6's, character
     # for character.  WDM6 is double-moment in the WARM half only.
-    if mp_physics in (6, 8, 9, 10, 16, 18, 28):
+    if mp_physics in (6, 8, 9, 10, 16, 18, 28, 30):
         required += ICE_MASS_WRFINPUT
+    if mp_physics == 30:
+        required += _FSBM_BIN_SPECIES + ("QNCCN","QNCLOUD","QNRAIN","QNICE","QNSNOW","QNGRAUPEL","EFF_RADIUS","ICE_EFF_RADIUS","TOT_EFF_RADIUS")
     if mp_physics == 9:
         # Milbrandt-Yau: WSM6's six masses (added just above) plus hail
         # and six number moments.  See MILBRANDT_MOISTURE_WRFINPUT.
@@ -1053,17 +1067,27 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         carried = (MYNN_CYCLED_WRFINPUT
                    if cfg is not None and bool(getattr(cfg, "cycling", False))
                    else frozenset())
-        for name, variable in dataset.variables.items():
-            if (name == "Times" or name in IGNORED_WRFINPUT
+        def unread(name):
+            return (name == "Times" or name in IGNORED_WRFINPUT
                     or (name in ANALYSIS_PASSTHROUGH_WRFINPUT
                         and name not in carried)
-                    or name in surface_dispositions):
-                continue
+                    or name in surface_dispositions)
+
+        def layer_water(name, variable):
             units = str(getattr(variable, "units", "")).strip().lower()
             compact_units = "".join(character for character in units
                                     if not character.isspace() and character not in "^*()")
-            if (name in ("SMOIS", "SH2O")
-                    and compact_units in ("kgm-2", "kg/m2", "mm", "m")):
+            return (name in ("SMOIS", "SH2O")
+                    and compact_units in ("kgm-2", "kg/m2", "mm", "m"))
+
+        decode = netcdf_bridge.BatchedDecode(dataset, [
+            name for name, variable in dataset.variables.items()
+            if not unread(name) and not layer_water(name, variable)])
+        for name, variable in dataset.variables.items():
+            if unread(name):
+                continue
+            decode.ready(name)
+            if layer_water(name, variable):
                 decoded, conversion = variable.read_layer_water("DZS")
                 value = _read_numeric(variable, decoded=decoded)
                 soil_conversions[name] = conversion
@@ -1221,8 +1245,12 @@ def _first(raw: Mapping[str, np.ndarray], names: Sequence[str], *,
 
 
 def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
-                             array_module) -> None:
-    """Restore the scheme-native moisture fields and their RK ``*0`` copies."""
+                             array_module, *, warm: bool = False) -> None:
+    """Restore the scheme-native moisture fields and their RK ``*0`` copies.
+
+    ``warm`` is a WRF restart: the species are the producing run's own
+    evolved state, so no cold-start replacement (WDM6's CCN fill) applies.
+    """
     # The QNCLOUD exemption is Morrison's alone (WRF diagnoses cloud number
     # there).  For mp=28 QNCLOUD is the prognostic droplet number the whole
     # scheme turns on, and a wrfinput without it must fail here rather than
@@ -1257,7 +1285,7 @@ def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
                 f"WRF input lacks active mp_physics={cfg.mp_physics} "
                 f"field {wrf_name}")
 
-    if cfg is not None and int(cfg.mp_physics) == 16:
+    if cfg is not None and int(cfg.mp_physics) == 16 and not warm:
         # WRF module_mp_wdm6.F:220-227 replaces the complete cold-start
         # CCN reservoir with ccn_conc on its first step, even when wrfinput
         # carries a nonzero QNCCN. Preserve that initialization after the
@@ -1293,7 +1321,14 @@ def wrf_coordinate_and_base(restored, hypsometric_opt=None):
     if hypsometric_opt is None:
         hypsometric_opt = int(restored.global_attributes.get(
             'HYPSOMETRIC_OPT', 2))
-    start = wrf_start_base_state(raw, int(hypsometric_opt))
+    if getattr(restored, 'warm_start', None) is not None:
+        # WRF's restart branch: start_em.F rebuilds the base state only for
+        # a run that is not a restart (the :554-636 block); a restart keeps
+        # the words the file carries, which the producing run integrated on.
+        start = {name: np.asarray(raw[name], np.float32)
+                 for name in ('MUB', 'PB', 'T_INIT', 'ALB', 'PHB')}
+    else:
+        start = wrf_start_base_state(raw, int(hypsometric_opt))
     # WRF writes T_INIT minus t0.  DomainState.thb is absolute base
     # potential temperature.
     theta_base = start['T_INIT'] + np.float32(300.0)
@@ -1509,7 +1544,8 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
     state.set_map_coriolis(
         raw["MAPFAC_M"], raw["MAPFAC_U"], raw["MAPFAC_V"], raw["F"],
         raw["E"], sina=raw["SINALPHA"], cosa=raw["COSALPHA"])
-    _restore_active_moisture(state, raw, cfg, cp)
+    warm = getattr(restored, "warm_start", None) is not None
+    _restore_active_moisture(state, raw, cfg, cp, warm=warm)
     if "H_DIABATIC" in raw:
         state.h_diabatic[...] = cp.asarray(raw["H_DIABATIC"], dtype=cp.float32)
     # WRF's cold start does not keep the file's P, AL or ALT either:
@@ -1529,11 +1565,14 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
     # real.exe's zero W, before its first history frame. The native door
     # admits the WRF default use_input_w=False; an explicit use_input_w
     # namelist key has no translation in this door.
-    from gpuwm.ingest.wrfinput_startup import initialize_wrfinput_vertical_velocity
-    initialize_wrfinput_vertical_velocity(
-        state, restored, cfg,
-        periodic_x=not (cfg.open_x or cfg.specified or cfg.nested),
-        periodic_y=not (cfg.open_y or cfg.specified or cfg.nested))
+    # A WRF restart carries the producing run's own W (W_2), which wrf.exe
+    # reads and integrates on; only a real.exe cold start diagnoses it.
+    if not warm:
+        from gpuwm.ingest.wrfinput_startup import initialize_wrfinput_vertical_velocity
+        initialize_wrfinput_vertical_velocity(
+            state, restored, cfg,
+            periodic_x=not (cfg.open_x or cfg.specified or cfg.nested),
+            periodic_y=not (cfg.open_y or cfg.specified or cfg.nested))
 
     for current, initial in (
             ("u", "u0"), ("v", "v0"), ("w", "w0"),
@@ -1629,7 +1668,12 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
     retain_landuse_albbck = (int(cfg.sf_surface_physics) == 2
                             and landuse is not None and not cfg.usemonalb)
     from gpuwm.ingest.wrfinput_noahmp import NOAHMP_INITIALIZED_SURFACE_FIELDS
-    for field in driver.fields:
+    # A WRF restart's carriers are the producing run's own and are applied
+    # after this initialization, every one with its shape and name rules
+    # (gpuwm.ingest.wrfrst.apply_warm_start_physics); the cold-start alias
+    # pass would read a restart's staggered PBL carriers as surface inputs.
+    warm = getattr(restored, "warm_start", None) is not None
+    for field in (() if warm else driver.fields):
         if (int(cfg.sf_surface_physics) == 3
                 and field in ("sh2o", "smfr3d", "mavail", "znt")):
             # RUCLSMINIT owns these cold-start outputs. real.exe's file
@@ -1660,9 +1704,13 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         driver.microphysics.rainnc[...] = cp.asarray(raw["RAINNC"], dtype=cp.float32)
     if driver.rainc is not None and "RAINC" in raw:
         driver.rainc[...] = cp.asarray(raw["RAINC"], dtype=cp.float32)
-    if int(cfg.sf_surface_physics) == 2:
+    if (int(cfg.sf_surface_physics) == 2
+            and getattr(restored, "warm_start", None) is None):
         # LSMINIT follows native cold-start field restoration. A later
         # checkpoint load replaces this initial state, including SH2O.
+        # A WRF restart is that later load: lsminit skips the partition
+        # under restart (module_sf_noahdrv.F's .NOT.restart branch), and
+        # the file's SH2O is the producing run's own.
         from gpuwm.core.noah import initialize_noah_liquid_water
         from gpuwm.core.physics import NOAH_LAYER_THICKNESS_M
         initialize_noah_liquid_water(driver.fields, driver.noah_params,
@@ -2169,6 +2217,14 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
                 first_interval_only: bool = False, cfg=None):
     """Build coupled gpuwm d01 boundary intervals from real.exe tables.
 
+    ``restored`` normally initializes the run at wrfbdy's first record, and
+    the first record is checked against it.  A domain restored from a WRF
+    restart (``restored.warm_start``) is a later instant of the same
+    simulation: its base state and map factors still couple the tables,
+    but its prognostics are not the first record's, so that check gives way
+    to the restart's own clock check (wrf.exe likewise only seeks the
+    bounding interval on restart).
+
     ``cfg`` carries the actual selected scalar boundary operation. The
     public WRF door always supplies it; its absence retains the original
     dry/vapour inventory for compatibility with verification callers.
@@ -2338,7 +2394,7 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
                 tendency = _wrfbdy_side_table(
                     dataset.variables[tendency_name], index, side_name)
                 raw_tables[gpu_name][side_name] = (value, tendency)
-            if index == 0:
+            if index == 0 and getattr(restored, "warm_start", None) is None:
                 _check_initial_boundary_pair(restored, raw_tables, width, layouts=layouts)
             duration = float(end - start)
             mu_start_sides = {

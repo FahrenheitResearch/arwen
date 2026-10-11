@@ -167,6 +167,7 @@ def test_streamed_guard_reuses_faces_and_matches_fresh_reading(monkeypatch):
         statics=basis.statics, starts=starts, announce=False)[1]
     guard = StreamedClockGuard(basis, run_clock=tc.clock_receipt(initial),
                                root_grid_id=1, run_seconds=10800.)
+    previous_count = len(calls)
     for index, interval in enumerate(bounds.intervals):
         guard(interval)
         count = len(calls)

@@ -208,6 +208,21 @@ def test_a_field_the_forecast_reads_from_the_toml_emits(tmp_path):
     assert paths["namelist_input"].is_file()
 
 
+def test_a_chem_switch_the_forecast_reads_from_the_toml_emits(tmp_path):
+    """The chem operator's switches are group (b) too.
+
+    The importer drops a pair's &chem whole (WRF-Chem is a declared
+    divergence), so the pair can never carry kemit or chemdt; the chem
+    step reads both from the bound TOML.  Before their entries this
+    emission was refused at the round trip for values the forecast reads.
+    """
+
+    exp, paths = _emit(tmp_path, "chem", kemit=5, chemdt=10.0,
+                       dust_opt=3, seas_opt=1)
+    assert (exp.root.run.kemit, exp.root.run.chemdt) == (5, 10.0)
+    assert paths["namelist_input"].is_file()
+
+
 def test_a_field_neither_the_pair_nor_the_forecast_table_carries_is_refused(
         tmp_path, monkeypatch):
     """Groups (a) and (c) stay compared.
@@ -293,14 +308,58 @@ def test_every_compared_inert_field_has_a_spelling_in_the_pair():
     """
 
     from gpuwm.hrrr_route_inputs import round_trip_exempt_run_fields
+    from gpuwm.namelist_import import imported_fire_fields
     from gpuwm.physics_source_defaults import PHYSICS_SELECTOR_VALUES
 
     importer = (ROOT / "gpuwm/namelist_import.py").read_text(encoding="utf-8")
+    # The &fire group is read by table, not key by key.
+    table_read = set(imported_fire_fields())
     unspelled = sorted(
         field for field in _inert_run_fields() - round_trip_exempt_run_fields()
-        if field not in PHYSICS_SELECTOR_VALUES
+        if field not in PHYSICS_SELECTOR_VALUES and field not in table_read
         and f'"{field}' not in importer and f"{field} =" not in importer)
     assert unspelled == []
+
+
+def test_a_fire_group_key_is_read_by_the_importer_table(tmp_path):
+    """The table the spelling test trusts is the one the importer reads.
+
+    Three &fire keys that appear nowhere in the importer's text, one per
+    Registry type, are stated off their defaults in a pair and import as
+    stated; the refinement ratios and gpuwm's fire extensions are not
+    &fire keys and stay out of the table.
+    """
+
+    from gpuwm.namelist_import import imported_fire_fields
+    from test_namelist_import import INPUT_TEXT, _pair
+
+    fields = set(imported_fire_fields())
+    assert not {"sr_x", "sr_y", "fire_static", "fire_smoke"} & fields
+    stated = {"fire_viscosity_bg": 0.25, "fire_lsm_band_ngp": 6,
+              "fire_is_real_perim": True}
+    importer = (ROOT / "gpuwm/namelist_import.py").read_text(encoding="utf-8")
+    for key in stated:
+        assert key in fields and key not in importer, key
+    from gpuwm.sfire_config import FireRunFields
+
+    def fortran(value):
+        if isinstance(value, bool):
+            return ".true." if value else ".false."
+        return repr(value)
+
+    # The root column keeps the Registry default; the fire domain states
+    # the value, as the fire door's own import test does.
+    rows = "".join(
+        f" {key}={fortran(getattr(FireRunFields(), key))},"
+        f"{fortran(value)},\n" for key, value in stated.items())
+    text = INPUT_TEXT.replace("&domains", "&domains\n sr_x=0,4, sr_y=0,3,") + (
+        "\n&fire\n ifire=0,2, fire_fuel_read=0,0,\n" + rows + "/\n")
+    translated, _report = import_namelists(*_pair(tmp_path, inp=text))
+    path = tmp_path / "fire.toml"
+    path.write_text(translated, encoding="utf-8")
+    child = load_experiment(path).domain(2).run
+    for key, value in stated.items():
+        assert getattr(child, key) == value, key
 
 
 def _routed_configs():

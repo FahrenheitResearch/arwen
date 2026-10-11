@@ -380,7 +380,8 @@ def declared_case_data(source: str, hints: dict, config_path: str) -> dict | Non
     if "era5_provider" in hints:
         from gpuwm.fetch import era5_combined_name
         name = era5_combined_name(hints["era5_provider"])
-    forcing = Path(hints["out"]).resolve() / name
+    # [fetch].out is relative to the configuration, as forcing is (D-11).
+    forcing = (path.parent / Path(hints["out"]).expanduser()).resolve() / name
     return {"forcing": [Path(os.path.relpath(forcing, path.parent)).as_posix()],
             "vtable": path.with_suffix(".Vtable").name,
             "forcing_interval_s": adapter.forcing_interval_seconds,

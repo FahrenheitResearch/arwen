@@ -230,15 +230,7 @@ _SOIL_LAYER_FIELDS = frozenset({"TSLB", "SMOIS", "SH2O",
 #: group already states; a run with a resolved land-use dataset overrides it
 #: from that dataset's own index (``GeogSelection.landuse_global_attrs``),
 #: which is what keeps it evidence rather than a constant.
-_DEFAULT_LANDUSE_ATTRS = {
-    "MMINLU": "MODIFIED_IGBP_MODIS_NOAH",
-    "ISWATER": 17,
-    "ISLAKE": 21,
-    "ISICE": 15,
-    "ISURBAN": 13,
-    "ISOILWATER": 14,
-    "NUM_LAND_CAT": 21,
-}
+from gpuwm.static.geog import DEFAULT_LANDUSE_ATTRS as _DEFAULT_LANDUSE_ATTRS
 
 
 def _wrf_patch_extent_attrs(nx: int, ny: int, nz: int) -> dict[str, int]:

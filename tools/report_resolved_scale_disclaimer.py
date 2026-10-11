@@ -435,10 +435,13 @@ def build_public_receipt(base: str, tip: str | None = None) -> dict:
         for i, line in enumerate(verification_lines)
         if line.startswith("- **FP32 ")
     )
-    da_line = 1 + next(
+    # The bullet the item follows.  7268b9482 replaced the page's "No data
+    # assimilation" bullet, the anchor until then, with the
+    # observation-validation one now in that place.
+    preceding_line = 1 + next(
         i
         for i, line in enumerate(verification_lines)
-        if line.startswith("- **No data assimilation")
+        if line.startswith("- **No observation-validation claim")
     )
     changelog_diff = run(
         ["git", "diff", *diff_endpoints(base, tip), "--", "CHANGELOG.md"]
@@ -487,9 +490,9 @@ def build_public_receipt(base: str, tip: str | None = None) -> dict:
                 VERIFICATION_PINNED_FIGURE_SUBSTRINGS,
             ),
             "precedes_fp32_bullet_line": fp32_line,
-            "follows_no_data_assimilation_bullet_line": da_line,
+            "follows_no_observation_validation_bullet_line": preceding_line,
             "ordering_holds": (
-                da_line
+                preceding_line
                 < (verification_item["first_line"] or 0)
                 < fp32_line
             ),

@@ -110,6 +110,7 @@ speedrun_register_cli = _lazy_register("gpuwm.speedrun_cli")
 ingest_register_cli = _lazy_register("gpuwm.ingest.preflight")
 mesh_register_cli = _lazy_register("gpuwm.mpas_mesh")
 ml_export_register_cli = _lazy_register("gpuwm.ml_export")
+scoreboard_register_cli = _lazy_register("gpuwm.scoreboard")
 grib2_export_register_cli = _lazy_register("gpuwm.grib2_export")
 multi_run_register_cli = _lazy_register("gpuwm.multi_run")
 obs_register_cli = _lazy_register("gpuwm.obs.cli")
@@ -118,6 +119,7 @@ simulated_radar_register_cli = _lazy_register("gpuwm.simulated_radar")
 verification_visuals_register_cli = _lazy_register("gpuwm.verification_visuals")
 remote_register_cli = _lazy_register("gpuwm.remote_cli")
 report_register_cli = _lazy_register("gpuwm.report_bundle")
+timeline_register_cli = _lazy_register("gpuwm.timeline.report")
 run_plan_register_cli = _lazy_register("gpuwm.runplan")
 setup_register_cli = _lazy_register("gpuwm.setup_cli")
 sources_register_cli = _lazy_register("gpuwm.sources_cli")
@@ -383,7 +385,7 @@ def _run_description() -> str:
         "workaround.")
 
 
-def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
+def build_parser(*, render_only: bool = False, preset_only: bool = False) -> argparse.ArgumentParser:
     """The whole gpuwm command surface, assembled.
 
     Split out of :func:`main` so the parser can be inspected without
@@ -401,6 +403,14 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--help-all", nargs=0, action=AllCommandsHelp,
                         help="show every command")
     sub = parser.add_subparsers(prog=parser.prog, dest="command", metavar="COMMAND", required=True)
+    if preset_only:
+        # Metadata inspection does not need the numerical or NetCDF commands.
+        # Importing their parsers made a preset list fail on an otherwise
+        # sufficient CPU install before its own handler could run.
+        _lazy_register("gpuwm.model_presets")(sub)
+        add_explain_flag(parser)
+        add_explain_flag(sub.choices["preset"])
+        return parser
     if render_only:
         # A live frame needs this parser and the common dispatch checks, not
         # imports and registration for every forecast and preparation door.
@@ -444,12 +454,14 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     # beside render, the other door that turns history files into a
     # product.
     ml_export_register_cli(sub)
+    scoreboard_register_cli(sub)
     grib2_export_register_cli(sub)
     simulated_radar_register_cli(sub)
     verification_visuals_register_cli(sub)
     enprod_register_cli(sub)
     downscale_register_cli(sub)
     doctor_register_cli(sub)
+    timeline_register_cli(sub)
     obs_register_cli(sub)
     table_assets_register_cli(sub)
     bridge_assets_register_cli(sub)
@@ -472,6 +484,8 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     # published NCAR meshes to 1e-11 and had no command anyone could type,
     # which by this project's rule means it was not shipped.
     mesh_register_cli(sub)
+    model_presets_register_cli = _lazy_register("gpuwm.model_presets")
+    model_presets_register_cli(sub)
     certify_register_cli(sub)
     spectral_op_register_cli(sub)
     multi_run_register_cli(sub)
@@ -542,12 +556,26 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     run.add_argument("--wrfinput", type=Path, metavar="DIR",
                      help="WRF real.exe directory containing wrfinput_d0*, "
                           "wrfbdy_d01 and producing namelist.input (instead of CONFIG)")
+    run.add_argument("--restart-from", type=Path, default=None, metavar="WRFRST",
+                     help="continue a WRF run from its restart file (wrfrst_d01_<time>, any "
+                          "suffix): the state, physics and clock are the file's, and the "
+                          "namelist.input and wrfbdy_d01 beside it (or in --wrfinput DIR) "
+                          "supply the settings and the lateral forcing.  With --run-seconds, "
+                          "the window after the restart instant")
+    run.add_argument("--benchmark", action="store_true",
+                     help="WRF inputs: time the forecast as a benchmark. Draws no "
+                          "products and runs no post-run verification, then prints "
+                          "the read, init, first step, steps and write times WRF's "
+                          "rsl.out reports, and the process total "
+                          "(also OUTDIR/benchmark-timing.json)")
     run.add_argument("--met-em", type=Path, metavar="DIR",
                      help="WPS metgrid directory with met_em.d0*.nc and producing namelist.input; native ArWen initialization")
     run.add_argument("--soil-source", type=Path, default=None, metavar="DIR",
                      help="WRF inputs: original met_em and Vtable directory for automatic soil-water recovery; defaults to the input directory")
     run.add_argument("--rrtmg-variant", choices=("rrtmg_legacy", "rte-rrtmgp"), default=None,
                      help="WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation")
+    run.add_argument("--thompson-version", choices=("wrf_461", "wrf_44"), default=None,
+                     help="WRF inputs: override the classic Thompson generation selected from producer TITLE")
     run.add_argument("--vertical-grid", default=None,
                      help="met_em: native, wrf-auto, or explicit:PATH eta grid")
     run.add_argument("--vertical-levels", type=int, default=None,
@@ -724,8 +752,13 @@ def main(argv: list[str] | None = None) -> int:
 def _dispatch_argv(argv: list[str] | None = None) -> int:
     tokens = _rewrite_version_alias(
         list(sys.argv[1:] if argv is None else argv))
+    if (len(tokens) > 1 and tokens[0] == "timeline"
+            and tokens[1] not in {"report", "project", "--help", "-h"}):
+        tokens.insert(1, "report")
     parser = (build_parser(render_only=True)
-              if tokens and tokens[0] == "render" else build_parser())
+              if tokens and tokens[0] == "render" else
+              build_parser(preset_only=True)
+              if tokens and tokens[0] == "preset" else build_parser())
     if not tokens:
         parser.print_help()
         return 0
@@ -755,6 +788,19 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
     # Provenance: the emitted TOML records which front door authored it.
     args.interactive = interactive
     if args.command == "run":
+        if (args.config is not None and args.wrfinput is None
+                and args.met_em is None and Path(args.config).is_dir()
+                and (Path(args.config) / "namelist.input").is_file()):
+            # A WRF run directory named where a CONFIG goes (NCAR's
+            # benchmark folders are run this way): the WRF-input door, which
+            # restarts when its namelist says restart = .true.
+            args.wrfinput, args.config = Path(args.config), None
+        if (args.restart_from is not None and args.wrfinput is None
+                and args.config is None and args.met_em is None):
+            args.wrfinput = Path(args.restart_from).parent
+        if args.restart_from is not None and args.wrfinput is None:
+            parser.error("--restart-from continues a WRF run; it pairs with --wrfinput DIR "
+                         "(or stands alone, reading the directory the file is in)")
         if sum(value is not None for value in (args.config, args.wrfinput, args.met_em)) != 1:
             parser.error("run requires exactly one of CONFIG, --wrfinput DIR or --met-em DIR")
         if args.soil_source is not None and args.wrfinput is None:
@@ -763,6 +809,15 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
             parser.error("--run-seconds is for --wrfinput or --met-em; set run_seconds in CONFIG")
         if args.rrtmg_variant is not None and args.config is not None:
             parser.error("--rrtmg-variant is for WRF inputs; set radiation in CONFIG")
+        if args.thompson_version is not None and (args.config is not None or args.met_em is not None):
+            parser.error("--thompson-version is for WRF folders; set thompson_version in CONFIG")
+        if args.benchmark and args.wrfinput is None:
+            # Breakage it prevents: the flag would be read by nothing on the
+            # other routes, so a timed run would still render and verify
+            # while its benchmarker believed it did not.
+            parser.error("--benchmark times the WRF-input door (a WRF run folder, "
+                         "--wrfinput DIR or --restart-from WRFRST); the other "
+                         "routes do not read it")
         if args.vertical_levels is not None and args.met_em is None:
             parser.error("--vertical-levels is for --met-em inputs")
         if args.vertical_grid is not None and args.met_em is None:
@@ -1273,6 +1328,16 @@ def _dispatch(args) -> int:
                 command=f"gpuwm {args.command}"))
             args.config = experiment.path
         _refuse_members_of_one_checkpoint(args)
+        import tomllib
+        from gpuwm.experiment import is_experiment_toml
+
+        continuation = tomllib.loads(experiment.path.read_text(encoding="utf-8"))
+        if "case_data" not in continuation and is_experiment_toml(experiment.path):
+            raise ValueError(
+                "prepared-route forecasts resume with gpuwm go CONFIG --restart CHECKPOINT "
+                "--prepared-root PREPARED --wps-namelist NAMELIST. Use the original prepared "
+                "folder and its bound config and WPS file; resume's declared-input route "
+                "cannot reconstruct that preparation's identity.")
         # Locate only; every safety property of the resume (manifest
         # validation, config/setup/physics identity, complete tree set)
         # is the run machinery's own and runs on the path set here.
@@ -1371,13 +1436,17 @@ def _dispatch(args) -> int:
                                health_debug=args.health_debug, gpu_uuid=args.gpu_uuid,
                                exclusive_gpu=not args.no_supervise,
                                rrtmg_variant=args.rrtmg_variant,
+                               **({} if getattr(args,"thompson_version",None) is None else {"thompson_version":args.thompson_version}),
                                allow_shared_gpu=args.allow_shared_gpu,
                                **({} if ensemble_request is None else
                                   {"ensemble_request": ensemble_request.receipt()}),
                                **({"vertical_grid":args.vertical_grid,
                                    "vertical_levels":args.vertical_levels}
                                   if args.met_em is not None else
-                                  ({} if args.soil_source is None else {"soil_source": args.soil_source})))
+                                  ({} if args.soil_source is None else {"soil_source": args.soil_source})),
+                               **({"restart_from": args.restart_from}
+                                  if args.met_em is None and args.restart_from is not None else {}),
+                               **({"benchmark": True} if args.benchmark else {}))
 
     # [[domain]]/[experiment] tables route to the experiment path; the
     # legacy [grid]/[dynamics]/[run] shape stays on the frozen case path.

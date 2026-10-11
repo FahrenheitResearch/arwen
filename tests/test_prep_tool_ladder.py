@@ -123,6 +123,12 @@ def _bare_estate(tmp_path, monkeypatch):
     """
 
     monkeypatch.setattr(bridges, "find_bridge", lambda name: None)
+    # The per-bridge environment override is the ladder's first rung, and
+    # the prep door reads it directly (source_cli._distribution_decoder):
+    # a box that exports its built bridges (the battery's tipbuild env
+    # does) is not a bare estate, so the rung is emptied here too.
+    for variable in bridges.BRIDGE_ENV.values():
+        monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(mapped_source, "_grib2_tools_crate",
                         lambda: tmp_path / "no-such-crate")
 

@@ -17,8 +17,11 @@ def test_fire_fields_follow_every_existing_field_in_order():
     fire = [f.name for f in dataclasses.fields(FireRunFields)]
     assert names[-len(fire):] == fire
     # The last positional field is the chem block's last; 253 positional
-    # fields since the urban line appended surface_energy_diag (was 252).
-    assert len(names) - len(fire) == 253
+    # fields since the urban line appended surface_energy_diag (was 252),
+    # 259 since the 2.8.8 line declared six more ahead of the chem block:
+    # cycling (01402fcb1) and the five RRFS aer3/MYNN/TEMPO switches
+    # (809cdc87b).
+    assert len(names) - len(fire) == 259
     assert names[:-len(fire)][-1] == "aerosol_mp_coupling"
 
 

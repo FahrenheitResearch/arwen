@@ -98,6 +98,7 @@ fn usage() -> String {
         \x20                 regenerate one with a registered SHA-256.\n\n\
          THE REGIONAL CULL\n\
          --cull-parent    cut a limited-area mesh out of an existing global grid or static\n\
+         --cull-provenance-grid GRID  bind static provenance to the final regional grid\n\
         \x20                 file instead of generating one. Byte-matches the native\n\
         \x20                 MPAS-Limited-Area v2.2 cull for the same region: bdyMask rings\n\
         \x20                 0..7, parent-subset ordering, contiguous reindex, 0 sentinels\n\
@@ -597,11 +598,13 @@ fn cull_region(args: &Args, parent: &str) -> Result<String, String> {
         }
     }
 
-    let receipt = rw_mpas::mesh::cull::cull_file(
+    let provenance_grid: Option<PathBuf> = args.get("cull-provenance-grid").map(PathBuf::from);
+    let receipt = rw_mpas::mesh::cull::cull_file_with_provenance(
         Path::new(parent),
         &shape,
         &out,
         graph.as_deref(),
+        provenance_grid.as_deref(),
     )
     .map_err(|e| e.to_string())?;
 

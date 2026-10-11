@@ -176,6 +176,21 @@ def _chained_tree(tmp_path, snapshots, *, chained=True, name="chained",
     return writer, output
 
 
+@pytest.mark.parametrize("chained", [True, False])
+def test_source_head_publication_is_observed_once_after_atomic_publish(tmp_path, monkeypatch, chained):
+    from gpuwm.mapped_composition import shared_composition_source
+    ledger = tmp_path / "ledger.jsonl"
+    monkeypatch.setenv("GPUWM_TIME_LEDGER", str(ledger))
+    with shared_composition_source("a" * 64, None):
+        writer, output = _chained_tree(tmp_path, _snapshots(), chained=chained)
+    events = [json.loads(line) for line in ledger.read_text().splitlines()]
+    heads = [event for event in events if event["stage"] == "prep.head.publish"]
+    assert len(heads) == 1
+    assert heads[0]["attrs"]["source_key"] == "a" * 64
+    assert heads[0]["attrs"]["head_sha256"] == read_head(output)["head_sha256"]
+    assert heads[0]["product"] == "ensemble"
+
+
 def _one_shot(tmp_path, snapshots, *, sealed_forcing_extension=False):
     times = _times(len(snapshots))
     boundaries = _frames(snapshots).build(times)

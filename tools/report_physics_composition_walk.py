@@ -180,8 +180,10 @@ AXES = (
     # from a test's assertion error: 9 (Milbrandt-Yau), 16 (WDM6) and 50
     # (P3 one-category) are admitted by the same inline check that admits
     # the rest, so they belong in the swept set.  Leaving them out shrank
-    # the measured space while the schema advertised them.
-    Axis("mp_physics", (0, 1, 6, 8, 9, 10, 16, 18, 28, 50),
+    # the measured space while the schema advertised them.  900 (TEMPO, the
+    # one named scheme 2.8.8 admits) joins for the same reason, and 30
+    # (FAST_SBM) joined the same check with the 2.8.9 port merge.
+    Axis("mp_physics", (0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50, 900),
          "gpuwm.config.validate_run_config, inline 'mp_physics must be' "
          "check, plus its two by-name gates -- _P3_UNPORTED_VARIANTS and "
          "the WDM5/WDM7 siblings -- each of which recites the same menu"),
@@ -569,6 +571,14 @@ REMEDIES = (
      "before": _suite(ra_lw_physics=0, ra_sw_physics=0) | {
          "_radiation_ack_withheld": True},
      "after": _suite(ra_lw_physics=0, ra_sw_physics=0)},
+    # FAST_SBM (mp_physics=30) on the default RTE+RRTMGP arm: a JUDGED
+    # cloud-optics exclusion (gpuwm.core.rrtmgp._NO_CLOUD_OPTICS_COUPLING),
+    # refused at the run door.  Followed the first way it names.
+    {"id": "fast-sbm-has-no-rte-rrtmgp-cloud-optics",
+     "remedy": "'Set ra_rrtmg_variant='rrtmg_legacy' (which computes its "
+               "own radii the way WRF does)'",
+     "before": _suite(mp_physics=30),
+     "after": _suite(mp_physics=30) | {"ra_rrtmg_variant": "rrtmg_legacy"}},
 )
 
 

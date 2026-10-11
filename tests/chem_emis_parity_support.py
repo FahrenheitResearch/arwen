@@ -63,7 +63,7 @@ def check_case_coverage(process):
             assert np.array_equal(f["eseas_before"][i], f["eseas_after"][i])
 
 
-def replay(process):
+def _replay_on_device(process):
     import cupy as cp
     results = {}
     cases = load(ROOT / process)
@@ -121,9 +121,29 @@ def replay(process):
             s=aggregate.setdefault(k,dict(max_ulp=0,n_nonzero=0,n=0))
             s["max_ulp"]=max(s["max_ulp"],t["max_ulp"]); s["n_nonzero"]+=t["n_nonzero"]; s["n"]+=t["n"]
         results[name]=tables
+    return cases, results, aggregate
+
+
+def replay(process):
+    import cupy as cp
+    # The 2 GiB footprint bound below (86a30395d) is the replay's OWN device
+    # memory, so the replay allocates from a pool of its own.  CuPy's default
+    # pool is process-wide: in a gate lane it still caches the freed blocks of
+    # every earlier GPU test, and how many depends on the card.  In the 2.8.9
+    # cut gate (a1388eae7, node-2 lane 2) the AFWA replay ran right after
+    # test_cam_ozone.py, which leaves the default pool at 2.39 GB on the
+    # 32 GB RTX 5090 (1.21 GB on node-4's 16 GB 5070 Ti; 405 MB of it live on
+    # both), so a bare total_bytes() failed a bound the replay meets alone at
+    # 30 KB.  A baseline subtracted from the shared pool is not the fix
+    # either: it reads 0 there, because the replay's blocks come out of
+    # cached fragments the earlier test left behind.  The scoped pool reads
+    # the same bytes in any order on any card.
+    pool = cp.cuda.MemoryPool()
+    with cp.cuda.using_allocator(pool.malloc):
+        cases, results, aggregate = _replay_on_device(process)
     print(process, json.dumps(aggregate,sort_keys=True))
-    pool_bytes = cp.get_default_memory_pool().total_bytes()
-    assert pool_bytes < 2*1024**3
+    pool_bytes = pool.total_bytes()
+    assert pool_bytes < 2*1024**3, (process, pool_bytes)
     print(process, "device_pool_bytes", pool_bytes)
     if os.environ.get("CHEM_MEASURE"):
         Path(process+"-ulp.json").write_text(json.dumps(dict(aggregate=aggregate,cases=results),indent=2))

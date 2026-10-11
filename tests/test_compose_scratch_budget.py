@@ -33,7 +33,11 @@ GIB = 1024 ** 3
 #: this tree, no atmospheric window, 2026-09-28).  GEM GDPS is the
 #: figure the scratch-disk refusal measured on a 48 hour window: 210 layers
 #: on 2400 x 1201 points.  The regional sources' figures are their whole
-#: grids, the stream a window that cannot crop leaves.
+#: grids, the stream a window that cannot crop leaves.  hrrr-prs is the
+#: one figure that is not the engine's own any more: it measured
+#: 6,980,436,624 (458 layers) and 6a69b356f then added one surface plane,
+#: vegetation_fraction, so it is that measurement plus one plane of the
+#: grid, 1,905,141 x 8 bytes, until the compose is run again.
 ENGINE_BYTES_PER_VALID_TIME = {
     "gem-gdps": 4_842_432_000,
     "ecmwf-open-data": 838_897_920,
@@ -41,7 +45,7 @@ ENGINE_BYTES_PER_VALID_TIME = {
     "aigfs": 789_062_400,
     "aigefs": 789_062_400,
     "gefs": 422_110_080,
-    "hrrr-prs": 6_980_436_624,
+    "hrrr-prs": 6_980_436_624 + 1_905_141 * 8,
     "rrfs": 4_557_097_272,
     "rap": 233_561_968,
     "icon-eu": 1_483_689_960,

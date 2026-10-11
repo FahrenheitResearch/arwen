@@ -272,7 +272,26 @@ _P3_MASS = (
 )
 
 
+from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
+
 _INVENTORIES = {
+    # WRF Registry/registry.sbm:318; the bin members use lowercase NetCDF names.
+    30: StockWrfPhysicsInventory(
+        mp_physics=30,scheme="FAST_SBM",registry_package="fast_khain_lynn_shpund",
+        wrfinput_fields=_ICE_MASS+tuple(
+            _scalar(name,name,units="  kg-1" if name.startswith("ff8") else "  kg kg-1",state_name=name)
+            for name in _FSBM_BIN_SPECIES)+tuple(
+            _scalar(name,netcdf,units="Microns",state_name=target)
+            for name,netcdf,target in (("effr","EFF_RADIUS","effc"),("ice_effr","ICE_EFF_RADIUS","effi"),("tot_effr","TOT_EFF_RADIUS","effs")))+tuple(
+            _scalar("q"+name,netcdf,units="# kg-1" if name=="ni" else "# kg(-1)",state_name=name)
+            for name,netcdf in (("nn","QNCCN"),("nc","QNCLOUD"),("nr","QNRAIN"),
+                                ("ni","QNICE"),("ns","QNSNOW"),("ng","QNGRAUPEL"))),
+        runtime_state_not_wrfinput=(RuntimeStateField("th_old","TH_OLD"),
+                                   RuntimeStateField("qv_old","QV_OLD"),
+                                   RuntimeStateField("tempc","TEMPC"),
+                                   RuntimeStateField("height","HEIGHT")),
+        registry_authority="WRF-v4.6.1 Registry/registry.sbm:318",
+    ),
     # Registry.EM_COMMON:3021
     6: StockWrfPhysicsInventory(
         mp_physics=6,
@@ -495,6 +514,7 @@ def _require_agreement_with_the_registry() -> None:
             1: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
             9: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
             16: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
+            900: "TEMPO is a WOOF named scheme with no WRF Registry.EM_COMMON package; stock-WRF export does not apply",
         })
 
 

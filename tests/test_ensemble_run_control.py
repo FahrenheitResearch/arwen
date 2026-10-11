@@ -34,8 +34,12 @@ from gpuwm.ensemble.runtime_context import current_capture
 MEMBER_SECONDS = 6.0
 #: When the interrupt is sent.
 INTERRUPT_AFTER = 0.5
-#: "Well before the member's full duration": the stop must be back by here.
-STOPPED_BY = MEMBER_SECONDS / 2
+#: "Well before the member's full duration": a stopped member must have run
+#: fewer than half its steps. Counted in the member's own steps, not wall time:
+#: wall time also measures the runner, and a GitHub windows-2025 runner running
+#: 2.4 times slower than usual took 3.08 s for a stop the steps show was prompt
+#: (public CI 38002026864, 2.8.8).
+HALF_THE_STEPS = int(MEMBER_SECONDS / 0.02) // 2
 
 
 def _model():
@@ -104,20 +108,17 @@ def test_interrupt_stops_the_running_member_and_cancels_the_queued_one(live_sigi
     adapter = EnsembleProgressAdapter(None, member_ids=(0, 1), run_seconds=60.0, control=control)
     record = {}
     timer = _interrupt_soon()
-    began = time.monotonic()
     try:
         with pytest.raises(KeyboardInterrupt) as caught:
             execute_member_packing(plan, lambda batch: _stepping_member(
                 adapter, batch.member_indices[0], record), control=control)
     finally:
         timer.cancel()
-    elapsed = time.monotonic() - began
     assert not isinstance(caught.value, MemberStopRequested), "the user's own interrupt is what surfaces"
-    assert elapsed < STOPPED_BY, f"the interrupt was held for {elapsed:.2f} s of a {MEMBER_SECONDS} s member"
     assert control.stop_requested
     # The running member ended at a step boundary and was joined before the raise.
     assert record[0]["ended"] is not None
-    assert 0 < record[0]["steps"] < int(MEMBER_SECONDS / 0.02) // 2
+    assert 0 < record[0]["steps"] < HALF_THE_STEPS, "the interrupt was held, not acted on"
     # The second wave never started.
     assert 1 not in record
 
@@ -129,17 +130,15 @@ def test_interrupt_stops_every_card_and_joins_before_it_returns(live_sigint):
     adapter = EnsembleProgressAdapter(None, member_ids=(0, 1), run_seconds=60.0, control=control)
     record = {}
     timer = _interrupt_soon()
-    began = time.monotonic()
     try:
         with pytest.raises(KeyboardInterrupt):
             execute_member_packing(plan, lambda batch: _stepping_member(
                 adapter, batch.member_indices[0], record), control=control)
     finally:
         timer.cancel()
-    assert time.monotonic() - began < STOPPED_BY
     assert sorted(record) == [0, 1]
     assert all(row["ended"] is not None for row in record.values()), "both members were joined"
-    assert all(0 < row["steps"] < int(MEMBER_SECONDS / 0.02) // 2 for row in record.values())
+    assert all(0 < row["steps"] < HALF_THE_STEPS for row in record.values())
 
 
 @pytest.mark.parametrize("stop", [SystemExit(143), KeyboardInterrupt()])
@@ -155,12 +154,10 @@ def test_a_stop_raised_by_one_member_stops_the_others_and_surfaces_unchanged(sto
             raise stop
         return _stepping_member(adapter, 1, record)
 
-    began = time.monotonic()
     with pytest.raises(type(stop)) as caught:
         execute_member_packing(plan, member, control=control)
     assert caught.value is stop
-    assert time.monotonic() - began < STOPPED_BY
-    assert record[1]["ended"] is not None and record[1]["steps"] < int(MEMBER_SECONDS / 0.02) // 2
+    assert record[1]["ended"] is not None and record[1]["steps"] < HALF_THE_STEPS
 
 
 def test_a_stopped_run_starts_no_further_wave():
@@ -239,13 +236,12 @@ def test_session_interrupt_ends_as_interrupted_with_no_aggregate_products(tmp_pa
         return {"status": "PASS"}
 
     timer = _interrupt_soon()
-    began = time.monotonic()
     try:
         with pytest.raises(KeyboardInterrupt):
             _session(tmp_path, collector=collector).run_prepared(runner, _inputs())
     finally:
         timer.cancel()
-    assert time.monotonic() - began < STOPPED_BY
+    assert all(0 < steps < HALF_THE_STEPS for steps in record.values()), record
     manifest = json.loads((tmp_path / "ensemble-run.json").read_text())
     assert manifest["status"] == "interrupted" and manifest["error_type"] == "KeyboardInterrupt"
     assert manifest["members_completed"] == [] and manifest["members_not_completed"] == [0, 1, 2]

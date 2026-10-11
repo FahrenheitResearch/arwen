@@ -5383,7 +5383,7 @@ def _write_terrain_clock_receipt(outdir, adaptations) -> Path | None:
                             clock_receipt(adaptations))
 
 
-def _write_acoustic_receipt(outdir, adaptations) -> Path | None:
+def _write_acoustic_receipt(outdir, adaptations, clock=None) -> Path | None:
     """Publish the acoustic derivation when the off-centering floor raised
     a domain's default epssm, so the run's own folder says which domain
     ran which value and why (A171)."""
@@ -5394,7 +5394,7 @@ def _write_acoustic_receipt(outdir, adaptations) -> Path | None:
     from gpuwm.acoustic_adaptation import acoustic_receipt
 
     return _publish_receipt(outdir, ACOUSTIC_RECEIPT_NAME,
-                            acoustic_receipt(adaptations))
+                            acoustic_receipt(adaptations, clock))
 
 
 def _publish_receipt(outdir, name: str, document) -> Path:
@@ -5538,7 +5538,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     exp, clock = _terrain_clock_for_case(exp, data, acoustic, terrain,
                                          grids, reach)
     _write_terrain_clock_receipt(outdir, clock)
-    _write_acoustic_receipt(outdir, acoustic)
+    _write_acoustic_receipt(outdir, acoustic, clock)
     if len(exp.domains) == 1:
         # Frozen cardinal path: retain Task-2's exact preparation, loop,
         # output order, and single-file v3/v2 restart shims.

@@ -92,6 +92,32 @@ def test_damaged_repair_preserves_original_until_replacement_is_verified(tmp_pat
     assert not list(root.glob(".*fetch-partial-*"))
 
 
+def test_writers_in_one_process_and_one_clock_tick_never_share_a_staging_name(tmp_path):
+    """Threads that ask for a staging name together each get their own.
+
+    The name was the pid and ``time.time_ns()``; Windows' clock advances in
+    coarse ticks, so 50 names asked in a row were one name on the
+    windows-2025 box, and two threads staging one table would have written
+    the same file -- the race a unique staging name exists to close.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    asset = _asset_for(b"x")
+    root = tmp_path / "root"
+    go = threading.Barrier(8)
+
+    def names(_):
+        go.wait(timeout=10)
+        return [table_assets._staging_path(root, asset).name for _ in range(50)]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        every = [name for batch in pool.map(names, range(8)) for name in batch]
+    assert len(set(every)) == len(every) == 400
+    prefix = f".{asset.filename}.fetch-partial-{os.getpid()}-"
+    assert all(name.startswith(prefix) for name in every)
+
+
 @pytest.mark.parametrize("copy", [b"bad", b"mismatch"])
 def test_packaged_repair_preserves_the_damaged_target_if_source_pin_fails(
         tmp_path, copy):
@@ -225,12 +251,28 @@ def test_fetch_tables_main_refuses_existing_wrong_bytes(
     assert (root / "freezeH2O.dat").read_bytes() == b"tampered"
 
 
-def test_fetch_tables_main_treats_packaged_gap_as_reinstall(
+def test_fetch_tables_main_keeps_refusal_for_a_gap_without_source_rows(
         tmp_path, monkeypatch, capsys):
     root = _staged_root_without_externalized(tmp_path, monkeypatch)
     (root / "thompson_aux_tables.dat").unlink()
+    from gpuwm import physics_compat
+    empty_package = tmp_path / "empty-package"
+    empty_package.mkdir()
+    monkeypatch.setattr(physics_compat, "packaged_thompson_table_root", lambda: empty_package)
+    monkeypatch.setattr(table_assets, "table_source_rows", lambda asset: ())
     assert table_assets.fetch_tables_main(_args()) == 2
     assert "reinstall" in capsys.readouterr().out
+
+
+def test_fetch_tables_main_fills_a_declared_packaged_gap_in_an_explicit_root(
+        tmp_path, monkeypatch):
+    packaged = packaged_thompson_table_root()
+    if not all((packaged / asset.filename).is_file() for asset in CLASSIC_TABLE_ASSETS):
+        pytest.skip("complete pinned companion fixture is absent")
+    root = _staged_root_without_externalized(tmp_path, monkeypatch)
+    (root / "thompson_aux_tables.dat").unlink()
+    assert table_assets.fetch_tables_main(_args(from_dir=str(packaged))) == 0
+    validate_table_assets(root)
 
 
 def test_cli_dispatches_fetch_tables_for_real(monkeypatch, capsys):
@@ -820,9 +862,6 @@ def test_a_server_that_withholds_the_body_is_a_refusal_within_the_timeout(
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setattr(table_assets, "SOCKET_TIMEOUT_SECONDS", 0.5)
-    monkeypatch.setattr(table_assets, "TRANSFER_ATTEMPTS", 2)
-    monkeypatch.setattr(table_assets, "RETRY_PAUSE_SECONDS", 0.0)
     asset = _asset_for(b"\x00" * 8192)
     root = tmp_path / "root"
     root.mkdir()
@@ -837,24 +876,24 @@ def test_a_server_that_withholds_the_body_is_a_refusal_within_the_timeout(
         server.server_close()
     assert clock.monotonic() - started < 10
     message = str(excinfo.value)
-    assert "stalled 2 times" in message and "--from" in message
+    assert "object length is unavailable" in message
     assert not (root / asset.filename).exists()
     assert list(root.glob(".*fetch-partial*")) == []
 
 
 def test_a_missing_file_on_the_server_is_not_retried(tmp_path, monkeypatch):
     calls = []
-    real = table_assets._transfer
+    real = table_assets._rw_asset
 
-    def counting(url, temp, asset):
-        calls.append(url)
-        return real(url, temp, asset)
+    def counting(kind, **kwargs):
+        calls.append(kind)
+        return real(kind, **kwargs)
 
-    monkeypatch.setattr(table_assets, "_transfer", counting)
+    monkeypatch.setattr(table_assets, "_rw_asset", counting)
     asset = _asset_for(b"x" * 16)
     root = tmp_path / "root"
     root.mkdir()
-    with pytest.raises(table_assets.TableAssetError, match="download failed"):
+    with pytest.raises(table_assets.TableAssetError, match="nowhere.dat"):
         table_assets.fetch_asset_from_url(
             root, asset, (tmp_path / "nowhere.dat").as_uri())
     assert len(calls) == 1

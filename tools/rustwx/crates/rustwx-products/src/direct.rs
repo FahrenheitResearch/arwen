@@ -40,6 +40,8 @@ mod query;
 mod rendering;
 mod titles;
 mod types;
+pub use titles::{local_accumulation_window, local_accumulation_window_from_cycle};
+pub use types::AccumulationWindow;
 pub(crate) use batch::{
     prepare_direct_batch_from_loaded, run_direct_batch_from_loaded, run_direct_batch_from_prepared,
 };
@@ -139,6 +141,7 @@ type PreparedProjectedMaps = Arc<HashMap<ProjectedMapCacheKey, ProjectedMap>>;
 impl DirectBatchRequest {
     fn from_hrrr(request: &HrrrDirectBatchRequest) -> Self {
         Self {
+            accumulation_window: None,
             model: ModelId::Hrrr,
             date_yyyymmdd: request.date_yyyymmdd.clone(),
             cycle_override_utc: request.cycle_override_utc,
@@ -190,6 +193,7 @@ fn sampling_direct_request(
     use_cache: bool,
 ) -> DirectBatchRequest {
     DirectBatchRequest {
+        accumulation_window: None,
         model,
         date_yyyymmdd: String::new(),
         cycle_override_utc: None,
@@ -988,7 +992,7 @@ fn render_direct_recipe(
                 target_ratio,
             )?;
         }
-        if let Some(annotations) = request.panel_annotations.as_ref() {
+        if let Some(annotations) = titles::product_annotations(request, item.recipe.title) {
             annotations.apply(&mut render_request);
         }
         let save_timing = save_png_profile_with_options(
@@ -1239,10 +1243,12 @@ fn render_direct_composite_panel(
             request.forecast_hour,
         )
     });
-    let subtitle_right = request
-        .subtitle_right_override
-        .clone()
-        .unwrap_or_else(|| source_subtitle(latest.source));
+    // Resolve once for both the planned sheet and the fallback grid, just
+    // as single maps resolve their provenance through the active theme.
+    let subtitle_right = rustwx_render::theme::active_theme().source_subtitle(Some(
+        request.subtitle_right_override.clone()
+            .unwrap_or_else(|| source_subtitle(latest.source)),
+    )).unwrap_or_default();
     let render_start = Instant::now();
     let canvas = if let Some(sheet) = sheet.as_ref() {
         let labels: Vec<String> = panel_requests

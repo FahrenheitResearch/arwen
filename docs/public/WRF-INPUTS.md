@@ -11,6 +11,45 @@ After `real.exe`, keep `wrfinput_d0*`, `wrfbdy_d01`, and the producing
 gpuwm run --wrfinput wrf-run --outdir forecast
 ```
 
+To continue a WRF run from a restart file, keep `wrfrst_d0*_<time>` (any
+suffix), `wrfbdy_d01` and a `namelist.input` together, and name the file:
+
+```console
+gpuwm run --restart-from wrf-run/wrfrst_d01_2019-11-26_23:00:00 --outdir forecast
+```
+
+A run directory whose `namelist.input` says `restart = .true.` restarts
+from wrf.exe's own file name with plain `gpuwm run --wrfinput wrf-run` (or
+`gpuwm run wrf-run`). The state, soil and snow, held radiation, PBL and
+cumulus persistence, accumulators and clock come from the file; moist theta
+is converted to ArWen's dry theta. The run ends where the namelist ends;
+`--run-seconds` sets the window after the restart instant. State the file
+holds for a scheme ArWen cannot continue, or a scheme that differs from the
+one that wrote it, is refused by name. NCAR's v4.4 benchmark folders run as
+shipped.
+
+To time a run the way WRF's `rsl.out` reports it, add `--benchmark`:
+
+```console
+gpuwm run --benchmark --restart-from v4.4_bench_conus12km/wrfrst_d01_2019-11-26_23:00:00.gnu --outdir woof-restart
+```
+
+A benchmark run draws no products and runs no post-run verification. It
+ends with one summary, also written to `woof-restart/benchmark-timing.json`:
+
+- **read:** the input import.
+- **init:** device restore, physics initialization and the first frame.
+- **first step.**
+- **steps:** the remaining steps, with their median and mean.
+- **write:** from the last step until the last history frame is on disk.
+- **finish:** the run receipt and certification capsule, and the worker's exit.
+- **total:** from process start, so interpreter start-up and card selection
+  are inside it, as they are inside `time gpuwm run ...`.
+
+On a warm start the run line and the step totals count only this run's
+steps (for NCAR's 1 h restart leg, 50 steps from step 550). The `Timing for
+main` lines keep WRF's own step numbers.
+
 After WPS `metgrid.exe`, keep `met_em.d0*.nc` and the intended
 `namelist.input` together. ArWen performs its native initialization:
 

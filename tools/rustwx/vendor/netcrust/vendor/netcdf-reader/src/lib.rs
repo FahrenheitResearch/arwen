@@ -509,6 +509,22 @@ impl NcFile {
         }
     }
 
+    /// [`Self::read_variable_slice_as_f64`] with each overlapping NetCDF-4
+    /// chunk decompressed once, in parallel.  Classic formats read as
+    /// [`Self::read_variable_slice_as_f64`] does.
+    #[cfg(feature = "rayon")]
+    pub fn read_variable_slice_as_f64_parallel(
+        &self,
+        name: &str,
+        selection: &NcSliceInfo,
+    ) -> Result<ArrayD<f64>> {
+        match &self.inner {
+            NcFileInner::Classic(c) => c.read_variable_slice_as_f64(name, selection),
+            #[cfg(feature = "netcdf4")]
+            NcFileInner::Nc4(n) => n.read_variable_slice_as_f64_parallel(name, selection),
+        }
+    }
+
     /// Read a slice with `scale_factor`/`add_offset` unpacking.
     pub fn read_variable_slice_unpacked(
         &self,

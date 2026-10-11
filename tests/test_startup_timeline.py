@@ -221,6 +221,19 @@ def test_native_forcing_work_retains_every_leaf_and_keeps_totals_separate(tmp_pa
     assert next(row for row in report["stage_summary"] if row["stage"] == "device_upload")["status"] == "unknown"
 
 
+def test_proof_follows_adjacent_runtime_measurements_once(tmp_path):
+    proof = tmp_path / "proof.json"
+    proof.write_text(json.dumps({"schema": "proof"}))
+    runtime = tmp_path / "preparation-runtime.json"
+    runtime.write_text(json.dumps({"schema": "gpuwm-preparation-runtime-v1",
+        "forcing_stage_timings": [{"forcing_index": 0, "total_seconds": 9,
+            "horizontal_seconds": 3, "column_stages_seconds": {"base_state_upload": 2}}]}))
+    timeline = Timeline()
+    timeline.read(proof)
+    timeline.read(runtime)
+    assert len(timeline.report()["forcing_work_breakdown"]["records"]) == 1
+
+
 def test_store_health_text_duration_has_no_invented_wall_placement(tmp_path):
     path = tmp_path / "run.log"
     path.write_text("prepared forecast: store-direct initialization -- the initialized.d01 full-state health gate IS armed, over the store: 221 fields, 21.96 GiB, in 503.4s\n")

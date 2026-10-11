@@ -1,0 +1,34 @@
+{
+  "schema":"gpuwm.obs-scorecard.manifest.v1", "candidate":"A", "reference":"B",
+  "bootstrap":{"replicates":5000,"confidence":0.95,"seed":107,"minimum_blocks":4},
+  "cases":[
+    {"id":"case-01","block":"regional-experiment-01","requests":["case-01.json"]},
+    {"id":"case-02","block":"regional-experiment-02","requests":["case-02.json"]}
+  ],
+  "acquisition":[
+    {"kind":"stations","source":"asos","optional":false},
+    {"kind":"radar","source":"mrms","quantity":"composite_reflectivity","product":"MergedReflectivityQCComposite_00.50","optional":false},
+    {"kind":"radar","source":"mrms","quantity":"precipitation_1h","product":"MultiSensor_QPE_01H_Pass2_00.00","optional":false}
+  ],
+  "notes":[
+    "Demonstration on two recorded regional experiments, not a common-treatment skill study. Case-01 is the recorded microphysics pair. Case-02 is the recorded PBL pair.",
+    "The two disjoint regional experiments are separate bootstrap blocks. Two-block CIs remain exploratory under the standing four-block minimum.",
+    "One scored hourly frame and its preceding precipitation frame per arm. The raw model outputs are not modified.",
+    "All-grid reflectivity RMSE depends on the archive's declared no-echo floor; FSS provides the event comparison.",
+    "Forecast gust diagnostics, exact-time station precipitation, soundings and snow observations may be absent and are reported explicitly."
+  ],
+  "metrics":[
+    {"id":"asos-temperature-rmse","source":"asos","quantity":"temperature_2m","units":"K","required":true},
+    {"id":"asos-temperature-bias","source":"asos","quantity":"temperature_2m","units":"K","statistic":"bias","direction":"diagnostic"},
+    {"id":"asos-dewpoint-rmse","source":"asos","quantity":"dewpoint_2m","units":"K","required":true},
+    {"id":"asos-wind-rmse","source":"asos","quantity":"wind_speed_10m","units":"m s-1","required":true},
+    {"id":"asos-gust-rmse","source":"asos","quantity":"wind_gust_10m","units":"m s-1"},
+    {"id":"asos-precipitation-rmse","source":"asos","quantity":"precipitation_1h","units":"mm"},
+    {"id":"mrms-reflectivity-rmse","source":"mrms","quantity":"composite_reflectivity","units":"dBZ","required":true},
+    {"id":"mrms-reflectivity-fss","source":"mrms","quantity":"composite_reflectivity","units":"dBZ","statistic":"fss","direction":"higher","threshold":35.0,"width_km":9.0},
+    {"id":"mrms-qpe-rmse","source":"mrms","quantity":"precipitation_1h","units":"mm","required":true},
+    {"id":"mrms-qpe-fss","source":"mrms","quantity":"precipitation_1h","units":"mm h-1","statistic":"fss","direction":"higher","threshold":1.0,"width_km":9.0},
+    {"id":"sonde-temperature-rmse","source":"rawinsonde","quantity":"temperature","units":"K"},
+    {"id":"snotel-swe-rmse","source":"snotel","quantity":"snow_water_equivalent","units":"mm"}
+  ]
+}

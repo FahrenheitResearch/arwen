@@ -376,10 +376,11 @@ def fit_main(args):
             fetch["cycle"] = cycle.strftime("%Y-%m-%dT%H")
         if args.hours is not None:
             fetch["hours"] = math.ceil(max(1, math.ceil(hours / (interval / 3600)) * (interval / 3600)))
-        # Fetch paths are interpreted by the fetch command relative to its cwd,
-        # not the TOML directory. Preserve that meaning when printing the new file.
+        # A relative fetch.out is relative to the starter's folder (D-11);
+        # the new file sits elsewhere, so it carries that meaning absolute.
         if fetch.get("out"):
-            fetch["out"] = str(Path(fetch["out"]).expanduser().resolve())
+            from gpuwm.case_data import config_fetch_out
+            fetch["out"] = str(config_fetch_out(raw, base_dir=starter.path.parent))
     common = dict(ratios=starter.ratios, root_dx_m=starter.dx,
                   free_bytes=free, hours=hours, start_time=start,
                   projection=projection, source=source, name=experiment["name"],
@@ -821,8 +822,8 @@ def tiles_main(args):
                           for key, before, after in delta])
     if raw.get("fetch", {}).get("out") is not None:
         proof["fetch_out_path_basis"] = (
-            "The unchanged fetch.out declaration remains relative to the fetch "
-            "command's working directory; gpuwm go chooses its own cache path.")
+            "The unchanged fetch.out declaration remains relative to this "
+            "configuration's folder; gpuwm go chooses its own cache path.")
     files = []
     if wps_text is not None:
         proof["source_wps"] = str(source_wps)

@@ -920,7 +920,8 @@ def test_every_native_z_refusal_carries_a_reason_and_its_authority():
     for mp, reason in table.items():
         assert f"mp_physics={mp}" in reason, (
             f"the reason for mp_physics={mp} does not name it")
-        assert ".F:" in reason, (
+        # A named scheme's authority is its own Fortran 90 source.
+        assert ".F:" in reason or ".F90:" in reason, (
             f"the reason for mp_physics={mp} cites no WRF authority line")
     assert 18 not in table
     assert 50 not in table

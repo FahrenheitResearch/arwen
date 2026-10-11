@@ -522,6 +522,12 @@ tests/test_publish_workflow_state_machine.py
 # Prepared-packet identity, native/metadata checks and bounded retry behavior
 # moved from the old inline Bash workflow fixtures into this controller suite.
 tests/test_prepared_publication.py
+# 2.8.9 cut r1: both platform wheels were over the 100,000,000-byte per-file
+# limit, so three artifacts are fetched on demand and left out of the wheel.
+# This suite holds the split: which three, what staging leaves out, that the
+# bundle and pins still carry all, and that doctor and the two doors name
+# `gpuwm fetch-bridges`.  CPU-only, no binary built or run, a few seconds.
+tests/test_on_demand_artifacts.py
 
 # Three more release-machinery suites on no leg, matching the 2.1.0
 # rationale above verbatim: CPU-only, fixtures built through the real tools,
@@ -2777,3 +2783,34 @@ tests/test_upper_damping_wrf461_oracle.py
 # checks the receipt against a real decode.
 tests/test_k_distribution_receipt.py
 tests/test_k_distribution_receipt_native.py
+# 2.8.9 speed merges: each change's own regression on the CPU leg (shortwave
+# stream-order contract, shared ensemble source composition, DA object fetch,
+# concurrent observation preparation, pinned static assets, streamed fetch tail).
+tests/test_rrtmg_sw_stream_order.py
+tests/test_ensemble_shared_composition.py
+tests/test_spd_da_fetch_contract.py
+tests/test_obs_prepare_parallel.py
+tests/test_static_asset_rust.py
+tests/test_fetch_stream_tail.py
+# FAST_SBM (mp_physics=30) CPU contracts: Fortran-stream fixtures and their hashes,
+# the float64 host reference, packaged tables, state and transport inventories, the
+# water budget and the bulk-to-bin start. Breakage: the scheme joined in 2.8.9 on no
+# battery list, so a dropped fixture, a re-pinned table or a lost spectral field
+# would have passed every leg. The device rows run on gpu_shard_files.txt.
+tests/test_fast_sbm_admission.py
+tests/test_fast_sbm_bulk_start.py
+tests/test_fast_sbm_cold_contract.py
+tests/test_fast_sbm_collision.py
+tests/test_fast_sbm_condensation.py
+tests/test_fast_sbm_derived.py
+tests/test_fast_sbm_nucleation.py
+tests/test_fast_sbm_oracle_fixtures.py
+tests/test_fast_sbm_packed_tables.py
+tests/test_fast_sbm_port_oracle.py
+tests/test_fast_sbm_sedimentation.py
+tests/test_fast_sbm_state.py
+tests/test_fast_sbm_state_integration.py
+tests/test_fast_sbm_tables.py
+tests/test_fast_sbm_transport_integration.py
+tests/test_fast_sbm_warm_column.py
+tests/test_fast_sbm_water_budget.py

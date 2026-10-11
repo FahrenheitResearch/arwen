@@ -641,6 +641,12 @@ fn read_row(
             values,
             times,
             detail: None,
+            // A file panel is a model panel: its subtitle names the run's
+            // --source-label and its receipt row carries kind "model", the op
+            // and the files as "members".  `source` is the frames/window
+            // provenance only; setting it here made every file panel read
+            // "source: <its own label>", typed it "external" and wrote its
+            // label as the op (809cdc87b).
             source: None,
         });
     }

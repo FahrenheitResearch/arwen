@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 
 from gpuwm.config import radiation_scheme_ids
-from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
+from gpuwm.physics_compat import rrtmg_variant
 
 
 CONTRACT = "gpuwm-ensemble-ordinary-concurrency-v1"
@@ -23,17 +23,10 @@ class OrdinaryBindingFallback:
     reason: str
 
 
-# The shortwave singleton's scratch is stream-owned, but CudaSW uploads its
-# constant tables asynchronously and _cuda_sw publishes the engine without
-# an upload-ready event. A second queue can borrow it before those uploads
-# complete. Legacy longwave already orders its immutable cache on use.
-ORDINARY_BINDING_FALLBACKS = (
-    OrdinaryBindingFallback(
-        "legacy_rrtmg_shortwave_table_upload",
-        (("ra_sw_physics", 4), ("ra_rrtmg_variant", RRTMG_VARIANT_LEGACY)),
-        "legacy RRTMG shortwave keeps sequential ordinary members because its "
-        "shared CudaSW table cache has no upload-ready event for another member stream"),
-)
+# Retired legacy_rrtmg_shortwave_table_upload: CudaSW records readiness after
+# its three immutable uploads and orders each stream before its first kernel.
+# Its writable scratch remains stream-owned. Legacy ra_sw=4 now packs normally.
+ORDINARY_BINDING_FALLBACKS = ()
 
 
 def _value(settings, key, default):

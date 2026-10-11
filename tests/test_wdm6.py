@@ -553,8 +553,8 @@ def test_a_refused_selector_cannot_join_without_its_own_sentence():
 
     source = Path(mt.__file__).read_text(encoding="utf-8")
     patched = source.replace(
-        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = ()",
-        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (99,)")
+        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (30,)",
+        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (30, 99)")
     assert patched != source, "the selector tuple moved; re-point this test"
     namespace = {"__name__": "mt_probe", "__file__": mt.__file__}
     with pytest.raises(RuntimeError, match=r"\[99\]"):

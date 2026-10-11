@@ -352,7 +352,7 @@ impl PanelAnnotations {
         }
         if let Some(suffix) = &self.title_suffix {
             request.title = Some(match request.title.take() {
-                Some(existing) => format!("{existing} -- {suffix}"),
+                Some(existing) => format!("{} {}", existing.trim_end(), suffix.trim_start()),
                 None => suffix.clone(),
             });
         }
@@ -600,10 +600,18 @@ mod tests {
         annotations.apply(&mut request);
         assert_eq!(
             request.title.as_deref(),
-            Some("Composite Reflectivity -- EXPERIMENTAL")
+            Some("Composite Reflectivity EXPERIMENTAL")
         );
         assert_eq!(request.subtitle_center.as_deref(), Some("note"));
         assert_eq!(request.subtitle_right.as_deref(), Some("source: keep me"));
+        request.title = Some("Kuchera snowfall, window total (d02 750 m)".into());
+        let annotations: PanelAnnotations = serde_json::from_str(
+            r#"{"title_suffix": ", 24 h ending Mon 12 Oct 18Z"}"#,
+        ).unwrap();
+        annotations.apply(&mut request);
+        assert_eq!(request.title.as_deref(), Some(
+            "Kuchera snowfall, window total (d02 750 m) , 24 h ending Mon 12 Oct 18Z"
+        ));
     }
 
     fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {

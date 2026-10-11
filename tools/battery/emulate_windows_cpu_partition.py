@@ -24,10 +24,18 @@ What it does, in order:
    directories, sets ``GPUWM_NO_LOCAL_GPU=1`` and an empty
    ``CUDA_VISIBLE_DEVICES``, and points ``HOME`` (and ``USERPROFILE``) at
    an empty directory, so no ``~/.gpuwm/bridges`` estate is reachable;
-4. stages the Thompson tables as the cpu job does (``python -m gpuwm.cli
+4. builds the one native the cpu job builds on Windows, the table fetcher
+   (``cargo build --release --locked --offline -p rw-fetch`` in
+   ``tools/rustwx``, into a target directory outside the clone), or takes
+   one already built with ``--rw-fetch``, and names it by
+   ``GPUWM_RW_FETCH`` exactly as the job does: every staged table and
+   static asset is pin-checked by rw_fetch since 2.8.9, and without it the
+   job's fetch-tables refused every table (exit 2) and 58 staging cases in
+   six Stage 1 files refused the same way;
+5. stages the Thompson tables as the cpu job does (``python -m gpuwm.cli
    fetch-tables``), or copies a staged table tree with ``--tables-from``
    for an offline host; tables are data, never natives;
-5. runs ``tools/battery/run_stage1.py --platform windows`` with the cpu
+6. runs ``tools/battery/run_stage1.py --platform windows`` with the cpu
    job's pytest arguments, and refuses first if any native artifact
    directory exists in the clone.
 
@@ -67,6 +75,9 @@ NATIVE_DIRECTORY_GLOBS = ("tools/*/target", "tools/*/*/target", "libexec/bridges
 
 #: The cpu job's pytest arguments after the worker count (ci.yml).
 CPU_JOB_MARKERS = "not gpu and not slow and not network and not static_platform_qualification"
+
+#: The variable ci.yml's Windows cpu leg names its table fetcher by.
+FETCHER_ENV = "GPUWM_RW_FETCH"
 
 
 class Refusal(RuntimeError):
@@ -110,6 +121,42 @@ def emulated_environment(environ: dict[str, str], home: pathlib.Path,
         "PYTHONUTF8": "1",
     })
     return env
+
+
+def fetcher_environment(env: dict[str, str], fetcher: pathlib.Path,
+                        clone: pathlib.Path) -> dict[str, str]:
+    """``env`` with the one native the Windows cpu leg builds, its fetcher.
+
+    The fetcher must sit outside the clone, as the job's sits under
+    ``RUNNER_TEMP``: one inside it would be a ``tools/*/target`` route the
+    rest of Stage 1 could find without the variable.
+    """
+    fetcher = fetcher.resolve()
+    if not fetcher.is_file():
+        raise Refusal(f"the table fetcher {fetcher} does not exist")
+    if fetcher.is_relative_to(clone.resolve()):
+        raise Refusal(f"the table fetcher {fetcher} is inside the clone {clone}")
+    return {**env, FETCHER_ENV: str(fetcher)}
+
+
+#: The toolchain ci.yml's fetcher step builds with.
+FETCHER_TOOLCHAIN = "1.94.0"
+
+
+def build_fetcher(clone: pathlib.Path, target: pathlib.Path) -> pathlib.Path:
+    """The cpu job's Windows fetcher step: rw-fetch alone, target outside the clone.
+
+    It builds in this process's own environment, as the job's step runs in
+    the runner's: the emulated one has an empty HOME, where no toolchain is.
+    """
+    rustup = shutil.which("rustup") or str(pathlib.Path.home() / ".cargo" / "bin" / "rustup")
+    if not pathlib.Path(rustup).is_file() and not shutil.which(rustup):
+        raise Refusal("no rustup to build the table fetcher with; pass --rw-fetch")
+    env = {key: value for key, value in os.environ.items() if key not in CLEARED_NAMES}
+    _run([rustup, "run", FETCHER_TOOLCHAIN, "cargo", "build", "--release", "--locked",
+          "--offline", "-p", "rw-fetch"],
+         cwd=clone / "tools" / "rustwx", env={**env, "CARGO_TARGET_DIR": str(target)})
+    return target / "release" / ("rw_fetch.exe" if os.name == "nt" else "rw_fetch")
 
 
 def reachable_native_directories(tree: pathlib.Path) -> list[pathlib.Path]:
@@ -173,6 +220,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="empty or absent scratch directory (default: a new temporary one)")
     parser.add_argument("--python", default=sys.executable, help="base interpreter for the fresh environment")
     parser.add_argument("--uv", help="uv executable; builds the environment with uv instead of venv and pip")
+    parser.add_argument("--rw-fetch", type=pathlib.Path,
+                        help="an rw_fetch built outside the checkout to name as the cpu job's "
+                             "Windows table fetcher (default: build it into the work directory)")
     parser.add_argument("--tables-from", type=pathlib.Path,
                         help="a staged ~/.gpuwm/tables tree to copy instead of running fetch-tables")
     parser.add_argument("--workers", type=int, help="pytest-xdist workers (default: the Windows cpu leg's)")
@@ -195,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"copied {len(changed)} uncommitted tracked change(s) into the clone", flush=True)
         interpreter = make_environment(clone, venv, args.python, str(host_leg["numpy"]), args.uv)
         env = emulated_environment(dict(os.environ), home, venv)
+        fetcher = args.rw_fetch or build_fetcher(clone, work / "rw-fetch-target")
+        env = fetcher_environment(env, fetcher, clone)
         located = subprocess.run([str(interpreter), "-c", "import gpuwm; print(gpuwm.__file__)"],
                                  cwd=work, env=env, check=True, capture_output=True,
                                  text=True).stdout.strip()

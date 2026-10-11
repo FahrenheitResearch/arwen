@@ -1,0 +1,37 @@
+{
+  "source_files": {
+    "gpuwm/core/kernels/fast_sbm_common.cuh": "40b390032f6fcace433ccdd5d2043a4fabf63e4682b9faf31f6acf0ddb55d5a2",
+    "gpuwm/core/kernels/fast_sbm_coll.cuh": "c3d848392ac0d3394b5a22e8faf7865d62e1328e5f45f156fc28cdabee31d9da",
+    "gpuwm/core/kernels/fast_sbm_aux.cuh": "b271ebf1b4f82b24178f1c503fc05ffbf73c38d4f05bd0f1cf1c3be93826bd6f",
+    "gpuwm/core/kernels/fast_sbm_nucl.cuh": "8cd18b15d7deb2087320e935ef767470dabd801f4e61faeeeaa3bea3c67a05ac",
+    "gpuwm/core/kernels/fast_sbm_core.cuh": "c3195dd6a93fbb6189645c6c97711dcb676313da3b33c19bcb344f2817513894",
+    "gpuwm/core/kernels/fast_sbm_column.cuh": "57884373b33a166c5d99c62f92bf8a4f7d380bef84bd1d7627c48abcaf19c998",
+    "gpuwm/core/kernels/fast_sbm_init.cuh": "5f3e2136b6afba94edd2fc36145880eb3dc6ebd902a16b3ddc938d715991fa30",
+    "gpuwm/core/kernels/fast_sbm_driver.cuh": "492f0a9530bf899b74ae935dd028bffee8f32a7177067dc8b54334fa98cc083e",
+    "tools/fast_sbm_host/fsbm_host.cpp": "0b39342e3fde4afdf0642e7850b26cf5387be417b0d30bcc0bc537fbd5b848ea",
+    "tools/fast_sbm_host/pack_tables.py": "844737594b4a897e9fb55c30814f5ce4c6745aa9ea170a043b111bf40129dc66",
+    "gpuwm/data/fast_sbm/SBM_input_33/BLKD_SDC.dat": "6992497ee5b95f0fd215b762ad4af8611079d1e13dbe3db78687fe04a128abf2",
+    "gpuwm/data/fast_sbm/SBM_input_33/MANIFEST.sha256": "358e79dc0c4dc6c83dfebac4ead1f6d43d65fb12b8f3cafb47392c6fe37587fc",
+    "gpuwm/data/fast_sbm/SBM_input_33/bulkdens33.asc": "a5607b3d0b9eb1fcdba30e50b714e348a81aabb64d963b0a00ff4f7b2a24caa6",
+    "gpuwm/data/fast_sbm/SBM_input_33/bulkradii33.asc": "d432d8eed8760f5000c6c86ac1b602687feb0783f558adbf10811fe7040a9de0",
+    "gpuwm/data/fast_sbm/SBM_input_33/capacity33.asc": "33759dbb0e238b37403ce2ad62759cca57c03538d72d34c2cc04bb7b2547c951",
+    "gpuwm/data/fast_sbm/SBM_input_33/ckii_33_300mb_500mb_750mb.asc": "546777c064e7687bbaaaf30ab417dfc146e2decaabc41b270439e33328a75c7f",
+    "gpuwm/data/fast_sbm/SBM_input_33/ckis_33_300mb_500mb_750mb.asc": "657428fd7bbc0dcf5e7810bb0e25af42645f6122a4b24313404b805cfcdec44d",
+    "gpuwm/data/fast_sbm/SBM_input_33/cklg_33_300mb_500mb_750mb.asc": "f3e8149a7e1bac947706f945a1d2ed0fb81ef2737404a0ef8c8c0c682fb4290f",
+    "gpuwm/data/fast_sbm/SBM_input_33/cklh_33_300mb_500mb_750mb.asc": "a2ffe0b96e4acfcd06dc1a0b10cb28f60601ebe255f8e00a70ce1797705fb50e",
+    "gpuwm/data/fast_sbm/SBM_input_33/ckli_33_300mb_500mb_750mb.asc": "59ce82054f29df7d9f982249b915201f3f0385ae559c5ef2b7cdb1907a46f81a",
+    "gpuwm/data/fast_sbm/SBM_input_33/ckls_33_300mb_500mb_750mb.asc": "ae282329a306d384bd6de958f1e0bf745c496d286237e8d22c85926081e0456a",
+    "gpuwm/data/fast_sbm/SBM_input_33/cksg_33_300mb_500mb_750mb.asc": "85b5fd667242ad216dd1b06f0f1c5ddfe15d797ae6c14dcc45e1097743bb37b9",
+    "gpuwm/data/fast_sbm/SBM_input_33/ckss_33_300mb_500mb_750mb.asc": "1946554a0e1341cd12c9ae6be2cd2c786bfc3e4622b8fe87f2e85fcc64373847",
+    "gpuwm/data/fast_sbm/SBM_input_33/coeff_p_new_33.dat": "0fc78f82cfed4033eab9bcaf3f5d6bf07a4f1bbbbf3aff708ede6a0b2e921e34",
+    "gpuwm/data/fast_sbm/SBM_input_33/coeff_q_new_33.dat": "cbda1e0fb2c604d6c8d61ad0abc22be7b1552be93bf5daed10b5186c4ba07d9e",
+    "gpuwm/data/fast_sbm/SBM_input_33/constants33.asc": "d3d7cf345ebf850fa12376a7f173ea12b169f6413910939682494bcc5874a4fa",
+    "gpuwm/data/fast_sbm/SBM_input_33/kernLL_z33.asc": "ce4e140595ff6db2434ecd5376a16c50ea410d03ddc1700bfa95a3490c15106f",
+    "gpuwm/data/fast_sbm/SBM_input_33/masses33.asc": "f53d3acdaa0a3e2a265272fa22a2a0bd54292f51815149370bbf315e3fa1bee4",
+    "gpuwm/data/fast_sbm/SBM_input_33/termvels33_corrected.asc": "bf4209175492a3019563671676787afc3befd948fddc6435db58f7a8d7f702e3"
+  },
+  "outputs": {
+    "tables-float32.npz": "d41b418330fbbdf092de023963afe814732f06306f8ea31ab1f5ceb550ee7ba1",
+    "tables-float64.npz": "8b009ba2d1ebf29d73fbd9a605cab691591183313c10af4eb1f9e12fb0dff31a"
+  }
+}

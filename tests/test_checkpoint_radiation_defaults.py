@@ -21,6 +21,7 @@ NEW_CONTROLS = {
     "aer_opt": ({}, 3),
     "alb_sol": ({}, 1),
     "rrtmg_cloud_optics_form": ({}, "noaa_wrf39"),
+    "rrtmg_aer3_type_source": ({"aer_opt": 3}, "landmask"),
     "rrtmg_smoke_manifest": ({"nx": 4, "ny": 3, "nz": 2, "aer_opt": 3}, None),
 }
 

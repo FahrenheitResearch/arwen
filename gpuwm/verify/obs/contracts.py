@@ -59,6 +59,8 @@ SURFACE_UNITS: Mapping[str, str] = {
     "temperature_2m": "K",
     "dewpoint_2m": "K",
     "wind_speed_10m": "m s-1",
+    "wind_gust_10m": "m s-1",
+    "precipitation_1h": "mm",
     "mslp": "Pa",
     **{name: row[0] for name, row in _AQ_VARIABLES.items()},
 }
@@ -82,6 +84,8 @@ SEAM_BOUNDS: Mapping[str, tuple[float, float]] = {
     "temperature_2m": (150.0, 350.0),
     "dewpoint_2m": (150.0, 350.0),
     "wind_speed_10m": (0.0, 150.0),
+    "wind_gust_10m": (0.0, 150.0),
+    "precipitation_1h": (0.0, 2000.0),
     "mslp": (80000.0, 115000.0),
     "composite_reflectivity": (-40.0, 100.0),
     "precipitation_accumulation": (0.0, 2000.0),

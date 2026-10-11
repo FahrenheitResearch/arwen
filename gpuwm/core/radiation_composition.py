@@ -305,6 +305,8 @@ def make_radiation(cfg, start_time, latitude_deg, longitude_deg, *,
                 ozone_parent=ozone_parent, ozone_routing=ozone_routing,
                 longwave=longwave, shortwave=shortwave,
                 aer_opt=int(getattr(cfg, "aer_opt", 0)) if shortwave else 0,
+                aer3_type_source=(getattr(cfg, "rrtmg_aer3_type_source", "rural")
+                                  if shortwave else "rural"),
                 trace_gas_overrides=trace_gas_subset(trace_gas_overrides,
                     (LEGACY_LW_GASES if longwave else frozenset())
                     | (LEGACY_SW_GASES if shortwave else frozenset())) or None,

@@ -606,6 +606,8 @@ def register_cli(subparsers) -> None:
     obs.set_defaults(func=_obs_estate)
     _register_radar(obs_sub)
     _register_instruments(obs_sub)
+    from gpuwm.obs.scorecard import register_cli as register_scorecard
+    register_scorecard(obs_sub)
 
 
 __all__ = ["register_cli"]

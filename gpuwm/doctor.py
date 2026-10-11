@@ -240,6 +240,47 @@ SEVERITY_OPT_IN = "opt-in"
 #: stop those.  ``Check.blocking`` is the authority and
 #: :func:`blocking_gaps` states the rule.
 
+#: What an absent on-demand artifact's line says, in one sentence.
+_ON_DEMAND_NOTE = ("it is fetched on demand: the platform wheel does not "
+                   "carry it, and `gpuwm fetch-bridges` installs it")
+
+
+def _absent_severity(artifact: str, otherwise: str,
+                     crate_relative: str = bridges.RUSTWX_CRATE_RELATIVE) -> str:
+    """The severity of ``artifact`` being absent (not stale, not overridden).
+
+    An on-demand artifact is absent on every fresh platform install by
+    design, so its absence is a choice the user has not made yet and reads
+    ``opt-in``.  Breakage this prevents: from 2.8.9 the platform wheel
+    leaves three artifacts to ``gpuwm fetch-bridges``, and reporting them
+    as before would print ``unreachable`` and ``degraded`` on every correct
+    install.  Any other artifact keeps the severity its own check passes.
+
+    That holds only where the fetch can deliver it
+    (:func:`gpuwm.bridges.on_demand_fetch_offered`).  In a source checkout
+    the remedy is a cargo build, and an install without pins or on a
+    platform with no bundle has nothing to fetch: there the artifact is
+    simply not built, and the line keeps the severity it had before.
+    """
+
+    if bridges.on_demand_fetch_offered(artifact, crate_relative):
+        return SEVERITY_OPT_IN
+    return otherwise
+
+
+def _absent_note(artifact: str,
+                 crate_relative: str = bridges.RUSTWX_CRATE_RELATIVE) -> str:
+    """The on-demand sentence for ``artifact``'s absent line, or nothing.
+
+    Nothing wherever ``gpuwm fetch-bridges`` could not install it; naming
+    a command that refuses is worse than naming none.
+    """
+
+    if bridges.on_demand_fetch_offered(artifact, crate_relative):
+        return f"; {_ON_DEMAND_NOTE}"
+    return ""
+
+
 def _companion_distribution_name() -> str:
     """The companion row's name, so cross-references cannot drift."""
 
@@ -424,15 +465,28 @@ def _import_probe(module: str,
     try:
         probe = subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True,
-            errors="replace", timeout=_PROBE_TIMEOUT_S * 4)
-    except (OSError, subprocess.TimeoutExpired) as error:
+            errors="replace", timeout=_PROBE_TIMEOUT_S * 10)
+    except subprocess.TimeoutExpired as error:
+        return False, (f"installed; import probe timed out after {error.timeout:g} s "
+                       "without an answer (box load can delay a probe); retry doctor "
+                       "when the load falls. No import failure was established.")
+    except OSError as error:
         return False, f"installed but the import probe failed to run: {error}"
     if probe.returncode == 0:
         return True, (probe.stdout or "").strip() or "imported"
     tail = [line for line in (probe.stderr or "").strip().splitlines()
             if line.strip()]
     reason = tail[-1] if tail else f"exit {probe.returncode}"
+    if probe.returncode == -2 or reason == "KeyboardInterrupt":
+        return False, ("installed; import probe interrupted before an answer "
+                       "(SIGINT/KeyboardInterrupt, including an external probe timeout); "
+                       "retry doctor when the load falls. No import failure was established.")
     return False, f"installed but failed to import: {reason}"
+
+
+def _import_probe_incomplete(evidence: str) -> bool:
+    return ("import probe timed out" in evidence
+            or "import probe interrupted" in evidence)
 
 
 #: CuPy ships one wheel per CUDA major (``cupy-cuda12x``, ``cupy-cuda13x``)
@@ -767,6 +821,9 @@ def _cupy_check() -> Check:
                 f"but the CuPy-wheel/box CUDA pairing was not judged: "
                 f"{_short(str(reason), 96)}",
                 brief=f"cupy {evidence}, no device", blocking=False)
+        if _names_full_device(cublas):
+            return _full_device_check("cupy (GPU runtime)", cublas,
+                                      status="present")
         # A device exists and the first cuBLAS load failed.  This is the
         # CUDA-major trap when the majors disagree, and a broken install
         # either way; both refuse, because the next real run dies at its
@@ -833,6 +890,9 @@ def _cupy_check() -> Check:
             + f".  It can still run {_GPU_STILL_WORKS}{served}", remedy,
             action=action, brief="not installed",
             severity=SEVERITY_UNREACHABLE)
+    if _import_probe_incomplete(evidence):
+        return Check("cupy (GPU runtime)", "untested", evidence,
+                     brief=_short(evidence), blocking=False)
     # CuPy IS installed and would not import.  The extra cannot be the
     # answer to every version of that -- see _cupy_import_failure_remedy,
     # which reads the import's own message and routes accordingly.
@@ -1075,6 +1135,44 @@ def _names_missing_cuda_headers(text: object) -> bool:
     return any(marker in lowered for marker in _HEADERS_FAILURE_MARKERS)
 
 
+#: Messages that say the probed CARD had no memory left, not that the
+#: install is wrong.  Named breakage: on a shared 4-card node whose card 0
+#: another process had filled (96.9 of 97.9 GB), `bash install.sh` exited 1
+#: and doctor printed "MISSING cupy ... -> pip install 'gpuwm[gpu-cu13]'",
+#: "MISSING CUDA kernel headers" and "MISSING radar-DA eigensolver" for a
+#: correct install, because every probe opens the first visible card and
+#: an allocation of 512 bytes failed there.
+_DEVICE_FULL_MARKERS = ("out of memory", "outofmemoryerror",
+                        "cudaerrormemoryallocation",
+                        "cuda_error_out_of_memory")
+
+
+def _names_full_device(*texts: object) -> bool:
+    """Does any of these failure messages say the card was out of memory?"""
+
+    return any(marker in str(text or "").lower()
+               for text in texts for marker in _DEVICE_FULL_MARKERS)
+
+
+def _full_device_check(name: str, evidence: object, *,
+                       status: str = "info") -> Check:
+    """Not judged: the probed card is full, which says nothing of the install."""
+
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    card = (f"CUDA_VISIBLE_DEVICES={visible}" if visible
+            else "the first card (CUDA_VISIBLE_DEVICES is unset)")
+    return Check(
+        name, status,
+        f"not judged -- the probe ran on {card}, which had no memory to "
+        f"give: {_short(str(evidence), 96)}.  Another process holds that "
+        "card; the install is not what failed",
+        "# point the probe at a card with free memory, then re-run doctor:\n"
+        "nvidia-smi --query-gpu=index,uuid,memory.used,memory.total --format=csv\n"
+        "CUDA_VISIBLE_DEVICES=<a free index or GPU-uuid> gpuwm doctor",
+        action="CUDA_VISIBLE_DEVICES=<free card> gpuwm doctor",
+        brief="card full, not judged", blocking=False)
+
+
 #: The markers that name the WHEEL: a shared library the wheel
 #: hard-codes and the loader could not produce.  (Their opposite number,
 #: the toolkit-headers class, is :data:`_HEADERS_FAILURE_MARKERS`, which
@@ -1179,6 +1277,10 @@ def _cuda_headers_check() -> Check:
     self_contained = result.get("self_contained", "did not report")
     headers = result.get("toolkit_headers", "did not report")
     cuda_path = result.get("cuda_path") or "unset"
+    if _names_full_device(self_contained if self_contained != "ok" else "",
+                          headers if headers != "ok" else ""):
+        return _full_device_check(
+            name, self_contained if self_contained != "ok" else headers)
     if self_contained == "ok" and headers == "ok":
         return Check(
             name, "verified",
@@ -1463,6 +1565,8 @@ def _da_eigensolver_check() -> Check:
 
     jacobi = result.get("jacobi", "did not report")
     library = result.get("library", "did not report")
+    if jacobi != "ok" and library != "ok" and _names_full_device(jacobi, library):
+        return _full_device_check(name, jacobi)
     if jacobi == "ok":
         # The supported path works, so cuSOLVER is genuinely optional and
         # its absence is news rather than a gap.
@@ -1976,6 +2080,8 @@ def _package_evidence(requirement: _Requirement,
         return ("absent", label, "not installed")
     if ok:
         return ("ok", label, f"{evidence} (distribution {version})")
+    if _import_probe_incomplete(evidence):
+        return ("untested", label, evidence)
     return ("broken", label, evidence)
 
 
@@ -2218,6 +2324,11 @@ def _base_dependency_check(base: tuple[_Requirement, ...],
             "pip install --force-reinstall gpuwm",
             action="pip install --force-reinstall gpuwm",
             brief=_short(detail), blocking=True, severity=SEVERITY_BROKEN)
+    incomplete = [(label, why) for _i, state, label, why in states
+                  if state == "untested"]
+    if incomplete:
+        detail = "; ".join(f"{label}: {why}" for label, why in incomplete)
+        return Check(name, "untested", detail, brief=_short(detail), blocking=False)
     packages = ", ".join(label for _i, _s, label, _w in states)
     detail = f"{packages} imported in subprocesses"
     if elsewhere:
@@ -2760,6 +2871,9 @@ _CHECKED_ARTIFACTS = {
     "rw_compare": "the `comparison engine` line",
     "rw_ensbatch": "the `ensemble reducer` line",
     "rw_nowcast_frames": "the `nowcast frames converter` line",
+    "rw_globe_pack": "the `global globe packer` line",
+    "rw_scorecard": "the `observation scorecard` line",
+    "rw_scoreboard": "the `forecast verification scorer` line",
     "arwen-tui": "the `terminal workspace` line",
 }
 
@@ -2827,13 +2941,15 @@ def _bundle_coverage_checks() -> list[Check]:
                 name, "missing",
                 f"in this release's bundle and not staged here; needed by: "
                 f"{artifact.consumer}.  Doctor has no contract probe for "
-                "this artifact, so staging it is all this line can ask for",
+                "this artifact, so staging it is all this line can ask for"
+                + _absent_note(artifact.name, artifact.crate),
                 "gpuwm fetch-bridges\n"
                 "  # stages every pinned artifact, this one included",
                 action="gpuwm fetch-bridges",
                 brief="bundled, not staged, and unchecked",
                 group=_GROUP_BRIDGES, blocking=False,
-                severity=SEVERITY_DEGRADED))
+                severity=_absent_severity(artifact.name, SEVERITY_DEGRADED,
+                                          artifact.crate)))
             continue
         checks.append(Check(
             name, "untested",
@@ -3508,11 +3624,12 @@ def _ml_export_check() -> Check:
             severity=SEVERITY_UNREACHABLE)
     if found is None:
         return Check(
-            label, "missing", f"not built and not staged -- {door} cannot run",
+            label, "missing", f"not built and not staged -- {door} cannot run"
+            + _absent_note(binary.name),
             binary.remedy(), action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
             brief=f"not staged; {door} cannot run",
             group=_GROUP_ENGINES, blocking=False,
-            severity=SEVERITY_UNREACHABLE)
+            severity=_absent_severity(binary.name, SEVERITY_UNREACHABLE))
     ok, evidence = bridges.bridge_abi_matches(binary.name, found)
     if not ok:
         return Check(
@@ -3722,6 +3839,54 @@ def _nowcast_frames_check() -> Check:
         missing_severity=SEVERITY_DEGRADED)
 
 
+def _observation_scorecard_check() -> Check:
+    """``rw_scorecard``, the native standing observation scorecard.
+
+    One door, ``gpuwm obs scorecard``, judged by the bundle contract
+    marker :func:`gpuwm.obs.scorecard.binary` refuses by.  Degraded rather
+    than unreachable when absent: forecasts and renders are untouched;
+    only the recorded-case scorecard cannot run.
+    """
+
+    from gpuwm.obs import scorecard
+
+    def probe(path):
+        return bridges.bridge_abi_matches("rw_scorecard", path)
+
+    filename = bridges.executable_name("rw_scorecard")
+    return _rustwx_door_check(
+        label="observation scorecard (rw_scorecard)",
+        env_var="GPUWM_RW_SCORECARD",
+        find=scorecard.find_binary,
+        remedy=bridges.artifact_remedy(
+            env_var="GPUWM_RW_SCORECARD", filename=filename,
+            subject="the observation scorecard",
+            crate_relative=bridges.RUSTWX_CRATE_RELATIVE,
+            one_liner=bridges.rustwx_build_hint(), artifact="rw_scorecard"),
+        doors=(("gpuwm obs scorecard", probe),),
+        missing_severity=SEVERITY_DEGRADED)
+
+
+def _forecast_scoreboard_check() -> Check:
+    """``rw_scoreboard``, the forecast verification scorer.
+
+    One door, ``gpuwm scoreboard --request``, judged by
+    :func:`gpuwm.scoreboard.probe` (the ``--abi`` line), the refusal that
+    door applies.  Degraded rather than unreachable when absent: only the
+    scoreboard requests cannot run.
+    """
+
+    from gpuwm import scoreboard
+
+    return _rustwx_door_check(
+        label="forecast verification scorer (rw_scoreboard)",
+        env_var=scoreboard.BINARY.env_var,
+        find=scoreboard.BINARY.find,
+        remedy=scoreboard.BINARY.remedy(),
+        doors=(("gpuwm scoreboard --request", scoreboard.probe),),
+        missing_severity=SEVERITY_DEGRADED)
+
+
 def _simulated_radar_check() -> Check:
     """Check the optional native radar capability without touching a GPU.
 
@@ -3743,9 +3908,11 @@ def _simulated_radar_check() -> Check:
                      brief=f"{SIMULATED_RADAR_ENV} names a missing file",
                      group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE)
     if found is None:
-        return Check(label, "missing", "not staged; simulated radar cannot run", remedy,
-                     action=build, brief="not staged; simulated radar cannot run",
-                     group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE)
+        return Check(label, "missing",
+                     "not staged; simulated radar cannot run" + _absent_note("rw_simradar"),
+                     remedy, action=build, brief="not staged; simulated radar cannot run",
+                     group=_GROUP_ENGINES, blocking=False,
+                     severity=_absent_severity("rw_simradar", SEVERITY_UNREACHABLE))
     ok, evidence = bridges.bridge_abi_matches("rw_simradar", found)
     return Check(label, "verified" if ok else "missing", f"{found}: {evidence}",
                  None if ok else remedy, action=None if ok else build,
@@ -4242,6 +4409,58 @@ def _obs_score_check() -> Check:
                      action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
                      brief="scores cannot be computed", group=_GROUP_ENGINES)
     return Check(name, "verified", f"{path}: ABI {score_bridge.OBSSCORE_ABI}",
+                 brief="staged", group=_GROUP_ENGINES)
+
+
+def _globe_pack_check() -> Check:
+    """``rw_globe_pack``, the global globe frame and statics packer (2.8.9).
+
+    The global worker publishes globe frames and resolves verified baked
+    statics through it, judged by its ABI marker. Non-blocking and degraded
+    when absent: regional, hex and ensemble forecasts never call it, but a
+    global run falls back to building its statics natively (about 2,000 s
+    at T255) and cannot pack its globe frames.
+    """
+
+    name = "global globe packer (rw_globe_pack)"
+    filename = bridges.executable_name("rw_globe_pack")
+    remedy = bridges.artifact_remedy(
+        env_var="GPUWM_RW_GLOBE_PACK", filename=filename,
+        subject="the global globe packer",
+        crate_relative=bridges.RUSTWX_CRATE_RELATIVE,
+        one_liner=bridges.rustwx_build_hint(), artifact="rw_globe_pack")
+    degrades = ("global runs build their statics natively and cannot pack "
+                "globe frames")
+    try:
+        path = bridges.find_artifact("GPUWM_RW_GLOBE_PACK", filename)
+    except FileNotFoundError as error:
+        path, reason = None, str(error)
+    else:
+        reason = None if path is not None else f"{filename} is not staged"
+    if path is None:
+        plain = reason == f"{filename} is not staged"
+        return Check(name, "missing",
+                     f"{reason} -- {degrades}"
+                     + (_absent_note("rw_globe_pack") if plain else ""), remedy,
+                     action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+                     brief="not staged; global statics build natively",
+                     group=_GROUP_ENGINES, blocking=False,
+                     severity=(_absent_severity("rw_globe_pack", SEVERITY_DEGRADED)
+                               if plain else SEVERITY_DEGRADED))
+    marker = bridges.BRIDGE_ABI_MARKERS["rw_globe_pack"]
+    try:
+        carries = marker in path.read_bytes()
+    except OSError as error:
+        carries, reason = False, f"unreadable ({error})"
+    if not carries:
+        return Check(name, "missing",
+                     f"{path} -- {reason or 'does not carry the ' + marker.decode() + ' contract'} "
+                     f"-- {degrades}", remedy,
+                     action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+                     brief="stale build; global statics build natively",
+                     group=_GROUP_ENGINES, blocking=False,
+                     severity=SEVERITY_DEGRADED)
+    return Check(name, "verified", f"{path} -- ABI {marker.decode()}",
                  brief="staged", group=_GROUP_ENGINES)
 
 
@@ -6303,6 +6522,8 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_comparison_engine_check())
     checks.append(_ensemble_reducer_check())
     checks.append(_nowcast_frames_check())
+    checks.append(_observation_scorecard_check())
+    checks.append(_forecast_scoreboard_check())
     checks.append(_simulated_radar_check())
     checks.append(_netcdf_decoder_check())
     checks.append(_mapped_engine_check())
@@ -6312,6 +6533,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_obs_score_check())
     checks.append(_noah_init_check())
     checks.append(_isobaric_reader_check())
+    checks.append(_globe_pack_check())
     checks.append(_radar_superob_check())
     checks.append(_region_dealias_check())
     checks.extend(_bridge_checks())

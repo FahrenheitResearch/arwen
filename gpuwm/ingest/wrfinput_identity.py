@@ -48,8 +48,15 @@ def _vector(dataset, name: str, path: Path) -> np.ndarray:
     return value
 
 
-def read_wrfinput_identity(path) -> WrfinputIdentity:
-    """Read and check dimensions, representation, record time and vertical grid."""
+def read_wrfinput_identity(path, *, restart: bool = False) -> WrfinputIdentity:
+    """Read and check dimensions, representation, record time and vertical grid.
+
+    ``restart`` reads a WRF-written restart file (``FLAG_RESTART = 1``):
+    its ``Times`` record is the restart instant, which lies after the
+    ``START_DATE`` of the simulation it continues, so the record must not
+    precede that start rather than equal it.  ``start_time`` is then the
+    restart instant.
+    """
     path = Path(path)
     with netcdf_bridge.open_dataset(path) as dataset:
         dimensions = {name: len(dim) for name, dim in dataset.dimensions.items()}
@@ -92,7 +99,18 @@ def read_wrfinput_identity(path) -> WrfinputIdentity:
             start = datetime.strptime(record, "%Y-%m-%d_%H:%M:%S")
         except ValueError:
             raise ValueError(f"{path}: invalid Times record {record!r}") from None
-        if record != str(attributes["START_DATE"]):
+        if restart:
+            try:
+                simulation_start = datetime.strptime(
+                    str(attributes["START_DATE"]).strip(), "%Y-%m-%d_%H:%M:%S")
+            except ValueError:
+                raise ValueError(
+                    f"{path}: invalid START_DATE {attributes['START_DATE']!r}") from None
+            if start < simulation_start:
+                raise ValueError(
+                    f"{path}: restart Times {record} precedes the simulation "
+                    f"START_DATE {attributes['START_DATE']}")
+        elif record != str(attributes["START_DATE"]):
             raise ValueError(f"{path}: Times {record} differs from START_DATE {attributes['START_DATE']}")
     return WrfinputIdentity(path, MappingProxyType(dimensions),
                             MappingProxyType(attributes), tuple(eta), float(top[0]), start)

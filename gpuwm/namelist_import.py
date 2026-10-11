@@ -654,6 +654,7 @@ _MP_MAP = {
     # cannot stand in for either.
     16: (16, "WDM6", "WDM6"),
     18: (18, "NSSL 2-moment", "NSSL 2-moment"),
+    30: (30, "FAST_SBM spectral bin", "FAST_SBM spectral bin"),
     # A TRANSLATION, not a substitution: the mapped value equals the WRF
     # value, so PHYSICS.md's "exactly three ratified substitutions" claim is
     # untouched.  Mapping 28 -> 8 would have been the substitution, and it
@@ -834,7 +835,7 @@ _SFSFC_ALLOWED = {0, 2, 3, 4}
 # importer disagreeing about a selector the emitter writes, which is a
 # configuration that cannot be read back as itself.  The cudt law that
 # comes with the scheme is applied at emission below.
-_CU_ALLOWED = {0, 1, 3, 16}
+_CU_ALLOWED = {0, 1, 3, 6, 16}
 
 #: The Grell-Freitas scheme-generation notice, recorded on EVERY import
 #: that selects cu_physics = 3 and printed by ``gpuwm import-namelist``.
@@ -1666,6 +1667,115 @@ def _apply_namelist_defaults(
     return recorded
 
 
+#: WRF's own physics suites, transcribed from WRF v4.6.1
+#: share/module_check_a_mundo.F setup_physics_suite (:3116-:3147).  WRF
+#: replaces a selector with the suite's value ONLY where the namelist wrote
+#: -1 for that domain, and stops on any other suite name (:3148).  Table
+#: work, not a code path: a suite WRF adds is one more row.
+WRF_PHYSICS_SUITES = {
+    "conus": {"cu_physics": 6, "mp_physics": 8, "ra_lw_physics": 4,
+              "ra_sw_physics": 4, "bl_pbl_physics": 2,
+              "sf_sfclay_physics": 2, "sf_surface_physics": 2},
+    "tropical": {"cu_physics": 16, "mp_physics": 6, "ra_lw_physics": 4,
+                 "ra_sw_physics": 4, "bl_pbl_physics": 1,
+                 "sf_sfclay_physics": 91, "sf_surface_physics": 2},
+}
+_WRF_PHYSICS_SUITE_LINES = {"conus": 3116, "tropical": 3133}
+
+
+def _expand_physics_suite(inp: dict, drop) -> list[NamelistDefault]:
+    """Resolve ``&physics physics_suite`` the way wrf.exe does.
+
+    Named breakage it prevents: NCAR's own benchmark namelists (and every
+    namelist built from WRF's README examples) write
+    ``physics_suite = 'conus'`` with the seven selectors at -1; this
+    importer refused all seven as unset sentinels, so a WRF run directory
+    that wrf.exe runs unchanged could not be read at all.  Each replaced
+    selector is recorded as a namelist default citing the suite row, and
+    the suite key itself is consumed with that reason.  'none' (WRF's
+    Registry default, Registry.EM_COMMON:2402) leaves every selector as
+    written, so a -1 there is still refused by the sentinel census.
+    """
+    physics = inp.get("physics")
+    if not physics or "physics_suite" not in physics:
+        return []
+    raw = physics.pop("physics_suite")
+    values = raw if isinstance(raw, list) else [raw]
+    suite = str(values[0]).strip().lower() if values else "none"
+    drop("physics", "physics_suite", values,
+         "expanded into explicit selectors exactly as WRF's "
+         "setup_physics_suite does (share/module_check_a_mundo.F)")
+    if suite == "none":
+        return []
+    table = WRF_PHYSICS_SUITES.get(suite)
+    if table is None:
+        raise _err("physics", "physics_suite", values,
+                   f"is not a WRF physics suite; WRF v4.6.1 knows "
+                   f"{sorted(WRF_PHYSICS_SUITES)} and 'none', and stops "
+                   "on any other name (share/module_check_a_mundo.F:3148)")
+    recorded = []
+    for key, suite_value in table.items():
+        column = physics.get(key)
+        if column is None:
+            continue
+        expanded = [suite_value if value == -1 else value for value in column]
+        if expanded == list(column):
+            continue
+        physics[key] = expanded
+        recorded.append(NamelistDefault(
+            "input", "physics", key, suite_value,
+            f"physics_suite '{suite}' resolves -1 to {suite_value} "
+            "(WRF v4.6.1 share/module_check_a_mundo.F:"
+            f"{_WRF_PHYSICS_SUITE_LINES[suite]})"))
+    return recorded
+
+
+def _wrf_domain_steps(root_step: Fraction, parent_id, tratio) -> list[Fraction]:
+    """Each domain's exact step: the root's, divided down the parent chain."""
+    steps: list[Fraction] = []
+    for n, parent in enumerate(parent_id):
+        if n == 0 or parent in (0, None):
+            steps.append(Fraction(root_step))
+        else:
+            steps.append(steps[int(parent) - 1] / int(tratio[n]))
+    return steps
+
+
+def _wrf_cadence_minutes(key: str, n: int, minutes: float, step: Fraction,
+                         fix) -> float:
+    """A WRF physics cadence in minutes, as the steps wrf.exe takes.
+
+    WRF never runs a fractional cadence: phys/module_physics_init.F:2148
+    sets ``STEPRA = MAX(NINT(RADT*60./DT), 1)`` (STEPCU and STEPBL alike)
+    and fires the scheme on whole steps.  gpuwm's clock takes cadences as
+    whole steps too and refuses a fraction.  Named breakage: NCAR's v4.4
+    CONUS 12 km namelist writes radt = 15 at a 72 s step (12.5 steps,
+    which wrf.exe runs as 13) and was refused.  A commensurate cadence is
+    returned unchanged; otherwise the minutes of WRF's whole-step count,
+    recorded as a fix naming both numbers.
+    """
+    if minutes <= 0.0:
+        return minutes
+    exact = Fraction(str(minutes)) * 60 / step
+    if exact.denominator == 1:
+        return minutes
+    # Fortran NINT rounds half away from zero; every value here is positive.
+    whole = max(int(exact + Fraction(1, 2)), 1)
+    effective = Fraction(whole) * step / 60
+    value = float(effective)
+    if Fraction(str(value)) != effective:
+        raise _err("physics", key, [minutes],
+                   f"wrf.exe runs it every {whole} step(s) of "
+                   f"{_seconds_text(step)}, which is {effective} min and has "
+                   "no exact decimal spelling; write a cadence that is a "
+                   "whole number of steps")
+    fix("physics", f"{key}[{n + 1}]", [minutes], value,
+        f"{minutes:g} min is {exact} steps of {_seconds_text(step)}; wrf.exe "
+        f"runs whole steps, NINT = {whole} (phys/module_physics_init.F:2148), "
+        f"which is {value:g} min")
+    return value
+
+
 def _run_length_seconds(time_control: dict) -> float:
     """WRF's run_days/hours/minutes/seconds, summed (0 when unset)."""
     total = 0.0
@@ -1915,15 +2025,33 @@ def _fmt(value) -> str:
     return '"' + str(value) + '"'
 
 
+#: The fire fields that are not ``&fire`` keys: the refinement ratios
+#: live in ``&domains`` (read below), and the static, fuel-table and
+#: smoke switches are gpuwm extensions WRF has no key for.
+_FIRE_NON_FIRE_GROUP_FIELDS = frozenset(
+    {"sr_x", "sr_y", "fire_static", "fire_fuel_namelist", "fire_smoke"})
+
+
+def imported_fire_fields() -> tuple[str, ...]:
+    """Every ``&fire`` key :func:`_fire_columns` reads, by table.
+
+    The importer reads the WRF v4.7.1 fire group through
+    :data:`gpuwm.sfire_config.FIRE_CONFIG_FIELDS` rather than one key at a
+    time, so these names are spelled in a pair although none of them is
+    written out in this module.  tests/test_route_round_trip_fields.py
+    reads this to tell a table-read field from one the pair cannot carry.
+    """
+    from gpuwm.sfire_config import FIRE_CONFIG_FIELDS
+    return tuple(name for name in FIRE_CONFIG_FIELDS
+                 if name not in _FIRE_NON_FIRE_GROUP_FIELDS)
+
+
 def _fire_columns(fire, domains, count):
     """Translate Registry fire columns without broadcasting omitted tails."""
-    from gpuwm.sfire_config import FireRunFields, FIRE_CONFIG_FIELDS, FIRE_DOMAIN_FIELDS
+    from gpuwm.sfire_config import FireRunFields, FIRE_DOMAIN_FIELDS
     defaults = FireRunFields()
-    extensions = {"sr_x", "sr_y", "fire_static", "fire_fuel_namelist", "fire_smoke"}
     result = {}
-    for name in FIRE_CONFIG_FIELDS:
-        if name in extensions:
-            continue
+    for name in imported_fire_fields():
         raw = fire.take(name)
         if raw is None:
             continue
@@ -2858,6 +2986,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     namelist_defaults = _apply_namelist_defaults(
         wps, inp, wrf_version=wrf_version,
         wrf_version_source=wrf_version_source)
+    namelist_defaults.extend(_expand_physics_suite(inp, drop))
     _census_missing_keys(wps, inp, wps_path, input_path)
 
     share = _Section("share", wps["share"], str(wps_path))
@@ -3654,6 +3783,35 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        "this preprocessing control is consumed by gpuwm run --met-em DIR")
         fix("domains", "use_sh_qv", use_sh_qv, use_sh_qv[0],
             "metgrid initialization passes this humidity interpolation choice to shared initialize_real")
+    # perturb_input (Registry.EM_COMMON:2368, default .false.): wrf.exe's
+    # only consumer is frame/module_io.F:2257-2262, which perturbs every
+    # 3-D float field it reads.  Named breakage: NCAR's benchmark namelists
+    # write the inert .false. and were refused as an unmapped key.
+    perturb_input = dm.take("perturb_input")
+    if perturb_input is not None:
+        if any(value is not False for value in perturb_input):
+            raise _err("domains", "perturb_input", perturb_input,
+                       "asks wrf.exe to perturb every 3-D field it reads "
+                       "(frame/module_io.F:2257-2262 perturb_real); gpuwm "
+                       "has no such input perturbation.  Write .false. or "
+                       "remove the key")
+        drop("domains", "perturb_input", perturb_input,
+             "inert at .false.: wrf.exe perturbs input fields only when "
+             "it is .true. (frame/module_io.F:2257-2262)")
+    # use_baseparam_fr_nml (&dynamics): WRF's start_em.F:516-523 takes the
+    # base-state constants from &dynamics base_* instead of the input file.
+    # gpuwm's own initialization already reads its base state from the
+    # namelist (base_temp above; the other constants are WRF's defaults and
+    # any other value is refused as an unmapped key), and the WRF-input
+    # doors compare the files' P00/T00/TLP/TISO/TLP_STRAT/P_STRAT with the
+    # namelist's (gpuwm.wrfinput_door.check_namelist_base_state).  Named
+    # breakage: NCAR's benchmark namelists write .t. and were refused.
+    use_baseparam = dyn.take("use_baseparam_fr_nml")
+    if use_baseparam is not None:
+        drop("dynamics", "use_baseparam_fr_nml", use_baseparam,
+             "base-state constants are the namelist's in gpuwm already; "
+             "the WRF-input door refuses files whose P00/T00/TLP/TISO/"
+             "TLP_STRAT/P_STRAT differ from them")
     feedback = int(dm.scalar("feedback", 1))
     smooth_option = int(dm.scalar("smooth_option", 2))
     blend_width = int(dm.scalar("blend_width", 5))
@@ -4897,18 +5055,33 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     resolved_soil_layers = (WRF_NO_LAND_SURFACE_SOIL_LAYERS if sfsfc == 0
                             else validated_soil_layer_count(sfsfc))
     requested_soil_layers = ph.take("num_soil_layers")
+    soil_reason = f"resolved soil geometry for sf_surface_physics={sfsfc}"
     if requested_soil_layers is not None:
         requested = int(_uniform("physics", "num_soil_layers", requested_soil_layers))
         try:
             resolved_soil_layers = soil_layer_count(SimpleNamespace(
                 sf_surface_physics=sfsfc, num_soil_layers=requested))
         except ValueError as error:
-            raise _err("physics", "num_soil_layers", requested_soil_layers,
-                       str(error)) from error
+            if sfsfc in (2, 4) and requested != resolved_soil_layers:
+                # A WRF namelist means what wrf.exe makes of it: Noah and
+                # Noah-MP have one soil geometry, and WRF v4.6.1 writes it
+                # over any request (share/module_check_a_mundo.F:3552-3555).
+                # Named breakage: NCAR's v4.4 CONUS benchmarks write
+                # num_soil_layers = 1 beside Noah and were refused; the
+                # files' own soil geometry is still checked against the
+                # resolved count by every WRF-input door.  RUC keeps its
+                # refusal: there WRF honours 6 or 9 and the request matters.
+                soil_reason = (
+                    f"wrf.exe sets num_soil_layers = {resolved_soil_layers} "
+                    f"for sf_surface_physics={sfsfc} whatever the namelist "
+                    "asks (share/module_check_a_mundo.F:3552-3555); the "
+                    f"request {requested} is replaced, as WRF replaces it")
+            else:
+                raise _err("physics", "num_soil_layers", requested_soil_layers,
+                           str(error)) from error
     fix(
         "physics", "num_soil_layers", requested_soil_layers,
-        resolved_soil_layers,
-        f"resolved soil geometry for sf_surface_physics={sfsfc}")
+        resolved_soil_layers, soil_reason)
     cu_values = ph.col("cu_physics", max_dom)
     if cu_values is None:
         raise _err(
@@ -5011,6 +5184,15 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                  "v4.6.1 cumulus driver would not read it either")
     radt = [float(v) for v in ph.col("radt", max_dom, 0)]
     bldt = float(_uniform("physics", "bldt", ph.col("bldt", max_dom, 0)))
+    if not use_adaptive_time_step:
+        domain_steps = _wrf_domain_steps(
+            Fraction(time_step) + Fraction(fract_num, fract_den),
+            parent_id, tratio)
+        radt = [_wrf_cadence_minutes("radt", n, value, domain_steps[n], fix)
+                for n, value in enumerate(radt)]
+        bldt = _wrf_cadence_minutes("bldt", 0, bldt, domain_steps[0], fix)
+        cudt = [(_wrf_cadence_minutes("cudt", n, value, domain_steps[n], fix)
+                 if cu[n] == 1 else value) for n, value in enumerate(cudt)]
     for key, reason in (
             ("ifsnow", "Noah snow physics is always active"),
             ("surface_input_source", "surface fields come from the "
@@ -5777,7 +5959,30 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     fix("dynamics", "scalar_adv_opt", scalar_adv, 1,
         "validated equal to the supported moist_adv_opt=1 path")
     time_step_sound = int(dyn.scalar("time_step_sound", 0))
-    if time_step_sound == 0:
+    if time_step_sound == 0 and not use_adaptive_time_step:
+        # WRF Registry default 0 on a fixed step: solve_em.F derives the
+        # count itself, max(2 * (INT(300 * dt / (min(dx, dy) / max_msft)
+        # - 0.01) + 1), 4), from the step and the root's largest map
+        # factor.  That is the count wrf.exe integrates with this
+        # namelist, so it is the count the import writes (4 at the usual
+        # 6 x dx step, 6 from about 10 x dx).
+        from gpuwm.core.adaptive_clock import wrf_num_sound_steps
+
+        rule_step = Fraction(time_step) + Fraction(fract_num, fract_den)
+        rule_factor = largest_mass_map_factor(
+            projection, map_proj, dx=root_dx, dy=root_dy,
+            e_we=int(e_we[0]), e_sn=int(e_sn[0]))
+        time_step_sound = int(wrf_num_sound_steps(
+            float(rule_step), float(root_dx), float(root_dy), rule_factor))
+        defaults_applied.append(AppliedDefault(
+            key="time_step_sound", value=time_step_sound,
+            reason="WRF Registry default 0 means WRF derives the count "
+                   "(solve_em.F: max(2 * (INT(300 * dt / (min(dx, dy) / "
+                   "max_msft) - 0.01) + 1), 4)); at "
+                   f"{_seconds_text(rule_step)} on {root_dx:g} m with a "
+                   f"largest map factor of {rule_factor:.6f} that is "
+                   f"{time_step_sound}"))
+    elif time_step_sound == 0:
         # WRF Registry default 0 = automatic selection; WRF picks 4 for
         # these dt/dx regimes and gpuwm needs an explicit even count --
         # recorded, never silent (F2).
@@ -5850,6 +6055,31 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         time_step_sound = int(derived)
         use_adaptive_time_step = False
         terrain_clock = "pinned"
+    # ---- WRF's own acoustic count on a fixed step (D8, 2.8.9) -----------
+    # A WRF namelist on a fixed step names the acoustic substep count
+    # wrf.exe integrates: its time_step_sound, or WRF's own rule for 0
+    # (above).  An import runs that count by default, to spec: the clock
+    # is pinned, and the terrain clock's measured verdict is carried as
+    # advice in the receipt and as a caution line where it differs.  The
+    # breakage this prevents: NCAR's CONUS 12 km restart, which WRF runs
+    # on 4 substeps, ran on 6 under the terrain clock (10 percent per step,
+    # 117.6 s against 72.9 s end to end on the restart leg) and sat
+    # further from WRF's own output than WRF's 4, which ran stable there.
+    # The terrain clock stays the default where the input does not name
+    # WRF's count: an adaptive namelist (WRF derives the count from a step
+    # the clock chooses), and a selector comment or named-source table
+    # that states terrain_clock (that statement is the input's choice).
+    if (terrain_clock is None and not use_adaptive_time_step
+            and "terrain_clock" not in source_defaults):
+        terrain_clock = "pinned"
+        defaults_applied.append(AppliedDefault(
+            key="terrain_clock", value="pinned",
+            reason="a fixed-step WRF namelist names the acoustic substep "
+                   f"count wrf.exe runs ({time_step_sound}); the import "
+                   "runs it, and the measured terrain clock's verdict is "
+                   "advice in the receipt (state terrain_clock in a "
+                   "gpuwm-physics-selectors-v1 comment to let it adapt "
+                   "the clock)"))
     # smdiv/emdiv/h_sca_adv_order are max_domains in the Registry and were
     # read here as scalars, which silently took element 1 and dropped a
     # tail the file really carried.  Columns now, on the same last-value
@@ -6117,6 +6347,14 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             "# engine runs that clock as written and records the terrain "
             "clock's",
             "# verdict as advice in the receipt.",
+            f'terrain_clock = "{terrain_clock}"',
+        ] if terrain_clock is not None and fixed_through_adaptive is not None
+          else [
+            "# The namelist's fixed step and acoustic count are the ones "
+            "wrf.exe runs;",
+            "# the engine runs them as written and records the terrain "
+            "clock's verdict",
+            "# as advice in the receipt.",
             f'terrain_clock = "{terrain_clock}"',
         ] if terrain_clock is not None else []),
         f"h_sca_adv_order = {h_sca_adv_order}",
@@ -6488,6 +6726,11 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                      "New Tiedtke carries no cudt cadence: the scheme runs "
                      "on the model step and its RAINCV is a per-call rate "
                      "with no NCA hold")
+        elif cu[n] == 6:
+            lines.append("cudt_minutes = 0.0")
+            if cudt[n]:
+                drop("physics", f"cudt[{n + 1}]", [cudt[n]],
+                     "Original cu6 runs every model step and returns per-call rain without an NCA hold")
         elif cudt[n]:
             drop("physics", f"cudt[{n + 1}]", [cudt[n]],
                  "cudt is consumed only where cu_physics = 1")

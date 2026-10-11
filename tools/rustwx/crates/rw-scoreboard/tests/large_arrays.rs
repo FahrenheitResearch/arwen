@@ -170,7 +170,7 @@ fn executable_extracts_stations_from_a_213578750_value_reflectivity_volume() {
     fs::write(
         &request,
         serde_json::to_vec(&json!({
-            "action":"extract", "method_id":"scoreboard-v2", "format":"wrf",
+            "action":"extract", "method_id":"scoreboard-v1", "format":"wrf",
             "input":frame, "valid_time":"2026-01-01T00:00:00Z", "output":artifact,
             "stations":[
                 {"station_id":"A", "lat":0.0, "lon":0.0, "elevation_m":0.0},

@@ -727,6 +727,53 @@ class Dataset:
         return len(groups)
 
 
+#: Decoded float64 bytes one ``rw_netcdf`` run hands back to a reader that
+#: reads a whole file (the WRF restart and wrfinput importers).  One
+#: decoder process per variable cost 345 process starts on NCAR's 12 km
+#: restart; a run per batch lets the decoder work on a batch's variables
+#: concurrently.  The cap bounds the batch's temporary files and the
+#: decoder's working set (NCAR's 2.5 km restart is ~70 GB as float64).
+DECODE_BATCH_BYTES = 4 << 30
+
+
+class BatchedDecode:
+    """Decode a file's variables in read order, one decoder run per batch.
+
+    ``ready(name)`` is called before a variable is first read; when the
+    variable has not been decoded yet, it and the variables after it are
+    decoded together (up to :data:`DECODE_BATCH_BYTES`) and cached
+    on the dataset exactly as their first ``variable[...]`` would cache
+    them, under each variable's own mask/scale policy.
+    """
+
+    def __init__(self, dataset, names, *, batch_bytes=DECODE_BATCH_BYTES):
+        self._dataset = dataset
+        self._names = list(names)
+        self._position = {name: index for index, name in enumerate(self._names)}
+        self._next = 0
+        self._batch_bytes = int(batch_bytes)
+        self.runs = 0
+
+    def ready(self, name: str) -> None:
+        index = self._position.get(name)
+        if index is None or index < self._next:
+            return
+        if getattr(self._dataset, "prefetch", None) is None:
+            # A reader surface with no batch decode reads each variable on
+            # its first ``variable[...]``, as it always did.
+            self._next = len(self._names)
+            return
+        batch, nbytes = [], 0
+        for later in self._names[index:]:
+            size = 8 * int(getattr(self._dataset.variables[later], "size", 0))
+            if batch and nbytes + size > self._batch_bytes:
+                break
+            batch.append(later)
+            nbytes += size
+        self.runs += self._dataset.prefetch(batch)
+        self._next = index + len(batch)
+
+
 #: The NetCDF library's default fill per stored type (netcdf.h NC_FILL_*),
 #: widened to the f64 the decoder hands back.  Byte and character types
 #: have none here, as in netCDF4-python.
