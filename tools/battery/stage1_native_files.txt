@@ -89,6 +89,7 @@ tests/test_renderer_theme_sections.py # netcdf-writer writes the stored-plane se
 tests/test_chem_source_cache_identity.py # gpuwm_preprocess_cpu executes real GRIB2 decoding and axis reads for cache authority and atomic publication controls.
 tests/test_urban_ucm_wrf461_parity.py # C++ compiles the shared-source SLUCM host twin against the original WRF column words.
 tests/test_urban_ucm_host.py # C++ compiles the shared-source SLUCM host twin against every WRF column variant.
+tests/test_urban_slucm_regime_wrf461.py # C++ compiles the shared-source SLUCM host twin for the WRF 4.6.1 regime columns.
 tests/test_highres_urban_fraction.py # static-fields computes the land-cover area and URBPARM built-fraction product.
 tests/test_bnu_soil_geog.py # static-fields executes the baseline soil-category carrier.
 

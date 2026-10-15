@@ -60,7 +60,7 @@ class RefusedKey(PipeMachine):
     def popen(self, words, *, stdin=subprocess.PIPE, stdout=subprocess.PIPE):
         if "unpack" in words:
             script = ("import sys; sys.stdin.buffer.read(); "
-                      "sys.stderr.write('drew@box: Permission denied (publickey).\\n'); sys.exit(255)")
+                      "sys.stderr.write('user@box: Permission denied (publickey).\\n'); sys.exit(255)")
             return subprocess.Popen([sys.executable, "-c", script], stdin=stdin, stdout=stdout,
                                     stderr=subprocess.PIPE)
         return super().popen(words, stdin=stdin, stdout=stdout)

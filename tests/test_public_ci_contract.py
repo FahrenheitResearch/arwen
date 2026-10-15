@@ -394,3 +394,34 @@ def test_the_runner_passes_every_manifest_deck_to_pytest_without_shell_translati
     assert run_must_run_gates.main(["--minimum", "20", "--", *arguments]) == 0
     assert calls == [([sys.executable, "-m", "pytest", *arguments,
                       *run_must_run_gates.listed_decks(ROOT)], {"cwd": ROOT})]
+
+
+def _listed(path: pathlib.Path) -> list[str]:
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        entry = line.split("#")[0].strip()
+        if entry:
+            rows.append(entry)
+    return rows
+
+
+def test_every_stage1_file_that_compiles_a_cxx_host_library_is_a_native_row():
+    """A Stage 1 file that builds a C++ library with the PATH's compiler for ctypes is a native row.
+
+    THE BREAKAGE: tests/test_urban_slucm_regime_wrf461.py compiled the SLUCM host twin with ``$CXX`` (default
+    ``c++``) and loaded it through ctypes. The windows-2025 runner's MinGW ``c++`` builds a library that needs
+    runtime DLLs Python does not search, so all ten regime cases errored in public ci at the 2.9.0 r7 snapshot.
+    The Linux partition emulation could not see it, because on Linux the same compiler links and loads. The
+    three sibling suites that build the same twin were already in tools/battery/stage1_native_files.txt.
+    """
+
+    import re
+
+    battery = ROOT / "tools" / "battery"
+    native = set(_listed(battery / "stage1_native_files.txt"))
+    compiles = re.compile(r"""os\.environ\.get\(\s*["']CXX["']""")
+    missing = [name for name in _listed(battery / "stage1_files.txt")
+               if (ROOT / name).is_file() and name not in native
+               and compiles.search((ROOT / name).read_text(encoding="utf-8"))]
+    assert not missing, ("these Stage 1 files build a C++ library with $CXX but are not in "
+                         "tools/battery/stage1_native_files.txt, so the Windows cpu job runs them: " + ", ".join(missing))

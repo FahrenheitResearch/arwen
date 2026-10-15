@@ -420,3 +420,16 @@ tools/rustwx/crates/rw-mpas/tests/native_static/reproduce.sh
 tools/rustwx/crates/rw-mpas/tests/native_static/reproduce_diagnostic_forecast.sh
 tools/rustwx/crates/rw-mpas/tests/native_static/residue_negative.py
 tools/rustwx/crates/rw-mpas/tests/native_static/v35_forecast_pair.py
+
+# Three rw-mpas proof examples link the system netCDF C library at build time
+# (#[link(name = "netcdf")]). They are instruments of the native-static
+# harness above, which the export already drops; the product reads netCDF
+# through rw_mpas_static's run-time loader instead. Breakage: in the public
+# tree ci.yml's native job runs `cargo test -p rw-mpas`, which builds every
+# example, and the GitHub ubuntu-24.04 and windows-2025 runners carry no
+# libnetcdf, so 2.9.0's first public ci (run 38684507300) failed both native
+# jobs at link time ("unable to find library -lnetcdf"; LNK1181 netcdf.lib).
+# tests/test_cargo_gate_manifest.py refuses any such target in the export.
+tools/rustwx/crates/rw-mpas/examples/static_grid_longitudes.rs
+tools/rustwx/crates/rw-mpas/examples/static_grid_metadata.rs
+tools/rustwx/crates/rw-mpas/examples/static_netcdf_compact.rs

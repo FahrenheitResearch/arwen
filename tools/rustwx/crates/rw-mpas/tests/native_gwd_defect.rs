@@ -31,7 +31,7 @@ fn small_box_native_defect_word_set() {
     } else {
         assert_eq!(port_receipt["native_undefined_ol1_cells"], serde_json::json!(undefined));
         assert_eq!(port_receipt["native_undefined_exclusion_status"],
-            "PROPOSED FOR DREW: case-specific sign-off required");
+            "PROPOSED FOR OWNER SIGN-OFF: case-specific sign-off required");
     }
     let port = netcrust::File::open(&out).unwrap();
     let mut runs = Vec::new();

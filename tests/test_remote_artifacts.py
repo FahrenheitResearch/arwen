@@ -496,6 +496,19 @@ def test_stream_overflow_and_timeout_leave_no_published_object(tmp_path):
     assert not path.exists() and not list(tmp_path.glob("*.part"))
 
 
+def test_a_remote_that_exits_before_reading_its_request_is_judged_by_its_stream(tmp_path):
+    # Breakage: _download wrote the request and closed stdin unguarded, so a remote that exited before
+    # reading it raised BrokenPipeError instead of the named refusal. The 2.9.0 E8 Stage 1 met it under
+    # load in the overflow case above. A request larger than any pipe buffer makes the early exit certain.
+    frame = {"size_bytes": 1, "sha256": hashlib.sha256(b"X").hexdigest()}
+    path = tmp_path / "object.wrf"
+    request = {"pad": "x" * (4 << 20)}
+    with pytest.raises(ValueError, match="exceeds"):
+        ra._download([sys.executable, "-c", "import sys;sys.stdout.buffer.write(b'X'*2)"], request, path, frame,
+                     timeout=10)
+    assert not path.exists() and not list(tmp_path.glob("*.part"))
+
+
 @pytest.fixture
 def timed_case(case):
     config = case.job_dir / "case.toml"

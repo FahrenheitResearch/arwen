@@ -89,7 +89,9 @@ jobs:
             numpy: "2.2.6"
             platform: windows
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    # Stage 1 on the two-worker ubuntu runner took just over 120 min at 2.9.0 (public ci run 38684507300 was
+    # cancelled at 99% with no failure), so the bound is 180, the GPU job's.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

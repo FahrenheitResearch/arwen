@@ -16,8 +16,9 @@ complete and the machine-readable support matrix matches the documentation.
       paths, private evidence, or unreviewed redistributable data.
 - [ ] The owner-identity gate (`verify_final_packet.py`, through
       `owner_identity_scan.py` in the private cut drivers) reads every member of
-      every packet asset, code and binaries included, and finds 0 hits for the
-      owner's name, e-mail address and home directory.
+      every packet asset, code and binaries included and archives inside members
+      opened, and finds 0 hits for the owner's name (as a word, in any case,
+      outside its named list of verb phrases), e-mail address and home directory.
 - [ ] Threat review covers malformed inputs, resource bounds, path traversal,
       symlinks, atomic publication, cancellation, and no-clobber behavior.
 - [ ] README, install, CLI, examples, compatibility matrix, changelog,

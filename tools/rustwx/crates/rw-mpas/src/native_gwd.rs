@@ -700,7 +700,7 @@ pub fn write_overlay(
         NcAttr::text("rw_mpas_gwd_source", "MPAS-A v8.4.2 mpas_init_atm_gwd.F f34984b RKIND=4"),
     ];
     if !undefined_ol1.is_empty() {
-        attrs.push(NcAttr::text("rw_mpas_native_undefined", "EXCLUSIONS PROPOSED FOR DREW: OL1 row zero, mpas_init_atm_gwd.F:1126-1128; case-specific sign-off required"));
+        attrs.push(NcAttr::text("rw_mpas_native_undefined", "EXCLUSIONS PROPOSED FOR OWNER SIGN-OFF: OL1 row zero, mpas_init_atm_gwd.F:1126-1128; case-specific sign-off required"));
         attrs.push(NcAttr::text("rw_mpas_native_undefined_ol1_cells", undefined_ol1.iter().map(usize::to_string).collect::<Vec<_>>().join(",")));
     }
     let mut w = NcClassicWriter::create(
@@ -740,7 +740,7 @@ pub fn write_overlay(
         cell_scaling: cfg.cell_scaling,
         rkind_bytes: 4,
         native_undefined_exclusion_status: (!undefined_ol1.is_empty())
-            .then_some("PROPOSED FOR DREW: case-specific sign-off required"),
+            .then_some("PROPOSED FOR OWNER SIGN-OFF: case-specific sign-off required"),
         native_undefined_ol1_cells: undefined_ol1,
     })
 }

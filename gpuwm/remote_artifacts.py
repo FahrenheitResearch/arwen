@@ -1151,8 +1151,16 @@ def _download(command, request, path, frame, *, timeout=180):
     for reader in readers:
         reader.start()
     try:
-        process.stdin.write(_encoded(request) + b"\n")
-        process.stdin.close()
+        try:
+            process.stdin.write(_encoded(request) + b"\n")
+            process.stdin.flush()
+        except (OSError, ValueError):
+            pass  # a remote that exits before reading its request: its stream, exit and diagnostics decide
+        finally:
+            try:
+                process.stdin.close()
+            except (OSError, ValueError):
+                pass  # the same early exit, met again when the buffered request flushes on close
         deadline = time.monotonic() + timeout
         while process.poll() is None or not finished.is_set():
             if failure:

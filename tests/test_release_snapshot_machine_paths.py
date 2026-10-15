@@ -576,9 +576,16 @@ def test_the_owners_name_and_mail_are_refused_in_every_shipped_file(tmp_path):
         "gpuwm/namelist_chem.py": "# " + OWNER_NAME + "'s ruling (2026-10-12)\n",
         "tests/test_door.py": "# ---- &chem (" + OWNER_NAME + ", 2026-10-12) ----\n",
         "docs/public/receipts/run.json": '{"author": "' + OWNER_MAIL + '"}\n',
+        # The all-capitals name in a Rust string literal: 2.9.0 cut r7 sealed
+        # with it in rw_mpas_static while this scan read the capitalised word only.
+        "tools/rustwx/crates/x/src/gwd.rs": ('attr("PROPOSED FOR ' + OWNER_NAME.upper()
+                                             + ': case-specific sign-off required");\n'),
         # The past tense of "draw" and a lower-case word inside an identifier
-        # are not the owner.
-        "gpuwm/render.py": "# the renderer drew 43 pictures; withdrew; Andrewsville\n",
+        # are not the owner; the packet gate reads the lower case with its
+        # named allowance.
+        "gpuwm/render.py": ("# the renderer " + OWNER_NAME.lower()
+                            + " 43 pictures; with" + OWNER_NAME.lower() + "; An" + OWNER_NAME.lower()
+                            + "sville\n"),
     }
     for rel, text in files.items():
         target = tmp_path / rel
@@ -588,4 +595,5 @@ def test_the_owners_name_and_mail_are_refused_in_every_shipped_file(tmp_path):
     assert sorted((rel, kind) for rel, _where, kind, _ in hits) == [
         ("docs/public/receipts/run.json", "owner's e-mail"),
         ("gpuwm/namelist_chem.py", "owner's name"),
-        ("tests/test_door.py", "owner's name")]
+        ("tests/test_door.py", "owner's name"),
+        ("tools/rustwx/crates/x/src/gwd.rs", "owner's name")]

@@ -440,3 +440,99 @@ def test_worker_gate_uses_the_battery_python_without_shell_expansion(monkeypatch
     assert not seen.get("shell", False)
     assert seen["cwd"] == REPOSITORY_ROOT / entry.workspace
     assert result.verdict == "PASSED"
+
+
+# ---------------------------------------------------------------------------
+# No exported cargo-gate target links the system netCDF C library
+# ---------------------------------------------------------------------------
+# THE BREAKAGE: ci.yml's native job runs these entries on GitHub's
+# ubuntu-24.04 and windows-2025 runners, which carry no libnetcdf, and
+# `cargo test -p <package>` builds every example and test target of the
+# package. 2.9.0's first public ci (run 38684507300) failed both native jobs
+# at link time ("unable to find library -lnetcdf"; LNK1181 netcdf.lib) on
+# three rw-mpas proof examples declaring #[link(name = "netcdf")]. The release
+# hosts have libnetcdf, so the battery and the nine-route rehearsal passed.
+# A target the export carries loads netCDF at run time (as rw_mpas_static's
+# verify does through libloading) or stays out of the export
+# (RELEASE-EXCLUDE.txt).
+
+import re as _re
+
+_NETCDF_LINK = _re.compile(r'#\s*\[\s*link\s*\(\s*name\s*=\s*"netcdf"')
+_NETCDF_LINK_LIB = _re.compile(r'rustc-link-lib\s*=\s*(?:dylib=|static=)?netcdf\b')
+
+
+def _package_directories() -> dict[str, Path]:
+    """Package name -> directory, for every package a cargo-gate workspace declares."""
+
+    found: dict[str, Path] = {}
+    for workspace in _workspaces():
+        root = REPOSITORY_ROOT / workspace
+        manifest = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+        candidates = [root / m for m in manifest.get("workspace", {}).get("members", [])]
+        if "workspace" not in manifest:
+            candidates = [root]
+            for table in ("dependencies", "dev-dependencies", "build-dependencies"):
+                for spec in manifest.get(table, {}).values():
+                    if isinstance(spec, dict) and "path" in spec:
+                        candidates.append((root / spec["path"]).resolve())
+        for directory in candidates:
+            toml = directory / "Cargo.toml"
+            if toml.is_file():
+                name = tomllib.loads(toml.read_text(encoding="utf-8"))["package"]["name"]
+                found.setdefault(name, directory)
+    return found
+
+
+def _exported_rust_files(directory: Path, root: Path = REPOSITORY_ROOT) -> list[str]:
+    from tools.release_exclusions import matches, read_exclusions
+
+    rules = read_exclusions(root)
+    listing = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--",
+                              directory.relative_to(root).as_posix()],
+                             capture_output=True)
+    if listing.returncode == 0 and listing.stdout:
+        names = [n for n in listing.stdout.decode("utf-8").split("\0") if n]
+    else:
+        names = [p.relative_to(root).as_posix() for p in directory.rglob("*")]
+    return [n for n in names if n.endswith(".rs") and "/target/" not in n
+            and "/vendor/" not in n and matches(n, rules) is None]
+
+
+def _netcdf_link_sites(root: Path, names: list[str]) -> list[str]:
+    sites = []
+    for name in names:
+        path = root / name
+        if not path.is_file():
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            text = line.strip()
+            if text.startswith("//"):
+                continue
+            if _NETCDF_LINK.search(text) or (path.name == "build.rs" and _NETCDF_LINK_LIB.search(text)):
+                sites.append(f"{name}:{number}")
+    return sites
+
+
+def test_no_exported_cargo_gate_target_links_the_system_netcdf_library() -> None:
+    packages = _package_directories()
+    gated = {entry.package for entry in _entries()}
+    offenders = []
+    for package in sorted(gated):
+        directory = packages.get(package)
+        if directory is None:
+            continue  # test_every_entry_names_a_real_workspace_and_package owns that refusal
+        offenders += _netcdf_link_sites(REPOSITORY_ROOT, _exported_rust_files(directory))
+    assert not offenders, (
+        "these exported targets link the system netCDF C library at build time, which the "
+        "public ci runners do not have (`cargo test -p` builds every example and test): "
+        + ", ".join(offenders) + ". Load it at run time, or add the file to RELEASE-EXCLUDE.txt.")
+
+
+def test_the_netcdf_link_scan_sees_a_directive_and_not_a_comment(tmp_path) -> None:
+    (tmp_path / "examples").mkdir()
+    (tmp_path / "examples" / "linked.rs").write_text('#[link(name="netcdf")]\nunsafe extern "C" {}\n')
+    (tmp_path / "examples" / "doc.rs").write_text('//! Linked at build time (`#[link(name = "netcdf")]`)\n')
+    (tmp_path / "build.rs").write_text('println!("cargo:rustc-link-lib=netcdf");\n')
+    found = _netcdf_link_sites(tmp_path, ["examples/linked.rs", "examples/doc.rs", "build.rs"])
+    assert found == ["examples/linked.rs:1", "build.rs:1"]

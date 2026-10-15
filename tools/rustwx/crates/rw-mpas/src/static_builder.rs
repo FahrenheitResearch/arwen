@@ -3325,7 +3325,7 @@ pub fn build_static_reporting(
                 crate::native_gwd::box_size(m.lat[c], m.dc[c]).1 < 4).collect()),
         native_undefined_exclusion_status: native_mesh.as_ref().and_then(|m|
             (0..m.lat.len()).any(|c| crate::native_gwd::box_size(m.lat[c], m.dc[c]).1 < 4)
-                .then(|| "PROPOSED FOR DREW: case-specific sign-off required".into())),
+                .then(|| "PROPOSED FOR OWNER SIGN-OFF: case-specific sign-off required".into())),
     };
     let provenance_json = serde_json::to_string(&provenance)
         .map_err(|e| MpasError::Refusal(format!("cannot serialise the provenance: {e}")))?;

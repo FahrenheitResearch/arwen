@@ -22,7 +22,7 @@ refusing it: a maximum extent (:data:`POINT_FIT_MAX_EXTENT_KM`), and the
 projection's own polar envelope.
 
 What stays a refusal is the case a smaller domain cannot fix: an area the
-user DREW that reaches the pole, and a point so close to one that even the
+user OUTLINED that reaches the pole, and a point so close to one that even the
 minimum layout contains it.  Those two keep their wording, which the
 desktop maps to its own sentence.
 
