@@ -94,6 +94,21 @@ def cell_config(cell: tuple[int, int, int, float]):
 class _OnCard(np.ndarray):
     """An array the stand-in put on the card."""
 
+    def get(self, *args, **kwargs):
+        """cupy's device-to-host copy."""
+        return np.array(self).view(np.ndarray)
+
+
+class _OnCardRow(_OnCard):
+    """A 1-D card array whose elements index as 0-d card arrays, as cupy's do
+    (``float(ds[1].get())`` reads the solar constant that way)."""
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        if isinstance(value, np.generic):
+            return np.asarray(value).view(_OnCard)
+        return value
+
 
 def _on_card(value):
     if isinstance(value, np.ndarray) and not isinstance(value, _OnCard):
@@ -229,9 +244,38 @@ def driver_arrays(driver, state) -> dict[str, tuple[tuple[int, ...], int]]:
 def census() -> dict[str, dict]:
     import datetime
 
+    from gpuwm.core import solar
     from gpuwm.core.physics import initialize_physics
     from gpuwm.core.preflight import physics_array_shapes
     from gpuwm.core.state import DomainState
+
+    # The WRF solar geometry (radconst + calc_coszen, both generations) is a
+    # compiled unit reached through the device-keyed module cache, which the
+    # stand-in has no device for; Noah-MP's cold start asks it for COSZEN.
+    # Its launches are no-ops here like every other, so the stand-in returns
+    # the same three on-card buffers, zero-filled, with the same shapes.
+    def solar_geometry_device(julian, xtime, gmt, latitude, longitude, *,
+                              generation=solar.DEFAULT_SOLAR_GENERATION,
+                              declination=None):
+        import cupy as cp
+        solar.solar_generation(generation)
+        lat = cp.ascontiguousarray(cp.asarray(latitude, dtype=cp.float32))
+        return (cp.zeros(2, cp.float32).view(_OnCardRow),
+                cp.zeros_like(lat), cp.zeros_like(lat))
+
+    solar.solar_geometry_device = solar_geometry_device
+
+    # Noah-MP compiles at the direct-NVRTC boundary (gpuwm.core.ieee_module)
+    # rather than through cp.RawModule; the stand-in compiles nothing there
+    # either, and its module launches nothing, exactly as _RawModule does.
+    from gpuwm.core import ieee_module
+
+    def compile_module(source, options, module_key, log_stream=None):
+        module = _RawModule()
+        module.code, module.options = source, tuple(options)
+        return module
+
+    ieee_module.compile_module = compile_module
 
     report: dict[str, dict] = {}
     for cell in admitted_cells():

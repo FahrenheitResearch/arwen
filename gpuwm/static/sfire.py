@@ -18,6 +18,12 @@ import time
 from gpuwm.static import rust_bridge
 
 SCHEMA="gpuwm-sfire-static-v1"
+#: The packaged route each role takes when a request names none.  Terrain is
+#: the 3DEP 1/3 arc-second tile route: the 3DEP WCS answers small windows but
+#: returned HTTP 404 and 504 for a 66 x 60 km fire domain (measured
+#: 2026-10-12), so the default refused an ordinary real fire; both routes
+#: carry the same 1/3 arc-second 3DEP elevations.
+DEFAULT_ROUTES=(("terrain","usgs-3dep-13as"),("fuel","landfire-fbfm40"))
 ROUTES=Path(__file__).resolve().parents[1]/"authorities"/"sfire-static-routes.v1.json"
 
 
@@ -252,6 +258,37 @@ def _wcs_open(url,offset):
             time.sleep(attempt+1)
 
 
+def _wcs_query(row,year,bounds,resolution,crs):
+    """The GetCoverage query a route row's WCS version speaks.
+
+    A row without ``wcs_version`` keeps the WCS 1.0.0 request (bbox, resx,
+    nearest-neighbour) it was published with.  ``wcs_version = "2.0.1"``
+    asks for the native coverage over the snapped bounds with one subset
+    per axis and no resampling.  The breakage this prevents: LANDFIRE's
+    GeoServer stopped answering WCS 1.0.0 GetCoverage (it returns an
+    ExceptionReport, "java.lang.String cannot be cast to ... EObject",
+    measured 2026-10-12) while WCS 2.0.1 serves the same native 30 m
+    pixels, so every LANDFIRE fuel request failed and no real fire could
+    be prepared.
+    """
+    version=row.get("wcs_version","1.0.0")
+    if version=="1.0.0":
+        return urllib.parse.urlencode(dict(service="WCS",version="1.0.0",request="GetCoverage",
+            coverage=row["coverage"].format(year=year),crs=crs,response_crs=crs,
+            bbox=",".join(format(value,".10f") for value in bounds),
+            resx=resolution,resy=resolution,format="GeoTIFF",
+            interpolation="nearest neighbor"))
+    if version!="2.0.1":
+        raise ValueError(f"SFIRE WCS version {version!r} has no request form; known: 1.0.0, 2.0.1")
+    x,y=row["axis_labels"]
+    query=[("service","WCS"),("version","2.0.1"),("request","GetCoverage"),
+           ("coverageId",row["coverage_id"].format(year=year)),
+           ("subset",f"{x}({bounds[0]:.10f},{bounds[2]:.10f})"),
+           ("subset",f"{y}({bounds[1]:.10f},{bounds[3]:.10f})"),
+           ("format","image/geotiff")]
+    return urllib.parse.urlencode(query)
+
+
 def acquire(source_id,year,bounds,cache_root):
     """Acquire an opaque public source via its packaged transport row."""
     from gpuwm.static import highres_fetch as fetch
@@ -274,12 +311,7 @@ def acquire(source_id,year,bounds,cache_root):
     resolution=row.get("resolution",row.get("resolution_degrees"))
     crs=row.get("crs","EPSG:4326")
     bounds=coverage_bounds(bounds,resolution,source_crs=crs,pixel_edge_offset=row.get("pixel_edge_offset",0.))
-    query=dict(service="WCS",version="1.0.0",request="GetCoverage",
-        coverage=row["coverage"].format(year=selected),crs=crs,response_crs=crs,
-        bbox=",".join(format(value,".10f") for value in bounds),
-        resx=resolution,resy=resolution,format="GeoTIFF",
-        interpolation="nearest neighbor")
-    url=row["url"].format(year=selected)+"?"+urllib.parse.urlencode(query)
+    url=row["url"].format(year=selected)+"?"+_wcs_query(row,selected,bounds,resolution,crs)
     key=hashlib.sha256(url.encode()).hexdigest()[:24]
     label=selected if selected is not None else "current"
     path=Path(cache_root)/source_id/f"{label}_{key}.tif"
@@ -321,7 +353,7 @@ def prepare(config,output,*,base=None):
     if not cache.is_absolute():cache=base/cache
     metadata={};inputs={}
     options=config.get("sources",{})
-    for role,default in (("terrain","usgs-3dep-wcs"),("fuel","landfire-fbfm40")):
+    for role,default in DEFAULT_ROUTES:
         if role in config:
             bound=dict(config[role]);path=Path(bound["path"])
             if not path.is_absolute():path=base/path

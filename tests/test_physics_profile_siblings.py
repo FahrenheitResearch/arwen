@@ -31,7 +31,11 @@ def test_new_offers_preserve_every_previous_source_order_and_default():
         old = (tuple(p for p in verified if p not in _EXPERT_PROFILE_IDS)
                + COMPOSITION_SUITE_PROFILE_IDS + _EXPERT_PROFILE_IDS) if verified else verified
         current = _SOURCE_PHYSICS_PROFILES[source]
-        assert current == old, source
+        # The port line adds named suites; every earlier offer keeps its order.
+        added = tuple(p for p in current if p not in old)
+        assert set(added) <= {
+            "lin-mp2-ysu-mm5-noah-rrtmg-legacy-implemented-unverified-v1"}, (source, added)
+        assert tuple(p for p in current if p not in added) == old, source
         if old:
             assert current[0] == old[0], source
 

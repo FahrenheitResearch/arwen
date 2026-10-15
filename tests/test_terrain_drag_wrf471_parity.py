@@ -255,7 +255,13 @@ def test_gwdo_gsl_matches_wrf_module_bl_gwdo_gsl(dx):
 #: the flushed subnormal input above.  RTX PRO 6000, NVRTC 13.4.92 and 12.9.86.
 YSU_TOPO_MAX_ULP: dict[str, int] = {"du": 0, "dv": 0, "u10": 1,
                                     "v10": 0}
-YSU_BRANCH_CASES = (12, 13)
+#: Held out of the tables above: case 13 only, where WRF's own prfac2 0/0
+#: writes NaN.  Case 12 (ust = hfx = qfx = 0) left with the zero-flux short
+#: circuit (golden/ports-pbl, 2026-10-12) and is graded with the rest; the
+#: tables did not move.
+YSU_BRANCH_CASES = (13,)
+#: The two calm columns, still asserted variant by variant below.
+YSU_CALM_CASES = (12, 13)
 #: The YSU kernel's worst absolute momentum-tendency error against WRF, with
 #: or without the topo arm (m/s2): zero since lane/parity-286 (was
 #: 4.2375177e-08, CUDA libm and contraction).
@@ -286,6 +292,10 @@ def _ysu_topo_run():
             psim=row("psim"), psih=row("psih"), xland=row("xland"),
             u10=row("u10_in"), v10=row("v10_in"), dt=float(fx["dt"]),
             ysu_topdown_pblmix=flag, topo=(row("ctopo"), row("ctopo2")),
+            # The WRF 4.7.1 ctopo reference grades the legacy kernel; the
+            # WRF 4.8 generation's terrain columns are graded against WRF
+            # 4.8 by tools/ysu_generations_oracle/gate.py.
+            ysu_version="wrf_461",
             u10_out=u10o, v10_out=v10o)
         host = {k: cp.asnumpy(v) for k, v in out.items()}
         host["u10"] = cp.asnumpy(u10o)
@@ -337,12 +347,15 @@ def test_the_u10_ulp_is_a_flushed_subnormal_input():
         assert (got[name][0, differ] == 0).all(), name
 
 
-# The ten legacy probes have a branch disagreement with WRF. They
-# remain constrained for every coefficient variant, not removed from the
-# oracle. Cases 12/13 take the inherited zero-coupling early return.
+# The ten calm-column probes (cases 12 and 13, five coefficient variants
+# each).  Until golden/ports-pbl they took the kernel's zero-flux early
+# return and sat 1e9 ULP from WRF; with that return removed every lane is
+# WRF's word, for every (ctopo, ctopo2) variant, wherever WRF wrote a number.
 # (Case 7, a positive subnormal BR the kernel used to flush and read as
-# convective, was closed in lane/parity-286 and is graded with the rest.) WRF case 13
-# produces 0/0 in prfac2, so its heat diffusivity and theta rates are NaN.
+# convective, was closed in lane/parity-286 and is graded with the rest.)
+# WRF case 13 produces 0/0 in prfac2, so its theta rates and one heat
+# diffusivity are NaN (1 << 40 is this file's ULP distance to a NaN); the
+# port is finite there by declared divergence.
 _LEGACY_FLOAT_REFERENCE = {
     "du": "utnp", "dv": "vtnp", "dtheta": "ttnp", "dqv": "qvtnp",
     "dqc": "qctnp", "dqi": "qitnp", "exch_h": "exch_hx",
@@ -350,26 +363,20 @@ _LEGACY_FLOAT_REFERENCE = {
     "delta": "delta", "u10": "u10", "v10": "v10",
 }
 _LEGACY_MAX_ULP = {
-    12: {"du": 920253600, "dv": 912814535, "dtheta": 892734306,
-         "dqv": 830378986, "dqc": 0, "dqi": 0, "exch_h": 1029269266,
-         "exch_m": 1041400506, "hpbl": 40359677, "wstar": 0,
-         "delta": 0, "u10": 0, "v10": 0},
-    13: {"du": 919006959, "dv": 911486339, "dtheta": 1 << 40,
-         "dqv": 822223394, "dqc": 0, "dqi": 0, "exch_h": 1 << 40,
-         "exch_m": 1039745268, "hpbl": 7644438, "wstar": 0,
-         "delta": 0, "u10": 0, "v10": 0},
+    12: {name: 0 for name in _LEGACY_FLOAT_REFERENCE},
+    13: {**{name: 0 for name in _LEGACY_FLOAT_REFERENCE},
+         "dtheta": 1 << 40, "exch_h": 1 << 40},
 }
-# Finite absolute momentum errors in m/s2, measured on sm_89 and sm_120.
+# Absolute momentum errors in m/s2: exactly zero on both columns, measured on
+# sm_120 (G1 RTX PRO 6000, NVRTC 12.9.86).
 _LEGACY_MOMENTUM_ABS = {
-    12: {"du": (6.495582056231797e-06,) * 5,
-         "dv": (3.4636921100172913e-06,) * 5},
-    13: {"du": (5.928675363975344e-06,) * 5,
-         "dv": (3.1616953037882922e-06,) * 5},
+    12: {"du": (0.0,) * 5, "dv": (0.0,) * 5},
+    13: {"du": (0.0,) * 5, "dv": (0.0,) * 5},
 }
 
 
 @requires_gpu
-@pytest.mark.parametrize("case", YSU_BRANCH_CASES)
+@pytest.mark.parametrize("case", YSU_CALM_CASES)
 def test_legacy_ysu_branches_and_topo_outputs_keep_their_measured_distance(case):
     """Every legacy output has a numeric, NaN or exact branch constraint."""
     fx, got = _ysu_topo_run()
@@ -398,7 +405,7 @@ def test_legacy_ysu_branches_and_topo_outputs_keep_their_measured_distance(case)
                 assert float(absolute) == _LEGACY_MOMENTUM_ABS[case][port][variant]
 
     # CTOPO2's correction is independent of the inherited PBL regimes and
-    # is exactly WRF's for every legacy column, including the early return.
+    # is exactly WRF's for every legacy column, calm columns included.
     for name in ("u10", "v10"):
         _assert_bits(got[name][0, columns], fx[name][columns], f"case {case} {name}")
     if case == 7:
@@ -414,22 +421,22 @@ def test_legacy_ysu_branches_and_topo_outputs_keep_their_measured_distance(case)
             assert (got[port][:, 0, columns[1:]] != got[port][:, 0, columns[0]][:, None]).any(axis=0).all()
             assert (fx[ref][:, columns[1:]] != fx[ref][:, columns[0]][:, None]).any(axis=0).all()
     else:
-        for name in ("du", "dv", "dtheta", "dqv", "dqc", "dqi", "exch_h", "exch_m"):
-            _assert_bits(got[name][:, 0, columns], np.zeros((40, 5), np.float32), name)
-        for name in ("wstar", "delta", "topdown_radsum", "wstar3_2", "cloudflg"):
-            assert (got[name][0, columns] == 0).all(), name
-        _assert_bits(got["hpbl"][0, columns], fx["dz8w"][0, columns], "early-return hpbl")
-        np.testing.assert_array_equal(got["kpbl"][0, columns], 1)
+        # The calm columns run the whole YSU column, as WRF does: no early
+        # return, so KPBL and PBLH are WRF's on every coefficient variant
+        # (case 12: nine levels, 703.36 m; case 13: two levels).
+        np.testing.assert_array_equal(got["kpbl"][0, columns], fx["kpbl"][columns])
         np.testing.assert_array_equal(fx["kpbl"][columns], 9 if case == 12 else 2)
+        _assert_bits(got["hpbl"][0, columns], fx["hpbl"][columns], "calm-column hpbl")
         if case == 12:
             assert (fx["ust"][columns] == 0).all()
         else:
             assert (fx["ust"][columns] == np.finfo(np.float32).smallest_subnormal).all()
-        # Zero stress has no CTOPO momentum effect in WRF either, even
-        # though its background mixing differs from the port's early exit.
-        for reference in ("utnp", "vtnp"):
+        # Zero stress has no CTOPO momentum effect in WRF, and none in the
+        # port: the background mixing is the same for all five variants.
+        for port, reference in (("du", "utnp"), ("dv", "vtnp")):
             for column in columns:
                 _assert_bits(fx[reference][:, column], fx[reference][:, columns[0]], reference)
+                _assert_bits(got[port][:, 0, column], got[port][:, 0, columns[0]], port)
 
 
 @requires_gpu

@@ -277,7 +277,7 @@ HRRR_BUNDLE_PATHS = MappingProxyType({
 #: asserts they are the same set -- and which fails on ANY surviving
 #: ``mp_physics in (1, 6, 8, 10, 18)`` literal anywhere under ``gpuwm/``,
 #: so a fifth copy of this gate cannot be added silently.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50) + tuple(
+REFL_10CM_MICROPHYSICS = (1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106) + tuple(
     __import__('gpuwm.microphysics_schemes', fromlist=['NAMED_MP_IDS']).NAMED_MP_IDS)
 #: What a PACKAGED source reports when nothing has been measured on it:
 #: the suites the generic mapped route carries for every packaged profile,
@@ -487,10 +487,15 @@ _EXPERT_PROFILE_IDS = (
 #: neither a composition suite nor an expert one here (which is also how
 #: ``expert_template_ids_for_source`` resolves a source whose declared
 #: template list is empty).
+# Source-independent compositions with component evidence and no
+# source-qualified WRF trajectory. The registry declares their maturity.
+_GENERIC_IMPLEMENTED_PROFILE_IDS = (
+    "lin-mp2-ysu-mm5-noah-rrtmg-legacy-implemented-unverified-v1",
+) + COMPOSITION_SUITE_PROFILE_IDS
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
     source_id: (
         with_profile_siblings(p for p in profiles if p not in _EXPERT_PROFILE_IDS)
-        + COMPOSITION_SUITE_PROFILE_IDS
+        + _GENERIC_IMPLEMENTED_PROFILE_IDS
         + _EXPERT_PROFILE_IDS
         if profiles else profiles)
     for source_id, profiles in _VERIFIED_SOURCE_PHYSICS_PROFILES.items()
@@ -860,7 +865,9 @@ def runner_capabilities() -> dict[str, object]:
     # and each entry says so beside the list rather than relying on a
     # consumer to find the top-level physics_admission block.
     source_profile_ids_semantics = (
-        "per-source WRF-verification evidence this runner vouches for; "
+        "per-source verification rows plus source-independent "
+        "implemented-unverified named compositions with their declared "
+        "component evidence limits; the latter claim no coupled WRF trajectory. "
         "NOT an admission list -- any engine-valid suite runs from the "
         "hash-bound experiment config on every supported source (see "
         "physics_admission)")
@@ -7199,6 +7206,8 @@ def preflight_prepared_forecast(
         geometry_receipt_path, static_path, grid, exp.root.run)
     static = load_native_static_cache(
         static_path, grid, exp.root.run.ny, exp.root.run.nx)
+    from gpuwm.static.orographic import require_prepared_terrain_drag
+    require_prepared_terrain_drag(static, exp.root.run)
     from gpuwm.static.terrain_autosmooth import verify_receipt, run_line
     smoothing = verify_receipt(
         geometry_receipt.get("terrain_autosmooth"), static["HGT_M"],
@@ -10448,6 +10457,7 @@ def run_prepared_forecast(
         records, output_schedule,
         captured_paths=(cadence_paths if capture is not None and not capture.keep_member_files else None))
     timing["total"] = time.perf_counter() - total_started
+    from gpuwm.correct_mode import run_receipt as _correct_mode_run_receipt
     report = {
         "schema": REPORT_SCHEMA,
         "status": "PASS",
@@ -10486,6 +10496,10 @@ def run_prepared_forecast(
                 runtime_source_identity["git_commit"] is not None
                 and final_source_identity["git_commit"] is not None),
         },
+        # physics.mode (gpuwm/correct_mode.py) as this run's RunConfig
+        # resolved it: correct by default from 2.9.0, exact when named, and
+        # exact with forced_by under GPUWM_WRF_EXACT=1.
+        "correct_mode": _correct_mode_run_receipt({1: cfg}),
         "domain": {
             "grid_id": 1,
             "nx": int(cfg.nx),

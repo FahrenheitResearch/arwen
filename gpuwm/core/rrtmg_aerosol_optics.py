@@ -747,3 +747,74 @@ def aer3_sw_optics_device(p3d, t3d, qv3d, dz8w, nwfa, nifa, nlayers,
              *((smoke,) if smoke is not None else ()),
              ztaua, zasya, zomga, taod))
     return ztaua, zasya, zomga, taod
+
+
+# WRF 4.6.1 Tegen six-type climatology. These entry points only orchestrate
+# device arrays. The interpolation and band sums run in rrtmg_aer1.cu.
+def _aer1_launch(name, count, args):
+    from gpuwm.core.kernels import load_module
+    if count:
+        load_module("rrtmg_aer1").get_function(name)(
+            ((count + 127) // 128,), (128,), args)
+
+
+def _aer1_array(name, value, shape):
+    import cupy as cp
+    if not isinstance(value, cp.ndarray) or value.dtype != cp.float32 or value.shape != shape:
+        raise ValueError(f"aer_opt=1 {name} needs float32 device shape {shape}")
+    if bool(cp.any(~cp.isfinite(value)).item()):
+        raise ValueError(f"aer_opt=1 {name} contains non-finite values")
+    return cp.ascontiguousarray(value)
+
+
+def aer1_climatology_device(latitude, longitude, tables):
+    import cupy as cp
+    nc = int(latitude.size)
+    lat = _aer1_array("latitude", latitude, (nc,))
+    lon = _aer1_array("longitude", longitude, (nc,))
+    if bool(cp.any((lat < -90) | (lat > 90) | (lon < -180) | (lon > 180)).item()):
+        raise ValueError("aer_opt=1 coordinates must use latitude [-90,90] and longitude [-180,180]")
+    out = cp.empty((nc, 12, 12, 6), cp.float32)
+    _aer1_launch("rrtmg_aer1_monthly", out.size,
+                 (np.int32(nc), lat, lon, cp.asarray(tables["latitude"]),
+                  cp.asarray(tables["longitude"]), cp.asarray(tables["climatology"]), out))
+    return out
+
+
+def aer1_time_pressure_device(monthly, julian, pressure, pressure_full, tables):
+    import cupy as cp
+    nc, nz = map(int, pressure.shape)
+    monthly = _aer1_array("aerodm", monthly, (nc, 12, 12, 6))
+    p = _aer1_array("pressure", pressure, (nc, nz))
+    pf = _aer1_array("interface pressure", pressure_full, (nc, nz+1))
+    if not np.isfinite(julian) or float(julian) < 0:
+        raise ValueError("aer_opt=1 julian must be finite and nonnegative")
+    if bool(cp.any((p <= 0)).item()) or bool(cp.any(p[:,1:] >= p[:,:-1]).item()) or bool(cp.any(pf[:,1:] >= pf[:,:-1]).item()):
+        raise ValueError("aer_opt=1 requires positive pressure decreasing from bottom to top")
+    timed = cp.empty((nc, 12, 6), cp.float32)
+    aerod = cp.empty((nc, nz, 6), cp.float32)
+    total = cp.empty(nc, cp.float32)
+    _aer1_launch("rrtmg_aer1_time", timed.size, (np.int32(nc), F(julian), monthly,
+                  cp.asarray(tables["month_days"]), timed))
+    _aer1_launch("rrtmg_aer1_pressure", aerod.size, (np.int32(nc), np.int32(nz), p, pf,
+                  cp.asarray(tables["pressure"]), timed, aerod))
+    _aer1_launch("rrtmg_aer1_total", nc, (np.int32(nc), np.int32(nz), aerod, total))
+    return aerod, total, timed
+
+
+def aer1_sw_optics_device(aerod, nlayers, sw_tables):
+    import cupy as cp
+    nc, nz, ns = map(int, aerod.shape)
+    if ns != 6 or type(nlayers) is not int or nlayers != nz+1:
+        raise ValueError("aer_opt=1 needs six species and one zero aerosol layer above the model top")
+    aerod = _aer1_array("aerod", aerod, (nc, nz, 6))
+    if bool(cp.any(aerod < 0).item()):
+        raise ValueError("aer_opt=1 layer optical depth must be nonnegative")
+    out = tuple(cp.empty((nc, 14, nlayers), cp.float32) for _ in range(3))
+    from gpuwm.core.rrtmg_sw import validate_aer1_optics_tables
+    validate_aer1_optics_tables(sw_tables)
+    coeffs = tuple(cp.asarray(np.ascontiguousarray(getattr(sw_tables, name), dtype=F))
+                   for name in ("rsrtaua", "rsrpiza", "rsrasya"))
+    _aer1_launch("rrtmg_aer1_optics", out[0].size,
+                 (np.int32(nc), np.int32(nz), np.int32(nlayers), aerod, *coeffs, *out))
+    return out

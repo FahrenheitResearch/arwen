@@ -408,6 +408,44 @@ def test_above_model_profiles_match_wrf_v461_lw_and_sw_construction():
                                rtol=0.0, atol=1.0e-7)
 
 
+def test_above_model_ladder_stays_above_the_floor_for_a_low_column_top():
+    """A column top below the declared p_top's ladder keeps positive layers.
+
+    Breakage: the MPAS column seam hands a top pressure per column and one
+    declared p_top.  On the global 30 km mesh (2026-10-11) the columns whose
+    top sat more than 4 hPa below the declared value got a negative
+    above-model interface and RRTMGP longwave returned non-finite heating.
+    """
+    from gpuwm.core.rrtmgp import (
+        RRTMGP_TOA_PRESSURE_PA, _extend_above_model_profile)
+
+    tops = np.array([1150.0, 700.0, 801.0, 1600.0], np.float32)
+    ncol, nz = tops.size, 6
+    plev = np.stack([np.linspace(100000.0, top, nz + 1) for top in tops]).astype(np.float32)
+    play = (0.5 * (plev[:, :-1] + plev[:, 1:])).astype(np.float32)
+    tlay = np.broadcast_to(np.linspace(288.0, 225.0, nz, dtype=np.float32), (ncol, nz)).copy()
+    tlev = np.broadcast_to(np.linspace(290.0, 224.0, nz + 1, dtype=np.float32), (ncol, nz + 1)).copy()
+    qv = np.full((ncol, nz), 3.0e-6, np.float32)
+
+    lw = _extend_above_model_profile(
+        play, plev, tlay, tlev, qv, p_top=1150.0, kind="lw",
+        pressure_floor=RRTMGP_TOA_PRESSURE_PA, xp=np, validate_top=False)
+    assert lw.upper_nlay == 3
+    upper = lw.plev[:, nz:]
+    assert np.all(np.isfinite(lw.plev)) and np.all(np.isfinite(lw.tlev))
+    assert np.all(np.diff(upper, axis=1) < 0.0)
+    assert np.all(upper[:, -1] == np.float32(RRTMGP_TOA_PRESSURE_PA))
+    assert np.all(lw.play[:, nz:] > RRTMGP_TOA_PRESSURE_PA)
+    # WRF's 4-hPa ladder is untouched wherever it stays above the floor.
+    for col in (0, 3):
+        np.testing.assert_array_equal(
+            upper[col, 1:3], np.float32(tops[col]) - np.array([400.0, 800.0], np.float32))
+    # The low tops share their own span evenly instead.
+    np.testing.assert_allclose(
+        upper[1, 1:3], 700.0 + (RRTMGP_TOA_PRESSURE_PA - 700.0) * np.array([1, 2]) / 3.0,
+        rtol=1.0e-6)
+
+
 def test_above_model_profile_guard_and_model_flux_slice():
     from gpuwm.core.rrtmgp import (
         RRTMGP_TOA_PRESSURE_PA, _extend_above_model_profile,
@@ -3754,8 +3792,12 @@ def test_preflight_prices_radius_columns_for_exactly_the_schemes_that_use_them()
         # One state carrying every field any scheme's coupling asks for, so
         # the only thing that varies between the two calls is effi.
         state = SimpleNamespace(
-            elapsed_seconds=0.0, qc=qc, qi=qi, qs=qs,
-            qr=cp.zeros(shape, cp.float32),
+            # Registry.EM_COMMON:3017: WSM3 has combined qc/qr only.
+            elapsed_seconds=0.0,
+            qc=qc + qi if mp_physics == 3 else qc,
+            qi=cp.zeros_like(qi) if mp_physics == 3 else qi,
+            qs=cp.zeros_like(qs) if mp_physics == 3 else qs,
+            qr=qs if mp_physics == 3 else cp.zeros(shape, cp.float32),
             nc=cp.full(shape, 1.0e8, cp.float32),
             nr=cp.full(shape, 1.0e3, cp.float32),
             ni=cp.full(shape, 1.0e5, cp.float32),

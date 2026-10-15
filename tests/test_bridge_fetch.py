@@ -33,6 +33,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_TOOL = REPO_ROOT / "tools" / "build_bridge_bundle.py"
 
 
+def test_intermediate_producer_is_reachable_from_the_release_bridge_roster(tmp_path):
+    artifact = next(row for row in bridge_assets.BUNDLED_ARTIFACTS
+                    if row.name == "met_intermediate")
+    assert artifact.crate == bridges.CRATE_RELATIVE
+    assert artifact.env_var == bridges.BRIDGE_ENV[artifact.name]
+    binary = tmp_path / artifact.name
+    binary.write_bytes(bridges.BRIDGE_ABI_MARKERS[artifact.name])
+    bridge_assets.verify_contract_marker(artifact.name, binary)
+    binary.write_bytes(b'old producer without the declared request contract')
+    with pytest.raises(bridge_assets.BridgeAssetError):
+        bridge_assets.verify_contract_marker(artifact.name, binary)
+
+
 def _args(**kwargs) -> argparse.Namespace:
     return argparse.Namespace(**{"from_dir": None, "dest": None,
                                  "keep_bundle": False, "list": False,
@@ -695,6 +708,7 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
     from gpuwm.obs_score_bridge import library_names as obsscore_names
     from gpuwm.isobaric_bridge import library_names as isobaric_names
     from gpuwm.obs.superob_bridge import library_name as superob_name
+    from gpuwm.core.tempo_rust import library_name as tempo_name
 
     # One expected filename per library, from the resolver that actually
     # searches for it: libraries with one shared expectation would
@@ -706,7 +720,8 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
                  "obs_regrid": obsregrid_names()[0],
                  "obs_score": obsscore_names()[0],
                  "rw_isobaric": isobaric_names()[0],
-                 "rw_superob": superob_name()}
+                 "rw_superob": superob_name(),
+                 "rw_tempo": tempo_name()}
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         produced = bridge_assets.artifact_filename(artifact, host)
         if artifact.kind == "library":
@@ -1444,10 +1459,10 @@ def test_the_nowcast_frames_bundle_entry_matches_its_resolver_and_source(
             == lanes.NOWCAST_FRAMES_ABI_MARKER.encode())
 
     source = (REPO_ROOT / bridges.RUSTWX_CRATE_RELATIVE / "crates"
-              / "rw-wrfbatch" / "src" / "bin" / "nowcast_frames.rs")
+              / "rw-wrfbatch" / "src" / "cli_contracts.rs")
     if not source.is_file():
         pytest.skip("the Rust source is not in this install")
-    match = re.search(r'const ABI_MARKER: &str = "((?:[^"\\]|\\.)*)";',
+    match = re.search(r'const NOWCAST_FRAMES: &str = "((?:[^"\\]|\\.)*)";',
                       source.read_text(encoding="utf-8"), re.S)
     assert match, "rw_nowcast_frames ABI_MARKER not found"
     # Rust's string continuation: a backslash before a newline drops the

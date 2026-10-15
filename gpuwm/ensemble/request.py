@@ -21,7 +21,7 @@ class EnsembleRequest:
     #: Source trajectories or explicitly declared surface/land member arms.
     recipe: str | None = None
     trajectories: tuple = ()
-    #: Named existing-land and fixed surface-state arms on one source.
+    #: Named existing-land and fixed surface-state arms on selected sources.
     member_variants: tuple = ()
     max_ordinary_members_per_device: int | None = None
 
@@ -34,6 +34,9 @@ class EnsembleRequest:
         from gpuwm.ensemble.surface_controls import is_surface_recipe, validate_surface_recipe
         if is_surface_recipe(self.perturbation):
             object.__setattr__(self, "perturbation", validate_surface_recipe(self.perturbation))
+        from gpuwm.ensemble.initial_perturbation import is_initial_perturbation, validate_initial_perturbation
+        if is_initial_perturbation(self.perturbation):
+            object.__setattr__(self, "perturbation", validate_initial_perturbation(self.perturbation))
         if isinstance(self.members, bool):
             raise ValueError("ensemble members must be a positive integer")
         members = index(self.members)
@@ -83,8 +86,8 @@ class EnsembleRequest:
                 from gpuwm.ensemble.surface_controls import shared_surface_options
                 shared_surface_options(self.perturbation, members)
         if trajectories:
-            if self.recipe != "multi-model":
-                raise ValueError('ensemble trajectories belong to recipe = "multi-model"')
+            if self.recipe not in ("multi-model", "member-roster"):
+                raise ValueError('ensemble trajectories belong to recipe = "multi-model" or "member-roster"')
             for item in trajectories:
                 if (not isinstance(item, dict) or not {"source", "cycle"} <= item.keys()
                         or set(item) - {"source", "cycle", "member"}):
@@ -93,6 +96,9 @@ class EnsembleRequest:
             if len(trajectories) < members:
                 raise ValueError(f"multi-model lists {len(trajectories)} trajectories, but {members} members "
                                  "were requested; repeating a trajectory would fabricate ensemble size")
+            if self.recipe == "member-roster" and len(trajectories) != members:
+                raise ValueError("member-roster needs one trajectory for each named arm; "
+                                 "extra trajectories would leave source-to-arm ownership ambiguous")
         elif self.recipe == "multi-model":
             raise ValueError("a multi-model ensemble needs its trajectory list: "
                              "--trajectories FILE or [ensemble] trajectories")

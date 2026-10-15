@@ -1,0 +1,6 @@
+U expf
+U free
+U malloc
+U memcpy
+U memset
+U powf

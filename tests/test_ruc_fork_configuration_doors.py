@@ -45,7 +45,7 @@ def test_actual_v4121_hrrr_wrf_namelist_selects_the_fork_ruc_forms():
 
 
 def _ruc_input(*, fork=False):
-    text = INPUT_TEXT.replace('mp_physics = 55, 55', 'mp_physics = 8, 8').replace(
+    text = INPUT_TEXT.replace('mp_physics = 10, 10', 'mp_physics = 8, 8').replace(
         'sf_sfclay_physics = 91, 91', 'sf_sfclay_physics = 5, 5').replace(
         'sf_surface_physics = 2, 2', 'sf_surface_physics = 3, 3').replace(
         'bl_pbl_physics = 11, 11', 'bl_pbl_physics = 5, 5').replace(

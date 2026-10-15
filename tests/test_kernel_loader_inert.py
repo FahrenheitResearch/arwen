@@ -20,6 +20,7 @@ never compile anything, so they run in environments with no CUDA device.
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 import pytest
 
@@ -57,12 +58,23 @@ _EXPECTED_HEADERS = {
     "thompson_column": ("glibc_flt32.cuh", "glibc_flt64.cuh",
                         "thompson_aerosol_libm.cuh", "thompson_column_support.cuh",
                         "thompson_column_radar.cuh", "thompson_column_generated.cuh"),
+    "wsm7": ("glibc_flt32.cuh", "glibc_flt64.cuh"),
     # Selected diffusion and surface sources have independently pinned headers.
     "acoustic": ("glibc_trig_flt32.cuh",),
     "myjsfc": ("glibc_flt32.cuh", "flt32_expf_fma.cuh"),
     "mynn_surface": ("mynn_libm.cuh", "surface_subnormal.cuh"),
     "sfclay": ("glibc_flt32.cuh", "sfclay_classic.cuh"),
     "smag2d": ("glibc_flt32.cuh",),
+    "lin": ("glibc_flt32.cuh", "lin_support.cuh", "lin_wrf.cuh"),
+    "lin_refl": ("refl.cu",),
+    # Goddard 2017 radiation (ra_lw/ra_sw_physics = 5): a new unit.
+    "goddard": ("glibc_flt32.cuh", "portable_libm64.cuh", "goddard_bands.cuh", "goddard_sounding.cuh"),
+    # WRF lightning diagnostics (glibc float32 powers): a new unit.
+    "lightning": ("glibc_flt32.cuh",),
+    # aer_opt = 1 six-type climatology optics: named, no extra header.
+    "rrtmg_aer1": (),
+    # aer_opt = 2 column aerosol (WRF float32 math): a new unit.
+    "aer_opt2": ("glibc_flt32.cuh",),
     "upper_wind_limiter": ("glibc_flt32.cuh",),
     # New order-five scalar eta entry, qualified against the native fork.
     # No existing translation unit gains a header through this grant.
@@ -73,7 +85,10 @@ _EXPECTED_HEADERS = {
     "sfire_coupling": ("glibc_trig_flt32.cuh",),
     "sfire_ideal": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh", "sfire_libm.cuh"),
     "sfire_ideal_atmos": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
-    "noah_init": ("noah.cu",),
+    # noah.cu carries WRF's seaice_noah (lane/290-A5-fixes), which calls
+    # glibc's float32 expf/powf; the ordinary land column calls neither.
+    "noah_init": ("glibc_flt32.cuh", "noah.cu"),
+    "noah": ("glibc_flt32.cuh",),
     "horizontal": ("portable_libm64.cuh",),
     # Test-only bit grading, with the same shared header future callers use.
     "portable_libm64_grade": ("portable_libm64.cuh",),
@@ -94,6 +109,7 @@ _EXPECTED_HEADERS = {
        for name in _ALLOWED_AEROSOL_MODULES},
     "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
     "gf": ("glibc_flt32.cuh",),
+    "g3": ("glibc_flt32.cuh",),
     "ntiedtke": ("glibc_flt32.cuh",),
     # The original cu6 kernel: a new module whose GPU column oracle
     # (tools/tiedtke_wrf461_oracle/check.py --gpu) grades it bitwise.
@@ -102,20 +118,35 @@ _EXPECTED_HEADERS = {
     # A new module, so no pre-hook source to stay identical to; its WRF
     # v4.7.1 parity suites grade it bitwise.
     "urban_ucm": ("glibc_flt32.cuh",),
+    "urban_ucm480": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh",
+                     "urban_ucm.cu", "urban_ucm480_support.cuh", "urban_ucm480.cuh"),
     "urban_bep": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     "urban_bep_couple": ("glibc_flt32.cuh",),
     "myjurb": ("glibc_flt32.cuh",),
+    # The MYJ PBL, graded bitwise against the WRF v4.6.1 MYJPBL column
+    # oracle (tests/test_myjpbl_wrf461_parity.py): gfk_pow and the
+    # contracted gfk_exp_fma.
+    "myjpbl": ("glibc_flt32.cuh", "flt32_expf_fma.cuh"),
     # YSU's topo_wind arm (ysu_column_topo) takes glibc's powf; the default
     # entry points compile to byte-identical PTX with the header present
     # (tests/test_mp8_frozen.py, the ysu re-pin).
     "ysu": ("glibc_flt32.cuh", "ysu_topo.cuh"),
+    # WRF 4.8 YSU generation (ysu_version = "wrf_480"), its own unit.
+    "ysu_480": ("glibc_flt32.cuh", "ysu_480_topo.cuh"),
     # Shin-Hong takes glibc's powf/expf since lane/parity-pbl-libm; its WRF
     # v4.6.1 oracle grades the unit bitwise (tests/test_shinhong_wrf461_parity.py).
     "shinhong": ("glibc_flt32.cuh",),
     # Lane 286-aer-swint: WRF swint_opt = 1 and aer_opt = 3, graded
     # bitwise against the operational HRRR fork's gfortran/glibc Fortran.
     "swint": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
+    "rrtmg_legacy_solar": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     "rrtmg_aer3": ("glibc_flt32.cuh",),
+    # Kessler (mp_physics=1), graded bitwise against the byte-unmodified
+    # WRF v4.6.1 column oracle by tests/test_kessler_wrf461_parity.py.
+    "kessler": ("glibc_flt32.cuh",),
+    # Dudhia shortwave (ra_sw_physics=1): a new module, graded bitwise
+    # against the WRF v4.6.1 column oracle (tests/test_dudhia_sw_wrf461_parity.py).
+    "dudhia_sw": ("glibc_flt32.cuh",),
     # The UW moist-turbulence PBL: a new module, so no existing unit moves.
     "uwpbl": ("glibc_flt64.cuh", "uwpbl_common.cuh", "uwpbl_wvsat.cuh",
               "uwpbl_vdiff.cuh", "uwpbl_zisocl.cuh", "uwpbl_caleddy.cuh",
@@ -131,9 +162,31 @@ _EXPECTED_HEADERS = {
     # COS takes glibc_cosf (lane/verify-ruc-lsm).
     "ruc": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
+    # Kain-Fritsch: WOOF's own float32 expf/logf/powf for its WRF 4.6.1
+    # column oracle (2026-10-07); the unit compiles on gpuwm/core/kf.py's
+    # own route from this same assembled source.
+    "kf": ("glibc_flt32.cuh",),
+    "wsm3": ("glibc_flt32.cuh",),
     "chem_fire": ("glibc_flt32.cuh",),
     "chem_plumerise": ("glibc_flt32.cuh",),
+    "wsm5": ("glibc_flt32.cuh", "glibc_flt64.cuh"),
     "chem_drydep_wesely": ("glibc_flt32.cuh",),
+    # WSM6 graded word for word against WRF v4.6.1
+    # (tests/test_wsm6_wrf461_column_exact.py): WOOF's own float32 words
+    # for the scheme, its own binary64 words for refl10cm_wsm6.
+    "wsm6": ("glibc_flt32.cuh", "glibc_flt64.cuh"),
+    # Milbrandt-Yau (mp_physics = 9) and its radar operator: WOOF's own
+    # float32 exp/log/pow and log10, graded bitwise against the WRF v4.6.1
+    # column oracle (tests/test_milbrandt2_wrf461_exact_gpu.py).
+    "milbrandt2": ("glibc_flt32.cuh", "log10_flt32.cuh"),
+    "milbrandt2_zet": ("glibc_flt32.cuh", "log10_flt32.cuh"),
+    # WDM6 and its reflectivity, graded word for word against WRF v4.6.1
+    # by tools/wdm6_wrf461_oracle: WOOF's own float32 exp/log/pow, and for
+    # the reflectivity also WOOF's own binary64 exp/log/pow.
+    "wdm6": ("glibc_flt32.cuh",),
+    "wdm6_refl": ("glibc_flt32.cuh", "glibc_flt64.cuh"),
+    'nsas': ('glibc_flt32.cuh', 'nsas_constants.cuh'),
+    "wsm6r": ("glibc_flt32.cuh", "glibc_flt64.cuh"),
 }
 
 
@@ -145,12 +198,15 @@ def _module_names() -> list[str]:
 
 
 def test_lake_compile_options_do_not_change_existing_modules():
-    # These are closed literal grants for the selected source: the five
+    # These are closed literal grants for the selected source: the six
     # no-FMA units, four surface units and five diffusion units. In
     # particular MYNN PBL carries both the no-FMA and no-FTZ requirements.
     # A global option change must still fail for every other actual module.
-    no_fmad = {"lake", "ysu", "shinhong", "mynn_pbl", "mynn_dmp_sibling"}
-    no_ftz = {"sfclay", "myjsfc", "mynn_surface", "mynn_pbl", "thompson_column"}
+    no_fmad = {"lake", "g3", "ysu", "shinhong", "mynn_pbl", "mynn_dmp_sibling",
+               "wsm6", "kessler", "myjpbl", "milbrandt2", "milbrandt2_zet",
+               "wdm6", "wdm6_refl", "wsm3", "wsm6r"}
+    no_ftz = {"g3", "sfclay", "myjsfc", "mynn_surface", "mynn_pbl", "thompson_column",
+              "ysu_480", "wsm6r", "aer_opt2"}
     diffusion = {"smag2d", "diffusion", "diff_opt1", "diff6", "diff6_seam"}
     expected = {name: ("-std=c++17", "--fmad=false") for name in no_fmad}
     expected.update({name: ("-std=c++17", "--fmad=false", "--ftz=false")
@@ -159,11 +215,29 @@ def test_lake_compile_options_do_not_change_existing_modules():
                            "--prec-div=true", "--prec-sqrt=true",
                            "-DGPUWM_WRF_EXACT_C_DIFFUSION=1")
                      for name in diffusion})
+    # The two solar geometry units keep subnormals only (WRF 4.8 solar
+    # generation, graded against both releases' radconst/calc_coszen).
+    expected.update({name: ("-std=c++17", "--ftz=false")
+                     for name in ("rrtmg_legacy_solar", "swint")})
+    # The urban units keep the urban lanes' marker route and options.
+    expected.update({name: ("-std=c++17", "--ftz=false")
+                     for name in ("urban_ucm", "urban_bep", "urban_bep_couple")})
+    expected["urban_ucm480"] = ("-std=c++17", "--ftz=false", "--fmad=false")
+    expected['nsas'] = ('-std=c++17', '--ftz=false', '--fmad=false')
+    # The lightning unit's own direct NVRTC route (lane order of flags).
+    expected["lightning"] = ("-std=c++17", "--ftz=false", "--fmad=false")
     names = _module_names()
     assert set(expected) <= set(names), sorted(set(expected) - set(names))
     for name in names:
         assert kernel_loader.module_options(name) == expected.get(
             name, ("-std=c++17",)), name
+
+
+def _strict_diagnostics_header(name: str) -> str:
+    from gpuwm.wrf_exact import DIAGNOSTICS_ENABLED
+    if name == "diagnostics" and DIAGNOSTICS_ENABLED:
+        return (_KDIR / "glibc_flt32.cuh").read_text(encoding="utf-8")
+    return ""
 
 
 def _pre_hook_source(name: str) -> str:
@@ -179,12 +253,13 @@ def _pre_hook_source(name: str) -> str:
     the em dashes in acoustic.cu, advection.cu and coriolis_map.cu as cp1252
     and agree with each other while both being wrong.
     """
-    return (kernel_loader._preamble()
+    return (kernel_loader._preamble() + _strict_diagnostics_header(name)
             + (_KDIR / f"{name}.cu").read_text(encoding="utf-8"))
 
 
 def _pre_hook_source_int_defines(name: str, prefix: str) -> str:
-    return (kernel_loader._preamble() + prefix + "\n"
+    return (kernel_loader._preamble() + _strict_diagnostics_header(name)
+            + prefix + "\n"
             + (_KDIR / f"{name}.cu").read_text(encoding="utf-8"))
 
 
@@ -218,11 +293,22 @@ def test_thompson_cu_source_is_byte_identical():
             == _pre_hook_source("thompson"))
 
 
+def _declared_header_extensions():
+    path = Path(__file__).resolve().parents[1] / "tests/data/kernel_source_pins.json"
+    return json.loads(path.read_text(encoding="utf-8")).get("loader_headers", {})
+
+
 def test_allow_list_is_a_closed_literal_mapping():
     extra = kernel_loader.EXTRA_HEADERS
-    assert dict(extra) == _EXPECTED_HEADERS, (
-        "the extra-header allow-list is a closed literal mapping; a module "
-        "may receive a device header only by being named here too")
+    expected = dict(_EXPECTED_HEADERS)
+    for name, headers in _declared_header_extensions().items():
+        assert isinstance(headers, list) and headers, name
+        assert name not in expected or expected[name] == tuple(headers), (
+            f"extension replaces established loader header identity for {name}")
+        expected[name] = tuple(headers)
+    assert dict(extra) == expected, (
+        "the loader header mapping differs from its declared source-pin "
+        "manifest; a new binding must carry source authority there")
     for name, headers in extra.items():
         assert isinstance(headers, tuple)
 
@@ -233,7 +319,9 @@ def test_allow_listed_headers_exist_and_translation_units_are_explicit():
             path = _KDIR / header
             assert path.is_file(), f"missing device header {header}"
             assert path.suffix == ".cuh" or (module, header) in (
-                ("noah_init", "noah.cu"), ("pd_vertical_sl", "pd_advection.cu")), (
+                ("noah_init", "noah.cu"), ("pd_vertical_sl", "pd_advection.cu"),
+                ("urban_ucm480", "urban_ucm.cu"),
+                ("lin_refl", "refl.cu")), (
                 "only the explicitly reused initialization and scalar units may supply a .cu header")
 
 
@@ -301,7 +389,9 @@ def test_the_noahmp_runtime_route_assembles_the_loader_source_byte_for_byte():
     for name in routed:
         unit = runtime_unit(name)
         assert unit.source == kernel_loader.module_source(name), name
-        assert unit.options == ("-std=c++17",), name
+        # Noah-MP units compile without FTZ (land no-FTZ route carried by
+        # the WRF 4.7 night snow-aging port, gpuwm/core/ieee_module.py).
+        assert unit.options == ("-std=c++17", "--ftz=false"), name
         assert name not in kernel_loader.EXTRA_HEADERS, (
             f"{name} joined the header allow-list; the Noah-MP runtime unit "
             "must carry the same header or the loader must stop routing it")
@@ -318,10 +408,18 @@ def test_mosaic_ucm_composes_one_header_and_unchanged_ucm():
 
 
 def test_noah_initialization_reuses_device_physics_without_moving_forecast_source():
-    assert "noah" not in kernel_loader.EXTRA_HEADERS
-    assert kernel_loader.module_source("noah") == _pre_hook_source("noah")
-    assert kernel_loader.EXTRA_HEADERS["noah_init"] == ("noah.cu",)
+    # The forecast unit gains exactly one header, glibc_flt32.cuh, for the
+    # sea-ice column's gfk_exp/gfk_pow (lane/290-A5-fixes); the ordinary
+    # land column reads none of it and its words are unchanged (the release
+    # short case is byte-identical to 0bf505764 with the header present).
+    glibc = (_KDIR / "glibc_flt32.cuh").read_text(encoding="utf-8")
+    assert kernel_loader.EXTRA_HEADERS["noah"] == ("glibc_flt32.cuh",)
+    assert kernel_loader.module_source("noah") == (
+        kernel_loader._preamble() + glibc
+        + (_KDIR / "noah.cu").read_text(encoding="utf-8"))
+    assert kernel_loader.EXTRA_HEADERS["noah_init"] == ("glibc_flt32.cuh", "noah.cu")
     reused = (_KDIR / "noah.cu").read_text(encoding="utf-8")
     body = (_KDIR / "noah_init.cu").read_text(encoding="utf-8")
-    assert kernel_loader.module_source("noah_init") == kernel_loader._preamble() + reused + body
+    assert kernel_loader.module_source("noah_init") == (
+        kernel_loader._preamble() + glibc + reused + body)
     assert "__device__ static real noah_frh2o(" not in body

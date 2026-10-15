@@ -1,0 +1,144 @@
+{
+ "A-nz50-ptop50hPa": {
+  "p_top": 5000.0,
+  "nz": 50,
+  "icloud": 1,
+  "warm_rain": false,
+  "yr": 2026,
+  "columns": [
+   "convective-plains",
+   "convective-tropical-mcs",
+   "convective-anvil-only",
+   "stable-night-clear",
+   "stable-night-fog",
+   "stable-night-dry-desert",
+   "arctic-winter-clear",
+   "arctic-ice-cloud-snow",
+   "midlat-snowstorm",
+   "freezing-rain",
+   "ocean-tropical-clear",
+   "ocean-stratocumulus",
+   "ocean-storm-track",
+   "high-terrain-tibet",
+   "high-terrain-rockies-cloud",
+   "high-terrain-andes-night",
+   "edge-1085hPa-anticyclone",
+   "edge-tbound-reset-342K",
+   "edge-tbound-exactly-340K",
+   "edge-hot-desert-jt-clamp",
+   "edge-taucloud-threshold",
+   "edge-negative-subnormal-q",
+   "edge-overcast-everywhere",
+   "edge-integer-kelvin",
+   "edge-plog-switches"
+  ]
+ },
+ "B-nz40-ptop100hPa": {
+  "p_top": 10000.0,
+  "nz": 40,
+  "icloud": 1,
+  "warm_rain": false,
+  "yr": 2026,
+  "columns": [
+   "convective-plains",
+   "convective-anvil-only",
+   "stable-night-clear",
+   "stable-night-fog",
+   "arctic-winter-clear",
+   "midlat-snowstorm",
+   "freezing-rain",
+   "ocean-tropical-clear",
+   "ocean-stratocumulus",
+   "high-terrain-tibet",
+   "edge-1085hPa-anticyclone",
+   "edge-tbound-reset-342K"
+  ]
+ },
+ "C-nz60-ptop10hPa": {
+  "p_top": 1000.0,
+  "nz": 60,
+  "icloud": 1,
+  "warm_rain": false,
+  "yr": 2026,
+  "columns": [
+   "convective-plains",
+   "convective-tropical-mcs",
+   "stable-night-clear",
+   "stable-night-dry-desert",
+   "arctic-ice-cloud-snow",
+   "ocean-storm-track",
+   "high-terrain-rockies-cloud",
+   "high-terrain-andes-night",
+   "edge-hot-desert-jt-clamp",
+   "edge-taucloud-threshold",
+   "edge-overcast-everywhere",
+   "edge-integer-kelvin"
+  ]
+ },
+ "D-nz35-ptop1hPa-nobuffer": {
+  "p_top": 100.0,
+  "nz": 35,
+  "icloud": 1,
+  "warm_rain": false,
+  "yr": 2019,
+  "columns": [
+   "convective-plains",
+   "stable-night-clear",
+   "arctic-winter-clear",
+   "midlat-snowstorm",
+   "ocean-tropical-clear",
+   "ocean-stratocumulus",
+   "high-terrain-tibet",
+   "edge-negative-subnormal-q"
+  ]
+ },
+ "E-nz45-ptop2hPa-onebuffer": {
+  "p_top": 200.0,
+  "nz": 45,
+  "icloud": 1,
+  "warm_rain": false,
+  "yr": 2031,
+  "columns": [
+   "convective-tropical-mcs",
+   "stable-night-fog",
+   "arctic-ice-cloud-snow",
+   "freezing-rain",
+   "ocean-storm-track",
+   "high-terrain-andes-night",
+   "edge-1085hPa-anticyclone",
+   "edge-tbound-exactly-340K"
+  ]
+ },
+ "F-icloud0": {
+  "p_top": 5000.0,
+  "nz": 50,
+  "icloud": 0,
+  "warm_rain": false,
+  "yr": 2026,
+  "columns": [
+   "convective-plains",
+   "convective-tropical-mcs",
+   "stable-night-fog",
+   "arctic-ice-cloud-snow",
+   "midlat-snowstorm",
+   "ocean-storm-track",
+   "high-terrain-rockies-cloud",
+   "edge-overcast-everywhere"
+  ]
+ },
+ "G-kessler-flags": {
+  "p_top": 5000.0,
+  "nz": 50,
+  "icloud": 1,
+  "warm_rain": true,
+  "yr": 2026,
+  "columns": [
+   "convective-plains",
+   "convective-tropical-mcs",
+   "stable-night-fog",
+   "freezing-rain",
+   "ocean-stratocumulus",
+   "ocean-storm-track"
+  ]
+ }
+}

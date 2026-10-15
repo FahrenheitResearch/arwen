@@ -88,12 +88,13 @@ FETCH_MODES = ("auto", "full-file", "idx-subset")
 
 #: ``rw_fetch --abi``.  The exact-ABI marker also compiled into the
 #: binary, so a stale build that still answers ``--help`` but no longer
-#: emits one of these record keys is caught by
+#: emits one of these record keys or lacks the declared commands is caught by
 #: ``gpuwm.native_wrf_distribution`` before a distribution ships.
 FETCH_ABI_MARKER = (
     "gpuwm-rw-fetch-record-v1\tmode\tmode_reason\tsource\tgrib_url\t"
     "idx_url\tidx_sha256\tidx_record_count\tselected_record_count\t"
-    "ranges\tsha256")
+    "ranges\tsha256\tcommands=fetch,probe,latest,object,asset,encoded-asset,"
+    "hash,unpack,unpack-audit,decode,inventory,objects")
 
 _PROBE_TIMEOUT_S = 20
 
@@ -317,7 +318,13 @@ def probe_fetch_bin(path: Path) -> tuple[bool, str]:
         return False, f"executes but --abi failed: {error}"
     observed = (abi.stdout or "").strip()
     if abi.returncode != 0 or observed != FETCH_ABI_MARKER:
-        return False, ("executes but reports a different fetch-record ABI "
+        missing_commands = (
+            "rw_fetch is stale: --abi does not declare the required hash "
+            "and object/asset/encoded-asset/inventory/objects fetch commands; "
+            if observed == FETCH_ABI_MARKER.split("\tcommands=", 1)[0]
+            else "rw_fetch "
+        )
+        return False, (missing_commands + "executes but reports a different fetch-record ABI "
                        "than this gpuwm expects -- rebuild it: "
                        f"{rustwx_build_hint()}")
     return True, (f"{transcript.strip()} -- --abi matches the "

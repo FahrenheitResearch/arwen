@@ -353,6 +353,7 @@ _HRRR_DISPOSITION_OPERATOR = {
 #: fields that do not exist for it.
 #:
 #:   1  kesslerscheme   Registry.EM_COMMON:3015  moist:qv,qc,qr
+#:   3  wsm3scheme      Registry.EM_COMMON:3017  moist:qv,qc,qr
 #:   6  wsm6scheme      Registry.EM_COMMON:3021  moist:qv,qc,qr,qi,qs,qg
 #:   8  thompson        Registry.EM_COMMON:3024  moist:qv,qc,qr,qi,qs,qg
 #:   9  milbrandt2mom   Registry.EM_COMMON:3025  moist:qv,qc,qr,qi,qs,qg,qh
@@ -405,10 +406,20 @@ _HRRR_DISPOSITION_OPERATOR = {
 #: mass entering with zero moments gets the scheme's own prescribed size
 #: distributions on the first call rather than undefined arithmetic.
 HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE = {
+    2: {"registry_citation":"Registry/Registry.EM_COMMON:3016",
+        "retained":HRRR_ANALYZED_HYDROMETEORS},
     1: {"registry_citation": "Registry/Registry.EM_COMMON:3015",
         "retained": ("QC", "QR")},
+    # WSM3: Kessler's narrow package; real.exe keeps QC and QR and drops
+    # the analysed QI/QS/QG (module_initialize_real.F:1859-1977).
+    3: {"registry_citation": "Registry/Registry.EM_COMMON:3017",
+        "retained": ("QC", "QR")},
+    4: {"registry_citation": "Registry/Registry.EM_COMMON:3018",
+        "retained": ("QC", "QR", "QI", "QS")},
     6: {"registry_citation": "Registry/Registry.EM_COMMON:3021",
         "retained": HRRR_ANALYZED_HYDROMETEORS},
+    106: {"registry_citation": "Registry/Registry.EM_COMMON:3022",
+          "retained": HRRR_ANALYZED_HYDROMETEORS},
     8: {"registry_citation": "Registry/Registry.EM_COMMON:3024",
         "retained": HRRR_ANALYZED_HYDROMETEORS},
     9: {"registry_citation": "Registry/Registry.EM_COMMON:3025",
@@ -419,12 +430,20 @@ HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE = {
          "retained": HRRR_ANALYZED_HYDROMETEORS},
     18: {"registry_citation": "Registry/Registry.EM_COMMON:3033",
          "retained": HRRR_ANALYZED_HYDROMETEORS},
+    24: {"registry_citation": "Registry/Registry.EM_COMMON:3034",
+         "retained": HRRR_ANALYZED_HYDROMETEORS},
     28: {"registry_citation": "Registry/Registry.EM_COMMON:3036",
          "retained": HRRR_ANALYZED_HYDROMETEORS},
     30: {"registry_citation": "Registry/registry.sbm:318",
          "retained": HRRR_ANALYZED_HYDROMETEORS},
     50: {"registry_citation": "Registry/Registry.EM_COMMON:3038",
          "retained": ("QC", "QR", "QI")},
+    # Ferrier-Aligo: moist:qv,qc,qr,qi, so real.exe interpolates QC, QR and
+    # QI and drops QS/QG (dyn_em/module_initialize_real.F:1859-1977 keys
+    # every species on its P_Q* membership).  QI here is the analysis's
+    # cloud ice alone, which is exactly what real.exe hands the scheme.
+    5: {"registry_citation": "Registry/Registry.EM_COMMON:3019",
+        "retained": ("QC", "QR", "QI")},
 }
 
 #: The microphysics ids whose WRF Registry ``moist:`` package can receive the
@@ -461,7 +480,7 @@ HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE = {
 #: integer sets and would go blind on a comprehension -- can still see this
 #: site.  ``test_the_analyzed_inventory_tuple_and_its_moist_packages_agree``
 #: pins the two equal.
-HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 30, 50)
+HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106)
 # Named schemes with the six-mass moist package retain every analysed
 # hydrometeor (capability row, gpuwm.microphysics_schemes).
 from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES

@@ -8,9 +8,7 @@ runtime.
 
 Each refusal here names the breakage it prevents:
 
-* random spread whose amplitude has no observation calibration
-  (:data:`UNCALIBRATED_SPREAD_REASON`): the spread and the probabilities
-  drawn from it would mean nothing;
+* selectors with no runtime consumer: requested fields would stay unperturbed;
 * N > 1 members that would all run one input (:func:`copies_breakage`):
   the run is N copies of one forecast, published with zero spread and
   probabilities of 0 or 1;
@@ -28,10 +26,12 @@ Each refusal here names the breakage it prevents:
 from __future__ import annotations
 
 
-UNCALIBRATED_SPREAD_REASON = (
-    "Random ensemble perturbations are unavailable: spread amplitudes have not "
-    "been calibrated against observations, so ensemble spread and probabilities "
-    "would be meaningless.")
+UNCALIBRATED_SPREAD_WARNING = "uncalibrated spread, WRF default amplitudes"
+# Compatibility import for tools that display this notice. It is no longer
+# an admission reason: calibration does not identify an implementation defect.
+UNCALIBRATED_SPREAD_REASON = UNCALIBRATED_SPREAD_WARNING
+IMPLEMENTED_RANDOM_SELECTORS = frozenset({
+    "sppt", "skebs", "stoch_force_opt", "spp", "spp_conv", "spp_pbl", "spp_lsm"})
 RANDOM_SELECTORS = frozenset({
     "sppt", "skebs", "stoch_force_opt", "spp", "spp_conv", "spp_pbl", "spp_lsm",
     "rand_perturb", "multi_perturb", "perturb_bdy", "perturb_chem_bdy",
@@ -50,8 +50,18 @@ TABLE_KEYS = ("members, keep_member_files, thresholds, recipe, trajectories and 
               "with optional max_ordinary_members_per_device concurrency cap")
 
 
+def missing_random_consumer(selector):
+    """Name the lost operation rather than the amplitude's scientific status."""
+    target = ("lateral boundary fields" if "bdy" in selector else
+              "initial random-field increments" if selector == "rand_perturb" else
+              "selected physics parameter increments")
+    return (f"{selector} has no runtime consumer for {target}: the requested "
+            "fields would remain unperturbed while the receipt claimed this selector. "
+            f"Next: turn {selector} off; use implemented SPPT, SKEBS or a supported SPP consumer.")
+
+
 def refuse_configured_random(raw):
-    """Refuse an authored random-physics switch, wherever the config sets it.
+    """Refuse authored random switches with missing runtime consumers.
 
     Called by the config loaders themselves, so every door that reads a
     config inherits the refusal before it downloads, spawns or allocates.
@@ -62,10 +72,10 @@ def refuse_configured_random(raw):
         for name, value in raw.items():
             if name == "ensemble":
                 continue
-            if name in RANDOM_SELECTORS:
+            if name in RANDOM_SELECTORS or name.startswith("pert_"):
                 enabled = any(bool(item) for item in value) if isinstance(value, list) else bool(value)
-                if enabled:
-                    raise ValueError(UNCALIBRATED_SPREAD_REASON)
+                if enabled and name not in IMPLEMENTED_RANDOM_SELECTORS:
+                    raise ValueError(missing_random_consumer(name))
             elif isinstance(value, (dict, list)):
                 refuse_configured_random(value)
     elif isinstance(raw, list):

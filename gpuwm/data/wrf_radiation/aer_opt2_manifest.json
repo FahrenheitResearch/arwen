@@ -1,0 +1,10 @@
+{
+  "schema": "wrf-aer-opt2-v1",
+  "source_sha256": "57c7e7e50a2be0a6ab169fa376da077b2b4251bf9c20fa6a06446934379c8870",
+  "assets": {
+    "aer_opt2.json": {
+      "sha256": "d37fb560e9238af21848417a6474e1a444ca809706ae31ed5226266fca5ea8e9",
+      "bytes": 13247
+    }
+  }
+}

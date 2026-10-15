@@ -1,0 +1,79 @@
+[
+{
+"regime": "hex-capped-downdraft",
+"branch": "qs_qi",
+"nz": 55,
+"dx": 60000.0,
+"dt": 360.0,
+"cudt": 0.0,
+"stepcu": 1,
+"mesh_column": 94647,
+"call": 1
+},
+{
+"regime": "hex-capped-downdraft",
+"branch": "qs_qi",
+"nz": 55,
+"dx": 60000.0,
+"dt": 360.0,
+"cudt": 0.0,
+"stepcu": 1,
+"mesh_column": 87539,
+"call": 2
+},
+{
+"regime": "hex-capped-downdraft",
+"branch": "qs_qi",
+"nz": 55,
+"dx": 60000.0,
+"dt": 360.0,
+"cudt": 0.0,
+"stepcu": 1,
+"mesh_column": 92966,
+"call": 2
+},
+{
+"regime": "hex-capped-downdraft",
+"branch": "qs_qi",
+"nz": 55,
+"dx": 60000.0,
+"dt": 360.0,
+"cudt": 0.0,
+"stepcu": 1,
+"mesh_column": 67938,
+"call": 3
+},
+{
+"regime": "hex-capped-downdraft",
+"branch": "qs_qi",
+"nz": 55,
+"dx": 60000.0,
+"dt": 360.0,
+"cudt": 0.0,
+"stepcu": 1,
+"mesh_column": 87524,
+"call": 3
+},
+{
+"regime": "hex-capped-downdraft",
+"branch": "qs_qi",
+"nz": 55,
+"dx": 60000.0,
+"dt": 360.0,
+"cudt": 0.0,
+"stepcu": 1,
+"mesh_column": 94090,
+"call": 3
+},
+{
+"regime": "hex-capped-downdraft",
+"branch": "qs_qi",
+"nz": 55,
+"dx": 60000.0,
+"dt": 360.0,
+"cudt": 0.0,
+"stepcu": 1,
+"mesh_column": 163272,
+"call": 3
+}
+]

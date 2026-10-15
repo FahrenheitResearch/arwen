@@ -308,29 +308,37 @@ def test_a_cadence_advisory_carries_the_owners_queue_record():
     assert all('projection_policy' not in record for record in records)
 
 
-def test_a_neutral_table_with_no_decoder_is_refused_with_the_way_out(
-        monkeypatch):
-    """Rule 1: a refusal owes the breakage AND the way out, in the text."""
+def test_a_neutral_table_is_read_without_gpuwm_global(monkeypatch, tmp_path):
+    """The decoder is the engine's own since 2.9.0 (gpuwm.obs.neutral_table).
+
+    Retires the refusal this test used to hold ("a neutral observation table
+    was given, and its decoder is not installed"): that guard existed because
+    the decoder lived in gpuwm-global, and with gpuwm-global absent a table
+    could not be read at all.  With every arwen_global import blocked, a table
+    is read and its rows come back.
+    """
     import builtins
-    import importlib
+    import csv
     import gpuwm.da.obs_point as owner
+    from gpuwm.obs import neutral_table
 
     real_import = builtins.__import__
 
-    def without_the_decoder(name, *args, **kwargs):
+    def without_the_global_package(name, *args, **kwargs):
         if name.startswith('arwen_global'):
             raise ImportError(f"No module named {name!r}")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, '__import__', without_the_decoder)
-    with pytest.raises(ImportError) as caught:
-        owner.read_tables(['does-not-matter.csv'])
-    text = str(caught.value)
-    assert 'arwen_global.obs_table' in text, 'the refusal must name what is absent'
-    assert 'gpuwm-global' in text and '--obs-table' in text, (
-        'the refusal must name both ways out: install the decoder, or'
-        ' review without the flag')
-    assert importlib is not None
+    table = tmp_path / 'obs.csv'
+    with table.open('w', newline='') as handle:
+        writer = csv.writer(handle)
+        writer.writerow(neutral_table.TABLE_HEADER)
+        writer.writerow(['fixture', 'station', 40.0, -100.0, 500.0, 85000, '2026-09-10T12:00:00Z',
+                         'temperature_k', 280.0, 1.5, 'sonde_level', '', '', '', ''])
+    monkeypatch.setattr(builtins, '__import__', without_the_global_package)
+    rows, receipts = owner.read_tables([table])
+    assert len(rows) == 1 and rows[0].variable == 'temperature_k'
+    assert receipts[0]['path'] == str(table)
 
 
 def test_every_local_da_option_says_what_it_does():

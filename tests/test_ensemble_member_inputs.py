@@ -676,7 +676,7 @@ def test_none_and_a_mistyped_key_keep_their_own_answers():
     assert "the [ensemble] table takes members, keep_member_files, thresholds" in str(refused.value)
 
 
-# ---- the calibration refusal at the loaders ----------------------------------------------
+# ---- implementation admission at the loaders ----------------------------------------------
 
 def test_the_experiment_loader_refuses_random_physics_on_every_route(tmp_path):
     """The overlay command's base config loads through the same builder."""
@@ -686,29 +686,28 @@ def test_the_experiment_loader_refuses_random_physics_on_every_route(tmp_path):
     text = base.read_text(encoding="utf-8")
     assert "[shared]\n" in text
     config = tmp_path / "base.toml"
-    for switch in ("spp_pbl = 1", "spp_conv = 1", "spp_lsm = 1"):
+    for switch in ("pert_mynn = true", "pert_thom = true", "rand_perturb = 1"):
         config.write_text(text.replace("[shared]\n", "[shared]\n" + switch + "\n", 1), encoding="utf-8")
         for load in (load_experiment, load_experiment_case):
             with pytest.raises(ValueError) as refused:
                 load(config)
-            assert str(refused.value) == UNCALIBRATED_SPREAD_REASON, switch
+            assert "no runtime consumer" in str(refused.value), switch
+            assert "unperturbed" in str(refused.value)
 
 
 def test_the_run_config_loader_refuses_random_physics(tmp_path):
     from gpuwm.config import load_config
     legacy = tmp_path / "legacy.toml"
-    legacy.write_text('[run]\ncase = "none"\n[physics]\nspp_pbl = 1\n')
+    legacy.write_text('[run]\ncase = "none"\n[physics]\npert_mynn = true\n')
     with pytest.raises(ValueError) as refused:
         load_config(legacy)
-    assert str(refused.value) == UNCALIBRATED_SPREAD_REASON
+    assert "pert_mynn has no runtime consumer" in str(refused.value)
 
 
 def test_branch_is_checked_before_it_writes_its_run_folder(tmp_path):
     from gpuwm.ensemble.calibration_admission import refuse_public_arguments
     config = _case(tmp_path, "[ensemble]\nmembers=1\n[ensemble.stochastic]\nsppt=true\n")
-    with pytest.raises(ValueError) as refused:
-        refuse_public_arguments(SimpleNamespace(command="branch", config=config))
-    assert str(refused.value) == UNCALIBRATED_SPREAD_REASON
+    refuse_public_arguments(SimpleNamespace(command="branch", config=config))
 
 
 # ---- the calibration campaign --------------------------------------------------------------
@@ -732,10 +731,7 @@ def test_the_calibration_campaign_binds_its_stochastic_arms(amplitude, tmp_path)
         reference = campaign.stochastic_controls(amplitude)
         assert run.stochastic_provider.sppt.stddev == reference["sppt"]["stddev"]
         assert run.stochastic_provider.spp == {"conv": 0, "pbl": 1, "lsm": 1}
-    # A public request still may not carry the same controls.
-    with pytest.raises(ValueError) as refused:
-        EnsembleRequest(2, stochastic=campaign.stochastic_controls(0.5))
-    assert str(refused.value) == UNCALIBRATED_SPREAD_REASON
+    assert EnsembleRequest(2, stochastic=campaign.stochastic_controls(0.5)).stochastic == campaign.stochastic_controls(0.5)
 
 
 # ---- the real command line -------------------------------------------------------------------

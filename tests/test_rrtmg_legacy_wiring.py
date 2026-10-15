@@ -410,9 +410,12 @@ def _reference(env):
         ps["cswpmcl"], ps["reicmcl"], ps["relqmcl"], ps["resnmcl"],
         aer_opt=0)
     # SW-audit item 1 stays closed at the engine API: nonzero aerosol is
-    # rejected, never silently discarded (the engine builds WRF's
-    # neutral 0/1/0 optics internally; there are no aerosol parameters).
-    with pytest.raises(NotImplementedError, match="aer_opt"):
+    # rejected, never silently discarded.  Since 2.9.0 aer_opt 1 and 2 are
+    # implemented (golden/ports-rad) and take the caller's per-band optics,
+    # so a call that names aer_opt=2 without them is refused by name rather
+    # than run on WRF's neutral 0/1/0 optics.
+    with pytest.raises(ValueError,
+                       match="aer_opt=2 needs the caller's per-band aerosol optics"):
         cuda_sw_ref.rrtmg_sw_batched(
             ps["ncol"], ps["nlay"], ps["icld"], ps["play"], ps["plev"],
             ps["tlay"], ps["tlev"], ps["tsfc"], ps["h2ovmr"],

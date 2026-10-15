@@ -16,7 +16,8 @@ def test_default_review_discovers_satellite_without_local_files(tmp_path, monkey
     binary.write_bytes(b'fixed executable fixture')
     monkeypatch.setattr(review, '_door_record', lambda *args: (str(binary), 'available'))
     monkeypatch.setattr(nexrad, 'find_nexrad_bin', lambda: None)
-    monkeypatch.setattr(review.importlib.util, 'find_spec', lambda name: None)
+    # (Hiding gpuwm-global through importlib is gone: the observation streams are the
+    # engine's own since 2.9.0, so their rows appear on every install.)
     req = request()
     rung = derive_rung(req, req.scale)
     _, _, exp, _ = configuration(req, rung)

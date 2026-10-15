@@ -15,14 +15,14 @@ A source request can name packaged routes:
 {
   "schema": "gpuwm-sfire-static-v1",
   "sources": {
-    "terrain": "usgs-3dep-wcs",
+    "terrain": "usgs-3dep-13as",
     "fuel": "landfire-fbfm40",
     "fuel_year": 2024
   }
 }
 ```
 
-The route table is gpuwm/authorities/sfire-static-routes.v1.json. LANDFIRE FBFM13 and FBFM40 use the native 30 m EPSG:5070 lattice. Raw category codes remain in NFUEL_CAT; the coupled model applies its fuel crosswalk. Missing terrain becomes zero only where fuel identifies open water, code 98. Beyond LANDFIRE's coastal water margin the fuel raster holds NoData (-9999); those cells become open water (98) only where the terrain source has no value or lies at or below sea level, so a coastal fire domain can reach offshore. Missing fuel over land and terrain gaps on nonwater cells refuse with the affected cell.
+The route table is gpuwm/authorities/sfire-static-routes.v1.json. Without a named route, terrain comes from the 3DEP 1/3 arc-second tiles (`usgs-3dep-13as`) and fuel from LANDFIRE FBFM40; the 3DEP WCS route (`usgs-3dep-wcs`) stays available for small windows, but its service refuses fire domains of tens of kilometres. LANDFIRE FBFM13 and FBFM40 use the native 30 m EPSG:5070 lattice, requested over WCS 2.0.1 (the LANDFIRE service no longer answers WCS 1.0.0 coverage requests) for releases 2016, 2023, 2024 and 2025. Raw category codes remain in NFUEL_CAT; the coupled model applies its fuel crosswalk. Missing terrain becomes zero only where fuel identifies open water, code 98. Beyond LANDFIRE's coastal water margin the fuel raster holds NoData (-9999); those cells become open water (98) only where the terrain source has no value or lies at or below sea level, so a coastal fire domain can reach offshore. Missing fuel over land and terrain gaps on nonwater cells refuse with the affected cell.
 
 For already captured inputs, replace routes with terrain and fuel objects containing path, sha256 and optional expected_bytes. Rust verifies and decodes those raster objects. A JSON request may instead declare an experiment path and grid_id, or provide an explicit grid_spec, sr_x and sr_y; these grid authorities are mutually exclusive. The standalone gpuwm-sfire-static console script accepts the same arguments. The rw-wps fire-static command delegates its JSON request to that native-backed entry point.
 

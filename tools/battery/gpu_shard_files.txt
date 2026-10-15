@@ -761,7 +761,12 @@ tests/test_nssl2_speed_gamma.py
 tests/test_nssl2_speed_graph.py
 tests/test_nssl2_speed_rain.py
 tests/test_nssl2_speed_small.py
-tests/test_milbrandt2_speed_shared.py
+# mp=9: tests/test_milbrandt2_speed_shared.py held the category-parallel
+# sedimentation equal to the serial kernel it replaced; that kernel's
+# arithmetic was not WRF's, and the WRF v4.6.1 column oracle below now holds
+# the parallel kernel (both depth tiers) to WRF's own serial Fortran word for
+# word, so it took the slot (lane/verify-milbrandt2mom-mp9).
+tests/test_milbrandt2_wrf461_exact_gpu.py
 # SHARD 1p: the default-pieces speed lane's device legs (Noah-MP slab caches
 # and write-back, KF column ordering and output initialization, New Tiedtke
 # argument cache, fused group and LLO3 device path, the Shin-Hong workspace,
@@ -796,6 +801,12 @@ tests/test_noahmp_parameter_cache.py
 tests/test_shinhong_workspace.py
 tests/test_kf_output_initialization.py
 tests/test_kf_workspace.py
+# test_kf.py (2026-10-13, golden 2.9.0 verify round 1): the oracle for 2.9.0's
+# only declared default-output change (the KF rain-flux floor, d547dc8c3,
+# test_kf_rain_is_not_negative_when_the_downdraft_evaporates_it_all) was on no
+# list, so no leg ran it.  Breakage it prevents: RAINC going negative again on a
+# deep column whose downdraft evaporates all the rain.
+tests/test_kf.py
 tests/test_ntiedtke_device_llo3.py
 tests/test_ntiedtke_argument_cache.py
 tests/test_noah_forcing_fused.py
@@ -825,6 +836,10 @@ tests/test_urban_prepared_fraction.py
 tests/test_urban_bep_wrf471_parity.py
 tests/test_urban_bep_couple_wrf471_parity.py
 tests/test_urban_bem_wrf471_parity.py
+# BEP_BEM against byte-unmodified WRF v4.6.1 over 26 weather regimes x every
+# urban class plus edge columns (574 urban columns), including the call in
+# which WRF itself stops.
+tests/test_urban_bem_regime_wrf461.py
 tests/test_myjurb_wrf471_parity.py
 tests/test_ysu_bep_wrf471_parity.py
 # The declared rural-drag divergence of the flag_bep arm: the column test
@@ -1134,6 +1149,10 @@ tests/test_sfire_spotting_wrf471_parity.py
 tests/test_sfire_tilestream_gpu.py
 tests/test_sfire_wind_wrf471_parity.py
 tests/test_sfire_wrf471_parity.py
+tests/test_sfire_regime_receipt.py
+tests/test_sfire_subnormal_runtime.py
+# Fire smoke on two physical cards (MULTICARD-CHECK 2026-10-08): skips by name on a one-card host.
+tests/test_sfire_smoke_two_cards_gpu.py
 
 # Selected per-cut device suites.
 tests/test_diffusion_default_words.py
@@ -1213,6 +1232,100 @@ tests/test_fast_sbm_bulk_start.py
 tests/test_fast_sbm_device.py
 tests/test_fast_sbm_production_cuda.py
 
+# Stochastic admission, device half (2.9.0, r290/defects): the six random arms
+# step, replay and stay finite, and all-off words match the bare forecast.
+# Per-cut, not weekly: the weekly shard is the frozen cumulus oracle families
+# only (tests/test_gpu_shard_manifest.py WEEKLY_SHARD_FAMILIES); both branches
+# that added these appended them to the weekly shard below.
+tests/test_ensemble_random_admission_gpu.py
+
+# The MPAS column seams' selectable entries, device half (2026-10-11).
+# Same rule as shard 1j: a device file on no list is asked by nobody.
+# tests/test_mpas_column_suite_gpu.py (the slot-table seam hex runs HRRR-
+# family physics through) had been on no list since it landed.
+# tests/test_mpas_column_physics_gpu.py gates the generic entry: the frozen
+# selection bit-identical through it, and every option the registry marks
+# implemented stepping on the column state -- the question that found NSSL
+# refusing a rebound array, the UW PBL dividing by an unfilled alt, and the
+# bin scheme reading C-grid winds a column state does not have.
+# Measured 61 passed on one card of the two-card box at 349e5c457.
+tests/test_mpas_column_suite_gpu.py
+tests/test_mpas_column_physics_gpu.py
+
+# Kain-Fritsch against WRF v4.6.1, device rows (golden/parity, 2026-10-12).
+# cu_physics = 1 is the wizard's default 12 km root cumulus.  The GPU kernel
+# is graded word for word against the byte-unmodified module_cu_kfeta.F
+# (tools/kf_wrf461_oracle, -O0) on 237 committed columns -- 150 structured,
+# 80 ERA5 real74, 7 hex capped-downdraft -- in whichever arithmetic the leg
+# runs (the strict leg: GPUWM_WRF_EXACT=1).  Before the WRF port the kernel
+# matched WRF on none of 1,793 convecting columns; these files were on no
+# list, so nothing would have said so.
+tests/test_kf_wrf461_oracle.py
+
+# The WRF v4.6.1 column oracles of the seven other schemes that shipped in
+# 2.8.9 with no WRF comparison, device rows (golden/parity, 2026-10-12): the
+# GPU kernel graded word for word against the byte-unmodified WRF Fortran in
+# whichever arithmetic the leg runs.  WSM6 (65 columns), Kessler (104; the
+# es >= p refute sets that grade its one declared cap open no device and run
+# on Stage 1),
+# Dudhia shortwave, RRTM longwave (79), MYJ (176) and WDM6 (84);
+# tests/test_milbrandt2_wrf461_exact_gpu.py (603 columns) is already listed
+# above.  Collected on G1 under `-m gpu`: 3, 2, 3, 2, 2 and 7 rows.
+tests/test_wsm6_wrf461_column_exact.py
+tests/test_kessler_wrf461_parity.py
+tests/test_dudhia_sw_wrf461_parity.py
+tests/test_rrtm_lw_wrf461_parity.py
+tests/test_myjpbl_wrf461_parity.py
+tests/test_wdm6_wrf461_oracle.py
+# WRF radiation and switch ports of 2.9.0 on the card: New Goddard's driver against the
+# WRF 4.6.1 fixture (zero ULP strict, mutations caught), the icloud = 2 cloud-fraction
+# column oracle and its coupled and shared-memory rows, aer_opt = 2 device optics, and
+# the lightning driver oracle, tiling and restart. Breakage: these device files were on
+# no GPU list, so a kernel change moving their words against WRF passed every leg.
+tests/test_goddard_device_oracle.py
+tests/test_cldfra2_gpu.py
+tests/test_cldfra2_coupled_gpu.py
+tests/test_cldfra2_shared_gpu.py
+tests/test_aer_opt2.py
+tests/test_lightning_cuda.py
+
+# 2.9.0 round 2: the device rows of the round's ports and fixes -- golden/ports-mp's WRF 4.6.1
+# column oracles (WSM3, WSM5, WSM6R, WSM7, Ferrier-Aligo, Lin; its own GPU parity leg after the
+# __fdiv_rn fix never got a card), golden/ports-cu's New SAS column oracle, golden/wrf-fixes' solar,
+# YSU 4.8, Noah-MP snow-age, urban and MYNN TKE-advection oracles, and golden/ports-pbl's physics-driver
+# rows. Breakage: on no GPU list, a kernel change moving their words against WRF passed every leg.
+# Per-cut: none is a frozen cumulus oracle family.
+tests/test_g3_cu5_parity.py
+tests/test_g3_diag.py
+tests/test_g3_halo.py
+tests/test_fer_hires_port.py
+tests/test_lin_frame_arithmetic.py
+tests/test_lin_wrf461_parity.py
+tests/test_mynn_tke_advection.py
+tests/test_noahmp_snow_age_gpu.py
+tests/test_nsas_column_oracle.py
+tests/test_solar_generation_gpu.py
+tests/test_urban480_gpu_oracle.py
+tests/test_urban_bep_wrf461_column_oracle.py
+tests/test_urban_default_subnormals.py
+tests/test_urban_water_balance_gpu.py
+tests/test_wsm3_remap_conservation.py
+tests/test_wsm5.py
+tests/test_wsm6r_wrf461_column_exact.py
+tests/test_wsm7_integration.py
+tests/test_wsm7_remap_budget.py
+tests/test_wsm_family_frame_pricing.py
+tests/test_ysu_generation_batch_gpu.py
+tests/test_physics_driver.py
+
+# Correct mode water budgets (WB4 New Tiedtke, WB5 WSM6; 2.9.0 default, plan
+# call 1, lane/290-A3): each correction fails in exact mode and closes in
+# correct mode on the card, and exact mode compiles the same PTX as the kernel
+# before the switch.  conftest marks the whole file gpu (its helpers open the
+# card), so it ran on no leg before: a lost correction or a moved exact image
+# would have passed every battery.
+tests/test_correct_mode_water_budget.py
+
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py
 tests/test_gf_shallow_cuda.py
@@ -1258,3 +1371,9 @@ tests/test_ntiedtke_workspace.py
 # Correctness stack files that collect only on the GPU leg.
 
 # Mixed CPU and GPU selected suites also retain their device leg.
+
+# New Tiedtke per-column grid spacing (2026-10-11): each column runs at the
+# spacing its driver carries (MPAS-A hands cu_ntiedtke len_disp/meshDensity**0.25
+# per cell), held bitwise to a whole batch at that spacing.  Measured 5 device
+# rows passed on one RTX PRO 6000 at d547dc8c3 plus this change.
+tests/test_ntiedtke_column_dx.py

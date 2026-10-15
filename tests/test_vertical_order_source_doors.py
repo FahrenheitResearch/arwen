@@ -25,7 +25,12 @@ def test_explicit_order3_keeps_exact_current_staging_importer_bytes(tmp_path):
     assert explicit == omitted
     from wrf_clock_lines import WRF_CLOCK_BLOCK, without_wrf_clock_lines
     assert WRF_CLOCK_BLOCK in explicit
-    assert hashlib.sha256(without_wrf_clock_lines(explicit).encode()
+    # Pinned before 2026-10-12: the input now asks for Morrison by its own
+    # number (55 is refused) and the omitted lid is WRF's open top; with
+    # exactly those two lines put back the parent's hash holds.
+    from ishmael_retirement import with_retired_line
+    assert hashlib.sha256(with_retired_line(
+        without_wrf_clock_lines(explicit)).encode()
                           ).hexdigest() == baseline["explicit_order3"]
 
 

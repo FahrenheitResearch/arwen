@@ -8,6 +8,7 @@ import pytest
 
 from gpuwm.domain_wizard import render_config
 from gpuwm.namelist_import import import_namelists
+from ishmael_retirement import requested_by_own_number, without_retired_line
 from wrf_clock_lines import without_wrf_clock_lines
 
 
@@ -51,14 +52,14 @@ def _controls(group, matrix_name):
     return json.loads(payload), pins
 
 
-def _assert_old_bytes(group, pins, key, emitted):
+def _assert_old_bytes(group, pins, key, emitted, *, retired=lambda old: old):
     row = pins["cases"][key]
     relative = Path(row["file"])
     assert len(relative.parts) == 1 and relative.suffix == ".toml"
     old = (FIXTURES / group / relative).read_bytes()
     assert len(old) == row["bytes"]
     assert hashlib.sha256(old).hexdigest() == row["sha256"]
-    assert without_wrf_clock_lines(emitted).encode("utf-8") == old
+    assert without_wrf_clock_lines(emitted).encode("utf-8") == retired(old)
 
 
 @pytest.mark.parametrize("case", NAMELISTS)
@@ -67,9 +68,10 @@ def test_ordinary_namelist_bytes_match_tolerance_original_parent(case, tmp_path)
     documents = matrix["namelists"][case]
     wps, inp = tmp_path / "namelist.wps", tmp_path / "namelist.input"
     wps.write_bytes(documents["wps"].encode("utf-8"))
-    inp.write_bytes(documents["input"].encode("utf-8"))
+    inp.write_bytes(requested_by_own_number(documents["input"]).encode("utf-8"))
     emitted, _ = import_namelists(wps, inp)
-    _assert_old_bytes("original-nine", pins, "namelist/" + case, emitted)
+    _assert_old_bytes("original-nine", pins, "namelist/" + case, emitted,
+                      retired=without_retired_line)
 
 
 @pytest.mark.parametrize("source", SOURCES)

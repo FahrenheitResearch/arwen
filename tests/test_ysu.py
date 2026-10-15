@@ -67,8 +67,8 @@ def _batched_columns(nz=32, ny=2, nx=5, seed=11):
     hfx = np.where(br <= 0.0, 180.0, -25.0)
     qfx = np.where(br <= 0.0, 8.0e-5, 0.0)
     ust = np.where(br <= 0.0, 0.42, 0.24)
-    # Include physics-off coupling in the device batch as well as the
-    # dedicated CPU no-op regression.
+    # A calm column (ust = hfx = qfx = 0) in the device batch: WRF runs the
+    # whole scheme there, and so do the kernel and the mirror.
     hfx[0, 0] = qfx[0, 0] = ust[0, 0] = 0.0
     wspd = np.hypot(u[0], v[0])
     return dict(
@@ -233,19 +233,45 @@ def test_ysu_topdown_revives_stable_surface_stratocumulus_pbl():
                                ref["dtheta"], rtol=5e-4, atol=5e-7)
 
 
-def test_zero_surface_exchange_is_exact_noop():
-    """Physics-off surface coupling must not leak background mixing."""
+def test_a_calm_column_runs_the_whole_scheme_as_wrf_does():
+    """``ust = hfx = qfx = 0`` is not a no-op: ``bl_ysu_run`` has no zero-flux
+    exit, and on the WRF v4.6.1 oracle's case 12 it computes a 703 m PBL with
+    nine levels in it.  The float64 mirror used to return zeros here (the
+    short circuit kernels/ysu.cu also carried until golden/ports-pbl); it now
+    reproduces WRF's diagnosis from WRF's own inputs.  CPU only -- the card's
+    bitwise grade of the same column is
+    test_ysu_wrf461_parity::test_a_calm_column_runs_wrfs_whole_scheme.
+    """
     from gpuwm.verify.npref import np_ysu_column
+    from gpuwm.verify.ysu_oracle import load_ysu_oracle
 
-    args = _column(theta=np.full(36, 300.0), u=np.full(36, 8.0),
-                   v=np.full(36, -2.0), qv=np.full(36, 0.008),
-                   hfx=0.0, qfx=0.0, ust=0.0, br=0.0)
-    out = np_ysu_column(**args)
-    for name in ("du", "dv", "dtheta", "dqv", "dqc", "dqi",
-                 "exch_h", "exch_m"):
-        np.testing.assert_array_equal(out[name], 0.0, err_msg=name)
-    assert np.isfinite(out["hpbl"])
-    assert out["kpbl"] >= 1
+    fixture = load_ysu_oracle()
+    i = fixture.cases.index(12)
+    inputs = fixture.inputs
+    for name in ("ust", "hfx", "qfx"):
+        assert float(inputs[name][0, i]) == 0.0, name
+    column = {name: inputs[name][:, 0, i].astype(np.float64)
+              for name in ("u", "v", "theta", "qv", "qc", "qi", "p",
+                           "exner", "dz", "rthraten")}
+    surface = {name: float(inputs[name][0, i])
+               for name in ("psfc", "znt", "ust", "hfx", "qfx", "wspd",
+                            "br", "psim", "psih", "xland", "u10", "v10")}
+    out = np_ysu_column(
+        column["u"], column["v"], column["theta"], column["qv"],
+        column["qc"], column["qi"], column["p"],
+        inputs["p_interface"][:, 0, i].astype(np.float64), column["exner"],
+        column["dz"], dt=fixture.dt, rthraten=column["rthraten"],
+        ysu_topdown_pblmix=fixture.topdown[i], **surface)
+    assert out["kpbl"] == int(fixture.kpbl_reference[0, i]) == 9
+    # float64 mirror against WRF's float32 word: measured 6.3e-7 relative.
+    assert out["hpbl"] == pytest.approx(
+        float(fixture.surface_reference["hpbl"][0, i]), rel=1e-5)
+    np.testing.assert_allclose(
+        out["exch_m"], fixture.level_reference["exch_mx"][:, 0, i],
+        rtol=1e-5, atol=0.0)
+    assert np.any(np.asarray(out["du"]) != 0.0)
+    for name in ("du", "dv", "dtheta", "dqv", "exch_h", "exch_m"):
+        assert np.isfinite(np.asarray(out[name])).all(), name
 
 
 def test_convective_surface_heating_grows_pbl_over_six_hours():
@@ -438,7 +464,11 @@ def test_the_kernel_spells_wrfs_two_pblflg_rules_like_the_mirror():
 @pytest.mark.gpu
 @requires_gpu
 def test_ysu_kernel_matches_float64_mirror():
-    """Mixed stable/unstable batch, including cloud and ocean branches."""
+    """The explicit historical engine path and its float64 mirror.
+
+    The corrected default is graded against independent release Fortran in
+    tools/ysu_generations_oracle, including the WRF driver round trips.
+    """
     import cupy as cp
     from gpuwm.core.ysu import launch_ysu
     from gpuwm.verify.npref import np_ysu_column
@@ -446,7 +476,7 @@ def test_ysu_kernel_matches_float64_mirror():
     host = _batched_columns()
     dt = host.pop("dt")
     dev = {name: cp.asarray(value) for name, value in host.items()}
-    got = launch_ysu(**dev, dt=dt)
+    got = launch_ysu(**dev, dt=dt, ysu_version="wrf_461")
 
     nz, ny, nx = host["theta"].shape
     ref = {name: np.empty((nz, ny, nx), np.float64)
@@ -463,7 +493,7 @@ def test_ysu_kernel_matches_float64_mirror():
             kw = {name: host[name][:, j, i].astype(np.float64)
                   for name in column_names}
             kw.update({name: float(host[name][j, i]) for name in surface_names})
-            col = np_ysu_column(**kw, dt=dt)
+            col = np_ysu_column(**kw, dt=dt, ysu_version="wrf_461")
             for name in ref:
                 if ref[name].ndim == 3:
                     ref[name][:, j, i] = col[name]
@@ -518,8 +548,17 @@ def _single_column_device(args):
 
 @pytest.mark.gpu
 @requires_gpu
-def test_nonfinite_hfx_surfaces_as_dtheta_and_the_refusal_names_hfx():
+# Over WATER (2.8.9's form of this test, lane/parity-286) both generations
+# keep momentum finite under a NaN HFX: vconv is 0 there, and the WRF 4.8
+# kernel (graded word for word against WRF 4.8 by
+# tools/ysu_generations_oracle/gate.py) passes HFX to no momentum term on a
+# stable water column.  Measured golden/wrf-fixes on sm_120 and sm_89.  The
+# YSU lane's ("wrf_480", "du") row was written for its LAND column.
+@pytest.mark.parametrize("version,first_output", [("wrf_461", "dtheta"), ("wrf_480", "dtheta")])
+def test_nonfinite_hfx_surfaces_as_dtheta_and_the_refusal_names_hfx(version, first_output):
     """The 1.5.2 field report, reproduced ON A STABLE SURFACE.
+
+    Both generations must name the bad HFX.
 
     A user lost an ERA5-forced run on its FIRST step to ``YSU returned
     non-finite dtheta tendency``.  The name is a false lead.  ``dtheta``
@@ -571,14 +610,14 @@ def test_nonfinite_hfx_surfaces_as_dtheta_and_the_refusal_names_hfx():
     col, surf = _device_column(args)
 
     # -- part 1: the kernel reproduces the user's exact signature --------
-    healthy = launch_ysu(**col, **surf, dt=args["dt"])
+    healthy = launch_ysu(**col, **surf, dt=args["dt"], ysu_version=version)
     assert all(bool(cp.isfinite(healthy[name]).all())
                for name in ("du", "dv", "dtheta")), "control must be clean"
 
     surf["hfx"][...] = cp.float32(cp.nan)
-    out = launch_ysu(**col, **surf, dt=args["dt"])
-    assert bool(cp.isfinite(out["du"]).all()), "momentum must not read HFX"
-    assert bool(cp.isfinite(out["dv"]).all()), "momentum must not read HFX"
+    out = launch_ysu(**col, **surf, dt=args["dt"], ysu_version=version)
+    assert bool(cp.isfinite(out["du"]).all())
+    assert bool(cp.isfinite(out["dv"]).all())
     assert not bool(cp.isfinite(out["dtheta"]).all())
     # Every OTHER output stays finite: this is what makes the report
     # identifiable rather than merely one blowup among many.
@@ -586,7 +625,7 @@ def test_nonfinite_hfx_surfaces_as_dtheta_and_the_refusal_names_hfx():
                  "wstar", "delta", "topdown_radsum", "wstar3_2"):
         assert bool(cp.isfinite(out[name]).all()), name
     status = cp.zeros((1,), cp.uint32)
-    assert validate_ysu_outputs(out, status) == "dtheta"
+    assert validate_ysu_outputs(out, status) == first_output
 
     # -- part 2: the refusal names the degenerate PRODUCER ---------------
     producers = {
@@ -603,7 +642,7 @@ def test_nonfinite_hfx_surfaces_as_dtheta_and_the_refusal_names_hfx():
 
     def claims(text):
         return (
-            "non-finite dtheta tendency" in text,     # the output, as before
+            f"non-finite {first_output} tendency" in text,
             "on domain 1" in text,                    # where
             "already degenerate" in text,             # something came in bad
             "hfx (1 non-finite)" in text,             # WHICH one, with a count
@@ -635,7 +674,7 @@ def test_nonfinite_hfx_surfaces_as_dtheta_and_the_refusal_names_hfx():
     with pytest.raises(FloatingPointError) as raised_bare:
         validate_ysu_tendencies(out, status=status)
     assert (str(raised_bare.value)
-            == "YSU returned non-finite dtheta tendency")
+            == f"YSU returned non-finite {first_output} tendency")
 
     # -- MUTATION CONTROLS, each watched failing -------------------------
     def mutant_output_only(_):
@@ -821,8 +860,7 @@ def test_ysu_producer_input_view_binds_the_fields_the_kernel_reads():
     with pytest.raises(KeyError):
         view["tsk"]
 def test_exactly_zero_ust_with_live_fluxes_is_defined():
-    """ust == 0 with nonzero heat flux misses the ysu.cu:203 short circuit;
-    WRF's prfac2 is then 0/0 (the parity suite's case-13 pathology).  The
+    """ust == 0 with nonzero heat flux: WRF's prfac2 is then 0/0 (the parity suite's case-13 pathology).  The
     kernel and the float64 mirror now both take the defined algebraic limit
     instead of laundering or propagating a NaN."""
     import cupy as cp

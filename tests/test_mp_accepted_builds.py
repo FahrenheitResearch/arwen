@@ -57,8 +57,8 @@ def test_the_accepted_menu_is_the_loader_menu():
     """
     from gpuwm import config as config_mod
 
-    assert config_mod.MP_PHYSICS_ACCEPTED == (0, 1, 6, 8, 9, 10, 16, 18,
-                                              28, 30, 50, 900)
+    assert config_mod.MP_PHYSICS_ACCEPTED == (0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18,
+                                              24, 28, 30, 50, 106, 900)
     # Every accepted value passes the loader's mp gate: the refusal for
     # an out-of-menu value recites the menu sentence, so an accepted
     # value must never produce it.

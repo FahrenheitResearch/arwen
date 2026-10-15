@@ -1,0 +1,331 @@
+{
+ "ncol": 77,
+ "nz": 45,
+ "level_fields": [
+  "th",
+  "qv",
+  "qc",
+  "qr",
+  "den",
+  "pii",
+  "p",
+  "dz"
+ ],
+ "face_fields": [
+  "w"
+ ],
+ "surface_fields": [
+  "rain",
+  "snow"
+ ],
+ "columns": [
+  {
+   "name": "warm-rain-0",
+   "regime": "warm rain"
+  },
+  {
+   "name": "warm-rain-1",
+   "regime": "warm rain"
+  },
+  {
+   "name": "warm-rain-2",
+   "regime": "warm rain"
+  },
+  {
+   "name": "warm-rain-3",
+   "regime": "warm rain"
+  },
+  {
+   "name": "warm-rain-4",
+   "regime": "warm rain"
+  },
+  {
+   "name": "warm-rain-5",
+   "regime": "warm rain"
+  },
+  {
+   "name": "warm-rain-6",
+   "regime": "warm rain"
+  },
+  {
+   "name": "warm-rain-7",
+   "regime": "warm rain"
+  },
+  {
+   "name": "convective-0",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-1",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-2",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-3",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-4",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-5",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-6",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-7",
+   "regime": "deep convection"
+  },
+  {
+   "name": "stratiform-0",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-1",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-2",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-3",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-4",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-5",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "freezing-rain-0",
+   "regime": "freezing rain"
+  },
+  {
+   "name": "freezing-rain-1",
+   "regime": "freezing rain"
+  },
+  {
+   "name": "freezing-rain-2",
+   "regime": "freezing rain"
+  },
+  {
+   "name": "freezing-rain-3",
+   "regime": "freezing rain"
+  },
+  {
+   "name": "cold-ice-0",
+   "regime": "cold ice"
+  },
+  {
+   "name": "cold-ice-1",
+   "regime": "cold ice"
+  },
+  {
+   "name": "cold-ice-2",
+   "regime": "cold ice"
+  },
+  {
+   "name": "cold-ice-3",
+   "regime": "cold ice"
+  },
+  {
+   "name": "cold-ice-4",
+   "regime": "cold ice"
+  },
+  {
+   "name": "cold-ice-5",
+   "regime": "cold ice"
+  },
+  {
+   "name": "cold-ice-6",
+   "regime": "cold ice"
+  },
+  {
+   "name": "cold-ice-7",
+   "regime": "cold ice"
+  },
+  {
+   "name": "cirrus-0",
+   "regime": "cirrus"
+  },
+  {
+   "name": "cirrus-1",
+   "regime": "cirrus"
+  },
+  {
+   "name": "cirrus-2",
+   "regime": "cirrus"
+  },
+  {
+   "name": "cirrus-3",
+   "regime": "cirrus"
+  },
+  {
+   "name": "dry-night-0",
+   "regime": "dry"
+  },
+  {
+   "name": "dry-night-1",
+   "regime": "dry"
+  },
+  {
+   "name": "dry-night-2",
+   "regime": "dry"
+  },
+  {
+   "name": "dry-desert-3",
+   "regime": "dry"
+  },
+  {
+   "name": "dry-desert-4",
+   "regime": "dry"
+  },
+  {
+   "name": "dry-desert-5",
+   "regime": "dry"
+  },
+  {
+   "name": "supersat-0",
+   "regime": "supersaturated"
+  },
+  {
+   "name": "supersat-1",
+   "regime": "supersaturated"
+  },
+  {
+   "name": "supersat-2",
+   "regime": "supersaturated"
+  },
+  {
+   "name": "supersat-3",
+   "regime": "supersaturated"
+  },
+  {
+   "name": "supersat-4",
+   "regime": "supersaturated"
+  },
+  {
+   "name": "supersat-5",
+   "regime": "supersaturated"
+  },
+  {
+   "name": "high-top-0",
+   "regime": "high model top"
+  },
+  {
+   "name": "high-top-1",
+   "regime": "high model top"
+  },
+  {
+   "name": "high-top-2",
+   "regime": "high model top"
+  },
+  {
+   "name": "high-top-3",
+   "regime": "high model top"
+  },
+  {
+   "name": "high-top-4",
+   "regime": "high model top"
+  },
+  {
+   "name": "high-top-5",
+   "regime": "high model top"
+  },
+  {
+   "name": "fog-0",
+   "regime": "radiation fog"
+  },
+  {
+   "name": "fog-1",
+   "regime": "radiation fog"
+  },
+  {
+   "name": "high-terrain-0",
+   "regime": "high terrain"
+  },
+  {
+   "name": "high-terrain-1",
+   "regime": "high terrain"
+  },
+  {
+   "name": "high-terrain-2",
+   "regime": "high terrain"
+  },
+  {
+   "name": "high-terrain-3",
+   "regime": "high terrain"
+  },
+  {
+   "name": "edge-thresholds",
+   "regime": "edge: branch thresholds"
+  },
+  {
+   "name": "edge-temperatures",
+   "regime": "edge: t0c and triple point"
+  },
+  {
+   "name": "edge-negative",
+   "regime": "edge: negative and subnormal inputs"
+  },
+  {
+   "name": "edge-top-only",
+   "regime": "edge: condensate in the top level only"
+  },
+  {
+   "name": "edge-bottom-only",
+   "regime": "edge: condensate in the lowest level only"
+  },
+  {
+   "name": "edge-thin-layers",
+   "regime": "edge: thin layers force the CFL limiter"
+  },
+  {
+   "name": "edge-subsaturated-cloud",
+   "regime": "edge: cloud in dry air evaporates"
+  },
+  {
+   "name": "edge-heavy-loading",
+   "regime": "edge: very large rain and snow"
+  },
+  {
+   "name": "edge-aggregation",
+   "regime": "edge: cloud ice above the aggregation limit"
+  },
+  {
+   "name": "edge-dry-tiny",
+   "regime": "edge: near-zero vapour and condensate"
+  },
+  {
+   "name": "edge-zero",
+   "regime": "edge: all hydrometeors zero, saturated"
+  },
+  {
+   "name": "edge-melt-surface-0",
+   "regime": "edge: melting level at the ground"
+  },
+  {
+   "name": "edge-melt-surface-1",
+   "regime": "edge: melting level at the ground"
+  },
+  {
+   "name": "edge-melt-w-zero",
+   "regime": "edge: w = 0 at the melting level"
+  },
+  {
+   "name": "edge-ice-into-warm-surface",
+   "regime": "edge: cold air over a warm lowest level"
+  }
+ ]
+}

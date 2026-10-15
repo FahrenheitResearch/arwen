@@ -8,21 +8,22 @@ import pytest
 #: and 50 (P3 one-category) were admitted by production while this tuple
 #: still read the pre-1.9 eight, so the three cross-checks that iterate it
 #: had quietly stopped covering two schemes.  RE-DERIVED by running the
-#: production validator over range(0, 60), exactly as
+#: production validator over range(0, 107), exactly as
 #: ``test_the_accepted_selector_list_this_module_uses_is_the_real_one``
 #: does; not hand-extended.
-_ACCEPTED_MP_PHYSICS = (0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50, 900)
+_ACCEPTED_MP_PHYSICS = (0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106, 900)
 
 #: The admitted selectors without a cloud-optics coupling: FAST_SBM (30)
 #: alone, refused against the 4/4 pair with the legacy-RRTMG remedy until
 #: its bin effective-radius integrals are qualified.  Before it this was
-#: empty.  P3 (50) left this tuple when its single-ice
+#: empty.  Purdue Lin (2) joins it: Lin produces no effective radii
+#: (Registry.EM_COMMON:3016), so the legacy engine diagnoses its radii.  P3 (50) left this tuple when its single-ice
 #: remap row landed; Milbrandt-Yau (9) left it when its own-radii row
 #: landed (``9: "milbrandt2"``: the block WRF ships commented out at
 #: module_mp_milbrandt2mom.F:3351-3378, evaluated over the transported
 #: number moments).  The tuple stays so the partition checks below keep
 #: asserting that nothing is admitted and uncoupled.
-_NO_RTE_RRTMGP_CLOUD_OPTICS = (30,)
+_NO_RTE_RRTMGP_CLOUD_OPTICS = (2, 30)
 
 #: The selectors the RTE+RRTMGP cross-checks below may actually drive.
 #: Derived, so a scheme cannot be dropped from coverage by hand.
@@ -50,8 +51,8 @@ def test_every_accepted_selector_is_judged():
     assert coupled | uncoupled == set(_ACCEPTED_MP_PHYSICS), (
         "these accepted selectors are neither coupled nor refused: "
         f"{sorted(set(_ACCEPTED_MP_PHYSICS) - coupled - uncoupled)}")
-    assert uncoupled == {30}, (
-        "the only accepted selector refused against RTE+RRTMGP is FAST_SBM; "
+    assert uncoupled == {2, 30}, (
+        "the accepted selectors refused against RTE+RRTMGP are FAST_SBM and Lin; "
         "50, then 9, were retired by writing their rows")
 
     # Every coupled selector validates against the 4/4 pair on the DEFAULT
@@ -86,9 +87,12 @@ def test_the_uncoupled_selectors_are_a_decision_in_the_module_that_raises():
         f"{sorted(set(_ACCEPTED_MP_PHYSICS) - coupled - recorded)}")
     assert (tuple(sorted(_NO_CLOUD_OPTICS_COUPLING))
             == tuple(sorted(_NO_RTE_RRTMGP_CLOUD_OPTICS)))
-    assert set(_NO_CLOUD_OPTICS_COUPLING) == {30}, (
-        "the one recorded exclusion is FAST_SBM; mp=9 was retired by "
+    assert set(_NO_CLOUD_OPTICS_COUPLING) == {2, 30}, (
+        "the recorded exclusions are FAST_SBM and Lin; mp=9 was retired by "
         "writing the scheme's own row")
+    assert "Lin supplies no effective radii" in _NO_CLOUD_OPTICS_COUPLING[2]
+    with pytest.raises(NotImplementedError, match="Lin supplies no effective radii"):
+        cloud_optics_scheme(2)
 
     # 2. The remedy sentence still exists for the refusal path an UNJUDGED
     #    selector takes (checked at 5.), and still names both live doors.
@@ -180,7 +184,7 @@ def test_the_accepted_selector_list_this_module_uses_is_the_real_one():
         return True
 
     from gpuwm.microphysics_schemes import NAMED_MP_IDS
-    admitted = tuple(mp for mp in (*range(0, 60), *NAMED_MP_IDS) if admits(mp))
+    admitted = tuple(mp for mp in (*range(0, 107), *NAMED_MP_IDS) if admits(mp))
     assert admitted == _ACCEPTED_MP_PHYSICS
     # The named refusals are the reason the helper cannot key on one
     # sentence; pin that they exist, so a lane cannot "fix" a future
@@ -283,7 +287,7 @@ def test_cloud_optics_scheme_fails_closed_on_an_unmapped_selector():
     """
     from gpuwm.core.rrtmgp import cloud_optics_scheme
 
-    for unmapped in (2, 5, 51, 95):
+    for unmapped in (2, 51, 95):
         with pytest.raises(NotImplementedError, match="cloud-optics"):
             cloud_optics_scheme(unmapped)
 
@@ -320,3 +324,11 @@ def test_both_radiation_engines_agree_on_which_schemes_carry_ice():
                 "radiation but resolves to the constant-radius branch")
 
 
+
+
+def test_ferrier_coupling_uses_total_ice_without_a_snow_species():
+    from gpuwm.core.rrtmgp import (cloud_optics_scheme, scheme_is_ice_active,
+                                  scheme_has_snow_species)
+    assert cloud_optics_scheme(5) == 'ferrier'
+    assert scheme_is_ice_active('ferrier')
+    assert not scheme_has_snow_species('ferrier')

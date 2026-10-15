@@ -51,11 +51,25 @@ only for ``kpblmax`` (the highest level with znu > 0.6, WRF
 module_bl_gwdo_gsl.F:162-164).  MPAS winds are earth-relative, so the drag
 sees ``sina = 0, cosa = 1`` exactly as native MPAS hands its own drag
 (mpas_atmphys_driver_gwdo.F, gwdo_from_MPAS).
+
+THE GENERIC ENTRY (``run_mpas_column_physics``, 2026-10-11).  The five
+selector tables above admit what somebody typed into them.  The generic
+entry at the foot of this module has no scheme table at all: its selection
+is one mapping of RunConfig physics fields, the engine's own
+``validate_run_config`` and ``validate_physics_capabilities`` judge it, the
+transported species and scheme-owned state come from the engine's own
+allocator (a host ``DomainState`` probe), the surface slots from
+``physics_inventory.microphysics_scratch_slots``, the soil depth from
+``config.soil_layer_count`` and the orographic statics from
+``static.orographic.required_static_fields``.  Whatever
+``PhysicsDriver.compute`` dispatches, it runs.  The slot-table entry above
+is kept so a caller written against it keeps working.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import numbers
 from datetime import datetime
 from types import MappingProxyType
@@ -80,6 +94,14 @@ from gpuwm.core.mpas_column_batch import (
 )
 
 __all__ = [
+    "COLUMN_SEAM_SETTINGS",
+    "ColumnPhysicsPlan",
+    "MPAS_DEFAULT_PHYSICS",
+    "MpasColumnPhysics",
+    "PHYSICS_RESTART_SCHEMA",
+    "column_physics_plan",
+    "physics_selector_menu",
+    "run_mpas_column_physics",
     "DRAG_SCHEMES",
     "MpasColumnSuiteTendencies",
     "FROZEN_SELECTION",
@@ -206,6 +228,10 @@ class MpasColumnSuiteTendencies(MpasColumnPhysicsTendencies):
 
     scalar_rates: object = dataclasses.field(
         default_factory=lambda: MappingProxyType({}))
+    #: Raw vertical-velocity rate on the interfaces (``[level + 1,
+    #: column]``, m s-2) when a phase-one scheme forces ``w`` (the SASE
+    #: closure does); None otherwise.  Generic entry only.
+    dw: object = None
 
 
 def resolve_generation(generation, *, microphysics_scheme, selection):
@@ -338,8 +364,16 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
                  snow_depth=0.0, soil_temperature=None,
                  soil_moisture=None, xice_threshold=None,
                  fractional_seaice=None, orographic_statistics=None,
-                 wsm6_hail_opt=0, generation=None, cell_area_m2=None):
+                 wsm6_hail_opt=0, generation=None, cell_area_m2=None,
+                 physics_mode=None, physics_correct_skip=()):
         # ---- pure validation FIRST (no device allocation before it) ----
+        # Correct mode (gpuwm/correct_mode.py): None is the engine default
+        # (correct; exact under GPUWM_WRF_EXACT=1).  The resolution authors
+        # every correction key, so exact builds the config it always did.
+        from gpuwm import correct_mode
+        correct = correct_mode.resolve(
+            physics_mode, physics_correct_skip,
+            source="MpasColumnSuitePhysics physics_mode")
         if not isinstance(n_levels, numbers.Integral) or n_levels < 3:
             raise ValueError(
                 f"n_levels must be an integer >= 3, got {n_levels!r}")
@@ -506,7 +540,8 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
             radt=cadences["radt_minutes"],
             radt_minutes=cadences["radt_minutes"],
             bldt=cadences["bldt_minutes"],
-            cudt_minutes=cadences["cudt_minutes"])
+            cudt_minutes=cadences["cudt_minutes"],
+            **correct.settings)
         if generation_assignments:
             import dataclasses
             from gpuwm.config import validate_run_config
@@ -519,6 +554,7 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
                 f"for land_surface_scheme={land_surface_scheme!r}, the row "
                 f"declares {n_soil}")
         self._cfg = cfg
+        self._correct_mode = correct
         self._cadences = cadences
         self._dt = float(cadences["dt"])
         self._nz, self._ncol = nz, ncol
@@ -550,6 +586,9 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
             "selection": dict(selection),
             "n_soil_levels": n_soil,
         }
+        if correct.applied:
+            # Present only in correct mode, as in the frozen batch.
+            self._identity["physics_correct"] = list(correct.applied)
         area = None
         if cell_area_m2 is not None:
             area = np.asarray(cell_area_m2, dtype=np.float64).reshape(-1)
@@ -789,3 +828,1072 @@ def _initialize_suite_driver(state, cfg, **kwargs):
 def run_mpas_column_suite(**kwargs) -> MpasColumnSuitePhysics:
     """Construct the selectable MPAS column-physics seam (keyword-only)."""
     return MpasColumnSuitePhysics(**kwargs)
+
+
+# ======================================================================
+# THE GENERIC ENTRY: any selection the engine's own registry accepts.
+# ======================================================================
+
+#: Restart schema of the generic seam (distinct from the frozen seam's and
+#: the slot-table seam's, so a payload of one never restores into another).
+PHYSICS_RESTART_SCHEMA = "mpas-column-physics-v1"
+
+#: RunConfig fields the seam owns.  The column grid and the cadences are
+#: constructor arguments kept as exact step counts; a second value arriving
+#: through the selection would leave the driver's STEPRA/STEPBL/STEPCU and
+#: the seam's own counters describing two different runs.
+_SEAM_OWNED_FIELDS = ("nx", "ny", "nz", "dx", "dy", "ztop", "dt",
+                      "run_seconds", "moist", "radt", "radt_minutes", "bldt",
+                      "cudt_minutes")
+
+#: Settings a column seam supplies when the caller states none, each with
+#: the selection it belongs to and the reason.  A row is a fact about what
+#: a column seam IS, not about a scheme's physics.
+COLUMN_SEAM_SETTINGS = (
+    {"field": "mp28_aerosol_source", "value": "synthetic",
+     "when": {"mp_physics": 28},
+     "why": "the seam has no ingest path and stages no WIF climatology; "
+            "thompson_init runs at first contact on the caller's own "
+            "aerosol arrays (gpuwm/core/mpas_column_batch.py, FIRST "
+            "CONTACT)"},
+)
+
+#: The frozen seam's selection in RunConfig spelling: what
+#: ``mpas_column_batch`` hard-wires, for a caller that wants "today's
+#: default" without restating it.  ``cu_physics``/``ishallow`` are the
+#: caller's (the frozen seam takes them as arguments too).
+MPAS_DEFAULT_PHYSICS = MappingProxyType({
+    "mp_physics": 6, "ra_physics": 4, "ra_rrtmg_variant": "rrtmg_legacy",
+    "sf_sfclay_physics": 1, "sf_surface_physics": 4, "bl_pbl_physics": 1,
+})
+
+#: WRF's earth rotation rate (share/module_model_constants.F EOMEG, s-1),
+#: for the Coriolis pair a column caller's latitude implies.
+_EOMEG = 7.2921e-5
+
+#: Host probe grid.  Small, and with ny != nx so a (ny, nx) trailing shape
+#: is unambiguous.
+_PROBE_NY, _PROBE_NX, _PROBE_NZ = 2, 3, 40
+
+#: The six mass rates of the fixed phase-one result, and the driver
+#: tendency component each is read from (None: no phase-one scheme forces
+#: it, so it is structurally zero).
+_FIXED_MASS_RATES = (("dqv", "rqv"), ("dqc", "rqc"), ("dqr", "rqr"),
+                     ("dqi", "rqi"), ("dqs", "rqs"), ("dqg", None))
+
+#: Microphysics domain-construction steps that need the caller's bound
+#: state and geometry, so they run at the first phase 2 rather than on the
+#: seam's zero placeholder buffers.  Keyed by ``mp_physics``; a scheme
+#: without a row has no such step.
+_FIRST_CONTACT = {28: "_thompson_first_contact", 900: "_tempo_first_contact"}
+
+
+def physics_selector_menu() -> dict:
+    """The registry's own inventory of implemented options, per component.
+
+    ``{component: {"selector_keys": [...], "options": {option_id:
+    {"selectors": {...}, "label": ..., "maturity": ...}}}}``.  A caller that
+    resolves its own spellings onto this needs no scheme list of its own.
+    """
+    from gpuwm.physics_registry import component_options, registry_view
+    menu = {}
+    for component_id, component in registry_view()["components"].items():
+        options = {}
+        for option_id, option in component_options(component_id).items():
+            selectors = option.get("selectors")
+            if not selectors:
+                continue
+            options[option_id] = {
+                "selectors": dict(selectors),
+                "label": option.get("label"),
+                "maturity": option.get("maturity")}
+        menu[component_id] = {
+            "selector_keys": list(component.get("selector_keys", [])),
+            "options": options}
+    return menu
+
+
+def _selection_assignments(physics) -> dict:
+    """Validate the selection mapping's KEYS and apply the seam settings."""
+    from gpuwm.config import RunConfig
+    from gpuwm.microphysics_schemes import resolve_mp_physics
+    if physics is None or not hasattr(physics, "items"):
+        raise TypeError(
+            "physics must be a mapping of RunConfig physics fields, e.g. "
+            f"{dict(MPAS_DEFAULT_PHYSICS)}")
+    chosen = dict(physics)
+    defaults = {item.name: item.default
+                for item in dataclasses.fields(RunConfig)}
+    owned = sorted(set(chosen) & set(_SEAM_OWNED_FIELDS))
+    if owned:
+        raise ValueError(
+            f"physics names {owned}, which the seam owns: the column grid "
+            "and the cadences are constructor arguments held as exact step "
+            "counts, and a second value here would describe a different "
+            "run than the one the counters keep")
+    unknown = sorted(set(chosen) - set(defaults))
+    if unknown:
+        raise ValueError(
+            f"physics names {unknown}, which are not RunConfig fields; a "
+            "setting nothing reads would be recorded as configuration the "
+            "run does not have")
+    if "mp_physics" in chosen:
+        chosen["mp_physics"] = resolve_mp_physics(chosen["mp_physics"])
+    for row in COLUMN_SEAM_SETTINGS:
+        if row["field"] in chosen:
+            continue
+        if all(chosen.get(key, defaults[key]) == value
+               for key, value in row["when"].items()):
+            chosen[row["field"]] = row["value"]
+    # The soil geometry is the land surface's own.  RunConfig's default
+    # count belongs to one scheme; where the caller states none, the seam
+    # requests the geometry the engine has validated for the selected one.
+    from gpuwm.config import (LAND_SURFACE_SOIL_LAYERS,
+                              validated_soil_layer_count)
+    land = chosen.get("sf_surface_physics", defaults["sf_surface_physics"])
+    if ("num_soil_layers" not in chosen and isinstance(land, int) and land
+            and LAND_SURFACE_SOIL_LAYERS.get(land) is not None):
+        chosen["num_soil_layers"] = validated_soil_layer_count(land)
+    return chosen
+
+
+def _selection_config(chosen, *, nz, ncol, ny, dx, ztop, cadences):
+    """The RunConfig of one selection, judged by the engine itself."""
+    from gpuwm.config import RunConfig, validate_run_config
+    from gpuwm.physics_compat import validate_physics_capabilities
+    cfg = RunConfig(
+        nx=ncol, ny=ny, nz=nz, dx=dx, dy=dx, ztop=ztop,
+        dt=float(cadences["dt"]), run_seconds=0.0, moist=True,
+        radt=cadences["radt_minutes"],
+        radt_minutes=cadences["radt_minutes"],
+        bldt=cadences["bldt_minutes"],
+        cudt_minutes=cadences["cudt_minutes"],
+        **chosen)
+    validate_run_config(cfg)
+    validate_physics_capabilities(cfg)
+    return cfg
+
+
+def _resolve_cadences(*, dt, radiation_seconds, surface_pbl_seconds,
+                      cumulus_seconds, cu_physics) -> dict:
+    """Exact step multiples for the three cadences (pure host logic).
+
+    ``cumulus_seconds=None`` is the model step in WRF's own spelling
+    (``cudt_minutes = 0``); a value is a hold of that length.  Which
+    schemes carry a hold is the engine validator's to say.
+    """
+    from gpuwm.core.mpas_column_batch import _cadence_steps
+    dt = _require_positive("dt", dt)
+    stepra = _cadence_steps("radiation_seconds", radiation_seconds, dt)
+    stepbl = _cadence_steps("surface_pbl_seconds", surface_pbl_seconds, dt)
+    resolved = {"dt": dt, "stepra": stepra, "stepbl": stepbl,
+                "radt_minutes": stepra * dt / 60.0,
+                "bldt_minutes": stepbl * dt / 60.0,
+                "stepcu": 0, "cudt_minutes": 0.0}
+    if not cu_physics:
+        if cumulus_seconds is not None:
+            raise ValueError(
+                "cumulus_seconds names a cadence for a cumulus scheme and "
+                "cu_physics is 0")
+        return resolved
+    if cumulus_seconds is None:
+        resolved["stepcu"] = 1
+        return resolved
+    stepcu = _cadence_steps("cumulus_seconds", cumulus_seconds, dt)
+    resolved["stepcu"] = stepcu
+    resolved["cudt_minutes"] = stepcu * dt / 60.0
+    return resolved
+
+
+def _mirror_shape(shape, ncol):
+    """A probe array's shape on the column grid, or None if it has none."""
+    if len(shape) < 2 or tuple(shape[-2:]) != (_PROBE_NY, _PROBE_NX):
+        return None
+    return tuple(shape[:-2]) + (1, ncol)
+
+
+def _allocator_layout(cfg) -> dict:
+    """What the engine's own allocator gives this selection, as a table.
+
+    Two host ``DomainState`` probes on a tiny grid: this configuration and
+    the all-defaults (dry, physics-off) one.  Everything the first carries
+    and the second does not is state the selection asked for -- transported
+    species, radii, cross-step carriers, emission fields -- with the
+    allocator's own initial value.  RK time copies (``name0`` beside
+    ``name``) are the dycore's and are left out; a view into a stacked
+    array (a bin scheme's species) is recorded as that view.
+    """
+    from gpuwm.config import RunConfig
+    from gpuwm.core.state import DomainState
+    from gpuwm.core.moist import WRF_MOIST_ARRAY_SPECIES, moist_species
+    probe_cfg = dataclasses.replace(cfg, nx=_PROBE_NX, ny=_PROBE_NY)
+    probe = DomainState(probe_cfg, array_module=np)
+    bare = DomainState(
+        RunConfig(nx=_PROBE_NX, ny=_PROBE_NY, nz=cfg.nz, dx=cfg.dx,
+                  dy=cfg.dy, ztop=cfg.ztop, dt=cfg.dt, run_seconds=0.0),
+        array_module=np)
+    species = tuple(moist_species(probe))
+    added = {name: value for name, value in vars(probe).items()
+             if not name.startswith("_")
+             and (name not in vars(bare)
+                  or (getattr(bare, name) is None and value is not None))}
+    arrays, scalars, skipped = {}, {}, []
+    for name, value in added.items():
+        if isinstance(value, np.ndarray):
+            if name.endswith("0") and name[:-1] in added:
+                continue
+            if _mirror_shape(value.shape, 1) is None:
+                skipped.append(name)
+                continue
+            arrays[name] = value
+        elif value is None or isinstance(value, (bool, int, float, str)):
+            scalars[name] = value
+    fields = {}
+    for name, value in arrays.items():
+        owner = None
+        for other, stack in arrays.items():
+            if (other != name and stack.ndim == value.ndim + 1
+                    and np.shares_memory(stack, value)):
+                index = next(i for i in range(stack.shape[0])
+                             if np.shares_memory(stack[i], value))
+                owner = (other, index)
+        first = value.reshape(-1)[0] if value.size else np.float32(0.0)
+        if owner is None and not np.all(value == first):
+            raise RuntimeError(
+                f"the allocator initializes {name} to a non-uniform field; "
+                "a column seam cannot rebuild that from a probe")
+        fields[name] = {"shape": tuple(value.shape[:-2]),
+                        "dtype": value.dtype, "fill": first, "view": owner}
+    missing = [name for name in species if name not in fields]
+    if missing:
+        raise RuntimeError(
+            f"the engine transports {missing} for this selection but its "
+            "allocator probe carries no such field on the mass grid")
+    return {
+        "species": species,
+        "mass_species": tuple(name for name in species
+                              if name in WRF_MOIST_ARRAY_SPECIES),
+        "fields": fields, "scalars": scalars, "skipped": tuple(skipped),
+    }
+
+
+@dataclasses.dataclass(frozen=True)
+class ColumnPhysicsPlan:
+    """What one selection needs from its caller (pure host, no device)."""
+
+    #: every registry selector key and every stated key -> resolved value
+    physics: object
+    #: transported scalars in engine order, starting qv/qc/qr
+    species: tuple
+    #: the species that are mixing-ratio masses (water loading)
+    mass_species: tuple
+    #: the rest: numbers, volumes, aerosols, bins
+    number_species: tuple
+    #: scheme state the seam owns and restarts (not transported)
+    state_fields: tuple
+    #: the effective radii among ``state_fields`` (micron, [level, column])
+    radii: tuple
+    #: accumulated surface buckets the microphysics binds (beside RAINC)
+    surface_accumulators: tuple
+    #: per-call surface fields a phase-2 receipt carries
+    surface_receipts: tuple
+    #: soil levels the land surface integrates (0: no land surface)
+    n_soil_levels: int
+    #: per-column orographic statics the selection reads
+    static_fields: tuple
+    #: step counts and WRF-minute cadences, or None when not judged
+    cadences: object
+    #: restart identity of the selection (hash it for a pin)
+    identity: object
+    #: the judged RunConfig (probe geometry unless built by the seam)
+    config: object = dataclasses.field(repr=False, compare=False)
+    #: the allocator table the column state is built from
+    layout: object = dataclasses.field(repr=False, compare=False)
+
+
+def _jsonable(value):
+    if isinstance(value, (bool, str)) or value is None:
+        return value
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, (tuple, list)):
+        return [_jsonable(item) for item in value]
+    return str(value)
+
+
+def _plan_from_config(cfg, chosen, cadences) -> ColumnPhysicsPlan:
+    from gpuwm.config import soil_layer_count
+    from gpuwm.core.physics_inventory import microphysics_scratch_slots
+    from gpuwm.physics_registry import registry_view
+    from gpuwm.static.orographic import required_static_fields
+    layout = _allocator_layout(cfg)
+    species = layout["species"]
+    stacks = {row["view"][0] for row in layout["fields"].values()
+              if row["view"] is not None}
+    state_fields = tuple(sorted(
+        name for name, row in layout["fields"].items()
+        if name not in species and row["view"] is None))
+    slots = tuple(component for component, _slot
+                  in microphysics_scratch_slots(int(cfg.mp_physics)))
+    resolved = {}
+    for component in registry_view()["components"].values():
+        for key in component.get("selector_keys", []):
+            if hasattr(cfg, key):
+                resolved[key] = _jsonable(getattr(cfg, key))
+    for key in chosen:
+        resolved[key] = _jsonable(getattr(cfg, key))
+    resolved = dict(sorted(resolved.items()))
+    n_soil = (int(soil_layer_count(cfg))
+              if int(cfg.sf_surface_physics) else 0)
+    statics = tuple(required_static_fields(
+        int(getattr(cfg, "topo_wind", 0) or 0),
+        int(getattr(cfg, "gwd_opt", 0) or 0)))
+    identity = {
+        "schema": PHYSICS_RESTART_SCHEMA, "batch_schema": RESTART_SCHEMA,
+        "physics": dict(resolved),
+        "species": list(species), "n_soil_levels": n_soil,
+        "static_fields": list(statics),
+    }
+    return ColumnPhysicsPlan(
+        physics=MappingProxyType(resolved),
+        species=species,
+        mass_species=layout["mass_species"],
+        number_species=tuple(name for name in species
+                             if name not in layout["mass_species"]),
+        state_fields=state_fields,
+        radii=tuple(name for name in ("effc", "effi", "effs", "effr")
+                    if name in state_fields and name not in stacks),
+        surface_accumulators=tuple(
+            name.upper() for name in slots if name.endswith("nc")),
+        surface_receipts=tuple(
+            name for name in slots if not name.endswith("nc")),
+        n_soil_levels=n_soil, static_fields=statics,
+        cadences=(None if cadences is None
+                  else MappingProxyType(dict(cadences))),
+        identity=MappingProxyType(identity),
+        config=cfg, layout=layout)
+
+
+def column_physics_plan(physics, *, n_levels=None, dt=None,
+                        radiation_seconds=None, surface_pbl_seconds=None,
+                        cumulus_seconds=None) -> ColumnPhysicsPlan:
+    """Judge one selection and say what it needs (pure host, no device).
+
+    With only ``physics`` the selection is judged on a probe grid and a
+    probe cadence (every scheme each step), which decides everything but
+    ``cadences`` (returned None): species, state, soil depth and statics
+    do not depend on the grid or the step.  Pass ``n_levels``, ``dt`` and
+    the cadences to have those judged too.
+    """
+    chosen = _selection_assignments(physics)
+    timed = dt is not None
+    if timed and (radiation_seconds is None or surface_pbl_seconds is None):
+        raise ValueError(
+            "dt was given without radiation_seconds and "
+            "surface_pbl_seconds; pass all three or none")
+    if not timed and any(value is not None for value in (
+            radiation_seconds, surface_pbl_seconds, cumulus_seconds)):
+        raise ValueError("a cadence was given without dt")
+    step = float(dt) if timed else 60.0
+    cadences = _resolve_cadences(
+        dt=step,
+        radiation_seconds=radiation_seconds if timed else step,
+        surface_pbl_seconds=surface_pbl_seconds if timed else step,
+        cumulus_seconds=cumulus_seconds if timed else None,
+        cu_physics=int(chosen.get("cu_physics", 0) or 0))
+    nz = _PROBE_NZ if n_levels is None else int(n_levels)
+    cfg = _selection_config(chosen, nz=nz, ncol=_PROBE_NX, ny=_PROBE_NY,
+                            dx=12000.0, ztop=20000.0, cadences=cadences)
+    return _plan_from_config(cfg, chosen, cadences if timed else None)
+
+
+class _GenericColumnState(_SuiteColumnState):
+    """The column state with the engine allocator's own scheme fields."""
+
+    def __init__(self, cfg, fnm, fnp, p_top, terrain_height, xp, *, znu,
+                 layout, latitude_deg):
+        super().__init__(cfg, fnm, fnp, p_top, terrain_height, xp,
+                         species=("qv", "qc", "qr"), znu=znu)
+        ny, nx = cfg.ny, cfg.nx
+        nz = cfg.nz
+        # The grid facts an ARW state carries and a scheme may read, in
+        # the form they take on this state: identity mass coupling on the
+        # interface levels as on the mass levels (c1f = 1, c2f = 0, beside
+        # the base state's c1h = 1, c2h = 0), and the Coriolis pair of the
+        # caller's own latitudes (WRF F = 2*EOMEG*sin(lat),
+        # E = 2*EOMEG*cos(lat)).
+        self.c1f = xp.ones(nz + 1, dtype=np.float32)
+        self.c2f = xp.zeros(nz + 1, dtype=np.float32)
+        latitude = np.deg2rad(np.asarray(latitude_deg, dtype=np.float64))
+        self.f = xp.asarray(
+            (2.0 * _EOMEG * np.sin(latitude)).astype(np.float32)
+        ).reshape(ny, nx)
+        self.e = xp.asarray(
+            (2.0 * _EOMEG * np.cos(latitude)).astype(np.float32)
+        ).reshape(ny, nx)
+        fields = layout["fields"]
+        # The frozen base state seeds a radius triple and scheme carriers
+        # by scheme id; this state takes all of that from the allocator.
+        for name in ("effc", "effi", "effs", "qs", "qg", "th_old", "qv_old",
+                     "nwfa2d", "nifa2d"):
+            if name not in fields and hasattr(self, name):
+                setattr(self, name, None)
+        for name, value in layout["scalars"].items():
+            if not hasattr(self, name):
+                setattr(self, name, value)
+        for name, row in fields.items():
+            if row["view"] is not None or name in ("qv", "qc", "qr"):
+                continue
+            setattr(self, name, xp.full(row["shape"] + (ny, nx), row["fill"],
+                                        dtype=row["dtype"]))
+        for name, row in fields.items():
+            if row["view"] is not None:
+                owner, index = row["view"]
+                setattr(self, name, getattr(self, owner)[index])
+
+
+def _capture_cumulus_momentum(driver, sink) -> None:
+    """Keep the raw A-grid momentum pair of whichever cumulus scheme runs.
+
+    ``PhysicsDriver`` couples a ``CumulusResult``'s ``rucuten/rvcuten``
+    onto ARW's C-grid faces; an A-grid caller needs the pair before that.
+    The driver's own callable is given a subclass of its own class whose
+    call records the pair (None for a scheme that returns none), so the
+    scheme's arithmetic, attributes and restart surface are untouched and
+    no scheme is named here.
+    """
+    adapter = driver.cumulus_callable
+    if adapter is None:
+        return
+    base = type(adapter)
+
+    def __call__(self, **kwargs):
+        result = base.__call__(self, **kwargs)
+        pair = (getattr(result, "rucuten", None),
+                getattr(result, "rvcuten", None))
+        sink["pair"] = None if pair[0] is None else pair
+        return result
+
+    adapter.__class__ = type(base.__name__, (base,),
+                             {"__call__": __call__, "__slots__": (),
+                              "__module__": base.__module__})
+
+
+class MpasColumnPhysics(MpasColumnBatchPhysics):
+    """The two-phase column seam for ANY selection the engine accepts.
+
+    ``physics`` is one mapping of RunConfig physics fields.  Nothing here
+    lists schemes: the engine validates the combination, its allocator
+    names the species and state, and ``PhysicsDriver.compute`` and
+    ``microphysics.apply`` -- the same function objects the ARW step calls
+    -- dispatch them.  See :func:`column_physics_plan` for what a selection
+    needs before construction.
+    """
+
+    def __init__(self, *, physics, n_levels, n_columns, dt,
+                 radiation_seconds, surface_pbl_seconds,
+                 start_time, latitude_deg, longitude_deg,
+                 terrain_height_m, z_interface_nominal_m, p_top_pa, dx_m,
+                 cumulus_seconds=None, dx_column_m=None, cell_area_m2=None,
+                 surface=None, statics=None):
+        # ---- pure validation FIRST (no device allocation before it) ----
+        if not isinstance(n_levels, numbers.Integral) or n_levels < 3:
+            raise ValueError(
+                f"n_levels must be an integer >= 3, got {n_levels!r}")
+        if not isinstance(n_columns, numbers.Integral) or n_columns < 1:
+            raise ValueError(
+                f"n_columns must be a positive integer, got {n_columns!r}")
+        if not isinstance(start_time, datetime):
+            raise TypeError("start_time must be a datetime (UTC)")
+        nz, ncol = int(n_levels), int(n_columns)
+        chosen = _selection_assignments(physics)
+        cadences = _resolve_cadences(
+            dt=dt, radiation_seconds=radiation_seconds,
+            surface_pbl_seconds=surface_pbl_seconds,
+            cumulus_seconds=cumulus_seconds,
+            cu_physics=int(chosen.get("cu_physics", 0) or 0))
+        p_top = _require_positive("p_top_pa", p_top_pa)
+        dx = _require_positive("dx_m", dx_m)
+        fnm, fnp = _interface_weights(z_interface_nominal_m)
+        if fnm.shape[0] != nz:
+            raise ValueError(
+                f"z_interface_nominal_m has {fnm.shape[0] + 1} interfaces "
+                f"but n_levels={nz} needs {nz + 1}")
+        top_nominal = float(np.asarray(
+            z_interface_nominal_m, dtype=np.float64)[-1])
+        cfg = _selection_config(chosen, nz=nz, ncol=ncol, ny=1, dx=dx,
+                                ztop=top_nominal, cadences=cadences)
+        plan = _plan_from_config(cfg, chosen, cadences)
+        lat = np.asarray(latitude_deg, dtype=np.float32).reshape(-1)
+        lon = np.asarray(longitude_deg, dtype=np.float32).reshape(-1)
+        if lat.shape != (ncol,) or lon.shape != (ncol,):
+            raise ValueError(
+                "latitude_deg/longitude_deg must have one value per "
+                f"column ({ncol}), got {lat.shape}/{lon.shape}")
+        terrain = np.asarray(terrain_height_m, dtype=np.float32).reshape(-1)
+        if terrain.shape != (ncol,):
+            raise ValueError(
+                f"terrain_height_m must have shape ({ncol},), got "
+                f"{terrain.shape}")
+        dx_column = None
+        if dx_column_m is not None:
+            dx_column = np.asarray(dx_column_m, dtype=np.float32).reshape(-1)
+            if dx_column.shape != (ncol,):
+                raise ValueError(
+                    f"dx_column_m must have one value per column ({ncol},), "
+                    f"got {dx_column.shape}")
+            if not np.all(np.isfinite(dx_column)) or np.any(dx_column <= 0.0):
+                raise ValueError("dx_column_m must be finite and positive")
+        area = None
+        if cell_area_m2 is not None:
+            area = np.asarray(cell_area_m2, dtype=np.float64).reshape(-1)
+            if (area.shape != (ncol,) or not np.all(np.isfinite(area))
+                    or np.any(area <= 0)):
+                raise ValueError(
+                    "cell_area_m2 must be finite and positive with one "
+                    "value per column")
+        # Surface inputs: the engine's own initialize_physics keywords.
+        from gpuwm.core.physics import initialize_physics
+        accepted = set(inspect.signature(initialize_physics).parameters)
+        seam_bound = {"state", "cfg", "radiation_start_time",
+                      "radiation_latitude", "radiation_longitude",
+                      "terrain_drag_static", "radiation", "cumulus"}
+        given = {} if surface is None else dict(surface)
+        unknown = sorted(name for name in given
+                         if name not in accepted or name in seam_bound)
+        if unknown:
+            raise ValueError(
+                f"surface names {unknown}, which initialize_physics does "
+                f"not take from a column caller; it takes "
+                f"{sorted(accepted - seam_bound)}")
+        n_soil = plan.n_soil_levels
+        for name in ("soil_temperature", "soil_moisture"):
+            if not n_soil:
+                continue
+            value = given.get(name)
+            if value is None:
+                raise ValueError(
+                    f"surface[{name!r}] is required: this land surface "
+                    f"integrates a {n_soil}-level soil column and a "
+                    "defaulted profile is substituted state")
+            if tuple(np.shape(value)) != (n_soil, ncol):
+                raise ValueError(
+                    f"surface[{name!r}] must have shape ({n_soil}, {ncol}) "
+                    f"for this land surface, got {tuple(np.shape(value))}")
+        # Orographic statistics: exactly the selection's field set.
+        need = plan.static_fields
+        supplied = {} if statics is None else dict(statics)
+        missing = [name for name in need if name not in supplied]
+        extra = sorted(name for name in supplied if name not in need)
+        if missing or extra:
+            raise ValueError(
+                f"statics must carry exactly {list(need)} for this "
+                f"selection (missing {missing}, extra {extra}); a drag on "
+                "zero statistics is a drag switched off without saying so")
+        oro = {}
+        for name in need:
+            value = np.asarray(supplied[name], dtype=np.float32).reshape(-1)
+            if value.shape != (ncol,) or not np.all(np.isfinite(value)):
+                raise ValueError(
+                    f"static {name} must be finite with one value per "
+                    f"column ({ncol},), got {value.shape}")
+            oro[name] = value.reshape(1, ncol)
+        znu = _nominal_znu(z_interface_nominal_m, p_top)
+
+        self._cfg = cfg
+        self._plan = plan
+        self._cadences = cadences
+        self._dt = float(cadences["dt"])
+        self._nz, self._ncol = nz, ncol
+        self._start_time = start_time
+        mp_physics = int(cfg.mp_physics)
+        from gpuwm.core.physics_inventory import microphysics_scratch_slots
+        self._surface_slots = tuple(microphysics_scratch_slots(mp_physics))
+        # The frozen seam's restart code keys two scheme carriers on its
+        # scheme names; reuse those names where it has them.
+        self._microphysics_scheme = next(
+            (name for name, value in _MP_PHYSICS_BY_SCHEME.items()
+             if value == mp_physics), f"mp_physics={mp_physics}")
+        self._has_graupel = any(
+            component == "graupelnc" for component, _ in self._surface_slots)
+        self._species = plan.species
+        self._state_restart_fields = tuple(
+            dict.fromkeys(plan.state_fields + ("h_diabatic",)))
+        self._identity = dict(
+            plan.identity,
+            n_levels=nz, n_columns=ncol, dt=self._dt,
+            stepra=cadences["stepra"], stepbl=cadences["stepbl"],
+            stepcu=cadences["stepcu"],
+            start_time=start_time.isoformat(), p_top_pa=p_top, dx_m=dx,
+            dx_column=("per-column" if dx_column is not None else "scalar"),
+            surface=sorted(given), physics=dict(plan.identity["physics"]),
+            species=list(plan.species),
+            static_fields=list(plan.static_fields))
+
+        # ---- device construction from here on --------------------------
+        import cupy as cp
+        self._cp = cp
+        self._cell_area_m2 = None if area is None else cp.asarray(area)
+        state = _GenericColumnState(cfg, fnm, fnp, p_top, terrain, cp,
+                                    znu=znu, layout=plan.layout,
+                                    latitude_deg=lat)
+        self._state = state
+        self._species_buffers = {
+            name: getattr(state, name) for name in self._species}
+
+        def on_grid(values):
+            if values is None or np.ndim(values) == 0 or isinstance(
+                    values, (str, bytes)):
+                return values
+            if not hasattr(values, "__cuda_array_interface__"):
+                values = np.asarray(values)
+            if values.shape[-1] != ncol:
+                return values
+            return values.reshape(values.shape[:-1] + (1, ncol))
+
+        kwargs = {name: on_grid(value) for name, value in given.items()}
+        kwargs.setdefault("glw", None)
+        self._driver = initialize_physics(
+            state, cfg, **kwargs,
+            radiation_start_time=start_time,
+            radiation_latitude=lat.reshape(1, ncol),
+            radiation_longitude=lon.reshape(1, ncol),
+            terrain_drag_static=(dict(oro, HGT_M=terrain.reshape(1, ncol))
+                                 if oro else None))
+        self._cumulus_momentum = {"pair": None, "seen": False}
+        _capture_cumulus_momentum(self._driver, self._cumulus_momentum)
+
+        self._aerosol_init = None
+        if mp_physics in _FIRST_CONTACT:
+            # initialize_physics ran the scheme's domain construction on
+            # zero placeholder buffers with no geometry; that product
+            # describes no column the seam will run, so every field it
+            # could have written goes back to the allocator's value and
+            # the real step runs at first contact (frozen seam docstring).
+            for name, row in plan.layout["fields"].items():
+                if row["view"] is None and name not in plan.radii:
+                    getattr(state, name)[...] = row["fill"]
+
+        shape3 = (nz, 1, ncol)
+        iface3 = (nz + 1, 1, ncol)
+        # The advective forcing lanes a cumulus scheme reads.  The driver
+        # binds them to the state's own pair when the allocator made one
+        # for the selected scheme; the seam fills whichever buffers the
+        # driver reads, and allocates a pair only when there is none.
+        for lane in ("gf_rthdynten", "gf_rqvdynten"):
+            if getattr(self._driver, lane, None) is None:
+                setattr(self._driver, lane,
+                        cp.zeros(shape3, dtype=cp.float32))
+        self._gf_rthdynten = self._driver.gf_rthdynten
+        self._gf_rqvdynten = self._driver.gf_rqvdynten
+        if dx_column is not None:
+            self._driver.gf_dx_column = cp.asarray(
+                dx_column.reshape(1, ncol))
+        # THE STATE'S ARRAYS ARE THE STATE'S, FOR GOOD.  A scheme may bind
+        # state arrays when the driver is built (NSSL's production
+        # coordinator does, and checks their identity on every call), so
+        # nothing here ever points a state attribute at another array:
+        # theta and pressure are the state's own thp/p, and both phases
+        # copy the caller's fields in (phase 2 copies the results back).
+        self._in = {name: cp.zeros(shape3, dtype=cp.float32)
+                    for name in ("u", "v", "temperature", "exner", "dz",
+                                 "rho")}
+        self._in["theta"] = state.thp
+        self._in["pressure"] = state.p
+        self._in.update({name: cp.zeros(iface3, dtype=cp.float32)
+                         for name in ("p_interface", "z_interface")})
+        self._atmosphere = None
+        state.prepared_physics_atmosphere = self._supplied_atmosphere
+        # A-grid winds for a post-RK scheme that reads winds from the
+        # state (an ARW state holds them on C-grid faces and such a scheme
+        # destaggers them; these columns have no faces).
+        state.mass_point_winds = lambda: (self._in["u"], self._in["v"])
+        self._out = {name: cp.zeros((nz, ncol), dtype=cp.float32)
+                     for name in _OUTPUT_BUFFERS}
+        self._dw_out = None
+        #: Seam-owned rate buffers for species outside the six masses,
+        #: created the first time a phase-one scheme forces one.  Not on
+        #: the restart manifest: every phase 1 rewrites them before a read.
+        self._scalar_out = {}
+        self.last_scalar_rates = MappingProxyType({})
+        self._step_index = 0
+        self._pending_phase = _PHASE1
+        state.elapsed_seconds = 0.0
+
+    # ------------------------------------------------------------------
+    @property
+    def plan(self) -> ColumnPhysicsPlan:
+        return self._plan
+
+    @property
+    def species(self) -> tuple:
+        return self._species
+
+    @property
+    def physics(self) -> dict:
+        """Every selector the seam's RunConfig resolved, by field name."""
+        return dict(self._plan.physics)
+
+    @property
+    def n_soil_levels(self) -> int:
+        return int(self._plan.n_soil_levels)
+
+    @property
+    def last_ruc_census(self):
+        census = getattr(self._driver, "last_ruc_census", None)
+        return None if census is None else dict(census)
+
+    def radii(self) -> dict:
+        """The scheme's effective radii as live ``[level, column]`` views."""
+        nz, ncol = self._nz, self._ncol
+        return {name: getattr(self._state, name).reshape(nz, ncol)
+                for name in self._plan.radii}
+
+    def soil_state(self) -> dict:
+        """Device copies of the soil column (``[level, column]``)."""
+        f = self._driver.fields
+        ncol = self._ncol
+        return {name: f[name].reshape(f[name].shape[0], ncol).copy()
+                for name in ("tslb", "smois") if name in f}
+
+    def _species_arrays(self, phase, species) -> dict:
+        """The selection's exact species set, both directions refused."""
+        given = {} if species is None else dict(species)
+        missing = [name for name in self._species
+                   if given.get(name) is None]
+        extra = sorted(name for name in given if name not in self._species)
+        if missing or extra:
+            raise ValueError(
+                f"{phase}: this selection transports {self._species} "
+                f"(missing {missing}, not its state {extra}); a "
+                "zero-defaulted species is substituted state and an "
+                "accepted extra one is caller state silently dropped")
+        return {name: given[name] for name in self._species}
+
+    # ------------------------------------------------------------------
+    def run_phase1(self, *, dt, u, v, theta, pressure, pressure_interface,
+                   z_interface, w, rho_dry, species, exner=None,
+                   rthdynten=None, rqvdynten=None):
+        """Run the due phase-1 chain; return the held raw tendency set.
+
+        The frozen seam's phase 1 with the species passed as one mapping
+        (exactly ``self.species``).  Read-only on every input.
+        """
+        if self._pending_phase != _PHASE1:
+            raise RuntimeError(
+                "run_phase1 called out of order: the previous step's "
+                "run_phase2 has not run (strict phase1 -> phase2 "
+                "alternation)")
+        if float(dt) != self._dt:
+            raise ValueError(
+                f"phase-1 dt={dt} does not match the constructor model "
+                f"step {self._dt}; the seam owns the sub-cadences")
+        from gpuwm.core import constants as _constants
+        cp = self._cp
+        nz, ncol = self._nz, self._ncol
+        level, iface = (nz, ncol), (nz + 1, ncol)
+        scalars = self._species_arrays("run_phase1", species)
+        for name, value in (("u", u), ("v", v), ("theta", theta),
+                            ("pressure", pressure), ("rho_dry", rho_dry),
+                            *scalars.items()):
+            self._require_input(name, value, level)
+        for name, value in (("pressure_interface", pressure_interface),
+                            ("z_interface", z_interface), ("w", w)):
+            self._require_input(name, value, iface)
+        for name, value in (("exner", exner), ("rthdynten", rthdynten),
+                            ("rqvdynten", rqvdynten)):
+            if value is not None:
+                self._require_input(name, value, level)
+
+        state, buf = self._state, self._in
+
+        def v3(a):
+            return a.reshape(a.shape[0], 1, ncol)
+
+        buf["u"][...] = v3(u)
+        buf["v"][...] = v3(v)
+        buf["theta"][...] = v3(theta)
+        buf["pressure"][...] = v3(pressure)
+        buf["p_interface"][...] = v3(pressure_interface)
+        buf["z_interface"][...] = v3(z_interface)
+        state.w[...] = v3(w)
+        # NEGATIVE-QV LAW (frozen seam): clamp in seam scratch only.
+        cp.maximum(v3(scalars["qv"]), cp.float32(0.0), out=state.qv)
+        for name in self._species:
+            if name != "qv":
+                getattr(state, name)[...] = v3(scalars[name])
+        if exner is None:
+            cp.power(buf["pressure"] / cp.float32(_constants.P0),
+                     cp.float32(_constants.RCP), out=buf["exner"])
+        else:
+            buf["exner"][...] = v3(exner)
+        cp.multiply(buf["theta"], buf["exner"], out=buf["temperature"])
+        cp.subtract(buf["z_interface"][1:], buf["z_interface"][:-1],
+                    out=buf["dz"])
+        cp.multiply(cp.float32(1.0) + state.qv, v3(rho_dry), out=buf["rho"])
+        # The state's own thermodynamic carriers, for a scheme that reads
+        # them directly rather than through the phy_prep product (the UW
+        # PBL forms its density from state.alt): alt = 1/rho_dry and, with
+        # phb == 0, php = z*g -- the same two fills phase 2 makes.
+        cp.divide(cp.float32(1.0), v3(rho_dry), out=state.alt)
+        cp.multiply(buf["z_interface"], cp.float32(_constants.G),
+                    out=state.php)
+        if rthdynten is None:
+            self._gf_rthdynten[...] = cp.float32(0.0)
+        else:
+            self._gf_rthdynten[...] = v3(rthdynten)
+        if rqvdynten is None:
+            self._gf_rqvdynten[...] = cp.float32(0.0)
+        else:
+            self._gf_rqvdynten[...] = v3(rqvdynten)
+
+        # The supplied phy_prep product, with _prepare_atmosphere's own
+        # zero semantics for a category the scheme set does not carry.
+        absent = {}
+        for name in ("qi", "qs"):
+            if getattr(state, name, None) is None:
+                absent[name] = state.scratch((nz, 1, ncol), f"physics_{name}")
+                absent[name][...] = 0.0
+        self._atmosphere = {
+            "theta": buf["theta"], "temperature": buf["temperature"],
+            "pressure": buf["pressure"],
+            "p_interface": buf["p_interface"], "exner": buf["exner"],
+            "u": buf["u"], "v": buf["v"],
+            "z_interface": buf["z_interface"], "dz": buf["dz"],
+            "qv": state.qv, "qc": state.qc,
+            "qi": absent.get("qi", getattr(state, "qi", None)),
+            "qs": absent.get("qs", getattr(state, "qs", None)),
+            "rho": buf["rho"],
+        }
+        state.elapsed_seconds = float(
+            np.float64(self._step_index) * np.float64(self._dt))
+        driver, cfg = self._driver, self._cfg
+        before = dict(driver.call_counts)
+        captured = self._cumulus_momentum
+        captured["pair"] = None
+        try:
+            tendencies = type(self)._PHASE1_ORCHESTRATION(driver, state, cfg)
+        finally:
+            self._atmosphere = None
+        after = driver.call_counts
+        ran = {name: after.get(name, 0) > before.get(name, 0)
+               for name in ("radiation", "ysu", "cumulus")}
+        out = self._out
+        out["dtheta"][...] = tendencies.rtheta.reshape(nz, ncol)
+        for name, component in _FIXED_MASS_RATES:
+            value = (None if component is None
+                     else getattr(tendencies, component, None))
+            if value is None:
+                out[name][...] = cp.float32(0.0)
+            else:
+                out[name][...] = value.reshape(nz, ncol)
+        # Momentum: the PBL slot's raw A-grid rates (after any gwd_opt
+        # drag), which every PBL scheme leaves in driver.pbl_raw_rates and
+        # which persist across non-due steps; zero with the slot off.
+        raw = driver.pbl_raw_rates or {}
+        for name in ("du", "dv"):
+            if name in raw:
+                out[name][...] = raw[name].reshape(nz, ncol)
+            else:
+                out[name][...] = cp.float32(0.0)
+        momentum = captured["pair"]
+        if momentum is not None:
+            cp.add(out["du"], momentum[0].reshape(nz, ncol), out=out["du"])
+            cp.add(out["dv"], momentum[1].reshape(nz, ncol), out=out["dv"])
+            captured["seen"] = True
+        elif captured["seen"]:
+            raise RuntimeError(
+                "the selected cumulus scheme returns a momentum pair and "
+                "did not run this step; its previous pair would be "
+                "applied as this step's.  Run it on the model step "
+                "(cumulus_seconds=None)")
+        out["h_diabatic"][...] = state.h_diabatic.reshape(nz, ncol)
+
+        # Rates for species outside the six masses, exactly as the ARW
+        # step reads them (PhysicsTendencies.extra_scalars).  The driver
+        # holds them mass-coupled by chm == 1.0 on this state, so they ARE
+        # the raw rates.
+        extra = getattr(driver.pbl_tendencies, "extra_scalars", None) or {}
+        fixed = {"qv", "qc", "qr", "qi", "qs", "qg"}
+        rates = {}
+        for name, value in extra.items():
+            if name in fixed:
+                continue
+            if name not in self._species:
+                raise RuntimeError(
+                    f"a phase-one scheme returned a rate for {name!r}, "
+                    f"which this selection does not transport "
+                    f"({self._species})")
+            if not ran["ysu"]:
+                raise RuntimeError(
+                    f"a held rate for {name!r} arrived on a step with no "
+                    "PBL call; it would be the previous step's")
+            buffer = self._scalar_out.get(name)
+            if buffer is None:
+                buffer = self._scalar_out[name] = cp.zeros(
+                    (nz, ncol), dtype=cp.float32)
+            buffer[...] = value.reshape(nz, ncol)
+            rates[name] = buffer
+        self.last_scalar_rates = MappingProxyType(rates)
+        # A w rate, for a closure that forces vertical velocity.  Coupled
+        # by chf = c1f*mu + c2f == 1.0 on this state, so it is the raw
+        # rate, exactly as the mass-level rates are.
+        dw = getattr(tendencies, "rw", None)
+        if dw is not None:
+            if self._dw_out is None:
+                self._dw_out = cp.zeros((nz + 1, ncol), dtype=cp.float32)
+            self._dw_out[...] = dw.reshape(nz + 1, ncol)
+        result = MpasColumnSuiteTendencies(
+            du=out["du"], dv=out["dv"], dtheta=out["dtheta"],
+            dqv=out["dqv"], dqc=out["dqc"], dqr=out["dqr"],
+            dqi=out["dqi"], dqs=out["dqs"], dqg=out["dqg"],
+            h_diabatic=out["h_diabatic"],
+            step_index=self._step_index,
+            elapsed_seconds=state.elapsed_seconds,
+            radiation_ran=ran["radiation"], surface_pbl_ran=ran["ysu"],
+            cumulus_ran=ran["cumulus"],
+            scalar_rates=self.last_scalar_rates,
+            dw=None if dw is None else self._dw_out)
+        self._pending_phase = _PHASE2
+        return result
+
+    # ------------------------------------------------------------------
+    def run_phase2(self, *, theta, pressure, z_interface, w, rho_dry,
+                   species, u=None, v=None,
+                   refl_10cm_due: bool = False) -> dict:
+        """Run the selected microphysics in place on the caller's arrays.
+
+        ``u``/``v`` are the post-RK A-grid winds for a scheme that reads
+        winds (the bin scheme does); passed as a pair or not at all, and
+        without them such a scheme sees the phase-1 winds.
+
+        ``theta`` and every transported species are updated in the
+        caller's arrays (copied into the state's own arrays, stepped, and
+        copied back: see the constructor on why the state's arrays never
+        change identity).  ``rho_dry`` and the post-RK ``w`` are always
+        bound (WRF hands its microphysics driver the current ``w`` and
+        ``rho``); a scheme that reads neither ignores them.  The receipt
+        carries the per-call surface fields the scheme's driver arm binds
+        (``plan.surface_receipts``).
+        """
+        if self._pending_phase != _PHASE2:
+            raise RuntimeError(
+                "run_phase2 called out of order: run_phase1 must run "
+                "first (strict phase1 -> phase2 alternation)")
+        from gpuwm.core import constants as _constants
+        cp = self._cp
+        nz, ncol = self._nz, self._ncol
+        level, iface = (nz, ncol), (nz + 1, ncol)
+        scalars = self._species_arrays("run_phase2", species)
+        for name, value in (("theta", theta), ("pressure", pressure),
+                            ("rho_dry", rho_dry), *scalars.items()):
+            self._require_input(name, value, level)
+        for name, value in (("z_interface", z_interface), ("w", w)):
+            self._require_input(name, value, iface)
+        if (u is None) != (v is None):
+            raise ValueError(
+                "run_phase2: u and v are a pair; one without the other "
+                "would step a scheme on winds from two different times")
+        state, cfg, driver = self._state, self._cfg, self._driver
+
+        def v3(a):
+            return a.reshape(a.shape[0], 1, ncol)
+
+        if u is not None:
+            self._require_input("u", u, level)
+            self._require_input("v", v, level)
+            self._in["u"][...] = v3(u)
+            self._in["v"][...] = v3(v)
+        # Copy in (thb == 0, so thp IS full theta; phb == 0, so php is
+        # z*g; alt = 1/rho_dry): every array the scheme reads is the
+        # state's own, the same object it was when the driver was built.
+        state.w[...] = v3(w)
+        state.thp[...] = v3(theta)
+        state.p[...] = v3(pressure)
+        for name, value in scalars.items():
+            getattr(state, name)[...] = v3(value)
+        cp.divide(cp.float32(1.0), v3(rho_dry), out=state.alt)
+        cp.multiply(v3(z_interface), cp.float32(_constants.G),
+                    out=state.php)
+        receipt = {}
+        first_contact = _FIRST_CONTACT.get(int(cfg.mp_physics))
+        if first_contact is not None and self._aerosol_init is None:
+            self._aerosol_init = getattr(self, first_contact)(z_interface)
+        if int(cfg.mp_physics) != 0:
+            diagnostics = type(self)._PHASE2_MICROPHYSICS(
+                state, cfg, self._dt, refl_10cm_due=refl_10cm_due)
+            driver.accept_microphysics(diagnostics)
+            for name in self._plan.surface_receipts:
+                value = getattr(diagnostics, name, None)
+                if value is not None:
+                    receipt[name] = value.reshape(ncol).copy()
+            if refl_10cm_due:
+                from gpuwm.core.refl import consume_refl_10cm
+                receipt["refl_10cm"] = (
+                    consume_refl_10cm(state).reshape(nz, ncol).copy())
+        elif refl_10cm_due:
+            raise ValueError(
+                "refl_10cm_due with mp_physics=0: no scheme computes a "
+                "reflectivity")
+        # Copy out: the caller's theta and species now hold the scheme's
+        # result.  A scheme that raised leaves the caller's arrays as they
+        # were handed in.
+        v3(theta)[...] = state.thp
+        for name, value in scalars.items():
+            v3(value)[...] = getattr(state, name)
+        self._step_index += 1
+        state.elapsed_seconds = float(
+            np.float64(self._step_index) * np.float64(self._dt))
+        self._pending_phase = _PHASE1
+        return receipt
+
+    def _thompson_first_contact(self, z_interface=None) -> dict:
+        return super()._thompson_first_contact()
+
+    def _tempo_first_contact(self, z_interface) -> dict:
+        """The frozen seam's TEMPO first contact (its run_phase2 block)."""
+        cp = self._cp
+        state, cfg = self._state, self._cfg
+        if not bool(cp.any(state.nwfa)) or not bool(cp.any(state.nifa)):
+            raise ValueError(
+                "TEMPO column seam requires supplied water-friendly and "
+                "ice-friendly aerosol initial fields; an absent "
+                "climatology must not become a synthetic real forecast")
+        if cfg.tempo_surface_emission_before:
+            area = self._cell_area_m2
+            if area is None:
+                raise ValueError(
+                    "native TEMPO surface emission initialization requires "
+                    "cell areas (cell_area_m2)")
+            from gpuwm.core.tempo import _runtime
+            _runtime(cfg, self._nz).initialize_mpas_surface_emission(
+                state.nwfa[0], z_interface[1] - z_interface[0], area,
+                state.nwfa2d)
+            emission = "native MPAS area and depth scaling"
+        else:
+            state.nwfa2d[...] = state.nwfa[0] * cp.float32(0.000196)
+            emission = "lowest-level times 0.000196"
+        return {"ccn": False, "in": False, "source": "supplied",
+                "surface_emission": emission}
+
+    def accumulated_precipitation(self) -> dict:
+        """Bucket copies (mm): the scheme's own surface slots plus RAINC."""
+        cp = self._cp
+        ncol = self._ncol
+        state, driver = self._state, self._driver
+        out = {}
+        for component, slot in self._surface_slots:
+            if component.endswith("nc"):
+                out[component.upper()] = state.scratch(
+                    (1, ncol), slot).reshape(ncol).copy()
+        rainc = driver.rainc
+        out["RAINC"] = (cp.zeros(ncol, dtype=cp.float32)
+                        if rainc is None else rainc.reshape(ncol).copy())
+        return out
+
+
+def run_mpas_column_physics(**kwargs) -> MpasColumnPhysics:
+    """Construct the generic MPAS column-physics seam (keyword-only)."""
+    return MpasColumnPhysics(**kwargs)

@@ -362,3 +362,76 @@ def test_levels_match_geocat_above_and_below_ground(tmp_path):
                 data, xr.DataArray(psfc[j, i]), hyam, hybm, variable=kind, **common).values * scale
             got = ds[name].values[:, j, i].astype(np.float64)
             assert np.allclose(got, expected, rtol=2e-6, atol=1e-3), (name, got, expected)
+
+
+# ---------------------------------------------------------------------------
+# Loader-ready layout: spatial chunks and the reflectivity row (A2)
+# ---------------------------------------------------------------------------
+
+def test_chunk_shape_grammar(tables):
+    assert ml_export.parse_chunk_yx(None) is None
+    assert ml_export.parse_chunk_yx("auto") is None
+    assert ml_export.parse_chunk_yx("full") == [0, 0]
+    assert ml_export.parse_chunk_yx("256,128") == [256, 128]
+    assert ml_export.parse_chunk_yx("512x512") == [512, 512]
+    for bad in ("0,64", "-1,5", "big", "1,2,3"):
+        with pytest.raises(ml_export.MlExportRefusal):
+            ml_export.parse_chunk_yx(bad)
+    assert ml_export.build_request(_args(), tables)["chunk_yx"] is None
+    request = ml_export.build_request(_args(chunk_yx="256,256"), tables)
+    assert request["chunk_yx"] == [256, 256]
+    assert "--chunk-yx 256,256" in request["provenance"]["options"]
+
+
+def test_reflectivity_is_a_model_level_row_only(tables):
+    chosen = ml_export.select_variables("+radar_reflectivity", tables, "model")
+    assert "radar_reflectivity" in [row["id"] for row in chosen]
+    row = next(r for r in tables.variables if r["id"] == "radar_reflectivity")
+    assert row["op"] == "raw:REFL_10CM" and row["units"] == "dBZ" and not row["default"]
+    with pytest.raises(ml_export.MlExportRefusal, match="model-level"):
+        ml_export.select_variables("radar_reflectivity", tables, "pressure")
+
+
+def _add_varying_fields(path: Path, hour: int) -> None:
+    netCDF4 = pytest.importorskip("netCDF4")
+    import numpy as np
+
+    with netCDF4.Dataset(path, "a") as ds:
+        nz, ny, nx = (len(ds.dimensions[d]) for d in ("bottom_top", "south_north", "west_east"))
+        ds["T2"][0] = 280.0 + np.arange(ny * nx, dtype="f4").reshape(ny, nx) / 10.0 + hour
+        refl = ds.createVariable("REFL_10CM", "f4", ("Time", "bottom_top", "south_north", "west_east"))
+        refl[0] = np.arange(nz * ny * nx, dtype="f4").reshape(nz, ny, nx) / 4.0 - 10.0 + hour
+
+
+def test_tiled_and_whole_plane_exports_hold_the_same_values(tmp_path):
+    found = ml_export.BINARY.find()
+    if found is None or not ml_export.BINARY.probe(found)[0]:
+        pytest.skip("rw_mlexport is not built on this machine")
+    xr = pytest.importorskip("xarray")
+    pytest.importorskip("zarr")
+    import numpy as np
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    for hour in (0, 1):
+        name = runs / f"wrfout_d01_2026-09-29_{hour:02d}_00_00"
+        _tiny_wrfout(name, hour)
+        _add_varying_fields(name, hour)
+    opened = {}
+    for shape in ("full", "2,4"):
+        out = tmp_path / f"export-{shape.replace(',', 'x')}"
+        code = cli.main(["ml-export", str(runs), "--out", str(out), "--levels", "model",
+                         "--variables", "temperature,radar_reflectivity,2m_temperature,land_sea_mask",
+                         "--chunk-yx", shape])
+        assert code == 0
+        opened[shape] = xr.open_zarr(out / "d01.zarr")
+        meta = json.loads((out / "d01.zarr" / "radar_reflectivity" / ".zarray").read_text())
+        assert meta["chunks"][-2:] == ([5, 6] if shape == "full" else [2, 4])
+        static = json.loads((out / "d01.zarr" / "land_sea_mask" / ".zarray").read_text())
+        assert static["chunks"] == ([5, 6] if shape == "full" else [2, 4])
+    whole, tiled = opened["full"], opened["2,4"]
+    for name in ("temperature", "radar_reflectivity", "2m_temperature", "land_sea_mask"):
+        np.testing.assert_array_equal(whole[name].values, tiled[name].values)
+    refl = whole["radar_reflectivity"]
+    assert refl.attrs["units"] == "dBZ"
+    assert float(refl.isel(time=1).max()) == pytest.approx((4 * 5 * 6 - 1) / 4.0 - 10.0 + 1)

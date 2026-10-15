@@ -245,12 +245,22 @@ def test_explicit_package_is_not_replaced_by_announced_substitution(tmp_path):
     from test_namelist_import import INPUT_TEXT,_pair
     from gpuwm.namelist_import import import_namelists
     from gpuwm.wrfinput_door import require_preserved_wrf_selectors
+    # mp_physics = 55 used to import as an announced Morrison substitution
+    # that this gate then refused; the importer now refuses it by name
+    # itself (gpuwm.config._MP_UNPORTED_SCHEMES), before any door.
+    ishmael=INPUT_TEXT.replace('mp_physics = 10, 10','mp_physics = 55, 55')
+    with pytest.raises(ValueError,match='Jensen-ISHMAEL.*is not ported'):
+        import_namelists(*_pair(tmp_path,inp=ishmael),rrtmg_variant=None)
+    # The gate still refuses a package replacement however it arises.
+    from dataclasses import replace
+    from gpuwm.namelist_import import Substitution
     _,report=import_namelists(*_pair(tmp_path),rrtmg_variant=None)
+    replaced=replace(report,substitutions=report.substitutions+(Substitution(
+        key='mp_physics',wrf_value=55,wrf_name='ISHMAEL',gpuwm_key='mp_physics',
+        gpuwm_value=10,gpuwm_name='Morrison 2-moment'),))
     with pytest.raises(ValueError,match='ISHMAEL.*no native implementation'):
-        require_preserved_wrf_selectors(report)
+        require_preserved_wrf_selectors(replaced)
     # A native selector remains admitted, including preserved legacy radiation.
-    text=INPUT_TEXT.replace('mp_physics = 55, 55','mp_physics = 10, 10')
-    _,report=import_namelists(*_pair(tmp_path,inp=text),rrtmg_variant=None)
     require_preserved_wrf_selectors(report)
 
 

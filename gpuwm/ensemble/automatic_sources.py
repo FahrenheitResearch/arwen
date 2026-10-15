@@ -361,13 +361,18 @@ class AutomaticSourceSelection:
         return None if self.stochastic_json is None else json.loads(self.stochastic_json)
 
     def describe(self):
-        return {"schema": SELECTION_SCHEMA, "mode": self.mode,
+        document = {"schema": SELECTION_SCHEMA, "mode": self.mode,
                 "context_sha256": self.context_sha256, "policy_sha256": self.policy_sha256,
                 "reason": self.reason, "recipe": None if self.recipe is None else self.recipe.describe(),
                 "recipe_sha256": None if self.recipe is None else self.recipe.sha256,
                 "stochastic": self.stochastic, "amplitude": self.amplitude,
                 "calibration_evidence": None if self.calibration_evidence_json is None else
                                         json.loads(self.calibration_evidence_json)}
+        from gpuwm.ensemble.calibration_admission import random_warnings
+        warnings = random_warnings(stochastic=self.stochastic)
+        if warnings:
+            document["warnings"] = warnings
+        return document
 
     @property
     def sha256(self):

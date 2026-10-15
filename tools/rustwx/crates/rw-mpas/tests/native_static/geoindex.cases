@@ -1,0 +1,195 @@
+# native comment
+TYPE = 'MiXeD_Value'
+===
+# native comment
+PROJECTION = 'MiXeD_Value'
+===
+# native comment
+UNITS = 'MiXeD_Value'
+===
+# native comment
+DESCRIPTION = 'MiXeD_Value'
+===
+# native comment
+ROW_ORDER = 'MiXeD_Value'
+===
+# native comment
+ENDIAN = 'MiXeD_Value'
+===
+# native comment
+MMINLU = 'MiXeD_Value'
+===
+# native comment
+DX = -1.23456789D+1
+===
+# native comment
+DY = -1.23456789D+1
+===
+# native comment
+KNOWN_X = -1.23456789D+1
+===
+# native comment
+KNOWN_Y = -1.23456789D+1
+===
+# native comment
+KNOWN_LAT = -1.23456789D+1
+===
+# native comment
+KNOWN_LON = -1.23456789D+1
+===
+# native comment
+SCALE_FACTOR = -1.23456789D+1
+===
+# native comment
+STDLON = -1.23456789D+1
+===
+# native comment
+TRUELAT1 = -1.23456789D+1
+===
+# native comment
+TRUELAT2 = -1.23456789D+1
+===
+# native comment
+MISSING_VALUE = -1.23456789D+1
+===
+# native comment
+TILE_X = 17.0
+===
+# native comment
+TILE_Y = 17.0
+===
+# native comment
+TILE_Z = 17.0
+===
+# native comment
+TILE_Z_START = 17.0
+===
+# native comment
+TILE_Z_END = 17.0
+===
+# native comment
+TILE_BDR = 17.0
+===
+# native comment
+WORDSIZE = 17.0
+===
+# native comment
+CATEGORY_MAX = 17.0
+===
+# native comment
+CATEGORY_MIN = 17.0
+===
+# native comment
+ISWATER = 17.0
+===
+# native comment
+ISLAKE = 17.0
+===
+# native comment
+ISICE = 17.0
+===
+# native comment
+ISURBAN = 17.0
+===
+# native comment
+ISOILWATER = 17.0
+===
+# native comment
+FILENAME_DIGITS = 17.0
+===
+signed=YES
+===
+signed=NO
+===
+signed=true
+===
+tile_x=1.5
+===
+dx=xyz
+===
+no_assignment
+===
+ # indented comment
+===
+unknown_parameter=anything
+===
+
+===
+dx=1, ignored
+===
+dx=1 2
+===
+dx=2*1.25
+===
+dx=1/
+===
+dx=1.25-2
+===
+dx=1.25+2
+===
+dx=.125
+===
+dx=1.
+===
+dx=+1.5e-2
+===
+dx=3*-.5D+2
+===
+dx=0*1
+===
+dx=-2*1
+===
+dx=2.0*1
+===
+dx=1.2foo
+===
+dx="1.25"
+===
+dx=1!comment
+===
+tile_x=3*17.0
+===
+tile_x=17, junk
+===
+tile_x=17/
+===
+tile_x=1.7+1
+===
+tile_x=1.5 17
+===
+dx=	-1.25	ignored
+===
+dx=nan
+===
+dx=inf
+===
+dx=-infinity
+===
+dx=1e+2,
+===
+dx=1 e+2
+===
+dx=1e+2! ignored
+===
+dx=bad
+dx=1
+===
+tile_x=1.5
+tile_x=17
+===
+tile_x=2147483648.0
+===
+tile_x=2147483647.0
+===
+tile_x=-2147483648.0
+===
+tile_x=1e20
+===
+tile_x=-1e20
+===
+tile_x=nan
+===
+tile_x=inf
+===
+tile_x=-inf
+===

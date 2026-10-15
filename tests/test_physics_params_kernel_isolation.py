@@ -117,11 +117,18 @@ def test_default_and_default_valued_sets_preserve_both_loader_source_routes():
         module = path.stem
         raw = path.read_text(encoding="utf-8")
         expected = kernels._preamble() + kernels._extra_header_text(module) + raw
+        if module in kernels._URBAN_NO_FTZ_MODULES:
+            # The SLUCM/BEP units retain subnormals through a source marker
+            # (gpuwm/cuda_subnormals.py); no other unit's source moves.
+            from gpuwm.cuda_subnormals import MARKER
+            expected = MARKER + expected
         baseline[module] = expected
         assert kernels.module_source(module) == expected
         defines = (("PHYSICS_PARAMS_SOURCE_CONTROL", 1),)
         tier = "#define PHYSICS_PARAMS_SOURCE_CONTROL 1\n"
-        if module == "thompson_column":
+        # Goddard (golden/ports-rad) sizes its band headers from the same tier
+        # (kernels._HEADERS_NEED_INT_DEFINES), so its tier precedes them too.
+        if module == "thompson_column" or module in kernels._HEADERS_NEED_INT_DEFINES:
             # thompson-v44 (effc0a99a): the integer tier sizes the generated
             # header's arrays, so it precedes that header as well as the
             # unit (tests/test_thompson_generation_selector.py pins it).

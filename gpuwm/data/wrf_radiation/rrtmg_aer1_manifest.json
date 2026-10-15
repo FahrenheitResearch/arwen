@@ -1,0 +1,58 @@
+{
+  "wrf_commit": "d66e442",
+  "asset_sha256": "c48005c8f802c60f42824b6daa358dd13aec7c3d41200a68876ef7eaa3c04509",
+  "asset_size": 4605516,
+  "asset_encoding": "climatology_xz: the climatology's float32 words as little-endian uint32, differenced along the last axis modulo 2**32, byte-planed, xz (gpuwm.core.rrtmg_sw.encode_aer1_climatology); arrays.climatology pins the decoded words. Re-encoded for 2.9.0 from the deflate npz sha256 bcfd682c1f90fb27461294e64e22afc72dcb51e8088fb0080fa11c4c6ac58078 (6047204 bytes) with identical decoded arrays; the file ships in the gpuwm-data companion.",
+  "arrays": {
+    "climatology": {
+      "shape": [
+        6,
+        12,
+        46,
+        12,
+        72
+      ],
+      "dtype": "float32",
+      "sha256": "06a584a9e1d281fb7b87a6283d546ff93b0b246e5e845a273860710ead2dad63"
+    },
+    "latitude": {
+      "shape": [
+        46
+      ],
+      "dtype": "float32",
+      "sha256": "c96eaa8b8271c8fa0fb6cf93767e887503a3ebefb1ff447d3aeabc3f878c74a3"
+    },
+    "longitude": {
+      "shape": [
+        72
+      ],
+      "dtype": "float32",
+      "sha256": "74cfb86fb380b72a87e0d65649466823e073fc9e2df986aa63e0ee5d68c1e29b"
+    },
+    "pressure": {
+      "shape": [
+        12
+      ],
+      "dtype": "float32",
+      "sha256": "d4d69e1a354b283da718c6a032dd756d213668a96c47a057dfd96c5220b0c5a1"
+    },
+    "month_days": {
+      "shape": [
+        12
+      ],
+      "dtype": "int32",
+      "sha256": "06769caf84ec15093723514fd7479dc31ea9fe04e18fb47c7b32364b4009be68"
+    }
+  },
+  "source_sha256": {
+    "aerosol.formatted": "5551eeccf5b4aa80e6ed8ae94e73c4ce8a4306a32aae9b3cc954cfa9c2c2d6aa",
+    "aerosol_lat.formatted": "16121ba61f026c57ba18200988ae786609304f52959d24db86d50d8411473a1a",
+    "aerosol_lon.formatted": "8201ebcba7199b5b737edf4f9f2a75d36ef4afa27fbdcffa9029dadcf8e61376",
+    "aerosol_plev.formatted": "3992b2acecbf604430cdb1975497d617cca3e314ee0ae3624f03e5a7f788fc96"
+  },
+  "optics_sha256": {
+    "rsrtaua": "464a78cbde16fbf98bc1afcb4d47f7e225bb4adddc3b00314d2152fae37d5a94",
+    "rsrpiza": "55f448d42c2609fd605948dee3029d44e83f974a0100ee525138bac8d50cb48c",
+    "rsrasya": "5e5a8a1e7d7e0e10759bdd1fc16a4feb2ef2ccc2934fc50b9359bf79b6726c49"
+  }
+}

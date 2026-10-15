@@ -1,0 +1,54 @@
+{
+ "inputs_checked_each": 4294967296,
+ "strict": false,
+ "capa_bits": "0x3E924925",
+ "mismatches": {
+  "expf": 0,
+  "powf_capa": 8388607,
+  "expf_unfused_gfk_exp": 2
+ },
+ "first_mismatches": {
+  "expf": [],
+  "powf_capa": [
+   {
+    "x_bits": "0x00000001",
+    "x": 1.401298464324817e-45,
+    "gfk": "0x2A0D52C2",
+    "libc": "0x2A2C4666"
+   },
+   {
+    "x_bits": "0x00000002",
+    "x": 2.802596928649634e-45,
+    "gfk": "0x2A0D52C2",
+    "libc": "0x2A52016D"
+   },
+   {
+    "x_bits": "0x00000003",
+    "x": 4.203895392974451e-45,
+    "gfk": "0x2A0D52C2",
+    "libc": "0x2A6BCCA3"
+   },
+   {
+    "x_bits": "0x00000004",
+    "x": 5.605193857299268e-45,
+    "gfk": "0x2A0D52C2",
+    "libc": "0x2A7FFFEA"
+   }
+  ],
+  "expf_unfused_gfk_exp": [
+   {
+    "x_bits": "0x4202422F",
+    "x": 32.564632415771484,
+    "gfk": "0x56FC9F1B",
+    "libc": "0x56FC9F1C"
+   },
+   {
+    "x_bits": "0xC27C65D9",
+    "x": -63.09946060180664,
+    "gfk": "0x11FA2992",
+    "libc": "0x11FA2993"
+   }
+  ]
+ },
+ "note": "powf_capa default-arithmetic mismatches are exactly the 8388607 positive subnormal x (flushed on input by -ftz=true); listing truncated to 4"
+}

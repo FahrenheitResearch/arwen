@@ -2,9 +2,10 @@
 
 Scope, stated once so no reader has to infer it: this file establishes
 that the port RUNS and that what it computes carries the physical
-signatures a longwave scheme must carry.  It is NOT an oracle comparison.
-Nothing here compares a single number against the WRF v4.6.1 Fortran, and
-the oracle campaign is still the next stage.
+signatures a longwave scheme must carry.  It is NOT an oracle comparison:
+nothing here compares a number against the WRF v4.6.1 Fortran.  That is
+tests/test_rrtm_lw_wrf461_parity.py, which holds every output word to the
+unmodified module's.
 
 Almost every assertion here is self-consistency -- the port compared with
 itself under a changed input -- and self-consistency is blind to an error
@@ -449,10 +450,12 @@ def test_a_surface_hotter_than_the_planck_table_is_clamped_not_crashed(
     assert int(row[0]) == rrtm_lw._TOTPLNK_ROWS - 2
     assert float(frac[0]) == pytest.approx(0.99, abs=1e-4)
     # WRF does not clamp LEVEL or LAYER temperatures at all (see the
-    # module docstring); the port's own clip has to hold the same
-    # ceiling, so drive one past the table and check the row, not a flux.
+    # module docstring); the port's own clip holds the LAST row (340 K),
+    # which a 340.0 K TBOUND legally indexes (tests/
+    # test_rrtm_lw_wrf461_parity.py), so drive one past the table and
+    # check the row, not a flux.
     row, _f = rrtm_lw._planck_index(np, np.full(1, 400.0, F), np.dtype(F))
-    assert int(row[0]) == rrtm_lw._TOTPLNK_ROWS - 2
+    assert int(row[0]) == rrtm_lw._TOTPLNK_ROWS - 1
     row, _f = rrtm_lw._planck_index(np, np.full(1, 100.0, F), np.dtype(F))
     assert int(row[0]) == 0
 
@@ -564,6 +567,12 @@ def test_the_composed_adapter_publishes_both_streams_and_owns_glw(
     from gpuwm.core.rrtm_lw import RRTMDudhiaRadiation
 
     atmosphere, fields, state, cfg = _atmosphere_and_state()
+    # The WRF 4.8 solar geometry (the default generation) is a compiled
+    # device unit the NumPy shim cannot run; the WRF 4.6.1 generation's
+    # host arithmetic serves this test, which is about which scheme owns
+    # which stream, not about COSZEN (tests/test_solar_generation_gpu.py
+    # grades both generations on the card).
+    cfg.solar_generation = "wrf_461"
     ny, nx = fields["tsk"].shape
     latitude = np.full((ny, nx), 39.0, F)
     longitude = np.full((ny, nx), -87.0, F)
@@ -979,7 +988,13 @@ def test_a_classic_wrf_namelist_imports_rrtm_natively(tmp_path) -> None:
     assert radiation_substitutions == [], radiation_substitutions
 
 
-def test_the_registry_row_is_accurate_about_the_missing_oracle() -> None:
+def test_the_registry_row_is_accurate_about_the_oracle() -> None:
+    """The longwave half has a WRF column oracle; the row says so, and no more.
+
+    The maturity stays implemented-unverified: that rung is about a matched
+    forecast trajectory, and the Dudhia shortwave half of this pair has no
+    oracle in this file's scope.
+    """
     registry = json.loads(
         (MODEL / "gpuwm" / "physics_registry_v2.json").read_text(
             encoding="utf-8"))
@@ -989,9 +1004,12 @@ def test_the_registry_row_is_accurate_about_the_missing_oracle() -> None:
     assert row["reachability"]["state"] == "component-override"
     assert row["selectors"] == {"ra_lw_physics": 1, "ra_sw_physics": 1}
     warnings = " ".join(row["warnings"])
-    assert "NO ORACLE COMPARISON" in warnings
-    assert "no ulp measurement" in warnings.lower()
-    # The claim the label must never make.
-    assert "bitwise" not in warnings.lower()
+    assert "NO ORACLE COMPARISON" not in warnings
+    assert "BITWISE AGAINST WRF ON ITS COLUMN ORACLE" in warnings
+    assert "tests/test_rrtm_lw_wrf461_parity.py" in warnings
+    assert (MODEL / "tests" / "test_rrtm_lw_wrf461_parity.py").is_file()
+    # What the oracle does NOT cover stays stated.
+    assert "NOT COVERED" in warnings
+    assert "matched WRF forecast trajectory" in warnings
     route = registry["runner_routes"]["tools.prepared_domain_tree_forecast"]
     assert "wrf-rrtm-dudhia" in route["allowed_component_options"]["radiation"]

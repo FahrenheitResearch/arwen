@@ -1,0 +1,13 @@
+{
+  "source": "WRF 4.6.1 public-data combo recording A154",
+  "changes": [
+    "ra_lw_physics=5",
+    "ra_sw_physics=5",
+    "run_seconds=30",
+    "history_interval_s=30"
+  ],
+  "inputs_sha256": {
+    "wrfinput_d01": "7ed1331d29b4fc0b208a383c4ed4dcb9c07a996be2db5312e06de02539b10760",
+    "wrfbdy_d01": "4228a3abd55e652c4993f385c2c74ea18a3aa2472a46343f9c4de34e1a6a1a6f"
+  }
+}

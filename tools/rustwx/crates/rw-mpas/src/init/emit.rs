@@ -140,6 +140,10 @@ pub fn write_init(
 
     // Dimensions, in the capsule's own order, so dimids line up.
     let cap_dims = capsule.dimensions()?;
+    let cells = cap_dims.iter().find(|d| d.name() == "nCells").map(|d| d.len()).unwrap_or(0);
+    let soil_levels = match computed.get("tslb") {
+        Some(Computed::Floats(v)) if cells > 0 => Some(v.len()/cells), _ => None,
+    };
     let mut dims: Vec<NcDim> = Vec::with_capacity(cap_dims.len());
     let mut dimid_of: BTreeMap<String, usize> = BTreeMap::new();
     let mut record_len = 0u64;
@@ -149,7 +153,7 @@ pub fn write_init(
             record_len = d.len().max(1) as u64;
             dims.push(NcDim::record(d.name()));
         } else {
-            dims.push(NcDim::fixed(d.name(), d.len()));
+            dims.push(NcDim::fixed(d.name(), if d.name() == "nSoilLevels" {soil_levels.unwrap_or(d.len())} else {d.len()}));
         }
     }
     if record_len == 0 {
@@ -197,6 +201,8 @@ pub fn write_init(
             gattrs.push(NcAttr::text("file_id", file_id));
         } else if name == "parent_id" {
             gattrs.push(NcAttr::text("parent_id", parent_id.clone()));
+        } else if name == "config_nsoillevels" && soil_levels.is_some() {
+            gattrs.push(NcAttr {name: name.clone(), value: NcAttrValue::Ints(vec![soil_levels.unwrap() as i32])});
         } else if let Some(attr) = attr_of(&a) {
             gattrs.push(attr);
         } else {
@@ -225,7 +231,9 @@ pub fn write_init(
     if !seen.contains("parent_id") {
         gattrs.push(NcAttr::text("parent_id", parent_id.clone()));
     }
-    gattrs.push(NcAttr::text("gpuwm_provenance", provenance));
+    if !seen.contains("gpuwm_provenance") {
+        gattrs.push(NcAttr::text("gpuwm_provenance", provenance));
+    }
 
     // Variable definitions, in the capsule's order.
     let cap_vars = capsule.variables()?;
@@ -247,6 +255,21 @@ pub fn write_init(
         vars.push(NcVarDef::new(v.name(), ty, dimids).with_attrs(attrs));
     }
 
+    let present: BTreeSet<String> = cap_vars.iter().map(|v| v.name().to_string()).collect();
+    // Only the transported species a physics suite may add are created here;
+    // any other computed name without a capsule variable stays a stray and
+    // meets the "no variable for" refusal below, which the door keys on.
+    let admitted = ["qi","qs","qg","ni","nr","nc","nwfa","nifa","ng","volg"];
+    let extra: Vec<String> = computed.keys()
+        .filter(|name| !present.contains(*name) && admitted.contains(&name.as_str())).cloned().collect();
+    for name in &extra {
+        let mut ids = vec![];
+        if let Some(&id) = dimid_of.get("Time") { ids.push(id); }
+        for dim in ["nCells", "nVertLevels"] {
+            ids.push(*dimid_of.get(dim).ok_or_else(|| MpasError::Refusal(format!("init lacks {dim}")))?);
+        }
+        vars.push(NcVarDef::new(name, NcType::Float, ids));
+    }
     let mut writer = NcClassicWriter::create(
         out_path,
         NcFormat::Data64,
@@ -262,7 +285,7 @@ pub fn write_init(
     // left at whatever the capsule held.  Refuse instead.
     {
         let present: BTreeSet<String> = cap_vars.iter().map(|v| v.name().to_string()).collect();
-        let stray: Vec<&String> = computed.keys().filter(|k| !present.contains(*k)).collect();
+        let stray: Vec<&String> = computed.keys().filter(|k| !present.contains(*k) && !extra.contains(*k)).collect();
         if !stray.is_empty() {
             return Err(MpasError::Refusal(format!(
                 "this run computed {} value(s) the init file has no variable for: {:?}.  Writing                  the file anyway would silently drop them and leave the capsule's own numbers in                  their place",
@@ -293,7 +316,7 @@ pub fn write_init(
                 .dimensions()
                 .iter()
                 .skip(usize::from(is_record))
-                .map(|d| d.len().max(1))
+                .map(|d| if d.name() == "nSoilLevels" {soil_levels.unwrap_or(d.len())} else {d.len().max(1)})
                 .product();
             if !matches!(value, Computed::Text(_)) && value.len() != expected {
                 return Err(MpasError::Refusal(format!(
@@ -417,6 +440,16 @@ pub fn write_init(
         ledger.carried.push(name);
     }
 
+    for name in extra {
+        let Computed::Floats(values) = &computed[&name] else { return Err(MpasError::Refusal("added species must be float32".into())); };
+        let levels = cap_dims.iter().find(|d| d.name()=="nVertLevels").unwrap().len();
+        if values.len()!=cells*levels || values.iter().any(|x| !x.is_finite() || *x<0.) {
+            return Err(MpasError::Refusal(format!("added species {name} is invalid or has a wrong shape")));
+        }
+        if dimid_of.contains_key("Time") { writer.put_record(&name,0,NcData::Floats(values)) }
+        else { writer.put(&name,NcData::Floats(values)) }.map_err(|e| MpasError::Refusal(e.to_string()))?;
+        ledger.computed.push(name);
+    }
     ledger.bytes = writer.file_len();
     writer
         .finish()

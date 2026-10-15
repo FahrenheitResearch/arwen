@@ -12,6 +12,10 @@ REQUEST_DEFAULTS = Path(__file__).with_name("data") / "physics_sources" / "reque
 # Only runtime selectors with no stock-WRF namelist spelling belong
 # here. A comment carries their explicit values without adding a WRF key.
 PHYSICS_SELECTOR_VALUES = {
+    "solar_generation": ("wrf_480", "wrf_461"),
+    "ysu_version": ("wrf_480", "wrf_461"),
+    "noahmp_snow_age": ("wrf_470", "wrf_461"),
+    "urban_water_balance": ("wrf_480", "wrf_471"),
     "thompson_version": ("wrf_461", "wrf_39_noaa"),
     "thompson_fork_snow_fall": ("blend", "wrf_39_noaa"),
     "mynn_sfclay_variant": ("wrf_461", "gsl_wrf39"),
@@ -34,10 +38,33 @@ PHYSICS_SELECTOR_VALUES = {
 _SELECTOR_MARKER = "! gpuwm-physics-selectors-v1:"
 
 
+def _correction_keys() -> tuple[str, ...]:
+    """The correct-mode keys (gpuwm/correct_mode.py) the same comment
+    carries, as JSON booleans.  A stock WRF namelist has no spelling for
+    them, and from 2.9.0 they default on (correct mode), so without this an
+    imported namelist could not select exact mode: a WRF parity arm would
+    have compared corrected WSM6/WDM6/New Tiedtke water budgets with WRF's."""
+    from gpuwm.correct_mode import CORRECTION_KEYS
+    return CORRECTION_KEYS
+
+
+def exact_mode_selectors() -> dict:
+    """The selector settings that name exact mode (every correction key
+    false), for a namelist an identity or parity proof writes."""
+    return {key: False for key in _correction_keys()}
+
+
 def _validate_physics_selectors(settings: dict) -> dict:
     if not isinstance(settings, dict):
         raise ValueError("physics selector comment must carry a JSON object")
+    corrections = _correction_keys()
     for key, value in settings.items():
+        if key in corrections:
+            if type(value) is not bool:
+                raise ValueError(
+                    f"invalid physics selector comment value for {key}: "
+                    f"{value!r} (a correct-mode key takes true or false)")
+            continue
         if key not in PHYSICS_SELECTOR_VALUES:
             raise ValueError(f"unknown physics selector comment key {key!r}")
         if type(value) is not str or value not in PHYSICS_SELECTOR_VALUES[key]:

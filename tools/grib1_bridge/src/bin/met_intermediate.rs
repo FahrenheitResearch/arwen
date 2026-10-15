@@ -152,7 +152,7 @@ struct MapSource {
 }
 
 /// Every centre whose rules have been read out of WPS source.
-const KNOWN_MAP_SOURCES: [MapSource; 4] = [
+const KNOWN_MAP_SOURCES: [MapSource; 5] = [
     MapSource {
         label: "ncep-gfs",
         header: "NCEP GFS Analysis",
@@ -196,6 +196,25 @@ const KNOWN_MAP_SOURCES: [MapSource; 4] = [
         nearest_neighbour_pressure_twins: false,
         snow_depth: SnowDepthRule::EcmwfReportedDensity,
         grib1_earth_radius_km: 6367.47,
+    },
+    // DWD (centre 78).  `rrpr.F` carries no DWD-specific repair, so every
+    // NCEP and ECMWF repair stays off: ICON publishes pressure-level
+    // RELHUM over water, an unmasked surface state and snow water
+    // equivalent in kg m-2 directly.  ONE rule is on, for the reason the
+    // ECMWF row has it: ICON's land field is FR_LAND, a FRACTION, and the
+    // init's masked soil interpolation tests LANDSEA against 0 -- a coastal
+    // cell at 0.3 would be read as land.  The header is the text ungrib's
+    // rd_grib2.F writes for centre 78.
+    MapSource {
+        label: "dwd",
+        header: "DWD Offenbach",
+        rh_over_ice: false,
+        masked_surface_repair: false,
+        snow_water_equivalent_doubled: false,
+        landsea_to_flag: true,
+        nearest_neighbour_pressure_twins: false,
+        snow_depth: SnowDepthRule::TwoHundredToOne,
+        grib1_earth_radius_km: 6371.229,
     },
 ];
 
@@ -666,6 +685,10 @@ struct Collector {
     slabs: BTreeMap<SlabKey, Slab>,
     messages_seen: usize,
     messages_matched: usize,
+    /// Depth bounds in metres of every field selected on a below-ground
+    /// layer (GRIB2 type 106 with both surfaces), by field name: the
+    /// soil-water-mass rule needs the layer thickness the record carried.
+    layer_bounds_m: BTreeMap<String, (f64, f64)>,
 }
 
 impl Collector {
@@ -677,6 +700,7 @@ impl Collector {
             slabs: BTreeMap::new(),
             messages_seen: 0,
             messages_matched: 0,
+            layer_bounds_m: BTreeMap::new(),
         }
     }
 
@@ -763,6 +787,13 @@ fn collect_grib2(path: &Path, vtable: &[VtableRow], out: &mut Collector) -> Resu
                 .map_err(|e| format!("{}: field {}: {e}", path.display(), row.name))?;
         out.masked_points += mark_masked(&mut data);
         out.messages_matched += 1;
+        if product.level_type == 106
+            && product.second_level_value.is_finite()
+            && product.second_level_value > product.level_value
+        {
+            out.layer_bounds_m
+                .insert(row.name.clone(), (product.level_value, product.second_level_value));
+        }
         out.insert(Slab {
             name: row.name.clone(),
             xlvl,
@@ -969,6 +1000,7 @@ fn apply_ungrib_rules(collector: &mut Collector, source: &MapSource, ledger: &mu
     surface_rh_from_dewpoint(collector, ledger);
     masked_surface_fields(collector, source, ledger);
     soil_height_from_geopotential(collector, ledger);
+    soil_moisture_from_water_mass(collector, ledger);
     snow_from_ecmwf_water_equivalent(collector, ledger);
     landsea_fraction_to_flag(collector, source, ledger);
     snow_water_equivalent_doubling(collector, source, ledger);
@@ -1002,6 +1034,57 @@ fn height_from_geopotential(collector: &mut Collector, ledger: &mut RuleLedger) 
         "GEOPT present without HGT (not source-gated)".into(),
         points,
         format!("HGT = GEOPT / 9.81 on {levels} levels"),
+    );
+}
+
+/// Soil water published as a MASS per layer (kg m-2) becomes the
+/// volumetric fraction the init reads: `SOILMxxx = SOILWxxx / (1000 kg m-3
+/// x layer thickness)`, the thickness taken from the record's own type-106
+/// depth pair.  A Vtable selects the mass under a `SOILW` scratch name (blank
+/// description) and declares the `SOILM` output with a blank selector, the
+/// same pattern as GEOPT -> HGT and SOILGEO -> SOILHGT.  Not source-gated:
+/// the units are the table's declaration, not a centre's.  Masked points
+/// (water, where a land-only layer has no value) stay masked.
+fn soil_moisture_from_water_mass(collector: &mut Collector, ledger: &mut RuleLedger) {
+    let sources: Vec<(String, f64, Vec<f32>, SlabGrid)> = collector
+        .slabs
+        .iter()
+        .filter(|((n, lvl), _)| n.starts_with("SOILW") && lvl.0 == XLVL_SURFACE)
+        .filter_map(|((n, _), s)| {
+            collector
+                .layer_bounds_m
+                .get(n)
+                .map(|(top, bottom)| (n.clone(), bottom - top, s.values.clone(), s.grid.clone()))
+        })
+        .collect();
+    if sources.is_empty() {
+        ledger.off(
+            "soilm_from_soil_water_mass",
+            "no SOILW layer with type-106 depth bounds was selected".into(),
+        );
+        return;
+    }
+    let mut points = 0usize;
+    let mut detail = Vec::new();
+    for (name, thickness, values, grid) in sources {
+        let target = format!("SOILM{}", &name[5..]);
+        if collector.has_surface(&target) {
+            continue;
+        }
+        let divisor = (1000.0 * thickness) as f32;
+        let derived: Vec<f32> = values
+            .iter()
+            .map(|v| if *v == MASKED_SENTINEL { *v } else { v / divisor })
+            .collect();
+        points += derived.iter().filter(|v| **v != MASKED_SENTINEL).count();
+        detail.push(format!("{target} = {name} / (1000 * {thickness:.4} m)"));
+        collector.insert(Slab { name: target, xlvl: XLVL_SURFACE, grid, values: derived });
+    }
+    ledger.on(
+        "soilm_from_soil_water_mass",
+        "SOILW mass-per-layer fields with depth bounds (not source-gated)".into(),
+        points,
+        detail.join("; "),
     );
 }
 
@@ -1622,6 +1705,10 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, Str
 }
 
 fn main() {
+    // Keep the release owner's build.rs stamp in the executable (2.9.0: this
+    // binary joined the bridge bundle, and a bridge the cut cannot prove from
+    // its bytes must not ship), as gdt101_remap does.
+    let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     if let Err(message) = run() {
         eprintln!("met_intermediate: {message}");
         std::process::exit(1);
@@ -1785,6 +1872,31 @@ fn grib_edition(path: &Path) -> Result<u8, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn soil_water_mass_becomes_volumetric_by_the_records_own_layer_thickness() {
+        // The breakage this prevents: ICON publishes W_SO in kg m-2 per
+        // TERRA layer; handed to the init as a fraction it would read 3.9
+        // (a 0-1 cm layer holding 39 kg m-2 would be 3.9 m3 m-3).
+        let mut c = Collector::new(0.0);
+        c.insert(slab("SOILW002", XLVL_SURFACE, vec![20.0, MASKED_SENTINEL]));
+        c.layer_bounds_m.insert("SOILW002".into(), (0.01, 0.03));
+        let mut ledger = RuleLedger::default();
+        soil_moisture_from_water_mass(&mut c, &mut ledger);
+        let out = &c.surface("SOILM002").unwrap().values;
+        assert!((out[0] - 1.0).abs() < 1e-6, "{out:?}");
+        assert_eq!(out[1], MASKED_SENTINEL);
+        assert!(ledger.entries.iter().any(|e| e.rule == "soilm_from_soil_water_mass" && e.applied));
+    }
+
+    #[test]
+    fn soil_water_mass_without_depth_bounds_is_not_converted() {
+        let mut c = Collector::new(0.0);
+        c.insert(slab("SOILW002", XLVL_SURFACE, vec![20.0]));
+        let mut ledger = RuleLedger::default();
+        soil_moisture_from_water_mass(&mut c, &mut ledger);
+        assert!(c.surface("SOILM002").is_none());
+    }
+
     use super::*;
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -1863,6 +1975,9 @@ mod tests {
     #[test]
     fn a_known_label_resolves_to_the_header_text_ungrib_writes() {
         assert_eq!(resolve_map_source("ecmwf").unwrap().header, "ECMWF");
+        assert_eq!(resolve_map_source("DWD").unwrap().header, "DWD Offenbach");
+        assert!(resolve_map_source("dwd").unwrap().landsea_to_flag);
+        assert!(!resolve_map_source("dwd").unwrap().rh_over_ice);
         assert_eq!(resolve_map_source("NCEP-GFS").unwrap().header, "NCEP GFS Analysis");
         assert_eq!(resolve_map_source(" ecmwf ").unwrap().header, "ECMWF");
     }

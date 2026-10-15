@@ -1845,8 +1845,8 @@ def mynn_bl_driver_cuda(
         raise ValueError("MYNN driver lane requires bl_mynn_edmf=1")
     if bl_mynn_output != 0 or type(bl_mynn_output) is not int:
         raise ValueError("MYNN driver lane requires bl_mynn_output=0")
-    if bl_mynn_tkeadvect is not False:
-        raise ValueError("MYNN driver lane requires bl_mynn_tkeadvect false")
+    if type(bl_mynn_tkeadvect) is not bool:
+        raise TypeError("bl_mynn_tkeadvect must be a bool")
     if icloud_bl != 1 or type(icloud_bl) is not int:
         raise ValueError("MYNN driver lane requires icloud_bl=1")
     if tke_budget != 0 or type(tke_budget) is not int:
@@ -2012,6 +2012,17 @@ def mynn_bl_driver_cuda(
         )
         for name in ("el", "qke", "tsq", "qsq", "cov", "sm", "sh"):
             layers[name][...] = getattr(seeded, name)
+
+    # WRF :838 initializes QKE_ADV on the cold call; :862 imports the
+    # advected carrier on warm calls. Copying adds no arithmetic.
+    if bl_mynn_tkeadvect:
+        if "qke_adv" not in values:
+            raise TypeError("MYNN TKE advection requires qke_adv[ncol,nz]")
+        carrier = cp.asarray(values["qke_adv"], dtype=DTYPE)
+        if carrier.shape != (ncol, nz):
+            raise ValueError("qke_adv must share the MYNN column shape")
+        if initflag <= 0:
+            layers["qke"][...] = carrier
 
     # ---- module_bl_mynn.F:866-1017 per-column assembly -------------------
     qv1 = prep["qv1"]
@@ -2248,6 +2259,7 @@ def mynn_bl_driver_cuda(
         "rqnbcablten": tendencies.dqnbca,
         "exch_h": exch_h, "exch_m": exch_m,
         "qke": predicted.qke, "tsq": predicted.tsq,
+        **({"qke_adv": predicted.qke} if bl_mynn_tkeadvect else {}),
         "qsq": predicted.qsq, "cov": predicted.cov,
         "el": turbulence.el, "sh": turbulence.sh,
         "sm": turbulence.sm, "qc_bl": qc_bl, "qi_bl": qi_bl,

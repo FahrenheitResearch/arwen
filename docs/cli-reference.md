@@ -826,12 +826,11 @@ when no location accepts the write.
 
 See `public/REPORTING-A-PROBLEM.md` for the user-facing page.
 
-## Tools fetched on first use
+## Native tools and partial fetch
 
-Three Rust tools are not inside the platform wheel and are installed by
-`gpuwm fetch-bridges`: the simulated radar engine (`gpuwm simulated-radar`
-and the `[simulated_radar]` table), the ML dataset exporter
-(`gpuwm ml-export`) and the globe packer. With them the wheel was over the
-package index's 100 MB per-file limit. Run the command once; until then each
-of those doors stops with a message naming it, and `gpuwm doctor` lists the
-three as opt-in.
+Platform wheels carry every declared native tool, including simulated radar,
+ML export and globe packing. `gpuwm fetch-bridges` also serves fallback installs
+and repairs a user's bridge directory. `gpuwm fetch-bridges --partial` fetches
+only missing or stale binaries through HTTP byte ranges. Add repeatable
+`--artifact NAME` arguments to select tools. A renderer launcher also selects
+its shared `rw_wrfbatch` executable. Map assets require the full fetch.

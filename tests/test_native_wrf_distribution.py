@@ -654,13 +654,18 @@ assert variants[1]["surface"]["sst_offset_k"] == 1.0
     assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
         ("gpuwm/source_availability.py", "gpuwm.domain_wizard")}
     # The initial-state perturbation ships with the ingest package; the
-    # radiation ceiling it reads when a forecast runner builds one is in
-    # the RTE+RRTMGP module, which does not, and that import is named
-    # optional.
+    # radiation ceiling import is optional. A configuration may also need
+    # this module's cloud-optics metadata, in which case the package-derived
+    # closure stages it and leaves its forecast-only imports unreachable.
     assert "gpuwm/ingest/init_perturbation.py" in files
-    assert "gpuwm/core/rrtmgp.py" not in files
-    assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
-        ("gpuwm/ingest/init_perturbation.py", "gpuwm.core.rrtmgp")}
+    if "gpuwm/core/rrtmgp.py" in files:
+        assert "gpuwm/core/rrtmgp.py" in receipt["import_closure_files"]
+        assert any(item["path"] == "gpuwm/core/rrtmgp.py"
+                   and item["module"] == "gpuwm.core.physics"
+                   for item in receipt["optional_internal_imports"])
+    else:
+        assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
+            ("gpuwm/ingest/init_perturbation.py", "gpuwm.core.rrtmgp")}
     # Preparation builds and seals the moving-nest statics corridor, so the
     # corridor module ships.  Its check of a corridor sealed under an older
     # build contract reads the relocation planner and the relocation

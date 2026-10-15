@@ -167,12 +167,12 @@ def physics_reuses_pbl_composition(cfg: RunConfig) -> bool:
 #: mp=16 reached production having moved only two of them.
 from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
 from gpuwm.microphysics_schemes import SCHEMES_BY_ID as _NAMED_MP_SCHEMES_BY_ID
-PBL_RQI_MICROPHYSICS = (6, 8, 9, 10, 16, 18, 28, 30, 50) + tuple(
+PBL_RQI_MICROPHYSICS = (2, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106) + tuple(
     _s.mp_id for _s in _NAMED_MP_SCHEMES.values() if "qi" in _s.ice_mass_species)
 
 
 #: Microphysics producers with an output-due radar reflectivity carrier.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50) + tuple(
+REFL_10CM_MICROPHYSICS = (1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106) + tuple(
     _s.mp_id for _s in _NAMED_MP_SCHEMES.values())
 
 
@@ -210,7 +210,24 @@ def microphysics_scratch_slots(
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("sr", "mp_kessler_sr"))
-    if mp_physics in (6, 8, 10, 16, 28, 30) or mp_physics in _NAMED_MP_SCHEMES_BY_ID:
+    if mp_physics == 5:
+        # Ferrier-Aligo.  THREE slots: the driver arm ``CASE
+        # (FER_MP_HIRES)`` binds RAINNC, RAINNCV and SR and nothing else
+        # (module_microphysics_driver.F:2613-2626).  FER_HIRES puts all
+        # surface precipitation into RAINNC and says how much of it fell
+        # frozen through SR (module_mp_fer_hires.F:967-974).
+        return (("rainnc", "mp_rainnc"),
+                ("rainncv", "mp_rainncv"),
+                ("sr", "mp_sr"))
+    if mp_physics == 3:
+        # WSM3: the driver arm binds RAINNC/RAINNCV, SNOWNC/SNOWNCV and SR
+        # and no graupel argument (module_microphysics_driver.F:2241-2245).
+        return (("rainnc", "mp_rainnc"),
+                ("rainncv", "mp_rainncv"),
+                ("sr", "mp_sr"),
+                ("snownc", "mp_snownc"),
+                ("snowncv", "mp_snowncv"))
+    if mp_physics in (2, 6, 8, 10, 16, 28, 30) or mp_physics in _NAMED_MP_SCHEMES_BY_ID:
         return (("rainnc", "mp_rainnc"),
                 ("rainncv", "mp_rainncv"),
                 ("sr", "mp_sr"),
@@ -218,7 +235,18 @@ def microphysics_scratch_slots(
                 ("snowncv", "mp_snowncv"),
                 ("graupelnc", "mp_graupelnc"),
                 ("graupelncv", "mp_graupelncv"))
-    if mp_physics in (9, 18):
+    if mp_physics == 106:
+        # WSM6R.  THREE slots: the driver arm ``CASE (WSM6RSCHEME)`` binds
+        # RAINNC and RAINNCV only (module_microphysics_driver.F:2362-2372);
+        # SR is the surface contract's zero (gpuwm/core/wsm6.py), and
+        # microphysics_scheme_sr_available says 106 has none.
+        return (("rainnc", "mp_rainnc"),
+                ("rainncv", "mp_rainncv"),
+                ("sr", "mp_sr"))
+    if mp_physics in (9, 18, 24):
+        # WSM7 (mp=24) binds the same nine in CASE (WSM7SCHEME)
+        # (module_microphysics_driver.F:2401-2408: RAIN/RAINNCV, SNOW/
+        # SNOWNCV, SR, GRAUPEL/GRAUPELNCV, HAIL/HAILNCV).
         # Milbrandt-Yau shares NSSL's nine-slot row because its WRF driver
         # arm binds the same nine: RAINNC/RAINNCV (:1868-1869),
         # SNOWNC/SNOWNCV (:1870-1871), HAILNC/HAILNCV (:1872-1873),
@@ -233,6 +261,9 @@ def microphysics_scratch_slots(
                 ("hailnc", "mp_hailnc"),
                 ("hailncv", "mp_hailncv"),
                 ("sr", "mp_sr"))
+    from gpuwm.core.column_schemes import COLUMN_SCHEMES
+    if mp_physics in COLUMN_SCHEMES:
+        return tuple((name.removeprefix("mp_"), name) for name in COLUMN_SCHEMES[mp_physics].surface)
     if mp_physics == 50:
         # P3 one-category.  FIVE slots, not mp=6/8's seven: the driver arm
         # ``CASE (P3_1CATEGORY)`` binds RAINNC/RAINNCV/SR/SNOWNC/SNOWNCV and
@@ -700,3 +731,30 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
         SASE_PBL_SCHEME: "_run_sase",
     },
 }
+
+
+# WRF G3 restart carriers and convtrans_prep accumulators. Shape tokens
+# resolve through cfg; the same rows drive allocation and memory review.
+CUMULUS_STATE_LAYOUTS = {5: {
+    "g3_apr": ((8, "ny", "nx"), "f4", None),
+    "g3_xf_ens": (("ensdim", "ny", "nx"), "f4", None),
+    "g3_pr_ens": (("ensdim", "ny", "nx"), "f4", None),
+    "g3_lev": ((9, "nz", "ny", "nx"), "f4", None),
+    "g3_sfc": ((7, "ny", "nx"), "f4", None),
+    "g3_isfc": ((4, "ny", "nx"), "i4", None),
+    **{name: (("nz", "ny", "nx"), "f4", "cu_diag") for name in
+       ("gd_cloud_a", "qc_cu", "gd_cloud2_a", "qi_cu", "gd_cldfr")},
+    "raincv_a": (("ny", "nx"), "f4", "cu_diag"),
+    "raincv_b": (("ny", "nx"), "f4", "cu_diag"),
+    "g3_diag_clock": ((4,), "i4", "cu_diag"),
+}}
+CUMULUS_HISTORY_LAYOUT = {
+    "gd_cloud": ("g3_lev", 7), "gd_cloud2": ("g3_lev", 8),
+    **{name: (name, None) for name in
+       ("gd_cloud_a", "qc_cu", "gd_cloud2_a", "qi_cu", "gd_cldfr", "raincv_a", "raincv_b")},
+}
+
+def cumulus_state_layout(cfg):
+    return {name: (tuple(getattr(cfg, dim) if isinstance(dim,str) else dim for dim in dims), dtype)
+            for name,(dims,dtype,flag) in CUMULUS_STATE_LAYOUTS.get(cfg.cu_physics,{}).items()
+            if flag is None or getattr(cfg,flag)}

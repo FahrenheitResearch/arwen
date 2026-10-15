@@ -16,14 +16,10 @@ ce7b5f970's message says 4,584, a miscount; 3,240 is the fixture's row
 count).  Measured bitwise on the node-1 RTX 4090
 (sm_89) and the node-2 RTX 5090 (sm_120), NVRTC 13.4.92 both.
 
-Subnormal-sensitive comparisons, recorded rather than probed: the kernel
-runs under CuPy's ``-ftz=true``, so a subnormal ``RAIN`` would read as zero
-in ``IF (RAIN > 0. ...)`` (IMP_SCHEME 2 retention, :1037/:1290/:1292; the
-green roof's RR2, :1192) where gfortran reads it as positive.  No fixture
-row carries one, and a forecast cannot hand the kernel one: ``RAIN`` is
-``RAINBL/DT*3600`` formed on the device from a RAINBL that FTZ-compiled
-microphysics kernels accumulated.  The other small thresholds
-(``BETR < 1.E-5``, ``ETAR < 1.E-20``, ``CMC < 1.E-20``) are normal floats.
+This fixture explicitly selects the older ``wrf_471`` water balance. The
+production default is the scoped WRF 4.8 store correction. The shared
+source-marked no-FTZ loader retains positive subnormal rainfall in both
+arithmetic modes; ``test_urban_water_balance_gpu.py`` checks it directly.
 
 **Measured: every output and every state field of every row is
 bit-identical to WRF** -- 19 outputs (TS QS SH LH LH_KINEMATIC SW ALB LW G RN

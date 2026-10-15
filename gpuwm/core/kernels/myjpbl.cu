@@ -1,11 +1,9 @@
 // MYJ (Mellor-Yamada-Janjic level 2.5) PBL, bl_pbl_physics=2, WRF v4.6.1.
 //
-// CUDA mirror of the float32 CPU authority
-// gpuwm/verify/myj_ref.py::np_myjpbl_column, itself transcribed line by
-// line from the byte-frozen phys/module_bl_myjpbl.F.  The :NNN anchors
-// below are that Fortran file's.  One thread owns one column and runs
-// MIXLEN, PRODQ2, DIFCOF, VDIFQ, VDIFH and VDIFV in the Fortran's own
-// order.
+// The :NNN anchors below are phys/module_bl_myjpbl.F's (WRF v4.6.1,
+// byte-frozen).  One thread owns one column and runs MIXLEN, PRODQ2,
+// DIFCOF, VDIFQ, VDIFH and VDIFV in the Fortran's own order, with the
+// Fortran's own expression shapes.
 //
 // LAYOUT.  gpuwm columns are bottom-up (index 0 = lowest layer); MYJ
 // counts DOWNWARD from the domain top.  The kernel flips on load exactly
@@ -14,19 +12,25 @@
 // zero-based MYJ index (Fortran K = m+1) and ``zh[m]`` is Fortran
 // ``ZHK(m+1)``, so ``zh[nz]`` is ZHK(LMH+1) -- the ground.
 //
-// DELIBERATE DIVERGENCE, gpuwm goes its own way (float32 precision).  WRF
-// seeds that column with the TERRAIN HEIGHT, ZINT(I,KTE+1,J)=HT(I,J)
-// (:312), so its interface heights are above SEA LEVEL; this kernel sets
-// zh[nz] = 0 and carries heights ABOVE GROUND (the CPU authority does the
-// same).  Every consumer reads only DIFFERENCES of these heights, so HT
-// cancels EXACTLY in real arithmetic -- but not in float32, where
-// differencing numbers offset by 1-3 km drops low-order bits the
-// ground-relative column keeps.  gpuwm's column is the more accurate one,
-// which is why it ships.  Declared, not assumed: the cancellation is
-// MEASURED in float32 over 1500 m and 3000 m terrain by
-// tests/test_myj_port.py::test_the_dropped_terrain_height_cancels_in_float32,
-// and gpuwm/verify/myj_ref.py::_interface_heights carries the full
-// declaration and the ``ht`` instrument that test drives.
+// CONFORMANCE: BIT-IDENTICAL to WRF v4.6.1's MYJPBL.  The column oracle
+// (tools/myjpbl_wrf461_oracle: the byte-unmodified module at gfortran -O0,
+// 176 columns x 3 calls) is graded word for word by
+// tests/test_myjpbl_wrf461_parity.py: every output field identical under
+// the strict build (GPUWM_WRF_EXACT=1); under default arithmetic only
+// RQCBLTEN/RQIBLTEN words differ, each by less than FLT_MIN, where CuPy's
+// -ftz=true flushes subnormal condensate.  What
+// that takes, each item measured as necessary:
+//   * ZINT(KTE+1)=HT (:312): the interface heights start at the terrain
+//     height, as WRF's do.  The kernel used to start them at 0; HT cancels
+//     in real arithmetic but not in float32 (51 ULP on PBLH, 231 on
+//     EXCH_H over terrain before this was fixed).
+//   * EXP is gfk_exp_fma and REAL**REAL gfk_pow -- WOOF's own float32
+//     routines (flt32_expf_fma.cuh, glibc_flt32.cuh), not CUDA's expf/powf;
+//     tools/myjpbl_wrf461_oracle/libm_sweep.py matches both against the
+//     oracle host's C library over all 2**32 inputs.
+//   * No FMA contraction: myjpbl is in the loader's _NO_FMAD_MODULES.
+//   * The constants are the float32 words gfortran folded (the block
+//     below), checked against the oracle's dump.
 //
 // SPECIES LOOP.  VDIFH's tridiagonal coefficients CM/CR/DTOZ are
 // species-INDEPENDENT (:1465-1495), so the kernel builds them once and
@@ -34,11 +38,6 @@
 // is the same arithmetic in the same order as the Fortran's inner
 // DO M=MSS,NSPEC, and it is what keeps the per-thread local footprint at
 // YSU's scale instead of four times it.
-//
-// Conformance status: CPU-vs-CUDA agreement is asserted by
-// tests/test_myj_port.py within a documented tolerance; NO oracle
-// comparison against the WRF Fortran has been run yet (that campaign is
-// the declared next stage, as it was for Shin-Hong and Grell-Freitas).
 //
 // Faithful quirks: CT is identically zero in ARW (MYJSFC zeroes it every
 // call, module_sf_myjsfc.F:206-211, and SFCDIF's countergradient block is
@@ -51,86 +50,82 @@
 #define MYJ_KMAX 128
 #endif
 
-// ---- share/module_model_constants.F ----
-#define MYJP_G       9.81f
-#define MYJP_RD      287.0f
-#define MYJP_CP      (7.0f * 287.0f / 2.0f)
-#define MYJP_XLV     2.5e6f
-#define MYJP_XLS     2.85e6f
-#define MYJP_P608    (461.6f / 287.0f - 1.0f)
-#define MYJP_PQ0     379.90516f
-#define MYJP_A2      17.2693882f
-#define MYJP_A3      273.16f
-#define MYJP_A4      35.86f
-#define MYJP_EPSQ2   0.2f
+// ---- Constants, as gfortran -O0 FOLDED them ------------------------------
+// Every value below is the float32 word the byte-unmodified WRF v4.6.1
+// objects carry, dumped by tools/myjpbl_wrf461_oracle/run_myjpbl.F90
+// (put_constants) into the fixture's const_a/const_b records and checked
+// against this block by tests/test_myjpbl_wrf461_parity.py.  They are
+// literals, not the Fortran expressions, because the expressions' folded
+// words are a property of gfortran's parameter folding: the CPU authority's
+// own re-folding of ADNH, ANMH, UBRYL, UBRY, UBRY3, AUBH, AUBM and BUBH
+// lands 1 ULP away from WRF's.
+// share/module_model_constants.F
+#define MYJP_G       9.810000420e+00f      // g = 9.81
+#define MYJP_RD      2.870000000e+02f      // r_d = 287.
+#define MYJP_CP      1.004500000e+03f      // cp = 7.*r_d/2.
+#define MYJP_XLV     2.500000000e+06f      // XLV = 2.5E6
+#define MYJP_XLS     2.850000000e+06f      // XLS = 2.85E6
+#define MYJP_P608    6.083624363e-01f      // p608 = r_v/r_d-1.
+#define MYJP_PQ0     3.799051514e+02f      // pq0 = 379.90516
+#define MYJP_A2      1.726938820e+01f      // a2 = 17.2693882
+#define MYJP_A3      2.731600037e+02f      // a3 = 273.16
+#define MYJP_A4      3.586000061e+01f      // a4 = 35.86
+#define MYJP_EPSQ2   2.000000030e-01f      // epsq2 = 0.2
 
-// ---- module_bl_myjpbl.F:25-124 ----
-#define PBL_VKARMAN  0.4f
-#define PBL_CAPA     (MYJP_RD / MYJP_CP)
-#define PBL_RLIVWV   (MYJP_XLS / MYJP_XLV)
-#define PBL_ELOCP    (2.72e6f / MYJP_CP)
-#define PBL_EPS1     1.0e-12f
-#define PBL_EPS2     0.0f
-#define PBL_EPSL     0.32f
-#define PBL_EPSRU    1.0e-7f
-#define PBL_EPSRS    1.0e-7f
-#define PBL_EPSTRB   1.0e-24f
-#define PBL_FH       1.01f
-#define PBL_ALPH     0.30f
-#define PBL_BETA     (1.0f / 273.0f)
-#define PBL_EL0MAX   1000.0f
-#define PBL_EL0MIN   1.0f
-#define PBL_ELFC     (0.23f * 0.5f)
-#define PBL_A1       0.659888514560862645f
-#define PBL_A2X      0.6574209922667784586f
-#define PBL_B1       11.87799326209552761f
-#define PBL_B2       7.226971804046074028f
-#define PBL_C1       0.000830955950095854396f
-#define PBL_ELZ0     0.0f
-#define PBL_ESQ      5.0f
-#define PBL_SEAFC    0.98f
-#define PBL_PQ0SEA   (MYJP_PQ0 * PBL_SEAFC)
-#define PBL_BTG      (PBL_BETA * MYJP_G)
-#define PBL_RB1      (1.0f / PBL_B1)
-
+// phys/module_bl_myjpbl.F:25-124
+#define PBL_VKARMAN  4.000000060e-01f      // VKARMAN = 0.4
+#define PBL_CAPA     2.857142985e-01f      // CAPA = R_D/CP
+#define PBL_RLIVWV   1.139999986e+00f      // RLIVWV = XLS/XLV
+#define PBL_ELOCP    2.707814941e+03f      // ELOCP = 2.72E6/CP
+#define PBL_EPS1     9.999999960e-13f      // EPS1 = 1.E-12
+#define PBL_EPS2     0.0f                 // EPS2 = 0.
+#define PBL_EPSL     3.199999928e-01f      // EPSL = 0.32
+#define PBL_EPSRU    1.000000012e-07f      // EPSRU = 1.E-7
+#define PBL_EPSRS    1.000000012e-07f      // EPSRS = 1.E-7
+#define PBL_EPSTRB   1.000000020e-24f      // EPSTRB = 1.E-24
+#define PBL_FH       1.009999990e+00f      // FH = 1.01
+#define PBL_ALPH     3.000000119e-01f      // ALPH = 0.30
+#define PBL_EL0MAX   1.000000000e+03f      // EL0MAX = 1000.
+#define PBL_EL0MIN   1.000000000e+00f      // EL0MIN = 1.
+#define PBL_ELFC     1.150000021e-01f      // ELFC = 0.23*0.5
+#define PBL_B1       1.187799358e+01f      // B1 = 11.87799326209552761
+#define PBL_ELZ0     0.0f                 // ELZ0 = 0.
+#define PBL_ESQ      5.000000000e+00f      // ESQ = 5.0
+#define PBL_PQ0SEA   3.723070679e+02f      // PQ0SEA = PQ0*SEAFC
+#define PBL_RB1      8.418930322e-02f      // RB1 = 1./B1
 // :62-92
-#define PBL_ADNH (9.0f*PBL_A1*PBL_A2X*PBL_A2X*(12.0f*PBL_A1+3.0f*PBL_B2)*PBL_BTG*PBL_BTG)
-#define PBL_ADNM (18.0f*PBL_A1*PBL_A1*PBL_A2X*(PBL_B2-3.0f*PBL_A2X)*PBL_BTG)
-#define PBL_ANMH (-9.0f*PBL_A1*PBL_A2X*PBL_A2X*PBL_BTG*PBL_BTG)
-#define PBL_ANMM (-3.0f*PBL_A1*PBL_A2X*(3.0f*PBL_A2X+3.0f*PBL_B2*PBL_C1+18.0f*PBL_A1*PBL_C1-PBL_B2)*PBL_BTG)
-#define PBL_BDNH (3.0f*PBL_A2X*(7.0f*PBL_A1+PBL_B2)*PBL_BTG)
-#define PBL_BDNM (6.0f*PBL_A1*PBL_A1)
-#define PBL_BEQH (PBL_A2X*PBL_B1*PBL_BTG+3.0f*PBL_A2X*(7.0f*PBL_A1+PBL_B2)*PBL_BTG)
-#define PBL_BEQM (-PBL_A1*PBL_B1*(1.0f-3.0f*PBL_C1)+6.0f*PBL_A1*PBL_A1)
-#define PBL_BNMH (-PBL_A2X*PBL_BTG)
-#define PBL_BNMM (PBL_A1*(1.0f-3.0f*PBL_C1))
-#define PBL_BSHH (9.0f*PBL_A1*PBL_A2X*PBL_A2X*PBL_BTG)
-#define PBL_BSHM (18.0f*PBL_A1*PBL_A1*PBL_A2X*PBL_C1)
-#define PBL_BSMH (-3.0f*PBL_A1*PBL_A2X*(3.0f*PBL_A2X+3.0f*PBL_B2*PBL_C1+12.0f*PBL_A1*PBL_C1-PBL_B2)*PBL_BTG)
-#define PBL_CESH PBL_A2X
-#define PBL_CESM (PBL_A1*(1.0f-3.0f*PBL_C1))
-
+#define PBL_ADNH     9.810666740e-02f      // ADNH = 9.*A1*A2x*A2x*(12.*A1+3.*B2)*BTG*BTG
+#define PBL_ADNM     9.729986787e-01f      // ADNM = 18.*A1*A1*A2x*(B2-3.*A2x)*BTG
+#define PBL_ANMH    -3.314461559e-03f      // ANMH = -9.*A1*A2x*A2x*BTG*BTG
+#define PBL_ANMM     2.444441020e-01f      // ANMM = -3.*A1*A2x*(3.*A2x+3.*B2*C1+18.*A1*C1-B2)*BTG
+#define PBL_BDNH     8.395565152e-01f      // BDNH = 3.*A2x*(7.*A1+B2)*BTG
+#define PBL_BDNM     2.612717152e+00f      // BDNM = 6.*A1*A1
+#define PBL_BEQH     1.120159984e+00f      // BEQH = A2x*B1*BTG+3.*A2x*(7.*A1+B2)*BTG
+#define PBL_BEQM    -5.205894947e+00f      // BEQM = -A1*B1*(1.-3.*C1)+6.*A1*A1
+#define PBL_BNMH    -2.362381108e-02f      // BNMH = -A2x*BTG
+#define PBL_BNMM     6.582434773e-01f      // BNMM = A1*(1.-3.*C1)
+#define PBL_BSHH     9.223730117e-02f      // BSHH = 9.*A1*A2x*A2x*BTG
+#define PBL_BSHM     4.281887319e-03f      // BSHM = 18.*A1*A1*A2x*C1
+#define PBL_BSMH     2.445979267e-01f      // BSMH = -3.*A1*A2x*(3.*A2x+3.*B2*C1+12.*A1*C1-B2)*BTG
+#define PBL_CESH     6.574209929e-01f      // CESH = A2x
+#define PBL_CESM     6.582434773e-01f      // CESM = A1*(1.-3.*C1)
 // :98-101 free term in the equilibrium equation for (L/Q)**2
-#define PBL_AEQH (9.0f*PBL_A1*PBL_A2X*PBL_A2X*PBL_B1*PBL_BTG*PBL_BTG \
-                  + 9.0f*PBL_A1*PBL_A2X*PBL_A2X*(12.0f*PBL_A1+3.0f*PBL_B2)*PBL_BTG*PBL_BTG)
-#define PBL_AEQM (3.0f*PBL_A1*PBL_A2X*PBL_B1*(3.0f*PBL_A2X+3.0f*PBL_B2*PBL_C1+18.0f*PBL_A1*PBL_C1-PBL_B2)*PBL_BTG \
-                  + 18.0f*PBL_A1*PBL_A1*PBL_A2X*(PBL_B2-3.0f*PBL_A2X)*PBL_BTG)
-
+#define PBL_AEQH     1.374758184e-01f      // AEQH
+#define PBL_AEQM    -1.930506945e+00f      // AEQM
 // :107-124 forbidden turbulence area / near isotropy
-#define PBL_REQU  (-PBL_AEQH/PBL_AEQM)
-#define PBL_EPSGH 1.0e-9f
-#define PBL_EPSGM (PBL_REQU*PBL_EPSGH)
-#define PBL_UBRYL ((18.0f*PBL_REQU*PBL_A1*PBL_A1*PBL_A2X*PBL_B2*PBL_C1*PBL_BTG \
-                    + 9.0f*PBL_A1*PBL_A2X*PBL_A2X*PBL_B2*PBL_BTG*PBL_BTG) \
-                   / (PBL_REQU*PBL_ADNM+PBL_ADNH))
-#define PBL_UBRY  ((1.0f+PBL_EPSRS)*PBL_UBRYL)
-#define PBL_UBRY3 (3.0f*PBL_UBRY)
-#define PBL_AUBH  (27.0f*PBL_A1*PBL_A2X*PBL_A2X*PBL_B2*PBL_BTG*PBL_BTG - PBL_ADNH*PBL_UBRY3)
-#define PBL_AUBM  (54.0f*PBL_A1*PBL_A1*PBL_A2X*PBL_B2*PBL_C1*PBL_BTG - PBL_ADNM*PBL_UBRY3)
-#define PBL_BUBH  ((9.0f*PBL_A1*PBL_A2X+3.0f*PBL_A2X*PBL_B2)*PBL_BTG - PBL_BDNH*PBL_UBRY3)
-#define PBL_BUBM  (18.0f*PBL_A1*PBL_A1*PBL_C1 - PBL_BDNM*PBL_UBRY3)
-#define PBL_CUBR  (1.0f - PBL_UBRY3)
-#define PBL_RCUBR (1.0f/PBL_CUBR)
+#define PBL_REQU     7.121229172e-02f      // REQU = -AEQH/AEQM
+#define PBL_EPSGH    9.999999717e-10f      // EPSGH = 1.E-9
+#define PBL_EPSGM    7.121229301e-11f      // EPSGM = REQU*EPSGH
+#define PBL_AUBH     2.960565686e-02f      // AUBH = 27.*A1*A2x*A2x*B2*BTG*BTG-ADNH*UBRY3
+#define PBL_AUBM    -4.157381356e-01f      // AUBM = 54.*A1*A1*A2x*B2*C1*BTG-ADNM*UBRY3
+#define PBL_BUBH     2.908875048e-01f      // BUBH = (9.*A1*A2x+3.*A2x*B2)*BTG-BDNH*UBRY3
+#define PBL_BUBM    -1.118793726e+00f      // BUBM = 18.*A1*A1*C1-BDNM*UBRY3
+#define PBL_CUBR     5.692963600e-01f      // CUBR = 1.-UBRY3
+#define PBL_RCUBR    1.756554365e+00f      // RCUBR = 1./CUBR
+// PRODQ2 :1164 B1**(2./3.): a constant operand, so gfortran folds it at
+// compile time (correctly rounded) -- the -O0 object calls powf only for
+// THSK/EXNSFC's (1.E5/PSFC)**CAPA.  A literal is that folded word.
+#define PBL_B1POW23  5.205894947e+00f
 
 extern "C" __global__ void myjpbl_column(
     // full bottom-up columns, (nz, n)
@@ -148,6 +143,7 @@ extern "C" __global__ void myjpbl_column(
     const real* __restrict__ snow_a, const real* __restrict__ akhs_a,
     const real* __restrict__ akms_a, const real* __restrict__ elflx_a,
     const real* __restrict__ uz0_a, const real* __restrict__ vz0_a,
+    const real* __restrict__ ht_a,
     // inout surface (n)
     real* __restrict__ thz0_a, real* __restrict__ qz0_a,
     real* __restrict__ qsfc_a, real* __restrict__ ct_a,
@@ -183,7 +179,7 @@ extern "C" __global__ void myjpbl_column(
     real s1[MYJ_KMAX], s2[MYJ_KMAX], s3[MYJ_KMAX], s4[MYJ_KMAX];
 
     // ---- flip on load (:364-383) --------------------------------------
-    zh[nz] = 0.0f;                             // ZHK(LMH+1) = HT, cancels
+    zh[nz] = ht_a[col];                        // ZINT(KTE+1)=HT (:312)
     for (int m = nz - 1; m >= 0; --m) {
         zh[m] = zh[m + 1] + MYJ_UP(dz_a, nz - 1 - m);
     }
@@ -330,7 +326,7 @@ mixlen_110:
             real rden1 = 1.0f / (aden * eloq41 + bden * eloq21 + cden);
             real rhsp1 = (arhs * eloq51 + brhs * eloq31 + crhs * eloq11)
                          * rden1 * rden1;
-            real eloq12 = eloq11 + (dloq1 - eloq11) * expf(rhsp1 * dtturbl);
+            real eloq12 = eloq11 + (dloq1 - eloq11) * gfk_exp_fma(rhsp1 * dtturbl);
             eloq12 = fmaxf(eloq12, PBL_EPS1);
             real eloq22 = eloq12 * eloq12;
             real eloq32 = eloq22 * eloq12;
@@ -342,7 +338,7 @@ mixlen_110:
                          * rden2 * rden2;
             real rhst2 = rhs2 / rhsp2;
             real eloq13 = eloq12 - rhst2
-                          + (rhst2 + dloq1 - eloq12) * expf(rhsp2 * dtturbl);
+                          + (rhst2 + dloq1 - eloq12) * gfk_exp_fma(rhsp2 * dtturbl);
             eloq13 = fmaxf(eloq13, PBL_EPS1);
             if (eloq13 > PBL_EPS1) {
                 q2[m] = el[m] * el[m] / (eloq13 * eloq13);
@@ -353,9 +349,9 @@ mixlen_110:
                 el[m] = PBL_EPSL;
             }
         }
-        // :1164 lower boundary, left-to-right (B1**(2./3.)*USTAR)*USTAR.
-        q2[lmh - 1] = fmaxf(powf(PBL_B1, 2.0f / 3.0f) * ustar * ustar,
-                            MYJP_EPSQ2);
+        // :1164 lower boundary, left-to-right (B1**(2./3.)*USTAR)*USTAR,
+        // with B1**(2./3.) the word gfortran folded at compile time.
+        q2[lmh - 1] = fmaxf(PBL_B1POW23 * ustar * ustar, MYJP_EPSQ2);
     }
     kpbl_a[col] = nz - lpbl + 1;               // :421 KPBL=KTE-LPBL+1
 
@@ -429,7 +425,7 @@ mixlen_110:
 
     // ================= main_integration, heat/moisture (:474-652) =======
     real psfc = psfc_a[col];
-    real thsk = tsk_a[col] * powf(1.0e5f / psfc, PBL_CAPA);      // :477
+    real thsk = tsk_a[col] * gfk_pow(1.0e5f / psfc, PBL_CAPA);   // :477
     for (int m = 0; m < nz; ++m) {
         real pkm = MYJ_UP(p_a, nz - 1 - m);
         rhok[m] = pkm / (MYJP_RD * tk[m]
@@ -449,10 +445,10 @@ mixlen_110:
         if (snow_a[col] > 0.0f || sice_a[col] > 0.5f) qfc1 = qfc1 * PBL_RLIVWV;
         if (qfc1 > 0.0f) qsfc = qk[nz - 1] + elflx_a[col] / qfc1;
     } else {
-        real exnsfc = powf(1.0e5f / psfc, PBL_CAPA);
+        real exnsfc = gfk_pow(1.0e5f / psfc, PBL_CAPA);
         qsfc = PBL_PQ0SEA / psfc
-               * expf(MYJP_A2 * (thsk - MYJP_A3 * exnsfc)
-                      / (thsk - MYJP_A4 * exnsfc));
+               * gfk_exp_fma(MYJP_A2 * (thsk - MYJP_A3 * exnsfc)
+                         / (thsk - MYJP_A4 * exnsfc));
     }
     qsfc_a[col] = qsfc;
     real qz0 = (1.0f - seamask) * qsfc + seamask * qz0_a[col];    // :566

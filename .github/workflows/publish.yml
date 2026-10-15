@@ -59,7 +59,19 @@ jobs:
           python -m build --outdir companion-dist gpuwm-data
           python -m pip install companion-dist/*.whl
           python -m pip install -e ".[dev]"
+      # Table staging invokes rw_fetch even for local synthetic bytes.
+      # Build it from this checkout with ci.yml's pinned toolchain and flags.
+      # The remaining selected tests use fixtures or explicit optional-native
+      # skips. Keep the Stage 1 native partition comparison in the guard test.
+      - name: build the table fetcher required by the contract tests
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal
+          cd tools/rustwx && rustup run 1.94.0 cargo build --release --locked --offline -p rw-fetch
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/rw-fetch-target
       - name: packaging and contract tests
+        env:
+          GPUWM_RW_FETCH: ${{ runner.temp }}/rw-fetch-target/release/rw_fetch
         run: |
           python tools/verify_source_bridge_pins.py
           python -m pytest -q -m "not gpu and not slow and not network" \
@@ -84,7 +96,10 @@ jobs:
             tests/test_bridge_bundle_adopt.py \
             tests/test_verify_source_bridge_pins.py \
             tests/test_verify_release_artifacts.py \
-            tests/test_native_build_inputs.py
+            tests/test_native_build_inputs.py \
+            tests/test_workflow_rehearsals.py tests/test_workflow_job_replay.py \
+            tests/test_pypi_capacity.py tests/test_publish_preflight.py \
+            tests/test_vendor_cache_ignore.py
       - id: controller
         name: capture the tested controller hash
         shell: bash

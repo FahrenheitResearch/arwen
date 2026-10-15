@@ -78,8 +78,27 @@ def test_shell_comparison_failure_exits_nonzero(tmp_path, arm):
             np.savez(tmp_path / ("woof-replay.npz" if replay else "woof.npz"), **arrays)
     script = (TOOL / "run_case.sh").read_text()
     comparisons = script[script.rindex('cd "$out"'):]
+    # The harness calls bare ``python``, the oracle box's own.  Hand the
+    # comparison this suite's interpreter (which has numpy) whatever the
+    # launching shell's PATH holds: a Stage 1 started as venv/bin/python on
+    # a box whose only system interpreter is python3 failed here with
+    # "python: command not found" before any comparison ran (2.9.0 lane A1,
+    # node-1).  A shell shim, not a symlink, so a venv interpreter keeps its
+    # own site-packages.
+    shim = tmp_path / "interpreter"
+    shim.mkdir()
+    if os.name == "nt":
+        interpreter_dir = str(Path(sys.executable).parent)
+    else:
+        (shim / "python").write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        (shim / "python").chmod(0o755)
+        interpreter_dir = str(shim)
     result = subprocess.run([bash, "-c", "set -euo pipefail\n" + comparisons],
-                            env=os.environ | {"out": str(tmp_path), "tool": str(TOOL)},
+                            env=os.environ | {
+                                "out": str(tmp_path), "tool": str(TOOL),
+                                "PATH": interpreter_dir + os.pathsep
+                                + os.environ.get("PATH", "")},
                             text=True, capture_output=True)
     assert "hfx" in result.stdout, result.stdout + result.stderr
     assert result.returncode != 0, result.stdout + result.stderr

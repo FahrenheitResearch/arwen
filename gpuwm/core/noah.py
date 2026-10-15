@@ -11,15 +11,15 @@ Scope (Phase 3 Task 10): 4 soil layers, snowpack (SWE/depth/density,
 melt, cover fraction, snow albedo aging), canopy water, the full surface
 energy balance producing TSK/HFX/QFX/LH/GRDFLX, runoff, and the WRF
 driver diagnostics (SMSTAV/SMSTOT/SMCREL/ACSNOM/ACSNOW/SNOPCX/POTEVP/
-NOAHRES).  NOT ported, matching the plan's authority-file scope: UA_PHYS,
-FASDAS, WRF-Hydro, the urban canopy models themselves (they run after the
-kernel, :mod:`gpuwm.core.urban_driver`; the kernel carries their hand-over
-through ``launch_noah(urban=...)``, and the plain ``VEGTYP==ISURBAN``
-parameter overrides inside SFLX/HRT ARE ported), ``SFCDIF_off`` (the
-exchange coefficient CH comes from the surface-layer scheme), and
-``SFLX_GLACIAL`` (module_sf_noahlsm_glacial_only.F): land-ice columns
-(``ivgtyp == isice``) are skipped like water points.  The bundle's d01
-has no land-ice points (pinned in tests/test_noah.py).
+NOAHRES), and the land-ice column: ``ivgtyp == isice`` runs WRF's
+``SFLX_GLACIAL`` (module_sf_noahlsm_glacial_only.F) through the driver's
+ICE == -1 arm, as WRF does (ported 2026-10-12; until then such a column
+was left untouched).  NOT ported: UA_PHYS, FASDAS, WRF-Hydro, the urban
+canopy models themselves (they run after the kernel,
+:mod:`gpuwm.core.urban_driver`; the kernel carries their hand-over through
+``launch_noah(urban=...)``, and the plain ``VEGTYP==ISURBAN`` parameter
+overrides inside SFLX/HRT ARE ported) and ``SFCDIF_off`` (the exchange
+coefficient CH comes from the surface-layer scheme).
 
 Parameter tables: VEGPARM.TBL / SOILPARM.TBL / GENPARM.TBL are shipped
 verbatim from the WRF v4.6.1 ``run/`` directory in
@@ -253,6 +253,36 @@ class NoahParams:
     sltype: str
 
 
+#: (ISURBAN, ISICE) for each land-use dataset VEGPARM.TBL carries.  WRF's
+#: Noah driver takes both from the model configuration, which
+#: share/input_wrf.F fills from the input file's global attributes (geogrid
+#: writes them from its land-use index) and, failing that, from MMINLU
+#: (input_wrf.F:849-862: MODIS 15, otherwise 24 for ISICE).  A table and not
+#: a default: until 2026-10-12 the driver passed the MODIS pair (13, 15) for
+#: every dataset, so a USGS run applied the urban overrides to category 13
+#: (evergreen broadleaf) and SKIPPED category 15 (mixed forest) as land ice.
+NOAH_LANDUSE_CATEGORY_IDS = {
+    "MODIFIED_IGBP_MODIS_NOAH": (13, 15),
+    "MODI-RUC": (13, 15),
+    "NLCD40": (13, 15),
+    "USGS": (1, 24),
+    "USGS-RUC": (1, 24),
+}
+
+
+def noah_category_ids(params: "NoahParams") -> tuple[int, int]:
+    """``(isurban, isice)`` of the dataset ``params`` was packed from."""
+    try:
+        return NOAH_LANDUSE_CATEGORY_IDS[params.lutype]
+    except KeyError:
+        raise ValueError(
+            f"Noah has no ISURBAN/ISICE identity for land-use dataset "
+            f"{params.lutype!r}: the column would apply the urban overrides "
+            "and the land-ice routine to whatever categories 13 and 15 mean "
+            "in that dataset.  Add the dataset's pair to "
+            "gpuwm.core.noah.NOAH_LANDUSE_CATEGORY_IDS") from None
+
+
 def pack_params(t: NoahTables) -> NoahParams:
     veg = np.zeros((t.lucats, len(VEG_COLS)))
     src = dict(nroot=t.nrotbl, rsmin=t.rstbl, rgl=t.rgltbl, hs=t.hstbl,
@@ -474,6 +504,71 @@ def initialize_noah_liquid_water(dev: dict, params: NoahParams, dzs) -> None:
            (soil, moisture, temperature, liquid, soil_table,
             np.int32(params.slcats), np.int32(columns)))
 
+#: ``noah_seaice_column``'s 2-D arguments, in kernel order.
+SEAICE_F2D = ("xice", "psfc", "sfcprs", "sfctmp", "qv1", "qgh", "glw",
+              "swdown", "rainbl", "sr", "rib", "chs", "cqs2", "chs2", "tsk",
+              "emiss", "albedo", "z0", "snow", "snowc", "snowh", "znt", "lh",
+              "hfx", "qfx", "potevp", "grdflx", "qsfc", "acsnow", "acsnom",
+              "snopcx", "sfcrunoff", "noahres")
+
+#: WRF v4.6.1 Registry.EM_COMMON defaults for the sea-ice namelist, the only
+#: values gpuwm runs: seaice_albedo_opt = 0, seaice_thickness_opt = 0,
+#: seaice_snowdepth_opt = 0 and fractional_seaice = 0.
+SEAICE_THICKNESS_DEFAULT_M = 3.0
+SEAICE_SNOWDEPTH_MIN_M = 0.001
+SEAICE_SNOWDEPTH_MAX_M = 1.0e10
+
+
+def launch_noah_seaice(dev: dict, dt: float, *, frpcpn: bool,
+                       xice_threshold: float = 0.5,
+                       albedo_default: float = 0.65,
+                       check_snow_density: bool = False) -> None:
+    """WRF's ``seaice_noah`` on device arrays (in place).
+
+    The surface driver calls it after ``lsm`` / ``lsm_mosaic`` on every Noah
+    run (module_surface_driver.F:2917-2929); it advances every column with
+    ``xice >= xice_threshold`` -- skin temperature, snow on ice, the four-layer
+    ice temperature profile and the surface fluxes -- and leaves every other
+    column untouched.  ``dt`` is the MODEL time step: the driver hands
+    seaice_noah ``dt`` where it hands lsm ``dtbl``.
+
+    ``check_snow_density`` reads back WRF's one fatal (SFLX_SEAICE's
+    "Physical snow depth is less than snow water equiv."), which only an
+    inconsistent initial SNOW/SNOWH pair can reach: once the scheme has run,
+    SNOWPACK holds the density at or below 0.4.  The forecast asks for it on
+    its first surface call, so the read costs one synchronisation per run.
+    """
+    import cupy as cp
+
+    from gpuwm.core.kernels import get_kernel
+    from gpuwm.core.state import DTYPE
+
+    ny, nx = dev["tsk"].shape
+    args = []
+    for name in SEAICE_F2D:
+        a = dev[name]
+        if a.shape != (ny, nx) or a.dtype != cp.float32:
+            raise ValueError(f"sea ice {name}: expected ({ny},{nx}) float32")
+        args.append(a)
+    tslb = dev["tslb"]
+    if tslb.shape != (NUM_SOIL_LAYERS, ny, nx) or tslb.dtype != cp.float32:
+        raise ValueError(f"sea ice tslb: expected ({NUM_SOIL_LAYERS},{ny},{nx}) float32")
+    fatal = cp.zeros((1,), dtype=cp.int32)
+    args += [tslb, fatal, DTYPE(dt), DTYPE(xice_threshold),
+             np.int32(1 if frpcpn else 0), DTYPE(albedo_default),
+             DTYPE(SEAICE_THICKNESS_DEFAULT_M), DTYPE(SEAICE_SNOWDEPTH_MIN_M),
+             DTYPE(SEAICE_SNOWDEPTH_MAX_M), np.int32(ny), np.int32(nx)]
+    kern = get_kernel("noah", "noah_seaice_column")
+    kern(((ny * nx + _TPB - 1) // _TPB,), (_TPB,), tuple(args))
+    if check_snow_density and int(fatal.get()[0]) != 0:
+        raise ValueError(
+            "Noah sea ice: Physical snow depth is less than snow water equiv. "
+            "(WRF SFLX_SEAICE's fatal): a sea-ice column has SNOW/1000 > SNOWH "
+            "after the 0.01 m floor and the depth clamp, so its snow density "
+            "exceeds 1 and the ice-column conduction would be computed from "
+            "an impossible snowpack.  Fix the initial SNOW/SNOWH pair.")
+
+
 def _urban_args(urban, ny: int, nx: int) -> list:
     """The ten trailing ``noah_column_urban`` arguments for the urban
     handover.  The default path (``urban is None``) launches
@@ -500,7 +595,7 @@ def _urban_args(urban, ny: int, nx: int) -> list:
 
 
 def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
-                isurban: int = 13, isice: int = 15,
+                isurban: int | None = None, isice: int | None = None,
                 xice_threshold: float = 0.5, frpcpn: bool = False,
                 usemonalb: bool = False, rdlai2d: bool = False,
                 opt_thcnd: int = 1, itimestep: int = 2,
@@ -510,9 +605,10 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
     ``dev`` maps field names to CuPy arrays: every name in ``_F2D`` as
     ``(ny, nx)`` float32 (``ivgtyp``/``isltyp`` int32), every name in
     ``_F3D`` as ``(4, ny, nx)`` float32, plus ``ebal`` (ny, nx) int32.
-    Water (``xland >= 1.5``), sea-ice (``xice >= xice_threshold``) and
-    land-ice (``ivgtyp == isice``) columns are skipped exactly as the
-    WRF driver skips them.
+    Water (``xland >= 1.5``) and sea-ice (``xice >= xice_threshold``)
+    columns are skipped exactly as the WRF driver skips them; land-ice
+    (``ivgtyp == isice``) columns run SFLX_GLACIAL, as the driver's
+    ICE == -1 arm does.
 
     ``urban`` is the urban model's handover
     (:meth:`gpuwm.core.urban_driver.UrbanCoupler.noah_kernel_args`), or
@@ -547,6 +643,12 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
         args.append(a)
     args.append(dev["ebal"])
     vegtbl, soiltbl, genp, dzs4 = _device_tables(params, dzs)
+    # The dataset's own category identities unless the caller names them
+    # (an oracle fixture does): WRF's driver receives ISURBAN and ISICE.
+    if isurban is None or isice is None:
+        dataset_isurban, dataset_isice = noah_category_ids(params)
+        isurban = dataset_isurban if isurban is None else isurban
+        isice = dataset_isice if isice is None else isice
     args += [vegtbl, soiltbl, genp, dzs4,
              DTYPE(dt), np.int32(params.lucats), np.int32(params.slcats),
              np.int32(isurban), np.int32(isice), DTYPE(xice_threshold),

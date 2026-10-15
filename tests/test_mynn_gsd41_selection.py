@@ -140,7 +140,10 @@ def test_named_import_emitted_bytes_select_the_pbl_source(
         anchor = b"wif_input_opt = 1\n"
         assert expected.count(anchor) == 1
         expected = expected.replace(anchor, anchor + fork_lines)
-    assert previous.encode() == expected
+    # The namelist omits &dynamics top_lid: the pinned import resolved the
+    # profile's rigid lid, today's reads WRF's open top (2026-10-12).
+    from operational_namelist_edits import as_open_top
+    assert previous.encode() == as_open_top(expected)
     cfg = build_experiment(tomllib.loads(text), source="named source byte proof").root.run
     assert cfg.ruc_irrigation == cfg.ruc_snow == "wrf_461"
     assert cfg.ruc_qvg_cold_start == "wrf"

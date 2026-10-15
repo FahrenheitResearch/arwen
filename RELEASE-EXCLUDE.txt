@@ -287,6 +287,7 @@ proof/**
 # half of what it relies on ships: gpuwm.bridge_assets.native_input_difference
 # and the pin and verifier tools that re-prove a reused binary.
 tools/release/cut/**
+tools/release/chain/**
 docs/dev/RELEASE-CUT.md
 
 # The branch-dispositions ledger and its gate: internal branch bookkeeping
@@ -358,3 +359,64 @@ tests/test_timeline_qualification.py
 # global-statics.v1.json, and the rw-globe-pack bridge it stages are
 # product files and still ship.
 tools/global_statics/**
+
+# The native MPAS-A static and GWD reference harness that came with the
+# rw-mpas i2/f2/i3 landing (2.9.0 lane A2): the scripts drive the MPAS pool's
+# strict native builds through its card and build queues and read that pool's
+# reference cases on the hosts that hold them, and the README is the lanes'
+# running log of those replays.  Nothing compiled reads native_gwd/.  In
+# native_static/ the word and case files and the Fortran and C drivers that
+# regenerate them ship, because the public cargo tests read the words
+# (static_native_parity.rs, static_collections.rs, the static_builder,
+# static_geog and static_operators unit tests); the scripts are the
+# measurement's own run records, not the product.
+tools/rustwx/crates/rw-mpas/tests/native_gwd/**
+# (Each script is listed: this file's rules are exact paths or a directory's /**.)
+tools/rustwx/crates/rw-mpas/tests/native_static/README.md
+tools/rustwx/crates/rw-mpas/tests/native_static/approved_residue.py
+tools/rustwx/crates/rw-mpas/tests/native_static/artifact_driver.py
+tools/rustwx/crates/rw-mpas/tests/native_static/assess_native_forecast.py
+tools/rustwx/crates/rw-mpas/tests/native_static/attempt_acceptance.py
+tools/rustwx/crates/rw-mpas/tests/native_static/audit_driver_coverage.py
+tools/rustwx/crates/rw-mpas/tests/native_static/bespoke_tile_matrix.py
+tools/rustwx/crates/rw-mpas/tests/native_static/check_citations.py
+tools/rustwx/crates/rw-mpas/tests/native_static/collect_coverage.py
+tools/rustwx/crates/rw-mpas/tests/native_static/compact_forecast.py
+tools/rustwx/crates/rw-mpas/tests/native_static/compile_collections.py
+tools/rustwx/crates/rw-mpas/tests/native_static/compile_diagnostics.py
+tools/rustwx/crates/rw-mpas/tests/native_static/consumer_driver.py
+tools/rustwx/crates/rw-mpas/tests/native_static/coverage_driver.py
+tools/rustwx/crates/rw-mpas/tests/native_static/coverage_union.py
+tools/rustwx/crates/rw-mpas/tests/native_static/error_coverage.py
+tools/rustwx/crates/rw-mpas/tests/native_static/forecast_attempt.py
+tools/rustwx/crates/rw-mpas/tests/native_static/forecast_difference.py
+tools/rustwx/crates/rw-mpas/tests/native_static/forecast_pair.py
+tools/rustwx/crates/rw-mpas/tests/native_static/forecast_restore.py
+tools/rustwx/crates/rw-mpas/tests/native_static/forecast_summary.py
+tools/rustwx/crates/rw-mpas/tests/native_static/fread_witness.py
+tools/rustwx/crates/rw-mpas/tests/native_static/full_driver.py
+tools/rustwx/crates/rw-mpas/tests/native_static/geoindex_defaults_plan.py
+tools/rustwx/crates/rw-mpas/tests/native_static/geoindex_encoding_plan.py
+tools/rustwx/crates/rw-mpas/tests/native_static/geoindex_error_plan.py
+tools/rustwx/crates/rw-mpas/tests/native_static/heap_witness.py
+tools/rustwx/crates/rw-mpas/tests/native_static/initialization_driver.py
+tools/rustwx/crates/rw-mpas/tests/native_static/landed_forecast_pair.py
+tools/rustwx/crates/rw-mpas/tests/native_static/longitude_matrix.py
+tools/rustwx/crates/rw-mpas/tests/native_static/parallel_artifacts.py
+tools/rustwx/crates/rw-mpas/tests/native_static/partial_replay.py
+tools/rustwx/crates/rw-mpas/tests/native_static/preflight_forecast.py
+tools/rustwx/crates/rw-mpas/tests/native_static/priority_static.py
+tools/rustwx/crates/rw-mpas/tests/native_static/proof_inputs.py
+tools/rustwx/crates/rw-mpas/tests/native_static/proof_inputs_replay.py
+tools/rustwx/crates/rw-mpas/tests/native_static/regenerate.py
+tools/rustwx/crates/rw-mpas/tests/native_static/regenerated_proof.py
+tools/rustwx/crates/rw-mpas/tests/native_static/reject_driver.py
+tools/rustwx/crates/rw-mpas/tests/native_static/replay_diagnostics.py
+tools/rustwx/crates/rw-mpas/tests/native_static/replay_errors.py
+tools/rustwx/crates/rw-mpas/tests/native_static/replay_regenerated_proof.py
+tools/rustwx/crates/rw-mpas/tests/native_static/reproduce-residue.sh
+tools/rustwx/crates/rw-mpas/tests/native_static/reproduce.py
+tools/rustwx/crates/rw-mpas/tests/native_static/reproduce.sh
+tools/rustwx/crates/rw-mpas/tests/native_static/reproduce_diagnostic_forecast.sh
+tools/rustwx/crates/rw-mpas/tests/native_static/residue_negative.py
+tools/rustwx/crates/rw-mpas/tests/native_static/v35_forecast_pair.py

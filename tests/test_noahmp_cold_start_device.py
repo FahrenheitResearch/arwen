@@ -81,6 +81,7 @@ _COLD_START_WRITES = (
     "tvxy", "tgxy", "canicexy", "canliqxy", "eahxy", "tahxy",
     "cmxy", "chxy", "fwetxy", "sneqvoxy", "alboldxy",
     "qsnowxy", "qrainxy", "wslakexy", "waxy", "xsaixy",
+    "t2mvxy", "t2mbxy",
 )
 
 #: 2140: ``ALBOLDXY = 0.65`` is assigned on every column of the grid with no

@@ -105,7 +105,7 @@ class JobManager:
     def launch(self, kind: str, argv: list[str], *, cwd: str | Path,
                gpu: bool, env_additions: dict[str, str] | None = None,
                outputs: dict[str, str] | None = None,
-               owner_file: str | None = None) -> dict:
+               owner_file: str | None = None, cards: list[int] | None = None) -> dict:
         """Detach one job; returns the launch document with its job_id.
 
         ``gpu=True`` takes the card lock first and refuses (verbatim
@@ -123,6 +123,10 @@ class JobManager:
                                outputs=outputs, owner_file=owner_file)
         # Check the card, spawn and record the holder as one step under the lock's mutex: checked apart,
         # two starts in the same instant both passed the check and both ran on the card.
+        if cards is None:
+            visible = (env_additions or {}).get("CUDA_VISIBLE_DEVICES", "0")
+            cards = [int(card) for card in visible.split(",")]
+        env_additions = dict(env_additions or {}, CUDA_VISIBLE_DEVICES=",".join(map(str, cards)))
         launched: dict = {}
 
         def start() -> tuple[str, int, dict | None]:
@@ -131,7 +135,7 @@ class JobManager:
             return launched["job_id"], launched["wrapper_pid"], launched["wrapper_process"]
 
         try:
-            self.gpu_lock.claim(start, before=self._reap_gpu_lock_locked)
+            self.gpu_lock.claim(start, before=self._reap_gpu_lock_locked, cards=cards)
         except CardHeld as held:
             raise CardTaken(str(held), held.holder) from None
         return launched
@@ -237,8 +241,7 @@ class JobManager:
         if state in ("exited", "cancelled") and receipt.get("gpu"):
             # The mutex is taken only when this job is the holder: a job list read every ended GPU job's status,
             # and each one locked the card's mutex to find it held by nobody.
-            held = self.gpu_lock.holder()
-            if isinstance(held, dict) and held.get("job_id") == job_id:
+            if any(held.get("job_id") == job_id for held in self.gpu_lock.holders()):
                 self.gpu_lock.release(job_id)
 
         document = {
@@ -267,13 +270,11 @@ class JobManager:
         release happens lazily at the next launch or status call.
         """
 
-        held = self.gpu_lock.holder()
-        if held is None:
-            return
-        job_id = held.get("job_id", "")
-        result = _read_json(self.root / job_id / "result.json")
-        if result is not None:
-            self.gpu_lock.release_locked(job_id)
+        for held in self.gpu_lock.holders():
+            job_id = held.get("job_id", "")
+            result = _read_json(self.root / job_id / "result.json")
+            if result is not None:
+                self.gpu_lock.release_locked(job_id)
 
     def card_refusal(self) -> str | None:
         """The sentence a launch that needs the card would be refused with now, or None when it would start.

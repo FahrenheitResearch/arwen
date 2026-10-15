@@ -4511,6 +4511,28 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
             "them from LANDUSEF), so Noah mosaic cannot run streamed.  Run "
             "this domain resident ([tiles] mode = 'off'), or set "
             "sf_surface_mosaic = 0.")
+    from gpuwm.config import CU_DOMAIN_EDGE_BAND_SCHEMES
+
+    if int(getattr(cfg, "cu_physics", 0) or 0) in CU_DOMAIN_EDGE_BAND_SCHEMES:
+        periodic = [axis for axis, wraps in zip("xy", _periodic_axes(cfg))
+                    if wraps]
+        if periodic:
+            # Named breakage: the scheme writes only the band four columns
+            # in from the DOMAIN's edges, periodic or not, and a tile window
+            # that wraps across a periodic edge computes its own window's
+            # band instead: the streamed tendencies differ from the resident
+            # run's beside every periodic domain edge (see
+            # gpuwm.config.CU_DOMAIN_EDGE_BAND_SCHEMES for the measurement).
+            raise StreamingRefused(
+                f"grid_id = {int(getattr(cfg, 'grid_id', 0))} sets "
+                f"cu_physics = {int(cfg.cu_physics)}, whose convective band "
+                "stops four columns short of the domain's lateral edges even "
+                f"on a periodic axis, and this domain is periodic in "
+                f"{' and '.join(periodic)}: a tile window that wraps across "
+                "that edge would write tendencies the resident run leaves at "
+                "zero, so it cannot run streamed.  Run this domain resident "
+                "([tiles] mode = 'off'), or give it specified or open lateral "
+                "boundaries.")
     from tilestream import driver as _driver
     from tilestream import gather as _gather
     from tilestream import physics_inventory as _physics
@@ -4826,6 +4848,18 @@ def _twin_composed_radiation(scheme, cls, lat, lon):
                shortwave_adapter=_tile_scheme(scheme.shortwave_adapter, tile_lat, tile_lon))
 
 
+def _twin_column_cumulus(scheme, cls, lat, lon):
+    """Rebuild :class:`~gpuwm.core.column_cumulus.ColumnCumulus`.
+
+    Its whole policy is its row of ``COLUMN_CUMULUS_SCHEMES``, selected by
+    ``cu_physics``; the namelist knobs it reads come from ``cfg`` at every
+    call and it holds no state between calls, so the twin is exact.  It
+    carries no geography.  The tile's own PhysicsDriver binds itself through
+    ``bind_driver`` on the first cumulus call, as for the domain's adapter.
+    """
+    return cls(scheme.scheme.cu_physics)
+
+
 @dataclass(frozen=True)
 class _TwinRecipe:
     """How to rebuild one non-dataclass adapter that requires arguments.
@@ -4867,6 +4901,12 @@ _TWIN_RECIPES = {
         build=_twin_composed_radiation,
         reproduces=frozenset({"start_time", "latitude_deg", "longitude_deg",
                               "longwave_adapter", "shortwave_adapter"}),
+    ),
+    # The column-cumulus table's one adapter (New SAS, cu_physics = 96): a
+    # plain class whose constructor requires the table row's cu_physics.
+    "gpuwm.core.column_cumulus:ColumnCumulus": _TwinRecipe(
+        build=_twin_column_cumulus,
+        reproduces=frozenset({"cu_physics"}),
     ),
     "gpuwm.core.rrtmg_legacy:RRTMGLegacyRadiation": _TwinRecipe(
         build=_twin_rrtmg_legacy,

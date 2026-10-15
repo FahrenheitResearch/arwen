@@ -79,6 +79,12 @@ pub struct DomainState {
     /// mass-level pressure.  Fixed for the export: every frame must agree.
     pub geopotential_between_interfaces: bool,
     pub levels_per_chunk: usize,
+    /// Horizontal chunk shape of every gridded array; 0 means the whole
+    /// plane (states written before spatial chunking existed).
+    #[serde(default)]
+    pub chunk_ny: usize,
+    #[serde(default)]
+    pub chunk_nx: usize,
     pub variables: Vec<VarState>,
     /// For each time, which stored latitude/longitude it has (0 = the
     /// first frame's).  More than one version is a moving nest.
@@ -98,6 +104,15 @@ pub struct State {
     pub options_digest: String,
     pub request: Request,
     pub domains: BTreeMap<String, DomainState>,
+}
+
+impl DomainState {
+    /// The horizontal chunk shape `(y, x)` of this domain's gridded arrays.
+    pub fn chunk_yx(&self) -> (usize, usize) {
+        let y = if self.chunk_ny == 0 { self.out_ny } else { self.chunk_ny.min(self.out_ny) };
+        let x = if self.chunk_nx == 0 { self.out_nx } else { self.chunk_nx.min(self.out_nx) };
+        (y.max(1), x.max(1))
+    }
 }
 
 pub fn state_dir(out: &Path) -> PathBuf {

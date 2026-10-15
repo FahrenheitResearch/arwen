@@ -680,7 +680,10 @@ CONSTANT_K_PROFILE_ID = (
 #: six when its cold-start arm landed (audit R-044): the prepared
 #: single-domain runner builds its initialization like any other suite's,
 #: with nwfa/nifa from the WIF monthly climatology.
+NSAS_PROFILE_ID = "wsm6-ysu-mm5-noah-nsas-rrtmg-legacy-v1"
+
 COMPOSITION_SUITE_PROFILE_IDS = (
+    NSAS_PROFILE_ID,
     MILBRANDT2MOM_NTIEDTKE_PROFILE_ID,
     WDM6_GRELL_FREITAS_PROFILE_ID,
     THOMPSON_AEROSOL_MYJ_PROFILE_ID,
@@ -3528,8 +3531,9 @@ def pending_wrf_physics_components(
     # Byte validation of the resolved table root still fails closed at
     # setup, which is the guard that was ever essential at run time.
     # Namelist preview invokes this readiness layer before its documented
-    # WRF-to-ArWen selector mappings (for example ISHMAEL 55 -> Morrison
-    # 10).  Shin-Hong 11 is no longer such a mapping: it imports natively
+    # WRF-to-ArWen selector mappings (ISHMAEL 55 -> Morrison 10 was one
+    # until it became a named refusal, gpuwm.config._MP_UNPORTED_SCHEMES).
+    # Shin-Hong 11 is no longer such a mapping either: it imports natively
     # since the Shin-Hong port, so bl_pbl_physics=11 is inside PBL_OPTIONS
     # and its four (11, sfclay) cells get their verdict from the WRF matrix
     # below exactly like 0/1/5.  The matrix governs the ported selector set

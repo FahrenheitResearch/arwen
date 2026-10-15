@@ -332,7 +332,7 @@ def test_gfs_lake_coverage_proves_a_global_in_crop_water_donor():
     point = (np.array([[30.0]]), np.array([[30.0]]))
     receipt = _source_coverage_receipt(
         snapshot, _CoverageGrid(point), np.array([[True]]))
-    assert receipt["lake_source_search"] == "global expanding nearest-water"
+    assert receipt["lake_source_search"] == "global expanding nearest-water (coverage diagnostic only)"
     assert receipt["max_lake_source_search_radius_cells"] == 32.0
     assert receipt["max_lake_source_water_distance_cells"] == 20.0
 
@@ -438,23 +438,21 @@ def test_a_whole_globe_file_has_no_edge_for_a_lake_to_miss_water_past():
     assert "lake_cells_nearest_water_past_crop" not in receipt
 
 
-def test_a_lake_with_no_gfs_water_takes_the_mapped_skin_and_is_counted(
+def test_a_lake_whose_nearer_gfs_water_could_lie_past_the_crop_is_announced(
         capsys):
-    from gpuwm.gfs_direct import (
-        _announce_lake_source_water, lake_skin_with_source_skin_fallback)
+    from gpuwm import gfs_direct
+    from gpuwm.gfs_direct import _announce_lake_source_water
 
-    lakes = np.array([[True, False], [True, True]])
-    searched = np.array([[np.nan, np.nan], [281.0, np.nan]])
-    mapped = np.array([[284.0, 290.0], [285.0, 286.0]])
-    lake_skin, cells = lake_skin_with_source_skin_fallback(
-        searched, lakes, mapped)
-    assert cells == 2
-    np.testing.assert_array_equal(lake_skin[lakes], [284.0, 281.0, 286.0])
-    assert np.isnan(lake_skin[0, 1])
-    _announce_lake_source_water(cells, 1, lake_cells=3)
+    _announce_lake_source_water(1, lake_cells=3)
     said = capsys.readouterr().err
-    assert "of 3 lake cell(s), 2 took the skin temperature GFS has" in said
-    assert "1 took the nearest GFS water inside the fetched area" in said
+    assert "of 3 lake cell(s), 1 took the nearest GFS water inside the fetched area" in said
+    _announce_lake_source_water(0, lake_cells=3)
+    assert capsys.readouterr().err == ""
+    # The 2.8.x nearest-water lake override is retired with its workaround:
+    # lakes are water targets of the masked chain, whose whole-source search
+    # takes that water and whose other_surface rule covers a crop with none.
+    assert not hasattr(gfs_direct, "lake_skin_with_source_skin_fallback")
+    assert not hasattr(gfs_direct, "interpolate_lake_skin_temperature")
 
 
 def test_git_identity_degrades_accurately_outside_a_checkout(monkeypatch):
@@ -864,10 +862,10 @@ def test_the_shipped_two_domain_proof_config_still_passes_the_front_door():
             split_receipt["domains"][grid_id]["governance"])
 
     # A selector the registry has no option for is recorded as a blocker,
-    # not raised.  The loader refuses mp_physics = 2 before any door sees
+    # not raised.  The loader refuses mp_physics = 7 before any door sees
     # it (the registry now resolves every selector the loader admits), so
     # it is handed to the door directly here.
-    blocked = front_door_physics_selection(_respelled(mp_physics=2))
+    blocked = front_door_physics_selection(_respelled(mp_physics=7))
     assert blocked["domains"]["1"]["components"] is None
     assert "mp_physics" in blocked["domains"]["1"]["registry_blocker"]
 
@@ -1987,3 +1985,57 @@ def test_a_gfs_domain_tree_too_deep_for_windows_is_refused_before_decode(
     assert not decoded
     assert not arguments["output_root"].exists()
     assert not list(parent.glob(".d-*"))
+
+
+def test_decode_extends_old_full_file_manifest_above_top():
+    from gpuwm.gfs_direct import _decode_levels_above_model_top
+    levels = _decode_levels_above_model_top({"source": {}}, 10000.0)
+    assert min(levels) == 70.0
+    assert 100.0 in levels
+
+
+def test_snow_policy_defaults_to_wps_and_raw_requires_a_declared_knob(tmp_path):
+    from gpuwm.case_data import optional_case_data_from_config, gfs_preparation_policy
+    assert gfs_preparation_policy(None)["gfs_snow_convention"] == "wps"
+    from test_case_data import make_case_toml, _CASE_DATA_TOML
+    p = make_case_toml(tmp_path, case_data=_CASE_DATA_TOML + 'gfs_snow_convention = "raw"\n')
+    assert gfs_preparation_policy(optional_case_data_from_config(p))["gfs_snow_convention"] == "raw"
+    p.write_text(p.read_text().replace('gfs_snow_convention = "raw"', 'gfs_snow_convention = "mistyped"'))
+    with pytest.raises(ValueError, match="gfs_snow_convention"):
+        optional_case_data_from_config(p)
+
+
+def test_lake_skin_policy_defaults_to_wps_and_air_temperature_is_a_declared_knob(tmp_path):
+    from gpuwm.case_data import optional_case_data_from_config, gfs_preparation_policy
+    assert gfs_preparation_policy(None)["gfs_lake_skin"] == "wps"
+    from test_case_data import make_case_toml, _CASE_DATA_TOML
+    p = make_case_toml(tmp_path, case_data=_CASE_DATA_TOML + 'gfs_lake_skin = "air_temperature"\n')
+    assert gfs_preparation_policy(optional_case_data_from_config(p))["gfs_lake_skin"] == "air_temperature"
+    p.write_text(p.read_text().replace('"air_temperature"', '"nearest"'))
+    with pytest.raises(ValueError, match="gfs_lake_skin"):
+        optional_case_data_from_config(p)
+
+
+def test_gfs_only_policy_stays_out_of_the_shared_preparation_identity():
+    """ERA5 and HRRR bind preparation_case_policy into their source identity;
+    a GFS-only key there would move every one of their prepared caches."""
+    from gpuwm.case_data import gfs_preparation_policy, preparation_case_policy
+    shared = preparation_case_policy(None)
+    assert not any(key.startswith("gfs_") for key in shared)
+    assert set(gfs_preparation_policy(None)) == {"gfs_snow_convention", "gfs_lake_skin"}
+
+
+def test_the_gfs_route_keeps_its_lakes_on_the_wps_search_by_default():
+    """The route hands its lake mask to the mapping only under "wps", and
+    both child catalogs (one-shot and chained tree) carry the root's
+    conventions, so a child is mapped as its root is."""
+    import inspect
+    from gpuwm import gfs_direct
+    source = inspect.getsource(gfs_direct.prepare_gfs_wrf)
+    assert "inland_water_search=lake_skin_search" in source
+    assert 'if case_policy["gfs_lake_skin"] == "wps" else None' in source
+    assert source.count('relative_humidity_convention="gfs_mixed"') == 2
+    assert source.count('case_policy["gfs_lake_skin"] == "wps"),') == 1
+    chained = inspect.getsource(gfs_direct._prepare_chained_gfs_tree)
+    assert chained.count('relative_humidity_convention="gfs_mixed"') == 1
+    assert 'c.case_policy["gfs_lake_skin"] == "wps"),' in chained

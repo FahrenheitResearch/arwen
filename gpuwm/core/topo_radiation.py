@@ -315,10 +315,15 @@ class TopoShortwave:
                 + self.start_time.microsecond / 3.6e9)
         xtime = F(float(state.elapsed_seconds) / 60.0)
         radt = F(effective_radt_minutes(cfg))
-        declin, solcon = radconst(julian)
-        coszen, hrang = calc_coszen_hrang(
-            julian, xtime + radt * F(0.5), gmt, self._xlat_host,
-            self._xlong_host, declin)
+        if getattr(cfg, "solar_generation", "wrf_480") == "wrf_480":
+            from gpuwm.core.solar import solar_geometry_device
+            ds, coszen, hrang = solar_geometry_device(julian, xtime + radt * F(0.5), gmt, self._xlat_host, self._xlong_host)
+            declin, solcon = map(F, cp.asnumpy(ds))
+        else:
+            declin, solcon = radconst(julian)
+            coszen, hrang = calc_coszen_hrang(
+                julian, xtime + radt * F(0.5), gmt, self._xlat_host,
+                self._xlong_host, declin, generation='wrf_461')
         f["topo_coszen"][...] = cp.asarray(coszen.reshape(self.shape))
         f["hrang"][...] = cp.asarray(hrang.reshape(self.shape))
         f["topo_declin"][...] = F(declin)

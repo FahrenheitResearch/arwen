@@ -171,6 +171,8 @@ _SHARED_CODES = frozenset({
     # on the resolved settings.  Unclassified, every mosaic_urban_canopy
     # override was reported as a disagreement it is not.
     "noah-mosaic-pairing",
+    # Consumer requirements are also checked by validate_run_config.
+    "parameter-consumer",
     "parameter-value",
     # The SPP consumer law, shared the same way: plan review calls
     # gpuwm.config's validate_spp_config, the function validate_run_config
@@ -182,6 +184,12 @@ _SHARED_CODES = frozenset({
     # shared by the same construction (gpuwm.config's
     # validate_scalar_pblmix_consumer and validate_mynn_generation_spp).
     "pbl-coupling",
+    # The lightning package's producer law, shared by the same construction:
+    # plan review calls gpuwm.lightning_contract.validate_lightning, the
+    # function validate_run_config calls.  Before it did, 602 reachable plans
+    # on the 2.9.0 round-2 tree offered lightning_option 1, 2 or 11 with no
+    # reflectivity or cumulus cloud top as launchable.
+    "lightning-dependency",
     "unimplemented-selector",
     "unknown-selector-combination",
 })
@@ -1154,6 +1162,7 @@ def test_the_gate_fails_when_the_runtime_authority_is_the_wrong_one():
     assert settings["km_opt"] == 4
     settings["diff_opt"] = 1
     settings["khdif"] = 100.0
+    settings["diff_opt"] = 1  # WRF ignores these constants under diff_opt=2.
     assert _config_refusal(settings, nested=False) is not None
     forged = deepcopy(report)
     forged["resolved_domains"][0]["settings"] = settings
@@ -1307,17 +1316,10 @@ def _observed_and_absences(consumer: str):
             0: "no land surface, no parameter bundle"}
     if consumer == "microphysics_transition.PORTED_MP_PHYSICS":
         from gpuwm.core import microphysics_transition as mt
-        from gpuwm.microphysics_schemes import NAMED_MP_IDS
-        return "microphysics", mt.PORTED_MP_PHYSICS, {
-            0: "no hydrometeors to close a mixed edge over",
-            30: ("FAST_SBM's mixed edge would build 142 spectral "
-                 "distributions from another scheme's bulk moments and no "
-                 "such entry closure is validated "
-                 "(microphysics_transition.UNVALIDATED_MIXED_EDGE_SELECTORS); "
-                 "its same-scheme edge runs"),
-            **{mp: "named scheme: its mixed nest edge is refused by name "
-               "(microphysics_transition.UNVALIDATED_MIXED_EDGE_SELECTORS)"
-               for mp in NAMED_MP_IDS}}
+        absences = dict(mt.MIXED_EDGE_ABSENCES)
+        absences.update({mp: ": ".join(mt._UNVALIDATED_MIXED_EDGE_REASONS[mp])
+                         for mp in mt.UNVALIDATED_MIXED_EDGE_SELECTORS})
+        return "microphysics", mt.PORTED_MP_PHYSICS, absences
     if consumer == "obsop.CLEAR_AIR_FLOOR_DBZ":
         from gpuwm.da import obsop
         from gpuwm.microphysics_schemes import NAMED_MP_IDS
@@ -1350,9 +1352,9 @@ def _observed_and_absences(consumer: str):
         from gpuwm.wrf_physics_inventory import supported_stock_wrf_mp_physics
         from gpuwm.microphysics_schemes import NAMED_MP_IDS
         return "microphysics", supported_stock_wrf_mp_physics(), {
-            **{mp: "export-only scope (audit R-014)" for mp in (0, 1, 9, 16)},
-            **{mp: "named WOOF scheme with no WRF v4.6.1 mp_physics number"
-               for mp in NAMED_MP_IDS}}
+            mp: "export-only scope (audit R-014)" for mp, row in
+            consumer_rows_by_selector("microphysics", "stock_wrf_export").items()
+            if row.get("inventoried") is not True}
     if consumer == "physics_compat._GLW_CONSUMING_SURFACE_SCHEMES":
         from gpuwm.physics_compat import _GLW_CONSUMING_SURFACE_SCHEMES
         return "land_surface", _GLW_CONSUMING_SURFACE_SCHEMES, {
@@ -1532,7 +1534,7 @@ def test_the_consumer_row_gate_refuses_a_missing_row_before_step_0(monkeypatch):
 
 def test_every_implemented_scheme_couples_to_rte_rrtmgp_at_plan_review():
     """No cloud_optics row publishes a null coupling except the one judged
-    exclusion (FAST_SBM, refused at the run door), and every other
+    exclusions (FAST_SBM and Purdue Lin, refused at the run door), and every other
     implemented scheme passes the 4/4 RTE+RRTMGP pairing on the DEFAULT
     variant at plan review.
 
@@ -1556,15 +1558,14 @@ def test_every_implemented_scheme_couples_to_rte_rrtmgp_at_plan_review():
     # _NO_CLOUD_OPTICS_COUPLING and both authorities refuse the RTE+RRTMGP
     # pairing (measured below) with the legacy-RRTMG remedy.  Any other
     # null is a gap, as it was when mp=9 was retired by writing its row.
-    assert uncoupled == [30], (
+    assert uncoupled == [2, 30], (
         "a scheme publishes a null RTE+RRTMGP coupling other than the "
-        f"judged FAST_SBM exclusion: {uncoupled}")
+        f"judged FAST_SBM and Lin exclusions: {uncoupled}")
     assert rows[30]["rte_rrtmgp_refusal"] is not None
+    # Lin (mp=2) has no effective-radius output at all (Registry.EM_COMMON:3016).
+    assert "Lin supplies no effective radii" in rows[2]["rte_rrtmgp_refusal"]
     assert rows[9]["rte_rrtmgp_coupling"] == "milbrandt2"
     assert rows[9]["rte_rrtmgp_refusal"] is None
-    # The legacy arm's declaration is WRF's fact and did not move: WRF
-    # hands RRTMG no Milbrandt-Yau radii (has_reqc=0), so the legacy port
-    # computes its own, as it always did.
     assert rows[9]["legacy_declares_radii"] is False
     for mp in sorted(rows):
         if mp == 0:
@@ -2092,10 +2093,11 @@ def test_the_preflight_reflectivity_rail_agrees_with_the_operator():
     from gpuwm.core.refl import (REFL_10CM_INPUT_SPECIES,
                                  SCHEME_NATIVE_REFL_10CM)
 
+    from gpuwm.core.column_schemes import COLUMN_SCHEMES
     assert set(preflight._REFLECTIVITY_MICROPHYSICS) == set(
-        REFL_10CM_INPUT_SPECIES)
+        REFL_10CM_INPUT_SPECIES) - set(COLUMN_SCHEMES)
     assert set(preflight._SELF_REFLECTIVITY_MICROPHYSICS) == set(
-        SCHEME_NATIVE_REFL_10CM)
+        SCHEME_NATIVE_REFL_10CM) | set(COLUMN_SCHEMES)
     # mp=18 in particular: it computes its own dBZ, so it must never be
     # charged refl.cu's frame.
     assert 18 not in preflight._REFLECTIVITY_MICROPHYSICS
@@ -2129,8 +2131,8 @@ def test_the_consumer_export_for_the_rust_crates_matches_the_registry():
         assert row["option_id"] == option_id
         inventory = consumer_rows_by_selector("microphysics", "stock_wrf_export")[mp]
         assert row["stock_wrf_export_inventoried"] is bool(inventory["inventoried"])
-    # HAILNC is filled by exactly the two hail-bearing schemes.
-    assert export["scheme_bound_precipitation_fields"]["HAILNC"] == [9, 18]
+    # HAILNC is filled by the three admitted hail-bearing schemes.
+    assert export["scheme_bound_precipitation_fields"]["HAILNC"] == [9, 18, 24]
 
 
 def test_every_transcribed_axis_covers_the_selectable_set_or_declares_why():

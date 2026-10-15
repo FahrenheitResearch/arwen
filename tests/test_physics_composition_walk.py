@@ -316,7 +316,7 @@ def test_each_axis_admits_exactly_the_values_the_walk_declares(
 
     The axis tables in the tool are a transcription of ``gpuwm/config.py``,
     and a transcription can be wrong or stale.  Tier E offers the loader
-    every integer in [-2, 99] plus 900 and 901 on each axis and classifies
+    every integer in [-2, 106] plus 900 and 901 on each axis and classifies
     each by whether the refusal is that axis's own schema message.  What
     the loader admits and what the tool claims must be the same set.
     """
@@ -455,7 +455,7 @@ def test_the_mynn_matrix_is_the_same_in_every_land_surface_column(
 #: evaluated over the transported number moments -- so the pairing
 #: resolves, and gpuwm.config.validate_milbrandt2_options no longer
 #: carries the refusal.
-MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 6, 8, 9, 10, 16, 18, 28, 50, 900]
+MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106, 900]
 
 #: The admitted microphysics values the MYNN slice does not reach.  50 was
 #: here from the 1.9 gate until the P3 cloud-optics row landed, and 9 until

@@ -1812,12 +1812,38 @@ fn read_wrf_products(
         core_field_selector("wind_speed_10m"),
         Some("m/s")
     );
-    push_core!(
-        "slp",
-        "mslp",
-        core_field_selector("mslp"),
-        Some("Pa")
-    );
+    // Sea-level pressure.  A WRF file keeps wrf-core's `slp` (wrf-python's
+    // DCOMPUTESEAPRS, the parity the WRF readers certify against).  A frame
+    // converted from MPAS-mesh history (rw_mpas_convert stamps
+    // MPAS_BRIDGE_SCHEMA) is reduced the way the GFS analysis it is compared
+    // with is reduced, NCEP's Shuell method (rw_mpas::mslp): DCOMPUTESEAPRS
+    // warms every cold column toward 290.66 K and read hex's MSLP up to
+    // 54 hPa low over Antarctica, Greenland and high terrain against the
+    // GFS analysis on the 120 km mesh (79 hPa on 15 km), with the state's
+    // own surface pressure right to 0.05 hPa.
+    if options.should_process("slp", Some("mslp"), WrfProductGroup::Core) {
+        if file.global_attr_str("MPAS_BRIDGE_SCHEMA").is_ok() {
+            match mpas_bridge_mslp(file, timeidx, shape.len()) {
+                Ok(values) => push_canonical_values(
+                    &mut fields,
+                    &grid,
+                    projection.clone(),
+                    "mslp",
+                    core_field_selector("mslp"),
+                    "Pa",
+                    values,
+                ),
+                Err(err) => fields.notes.push(format!("mslp unavailable: {err}")),
+            }
+        } else {
+            push_core!(
+                "slp",
+                "mslp",
+                core_field_selector("mslp"),
+                Some("Pa")
+            );
+        }
+    }
     // Surface pressure (Pa) — required by the skew-T column builder. WRF PSFC
     // is a raw field (no `getvar` diagnostic), so push it explicitly with a
     // forced "Pa" unit rather than through `push_core!`.
@@ -3041,6 +3067,44 @@ fn checked_horizontal_cells(ny: usize, nx: usize) -> Result<usize, String> {
     ny.checked_mul(nx).ok_or_else(|| {
         format!("horizontal dimensions [{ny}, {nx}] overflow the platform address space")
     })
+}
+
+/// Sea-level pressure (Pa) of an MPAS-bridge frame by the NCEP Shuell
+/// reduction ([`rw_mpas::mslp`]) from the frame's own fields: the lowest
+/// model level's temperature, vapour and height, the surface pressure and the
+/// terrain.  Layout: wrf-core's planes, level-major, `cells` per level.
+pub(crate) fn mpas_bridge_mslp(
+    file: &WrfFile,
+    timeidx: usize,
+    cells: usize,
+) -> Result<Vec<f32>, String> {
+    let temperature = file.temperature(timeidx).map_err(|e| format!("temperature: {e}"))?;
+    let qvapor = file.qvapor(timeidx).map_err(|e| format!("QVAPOR: {e}"))?;
+    let height = file.height_msl(timeidx).map_err(|e| format!("height: {e}"))?;
+    let psfc = file.psfc(timeidx).map_err(|e| format!("PSFC: {e}"))?;
+    let terrain = file.terrain(timeidx).map_err(|e| format!("HGT: {e}"))?;
+    for (name, len) in [
+        ("temperature", temperature.len()),
+        ("QVAPOR", qvapor.len()),
+        ("height", height.len()),
+    ] {
+        if len < cells {
+            return Err(format!("{name} carries {len} values, fewer than one level of {cells}"));
+        }
+    }
+    if psfc.len() != cells || terrain.len() != cells {
+        return Err(format!(
+            "PSFC/HGT carry {}/{} values for {cells} columns",
+            psfc.len(),
+            terrain.len()
+        ));
+    }
+    Ok((0..cells)
+        .map(|ij| {
+            rw_mpas::mslp::shuell_mslp_pa(psfc[ij], terrain[ij], temperature[ij], qvapor[ij], height[ij])
+                as f32
+        })
+        .collect())
 }
 
 pub fn compute_var(

@@ -1391,10 +1391,23 @@ def scheme_reflectivity_provider(run_cfg, *, base_theta):
         raise RadarAssimilationError(
             f"base_theta must be (nz,) or (nz, ny, nx), got "
             f"{theta_base.shape}")
-    from gpuwm.da.obsop import simulated_reflectivity  # noqa: PLC0415
+    from gpuwm.da.obsop import (HOST_REFLECTIVITY_MIRRORS,  # noqa: PLC0415
+                                simulated_reflectivity)
 
     moisture = ("qv", "qc", "qr", "qi", "qs", "qg", "qh",
                 "nr", "ns", "ng", "nc", "ni")
+    # Checkpoints are host arrays.  The schemes with a float64 host mirror
+    # (Kessler, WSM6, Morrison) are evaluated on it, as they always were;
+    # every other routed scheme (classic and aerosol-aware Thompson, WDM6,
+    # Milbrandt-Yau, NSSL, P3) has its H(x) on the CUDA path only, and
+    # handing it host arrays answered "no reflectivity formulation here".
+    # The regional door read that as "this scheme has no operator" and ran
+    # every Thompson analysis -- the HRRR suite's included -- with no
+    # reflectivity or clear-air batch at all (D-09 case, mp 28 and mp 8
+    # arms, 2026-10-12: batches vr/surface/cwp only).  Those schemes are
+    # evaluated on the device copy of the same state instead.
+    on_device = (getattr(run_cfg, "mp_physics", None) is not None
+                 and int(run_cfg.mp_physics) not in HOST_REFLECTIVITY_MIRRORS)
 
     def provider(member_index: int, state: Mapping[str, np.ndarray]):
         for name in ("p", "thp", "qv"):
@@ -1402,6 +1415,8 @@ def scheme_reflectivity_provider(run_cfg, *, base_theta):
                 raise RadarAssimilationError(
                     f"member {member_index}: checkpoint carries no {name!r}, "
                     "which the reflectivity operator needs")
+        if on_device:
+            return _device_reflectivity(state, theta_base, run_cfg, moisture)
         namespace = types.SimpleNamespace(
             p=np.asarray(state["p"], dtype=np.float64),
             thp=np.asarray(state["thp"], dtype=np.float64),
@@ -1413,6 +1428,49 @@ def scheme_reflectivity_provider(run_cfg, *, base_theta):
                           dtype=np.float64)
 
     return provider
+
+
+class _DeviceOperatorState(types.SimpleNamespace):
+    """A device view of one checkpoint for the CUDA-only H(x) routes.
+
+    Carries the fields the reflectivity authority reads and the one method
+    it calls on a ``DomainState`` (``scratch``), with buffers private to
+    this view: nothing it writes reaches the checkpoint or another call.
+    """
+
+    def scratch(self, shape, slot, dtype=None):
+        import cupy as cp  # noqa: PLC0415
+
+        buffers = self.__dict__.setdefault("_buffers", {})
+        shape = tuple(shape) if isinstance(shape, (tuple, list)) else (shape,)
+        buf = buffers.get(slot)
+        if buf is None or tuple(buf.shape) != shape:
+            buf = cp.zeros(shape, dtype=np.float32 if dtype is None else dtype)
+            buffers[slot] = buf
+        return buf
+
+
+def _device_reflectivity(state, theta_base, run_cfg, moisture):
+    """``(nz, ny, nx)`` float64 dBZ of a host checkpoint, on the device."""
+    try:
+        import cupy as cp  # noqa: PLC0415
+    except Exception as exc:  # pragma: no cover - CPU-only host
+        raise NotImplementedError(
+            f"mp_physics={run_cfg.mp_physics}: the reflectivity operator of "
+            "this scheme runs on the CUDA path only and no CUDA runtime is "
+            f"importable here ({exc})") from exc
+    from gpuwm.da.obsop import simulated_reflectivity  # noqa: PLC0415
+
+    def device(values):
+        return cp.asarray(np.ascontiguousarray(values, dtype=np.float32))
+
+    view = _DeviceOperatorState(
+        p=device(state["p"]), thp=device(state["thp"]),
+        thb=device(theta_base),
+        **{name: (None if state.get(name) is None else device(state[name]))
+           for name in moisture})
+    dbz = simulated_reflectivity(view, run_cfg)
+    return np.asarray(cp.asnumpy(dbz), dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------

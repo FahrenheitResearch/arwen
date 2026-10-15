@@ -366,7 +366,11 @@ RESTART_TOLERATED_DOMAIN_FIELDS = (
     "history_interval_s", "history_begin_s", "history_end_s")
 RESTART_TOLERATED_RUN_FIELDS = (
     "run_seconds", "output_interval_s", "restart_interval_s",
-    "surface_energy_diag")
+    "surface_energy_diag",
+    # Correct mode WB1 (gpuwm/correct_mode.py OUTPUT_ONLY_KEYS): books the
+    # settled-cloud total CLOUDNC and changes no prognostic word
+    # (tests/test_correct_mode_water_budget.py, every word bit-identical).
+    "thompson_cloud_surface_booking")
 
 #: ``mp_physics`` -> the RunConfig fields ONLY that scheme reads.  A domain
 #: running some other scheme drops them from its identity entirely rather
@@ -419,6 +423,17 @@ SCHEME_SCOPED_RUN_FIELDS: dict[int, tuple[str, ...]] = {
     # any other scheme, which is what makes the scoping lossless.
     50: ("p3_backend",),
 }
+
+#: Cumulus-scoped knobs: each RunConfig field and the ``cu_physics`` values
+#: that read it.  Same convention as :data:`SCHEME_SCOPED_RUN_FIELDS`, keyed
+#: by the cumulus selector instead: a domain whose cumulus scheme does not
+#: read the field drops it from its identity (gpuwm.config refuses a
+#: non-default value there, which is what makes the drop lossless), so no
+#: fingerprint written before the field existed moves.
+def _cumulus_scoped_run_fields() -> dict[str, frozenset]:
+    from gpuwm.config import NSAS_DX_FACTOR_SCHEMES, SAS_PGCON_SCHEMES
+    return {"nsas_dx_factor": NSAS_DX_FACTOR_SCHEMES,
+            "sas_pgcon": SAS_PGCON_SCHEMES}
 
 #: The adaptive-timestep surface, scoped OFF the restart identity whenever
 #: ``use_adaptive_time_step`` is false -- see ``restart_identity_payload``.
@@ -607,12 +622,30 @@ def restart_identity_payload(exp) -> dict:
         run = domain.get("run", {})
         drop_default_diffusion_selectors(run)
         drop_default_spp_selectors(run)
+        # The historical scalar operator was PD. Its unchanged default
+        # leaves old tree checkpoint identities intact; TKE activation binds.
+        if run.get("scalar_adv_opt", 1) == 1:
+            run.pop("scalar_adv_opt", None)
+        from gpuwm.lightning_contract import drop_default_lightning_selectors
+        drop_default_lightning_selectors(run)
         # fractional_seaice, absent-stays-absent: 0 is the 0.5 sea-ice
         # threshold every RUC fingerprint written before the field ran.
         if not run.get("fractional_seaice", 0):
             run.pop("fractional_seaice", None)
         # These radiation-driver fields were absent from older fingerprints.
         # Zero retains the prior trajectory; every enabled selector binds.
+        if run.get("aer_opt", 0) != 2:
+            run.pop("aer_type", None)
+            run.pop("aer_aod550_opt", None)
+            run.pop("aer_angexp_opt", None)
+            run.pop("aer_ssa_opt", None)
+            run.pop("aer_asy_opt", None)
+            run.pop("aer_aod550_val", None)
+            run.pop("aer_angexp_val", None)
+            run.pop("aer_ssa_val", None)
+            run.pop("aer_asy_val", None)
+            run.pop("aer_auxinput15", None)
+            run.pop("aer_auxinput15_interval", None)
         for name in ("swint_opt", "aer_opt", "alb_sol"):
             if not run.get(name, 0):
                 run.pop(name, None)
@@ -639,6 +672,15 @@ def restart_identity_payload(exp) -> dict:
             run.pop("relax_timescale_s", None)
         if not run.get("relax_w"):
             run.pop("relax_w", None)
+        # New canopy controls bind selected nondefault physics while their
+        # defaults preserve the older numerical-generation fingerprint.
+        if run.get("urban_ucm_generation", "wrf_471") == "wrf_471":
+            run.pop("urban_ucm_generation", None)
+        for name in ("urban_treeoption", "urban_ttscheme", "urban_fvg"):
+            if run.get(name, -1) == -1:
+                run.pop(name, None)
+        if run.get("urban_table_dir", "") == "":
+            run.pop("urban_table_dir", None)
         # The urban canopy keys, on the same convention: with
         # sf_urban_physics = 0 (WRF's default and every experiment written
         # before the urban models existed) all three drop out, so no
@@ -648,8 +690,12 @@ def restart_identity_payload(exp) -> dict:
         # same three on the same condition (_URBAN_DIGEST_FIELDS).
         if not run.get("sf_urban_physics"):
             for name in ("sf_urban_physics", "use_wudapt_lcz",
-                         "num_urban_hi"):
+                         "num_urban_hi", "urban_water_balance"):
                 run.pop(name, None)
+        elif int(run.get("sf_urban_physics", 0)) != 1:
+            run.pop("urban_water_balance", None)
+        elif run.get("urban_water_balance", "wrf_471") == "wrf_471":
+            run.pop("urban_water_balance", None)
         # Scheme-scoped knobs leave the identity of every domain that does
         # not select their scheme (:data:`SCHEME_SCOPED_RUN_FIELDS`).
         selected = run.get("mp_physics")
@@ -657,6 +703,26 @@ def restart_identity_payload(exp) -> dict:
             if selected == scheme:
                 continue
             for name in names:
+                run.pop(name, None)
+        for name, readers in _cumulus_scoped_run_fields().items():
+            if run.get("cu_physics") not in readers:
+                run.pop(name, None)
+        # The correct-mode keys (gpuwm/correct_mode.py), by the checkpoint
+        # echo's rule (gpuwm/io/restart.py _drop_default_off_run_keys): a key
+        # binds only where it is on AND its scheme reads it.  Off is the
+        # matched arithmetic every fingerprint before the keys ran, and a
+        # key no selected scheme reads reaches nothing, so every experiment
+        # without WSM6 or New Tiedtke keeps its fingerprint under the 2.9.0
+        # correct-mode default, and an exact-mode WSM6 run keeps its own.
+        # Breakage this prevents: the keys joined RunConfig (False, then
+        # default-on) and moved every recorded fingerprint and tree restart
+        # identity, schemes or not (tests/test_water_overlay.py,
+        # tests/test_devices_door.py).
+        from gpuwm.correct_mode import (CORRECTION_KEYS, OUTPUT_ONLY_KEYS,
+                                        key_in_scope)
+        for name in CORRECTION_KEYS:
+            if (name in OUTPUT_ONLY_KEYS or not run.get(name, False)
+                    or not key_in_scope(name, run)):
                 run.pop(name, None)
         # THE SURFACE-RADIATION CARRIER POLICY, on the same convention the
         # perturbation and spawn blocks above use: the DEFAULT drops out of
@@ -733,6 +799,14 @@ def restart_identity_payload(exp) -> dict:
         # ... and the original explicit vertical advection (A158).
         if not run.get("zadvect_implicit", 0):
             run.pop("zadvect_implicit", None)
+        if run.get("sf_surface_physics", 0) != 4:
+            run.pop("noahmp_snow_age", None)
+        elif run.get("noahmp_snow_age") == "wrf_461":
+            run.pop("noahmp_snow_age", None)
+        # The solar generation: wrf_461 is what every earlier fingerprint
+        # ran, so it is omitted; the WRF 4.8 default is bound by name.
+        if run.get("solar_generation", "wrf_461") == "wrf_461":
+            run.pop("solar_generation", None)
         if run.get("zadvect_implicit_variant", "wrf_471") == "wrf_471":
             run.pop("zadvect_implicit_variant", None)
         # ... and the RUC SOILPROP lineage, omitted at its wrf_45 default so
@@ -751,6 +825,10 @@ def restart_identity_payload(exp) -> dict:
         # omitted at its default for the same reason.
         if run.get("bl_mynn_version", "wrf_461") == "wrf_461":
             run.pop("bl_mynn_version", None)
+        # Headers before this selector ran the legacy YSU kernel.
+        if (run.get("bl_pbl_physics", 0) != 1
+                or run.get("ysu_version", "wrf_461") == "wrf_461"):
+            run.pop("ysu_version", None)
         if run.get("bl_mynn_gsd41_unsquared_qtke", False) is False:
             run.pop("bl_mynn_gsd41_unsquared_qtke", None)
         if run.get("bl_mynn_cloud_tendency_form", "wrf_461") == "wrf_461":
@@ -853,6 +931,18 @@ def restart_identity_payload(exp) -> dict:
             run.pop("terrain_clock", None)
         # Earlier runs held shortwave between calls, used zero aerosol,
         # and ran the WRF v4.6.1 cloud wrapper. Only moved forms bind.
+        if run.get("aer_opt", 0) != 2:
+            run.pop("aer_type", None)
+            run.pop("aer_aod550_opt", None)
+            run.pop("aer_angexp_opt", None)
+            run.pop("aer_ssa_opt", None)
+            run.pop("aer_asy_opt", None)
+            run.pop("aer_aod550_val", None)
+            run.pop("aer_angexp_val", None)
+            run.pop("aer_ssa_val", None)
+            run.pop("aer_asy_val", None)
+            run.pop("aer_auxinput15", None)
+            run.pop("aer_auxinput15_interval", None)
         for key in ("swint_opt", "aer_opt"):
             if not run.get(key, 0):
                 run.pop(key, None)

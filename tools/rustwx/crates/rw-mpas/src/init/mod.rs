@@ -21,6 +21,8 @@ pub mod emit;
 pub mod hinterp;
 pub mod metfile;
 pub mod soil;
+pub mod ruc;
+pub mod aerosol;
 pub mod vinterp;
 
 use std::collections::BTreeMap;
@@ -84,6 +86,9 @@ enum Target {
     /// Soil temperature / moisture at a fixed first-guess layer.
     SoilT(usize, f32),
     SoilM(usize, f32),
+    NodeT(u16),
+    NodeM(u16),
+    Number(&'static str),
 }
 
 struct FieldRule {
@@ -111,6 +116,15 @@ const SEAICE_METHODS: &[Method] = &[Method::FourPoint, Method::WtAverage4, Metho
 /// survives: `init_soil_layers_depth` recomputes the mid-depths cumulatively
 /// and overwrites whatever the dispatch put in `zs_fg`.
 fn rule_for(field: &str) -> Option<FieldRule> {
+    if field.len() == 8 && (field.starts_with("ST") || field.starts_with("SM")) {
+        if let (Ok(a), Ok(b)) = (field[2..5].parse::<u16>(), field[5..8].parse::<u16>()) {
+            if a == b {
+                return Some(FieldRule { target: if field.starts_with("ST") { Target::NodeT(a) } else { Target::NodeM(a) },
+                    methods: if field.starts_with("ST") { SOIL_T_METHODS } else { SOIL_M_METHODS },
+                    mask: Some((0.0, 0, if field.starts_with("ST") {285.0} else {1.0})) });
+            }
+        }
+    }
     let profile = |t: Target| FieldRule {
         target: t,
         methods: PROFILE_METHODS,
@@ -127,6 +141,8 @@ fn rule_for(field: &str) -> Option<FieldRule> {
         mask: Some((0.0, 0, 1.0)),
     };
     Some(match field {
+        "QNWFA" => profile(Target::Number("nwfa")),
+        "QNIFA" => profile(Target::Number("nifa")),
         "TT" => profile(Target::T),
         "RH" => profile(Target::Rh),
         "SPECHUMD" => profile(Target::Sh),
@@ -192,7 +208,7 @@ fn rule_for(field: &str) -> Option<FieldRule> {
 fn contributes_a_level(target: Target) -> bool {
     matches!(
         target,
-        Target::T | Target::Rh | Target::Sh | Target::Z | Target::P | Target::U | Target::V
+        Target::T | Target::Rh | Target::Sh | Target::Z | Target::P | Target::U | Target::V | Target::Number(_)
     )
 }
 
@@ -211,6 +227,7 @@ pub struct InitConfig {
     pub start_time: String,
     pub n_fg_levels: usize,
     pub n_fg_soil_levels: usize,
+    pub land_surface: String,
     pub extrap_airtemp: Extrap,
     pub use_spechumd: bool,
     pub theta_adv_order: i32,
@@ -312,6 +329,7 @@ pub struct InitReceipt {
     pub hydrostatic_iterations_mean: f64,
     pub hydrostatic_cells_hitting_the_cap: usize,
     pub soil: soil::SoilCounts,
+    pub soil_categories_reconciled: usize,
     pub seaice: soil::SeaiceCounts,
     pub emit: emit::EmitLedger,
     /// Named loudly so nobody markets a capsule-fed init as a from-scratch one.
@@ -339,6 +357,9 @@ struct FirstGuess {
     st: Vec<Vec<f32>>,
     sm: Vec<Vec<f32>>,
     dzs_cm: Vec<f32>,
+    numbers: BTreeMap<&'static str, Vec<Vec<f32>>>,
+    node_t: BTreeMap<u16, Vec<f32>>,
+    node_m: BTreeMap<u16, Vec<f32>>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -370,6 +391,7 @@ fn horizontal_pass(
     let underflow_hits = std::sync::atomic::AtomicU64::new(0);
 
     let mut fg = FirstGuess {
+        numbers: BTreeMap::new(), node_t: BTreeMap::new(), node_m: BTreeMap::new(),
         vert_level: Vec::new(),
         t: vec![vec![0.0; nfg]; n_cells],
         rh: vec![vec![0.0; nfg]; n_cells],
@@ -522,6 +544,12 @@ fn horizontal_pass(
             Target::Skintemp => fg.skintemp.copy_from_slice(&values),
             Target::Snow => fg.snow.copy_from_slice(&values),
             Target::Seaice => fg.xice.copy_from_slice(&values),
+            Target::Number(name) => {
+                let field = fg.numbers.entry(name).or_insert_with(||vec![vec![0.;nfg];n_cells]);
+                for (c,v) in values.iter().enumerate() { field[c][level_index]=*v; }
+            }
+            Target::NodeT(depth) => { fg.node_t.insert(depth, values); }
+            Target::NodeM(depth) => { fg.node_m.insert(depth, values); }
             Target::SoilT(k, dz) => {
                 if k >= nfgs {
                     return Err(MpasError::Refusal(format!(
@@ -577,6 +605,16 @@ fn horizontal_pass(
 /// Build one init file.
 pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
     let started = std::time::Instant::now();
+    // Stage timing and stage dumps for the batched GPU init's oracle. Silent
+    // unless INIT_GPU_ORACLE (dump directory) or RW_MPAS_INIT_PROFILE is set,
+    // so a default init writes the same stderr and the same file as before.
+    let profile = std::env::var_os("INIT_GPU_ORACLE").is_some()
+        || std::env::var_os("RW_MPAS_INIT_PROFILE").is_some();
+    let stage = |name: &str| {
+        if profile {
+            eprintln!("INIT_STAGE {name} {:.6}", started.elapsed().as_secs_f64());
+        }
+    };
     let mut receipt = InitReceipt {
         met_path: cfg.met_path.display().to_string(),
         static_path: cfg.static_path.display().to_string(),
@@ -623,7 +661,22 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
     receipt.n_vert_levels = metrics.n_vert_levels;
 
     let slabs = metfile::read_met_file(&cfg.met_path)?;
+    stage("read");
     let mut fg = horizontal_pass(&slabs, &mesh, &statics, cfg, &mut receipt)?;
+    stage("horizontal");
+    if let Ok(dir) = std::env::var("INIT_GPU_ORACLE") {
+        let mut values: Vec<(String, Vec<f32>)> = Vec::new();
+        for (name, cols) in [("t", &fg.t), ("rh", &fg.rh), ("sh", &fg.sh), ("z", &fg.z), ("p", &fg.p),
+                             ("u", &fg.u), ("v", &fg.v), ("st", &fg.st), ("sm", &fg.sm)] {
+            values.push((name.into(), cols.iter().flatten().copied().collect()));
+        }
+        for (name, v) in [("vert_level", &fg.vert_level), ("psfc", &fg.psfc), ("pmsl", &fg.pmsl),
+                           ("soilz", &fg.soilz), ("skintemp", &fg.skintemp), ("snow", &fg.snow),
+                           ("xice", &fg.xice), ("u10", &fg.u10), ("v10", &fg.v10), ("dzs_cm", &fg.dzs_cm)] {
+            values.push((name.into(), v.clone()));
+        }
+        gpu_oracle_dump(&dir, "horizontal", values)?;
+    }
 
     let nz = metrics.n_vert_levels;
     let n_cells = mesh.n_cells;
@@ -750,6 +803,15 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
         psfc.push(ps);
     }
 
+    stage("vertical");
+    if let Ok(dir) = std::env::var("INIT_GPU_ORACLE") {
+        let mut values: Vec<(String, Vec<f32>)> = Vec::new();
+        for (name, cols) in [("t", &t_col), ("rh", &rh_col), ("sh", &sh_col), ("p", &p_col)] {
+            values.push((name.into(), cols.iter().flatten().copied().collect()));
+        }
+        values.push(("psfc".into(), psfc.clone()));
+        gpu_oracle_dump(&dir, "vertical", values)?;
+    }
     // Edge winds: rotate to the edge normal, then interpolate on the two-cell
     // mean coordinate to the four-point mean target.
     let u_edge: Vec<Vec<f32>> = (0..n_edges)
@@ -788,6 +850,7 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
         })
         .collect();
 
+    stage("edge");
     // Moisture, then RH over ice, then the column chain.
     let use_sh = cfg.use_spechumd
         && sh_col
@@ -844,22 +907,25 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
     };
     receipt.hydrostatic_cells_hitting_the_cap = capped;
 
+    stage("dynamics");
     // ru, rw and w.
     let mut ru = vec![vec![0.0f32; nz]; n_edges];
-    for e in 0..n_edges {
+    // Columns are independent. Keep the level arithmetic in its original
+    // order while assigning each output column to one Rayon worker.
+    ru.par_iter_mut().enumerate().for_each(|(e, out)| {
         let [c1, c2] = mesh.cells_on_edge[e];
         let c1 = (c1.max(1) - 1).min(n_cells - 1);
         let c2 = (c2.max(1) - 1).min(n_cells - 1);
         for k in 0..nz {
-            ru[e][k] = u_edge[e][k] * 0.5 * (states[c1].rho_zz[k] + states[c2].rho_zz[k]);
+            out[k] = u_edge[e][k] * 0.5 * (states[c1].rho_zz[k] + states[c2].rho_zz[k]);
         }
-    }
+    });
     // w and rw are dimensioned against nVertLevelsP1 in the file, and the
     // case code fills only k = 2 .. nVertLevels; the bottom and the top stay
     // at zero.  Allocating nz here instead would emit a short slab.
     let nzp1 = nz + 1;
     let mut rw = vec![vec![0.0f32; nzp1]; n_cells];
-    for c in 0..n_cells {
+    rw.par_iter_mut().enumerate().for_each(|(c, out)| {
         for i in 0..mesh.n_edges_on_cell[c] {
             let e = mesh.edges_on_cell[c][i];
             if e == 0 || e > n_edges {
@@ -871,29 +937,30 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
                 let flux = metrics.fzm[k] * ru[e][k] + metrics.fzp[k] * ru[e][k - 1];
                 let metric = metrics.fzm[k] * metrics.zz[c][k] + metrics.fzp[k] * metrics.zz[c][k - 1];
                 if side_one {
-                    rw[c][k] -= metric * metrics.zb[e][0][k] * flux;
+                    out[k] -= metric * metrics.zb[e][0][k] * flux;
                 } else {
-                    rw[c][k] += metric * metrics.zb[e][1][k] * flux;
+                    out[k] += metric * metrics.zb[e][1][k] * flux;
                 }
                 if cfg.theta_adv_order == 3 {
                     let sign = if ru[e][k] >= 0.0 { 1.0f32 } else { -1.0f32 };
                     if side_one {
-                        rw[c][k] += sign * cfg.coef_3rd_order * metric * metrics.zb3[e][0][k] * flux;
+                        out[k] += sign * cfg.coef_3rd_order * metric * metrics.zb3[e][0][k] * flux;
                     } else {
-                        rw[c][k] -= sign * cfg.coef_3rd_order * metric * metrics.zb3[e][1][k] * flux;
+                        out[k] -= sign * cfg.coef_3rd_order * metric * metrics.zb3[e][1][k] * flux;
                     }
                 }
             }
         }
-    }
+    });
     let mut w = vec![vec![0.0f32; nzp1]; n_cells];
-    for c in 0..n_cells {
+    w.par_iter_mut().enumerate().for_each(|(c, out)| {
         for k in 1..nz {
-            w[c][k] = rw[c][k]
+            out[k] = rw[c][k]
                 / (metrics.fzp[k] * states[c].rho_zz[k - 1] + metrics.fzm[k] * states[c].rho_zz[k]);
         }
-    }
+    });
 
+    stage("w");
     // Soil and the surface companions.
     // SST is a copy of the skin temperature taken in the case code, BEFORE
     // physics_initialize_real adjusts the skin temperature onto the model's
@@ -924,6 +991,46 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
         &fg.dzs_cm,
         cfg.deep_moisture,
     )?;
+    let mut tslb: Vec<Vec<f32>> = tslb.into_iter().map(Vec::from).collect();
+    let mut smois: Vec<Vec<f32>> = smois.into_iter().map(Vec::from).collect();
+    let mut sh2o: Vec<Vec<f32>> = sh2o.into_iter().map(Vec::from).collect();
+    let mut smcrel: Vec<Vec<f32>> = smcrel.into_iter().map(Vec::from).collect();
+    if cfg.land_surface == "ruc" {
+        let has_nodes = !fg.node_t.is_empty() || !fg.node_m.is_empty();
+        if has_nodes && (fg.node_t.keys().collect::<Vec<_>>() != fg.node_m.keys().collect::<Vec<_>>()) {
+            return Err(MpasError::Refusal("source soil node temperature and moisture depths disagree".into()));
+        }
+        // WRF's reader forms a layer source's depth as the INTEGER mid-depth
+        // of its bounds, (top + bottom) / 2 in centimetres (char2int2), so a
+        // 0-7 cm layer samples at 3 cm. Identical to the float mid-depth for
+        // every even-bounded source (GFS: 5, 25, 70, 150).
+        let mut layer_mid_cm = Vec::with_capacity(fg.dzs_cm.len());
+        let mut top = 0i64;
+        for &dz in &fg.dzs_cm {
+            let bottom = top + dz.round() as i64;
+            layer_mid_cm.push(((top + bottom) / 2) as f32);
+            top = bottom;
+        }
+        let node_cm: Vec<f32> = fg.node_t.keys().map(|&z| f32::from(z)).collect();
+        for c in 0..n_cells {
+            if statics.landmask[c] == 0 {
+                // init_soil_3_real's open-water fill; never interpolated.
+                tslb[c] = vec![skintemp[c]; 9]; smois[c] = vec![1.; 9];
+            } else if has_nodes {
+                // adjust_soil_temp_new moves every source node onto the
+                // model terrain, as the layer path's first guess already is.
+                let shift = 0.0065 * (statics.ter[c] - fg.soilz[c]);
+                let t: Vec<f32> = fg.node_t.values().map(|v| v[c] - shift).collect();
+                let m: Vec<f32> = fg.node_m.values().map(|v| v[c]).collect();
+                (tslb[c], smois[c]) = ruc::node_column(&node_cm, &t, &m)
+                    .map_err(|e| MpasError::Refusal(format!("cell {c}: {e}")))?;
+            } else {
+                (tslb[c], smois[c]) = ruc::layer_column(&layer_mid_cm, &fg.st[c], &fg.sm[c], skintemp[c], tmn[c])
+                    .map_err(|e| MpasError::Refusal(format!("cell {c}: {e}")))?;
+            }
+            sh2o[c] = smois[c].clone(); smcrel[c] = vec![0.;9];
+        }
+    }
     soil_counts.land_moisture_repaired = repaired;
     soil_counts.land_temperature_flagged = flagged;
     receipt.soil = soil_counts;
@@ -981,10 +1088,16 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
         &mut sh2o,
         &mut smcrel,
     );
+    // Preserve the legacy MPAS Noah initializer's field identity. Selected
+    // WRF land models need real.exe's category reconciliation before LSMINIT.
+    if cfg.land_surface != "noah" {
+        receipt.soil_categories_reconciled = soil::reconcile_soil_category(&xland, &mut isltyp);
+    }
     let q2: Vec<f32> = (0..n_cells)
         .map(|c| dynamics::diagnose_q2(t2m[c], psfc[c], rh2[c]))
         .collect();
 
+    stage("soil");
     // Assemble the computed set, cell-major with the vertical fastest.
     let flat3 = |f: &dyn Fn(usize, usize) -> f32| -> Vec<f32> {
         let mut out = Vec::with_capacity(n_cells * nz);
@@ -1009,7 +1122,7 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
         }
         out
     };
-    let flat_soil = |src: &Vec<[f32; 4]>| -> Vec<f32> {
+    let flat_soil = |src: &Vec<Vec<f32>>| -> Vec<f32> {
         let mut out = Vec::with_capacity(n_cells * 4);
         for c in 0..n_cells {
             out.extend_from_slice(&src[c]);
@@ -1076,15 +1189,40 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
     // the emitter would have refused if it were passed.
     let _ = &smcrel;
     // Soil layer geometry, which the file carries per cell.
-    let zs_m = soil::noah_mid_depths();
+    let zs_m = if cfg.land_surface == "ruc" {ruc::DEPTHS.to_vec()} else {soil::noah_mid_depths().to_vec()};
+    let dzs_m = if cfg.land_surface == "ruc" {ruc::thicknesses()} else {soil::NOAH_LAYER_THICKNESS.to_vec()};
     let mut dzs_flat = Vec::with_capacity(n_cells * 4);
     let mut zs_flat = Vec::with_capacity(n_cells * 4);
     for _ in 0..n_cells {
-        dzs_flat.extend_from_slice(&soil::NOAH_LAYER_THICKNESS);
+        dzs_flat.extend_from_slice(&dzs_m);
         zs_flat.extend_from_slice(&zs_m);
     }
     put("dzs", dzs_flat);
     put("zs", zs_flat);
+    if cfg.land_surface == "ruc" {
+        // This init-stream scratch slot is zero in native real-data
+        // initialization. Its geometry must still agree with RUC's nodes.
+        put("dz", vec![0.; n_cells * 9]);
+    }
+    if ["nwfa","nifa"].iter().all(|name|fg.numbers.contains_key(name)) {
+        for (name, field) in &fg.numbers {
+            let mut out=Vec::with_capacity(n_cells*nz);
+            for c in 0..n_cells {
+                let mut pairs:Vec<(f32,f32)>=fg.vert_level.iter().enumerate()
+                    .filter(|(_,level)|**level!=SURFACE_LEVEL_TAG)
+                    .map(|(k,_)|(fg.z[c][k],field[c][k])).collect();
+                pairs.sort_by(|a,b|a.0.total_cmp(&b.0));
+                let coord:Vec<f32>=pairs.iter().map(|p|p.0).collect();
+                let values:Vec<f32>=pairs.iter().map(|p|p.1).collect();
+                for k in 0..nz {
+                    let target=0.5*(zgrid[c][k]+zgrid[c][k+1]);
+                    out.push(vertical_interp(target,&coord,&values,Extrap::Constant)
+                        .map_err(|_|MpasError::Refusal(format!("invalid analysis aerosol column {c}")))?.max(0.));
+                }
+            }
+            computed.insert(name.to_string(),emit::Computed::Floats(out));
+        }
+    }
 
     for (name, v) in ints {
         computed.insert(name, emit::Computed::Ints(v));
@@ -1104,6 +1242,7 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
         emit::Computed::Text(cfg.landuse_table.clone()),
     );
 
+    stage("assemble");
     let seed = format!(
         "{}|{}|{}|{}",
         cfg.met_path.display(),
@@ -1123,6 +1262,7 @@ pub fn build_init(cfg: &InitConfig) -> MpasResult<InitReceipt> {
         &cfg.lineage,
     )?;
 
+    stage("emit");
     receipt.seconds = started.elapsed().as_secs_f64();
     Ok(receipt)
 }
@@ -1265,4 +1405,23 @@ mod tests {
         );
         assert_ne!(xa.floor(), xb.floor(), "lon_rad = {lon_rad}");
     }
+}
+
+// Validation-only stage capture; never active unless explicitly requested.
+fn gpu_oracle_dump(dir: &str, stage: &str, arrays: Vec<(String, Vec<f32>)>) -> MpasResult<()> {
+    use std::io::Write;
+    let root = Path::new(dir).join(stage);
+    std::fs::create_dir_all(&root).map_err(|e| MpasError::Refusal(e.to_string()))?;
+    let mut index = BTreeMap::new();
+    for (name, values) in arrays {
+        let path = root.join(format!("{name}.f32"));
+        let mut out = std::io::BufWriter::new(std::fs::File::create(&path)
+            .map_err(|e| MpasError::Refusal(e.to_string()))?);
+        for x in &values { out.write_all(&x.to_le_bytes()).map_err(|e| MpasError::Refusal(e.to_string()))?; }
+        out.flush().map_err(|e| MpasError::Refusal(e.to_string()))?;
+        index.insert(name, values.len());
+    }
+    let json = serde_json::to_vec_pretty(&index).map_err(|e| MpasError::Refusal(e.to_string()))?;
+    std::fs::write(root.join("index.json"), json).map_err(|e| MpasError::Refusal(e.to_string()))?;
+    Ok(())
 }

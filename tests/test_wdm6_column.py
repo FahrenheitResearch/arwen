@@ -199,10 +199,12 @@ def test_warm_rain_conserves_water_through_production_microphysics(seconds):
 @requires_gpu
 def test_device_rain_substep_accounts_for_surface_mass_and_number():
     """Expose both budgets from the production helper on the device itself."""
-    from pathlib import Path
     import cupy as cp
+    from gpuwm.core.kernels import module_source
 
-    source = (Path(__file__).resolve().parents[1] / "gpuwm/core/kernels/wdm6.cu").read_text()
+    # The production unit as the loader assembles it (WOOF's own float32
+    # libm header included), plus the probe.
+    source = module_source("wdm6")
     source += r'''
 extern "C" __global__ void rain_budget_probe(float*q,float*n,const float*rho,
     const float*dz,const float*vr,const float*vn,float*out) {

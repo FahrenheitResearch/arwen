@@ -302,3 +302,8 @@ tests/test_mynn_water_gsd41.py
 # guard for the two measured b0556bd76, lane/286-fork-thompson, powf sites.
 # The device bodies remain GPU work; dynamic loading needs ALWAYS coverage.
 tests/test_thompson_fork_plain_powf_receipt.py
+
+# 2.9.0 obs move (hex global supersedes gpuwm-global): a repo-scanning gate that
+# no engine module imports arwen_global again; it reads the tree, so no import
+# edge selects it.
+tests/test_obs_streams_in_engine.py

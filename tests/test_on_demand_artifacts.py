@@ -1,24 +1,4 @@
-"""Three artifacts are fetched on demand instead of riding in the platform wheel.
-
-Breakage these pin (2.8.9 cut r1): with every declared artifact staged, both
-platform wheels were over the 100,000,000-byte per-file limit (Linux
-107,777,663 bytes, Windows 102,503,274), so neither could be published. The
-simulated radar, the ML dataset exporter and the global globe packer now stay
-in the roster, the bundle and the pins, and are left out of the wheel.
-
-What must hold for that to be a packaging change and nothing else:
-
-* exactly those three are on demand, and no default path is among them;
-* staging into the package leaves exactly them out, of the directory and of
-  the ``BUNDLE.json`` beside it, while every other destination and the release
-  bundle and its pins still carry the whole roster;
-* every reader of the declaration that does not import gpuwm agrees with it;
-* ``gpuwm doctor`` reads their absence as opt-in, with the command that
-  installs them, and reads a stale or mis-pointed one as it always did;
-* the two doors refuse by name with that command.
-
-CPU-only and fast: no binary is built or run.
-"""
+"""All native tools ship in platform wheels, including the three restored tools."""
 
 from __future__ import annotations
 
@@ -47,23 +27,23 @@ FETCH = "gpuwm fetch-bridges"
 # The declaration
 # ---------------------------------------------------------------------------
 
-def test_exactly_three_artifacts_are_on_demand():
-    assert {a.name for a in bridge_assets.BUNDLED_ARTIFACTS if a.on_demand} == ON_DEMAND
-    assert {a.name for a in bridge_assets.on_demand_artifacts()} == ON_DEMAND
+def test_three_formerly_omitted_artifacts_are_restored():
+    assert ON_DEMAND <= {a.name for a in bridge_assets.wheel_artifacts()}
+    assert not hasattr(bridge_assets.BundledArtifact, "on_demand")
 
 
 def test_the_wheel_carries_every_other_artifact_in_roster_order():
     carried = bridge_assets.wheel_artifacts()
     assert [a.name for a in carried] == [
-        a.name for a in bridge_assets.BUNDLED_ARTIFACTS if a.name not in ON_DEMAND]
-    assert len(carried) + len(ON_DEMAND) == len(bridge_assets.BUNDLED_ARTIFACTS)
-    assert not ON_DEMAND & {a.name for a in carried}
+        a.name for a in bridge_assets.BUNDLED_ARTIFACTS]
+    assert len(carried) == len(bridge_assets.BUNDLED_ARTIFACTS)
+    assert ON_DEMAND <= {a.name for a in carried}
 
 
-def test_no_library_and_no_default_path_is_on_demand():
+def test_restored_tools_and_default_paths_are_carried():
     """A decoder, a writer or the renderer left out would make a bare install
     refuse its own forecast; every library is behind a default path."""
-    for artifact in bridge_assets.on_demand_artifacts():
+    for artifact in restored_artifacts():
         assert artifact.kind == "executable", artifact.name
         assert not artifact.vendored, artifact.name
         assert artifact.name not in bridges.BRIDGE_ENV, artifact.name
@@ -95,11 +75,8 @@ def _assert_wheel_inventory(directory: Path, platform: str) -> None:
     manifest = json.loads((directory / stage_wheel_bridges.MANIFEST_NAME).read_text("utf-8"))
     carried = {a.name: bridge_assets.artifact_filename(a, platform)
                for a in bridge_assets.wheel_artifacts()}
-    left_out = {bridge_assets.artifact_filename(a, platform)
-                for a in bridge_assets.on_demand_artifacts()}
     files = {path.name for path in directory.iterdir()}
     assert files == set(carried.values()) | {stage_wheel_bridges.MANIFEST_NAME}
-    assert not files & left_out
     assert manifest["platform"] == platform
     assert {row["artifact"]: row["filename"] for row in manifest["artifacts"]} == carried
     assert len(manifest["artifacts"]) == len(carried)
@@ -110,20 +87,19 @@ def _assert_wheel_inventory(directory: Path, platform: str) -> None:
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
-def test_staging_into_the_package_leaves_exactly_the_three_out(tmp_path, monkeypatch, platform, capsys):
+def test_staging_into_the_package_carries_the_restored_tools(tmp_path, monkeypatch, platform, capsys):
     packaged = _packaged(tmp_path, monkeypatch)
     _fake_build_tree(tmp_path, platform)
     assert stage_wheel_bridges.main(["--platform", platform]) == 0
     _assert_wheel_inventory(packaged, platform)
     said = capsys.readouterr().out
     carried, declared = len(bridge_assets.wheel_artifacts()), len(bridge_assets.BUNDLED_ARTIFACTS)
-    assert f"staged {carried} of {declared} artifacts" in said and FETCH in said
-    for name in ON_DEMAND:
-        assert name in said
+    assert carried == declared
+    assert f"staged {carried} artifacts" in said
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
-def test_staging_the_package_from_a_bundle_leaves_exactly_the_three_out(tmp_path, monkeypatch, platform):
+def test_staging_the_package_from_a_bundle_carries_the_restored_tools(tmp_path, monkeypatch, platform):
     packaged = _packaged(tmp_path, monkeypatch)
     archive = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
@@ -135,14 +111,12 @@ def test_staging_the_package_from_a_bundle_leaves_exactly_the_three_out(tmp_path
     _assert_wheel_inventory(packaged, platform)
 
 
-def test_a_package_wheel_does_not_need_the_three_built(tmp_path, monkeypatch):
+def test_a_package_wheel_requires_every_artifact_built(tmp_path, monkeypatch):
     """They are not staged, so a build tree without them still stages a wheel;
     any other missing artifact is still refused by name."""
     packaged = _packaged(tmp_path, monkeypatch)
     platform = "linux-x86_64"
     _fake_build_tree(tmp_path, platform)
-    for artifact in bridge_assets.on_demand_artifacts():
-        stage_wheel_bridges.source_path(artifact, platform).unlink()
     stage_wheel_bridges.stage(platform)
     _assert_wheel_inventory(packaged, platform)
     stage_wheel_bridges.source_path(bridge_assets.wheel_artifacts()[0], platform).unlink()
@@ -150,6 +124,13 @@ def test_a_package_wheel_does_not_need_the_three_built(tmp_path, monkeypatch):
         stage_wheel_bridges.stage(platform)
     assert bridge_assets.wheel_artifacts()[0].name in str(refusal.value)
     assert f"1 of {len(bridge_assets.wheel_artifacts())} declared" in str(refusal.value)
+    _fake_build_tree(tmp_path, platform)
+    for artifact in restored_artifacts():
+        stage_wheel_bridges.source_path(artifact, platform).unlink()
+    with pytest.raises(SystemExit) as refusal:
+        stage_wheel_bridges.stage(platform)
+    for name in ON_DEMAND:
+        assert name in str(refusal.value)
 
 
 def test_any_other_destination_still_gets_the_whole_roster(tmp_path, monkeypatch, capsys):
@@ -162,7 +143,7 @@ def test_any_other_destination_still_gets_the_whole_roster(tmp_path, monkeypatch
     manifest = json.loads((home / stage_wheel_bridges.MANIFEST_NAME).read_text("utf-8"))
     assert {row["artifact"] for row in manifest["artifacts"]} == {
         a.name for a in bridge_assets.BUNDLED_ARTIFACTS}
-    for artifact in bridge_assets.on_demand_artifacts():
+    for artifact in restored_artifacts():
         assert (home / bridge_assets.artifact_filename(artifact, platform)).is_file()
     assert f"staged {len(bridge_assets.BUNDLED_ARTIFACTS)} artifacts for" in capsys.readouterr().out
 
@@ -203,7 +184,7 @@ def test_the_bundle_and_its_pins_still_carry_every_artifact(tmp_path, monkeypatc
     # A bundle without one of the three is still refused: fetch-bridges could not deliver it.
     slim = tmp_path / archive.name
     with zipfile.ZipFile(archive) as source, zipfile.ZipFile(slim, "w") as target:
-        dropped = bridge_assets.artifact_filename(bridge_assets.on_demand_artifacts()[0], platform)
+        dropped = bridge_assets.artifact_filename(restored_artifacts()[0], platform)
         for info in source.infolist():
             if info.filename != dropped:
                 target.writestr(info, source.read(info.filename))
@@ -251,7 +232,7 @@ def _driver(relative: str, *values):
 ])
 def test_the_desktop_drivers_read_the_same_declaration(relative):
     rows = _function(relative, "declared_artifacts")(DECLARATION)
-    assert rows == [(a.name, a.vendored, a.on_demand) for a in bridge_assets.BUNDLED_ARTIFACTS]
+    assert rows == [(a.name, a.vendored, False) for a in bridge_assets.BUNDLED_ARTIFACTS]
 
 
 @private_input(STAGE_PUBLIC_DESKTOP)
@@ -265,7 +246,7 @@ def test_the_desktop_staging_counts_what_the_wheel_carries():
 @private_input(BUILD_ACCEPTANCE)
 def test_the_acceptance_driver_reads_the_same_on_demand_set():
     reader = _function(BUILD_ACCEPTANCE, "on_demand_artifacts")
-    assert reader(REPO) == ON_DEMAND
+    assert reader(REPO) == set()
 
 
 @pytest.mark.parametrize("relative, needle", [
@@ -319,20 +300,17 @@ def _first_command(remedy: str) -> str:
 
 
 @pytest.mark.parametrize("artifact", sorted(ON_DEMAND))
-def test_the_remedy_for_an_on_demand_artifact_is_the_fetch(pip_install, artifact):
-    assert bridges.fetched_on_demand(artifact)
+def test_missing_restored_artifact_still_has_the_fetch_remedy(pip_install, artifact):
     remedy = bridges.artifact_remedy(
         env_var="GPUWM_X", filename=artifact, subject="the thing",
         crate_relative=bridges.RUSTWX_CRATE_RELATIVE, artifact=artifact)
     assert _first_command(remedy) == FETCH
-    assert "fetched on demand" in remedy and "does not" in remedy
+    assert "fetched on demand" not in remedy
     for line in remedy.splitlines():
         assert line.lstrip().startswith("#") or line.strip() == FETCH, line
 
 
 def test_the_remedy_for_any_other_artifact_is_unchanged(pip_install):
-    assert not bridges.fetched_on_demand("rw_nexrad")
-    assert not bridges.fetched_on_demand(None)
     remedy = bridges.artifact_remedy(
         env_var="GPUWM_RW_NEXRAD", filename="rw_nexrad", subject="the radar front door",
         crate_relative=bridges.RUSTWX_CRATE_RELATIVE, artifact="rw_nexrad")
@@ -355,30 +333,29 @@ def _absent_checks(monkeypatch):
             "rw_globe_pack": doctor._globe_pack_check()}
 
 
-def test_doctor_reads_an_absent_on_demand_artifact_as_opt_in(pip_install, monkeypatch):
+def test_doctor_reports_missing_restored_artifacts_as_unreachable_or_degraded(pip_install, monkeypatch):
     from gpuwm import doctor
 
     for name, check in _absent_checks(monkeypatch).items():
         assert check.status == "missing", name
-        assert check.severity == doctor.SEVERITY_OPT_IN, (name, check.severity)
+        expected = doctor.SEVERITY_DEGRADED if name == "rw_globe_pack" else doctor.SEVERITY_UNREACHABLE
+        assert check.severity == expected, (name, check.severity)
         assert check.blocking is False, name
         assert check.action == FETCH, (name, check.action)
         assert _first_command(check.remedy) == FETCH, name
-        assert "fetched on demand" in check.detail and FETCH in check.detail, (name, check.detail)
+        assert "fetched on demand" not in check.detail, (name, check.detail)
         assert not doctor.blocking_gaps([check]), name
 
 
 def test_doctor_keeps_the_old_severity_for_an_artifact_that_is_not_on_demand(pip_install, monkeypatch):
     from gpuwm import doctor
 
-    monkeypatch.setattr(bridge_assets, "on_demand_artifacts", lambda: ())
     checks = _absent_checks(monkeypatch)
     assert checks["rw_simradar"].severity == doctor.SEVERITY_UNREACHABLE
     assert checks["rw_mlexport"].severity == doctor.SEVERITY_UNREACHABLE
     assert checks["rw_globe_pack"].severity == doctor.SEVERITY_DEGRADED
     for check in checks.values():
         assert "fetched on demand" not in check.detail
-    assert doctor._absent_severity("rw_nexrad", doctor.SEVERITY_UNREACHABLE) == doctor.SEVERITY_UNREACHABLE
 
 
 def _no_bundle_for_this_platform(monkeypatch, tmp_path):
@@ -414,9 +391,6 @@ def test_doctor_does_not_name_the_fetch_where_it_cannot_install_the_artifact(
     from gpuwm import doctor
 
     install(monkeypatch, tmp_path)
-    for name in ON_DEMAND:
-        assert bridges.fetched_on_demand(name)
-        assert not bridges.on_demand_fetch_offered(name)
     checks = _absent_checks(monkeypatch)
     assert checks["rw_simradar"].severity == doctor.SEVERITY_UNREACHABLE
     assert checks["rw_mlexport"].severity == doctor.SEVERITY_UNREACHABLE
@@ -468,7 +442,7 @@ def test_the_simulated_radar_door_refuses_with_the_fetch(pip_install, monkeypatc
     said = str(refusal.value)
     assert "rw_simradar is not installed" in said
     assert _first_command(said.split("\n", 1)[1]) == FETCH
-    assert "fetched on demand" in said
+    assert "fetched on demand" not in said
 
 
 def test_a_forecast_asking_for_radar_refuses_with_the_fetch_before_it_starts(pip_install, monkeypatch):
@@ -480,7 +454,7 @@ def test_a_forecast_asking_for_radar_refuses_with_the_fetch_before_it_starts(pip
     experiment = SimpleNamespace(simulated_radar=SimpleNamespace(enabled=True))
     (label, sentence), = simulated_radar_config.door_refusals(experiment)
     assert label == simulated_radar_config.REFUSAL_LABEL
-    assert FETCH in sentence and "fetched on demand" in sentence
+    assert FETCH in sentence and "fetched on demand" not in sentence
 
 
 def test_the_ml_export_door_refuses_with_the_fetch(pip_install, monkeypatch, tmp_path, capsys):
@@ -495,5 +469,9 @@ def test_the_ml_export_door_refuses_with_the_fetch(pip_install, monkeypatch, tmp
         finalize=False, list=False, json=False)
     assert ml_export.main(args) == ml_export.EXIT_NOT_STAGED
     said = capsys.readouterr().err
-    assert "rw_mlexport" in said and "fetched on demand" in said
+    assert "rw_mlexport" in said and "fetched on demand" not in said
     assert _first_command(said.split("\n", 1)[1]) == FETCH
+
+
+def restored_artifacts():
+    return tuple(a for a in bridge_assets.BUNDLED_ARTIFACTS if a.name in ON_DEMAND)

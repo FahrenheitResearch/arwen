@@ -67,6 +67,7 @@ def _hash_array(digest, name, array):
 def _one_profile(name, switches):
     import cupy as cp
 
+    from gpuwm import correct_mode
     from gpuwm.config import RunConfig
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.dycore import step
@@ -78,13 +79,17 @@ def _one_profile(name, switches):
         nx=4, ny=2, nz=16, dx=3000.0, dy=3000.0, ztop=9000.0,
         dt=12.0, run_seconds=0.0, time_step_sound=4, moist=True,
         sf_sfclay_physics=91, sf_surface_physics=2, bl_pbl_physics=1,
-        # The certified PHYSICS selectors are exact. The tiny synthetic
+        # The certified PHYSICS selectors are exact, and so is the physics
+        # mode (2.9.0 plan call 1: the RunConfig default is correct, which
+        # changes WSM6's surface booking and adds Thompson's CLOUDNC slots,
+        # so the identity names exact below). The tiny synthetic
         # state is flat because init_moist_balanced deliberately has no
         # terrain constructor; terrain transport is outside this seam.
         num_soil_layers=4, terrain_opt=0, km_opt=4,
         diff_6th_opt=2, diff_6th_factor=0.12,
         diff_6th_slopeopt=1, epssm=0.5, morr_rimed_ice=1,
-        wsm6_hail_opt=0, **switches)
+        wsm6_hail_opt=0, **correct_mode.resolve("exact").settings,
+        **switches)
     coord = make_vertical_coord(cfg.nz, stretch=1.4)
     base = make_base_state(
         coord, lambda z: 299.0 + 0.004 * np.asarray(z, np.float64),

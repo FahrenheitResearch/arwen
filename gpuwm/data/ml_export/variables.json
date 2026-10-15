@@ -115,6 +115,20 @@
       "comment": "With respect to water above 273.16 K, ice below 250.16 K and a quadratic blend between, as the IFS defines it. Not capped at 100 %, as ERA5's is not."
     },
     {
+      "id": "radar_reflectivity",
+      "kind": "level",
+      "default": false,
+      "level_kinds": ["model"],
+      "names": {"wb2": "radar_reflectivity", "era5": "refl"},
+      "op": "raw:REFL_10CM",
+      "fields": ["REFL_10CM"],
+      "units": "dBZ",
+      "long_name": "Radar reflectivity (10 cm)",
+      "standard_name": "equivalent_reflectivity_factor",
+      "short_name": "refl",
+      "comment": "REFL_10CM as the microphysics scheme diagnoses it, on model levels only: interpolating dBZ to pressure levels would define a new reflectivity convention, so pressure-level exports do not offer it. ERA5 has no reflectivity; refl is this table's ERA5-style short name. Needs a history preset that keeps REFL_10CM (severe does; minimal does not)."
+    },
+    {
       "id": "pressure",
       "kind": "level",
       "default": true,

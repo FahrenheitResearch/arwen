@@ -27,7 +27,8 @@ The new glibc_trig_flt32.cuh also carries its notice inline.
 WHAT IS COVERED, AND WHERE
 --------------------------
 1. Arm optimized-routines (MIT)        -- logf, expf, exp2f, powf, sinf, cosf
-2. FDLIBM / Sun Microsystems           -- expm1f, tanhf, atanf, log10f, log1pf
+2. FDLIBM / Sun Microsystems           -- expm1f, tanhf, atanf, log10f, log1pf,
+                                          and binary64 log10, log1p, atan, atan2
 3. AER RRTMG (BSD 3-Clause)            -- the legacy RRTMG radiation kernels
 4. RTE+RRTMGP (BSD 3-Clause)           -- the default radiation kernels
 5. Numerical Recipes Software          -- the GAMMLN log-gamma coefficients
@@ -42,16 +43,26 @@ transcriptions of the standard single-precision libm routines rather than
 calling CUDA's, whose expf, powf and tgammaf are different functions.
 
 Scope in this directory: the logf / expf / exp2f / powf cores and their data
-tables (Arm, MIT) appear in glibc_flt32.cuh, mynn_dmp_sibling.cu, mynn_pbl.cu,
-noahmp_bareflux.cu, noahmp_fluxprep.cu, noahmp_leaves.cu, noahmp_radiation.cu,
-noahmp_snow.cu, noahmp_soilwater.cu, noahmp_vegeflux.cu, noahmp_vegprecip.cu,
-noahmp_water.cu, rrtmg_lw.cu, rrtmg_sw.cu and vert_interp.cu.  The
+tables (Arm, MIT) appear in glibc_flt32.cuh, mynn_dmp_sibling.cu,
+mynn_libm.cuh, mynn_pbl.cu, noahmp_bareflux.cu, noahmp_fluxprep.cu,
+noahmp_leaves.cu, noahmp_radiation.cu, noahmp_snow.cu, noahmp_soilwater.cu,
+noahmp_vegeflux.cu, noahmp_vegprecip.cu, noahmp_water.cu, rrtmg_lw.cu,
+rrtmg_sw.cu, thompson_aerosol_libm.cuh and vert_interp.cu.  The
 wrf_vi_pressure_log helper in vert_interp.cu uses glibc_flt32.cuh's Arm
 logf tables and reproduces its range reduction and polynomial with fused
-binary64 operations.  The expm1f / tanhf / atanf /
-log10f reductions (FDLIBM, Sun Microsystems) appear in mynn_dmp_sibling.cu,
-mynn_pbl.cu, noahmp_bareflux.cu, noahmp_energy.cu, noahmp_fluxprep.cu,
-noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu and ruc.cu.
+binary64 operations.  thompson_aerosol_libm.cuh's expf and powf cores run
+on glibc_flt32.cuh's Arm exp2f and powf tables.  The expm1f / tanhf / atanf /
+log10f reductions (FDLIBM, Sun Microsystems) appear in dudhia_sw.cu,
+log10_flt32.cuh, mynn_dmp_sibling.cu, mynn_libm.cuh, mynn_pbl.cu, noahmp_bareflux.cu,
+noahmp_energy.cu, noahmp_fluxprep.cu, noahmp_glacier.cu, noahmp_leaves.cu,
+noahmp_vegeflux.cu, ruc.cu, sfclay.cu, sfclay_classic.cuh,
+thompson_aerosol_libm.cuh and ysu_480_topo.cuh.  The binary64 log10, log1p,
+atan and atan2 reductions (FDLIBM) appear in thompson_aerosol_libm.cuh;
+tempo/tempo_common.cuh carries FDLIBM's binary64 log10 (e_log10.c) as
+TEMPO's device log10, and portable_libm64.cuh carries the log1pf (s_log1pf.c)
+and binary64 log1p (s_log1p.c, through Rust libm's log1p.rs) of its Rust libm
+transcription, whose MIT grant the repository NOTICE records beside it.
+dudhia_sw.cu's log10f is the same reduction as log10_flt32.cuh's.
 glibc_flt32.cuh is NOT on that second list: it carried FDLIBM's expm1f and
 lgammaf through 2.6.5 as helpers of ArWen's earlier gamma, and both were
 removed at 2.6.6 when that gamma was replaced and nothing called them any
@@ -97,7 +108,7 @@ renamings, qualifiers, macro spellings and splitting polynomial helpers
 into sincosf_poly.h. Integration aliases and IFUNC wrappers are not copied.
 The MIT branch is elected for these parts too; the full Arm permission
 notice below and licenses/LICENSE-Arm-optimized-routines-MIT.txt apply.
-This adds one trig header to the fifteen log/exp/pow kernel files above;
+This adds one trig header to the seventeen log/exp/pow kernel files above;
 the Python log/exp/pow copy remains separate.
 
 At the vintage glibc imported -- Arm 86067a740541, 2017-08-11, taken into
@@ -137,13 +148,15 @@ c7e74e8165fadb7dd9ee169534fe99ef) reads:
     SOFTWARE.
 
 
-2. FDLIBM -- expm1f, tanhf, atanf, log10f, log1pf
---------------------------------------------------
+2. FDLIBM -- expm1f, tanhf, atanf, log10f, log1pf, and binary64 log10, log1p, atan, atan2
+-----------------------------------------------------------------------------------------
 
 These reductions descend from FDLIBM, developed at SunPro, a Sun Microsystems,
 Inc. business, and converted to single precision at Cygnus Support.  glibc
 carries them substantially unmodified and presents them, in its own LICENSES
-file, as Sun's code.  The notice below is the whole of the licence: its single
+file, as Sun's code.  The binary64 log10, log1p, atan and atan2 in
+thompson_aerosol_libm.cuh descend from FDLIBM's double-precision e_log10.c,
+s_log1p.c, s_atan.c and e_atan2.c, which carry the same notice.  The notice below is the whole of the licence: its single
 condition is that the notice be preserved, and this is that preservation.
 
     /*

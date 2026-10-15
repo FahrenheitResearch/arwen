@@ -2,12 +2,19 @@
 // Generated from the pinned Fortran by tools/transcribe_bep.py.
 // All indices inside device routines remain Fortran 1-based.
 // Arithmetic boundaries are explicit; do not compile with fast math.
-// __builtin_offsetof exists in NVRTC 13 and not in NVRTC 12, the CUDA 12
-// wheel the default `gpuwm[gpu]` install carries, where every per-member
-// assert below failed to compile and options 2/3 could not start.  The
-// member offsets are asserted where the builtin exists; the two sizeof
-// asserts hold on both toolchains.
-#if defined(__CUDACC_VER_MAJOR__) && (__CUDACC_VER_MAJOR__ >= 13)
+// __builtin_offsetof is missing from NVRTC 12 (the CUDA 12 wheel the
+// default `gpuwm[gpu]` install carries) and from NVRTC 13.2, and present in
+// NVRTC 13.4; where it is missing every per-member assert below failed to
+// compile and options 2/3 could not start.  A version test (>= 13) admitted
+// 13.2 and failed there, so the builtin itself is asked for.  The member
+// offsets are asserted where it exists; the two sizeof asserts hold on every
+// toolchain.
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_offsetof)
+#define BEP_HAS_OFFSETOF 1
+#endif
+#endif
+#if defined(BEP_HAS_OFFSETOF)
 #define BEP_OFFSET_ASSERT(type, member, offset) static_assert(__builtin_offsetof(type, member) == (offset), #member " offset")
 #else
 #define BEP_OFFSET_ASSERT(type, member, offset) static_assert(true, #member " offset")

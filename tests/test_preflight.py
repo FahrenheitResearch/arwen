@@ -51,6 +51,22 @@ CONFIG_D01 = ROOT / "configs" / "real74_d01.toml"
 # together; the idiom is tests/test_case_data.py's.
 from gpuwm.case_data import case_data_root  # noqa: E402
 
+# Consumer expectations come from the independent generated declarations.
+from gpuwm.physics_registry import implemented_selector_values as _intake_selectors
+from gpuwm.physics_registry import consumer_rows_by_selector as _intake_rows
+_INTAKE_MP = tuple(sorted(_intake_selectors("microphysics")))
+_INTAKE_REFL = tuple(mp for mp in _INTAKE_MP if mp)
+_INTAKE_PRODUCERS = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "reflectivity_input_species").items()
+    if row is not None))
+_INTAKE_NATIVE = tuple(sorted(set(_INTAKE_REFL) - set(_INTAKE_PRODUCERS)))
+_INTAKE_SNOW = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qs" in (row or {}).get("state_fields", ())))
+_INTAKE_SIX = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qg" in (row or {}).get("state_fields", ())))
+
 BUNDLE = case_data_root() / "WRF_1974_MP55_reference_bundle"
 _BUNDLE_INPUTS = (BUNDLE / "met_em" / "met_em.d01.1974-04-03_12_00_00.nc",
                   BUNDLE / "era5_grib" / "era5_19740403.grb")
@@ -149,7 +165,14 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     # TEMPO (a named scheme) owns the graupel volume pair (volg/volg0) no
     # ported WRF scheme allocates, so its arm joins the union too.
     tempo_cfg = dataclasses.replace(d01_cfg, mp_physics=900)
+    # MYNN with bl_mynn_tkeadvect owns the advected TKE carrier (WRF's
+    # qke_adv scalar) and its RK time-t copy; no other configuration
+    # allocates them, so the arm joins the union (2.9.0).
+    tkeadv_cfg = dataclasses.replace(d01_cfg, bl_pbl_physics=5,
+                                     sf_sfclay_physics=5,
+                                     bl_mynn_tkeadvect=True)
     names = (set(pf.state_array_shapes(d01_cfg))
+             | set(pf.state_array_shapes(tkeadv_cfg))
              | set(pf.state_array_shapes(nssl_cfg))
              | set(pf.state_array_shapes(les_cfg))
              | set(pf.state_array_shapes(aerosol_cfg))
@@ -165,6 +188,18 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     # are classified, so they join the union by name.
     assert restart.STRICT_LAZY_STATE_ATTRS <= restart.STATE_REBUILT_ATTRS
     names |= set(restart.STRICT_LAZY_STATE_ATTRS)
+    # aer_opt = 1 (golden/ports-rad) attaches the monthly aerosol climatology
+    # ``aerodm`` at its first radiation call, outside DomainState's allocation
+    # list: it is classified as derived setup (rebuilt, never in a checkpoint)
+    # and priced among the radiation arrays, so it joins the union by name
+    # once that pricing is shown.
+    aer1_cfg = dataclasses.replace(d01_cfg, aer_opt=1)
+    assert "radiation/aerodm" in pf.physics_array_shapes(aer1_cfg)
+    assert "radiation/aerodm" not in pf.physics_array_shapes(d01_cfg)
+    names.add("aerodm")
+    # Added packages join the allocation census; old configurations remain.
+    for mp in (5,):
+        names |= set(pf.state_array_shapes(dataclasses.replace(d01_cfg, mp_physics=mp)))
     classified = (set(restart.STATE_SERIALIZED_ATTRS)
                   | set(restart.STATE_REBUILT_ATTRS)
                   | set(restart.CHECKPOINT_ONLY_STATE)
@@ -183,6 +218,9 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     # the equality hold again by deleting them from BOTH sides.
     for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
         assert name in restart.STATE_SERIALIZED_ATTRS
+    # The advected TKE carrier is cross-step state; its time-t copy is not.
+    assert "qke_adv" in restart.STATE_SERIALIZED_ATTRS
+    assert "qke_adv0" in restart.STATE_REBUILT_ATTRS
     for name in ("nc0", "nwfa0", "nifa0"):
         assert name in restart.STATE_REBUILT_ATTRS
     # Same guard for P3: the rime pair and the supersaturation carriers are
@@ -760,6 +798,75 @@ def test_diff6_tendencies_alias_lifetime_safe_backings(monkeypatch):
     assert old_bytes - new_bytes == 141_237_600
 
 
+#: Strict WRF mode's own scratch: slot -> shape on the _TINY grid (nz=4,
+#: ny=6, nx=8).  The two mass planes live on state.mup's (ny, nx) plane.
+_STRICT_SLOTS = {
+    "acoustic_wrf_muts": (6, 8),
+    "wrf_exact_muts": (6, 8),
+    "wrf_exact_mu_halo": (6, 8),
+    "rk_ww_ru": (4, 6, 9),
+    "rk_ww_rv": (4, 7, 8),
+    "moist_sc_t": (4, 6, 8),
+}
+
+
+def test_strict_mode_scratch_is_priced_and_builds_a_multi_domain_arena(
+        monkeypatch):
+    """Strict WRF mode's scratch has lifetime rows and is priced per domain.
+
+    The breakage this prevents: scratch_slot_registry registered
+    ``acoustic_wrf_muts`` under GPUWM_WRF_EXACT=1 (9190ec5f2) with no
+    SCRATCH_SLOT_LIFETIME_AUDIT row, so every MULTI-domain strict run raised
+    ``KeyError: scratch slot 'acoustic_wrf_muts' has no lifetime audit row``
+    while gpuwm/core/model.py priced and built its shared scratch arena
+    (a single-domain run builds no arena, which is why the identity proofs
+    never met it).  The five other strict allocations -- the step-carried
+    mass planes, calc_ww_cp's face fluxes and the held species source --
+    were priced nowhere, so a strict estimate under-read every domain.
+    """
+    import types
+
+    import gpuwm.core.state as state_mod
+    import gpuwm.wrf_exact as wrf_exact
+
+    monkeypatch.setattr(state_mod, "cp", np)
+    monkeypatch.setattr(wrf_exact, "ENABLED", True)
+    root_cfg = RunConfig(**_TINY, moist=True, mp_physics=8, specified=True)
+    child_cfg = RunConfig(**_TINY, moist=True, mp_physics=8, nested=True)
+    registry = pf.scratch_slot_registry(root_cfg, n_lbc_intervals=2)
+    assert {slot: tuple(registry[slot]) for slot in _STRICT_SLOTS} == \
+        _STRICT_SLOTS
+    for slot in _STRICT_SLOTS:
+        assert pf.scratch_slot_lifetime(slot) is not None, slot
+        assert not pf.scratch_slot_uses_arena(slot), slot
+    dry = pf.scratch_slot_registry(RunConfig(**_TINY), n_lbc_intervals=2)
+    assert "moist_sc_t" not in dry and "rk_ww_ru" in dry
+
+    tree = (types.SimpleNamespace(grid_id=1, parent_id=0, run=root_cfg),
+            types.SimpleNamespace(grid_id=2, parent_id=1, run=child_cfg))
+    arena = state_mod.build_shared_scratch_arena(tree)
+    assert arena.nbytes == pf.shared_scratch_arena_bytes(tree)
+    assert not set(_STRICT_SLOTS) & set(arena.slot_shapes)
+
+    # The flagship tree, inputs not required: the strict estimate prices
+    # exactly the six slots on every domain, and nothing else moves in
+    # residency.
+    raw = tomllib.loads(CONFIG_4DOM.read_text(encoding="utf-8"))
+    raw.pop("case_data")
+    flagship = build_experiment(raw, source=str(CONFIG_4DOM))
+    strict = pf.estimate_experiment(flagship)
+    monkeypatch.setattr(wrf_exact, "ENABLED", False)
+    default = pf.estimate_experiment(flagship)
+    for dc, s_dom, d_dom in zip(flagship.domains, strict.domains,
+                                default.domains):
+        nz, ny, nx = dc.run.nz, dc.run.ny, dc.run.nx
+        expected = 4 * (3 * ny * nx + nz * ny * (nx + 1)
+                        + nz * (ny + 1) * nx + nz * ny * nx)
+        assert s_dom.resident_bytes - d_dom.resident_bytes == expected
+        assert {it.name for it in s_dom.items} - {
+            it.name for it in d_dom.items} == set(_STRICT_SLOTS)
+
+
 def test_smag_coefficients_alias_acoustic_backings(monkeypatch):
     """Pre-RK K_m/K_h retire before acoustic alpha/gamma are prepared."""
     import types
@@ -908,12 +1015,19 @@ def _scratch_call_sites():
 
 
 @requires_4dom_inputs
-def test_every_scratch_call_site_is_classified(d01_cfg):
+def test_every_scratch_call_site_is_classified(d01_cfg, monkeypatch):
     """The plan's completeness gate: every ``scratch(...)`` call site in
     gpuwm/ resolves against the static registry -- literal slots must be
     registry names (or F4 manifest names for ``nest_*``), dynamic slots
     must use a registered prefix family, and variable-slot sites are
-    pinned to an explicit allowlist.  An unclassified slot is an error."""
+    pinned to an explicit allowlist.  An unclassified slot is an error.
+
+    This cell skips on every machine without the 1974 bundle, so the
+    2.9.0 scheme ports, lightning and strict WRF mode landed without arms
+    here; it was red from at least 2.8.9 (cd336e62d) to the 2.9.0 lane tip
+    and green at 8e170fd66.  The arms below cover them, and every
+    generated-name site added with them is checked against the registry by
+    the names it actually generates, not only allowlisted."""
     known: set[str] = set()
     for cfg in (d01_cfg,
                 RunConfig(**_TINY, moist=True, moist_cq=True, mp_physics=1,
@@ -966,8 +1080,42 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                 # (uwpbl_zero); without this arm its call site in
                 # _run_uwpbl is invisible to this completeness gate.
                 RunConfig(**_TINY, moist=True, mp_physics=8,
-                          bl_pbl_physics=9, sf_sfclay_physics=1)):
+                          bl_pbl_physics=9, sf_sfclay_physics=1),
+                # The 2.9.0 microphysics ports: Purdue Lin, WSM3, the WSM5
+                # column scheme, Ferrier-Aligo, WSM7, fast SBM, WSM6R and
+                # TEMPO each own preparation, precipitation and reflectivity
+                # slots no other arm reaches.
+                RunConfig(**_TINY, moist=True, mp_physics=2),
+                RunConfig(**_TINY, moist=True, mp_physics=3),
+                RunConfig(**_TINY, moist=True, mp_physics=4),
+                RunConfig(**_TINY, moist=True, mp_physics=5),
+                RunConfig(**_TINY, moist=True, mp_physics=24),
+                RunConfig(**_TINY, moist=True, mp_physics=30),
+                RunConfig(**_TINY, moist=True, mp_physics=106),
+                RunConfig(**_TINY, moist=True, mp_physics=900),
+                # The NOAA WRFV3.9 Thompson fork's aerosol arm holds the
+                # entry ice number (mp_thompson_aero_ni_entry).
+                RunConfig(**_TINY, moist=True, mp_physics=28,
+                          specified=True, aer_init_opt=1, wif_input_opt=1,
+                          thompson_version="wrf_39_noaa"),
+                # Lightning: the flash family, its clock and calendar, and
+                # option 11's cumulus cloud-top plane (ltng_ktop_deep).
+                RunConfig(**_TINY, moist=True, mp_physics=8, cu_physics=5,
+                          lightning_option=11),
+                RunConfig(**_TINY, moist=True, mp_physics=8,
+                          lightning_option=3)):
         known |= set(pf.scratch_slot_registry(cfg, n_lbc_intervals=2))
+    # Strict WRF mode (GPUWM_WRF_EXACT=1, read once at import) owns the
+    # step-carried mass planes, calc_ww_cp's face fluxes and the held
+    # species source; without this arm they are invisible to this gate.
+    import gpuwm.wrf_exact as wrf_exact
+    with monkeypatch.context() as strict:
+        strict.setattr(wrf_exact, "ENABLED", True)
+        for cfg in (RunConfig(**_TINY, moist=True, mp_physics=8,
+                              specified=True, diff_6th_opt=2),
+                    RunConfig(**_TINY, moist=True, mp_physics=8,
+                              nested=True, km_opt=1, diff_opt=2)):
+            known |= set(pf.scratch_slot_registry(cfg, n_lbc_intervals=2))
     exp = load_experiment_case(CONFIG_4DOM)[0]
     for dc in exp.domains:
         known |= set(pf.scratch_slot_registry(dc.run, n_lbc_intervals=2))
@@ -1104,7 +1252,55 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
         # CHEM_BOUNDARY_SLOTS is the priced fixed eight-table family.
         # test_chem_cams_boundary exercises its actual packed NumPy tables.
         ("gpuwm/ingest/lateral_bc.py", "chem_boundary_rows"),
+        # --- Sites that landed while this cell skipped (see the docstring).
+        # Every name each one generates is checked against the registry
+        # after the scan, so these entries admit no unpriced slot.
+        # Strict WRF mode names its slots by module constant
+        # (acoustic.WRF_ACOUSTIC_MUTS_SLOT, dycore.WRF_MUTS_SLOT and
+        # dycore.WRF_MU_HALO_SLOT).
+        ("gpuwm/core/acoustic.py", "wrf_acoustic_muts"),
+        ("gpuwm/core/dycore.py", "_capture_wrf_muts"),
+        ("gpuwm/core/dycore.py", "_wrf_step_epilogue"),
+        # Strict mode's WRF-order folds walk the same fixed-tendency specs
+        # rows as prepare_fixed_tendencies above (the registered smag_r
+        # family), and fold_lateral_relaxation walks _FOLD_ROWS' held dry
+        # slots.
+        ("gpuwm/core/dycore.py", "_compute_wrf_constant_k_tendencies"),
+        ("gpuwm/core/dycore.py", "_fold_physics_wrf"),
+        ("gpuwm/core/dycore.py", "_accumulate_diff6_wrf_order"),
+        ("gpuwm/core/dycore.py", "fold_lateral_relaxation"),
+        # Scheme adapters that take their names from their own tables:
+        # fast SBM's surface map, the column-scheme row's surface tuple, the
+        # MPAS column suite's microphysics_scratch_slots, the generated
+        # Thompson column's literal preparation tuple, WSM6R's prefix and
+        # the WSM family row's name.
+        ("gpuwm/core/fast_sbm_runtime.py", "apply"),
+        ("gpuwm/core/microphysics.py", "_apply_column_scheme"),
+        ("gpuwm/core/mpas_column_suite.py", "accumulated_precipitation"),
+        ("gpuwm/core/thompson_column.py", "apply_generated"),
+        ("gpuwm/core/wsm6.py", "_wsm6_prepare"),
+        ("gpuwm/core/wsm_family.py", "apply"),
+        # Correct mode's Thompson cloud booking (WB1, 2.9.0 c4a312f04) names
+        # its two surface totals by module constant
+        # (thompson_cloud_booking.CLOUDNC_SLOT / CLOUDNCV_SLOT).
+        ("gpuwm/core/thompson_cloud_booking.py", "book_settled_cloud"),
     }
+    # A dynamic prefix one adapter generates from its own table, pinned BY
+    # SITE rather than added to known_prefixes, so it admits nothing
+    # anywhere else (``mp_`` and ``physics_`` are far too wide to admit
+    # globally).  The generated names are checked after the scan.
+    allowed_prefix_sites = {
+        ("gpuwm/core/lightning.py", "initialize_lightning", "ltng_"),
+        ("gpuwm/core/lightning.py", "update_lightning", "ltng_"),
+        ("gpuwm/core/fast_sbm_runtime.py", "apply", "fsbm_frame_"),
+        ("gpuwm/core/mpas_column_suite.py", "run_phase1", "physics_"),
+        ("gpuwm/core/wsm_family.py", "apply", "mp_"),
+    }
+    # The one sanctioned hand-off of the bound allocator: fast_sbm_runtime
+    # .apply passes state.scratch to fast_sbm_cuda.launch, whose own literal
+    # scratch(...) calls this scanner sees and classifies (asserted after
+    # the scan), so no call escapes the gate.
+    allowed_alias_sites = {("gpuwm/core/fast_sbm_runtime.py", "apply")}
     # Data named scratch is still inventoried, but is not a bound allocator
     # method. These exact uses are tied to concrete tuple, prepared mapping,
     # and Path owners; a new data use or a callable alias still fails closed.
@@ -1127,6 +1323,8 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
     problems = []
     seen_variable_sites = set()
     seen_data_sites = set()
+    seen_prefix_sites = set()
+    seen_alias_sites = set()
     for kind, payload, rel, func in sites:
         if kind == "literal":
             if payload.startswith("nest_"):
@@ -1137,9 +1335,13 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                 problems.append(f"{rel}::{func}: slot {payload!r} is not in "
                                 "the scratch registry")
         elif kind == "prefix":
-            if payload not in known_prefixes:
+            if (rel, func, payload) in allowed_prefix_sites:
+                seen_prefix_sites.add((rel, func, payload))
+            elif payload not in known_prefixes:
                 problems.append(f"{rel}::{func}: dynamic slot prefix "
                                 f"{payload!r} is not a registered family")
+        elif kind == "alias" and (rel, func) in allowed_alias_sites:
+            seen_alias_sites.add((rel, func))
         elif kind == "variable":
             seen_variable_sites.add((rel, func))
             if (rel, func) not in allowed_variable_sites:
@@ -1161,6 +1363,64 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
     # The allowlist may not silently rot either.
     assert seen_variable_sites == allowed_variable_sites
     assert seen_data_sites == known_data_sites
+    assert seen_prefix_sites == allowed_prefix_sites
+    assert seen_alias_sites == allowed_alias_sites
+    # The callee the fast-SBM hand-off reaches is itself scanned: its six
+    # literal slots were classified above.
+    assert {payload for kind, payload, rel, func in sites
+            if (kind, rel, func) == ("literal", "gpuwm/core/fast_sbm_cuda.py",
+                                     "launch")} == {
+        "fsbm_dims", "fsbm_pointers", "fsbm_work", "fsbm_cloud_base",
+        "fsbm_tally", "fsbm_status"}
+
+    # Every name the sites admitted above by site actually generate, from
+    # the same tables the sites read, is a registry slot.
+    from gpuwm.core import wsm_family
+    from gpuwm.core.acoustic import WRF_ACOUSTIC_MUTS_SLOT
+    from gpuwm.core.column_schemes import COLUMN_SCHEMES
+    from gpuwm.core.fast_sbm_contract import STATE_FIELDS as FSBM_FIELDS
+    from gpuwm.core.fast_sbm_runtime import _SURFACE_SLOTS
+    from gpuwm.core.physics_inventory import microphysics_scratch_slots
+    from gpuwm.core.thompson_cloud_booking import CLOUDNC_SLOT, CLOUDNCV_SLOT
+    from gpuwm.lightning_contract import LIGHTNING_OPTIONS
+
+    # gpuwm.core.dycore imports CuPy at module scope, which would turn this
+    # CPU gate into a skip; its three constants are read from the source.
+    dycore_constants = {
+        node.targets[0].id: ast.literal_eval(node.value)
+        for node in ast.parse((ROOT / "gpuwm/core/dycore.py").read_text(
+            encoding="utf-8")).body
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in ("WRF_MUTS_SLOT", "WRF_MU_HALO_SLOT",
+                                   "_FOLD_ROWS")}
+    generated = {WRF_ACOUSTIC_MUTS_SLOT, dycore_constants["WRF_MUTS_SLOT"],
+                 dycore_constants["WRF_MU_HALO_SLOT"]}
+    generated |= {slot for slot, _msf in
+                  dycore_constants["_FOLD_ROWS"].values()}
+    for mp in wsm_family.family_selectors():
+        generated |= set(wsm_family.preparation_slots(mp))
+        generated |= {f"mp_{cls}{suffix}"
+                      for cls in wsm_family.row(mp).precip
+                      for suffix in ("nc", "ncv")}
+    generated |= {f"wsm6r_{field}"
+                  for field in ("theta", "rho", "pii", "dz", "z8w")}
+    for row in COLUMN_SCHEMES.values():
+        generated |= set(row.surface)
+    generated |= {"fsbm_frame_" + name for name in FSBM_FIELDS}
+    generated |= set(_SURFACE_SLOTS.values())
+    generated |= {"ltng_" + name for option in LIGHTNING_OPTIONS.values()
+                  for name in option["fields"]}
+    generated |= {"ltng_" + name for name in
+                  ("iccg_in_num", "iccg_in_den", "lat", "lon")}
+    generated |= {"physics_qi", "physics_qs"}
+    generated |= {CLOUDNC_SLOT, CLOUDNCV_SLOT}
+    generated |= {"mp_th", "mp_pii", "mp_thompson_temperature", "mp_dz8w"}
+    for mp in _INTAKE_MP:
+        if mp:
+            generated |= {slot for _component, slot in
+                          microphysics_scratch_slots(mp)}
+    assert generated <= known, sorted(generated - known)
 
 
 def test_prepared_store_follower_slots_match_declared_registry():
@@ -1462,7 +1722,7 @@ def test_mp50_smag_held_tendencies_are_exactly_p3s_species():
     """The held-tendency row for the one scheme with qi and NO qs/qg.
 
     The ice-mass admission tuple in ``scratch_slot_registry`` (the
-    ``(6, 8, 9, 10, 16, 18, 28)`` arm) prices ``smag_rqi``/``rqs``/``rqg``
+    ``(6, 8, 9, 10, 16, 18, 24, 28)`` arm) prices ``smag_rqi``/``rqs``/``rqg``
     together, because until P3 every scheme with cloud ice also had snow
     and graupel.  mp=50 is deliberately absent from it and takes its own
     arm instead: Registry.EM_COMMON:3038 declares P3's package as
@@ -1965,7 +2225,7 @@ def test_mp50_is_deliberately_out_of_the_six_mass_shape_package():
     m = (_TINY["nz"], _TINY["ny"], _TINY["nx"])
     six_mass = ("qi", "qs", "qg", "qi0", "qs0", "qg0",
                 "effc", "effi", "effs")
-    members = (6, 8, 9, 10, 16, 18, 28)
+    members = (6, 8, 9, 10, 16, 18, 24, 28)
 
     p3 = pf.state_array_shapes(RunConfig(**_TINY, moist=True,
                                          mp_physics=50))
@@ -2021,11 +2281,33 @@ def test_mp50_is_deliberately_out_of_the_six_mass_shape_package():
         "the six-mass arm is no longer chained to the mp==50 arm; an "
         "unchained sibling lets a widened tuple price qs/qg/effs on top "
         "of P3's own package")
+    # Lin has its own six-mass arm without effective-radius fields.
+    lin_arm = orelse[0]
+    assert isinstance(lin_arm.test, ast.Compare)
+    assert isinstance(lin_arm.test.ops[0], ast.Eq)
+    assert lin_arm.test.comparators[0].value == 2
+    lin_shapes = pf.state_array_shapes(RunConfig(**_TINY, moist=True, mp_physics=2))
+    assert {"qi", "qs", "qg", "qi0", "qs0", "qg0"} <= set(lin_shapes)
+    assert not {"effc", "effi", "effs"} & set(lin_shapes)
+    assert not priced(2)
+    assert len(lin_arm.orelse) == 1
+    wsm3_arm = lin_arm.orelse[0]
+    assert isinstance(wsm3_arm.test.ops[0], ast.Eq)
+    assert wsm3_arm.test.comparators[0].value == 3
+    assert len(wsm3_arm.orelse) == 1 and isinstance(wsm3_arm.orelse[0], ast.If)
+    orelse = wsm3_arm.orelse
+    # Column metadata may own an intervening mass-package arm.
+    while (isinstance(orelse[0].test, ast.Compare)
+           and isinstance(orelse[0].test.comparators[0], ast.Name)
+           and orelse[0].test.comparators[0].id == "COLUMN_SCHEMES"):
+        from gpuwm.core.column_schemes import COLUMN_SCHEMES
+        assert 50 not in COLUMN_SCHEMES
+        orelse = orelse[0].orelse
+        assert len(orelse) == 1 and isinstance(orelse[0], ast.If)
     chained = orelse[0].test
     assert isinstance(chained, ast.Compare)
     assert isinstance(chained.ops[0], ast.In)
-    assert [element.value for element in chained.comparators[0].elts] == [
-        6, 8, 9, 10, 16, 18, 28], (
+    assert list(eval(compile(ast.Expression(chained.comparators[0]), "<six-mass-membership>", "eval"), pf.__dict__)) == [6, 8, 9, 10, 16, 18, 24, 28, 106], (  # Lin (2) and FAST_SBM (30) own arms; TEMPO is a named row
         "the six-mass membership tuple moved; see Registry.EM_COMMON "
         ":3021/:3024/:3025/:3026/:3031/:3033/:3036 for its members and "
         ":3038 for why 50 is not one of them")
@@ -2846,7 +3128,7 @@ def test_p3_nest_forcing_excludes_snow_and_graupel(exp4):
     # The block itself is unchanged: exactly the schemes whose Registry
     # moist package carries all three ice masses (Registry.EM_COMMON:
     # 3021, 3024-3026, 3031, 3033, 3036).
-    for mp in (6, 8, 9, 10, 16, 18, 28):
+    for mp in (6, 8, 9, 10, 16, 18, 24, 28):
         block = pf.nest_field_kinds(
             RunConfig(**_TINY, moist=True, mp_physics=mp))
         assert {"qi", "qs", "qg"} <= set(block), mp
@@ -3356,8 +3638,18 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # 4*((nz+1)*ny*nx + 2*nz), totaling 172,201,768 B. Actual state
     # allocation shapes are independently checked against NumPy-backed
     # DomainState, and USTM is in the surface producer's inventory.
-    assert per_domain == {1: 1513530992, 2: 5443919384,
-                          3: 6850817292, 4: 9802340360}
+    # Two later additions, re-pinned here only in 2.9.0 because these cells
+    # skip on every machine without the 1974 bundle (the single-domain pins
+    # took both when they landed): the CLDFRA publication buffer
+    # (cf1b03b17), one resident (nz, ny, nx) FP32 physics persistent per
+    # domain -- 9,800,000 / 39,200,000 / 49,196,196 / 70,560,000 B -- and the
+    # strict health rim table (a677ad4e1), integration_health_rim
+    # (1024, 3) FP32 = 12,288 B per domain.  An item-by-item diff of the
+    # estimate at 8e170fd66 (these pins, green) and at the 2.9.0 lane tip
+    # shows exactly those two items and nothing else; the sum is
+    # 168,805,348 B.
+    assert per_domain == {1: 1523343280, 2: 5483131672,
+                          3: 6900025776, 4: 9872912648}
     nest = {d.grid_id: d.category_bytes("nest") for d in est4.domains}
     assert nest == {1: 0, 2: 103165552, 3: 149390256, 4: 193084928}
     # The post-CQ request includes both simultaneously live nested-force
@@ -3388,7 +3680,8 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # g-point CSR the gas tables now upload (see
     # test_estimate_experiment_shared_counting).  Nothing else in residency
     # moved -- the optimisation is a workspace and kernel change.
-    assert est4.resident_bytes == 14708970520
+    # +168,805,348 B: CLDFRA (cf1b03b17) and the rim table (a677ad4e1).
+    assert est4.resident_bytes == 14708970520 + 168_805_348 == 14877775868
     # The case configures column_chunk = 6250 (byte-identical to 3125,
     # 33% faster per radiation call); the 3125 numbers stay pinned in the
     # ladder below, so the trade this bought is on the record both ways.
@@ -3410,11 +3703,13 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # +3,444,004 B: the four-domain OLR publication total.
     # -1,331,736,416 B against the pre-optimisation pin: the 1,331,750,000 B
     # of workspace the phase change removed, less the 13,584 B of CSR.
-    assert est4.subtotal_bytes == 18611460520 + rho_bytes == 18682020520
+    # +168,805,348 B: CLDFRA (cf1b03b17) and the rim table (a677ad4e1).
+    assert est4.subtotal_bytes == (
+        18611460520 + rho_bytes + 168_805_348) == 18850825868
     assert est4.headroom == pf.forecast_pool_headroom(
         dc.run for dc in exp4.domains) == 1.13
     assert est4.alloc_estimate_bytes == math.ceil(
-        est4.headroom * est4.subtotal_bytes) == 21110683188
+        est4.headroom * est4.subtotal_bytes) == 21301433231
     # Chunk ladder after arena sharing and physics-persistent reclamation.
     # The 1024-descriptor health-slot registration adds 49,168 B/domain to
     # the audited scratch; the pins below are computed on the merged tree.
@@ -3427,8 +3722,10 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # The ladder FLATTENED with the workspace: the whole rung-to-rung spread
     # is 1.13 x the workspace difference, and the workspace is now 2.85x
     # smaller, so 6250 -> 256 buys 824 MB where it used to buy 2,293 MB.
-    assert ladder == {6250: 21110683188, 3125: 20688373938,
-                      1562: 20477151744, 256: 20300660262}
+    # Every rung also carries ceil(1.13 x 168,805,348) = 190,750,043 B of
+    # CLDFRA (cf1b03b17) and rim table (a677ad4e1), measured per rung.
+    assert ladder == {6250: 21301433231, 3125: 20879123981,
+                      1562: 20667901787, 256: 20491410305}
 
 
 def test_d01_calibration_bounds_measured_fixture(exp1):
@@ -3549,13 +3846,15 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
         exp4, est4):
     """Project retained bytes explicitly; never relabel them a fresh probe.
 
-    The old receipt predates the EOS residual/coefficient arrays and USTM.
-    Its algebra must add their physical allocation once, whereas the
-    estimator applies the current measured forecast margin, 1.13. The rho
-    array was already physically allocated by that probe and is now priced
-    too, so it is not added twice to the receipt. The resulting margin is
-    338,749,914 B. PROBE_POOL_USED_PEAK_BYTES remains the original record;
-    this constructed projection cannot certify a live measured-bound gate.
+    The old receipt predates the EOS residual/coefficient arrays and USTM,
+    and also the CLDFRA publication buffer (cf1b03b17) and the strict health
+    rim table (a677ad4e1). Its algebra must add their physical allocation
+    once, whereas the estimator applies the current measured forecast
+    margin, 1.13. The rho array was already physically allocated by that
+    probe and is now priced too, so it is not added twice to the receipt.
+    The resulting margin is 316,805,219 B. PROBE_POOL_USED_PEAK_BYTES
+    remains the original record; this constructed projection cannot certify
+    a live measured-bound gate.
     """
     # ``PROBE_POOL_USED_PEAK_BYTES`` is a receipt taken at the LIBRARY default
     # chunk, so it must be projected against the default-chunk estimate.
@@ -3568,11 +3867,17 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
         4 * ((dc.run.nz + 1) * dc.run.ny * dc.run.nx + 2 * dc.run.nz)
         for dc in exp4.domains)
     assert added_persistents == 172_201_768
+    # CLDFRA (nz, ny, nx) FP32 plus the (1024, 3) FP32 rim table, per domain.
+    later_persistents = sum(
+        4 * dc.run.nz * dc.run.ny * dc.run.nx + 4 * 1024 * 3
+        for dc in exp4.domains)
+    assert later_persistents == 168_805_348
+    added_persistents += later_persistents
     projected_used = (pf.PROBE_POOL_USED_PEAK_BYTES + added_persistents
                       - est.dycore_state_saved_bytes
                       - (3035550000 - est.workspace_bytes)
                       - diff6_alias_saved - 141_120_000)
-    assert projected_used - est.alloc_estimate_bytes == 338_749_914
+    assert projected_used - est.alloc_estimate_bytes == 316_805_219
     legs = pf.evaluate_alloc_gates(
         measured_used_bytes=projected_used,
         estimate_bytes=est.alloc_estimate_bytes,
@@ -3684,8 +3989,11 @@ def test_check_cli_estimator_json(capsys):
     # 1,331,750,000 B of chunk workspace the phase change removed at this
     # case's 6250 chunk, less 1.15 x the 13,584 B of gas-table CSR it added.
     # Current subtotal includes rho and uses the measured forecast margin.
+    # +168,805,348 B of subtotal: the CLDFRA publication buffer (cf1b03b17)
+    # and the strict health rim table (a677ad4e1) on all four domains; see
+    # test_estimate_4dom_golden_pins.
     assert payload["alloc_estimate_bytes"] == math.ceil(
-        1.13 * 18682020520) == 21110683188
+        1.13 * (18682020520 + 168805348)) == 21301433231
     # All requested moist-CQ slots are represented; the shared arena aliases
     # their lifetimes without changing the exact physical backing.
     assert payload["scratch_arena_saved_bytes"] == 6156502304
@@ -3739,27 +4047,37 @@ def test_check_cli_estimator_json(capsys):
     # re-read compiles it to 3,600 B, so the widest frame this
     # configuration launches is Morrison's 5,120 B and the backing store
     # is (5,120 - 1,024) x 1,536 x 170 = 1,069,547,520 B.
+    # 2.9.0, +125,141,381 B, re-pinned only now because this cell skips on
+    # every machine without the 1974 bundle: the WRF 4.6.1 line-for-line KF
+    # port (26779da4e) keeps 66 column arrays in the workspace, not 52, so
+    # KF's in-flight term is 170 x 256 x 66 x 49 x 4 = 562,974,720 B
+    # (+119,418,880 B), and the 3% retention term follows the alloc
+    # estimate's CLDFRA and rim-table growth (+5,722,501 B).
     reference = pf.card_local_memory_profile(None)
     assert payload["reserve_bytes"] == (
-        math.ceil(0.03 * 21110683188) + reference.cuda_context_bytes
-        + 1069547520 + 443555840 + 313344000 + 512 * (1 << 20)
-    ) == 3799585840
+        math.ceil(0.03 * 21301433231) + reference.cuda_context_bytes
+        + 1069547520 + 562974720 + 313344000 + 512 * (1 << 20)
+    ) == 3924727221
     exp_4dom = load_experiment_case(CONFIG_4DOM)[0]
     assert payload["reserve_components"]["device_overhead_bytes"] == (
         reference.cuda_context_bytes + 1069547520
-        + 443555840 + 313344000)
+        + 562974720 + 313344000)
     assert payload["kernel_local_memory_bytes"] == 1069547520
     frames_4dom = pf.kernel_local_frame_bytes(exp_4dom)
     assert frames_4dom["rrtmgp_rte"] == 3600
     assert frames_4dom["morrison"] == max(frames_4dom.values()) == 5120
     assert "kf" in payload["kernel_modules"]
     assert frames_4dom["kf"] == 512
+    from gpuwm.core.kf import KFWS_SLOTS
+    assert KFWS_SLOTS == 66
     assert pf.kf_column_workspace_bytes(
-        exp_4dom, profile=reference) == 443555840
+        exp_4dom, profile=reference) == 170 * 256 * 66 * 49 * 4 == 562974720
     # Same +349,962,240 B context shift as ``reserve_bytes`` above, the
     # same -308,469,760 B net from the two workspaces and the same
-    # -8,355,840 B from the re-read `rrtmgp_rte` frame.
-    assert payload["run_time_reserve_bytes"] == 6098604658
+    # -8,355,840 B from the re-read `rrtmgp_rte` frame.  +119,418,880 B in
+    # 2.9.0: the KF port's 66-array workspace (26779da4e); this leg's
+    # residual is the pinned fixture basis, so the 3% term does not move it.
+    assert payload["run_time_reserve_bytes"] == 6218023538
     assert payload["reserve_components"]["retention_residual_bytes"] == (
         math.ceil(0.03 * payload["alloc_estimate_bytes"]))
 
@@ -5392,7 +5710,7 @@ def test_the_recorded_local_frames_match_the_driver():
     from gpuwm.certify import compile_platform
 
     cp = pytest.importorskip("cupy")
-    from gpuwm.core.kernels import load_module
+    from gpuwm.core.kernels import load_module, kernel_local_size_bytes
 
     kdir = ROOT / "gpuwm" / "core" / "kernels"
     symbol = re.compile(
@@ -5425,10 +5743,10 @@ def test_the_recorded_local_frames_match_the_driver():
         widest = 0
         for name in sorted(set(symbol.findall(path.read_text()))):
             try:
-                attributes = module.get_function(name).attributes
+                local_bytes = kernel_local_size_bytes(module.get_function(name))
             except Exception:  # noqa: BLE001
                 continue
-            widest = max(widest, int(attributes["local_size_bytes"]))
+            widest = max(widest, local_bytes)
         observed[path.stem] = widest
     assert uncompilable == set(pf.UNMEASURED_KERNEL_MODULES)
 

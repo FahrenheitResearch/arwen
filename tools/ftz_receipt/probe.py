@@ -53,6 +53,11 @@ os.environ.setdefault("CUPY_CACHE_IN_MEMORY", "1")
 
 import numpy as np  # noqa: E402
 
+if not __package__:
+    # Run by file name: make `tools` resolve to this tree, not to another
+    # installed checkout (D1; see route_inventory.require_same_tree).
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from tools.ftz_receipt import route_inventory as ri  # noqa: E402
 from tools.ftz_receipt import sass  # noqa: E402
 
@@ -474,6 +479,27 @@ def build_routes(inventory: dict, capture: NvrtcCapture) -> dict:
         "kernels": PTX_KERNELS,
         "not_applicable": PTX_NOT_APPLICABLE,
     }
+    # R6 follows the unflushed production column loader, including its cache.
+    r6_site = ri.find_site(inventory, file="gpuwm/core/kernels/__init__.py",
+                          constructor_kind="cupy.cuda.compiler.compile_using_nvrtc",
+                          enclosing="load_module_unflushed")
+    capture.label = "R6"
+    original = gpuwm_kernels._unit_text
+    def probe_unit(name, kernel_dir=gpuwm_kernels._KDIR):
+        return source.removeprefix(gpuwm_kernels._preamble()) if name == "wsm5" else original(name, kernel_dir)
+    gpuwm_kernels._unit_text = probe_unit
+    try:
+        gpuwm_kernels.load_module_unflushed.cache_clear()
+        r6_module = gpuwm_kernels.load_module_unflushed("wsm5")
+    finally:
+        gpuwm_kernels._unit_text = original
+        gpuwm_kernels.load_module_unflushed.cache_clear()
+    r6_options = list(gpuwm_kernels.UNFLUSHED_OPTIONS)
+    routes["R6"] = {"id": "R6", "label": "unflushed column loader",
+        "constructor": "gpuwm.core.kernels.load_module_unflushed",
+        "site": f"{r6_site['file']}:{r6_site['line']}",
+        "site_options": r6_options, "arm_options": r6_options,
+        "kind": "module", "module": r6_module, "kernels": MODULE_KERNELS}
     capture.label = None
     return routes
 
@@ -882,6 +908,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=None)
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
+    ri.require_same_tree(__file__)
     root = Path(args.root).resolve() if args.root else ri.repo_root()
     inventory = ri.load_inventory(root)
     out_dir = (Path(args.out) if args.out

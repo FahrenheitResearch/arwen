@@ -142,6 +142,11 @@ def main() -> None:
     parser.add_argument("--static-receipt", type=Path)
     parser.add_argument("--lake-depth", action="store_true",
                         help="build WPS lake-depth geography for the CLM lake model")
+    parser.add_argument(
+        "--orographic", default="",
+        help=("comma-separated geo_em orographic statistics the "
+              "configuration's terrain drag reads (topo_wind, gwd_opt; "
+              "gpuwm.static.orographic.required_static_fields)"))
     configuration = parser.add_mutually_exclusive_group()
     configuration.add_argument("--experiment-config", type=Path)
     configuration.add_argument(
@@ -160,6 +165,11 @@ def main() -> None:
     )
     args = parser.parse_args()
     need_lake_depth = args.lake_depth
+    # The terrain-drag statistics this preparation's physics reads.  Without
+    # them a gwd_opt = 3 (GSL drag) or topo_wind configuration on the hrrr
+    # route prepared for minutes and then refused at the forecast seam
+    # (prepared_terrain_drag_missing; QA R4 on the 2.9.0 recipe door).
+    need_orographic = [name for name in args.orographic.split(",") if name]
     experiment_tables = None
     if args.experiment_config is not None:
         import tomllib
@@ -170,6 +180,11 @@ def main() -> None:
             from gpuwm.experiment import load_experiment
             run = load_experiment(args.experiment_config).root.run
             need_lake_depth |= bool(run.sf_lake_physics == 1 and run.use_lakedepth == 1)
+            from gpuwm.static.orographic import required_static_fields
+            need_orographic += [
+                name for name in required_static_fields(
+                    run.topo_wind or 0, run.gwd_opt or 0)
+                if name not in need_orographic]
     if args.output.exists() or args.receipt.exists():
         raise FileExistsError("native static output/receipt already exists")
 
@@ -245,6 +260,12 @@ def main() -> None:
             raise ValueError(
                 "the static cache has no LAKE_DEPTH required by the selected "
                 "lake model; rebuild from --geog-root to include bathymetry")
+        missing_drag = [name for name in need_orographic if name not in fields]
+        if missing_drag:
+            raise ValueError(
+                "prepared_terrain_drag_missing: the static cache has no "
+                + ", ".join(missing_drag) + " required by the configured "
+                "terrain drag; rebuild from --geog-root to include them")
         # A sealed static keeps the terrain it was built with.  One built
         # under another d01 smoothing than this preparation asks for would
         # integrate terrain the configuration did not ask for (a default
@@ -270,6 +291,8 @@ def main() -> None:
         selection = GeogSelection.fallback(args.geog_root)
         if need_lake_depth:
             selection = replace(selection, lake_depth=True)
+        if need_orographic:
+            selection = selection.with_orographic(need_orographic)
         if smoothing_attestation is not None:
             selection = replace(selection, terrain_smoothing=smoothing)
         selection = replace(selection, static_source=static_source_for(highres))

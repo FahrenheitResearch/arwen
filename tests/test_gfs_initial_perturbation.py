@@ -146,8 +146,6 @@ def _cpu_preparation(monkeypatch, exp):
     monkeypatch.setattr(gfs_direct, "orient_global_source_longitudes", lambda source, *_a: source)
     monkeypatch.setattr(gfs_direct, "_source_coverage_receipt", lambda *_a: {})
     monkeypatch.setattr(gfs_direct, "interpolate_era5_to_lambert", lambda source, *_a, **_k: source)
-    monkeypatch.setattr(gfs_direct, "interpolate_lake_skin_temperature",
-                        lambda *_a, **_k: np.zeros((3, 3)))
     monkeypatch.setattr(gfs_direct, "soil_source_orography", lambda *_a: None)
     monkeypatch.setattr(gfs_direct, "soil_mesh_plan_from_case", lambda *_a: None)
     monkeypatch.setattr(gfs_direct, "preprocess_land_surface_soil",

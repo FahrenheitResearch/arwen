@@ -245,3 +245,9 @@ def test_moving_steep_footprint_refuses_before_coordinate_initialization(tmp_pat
     with pytest.raises(ValueError, match="requires terrain auto-smoothing and moves.*overlap-statics"):
         run_terrain_fields(exp, grids_from_projection_config(exp),
             root_terrain=np.zeros((40, 40)), static_catalog=catalog, corridors=False)
+    # Plan call 5 (2.9.0): a mover born on its statics corridor's crop is
+    # bounded once at corridor scale, so the refusal does not apply to it.
+    fields = run_terrain_fields(exp, grids_from_projection_config(exp),
+        root_terrain=np.zeros((40, 40)), static_catalog=catalog, corridors=False,
+        statics_corridor=(2,))
+    assert [field.label for field in fields] == ["d01 static terrain", "d02 static terrain"]

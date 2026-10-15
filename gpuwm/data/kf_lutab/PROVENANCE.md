@@ -144,45 +144,38 @@ magnifies a table move rather than tracking it. Neither `4239185`'s message nor
 any other commit message can be corrected in place; this table is the
 correction of record, and the test comment now carries these figures.
 
-## Deliberate runtime deviations from WRF v4.6.1
+## The runtime port: no deviations from WRF v4.6.1 on any defined path
 
-The column port retains a small set of bounds/error-handling guards that are
-not present in `module_cu_kfeta.F`. They do not activate for the packaged
-real74 columns or the trigger/shallow parity fixtures:
+Until 2026-10-07 the CUDA column (`gpuwm/core/kernels/kf.cu`) was a
+re-derivation of the scheme with its own guards and its own density, graded
+only against a float64 mirror of itself. It was replaced that day by a
+line-for-line port of `KF_eta_PARA`, graded at 0 ULP on every output of
+`KF_eta_CPS` against the byte-unmodified Fortran by the column oracle in
+`tools/kf_wrf461_oracle` (`tests/test_kf_wrf461_oracle.py`). The guards this
+section used to list are gone with the old kernel: no `0.99*p` cap on the
+saturation vapor pressure, no bounding of the dewpoint/`ALU` lookup, no
+top-two-levels LCL refusal, and the layer masses use WRF's own RHO input
+(`DP(K)=rhoe(k)*g*DZQ(k)`, module_cu_kfeta.F:779) instead of an in-scheme
+`p/(R*Tv)`.
 
-- Saturation vapor pressure is capped at `0.99*p` before forming `qes`. WRF
-  evaluates the denominator directly; the cap keeps arbitrary validation
-  inputs from producing a non-positive denominator.
-- The source-layer dewpoint/`ALU` lookup bounds `EMIX`/`A1`, the lookup index,
-  and interpolation fraction. WRF extrapolates its private table expression;
-  the port bounds fixed CUDA table storage for near-dry or out-of-range test
-  inputs.
-- An LCL at/below the first mass level or within the top two mass levels is a
-  no-convection result. WRF checks an LCL above the model top, but its later
-  neighbor and plume accesses are not defined for these degenerate columns.
-- If negative-vapor borrowing encounters zero `TMA` or `TMB`, the port rejects
-  the column before division. WRF divides without a zero guard at lines
-  2039-2045.
-- WRF aborts the domain for negative surface `QG` and eventually for its
-  cloud-top mass-balance diagnostic (lines 2028-2067, 2497-2499). The CUDA
-  kernel cannot issue a per-thread host fatal error, so those exceptional
-  columns return zero outputs; the float64 mirror returns zero for the former
-  and raises `RuntimeError` for the latter. Ordinary WRF no-cloud/numerical
-  `RETURN` paths remain ordinary zero-output columns in both ports.
-- Environmental density for the layer-mass integrals is computed in-scheme as
-  `rho = p/(R*Tv)` with `Tv = T*(1+0.608*qenv)` (`kf.cu:291-293`; the float64
-  mirror's `np_kf_column` uses the identical form) — the expression WRF itself
-  carries commented out at `module_cu_kfeta.F:777`
-  (`!        RHOE(K)=P0(K)/(R*TV0(K))`). WRF instead consumes the
-  driver-supplied moist density `rho = 1./alt*(1.+qv)` from `phy_prep`
-  (`module_big_step_utilities_em.F:4856`) as `RHOE` in
-  `DP(K)=rhoe(k)*g*DZQ(k)` (kfeta.F:779). O(0.1%) layer-mass difference in
-  humid columns; recorded 2026-07-16 per the Task 6b review (adopting WRF's
-  form would add a rho input to the frozen kernel surface).
+What remains differs from the Fortran only where the Fortran's own behaviour
+is undefined or is a model abort, and each is documented in `kf.cu` beside
+the code:
 
-Two previously added guards were removed for literal parity: candidate-source
-search now ends only 300 hPa above the surface (not also at `0.5*psfc`), and
-the precipitation-efficiency shear depth is the un-clamped
-`z(cloud_top)-z(LCL)` expression from line 1611. The cloud-top guards guarantee
-that denominator is positive. Source depth also follows WRF's strict
-`DPTHMX > 5000 Pa`; equality is insufficient.
+- A source layer whose LCL is the first mass level (`KLCL = 1`) makes WRF
+  read `Z0(0)`, `T0(0)` and `W0AVG1D(0)`, outside its arrays. The port does
+  not evaluate that candidate (and returns no convection if the closure's
+  recomputed LCL lands there).
+- `wrf_error_fatal` paths -- negative `QG` at the surface (lines 2028-2034)
+  and the cloud-top mass-balance stop (2060-2067, 2497-2499) -- stop the
+  whole WRF model. The port returns no convection for the column; the oracle
+  never counts such a column as a match (none occurred in the graded sets).
+- A table index outside the whole `TTAB`/`QSTAB`/`THE0K`/`ALU` array (WRF
+  reads a neighbouring module variable) is clamped to the array so the
+  kernel stays inside its allocation. Every in-bounds index, including the
+  edge cells WRF's own `OUT OF BOUNDS` message flags, reads exactly the
+  Fortran's word: the tables are uploaded in Fortran column-major order.
+- A zero `TMB` in the negative-vapor borrowing divides by zero in WRF and in
+  the port alike; the resulting non-finite tendency is caught by the
+  driver's validation (`validate_kf_outputs`) and stops the run with a named
+  error instead of propagating as it would in WRF.

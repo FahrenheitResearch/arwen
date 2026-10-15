@@ -66,6 +66,14 @@ MOVED_MEMBER_SHA256 = {
         "97c404da2e858eb9d4e3c5c521d8a1352eeaa93d34fafcd6e00a83676520f2b5",
     "spp/native-wrf461.zip":
         "9bc14a88c46b54547a6a19000830a3f4028fbce4b755f5bfb2648e853e4d0f4b",
+    # Moved in 2.9.0 as a single file, re-encoded on the way (xz of byte
+    # planes of longitude differences; gpuwm/core/rrtmg_sw.py
+    # encode_aer1_climatology).  These are the re-encoded bytes; that the
+    # DECODED words are the ones the 2.9.0 aer_opt=1 port was proven on is
+    # rrtmg_aer1_manifest.json's arrays.climatology sha256, which the loader
+    # checks on every load.
+    "wrf_radiation/rrtmg_aer1_climatology.npz":
+        "c48005c8f802c60f42824b6daa358dd13aec7c3d41200a68876ef7eaa3c04509",
     # Moved later in 2.8.7 as a directory, beside the Linux bridges' symbol
     # strip; the digests are the ones they had at e81291059.
     "chem/optics/table-sha256sums.txt":

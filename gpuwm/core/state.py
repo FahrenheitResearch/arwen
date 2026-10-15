@@ -14,6 +14,8 @@ Array layout is ``(nz, ny, nx)`` with x fastest.  Staggering (WRF-ARW):
 
 from __future__ import annotations
 
+from gpuwm.core.column_schemes import COLUMN_SCHEMES
+
 import math
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
@@ -522,7 +524,24 @@ class DomainState:
                 self.rqvften = zeros(nz, ny, nx)
             else:
                 self.rthften = self.rqvften = None
-            if cfg.mp_physics == 50:
+            if cfg.mp_physics == 5:
+                # Ferrier-Aligo (Registry.EM_COMMON:3019): package
+                # fer_mp_hires is moist:qv,qc,qr,qi (qi is the TOTAL ice,
+                # cloud ice and precipitating ice together) + scalar:qt +
+                # state:f_ice_phy,f_rain_phy,f_rimef_phy.  Like P3 it has
+                # one ice mass and no qs/qg, and allocating those would hand
+                # the model two frozen species the scheme never writes.
+                # qt is rebuilt from qc+qr+qi on every FER_HIRES entry
+                # (module_mp_fer_hires.F:388), so it is carried, never
+                # transported (gpuwm/core/fer_hires.py).  The three f_*
+                # fields are WRF state arrays: not advected, carried from
+                # step to step, and set by fer_hires_init on a non-restart
+                # start to F_ICE = F_RAIN = 0 and F_RIMEF = 1 (:2912-2923).
+                for name in ("qi", "qt", "f_ice", "f_rain", "f_rimef"):
+                    setattr(self, name, zeros(nz, ny, nx))
+                self.f_rimef[...] = DTYPE(1.0)
+                self.qi0 = rebuilt("qi0", nz, ny, nx)
+            elif cfg.mp_physics == 50:
                 # P3 one-category (Registry.EM_COMMON:3038).  Deliberately
                 # NOT folded into the tuple below: P3 has ONE ice category
                 # and therefore no qs/qg/effs at all -- allocating them
@@ -573,7 +592,38 @@ class DomainState:
                 for name in EXTRA_SPECIES:
                     setattr(self,name+"0",rebuilt(name+"0",nz,ny,nx))
                 self.effc.fill(DTYPE(10.)); self.effi.fill(DTYPE(25.)); self.effs.fill(DTYPE(50.))
-            elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
+            elif cfg.mp_physics == 2:
+                # Registry.EM_COMMON:3016 has six masses and no radius fields.
+                for name in ("qi", "qs", "qg"):
+                    setattr(self, name, zeros(nz, ny, nx))
+                    setattr(self, name + "0", rebuilt(name + "0", nz, ny, nx))
+            elif cfg.mp_physics == 3:
+                # WSM3 (Registry.EM_COMMON:3017, wsm3scheme): moist:qv,qc,qr
+                # and state:re_cloud,re_ice,re_snow.  Its cloud ice lives in
+                # qc and its snow in qr below 0 C, so it allocates no
+                # qi/qs/qg -- a zero ice field beside a live one would be
+                # the silent-zero-field failure the mp=28 comment above
+                # warns about -- but it does register the radius trio, and
+                # module_physics_init.F:1004-1024 asks WSM3 for all three
+                # under RRTMG.  Background radii are module_model_constants.F
+                # RE_QC_BG/RE_QI_BG/RE_QS_BG (:62-64), the values
+                # module_mp_wsm3.F:166-168 seeds before effectRad_wsm3, in
+                # gpuwm's radiation-facing micron convention.
+                for name in ("effc", "effi", "effs"):
+                    setattr(self, name, zeros(nz, ny, nx))
+                self.effc[...] = DTYPE(2.49)
+                self.effi[...] = DTYPE(4.99)
+                self.effs[...] = DTYPE(9.99)
+            elif cfg.mp_physics in COLUMN_SCHEMES:
+                row = COLUMN_SCHEMES[cfg.mp_physics]
+                for name in row.species:
+                    if name not in ("qv", "qc", "qr"):
+                        setattr(self, name, zeros(nz, ny, nx))
+                        setattr(self, name + "0", rebuilt(name + "0", nz, ny, nx))
+                for name, value in zip(("effc", "effi", "effs"), row.background_radii):
+                    setattr(self, name, zeros(nz, ny, nx))
+                    getattr(self, name)[...] = DTYPE(value)
+            elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 24, 28, 106):
                 common = ("qi", "qs", "qg", "effc", "effi", "effs")
                 number_and_radius = (
                     ("nr", "ni") if cfg.mp_physics == 8 else
@@ -603,6 +653,11 @@ class DomainState:
                     # silently appear on an mp=8 state.
                     (("nc", "nr", "ni", "nwfa", "nifa")
                      if cfg.mp_physics == 28 else ()))))))
+                if cfg.mp_physics == 24:
+                    # mp=24 (WSM7, Registry.EM_COMMON:3034
+                    # moist:qv,qc,qr,qi,qs,qg,qh): WSM6's six masses plus
+                    # the hail mass, and no number moment.
+                    number_and_radius = ("qh",)
                 for name in common + number_and_radius:
                     setattr(self, name, zeros(nz, ny, nx))
                 if cfg.mp_physics == 16:
@@ -653,7 +708,7 @@ class DomainState:
                 # module_model_constants.F.
                 # Gate: tests/test_p3_port.py::
                 # test_the_background_radius_rows_are_a_six_species_partition
-                if cfg.mp_physics in (6, 8, 16, 28):
+                if cfg.mp_physics in (6, 8, 16, 24, 28, 106):
                     # module_model_constants.F WSM6/Thompson background radii,
                     # stored in gpuwm's radiation-facing micron convention.
                     # (RE_QC_BG/RE_QI_BG/RE_QS_BG = 2.49E-6/4.99E-6/9.99E-6
@@ -713,6 +768,8 @@ class DomainState:
                         "qh0", "nc0", "nr0", "ni0", "ns0", "ng0", "nh0")
                 elif cfg.mp_physics == 10:
                     time_copies += ("nr0", "ni0", "ns0", "ng0")
+                elif cfg.mp_physics == 24:
+                    time_copies += ("qh0",)
                 elif cfg.mp_physics == 16:
                     time_copies += tuple(
                         f"{name}0" for name in WDM6_NUMBER_SPECIES)
@@ -781,6 +838,10 @@ class DomainState:
         # (the ``r`` IO flag) and so does gpuwm -- ``tke`` is SERIALIZED and
         # ``tke0`` is REBUILT (written from tke at every dycore.step entry),
         # both classified in gpuwm/io/restart.py.
+        if cfg.bl_pbl_physics == 5 and cfg.bl_mynn_tkeadvect:
+            # Registry.EM_COMMON:1118,3168: scalar qke_adv, not water mass.
+            self.qke_adv = zeros(nz, ny, nx)
+            self.qke_adv0 = rebuilt("qke_adv0", nz, ny, nx)
         if cfg.km_opt == 2:
             self.tke = zeros(nz, ny, nx)
             self.tke0 = rebuilt("tke0", nz, ny, nx)

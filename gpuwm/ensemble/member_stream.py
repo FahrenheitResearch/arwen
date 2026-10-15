@@ -42,6 +42,14 @@ class MemberCudaScope:
         self.stream = stream
         self.pool = pool
         self._release = None
+        self._live_peak = 0
+        self._reserved_peak = 0
+
+    def malloc(self, size):
+        pointer = self.pool.malloc(size)
+        self._live_peak = max(self._live_peak, int(self.pool.used_bytes()))
+        self._reserved_peak = max(self._reserved_peak, int(self.pool.total_bytes()))
+        return pointer
 
     def receipt(self):
         result = {
@@ -52,6 +60,9 @@ class MemberCudaScope:
             "stream_priority": int(self.stream.priority),
             "allocator": "member_owned_memory_pool",
             "model_operation_policy": "unchanged_ordinary_member_operations",
+            "pool_live_peak_bytes": self._live_peak,
+            "pool_reserved_peak_bytes": self._reserved_peak,
+            "pool_peak_sampling": "after_every_successful_member_allocation",
         }
         if self._release is not None:
             result.update(self._release)
@@ -80,7 +91,7 @@ def member_cuda_scope(*, device_id, member_id, array_module=None):
         pool = cuda.MemoryPool()
         owned = MemberCudaScope(device_id=device_id, member_id=member_id,
                                 stream=stream, pool=pool)
-        with member_cfl_scope() as cfl_owner, stream, cuda.using_allocator(pool.malloc):
+        with member_cfl_scope() as cfl_owner, stream, cuda.using_allocator(owned.malloc):
             failure = None
             try:
                 yield owned

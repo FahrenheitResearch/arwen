@@ -534,30 +534,12 @@ def check_python_inventory(path: Path, repo: Path, project: str) -> None:
 
 
 def on_demand_artifacts(repo: Path) -> set[str]:
-    """Names the tagged gpuwm/bridge_assets.py declares ``on_demand=True``.
-
-    They are in each platform bundle and its pins and are not in the platform
-    wheel; ``gpuwm fetch-bridges`` installs them. Read from the tagged source
-    rather than from the wheel under test, so a wheel cannot excuse its own
-    missing file.
-    """
-    path = repo / "gpuwm/bridge_assets.py"
-    for node in ast.parse(path.read_text(encoding="utf-8")).body:
-        target = getattr(node, "target", None)
-        if not (isinstance(node, ast.AnnAssign) and getattr(target, "id", None) == "BUNDLED_ARTIFACTS"):
-            continue
-        calls = getattr(node.value, "elts", [])
-        require(bool(calls) and all(isinstance(call, ast.Call) and getattr(call.func, "id", None) == "BundledArtifact"
-                                    and call.args and isinstance(getattr(call.args[0], "value", None), str)
-                                    for call in calls), "BUNDLED_ARTIFACTS is not a literal roster of declarations")
-        return {call.args[0].value for call in calls
-                if any(keyword.arg == "on_demand" and getattr(keyword.value, "value", None) is True
-                       for keyword in call.keywords)}
-    raise PublicationError(f"no BUNDLED_ARTIFACTS declaration in {path}")
+    """Compatibility reader: all artifacts now ship in the platform wheel."""
+    return set()
 
 
 def check_embedded_natives(path: Path, pins: dict, platform: str | None, on_demand: set[str]) -> dict:
-    """The platform wheel embeds the pinned bundle's binaries less the on-demand ones, byte for byte."""
+    """The platform wheel embeds every pinned native artifact, byte for byte."""
     prefix = "gpuwm/libexec/bridges/"
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
@@ -568,9 +550,8 @@ def check_embedded_natives(path: Path, pins: dict, platform: str | None, on_dema
             return {"platform": None, "artifacts": 0}
         pinned = pins["platforms"][platform]["binaries"]
         _rows(pinned, "native bundle pins")
-        require(on_demand <= {row.get("artifact") for row in pinned},
-                "an on-demand native artifact is not pinned in the bundle, so gpuwm fetch-bridges cannot install it")
-        rows = [row for row in pinned if row.get("artifact") not in on_demand]
+        require(not on_demand, "wheel exclusions are retired; every native artifact must ship")
+        rows = pinned
         expected = _rows(rows, "native bundle pins")
         require(held == set(expected) | {"BUNDLE.json"},
                 "embedded native inventory differs from the wheel-carried part of the proven bundle")

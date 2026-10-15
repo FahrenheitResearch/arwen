@@ -18,16 +18,10 @@ import pytest
 
 from gpuwm.da.obs_point import point_batches, read_tables
 
-try:
-    from arwen_global import obs_table as shared
-except ImportError:                                  # pragma: no cover
-    shared = None
-
-pytestmark = pytest.mark.skipif(
-    shared is None,
-    reason="the shared observation-table package (arwen_global.obs_table) "
-           "is not installed in this environment; it owns the row type and "
-           "the shared operators these tests adapt")
+# The neutral table and its operators are the engine's own since 2.9.0
+# (gpuwm.obs.neutral_table, gpuwm.obs.column_operators); until then this file
+# skipped on every installation without gpuwm-global.
+from gpuwm.obs import neutral_table as shared
 
 ObsRow = getattr(shared, 'ObsRow', None)
 T = datetime(2026, 9, 10, 12, 15, tzinfo=timezone.utc)
@@ -144,7 +138,7 @@ def test_station_pressure_and_sea_level_pressure_are_not_lowest_level_pressure()
 
 
 def test_refractivity_uses_tangent_height_and_shared_operator():
-    from arwen_global.obs_operators import refractivity_n
+    from gpuwm.obs.column_operators import refractivity_n
     col = columns()[0]
     height = 1000.
     z = np.array([500., 2000.])
@@ -180,7 +174,7 @@ def test_refractivity_pressure_is_read_between_layer_interfaces():
     operator's pressure at the tangent height is the column's own; the
     layer-mean heights it used without them put each mass-level pressure
     too high in the column, so the pressure read there was too high."""
-    from arwen_global.obs_operators import refractivity_n
+    from gpuwm.obs.column_operators import refractivity_n
     g, cols, dnw, (psfc, scale_height) = _eta_column()
     height = 5500.
     truth = float(refractivity_n(psfc * np.exp(-height / scale_height), 250., 0.))

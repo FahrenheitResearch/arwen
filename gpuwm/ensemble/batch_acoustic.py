@@ -133,7 +133,7 @@ def prepare_moist_cq(state, cfg):
     if cfg.mp_physics == 0:
         qi = qs = qg = state.qv
         n_mass = 1
-    elif cfg.mp_physics == 1:
+    elif cfg.mp_physics in (1, 3):
         qi = qs = qg = state.qv
         n_mass = 3
     elif getattr(state, "qi", None) is not None and getattr(state, "qs", None) is None:
@@ -141,9 +141,9 @@ def prepare_moist_cq(state, cfg):
         qs = qg = state.scratch((nz, ny, nx), "moist_absent_mass")
         qs[...] = 0.0
         n_mass = 6
-    elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28, 30):
+    elif cfg.mp_physics in (2, 6, 8, 9, 10, 16, 18, 24, 28, 30, 106):
         qi, qs, qg = state.qi, state.qs, state.qg
-        n_mass = 7 if cfg.mp_physics in (9, 18) else 6
+        n_mass = 7 if cfg.mp_physics in (9, 18, 24) else 6
     elif _mass_loading_species(cfg.mp_physics) == ("qi", "qs", "qg"):
         # A NAMED scheme whose capability row declares the six-mass moist
         # package: the same calc_cq call as the Thompson family.
@@ -152,7 +152,7 @@ def prepare_moist_cq(state, cfg):
         n_mass = 6
     else:
         raise ValueError(f"unsupported mp_physics={cfg.mp_physics} for cq")
-    qh = state.qh if cfg.mp_physics in (9, 18) else state.qv
+    qh = state.qh if cfg.mp_physics in (9, 18, 24) else state.qv
     arrays = (state.qv, state.qc, state.qr, qi, qs, qg, qh, cqu, cqv, cqw)
     args = arrays + (_I32(n_mass), _I32(nz), _I32(ny), _I32(nx))
     n = (nz + 1) * (ny + 1) * (nx + 1)

@@ -68,6 +68,11 @@ pub struct Request {
     /// spacing is given.
     #[serde(default)]
     pub spacings_deg: Vec<f64>,
+    /// Horizontal chunk shape `[y, x]` of every gridded array.  Absent:
+    /// the automatic rule (`export::spatial_chunks`); `[0, 0]`: the whole
+    /// plane in one chunk, the layout before spatial chunking existed.
+    #[serde(default)]
+    pub chunk_yx: Option<[usize; 2]>,
     pub provenance: Provenance,
 }
 

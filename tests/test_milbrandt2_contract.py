@@ -302,7 +302,48 @@ def test_transcendentals_are_ieee_not_fast_math():
     assert intrinsics == [], (
         f"unlisted device intrinsics appeared: {intrinsics}")
     # The header note must survive too -- it is the only record of why.
-    assert "TRANSCENDENTALS ARE IEEE, NOT FAST-MATH." in _kernel_source()
+    assert ("TRANSCENDENTALS ARE IEEE, NOT FAST-MATH -- AND THEY ARE WOOF'S "
+            "OWN." in _kernel_source())
+
+
+def test_transcendentals_are_woofs_own_not_cudas():
+    """Every EXP, LOG, LOG10 and REAL**REAL is gfk_*, none is CUDA's.
+
+    THE BREAKAGE.  CUDA's expf/logf/log10f/powf are different functions
+    from the ones WRF's gfortran build calls.  On the WRF v4.6.1 column
+    oracle (tools/milbrandt2_wrf461_oracle) they put the scheme 1-2 ULP off
+    WRF in Part 1's diagnosed numbers and the misses grew to whole-field
+    divergence by the end of the call; with WOOF's own functions every
+    output word matches (tests/test_milbrandt2_wrf461_exact_gpu.py).  That
+    GPU test is the measurement; this one fails on any machine, with no
+    card, the moment a CUDA libm call re-enters either unit.
+    """
+    from pathlib import Path
+
+    import gpuwm.core.kernels as kernels
+
+    kdir = Path(kernels.__file__).parent
+    for unit in ("milbrandt2.cu", "milbrandt2_zet.cu"):
+        code = _code((kdir / unit).read_text(encoding="utf-8"))
+        cuda = {name: len(re.findall(r"(?<![A-Za-z0-9_])" + name + r"\s*\(",
+                                     code))
+                for name in ("powf", "expf", "logf", "log10f", "exp", "log",
+                             "log10", "pow", "exp2f", "cbrtf")}
+        cuda = {name: n for name, n in cuda.items() if n}
+        assert cuda == {}, (
+            f"{unit} calls CUDA's libm {cuda}; WRF's oracle evaluates "
+            "WOOF's gfk_exp/gfk_log/gfk_log10/gfk_pow, not these")
+        assert "gfk_" in code, f"{unit} has no gfk_ transcendental at all"
+    assert kernels.EXTRA_HEADERS["milbrandt2"] == (
+        "glibc_flt32.cuh", "log10_flt32.cuh")
+    assert kernels.EXTRA_HEADERS["milbrandt2_zet"] == (
+        "glibc_flt32.cuh", "log10_flt32.cuh")
+    # And WRF's compiler contracts nothing: both units compile without FMA
+    # in the DEFAULT build, not only under GPUWM_WRF_EXACT=1.
+    assert kernels.module_options("milbrandt2") == ("-std=c++17",
+                                                    "--fmad=false")
+    assert kernels.module_options("milbrandt2_zet") == ("-std=c++17",
+                                                        "--fmad=false")
 
 
 def test_rain_evaporation_is_single_precision_like_the_fortran():
@@ -327,11 +368,10 @@ def test_rain_evaporation_is_single_precision_like_the_fortran():
     # intrinsic gate above: ``in`` dumps the whole translation unit.
     code = _code(_kernel_source())
 
-    guard = ("float No_r = (float)((double)nr\n"
-             "                             * pow((double)LAMr,\n"
-             "                                   (double)(1.0f + "
-             "MY2_alpha_r))\n"
-             "                             * (double)iGR31);")
+    # ``dble(LAMr)**dble(1.+alpha_r)`` is DOUBLE**1.0, which gfortran folds
+    # to the operand, so the product carries no pow.
+    guard = ("float No_r = (float)((double)nr * (double)LAMr * "
+             "(double)iGR31);")
     assert code.count(guard) == 1, (
         "the :3054 overflow guard must compute in double and be rounded "
         "back to float on assignment, exactly as No_r is REAL(4) in WRF")
@@ -496,7 +536,16 @@ def test_registry_row_is_implemented_unverified_and_says_so():
     assert row["implemented"] is True
     assert row["maturity"] == "implemented-unverified"
     assert row["selectors"] == {"mp_physics": 9}
-    assert any("NO ORACLE HAS BEEN RUN" in w for w in row["warnings"])
+    # The column oracle has run and is bitwise; the row says so, and says
+    # what is still missing (a forecast trajectory), which is why the
+    # maturity stays where it is.
+    assert any("COLUMN ORACLE: BITWISE" in w for w in row["warnings"])
+    assert any("NO forecast-trajectory comparison" in w
+               for w in row["warnings"])
+    assert not any("NO ORACLE HAS BEEN RUN" in w for w in row["warnings"])
+    evidence = row["extensions"]["column_oracle_evidence"]
+    assert evidence["strict_build"] == "bitwise on every output word"
+    assert evidence["default_build"] == "bitwise on every output word"
     # RETIRED with the defect it guarded (audit R-067): this asserted
     # ``reachability.state == "component-override"``, which said the only
     # way to this scheme was hand-writing a tuple.  It has a named suite

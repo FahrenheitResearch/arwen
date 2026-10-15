@@ -248,5 +248,6 @@ def uwpbl_radiation_cloud_fraction(atmosphere, cfg, out) -> None:
 
     cldfra = cal_cldfra1(flat("qv"), flat("qc"), flat("qi"), flat("qs"),
                          flat("temperature"), flat("pressure"),
-                         f_qc=True, f_qi=f_qi, f_qs=f_qs)
+                         f_qc=True, f_qi=f_qi, f_qs=f_qs,
+                         mp_physics=int(cfg.mp_physics))
     out[...] = cldfra.reshape(out.shape)

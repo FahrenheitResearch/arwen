@@ -246,6 +246,116 @@ def version_identity_refusal(prov: Provenance | None = None) -> str | None:
     return layered(f"REFUSING: version identity is ambiguous -- {action}", why)
 
 
+#: Top-level packages the gpuwm distribution ships beside ``gpuwm`` whose
+#: code runs inside its forecasts.  They must come from the same release.
+COMPANION_PACKAGES = ("tilestream",)
+
+_PYPROJECT_FIELD = r"""^\s*{field}\s*=\s*["']([^"']+)["']"""
+
+
+def _companion_root(name: str) -> Path | None:
+    """The directory holding the ``name`` package as this process resolves it."""
+
+    import importlib.util
+
+    module = sys.modules.get(name)
+    origin = getattr(module, "__file__", None) if module is not None else None
+    if origin is None:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            return None
+        origin = getattr(spec, "origin", None) if spec is not None else None
+    if not origin or origin in ("namespace", "built-in", "frozen"):
+        return None
+    try:
+        return Path(origin).resolve().parent.parent
+    except OSError:
+        return None
+
+
+def _release_at(root: Path, package: str) -> str | None:
+    """The gpuwm release that ``root`` holds ``package`` for, or None.
+
+    A source tree: the ``[project].version`` of its ``pyproject.toml`` when
+    that names gpuwm.  An installed root (``site-packages``): the
+    ``gpuwm-*.dist-info`` whose RECORD lists ``<package>/__init__.py``.
+    Anything else cannot be answered, and an unanswerable question is
+    silent here like every gate in this module.
+    """
+
+    import re
+
+    try:
+        text = (root / "pyproject.toml").read_text(encoding="utf-8",
+                                                   errors="replace")
+    except OSError:
+        text = None
+    if text is not None:
+        name = re.search(_PYPROJECT_FIELD.format(field="name"), text, re.M)
+        version = re.search(_PYPROJECT_FIELD.format(field="version"), text,
+                            re.M)
+        if name and name.group(1).strip().lower() == "gpuwm" and version:
+            return version.group(1).strip()
+        return None
+    wanted = f"{package}/__init__.py"
+    try:
+        records = sorted(root.glob("gpuwm-*.dist-info"))
+    except OSError:
+        return None
+    for info in records:
+        try:
+            record = (info / "RECORD").read_text(encoding="utf-8",
+                                                 errors="replace")
+        except OSError:
+            continue
+        if any(line.split(",", 1)[0] == wanted
+               for line in record.splitlines()):
+            return info.name[len("gpuwm-"):-len(".dist-info")]
+    return None
+
+
+def companion_identity_refusal(prov: Provenance | None = None) -> str | None:
+    """Why a companion package of another release would run, or None.
+
+    Breakage it prevents (2026-10-05): a box lane venv layered over a base
+    venv that held the 2.8.5 wheel ran gpuwm from the 2.8.6 source but
+    imported ``tilestream`` from the base ``site-packages``.  The run
+    refused a two-rank swint split that 2.8.6 tilestream handles (it
+    gathers the swint grids per rank), and the refusal was reported as an
+    engine defect.  Silent when both come from one root, when the other
+    root's release cannot be read, or when the two releases agree.
+    """
+
+    prov = resolve() if prov is None else prov
+    ours = executing_version(prov)
+    if ours == UNKNOWN_VERSION:
+        return None
+    gpuwm_root = _companion_root("gpuwm")
+    for name in COMPANION_PACKAGES:
+        root = _companion_root(name)
+        if root is None or gpuwm_root is None or root == gpuwm_root:
+            continue
+        theirs = _release_at(root, name)
+        if theirs is None or theirs == ours:
+            continue
+        action = (
+            f"gpuwm {ours!r} is running from {gpuwm_root}, but `import "
+            f"{name}` resolves to gpuwm {theirs!r} in {root}.  Put this "
+            f"tree first (PYTHONPATH={gpuwm_root}) or remove the other "
+            f"install from this environment.")
+        why = (
+            f"{name} ships inside the gpuwm distribution and runs inside "
+            f"its forecasts (tiling, multi-card ranks, streamed state).  A "
+            f"venv layered over a base venv that holds an older gpuwm "
+            f"wheel finds the base copy on sys.path ahead of an editable "
+            f"finder, so the product runs one release's {name} under "
+            f"another release's gpuwm and reports that release's "
+            f"refusals and results as this one's.")
+        return layered(f"REFUSING: mixed releases -- {action}", why)
+    return None
+
+
 def require_consistent_version(command: str,
                                prov: Provenance | None = None) -> None:
     """Raise the version refusal, unless ``command`` is a diagnostic.
@@ -259,6 +369,8 @@ def require_consistent_version(command: str,
     if command in DIAGNOSTIC_COMMANDS:
         return
     refusal = version_identity_refusal(prov)
+    if refusal is None:
+        refusal = companion_identity_refusal(prov)
     if refusal is not None:
         raise ValueError(refusal)
 

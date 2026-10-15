@@ -1,0 +1,24 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# -O0 (THE REFERENCE) libm/libmvec symbols:
+U __module_libmassv_MOD_vsqrt_s
+U exp
+U expf
+U log10
+U logf
+U lroundf
+U pow
+U powf
+# -O2 -ftree-vectorize -funroll-loops (WRF's phys/ flags):
+U _ZGVbN2v_log10
+U __module_libmassv_MOD_vsqrt_s
+U exp
+U expf
+U log10
+U logf
+U lroundf
+U pow
+U powf
+# positive control:
+U _ZGVbN4v_expf
+U expf

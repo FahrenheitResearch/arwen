@@ -147,7 +147,8 @@ _REQUIRED_KEYS = (
 _OPTIONAL_KEYS = (
     "forcing_interval_s", "output_domain", "source_orography",
     "source_orography_variable", "co2_vmr", "water_temperature_overlay",
-    "water_temperature_policy", "preprocess_backend",
+    "water_temperature_policy", "preprocess_backend", "gfs_snow_convention",
+    "gfs_lake_skin",
 )
 _KNOWN_KEYS = frozenset(_REQUIRED_KEYS) | frozenset(_OPTIONAL_KEYS)
 
@@ -486,6 +487,15 @@ class CaseDataConfig:
     #: when it is not declared; declared, it joins the InputCatalog and
     #: the run identity moves exactly when the data does.
     water_temperature_overlay: Path | None = None
+    #: WPS doubles WEASD and derives SNOWH; raw retains the input fields.
+    gfs_snow_convention: str = "wps"
+    #: Skin temperature of a land-use lake on the GFS route.  ``wps``: the
+    #: masked water interpolation with metgrid's whole-array search, so a
+    #: lake GFS does not resolve takes the nearest GFS water, as WPS and
+    #: real.exe (no use_tavg_for_tsk) give it.  ``air_temperature``: the
+    #: inland-water reach (INLAND_WATER_SOURCE_REACH_M), past which such a
+    #: lake takes the 2 m air temperature there instead.
+    gfs_lake_skin: str = "wps"
     #: Which provider decides the water-surface temperature.  Silence is
     #: ``era5_class_coherent``: one provider per surface class and per
     #: connected body of water, which is what makes a bare run's lakes
@@ -906,6 +916,14 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
             orog_path = _resolve_path(base_dir, raw_orography,
                                       "source_orography", source)
 
+    snow_convention = raw.get("gfs_snow_convention", "wps")
+    if snow_convention not in ("wps", "raw"):
+        raise ValueError("gfs_snow_convention must be 'wps' or 'raw'")
+    lake_skin = raw.get("gfs_lake_skin", "wps")
+    if lake_skin not in GFS_LAKE_SKIN_CHOICES:
+        raise ValueError(
+            "gfs_lake_skin must be one of "
+            + ", ".join(repr(choice) for choice in GFS_LAKE_SKIN_CHOICES))
     water_policy = None
     if "water_temperature_policy" in raw:
         from gpuwm.ingest.water_temperature import (
@@ -1038,7 +1056,8 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
         sfcp_to_sfcp=sfcp, co2_vmr=co2, output_title=title,
         output_domain=domain, forcing_interval_s=interval,
         water_temperature_overlay=overlay_path,
-        water_temperature_policy=water_policy,
+        water_temperature_policy=water_policy, gfs_snow_convention=snow_convention,
+        gfs_lake_skin=lake_skin,
         preprocess_backend=preprocess_backend)
 
 
@@ -1078,6 +1097,24 @@ def preparation_case_policy(data, *, sfcp_to_sfcp=None):
         "sfcp_to_sfcp": pressure,
         "water_temperature_policy": resolve_water_temperature_policy(data),
         "water_temperature_overlay": None if overlay is None else str(overlay.resolve()),
+    }
+
+
+#: ``gfs_lake_skin`` values; the first is the default.
+GFS_LAKE_SKIN_CHOICES = ("wps", "air_temperature")
+
+
+def gfs_preparation_policy(data):
+    """The GFS route's own preparation operands, beside the shared ones.
+
+    Kept out of :func:`preparation_case_policy` on purpose: every route
+    binds that dict into its source identity, so a GFS-only key there
+    would move every ERA5 and HRRR preparation's identity (and miss every
+    prepared cache once) for a choice those routes never make.
+    """
+    return {
+        "gfs_snow_convention": "wps" if data is None else data.gfs_snow_convention,
+        "gfs_lake_skin": "wps" if data is None else data.gfs_lake_skin,
     }
 
 

@@ -32,6 +32,25 @@ from gpuwm.offline_child_run import (
     _verify_file_receipts,
 )
 
+# Consumer expectations come from the independent generated declarations.
+from gpuwm.physics_registry import implemented_selector_values as _intake_selectors
+from gpuwm.physics_registry import consumer_rows_by_selector as _intake_rows
+_INTAKE_MP = tuple(sorted(_intake_selectors("microphysics")))
+_INTAKE_REFL = tuple(mp for mp in _INTAKE_MP if mp)
+_INTAKE_EDGES = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "nest_transition").items()
+    if (row or {}).get("mixed_edge_ported")))
+_INTAKE_PRODUCERS = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "reflectivity_input_species").items()
+    if row is not None))
+_INTAKE_NATIVE = tuple(sorted(set(_INTAKE_REFL) - set(_INTAKE_PRODUCERS)))
+_INTAKE_SNOW = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qs" in (row or {}).get("state_fields", ())))
+_INTAKE_SIX = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qg" in (row or {}).get("state_fields", ())))
+
 
 def _variable(dataset, name, dims, value):
     variable = dataset.createVariable(name, "f4", dims)
@@ -73,10 +92,13 @@ def test_offline_child_capabilities_are_warning_only_and_exact(capsys):
     # different scheme is converted by the online nest edge's own contract
     # and kernel on the parent archive, for every ordered pair of the
     # schemes that edge ports; the one edge without a contract is mp=0.
+    # 2.8.9 pinned [0, 1, 6, 8, 9, 10, 16, 18, 28, 50]; the ports add 2, 3,
+    # 4, 24 and 106.  Ferrier-Aligo (5), FAST_SBM (30) and TEMPO (900) are
+    # refused by name in their registry rows (rime factor, bin spectra,
+    # graupel volume), so none of them is a same-scheme offline parent.
     assert capability["same_scheme_mp_physics"] == [
-        0, 1, 6, 8, 9, 10, 16, 18, 28, 50]
-    assert capability["cross_scheme_transitions"]["mp_physics"] == [
-        1, 6, 8, 9, 10, 16, 18, 28, 50]
+        0, 1, 2, 3, 4, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106]
+    assert capability["cross_scheme_transitions"]["mp_physics"] == list(_INTAKE_EDGES)
     assert capability["cross_scheme_transitions"]["order"] == (
         "diagnose-parent-then-spatially-interpolate")
     # Was pinned to False while the runner refused any child whose nz
@@ -315,8 +337,7 @@ def test_the_cross_scheme_contract_is_the_online_ported_set():
 
     assert PARENT_SCHEME_CONTRACT == (
         OFFLINE_CHILD_MP_PHYSICS & frozenset(mt.PORTED_MP_PHYSICS))
-    assert PARENT_SCHEME_CONTRACT == frozenset(
-        {1, 6, 8, 9, 10, 16, 18, 28, 50})
+    assert PARENT_SCHEME_CONTRACT == frozenset(_INTAKE_EDGES)
     for source in sorted(PARENT_SCHEME_CONTRACT):
         for target in sorted(PARENT_SCHEME_CONTRACT):
             assert offline_cross_scheme_refusal(source, target) is None

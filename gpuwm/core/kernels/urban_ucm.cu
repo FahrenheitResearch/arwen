@@ -8,6 +8,8 @@
 // IMP_SCHEME=2 water-retention updates, which omit the vapor-flux-to-water-
 // depth conversion RHOO/1000. The later correction is retained here.
 // IMP_SCHEME=1, the shipped table default, is unchanged between references.
+// Water balance alone defaults to WRF v4.8.0: weak rain does not suppress
+// evaporation. SW_WATER_BALANCE=0 explicitly retains the older clamps.
 // The compiled CPU twin includes this file: urban_ucm_host.cpp.
 //
 //   ucm_urban        subroutine urban            305-1692
@@ -36,13 +38,10 @@
 //  * every float op is an explicit rounding intrinsic (FADD/FSUB/FMUL/FDIV/
 //    FSQRT from glibc_flt32.cuh), so nvcc cannot contract a*b+c into an FMA
 //    gfortran -O0 never forms, and evaluation is Fortran's left to right;
-//  * EXP/LOG/x**real are glibc's expf/logf/powf: gfk_exp/gfk_log/gfk_pow.
+//  * EXP/LOG/x**real use WOOF's own float32 routines: gfk_exp/gfk_log/gfk_pow.
 //    gfortran -O0 calls powf for EVERY real exponent, 2. 3. 4. included;
 //    x**integer is libgcc's __powisf2 (u_powi);
-//  * ATAN and LOG10: glibc 2.43's atanf and log10f are CORE-MATH, correctly
-//    rounded (measured: double atan/log10 rounded once matched glibc 2.43 on
-//    every normal input of a 1/97 sweep of all float32, while the fdlibm
-//    atanf gpuwm carries for glibc 2.39 missed 217,462 of them);
+//  * ATAN and LOG10 round the double result once, as pinned by the oracle;
 //  * constant subexpressions gfortran folds at compile time are the folded
 //    words, read off gfortran 15.2 itself (tools/urban_wrf471_oracle/
 //    build_ucm.sh), never re-folded by nvcc.
@@ -187,7 +186,8 @@ __constant__ float u_gr_param[21] = {
 #define SW_IRI 8
 #define SW_GR 9
 #define SW_NUT 10
-#define SW_N 11
+#define SW_WATER_BALANCE 11
+#define SW_N 12
 
 // ucm_urban return codes; the launcher turns a nonzero into a refusal.
 #define UCM_OK 0
@@ -799,6 +799,17 @@ __device__ void u_shflx(float* stc, const float* smc, float smcmax, float yy,
 // ---------------------------------------------------------------------------
 // urban (305-1692)
 // ---------------------------------------------------------------------------
+__device__ float ucm_water_update(float prior, float flux, float rain1,
+                                  float rho_air, float dt, float porosity,
+                                  float rain, int generation)
+{
+    if (flux <= 0.0f) flux = 0.0f;
+    float water = FADD(prior, FDIV(FMUL(FSUB(rain1,
+        FDIV(FMUL(flux, rho_air), 1000.0f)), dt), porosity));
+    if (generation == 0 && rain > 0.0f && water < prior) water = prior;
+    return water;
+}
+
 __device__ int ucm_urban(const float* __restrict__ tab,
                          const float* __restrict__ glob,
                          const int* __restrict__ isw, UcmCol& c)
@@ -961,9 +972,8 @@ __device__ int ucm_urban(const float* __restrict__ tab,
     }
     if (imp_scheme == 2) {
         if (flxhumrp <= 0.0f) flxhumrp = 0.0f;
-        c.drelr = FADD(drelrp, FDIV(FMUL(FSUB(rain1, FDIV(FMUL(flxhumrp, c.rhoo), 1000.0f)),
-                                         c.delt), porimp[0]));
-        if (c.rain > 0.0f && c.drelr < drelrp) c.drelr = drelrp;
+        c.drelr = ucm_water_update(drelrp, flxhumrp, rain1, c.rhoo, c.delt,
+                                  porimp[0], c.rain, isw[SW_WATER_BALANCE]);
         if (c.drelr <= 0.0f) {
             c.drelr = 0.0f;
             betr = 0.0f;
@@ -1149,12 +1159,10 @@ __device__ int ucm_urban(const float* __restrict__ tab,
     if (imp_scheme == 2) {
         if (flxhumbp <= 0.0f) flxhumbp = 0.0f;
         if (flxhumgp <= 0.0f) flxhumgp = 0.0f;
-        c.drelb = FADD(drelbp, FDIV(FMUL(FSUB(rain1, FDIV(FMUL(flxhumbp, c.rhoo), 1000.0f)),
-                                         c.delt), porimp[1]));
-        if (c.rain > 0.0f && c.drelb < drelbp) c.drelb = drelbp;
-        c.drelg = FADD(drelgp, FDIV(FMUL(FSUB(rain1, FDIV(FMUL(flxhumgp, c.rhoo), 1000.0f)),
-                                         c.delt), porimp[2]));
-        if (c.rain > 0.0f && c.drelg < drelgp) c.drelg = drelgp;
+        c.drelb = ucm_water_update(drelbp, flxhumbp, rain1, c.rhoo, c.delt,
+                                  porimp[1], c.rain, isw[SW_WATER_BALANCE]);
+        c.drelg = ucm_water_update(drelgp, flxhumgp, rain1, c.rhoo, c.delt,
+                                  porimp[2], c.rain, isw[SW_WATER_BALANCE]);
         if (c.drelb <= 0.0f) {
             c.drelb = 0.0f;
             betb = 0.0f;

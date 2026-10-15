@@ -114,18 +114,23 @@ fn basemap_root_candidates() -> Vec<PathBuf> {
         }
     }
 
-    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .map(Path::to_path_buf);
-    if let Some(workspace_root) = workspace_root {
-        push(workspace_root.join("assets").join("basemap"));
-        push(
-            workspace_root
-                .join("rustbox-fresh")
-                .join("assets")
-                .join("basemap"),
-        );
+    // A development fallback may refer to this checkout. Release binaries
+    // use explicit or runtime-relative assets and must not embed its path.
+    #[cfg(debug_assertions)]
+    {
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf);
+        if let Some(workspace_root) = workspace_root {
+            push(workspace_root.join("assets").join("basemap"));
+            push(
+                workspace_root
+                    .join("rustbox-fresh")
+                    .join("assets")
+                    .join("basemap"),
+            );
+        }
     }
 
     candidates

@@ -1,0 +1,220 @@
+{
+  "schema": "gpuwm.nwpsuite.receipts.v1",
+  "note": "Provenance for the measured and planned numbers the suite tables carry. Each row of rates.v1.json and references.v1.json whose source is a receipt cites it here by id. Measured rows record what was timed, on what card and build, and the values the table copies; planned rows say so.",
+  "receipts": {
+    "hrrr-conus-multicard-2026-10-03": {
+      "kind": "measured",
+      "date": "2026-10-03",
+      "what": "HRRR CONUS 3 km full grid (1797 x 1057 x 50) forecast stepping rate by card count, free-threaded Python 3.14t",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "68c1f4092 (2.8.6 line)",
+      "values": {
+        "stepping_s_per_fh_2_cards": 222.7,
+        "stepping_s_per_fh_4_cards": 130.0
+      },
+      "used_by": [
+        "rates:cam-full-4",
+        "rates:cam-member-2"
+      ]
+    },
+    "hrrr-conus-8card-48h-2026-10-04": {
+      "kind": "measured",
+      "date": "2026-10-04",
+      "what": "HRRR CONUS 3 km 48 h forecast on 8 cards: 46.8 min wall, 58.5 s per forecast hour; the repeat was byte-identical and 4- and 8-card runs were identical",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "e62a72e48",
+      "values": {
+        "wall_minutes_48h": 46.8,
+        "all_in_s_per_fh": 58.5
+      },
+      "limits": "the surviving summary does not fix the timing boundary (startup in or out)",
+      "used_by": [
+        "rates:cam-full-8"
+      ]
+    },
+    "rrfs-conus12km-1card-2026-10-08": {
+      "kind": "measured",
+      "date": "2026-10-08",
+      "what": "gpuwm-hex RRFS v2 shape on the conus12km mesh, 6 h door run on one card: 1,097.1 s (360 steps, 7 frames, door passed)",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "2.8.8 (e96312af2; bit-identical f01 on the 2.8.8 release merge)",
+      "values": {
+        "stepping_s_per_fh": 182.9
+      },
+      "memory": "passed on one 96 GB card; peak not recorded, so the table uses a full-card bound",
+      "used_by": [
+        "rates:lam-coarse-1"
+      ]
+    },
+    "rrfs-conus3km-8card-2026-10-05": {
+      "kind": "measured",
+      "date": "2026-10-05",
+      "what": "gpuwm-hex on NOAA's RRFS v2 conus3km mesh (2,341,818 cells, 59 layers), 6 h on 8 cards: steady stepping 484 s per forecast hour, about 966 s per forecast hour end to end with hourly output, about 53 min fixed startup, peak 54,074 MiB per card",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "pre-2.8.7 hex branch",
+      "values": {
+        "stepping_s_per_fh": 484,
+        "all_in_s_per_fh": 966,
+        "startup_s": 3180,
+        "peak_mib_per_card": 54074
+      },
+      "used_by": [
+        "rates:lam-fine-8"
+      ]
+    },
+    "hex-patch48-3-lts-1card-2026-10-11": {
+      "kind": "measured",
+      "date": "2026-10-11",
+      "what": "gpuwm-hex 48-3 km patch mesh with local time stepping on one card: 67.9 s per forecast hour against 135.8 for fixed stepping (warm caches); LTS peak 34,035 MiB",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "hex integration line",
+      "values": {
+        "stepping_s_per_fh": 67.9,
+        "peak_mib_per_card": 34035
+      },
+      "used_by": [
+        "rates:patch-1",
+        "references:meshes/patch48-3"
+      ]
+    },
+    "hex-global-15km-8card-2026-10-10": {
+      "kind": "measured",
+      "date": "2026-10-10",
+      "what": "gpuwm-hex global 15 km (x1.2621442) 24 h GFS-started run on 8 cards at the MPAS-A defaults: first step at 792 s, 49.7 s stepping plus 2.5 s output per forecast hour; peak 60,273 to 62,967 MiB per card on the 15 km suite runs",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "hex ops-cycle line",
+      "values": {
+        "stepping_s_per_fh": 49.7,
+        "all_in_s_per_fh": 52.2,
+        "startup_s": 792,
+        "peak_mib_per_card": 62967
+      },
+      "used_by": [
+        "rates:global-fine-8",
+        "references:meshes/x1.2621442"
+      ]
+    },
+    "hex-global-30km-2card-2026-10-11": {
+      "kind": "measured",
+      "date": "2026-10-11",
+      "what": "gpuwm-hex global 30 km (x1.655362) on 2 cards: 22.8 s per forecast hour; the 6 h cycle forecast reached its first step in 86 s; peak 58,229 to 58,967 MiB per card",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "hex capacity and cycling lines",
+      "values": {
+        "stepping_s_per_fh": 22.8,
+        "startup_s": 86,
+        "peak_mib_per_card": 58967
+      },
+      "used_by": [
+        "rates:global-coarse-2",
+        "rates:da-background-score-2",
+        "references:meshes/x1.655362"
+      ]
+    },
+    "hex-global-30km-ensemble-member-2026-10-11": {
+      "kind": "measured",
+      "date": "2026-10-11",
+      "what": "gpuwm-hex global 30 km ensemble member, 72 h, door start to passed: 2,938 s with five members on five cards at once (40.8 s per forecast hour); peak 84,334 MiB per member with New Tiedtke",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "hex 2e0846b",
+      "values": {
+        "all_in_s_per_fh": 40.80555555555556,
+        "measured_lead_hours": 72,
+        "peak_mib_per_card": 84334
+      },
+      "used_by": [
+        "rates:global-member-1"
+      ]
+    },
+    "hex-global-30km-ensemble-igra2-2026-10-11": {
+      "kind": "measured",
+      "date": "2026-10-11",
+      "what": "the 21-member gpuwm-hex 30 km ensemble verified at IGRA2 radiosondes (483 to 498 stations per time) for z500, t850 and 250 hPa wind to 72 h, beside GEFS",
+      "used_by": [
+        "references:upper/igra2"
+      ]
+    },
+    "hex-country-patch-2card-2026-10-11": {
+      "kind": "measured",
+      "date": "2026-10-11",
+      "what": "gpuwm-hex 48-3 km country patch (ph48-3) 48 h forecasts on 2 cards: 141 to 150 wall seconds per forecast hour, 131 to 145 s steady between outputs, start-up to first step 461 to 482 s cold; peak 46,731 MiB per card",
+      "card_model": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+      "build": "hex add2b85",
+      "values": {
+        "stepping_s_per_fh": 145,
+        "all_in_s_per_fh": 150,
+        "startup_s": 482,
+        "peak_mib_per_card": 46731
+      },
+      "used_by": [
+        "rates:country-patch-2",
+        "references:meshes/ph48-3",
+        "references:polygons/archipelago-grid"
+      ]
+    },
+    "hex-variable-mesh-plan-2026-10-12": {
+      "kind": "projected",
+      "date": "2026-10-12",
+      "what": "the gpuwm-hex local-time-stepping planner's layout of the x5.6488066 variable mesh (6,488,066 cells; 3,490,426 at rate 1, 492,120 at rate 2, 2,505,520 at rate 4; fixed over LTS work ratio 1.487) priced on 8 cards",
+      "values": {
+        "stepping_s_per_fh": 276.8,
+        "peak_mib_per_card": 64205
+      },
+      "limits": "a projection; it underestimated the measured coarse variable-mesh case by 1.7x",
+      "used_by": [
+        "rates:variable-fine-8-projected",
+        "references:meshes/x5.6488066"
+      ]
+    },
+    "stock-mpas-jedi-30km-cycling-2026-10-04": {
+      "kind": "measured",
+      "date": "2026-10-04",
+      "what": "stock MPAS-JEDI 4.0.1 3DEnVar on the 30 km x1.655362 mesh, 55 levels, 32 CPU ranks, six-hourly cycles from public prepBUFR (conventional observations): the 2026-10-04 18Z solve took 543 s; 240 GB peak resident across the ranks (230 GiB declared to the memory gate)",
+      "build": "MPAS-JEDI 4.0.1",
+      "values": {
+        "startup_s": 543,
+        "host_memory_mib": 245760
+      },
+      "used_by": [
+        "rates:da-stock-solve",
+        "rates:da-background-score-2",
+        "references:obs/conventional"
+      ]
+    },
+    "stock-mpas-jedi-30km-gnssro-radiance-2026-10-11": {
+      "kind": "measured",
+      "date": "2026-10-11",
+      "what": "stock MPAS-JEDI 4.0.1 3DEnVar on the 30 km global mesh with GEFS 20 members ran GNSS radio occultation and satellite radiance observation spaces end to end (335.18 s on 64 CPU ranks)",
+      "build": "MPAS-JEDI 4.0.1",
+      "used_by": [
+        "references:obs/gnssro",
+        "references:obs/radiance"
+      ]
+    },
+    "hex-products-30km-48h-2026-10-11": {
+      "kind": "measured",
+      "date": "2026-10-11",
+      "what": "the gpuwm-hex product door drew the 30 km global 0-48 h standard set (426 maps, 54 soundings, 6 meteograms) in 3 min 53 s on the CPU",
+      "values": {
+        "startup_s": 233
+      },
+      "used_by": [
+        "rates:products-standard"
+      ]
+    },
+    "suite-capacity-plan-2026-10-12": {
+      "kind": "planned",
+      "date": "2026-10-12",
+      "what": "planning floors from the two-box suite capacity plan, not measurements: HRRR ensemble member on 2 cards 67 min (4,020 s); RRFS v2 shape 12 km 18 h 58 min (3,480 s); CONUS 3 km hex patch 18 h 23 min (1,380 s); global 30 km 120 h on 2 cards 49 min (2,940 s); the 30 km DA background and score 16 min (960 s). The default publish target is a local index; anything external needs the operator's yes",
+      "used_by": [
+        "rates:cam-member-2",
+        "rates:lam-coarse-1",
+        "rates:patch-1",
+        "rates:global-coarse-2",
+        "rates:da-background-score-2",
+        "references:publish/local-index",
+        "templates:agency-2box"
+      ]
+    }
+  }
+}

@@ -51,6 +51,25 @@ def test_terrain_drag_divisions_use_the_direct_non_ftz_production_route():
     assert "terrain_drag.cu" in FTZ_FALSE_SOURCES
 
 
+def test_cumulus_and_lightning_exceptions_compile_without_ftz():
+    """2.9.0 round 2: g3.cu, nsas.cu and lightning.cu are exempt only because
+    their loaders never append -ftz=true; if a route changes, the exception
+    must go and their constant divisions must take __fdiv_rn."""
+    from gpuwm.core import kernels
+
+    for module in ("g3", "nsas"):
+        assert module in kernels._NO_FTZ_MODULES
+        assert "--ftz=false" in kernels.module_options(module)
+        assert "--fmad=false" in kernels.module_options(module)
+        assert f"{module}.cu" in FTZ_FALSE_SOURCES
+    source = (REPO_ROOT / "gpuwm" / "core" / "kernels" / "__init__.py").read_text(
+        encoding="utf-8")
+    block = source[source.index('    if name == "lightning":' + chr(10) + '        from gpuwm import nvrtc_ptx_cache'):]
+    block = block[:block.index("return mod")]
+    assert '("-std=c++17", "--ftz=false", "--fmad=false")' in block
+    assert "lightning.cu" in FTZ_FALSE_SOURCES
+
+
 def test_kernel_sources_divide_by_float_constants_only_through_fdiv_rn():
     """A146: every -ftz=true kernel source spells a constant divisor as
     ``__fdiv_rn(x, C)``; a plain ``x / C`` is rounded one ULP off on

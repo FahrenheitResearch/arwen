@@ -155,6 +155,16 @@ def test_a_match_that_skipped_a_reference_field_fails():
     assert _decide(comparisons={"scalar": comparison}, designated=False) == "INFO-MISS"
 
 
+def test_an_engine_crash_after_complete_history_is_never_pass():
+    # The verify-exact crash-pass defect (roadmap 2026-10-12): an engine error
+    # after the last history write (checkpoint capture, teardown) left every
+    # frame matching, and the run scored PASS with exit 0.
+    assert _decide(woof_status="CRASH") == "WOOF-CRASH"
+    assert _decide(woof_status="CRASH", designated=False) == "WOOF-CRASH"
+    assert _decide(woof_status="CRASH", referee_sound=False) == "WOOF-CRASH"
+    assert _decide() == "PASS"
+
+
 # -- hole 3: WOOF-only runs must reach every planned step -------------------
 
 def test_h5_a_woof_only_run_that_stopped_early_is_not_ok():

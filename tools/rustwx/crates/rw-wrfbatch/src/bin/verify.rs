@@ -12,7 +12,7 @@ use std::process::ExitCode;
 pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
-const ABI:&str="gpuwm.verify-visuals.request.v1\tgpuwm.verify-visuals.receipt.v1\tgpuwm.verify-visuals.inventory.v1\tstations\tradar\tartifacts\tnative-scoring\tnative-rendering\tcase-scorecard-inputs-v1";
+use crate::cli_contracts::VERIFY as ABI;
 const USAGE:&str="rw_verify --request REQUEST.json --json RECEIPT.json [--image CARD.png]\nrw_verify --inventory REQUEST.json\nrw_verify --prepare REQUEST.json --json PREPARED_REQUEST.json\nrw_verify --help | --abi";
 
 fn prepare(request: &VerificationRequest) -> Result<Value, String> {
@@ -314,7 +314,7 @@ fn score(
     Ok(receipt)
 }
 
-fn main() -> ExitCode {
+pub(crate) fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|a| a == "--abi") {

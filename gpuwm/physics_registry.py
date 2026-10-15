@@ -422,6 +422,8 @@ REGISTRY_PHYSICS_IDENTITY_SCHEMA = "gpuwm-physics-registry-parts-v3"
 
 #: Top-level blocks no selection's physics identity binds.
 REGISTRY_BLOCKS_OUTSIDE_PHYSICS_IDENTITY: Mapping[str, str] = {
+    "diagnostic_packages": "passive package descriptions; selected parameters and compiled kernels bind the diagnostic identity",
+    "diagnostic_state": "WRF diagnostic field metadata; checkpoint inventory binds the actual fields",
     "template_aliases": "historical profile spellings, not executable settings",
     "authority": (
         "the registry's declarations of its own contracts and the WRF "
@@ -874,6 +876,54 @@ def _selected_option_ids(options: Mapping[str, object] | None,
     return (wanted,) if isinstance(wanted, str) else tuple(wanted or ())
 
 
+def _unselected_identity_extensions(components, chosen):
+    """Additive option facts bind when that option enters the selection.
+
+    Established transition rows remain bound globally as in the prior schema;
+    adding an unused option must not invalidate an existing prepared proof.
+    """
+    excluded = {}
+    for component_id, component in components.items():
+        if not isinstance(component, Mapping):
+            continue
+        selected = set(chosen.get(component_id, ()))
+        excluded[component_id] = {
+            name: option for name, option in component.get("options", {}).items()
+            if name not in selected and isinstance(option, Mapping)
+            and option.get("physics_identity_extension", {}).get("transitions") is True}
+    return excluded
+
+
+def _transition_identity_scope(transitions, excluded):
+    if not isinstance(transitions, Mapping):
+        return transitions
+    return {name: {**policy, "cross_options": [
+        row for row in policy.get("cross_options", ())
+        if row.get("parent_option_id") not in excluded.get(policy.get("component_id"), {})
+        and row.get("child_option_id") not in excluded.get(policy.get("component_id"), {})]}
+        if isinstance(policy, Mapping) and "cross_options" in policy else policy
+        for name, policy in transitions.items()}
+
+
+def _option_identity_scope(option, excluded):
+    # MYNN's registry row carries a scheme-indexed F_QS table. Removing
+    # only unused additive IDs preserves the prior table and binds every
+    # established ID, including deliberate true/false changes to old IDs.
+    if not isinstance(option, Mapping):
+        return option
+    extension = option.get("extensions", {}).get("supplied_moisture_species")
+    if not isinstance(extension, Mapping):
+        return option
+    ids = {value for row in excluded.get("microphysics", {}).values()
+           for key, value in row.get("selectors", {}).items() if key == "mp_physics"}
+    if not ids:
+        return option
+    fields = {key: [value for value in values if value not in ids]
+              if key in {"flag_qs_true_microphysics_selectors", "flag_qs_false_microphysics_selectors"} else values
+              for key, values in extension.items()}
+    return {**option, "extensions": {**option["extensions"], "supplied_moisture_species": fields}}
+
+
 def registry_physics_part_sources(
         registry: Mapping[str, object] | None = None,
         *,
@@ -899,12 +949,13 @@ def registry_physics_part_sources(
         f"{component_id}.{option_id}"
         for component_id, chosen in chosen_by_component.items()
         for option_id in chosen}
+    excluded = {} if every else _unselected_identity_extensions(components, chosen_by_component)
     parts: dict[str, object] = {
         "document": {
             "schema": selected.get("schema"),
             "registry_version": selected.get("registry_version"),
         },
-        "transitions": selected.get("transitions"),
+        "transitions": _transition_identity_scope(selected.get("transitions"), excluded),
     }
     parameters = selected.get("parameters")
     if isinstance(parameters, Mapping):
@@ -931,7 +982,7 @@ def registry_physics_part_sources(
             # An option the registry does not carry is a part of its own
             # (null), so a receipt that names one differs by name.
             parts[f"components.{component_id}.options.{option_id}"] = (
-                available.get(option_id))
+                _option_identity_scope(available.get(option_id), excluded))
     templates = selected.get("templates")
     templates = templates if isinstance(templates, Mapping) else {}
     for template_id in (tuple(templates) if every
@@ -3310,6 +3361,38 @@ def validate_physics_plan(
             if name in selector_owners and _is_json_scalar(value):
                 settings[name] = value
 
+        # Some scheme-only controls must stay at their declared default
+        # when their consumer is inactive, or the run would discard them.
+        for name, spec in parameter_specs.items():
+            if not isinstance(spec, dict) or spec.get("inactive_value_policy") != "require-default":
+                continue
+            if registry_knob_is_read(name, settings, selected_registry):
+                continue
+            value = _effective_setting(name, settings, parameter_specs)
+            if value != spec.get("default"):
+                errors.append(_issue(
+                    "parameter-value", f"{base_path}.parameters.{name}",
+                    f"{name}={value!r} needs {spec.get('read_when')}; "
+                    "the inactive consumer would discard its nondefault value"))
+        # A new parameter can declare the consumers that read a moved value.
+        # Defaults remain inert outside them, preserving existing identities.
+        for name, spec in parameter_specs.items():
+            if not isinstance(spec, dict):
+                continue
+            required = spec.get("nondefault_requires_components")
+            if not isinstance(required, dict):
+                continue
+            value = _effective_setting(name, settings, parameter_specs)
+            if _same_value(value, spec.get("default")):
+                continue
+            for component, allowed in required.items():
+                if resolved_components.get(component) not in allowed:
+                    errors.append(_issue(
+                        "parameter-consumer", f"{base_path}.parameters.{name}",
+                        f"{name}={value!r} would be ignored: it requires "
+                        f"{component} in {allowed!r}; leave it at its default "
+                        "or select a consuming option"))
+
         # Use the run door's coupling law after parameter values resolve.
         from types import SimpleNamespace
         from gpuwm.config import validate_noah_mosaic_config
@@ -3360,6 +3443,25 @@ def validate_physics_plan(
                 law(coupled)
             except (ValueError, NotImplementedError) as exc:
                 errors.append(_issue("pbl-coupling", base_path, str(exc)))
+        # The lightning package's producers, by the same law: the nested
+        # route offers lightning_option as a free per-domain knob, and the
+        # run door refuses options 1 and 2 without do_radar_ref=1, 11 without
+        # a cumulus cloud top and 3 without a graupel scheme
+        # (gpuwm.lightning_contract.validate_lightning).  Plan review called
+        # 602 such plans launchable on the 2.9.0 round-2 tree
+        # (tests/test_authority_agreement.py), so it asks the run door's own
+        # function rather than a copy of its producer tables.
+        from gpuwm.lightning_contract import (LIGHTNING_DEFAULTS,
+                                              validate_lightning)
+        try:
+            validate_lightning(SimpleNamespace(
+                **{name: settings.get(name, default)
+                   for name, default in LIGHTNING_DEFAULTS.items()},
+                moist=settings.get("moist", True),
+                mp_physics=settings.get("mp_physics", 0),
+                cu_physics=settings.get("cu_physics", 0)))
+        except ValueError as exc:
+            errors.append(_issue("lightning-dependency", base_path, str(exc)))
 
         # AUDIT R-005, and it runs HERE -- after every source of a setting
         # and before the constraint battery below -- because the value it

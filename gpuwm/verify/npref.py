@@ -1005,7 +1005,7 @@ def np_kessler_column(t, qv, qc, qr, rho, pii, z, dz8w, dt, rainnc=0.0):
     rcgs = 0.001 * rho
 
     qc = np.maximum(qc - qrprod, 0.0)
-    qr = prodk                                   # qr = (qr + prod - qr)
+    qr = (qr + prodk) - qr                       # the file's own expression
     qr = np.maximum(qr + qrprod, 0.0)
 
     temp = pii * t
@@ -1013,6 +1013,7 @@ def np_kessler_column(t, qv, qc, qr, rho, pii, z, dz8w, dt, rainnc=0.0):
     gam = 2.5e6 / (1004.0 * pii)
     es = 1000.0 * c.SVP1 * np.exp(c.SVP2 * (temp - c.SVPT0)
                                   / (temp - c.SVP3))
+    es = np.minimum(es, 0.99 * pressure)         # WOOF's es >= p guard
     qvs = c.EP2 * es / (pressure - es)
     prod = (qv - qvs) / (1.0 + pressure / (pressure - es) * qvs * f5
                          / (temp - c.SVP3) ** 2)
@@ -4983,7 +4984,8 @@ def np_sfclay(u, v, t, qv, p, dz8w, psfc, tsk, znt, pblh, mavail,
 # phys/module_sf_noahlsm.F (SFLX and its full subtree).  One call
 # integrates ONE column in float64; gpuwm/core/kernels/noah.cu is the
 # FP32 device twin.  UA_PHYS / FASDAS / WRF_HYDRO / urban canopy /
-# SFCDIF_off / SFLX_GLACIAL are not ported (see gpuwm/core/noah.py).
+# SFCDIF_off are not ported (see gpuwm/core/noah.py); SFLX_GLACIAL is
+# (_noah_glacial, since 2026-10-12).
 #
 # Constant discipline: module_sf_noahlsm's OWN parameters are kept as the
 # file literals below (RD = 287.04, SIGMA = 5.67e-8, PENMAN's local
@@ -5915,6 +5917,180 @@ def _noah_snopac(etp, prcp, prcpf, snowng, smc, smcmax, smcwlt, smcref,
                 reslin=reslin)
 
 
+def _noah_glacial(ffrozp, dt, nsoil, sldpth, lwdn, solnet, sfcprs, prcp,
+                  sfctmp, q2, th2, q2sat, dqsdt2, alb, snoalb, tbot, z0brd,
+                  emissi, embrd, t1, stc, snowh, sneqv, sncovr, ch,
+                  snotime1, ribb, lvcoef):
+    """SFLX_GLACIAL (WRF v4.6.1 phys/module_sf_noahlsm_glacial_only.F) in
+    float64: the land-ice column the driver's ICE == -1 arm calls.  Mutates
+    ``stc``; returns a dict of what the driver consumes.  kernels/noah.cu's
+    noah_sflx_glacial is the FP32 twin; both are graded against WRF's own
+    words by tests/test_noah_wrf461_parity.py."""
+    tfreez = _NTFREEZ
+    zsoil = [-sldpth[0]]
+    for kz in range(1, nsoil):
+        zsoil.append(-sldpth[kz] + zsoil[kz - 1])
+    if sneqv < 0.10:
+        sneqv, snowh = 0.10, 0.50
+    sndens = sneqv / snowh
+    sncond = _noah_csnow(sndens)
+    snowng = frzgra = False
+    if prcp > 0.0:
+        if ffrozp > 0.5:
+            snowng = True
+        elif t1 <= tfreez:
+            frzgra = True
+    if snowng or frzgra:
+        sn_new = prcp * dt * 0.001
+        sneqv = sneqv + sn_new
+        prcpf = 0.0
+        snowh, sndens = _noah_snow_new(sfctmp, sn_new, snowh, sndens)
+        if sncovr > 0.99:
+            if stc[0] < tfreez - 5.0:
+                sndens = 0.2
+            if snowng and t1 < 273.0 and sfctmp < 273.0:
+                sndens = 0.2
+        sncond = _noah_csnow(sndens)
+    else:
+        prcpf = prcp
+    del prcpf  # SNOPAC's PRCP1 is computed and never read
+    sncovr = 1.0
+    albedo, emissi, snotime1 = _noah_alcalc(alb, snoalb, embrd, 1.0, dt,
+                                            snowng, snotime1, lvcoef)
+    df1 = sncond
+    dsoil = -(0.5 * zsoil[0])
+    dtot = snowh + dsoil
+    df1 = (snowh / dtot) * sncond + (dsoil / dtot) * df1
+    if dtot > 2.0 * dsoil:
+        dtot = 2.0 * dsoil
+    ssoil = df1 * (t1 - stc[0]) / dtot
+    burial = 7.0 * z0brd - snowh
+    z0 = 0.001 if burial <= 0.0007 else burial / 7.0
+    fdown = solnet + lwdn
+    t2v = sfctmp * (1.0 + 0.61 * q2)
+    rch = sfcprs / (_NRD * t2v) * _NCP_PEN * ch
+    t24 = sfctmp * sfctmp * sfctmp * sfctmp
+    # PENMAN (glacial): latent heat by T1, not by snow cover
+    if t1 > 273.15:
+        elcp1, lvs = _NELCP, _NLSUBC
+    else:
+        elcp1, lvs = _NELCP * _NLSUBS / _NLSUBC, _NLSUBS
+    delta = elcp1 * dqsdt2
+    a = elcp1 * (q2sat - q2)
+    rr = emissi * t24 * 6.48e-8 / (sfcprs * ch) + 1.0
+    if not snowng:
+        if prcp > 0.0:
+            rr = rr + _NCPH2O * prcp / rch
+    else:
+        rr = rr + _NCPICE * prcp / rch
+    flx2 = -_NLSUBF * prcp if frzgra else 0.0
+    fnet = fdown - emissi * _NSIGMA * t24 - ssoil - flx2
+    rad = fnet / rch + th2 - sfctmp
+    etp = ((a * rr + rad * delta) / (delta + rr)) * rch / lvs
+    # SNOPAC (glacial)
+    esdmin = 1.0e-6
+    snomlt = dew = esnow = esnow2 = 0.0
+    if etp <= 0.0:
+        if ribb >= 0.1 and fdown > 150.0:
+            etp = (min(etp * (1.0 - ribb), 0.0) / 0.980
+                   + etp * (0.980 - 1.0)) / 0.980
+        etp1 = etp * 0.001
+        dew = -etp1
+        esnow2 = etp1 * dt
+        etanrg = etp * _NLSUBS
+    else:
+        esnow = etp
+        esnow2 = esnow * 0.001 * dt
+        etanrg = esnow * _NLSUBS
+    flx1 = 0.0
+    if snowng:
+        flx1 = _NCPICE * prcp * (t1 - sfctmp)
+    elif prcp > 0.0:
+        flx1 = _NCPH2O * prcp * (t1 - sfctmp)
+    dtot = snowh + dsoil
+    denom = 1.0 + df1 / (dtot * rr * rch)
+    t12a = ((fdown - flx1 - flx2 - emissi * _NSIGMA * t24) / rch
+            + th2 - sfctmp - etanrg / rch) / rr
+    t12b = df1 * stc[0] / (dtot * rr * rch)
+    t12 = (sfctmp + t12a + t12b) / denom
+    flx3 = 0.0
+    if t12 <= tfreez:
+        t1 = t12
+        ssoil = df1 * (t1 - stc[0]) / dtot
+        sneqv = max(0.0, sneqv - esnow2)
+    else:
+        t1 = tfreez
+        if dtot > 2.0 * dsoil:
+            dtot = 2.0 * dsoil
+        ssoil = df1 * (t1 - stc[0]) / dtot
+        if sneqv - esnow2 <= esdmin:
+            sneqv = 0.0
+        else:
+            sneqv = sneqv - esnow2
+            seh = rch * (t1 - th2)
+            flx3 = (fdown - flx1 - flx2 - emissi * _NSIGMA * t1 ** 4
+                    - ssoil - seh - etanrg)
+            flx3 = max(flx3, 0.0)
+            ex = flx3 * 0.001 / _NLSUBF
+            snomlt = ex * dt
+            if sneqv - snomlt >= esdmin:
+                sneqv = sneqv - snomlt
+            else:
+                ex = sneqv / dt
+                flx3 = ex * 1000.0 * _NLSUBF
+                snomlt = sneqv
+                sneqv = 0.0
+    zz1 = 1.0
+    yy = stc[0] - 0.5 * ssoil * zsoil[0] * zz1 / df1
+    # SHFLX (glacial) = HRTICE + HSTEP
+    zbot = -25.0
+    ai, bi, ci, rhsts = ([0.0] * nsoil for _ in range(4))
+    hcpct = 1.0e6 * (0.8194 - 0.1309 * 0.5 * zsoil[0])
+    ddz = 1.0 / (-0.5 * zsoil[1])
+    ci[0] = (df1 * ddz) / (zsoil[0] * hcpct)
+    bi[0] = -ci[0] + df1 / (0.5 * zsoil[0] * zsoil[0] * hcpct * zz1)
+    dtsdz = (stc[0] - stc[1]) / (-0.5 * zsoil[1])
+    ssoil_h = df1 * (stc[0] - yy) / (0.5 * zsoil[0] * zz1)
+    rhsts[0] = (df1 * dtsdz - ssoil_h) / (zsoil[0] * hcpct)
+    ddz2 = 0.0
+    df1k = df1
+    for k in range(1, nsoil):
+        zmd = 0.5 * (zsoil[k] + zsoil[k - 1])
+        hcpct = 1.0e6 * (0.8194 - 0.1309 * zmd)
+        df1n = 0.32333 - 0.10073 * zmd
+        if k != nsoil - 1:
+            dtsdz2 = (stc[k] - stc[k + 1]) / (0.5 * (zsoil[k - 1]
+                                                     - zsoil[k + 1]))
+            ddz2 = 2.0 / (zsoil[k - 1] - zsoil[k + 1])
+            ci[k] = -df1n * ddz2 / ((zsoil[k - 1] - zsoil[k]) * hcpct)
+        else:
+            dtsdz2 = (stc[k] - tbot) / (0.5 * (zsoil[k - 1] + zsoil[k])
+                                        - zbot)
+            ci[k] = 0.0
+        rhsts[k] = ((df1n * dtsdz2 - df1k * dtsdz)
+                    / ((zsoil[k] - zsoil[k - 1]) * hcpct))
+        ai[k] = -df1k * ddz / ((zsoil[k - 1] - zsoil[k]) * hcpct)
+        bi[k] = -(ai[k] + ci[k])
+        df1k, dtsdz, ddz = df1n, dtsdz2, ddz2
+    stc[:] = _noah_hstep(stc, rhsts, dt, nsoil, ai, bi, ci)
+    if sneqv >= 0.10:
+        snowh, sndens = _noah_snowpack(sneqv, dt, snowh, sndens, t1, yy)
+    else:
+        sneqv, snowh = 0.10, 0.50
+    eta_kinematic = etp
+    q1 = q2 + eta_kinematic * _NCP / rch
+    sheat = -(ch * _NCP * sfcprs) / (_NR * t2v) * (th2 - t1)
+    esnow = esnow * _NLSUBS
+    etp = etp * _NLSUBS
+    eta = esnow if etp > 0.0 else etp
+    return dict(t1=t1, sneqv=sneqv, snowh=snowh, sncovr=sncovr,
+                albedo=albedo, emissi=emissi, z0=z0, snotime1=snotime1,
+                eta=eta, sheat=sheat, eta_kinematic=eta_kinematic,
+                fdown=fdown, esnow=esnow, dew=dew, etp=etp,
+                ssoil=-1.0 * ssoil, flx1=flx1, flx2=flx2, flx3=flx3,
+                snomlt=snomlt, runoff1=snomlt / dt, q1=q1)
+
+
 def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
                prcp, sfctmp, q2, th2, q2sat, dqsdt2, vegtyp, soiltyp,
                shdfac, shdmin, shdmax, alb, snoalb, tbot, z0brd, cmc,
@@ -6240,7 +6416,7 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
                 ffrozp=ffrozp)
 
 
-def np_noah_column(col, params, dt, dzs, isurban=13, isice=15,
+def np_noah_column(col, params, dt, dzs, isurban=None, isice=None,
                    xice_threshold=0.5, frpcpn=False, usemonalb=False,
                    rdlai2d=False, opt_thcnd=1):
     """Float64 mirror of one Noah column step: the WRF v4.6.1 driver
@@ -6249,12 +6425,18 @@ def np_noah_column(col, params, dt, dzs, isurban=13, isice=15,
     ``col`` is a dict of scalars (plus length-4 arrays ``smois``,
     ``tslb``, ``sh2o``) named exactly as gpuwm.core.noah.launch_noah's
     device fields.  Returns the updated state dict plus diagnostics:
-    ``skip`` (0 = land run, 1 = water, 2 = sea ice, 3 = land ice /
-    glacial, unported), ``ebal_case`` (0 NOPAC, 1 SNOPAC sub-freezing,
+    ``skip`` (0 = land run, 1 = water, 2 = sea ice, 3 = land ice, run
+    through SFLX_GLACIAL), ``ebal_case`` (0 NOPAC, 1 SNOPAC sub-freezing,
     2 SNOPAC melting unclipped, 3 SNOPAC clipped), ``reslin`` (the
     branch-exact discrete energy-identity residual, W/m^2),
     ``near_branch``/``clamped`` flags, and the WRF ``noahres``.
     """
+    if isurban is None or isice is None:
+        # the dataset's own ISURBAN/ISICE, as launch_noah resolves them
+        from gpuwm.core.noah import noah_category_ids
+        dataset_isurban, dataset_isice = noah_category_ids(params)
+        isurban = dataset_isurban if isurban is None else isurban
+        isice = dataset_isice if isice is None else isice
     tresh, a2, a3, a4 = 0.95, 17.67, 273.15, 29.65
     a23m4 = a2 * (a3 - a4)
     flags = dict(near_branch=False, clamped=False)
@@ -6311,10 +6493,6 @@ def np_noah_column(col, params, dt, dzs, isurban=13, isice=15,
         out["sh2o"] = np.ones(nsoil)
         out["lai"] = 0.01
         return out
-    if vegtyp == isice:                      # land ice: SFLX_GLACIAL
-        out["skip"] = 3                      # not ported (documented)
-        return out
-
     dqsdt2 = q2sat * a23m4 / (sfctmp - a4) ** 2
     if col["snow"] > 0.0:
         sfctsno = sfctmp
@@ -6355,6 +6533,61 @@ def np_noah_column(col, params, dt, dzs, isurban=13, isice=15,
     if rdlai2d:
         if shdfac > 0.0 and xlai <= 0.0:
             xlai = 0.01
+
+    if vegtyp == isice:
+        # LAND ICE, module_sf_noahdrv.F:1137-1190 (ICE == -1): the shared
+        # prep above, then SFLX_GLACIAL and the same post-update with the
+        # soil held saturated, XLAI = 0.01, SOILM = SOILW = 0, RUNOFF2 = 0.
+        from gpuwm.core.noah import GEN
+        g = _noah_glacial(ffrozp, dt, nsoil, sldpth, lwdn, solnet, sfcprs,
+                          prcp, sfctmp, q2k, th2, q2sat, dqsdt2, albbrd,
+                          snoalb1, tbot, z0brd, emissi, embrd, t1, stc,
+                          snowhk, sneqv, sncovr, chk, snotime1, ribb,
+                          params.gen[GEN["lvcoef"]])
+        out["lai"] = 0.01
+        out["canwat"] = cmc * 1000.0
+        out["snow"] = g["sneqv"] * 1000.0
+        out["snowh"] = g["snowh"]
+        out["albedo"] = g["albedo"]
+        out["albbck"] = albbrd
+        out["z0"] = z0brd
+        out["emiss"] = g["emissi"]
+        out["znt"] = g["z0"]
+        out["tsk"] = g["t1"]
+        out["hfx"] = g["sheat"]
+        out["potevp"] = col["potevp"] + g["etp"] * (dt / (_NXLV
+                                                          * c.RHOWATER))
+        out["qfx"] = g["eta_kinematic"]
+        out["lh"] = g["eta"]
+        out["grdflx"] = g["ssoil"]
+        out["snowc"] = g["sncovr"]
+        out["chs2"] = col["cqs2"]
+        out["snotime"] = g["snotime1"]
+        out["qsfc"] = g["q1"] / (1.0 - g["q1"])
+        out["smois"] = np.ones(nsoil)
+        out["tslb"] = np.array(stc)
+        out["sh2o"] = np.ones(nsoil)
+        out["noahres"] = ((solnet + lwdn) - g["sheat"] + g["ssoil"]
+                          - g["eta"]
+                          - (g["emissi"] * _NSTBOLT * g["t1"] ** 4)
+                          - g["flx1"] - g["flx2"] - g["flx3"])
+        out["smstav"] = 0.0
+        out["smstot"] = 0.0
+        out["smcrel"] = np.ones(nsoil)
+        out["sfcrunoff"] = col["sfcrunoff"] + g["runoff1"] * dt * 1000.0
+        out["udrunoff"] = col["udrunoff"]
+        if ffrozp > 0.5:
+            out["acsnow"] = col["acsnow"] + prcp * dt
+        if out["snow"] > 0.0:
+            out["acsnom"] = col["acsnom"] + g["snomlt"] * 1000.0
+            out["snopcx"] = (col["snopcx"]
+                             - g["snomlt"] * 1000.0 * _NXLF / dt)
+        out.update(skip=3, ebal_case=4, reslin=0.0, chklowq=1.0,
+                   runoff1=g["runoff1"], runoff2t=0.0, etp=g["etp"],
+                   esnow_w=g["esnow"], flx1=g["flx1"], flx2=g["flx2"],
+                   flx3=g["flx3"], fdown=g["fdown"], q1=g["q1"],
+                   dew=g["dew"], sncovr=g["sncovr"])
+        return out
 
     r = _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet,
                    sfcprs, prcp, sfctmp, q2k, th2, q2sat, dqsdt2,
@@ -6468,7 +6701,7 @@ def _ysu_thomas(lower, diag, upper, rhs):
 def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
                   psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland,
                   u10, v10, dt, rthraten=None,
-                  ysu_topdown_pblmix=1):
+                  ysu_topdown_pblmix=1, ysu_version="wrf_480"):
     """Float64 mirror of the YSU CUDA column kernel.
 
     The transcription authority is WRF v4.6.1 ``module_bl_ysu.F`` and the
@@ -6508,18 +6741,12 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
     if dt <= 0.0 or np.any(dz <= 0.0):
         raise ValueError("YSU requires dt > 0 and positive layer depths")
 
-    zeros = np.zeros(nz, dtype=np.float64)
-    # gpuwm's physics-off coupling supplies no friction velocity and no
-    # surface fluxes.  WRF never enters YSU in that configuration; making it
-    # an explicit no-op prevents the scheme's background K from leaking into
-    # idealized physics-off runs while still returning useful diagnostics.
-    if ust == 0.0 and hfx == 0.0 and qfx == 0.0:
-        return dict(du=zeros.copy(), dv=zeros.copy(), dtheta=zeros.copy(),
-                    dqv=zeros.copy(), dqc=zeros.copy(), dqi=zeros.copy(),
-                    hpbl=float(dz[0]), kpbl=1,
-                    exch_h=zeros.copy(), exch_m=zeros.copy(),
-                    wstar=0.0, delta=0.0, topdown_radsum=0.0,
-                    wstar3_2=0.0, cloudflg=False)
+    # No zero-flux exit: bl_ysu_run has none, and a calm column (ust = hfx =
+    # qfx = 0) runs the whole scheme in WRF (a 703 m PBL with nine levels on
+    # the WRF v4.6.1 oracle's case 12).  YSU without a surface layer is
+    # refused at the configuration door (WRF fatals on that pairing,
+    # gpuwm.wrf461_compatibility PBL_SURFACE_LAYER_AUTHORITY[(1, 0)]), so
+    # no supported run reaches this column with uninitialised fluxes.
 
     # WRF constants local to bl_ysu_run.
     xkzminm, xkzminh, xkzmax = 0.1, 0.01, 1000.0
@@ -6733,7 +6960,10 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
                 - (thli[kt] + theta[kt] * ep1 * qsum))
             dthv_cloud = max(dthv_cloud, 0.1)
             tmp1 = c.XLV / c.CP * rcldb / (exner[kt] * dthv_cloud)
-            ent_eff = 0.2 * 8.0 * tmp1 + 0.2
+            from gpuwm.ysu_generations import ysu_generation
+            ysu_generation(ysu_version)
+            ent_eff = (min(0.2 * 8.0 * tmp1, 0.4) if ysu_version == "wrf_480"
+                       else 0.2 * 8.0 * tmp1 + 0.2)
             for kk in range(kt + 1):
                 radflux = rthraten[kk] * exner[kk]
                 radflux *= (c.CP / c.G
@@ -8127,1275 +8357,19 @@ def np_mcica_maxran_masks(play, cldfra, ngpt, permuteseed):
     return mask
 
 # ---------------------------------------------------------------------------
-# Kain--Fritsch cumulus (WRF v4.6.1 module_cu_kfeta.F)
+# Kain--Fritsch cumulus: no float64 mirror.  The authority for
+# kernels/kf.cu is WRF v4.6.1 itself, through the column oracle in
+# tools/kf_wrf461_oracle (tests/test_kf_wrf461_oracle.py, 0 ULP).  The
+# mirror that stood here (np_kf_column) encoded the pre-2026-10-07 kernel,
+# which re-derived the scheme instead of porting it; it was retired with it.
 # ---------------------------------------------------------------------------
-
-def _kf_saturation_mixing_ratio(temperature, pressure):
-    """Buck/Teten liquid-water saturation used by KF lines 763-769."""
-    temperature = np.asarray(temperature, dtype=np.float64)
-    pressure = np.asarray(pressure, dtype=np.float64)
-    es = 611.2 * np.exp((17.67 * temperature - 17.67 * 273.15)
-                        / (temperature - 29.65))
-    es = np.minimum(es, 0.99 * pressure)
-    return 0.622 * es / (pressure - es)
-
-
-def _kf_environment_thetae(pressure, temperature, qv, log_ratio):
-    """``ENVIRTHT`` transcription (module_cu_kfeta.F:3044-3081)."""
-    ee = max(float(qv), 1.0e-9) * pressure / (0.622 + max(float(qv), 1.0e-9))
-    a1 = max(ee / 611.2, 0.001)
-    position = (a1 - 0.001) / 0.075
-    index = int(np.clip(np.trunc(position), 0, len(log_ratio) - 2))
-    base = 0.001 + 0.075 * index
-    fraction = np.clip((a1 - base) / 0.075, 0.0, 1.0)
-    tlog = ((1.0 - fraction) * float(log_ratio[index])
-            + fraction * float(log_ratio[index + 1]))
-    dewpoint = (17.67 * 273.15 - 29.65 * tlog) / (17.67 - tlog)
-    tsat = dewpoint - (0.212 + 1.571e-3 * (dewpoint - 273.16)
-                       - 4.36e-4 * (temperature - 273.16)) * (
-                           temperature - dewpoint)
-    theta = temperature * (1.0e5 / pressure) ** (
-        0.2854 * (1.0 - 0.28 * qv))
-    return theta * np.exp((3374.6525 / max(tsat, 150.0) - 2.5403)
-                          * qv * (1.0 + 0.81 * qv))
-
-
-def _kf_table_parcel(pressure, thetae, table):
-    """Bilinear ``TPMIX2DD`` lookup (source lines 3009-3039)."""
-    tp = (pressure - table.pressure_top) * table.pressure_reciprocal
-    qq = tp - np.trunc(tp)
-    ip = int(tp)
-    bth = ((float(table.thetae_base[ip + 1])
-            - float(table.thetae_base[ip])) * qq
-           + float(table.thetae_base[ip]))
-    tth = (thetae - bth) * table.thetae_reciprocal
-    pp = tth - np.trunc(tth)
-    it = int(tth)
-    t00 = float(table.temperature[it, ip])
-    t10 = float(table.temperature[it + 1, ip])
-    t01 = float(table.temperature[it, ip + 1])
-    t11 = float(table.temperature[it + 1, ip + 1])
-    q00 = float(table.qsat[it, ip])
-    q10 = float(table.qsat[it + 1, ip])
-    q01 = float(table.qsat[it, ip + 1])
-    q11 = float(table.qsat[it + 1, ip + 1])
-    ts = (t00 + (t10 - t00) * pp + (t01 - t00) * qq
-          + (t00 - t10 - t01 + t11) * pp * qq)
-    qs = (q00 + (q10 - q00) * pp + (q01 - q00) * qq
-          + (q00 - q10 - q01 + q11) * pp * qq)
-    return ts, qs
-
-
-def _kf_prof5(equilibrium_fraction):
-    """Gaussian fractional entrainment/detrainment (source 2930-2974)."""
-    sqrt_two_pi = 2.506628
-    a1, a2, a3 = 0.4361836, -0.1201676, 0.9372980
-    p, sigma, normalization = 0.33267, 0.166666667, 0.202765151
-    equilibrium_fraction = float(equilibrium_fraction)
-    y = 6.0 * equilibrium_fraction - 3.0
-    ey = np.exp(-0.5 * y * y)
-    e45 = np.exp(-4.5)
-    t2 = 1.0 / (1.0 + p * abs(y))
-    t1 = 0.500498
-    c1 = a1 * t1 + a2 * t1 * t1 + a3 * t1 * t1 * t1
-    c2 = a1 * t2 + a2 * t2 * t2 + a3 * t2 * t2 * t2
-    if y >= 0.0:
-        entrainment = (sigma * (0.5 * (sqrt_two_pi - e45 * c1 - ey * c2)
-                                + sigma * (e45 - ey))
-                       - e45 * equilibrium_fraction ** 2 / 2.0)
-        detrainment = (sigma * (0.5 * (ey * c2 - e45 * c1)
-                                + sigma * (e45 - ey))
-                       - e45 * (0.5 + equilibrium_fraction ** 2 / 2.0
-                                - equilibrium_fraction))
-    else:
-        entrainment = (sigma * (0.5 * (ey * c2 - e45 * c1)
-                                + sigma * (e45 - ey))
-                       - e45 * equilibrium_fraction ** 2 / 2.0)
-        detrainment = (sigma * (0.5 * (sqrt_two_pi - e45 * c1 - ey * c2)
-                                + sigma * (e45 - ey))
-                       - e45 * (0.5 + equilibrium_fraction ** 2 / 2.0
-                                - equilibrium_fraction))
-    return entrainment / normalization, detrainment / normalization
-
-
-def _kf_tpmix2(pressure, thetae, temperature, qv, liquid, ice, table):
-    """Parcel thermodynamics, transcribed from WRF lines 2695-2815."""
-    wetbulb, qsat = _kf_table_parcel(pressure, thetae, table)
-    deficit = qsat - qv
-    if deficit <= 0.0:
-        qnew = qv - qsat
-        qv = qsat
-    else:
-        qnew = 0.0
-        total_condensate = liquid + ice
-        if total_condensate >= deficit:
-            liquid -= deficit * liquid / (total_condensate + 1.0e-10)
-            ice -= deficit * ice / (total_condensate + 1.0e-10)
-            qv = qsat
-        else:
-            latent_heat = 3.15e6 - 2370.0 * wetbulb
-            heat_capacity = 1004.5 * (1.0 + 0.89 * qv)
-            if total_condensate < 1.0e-10:
-                wetbulb += latent_heat * (deficit / (1.0 + deficit)) / heat_capacity
-            else:
-                remainder = deficit - total_condensate
-                wetbulb += (latent_heat * (remainder / (1.0 + remainder))
-                            / heat_capacity)
-                qv += total_condensate
-                liquid = 0.0
-                ice = 0.0
-    return wetbulb, qv, liquid, ice, qnew, 0.0
-
-
-def _kf_dtfrznew(temperature, pressure, thetae, qv, frozen, ice):
-    """Linear-glaciation heat adjustment from WRF lines 2817-2860."""
-    rlc = 2.5e6 - 2369.276 * (temperature - 273.16)
-    rls = 2833922.0 - 259.532 * (temperature - 273.16)
-    rlf = rls - rlc
-    cpp = 1004.5 * (1.0 + 0.89 * qv)
-    derivative = ((17.67 * 273.15 - 17.67 * 29.65)
-                  / ((temperature - 29.65) ** 2))
-    temperature += rlf * frozen / (cpp + rls * qv * derivative)
-    es = 611.2 * np.exp((17.67 * temperature - 17.67 * 273.15)
-                        / (temperature - 29.65))
-    qsat = es * 0.622 / (pressure - es)
-    evaporated = qsat - qv
-    ice -= evaporated
-    qv += evaporated
-    pii = (1.0e5 / pressure) ** (0.2854 * (1.0 - 0.28 * qv))
-    thetae = (temperature * pii
-              * np.exp((3374.6525 / temperature - 2.5403)
-                       * qv * (1.0 + 0.81 * qv)))
-    return temperature, thetae, qv, ice
-
-
-def _kf_condload(liquid, ice, w2, layer_depth, buoyancy_term,
-                 entrainment_term, qnew_liquid, qnew_ice):
-    """Ogura--Cho condensate loading/fallout, WRF lines 2863-2927."""
-    total = liquid + ice
-    fresh = qnew_liquid + qnew_ice
-    estimated = 0.5 * (total + fresh)
-    g1 = max(w2 + buoyancy_term - entrainment_term
-             - 2.0 * 9.81 * layer_depth * estimated / 1.5, 0.0)
-    wavg = 0.5 * (np.sqrt(w2) + np.sqrt(g1))
-    conversion = 0.03 * layer_depth / wavg
-    fresh_liquid_ratio = qnew_liquid / (fresh + 1.0e-8)
-    total += 0.6 * fresh
-    old_total = total
-    liquid_ratio = (0.6 * qnew_liquid + liquid) / (total + 1.0e-8)
-    total *= np.exp(-conversion)
-    fallout = old_total - total
-    liquid_out = liquid_ratio * fallout
-    ice_out = (1.0 - liquid_ratio) * fallout
-    precipitation_drag = 0.5 * (old_total + total - 0.2 * fresh)
-    w2 += (buoyancy_term - entrainment_term
-           - 2.0 * 9.81 * layer_depth * precipitation_drag / 1.5)
-    if abs(w2) < 1.0e-4:
-        w2 = 1.0e-4
-    liquid = liquid_ratio * total + fresh_liquid_ratio * 0.4 * fresh
-    ice = (1.0 - liquid_ratio) * total + (1.0 - fresh_liquid_ratio) * 0.4 * fresh
-    return liquid, ice, w2, 0.0, 0.0, liquid_out, ice_out
-
-
-def _kf_mixed_virtual_temperature(pressure, thetae, qv, liquid, ice,
-                                  table):
-    """Full liquid/ice ``TPMIX2`` state used by the mixing-fraction test."""
-    temperature, qv, liquid, ice, _, _ = _kf_tpmix2(
-        pressure, thetae, 0.0, qv, liquid, ice, table)
-    return temperature * (1.0 + 0.608 * qv - liquid - ice)
-
-
-def np_kf_column(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
-                 dx, dt, cudt, table=None, _source_bottom_override=None,
-                 _force_shallow=False, _dispatch_candidates=True,
-                 phase_mode=None):
-    """Float64 Kain--Fritsch column mirror returning uncoupled tendencies.
-
-    This is the float64 transcription authority for the local WRF v4.6.1
-    KF structure: 50-hPa source layers and the LCL trigger (lines 800-1046),
-    TPMIX updraft (1122-1320), downdraft (1642-1873), ten-pass AINC closure
-    (1875-2281), and WRF-named feedback/rain rates (2503-2508, 2564-2646).
-    """
-    from gpuwm.core.kf import KFPhaseMode, load_kf_table
-
-    if phase_mode is None:
-        phase_mode = KFPhaseMode.SEPARATE_ICE_SNOW
-    if isinstance(phase_mode, (bool, np.bool_)):
-        raise ValueError("KF phase_mode must be an explicit KFPhaseMode")
-    try:
-        phase_mode = KFPhaseMode(phase_mode)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"invalid KF phase_mode {phase_mode!r}") from exc
-
-    arrays = [np.asarray(value, dtype=np.float64) for value in
-              (u, v, temperature, qv, qc, pressure, exner, dz, w)]
-    (u, v, temperature, qv, qc, pressure, exner, dz, w) = arrays
-    nz = temperature.size
-    if nz < 8 or any(array.shape != (nz,) for array in arrays):
-        raise ValueError("KF inputs must be one-dimensional columns of the "
-                         "same length with nz >= 8")
-    if (not np.all(np.isfinite(np.concatenate(arrays)))
-            or np.any(pressure <= 0.0) or np.any(dz <= 0.0)
-            or not np.all(np.diff(pressure) < 0.0)):
-        raise ValueError("KF requires finite bottom-up columns with positive "
-                         "layer depths and strictly decreasing pressure")
-    if not all(np.isfinite(value) and value > 0.0
-               for value in (dx, dt, cudt)):
-        raise ValueError("KF dx, dt, and cudt must be positive and finite")
-    table = load_kf_table() if table is None else table
-
-    zeros = np.zeros(nz, dtype=np.float64)
-    output = {
-        "rthcuten": zeros.copy(), "rqvcuten": zeros.copy(),
-        "rqccuten": zeros.copy(), "rqicuten": zeros.copy(),
-        "rqrcuten": zeros.copy(), "rqscuten": zeros.copy(),
-        "updraft_mass_flux": zeros.copy(),
-        "downdraft_mass_flux": zeros.copy(),
-        "rainc": 0.0, "triggered": False, "cape_before": 0.0,
-        "cape_after": 0.0, "timec": 0.0, "cloud_base": -1,
-        "cloud_top": -1, "raw_rthcuten": zeros.copy(),
-        "reported_mse_residual": 0.0,
-        "shallow": False, "nca_seconds": 0.0,
-        "candidate_shallow_eligible": False,
-        "candidate_cloud_depth": 0.0,
-        "triggered_candidates": 0, "guard_rejections": 0,
-    }
-
-    z_interface = np.concatenate(([0.0], np.cumsum(dz)))
-    z = 0.5 * (z_interface[:-1] + z_interface[1:])
-    qsat_env = _kf_saturation_mixing_ratio(temperature, pressure)
-    qenv = np.clip(np.minimum(qv, qsat_env), 1.0e-6, None)
-    relative_humidity = qenv / qsat_env
-    tv_env = temperature * (1.0 + 0.608 * qenv)
-    rho = pressure / (287.0 * tv_env)
-    dp = rho * 9.81 * dz
-
-    # WRF checks adjacent groups at approximately 15-hPa source offsets,
-    # terminating near 300 hPa above the surface (lines 785-815).
-    candidates = [0]
-    threshold = pressure[0] - 1500.0
-    for k in range(1, nz):
-        if pressure[k] < pressure[0] - 30000.0:
-            break
-        if pressure[k] < threshold:
-            candidates.append(k)
-            threshold -= 1500.0
-
-    # WRF's USL loop evaluates every buoyant candidate until the first deep
-    # cloud succeeds.  If all deep attempts fail, it reruns the candidate that
-    # produced the deepest otherwise-valid cloud with FBFRC=1 (lines 818-845,
-    # 1322-1424).  Recursive single-candidate calls keep the candidate physics
-    # identical on the deep attempt and the required shallow rerun.
-    if _dispatch_candidates:
-        shallow_source = None
-        shallow_depth = -1.0
-        triggered_candidates = 0
-        guard_rejections = 0
-        for candidate in candidates:
-            candidate_result = np_kf_column(
-                u, v, temperature, qv, qc, pressure, exner, dz, w,
-                dx=dx, dt=dt, cudt=cudt, table=table,
-                _source_bottom_override=candidate,
-                _dispatch_candidates=False, phase_mode=phase_mode)
-            triggered_candidates += candidate_result["triggered_candidates"]
-            guard_rejections += candidate_result["guard_rejections"]
-            if candidate_result["triggered"]:
-                candidate_result["triggered_candidates"] += (
-                    triggered_candidates
-                    - candidate_result["triggered_candidates"])
-                candidate_result["guard_rejections"] += (
-                    guard_rejections - candidate_result["guard_rejections"])
-                return candidate_result
-            if (candidate_result["candidate_shallow_eligible"]
-                    and candidate_result["candidate_cloud_depth"]
-                    > shallow_depth):
-                shallow_source = candidate
-                shallow_depth = candidate_result["candidate_cloud_depth"]
-        if shallow_source is None:
-            output["triggered_candidates"] = triggered_candidates
-            output["guard_rejections"] = guard_rejections
-            return output
-        shallow_result = np_kf_column(
-            u, v, temperature, qv, qc, pressure, exner, dz, w,
-            dx=dx, dt=dt, cudt=cudt, table=table,
-            _source_bottom_override=shallow_source, _force_shallow=True,
-            _dispatch_candidates=False, phase_mode=phase_mode)
-        shallow_result["triggered_candidates"] += triggered_candidates
-        shallow_result["guard_rejections"] += guard_rejections
-        return shallow_result
-
-    candidates = [_source_bottom_override]
-
-    selected = None
-    for source_bottom in candidates:
-        source_top = source_bottom
-        source_dp = 0.0
-        while source_top < nz and source_dp <= 5000.0:
-            source_dp += dp[source_top]
-            source_top += 1
-        if source_dp <= 5000.0 or source_top >= nz:
-            continue
-        source_slice = slice(source_bottom, source_top)
-        tmix = float(np.sum(dp[source_slice] * temperature[source_slice]) / source_dp)
-        qmix = float(np.sum(dp[source_slice] * qenv[source_slice]) / source_dp)
-        zmix = float(np.sum(dp[source_slice] * z[source_slice]) / source_dp)
-        pmix = float(np.sum(dp[source_slice] * pressure[source_slice]) / source_dp)
-
-        emix = max(qmix * pmix / (0.622 + qmix), 0.6112)
-        a1 = max(emix / 611.2, 0.001)
-        position = (a1 - 0.001) / 0.075
-        index = int(np.clip(np.trunc(position), 0,
-                            table.log_ratio.size - 2))
-        base = 0.001 + 0.075 * index
-        fraction = np.clip((a1 - base) / 0.075, 0.0, 1.0)
-        tlog = ((1.0 - fraction) * float(table.log_ratio[index])
-                + fraction * float(table.log_ratio[index + 1]))
-        dewpoint = (17.67 * 273.15 - 29.65 * tlog) / (17.67 - tlog)
-        tlcl = dewpoint - (0.212 + 1.571e-3 * (dewpoint - 273.16)
-                           - 4.36e-4 * (tmix - 273.16)) * (tmix - dewpoint)
-        tlcl = min(tlcl, tmix)
-        zlcl = zmix + (tlcl - tmix) / (-9.81 / 1004.5)
-        klcl = int(np.searchsorted(z, zlcl, side="left"))
-        if klcl <= 0 or klcl >= nz - 2:
-            continue
-        fraction_z = np.clip((zlcl - z[klcl - 1]) /
-                             (z[klcl] - z[klcl - 1]), 0.0, 1.0)
-        tenv_lcl = ((1.0 - fraction_z) * temperature[klcl - 1]
-                    + fraction_z * temperature[klcl])
-        qenv_lcl = ((1.0 - fraction_z) * qenv[klcl - 1]
-                    + fraction_z * qenv[klcl])
-        tven_lcl = tenv_lcl * (1.0 + 0.608 * qenv_lcl)
-        w_lcl = ((1.0 - fraction_z) * w[klcl - 1] + fraction_z * w[klcl])
-        w_threshold = 0.02 * min(zlcl / 2000.0, 1.0)
-        w_scaled = w_lcl * dx / 25000.0 - w_threshold
-        dt_lcl = 0.0 if w_scaled < 1.0e-4 else 4.64 * w_scaled ** 0.33
-        if tlcl + dt_lcl < tenv_lcl:
-            continue
-        plcl = ((1.0 - fraction_z) * pressure[klcl - 1]
-                + fraction_z * pressure[klcl])
-        selected = (source_bottom, source_top, source_dp, tmix, qmix,
-                    zmix, pmix, tlcl, zlcl, klcl, dt_lcl, w_scaled, plcl,
-                    tenv_lcl, tven_lcl)
-        break
-
-    if selected is None:
-        return output
-    output["triggered_candidates"] = 1
-
-    (source_bottom, source_top, source_dp, tmix, qmix, zmix, pmix,
-     tlcl, zlcl, klcl, dt_lcl, w_scaled, plcl, tenv_lcl,
-     tven_lcl) = selected
-    # DTLCL initializes vertical velocity but does not alter parcel theta-e
-    # (source 1034 and 1038-1047).
-    thetae = _kf_environment_thetae(pmix, tmix, qmix, table.log_ratio)
-    if w_scaled < 0.0:
-        radius = 1000.0
-    elif w_scaled > 0.1:
-        radius = 2000.0
-    else:
-        radius = 1000.0 + 1000.0 * w_scaled / 0.1
-    tv_lcl = tlcl * (1.0 + 0.608 * qmix)
-    rho_lcl = plcl / (287.0 * tv_lcl)
-    updraft = output["updraft_mass_flux"]
-    base_mass_flux = rho_lcl * 0.01 * dx * dx
-    kbase = klcl - 1
-    updraft[kbase] = base_mass_flux
-
-    # WRF module_cu_kfeta.F:1071-1320.  Keep the native draft variables so
-    # the closure below derives feedback from the converged mass fluxes.
-    tu = np.zeros(nz, dtype=np.float64)
-    qu = np.zeros(nz, dtype=np.float64)
-    thetaeu = np.zeros(nz, dtype=np.float64)
-    qliq = np.zeros(nz, dtype=np.float64)
-    qice = np.zeros(nz, dtype=np.float64)
-    qlqout = np.zeros(nz, dtype=np.float64)
-    qicout = np.zeros(nz, dtype=np.float64)
-    pptliq = np.zeros(nz, dtype=np.float64)
-    pptice = np.zeros(nz, dtype=np.float64)
-    detlq = np.zeros(nz, dtype=np.float64)
-    detice = np.zeros(nz, dtype=np.float64)
-    uer = np.zeros(nz, dtype=np.float64)
-    udr = np.zeros(nz, dtype=np.float64)
-    eqfrc = np.ones(nz, dtype=np.float64)
-    dilfrc = np.ones(nz, dtype=np.float64)
-    qdt = np.zeros(nz, dtype=np.float64)
-    positive_energy = np.zeros(nz, dtype=np.float64)
-    wlcl = (1.0 if dt_lcl <= 1.0e-4 else
-            min(1.0 + 0.5 * np.sqrt(
-                2.0 * 9.81 * dt_lcl * 500.0 / tven_lcl), 3.0))
-    w2 = wlcl * wlcl
-    thetaeu[kbase] = thetae
-    tu[kbase] = tlcl
-    qu[kbase] = qmix
-    ee1 = 1.0
-    ud1 = 0.0
-    rei = 0.0
-    upold = base_mass_flux
-    upnew = upold
-    abe = 0.0
-    trppt = 0.0
-    ttemp = 268.16
-    let = klcl
-    ltop = kbase
-    for nk in range(kbase, nz - 1):
-        nk1 = nk + 1
-        tu[nk1] = temperature[nk1]
-        thetaeu[nk1] = thetaeu[nk]
-        qu[nk1] = qu[nk]
-        qliq[nk1] = qliq[nk]
-        qice[nk1] = qice[nk]
-        (tu[nk1], qu[nk1], qliq[nk1], qice[nk1], qnewlq,
-         qnewice) = _kf_tpmix2(
-             pressure[nk1], thetaeu[nk1], tu[nk1], qu[nk1],
-             qliq[nk1], qice[nk1], table)
-
-        if tu[nk1] <= 268.16:
-            if tu[nk1] > 248.16:
-                if ttemp > 268.16:
-                    ttemp = 268.16
-                frc1 = (ttemp - tu[nk1]) / (ttemp - 248.16)
-            else:
-                frc1 = 1.0
-            ttemp = tu[nk1]
-            frozen = (qliq[nk1] + qnewlq) * frc1
-            qnewice += qnewlq * frc1
-            qnewlq -= qnewlq * frc1
-            qice[nk1] += qliq[nk1] * frc1
-            qliq[nk1] -= qliq[nk1] * frc1
-            (tu[nk1], thetaeu[nk1], qu[nk1],
-             qice[nk1]) = _kf_dtfrznew(
-                 tu[nk1], pressure[nk1], thetaeu[nk1], qu[nk1],
-                 frozen, qice[nk1])
-
-        tvu = tu[nk1] * (1.0 + 0.608 * qu[nk1])
-        if nk == kbase:
-            be = (tv_lcl + tvu) / (tven_lcl + tv_env[nk1]) - 1.0
-            layer_depth = z[nk1] - zlcl
-        else:
-            tvu_below = tu[nk] * (1.0 + 0.608 * qu[nk])
-            be = (tvu_below + tvu) / (tv_env[nk] + tv_env[nk1]) - 1.0
-            layer_depth = z[nk1] - z[nk]
-        boterm = 2.0 * layer_depth * 9.81 * be / 1.5
-        enterm = 2.0 * rei * w2 / upold
-        (qliq[nk1], qice[nk1], w2, qnewlq, qnewice,
-         qlqout[nk1], qicout[nk1]) = _kf_condload(
-             qliq[nk1], qice[nk1], w2, layer_depth, boterm, enterm,
-             qnewlq, qnewice)
-        ltop = nk
-        if w2 < 1.0e-3:
-            break
-
-        environment_thetae = _kf_environment_thetae(
-            pressure[nk1], temperature[nk1], qenv[nk1], table.log_ratio)
-        rei = base_mass_flux * dp[nk1] * 0.03 / radius
-        tvqu = tu[nk1] * (
-            1.0 + 0.608 * qu[nk1] - qliq[nk1] - qice[nk1])
-        if nk == kbase:
-            dilbe = ((tv_lcl + tvqu) / (tven_lcl + tv_env[nk1])
-                     - 1.0) * layer_depth
-        else:
-            tvqu_below = tu[nk] * (
-                1.0 + 0.608 * qu[nk] - qliq[nk] - qice[nk])
-            dilbe = ((tvqu_below + tvqu) / (tv_env[nk] + tv_env[nk1])
-                     - 1.0) * layer_depth
-        if dilbe > 0.0:
-            positive_energy[nk1] = dilbe * 9.81
-            abe += positive_energy[nk1]
-
-        if tvqu <= tv_env[nk1]:
-            ee2, ud2 = 0.5, 1.0
-            eqfrc[nk1] = 0.0
-        else:
-            let = nk1
-            f1 = 0.95
-            f2 = 1.0 - f1
-            mixed_virtual = _kf_mixed_virtual_temperature(
-                pressure[nk1], f1 * environment_thetae + f2 * thetaeu[nk1],
-                f1 * qenv[nk1] + f2 * qu[nk1], f2 * qliq[nk1],
-                f2 * qice[nk1], table)
-            if mixed_virtual > tv_env[nk1]:
-                ee2, ud2 = 1.0, 0.0
-                eqfrc[nk1] = 1.0
-            else:
-                f1 = 0.10
-                f2 = 1.0 - f1
-                mixed_virtual = _kf_mixed_virtual_temperature(
-                    pressure[nk1],
-                    f1 * environment_thetae + f2 * thetaeu[nk1],
-                    f1 * qenv[nk1] + f2 * qu[nk1], f2 * qliq[nk1],
-                    f2 * qice[nk1], table)
-                if abs(mixed_virtual - tvqu) < 1.0e-3:
-                    ee2, ud2 = 1.0, 0.0
-                    eqfrc[nk1] = 1.0
-                else:
-                    eqfrc[nk1] = np.clip(
-                        (tv_env[nk1] - tvqu) * f1 / (mixed_virtual - tvqu),
-                        0.0, 1.0)
-                    if eqfrc[nk1] == 1.0:
-                        ee2, ud2 = 1.0, 0.0
-                    elif eqfrc[nk1] == 0.0:
-                        ee2, ud2 = 0.0, 1.0
-                    else:
-                        ee2, ud2 = _kf_prof5(eqfrc[nk1])
-        ee2 = max(ee2, 0.5)
-        ud2 *= 1.5
-        uer[nk1] = 0.5 * rei * (ee1 + ee2)
-        udr[nk1] = 0.5 * rei * (ud1 + ud2)
-        if updraft[nk] - udr[nk1] < 10.0:
-            if dilbe > 0.0:
-                abe -= dilbe * 9.81
-                positive_energy[nk1] = 0.0
-            let = nk
-            break
-        ee1, ud1 = ee2, ud2
-        upold = updraft[nk] - udr[nk1]
-        upnew = upold + uer[nk1]
-        updraft[nk1] = upnew
-        dilfrc[nk1] = upnew / upold
-        detlq[nk1] = qliq[nk1] * udr[nk1]
-        detice[nk1] = qice[nk1] * udr[nk1]
-        qdt[nk1] = qu[nk1]
-        qu[nk1] = (upold * qu[nk1] + uer[nk1] * qenv[nk1]) / upnew
-        thetaeu[nk1] = (thetaeu[nk1] * upold
-                        + environment_thetae * uer[nk1]) / upnew
-        qliq[nk1] *= upold / upnew
-        qice[nk1] *= upold / upnew
-        pptliq[nk1] = qlqout[nk1] * updraft[nk]
-        pptice[nk1] = qicout[nk1] * updraft[nk]
-        trppt += pptliq[nk1] + pptice[nk1]
-        if nk1 <= source_top - 1:
-            uer[nk1] += base_mass_flux * dp[nk1] / source_dp
-
-    cloud_top = ltop
-    cape = float(abe)
-    cloud_depth = z[cloud_top] - zlcl
-    cloud_minimum = (4000.0 if tlcl > 293.0 else
-                     2000.0 + 100.0 * np.clip(tlcl - 273.0, 0.0, 20.0))
-    kpbl = source_top - 1
-    if (cloud_top <= klcl or cloud_top <= kpbl or let + 1 <= kpbl):
-        output["guard_rejections"] = 1
-        output["updraft_mass_flux"].fill(0.0)
-        output["downdraft_mass_flux"].fill(0.0)
-        return output
-    if not _force_shallow and (cape <= 1.0 or cloud_depth <= cloud_minimum):
-        output["candidate_shallow_eligible"] = True
-        output["candidate_cloud_depth"] = float(cloud_depth)
-        output["updraft_mass_flux"].fill(0.0)
-        output["downdraft_mass_flux"].fill(0.0)
-        return output
-    shallow = bool(_force_shallow)
-    if shallow:
-        let = max(kpbl, klcl)
-
-    # Cloud-top total detrainment (WRF lines 1426-1474).
-    if let == cloud_top:
-        udr[cloud_top] = (updraft[cloud_top] + udr[cloud_top]
-                          - uer[cloud_top])
-        detlq[cloud_top] = qliq[cloud_top] * udr[cloud_top] * upnew / upold
-        detice[cloud_top] = qice[cloud_top] * udr[cloud_top] * upnew / upold
-        uer[cloud_top] = 0.0
-        updraft[cloud_top] = 0.0
-    else:
-        top_dp = float(np.sum(dp[let + 1:cloud_top + 1]))
-        dumfdp = updraft[let] / top_dp
-        for nk in range(let + 1, cloud_top + 1):
-            if nk == cloud_top:
-                udr[nk] = updraft[nk - 1]
-                uer[nk] = 0.0
-                detlq[nk] = udr[nk] * qliq[nk] * dilfrc[nk]
-                detice[nk] = udr[nk] * qice[nk] * dilfrc[nk]
-            else:
-                updraft[nk] = updraft[nk - 1] - dp[nk] * dumfdp
-                uer[nk] = updraft[nk] * (1.0 - 1.0 / dilfrc[nk])
-                udr[nk] = updraft[nk - 1] - updraft[nk] + uer[nk]
-                detlq[nk] = udr[nk] * qliq[nk] * dilfrc[nk]
-                detice[nk] = udr[nk] * qice[nk] * dilfrc[nk]
-            if nk >= let + 2:
-                trppt -= pptliq[nk] + pptice[nk]
-                pptliq[nk] = updraft[nk - 1] * qlqout[nk]
-                pptice[nk] = updraft[nk - 1] * qicout[nk]
-                trppt += pptliq[nk] + pptice[nk]
-
-    # Native source-layer mass-flux profile (WRF lines 1477-1577).
-    for nk in range(kbase + 1):
-        if nk >= source_bottom:
-            if nk == source_bottom:
-                updraft[nk] = base_mass_flux * dp[nk] / source_dp
-                uer[nk] = updraft[nk]
-            elif nk <= source_top - 1:
-                uer[nk] = base_mass_flux * dp[nk] / source_dp
-                updraft[nk] = updraft[nk - 1] + uer[nk]
-            else:
-                updraft[nk] = base_mass_flux
-                uer[nk] = 0.0
-            tu[nk] = tmix + (z[nk] - zmix) * (-9.81 / 1004.5)
-            qu[nk] = qmix
-        udr[nk] = 0.0
-        qdt[nk] = 0.0
-        qliq[nk] = qice[nk] = 0.0
-        qlqout[nk] = qicout[nk] = 0.0
-        pptliq[nk] = pptice[nk] = 0.0
-        detlq[nk] = detice[nk] = 0.0
-        eqfrc[nk] = 1.0
-
-    theta_env = np.zeros(nz, dtype=np.float64)
-    theta_up = np.zeros(nz, dtype=np.float64)
-    for nk in range(cloud_top + 1):
-        if thetaeu[nk] == 0.0:
-            thetaeu[nk] = _kf_environment_thetae(
-                pressure[nk], temperature[nk], qenv[nk], table.log_ratio)
-        theta_up[nk] = tu[nk] * (1.0e5 / pressure[nk]) ** (
-            0.2854 * (1.0 - 0.28 * qdt[nk]))
-        theta_env[nk] = temperature[nk] * (1.0e5 / pressure[nk]) ** (
-            0.2854 * (1.0 - 0.28 * qenv[nk]))
-
-    parcel_t = tu
-    parcel_q = qu
-    output["updraft_liquid"] = qliq.copy()
-    output["updraft_ice"] = qice.copy()
-    output["liquid_precip_flux"] = pptliq.copy()
-    output["ice_precip_flux"] = pptice.copy()
-
-    l5 = int(np.nonzero(pressure >= 0.5 * pressure[0])[0][-1])
-    wind_mid = np.hypot(u[l5], v[l5])
-    wind_lcl = np.hypot(u[klcl], v[klcl])
-    velocity = 0.5 * (wind_lcl + wind_mid)
-    advective_time = np.inf if velocity == 0.0 else dx / velocity
-    timec = (2400.0 if shallow
-             else np.clip(advective_time, 1800.0, 3600.0))
-    timec = max(np.floor(timec / dt + 0.5), 1.0) * dt
-
-    wind_top = np.hypot(u[cloud_top], v[cloud_top])
-    shear_sign = 1.0 if wind_top > wind_lcl else -1.0
-    shear = (1000.0 * shear_sign
-             * np.hypot(u[cloud_top] - u[klcl],
-                        v[cloud_top] - v[klcl])
-             / (z[cloud_top] - z[klcl]))
-    shear_efficiency = np.clip(
-        1.591 + shear * (-0.639 + shear * (9.53e-2 - shear * 4.96e-3)),
-        0.2, 0.9)
-    cloud_base_kft = max((zlcl - z[0]) * 3.281e-3, 0.0)
-    if cloud_base_kft < 3.0:
-        cloud_base_response = 0.02
-    else:
-        cloud_base_response = (
-            0.96729352 + cloud_base_kft * (
-                -0.70034167 + cloud_base_kft * (
-                    0.162179896 + cloud_base_kft * (
-                        -1.2569798e-2 + cloud_base_kft * (
-                            4.2772e-4 - cloud_base_kft * 5.44e-6)))))
-    if cloud_base_kft > 25.0:
-        cloud_base_response = 2.4
-    cloud_base_efficiency = min(1.0 / (1.0 + cloud_base_response), 0.9)
-    precip_efficiency = 0.5 * (shear_efficiency + cloud_base_efficiency)
-
-    # WRF downdraft model, module_cu_kfeta.F:1642-1873.
-    downdraft = output["downdraft_mass_flux"]
-    der = np.zeros(nz, dtype=np.float64)
-    ddr = np.zeros(nz, dtype=np.float64)
-    thetaed = np.zeros(nz, dtype=np.float64)
-    theta_ad = np.zeros(nz, dtype=np.float64)
-    qd = np.zeros(nz, dtype=np.float64)
-    tz = np.zeros(nz, dtype=np.float64)
-    qsd = np.zeros(nz, dtype=np.float64)
-    tder = 0.0
-    tder_before_suppression = 0.0
-    pptflx = trppt
-    cpr = trppt
-    ldb = 0
-    lfs = 0 if shallow else max(let - 1, 0)
-    kstart = source_top
-    if not shallow and kstart < nz - 1:
-        for nk in range(kstart + 1, nz):
-            if pressure[kstart] - pressure[nk] > 15000.0:
-                lfs = nk
-                break
-        lfs = min(lfs, let - 1)
-        if lfs > kstart and pressure[kstart] - pressure[lfs] > 5000.0:
-            thetaed[lfs] = _kf_environment_thetae(
-                pressure[lfs], temperature[lfs], qenv[lfs], table.log_ratio)
-            qd[lfs] = qenv[lfs]
-            tz[lfs], qss = _kf_table_parcel(
-                pressure[lfs], thetaed[lfs], table)
-            theta_ad[lfs] = tz[lfs] * (1.0e5 / pressure[lfs]) ** (
-                0.2854 * (1.0 - 0.28 * qss))
-            rdd = pressure[lfs] / (287.0 * tz[lfs] * (1.0 + 0.608 * qss))
-            downdraft[lfs] = -(1.0 - precip_efficiency) * 0.01 * dx * dx * rdd
-            der[lfs] = downdraft[lfs]
-            rhbar_numerator = relative_humidity[lfs] * dp[lfs]
-            rhbar_denominator = dp[lfs]
-            for nd in range(lfs - 1, kstart - 1, -1):
-                der[nd] = der[lfs] * dp[nd] / dp[lfs]
-                downdraft[nd] = downdraft[nd + 1] + der[nd]
-                thetaed[nd] = (thetaed[nd + 1] * downdraft[nd + 1]
-                               + _kf_environment_thetae(
-                                   pressure[nd], temperature[nd], qenv[nd],
-                                   table.log_ratio) * der[nd]) / downdraft[nd]
-                qd[nd] = (qd[nd + 1] * downdraft[nd + 1]
-                          + qenv[nd] * der[nd]) / downdraft[nd]
-                rhbar_denominator += dp[nd]
-                rhbar_numerator += relative_humidity[nd] * dp[nd]
-            rhbar = rhbar_numerator / rhbar_denominator
-            dmffrc = 2.0 * (1.0 - rhbar)
-
-            melting_precip = float(np.sum(pptice[klcl:cloud_top + 1]))
-            ml = 0
-            for nk in range(cloud_top + 1):
-                if temperature[nk] > 273.16:
-                    ml = nk
-            dtmelt = (3.339e5 * melting_precip
-                      / (1004.5 * updraft[klcl])
-                      if source_bottom < ml and updraft[klcl] != 0.0 else 0.0)
-            ldt = min(lfs - 1, kstart - 1)
-            tz[kstart], qss = _kf_table_parcel(
-                pressure[kstart], thetaed[kstart], table)
-            tz[kstart] -= dtmelt
-            es = 611.2 * np.exp((17.67 * tz[kstart] - 17.67 * 273.15)
-                                / (tz[kstart] - 29.65))
-            qss = 0.622 * es / (pressure[kstart] - es)
-            thetaed[kstart] = (tz[kstart]
-                               * (1.0e5 / pressure[kstart]) ** (
-                                   0.2854 * (1.0 - 0.28 * qss))
-                               * np.exp((3374.6525 / tz[kstart] - 2.5403)
-                                        * qss * (1.0 + 0.81 * qss)))
-            dpdd = 0.0
-            ldb = 0
-            for nd in range(ldt, -1, -1):
-                dpdd += dp[nd]
-                thetaed[nd] = thetaed[kstart]
-                qd[nd] = qd[kstart]
-                tz[nd], qss = _kf_table_parcel(
-                    pressure[nd], thetaed[nd], table)
-                qsd[nd] = qss
-                rhh = 1.0 - 0.2e-3 * (z[kstart] - z[nd])
-                if rhh < 1.0:
-                    dssdt = ((17.67 * 273.15 - 17.67 * 29.65)
-                             / ((tz[nd] - 29.65) ** 2))
-                    latent = 3.15e6 - 2370.0 * tz[nd]
-                    dtmp = (latent * qss * (1.0 - rhh)
-                            / (1004.5 + latent * rhh * qss * dssdt))
-                    t1rh = tz[nd] + dtmp
-                    es = (rhh * 611.2
-                          * np.exp((17.67 * t1rh - 17.67 * 273.15)
-                                   / (t1rh - 29.65)))
-                    qsrh = 0.622 * es / (pressure[nd] - es)
-                    if qsrh < qd[nd]:
-                        qsrh = qd[nd]
-                        t1rh = tz[nd] + (qss - qsrh) * latent / 1004.5
-                    tz[nd] = t1rh
-                    qss = qsrh
-                    qsd[nd] = qss
-                tvd = tz[nd] * (1.0 + 0.608 * qsd[nd])
-                if tvd > tv_env[nd] or nd == 0:
-                    ldb = nd
-                    break
-
-            if pressure[ldb] - pressure[lfs] > 5000.0:
-                for nd in range(ldt, ldb - 1, -1):
-                    ddr[nd] = -downdraft[kstart] * dp[nd] / dpdd
-                    der[nd] = 0.0
-                    downdraft[nd] = downdraft[nd + 1] + ddr[nd]
-                    tder += (qsd[nd] - qd[nd]) * ddr[nd]
-                    qd[nd] = qsd[nd]
-                    theta_ad[nd] = tz[nd] * (1.0e5 / pressure[nd]) ** (
-                        0.2854 * (1.0 - 0.28 * qd[nd]))
-
-            tder_before_suppression = tder
-            if tder >= 1.0:
-                ddinc = -dmffrc * updraft[klcl] / downdraft[kstart]
-                if tder * ddinc > trppt:
-                    ddinc = trppt / tder
-                tder *= ddinc
-                downdraft[ldb:lfs + 1] *= ddinc
-                der[ldb:lfs + 1] *= ddinc
-                ddr[ldb:lfs + 1] *= ddinc
-                pptflx = trppt - tder
-                precip_efficiency = pptflx / trppt
-                if ldb > 0:
-                    downdraft[:ldb] = 0.0
-                    der[:ldb] = 0.0
-                    ddr[:ldb] = 0.0
-                    theta_ad[:ldb] = 0.0
-                    qd[:ldb] = 0.0
-                    tz[:ldb] = 0.0
-                downdraft[lfs + 1:] = 0.0
-                der[lfs + 1:] = 0.0
-                ddr[lfs + 1:] = 0.0
-                theta_ad[lfs + 1:] = 0.0
-                qd[lfs + 1:] = 0.0
-                tz[lfs + 1:] = 0.0
-                theta_ad[ldt + 1:lfs] = 0.0
-                qd[ldt + 1:lfs] = 0.0
-                tz[ldt + 1:lfs] = 0.0
-            else:
-                pptflx = trppt
-                cpr = trppt
-                tder = 0.0
-                downdraft.fill(0.0)
-                der.fill(0.0)
-                ddr.fill(0.0)
-                theta_ad.fill(0.0)
-                qd.fill(0.0)
-                tz.fill(0.0)
-
-    # WRF module_cu_kfeta.F:1875-2281.  Limit the unit draft fluxes by
-    # available layer mass, integrate compensating subsidence, diagnose the
-    # provisional sounding's CAPE, and iterate AINC until at least 90 % of
-    # the original ABE is consumed (or the native ten-pass limit is reached).
-    cell_mass = dp * dx * dx / 9.81
-    inverse_cell_mass = 1.0 / cell_mass
-    lmax = max(klcl, lfs)
-    aincmx = 1000.0
-    for nk in range(source_bottom, lmax + 1):
-        draft_inflow = uer[nk] - der[nk]
-        if draft_inflow > 1.0e-3:
-            aincmx = min(aincmx,
-                         cell_mass[nk] / (draft_inflow * timec))
-    ainc = min(1.0, aincmx)
-    unit_tder = tder
-    unit_pptflx = pptflx
-    unit_updraft = updraft.copy()
-    unit_downdraft = downdraft.copy()
-    unit_detlq = detlq.copy()
-    unit_detice = detice.copy()
-    unit_udr = udr.copy()
-    unit_uer = uer.copy()
-    unit_der = der.copy()
-    unit_ddr = ddr.copy()
-    pptflx_scale = 1.0
-
-    if shallow:
-        # WRF lines 1911-1948: TKEMAX is hard-coded to 5, hence
-        # EVAC=0.5*5*0.1=0.25 of the source-layer mass per cycle.
-        ainc = 0.25 * source_dp * dx * dx / (
-            base_mass_flux * 9.81 * timec)
-        tder = unit_tder * ainc
-        pptflx = unit_pptflx * ainc
-        pptflx_scale = ainc
-        updraft[:] = unit_updraft * ainc
-        downdraft[:] = unit_downdraft * ainc
-        detlq[:] = unit_detlq * ainc
-        detice[:] = unit_detice * ainc
-        udr[:] = unit_udr * ainc
-        uer[:] = unit_uer * ainc
-        der[:] = unit_der * ainc
-        ddr[:] = unit_ddr * ainc
-
-    fabe = 1.0
-    noitr = False
-    noitr_reverted = False
-    aincold = 0.0
-    fabeold = 1.0
-    closure_iterations = 0
-    adjusted_cape = cape
-    tg = temperature.copy()
-    qg = qenv.copy()
-    omega = np.zeros(nz, dtype=np.float64)
-    fxm = np.zeros(nz, dtype=np.float64)
-    nstep = 1
-    dtime = timec
-    ainc_history = []
-    fabe_history = []
-    for ncount in range(10):
-        closure_iterations = ncount + 1
-        ainc_history.append(float(ainc))
-        domgdp = np.zeros(nz, dtype=np.float64)
-        dtt = timec
-        omega.fill(0.0)
-        for nk in range(cloud_top + 1):
-            domgdp[nk] = -(uer[nk] - der[nk] - udr[nk] - ddr[nk]) \
-                * inverse_cell_mass[nk]
-            if nk > 0:
-                omega[nk] = omega[nk - 1] - dp[nk - 1] * domgdp[nk - 1]
-                absolute_omega = abs(omega[nk])
-                if absolute_omega * timec > 0.75 * dp[nk - 1]:
-                    dtt = min(dtt, 0.75 * dp[nk - 1] / absolute_omega)
-
-        nstep = max(int(np.floor(timec / dtt + 1.5)), 1)
-        dtime = timec / nstep
-        theta_pa = theta_env.copy()
-        qpa = qenv.copy()
-        fxm[:] = omega * dx * dx / 9.81
-        for _ in range(nstep):
-            theta_flux_in = np.zeros(nz, dtype=np.float64)
-            theta_flux_out = np.zeros(nz, dtype=np.float64)
-            q_flux_in = np.zeros(nz, dtype=np.float64)
-            q_flux_out = np.zeros(nz, dtype=np.float64)
-            for nk in range(1, cloud_top + 1):
-                if omega[nk] <= 0.0:
-                    theta_flux_in[nk] = -fxm[nk] * theta_pa[nk - 1]
-                    q_flux_in[nk] = -fxm[nk] * qpa[nk - 1]
-                    theta_flux_out[nk - 1] += theta_flux_in[nk]
-                    q_flux_out[nk - 1] += q_flux_in[nk]
-                else:
-                    theta_flux_out[nk] = fxm[nk] * theta_pa[nk]
-                    q_flux_out[nk] = fxm[nk] * qpa[nk]
-                    theta_flux_in[nk - 1] += theta_flux_out[nk]
-                    q_flux_in[nk - 1] += q_flux_out[nk]
-            for nk in range(cloud_top + 1):
-                theta_pa[nk] += (
-                    theta_flux_in[nk] + udr[nk] * theta_up[nk]
-                    + ddr[nk] * theta_ad[nk] - theta_flux_out[nk]
-                    - (uer[nk] - der[nk]) * theta_env[nk]
-                ) * dtime * inverse_cell_mass[nk]
-                qpa[nk] += (
-                    q_flux_in[nk] + udr[nk] * qdt[nk]
-                    + ddr[nk] * qd[nk] - q_flux_out[nk]
-                    - (uer[nk] - der[nk]) * qenv[nk]
-                ) * dtime * inverse_cell_mass[nk]
-
-        q_borrow_failed = False
-        for nk in range(cloud_top + 1):
-            if qpa[nk] >= 0.0:
-                continue
-            if nk == 0:
-                q_borrow_failed = True
-                break
-            neighbor = klcl if nk == cloud_top else nk + 1
-            tma = qpa[neighbor] * cell_mass[neighbor]
-            tmb = qpa[nk - 1] * cell_mass[nk - 1]
-            tmm = (qpa[nk] - 1.0e-9) * cell_mass[nk]
-            if tma == 0.0 or tmb == 0.0:
-                q_borrow_failed = True
-                break
-            bcoeff = -tmm / (tma * tma / tmb + tmb)
-            acoeff = bcoeff * tma / tmb
-            tmb *= 1.0 - bcoeff
-            tma *= 1.0 - acoeff
-            qpa[nk] = 1.0e-9
-            qpa[neighbor] = tma * inverse_cell_mass[neighbor]
-            qpa[nk - 1] = tmb * inverse_cell_mass[nk - 1]
-        if q_borrow_failed:
-            output["updraft_mass_flux"].fill(0.0)
-            output["downdraft_mass_flux"].fill(0.0)
-            return output
-
-        top_omega = ((udr[cloud_top] - uer[cloud_top]) * dp[cloud_top]
-                     * inverse_cell_mass[cloud_top])
-        if abs(top_omega - omega[cloud_top]) > 1.0e-3:
-            raise RuntimeError("KF mass does not balance at cloud top")
-
-        qg[:cloud_top + 1] = qpa[:cloud_top + 1]
-        moist_exponent = 0.2854 * (1.0 - 0.28 * qg[:cloud_top + 1])
-        tg[:cloud_top + 1] = (
-            theta_pa[:cloud_top + 1]
-            / (1.0e5 / pressure[:cloud_top + 1]) ** moist_exponent)
-
-        if shallow:
-            break
-
-        tmix_g = float(np.sum(
-            dp[source_bottom:source_top] * tg[source_bottom:source_top])
-            / source_dp)
-        qmix_g = float(np.sum(
-            dp[source_bottom:source_top] * qg[source_bottom:source_top])
-            / source_dp)
-        qss = float(_kf_saturation_mixing_ratio(
-            np.asarray([tmix_g]), np.asarray([pmix]))[0])
-        if qmix_g > qss:
-            latent = 3.15e6 - 2370.0 * tmix_g
-            cpm = 1004.5 * (1.0 + 0.887 * qmix_g)
-            dssdt = qss * ((17.67 * 273.15 - 17.67 * 29.65)
-                           / ((tmix_g - 29.65) ** 2))
-            dq = (qmix_g - qss) / (1.0 + latent * dssdt / cpm)
-            tmix_g += latent / 1004.5 * dq
-            qmix_g -= dq
-            tlcl_g = tmix_g
-        else:
-            qmix_g = max(qmix_g, 0.0)
-            emix = qmix_g * pmix / (0.622 + qmix_g)
-            a1 = emix / 611.2
-            position = (a1 - 1.0e-3) / 0.075
-            lookup_index = int(position)
-            value = lookup_index * 0.075 + 1.0e-3
-            fraction = (a1 - value) / 0.075
-            tlog = (fraction * float(table.log_ratio[lookup_index + 1])
-                    + (1.0 - fraction)
-                    * float(table.log_ratio[lookup_index]))
-            dewpoint = ((17.67 * 273.15 - 29.65 * tlog)
-                        / (17.67 - tlog))
-            tlcl_g = (dewpoint
-                      - (0.212 + 1.571e-3 * (dewpoint - 273.16)
-                         - 4.36e-4 * (tmix_g - 273.16))
-                      * (tmix_g - dewpoint))
-            tlcl_g = min(tlcl_g, tmix_g)
-
-        tvlcl_g = tlcl_g * (1.0 + 0.608 * qmix_g)
-        zlcl_g = zmix + (tlcl_g - tmix_g) / (-9.81 / 1004.5)
-        klcl_g = int(np.searchsorted(z, zlcl_g, side="left"))
-        if klcl_g <= 0 or klcl_g > cloud_top:
-            output["updraft_mass_flux"].fill(0.0)
-            output["downdraft_mass_flux"].fill(0.0)
-            return output
-        kbase_g = klcl_g - 1
-        lcl_fraction = ((zlcl_g - z[kbase_g])
-                        / (z[klcl_g] - z[kbase_g]))
-        tenv_g = (tg[kbase_g]
-                  + (tg[klcl_g] - tg[kbase_g]) * lcl_fraction)
-        qenv_g = (qg[kbase_g]
-                  + (qg[klcl_g] - qg[kbase_g]) * lcl_fraction)
-        tven_g = tenv_g * (1.0 + 0.608 * qenv_g)
-        thetae_g = (tmix_g
-                    * (1.0e5 / pmix) ** (
-                        0.2854 * (1.0 - 0.28 * qmix_g))
-                    * np.exp((3374.6525 / tlcl_g - 2.5403)
-                             * qmix_g * (1.0 + 0.81 * qmix_g)))
-
-        adjusted_cape = 0.0
-        thetae_parcel = thetae_g
-        tvqu_below = 0.0
-        for nk in range(kbase_g, cloud_top):
-            nk1 = nk + 1
-            tgu, qgu = _kf_table_parcel(
-                pressure[nk1], thetae_parcel, table)
-            tvqu = tgu * (1.0 + 0.608 * qgu - qliq[nk1] - qice[nk1])
-            if nk == kbase_g:
-                depth = z[klcl_g] - zlcl_g
-                dilbe = ((tvlcl_g + tvqu) / (tven_g +
-                         tg[nk1] * (1.0 + 0.608 * qg[nk1])) - 1.0) * depth
-            else:
-                depth = z[nk1] - z[nk]
-                dilbe = ((tvqu_below + tvqu) /
-                         (tg[nk] * (1.0 + 0.608 * qg[nk])
-                          + tg[nk1] * (1.0 + 0.608 * qg[nk1]))
-                         - 1.0) * depth
-            if dilbe > 0.0:
-                adjusted_cape += dilbe * 9.81
-            environment_thetae = _kf_environment_thetae(
-                pressure[nk1], tg[nk1], qg[nk1], table.log_ratio)
-            thetae_parcel = (thetae_parcel / dilfrc[nk1]
-                             + environment_thetae
-                             * (1.0 - 1.0 / dilfrc[nk1]))
-            tvqu_below = tvqu
-
-        if noitr:
-            break
-        dabe = max(cape - adjusted_cape, 0.1 * cape)
-        fabe = adjusted_cape / cape
-        fabe_history.append(float(fabe))
-        if fabe > 1.0:
-            output["updraft_mass_flux"].fill(0.0)
-            output["downdraft_mass_flux"].fill(0.0)
-            return output
-        if ncount != 0:
-            if abs(ainc - aincold) < 1.0e-4:
-                noitr = True
-                noitr_reverted = True
-                ainc = aincold
-                continue
-            dfda = (fabe - fabeold) / (ainc - aincold)
-            if dfda > 0.0:
-                noitr = True
-                noitr_reverted = True
-                ainc = aincold
-                continue
-        aincold = ainc
-        fabeold = fabe
-        if ainc / aincmx > 0.999 and fabe > 0.10:
-            break
-        if (0.0 <= fabe <= 0.10) or ncount == 9:
-            break
-        if fabe == 0.0:
-            ainc *= 0.5
-        else:
-            if dabe < 1.0e-4:
-                noitr = True
-                noitr_reverted = True
-                ainc = aincold
-                continue
-            ainc *= 0.95 * cape / dabe
-        ainc = min(aincmx, ainc)
-        if ainc < 0.05:
-            output["updraft_mass_flux"].fill(0.0)
-            output["downdraft_mass_flux"].fill(0.0)
-            return output
-        tder = unit_tder * ainc
-        pptflx = unit_pptflx * ainc
-        pptflx_scale = ainc
-        updraft[:] = unit_updraft * ainc
-        downdraft[:] = unit_downdraft * ainc
-        detlq[:] = unit_detlq * ainc
-        detice[:] = unit_detice * ainc
-        udr[:] = unit_udr * ainc
-        uer[:] = unit_uer * ainc
-        der[:] = unit_der * ainc
-        ddr[:] = unit_ddr * ainc
-
-    # WRF 2571-2573: the shallow arm RE-SETS TIMEC to exactly 2400 here,
-    # discarding the FLOAT(NINT(TIMEC/DT))*DT rounding of :1600.  Every
-    # feedback tendency from :2603 to :2640 then divides by the un-rounded
-    # value, while the closure and advection arithmetic above, TIMEC_KF
-    # (:2387) and the TADVEC comparison (:2569) all keep the rounded one.
-    tendency_timec = 2400.0 if shallow else timec
-    output["rqvcuten"][:cloud_top + 1] = (
-        (qg[:cloud_top + 1] - qenv[:cloud_top + 1]) / tendency_timec)
-    output["closure_scale"] = float(ainc)
-    output["closure_iterations"] = int(closure_iterations)
-    output["closure_fabe"] = float(fabe)
-    output["closure_noitr_revert"] = bool(noitr_reverted)
-    output["closure_ainc_history"] = tuple(ainc_history)
-    output["closure_fabe_history"] = tuple(fabe_history)
-    output["closure_precip_scale"] = float(pptflx_scale)
-    output["closure_qv"] = qg.copy()
-
-    output["downdraft_temperature"] = tz.copy()
-    output["downdraft_qv"] = qd.copy()
-    output["downdraft_entrainment"] = der.copy()
-    output["downdraft_detrainment"] = ddr.copy()
-    output["downdraft_evaporation"] = float(tder)
-    output["downdraft_evaporation_before_suppression"] = float(
-        tder_before_suppression)
-    output["precip_efficiency"] = float(precip_efficiency)
-
-    # WRF module_cu_kfeta.F:2311-2382.  Deep convection uses FBFRC=0;
-    # shallow fallback uses FBFRC=1 and returns all generated precipitation
-    # to the resolved hydrometeor fields instead of surface rain.
-    fbfrc = 1.0 if shallow else 0.0
-    frc2 = pptflx / (cpr * ainc) if cpr > 0.0 else 0.0
-    qlpa = np.zeros(nz, dtype=np.float64)
-    qipa = np.zeros(nz, dtype=np.float64)
-    qrpa = np.zeros(nz, dtype=np.float64)
-    qspa = np.zeros(nz, dtype=np.float64)
-    for _ in range(nstep):
-        ql_flux_in = np.zeros(nz, dtype=np.float64)
-        ql_flux_out = np.zeros(nz, dtype=np.float64)
-        qi_flux_in = np.zeros(nz, dtype=np.float64)
-        qi_flux_out = np.zeros(nz, dtype=np.float64)
-        qr_flux_in = np.zeros(nz, dtype=np.float64)
-        qr_flux_out = np.zeros(nz, dtype=np.float64)
-        qs_flux_in = np.zeros(nz, dtype=np.float64)
-        qs_flux_out = np.zeros(nz, dtype=np.float64)
-        for nk in range(1, cloud_top + 1):
-            if omega[nk] <= 0.0:
-                ql_flux_in[nk] = -fxm[nk] * qlpa[nk - 1]
-                qi_flux_in[nk] = -fxm[nk] * qipa[nk - 1]
-                qr_flux_in[nk] = -fxm[nk] * qrpa[nk - 1]
-                qs_flux_in[nk] = -fxm[nk] * qspa[nk - 1]
-                ql_flux_out[nk - 1] += ql_flux_in[nk]
-                qi_flux_out[nk - 1] += qi_flux_in[nk]
-                qr_flux_out[nk - 1] += qr_flux_in[nk]
-                qs_flux_out[nk - 1] += qs_flux_in[nk]
-            else:
-                ql_flux_out[nk] = fxm[nk] * qlpa[nk]
-                qi_flux_out[nk] = fxm[nk] * qipa[nk]
-                qr_flux_out[nk] = fxm[nk] * qrpa[nk]
-                qs_flux_out[nk] = fxm[nk] * qspa[nk]
-                ql_flux_in[nk - 1] += ql_flux_out[nk]
-                qi_flux_in[nk - 1] += qi_flux_out[nk]
-                qr_flux_in[nk - 1] += qr_flux_out[nk]
-                qs_flux_in[nk - 1] += qs_flux_out[nk]
-        qlpa[:cloud_top + 1] += (
-            ql_flux_in[:cloud_top + 1] + detlq[:cloud_top + 1]
-            - ql_flux_out[:cloud_top + 1]
-        ) * dtime * inverse_cell_mass[:cloud_top + 1]
-        qipa[:cloud_top + 1] += (
-            qi_flux_in[:cloud_top + 1] + detice[:cloud_top + 1]
-            - qi_flux_out[:cloud_top + 1]
-        ) * dtime * inverse_cell_mass[:cloud_top + 1]
-        qrpa[:cloud_top + 1] += (
-            qr_flux_in[:cloud_top + 1]
-            + pptliq[:cloud_top + 1] * ainc * fbfrc * frc2
-            - qr_flux_out[:cloud_top + 1]
-        ) * dtime * inverse_cell_mass[:cloud_top + 1]
-        qspa[:cloud_top + 1] += (
-            qs_flux_in[:cloud_top + 1]
-            + pptice[:cloud_top + 1] * ainc * fbfrc * frc2
-            - qs_flux_out[:cloud_top + 1]
-        ) * dtime * inverse_cell_mass[:cloud_top + 1]
-
-    # WRF module_cu_kfeta.F:2599-2640 applies output phase closure before
-    # diagnosing DTDT.  WARM_RAIN and !F_QS both fold QI/QS into QC/QR, but
-    # the operation is not mass-only: TG receives the matching latent-fusion
-    # adjustment.  F_QS,!F_QI instead folds cloud ice into snow with no TG
-    # adjustment, while F_QI,F_QS preserves all four categories.
-    active = slice(0, cloud_top + 1)
-    cpm = 1004.5 * (1.0 + 0.887 * qg[active])
-    rlf = 3.339e5
-    if phase_mode == KFPhaseMode.WARM_RAIN:
-        tg[active] -= (qipa[active] + qspa[active]) * rlf / cpm
-        output["rqccuten"][active] = (
-            (qlpa[active] + qipa[active]) / tendency_timec)
-        output["rqrcuten"][active] = (
-            (qrpa[active] + qspa[active]) / tendency_timec)
-    elif phase_mode == KFPhaseMode.NO_SEPARATE_SNOW:
-        warm_levels = np.flatnonzero(temperature[active] > 273.16)
-        melting_level = int(warm_levels[-1]) if warm_levels.size else -1
-        level = np.arange(cloud_top + 1)
-        below_melting = level <= melting_level
-        tg_active = tg[active]
-        tg_active[below_melting] -= (
-            (qipa[active][below_melting] + qspa[active][below_melting])
-            * rlf / cpm[below_melting])
-        tg_active[~below_melting] += (
-            (qlpa[active][~below_melting] + qrpa[active][~below_melting])
-            * rlf / cpm[~below_melting])
-        output["rqccuten"][active] = (
-            (qlpa[active] + qipa[active]) / tendency_timec)
-        output["rqrcuten"][active] = (
-            (qrpa[active] + qspa[active]) / tendency_timec)
-    elif phase_mode == KFPhaseMode.SEPARATE_SNOW:
-        output["rqccuten"][active] = qlpa[active] / tendency_timec
-        output["rqrcuten"][active] = qrpa[active] / tendency_timec
-        output["rqscuten"][active] = (
-            (qspa[active] + qipa[active]) / tendency_timec)
-    else:
-        output["rqccuten"][active] = qlpa[active] / tendency_timec
-        output["rqicuten"][active] = qipa[active] / tendency_timec
-        output["rqrcuten"][active] = qrpa[active] / tendency_timec
-        output["rqscuten"][active] = qspa[active] / tendency_timec
-    output["rthcuten"][active] = (
-        (tg[active] - temperature[active]) / (exner[active] * tendency_timec))
-    output["closure_temperature"] = tg.copy()
-    output["closure_liquid"] = qlpa.copy()
-    output["closure_ice"] = qipa.copy()
-    output["closure_rain"] = qrpa.copy()
-    output["closure_snow"] = qspa.copy()
-    output["precip_partition"] = float(frc2)
-    output["condensation_transfer"] = float(
-        (1.0 - eqfrc[lfs]) * (qliq[lfs] + qice[lfs]) * downdraft[lfs])
-    precip_rate = pptflx * (1.0 - fbfrc) / (dx * dx)
-
-    # Report, but never correct, WRF's actual column MSE residual.  KF's
-    # temperature-dependent latent heats and local melt treatment do not close
-    # moist static energy to machine precision (source lines 2564-2640).
-    mass_per_area = dp / 9.81
-    latent_heat = 3.15e6 - 2370.0 * temperature[active]
-    reported_mse_residual = float(np.sum(
-        mass_per_area[active]
-        * (1004.5 * output["rthcuten"][active] * exner[active]
-           + latent_heat * output["rqvcuten"][active])))
-    # Anti-fixer gate: recompute the feedback rate directly from the final TG
-    # local after WRF's phase-dependent latent-fusion branch.  WRF then sets
-    # DTDT(K)=(TG(K)-T0(K))/TIMEC (module_cu_kfeta.F:2640), with the driver
-    # converting DTDT to RTHCUTEN=DTDT/pi (:487).  Any later correction to the
-    # returned rate breaks the exact equality gate below.
-    raw_rthcuten = np.zeros(nz, dtype=np.float64)
-    raw_rthcuten[:cloud_top + 1] = (
-        (tg[:cloud_top + 1] - temperature[:cloud_top + 1])
-        / (tendency_timec * exner[:cloud_top + 1]))
-    output["raw_rthcuten"] = raw_rthcuten
-    output["reported_mse_residual"] = reported_mse_residual
-
-    feedback_time = timec
-    if not shallow and advective_time < timec:
-        feedback_time = max(np.floor(advective_time / dt + 0.5), 0.0) * dt
-    nca_seconds = cudt if shallow else feedback_time
-    output.update(
-        rainc=float(precip_rate * min(cudt, feedback_time)),
-        precip_rate=float(precip_rate), precip_flux=float(pptflx),
-        triggered=True, cape_before=cape, cape_after=float(adjusted_cape),
-        timec=float(timec), cloud_base=int(klcl), cloud_top=int(cloud_top),
-        source_bottom=int(source_bottom), source_top=int(source_top),
-        shallow=shallow, nca_seconds=float(nca_seconds),
-    )
-    return output
 
 
 # ---------------------------------------------------------------------------
 # Cumulus-driver NCA persistence (Phase 4 Task 6b) -- WRF v4.6.1 DRIVER side:
 # module_cu_kfeta.F:406-440 (per-column hold/skip and entry zeroing) plus
 # solve_em.F:3558-3571 -> module_physics_addtendc.F:2139-2231 (advance_ppt).
-# The KF column scheme itself (np_kf_column above) is verified and frozen;
+# The KF column scheme itself is graded against WRF by its column oracle;
 # this section mirrors only the driver contract that consumes its outputs.
 # ---------------------------------------------------------------------------
 

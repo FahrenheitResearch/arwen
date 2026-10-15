@@ -556,3 +556,36 @@ def test_the_host_rule_allowance_is_live_and_names_one_shipped_config():
         assert len(shipped.get(digest, [])) == 1, (
             f"the WRF reference pinned at {digest} names no single shipped "
             f"config: {shipped.get(digest)}")
+
+
+#: The owner's identity, assembled so this file carries none of it.
+OWNER_NAME = "Dr" + "ew"
+OWNER_MAIL = "fahrenheit" + "agi" + "@example.invalid"
+
+
+@requires_builder
+def test_the_owners_name_and_mail_are_refused_in_every_shipped_file(tmp_path):
+    """Code is read too: a comment is published text (owner ruling 2026-09-10).
+
+    2.9.0's first candidate carried the owner's name in two modules, three
+    tests and a frozen config, and nothing read for it.
+    """
+
+    snap = _snap()
+    files = {
+        "gpuwm/namelist_chem.py": "# " + OWNER_NAME + "'s ruling (2026-10-12)\n",
+        "tests/test_door.py": "# ---- &chem (" + OWNER_NAME + ", 2026-10-12) ----\n",
+        "docs/public/receipts/run.json": '{"author": "' + OWNER_MAIL + '"}\n',
+        # The past tense of "draw" and a lower-case word inside an identifier
+        # are not the owner.
+        "gpuwm/render.py": "# the renderer drew 43 pictures; withdrew; Andrewsville\n",
+    }
+    for rel, text in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    hits = snap.machine_path_hits(str(tmp_path))
+    assert sorted((rel, kind) for rel, _where, kind, _ in hits) == [
+        ("docs/public/receipts/run.json", "owner's e-mail"),
+        ("gpuwm/namelist_chem.py", "owner's name"),
+        ("tests/test_door.py", "owner's name")]

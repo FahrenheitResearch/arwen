@@ -67,6 +67,8 @@ class StochasticPhysicsBinding:
 
     def snapshot(self):
         return {"contract": "gpuwm-ensemble-stochastic-binding.v1",
+                **({"warnings": ["uncalibrated spread, WRF default amplitudes"]}
+                   if self.enabled else {}),
                 "member_id": self.member_id, "recipe_sha256": self.recipe_sha256,
                 "applied_steps": self.applied_steps, "hook": self.hook.snapshot()}
 

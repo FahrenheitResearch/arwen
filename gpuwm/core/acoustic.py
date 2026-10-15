@@ -173,11 +173,13 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
     if cfg.mp_physics == 0:
         qi = qs = qg = state.qv              # placeholders are never read
         n_mass = 1
-    elif cfg.mp_physics == 1:
+    elif cfg.mp_physics in (1, 3):
+        # Kessler (Registry.EM_COMMON:3015) and WSM3 (:3017) both declare
+        # moist:qv,qc,qr; WSM3's cloud ice and snow live inside qc and qr.
         qi = qs = qg = state.qv              # ice placeholders are never read
         n_mass = 3
     elif getattr(state, "qi", None) is not None \
-            and getattr(state, "qs", None) is None:
+            and getattr(state, "qg", None) is None:
         # P3 one-category (Registry.EM_COMMON:3038): moist:qv,qc,qr,qi --
         # ONE ice mass, no snow, no graupel.  calc_cq's mass arms are
         # 1/3/6/7 and 4 is not one of them, so the absent qs/qg take the
@@ -195,9 +197,11 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
         # counting besides: it is a COMPONENT of qi, not extra mass.
         from gpuwm.core.moist import absent_mass_plane
         qi = state.qi
-        qs = qg = absent_mass_plane(state)
+        zero = absent_mass_plane(state)
+        qs = state.qs if getattr(state, "qs", None) is not None else zero
+        qg = zero
         n_mass = 6
-    elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28, 30):
+    elif cfg.mp_physics in (2, 6, 8, 9, 10, 16, 18, 24, 28, 30, 106):
         # mp=28 is numerically IDENTICAL to mp=8 here.  WRF's calc_cq sums
         # the Registry ``moist`` package only, and Registry.EM_COMMON:3036
         # gives aerosol-aware Thompson
@@ -220,7 +224,7 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
         # ran mode 3).
         qi = state.qi
         qs, qg = state.qs, state.qg
-        n_mass = 7 if cfg.mp_physics in (9, 18) else 6
+        n_mass = 7 if cfg.mp_physics in (9, 18, 24) else 6
     elif _mass_loading_species(cfg.mp_physics) == ("qi", "qs", "qg"):
         # A NAMED scheme whose capability row declares the six-mass moist
         # package: the same calc_cq call as the Thompson family.
@@ -229,7 +233,7 @@ def prepare_moist_cq(state: DomainState, cfg: RunConfig) -> tuple:
         n_mass = 6
     else:
         raise ValueError(f"unsupported mp_physics={cfg.mp_physics} for cq")
-    qh = state.qh if cfg.mp_physics in (9, 18) else state.qv
+    qh = state.qh if cfg.mp_physics in (9, 18, 24) else state.qv
     n = (nz + 1) * (ny + 1) * (nx + 1)
     blocks = (n + _THREADS - 1) // _THREADS
     get_kernel("acoustic", "calc_cq")(

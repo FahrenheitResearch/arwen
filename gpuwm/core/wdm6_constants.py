@@ -198,7 +198,57 @@ def coefficients(hail_opt: int = 0) -> WDM6Coefficients:
     )
 
 
+#: The float32 words WRF v4.6.1's own ``wdm6init`` leaves in its saved
+#: variables, as bit patterns, read back from the Fortran by
+#: tools/wdm6_wrf461_oracle (gfortran 13.3 -O0, glibc 2.39; the oracle's
+#: ``constants-*.txt`` dumps).  ``kernels/wdm6.cu`` bakes exactly these words
+#: (tests/test_wdm6.py pins the correspondence) because they are WRF's
+#: coefficients: ``wdm6init`` declares them default REAL, so ``rgmma``'s
+#: 10,000-term product and every derived product are float32 arithmetic.
+#: :func:`coefficients` evaluates the same formulas in float64; its values
+#: differ from these words by 1 to about 70 ULP (rgmma's float32
+#: accumulation for the fall speeds, single roundings such as pidnr's
+#: 4*pi*denr for the rest) and stay as the readable derivation, checked
+#: against the words to 1e-5 relative.  The column oracle grades the kernel
+#: bitwise against WRF with these words in place
+#: (tests/test_wdm6_wrf461_oracle.py).
+WDM6_WRF_WORDS: dict[str, int] = {
+    "pi": 0x40490FDB, "qc0": 0x38AFB0CB, "qc1": 0x3A5B9CFE,
+    "qck1": 0x458DB55A, "pidnc": 0x4402E653, "g4pbr": 0x418E89D3,
+    "g7pbr": 0x45526AA0, "pvtr": 0x453B679F, "pvtrn": 0x44B05C29,
+    "precr1": 0x411CD40C, "precr2": 0x4395A266, "pidnr": 0x4644597C,
+    "roqimax": 0x38AA64C8, "pvts": 0x41A069C1, "precs1": 0x4A9EB100,
+    "precs2": 0x4B8E882C, "pidn0s": 0x4E15CD85, "pacrc": 0x4C537EB0,
+    "rslopecmax": 0x360637BD, "rslopec2max": 0x2C8CBCCC,
+    "rslopec3max": 0x231392EE, "rslopermax": 0x37A7C5AC,
+    "rsloperbmax": 0x39369152, "rsloper2max": 0x2FDBE6FE,
+    "rsloper3max": 0x28101D7C, "rslopesmax": 0x3727C5AC,
+    "rslopesbmax": 0x3C1205C6, "rslopes2max": 0x2EDBE6FE,
+    "rslopes3max": 0x26901D7C, "cdm2": 0x3F6711B5,
+}
+
+#: The hail_opt-dependent words (wdm6init :2096-2108 and the products of
+#: n0g/deng/avtg/lamdagmax), same provenance.
+WDM6_WRF_RIMED_WORDS: dict[int, dict[str, int]] = {
+    0: {"pidn0g": 0x4FBB40E7, "pvtg": 0x4474FCE3, "pacrg": 0x4F90EE38,
+        "precg1": 0x4B959029, "precg2": 0x4D768C0C,
+        "rslopegmax": 0x378BCF65, "rslopegbmax": 0x391DCA2F,
+        "rslopeg2max": 0x2F98B5BF, "rslopeg3max": 0x27A6CCCC},
+    1: {"pidn0g": 0x4CA7C777, "pvtg": 0x44539495, "pacrg": 0x4C2036D0,
+        "precg1": 0x483F70D8, "precg2": 0x4A12A338,
+        "rslopegmax": 0x3851B717, "rslopegbmax": 0x39BDFF22,
+        "rslopeg2max": 0x312BCC76, "rslopeg3max": 0x2A0CBCCB},
+}
+
+
+def wrf_word(bits: int) -> float:
+    """The float32 value of one WRF word (returned as a Python float)."""
+    import struct
+    return struct.unpack("<f", struct.pack("<I", bits))[0]
+
+
 __all__ = ["WDM6Coefficients", "WDM6_DEEP_KMAX", "WDM6_KERNEL_LEVEL_TIERS",
            "WDM6_NUMBER_SPECIES", "WDM6_SHALLOW_KMAX",
-           "WDM6_VERTICAL_LEVEL_BOUNDS", "coefficients",
-           "rimed_ice_constants", "wdm6_level_tier"]
+           "WDM6_VERTICAL_LEVEL_BOUNDS", "WDM6_WRF_RIMED_WORDS",
+           "WDM6_WRF_WORDS", "coefficients", "rimed_ice_constants",
+           "wdm6_level_tier", "wrf_word"]

@@ -42,7 +42,7 @@ def request_for_payload(payload, *, override=None, members=None, keep_member_fil
             value["trajectories"] = list(trajectories)
         if value.get("trajectories") and value.get("recipe") is None:
             value["recipe"] = "multi-model"
-        if value.get("recipe") != "multi-model":
+        if value.get("recipe") not in ("multi-model", "member-roster"):
             if recipe is not None and trajectories is None:
                 # --recipe time-lagged over a table that listed trajectories.
                 value.pop("trajectories", None)

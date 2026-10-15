@@ -161,7 +161,7 @@
   "promotion": {
    "alpha": 0.05,
    "chaos_floor": "the cross-case median difference must exceed the twin band for the same score",
-   "delegation_reference": "Drew's standing delegation, 2026-08-04: \"just make right calls and keep going\", relayed by the obs-battery lead to this lane on 2026-08-04 with Q1 and Q2 both answered.",
+   "delegation_reference": "The owner's standing delegation, 2026-08-04: \"just make right calls and keep going\", relayed by the obs-battery lead to this lane on 2026-08-04 with Q1 and Q2 both answered.",
    "guardrail_rule": "no guardrail may degrade the cross-case median by more than that metric's own twin band",
    "guardrails": [
     {

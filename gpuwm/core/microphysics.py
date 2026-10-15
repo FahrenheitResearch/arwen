@@ -710,10 +710,24 @@ def _apply_thompson(
     # through microphysics_driver; Thompson copies w(i,k,j) directly into
     # w1d(k).  gpuwm's matching kts:kte view is the lower full-level slice,
     # not a mass-level average (the upper extra interface is outside kte).
+    # Correct mode, finding WB1 (RunConfig.thompson_cloud_surface_booking,
+    # gpuwm/core/thompson_cloud_booking.py): the cloud water this fallout
+    # takes out of the column is booked in CLOUDNC instead of vanishing.
+    # Exact mode (the key off) issues exactly the launcher sequence above
+    # and below, nothing more.
+    book_cloud = getattr(cfg, "thompson_cloud_surface_booking", False) is True
+    if book_cloud:
+        from gpuwm.core.thompson_cloud_booking import (book_settled_cloud,
+                                                       cloud_column_water)
+        cloud_before = cloud_column_water(
+            state.qc, temperature, state.p, state.qv, dz)
     launch_cloud_sedimentation(
         state.qc, temperature, state.p, state.qv, state.w[:-1], dz, dt,
         reference_density=frozen_reference_density,
         rain_active_columns=rainncv, cloud_active_columns=snowncv)
+    if book_cloud:
+        book_settled_cloud(state, cfg, cloud_before, state.qc, temperature,
+                           state.p, state.qv, dz)
     launch_ice_sedimentation(
         state.qi, state.ni, temperature, state.p, state.qv, dz,
         rainnc, rainncv, snownc, snowncv, dt,
@@ -843,13 +857,164 @@ def normalize_spec_zone_ring_after_restore(state: DomainState,
             state.h_diabatic[slc] = 0
 
 
+# ---------------------------------------------------------------------------
+# Single-moment column schemes admitted by table row
+# ---------------------------------------------------------------------------
+
+from gpuwm.core.column_schemes import COLUMN_SCHEMES, ColumnSchemeRow
+
+_COLUMN_WORDS: dict = {}
+
+
+def _column_words(row: ColumnSchemeRow, which: str):
+    """A row's init or radar words, uploaded once per device."""
+    key = (row.mp_physics, which, cp.cuda.runtime.getDevice())
+    words = _COLUMN_WORDS.get(key)
+    if words is None:
+        if which == "init":
+            words = cp.asarray(row.init_words())
+        else:
+            f32, f64 = row.radar_words()
+            words = (cp.asarray(f32), cp.asarray(f64))
+        _COLUMN_WORDS[key] = words
+    return words
+
+
+def column_scheme_kernel(row: ColumnSchemeRow, func: str, nz: int):
+    """``func`` from the row's unit, compiled at its level tier for ``nz``."""
+    from gpuwm.core.kernels import get_kernel_unflushed
+    tier = row.level_tier(nz)
+    defines = () if tier == row.shallow_tier else ((row.tier_define, tier),)
+    return get_kernel_unflushed(row.unit, func, defines)
+
+
+def _check_column_fields(label, fields: dict, shape) -> None:
+    for name, value in fields.items():
+        if value.shape != shape:
+            raise ValueError(f"{label} {name} must have shape {shape}, "
+                             f"got {value.shape}")
+        if value.dtype != DTYPE:
+            raise TypeError(f"{label} {name} must be float32, got {value.dtype}")
+        if not value.flags.c_contiguous:
+            raise ValueError(f"{label} {name} must be C-contiguous")
+
+
+def launch_column_scheme(row: ColumnSchemeRow, theta, species, den, p, pii,
+                         dz, surface, effc, effi, effs, dt: float) -> None:
+    """One call of a table-row scheme over contiguous FP32 ``(nz,ny,nx)``.
+
+    ``species`` and ``surface`` are sequences in the row's order.
+    """
+    shape = theta.shape
+    if len(shape) != 3:
+        raise ValueError(f"{row.label} fields must be 3-D, got {shape}")
+    nz, ny, nx = shape
+    if not np.isfinite(dt) or dt <= 0.0:
+        raise ValueError(f"dt must be finite and positive, got {dt}")
+    if len(species) != len(row.species) or len(surface) != len(row.surface):
+        raise ValueError(f"{row.label} takes species {row.species} and "
+                         f"surface {row.surface}")
+    _check_column_fields(row.label, {
+        "theta": theta, **dict(zip(row.species, species)), "den": den,
+        "p": p, "pii": pii, "dz": dz, "effc": effc, "effi": effi,
+        "effs": effs}, shape)
+    _check_column_fields(row.label, dict(zip(row.surface, surface)), (ny, nx))
+    ncol = ny * nx
+    kernel = column_scheme_kernel(row, row.column_entry, nz)
+    kernel(((ncol + _TPB - 1) // _TPB,), (_TPB,),
+           (theta, *species, den, p, pii, dz, *surface, effc, effi, effs,
+            _column_words(row, "init"), DTYPE(dt),
+            np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_column_refl(row: ColumnSchemeRow, refl_species, t, p, refl) -> None:
+    """The row's own REFL_10CM (dBZ, floored at -35 as WRF's wrapper does)."""
+    shape = t.shape
+    nz, ny, nx = shape
+    _check_column_fields(row.label, {
+        **dict(zip(row.refl_species, refl_species)), "t": t, "p": p,
+        "refl": refl}, shape)
+    f32, f64 = _column_words(row, "radar")
+    ncol = ny * nx
+    kernel = column_scheme_kernel(row, row.refl_entry, nz)
+    kernel(((ncol + _TPB - 1) // _TPB,), (_TPB,),
+           (*refl_species, t, p, f32, f64, refl,
+            np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def _apply_column_scheme(state: DomainState, cfg: RunConfig, dt: float,
+                         row: ColumnSchemeRow, *, refl_10cm_due: bool
+                         ) -> MicrophysicsDiagnostics:
+    """Prepare WRF's driver fields, run the row's scheme, finish heating."""
+    nz, ny, nx = state.p.shape
+    required = tuple(row.species) + ("effc", "effi", "effs")
+    missing = [n for n in required if getattr(state, n, None) is None]
+    if missing:
+        raise ValueError(f"mp_physics={row.mp_physics} state lacks "
+                         f"{row.label} fields: " + ", ".join(missing))
+    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
+    theta = state.scratch((nz, ny, nx), "mpcol_theta")
+    rho = state.scratch((nz, ny, nx), "mpcol_rho")
+    pii = state.scratch((nz, ny, nx), "mpcol_pii")
+    dz = state.scratch((nz, ny, nx), "mpcol_dz")
+    z8w = state.scratch((nz + 1, ny, nx), "mpcol_z8w")
+    theta[...] = thb + state.thp
+    rho[...] = 1.0 / state.alt
+    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
+    z8w[...] = (phb + state.php) / DTYPE(c.G)
+    dz[...] = z8w[1:] - z8w[:-1]
+    surface = [state.scratch((ny, nx), name) for name in row.surface]
+    save_pre_mp_theta(state)
+    launch_column_scheme(
+        row, theta, [getattr(state, n) for n in row.species], rho, state.p,
+        pii, dz, surface, state.effc, state.effi, state.effs, dt)
+    if refl_10cm_due:
+        from gpuwm.core.refl import stash_refl_10cm
+        refl_t = state.scratch((nz, ny, nx), "refl_t")
+        refl_t[...] = theta * pii
+        refl = state.scratch((nz, ny, nx), "refl_10cm")
+        launch_column_refl(row, [getattr(state, n) for n in row.refl_species],
+                           refl_t, state.p, refl)
+        stash_refl_10cm(state, refl)
+    moist_physics_finish(state, cfg, theta, dt)
+    rainnc, rainncv, snownc, snowncv, sr = surface
+    return MicrophysicsDiagnostics(rainnc=rainnc, rainncv=rainncv, sr=sr,
+                                   snownc=snownc, snowncv=snowncv)
+def _wsm_family_selectors() -> frozenset[int]:
+    from gpuwm.core.wsm_family import family_selectors
+    return family_selectors()
+
+
 def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
                      refl_10cm_due: bool) -> MicrophysicsDiagnostics:
     """Scheme dispatch exactly as before the ring guard existed."""
+    row = COLUMN_SCHEMES.get(int(cfg.mp_physics))
+    if row is not None:
+        return _apply_column_scheme(state, cfg, dt, row,
+                                    refl_10cm_due=refl_10cm_due)
     if cfg.mp_physics == 1:
         return _apply_kessler(
             state, cfg, dt, refl_10cm_due=refl_10cm_due)
-    elif cfg.mp_physics == 6:
+    elif cfg.mp_physics == 2:
+        from gpuwm.core import lin
+        return lin.apply(state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics == 5:
+        # Ferrier-Aligo.  Lazy import for the Morrison reason: mp=5 compiles
+        # its own CUDA translation unit and reads its own lookup table,
+        # which no other scheme's run may pay for.
+        from gpuwm.core.fer_hires import apply as apply_fer_hires
+        return apply_fer_hires(
+            state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics == 3:
+        # WSM3.  Lazy import for the Morrison reason: mp=3 compiles its own
+        # CUDA translation unit, which no other scheme's run may build.
+        from gpuwm.core.wsm3 import apply as apply_wsm3
+        return apply_wsm3(
+            state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics in (6, 106):
+        # The WSM6 family module: 106 (WSM6R) is its second row
+        # (gpuwm.core.wsm6.WSM6_FAMILY), with its own kernels/wsm6r.cu.
         from gpuwm.core.wsm6 import apply as apply_wsm6
         return apply_wsm6(
             state, cfg, dt, refl_10cm_due=refl_10cm_due)
@@ -895,6 +1060,12 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         adapter = importlib.import_module(
             "gpuwm.core." + _named_scheme(cfg.mp_physics).name)
         return adapter.apply(state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    elif cfg.mp_physics in _wsm_family_selectors():
+        # A WSM-family row (gpuwm/data/wsm_family/schemes.json), run by
+        # the one table-driven runner; lazy for the Morrison reason.
+        from gpuwm.core.wsm_family import apply as apply_wsm_family
+        return apply_wsm_family(
+            state, cfg, dt, refl_10cm_due=refl_10cm_due)
     elif cfg.mp_physics == 50:
         # P3 one-category.  Lazy import for the reason the Morrison and
         # aerosol arms use one, plus a P3-specific one: importing this
@@ -1003,7 +1174,8 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
     """Apply the configured microphysics to ``state`` over ``dt`` seconds.
 
     ``cfg.mp_physics = 0`` returns immediately (bitwise no-op); ``1`` runs
-    Kessler, ``6`` runs WSM6, ``8`` runs classic Thompson, ``10`` runs
+    Kessler, ``2`` runs Purdue Lin, ``3`` runs WSM3, ``4`` runs WSM5 (column row),
+    ``5`` runs Ferrier-Aligo, ``6`` runs WSM6, ``8`` runs classic Thompson, ``10`` runs
     Morrison two-moment, ``18`` runs NSSL two-moment, and ``28`` runs
     aerosol-aware Thompson (all require moisture); anything else raises.
     ``refl_10cm_due`` is gpuwm's history-step
@@ -1070,14 +1242,16 @@ def _apply_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         if refl_10cm_due:
             raise ValueError("REFL_10CM is due without active microphysics")
         return None
-    if (cfg.mp_physics not in (1, 6, 8, 9, 10, 16, 18, 28, 30, 50)
-            and _named_scheme(cfg.mp_physics) is None):
+    if (cfg.mp_physics not in (1, 2, 3, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106)
+            and _named_scheme(cfg.mp_physics) is None
+            and int(cfg.mp_physics) not in COLUMN_SCHEMES):
         raise ValueError(f"unknown mp_physics={cfg.mp_physics} "
-                         "(0 = none, 1 = Kessler, 6 = WSM6, "
+                         "(0 = none, 1 = Kessler, 2 = Purdue Lin, 3 = WSM3, 4 = WSM5, "
+                         "5 = Ferrier-Aligo, 6 = WSM6, "
                          "8 = Thompson, 9 = Milbrandt-Yau, "
                          "10 = Morrison, 16 = WDM6, "
-                         "18 = NSSL, 28 = Thompson aerosol-aware, "
-                         "50 = P3 one-category)")
+                         "18 = NSSL, 24 = WSM7, 28 = Thompson aerosol-aware, "
+                         "50 = P3 one-category, 106 = WSM6R)")
     if state.qv is None:
         raise ValueError(f"mp_physics={cfg.mp_physics} requires "
                          "cfg.moist=True: the state "
@@ -1177,18 +1351,22 @@ def microphysics_zero_out(state: DomainState, cfg: RunConfig) -> None:
     against it does not change a prognostic value.
     """
     mode = int(cfg.mp_zero_out)
-    if mode == 0 or state.qv is None:
+    if mode == 0 or (state.qv is None and getattr(state, "qke_adv", None) is None):
         return
     from gpuwm.core.moist import WRF_MOIST_ARRAY_SPECIES, moist_species
     from gpuwm.core.dycore import _boundary_forced
     names = moist_species(state)
     moist = [name for name in names if name in WRF_MOIST_ARRAY_SPECIES]
-    arrays = [(moist, "qv")]
+    arrays = [(moist, "qv")] if moist else []
     if int(cfg.mp_zero_out_all):
         scalars = [name for name in names
                    if name not in WRF_MOIST_ARRAY_SPECIES]
         if scalars:
             first = WRF_FIRST_SCALAR_SPECIES.get(int(cfg.mp_physics))
+            if scalars == ["qke_adv"]:
+                # MYNN may provide the only Registry scalar member when
+                # the microphysics package has no number tracers.
+                first = "qke_adv"
             if first not in scalars:
                 raise ValueError(
                     f"mp_zero_out_all = 1 under mp_physics = "

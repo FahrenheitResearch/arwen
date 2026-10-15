@@ -136,8 +136,7 @@ def _save_time_t(state):
     names = list(_PROGNOSTICS)
     if state.qv is not None:
         names.extend(SPECIES)
-        if getattr(state, 'qi', None) is not None:
-            names.extend(extra_moist_species(state))
+    names.extend(extra_moist_species(state))
     if getattr(state, 'tke', None) is not None:
         names.append('tke')
     pairs = tuple((getattr(state, name), getattr(state, name + '0'))
@@ -703,9 +702,11 @@ def _launch_slow_buoyancy(state: DomainState, cfg: RunConfig) -> None:
             # q_total's modes are 0/1/2/3 with no "one ice mass" arm.  The
             # absent pair takes the shared zero plane rather than reopening
             # a frozen kernel; moist.absent_mass_plane argues the identity.
-            if getattr(state, "qs", None) is None:
+            if getattr(state, "qg", None) is None:
                 from gpuwm.core.moist import absent_mass_plane
-                qs = qg = absent_mass_plane(state)
+                zero = absent_mass_plane(state)
+                qs = state.qs if getattr(state, "qs", None) is not None else zero
+                qg = zero
             else:
                 qs, qg = state.qs, state.qg
         else:
@@ -1809,9 +1810,9 @@ def _smag2d_specs(state: DomainState, km, kh, *, time_t: bool = False,
     if state.qv is not None:
         specs += [(field(name), None, kh, state.c1h, state.c2h,
                    "smag_r" + name, "") for name in SPECIES]
-        specs += [(field(name), None, kh, state.c1h, state.c2h,
-                   "smag_r" + name, "")
-                  for name in extra_moist_species(state)]
+    specs += [(field(name), None, kh, state.c1h, state.c2h,
+               "smag_r" + name, "")
+              for name in extra_moist_species(state)]
     chem = getattr(state, "chem", None)
     if chem is not None:
         # WRF's chem array mixes like the scalar arrays: horizontal_diffusion_s
@@ -2657,10 +2658,10 @@ def add_fixed_dry_tendencies(state: DomainState, cfg: RunConfig) -> None:
 
 def fixed_scalar_tendencies(state: DomainState, cfg: RunConfig):
     """Return held scalar forward tendencies by Registry field name."""
-    if state.qv is None or (not wrf_mixing_package_active(cfg)
+    if (state.qv is None and getattr(state, "qke_adv", None) is None) or (not wrf_mixing_package_active(cfg)
                             and cfg.diff_6th_opt <= 0):
         return None
-    names = list(SPECIES)
+    names = [name for name in SPECIES if getattr(state, name, None) is not None]
     names += list(extra_moist_species(state))
     shape = state.p.shape
     return {name: state.scratch(shape, "smag_r" + name) for name in names}
@@ -4167,7 +4168,7 @@ def apply_open_zero_gradient(state: DomainState, cfg: RunConfig) -> None:
                 continue
             q[:, :, 0] = cp.where(outw, q[:, :, 1], q[:, :, 0])
             q[:, :, -1] = cp.where(oute, q[:, :, -2], q[:, :, -1])
-        if getattr(state, "qi", None) is not None:
+        if extra_moist_species(state):
             for name in extra_moist_species(state):
                 q = getattr(state, name)
                 q[:, :, 0] = cp.where(outw, q[:, :, 1], q[:, :, 0])
@@ -4210,7 +4211,7 @@ def apply_open_zero_gradient(state: DomainState, cfg: RunConfig) -> None:
                 continue
             q[:, 0, :] = cp.where(outs, q[:, 1, :], q[:, 0, :])
             q[:, -1, :] = cp.where(outn, q[:, -2, :], q[:, -1, :])
-        if getattr(state, "qi", None) is not None:
+        if extra_moist_species(state):
             for name in extra_moist_species(state):
                 q = getattr(state, name)
                 q[:, 0, :] = cp.where(outs, q[:, 1, :], q[:, 0, :])
@@ -4415,6 +4416,10 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             update_diagnostics(state, cfg.hypsometric_opt,
                                muts=_wrf_muts(state))
         physics_tendencies = state.physics.compute(state, cfg)
+        # WRF rk_update_scalar saves scalar_old from the post-physics
+        # carrier on stage 1 (module_em.F:1679,1722). Preserve the MYNN solve.
+        if getattr(state, "qke_adv", None) is not None:
+            state.qke_adv0[...] = state.qke_adv
     elif getattr(getattr(state, "physics", None), "cam_ozone", None) is not None:
         # A nested consumer can require root CAM ozone even with all local
         # schemes disabled. Run its common cadence, adding no tendencies.
@@ -4593,7 +4598,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         # (WRF rk_scalar_tend for chem, solve_em.F:2476-2500), so a chem run
         # accumulates sumflux even on a dry state.
         scalars = (moist or getattr(state, "tke", None) is not None
-                   or chem is not None)
+                   or chem is not None or getattr(state, "qke_adv", None) is not None)
         if scalars:
             ru_m = state.scratch((nzs, nys, nxs + 1), "rk_ru_m")
             rv_m = state.scratch((nzs, nys + 1, nxs), "rk_rv_m")
@@ -4648,7 +4653,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             if ieva.active_stage(cfg, istage, len(stages)):
                 scalar_implicit["implicit"] = ieva.split_scalar_omega(
                     state, cfg, ww_m, state.mub2d + state.mup, nsub * dtau)
-            if moist:
+            if moist or getattr(state, "qke_adv", None) is not None:
                 advance_scalars_stage(
                     state, cfg, ru_m, rv_m, ww_m, nsub * dtau,
                     final=(istage == len(stages) - 1),
@@ -4721,6 +4726,12 @@ def _step_epilogue(state: DomainState, cfg: RunConfig,
         # diagnostic's own scratch slots -- inertness is pinned by
         # tests/test_uh_lifecycle.py.
         update_up_heli_max(state, cfg)
+    # WRF lightning diagnostics (lightning_option): off touches nothing here.
+    lightning_refl_due = False
+    if cfg.lightning_option:
+        from gpuwm.core.lightning import lightning_due, update_lightning
+        lightning_refl_due = (cfg.lightning_option in (1, 2)
+                              and lightning_due(state, cfg))
     if cfg.mp_physics != 0:                           # post-RK3 adjustment
         # h_diabatic capture cadence: once per INTERNAL step with cfg.dt.
         # Under the real74 compatibility integrator (dt = clock_dt/8) this
@@ -4729,11 +4740,13 @@ def _step_epilogue(state: DomainState, cfg: RunConfig,
         # capture dt and apply window are the same internal step; the
         # native dt=60 path restores WRF cadence with no code change).
         microphysics_result = apply_microphysics(     # (WRF microphysics
-            state, cfg, cfg.dt, refl_10cm_due=refl_10cm_due)
+            state, cfg, cfg.dt, refl_10cm_due=(refl_10cm_due or lightning_refl_due))
         if state.physics is not None:
             state.physics.accept_microphysics(
                 microphysics_result, dt=cfg.dt)
         update_diagnostics(state, cfg.hypsometric_opt)  # after the RK loop)
+    if cfg.lightning_option:
+        update_lightning(state, cfg, history_reflectivity_due=refl_10cm_due)
 
 
 def _wrf_step_epilogue(state: DomainState, cfg: RunConfig,
@@ -4750,9 +4763,15 @@ def _wrf_step_epilogue(state: DomainState, cfg: RunConfig,
     the first step of the round-3 pair).
     """
     update_diagnostics(state, cfg.hypsometric_opt, muts=_wrf_muts(state))
+    # WRF lightning diagnostics (lightning_option): off touches nothing here.
+    lightning_refl_due = False
+    if cfg.lightning_option:
+        from gpuwm.core.lightning import lightning_due, update_lightning
+        lightning_refl_due = (cfg.lightning_option in (1, 2)
+                              and lightning_due(state, cfg))
     if cfg.mp_physics != 0:
         microphysics_result = apply_microphysics(
-            state, cfg, cfg.dt, refl_10cm_due=refl_10cm_due)
+            state, cfg, cfg.dt, refl_10cm_due=(refl_10cm_due or lightning_refl_due))
         if state.physics is not None:
             state.physics.accept_microphysics(
                 microphysics_result, dt=cfg.dt)
@@ -4765,6 +4784,10 @@ def _wrf_step_epilogue(state: DomainState, cfg: RunConfig,
     set_w_surface(state, cfg)
     if cfg.nwp_diagnostics == 1:
         update_up_heli_max(state, cfg)
+    # Passive diagnostic (its inertness receipts hash every serialized
+    # field): the same place in the step as the default epilogue.
+    if cfg.lightning_option:
+        update_lightning(state, cfg, history_reflectivity_due=refl_10cm_due)
 
 
 def _wrf_reuse_diagnostics(state: DomainState) -> bool:

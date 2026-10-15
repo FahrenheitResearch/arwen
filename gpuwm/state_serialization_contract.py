@@ -90,11 +90,20 @@ STATE_SERIALIZED_ATTRS = (
     # the writer and the reader skip on ``is None``, so no existing
     # restart inventory moves.
     "qir", "qib", "th_old", "qv_old",
+    # mp_physics=5 (Ferrier-Aligo).  F_ICE_PHY, F_RAIN_PHY and F_RIMEF_PHY
+    # are WRF state carried in its restart stream (Registry.EM_COMMON
+    # fer_mp_hires package, :3019), and QT is the package's scalar.
+    # F_RIMEF is the one that decides a trajectory: FER_HIRES keeps it for
+    # every ice-bearing cell from one call to the next
+    # (module_mp_fer_hires.F:389-395), so a resume that re-set it to 1
+    # would restore unrimed ice.  Absent on every other scheme, and the
+    # writer and the reader skip on ``is None``.
+    "qt", "f_ice", "f_rain", "f_rimef",
     # SASE prognostic subgrid turbulence energy.  Like the optional
     # microphysics moments above, the attribute is ABSENT on a state that
     # did not select the closure, and the manifest walk skips what is not
     # there -- so adding it moves no existing restart.
-    "e_sgs",
+    "e_sgs", "qke_adv",
 ) + _FSBM_BIN_SPECIES
 
 # STATE_SETUP_ARRAYS is deliberately NOT extended with nwfa2d/nifa2d, even
@@ -125,6 +134,11 @@ STATE_SETUP_ARRAYS = (
 #: restore path runs before any reader.
 STATE_DERIVED_SETUP_ARRAYS = (
     "dphb_resid", "dc3f", "dc4f",
+    # WRF aerodm has no IO stream (Registry.EM_COMMON:1270). The monthly
+    # climatology is a deterministic function of the adapter's fingerprinted
+    # grid and checked table. A fresh state rebuilds it at the first radiation
+    # call before reading it; the root grid is fixed and resident nests refuse.
+    "aerodm",
 )
 
 STATE_SETUP_SCALARS = (

@@ -9,6 +9,7 @@
 
 [package]
 name = "rw-wrfbatch"
+autobins = false
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
@@ -28,7 +29,7 @@ path = "src/main.rs"
 # volume is not a forecast, so neither is a flag on it.
 [[bin]]
 name = "rw_ensbatch"
-path = "src/bin/ensbatch.rs"
+path = "src/launcher.rs"
 
 [[bin]]
 name = "rw_obsgrid"
@@ -37,17 +38,24 @@ path = "src/bin/obsgrid.rs"
 # A run's products beside a reference model's own fields for the same
 # cycle and lead: two inputs of two formats on one grid and one colour
 # scale, which is neither one run's frames nor N members of one ensemble.
+# Soundings and meteograms at named points straight off MPAS native
+# history (the gpuwm-hex product door's third binary). Its own program, not
+# one of the renderer launchers; bundled since 2.9.0 (gpuwm.bridge_assets).
+[[bin]]
+name = "rw_hex_points"
+path = "src/bin/hex_points.rs"
+
 [[bin]]
 name = "rw_compare"
-path = "src/bin/compare.rs"
+path = "src/launcher.rs"
 
 [[bin]]
 name = "rw_verify"
-path = "src/bin/verify.rs"
+path = "src/launcher.rs"
 
 [[bin]]
 name = "rw_scorecard"
-path = "src/bin/scorecard.rs"
+path = "src/launcher.rs"
 
 # A 2D reflectivity NetCDF file (a nowcast runner's output) written out as
 # the `gpuwm-obs.nowcast-frames.v1` contract, which is the only form the
@@ -56,7 +64,7 @@ path = "src/bin/scorecard.rs"
 # not a render.
 [[bin]]
 name = "rw_nowcast_frames"
-path = "src/bin/nowcast_frames.rs"
+path = "src/launcher.rs"
 
 [dependencies]
 rw-scoreboard = { path = "../rw-scoreboard" }
@@ -83,6 +91,9 @@ rustwx-cross-section = { path = "../rustwx-cross-section" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rustwx-ensemble = { path = "../rustwx-ensemble" }
 rustwx-render = { path = "../rustwx-render" }
+# Point columns (soundings, meteograms) off an MPAS history, interpolated with
+# the same linear map the product remap draws maps with.
+rw-mpas = { path = "../rw-mpas" }
 rustwx-models = { path = "../rustwx-models" }
 rustwx-products = { path = "../rustwx-products" }
 rusty-weather = { path = "../rusty-weather" }

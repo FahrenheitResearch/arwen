@@ -87,8 +87,37 @@ def dz8w(state):
     return z_at_w[1:] - z_at_w[:-1]
 
 
+def _state_card(state):
+    """Make the card that holds ``state``'s arrays the current one.
+
+    The breakage this prevents: a ranked run builds and refreshes every
+    rank's chem diagnostics from one host thread, and the caller's current
+    card is not necessarily the rank's.  With SFIRE bulk smoke on two
+    physical cards, rank 1's ``dz8w`` and column sums were launched while
+    card 0 was current; on cards with no peer path CuPy refuses that launch
+    ("Peer access is unavailable") and the run could not be built at all,
+    and on cards with a peer path the kernels ran on card 0 reading card
+    1's memory across the bus.  A state whose arrays are not on a CUDA
+    card (CPU tests, host mirrors) keeps the caller's context.
+    """
+    import contextlib
+
+    device = getattr(getattr(state, "alt", None), "device", None)
+    device_id = getattr(device, "id", None)
+    if not isinstance(device_id, int):
+        return contextlib.nullcontext()
+    import cupy as cp
+
+    return cp.cuda.Device(device_id)
+
+
 def history_fields(state) -> dict:
     """``{output_name: (array, long_name, units)}`` for one history frame."""
+    with _state_card(state):
+        return _history_fields(state)
+
+
+def _history_fields(state) -> dict:
     chem = state.chem
     out: dict = {}
     for row in (*chem.transported, *chem.prescribed):

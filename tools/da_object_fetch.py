@@ -34,10 +34,13 @@ def timed(stage):
 
 
 def events(command, request):
-    from gpuwm.rustwx_fetch import find_fetch_bin, fetch_remedy
+    from gpuwm.rustwx_fetch import find_fetch_bin, fetch_remedy, probe_fetch_bin
     binary = find_fetch_bin()
     if binary is None:
         raise ValueError("Rust public-object fetch is required: " + fetch_remedy())
+    ok, evidence = probe_fetch_bin(binary)
+    if not ok:
+        raise ValueError(evidence)
     origin = os.environ.get("GPUWM_RW_FETCH_TEST_ORIGIN")
     if origin:
         request = {**request, "origin": origin}

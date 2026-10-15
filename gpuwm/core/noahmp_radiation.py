@@ -73,15 +73,18 @@ _SIGMA_FLOOR = F(1.0e-6)      # TWOSTREAM's |SIGMA| clamp
 class RadiationOptions:
     """The two Noah-MP options this subsystem branches on."""
 
-    __slots__ = ("opt_rad", "opt_alb")
+    __slots__ = ("opt_rad", "opt_alb", "noahmp_snow_age")
 
-    def __init__(self, opt_rad: int, opt_alb: int) -> None:
+    def __init__(self, opt_rad: int, opt_alb: int, noahmp_snow_age="wrf_470") -> None:
+        from gpuwm.noahmp_generation import snow_age_generation
         self.opt_rad = int(opt_rad)
         self.opt_alb = int(opt_alb)
+        self.noahmp_snow_age = snow_age_generation(noahmp_snow_age)
 
 
 #: The WRF Registry defaults (Registry/Registry.EM_COMMON lines 2686-2687).
-PINNED_OPTIONS = RadiationOptions(opt_rad=3, opt_alb=2)
+PINNED_OPTIONS = RadiationOptions(opt_rad=3, opt_alb=2, noahmp_snow_age="wrf_461")
+DEFAULT_OPTIONS = RadiationOptions(opt_rad=3, opt_alb=2)
 
 
 # --------------------------------------------------------------------------
@@ -433,7 +436,7 @@ def albedo(tau0, grain_growth, extra_growth, dirt_soot, swemx,
            smc, sneqvo, sneqv, qsnow, fveg, albold, tauss,
            frevd_in=(0.0, 0.0), frevi_in=(0.0, 0.0),
            fregd_in=(0.0, 0.0), fregi_in=(0.0, 0.0),
-           options: RadiationOptions = PINNED_OPTIONS):
+           options: RadiationOptions = DEFAULT_OPTIONS):
     """Surface albedos and per-unit-flux canopy fluxes.
 
     Returns a dict keyed exactly like the oracle CSV's output columns.
@@ -441,9 +444,9 @@ def albedo(tau0, grain_growth, extra_growth, dirt_soot, swemx,
     ``VEGTYP``, ``SNOWH``, ``ICE``, ``ILOC`` and ``JLOC`` reach only dead
     arguments of the callees under the pinned identity; they are accepted so
     the signature matches the Fortran and the mutation study can record them.
-    ``FAGE`` is a dummy argument with no INTENT: it is written by SNOW_AGE on
-    the daytime path and left untouched when ``COSZ <= 0``, so its entry
-    value is part of the contract and is threaded through.
+    ``FAGE`` is written before the solar branch in the corrected generation.
+    The explicit ``wrf_461`` reproduction writes it only during daylight,
+    leaving its entry value untouched when ``COSZ <= 0``.
 
     FREVD/FREVI/FREGD/FREGI are the one real defect in the pinned source that
     this transcription has to model rather than fix.  ALBEDO's initialisation
@@ -460,8 +463,8 @@ def albedo(tau0, grain_growth, extra_growth, dirt_soot, swemx,
     """
     if options.opt_alb != 2:
         raise NotImplementedError(
-            "only OPT_ALB = 2 (CLASS) is transcribed; SNOWALB_BATS is dead "
-            "under the pinned Registry defaults"
+            "OPT_ALB must be 2 (CLASS); OPT_ALB=1 needs SNOWALB_BATS's "
+            "snow-age-dependent albedo calculation, which is not implemented"
         )
     del vegtyp, snowh  # dead under the pinned identity; see the docstring
 
@@ -497,6 +500,10 @@ def albedo(tau0, grain_growth, extra_growth, dirt_soot, swemx,
     ftdi = [F(0.0), F(0.0)]
     gdir = F(0.0)
 
+    if options.noahmp_snow_age == "wrf_470":
+        tauss, fage = snow_age(tau0, grain_growth, extra_growth, dirt_soot,
+                               swemx, dt, tg, sneqvo, sneqv, tauss)
+
     if cosz > F(0.0):
         rho = [F(0.0), F(0.0)]
         tau = [F(0.0), F(0.0)]
@@ -508,8 +515,9 @@ def albedo(tau0, grain_growth, extra_growth, dirt_soot, swemx,
             rho[ib] = max(F(F(F(rhol[ib]) * wl) + F(F(rhos[ib]) * ws)), mpe)
             tau[ib] = max(F(F(F(taul[ib]) * wl) + F(F(taus[ib]) * ws)), mpe)
 
-        tauss, fage = snow_age(tau0, grain_growth, extra_growth, dirt_soot,
-                               swemx, dt, tg, sneqvo, sneqv, tauss)
+        if options.noahmp_snow_age == "wrf_461":
+            tauss, fage = snow_age(tau0, grain_growth, extra_growth, dirt_soot,
+                                   swemx, dt, tg, sneqvo, sneqv, tauss)
 
         alb, albsnd_t, albsni_t = snowalb_class(swemx, nband, qsnow, dt, albold)
         albsnd = list(albsnd_t)

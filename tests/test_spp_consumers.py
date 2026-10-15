@@ -173,7 +173,13 @@ def test_mynn_surface_spp_native(oracle, backend):
 def test_spp_specializations_leave_default_compiler_sources_frozen():
     from gpuwm.core.kernels import module_source
     from gpuwm.core.spp_kernel_sources import specialized_source
-    pins = {"gf": "53785cdbe6d07c950bb4d8017ecf84a83d0f3bc84b81875e96bcda14ee8d9191",
+    pins = {
+            # RE-PINNED for 2.9.0 (lane/290-A5-fixes 0e7c7f03d, exact chain
+            # 7cdf42951): CUP_gf keeps descending after a valid
+            # downdraft-origin adjustment, as WRF does; the same change
+            # re-pinned gf in tests/test_kernel_source_freeze_per_module.py.
+            # Previously 53785cdb.
+            "gf": "5a3b174daffc9b7c5a6606dbcaf795693b599e5f4a9092316de186b4fcd4e7c1",
             # Accepted staging adds source-selected GSD41 entry points.
             # This pins the actual default compiler string and checks that
             # constructing an SPP specialization leaves that string intact.

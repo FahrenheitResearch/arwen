@@ -18,18 +18,26 @@ on a rented RTX 5090 (Linux, CUDA 12.9, cupy 14.1.1) -- and every maximum was
 identical on both.  The *count* of differing lanes was not, so no count is
 pinned.
 
-Two fixture columns are held out of the ULP table and asserted separately, by
-:func:`test_the_two_documented_behavioural_divergences_are_exactly_these`.
-They do not measure arithmetic; each is a place where the port and WRF take
-different branches, and folding a branch disagreement into a ULP maximum hides
-it behind a big number:
+One fixture column is held out of the ULP table and asserted separately, by
+:func:`test_case_13_is_wrfs_word_wherever_wrf_wrote_a_number`.  It does not
+measure arithmetic: it is the place where WRF itself is undefined, and folding
+WRF's NaN into a ULP maximum hides it behind a big number:
+
+* case 13 -- ``ust`` is a subnormal.  WRF's ``ust**3`` underflows to zero,
+  ``wstar3`` is zero and ``sfcflg`` is true, so ``prfac2`` is 0/0 and WRF fills
+  the whole ``rthblten`` column (and one ``exch_h`` lane) with NaN.  gpuwm
+  returns the defined algebraic value there and is WRF's word on every lane
+  WRF wrote a number, ``kpbl`` and ``hpbl`` included.
+
+CLOSED in golden/ports-pbl (2026-10-12), and now inside the ordinary table:
 
 * case 12 -- ``ust``, ``hfx`` and ``qfx`` are all exactly zero.  ``ysu.cu``
-  returns zero tendencies; WRF has no such short circuit and computes a
-  703 m PBL with nine levels in it.
-* case 13 -- ``ust`` is a subnormal, so ``-ftz`` makes case 12's short circuit
-  fire on a nonzero input.  WRF meanwhile divides 0 by 0 in ``prfac2`` and
-  fills the column with NaN.
+  used to short circuit this column (zero tendencies, ``PBLH = dz(1)``,
+  ``KPBL = 1``) and, through ``-ftz``, case 13's subnormal ``ust`` too.
+  ``bl_ysu_run`` has no such branch: it computes a 703 m PBL with nine levels
+  in it.  The short circuit is gone from the kernel and from
+  ``gpuwm.verify.npref.np_ysu_column``; case 12 is now WRF's word on every
+  lane (:func:`test_a_calm_column_runs_wrfs_whole_scheme`).
 
 CLOSED in lane/parity-286, and now inside the ordinary table:
 
@@ -58,6 +66,11 @@ import pytest
 
 from conftest import requires_gpu
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
+# The switch gpuwm.wrf_exact.install() reads to rewrite every NVRTC compile to
+# STRICT_OPTIONS (--fmad=false --ftz=false ...), CuPy's appended -ftz=true
+# included.  Read from that module so this file and the compiler agree on
+# which arithmetic the kernel below was built with.
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 from gpuwm.verify.ysu_oracle import (
     LEVEL_FIELD_MAP,
     NOCTOPO_FIELD_MAP,
@@ -67,12 +80,16 @@ from gpuwm.verify.ysu_oracle import (
     ysu_port_outputs,
 )
 
-#: Columns whose disagreement with WRF is a branch, not a rounding.  Asserted
-#: one at a time below instead of being averaged into a ULP maximum.
-BRANCH_DIVERGENCE_CASES = (12, 13)
+#: Columns held out of the ULP table: case 13, where WRF writes NaN (its own
+#: ``prfac2`` 0/0) and gpuwm writes the defined value.  Asserted lane by lane
+#: below instead of being averaged into a ULP maximum.  Case 12 left this tuple
+#: when the zero-flux short circuit was removed (golden/ports-pbl).
+BRANCH_DIVERGENCE_CASES = (13,)
 
 #: Worst ULP distance from ``kernels/ysu.cu`` to the word ``bl_ysu_run`` wrote,
-#: over the 22 columns that take the same branches as WRF.  This is the kernel
+#: over the 23 columns where WRF wrote numbers (22 until golden/ports-pbl
+#: removed the zero-flux short circuit and case 12 joined at 0 ULP on every
+#: field; the maxima below did not move -- RTX PRO 6000, NVRTC 12.9).  This is the kernel
 #: as it ships, and since lane/parity-286 it is WRF's word on every lane except
 #: the ones the card's flush-to-zero reaches (``SUBNORMAL_LANES``): the dqv,
 #: dqc and dqi maxima below are those lanes, where WRF wrote a subnormal
@@ -118,6 +135,14 @@ BASELINE_MAX_ULP = {
     "delta": 0,
 }
 
+#: The same table under GPUWM_WRF_EXACT=1, where gpuwm.wrf_exact compiles the
+#: unit with ``--ftz=false`` (it strips CuPy's ``-ftz=true`` at the NVRTC
+#: boundary): zero on every field, the dqv/dqc/dqi subnormal lanes included.
+#: Measured at 861a3908c on an RTX 4090 (sm_89) and an RTX 5090 (sm_120),
+#: NVRTC 13.4.92, identical; an earlier 2.9.0 strict run measured the same
+#: zeros on an RTX 5070 Ti (sm_120) at 0bf505764.
+STRICT_BASELINE_MAX_ULP = dict.fromkeys(BASELINE_MAX_ULP, 0)
+
 #: The same port momentum against WRF's ctopo-ABSENT call (``ad(1) = 1+fric``,
 #: bl_ysu.F90:1315), the arm the kernel used to take and no WRF run reaches.
 #: Kept so that the move onto WRF's default arm stays visible: the port is
@@ -129,10 +154,12 @@ NOCTOPO_BASELINE_MAX_ULP = {"du": 182, "dv": 182}
 #: involved: the same call with and without ``ctopo``.
 WRF_CTOPO_GAP_MAX_ULP = {"utnp": 182, "vtnp": 182}
 
-#: Every lane where ``bl_ysu_run`` wrote a subnormal.  CuPy appends
-#: ``-ftz=true`` unconditionally, so the kernel writes exactly zero in all of
-#: them.  Pinned as a count so that neither the flush nor the fixture's ability
-#: to reach it can quietly disappear.
+#: Every lane where ``bl_ysu_run`` wrote a subnormal.  In the default build
+#: CuPy appends ``-ftz=true`` after the loader's options, so the kernel writes
+#: exactly zero in all of them; under GPUWM_WRF_EXACT=1 the unit compiles
+#: ``--ftz=false`` and writes WRF's word in all of them.  Pinned as a count so
+#: that neither arithmetic's behaviour nor the fixture's ability to reach these
+#: lanes can quietly disappear.
 SUBNORMAL_LANES = {"dqv": 5, "dqc": 5, "dqi": 1}
 
 
@@ -240,14 +267,18 @@ def test_wrfs_default_ctopo_arm_differs_from_the_ctopo_absent_arm():
 @pytest.mark.gpu
 @requires_gpu
 def test_ysu_cuda_column_holds_its_measured_distance_from_wrf():
+    """Default build: BASELINE_MAX_ULP.  Strict build: STRICT_BASELINE_MAX_ULP,
+    zero on every field."""
     import cupy  # noqa: F401  (marks this test for -m "not gpu")
 
     fixture = _fixture()
     port = ysu_port_outputs(fixture)
     measured = _measure(fixture, port, _arithmetic_mask(fixture))
-    assert measured == BASELINE_MAX_ULP, (
-        "YSU's distance from the unmodified WRF module changed.\n"
-        f"  measured {measured}\n  recorded {BASELINE_MAX_ULP}\n"
+    recorded = STRICT_BASELINE_MAX_ULP if WRF_EXACT else BASELINE_MAX_ULP
+    assert measured == recorded, (
+        "YSU's distance from the unmodified WRF module changed"
+        f" (GPUWM_WRF_EXACT={int(WRF_EXACT)}).\n"
+        f"  measured {measured}\n  recorded {recorded}\n"
         "If a field got worse, something regressed.  If it got better, say so:"
         " update the table in the same commit as the improvement, with the"
         " attribution, so the residual stays documented.")
@@ -256,10 +287,12 @@ def test_ysu_cuda_column_holds_its_measured_distance_from_wrf():
 @pytest.mark.gpu
 @requires_gpu
 def test_ysu_is_bitwise_wrf_outside_the_flushed_subnormal_lanes():
-    """Every word the kernel writes on the 22 arithmetic columns is the word
+    """Every word the kernel writes on the 23 arithmetic columns is the word
     ``bl_ysu_run`` (and module_bl_ysu.F:452 for theta) wrote, except where
     WRF wrote a subnormal tendency, which the -ftz kernel writes as exactly
     zero (test_ftz_flushes_every_subnormal_tendency_wrf_wrote pins those).
+    Under GPUWM_WRF_EXACT=1 nothing is flushed and no lane is exempt
+    (test_strict_build_writes_every_subnormal_tendency_wrf_wrote).
 
     This replaced the dtheta round-trip test: the last dtheta ULP was WRF's
     (ttnp*pi2d)/pi2d, and the kernel now spells that round trip (ysu_thx).
@@ -274,6 +307,8 @@ def test_ysu_is_bitwise_wrf_outside_the_flushed_subnormal_lanes():
         want = np.ascontiguousarray(fixture.level_reference[column][:, :, mask])
         got = np.ascontiguousarray(port[name][:, :, mask], np.float32)
         flushed = (np.abs(want) > 0) & (np.abs(want) < smallest_normal)
+        if WRF_EXACT:
+            flushed[...] = False
         np.testing.assert_array_equal(
             got.view(np.uint32)[~flushed], want.view(np.uint32)[~flushed],
             err_msg=name)
@@ -286,14 +321,15 @@ def test_ysu_is_bitwise_wrf_outside_the_flushed_subnormal_lanes():
 
 @pytest.mark.gpu
 @requires_gpu
-def test_ysu_kpbl_matches_wrf_exactly_outside_the_short_circuit():
+def test_ysu_kpbl_matches_wrf_exactly_on_every_column():
+    """Every one of the 24 columns, case 13 included: WRF's 0/0 poisons the
+    heat tendency there but not the PBL diagnosis, and kpbl is WRF's."""
     import cupy  # noqa: F401
 
     fixture = _fixture()
     port = ysu_port_outputs(fixture)
-    mask = _arithmetic_mask(fixture)
-    got = np.asarray(port["kpbl"]).reshape(-1)[mask]
-    want = fixture.kpbl_reference.reshape(-1)[mask]
+    got = np.asarray(port["kpbl"]).reshape(-1)
+    want = fixture.kpbl_reference.reshape(-1)
     np.testing.assert_array_equal(got, want)
 
 
@@ -347,8 +383,13 @@ def test_ysu_takes_wrfs_default_ctopo_drag_arm():
 
 @pytest.mark.gpu
 @requires_gpu
+@pytest.mark.skipif(WRF_EXACT, reason=(
+    "the default build's flush: GPUWM_WRF_EXACT=1 compiles --ftz=false, and"
+    " test_strict_build_writes_every_subnormal_tendency_wrf_wrote grades"
+    " these lanes there"))
 def test_ftz_flushes_every_subnormal_tendency_wrf_wrote():
-    """``-ftz=true`` is appended by CuPy and cannot be turned off from here.
+    """In the default build ``-ftz=true`` is appended by CuPy after the
+    loader's options and cannot be turned off from here.
 
     Asserted as an equality in both directions: the fixture must still reach
     subnormal tendencies at all, and the kernel must still be writing exactly
@@ -375,40 +416,109 @@ def test_ftz_flushes_every_subnormal_tendency_wrf_wrote():
 
 @pytest.mark.gpu
 @requires_gpu
-def test_the_two_documented_behavioural_divergences_are_exactly_these():
-    """The held-out columns, stated as what they are rather than as ULP.
+@pytest.mark.skipif(not WRF_EXACT, reason=(
+    "strict build only (GPUWM_WRF_EXACT=1); the default build flushes these"
+    " lanes, test_ftz_flushes_every_subnormal_tendency_wrf_wrote"))
+def test_strict_build_writes_every_subnormal_tendency_wrf_wrote():
+    """GPUWM_WRF_EXACT=1 is WRF's arithmetic, and gfortran keeps subnormals.
 
-    Each assertion is the divergence written down.  If one is ever closed this
-    test fails, which is the intended way to find out.
+    gpuwm.wrf_exact rewrites every NVRTC compile to its STRICT_OPTIONS and
+    drops CuPy's ``-ftz=true``, so in every lane where ``bl_ysu_run`` wrote a
+    subnormal tendency the kernel must write that same word: not zero, not a
+    neighbour.  The lane count is the default build's SUBNORMAL_LANES, so the
+    fixture's reach is pinned in both arithmetic modes.
     """
     import cupy  # noqa: F401
 
     fixture = _fixture()
     port = ysu_port_outputs(fixture)
-    index = {case: i for i, case in enumerate(fixture.cases)}
+    smallest_normal = np.float32(np.finfo(np.float32).smallest_normal)
+    found = {}
+    for name, column in LEVEL_FIELD_MAP.items():
+        want = np.ascontiguousarray(fixture.level_reference[column])
+        subnormal = (np.abs(want) > 0) & (np.abs(want) < smallest_normal)
+        if not subnormal.any():
+            continue
+        found[name] = int(subnormal.sum())
+        got = np.ascontiguousarray(port[name], np.float32)
+        assert np.all(got[subnormal] != 0), (
+            f"{name}: the strict build flushed a subnormal tendency WRF wrote")
+        np.testing.assert_array_equal(
+            got.view(np.uint32)[subnormal], want.view(np.uint32)[subnormal],
+            err_msg=name)
+    assert found == SUBNORMAL_LANES, found
 
-    # cases 12 and 13: ysu.cu:250 short circuits where WRF runs the scheme.
-    for case, wrf_kpbl in ((12, 9), (13, 2)):
-        i = index[case]
-        assert int(port["kpbl"].reshape(-1)[i]) == 1
-        assert int(fixture.kpbl_reference.reshape(-1)[i]) == wrf_kpbl
-        assert float(port["hpbl"].reshape(-1)[i]) == float(
-            fixture.inputs["dz"][0, 0, i]), (
-            "the short circuit reports the first layer depth as the PBL top")
-        for name in ("du", "dv", "dtheta", "dqv", "exch_h", "exch_m"):
-            assert np.all(port[name][:, 0, i] == 0), (case, name)
-        assert not np.all(fixture.level_reference["utnp"][:, 0, i] == 0), (
-            f"case {case}: WRF produced tendencies here, so the short circuit"
-            " is a divergence and not an agreement")
 
-    # case 13 also pins WRF's own 0/0: ust**3 underflows to zero while
-    # wstar3 is zero and sfcflg is true, so prfac2 is 0/0 and the column
-    # fills with NaN.  gpuwm implements the defined behaviour instead.
-    i = index[13]
+@pytest.mark.gpu
+@requires_gpu
+def test_a_calm_column_runs_wrfs_whole_scheme():
+    """Case 12, closed: ``ust = hfx = qfx = 0``.
+
+    The kernel used to return zero tendencies, ``PBLH = dz(1)`` and
+    ``KPBL = 1`` here (the zero-flux short circuit).  ``bl_ysu_run`` has no
+    such branch and computes a 703 m PBL with nine levels in it, ``EXCH_M`` of
+    0.143 m2/s and nonzero momentum tendencies.  The port now writes WRF's word
+    on every lane of the column.
+    """
+    import cupy  # noqa: F401
+
+    fixture = _fixture()
+    port = ysu_port_outputs(fixture)
+    i = {case: n for n, case in enumerate(fixture.cases)}[12]
+    assert 12 not in BRANCH_DIVERGENCE_CASES
+    for name in ("ust", "hfx", "qfx"):
+        assert float(fixture.inputs[name].reshape(-1)[i]) == 0.0, name
+    assert int(port["kpbl"].reshape(-1)[i]) == 9
+    assert int(fixture.kpbl_reference.reshape(-1)[i]) == 9
+    assert float(port["hpbl"].reshape(-1)[i]) == float(
+        fixture.surface_reference["hpbl"].reshape(-1)[i])
+    assert 700.0 < float(port["hpbl"].reshape(-1)[i]) < 710.0
+    for name, column in LEVEL_FIELD_MAP.items():
+        got = np.ascontiguousarray(port[name][:, 0, i], np.float32)
+        want = np.ascontiguousarray(fixture.level_reference[column][:, 0, i])
+        np.testing.assert_array_equal(got.view(np.uint32),
+                                      want.view(np.uint32), err_msg=name)
+    assert not np.all(port["du"][:, 0, i] == 0), (
+        "WRF mixes momentum in the calm column; zeros mean the short circuit"
+        " came back")
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_case_13_is_wrfs_word_wherever_wrf_wrote_a_number():
+    """The one held-out column, stated as what it is rather than as ULP.
+
+    ``ust`` is the smallest subnormal.  WRF's ``ust**3`` underflows to zero
+    while ``wstar3`` is zero and ``sfcflg`` is true, so ``prfac2`` is 0/0
+    (bl_ysu.F90:963) and the heat tendency fills with NaN.  gpuwm implements
+    the defined algebraic value instead (kernels/ysu.cu's float64
+    re-evaluation of ``prfac2``) -- a DECLARED divergence where WRF is
+    undefined.  On every lane WRF wrote a number the port writes WRF's word,
+    and ``kpbl``/``hpbl`` are WRF's.
+    """
+    import cupy  # noqa: F401
+
+    fixture = _fixture()
+    port = ysu_port_outputs(fixture)
+    i = {case: n for n, case in enumerate(fixture.cases)}[13]
+    assert int(port["kpbl"].reshape(-1)[i]) == int(
+        fixture.kpbl_reference.reshape(-1)[i]) == 2
+    assert float(port["hpbl"].reshape(-1)[i]) == float(
+        fixture.surface_reference["hpbl"].reshape(-1)[i])
     wrf_nan = ~np.isfinite(fixture.level_reference["rthblten"][:, 0, i])
     assert wrf_nan.sum() == fixture.nz, (
         "WRF's NaN column disappeared; the 0/0 in prfac2 was the point")
-    assert np.all(np.isfinite(port["dtheta"][:, 0, i]))
+    nonfinite = 0
+    for name, column in LEVEL_FIELD_MAP.items():
+        got = np.ascontiguousarray(port[name][:, 0, i], np.float32)
+        want = np.ascontiguousarray(fixture.level_reference[column][:, 0, i])
+        assert np.all(np.isfinite(got)), name
+        ok = np.isfinite(want)
+        nonfinite += int((~ok).sum())
+        np.testing.assert_array_equal(got.view(np.uint32)[ok],
+                                      want.view(np.uint32)[ok], err_msg=name)
+    # 40 rthblten lanes and one exch_h lane: the whole of WRF's 0/0.
+    assert nonfinite == fixture.nz + 1
 
 
 @pytest.mark.gpu

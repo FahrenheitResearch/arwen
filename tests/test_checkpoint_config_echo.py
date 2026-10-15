@@ -53,16 +53,20 @@ MOVED = {
     "slope_rad": (dict(slope_rad=1), {"slope_rad"}),
     "topo_shading": (dict(slope_rad=1, topo_shading=1, shadlen=20000.0),
                      {"slope_rad", "topo_shading", "shadlen"}),
+    # YSU runs here, so its generation (default wrf_480, 2.9.0) is bound too.
     "topo_wind": (dict(bl_pbl_physics=1, sf_sfclay_physics=1, topo_wind=1),
-                  {"topo_wind"}),
+                  {"topo_wind", "ysu_version"}),
     "gwd_opt": (dict(gwd_opt=1), {"gwd_opt"}),
     "sf_surface_mosaic": (dict(sf_surface_physics=2, sf_surface_mosaic=1,
                                mosaic_cat=2),
                           {"sf_surface_mosaic", "mosaic_cat"}),
+    # The single-layer urban model runs here, so its water-balance
+    # generation (default wrf_480, 2.9.0) is bound too.
     "mosaic_urban_canopy": (dict(sf_surface_physics=2, sf_urban_physics=1,
                                  sf_surface_mosaic=1,
                                  mosaic_urban_canopy="every_tile"),
                             {"sf_surface_mosaic", "mosaic_cat",
+                             "urban_water_balance",
                              "mosaic_urban_canopy"}),
     "diff_opt": (dict(diff_opt=1), {"diff_opt", "mix_full_fields"}),
     "mix_full_fields": (dict(diff_opt=1, mix_full_fields=False),
@@ -111,6 +115,28 @@ MOVED = {
 
 #: The keys an echo at every default leaves out.
 DEFAULT_OFF = frozenset({
+    # Inactive G3 fields preserve pre-G3 checkpoint identities.
+    "cugd_avedx",
+    "maxiens",
+    "maxens",
+    "maxens2",
+    "maxens3",
+    "ensdim",
+    "cu_diag",
+    "convtrans_avglen_m",
+    # Inactive New SAS knobs (read only by cu_physics = 96) preserve
+    # pre-NSAS checkpoint identities.
+    "nsas_dx_factor", "sas_pgcon",
+    # The aer_opt = 2 controls and the lightning package (golden/ports-rad),
+    # absent while unread, as in a 2.8.9 header
+    # (config.drop_inactive_radiation_port_keys).
+    "aer_type", "aer_aod550_opt", "aer_angexp_opt", "aer_ssa_opt",
+    "aer_asy_opt", "aer_aod550_val", "aer_angexp_val", "aer_ssa_val",
+    "aer_asy_val", "aer_auxinput15", "aer_auxinput15_interval",
+    "lightning_option", "lightning_dt", "lightning_start_seconds",
+    "flashrate_factor", "iccg_method", "iccg_prescribed_num",
+    "iccg_prescribed_den", "cellcount_method", "cldtop_adjustment",
+    "do_radar_ref",
     "thompson_version", "thompson_fork_snow_fall", "thompson_table_dir",
     "upper_wind_limiter_form",
     "adaptive_nest_lattice", "zadvect_implicit", "w_crit_cfl", "slope_rad",
@@ -146,6 +172,20 @@ DEFAULT_OFF = frozenset({
     # Output-only surface energy carriers, dropped by the echo when off.
     "surface_energy_diag",
     "cycling",
+    # 2.9.0 (golden/wrf-fixes).  WRF's only implemented scalar advection
+    # operator and the WRF 4.7.1 urban canopy drop at their defaults; the
+    # YSU, Noah-MP snow-aging and SLUCM water selectors are scheme-scoped
+    # and absent while their scheme is off (this fixture runs none of
+    # them).  solar_generation is NOT here: its default, "wrf_480", is
+    # echoed, and "wrf_461" (every earlier header's sun) drops out.
+    "scalar_adv_opt", "urban_ucm_generation", "urban_treeoption",
+    "urban_ttscheme", "urban_fvg", "urban_table_dir", "ysu_version",
+    "noahmp_snow_age", "urban_water_balance",
+    # 2.9.0 correct mode (gpuwm/correct_mode.py): default on, but echoed only
+    # where its scheme reads it; this fixture runs neither WSM6 nor New
+    # Tiedtke, so both are absent, as in a 2.8.9 header.
+    "wsm6_conservative_surface", "ntiedtke_dry_mass_coupling",
+    "wdm6_conservative_surface", "thompson_cloud_surface_booking",
 })
 
 
@@ -347,7 +387,11 @@ def test_chemistry_off_emitted_config_bytes_match_recovery_staging(
     # These bytes were pinned under the measured terrain clock, the default
     # until 2.8.8; the local-face default is echoed and is checked in
     # test_the_terrain_clock_default_is_echoed_and_measured_drops_out.
-    cfg = RunConfig(**{"terrain_clock": "measured", **row["constructor"]})
+    # ... and under the WRF 4.6.1 solar generation, the default until 2.9.0;
+    # the WRF 4.8 default is echoed (tests/test_restart.py
+    # test_the_wrf480_solar_default_moves_only_the_solar_binding).
+    cfg = RunConfig(**{"terrain_clock": "measured",
+                       "solar_generation": "wrf_461", **row["constructor"]})
     if inactive_nondefaults:
         cfg = dataclasses.replace(cfg, chem_adv_opt=2, kemit=17,
                                   dust_alpha=3.0, aer_ra_feedback=1)

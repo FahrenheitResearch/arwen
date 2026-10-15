@@ -1,0 +1,216 @@
+   1   0
+type C 'mixed_value'
+===
+   2   0
+projection C 'mixed_value'
+===
+   3   0
+units C 'mixed_value'
+===
+   4   0
+description C 'mixed_value'
+===
+   5   0
+row_order C 'mixed_value'
+===
+   6   0
+endian C 'mixed_value'
+===
+   7   0
+mminlu C 'mixed_value'
+===
+   8   0
+dx R C14587E7
+===
+   9   0
+dy R C14587E7
+===
+  10   0
+known_x R C14587E7
+===
+  11   0
+known_y R C14587E7
+===
+  12   0
+known_lat R C14587E7
+===
+  13   0
+known_lon R C14587E7
+===
+  14   0
+scale_factor R C14587E7
+===
+  15   0
+stdlon R C14587E7
+===
+  16   0
+truelat1 R C14587E7
+===
+  17   0
+truelat2 R C14587E7
+===
+  18   0
+missing_value R C14587E7
+===
+  19   0
+tile_x I 17
+===
+  20   0
+tile_y I 17
+===
+  21   0
+tile_z I 17
+===
+  22   0
+tile_z_start I 17
+===
+  23   0
+tile_z_end I 17
+===
+  24   0
+tile_bdr I 17
+===
+  25   0
+wordsize I 17
+===
+  26   0
+category_max I 17
+===
+  27   0
+category_min I 17
+===
+  28   0
+iswater I 17
+===
+  29   0
+islake I 17
+===
+  30   0
+isice I 17
+===
+  31   0
+isurban I 17
+===
+  32   0
+isoilwater I 17
+===
+  33   0
+filename_digits I 17
+===
+  34   0
+signed I 1
+===
+  35   0
+signed I 0
+===
+  36  -1
+===
+  37  -1
+===
+  38  -1
+===
+  39  -1
+===
+  40  -1
+===
+  41   0
+===
+  42   0
+===
+  43   0
+dx R 3F800000
+===
+  44   0
+dx R 3F800000
+===
+  45   0
+dx R 3FA00000
+===
+  46   0
+dx R 3F800000
+===
+  47   0
+dx R 3C4CCCCD
+===
+  48   0
+dx R 42FA0000
+===
+  49   0
+dx R 3E000000
+===
+  50   0
+dx R 3F800000
+===
+  51   0
+dx R 3C75C28F
+===
+  52   0
+dx R C2480000
+===
+  53  -1
+===
+  54  -1
+===
+  55  -1
+===
+  56  -1
+===
+  57  -1
+===
+  58  -1
+===
+  59   0
+tile_x I 17
+===
+  60   0
+tile_x I 17
+===
+  61   0
+tile_x I 17
+===
+  62   0
+tile_x I 17
+===
+  63  -1
+===
+  64   0
+dx R BFA00000
+===
+  65   0
+dx R 7FC00000
+===
+  66   0
+dx R 7F800000
+===
+  67   0
+dx R FF800000
+===
+  68   0
+dx R 42C80000
+===
+  69   0
+dx R 3F800000
+===
+  70  -1
+===
+  71  -1
+===
+  72  -1
+===
+  73  -1
+===
+  74  -1
+===
+  75   0
+tile_x I -2147483648
+===
+  76  -1
+===
+  77  -1
+===
+  78  -1
+===
+  79  -1
+===
+  80  -1
+===

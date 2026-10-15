@@ -35,7 +35,7 @@ use rw_mpas::init::hinterp::Underflow;
 use rw_mpas::init::vinterp::Extrap;
 use rw_mpas::lbc::parent::{build_from_parent, ParentConfig};
 use rw_mpas::lbc::source::{Registry, StateKind};
-use rw_mpas::lbc::{build_lbc, compare, BoundaryInterval, LbcConfig};
+use rw_mpas::lbc::{build_lbc, compare, BoundaryInterval, LbcConfig, PhysicsMode};
 
 /// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: see `rw_mpas_init` for why the
 /// stamp exists and how the release cut reads it.
@@ -48,7 +48,7 @@ pub const ABI_MARKER: &str = "rw_mpas_lbc --grid INIT.nc --out-dir DIR \
 --interval YYYY-MM-DD_HH:MM:SS=MET_PATH [--interval ...] --nfglevels N \
 --fg-interval-seconds N --extrap-airtemp MODE --use-spechumd yes|no \
 --theta-adv-order N --coef-3rd-order X --oned-underflow preserve|reproduce-ifx-ftz \
-[--config-attrs JSON] [--receipt JSON]\n\
+[--physics-mode correct|exact] [--config-attrs JSON] [--receipt JSON]\n\
 rw_mpas_lbc --source ROW --grid CHILD-INIT.nc --parent-grid PARENT-INIT.nc --out-dir DIR \
 --start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS \
 --interval YYYY-MM-DD_HH:MM:SS=PARENT_FRAME [--interval ...] --fg-interval-seconds N \
@@ -81,7 +81,12 @@ fn usage() -> String {
          --use-spechumd       yes | no                        (config_use_spechumd)\n\
          --oned-underflow     preserve | reproduce-ifx-ftz; a property of how the reference\n\
         \x20                    was compiled, see rw_mpas_init --help\n\
-         --config-attrs       JSON object overriding header config attributes that are\n\
+         --physics-mode       correct | exact (default correct; config_physics_mode).\n\
+        \x20                    correct extrapolates edge winds like the initial conditions\n\
+        \x20                    (IN4) and refuses records whose valid time is not the\n\
+        \x20                    boundary time (IN5); exact reproduces native case 9 and is\n\
+        \x20                    what every identity proof against native names\n\
+         --config-attrs      JSON object overriding header config attributes that are\n\
         \x20                    namelist metadata (met prefix, geography table names, ...);\n\
         \x20                    producer switches cannot be overridden\n\n\
          The first-guess switches have no defaults, and a row that carries a\n\
@@ -273,6 +278,9 @@ fn run_produce(argv: Vec<String>) -> Result<String, String> {
         coef_3rd_order: args.number("coef-3rd-order")?,
         fg_interval_seconds: args.number("fg-interval-seconds")?,
         oned_underflow: Underflow::parse(args.need("oned-underflow")?)?,
+        physics_mode: PhysicsMode::parse(
+            args.map.get("physics-mode").map(String::as_str).unwrap_or("correct"),
+        )?,
         attr_overrides,
         provenance: format!(
             "rw_mpas_lbc from {}",

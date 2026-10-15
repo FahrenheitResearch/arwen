@@ -182,8 +182,11 @@ AXES = (
     # the rest, so they belong in the swept set.  Leaving them out shrank
     # the measured space while the schema advertised them.  900 (TEMPO, the
     # one named scheme 2.8.8 admits) joins for the same reason, and 30
-    # (FAST_SBM) joined the same check with the 2.8.9 port merge.
-    Axis("mp_physics", (0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50, 900),
+    # (FAST_SBM) joined the same check with the 2.8.9 port merge, 2 (Purdue
+    # Lin), 3 (WSM3), 4 (WSM5), 5 (Ferrier-Aligo), 24 (WSM7) and 106
+    # (WSM6R) with their ports.  ra_lw/ra_sw 5 (New Goddard, golden/ports-rad)
+    # joined the radiation checks below the same way in 2.9.0.
+    Axis("mp_physics", (0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106, 900),
          "gpuwm.config.validate_run_config, inline 'mp_physics must be' "
          "check, plus its two by-name gates -- _P3_UNPORTED_VARIANTS and "
          "the WDM5/WDM7 siblings -- each of which recites the same menu"),
@@ -193,10 +196,10 @@ AXES = (
          "gpuwm.config.SURFACE_LAYER_SCHEMES"),
     Axis("sf_surface_physics", tuple(LAND_SURFACE_SCHEMES),
          "gpuwm.config.LAND_SURFACE_SCHEMES"),
-    Axis("ra_lw_physics", (0, 1, 4, 90),
+    Axis("ra_lw_physics", (0, 1, 4, 5, 90),
          "gpuwm.config.validate_run_config, inline 'ra_lw_physics must be' "
          "check (after gpuwm.config.radiation_scheme_ids resolution)"),
-    Axis("ra_sw_physics", (0, 1, 4, 90),
+    Axis("ra_sw_physics", (0, 1, 4, 5, 90),
          "gpuwm.config.validate_run_config, inline 'ra_sw_physics must be' "
          "check (after gpuwm.config.radiation_scheme_ids resolution)"),
     Axis("cu_physics", tuple(CU_SCHEMES),
@@ -255,7 +258,7 @@ TIER_A_HELD = {"mp_physics": 8, "cu_physics": 1}
 #: ArWen-only SASE number.  ``-1`` is deliberately absent -- it is the UNSET
 #: sentinel of the radiation pair (``gpuwm.config.radiation_scheme_ids``),
 #: not a scheme, and tier C is where the unset spelling is walked.
-_SCAN = (-2,) + tuple(range(0, 100)) + (SASE_PBL_SCHEME, 901)
+_SCAN = (-2,) + tuple(range(0, 107)) + (SASE_PBL_SCHEME, 901)
 
 COVERAGE_RULE = (
     "TIER A -- FULL cartesian over the six coupled axes: bl_pbl_physics x "
@@ -286,7 +289,7 @@ COVERAGE_RULE = (
     "classic-RRTM/Dudhia-only rules are retired: independently selected "
     "spectra now compose, and accepted before/after pairs are not remedies.",
     "TIER E -- schema completeness.  For each axis, every integer in "
-    "[-1, 99] plus 900 and 901 is offered to the loader and classified by "
+    "[-1, 106] plus 900 and 901 is offered to the loader and classified by "
     "whether the refusal is the axis's own schema message.  The measured "
     "in-schema set is compared with the declared one, so the axis tables "
     "above are verified against the artifact instead of transcribed from "
@@ -398,6 +401,12 @@ _SASE = {"bl_pbl_physics": SASE_PBL_SCHEME, "sf_sfclay_physics": 1,
 #: these entries cover exactly the rules the walk produced -- a new refusal
 #: cannot land without someone demonstrating that its advice works.
 REMEDIES = (
+    {"id": "cloud-optics-without-effective-radii",
+     "remedy": "Set ra_rrtmg_variant='rrtmg_legacy' for the backend that diagnoses its own radii.",
+     "before": _suite(mp_physics=2, ra_lw_physics=4, ra_sw_physics=4),
+     "after": _suite(mp_physics=2, ra_lw_physics=4, ra_sw_physics=4,
+                     ra_rrtmg_variant="rrtmg_legacy",
+                     wrf_rrtmg_compatibility="wrf-rrtmg-4-4-legacy-v1")},
     # Independent spectrum composition retired the coupled-LW/SW and
     # classic-RRTM/Dudhia-only refusals. Their former before cases now
     # accept unchanged and are covered by the positive composition gate.
@@ -752,6 +761,9 @@ def key_of(combination: dict[str, object]) -> str:
              for name in AXIS_NAMES if name in combination]
     if "ra_physics" in combination:
         parts.append(f"raagg{combination['ra_physics']}")
+    for name in ("ra_rrtmg_variant", "wrf_rrtmg_compatibility"):
+        if name in combination:
+            parts.append(f"{name}={combination[name]}")
     if combination.get("_radiation_ack_withheld"):
         parts.append("noradack")
     if combination.get("_ack_withheld"):
@@ -793,6 +805,10 @@ class Walk:
                 combination = dict(anchor)
                 combination.update(mp_physics=mp, cu_physics=cu)
                 self.run("B-scheme-cartesian-on-anchors", combination, name)
+                if mp == 2 and combination.get("ra_lw_physics") == 4 and combination.get("ra_sw_physics") == 4:
+                    legacy = dict(combination, ra_rrtmg_variant="rrtmg_legacy",
+                                  wrf_rrtmg_compatibility="wrf-rrtmg-4-4-legacy-v1")
+                    self.run("B-scheme-cartesian-on-anchors", legacy, name + ".legacy-cloud-optics")
 
     def tier_c(self) -> None:
         for name, anchor in ANCHORS.items():

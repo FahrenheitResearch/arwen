@@ -1,0 +1,8 @@
+d22f743670008916a2ef9fdfb3ec706cd1f9f612cb22a0c12802d66f7561be5e  gr1pv-summer/dump/data.bin
+260c253865552c4b4d9f65bc941a5a48e5b8f3c2ab22288cb88e94042a0b8d1a  gr2-winter/dump/data.bin
+125d8ad2319c0bf2280fb4cd5d020a11e6ec37b92e70e1ae7a965e1adada6bcb  lcz-summer/dump/data.bin
+6a015fd4413c2717db70ef201a2f4fcc6b540da5448700b89f3d0b3c1149f8cf  lcz-winter/dump/data.bin
+7bd3e7d595b55a4998669b2d101e4d800225d3c135fb0ed07e77defa3ce076e0  long-summer/dump/data.bin
+6066da3614e9024545e98dd9882720d5dcdd0c8f5c3aa3684018d963e3809024  nlcd-summer/dump/data.bin
+bd076bd3d2b8ca7c389d822a823d2502b5897a2739f07bfd99d72ac8f1fa6087  nlcd-winter/dump/data.bin
+0cc58edbd50bbefcd40632211a607d9dbbe3047092ee789124770a643136d05d  stop-summer/dump/data.bin

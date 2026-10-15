@@ -460,7 +460,9 @@ class NativeBootstrapAllocationPlans:
 
 def _bootstrap_allocation_declarations(cfg, state_specs, entries):
     from gpuwm.ensemble.batch_physics import ColumnField, column_memory_plan, thompson_column_scratch_fields
-    scratch_fields = thompson_column_scratch_fields(nz=cfg.nz, ny=cfg.ny, nx=cfg.nx, reflectivity=True)
+    scratch_fields = thompson_column_scratch_fields(
+        nz=cfg.nz, ny=cfg.ny, nx=cfg.nx, reflectivity=True,
+        cloud_booking=getattr(cfg, "thompson_cloud_surface_booking", False) is True)
     model_names = tuple(name for name in (
         "p", "alt", "thp", "php", "u", "v", "w", "mup", "qv", "qc", "qr", "qi", "qs", "qg", "ni", "nr",
         "h_diabatic", "effc", "effi", "effs", "effr", "rthften", "rqvften")
@@ -701,6 +703,15 @@ def initialize_member_physics_from_bootstrap(batch, bootstrap_state, bootstrap_d
             ("rainnc", "mp_rainnc"), ("rainncv", "mp_rainncv"), ("sr", "mp_sr"),
             ("snownc", "mp_snownc"), ("snowncv", "mp_snowncv"),
             ("graupelnc", "mp_graupelnc"), ("graupelncv", "mp_graupelncv"))})
+    # Correct mode WB1: a member restored with its booked CLOUDNC total keeps
+    # it, as the ordinary restore does; the batch slot carries the restored
+    # (or zero) words, the packed bank books from here on.
+    from gpuwm.ensemble.batch_physics import THOMPSON_CLOUD_BOOKING_SLOTS
+    for slot in THOMPSON_CLOUD_BOOKING_SLOTS:
+        restored = batch.storage.arrays.get("scratch:" + slot)
+        if slot in scratch and restored is not None:
+            array_module.copyto(scratch[slot].reshape(members, cfg.ny, cfg.nx),
+                                restored.reshape(members, cfg.ny, cfg.nx))
     for name, slot in (("rainnc", "mp_rainnc"), ("snownc", "mp_snownc"), ("graupelnc", "mp_graupelnc")):
         original_value = getattr(bootstrap.microphysics, name)
         target = scratch[slot].reshape(members, cfg.ny, cfg.nx)

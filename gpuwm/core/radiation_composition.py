@@ -118,8 +118,11 @@ class ComposedRadiation:
             valid_time = self.start_time + timedelta(seconds=float(state.elapsed_seconds))
             minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
             interval = _physics_period_seconds(minutes, cfg)
+            from gpuwm.core.solar import solar_period_seconds
+            interval = solar_period_seconds(cfg, interval)
             coszen, _ = wrf_solar_geometry(valid_time, self.latitude_deg,
-                self.longitude_deg, hour_offset_seconds=0.5 * interval)
+                self.longitude_deg, hour_offset_seconds=0.5 * interval, generation=getattr(cfg, "solar_generation", "wrf_480"),
+                start_time=self.start_time, elapsed_seconds=state.elapsed_seconds)
             swdown = cp.zeros_like(fields["glw"])
             gsw = swdown
         else:
@@ -135,6 +138,9 @@ class ComposedRadiation:
             swddir=(getattr(sw, "swddir", None) if sw is not None
                     and int(getattr(cfg, "swint_opt", 0)) == 1 else None),
             swddif=getattr(sw, "swddif", None) if sw is not None else None,
+            aod5503d=getattr(sw,"aod5503d",None),
+            aerosol2d=getattr(sw,"aerosol2d",None),
+            aodtot=getattr(sw, "aodtot", None) if sw is not None else None,
             # Both spectra build the same driver CLDFRA where both compute
             # one; the longwave's is taken first, the shortwave's when the
             # longwave half computes none.
@@ -281,6 +287,8 @@ def make_radiation(cfg, start_time, latitude_deg, longitude_deg, *,
         if selector == 1:
             from gpuwm.core.dudhia import DudhiaShortwaveRadiation
             return DudhiaShortwaveRadiation(*args, swrad_scat=cfg.swrad_scat, icloud=cfg.icloud)
+        if selector == 5:
+            return ColumnTableRadiation(*args, selector=selector, column_chunk=column_chunk)
         if selector == 90:
             from gpuwm.core.analytic_radiation import AnalyticClearSkyRadiation
             return AnalyticClearSkyRadiation(*args)
@@ -343,3 +351,144 @@ def make_radiation(cfg, start_time, latitude_deg, longitude_deg, *,
             cp.ascontiguousarray(cp.asarray(longitude_deg, dtype=cp.float32)))
     return ComposedRadiation(*args, longwave_adapter=engine(lw, True, False),
                              shortwave_adapter=engine(sw, False, True))
+
+
+class ColumnTableRadiation:
+    """Run the registered paired column solver through the shared CUDA loader."""
+    publishes_olr = True
+    publishes_cldfra = True
+    glw_provenance = 'scheme'
+    diagnostics = ('SWDDNI','SWDDIR','SWDDIF','TLWDN','TLWUP','SLWDN','SLWUP',
+                   'TSWDN','TSWUP','SSWDN','SSWUP')
+
+    def __init__(self, start_time, latitude_deg, longitude_deg, *, selector=5,
+                 column_chunk=None):
+        import cupy as cp
+        if selector != 5:
+            raise ValueError(f'no table column solver for radiation {selector}')
+        self.start_time = start_time
+        self.latitude_deg = cp.asarray(latitude_deg, dtype=cp.float32)
+        self.longitude_deg = cp.asarray(longitude_deg, dtype=cp.float32)
+        self.column_chunk = max(1, int(column_chunk or 128))
+        self.update_count = 0
+
+    def restart_identity(self):
+        return {'algorithm': 'wrf461-goddard-defined-visible-depth-v1',
+                'above_atmosphere_policy': 'model-column-top-interface-zero-hpa',
+                'radii_policy': 'gsfc-microns-or-wrf-use-mp-re-meter-conversion-otherwise-zero',
+                'cloud_table': 'ad4bb1dd8446a2b00559ac425e21255a01b79a4cac7b5e3e693a3c98c222a1c8'}
+
+    def __call__(self, *, atmosphere, fields, state, cfg):
+        import cupy as cp
+        import numpy as np
+        from gpuwm.core.kernels import get_kernel_int_defines
+        from gpuwm.core.radiation_tables import radiation_table_words
+        from gpuwm.core.physics import RadiationResult
+        from gpuwm.core.rrtmg_legacy import (legacy_cloud_fraction_flags,
+            legacy_scheme_has_req, radconst, calc_coszen)
+        from gpuwm.core.rrtmgp import cal_cldfra1
+        from gpuwm.core.swint import calendar_scalars
+        nz, ny, nx = atmosphere['pressure'].shape
+        if nz < 2:
+            raise ValueError('interface-temperature extrapolation needs at least two layers')
+        ncol=ny*nx
+        grid=lambda x: cp.ascontiguousarray(cp.asarray(x,dtype=cp.float32)).reshape(-1,ncol)
+        zeros=cp.zeros((nz,ncol),cp.float32)
+        moist={name: grid(getattr(state,name)) if getattr(state,name,None) is not None else zeros
+               for name in ('qv','qc','qr','qi','qs','qg','qh')}
+        t,p=grid(atmosphere['temperature']),grid(atmosphere['pressure'])
+        fqi,fqs=((True,True) if int(cfg.mp_physics)==7 else
+                 legacy_cloud_fraction_flags(int(cfg.mp_physics)))
+        cf=(cal_cldfra1(moist['qv'],moist['qc'],moist['qi'],moist['qs'],t,p,
+                       f_qc=True,f_qi=fqi,f_qs=fqs) if cfg.icloud else zeros)
+        from gpuwm.core.mynn_radiation import merge_mynn_bl_clouds, mynn_bl_cloud_active, wrf_itimestep
+        active_bl=mynn_bl_cloud_active(getattr(cfg,'bl_pbl_physics',0),getattr(cfg,'icloud_bl',0))
+        if active_bl:
+            moist['qc']=moist['qc'].copy();moist['qi']=moist['qi'].copy()
+        moist['qc'],moist['qi'],cf=merge_mynn_bl_clouds(moist['qc'],moist['qi'],cf,
+            qc_bl=grid(fields['qc_bl']) if active_bl else None,
+            qi_bl=grid(fields['qi_bl']) if active_bl else None,
+            cldfra_bl=grid(fields['cldfra_bl']) if active_bl else None,
+            bl_pbl_physics=getattr(cfg,'bl_pbl_physics',0),icloud_bl=getattr(cfg,'icloud_bl',0),
+            itimestep=wrf_itimestep(state.elapsed_seconds,cfg.dt) if active_bl else 1)
+        values,direct_gsfc=radiation_radius_provider_fields(
+            state,int(cfg.mp_physics),getattr(cfg,'use_mp_re',1))
+        radii=[zeros if value is None else grid(value) if direct_gsfc else
+               grid(value)*np.float32(1.e-6)*np.float32(1.e6) for value in values]
+        julian,xtime,gmt=calendar_scalars(self.start_time,state.elapsed_seconds)
+        declin,solcon=radconst(julian)
+        minutes=np.float32(cfg.radt if cfg.radt>0 else cfg.radt_minutes)
+        cosine=cp.asarray(calc_coszen(julian,xtime+minutes*np.float32(.5),gmt,
+            cp.asnumpy(self.latitude_deg).reshape(-1),cp.asnumpy(self.longitude_deg).reshape(-1),declin))
+        defs=(('GDD_MAX_LEVELS',nz),)
+        kernel=lambda name:get_kernel_int_defines('goddard',name,defs)
+        tw=cp.empty((nz+1,ncol),cp.float32)
+        count=(nz+1)*ncol
+        kernel('goddard_interface_temperature')(((count+127)//128,),(128,),
+            (t,grid(atmosphere['z_interface']),cp.asarray(state.fnm,dtype=cp.float32),
+             cp.asarray(state.fnp,dtype=cp.float32),tw,np.int32(nz),np.int32(ncol)))
+        heat_lw=cp.empty((nz,ncol),cp.float32);heat_sw=cp.empty_like(heat_lw)
+        surface=cp.empty((15,ncol),cp.float32)
+        table=radiation_table_words('goddard-cloud')
+        for first in range(0,ncol,self.column_chunk):
+            last=min(first+self.column_chunk,ncol);nc=last-first
+            pack=lambda value:cp.ascontiguousarray(value[...,first:last]).reshape(-1)
+            # WRF phy_prep passes (1+qv)/ALT as rho_phy to goddardrad.
+            rho=grid(atmosphere["rho"])
+            raw=cp.concatenate([pack(grid(atmosphere['p_interface'])),pack(t),pack(p),
+                pack(moist['qv']),pack(cf),pack(grid(atmosphere['dz'])),pack(rho),
+                *[pack(moist['q'+s]) for s in ('i','c','r','s','g','h')],
+                *[pack(r) for r in radii],pack(self.latitude_deg.reshape(1,-1)),
+                pack(cosine.reshape(1,-1)),pack(tw[:1]),
+                *[pack(grid(fields[name])) for name in ('tsk','emiss','albedo')],
+                pack(grid(atmosphere['exner']))])
+            band=cp.empty(((5*nz+15)*nc,),cp.float32)
+            flags=cp.empty((3*nc,),cp.int32);dz=cp.empty((nz*nc,),cp.float32)
+            q=cp.empty((6*nz*nc,),cp.float32);re=cp.empty_like(q)
+            launch=(((nc+31)//32,),(32,))
+            kernel('goddard_prepare_columns')(*launch,(raw,band,flags,dz,q,re,
+                np.int32(nz),np.int32(nc),np.int32(int(julian)+1)))
+            optics=cp.empty((63*nz*nc,),cp.float32)
+            kernel('goddard_cloud_columns')(((nz*nc+127)//128,),(128,),
+                (dz,q,re,table,optics,np.int32(nz),np.int32(nc)))
+            flux=cp.empty(((6*(nz+1)+4)*nc,),cp.float32)
+            kernel('goddard_bands_columns')(*launch,(band,flags,optics,flux,np.int32(nz),np.int32(nc)))
+            result=cp.empty(((2*nz+15)*nc,),cp.float32)
+            kernel('goddard_publish_columns')(*launch,(band,flux,raw,result,
+                np.int32(nz),np.int32(nc),np.float32(solcon)))
+            result=result.reshape(2*nz+15,nc)
+            heat_lw[:,first:last]=result[:nz];heat_sw[:,first:last]=result[nz:2*nz]
+            surface[:,first:last]=result[2*nz:]
+        self.update_count+=1
+        diagnostics={name:surface[index].reshape(ny,nx) for name,index in
+            zip(self.diagnostics,(4,5,6,7,8,9,10,11,12,13,14))}
+        return RadiationResult(rthratenlw=heat_lw.reshape(nz,ny,nx),
+            rthratensw=heat_sw.reshape(nz,ny,nx),swdown=surface[0].reshape(ny,nx),
+            glw=surface[1].reshape(ny,nx),gsw=surface[2].reshape(ny,nx),
+            coszen=cosine.reshape(ny,nx),olr=surface[3].reshape(ny,nx),
+            swddir=diagnostics['SWDDIR'],swddif=diagnostics['SWDDIF'],
+            cldfra=cf.reshape(nz,ny,nx),flux_diagnostics=diagnostics)
+
+
+def radiation_radius_provider_fields(state, mp_physics, use_mp_re=1):
+    """Resolve WRF's six GSFC radius carriers in ice/cloud/rain/snow/graupel/hail order."""
+    if int(mp_physics)==7:
+        names=tuple('re_'+species+'_gsfc' for species in
+                    ('ice','cloud','rain','snow','graupel','hail'))
+        values=tuple(getattr(state,name,None) for name in names)
+        for name,value in zip(names,values):
+            if value is None:
+                raise ValueError(f'mp=7 radiation requires state.{name}; missing cloud optics radius')
+        return values,True
+    from gpuwm.core.rrtmg_legacy import legacy_scheme_has_req
+    hc,hi,hs=legacy_scheme_has_req(int(mp_physics),use_mp_re)
+    names=(('effi',hi),('effc',hc),(None,0),('effs',hs),(None,0),(None,0))
+    values=[]
+    for name,declared in names:
+        value=getattr(state,name,None) if name and declared else None
+        if name and declared and value is None:
+            raise ValueError(f'microphysics declares {name} but supplies no effective radius')
+        values.append(value)
+    # With no WRF radius provider, the GSFC Registry carriers stay zero.
+    # The cloud LUT owns its documented lower-radius clipping, including zero.
+    return tuple(values),False

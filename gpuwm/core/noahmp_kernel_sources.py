@@ -4,9 +4,9 @@ Five source files are fragments rather than standalone translation units:
 ``noahmp_driver``, ``noahmp_energy``, ``noahmp_thermal``, ``noahmp_glacier``
 and ``noahmp_libm_slab``. They borrow the r_pow/r_exp/r_log helpers from
 ``noahmp_leaves``; the slab also borrows helpers from ``noahmp_energy``.
-Some standalone units carry independent libm transcriptions. In particular,
+Some standalone units carry independent WOOF float32 math routines. In particular,
 prepending leaves to fluxprep would introduce duplicate definitions. Nothing
-here changes CUDA math or consolidates those transcriptions.
+here changes CUDA math or consolidates those routines.
 
 Runtime factories and memory measurement share :func:`runtime_unit`, which
 binds ordered parts, the common preamble, exact compiler options and all global
@@ -35,7 +35,7 @@ import re
 
 KERNEL_DIR = Path(__file__).resolve().parent / "kernels"
 
-#: The shared helper transcription for composed units. Its ``r_pow``,
+#: WOOF's shared float32 helpers for composed units. Its ``r_pow``,
 #: ``r_exp`` and ``r_log`` are what the composed units below are missing.
 LIBM_UNIT = "noahmp_leaves"
 
@@ -48,7 +48,7 @@ NOAHMP_TRANSLATION_UNITS: dict[str, tuple[str, ...]] = {
     "noahmp_fluxprep": ("noahmp_fluxprep",),
     # NOAHMP_GLACIER borrows r_pow/r_exp/r_log (and the AD/SU/MU/DV
     # macros plus NMP_* constants) from the libm unit and carries only its
-    # own glibc atanf copy, like noahmp_bareflux does.
+    # own float32 atan routine, like noahmp_bareflux does.
     "noahmp_glacier": (LIBM_UNIT, "noahmp_glacier"),
     "noahmp_leaves": ("noahmp_leaves",),
     # The slab composition's elementwise transcendentals borrow r_pow/r_exp/
@@ -113,7 +113,7 @@ __all__ = [
 # particular, load_module("noahmp_driver") must STILL fail: that is a fragment,
 # not the unit the driver factory compiles.  The old standalone census and its
 # measurements retain their meanings.
-DEFAULT_OPTIONS = ("-std=c++17",)
+DEFAULT_OPTIONS = ("-std=c++17", "--ftz=false")
 
 
 def pricing_key(name: str) -> str:
@@ -223,7 +223,7 @@ def runtime_unit(name: str, *, kernel_dir: Path = KERNEL_DIR) -> RuntimeUnit:
     texts = _component_texts(parts, kernel_dir)
     if name == "noahmp_vegeflux":
         prefix = ""
-        options = ("-std=c++14",)
+        options = ("-std=c++14", "--ftz=false")
     else:
         from gpuwm.core.kernels import _preamble
         prefix = _preamble(kernel_dir)
@@ -241,7 +241,7 @@ def compile_runtime_unit(name: str, *, module_key: str,
                          source: str | None = None, log_stream=None):
     """Compile and load one Noah-MP runtime unit; no launch, no constant upload.
 
-    THE one ``cp.RawModule`` site for Noah-MP.  Every runtime factory
+    The one direct-NVRTC route for Noah-MP. Every runtime factory
     (driver, energy, thermal, glacier, the libm slab, the generic loader's
     standalone units) and the frame measurement in
     :func:`gpuwm.core.noahmp_frame_provenance.measure_live` compile through
@@ -261,17 +261,11 @@ def compile_runtime_unit(name: str, *, module_key: str,
 
 def _compile_loaded_module(code, opts, module_key, log_stream=None):
     """Keep generated transfers and scientific units on the same compile route."""
-    import cupy as cp
-    from gpuwm.certify.kernel_manifest import record_module
-
-    module = cp.RawModule(code=code, options=opts, backend="nvrtc",
-                          name_expressions=None)
-    if log_stream is None:
-        module.compile()
-    else:
-        module.compile(log_stream=log_stream)
-    record_module(module_key, source=code, options=opts, module=module)
-    return module
+    from gpuwm.core.ieee_module import compile_module
+    # Negative controls may supply their own options; they still need the
+    # production subnormal arithmetic to isolate the expression they change.
+    opts = tuple(o for o in opts if o.lstrip('-').split('=')[0] != 'ftz') + ('--ftz=false',)
+    return compile_module(code, opts, module_key, log_stream)
 
 
 def compile_generated_slab_kernel(source, name):

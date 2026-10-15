@@ -1,0 +1,33 @@
+--- a/tools/urban_bep_wrf461_oracle/build.sh
++++ b/tools/urban_bep_wrf461_oracle/build.sh
+@@ -88,7 +88,7 @@
+         exit 4
+     fi
+ done
+-nm module_sf_bep.o | grep -q '__module_sf_bep_MOD_bep$' \
++nm module_sf_bep.o | grep '__module_sf_bep_MOD_bep$' > /dev/null \
+     || { echo "module_sf_bep.o does not export bep; is -Dwrfmodel set?" >&2; exit 6; }
+ 
+ gfortran -c -O0 ${free} -I "${build_dir}" "${shared}/oracle_io.F90"
+@@ -114,8 +114,8 @@
+ done
+ 
+ {
+-    echo "# gfortran: $(gfortran --version | head -1)"
+-    echo "# glibc:    $(ldd --version | head -1)"
++    echo "# gfortran: $(gfortran --version | sed -n '1p')"
++    echo "# glibc:    $(ldd --version | sed -n '1p')"
+     echo "# -O0 libm symbols per object (THE REFERENCE):"
+     for f in undefined-O0-*.txt; do
+         echo "## ${f#undefined-O0-}"
+@@ -125,8 +125,8 @@
+     grep -E 'expf|_ZGV' undefined-control.txt || true
+ } > libmvec-report.txt
+ {
+-    gfortran --version | head -1
+-    ldd --version | head -1
++    gfortran --version | sed -n '1p'
++    ldd --version | sed -n '1p'
+     echo "extra link objects: ${ORACLE_LINK_EXTRA:-none}"
+     for driver in "${here}"/run_bep461_*.F90; do
+         name=$(basename "${driver}" .F90)

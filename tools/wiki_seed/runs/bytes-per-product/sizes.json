@@ -27,6 +27,10 @@
       "windowed",
       48
     ],
+    "10m_wind_gusts": [
+      "direct",
+      0.0
+    ],
     "10m_wind_run_max": [
       "windowed",
       1
@@ -311,6 +315,22 @@
       "derived",
       0
     ],
+    "categorical_freezing_rain": [
+      "direct",
+      0.0
+    ],
+    "categorical_ice_pellets": [
+      "direct",
+      0.0
+    ],
+    "categorical_rain": [
+      "direct",
+      0.0
+    ],
+    "categorical_snow": [
+      "direct",
+      0.0
+    ],
     "cloud_cover_levels": [
       "direct",
       0
@@ -387,6 +407,10 @@
       "direct",
       0
     ],
+    "precipitation_type": [
+      "direct",
+      0.0
+    ],
     "qpf_12h": [
       "windowed",
       12
@@ -423,9 +447,21 @@
       "direct",
       0
     ],
+    "snow_10to1_window": [
+      "direct",
+      0.0
+    ],
     "snow_column_max": [
       "direct",
       0
+    ],
+    "snow_kuchera_window": [
+      "direct",
+      0.0
+    ],
+    "snowfall_window": [
+      "direct",
+      0.0
     ],
     "srh_0_1km": [
       "derived",
@@ -1591,6 +1627,14 @@
       "history_frames": 2,
       "picture_files": 141,
       "audited_pictures": 141,
+      "complete_inventory": true
+    },
+    "8ca78c45e4a2fe07": {
+      "audit_sha256": "8ca78c45e4a2fe07568206fd7f951b191bcb5abbe3eacbc617a5c09fd50f73c6",
+      "audit_date": "2026-10-12T05:15:14.898082+00:00",
+      "history_frames": 4,
+      "picture_files": 18,
+      "audited_pictures": 18,
       "complete_inventory": true
     }
   },
@@ -5635,6 +5679,24 @@
     ["7a2a9c1d8bb4a5dc", "uh_2to5km", [154, 124], "arwen_wrf_20260927_12z_f001.png", 122945, "2026-09-27", [3000.0, 3000.0]],
     ["7a2a9c1d8bb4a5dc", "uh_2to5km_1h_max", [154, 124], "arwen_wrf_20260927_12z_f001.png", 144384, "2026-09-27", [3000.0, 3000.0]],
     ["7a2a9c1d8bb4a5dc", "uh_2to5km_run_max", [154, 124], "arwen_wrf_20260927_12z_f001.png", 144555, "2026-09-27", [3000.0, 3000.0]],
+    ["8ca78c45e4a2fe07", "10m_wind_gusts", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_10m_wind_gusts.png", 247249, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "10m_wind_gusts", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_10m_wind_gusts.png", 346061, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "categorical_freezing_rain", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_categorical_freezing_rain.png", 224090, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "categorical_freezing_rain", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_categorical_freezing_rain.png", 224699, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "categorical_ice_pellets", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_categorical_ice_pellets.png", 223652, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "categorical_ice_pellets", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_categorical_ice_pellets.png", 224198, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "categorical_rain", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_categorical_rain.png", 222669, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "categorical_rain", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_categorical_rain.png", 222856, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "categorical_snow", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_categorical_snow.png", 226351, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "categorical_snow", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_categorical_snow.png", 226726, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "precipitation_type", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_precipitation_type.png", 496803, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "precipitation_type", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_precipitation_type.png", 497454, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "snow_10to1_window", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_snow_10to1_window.png", 237641, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "snow_10to1_window", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_snow_10to1_window.png", 328252, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "snow_kuchera_window", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_snow_kuchera_window.png", 240859, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "snow_kuchera_window", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_snow_kuchera_window.png", 303352, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "snowfall_window", [36, 36], "rustwx_wrf_20260101_0z_f006_d01-16km_snowfall_window.png", 238332, "2026-10-12", [16000.0, 16000.0]],
+    ["8ca78c45e4a2fe07", "snowfall_window", [156, 124], "rustwx_wrf_20260101_0z_f006_d02-16km_snowfall_window.png", 328942, "2026-10-12", [16000.0, 16000.0]],
     ["8f075df4ba9732b5", "10m_wind_1h_max", [156, 124], "arwen_wrf_20260927_12z_f001.png", 308871, "2026-09-27", [3000.0, 3000.0]],
     ["8f075df4ba9732b5", "10m_wind_run_max", [156, 124], "arwen_wrf_20260927_12z_f001.png", 308996, "2026-09-27", [3000.0, 3000.0]],
     ["8f075df4ba9732b5", "10m_wind_speed_and_direction", [156, 124], "arwen_wrf_20260927_12z_f000.png", 976535, "2026-09-27", [3000.0, 3000.0]],

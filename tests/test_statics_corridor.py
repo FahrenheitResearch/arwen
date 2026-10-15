@@ -692,3 +692,50 @@ def test_a_whole_frame_corridor_serves_any_reach(corridor_build, tmp_path):
 def test_a_window_the_frame_cannot_hold_is_refused():
     with pytest.raises(ValueError, match="does not lie inside"):
         corridor_geometry(_child_dc(), _parent_run(), window=(20, 0, 18, 9))
+
+
+def test_without_highres_the_corridor_bounds_its_slope_and_births_the_child(
+        geog_root, corridor_build, tmp_path, monkeypatch):
+    """Plan call 5 (2.9.0): the slope bound runs at corridor scale with or
+    without ``[static.highres]``.  Before it a corridor built without the
+    overlay was never bounded while the child's footprint build was, so over
+    steep ground the first move's overlap rule refused, and a nest that did
+    move ran corridor terrain no bound had checked.  This fixture's ground
+    sits inside the measured limit, so the limit is set just under the
+    corridor's own steepest face to make it steep."""
+    import gpuwm.static.terrain_autosmooth as autosmooth
+    from gpuwm.acoustic_adaptation import steepest_slope
+    from gpuwm.static.corridor import corridor_birth_statics
+    from gpuwm.static.terrain_autosmooth import receipt_of, verify_receipt
+
+    reference = _reference_grid()
+    grid = corridor_grid(reference, corridor_geometry(_child_dc(), _parent_run()))
+    raw = np.asarray(corridor_build.fields["HGT_M"])
+    steepest = steepest_slope(raw, grid.dx, grid.dy, msfu=grid.mapfac_u(),
+                              msfv=grid.mapfac_v(), label="d02").slope
+    measured = autosmooth.measured_slope_limit
+    monkeypatch.setattr(autosmooth, "measured_slope_limit",
+                        lambda grid, run=None: (0.9 * steepest, measured(grid, run)[1]))
+    built = build_child_statics_corridor(
+        child_dc=_child_dc(), parent_run=_parent_run(), reference_grid=reference,
+        static_catalog=_catalog(geog_root, tmp_path))
+    directory = tmp_path / "statics-corridor"
+    receipt = write_statics_corridor_set(directory, [built])
+    entry = receipt["domains"]["d02"]
+    assert entry["terrain_autosmooth"]["smooth_passes"] >= 1
+    assert entry["terrain_autosmooth"]["slope_after"] < 0.9 * steepest
+    assert np.asarray(built.fields["HGT_M"]).tobytes() != raw.tobytes()
+
+    births = corridor_birth_statics(directory, receipt,
+                                    SimpleNamespace(domains=[_child_dc()]))
+    baseline = build_static(reference, geog_root,
+                            selection=GeogSelection.fallback(geog_root))
+    born = births[2].footprint_statics(baseline, reference)
+    corridor = load_child_statics_corridor(
+        directory, expected_set_receipt=receipt, grid_id=2,
+        child_dc=_child_dc(), parent_run=_parent_run(), reference_grid=reference)
+    declared = corridor.crop(_REF_I, _REF_J)
+    for name in baseline:
+        assert born[name].tobytes() == declared[name].tobytes(), name
+    assert born["HGT_M"].tobytes() != baseline["HGT_M"].tobytes()
+    verify_receipt(receipt_of(born), born["HGT_M"], domain_id=2)

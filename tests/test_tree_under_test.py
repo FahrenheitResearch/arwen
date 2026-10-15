@@ -203,3 +203,42 @@ class _StubConfig:
 
     def addinivalue_line(self, name: str, value: str) -> None:
         self.lines.append(value)
+
+
+# ---------------------------------------------------------------------------
+# Companion split: this tree's gpuwm with an installed tilestream (D4)
+# ---------------------------------------------------------------------------
+
+
+def test_an_installed_tilestream_under_this_trees_gpuwm_is_refused(tmp_path):
+    """The 2026-10-05 box venv shape: gpuwm from the tree, tilestream from a
+    base venv's 2.8.5 wheel, and a false multi-card refusal filed as a
+    defect."""
+
+    site = tmp_path / "gvenv" / "lib" / "python3.12" / "site-packages"
+    (site / "tilestream").mkdir(parents=True)
+    modules = {
+        "gpuwm": _module_at(REPO_ROOT / "gpuwm" / "__init__.py"),
+        "tilestream": _module_at(site / "tilestream" / "__init__.py"),
+    }
+    offences = tree_under_test.shadowed_companions(REPO_ROOT, modules)
+    assert [name for name, _, _ in offences] == ["tilestream"]
+    message = tree_under_test.refusal(REPO_ROOT, offences)
+    assert "REFUSING" in message and str(site) in message
+
+
+def test_a_wheel_run_with_both_packages_installed_is_not_a_split(tmp_path):
+    site = tmp_path / "venv" / "Lib" / "site-packages"
+    modules = {
+        "gpuwm": _module_at(site / "gpuwm" / "__init__.py"),
+        "tilestream": _module_at(site / "tilestream" / "__init__.py"),
+    }
+    assert tree_under_test.shadowed_companions(REPO_ROOT, modules) == []
+
+
+def test_both_packages_from_this_tree_is_not_a_split():
+    modules = {
+        "gpuwm": _module_at(REPO_ROOT / "gpuwm" / "__init__.py"),
+        "tilestream": _module_at(REPO_ROOT / "tilestream" / "__init__.py"),
+    }
+    assert tree_under_test.shadowed_companions(REPO_ROOT, modules) == []

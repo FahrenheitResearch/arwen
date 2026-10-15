@@ -2,7 +2,7 @@ THIRD-PARTY LICENCES FOR THE ARWEN BRIDGE BUNDLE
 ==============================================================================
 
 This file is the binary-form notice for the compiled artefacts distributed
-in this bundle and staged into ArWen platform wheels: 45 Rust executables and
+in this bundle and staged into ArWen platform wheels: 48 Rust executables and
 libraries, plus the map assets beside it and two embedded fonts.
 
 Those binaries are built from two kinds of source, and both carry third-party
@@ -17542,8 +17542,8 @@ All LICENSE, LICENCE, COPYING, COPYRIGHT and NOTICE files at each
 resolved vendored package root are reproduced, deduplicated by raw SHA-256.
 The TUI itself uses the repository Apache-2.0 licence.
 
-tools/arwen-tui/Cargo.toml sha256 57c45cc02c6943ca90eb45739b4cc08e1b3afaf664cf49753b53f0e72a34269b
-tools/arwen-tui/Cargo.lock sha256 fc05afc428930dc57ce668504f9be4bec1197ac329da9e758d0820c6dd510f2f
+tools/arwen-tui/Cargo.toml sha256 ceac8a3d884590c92106a4d33bc5a15cdc282afdb13a0ec3f3ebdfc92080d778
+tools/arwen-tui/Cargo.lock sha256 004b0c5456a41c67db099fd3aa344f7ea9097fb036b6c9e6bc477aa78638fa25
 x86_64-unknown-linux-gnu: 70 external packages
 x86_64-pc-windows-msvc: 67 external packages
 

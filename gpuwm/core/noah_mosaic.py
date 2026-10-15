@@ -446,7 +446,8 @@ def launch_noah_mosaic(dev: dict, params, dt: float, dzs, *, mosaic_cat: int,
                        categories: MosaicCategories, xice_threshold: float,
                        frpcpn: bool, usemonalb: bool, rdlai2d: bool,
                        opt_thcnd: int, itimestep: int, urban=None,
-                       atmosphere=None, solar=None, use_wudapt_lcz: int = 0) -> None:
+                       atmosphere=None, solar=None, use_wudapt_lcz: int = 0,
+                       urban_water_balance=None) -> None:
     """Launch one thread per column, tile work in a device function.
 
     WRF sf_urban_physics=0 or 1, four soil layers. Glacial tiles and the mosaic
@@ -486,12 +487,13 @@ def launch_noah_mosaic(dev: dict, params, dt: float, dzs, *, mosaic_cat: int,
     else:
         from .urban_ucm import (
             _checked, _pointer_table, _state_arrays, _packed, _device_params,
-            _status_word, _jmonth, _raise_on)
+            _status_word, _jmonth, _raise_on, water_balance_params)
         for n, (shape, dtype) in mosaic_array_shapes(mosaic_cat, ny, nx, urban=True).items():
             _checked(dev[n], shape, n, getattr(cp, dtype))
         sp = _pointer_table(_state_arrays(urban, ny, nx))
         tp = _pointer_table([dev[n] for n in (*MOSAIC_URBAN_TILE_FIELDS, *MOSAIC_URBAN_SOIL_FIELDS)])
-        tab, glob, isw = _device_params(_packed(urban.params))
+        tab, glob, isw = _device_params(water_balance_params(
+            urban.params, urban_water_balance))
         err = _status_word(urban)
         # The same UrbanCoupler-held solar object as the ordinary UCM route.
         # noahdrv.F:3790-3794 sets LSOLAR=.false.; urban's active arm reads
@@ -554,6 +556,8 @@ def mosaic_ucm_source():
 @lru_cache(maxsize=None)
 def _mosaic_ucm_module():
     import cupy as cp
+    from gpuwm.cuda_subnormals import install
+    install()
     from gpuwm.certify.kernel_manifest import record_module
     from .kernels import MODULE_KEY_ROOT, _compile_observed
     source = mosaic_ucm_source()

@@ -22,9 +22,9 @@ fire perimeter, rate of spread and ground heat flux.
 
 | Download | Requirements |
 | --- | --- |
-| [Windows desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.9/ArWen-Desktop-1.0.9-Windows-x64.zip) | x86-64 Windows; compatible NVIDIA GPU and driver; internet for first setup |
-| [Linux desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.9/ArWen-Desktop-1.0.9-Linux-x64-pip.tar.gz) | x86-64 Linux, glibc 2.39 or newer, such as Ubuntu 24.04; Python 3.11 or newer; X11 or Wayland with working OpenGL |
-| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.9/ArWen-2.8.9-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
+| [Windows desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.0/ArWen-Desktop-1.0.10-Windows-x64.zip) | x86-64 Windows; compatible NVIDIA GPU and driver; internet for first setup |
+| [Linux desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.0/ArWen-Desktop-1.0.10-Linux-x64-pip.tar.gz) | x86-64 Linux, glibc 2.39 or newer, such as Ubuntu 24.04; Python 3.11 or newer; X11 or Wayland with working OpenGL |
+| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.0/ArWen-2.9.0-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
 
 The desktop archives contain the applications, native map library and map assets.
 Windows includes a graphical setup launcher that downloads a private Python and
@@ -33,7 +33,7 @@ compiler is needed for these binary packages.
 
 The Python package is named **`gpuwm`**. Its Windows and Linux platform wheels
 include the engine, native processing tools, and TUI. The desktop GUI is the
-separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.8.9)
+separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.9.0)
 for the exact artifacts and qualification records.
 
 ## Install the desktop for forecasts on your PC
@@ -58,22 +58,30 @@ free disk space, plus space for weather inputs and forecast output.
 ### Linux
 
 ```bash
-python3 -m venv ~/.local/share/arwen/venvs/2.8.9
-~/.local/share/arwen/venvs/2.8.9/bin/python -m pip install 'gpuwm[all-cu12]==2.8.9'
-~/.local/share/arwen/venvs/2.8.9/bin/python -m gpuwm.cli fetch-tables
-~/.local/share/arwen/venvs/2.8.9/bin/python -m gpuwm.cli fetch-geog --datasets wrf
-~/.local/share/arwen/venvs/2.8.9/bin/python -m gpuwm.cli doctor
+python3 -m venv ~/.local/share/arwen/venvs/2.9.0
+. ~/.local/share/arwen/venvs/2.9.0/bin/activate
+python -m pip install 'gpuwm[all-cu12]==2.9.0'
+gpuwm fetch-tables
+gpuwm fetch-geog
+gpuwm doctor
 ```
 
+Activating the environment puts `gpuwm` on PATH, and every command the
+program prints starts with it; `gpuwm doctor` checks that.
+
 `fetch-geog` sets up the global geography every forecast builds its terrain,
-land use and soil from, once per computer. It downloads about 1.3 GB and
-takes about 17 GB of disk once unpacked; add `--list` to see each dataset and
-its size without downloading. Without it a forecast is refused at its start.
+land use and soil from, once per computer. It downloads about 2.2 GB and
+takes about 35 GB of disk once unpacked, including the soil archive
+`gpuwm mesh` builds MPAS statics from. Add `--list` to see each dataset and
+its size without downloading. `--datasets wrf` stages only what regional
+forecasts read (about 1.3 GB, about 17 GB unpacked); `gpuwm doctor` then
+reports the mesh geography as missing. Without it a forecast is refused at
+its start.
 
 Extract the complete Linux tarball. From its application folder:
 
 ```bash
-./Start\ ArWen.sh --python ~/.local/share/arwen/venvs/2.8.9/bin/python
+./Start\ ArWen.sh --python ~/.local/share/arwen/venvs/2.9.0/bin/python
 ```
 
 If your distribution does not include Python's venv module, install its venv
@@ -86,11 +94,12 @@ thread and run about twice as fast on free-threaded Python 3.14
 with `--prefer-binary`:
 
 ```bash
-uv venv --seed --python 3.14t ~/.local/share/arwen/venvs/2.8.9
-~/.local/share/arwen/venvs/2.8.9/bin/python -m pip install --prefer-binary 'gpuwm[all-cu12]==2.8.9'
+uv venv --seed --python 3.14t ~/.local/share/arwen/venvs/2.9.0
+~/.local/share/arwen/venvs/2.9.0/bin/python -m pip install --prefer-binary 'gpuwm[all-cu12]==2.9.0'
 ```
 
-Then run the `fetch-tables`, `fetch-geog` and `doctor` commands above.
+Then activate it and run the `fetch-tables`, `fetch-geog` and `doctor`
+commands above.
 `--prefer-binary` matters on this interpreter: the newest `cftime` (1.6.6)
 publishes no free-threaded wheel, and without the flag pip builds it from
 source, which needs a C compiler; with it pip installs 1.6.5's wheel. The
@@ -142,7 +151,7 @@ terminal, native weather processing, and remote-control workflows can run on a
 computer without a local CUDA installation.
 
 Only an intentionally viewer-only or remote-control installation should use
-`gpuwm[render]==2.8.9` without a GPU extra. It cannot execute local forecasts.
+`gpuwm[render]==2.9.0` without a GPU extra. It cannot execute local forecasts.
 
 ## Work with weather
 
@@ -155,6 +164,11 @@ Only an intentionally viewer-only or remote-control installation should use
   times, view native fields and plots, and play the forecast history.
 - **Terminal and CLI:** use `gpuwm tui` for an interactive workspace or the
   command interfaces for scripts and automation.
+- **New in 2.9.0:** an unattended forecast suite (`gpuwm suite`), a complete
+  HRRR-style recipe for any region (`gpuwm domain --recipe hrrr_v4_gsd41
+  --region ID --spacing-km N`), ensembles that mix physics, and the engine for
+  the global model gpuwm-hex 0.4.0. See [What's new in 2.9.0](docs/public/WHATS-NEW-2.9.0.md)
+  and [gpuwm with gpuwm-hex](docs/public/WITH-GPUWM-HEX.md).
 
 Forecast and cyclone setup use the shared preparation source catalog, with
 geographic coverage, available times and required fields determined by the source. The installed source catalog is
@@ -208,7 +222,7 @@ writes them as each frame lands. See [GRIB2 export](docs/grib2-export.md).
 ## Integrate ArWen into another application
 
 The [integration guide](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/integration-kit/integration-guide.md)
-and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.9/ArWen-2.8.9-Integration-Kit.zip)
+and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.0/ArWen-2.9.0-Integration-Kit.zip)
 describe the CLI, run-plan documents, catalogs, and companion bridge boundaries.
 The kit contains an example subprocess client and tests. It is a documented
 integration surface, not a separate simulation engine or a replacement for
@@ -283,9 +297,11 @@ the forecast.
   platform (target architecture and NVRTC build). The NVRTC build is set by
   the cuda-toolkit release the package's `[ctk]` extra resolves to when pip
   runs, not by the machine. The desktop runtime is a CUDA-12 install. This
-  release carries readings on both CUDA majors: sm_120 and sm_86 on NVRTC
-  12.9.86, the build a CUDA-12 install resolves (`gpu-cu12`, `gpu`, `all`, and
-  the desktop runtime), and sm_120 on the three builds the `gpu-cu13` extra has
+  release carries readings on both CUDA majors: sm_120 on NVRTC 12.9.86, the
+  build a CUDA-12 install resolves (`gpu-cu12`, `gpu`, `all`, and the desktop
+  runtime; the sm_86 reading is withdrawn until an sm_86 card re-reads the
+  2.9.0 units, so sm_86 is priced from the ceiling, which is at or above every
+  frame it last measured), and sm_120 on the three builds the `gpu-cu13` extra has
   resolved to, 13.4.92 (what `pip install gpuwm[gpu-cu13]` installs today),
   13.4.59 and 13.3.33. On a recorded platform the estimate prices Noah-MP from
   that platform's own reading. On any other card the Noah-MP frames are priced the

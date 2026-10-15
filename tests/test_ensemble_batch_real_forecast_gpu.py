@@ -138,6 +138,7 @@ def test_real_complete_member_graph_and_rust_history_are_byte_identical(prepared
     from gpuwm.ensemble.batch_forecast import PreparedRealEnsemble
     from gpuwm.ensemble.batch_perturbation import initialize_member_winds
     from gpuwm.ensemble.batch_dycore import member_domain_view
+    from gpuwm.ensemble.native_forecast import borrow_physics_scratch
     from gpuwm.io import nc_writer_bridge
     from gpuwm.io.wrfout import WrfoutWriter, state_frame
     assert nc_writer_bridge.unavailable_reason() is None
@@ -210,6 +211,7 @@ def test_real_complete_member_graph_and_rust_history_are_byte_identical(prepared
         for member, state in enumerate(scalar_states):
             view = member_domain_view(runtime.batch, member)
             view.physics = _physics_readout(runtime.physics.driver, member=member, members=members, ny=cfg.ny, nx=cfg.nx)
+            borrow_physics_scratch(view, runtime.physics.driver, member=member, members=members, ny=cfg.ny, nx=cfg.nx)
             paths = [tmp_path / f"batch-{step}-{member}.nc", tmp_path / f"single-{step}-{member}.nc"]
             member_refl=batched_refl if members==1 else batched_refl[:,member*cfg.ny:(member+1)*cfg.ny]
             scalar_refl=consume_refl_10cm(state)

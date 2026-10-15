@@ -15,6 +15,7 @@ at HT = 350 m are in the fixture.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,11 @@ STATE = ("thz0", "qz0", "qsfc", "ct")
 #: diffusion leaves a denormal residue.  Pinned as a count, and each lane is
 #: checked to be exactly that case.
 SUBNORMAL_LANES = {"rqcblten": 3}
+#: Under the strict build (GPUWM_WRF_EXACT=1, --ftz=false) nothing is
+#: flushed, so the same gate holds with no lanes excepted.  Measured on W1
+#: (RTX PRO 6000) 2026-10-07: every word identical, no flushed lanes.
+if os.environ.get("GPUWM_WRF_EXACT") == "1":
+    SUBNORMAL_LANES = {}
 
 
 def load_bin_fixture(directory: Path) -> dict[str, np.ndarray]:

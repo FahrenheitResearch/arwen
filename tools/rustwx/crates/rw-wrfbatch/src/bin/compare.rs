@@ -101,10 +101,7 @@ mod comparison_observations;
 mod compare_panels;
 
 /// The `--abi` contract line: the vocabulary the PYTHON half parses.
-const ABI_MARKER: &str = "gpuwm-rw-compare-references-v1\tREFERENCE\tname\tlabel\t\
-gpuwm-rw-compare-products-v1\tPRODUCT\tname\tslug\ttitle\tdifference\t\
-gpuwm-rw-compare-events-v1\tRENDERED\tSKIPPED\tFAILED\tSTATS\tMATCH\tSOURCE\tFINISHED\t\
-gpuwm-rw-compare-presentation-v1\t--theme";
+use crate::cli_contracts::COMPARE as ABI_MARKER;
 
 /// One reference model: where its files are and what they are called.
 ///
@@ -784,7 +781,7 @@ fn parse_args() -> Result<Invocation, String> {
     })))
 }
 
-fn main() -> ExitCode {
+pub(crate) fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     // The DA sheet modes (increment, spread, stamp, omb) read their fields
     // from the files directly and share no option with the comparison.

@@ -572,6 +572,15 @@ def test_prepare_hrrr_hierarchy_seals_and_binds_the_corridor(
     receipt, and the two agreeing."""
 
     inputs = _stub_sealed_root(monkeypatch, chain, tmp_path / "root")
+    handed = {}
+    stub = hrrr_hierarchy_direct.initialize_and_export_native_hierarchy
+
+    def initialize(**kwargs):
+        handed.update(kwargs)
+        return stub(**kwargs)
+
+    monkeypatch.setattr(hrrr_hierarchy_direct,
+                        "initialize_and_export_native_hierarchy", initialize)
     output = tmp_path / "hierarchy"
     payload = _prepare(inputs, output, statics_corridor="all")
 
@@ -604,6 +613,17 @@ def test_prepare_hrrr_hierarchy_seals_and_binds_the_corridor(
         parent_run=chain.exp.domains[0].run,
         reference_grid=chain.grids[1])
     assert loaded.crop(_REF_I, _REF_J)["HGT_M"].shape == (9, 9)
+
+    # Plan call 5: the corridor was sealed before the children, and the
+    # child is handed its crop at the declared placement as its birth
+    # footprint; the staging set moved into the published tree.
+    births = handed["catalog"].statics_corridor_births
+    assert set(births) == {2}
+    declared = loaded.crop(_REF_I, _REF_J)
+    assert set(births[2].fields) == set(declared)
+    for name, value in declared.items():
+        assert births[2].fields[name].tobytes() == value.tobytes(), name
+    assert not (output / ".statics-corridor-pending").exists()
 
 
 def test_without_the_flag_the_receipt_carries_no_corridor_key(

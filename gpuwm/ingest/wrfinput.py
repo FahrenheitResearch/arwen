@@ -69,6 +69,14 @@ MOISTURE_MAP = {
     # ``read_wrfinput`` rejects the file as carrying "unmapped WRF
     # variable(s)" before any inventory check is reached.
     "QIR": "qir", "QIB": "qib",
+    # mp_physics=5 (Ferrier-Aligo).  QICE is already above and carries the
+    # scheme's total ice.  CWM is the Registry's output name for the
+    # scalar qt (Registry.EM_COMMON:529-530, IO ``i0rhusdf``), so real.exe
+    # writes it; FER_HIRES rebuilds qt from qc+qr+qi on entry
+    # (module_mp_fer_hires.F:388), so it is restored when present and not
+    # required.  F_ICE_PHY/F_RAIN_PHY/F_RIMEF_PHY carry ``rhdu`` with no
+    # ``i`` (:1333-1335) and are never in a wrfinput.
+    "CWM": "qt",
     # mp_physics=9 (Milbrandt-Yau double-moment, seven class).  QNCLOUD,
     # QNRAIN, QNICE, QNSNOW and QNGRAUPEL are already above and carry
     # Milbrandt's five prognostic number moments unchanged; QHAIL and
@@ -195,6 +203,16 @@ MILBRANDT_MOISTURE_WRFINPUT = (
     "QNHAIL",
 )
 P3_MOISTURE_WRFINPUT = ("QICE", "QNICE", "QNRAIN", "QIR", "QIB")
+#: mp_physics=5 (Ferrier-Aligo, Registry.EM_COMMON:3019): one total-ice
+#: mass, added through this tuple for P3's reason (no QSNOW/QGRAUP exists
+#: in the package).  CWM, the scalar qt, is optional: see MOISTURE_MAP.
+FERRIER_MOISTURE_WRFINPUT = ("QICE",)
+FERRIER_OPTIONAL_MOISTURE_WRFINPUT = ("CWM",)
+#: mp_physics=24 (WSM7).  ``Registry.EM_COMMON:3034`` declares the package
+#: as ``moist:qv,qc,qr,qi,qs,qg,qh`` -- WSM6's six masses plus HAIL, no
+#: scalar package.  QHAIL is a MASS, listed here rather than in
+#: ICE_MASS_WRFINPUT for the reason MILBRANDT_MOISTURE_WRFINPUT gives.
+WSM7_MOISTURE_WRFINPUT = ("QHAIL",)
 NSSL_MOISTURE_WRFINPUT = (
     "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL",
     "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL",
@@ -218,6 +236,7 @@ PHYSICS_FIELD_ALIASES = {
     "snowfallac": ("SNOWFALLAC",), "soilt1": ("SOILT1",),
     # Stock v4.6.1 names this field qke; real.exe products also use QKE.
     "qke": ("qke", "QKE"),
+    "qke_adv": ("qke_adv",),
 }
 
 RUC_INPUT_FIELDS = frozenset({"ACRUNOFF", "RHOSNF", "SNOWFALLAC", "SOILT1"})
@@ -230,6 +249,7 @@ MYNN_CYCLED_WRFINPUT = frozenset({"QC_BL", "CLDFRA_BL"})
 # ``restore_domain_state``.  They are permitted when present but are not
 # synthesized when absent.
 OPTIONAL_WRFINPUT = (
+    "ICCG_IN_NUM", "ICCG_IN_DEN",
     "H_DIABATIC", "RAINNC", "RAINC", "QNCLOUD", "SST", "CANWAT", "LAKEMASK",
     "QNWFA2D", "QNIFA2D",
     "MAPFAC_MX", "MAPFAC_MY", "MAPFAC_UX", "MAPFAC_UY", "MAPFAC_VX", "MAPFAC_VY",
@@ -264,6 +284,7 @@ _WRFINPUT_GEOMETRY_DIMENSIONS = frozenset({
 # resulting shape, so a truncated variable cannot borrow an unrelated
 # dimension of the same length.
 WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
+    "ICCG_IN_NUM": _MASS_2D_DIMS, "ICCG_IN_DEN": _MASS_2D_DIMS,
     **SFIRE_INPUT_DIMENSIONS,
     **{name: _MASS_3D_DIMS for name in (
         "T", "T_INIT", "P", "PB", "AL", "ALB", "QVAPOR", "QCLOUD",
@@ -271,6 +292,7 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "QNSNOW", "QNGRAUPEL", "QNCLOUD", "QHAIL", "QNDROP",
         "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL", "H_DIABATIC",
         "QIR", "QIB", "QNWFA", "QNIFA", "QNBCA", "qke", "QKE", "qke_adv",
+        "CWM",
         "fire_smoke",
         "QC_BL", "CLDFRA_BL",
     )},
@@ -306,6 +328,40 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
     )},
 }
 
+# Registry urban static records are present in ordinary real.exe files even
+# when their optional gridded morphology and external heat are all zero.
+# They are not forecast prognostics. The current cold initializer uses the
+# selected URBPARM morphology. Nonzero active records need the missing
+# gridded-morphology/external-heat handover and must never be discarded.
+URBAN_TABLE_ONLY_INPUTS = {
+    **{name: ("Time", "south_north", "west_east") for name in (
+        "BUILD_AREA_FRACTION", "BUILD_HEIGHT", "BUILD_SURF_RATIO",
+        "LF_URB2D_S", "MH_URB2D", "STDH_URB2D", "Z0_URB2D")},
+    "LF_URB2D": ("Time", "urban_wind_directions_stag", "south_north", "west_east"),
+    "AHE": ("Time", "month_hour", "south_north", "west_east"),
+}
+
+
+def urban_static_input_dispositions(dataset, path, cfg, expected_dimensions):
+    """Admit inactive static records, retaining a concrete active-data refusal."""
+    active = int(getattr(cfg, "sf_urban_physics", 0)) > 0
+    dispositions = {}
+    for name, dimensions in URBAN_TABLE_ONLY_INPUTS.items():
+        if name not in dataset.variables:
+            continue
+        variable = dataset.variables[name]
+        value = np.asarray(variable[...])
+        shape = tuple(1 if dim == 'Time' else expected_dimensions[dim]
+                      if dim in expected_dimensions else len(dataset.dimensions[dim])
+                      for dim in dimensions)
+        if tuple(variable.dimensions) != dimensions or value.shape != shape or any(n <= 0 for n in shape):
+            raise ValueError(f'{path}: urban static input {name} has incompatible dimensions or shape; expected {dimensions} {shape}')
+        if active and (not np.isfinite(value).all() or np.any(value != 0)):
+            raise ValueError(f'{path}: nonzero or nonfinite urban static input {name} requires the missing gridded urban morphology or external anthropogenic-heat handover; the table-only cold initializer cannot preserve it')
+        dispositions[name] = ('zero optional urban morphology/external-heat record; the cold start uses the selected URBPARM table'
+                              if active else 'urban static record is inactive with sf_urban_physics=0')
+    return dispositions
+
 
 def _mapped_wrfinput_names() -> set[str]:
     names = set(REQUIRED_WRFINPUT) | set(OPTIONAL_WRFINPUT)
@@ -325,13 +381,11 @@ MAPPED_WRFINPUT = frozenset(_mapped_wrfinput_names())
 # (module_mp_thompson.F:1807-1811,3983-3988). Retain and validate the input
 # without claiming a prognostic black-carbon consumer exists in ArWen.
 INACTIVE_AEROSOL_WRFINPUT = frozenset({"QNBCA"})
-# Registry.EM_COMMON:3168 allocates qke_adv for every MYNN run. The three
-# read/write sites in module_bl_mynn.F:837-841,861-864,1442-1445 are gated
-# by bl_mynn_tkeadvect. Retain and validate it only under the explicitly
-# selected inactive operation; it is not an alias for the live qke carrier.
-INACTIVE_MYNN_WRFINPUT = frozenset({"qke_adv"})
+# Registry.EM_COMMON:1118,3168 allocates the MYNN scalar QKE carrier.
+# With advection selected it is restored independently from diagnostic QKE.
+MYNN_SCALAR_WRFINPUT = frozenset({"qke_adv"})
 ALLOWED_WRFINPUT = (MAPPED_WRFINPUT | frozenset(EXPLICIT_AUXILIARY_WRFINPUT)
-                   | INACTIVE_AEROSOL_WRFINPUT | INACTIVE_MYNN_WRFINPUT)
+                   | INACTIVE_AEROSOL_WRFINPUT | MYNN_SCALAR_WRFINPUT)
 
 #: WRF's 1-D base-state profiles.  real.exe never assigns them
 #: (Registry.EM_COMMON:372 and :1247-1249 name them "BASE STATE ... IN
@@ -490,12 +544,18 @@ ANALYSIS_PASSTHROUGH_WRFINPUT: Mapping[str, str] = _analysis_passthrough(
 SUPPORTED_MICROPHYSICS: Mapping[int, str] = MappingProxyType({
     0: "passive water vapor (microphysics off)",
     1: "Kessler warm rain",
+    2: "Purdue Lin",
+    3: "WSM3",
+    4: "WSM5",
     6: "WSM6",
     8: "Thompson",
+    106: "WSM6R (revised WSM6)",
     9: "Milbrandt-Yau double-moment (seven class)",
     10: "Morrison double-moment",
     16: "WDM6 double-moment warm rain",
     18: "NSSL double-moment",
+    5: "Ferrier-Aligo",
+    24: "WSM7 single-moment (seven class)",
     28: "Thompson aerosol-aware",
     30: "FAST_SBM warm and cold spectral bin",
     50: "P3 one-category",
@@ -507,28 +567,36 @@ SUPPORTED_MICROPHYSICS: Mapping[int, str] = MappingProxyType({
 #: so restoring it would mean dropping prognostics on the floor.  The
 #: three P3 siblings recite ``gpuwm.config``'s own refusal text, which is
 #: where their missing physics is argued in detail.
+#:
+#: The names are WRF v4.6.1's own (Registry/Registry.EM_COMMON:3014-3047,
+#: the ``package ... mp_physics==N`` rows).  A WRF package missing from
+#: this table was refused as "not a WRF microphysics package", which is
+#: false for a real one, and 55/56 used to carry P3 names although WRF
+#: assigns them to Jensen ISHMAEL and NTU.  tests/test_wrfinput_mp_names.py
+#: pins every Registry row to this table or to SUPPORTED_MICROPHYSICS.
 UNSUPPORTED_MICROPHYSICS: Mapping[int, str] = MappingProxyType({
-    2: "Lin et al.",
-    3: "WSM3",
-    4: "WSM5",
-    5: "Ferrier (Eta)",
     7: "Goddard 4-ice",
     11: "CAM 5.1",
     13: "SBU-YLin",
     14: "WDM5",
+    15: "Ferrier-Aligo, advected species",
     17: "NSSL 2-moment 4-ice",
     19: "NSSL 1-moment",
     21: "NSSL 1-moment lfo",
     22: "NSSL 2-moment, no hail",
-    24: "WSM7",
     26: "WDM7",
     32: "HUJI spectral bin (full)",
+    38: "Thompson graupel-hail",
     40: "Morrison + CESM aerosol",
     51: "P3 with prognostic droplet number",
     52: "P3, two ice categories",
     53: "P3 one category, three-moment ice",
-    55: "P3 multi-category with liquid fraction",
-    56: "P3 multi-category, three-moment ice",
+    55: "Jensen ISHMAEL",
+    56: "NTU multi-moment",
+    95: "Ferrier (Eta, old)",
+    96: "MADWRF",
+    97: "Goddard GCE",
+    106: "WSM6 revised",
 })
 
 #: WRF ``sf_surface_physics`` -> (scheme name, the soil-layer count the
@@ -915,10 +983,16 @@ def active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
     # 16 belongs with the ice-carrying set: wdm6scheme's moist inventory
     # (Registry.EM_COMMON:3031) is qv,qc,qr,qi,qs,qg -- WSM6's, character
     # for character.  WDM6 is double-moment in the WARM half only.
-    if mp_physics in (6, 8, 9, 10, 16, 18, 28, 30):
+    from gpuwm.core.column_schemes import COLUMN_SCHEMES
+    if mp_physics in COLUMN_SCHEMES:
+        names = {"qi": "QICE", "qs": "QSNOW", "qg": "QGRAUP"}
+        required += tuple(names[n] for n in COLUMN_SCHEMES[mp_physics].species if n in names)
+    if mp_physics in (2, 6, 8, 9, 10, 16, 18, 24, 28, 30, 106):
         required += ICE_MASS_WRFINPUT
     if mp_physics == 30:
         required += _FSBM_BIN_SPECIES + ("QNCCN","QNCLOUD","QNRAIN","QNICE","QNSNOW","QNGRAUPEL","EFF_RADIUS","ICE_EFF_RADIUS","TOT_EFF_RADIUS")
+    if mp_physics == 24:
+        required += WSM7_MOISTURE_WRFINPUT
     if mp_physics == 9:
         # Milbrandt-Yau: WSM6's six masses (added just above) plus hail
         # and six number moments.  See MILBRANDT_MOISTURE_WRFINPUT.
@@ -944,9 +1018,13 @@ def active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
         # is refused as carrying inactive moisture rather than restored
         # with two frozen species dropped on the floor.
         required += P3_MOISTURE_WRFINPUT
+    elif mp_physics == 5:
+        required += FERRIER_MOISTURE_WRFINPUT
     allowed = frozenset(required)
     if mp_physics == 10:
         allowed |= frozenset(MORRISON_OPTIONAL_MOISTURE_WRFINPUT)
+    if mp_physics == 5:
+        allowed |= frozenset(FERRIER_OPTIONAL_MOISTURE_WRFINPUT)
     return frozenset(required), allowed
 
 
@@ -1025,7 +1103,9 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         dimensions = {name: len(dim) for name, dim in dataset.dimensions.items()}
         attrs = {name: dataset.getncattr(name) for name in dataset.ncattrs()}
         from gpuwm.ingest.wrfinput_noahmp import input_dispositions
-        surface_dispositions = input_dispositions(cfg)
+        surface_dispositions = dict(input_dispositions(cfg))
+        surface_dispositions.update(urban_static_input_dispositions(
+            dataset, path, cfg, expected_dimensions))
         if surface_dispositions or _integral_attribute(attrs.get("SF_SURFACE_PHYSICS")) == 4:
             from gpuwm.ingest.wrfinput_noahmp import require_cold_start
             require_cold_start(dataset)
@@ -1211,7 +1291,7 @@ def _validate_supplied_physics_fields(raw, cfg, attributes):
         raise ValueError(
             f"WRF physics input {sorted(ruc)} requires the RUC "
             "sf_surface_physics=3 consumer")
-    mynn = (MYNN_QKE_INPUT_FIELDS | INACTIVE_MYNN_WRFINPUT
+    mynn = (MYNN_QKE_INPUT_FIELDS | MYNN_SCALAR_WRFINPUT
             | MYNN_CYCLED_WRFINPUT) & raw.keys()
     if mynn and pbl != 5:
         raise ValueError(
@@ -1219,15 +1299,6 @@ def _validate_supplied_physics_fields(raw, cfg, attributes):
             "bl_pbl_physics=5 consumer")
     if "qke" in raw and "QKE" in raw and not np.array_equal(raw["qke"], raw["QKE"]):
         raise ValueError("WRF physics input qke and QKE contain conflicting aliases")
-    if bool(getattr(cfg, "bl_mynn_tkeadvect", False)):
-        raise NotImplementedError(
-            "bl_mynn_tkeadvect=True requires the qke_adv transport and "
-            "MYNN feedback operation, which is not implemented")
-    if "qke_adv" in raw and getattr(cfg, "bl_mynn_tkeadvect", None) is not False:
-        raise ValueError(
-            "WRF qke_adv can be retained only with an explicit "
-            "bl_mynn_tkeadvect=False selection; active qke_adv transport "
-            "and MYNN feedback are not implemented")
 
 def _expect_shape(name: str, value: np.ndarray, expected: tuple[int, ...]) -> None:
     if value.shape != expected:
@@ -1646,6 +1717,7 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         # radiation/PBL calls, so preserve that start-of-run convention.
         glw=glw,
         pblh=(0.0 if pblh is None else pblh),
+        lightning_inputs={key.lower(): raw[key] for key in ("ICCG_IN_NUM", "ICCG_IN_DEN") if key in raw},
         radiation=radiation,
         radiation_start_time=radiation_start_time,
         radiation_latitude=radiation_latitude,
@@ -1665,7 +1737,7 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
     # when USEMONALB is false (WRF module_physics_init.F:1958). The native
     # file can also contain a distinct monthly ALBBCK. Restoring that over
     # the initialized carrier undoes the cold-start authority.
-    retain_landuse_albbck = (int(cfg.sf_surface_physics) == 2
+    retain_landuse_albbck = (int(cfg.sf_surface_physics) in (2, 3)
                             and landuse is not None and not cfg.usemonalb)
     from gpuwm.ingest.wrfinput_noahmp import NOAHMP_INITIALIZED_SURFACE_FIELDS
     # A WRF restart's carriers are the producing run's own and are applied
@@ -1696,6 +1768,8 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
                     f"gpuwm {field} shape {driver.fields[field].shape}")
             driver.fields[field][...] = cp.asarray(
                 value, dtype=driver.fields[field].dtype)
+    if cfg.bl_pbl_physics == 5 and cfg.bl_mynn_tkeadvect and "qke_adv" not in raw:
+        state.qke_adv[...] = driver.fields["qke"]
     if not retain_landuse_albbck:
         driver.fields["albbck"][...] = cp.asarray(albbck, dtype=cp.float32)
     if int(cfg.sf_surface_physics) != 4:
@@ -1715,6 +1789,13 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         from gpuwm.core.physics import NOAH_LAYER_THICKNESS_M
         initialize_noah_liquid_water(driver.fields, driver.noah_params,
                                     NOAH_LAYER_THICKNESS_M)
+    elif int(cfg.sf_surface_physics) == 3:
+        # RUCLSMINIT owns the initial liquid/frozen partition, availability
+        # and roughness. Native wrfinput placeholders restored above must
+        # precede this cold start, just as LSMINIT does for Noah. A later
+        # checkpoint restore replaces the resulting prognostic state.
+        from gpuwm.core.ruc_runtime import ruc_cold_start
+        ruc_cold_start(driver.fields, params=driver.ruc_params)
     if getattr(cfg, "sf_surface_mosaic", 0) == 1:
         from gpuwm.core.noah_mosaic_door import attach_wrfinput_noah_mosaic
         attach_wrfinput_noah_mosaic(driver, cfg, restored,
@@ -1987,7 +2068,8 @@ def wrf_initial_boundary_head(raw, layouts=None, *, moist_theta: bool,
             raw, np.asarray(raw["MU"], dtype=np.float32))
     head = {}
     for key, (name, *_dimensions) in layouts.items():
-        field = np.asarray(raw[name], dtype=np.float32)
+        input_name = "qke_adv" if key == "qke_adv" else name
+        field = np.asarray(raw[input_name], dtype=np.float32)
         if key == "theta" and moist_theta:
             field = _moist_theta_from_dry(field, raw["QVAPOR"])
         if key == "mu":
@@ -2267,6 +2349,12 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
     field_names = {name: layout[0] for name, layout in layouts.items()}
     with netcdf_bridge.open_dataset(path) as dataset:
         _check_boundary_identity(dataset, restored)
+        if (cfg is not None and cfg.bl_pbl_physics == 5 and cfg.bl_mynn_tkeadvect
+                and any(name.upper().startswith("QKE_ADV_B") for name in dataset.variables)):
+            prefix = ("qke_adv" if any(name.startswith("qke_adv_B")
+                                      for name in dataset.variables) else "QKE_ADV")
+            layouts["qke_adv"] = (prefix, "bottom_top", "south_north", "west_east")
+            field_names["qke_adv"] = prefix
         if "Times" not in dataset.variables:
             raise ValueError("wrfbdy_d01 has no Times variable")
         if "bdy_width" not in dataset.dimensions:

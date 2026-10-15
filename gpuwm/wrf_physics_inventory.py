@@ -275,6 +275,10 @@ _P3_MASS = (
 from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
 
 _INVENTORIES = {
+    # WRF v4.6.1 Registry.EM_COMMON:3016, no scalar or radius fields.
+    2: StockWrfPhysicsInventory(mp_physics=2,scheme="Purdue Lin",
+        registry_package="linscheme",wrfinput_fields=_ICE_MASS,
+        runtime_state_not_wrfinput=()),
     # WRF Registry/registry.sbm:318; the bin members use lowercase NetCDF names.
     30: StockWrfPhysicsInventory(
         mp_physics=30,scheme="FAST_SBM",registry_package="fast_khain_lynn_shpund",
@@ -292,6 +296,29 @@ _INVENTORIES = {
                                    RuntimeStateField("height","HEIGHT")),
         registry_authority="WRF-v4.6.1 Registry/registry.sbm:318",
     ),
+    # WRF 4.6.1 Registry.EM_COMMON:3019. qt is the scalar condensate.
+    5: StockWrfPhysicsInventory(
+        mp_physics=5, scheme="Ferrier-Aligo", registry_package="fer_mp_hires",
+        wrfinput_fields=_P3_MASS + (_scalar("qt", "CWM"),),
+        runtime_state_not_wrfinput=(
+            RuntimeStateField("f_ice_phy", "F_ICE_PHY"),
+            RuntimeStateField("f_rain_phy", "F_RAIN_PHY"),
+            RuntimeStateField("f_rimef_phy", "F_RIMEF_PHY"),
+        ),
+    ),
+    # Registry.EM_COMMON:3018, WSM5 has no graupel.
+    4: StockWrfPhysicsInventory(
+        mp_physics=4, scheme="WSM5", registry_package="wsm5scheme",
+        wrfinput_fields=tuple(f for f in _ICE_MASS if f.registry_name != "qg"),
+        runtime_state_not_wrfinput=_EFFECTIVE_RADII,
+    ),
+    # WRF v4.6.1 Registry.EM_COMMON:3034, wsm7scheme:
+    # moist:qv,qc,qr,qi,qs,qg,qh; state:re_cloud,re_ice,re_snow.
+    24: StockWrfPhysicsInventory(
+        mp_physics=24, scheme="WSM7", registry_package="wsm7scheme",
+        wrfinput_fields=_ICE_MASS + (_moist("qh", "QHAIL"),),
+        runtime_state_not_wrfinput=_EFFECTIVE_RADII,
+    ),
     # Registry.EM_COMMON:3021
     6: StockWrfPhysicsInventory(
         mp_physics=6,
@@ -299,6 +326,16 @@ _INVENTORIES = {
         registry_package="wsm6scheme",
         wrfinput_fields=_ICE_MASS,
         runtime_state_not_wrfinput=_EFFECTIVE_RADII,
+    ),
+    # Registry.EM_COMMON:3022.  wsm6rscheme declares moist:qv,qc,qr,qi,qs,qg
+    # and NOTHING else: no re_cloud/re_ice/re_snow state, because WRF's
+    # wsm6r computes no radius (gpuwm's radii for it are its own diagnosis).
+    106: StockWrfPhysicsInventory(
+        mp_physics=106,
+        scheme="WSM6R",
+        registry_package="wsm6rscheme",
+        wrfinput_fields=_ICE_MASS,
+        runtime_state_not_wrfinput=(),
     ),
     # Registry.EM_COMMON:3024.  Thompson's package includes both qni and qnr.
     8: StockWrfPhysicsInventory(
@@ -489,7 +526,7 @@ def _require_agreement_with_the_registry() -> None:
     Generated from ``_INVENTORIES`` by tools/build_registry.py and held to
     it here, so a package row added without a rebuilt registry -- or a
     registry claiming an inventory this module does not carry -- fails this
-    import.  The four uninventoried schemes are an export-only scope
+    import.  The five uninventoried schemes are an export-only scope
     decision the row itself states (``inventoried: false`` with its
     reason); they are not absences to cite, because the registry publishes
     a row for them too.
@@ -512,6 +549,7 @@ def _require_agreement_with_the_registry() -> None:
         cited_absences={
             0: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
             1: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
+            3: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014); WSM3 joined the runtime with its port, the stock-WRF export contract did not",
             9: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
             16: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
             900: "TEMPO is a WOOF named scheme with no WRF Registry.EM_COMMON package; stock-WRF export does not apply",
@@ -560,3 +598,13 @@ __all__ = [
     "stock_wrf_physics_inventory",
     "supported_stock_wrf_mp_physics",
 ]
+
+# Independent radiation package, WRF 4.6.1 Registry.EM_COMMON:1733-1737,3241.
+# These restart/auxinput fields are independent of the microphysics package.
+USER_AEROSOL_RUNTIME_FIELDS = (
+    RuntimeStateField("aod5503d", "AOD5503D"),
+    RuntimeStateField("aod5502d", "AOD5502D", dimensions=WRFINPUT_2D_DIMS),
+    RuntimeStateField("angexp2d", "ANGEXP2D", dimensions=WRFINPUT_2D_DIMS),
+    RuntimeStateField("aerssa2d", "AERSSA2D", dimensions=WRFINPUT_2D_DIMS),
+    RuntimeStateField("aerasy2d", "AERASY2D", dimensions=WRFINPUT_2D_DIMS),
+)

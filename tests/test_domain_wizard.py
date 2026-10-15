@@ -3621,7 +3621,10 @@ def test_the_cadence_advisory_fires_for_every_offered_suite(profile):
 
     switches = profile_switches(profile)
     lw, sw = radiation_scheme_ids(switches)
-    assert lw > 0 or sw > 0  # the premise above, pinned
+    if lw == sw == 0:
+        assert radiation_cadence_advisory(profile, 4) == []
+        assert radiation_cadence_advisory(profile, 1) == []
+        return
     notes = radiation_cadence_advisory(profile, 4)
     assert len(notes) == 1
     assert f"radt {float(switches['radt']):g}" in notes[0]

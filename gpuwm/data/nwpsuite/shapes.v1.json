@@ -1,0 +1,2490 @@
+{
+  "schema": "gpuwm.nwpsuite.shapes.v1",
+  "shapes": {
+    "global-uniform": {
+      "engine": "gpuwm-hex",
+      "door": "gpuwm-hex forecast",
+      "argv_template": [
+        "gpuwm-hex",
+        "forecast",
+        "--mesh",
+        "{mesh}",
+        "--grid",
+        "{prepared.mesh}",
+        "--static",
+        "{prepared.terrain}",
+        "--init",
+        "{prepared.init}",
+        "--init-source",
+        "{source}",
+        "--start-time",
+        "{start_time}",
+        "--hours",
+        "{lead_hours}",
+        "--out",
+        "{prepared.outdir}"
+      ],
+      "da_methods": [
+        "none",
+        "jedi-3denvar",
+        "jedi-letkf"
+      ],
+      "ensembles": false,
+      "admission_inputs": [
+        "mesh",
+        "cards",
+        "measured:peak_mib_per_card",
+        "hexcore.device_admission"
+      ],
+      "rate_key": [
+        "shape",
+        "grid",
+        "card_model",
+        "cards",
+        "build"
+      ],
+      "events": [
+        "forecast-receipt.json",
+        "fc/history-ready.jsonl"
+      ],
+      "override_transport": "--physics KEY=VALUE",
+      "binding_required": [
+        "prepared.mesh",
+        "prepared.terrain",
+        "prepared.init"
+      ],
+      "multicard_argv_template": [
+        "--samehost-devices",
+        "{device_ids}",
+        "--samehost-layouts",
+        "{prepared.layouts}",
+        "--samehost-part",
+        "{prepared.part}"
+      ],
+      "door_flags": {
+        "fullstep-local-timestep": {
+          "type": "boolean",
+          "action": "boolean_optional",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2953"
+        },
+        "fullstep-lts-mode": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2958",
+          "choices": [
+            "shadow",
+            "active"
+          ]
+        },
+        "fullstep-lts-max-rate": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2959",
+          "choices": [
+            1,
+            2,
+            4,
+            8,
+            16
+          ]
+        },
+        "fullstep-lts-buffer-rings": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2960"
+        },
+        "boundary-fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2961"
+        },
+        "samehost-devices": {
+          "type": "string",
+          "action": "store",
+          "admission": "placement",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2971"
+        },
+        "samehost-layouts": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2974"
+        },
+        "samehost-part": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2976"
+        },
+        "samehost-transport": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2978",
+          "choices": [
+            "auto",
+            "peer",
+            "staged"
+          ]
+        },
+        "samehost-reference": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2980"
+        },
+        "samehost-fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2982"
+        },
+        "mesh": {
+          "type": "string",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2984",
+          "row_key": "mesh",
+          "unit": "identity"
+        },
+        "grid": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2987"
+        },
+        "static": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2990"
+        },
+        "init": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2993"
+        },
+        "init-source": {
+          "type": "string",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2996",
+          "row_key": "ic",
+          "unit": "source"
+        },
+        "invariant": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3000"
+        },
+        "no-invariant": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3006"
+        },
+        "lbc-dir": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3011"
+        },
+        "physics-backend": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3020"
+        },
+        "physics-suite": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3028"
+        },
+        "physics": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3036"
+        },
+        "physics-namelist": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3046"
+        },
+        "orographic-statistics": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3054"
+        },
+        "source-table": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3059"
+        },
+        "start-time": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3066"
+        },
+        "hours": {
+          "type": "number",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3070",
+          "row_key": "cycle.lead",
+          "unit": "h"
+        },
+        "dt": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3073"
+        },
+        "time-integration-order": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3081",
+          "choices": [
+            2,
+            3
+          ]
+        },
+        "acoustic-substeps": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3084"
+        },
+        "radiation-seconds": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3089"
+        },
+        "monotonic": {
+          "type": "boolean",
+          "action": "boolean_optional",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3094"
+        },
+        "cam-coefficient": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3098"
+        },
+        "cam-damping-levels": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3099"
+        },
+        "rayleigh-u": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3100"
+        },
+        "damping-start-m": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3101"
+        },
+        "max-wind": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3102"
+        },
+        "dynamics": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3108"
+        },
+        "history-every-minutes": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3116"
+        },
+        "fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3119"
+        },
+        "out": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3122"
+        },
+        "members": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3125"
+        },
+        "member-buffers": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3127",
+          "choices": [
+            "auto",
+            "nvme"
+          ]
+        },
+        "scratch": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3129"
+        },
+        "receipt": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3133"
+        },
+        "gpuwm-checkout": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3136"
+        },
+        "repo": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3141"
+        },
+        "case-label": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3145"
+        },
+        "horiz-mixing": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3148",
+          "choices": [
+            "2d_smagorinsky",
+            "off"
+          ]
+        },
+        "convection": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3155"
+        },
+        "preset": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3170"
+        },
+        "pbl-cadence": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3182"
+        },
+        "local-timestep": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3197"
+        },
+        "local-timestep-rates": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3206"
+        },
+        "local-timestep-buffer-rings": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3210"
+        },
+        "local-timestep-classing": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3213"
+        },
+        "headroom-mib": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3219"
+        },
+        "device-fixed-mib": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3228"
+        },
+        "device-bytes-per-cell": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3232"
+        },
+        "stop-on-refusal": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3236"
+        },
+        "preflight": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3241"
+        }
+      }
+    },
+    "global-ensemble": {
+      "engine": "gpuwm-hex",
+      "door": "gpuwm-hex ensemble",
+      "argv_template": [
+        "gpuwm-hex",
+        "ensemble",
+        "--manifest",
+        "{prepared.manifest}",
+        "--members",
+        "1",
+        "--resolution-km",
+        "30",
+        "--cycle-hours",
+        "{lead_hours}",
+        "--members-per-card",
+        "1",
+        "--out",
+        "{prepared.outdir}"
+      ],
+      "da_methods": [
+        "none",
+        "jedi-3denvar",
+        "jedi-letkf"
+      ],
+      "ensembles": true,
+      "admission_inputs": [
+        "mesh",
+        "cards",
+        "measured:peak_mib_per_card",
+        "hexcore.device_admission"
+      ],
+      "rate_key": [
+        "shape",
+        "grid",
+        "card_model",
+        "cards",
+        "build"
+      ],
+      "events": [
+        "ensemble-receipt.json",
+        "member forecast.log",
+        "history-ready.jsonl"
+      ],
+      "override_transport": "manifest.forecast_flags",
+      "binding_required": [
+        "prepared.manifest"
+      ],
+      "door_flags": {
+        "manifest": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1109"
+        },
+        "out": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1110"
+        },
+        "members": {
+          "type": "integer",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1111",
+          "row_key": "members",
+          "unit": "count"
+        },
+        "resolution-km": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1112",
+          "choices": [
+            60,
+            30
+          ]
+        },
+        "cycle-hours": {
+          "type": "number",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1113",
+          "row_key": "cycle.lead",
+          "unit": "h"
+        },
+        "members-per-card": {
+          "type": "string",
+          "action": "store",
+          "admission": "placement",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1114"
+        },
+        "analysis": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1115"
+        },
+        "gpuwm-checkout": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1116"
+        },
+        "io-workers": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1117"
+        },
+        "history-every-minutes": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1118"
+        },
+        "export-hours": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1120"
+        },
+        "extract-levels": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1123"
+        },
+        "discard-history": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1125"
+        },
+        "discard-inputs": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1127"
+        },
+        "prepare-ahead": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1130"
+        },
+        "sample-seconds": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1132"
+        },
+        "deadline-seconds": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1133"
+        },
+        "member-seconds-estimate": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1136"
+        },
+        "member-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1138"
+        },
+        "export-dir": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1140"
+        },
+        "extract-grid-deg": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@2e0846b:tree/src/hexcore/ensemble.py:1141"
+        }
+      }
+    },
+    "global-variable": {
+      "engine": "gpuwm-hex",
+      "door": "gpuwm-hex forecast",
+      "argv_template": [
+        "gpuwm-hex",
+        "forecast",
+        "--mesh",
+        "{mesh}",
+        "--grid",
+        "{prepared.mesh}",
+        "--static",
+        "{prepared.terrain}",
+        "--init",
+        "{prepared.init}",
+        "--init-source",
+        "{source}",
+        "--start-time",
+        "{start_time}",
+        "--hours",
+        "{lead_hours}",
+        "--out",
+        "{prepared.outdir}"
+      ],
+      "da_methods": [
+        "none",
+        "jedi-3denvar",
+        "jedi-letkf"
+      ],
+      "ensembles": false,
+      "admission_inputs": [
+        "mesh",
+        "cards",
+        "measured:peak_mib_per_card",
+        "hexcore.device_admission"
+      ],
+      "rate_key": [
+        "shape",
+        "grid",
+        "card_model",
+        "cards",
+        "build"
+      ],
+      "events": [
+        "forecast-receipt.json",
+        "fc/history-ready.jsonl"
+      ],
+      "override_transport": "--physics KEY=VALUE",
+      "binding_required": [
+        "prepared.mesh",
+        "prepared.terrain",
+        "prepared.init"
+      ],
+      "multicard_argv_template": [
+        "--samehost-devices",
+        "{device_ids}",
+        "--samehost-layouts",
+        "{prepared.layouts}",
+        "--samehost-part",
+        "{prepared.part}"
+      ],
+      "door_flags": {
+        "fullstep-local-timestep": {
+          "type": "boolean",
+          "action": "boolean_optional",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2953"
+        },
+        "fullstep-lts-mode": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2958",
+          "choices": [
+            "shadow",
+            "active"
+          ]
+        },
+        "fullstep-lts-max-rate": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2959",
+          "choices": [
+            1,
+            2,
+            4,
+            8,
+            16
+          ]
+        },
+        "fullstep-lts-buffer-rings": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2960"
+        },
+        "boundary-fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2961"
+        },
+        "samehost-devices": {
+          "type": "string",
+          "action": "store",
+          "admission": "placement",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2971"
+        },
+        "samehost-layouts": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2974"
+        },
+        "samehost-part": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2976"
+        },
+        "samehost-transport": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2978",
+          "choices": [
+            "auto",
+            "peer",
+            "staged"
+          ]
+        },
+        "samehost-reference": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2980"
+        },
+        "samehost-fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2982"
+        },
+        "mesh": {
+          "type": "string",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2984",
+          "row_key": "mesh",
+          "unit": "identity"
+        },
+        "grid": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2987"
+        },
+        "static": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2990"
+        },
+        "init": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2993"
+        },
+        "init-source": {
+          "type": "string",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2996",
+          "row_key": "ic",
+          "unit": "source"
+        },
+        "invariant": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3000"
+        },
+        "no-invariant": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3006"
+        },
+        "lbc-dir": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3011"
+        },
+        "physics-backend": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3020"
+        },
+        "physics-suite": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3028"
+        },
+        "physics": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3036"
+        },
+        "physics-namelist": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3046"
+        },
+        "orographic-statistics": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3054"
+        },
+        "source-table": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3059"
+        },
+        "start-time": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3066"
+        },
+        "hours": {
+          "type": "number",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3070",
+          "row_key": "cycle.lead",
+          "unit": "h"
+        },
+        "dt": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3073"
+        },
+        "time-integration-order": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3081",
+          "choices": [
+            2,
+            3
+          ]
+        },
+        "acoustic-substeps": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3084"
+        },
+        "radiation-seconds": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3089"
+        },
+        "monotonic": {
+          "type": "boolean",
+          "action": "boolean_optional",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3094"
+        },
+        "cam-coefficient": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3098"
+        },
+        "cam-damping-levels": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3099"
+        },
+        "rayleigh-u": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3100"
+        },
+        "damping-start-m": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3101"
+        },
+        "max-wind": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3102"
+        },
+        "dynamics": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3108"
+        },
+        "history-every-minutes": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3116"
+        },
+        "fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3119"
+        },
+        "out": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3122"
+        },
+        "members": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3125"
+        },
+        "member-buffers": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3127",
+          "choices": [
+            "auto",
+            "nvme"
+          ]
+        },
+        "scratch": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3129"
+        },
+        "receipt": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3133"
+        },
+        "gpuwm-checkout": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3136"
+        },
+        "repo": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3141"
+        },
+        "case-label": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3145"
+        },
+        "horiz-mixing": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3148",
+          "choices": [
+            "2d_smagorinsky",
+            "off"
+          ]
+        },
+        "convection": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3155"
+        },
+        "preset": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3170"
+        },
+        "pbl-cadence": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3182"
+        },
+        "local-timestep": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3197"
+        },
+        "local-timestep-rates": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3206"
+        },
+        "local-timestep-buffer-rings": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3210"
+        },
+        "local-timestep-classing": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3213"
+        },
+        "headroom-mib": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3219"
+        },
+        "device-fixed-mib": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3228"
+        },
+        "device-bytes-per-cell": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3232"
+        },
+        "stop-on-refusal": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3236"
+        },
+        "preflight": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3241"
+        }
+      }
+    },
+    "regional-patch": {
+      "engine": "gpuwm-hex",
+      "door": "gpuwm-hex forecast",
+      "argv_template": [
+        "gpuwm-hex",
+        "forecast",
+        "--mesh",
+        "{mesh}",
+        "--grid",
+        "{prepared.mesh}",
+        "--static",
+        "{prepared.terrain}",
+        "--init",
+        "{prepared.init}",
+        "--init-source",
+        "{source}",
+        "--start-time",
+        "{start_time}",
+        "--hours",
+        "{lead_hours}",
+        "--out",
+        "{prepared.outdir}"
+      ],
+      "da_methods": [
+        "none",
+        "jedi-3denvar",
+        "jedi-letkf"
+      ],
+      "ensembles": false,
+      "admission_inputs": [
+        "mesh",
+        "cards",
+        "measured:peak_mib_per_card",
+        "hexcore.device_admission"
+      ],
+      "rate_key": [
+        "shape",
+        "grid",
+        "card_model",
+        "cards",
+        "build"
+      ],
+      "events": [
+        "forecast-receipt.json",
+        "fc/history-ready.jsonl"
+      ],
+      "override_transport": "--physics KEY=VALUE",
+      "binding_required": [
+        "prepared.mesh",
+        "prepared.terrain",
+        "prepared.init"
+      ],
+      "multicard_argv_template": [
+        "--samehost-devices",
+        "{device_ids}",
+        "--samehost-layouts",
+        "{prepared.layouts}",
+        "--samehost-part",
+        "{prepared.part}"
+      ],
+      "door_flags": {
+        "fullstep-local-timestep": {
+          "type": "boolean",
+          "action": "boolean_optional",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2953"
+        },
+        "fullstep-lts-mode": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2958",
+          "choices": [
+            "shadow",
+            "active"
+          ]
+        },
+        "fullstep-lts-max-rate": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2959",
+          "choices": [
+            1,
+            2,
+            4,
+            8,
+            16
+          ]
+        },
+        "fullstep-lts-buffer-rings": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2960"
+        },
+        "boundary-fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2961"
+        },
+        "samehost-devices": {
+          "type": "string",
+          "action": "store",
+          "admission": "placement",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2971"
+        },
+        "samehost-layouts": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2974"
+        },
+        "samehost-part": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2976"
+        },
+        "samehost-transport": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2978",
+          "choices": [
+            "auto",
+            "peer",
+            "staged"
+          ]
+        },
+        "samehost-reference": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2980"
+        },
+        "samehost-fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2982"
+        },
+        "mesh": {
+          "type": "string",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2984",
+          "row_key": "mesh",
+          "unit": "identity"
+        },
+        "grid": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2987"
+        },
+        "static": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2990"
+        },
+        "init": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2993"
+        },
+        "init-source": {
+          "type": "string",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:2996",
+          "row_key": "ic",
+          "unit": "source"
+        },
+        "invariant": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3000"
+        },
+        "no-invariant": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3006"
+        },
+        "lbc-dir": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3011"
+        },
+        "physics-backend": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3020"
+        },
+        "physics-suite": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3028"
+        },
+        "physics": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3036"
+        },
+        "physics-namelist": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3046"
+        },
+        "orographic-statistics": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3054"
+        },
+        "source-table": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3059"
+        },
+        "start-time": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3066"
+        },
+        "hours": {
+          "type": "number",
+          "action": "store",
+          "admission": "row",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3070",
+          "row_key": "cycle.lead",
+          "unit": "h"
+        },
+        "dt": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3073"
+        },
+        "time-integration-order": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3081",
+          "choices": [
+            2,
+            3
+          ]
+        },
+        "acoustic-substeps": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3084"
+        },
+        "radiation-seconds": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3089"
+        },
+        "monotonic": {
+          "type": "boolean",
+          "action": "boolean_optional",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3094"
+        },
+        "cam-coefficient": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3098"
+        },
+        "cam-damping-levels": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3099"
+        },
+        "rayleigh-u": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3100"
+        },
+        "damping-start-m": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3101"
+        },
+        "max-wind": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3102"
+        },
+        "dynamics": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3108"
+        },
+        "history-every-minutes": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3116"
+        },
+        "fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3119"
+        },
+        "out": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3122"
+        },
+        "members": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3125"
+        },
+        "member-buffers": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3127",
+          "choices": [
+            "auto",
+            "nvme"
+          ]
+        },
+        "scratch": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3129"
+        },
+        "receipt": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3133"
+        },
+        "gpuwm-checkout": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3136"
+        },
+        "repo": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3141"
+        },
+        "case-label": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3145"
+        },
+        "horiz-mixing": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3148",
+          "choices": [
+            "2d_smagorinsky",
+            "off"
+          ]
+        },
+        "convection": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3155"
+        },
+        "preset": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3170"
+        },
+        "pbl-cadence": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3182"
+        },
+        "local-timestep": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3197"
+        },
+        "local-timestep-rates": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3206"
+        },
+        "local-timestep-buffer-rings": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3210"
+        },
+        "local-timestep-classing": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3213"
+        },
+        "headroom-mib": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3219"
+        },
+        "device-fixed-mib": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3228"
+        },
+        "device-bytes-per-cell": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3232"
+        },
+        "stop-on-refusal": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3236"
+        },
+        "preflight": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "hex@14787f7:tree/src/hexcore/forecast_door.py:3241"
+        }
+      }
+    },
+    "regional-lam-mpas": {
+      "engine": "gpuwm-hex",
+      "door": "gpuwm preset run",
+      "argv_template": [
+        "gpuwm",
+        "preset",
+        "run",
+        "{preset}",
+        "--mesh",
+        "{mesh}",
+        "--grid",
+        "{prepared.mesh}",
+        "--static",
+        "{prepared.terrain}",
+        "--init",
+        "{prepared.init}",
+        "--lbc-dir",
+        "{prepared.lbc}",
+        "--invariant",
+        "{prepared.invariant}",
+        "--start-time",
+        "{start_time}",
+        "--init-source",
+        "{source}",
+        "--hours",
+        "{lead_hours}",
+        "--card",
+        "{device_ids}",
+        "--out",
+        "{prepared.outdir}"
+      ],
+      "da_methods": [
+        "none",
+        "jedi-3denvar",
+        "jedi-letkf"
+      ],
+      "ensembles": false,
+      "admission_inputs": [
+        "mesh",
+        "cards",
+        "measured:peak_mib_per_card",
+        "hexcore.device_admission"
+      ],
+      "rate_key": [
+        "shape",
+        "grid",
+        "card_model",
+        "cards",
+        "build"
+      ],
+      "events": [
+        "forecast-receipt.json",
+        "fc/history-ready.jsonl"
+      ],
+      "override_transport": "unsupported",
+      "binding_required": [
+        "prepared.mesh",
+        "prepared.terrain",
+        "prepared.init"
+      ],
+      "door_flags": {
+        "experimental": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:213"
+        },
+        "mesh": {
+          "type": "string",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/model_presets.py:215",
+          "row_key": "mesh",
+          "unit": "identity"
+        },
+        "start-time": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:218"
+        },
+        "init-source": {
+          "type": "string",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/model_presets.py:219",
+          "row_key": "ic",
+          "unit": "source"
+        },
+        "hours": {
+          "type": "number",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/model_presets.py:220",
+          "row_key": "cycle.lead",
+          "unit": "h"
+        },
+        "history-every-minutes": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:221"
+        },
+        "card": {
+          "type": "string",
+          "action": "store",
+          "admission": "placement",
+          "source": "gpuwm/model_presets.py:222"
+        },
+        "fingerprint-every": {
+          "type": "integer",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:223"
+        },
+        "grid": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:227"
+        },
+        "static": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:227"
+        },
+        "init": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:227"
+        },
+        "lbc-dir": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:227"
+        },
+        "invariant": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/model_presets.py:227"
+        },
+        "out": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/model_presets.py:227"
+        }
+      }
+    },
+    "regional-cam": {
+      "engine": "gpuwm",
+      "door": "gpuwm run-plan",
+      "argv_template": [
+        "gpuwm",
+        "run-plan",
+        "{run_plan}"
+      ],
+      "da_methods": [
+        "none",
+        "local-da"
+      ],
+      "ensembles": false,
+      "admission_inputs": [
+        "recipe",
+        "cards",
+        "cpu:gpuwm.core.devices_memory.estimate_devices"
+      ],
+      "rate_key": [
+        "shape",
+        "grid",
+        "card_model",
+        "cards",
+        "build"
+      ],
+      "events": [
+        "events.jsonl",
+        "report.json",
+        "run-manifest.json"
+      ],
+      "override_transport": "derived_config",
+      "binding_required": [
+        "run_plan"
+      ],
+      "alternate_argv_template": [
+        "gpuwm",
+        "go",
+        "{derived_config}",
+        "--cycle",
+        "{cycle}",
+        "--devices",
+        "{cards}"
+      ],
+      "door_flags": {
+        "stage-only": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6618"
+        },
+        "warm-kernels": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6620"
+        },
+        "static-cache-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6622"
+        },
+        "static-cache-key": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6624"
+        },
+        "readiness-fold": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6626"
+        },
+        "live-products-width": {
+          "type": "integer",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6628"
+        },
+        "outdir": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6633"
+        },
+        "restart": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6641"
+        },
+        "prepare-only": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6646"
+        },
+        "tiles": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6648"
+        },
+        "prepared-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6657"
+        },
+        "wps-namelist": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6660"
+        },
+        "data-dir": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6663"
+        },
+        "geog-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6667"
+        },
+        "transport": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6671"
+        },
+        "cycle": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6676"
+        },
+        "whole-cycle": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6684"
+        },
+        "late-after-minutes": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6689"
+        },
+        "readiness": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6695"
+        },
+        "no-probe": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6699"
+        },
+        "supplement": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6702"
+        },
+        "products": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6713"
+        },
+        "no-verify-visuals": {
+          "type": "boolean",
+          "action": "store_false",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6721"
+        },
+        "grib2": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6723"
+        },
+        "section": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6731"
+        },
+        "keep-checkpoints": {
+          "type": "integer",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6742"
+        },
+        "dry-run": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6748"
+        },
+        "devices": {
+          "type": "integer",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/go_cli.py:6751",
+          "row_key": "cards",
+          "unit": "count"
+        },
+        "no-memory-gate": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6753"
+        },
+        "recipe": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:125"
+        },
+        "trajectories": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:133"
+        },
+        "restart-roster": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:140"
+        },
+        "members": {
+          "type": "integer",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/ensemble/door.py:142",
+          "row_key": "members",
+          "unit": "count"
+        },
+        "keep-member-files": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "passthrough",
+          "source": "gpuwm/ensemble/door.py:144"
+        }
+      }
+    },
+    "regional-cam-ensemble": {
+      "engine": "gpuwm",
+      "door": "gpuwm ensemble",
+      "argv_template": [
+        "gpuwm",
+        "run-plan",
+        "{run_plan}"
+      ],
+      "da_methods": [
+        "none",
+        "local-da"
+      ],
+      "ensembles": true,
+      "admission_inputs": [
+        "recipe",
+        "cards",
+        "cpu:gpuwm.core.devices_memory.estimate_devices"
+      ],
+      "rate_key": [
+        "shape",
+        "grid",
+        "card_model",
+        "cards",
+        "build"
+      ],
+      "events": [
+        "events.jsonl",
+        "report.json",
+        "run-manifest.json",
+        "ensemble-recipe.json"
+      ],
+      "override_transport": "derived_config",
+      "binding_required": [
+        "run_plan"
+      ],
+      "alternate_argv_template": [
+        "gpuwm",
+        "go",
+        "{derived_config}",
+        "--cycle",
+        "{cycle}",
+        "--members",
+        "{members}",
+        "--recipe",
+        "{perturb.recipe}",
+        "--devices",
+        "{cards}"
+      ],
+      "door_flags": {
+        "stage-only": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6618"
+        },
+        "warm-kernels": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6620"
+        },
+        "static-cache-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6622"
+        },
+        "static-cache-key": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6624"
+        },
+        "readiness-fold": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6626"
+        },
+        "live-products-width": {
+          "type": "integer",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6628"
+        },
+        "outdir": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6633"
+        },
+        "restart": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6641"
+        },
+        "prepare-only": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6646"
+        },
+        "tiles": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6648"
+        },
+        "prepared-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6657"
+        },
+        "wps-namelist": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6660"
+        },
+        "data-dir": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6663"
+        },
+        "geog-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6667"
+        },
+        "transport": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6671"
+        },
+        "cycle": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6676"
+        },
+        "whole-cycle": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6684"
+        },
+        "late-after-minutes": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6689"
+        },
+        "readiness": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6695"
+        },
+        "no-probe": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6699"
+        },
+        "supplement": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6702"
+        },
+        "products": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6713"
+        },
+        "no-verify-visuals": {
+          "type": "boolean",
+          "action": "store_false",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6721"
+        },
+        "grib2": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6723"
+        },
+        "section": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6731"
+        },
+        "keep-checkpoints": {
+          "type": "integer",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6742"
+        },
+        "dry-run": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6748"
+        },
+        "devices": {
+          "type": "integer",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/go_cli.py:6751",
+          "row_key": "cards_per_member",
+          "unit": "count"
+        },
+        "no-memory-gate": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6753"
+        },
+        "recipe": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:125"
+        },
+        "trajectories": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:133"
+        },
+        "restart-roster": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:140"
+        },
+        "members": {
+          "type": "integer",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/ensemble/door.py:142",
+          "row_key": "members",
+          "unit": "count"
+        },
+        "keep-member-files": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "passthrough",
+          "source": "gpuwm/ensemble/door.py:144"
+        }
+      }
+    },
+    "regional-nest": {
+      "engine": "gpuwm",
+      "door": "gpuwm run-plan",
+      "argv_template": [
+        "gpuwm",
+        "run-plan",
+        "{run_plan}"
+      ],
+      "da_methods": [
+        "none",
+        "local-da"
+      ],
+      "ensembles": false,
+      "admission_inputs": [
+        "recipe",
+        "cards",
+        "cpu:gpuwm.core.devices_memory.estimate_devices"
+      ],
+      "rate_key": [
+        "shape",
+        "grid",
+        "card_model",
+        "cards",
+        "build"
+      ],
+      "events": [
+        "events.jsonl",
+        "report.json",
+        "run-manifest.json"
+      ],
+      "override_transport": "derived_config",
+      "binding_required": [
+        "run_plan"
+      ],
+      "availability": "memory and rates must be calibrated before admission",
+      "door_flags": {
+        "stage-only": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6618"
+        },
+        "warm-kernels": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6620"
+        },
+        "static-cache-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6622"
+        },
+        "static-cache-key": {
+          "type": "string",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6624"
+        },
+        "readiness-fold": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6626"
+        },
+        "live-products-width": {
+          "type": "integer",
+          "action": "store",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6628"
+        },
+        "outdir": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6633"
+        },
+        "restart": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6641"
+        },
+        "prepare-only": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6646"
+        },
+        "tiles": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6648"
+        },
+        "prepared-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6657"
+        },
+        "wps-namelist": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6660"
+        },
+        "data-dir": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6663"
+        },
+        "geog-root": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6667"
+        },
+        "transport": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6671"
+        },
+        "cycle": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6676"
+        },
+        "whole-cycle": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6684"
+        },
+        "late-after-minutes": {
+          "type": "number",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6689"
+        },
+        "readiness": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6695"
+        },
+        "no-probe": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6699"
+        },
+        "supplement": {
+          "type": "string",
+          "action": "append",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6702"
+        },
+        "products": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6713"
+        },
+        "no-verify-visuals": {
+          "type": "boolean",
+          "action": "store_false",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6721"
+        },
+        "grib2": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6723"
+        },
+        "section": {
+          "type": "string",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6731"
+        },
+        "keep-checkpoints": {
+          "type": "integer",
+          "action": "store",
+          "admission": "passthrough",
+          "source": "gpuwm/go_cli.py:6742"
+        },
+        "dry-run": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "rate",
+          "source": "gpuwm/go_cli.py:6748"
+        },
+        "devices": {
+          "type": "integer",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/go_cli.py:6751",
+          "row_key": "cards",
+          "unit": "count"
+        },
+        "no-memory-gate": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "refuse",
+          "source": "gpuwm/go_cli.py:6753"
+        },
+        "recipe": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:125"
+        },
+        "trajectories": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:133"
+        },
+        "restart-roster": {
+          "type": "string",
+          "action": "store",
+          "admission": "rate",
+          "source": "gpuwm/ensemble/door.py:140"
+        },
+        "members": {
+          "type": "integer",
+          "action": "store",
+          "admission": "row",
+          "source": "gpuwm/ensemble/door.py:142",
+          "row_key": "members",
+          "unit": "count"
+        },
+        "keep-member-files": {
+          "type": "boolean",
+          "action": "store_true",
+          "admission": "passthrough",
+          "source": "gpuwm/ensemble/door.py:144"
+        }
+      }
+    }
+  }
+}

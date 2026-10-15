@@ -287,6 +287,9 @@
                                              }
                                          ],
                         "runtime":  {
+                                        "runner_module": "hexcore.drivers.forecast_receipt",
+                                        "prepare_module": "hexcore.preset_prepare",
+                                        "source_profile": "rrfs-v2",
                                         "physics_suite":  "rrfs_v2_tempo_candidate",
                                         "experimental":  true,
                                         "forecast_options":  {

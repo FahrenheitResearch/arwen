@@ -9,7 +9,7 @@ models (UCM, BEP, BEP+BEM) read their tables through that one object.
 Precision is WRF's ``-r4`` build: every table value is the binary32 nearest
 the decimal text (gfortran's list-directed READ rounds once, correctly), and
 every derived value (``HGT_TBL``, ``ZDC_TBL``, ``Z0C_TBL``, ``SVF_TBL`` ...) is
-evaluated statement by statement in binary32 with glibc 2.39's ``expf`` and
+evaluated statement by statement in binary32 through WOOF's own ``expf`` and
 ``powf`` (:mod:`gpuwm.core.noahmp_libm`), because the Fortran column oracle
 the kernels are proven against was compiled that way.
 
@@ -43,6 +43,23 @@ URBAN_TABLE_SHA256 = MappingProxyType({
     "URBPARM_LCZ.TBL":
         "ab08e3f79d2f5d9d329aa2c953de4e7d94a71741baa0a50f1ecc145c6f81d9ab",
 })
+
+# Table generations are separate from runtime canopy implementations.
+# WRF v4.6.1, v4.7.0 and v4.7.1 have the same two table byte streams.
+URBAN_TABLE_GENERATIONS = MappingProxyType({
+    "wrf_461": URBAN_TABLE_SHA256,
+    "wrf_470": URBAN_TABLE_SHA256,
+    "wrf_471": URBAN_TABLE_SHA256,
+    "wrf_480": MappingProxyType({
+        "URBPARM.TBL":
+            "16db7a3ea930f28b02af32306a2a4261fdf3e3377f4be6e9ba4605a4b8269847",
+        "URBPARM_LCZ.TBL":
+            "89c396ae52071d6cd1b3ef729ae61799dd12c68e851b06e1dc361a7ea0183019",
+    }),
+})
+_NBS_ROWS = ("FVG", "RTREE", "HTREE", "DTREE", "LAI_TREE", "LAI_VEG",
+             "Z0VG", "Z0HVG", "EPSVG", "EPST", "ALBVG", "ALBT")
+_NBS_SWITCHES = {"TREEOPTION": "TREEOPTION", "TTscheme": "TTscheme"}
 
 #: module_sf_urban.F:70-72.
 MAXDIRS = 3
@@ -194,6 +211,7 @@ class UrbanParams:
     icate: int
     sha256: str
     values: Mapping[str, np.ndarray] = field(repr=False)
+    generation: str = "wrf_471"
 
     def __getattr__(self, name: str):
         values = object.__getattribute__(self, "values")
@@ -218,7 +236,8 @@ def urban_table_path(use_wudapt_lcz: int, tbl_dir: Path | None = None) -> Path:
 
 def load_urban_params(sf_urban_physics: int, use_wudapt_lcz: int = 0, *,
                       tbl_dir: Path | None = None,
-                      verify_sha256: bool = True) -> UrbanParams:
+                      verify_sha256: bool = True,
+                      generation: str = "wrf_471") -> UrbanParams:
     """``urban_param_init`` (module_sf_urban.F:2043-2551), transcribed.
 
     ``sf_urban_physics`` matters: option 1 rederives ``Z0R_TBL`` from the
@@ -226,6 +245,16 @@ def load_urban_params(sf_urban_physics: int, use_wudapt_lcz: int = 0, *,
     ``slucm_distributed_drag`` is not an argument because gpuwm refuses it at
     the namelist door (its arm is not transcribed).
     """
+    if generation not in URBAN_TABLE_GENERATIONS:
+        raise UrbanTableError(f"unknown urban table generation {generation!r}; "
+                              f"choose {tuple(URBAN_TABLE_GENERATIONS)}")
+    if generation == "wrf_480" and tbl_dir is None:
+        tbl_dir = URBAN_TABLE_DIR / "wrf480"
+    nbs = generation == "wrf_480"
+    pins = URBAN_TABLE_GENERATIONS[generation]
+    row_keys = {**_ROW_KEYS, **({k: k for k in _NBS_ROWS} if nbs else {})}
+    scalar_ints = {**_SCALAR_INTS, **(_NBS_SWITCHES if nbs else {})}
+    cap_keys = (*_CAP_KEYS, "CAPVG") if nbs else _CAP_KEYS
     option = int(sf_urban_physics)
     if option not in (1, 2, 3):
         raise ValueError(f"load_urban_params: sf_urban_physics={option} runs "
@@ -233,11 +262,11 @@ def load_urban_params(sf_urban_physics: int, use_wudapt_lcz: int = 0, *,
     path = urban_table_path(use_wudapt_lcz, tbl_dir)
     raw = path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
-    if verify_sha256 and digest != URBAN_TABLE_SHA256[path.name]:
+    if verify_sha256 and digest != pins[path.name]:
         raise UrbanTableError(
-            f"{path} has SHA-256 {digest}, not the vendored WRF v4.7.1 "
-            f"table's {URBAN_TABLE_SHA256[path.name]}: the urban oracle "
-            "fixtures were built from the vendored bytes, so another table is "
+            f"{path} has SHA-256 {digest}, not the {generation} "
+            f"table's {pins[path.name]}: the urban oracle "
+            "fixtures were built from the pinned bytes, so another table is "
             "an unproven model")
     lines = raw.decode("ascii").split("\n")
     v: dict[str, np.ndarray] = {}
@@ -288,9 +317,9 @@ def load_urban_params(sf_urban_physics: int, use_wudapt_lcz: int = 0, *,
             roof_width = _read_reals(rest, icate, name)
         elif name == "ROAD_WIDTH":
             road_width = _read_reals(rest, icate, name)
-        elif name in _ROW_KEYS:
-            v[f"{_ROW_KEYS[name]}_TBL"] = _read_reals(rest, icate, name)
-        elif name in _CAP_KEYS:
+        elif name in row_keys:
+            v[f"{row_keys[name]}_TBL"] = _read_reals(rest, icate, name)
+        elif name in cap_keys:
             row = _read_reals(rest, icate, name)
             v[f"{name}_TBL"] = np.array(
                 [f32(f32(float(x) * _F32_ONE_OVER_CAL) * f32(1.0e-6))
@@ -306,8 +335,8 @@ def load_urban_params(sf_urban_physics: int, use_wudapt_lcz: int = 0, *,
             row = _read_reals(rest, URBAN_LAYERS, name)
             dz[_LAYER_KEYS[name]] = np.array(
                 [f32(float(x) * f32(100.0)) for x in row], dtype=np.float32)
-        elif name in _SCALAR_INTS:
-            v[_SCALAR_INTS[name]] = np.array(_read_ints(rest, 1, name)[0],
+        elif name in scalar_ints:
+            v[scalar_ints[name]] = np.array(_read_ints(rest, 1, name)[0],
                                              dtype=np.int32)
         elif name in _SCALAR_REALS:
             v[_SCALAR_REALS[name]] = np.array(_read_reals(rest, 1, name)[0],
@@ -379,12 +408,36 @@ def load_urban_params(sf_urban_physics: int, use_wudapt_lcz: int = 0, *,
         if name not in dz:
             raise UrbanTableError(f"URBPARM table lacks D{name}")
         v[name] = dz[name]
-    _derive(v, icate, roof_width, road_width, option)
+    if nbs:
+        required = [*(f"{name}_TBL" for name in (*_NBS_ROWS, "CAPVG")),
+                    *_NBS_SWITCHES.values()]
+        missing = [name for name in required if name not in v]
+        if missing:
+            raise UrbanTableError(
+                f"wrf_480 table lacks {missing}: read_param would read "
+                "uninitialized nature-based solution table state")
+        for name in _NBS_SWITCHES.values():
+            if int(v[name]) not in (0, 1):
+                raise UrbanTableError(
+                    f"{name} must be 0 or 1: the WRF tree solver has no "
+                    f"temperature or canopy arm for {int(v[name])}")
+    _derive(v, icate, roof_width, road_width, option, nbs=nbs)
+    if nbs:
+        if int(v["TREEOPTION"]) == 1:
+            for lc in range(icate):
+                # VF_TREE_ANALYTICAL:5431-5434. Equality is allowed.
+                if (f32(2.0 * float(v["RTREE_TBL"][lc])) > v["RW_TBL"][lc]
+                        or f32(float(v["HTREE_TBL"][lc])
+                               + float(v["RTREE_TBL"][lc])) > v["HGT_TBL"][lc]):
+                    raise UrbanTableError(
+                        f"category {lc+1}: Invalid tree geometry in "
+                        "VF_TREE_ANALYTICAL: 2*rt must be <= W and ht + rt <= H")
     _refuse_untranscribed_arms(v, path)
     frozen = {name: _frozen(value) for name, value in v.items()}
     return UrbanParams(table=path.name, sf_urban_physics=option,
                        use_wudapt_lcz=int(use_wudapt_lcz), icate=icate,
-                       sha256=digest, values=MappingProxyType(frozen))
+                       sha256=digest, values=MappingProxyType(frozen),
+                       generation=generation)
 
 
 def _frozen(value: np.ndarray) -> np.ndarray:
@@ -393,7 +446,8 @@ def _frozen(value: np.ndarray) -> np.ndarray:
     return array
 
 
-def _derive(v: dict, icate: int, roof_width, road_width, option: int) -> None:
+def _derive(v: dict, icate: int, roof_width, road_width, option: int, *,
+            nbs: bool = False) -> None:
     """module_sf_urban.F:2463-2546: the values urban_param_init computes."""
     cd = f32(1.2)
     alpha_macd = f32(4.43)
@@ -409,6 +463,9 @@ def _derive(v: dict, icate: int, roof_width, road_width, option: int) -> None:
                  "Z0HC", "SVF"):
         v[f"{name}_TBL"] = v[f"{name}_TBL"].copy()
     z0r = v["Z0R_TBL"].copy()
+    if nbs:
+        v["RTREE_M_TBL"] = v["RTREE_TBL"].copy()
+        v["RW_M_TBL"] = road_width.copy()
     for lc in range(icate):
         zr = float(v["ZR_TBL"][lc])
         road = float(road_width[lc])
@@ -419,6 +476,10 @@ def _derive(v: dict, icate: int, roof_width, road_width, option: int) -> None:
         rw = f32(1.0 - r)
         v["HGT_TBL"][lc] = hgt
         v["R_TBL"][lc] = r
+        if nbs:
+            # module_sf_urban.F:3451-3459, inside the source category loop.
+            for name in ("RTREE", "DTREE", "HTREE"):
+                v[f"{name}_TBL"][lc] = f32(float(v[f"{name}_TBL"][lc]) / width)
         v["RW_TBL"][lc] = rw
         v["BETR_TBL"][lc] = 0.0
         v["BETB_TBL"][lc] = 0.0
@@ -566,7 +627,8 @@ def lcz_categories(mminlu: str = "MODIFIED_IGBP_MODIS_NOAH", *,
     return urban_category_set(mminlu, isurban=-1, tbl_dir=tbl_dir).lcz
 
 
-def ucm_canopy_heights(use_wudapt_lcz: int) -> dict[int, float]:
+def ucm_canopy_heights(use_wudapt_lcz: int, *, generation: str = "wrf_471",
+                      tbl_dir=None) -> dict[int, float]:
     """``ZDC + Z0C + 2`` m per urban class of the table the UCM would read.
 
     ``module_sf_urban.F:825`` stops the model (``FATAL_ERROR``) on any
@@ -577,7 +639,8 @@ def ucm_canopy_heights(use_wudapt_lcz: int) -> dict[int, float]:
     class needs is known before any cell is read.  Summed in float32 in
     WRF's order.  Keys are urban types (``utype``, 1-based).
     """
-    params = load_urban_params(1, int(use_wudapt_lcz))
+    params = load_urban_params(1, int(use_wudapt_lcz),
+                               generation=generation, tbl_dir=tbl_dir)
     zdc, z0c = params.values["ZDC_TBL"], params.values["Z0C_TBL"]
     return {utype + 1: float(f32(f32(zdc[utype] + z0c[utype]) + f32(2.0)))
             for utype in range(params.icate)}
@@ -585,7 +648,8 @@ def ucm_canopy_heights(use_wudapt_lcz: int) -> dict[int, float]:
 
 __all__ = [
     "MAXDIRS", "MAXHGTS", "URBAN_LAYERS", "URBAN_TABLE_DIR",
-    "URBAN_TABLE_SHA256", "UNTRANSCRIBED_TABLE_ARMS", "UrbanCategories",
+    "URBAN_TABLE_SHA256", "URBAN_TABLE_GENERATIONS",
+    "UNTRANSCRIBED_TABLE_ARMS", "UrbanCategories",
     "UrbanParams", "UrbanTableError", "decimal_to_f32", "lcz_categories",
     "load_urban_params",
     "ucm_canopy_heights", "urban_category_set", "urban_table_path",

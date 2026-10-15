@@ -105,12 +105,37 @@ def test_the_imported_operational_hrrr_namelist_prepares_on_this_route(
     wps = wps.replace("'modis_15s+modis_fpar+modis_lai+30s'",
                       "'modis_lai+30s'")
     (tmp_path / "namelist.wps").write_text(wps, encoding="utf-8")
+    # Since 2026-10-12 the namelist's HRRR-Smoke chemistry is no longer
+    # imported to run with none (tests/operational_namelist_edits.py).  With
+    # the smoke mapped (its four uncarried settings changed), the import is a
+    # chemistry configuration, and THIS route cannot carry one: the pair it
+    # emits has no &chem group, so it refuses by name rather than prepare a
+    # tree its own namelists would read without the smoke.
+    from operational_namelist_edits import importable, without_smoke
+    source = (OPERATIONAL / "hrrr_wrf.nl").read_text(encoding="utf-8")
+    smoke = tmp_path / "smoke"
+    smoke.mkdir()
+    (smoke / "hrrr_wrf.nl").write_text(importable(source), encoding="utf-8")
+    smoke_text, _ = import_namelists(tmp_path / "namelist.wps",
+                                     smoke / "hrrr_wrf.nl", name="d04")
+    smoke_config = smoke / "d04.toml"
+    smoke_config.write_text(smoke_text, encoding="utf-8")
+    smoke_exp = build_experiment(tomllib.loads(smoke_text),
+                                 source=str(smoke_config))
+    assert smoke_exp.root.run.chem_sets == "smoke"
+    with pytest.raises(HrrrRouteInputError, match="chem_sets: config 'smoke'"):
+        write_hrrr_route_inputs(smoke_config, smoke_exp, wps_text=wps,
+                                writer=_write)
+    # The route's acceptance row is the meteorology: chemistry off.
+    (tmp_path / "hrrr_wrf.nl").write_text(without_smoke(source),
+                                          encoding="utf-8")
     text, _ = import_namelists(tmp_path / "namelist.wps",
-                               OPERATIONAL / "hrrr_wrf.nl", name="d04")
+                               tmp_path / "hrrr_wrf.nl", name="d04")
     config = tmp_path / "d04.toml"
     config.write_text(text, encoding="utf-8")
     exp = build_experiment(tomllib.loads(text), source=str(config))
     assert exp.root.run.cycling is True
+    assert exp.root.run.chem_sets == ""
     write_hrrr_route_inputs(config, exp, wps_text=wps, writer=_write)
     paths = route_input_paths(config)
     assert _replay(paths).root.run.cycling is True

@@ -39,6 +39,7 @@ def test_native_host_matches_each_fortran_row(twin, name):
     outputs, after, codes = twin.run_columns(
         port_params(table, switches), _inputs(rows, selected),
         _state_from(rows, selected, "_in"),
+        generation="wrf_471",
     )
     assert not np.any(codes), np.unique(codes)
     differences = ulp_table(_flatten(outputs, after), _reference(rows, selected))
@@ -54,7 +55,8 @@ def test_native_host_carries_all_six_fortran_steps(twin, name):
     state = _state_from(rows, first, "_in")
     for step in steps:
         selected = rows["step"] == step
-        outputs, state, codes = twin.run_columns(params, _inputs(rows, selected), state)
+        outputs, state, codes = twin.run_columns(params, _inputs(rows, selected), state,
+                                                 generation="wrf_471")
         assert not np.any(codes), np.unique(codes)
         differences = ulp_table(_flatten(outputs, state), _reference(rows, selected))
         assert not any(differences.values()), differences

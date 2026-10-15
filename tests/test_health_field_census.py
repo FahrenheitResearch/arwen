@@ -596,7 +596,19 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     its Noah-MP slice adds 120 measured rows and 80 WRF-scheme refusals.
     The original non-UW slices retain every historical count below.
     """
-    report = four_domain_census
+    full = four_domain_census
+    # Preserve every historical admission/refusal pin separately. The new
+    # family row must add exactly WSM6's configuration cells, with its own
+    # state inventory, rather than absorbing unrelated admission changes.
+    keys = ("bl_pbl_physics", "sf_sfclay_physics", "sf_surface_physics", "km_opt", "cu_physics")
+    cells = lambda mp: {tuple(row[key] for key in keys) for row in full["rows"] if row["mp_physics"] == mp}
+    assert cells(24) == cells(6) and cells(24)
+    refused = lambda mp: {entry["selection"].split("-", 1)[1] for entry in full["rejected"] if entry["selection"].startswith(f"mp{mp}-")}
+    assert refused(24) == refused(6)
+    report = {**full,
+              "rows": [row for row in full["rows"] if row["mp_physics"] != 24],
+              "rejected": [entry for entry in full["rejected"] if not entry["selection"].startswith("mp24-")],
+              "selectable_axes": {**full["selectable_axes"], "mp_physics": [mp for mp in full["selectable_axes"]["mp_physics"] if mp != 24]}}
     # 9d8055e26, lane/europe-uw-pbl: the routed UW selector adds its own
     # measured slice. Preserve the old non-UW pins beside the combined pins
     # so this update cannot absorb an unrelated admission change.

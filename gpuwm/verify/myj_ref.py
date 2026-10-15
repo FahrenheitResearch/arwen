@@ -19,8 +19,10 @@ and that column function is BIT-IDENTICAL to WRF v4.6.1's MYJSFC on the
 column oracle (tools/myjsfc_wrf461_oracle,
 tests/test_myjsfc_wrf461_parity.py, every field of every call, replayed
 and free-running).  The MYJPBL column function still uses NumPy's float32
-``log``/``exp``/``sqrt``; nothing in this module claims a WRF oracle for
-it.
+``log``/``exp``/``sqrt``, not pinned to a libm word, so for the PBL this
+module is a tolerance authority: the MYJPBL oracle campaign graded the
+CUDA kernel, not this module, against WRF (tools/myjpbl_wrf461_oracle,
+tests/test_myjpbl_wrf461_parity.py: bit-identical).
 
 WRF quirks preserved on purpose (cited where they occur):
 
@@ -39,12 +41,18 @@ WRF quirks preserved on purpose (cited where they occur):
 
 DECLARED DIVERGENCES FROM WRF (one, stated here and again where it lives):
 
-* The interface-height column is GROUND-relative, not sea-level relative:
-  WRF seeds ``ZINT(KTE+1)=HT`` (module_bl_myjpbl.F:312,
-  module_sf_myjsfc.F:162) and gpuwm seeds 0.  HT cancels exactly in real
-  arithmetic and only approximately in float32; gpuwm's column is the more
-  accurate one.  Full declaration and the measurement that bounds it:
-  :func:`_interface_heights`.
+* MYJSFC's interface-height column is GROUND-relative, not sea-level
+  relative: WRF seeds ``ZINT(KTE+1)=HT`` (module_sf_myjsfc.F:162) and the
+  surface-layer kernel seeds 0.  HT cancels exactly in real arithmetic and
+  only approximately in float32.  Full declaration and the measurement that
+  bounds it: :func:`_interface_heights`.  The PBL kernel no longer does
+  this: it seeds HT as WRF does (module_bl_myjpbl.F:312) and is
+  bit-identical to WRF's MYJPBL (tests/test_myjpbl_wrf461_parity.py).
+
+The parameters below are folded exactly as gfortran folds them; the
+oracle's dump of WRF's own words checks every MYJPBL one.  Transcendentals
+here are still NumPy's, so this authority agrees with WRF within a
+tolerance, not bitwise; the CUDA kernel is the bitwise one.
 """
 
 from __future__ import annotations
@@ -115,11 +123,14 @@ PQ0SEA = F(PQ0 * SEAFC)
 BTG = F(BETA * G)
 RB1 = F(F(1.0) / B1)
 
-# module_bl_myjpbl.F:62-92 (stepwise, left-to-right with parentheses).
-ADNH = F(F(F(F(F(F(9.0) * A1) * A2X) * A2X)
-           * F(F(F(12.0) * A1) + F(F(3.0) * B2))) * F(BTG * BTG))
+# module_bl_myjpbl.F:62-92 (stepwise, left-to-right with parentheses, as
+# gfortran folds them: ``...*BTG*BTG`` is ``(...*BTG)*BTG``, never
+# ``...*(BTG*BTG)``; tests/test_myjpbl_wrf461_parity.py checks every
+# derived word against the one WRF's object carries).
+ADNH = F(F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X)
+           * F(F(F(12.0) * A1) + F(F(3.0) * B2))) * BTG) * BTG))
 ADNM = F(F(F(F(F(F(18.0) * A1) * A1) * A2X) * F(B2 - F(F(3.0) * A2X))) * BTG)
-ANMH = F(F(F(F(F(-9.0) * A1) * A2X) * A2X) * F(BTG * BTG))
+ANMH = F(F(F(F(F(F(F(-9.0) * A1) * A2X) * A2X) * BTG) * BTG))
 ANMM = F(F(F(F(F(-3.0) * A1) * A2X)
            * F(F(F(F(F(3.0) * A2X) + F(F(F(3.0) * B2) * C1))
                  + F(F(F(18.0) * A1) * C1)) - B2)) * BTG)
@@ -140,9 +151,9 @@ CESH = A2X
 CESM = F(A1 * F(F(1.0) - F(F(3.0) * C1)))
 
 # module_bl_myjpbl.F:98-101 free equilibrium term.
-AEQH = F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X) * B1) * F(BTG * BTG))
-         + F(F(F(F(F(F(9.0) * A1) * A2X) * A2X)
-               * F(F(F(F(12.0) * A1)) + F(F(3.0) * B2))) * F(BTG * BTG)))
+AEQH = F(F(F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X) * B1) * BTG) * BTG))
+         + F(F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X)
+               * F(F(F(F(12.0) * A1)) + F(F(3.0) * B2))) * BTG) * BTG)))
 AEQM = F(F(F(F(F(F(F(3.0) * A1) * A2X) * B1)
             * F(F(F(F(F(3.0) * A2X) + F(F(F(3.0) * B2) * C1))
                   + F(F(F(18.0) * A1) * C1)) - B2)) * BTG)
@@ -154,13 +165,13 @@ REQU = F(-AEQH / AEQM)
 EPSGH = F(1.0e-9)
 EPSGM = F(REQU * EPSGH)
 UBRYL = F(F(F(F(F(F(F(F(F(18.0) * REQU) * A1) * A1) * A2X) * B2) * C1) * BTG)
-          + F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X) * B2) * F(BTG * BTG))))
+          + F(F(F(F(F(F(F(F(F(9.0) * A1) * A2X) * A2X) * B2) * BTG) * BTG))))
 UBRYL = F(UBRYL / F(F(REQU * ADNM) + ADNH))
 UBRY = F(F(F(1.0) + EPSRS) * UBRYL)
 UBRY3 = F(F(3.0) * UBRY)
-AUBH = F(F(F(F(F(F(F(27.0) * A1) * A2X) * A2X) * B2) * F(BTG * BTG))
+AUBH = F(F(F(F(F(F(F(F(F(27.0) * A1) * A2X) * A2X) * B2) * BTG) * BTG))
          - F(ADNH * UBRY3))
-AUBM = F(F(F(F(F(F(F(54.0) * A1) * A1) * A2X) * B2) * F(C1 * BTG))
+AUBM = F(F(F(F(F(F(F(F(F(54.0) * A1) * A1) * A2X) * B2) * C1) * BTG))
          - F(ADNM * UBRY3))
 BUBH = F(F(F(F(F(F(9.0) * A1) * A2X) + F(F(F(3.0) * A2X) * B2)) * BTG)
          - F(BDNH * UBRY3))
@@ -232,8 +243,16 @@ def _interface_heights(dz, ht=F(0.0)):
     ``KFLIP=KTE+1-K`` (module_bl_myjpbl.F:313-320,
     module_sf_myjsfc.F:163-170).
 
-    DELIBERATE DIVERGENCE, gpuwm goes its own way (float32 precision):
-    WRF seeds that recursion with the TERRAIN HEIGHT --
+    MYJPBL: NO LONGER A DIVERGENCE.  The PBL kernel (kernels/myjpbl.cu)
+    seeds ``zh[nz] = HT`` as WRF does, because the float32 words depend on
+    it and the WRF column oracle grades it bitwise
+    (tests/test_myjpbl_wrf461_parity.py; with HT = 0 the terrain columns
+    miss by up to 51 ULP on PBLH and 231 ULP on EXCH_H).  What follows
+    describes the SURFACE LAYER (kernels/myjsfc.cu), which still runs the
+    ground-relative column and has no WRF oracle yet.
+
+    DELIBERATE DIVERGENCE (MYJSFC), gpuwm goes its own way (float32
+    precision): WRF seeds that recursion with the TERRAIN HEIGHT --
     ``ZINT(I,KTE+1,J)=HT(I,J)`` (module_bl_myjpbl.F:312,
     module_sf_myjsfc.F:162) -- so every interface height it carries is
     height above SEA LEVEL.  gpuwm seeds it with ``ht=0.0`` by default, so
@@ -1020,10 +1039,12 @@ def np_myjpbl_column(
     module_pbl_driver.F:1457).  Returns bottom-up tendencies plus updated
     state, mirroring the WRF INOUT set.
 
-    ``ht`` is the interface-height origin (module_bl_myjpbl.F:312-320).  It
-    defaults to gpuwm's DECLARED ground-relative 0 rather than WRF's
-    terrain height; :func:`_interface_heights` carries the declaration and
-    names the test that measures it.
+    ``ht`` is the interface-height origin, WRF's ``ZINT(KTE+1)=HT``
+    (module_bl_myjpbl.F:312-320).  The shipped kernel seeds it with the
+    terrain height exactly as WRF does (it is bit-identical to WRF's
+    MYJPBL, tests/test_myjpbl_wrf461_parity.py); pass the column's HT to
+    mirror it.  The default 0 is kept for the surface-layer comparisons in
+    tests/test_myj_port.py, see :func:`_interface_heights`.
     """
     dz = np.asarray(dz, dtype=F)
     nz = dz.shape[0]

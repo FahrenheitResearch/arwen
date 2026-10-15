@@ -1,0 +1,102 @@
+--- a/tools/urban_slucm_regime_oracle/slucm_regime_oracle.F90
++++ b/tools/urban_slucm_regime_oracle/slucm_regime_oracle.F90
+@@ -50,7 +50,7 @@
+ 
+   integer, parameter :: nsoil = 4
+   integer, parameter :: nstep = 6
+-  integer, parameter :: nscen = 18
++  integer, parameter :: nscen = 32
+   real :: dzr(nsoil), dzb(nsoil), dzg(nsoil)
+   character(len=16) :: table, variant
+   character(len=512) :: prefix, arg
+@@ -139,7 +139,7 @@
+     zr_u = zr_tbl(ut)
+     zdc_u = zdc_tbl(ut)
+     z0c_u = z0c_tbl(ut)
+-    do sc = 1, nscen
++    do sc = 31, nscen
+       call scenario_init()
+       do st = 1, nstep
+         call scenario_forcing()
+@@ -250,6 +250,21 @@
+     case (18)           ! first level 3 m above the roof, afternoon
+       tsurf0 = 312.
+       tlay0 = (/ 308., 302., 297. /)
++    case (19:32)
++      tsurf0 = 300.
++      tlay0 = (/ 298., 296., 294. /)
++      jmonth = mod(sc - 19,12) + 1
++      if (sc == 19) then
++        tsurf0 = 365.
++        tlay0 = (/ 345., 325., 305. /)
++      else if (sc == 20) then
++        tsurf0 = 215.
++        tlay0 = (/ 225., 240., 260. /)
++      else if (sc == 27) then
++        sm0 = 0.01
++      else if (sc == 28) then
++        sm0 = 0.439
++      end if
+     end select
+ 
+     tr = tsurf0 + 0.
+@@ -277,6 +292,14 @@
+     flxhumr = 0.
+     flxhumb = 0.
+     flxhumg = 0.
++    if (sc >= 31) then
++      drelr = 0.001
++      drelb = 0.001
++      drelg = 0.001
++      flxhumr = 1.e-5
++      flxhumb = 1.e-5
++      flxhumg = 1.e-5
++    end if
+     cmcr = 0.
+     tgr = tsurf0 + 0.
+     tgrl = trl
+@@ -527,6 +550,44 @@
+       omg = 0.6
+       cosz = 0.85
+       za = zr_u + 3.
++    case (19:32)
++      ta = 295. + 0.01*s
++      qa = 0.009
++      ua = 4.
++      ssg = 500.
++      llg = 350.
++      rhoo = 1.1
++      omg = 2.4
++      cosz = 0.5
++      if (sc == 19) then
++        ta = 340.; qa = 0.0001; ssg = 1300.; llg = 450.
++      else if (sc == 20) then
++        ta = 210.; qa = 1.e-7; ssg = 0.; llg = 80.; rhoo = 1.6
++      else if (sc == 21) then
++        ta = 275.; qa = 0.025; ssg = 0.; llg = 320.
++      else if (sc == 22) then
++        rhoo = 0.6; ta = 270.; qa = 0.002; ua = 40.; ssg = 1100.
++      else if (sc == 23) then
++        delt = 0.001
++      else if (sc == 24) then
++        delt = 3600.
++      else if (sc == 25) then
++        ua = 0.; ssg = 0.; chs = 0.0001; chs2 = 0.0001
++      else if (sc == 26) then
++        rain = 1000.; delt = 1.
++      else if (sc == 27) then
++        qa = 0.0001; ssg = 1200.
++      else if (sc == 28) then
++        rain = 50.; ssg = 0.
++      else if (sc == 29) then
++        rain = 1.e-30
++      else if (sc == 30) then
++        rain = 1.e-40
++      else if (sc == 31) then
++        rain = 1.e-40
++      else if (sc == 32) then
++        rain = 1.e-37
++      end if
+     end select
+     u1 = dir_u * ua
+     v1 = dir_v * ua

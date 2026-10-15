@@ -317,3 +317,11 @@ def test_constant_bands_per_call_and_positive_tiny_coszen():
     for band in dev._bands(False, 7, 73):
         assert band.shape == (mcica.NBNDLW, 7, 73)
         assert_bits(band, np.zeros(band.shape, np.float32))
+
+@pytest.mark.parametrize('icloud', [0, 1])
+def test_ferrier_hires_wrapper_remaps_total_ice_on_device(icloud):
+    kw = synthetic(3)
+    kw.update(mp_physics=5, icloud=icloud, f_qi=True, f_qs=False,
+              has_reqc=0, has_reqi=0, has_reqs=0)
+    for sw in (False, True):
+        dual(side_kwargs(kw, sw), sw)

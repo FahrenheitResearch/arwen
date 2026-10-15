@@ -1,0 +1,37 @@
+schema = "gpuwm.suite.v1"
+name = "agency-generic"
+region = "PH"
+[[box]]
+id = "r"
+host = "local"
+cards = 8
+card_model = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+memory_mib = 97887
+host_memory_mib = 524288
+build = "2.8.9"
+[policy]
+headroom = 0.20
+[defaults]
+products = "standard"
+publish = { targets = ["local-index"] }
+[[system]]
+id = "country-patch"
+shape = "regional-patch"
+mesh = "ph48-3"
+ic = ["gfs"]
+domain = { from = "region", spacing_km = 3 }
+cycle = { every = "6h", lead = "48h", deadline = "ready+180m" }
+cards = 2
+box = "r"
+priority = 1
+rate = "country-patch-2"
+[[system]]
+id = "world-det"
+shape = "global-uniform"
+mesh = "x1.655362"
+ic = ["gfs", "ifs"]
+cycle = { every = "6h", lead = "120h", deadline = "ready+180m" }
+cards = 2
+box = "r"
+priority = 2
+rate = "global-coarse-2"

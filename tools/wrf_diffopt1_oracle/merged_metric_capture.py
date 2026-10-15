@@ -112,8 +112,16 @@ CHECKPOINT_STEPS = 2
 
 
 def checkpoint_configuration(km):
-    """The default-on metric form (diff_opt=2, mix_full_fields) as shipped."""
-    return configuration(km=km, diff=2, mix=True)
+    """The default-on metric form (diff_opt=2, mix_full_fields) as shipped.
+
+    Under the solar generation the checkpoints were written with: 2.8.8's
+    only one, ``wrf_461``.  2.9.0 makes WRF 4.8's equation of time the
+    default, and a restore refuses a solar generation other than the one a
+    checkpoint records, so the resume claim is checked on the recorded one.
+    """
+    from dataclasses import replace
+    return replace(configuration(km=km, diff=2, mix=True),
+                   solar_generation="wrf_461")
 
 
 def record_checkpoints(data, engine_commit):

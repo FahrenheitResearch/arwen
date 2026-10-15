@@ -39,23 +39,53 @@ STATIC_NAME = "rw_mpas_static"
 __getattr__ = lazy_build_hints(
     __name__, CARGO_BUILD_HINT=RUSTWX_CRATE_RELATIVE)
 
+#: The tools ``rw_mpas_static`` carries besides the static door, as
+#: ``rw_mpas_static TOOL ARGS...``.  Each was its own binary until 2.9.0
+#: (``rw_mpas_static_bounded``, ``rw_mpas_static_words``,
+#: ``rw_mpas_gwd_replace``, ``rw_mpas_gwd_review``, ``rw_mpas_verify``); one
+#: executable keeps one copy of the shared code in each platform wheel, and
+#: the binary invoked under a former name still runs that tool.
+STATIC_TOOLS = ("bounded", "words", "gwd-replace", "gwd-review", "verify")
+
 #: ``rw_mpas_static --abi`` output: the argument vector this wrapper was
-#: written against plus the progress grammar :func:`run_static` parses.
+#: written against, the progress grammar :func:`run_static` parses, and the
+#: tool line.  The tool line is what tells a build that carries the tools
+#: from one that predates them: an older build still launches and answers
+#: the door's contract, then treats ``verify`` as a static request and
+#: refuses for want of ``--grid``.
 STATIC_ABI_MARKER = (
     "rw_mpas_static --grid GRID.nc --out STATIC.nc [--geog DIR] "
-    "[--terrain-only] [--nominal-dx-m M] "
+    "[--legacy-static] [--terrain-only] [--nominal-dx-m M] "
     "[--valid-time YYYY-MM-DD_hh:mm:ss] "
     "[--receipt JSON] [--clobber] "
     "| --compare REFERENCE.nc CANDIDATE.nc [--report JSON]\n"
-    "GRID\tNOMINALDX\tVECTORS\tOPERATORS\tGEOGGRID\tGWDBAND\tWROTE\tFINISHED")
+    "GRID\tNOMINALDX\tVECTORS\tOPERATORS\tGEOGGRID\tGWDBAND\tWROTE\tFINISHED\n"
+    "TOOLS\t" + "\t".join(STATIC_TOOLS))
 
-#: Geography datasets the builder reads.  A root missing any of them
-#: cannot produce a static, and saying which one is missing before the
+#: The schema tag a 2.9.0 default (native-stream) static carries in its
+#: ``rw_mpas_static_schema`` attribute and its receipt.  A consumer that
+#: caches statics keys on it: a file without it was written by an older
+#: builder from the with-lakes land use, with every lake stored as land,
+#: and is rebuilt rather than reused.
+STATIC_SCHEMA_TAG = "rw-mpas-static/v4-native"
+
+#: The tag ``--legacy-static`` (and every pre-2.9.0 builder) writes.
+LEGACY_STATIC_SCHEMA_TAG = "rw-mpas-static/v3-unified"
+
+#: Geography datasets the builder reads by default.  A root missing any of
+#: them cannot produce a static, and saying which one is missing before the
 #: mesh relaxation runs is the difference between a five-second refusal
 #: and a wasted half hour.
+#:
+#: The default is MPAS-A v8.4.2's own static (2.9.0): land use from
+#: ``modis_landuse_20class_30s``, where a lake is water (category 17), and
+#: the gravity-wave-drag statistics over the USGS ``landuse_30s`` water
+#: mask, as native ``init_atmosphere`` reads them.  The with-lakes land use
+#: is read only by ``--legacy-static`` (:data:`LEGACY_GEOG_DATASETS`).
 REQUIRED_GEOG_DATASETS = (
     "topo_gmted2010_30s",
-    "modis_landuse_20class_30s_with_lakes",
+    "modis_landuse_20class_30s",
+    "landuse_30s",
     "soiltype_top_30s",
     "soiltemp_1deg",
     "maxsnowalb_modis",
@@ -75,6 +105,13 @@ REQUIRED_GEOG_DATASETS = (
     "texture_layer3",
     "texture_layer4",
 )
+
+#: What ``--legacy-static`` reads in place of the two native land-use
+#: datasets: the with-lakes MODIS land use, and no USGS mask (its GWD
+#: statistics are the legacy ones).
+LEGACY_GEOG_DATASETS = tuple(
+    "modis_landuse_20class_30s_with_lakes" if name == "modis_landuse_20class_30s"
+    else name for name in REQUIRED_GEOG_DATASETS if name != "landuse_30s")
 
 #: Fields the static carries as a bitwise +0 PLACEHOLDER rather than as
 #: values.  A consumer overlays the real arrays from the init file; the
@@ -104,9 +141,16 @@ PLACEHOLDER_FIELDS = (
 #: the old absent list does not go looking for a gap that is not there.
 FORMERLY_UNWRITTEN_FIELDS = (
     "cell_gradient_coef_x", "cell_gradient_coef_y",
-    "defc_a", "defc_b",
     "soilcomp", "soilcl1", "soilcl2", "soilcl3", "soilcl4",
 )
+
+#: Fields the native static stream does not carry, by MPAS's own registry:
+#: the deformation weights and the two land-use aliases belong to the init
+#: file, as they do for a published native static.  ``--legacy-static``
+#: still writes them.  Not a gap: the port reads ``defc_a``/``defc_b`` from
+#: the init file and the mesh binding drops them from a native static by
+#: name (see ``gpuwm.mpas_mesh.PORT_BLOCKING_STATIC_FIELDS``).
+NATIVE_STREAM_OMITTED_FIELDS = ("defc_a", "defc_b", "lu_index", "soilcat_top")
 
 _PROBE_TIMEOUT_S = 20
 
@@ -164,6 +208,29 @@ def static_remedy() -> str:
         subject="the mpas static builder",
         crate_relative=RUSTWX_CRATE_RELATIVE,
         one_liner=rustwx_build_hint(), artifact=STATIC_NAME)
+
+
+def tool_command(tool: str, binary: Path | None = None) -> list[str]:
+    """The argument-vector head that runs one of ``rw_mpas_static``'s tools.
+
+    ``binary`` defaults to the resolved builder (:func:`find_static_bin`).
+    The binary is probed first, so a build that predates the tools is
+    refused with the rebuild remedy rather than run: such a build would
+    take ``verify`` for a static request.  A caller appends the tool's own
+    arguments, e.g. ``tool_command("verify") + ["--request", r, "--out", o]``.
+    """
+
+    if tool not in STATIC_TOOLS:
+        raise ValueError(
+            f"rw_mpas_static has no tool {tool!r}; it carries "
+            f"{', '.join(STATIC_TOOLS)}")
+    path = binary if binary is not None else find_static_bin()
+    if path is None:
+        raise FileNotFoundError(static_remedy())
+    ok, evidence = probe_static_bin(Path(path))
+    if not ok:
+        raise RuntimeError(f"rw_mpas_static at {path}: {evidence}")
+    return [str(path), tool]
 
 
 def probe_static_bin(path: Path) -> tuple[bool, str]:
@@ -437,6 +504,8 @@ def run_static(binary: Path, argv: list[str], *,
 
 __all__ = [
     "CARGO_BUILD_HINT", "REQUIRED_GEOG_DATASETS", "STATIC_ABI_MARKER",  # noqa: F822 -- module __getattr__
+    "LEGACY_GEOG_DATASETS", "LEGACY_STATIC_SCHEMA_TAG", "STATIC_SCHEMA_TAG",
+    "NATIVE_STREAM_OMITTED_FIELDS",
     "STATIC_ENV", "STATIC_NAME", "StaticEngineError",
     "PLACEHOLDER_FIELDS", "FORMERLY_UNWRITTEN_FIELDS", "fetchable_for",
     "crate_dir", "default_geog_root", "find_static_bin",

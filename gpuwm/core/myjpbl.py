@@ -1,8 +1,9 @@
 """MYJ (Mellor-Yamada-Janjic level 2.5) PBL, ``bl_pbl_physics = 2``.
 
-CUDA launcher around :mod:`gpuwm.core.kernels.myjpbl`, the device mirror of
-the float32 CPU authority ``gpuwm.verify.myj_ref.np_myjpbl_column``, itself
-transcribed from the byte-frozen WRF v4.6.1 ``phys/module_bl_myjpbl.F``.
+CUDA launcher around :mod:`gpuwm.core.kernels.myjpbl`, the device port of
+the byte-frozen WRF v4.6.1 ``phys/module_bl_myjpbl.F`` (the float32 CPU
+authority ``gpuwm.verify.myj_ref.np_myjpbl_column`` is its tolerance
+twin).
 
 WHAT THIS SCHEME OWNS.  MYJ predicts TKE (``q**2 = 2*TKE``) with Janjic's
 extension of Mellor-Yamada level 2.5, builds the mixing length from it,
@@ -17,9 +18,13 @@ COLUMN LIMIT.  The kernel keeps the whole column in per-thread local
 arrays, as YSU's does, so it carries the same compile-time ceiling.  A
 deeper column is refused here rather than silently truncated.
 
-Conformance status: implemented-unverified.  ``tests/test_myj_port.py``
-asserts CPU-vs-CUDA agreement and physical sanity; NO oracle comparison
-against the WRF Fortran has been run.
+Conformance status: BIT-IDENTICAL to WRF v4.6.1's MYJPBL on the
+176-column oracle (tools/myjpbl_wrf461_oracle,
+tests/test_myjpbl_wrf461_parity.py) under the strict build; registry
+maturity stays implemented-unverified because no matched forecast
+trajectory exists.  ``surface["ht"]`` is WRF's HT: MYJPBL's interface
+heights start at the terrain height (ZINT(KTE+1)=HT, :312), and the float32
+words depend on it.
 """
 
 from __future__ import annotations
@@ -49,7 +54,7 @@ MYJ_MIN_COLUMN_LEVELS = 4
 _COLUMN_INPUTS = ("dz", "u", "v", "t", "th", "exner", "qv", "qc", "qi", "p")
 #: Read-only surface inputs, in kernel argument order.
 _SURFACE_INPUTS = ("psfc", "ust", "tsk", "chklowq", "xland", "sice", "snow",
-                   "akhs", "akms", "elflx", "uz0", "vz0")
+                   "akhs", "akms", "elflx", "uz0", "vz0", "ht")
 #: WRF INOUT surface state MYJPBL rewrites (:542, :556-566, :852).
 MYJ_PBL_INOUT = ("thz0", "qz0", "qsfc", "ct")
 #: Bottom-up ``(nz, ny, nx)`` outputs, in kernel argument order.

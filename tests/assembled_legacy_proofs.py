@@ -3,6 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 
+SOURCE_EXTENSION_SHA = "a28411700dbc582af6b5a1493a6c9748129550d641462417667aec1d915556a7"
+
 PROOF_SHAS = {
     "acoustic-published.json": "a87236d1940de34920102e86cbfc57ddafb0cabb103c4d891923385cf9c2e1e9",
     "coordinate-native.json": "e444d6d4eed8a6c875a1970d0ac8d97f255357df6874ef5c915b1c0cfcefc070",
@@ -35,12 +37,34 @@ def _identity(proof, modules):
         assert capture["module_options"][module] == list(module_options(module))
 
 
+def _source_extension(root, name, before, after):
+    # The 2.8.9 captures stay immutable.  A sealed orchestration source that a
+    # microphysics port had to extend (new mass packages in calc_cq and
+    # slow_buoyancy, new loader rows) is admitted only by a fresh base-versus-tip
+    # reproduction of every affected numerical receipt with zero differing words.
+    extension = Path(root) / "tests/data/assembled_legacy_proofs/source-extension.json"
+    assert _sha(extension) == SOURCE_EXTENSION_SHA, "source extension seal"
+    measured = json.loads(extension.read_text())
+    assert measured["schema"] == "measured-legacy-source-extension-v1"
+    assert measured["baseline"] == "cd336e62d6e6b6312c9636e0fdfff84801909b6a"
+    for family, arrays, words in (("coordinate", 272, 178128),
+                                  ("drivers", 2618, 31686592),
+                                  ("acoustic", 132, 305632)):
+        row = measured["measurements"][family]
+        assert (row["arrays"], row["words"], row["changed_arrays"], row["different_words"]) == (arrays, words, 0, 0)
+    transition = measured["sources"].get(name)
+    assert transition is not None, name
+    assert transition["before"] == before, name
+    assert transition["after"] == after, name
+
+
 def _sources(root, proof):
     assert proof["source_inputs"]
     for name, row in proof["source_inputs"].items():
         path = Path(root) / name
-        assert path.stat().st_size == row["bytes"], name
-        assert _sha(path) == row["sha256"], name
+        actual = {"bytes": path.stat().st_size, "sha256": _sha(path)}
+        if actual != row:
+            _source_extension(root, name, row, actual)
 
 
 def validate_published_acoustic(root):

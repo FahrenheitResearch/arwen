@@ -188,7 +188,8 @@ def module_source(*, kernel_dir=None) -> str:
     from gpuwm.core.kernels import _preamble
 
     root = Path(kernel_dir) if kernel_dir is not None else Path(__file__).parent / "kernels"
-    return _preamble(root) + "".join(
+    from gpuwm.cuda_subnormals import MARKER
+    return MARKER + _preamble(root) + "".join(
         (root / name).read_text(encoding="utf-8") for name in _SOURCES)
 
 
@@ -196,6 +197,8 @@ def module_source(*, kernel_dir=None) -> str:
 def _bem_module():
     """Dedicated loader: this module alone needs both option overrides."""
     import cupy as cp
+    from gpuwm.cuda_subnormals import install
+    install()
 
     from gpuwm.certify.kernel_manifest import record_module
 
@@ -283,6 +286,12 @@ def workspace_bytes_per_column(nz: int) -> int:
                 + WORKSPACE_FLOATS_PER_LEVEL * (int(nz) + 1))
 
 
+def urban_columns(frc_urb2d):
+    """Positive validated [0,1] fractions, including positive subnormal words."""
+    import cupy as cp
+    return cp.flatnonzero(frc_urb2d.ravel().view(cp.int32) > cp.int32(0))
+
+
 class ColumnPlan:
     """The urban column list, chunked to a workspace budget, and its buffers.
 
@@ -294,7 +303,7 @@ class ColumnPlan:
     def __init__(self, frc_urb2d, nz: int, workspace_bytes: int) -> None:
         import cupy as cp
 
-        cols = cp.flatnonzero(frc_urb2d.ravel() > cp.float32(0))
+        cols = urban_columns(frc_urb2d)
         cols = cols.astype(cp.int32)
         self.count = int(cols.size)
         self.nz = int(nz)

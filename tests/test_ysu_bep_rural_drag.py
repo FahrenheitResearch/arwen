@@ -29,9 +29,8 @@ parity.py`` grades the port against (``build_ysu_bep_fix.sh``).  Reverting
 is one line in each place.
 
 WHAT THIS FILE PINS.  The fixture's rural columns (frc = 0: cases 6, 18 and
-24; case 12 has ust = hfx = qfx = 0, where the plain kernel takes its
-zero-flux short circuit and the BEP arm cannot, so it drags nothing either
-way and is left out) run through the port twice: under BEP with the forcing
+24; case 12 has ust = hfx = qfx = 0, so with ust = 0 it drags nothing
+either way and is left out) run through the port twice: under BEP with the forcing
 the couple hands YSU, and with urban off.  The measure is the column's
 momentum budget, ``sum_k du_k * delp_k / g``: the vertical mixing conserves
 column momentum, so this is minus the surface stress the solve applied,

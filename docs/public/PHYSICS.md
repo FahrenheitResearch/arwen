@@ -44,11 +44,11 @@ substitutions (see the end of this page).
 
 **A rung grades one OPTION, and most of the tree sits on the same
 rung.** `implemented-unverified` is not a mark against any particular
-scheme. It is carried by **30 of the registry's 48 component options**:
+scheme. It is carried by **39 of the registry's 57 component options**:
 YSU, MYJ, MYNN (PBL and surface layer both), Eta similarity, Shin-Hong,
-UW moist turbulence, SASE, Milbrandt-Yau, Morrison, WDM6, P3 one-category, FAST_SBM spectral bin, Thompson
-aerosol-aware, TEMPO, Noah, Noah-MP, RUC, Grell-Freitas, Original cu6 cumulus, New Tiedtke, WRF RRTM
-longwave with Dudhia shortwave, the three urban canopy models
+UW moist turbulence, SASE, Purdue Lin, WSM3, WSM5, Ferrier-Aligo, WSM7, WSM6R, Milbrandt-Yau, Morrison, WDM6, P3 one-category, FAST_SBM spectral bin, Thompson
+aerosol-aware, TEMPO, Noah, Noah-MP, RUC, Grell-Freitas, Original cu6 cumulus, New Tiedtke, Grell 3D, New SAS (YSU) with NSCV shallow convection, WRF RRTM
+longwave with Dudhia shortwave, New Goddard longwave and shortwave, the three urban canopy models
 (single-layer UCM, BEP and BEP+BEM), and all five turbulence closures. It says
 that the option retains the evidence limits described in its own row.
 Some rows report an oracle or an idealized trajectory, while others
@@ -104,17 +104,17 @@ verdict. `docs/public/receipts/physics-composition-walk.json` is that
 record, and `tests/test_physics_composition_walk.py` regenerates it on
 every release cut and compares it byte for byte. As measured:
 
-- **3640 of 11531 admission attempts are accepted**, covering **3632 distinct
-  accepted suites**, against 32 registered templates. The presets are a
+- **5839 of 18182 admission attempts are accepted**, covering **5831 distinct
+  accepted suites**, against 34 registered templates. The presets are a
   corner of the space, not the space.
 - **Every accepted run keeps every switch the file set**, checked
   against the resolved per-domain `RunConfig`. Zero rewrites. An
   admission is never a silent substitution.
 - **Every admitted value of every axis reaches an accepted run**, with
   no exceptions left. `ra_lw_physics = 1` (WRF RRTM longwave) was the
-  last one; 1.9 ports it, and it now reaches 836 distinct accepted suites,
+  last one; 1.9 ports it, and it now reaches 1045 distinct accepted suites,
   including 209 paired with Dudhia shortwave.
-- **7891 refusals fall into 18 distinct rules**, every one of which
+- **12343 refusals fall into 19 distinct rules**, every one of which
   names the selector to change, and each of which has a
   demonstrated remedy -- the receipt carries a before/after pair per
   rule showing that doing what the message says reaches an accepted
@@ -1183,19 +1183,19 @@ Notes with teeth:
 | option | WRF id | maturity | evidence, in one line |
 |---|---|---|---|
 | YSU | 1 | implemented-unverified | 24-column oracle vs unmodified `bl_ysu.F90`: every output word bitwise WRF's on the 22 columns that take WRF's branches, except 11 subnormal tendencies the card flushes to zero (glibc powf/expf, no contraction, WRF's association and its default `ctopo` drag arm); part of the option set used in the one historical matched run against WRF, alongside Thompson; no current whole-suite match is implied |
-| MYJ (Mellor-Yamada-Janjic 2.5) | 2 | implemented-unverified | float32 CPU authority transcribed line by line from the byte-frozen `module_bl_myjpbl.F`, with the CUDA translation unit agreeing with it on land and water columns inside a stated tolerance; column smokes assert finiteness, the `EPSQ2` TKE floor, non-negative mixing length and exchange coefficients, and vapour conservation in a surface-sealed column, each with a mutation control that stubs the ported routine itself. TKE cold-starts at WRF's `epsq2` = 0.2 (`MYJPBLINIT`), not zero -- the seed decides the first-step PBL depth. **Declared divergence:** interface heights are carried above ground rather than above sea level (WRF seeds `ZINT(KTE+1)=HT`), which cancels exactly in real arithmetic and to within 69 ULP in float32 over 4.4 km terrain, with `KPBL` unchanged; gpuwm's column is the better-conditioned one. **No oracle comparison against the WRF Fortran has been run** -- there is no gfortran replay, no fixture of WRF words and no ULP table -- so nothing here claims bit agreement with WRF; that campaign is the declared next stage. Selectable only as the 2/2 pair with the Eta similarity surface layer |
+| MYJ (Mellor-Yamada-Janjic 2.5) | 2 | implemented-unverified | The CUDA kernel is **bit-identical to WRF v4.6.1's own MYJPBL**: a gfortran column oracle (the byte-unmodified `module_bl_myjpbl.F`, 176 columns over convective, stable, neutral, ocean, snow, sea-ice, cloudy and terrain regimes from -25 m to 4500 m, with and without cloud ice, 4 to 128 levels, three consecutive calls) agrees on every word of every output under the strict build; under default arithmetic the only differences are in cloud-water and cloud-ice tendencies, each smaller than the smallest normal float32 (1.2e-38), from subnormal values flushing to zero. Interface heights start at the terrain height exactly as WRF's do. TKE cold-starts at WRF's `epsq2` = 0.2 (`MYJPBLINIT`), not zero -- the seed decides the first-step PBL depth. No matched ArWen-versus-WRF forecast exists yet, which is why the tier is unchanged. Selectable only as the 2/2 pair with the Eta similarity surface layer |
 | MYNN (EDMF) | 5 | implemented-unverified | **bitwise WRF v4.6.1 on the card**: every CUDA leaf, both driver fixtures and six column families (convective day, stable night with dew, stratocumulus, shallow cumulus, cold pool, high wind) integrated twelve steps free-running from a cold start, 0 ULP on every output, both mixing lengths (WOOF's own float32 elementary functions, no FMA contraction; tests/test_mynn_wrf461_exact_gpu.py); `bl_mynn_version = "gsd_41"` is word for word the operational HRRR fork's own driver on the same families with the fork's tendency form, and by default changes theta and vapor tendency values and can change a cloud-water zero sign through its two documented water-conserving fixes (tests/test_mynn_gsd41_driver_exact_gpu.py); no matched WRF forecast yet; 300-step coupled forecast gate; composes with every radiation pairing the loader admits and with the MYNN (5), classic MM5 (91) or revised MM5 (1) surface layer -- see the MYNN scope note below |
 | UW moist turbulence (CAM5, Bretherton and Park 2009) | 9 | implemented-unverified | ported from WRF v4.7.1 (`module_bl_camuwpbl_driver.F` and the CAM modules it calls) in binary64, the scheme's own precision; every output word equals a gfortran -O0 build of the byte-unmodified sources (tools/uwpbl_wrf471_oracle) on the card and in the CPU reference, over six regime families (convective day, stable night, stratocumulus, valley cold pool, mixed-phase, shallow cumulus) on 35, 44 and 61 levels plus 48 branch-probe columns; cos and acos are correctly rounded rather than glibc's LGPL code, and float32 subnormal lanes under the loader's flush-to-zero are counted in tests/test_uwpbl_ftz_wrf471_parity.py; no matched forecast or observation score yet. Needs a surface layer that writes UST/HFX/QFX (1, 5 or 91) and `moist = true`; imports natively from a WRF namelist |
 | Shin-Hong (scale-aware) | 11 | implemented-unverified | float32 CPU authority reproduces every output field of both `ctopo` arms at **max ULP 0** against the byte-frozen `module_bl_shinhong.F`, over 30 cases x 6 grid spacings x 40 levels; the CUDA mirror is bitwise against the same WRF words on every lane except subnormal tendencies the card flushes to zero (glibc powf/expf, no contraction); and its resolved/subgrid partition was scored across a 3200-100 m ladder against pre-registered Honnert (2011) envelope bands -- every gated rung inside, 100 m LES anchor held ([receipts](receipts/grayzone/)) |
 | SASE | none: ArWen-only, `bl_pbl_physics = 900` outside WRF's namespace | implemented-unverified, **permanently** | no WRF v4.6.1 counterpart, so no oracle comparison against WRF Fortran exists or can exist and this ladder cannot rank it; numerics self-checked; physics unvalidated -- 2 of 7 frozen acceptance bars met on a single reference case on a single day ([Selecting an experimental scheme](#selecting-an-experimental-scheme)) |
 
-The YSU registry entry records its open items verbatim: the zero-flux
-short circuit (which an FTZ-flushed subnormal `ust` also reaches), WRF's
-own undefined `prfac2` 0/0, and the flushed subnormal tendencies. The
-subnormal-`br` regime disagreement and the `topo_wind=0` driver arm
-difference were closed in the default kernel on 2026-10-05: the `br > 0`
-compare is made in double, and every YSU column takes WRF's `ctopo` drag
-arm, as WRF's own driver does. MYNN's entry
+The YSU registry entry records its open items verbatim: WRF's own
+undefined `prfac2` 0/0 and the flushed subnormal tendencies. Closed in the
+default kernel: the subnormal-`br` regime disagreement and the `topo_wind=0`
+driver arm difference (2026-10-05: `br > 0` compared in double, every column
+on WRF's `ctopo` drag arm), and the zero-flux short circuit WRF never had,
+which a flushed subnormal `ust` also reached (2026-10-12: the calm column is
+now WRF's word on every lane). MYNN's entry
 records that its CUDA scheme is now WRF's word on every oracle (the
 leaves were up to 3,746 ULP off and the free-running families up to
 1.6e9 before the glibc libm and the no-contraction build), that
@@ -1292,12 +1292,20 @@ The QKE seed decision uses the domain's lowest-level maximum and float32
 The cycling referee changes only those three zero assignments and is
 separate from the unmodified cold-start referee.
 
-**MYNN options.** 10 knobs retain one implemented value:
+**MYNN options.** 9 knobs retain one implemented value:
 `bl_mynn_closure` 2.6, `bl_mynn_cloudpdf` 2,
 `bl_mynn_edmf` 1, `bl_mynn_edmf_mom` 1, `bl_mynn_edmf_tke` 0,
 `bl_mynn_cloudmix` 1, `bl_mynn_mixqt` 0,
-`bl_mynn_output` 0, `bl_mynn_tkeadvect` false, `icloud_bl` 1
+`bl_mynn_output` 0, `icloud_bl` 1
 (`gpuwm/config.py`, `MYNN_PBL_OPTION_IDENTITY`).
+
+`bl_mynn_tkeadvect` accepts false (default) and true. True allocates
+QKE_ADV as a Registry scalar and uses the existing RK transport,
+positive-definite with `scalar_adv_opt = 1`, including scalar lateral
+boundaries. MYNN reads the transported carrier and writes its solved QKE
+back after each call. Native qke_adv input takes precedence over QKE;
+when absent the initializer copies QKE. Prepared and restart identities
+distinguish the selections. The false path allocates no carrier.
 
 `bl_mynn_mixlength` accepts 1 (default) and 2, the WRF v4.6.1
 mixing-length branches. `bl_mynn_mixscalars` and `scalar_pblmix` accept
@@ -1328,12 +1336,12 @@ why these pairings are refused:
 ```
 
 The MYNN *PBL* carries no such restriction: 5/91, 5/1 and 5/5 are all
-accepted -- **192, 192 and 250 distinct accepted combinations**
+accepted -- **300, 300 and 422 distinct accepted combinations**
 respectively, counted from the walk receipt's `accepted_combinations`.
 Which field is counted matters, so it is said rather than left to be
-inferred: `mynn_slice.accepted` in the same receipt reads **251** for
+inferred: `mynn_slice.accepted` in the same receipt reads **423** for
 the 5/5 pairing because that field counts ATTEMPTS, and the walk
-re-tries its 5/5 anchor suite in a second tier -- 251 attempts over 250
+re-tries its 5/5 anchor suite in a second tier -- 423 attempts over 422
 distinct configurations. Distinct configurations are what a reader
 asking "what may I compose?" wants, so that is what the three numbers
 above are. Earlier revisions of this page described the 5/5 pairing as
@@ -1378,7 +1386,7 @@ calls (`tests/test_sfclayrev_nonfinite.py`,
 All four run. In plain words: `template` means **a preset exists**, and
 `component-override` means **a preset exists** on the routes that
 declare it and you **type it in your config** anywhere else -- which is
-how the revised MM5 row's 1268 distinct accepted combinations were measured.
+how the revised MM5 row's 2044 distinct accepted combinations were measured.
 Maturity and reachability are separate registry axes, quoted verbatim
 from the registry: `maturity` is the option's evidence tier and
 `reachability.state` is how a NAMED route can offer it. Neither column
@@ -1391,7 +1399,7 @@ definition and for the measured difference between the two.
 
 | option | WRF id | maturity | evidence, in one line |
 |---|---|---|---|
-| Noah (4-layer) | 2 | implemented-unverified | 42-column oracle vs unmodified `module_sf_noahdrv.F`: 7 of 31 outputs bit-identical incl. the whole TSLB profile; TSK within 2 ULP, HFX worst at 375 ULP; part of the option set used in the one historical matched run against WRF |
+| Noah (4-layer) | 2 | implemented-unverified | 42-column oracle vs unmodified `module_sf_noahdrv.F`: 7 of 31 outputs bit-identical incl. the whole TSLB profile; TSK within 2 ULP, HFX worst at 375 ULP; land ice runs WRF's `SFLX_GLACIAL` (24 more oracle columns: TSK, HFX and TSLB bit-identical, worst flux 5 ULP); part of the option set used in the one historical matched run against WRF |
 | RUC (9-level) | 3 | implemented-unverified | column family oracle-matched vs unmodified `module_sf_ruclsm.F`; full device residency measured at production width (0.47 s per call at 360,000 columns, snow-free) |
 | Noah-MP | 4 | implemented-unverified | `NOAHMP_SFLX` bitwise on all four whole-column fixtures; device slab path max ULP 0 vs the scalar authority at 360,000 columns; expert-route option pinned to the exact WRF Registry default option identity |
 
@@ -1405,11 +1413,11 @@ oracles, input requirements and persistence contract.
 Divergences the registry states plainly (read the registry warnings
 before relying on any of these over unusual surfaces):
 
-- **Noah:** the glacial land-ice column (`SFLX_GLACIAL`) is not ported
-  -- a domain with land-ice points must not use Noah; measured cost of
-  ignoring this is listed per field in the registry. Frozen-ground
-  infiltration on simultaneously-frozen-and-melting columns differs
-  through CUDA vs glibc `expf`/`powf` (water redistributed, not lost).
+- **Noah:** frozen-ground infiltration on simultaneously-frozen-and-melting
+  columns differs through CUDA vs glibc `expf`/`powf` (water redistributed,
+  not lost). The glacial land-ice column (`SFLX_GLACIAL`), which earlier
+  releases left untouched, runs as in WRF since 2026-10-12; its oracle
+  numbers are in the registry.
 - **Noah near-surface humidity:** after Noah, `SFCDIAGS` diagnoses Q2
   from the surface humidity, moisture flux and exchange coefficient.
   WRF can produce a nonpositive value from this inversion. ArWen
@@ -1493,7 +1501,7 @@ one line:
 | RTE+RRTMGP | 4/4 (default) | supported | the default modern k-distribution path; substitution token recorded in every config it touches |
 | legacy RRTMG | 4/4 with `ra_rrtmg_variant = "rrtmg_legacy"` | verification tier* | line transcription of WRF v4.6.1 option 4/4: batched LW/SW engines bit-identical (max ULP 0) to the port oracle over the full fixture decks; McICA generators match every stored WRF Fortran mask; used for all matched-run comparisons |
 | Dudhia SW (+ LW off) | 0/1 | supported | certified-slice shortwave |
-| WRF RRTM + Dudhia | 1/1 | implemented-unverified | line transcription of WRF v4.6.1 `module_ra_rrtm.F`; column smoke of the shipped seams only, **no oracle comparison against the Fortran** |
+| WRF RRTM + Dudhia | 1/1 | implemented-unverified | RRTM longwave: line transcription of WRF v4.6.1 `module_ra_rrtm.F`, **equal to the unmodified Fortran word for word (0 ULP)** on a 79-column oracle (storms, nights, snow and ice, ocean, terrain, edge cases), every output and every intermediate, on GPU and CPU (`tests/test_rrtm_lw_wrf461_parity.py`); no matched forecast run; the Dudhia half is graded on its own |
 
 \* "verification tier" is this page's own term, not registry
 vocabulary. Legacy RRTMG is not a separate registry component option:
@@ -1645,6 +1653,8 @@ time. Choosing this pair on a large domain remains a deliberate trade.
 | Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; a preset selects it (with WDM6 and RTE+RRTMGP) and it is also a per-domain override -- a config writing `cu_physics = 3` is accepted directly; runs on the model step (cudt pinned 0) |
 | Original Tiedtke | 6 | implemented-unverified | WRF v4.6.1 `module_cu_tiedtke.F`, the cumulus of WRF's `physics_suite = 'conus'`, transcribed into one GPU column kernel; its columns match WRF's Fortran word for word in default and strict arithmetic (864 column evaluations, glibc 2.43 referee), and `scientific_evidence` is `none`. Runs on the model step (cudt pinned 0); a config writing `cu_physics = 6` is accepted directly, and the WRF namelist importer reads it, including NCAR's benchmark namelists through `physics_suite`. See [cumulus-cu6.md](../cumulus-cu6.md) |
 | New Tiedtke | 16 | implemented-unverified | the WRF v4.6.1 `module_cu_ntiedtke` scheme; all 21 stages and the assembled pipeline reproduce the byte-frozen Fortran bitwise over an 18-case, 6-spacing oracle corpus, and `scientific_evidence` is `none`. Runs with or without a PBL scheme -- it reads no `KPBL`, takes its surface fluxes from the surface layer and the land-surface model, and folds zero advective-forcing lanes exactly as WRF's cumulus driver does when no PBL tendency exists (the PBL-off configuration is admitted on that field contract, not on evidence: every measured run carries a PBL scheme) -- and runs on the model step (cudt pinned 0); a preset selects it (with Milbrandt-Yau and the legacy RRTMG engine) and it is also a per-domain override -- a config writing `cu_physics = 16` is accepted directly, and the WRF namelist importer reads it back with that cadence rule applied, so the pair the configuration door writes for the analyzed-input route can be read as the configuration beside it. See [cumulus-new-tiedtke.md](../cumulus-new-tiedtke.md) |
+| Grell 3D | 5 | implemented-unverified | WRF v4.6.1 `module_cu_g3.F` (G3DRV, CUP_enss_3d and conv_grell_spread3d) transcribed into one GPU unit; its column and diagnostic fixtures match WRF's Fortran word for word in default and strict arithmetic (28 domains, 2112 columns, all 16 closure selectors, ensemble dimensions 144/136/288, periodic forcing and spreading), and `scientific_evidence` is `none`. Declared deviations: three shallow level diagnostics WRF leaves uninitialized with `ishallow = 0` are written as zero, an unset `kdet` falls back to the top level, and the averaging clock belongs to each domain. Runs on the model step (cudt pinned 0; a positive cudt is refused because held PRATEC would be added between calls); reads `clos_choice`, `ishallow`, `cugd_avedx`, the ensemble dimensions and `cu_diag`. Whole-model WRF parity and observation skill are not claimed. |
+| New SAS (YSU) with NSCV shallow convection | 96 | implemented-unverified | WRF v4.6.1 `module_cu_nsas.F` (cu_nsas, nsas2d and its built-in nscv2d shallow convection) as one GPU unit, admitted as a table row of `gpuwm.core.column_cumulus` rather than an adapter module; its column fixtures match WRF's Fortran word for word in default and strict arithmetic, and `scientific_evidence` is `none`. Honours `cudt` as WRF does (rates formed over dt*stepcu and held between calls) except under an adaptive step, where WRF resets it to 0 and so does the importer; reads `sas_pgcon` and `nsas_dx_factor`. Whole-model WRF parity and observation skill are not claimed. |
 | off | 0 | supported | the convection-permitting nests run with cumulus off |
 
 What is certified for Grell-Freitas, and what is not. The certified
@@ -2079,7 +2089,7 @@ user-facing walkthrough -- the symptom, how to tell which version is
 actually executing, and how to correct the config -- is
 [NOCTURNAL-DEWPOINTS.md](NOCTURNAL-DEWPOINTS.md).
 
-The table below classifies all **31 shipped single-domain profiles**
+The table below classifies all **33 shipped single-domain profiles**
 (`gpuwm.physics_compat.SINGLE_DOMAIN_PHYSICS_PROFILES`, which is the
 `--physics-profile` choice list). The registry carries one further
 template that no fixed-template route declares and so has no row here
@@ -2097,6 +2107,7 @@ load, by the same guard.
 | `thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's hrrr default) |
 | `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (the same suite on the legacy engines) |
 | `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `lin-mp2-ysu-mm5-noah-rrtmg-legacy-implemented-unverified-v1` | legacy RRTMG / legacy RRTMG | **yes** |
 | `p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (legacy is P3's one admissible 4/4 engine -- see the P3 section above) |
 | `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
@@ -2106,6 +2117,7 @@ load, by the same guard.
 | `thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (aerosol-aware Thompson with the GSD MYNN v4.1 form over RUC) |
 | `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP (declared as the aggregate `ra_physics = 4`) | **yes** |
+| `wsm6-ysu-mm5-noah-nsas-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (WSM6 and YSU with New SAS cumulus and its NSCV shallow convection) |
 | `milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
 | `wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
@@ -2433,20 +2445,24 @@ deliberately, or picks a profile with both streams on.
 
 ## Namelist import substitutions
 
-`gpuwm import-namelist` maps exactly two unimplemented WRF selections
-to their nearest implemented counterparts, and reports each one in a
+`gpuwm import-namelist` maps exactly one unimplemented WRF selection
+to its nearest implemented counterpart, and reports it in a
 structured substitution report rather than silently rewriting:
 
 | WRF namelist asks for | ArWen substitutes | class |
 |---|---|---|
-| `mp_physics = 55` (ISHMAEL) | Morrison 2-moment (10) | model-form change, no error bound |
 | `ra_lw/sw_physics = 4` (RRTMG) | RTE+RRTMGP (default) or legacy RRTMG (`--rrtmg-variant rrtmg_legacy`) | explicit, token-recorded |
 
 `bl_pbl_physics = 11` (Shin-Hong) was the third row of this table until
 the Shin-Hong port: it now imports natively as 11 and runs the scheme
 itself (registry maturity "implemented-unverified" -- its CPU authority
 is bitwise against WRF v4.6.1, and no matched forecast trajectory
-exists yet), so it is no longer a substitution.  `bl_pbl_physics = 9`
+exists yet), so it is no longer a substitution.  `mp_physics = 55` (Jensen-ISHMAEL)
+was a row too, imported as Morrison (10): a model-form change with no
+error bound.  Since 2026-10-12 it is refused by name
+(`gpuwm.config._MP_UNPORTED_SCHEMES`: ISHMAEL predicts ice habit and
+density that Morrison does not carry) until the port lands; a namelist
+that wants Morrison asks for 10.  `bl_pbl_physics = 9`
 (the UW moist-turbulence PBL) was never a substitution: it imports
 natively as 9 and runs the WRF v4.7.1 scheme.
 

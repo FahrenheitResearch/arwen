@@ -27,8 +27,9 @@
 // ZET fields are bitwise equal.
 //
 // TRANSCRIPTION AUTHORITY: WRF_source_v4.6.1_group/phys/
-// module_mp_milbrandt2mom.F:3400-3466, read line by line.  Transcendentals
-// are IEEE (log10f, never __log10f), as in milbrandt2.cu.
+// module_mp_milbrandt2mom.F:3400-3466, read line by line.  LOG10 is WOOF's
+// own gfk_log10 (log10_flt32.cuh), as in milbrandt2.cu, and the unit is
+// compiled without FMA contraction like it, so the two stay bitwise equal.
 
 #define my2z_cxr ck[147]
 #define my2z_cxi ck[148]
@@ -107,7 +108,7 @@ void milbrandt2_zet(
     }
     float zet = tmp1 + tmp2 + tmp3 + tmp4 + tmp5;
     if (zet > 0.0f) {
-        zet = 10.0f * log10f(zet * MY2Z_zfact);
+        zet = 10.0f * gfk_log10(zet * MY2Z_zfact);
     } else {
         zet = MY2Z_minZET;
     }

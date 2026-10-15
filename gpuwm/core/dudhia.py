@@ -53,8 +53,9 @@ def _array_namespace(*values):
 
 
 def wrf_solar_geometry(valid_time: datetime, latitude_deg, longitude_deg,
-                       *, hour_offset_seconds: float = 0.0):
-    """Return WRF v4.6.1 ``(coszen, solcon)`` for one radiation call.
+                       *, hour_offset_seconds: float = 0.0, generation="wrf_480",
+                       start_time=None, elapsed_seconds=0.0):
+    """Return the selected WRF ``(coszen, solcon)`` for a radiation call.
 
     This is the standard ``radconst``/``calc_coszen`` path in
     ``module_radiation_driver.F:3469-3541``.  As in WRF, only the hour
@@ -65,6 +66,14 @@ def wrf_solar_geometry(valid_time: datetime, latitude_deg, longitude_deg,
         raise TypeError("valid_time must be a datetime")
     if not np.isfinite(hour_offset_seconds):
         raise ValueError("hour_offset_seconds must be finite")
+    from gpuwm.core.solar import solar_generation, geometry_at
+    solar_generation(generation)
+    if generation == "wrf_480":
+        import cupy as cp
+        ds, cz, _ha = geometry_at(valid_time, latitude_deg, longitude_deg,
+            hour_offset_seconds=hour_offset_seconds, generation=generation,
+            start_time=start_time, elapsed_seconds=elapsed_seconds)
+        return (cz if hasattr(latitude_deg, "__cuda_array_interface__") else cp.asnumpy(cz)), float(ds[1].get())
     xp = _array_namespace(latitude_deg, longitude_deg)
     lat = xp.asarray(latitude_deg)
     lon = xp.asarray(longitude_deg)
@@ -103,6 +112,39 @@ def wrf_solar_geometry(valid_time: datetime, latitude_deg, longitude_deg,
     return cosine_zenith, 1370.0 * eccentricity
 
 
+def _wrf_cssca(swrad_scat: float):
+    """``swinit``: ``cssca = swrad_scat * 1.e-5`` in REAL (float32)."""
+    return np.float32(np.float32(swrad_scat) * np.float32(1.0e-5))
+
+
+def _device_columns(arrays, mu, surface_albedo, exner, *, solcon, cssca,
+                    icloud):
+    """Launch the dudhia_sw_column kernel on top-down (ncol, nlay) columns."""
+    import cupy as cp
+    from gpuwm.core.kernels import load_module
+
+    f32 = [cp.ascontiguousarray(value, dtype=cp.float32) for value in arrays]
+    ncol, nlay = f32[0].shape
+    mu = cp.ascontiguousarray(mu, dtype=cp.float32)
+    surface_albedo = cp.ascontiguousarray(surface_albedo, dtype=cp.float32)
+    heating = cp.empty((ncol, nlay), dtype=cp.float32)
+    gsw = cp.empty((ncol,), dtype=cp.float32)
+    swdown = cp.empty((ncol,), dtype=cp.float32)
+    use_exner = exner is not None
+    pi3d = (cp.ascontiguousarray(exner, dtype=cp.float32) if use_exner
+            else heating)
+    if ncol == 0:
+        return heating, swdown, gsw
+    kernel = load_module("dudhia_sw").get_function("dudhia_sw_column")
+    block = 128
+    kernel(((ncol + block - 1) // block,), (block,),
+           (*f32, pi3d, mu, surface_albedo, heating, gsw, swdown,
+            np.float32(solcon), cssca, np.int32(icloud),
+            np.int32(1 if use_exner else 0), np.int32(ncol), np.int32(nlay),
+            np.int64(nlay), np.int64(1), np.int64(0)))
+    return heating, swdown, gsw
+
+
 def dudhia_shortwave_columns(
         temperature, pressure, qv, qc, qr, qi, qs, qg, dz,
         cosine_zenith, albedo, *, solcon: float,
@@ -112,10 +154,17 @@ def dudhia_shortwave_columns(
     Parameters with a vertical coordinate have shape ``(ncol,nlay)``;
     ``cosine_zenith`` and ``albedo`` have shape ``(ncol,)``.  The returned
     tuple is ``(theta_heating, swdown, gsw)`` where ``theta_heating`` is in
-    K s-1, ``swdown`` is incident downwelling surface shortwave, and ``gsw``
-    is the net (surface-albedo-absorbed) flux used internally by WRF.
+    K s-1, ``swdown`` is the radiation driver's incident surface shortwave
+    ``GSW/(1-ALBEDO)`` and ``gsw`` the net (surface-absorbed) flux.
     Supplying ``exner`` applies SWRAD's temperature-to-potential-temperature
     conversion; omitting it returns temperature heating.
+
+    CUDA inputs run the ``dudhia_sw`` kernel in float32 (WRF's REAL; the
+    cosine of the zenith angle is rounded to float32 first, as WRF's COSZEN
+    is a REAL), graded bitwise against WRF v4.6.1 by
+    tests/test_dudhia_sw_wrf461_parity.py.  NumPy inputs run a host mirror
+    of the same expressions in the input dtype with NumPy's own power and
+    log10, which is not graded bitwise.
     """
     xp = _array_namespace(
         temperature, pressure, qv, qc, qr, qi, qs, qg, dz,
@@ -132,8 +181,8 @@ def dudhia_shortwave_columns(
         raise ValueError("Dudhia surface inputs must have shape (ncol,)")
     if exner is not None and xp.asarray(exner).shape != shape:
         raise ValueError("Dudhia exner must match the layer shape")
-    if icloud not in (0, 1):
-        raise ValueError("icloud must be 0 or 1")
+    if icloud not in (0, 1, 2):
+        raise ValueError("icloud=3 requires unported cal_cldfra3 condensate adjustment; choose 0, 1 or 2")
     if (not np.isfinite(solcon) or solcon <= 0.0
             or not np.isfinite(swrad_scat) or swrad_scat < 0.0):
         raise ValueError("solcon must be positive and swrad_scat non-negative")
@@ -141,8 +190,16 @@ def dudhia_shortwave_columns(
     dtype = arrays[0].dtype
     if dtype.kind != "f":
         raise TypeError("Dudhia atmospheric inputs must be floating point")
+    if xp is not np:
+        return _device_columns(
+            arrays, mu, surface_albedo,
+            None if exner is None else xp.asarray(exner),
+            solcon=solcon, cssca=_wrf_cssca(swrad_scat), icloud=icloud)
+
     def real(value):
         return dtype.type(value)
+    mu = mu.astype(dtype)
+    surface_albedo = surface_albedo.astype(dtype)
     t, p, qv_a, qc_a, qr_a, qi_a, qs_a, qg_a, dz_a = arrays
     rho = p / (real(c.RD) * t)
     vapor_path = rho * xp.maximum(qv_a, real(0.0)) * dz_a * real(1000.0)
@@ -172,14 +229,14 @@ def dudhia_shortwave_columns(
     dsca = xp.zeros_like(ww)
     dabs = xp.zeros_like(ww)
     dscld = xp.zeros_like(ww)
-    dabsa = xp.zeros_like(ww)  # WRF-Chem aerosol absorption is absent.
-    cssca = real(swrad_scat * 1.0e-5)
+    cssca = (real(_wrf_cssca(swrad_scat)) if dtype == np.float32
+             else real(swrad_scat * 1.0e-5))
     albtab = xp.asarray(_ALBTAB, dtype=dtype)
     abstab = xp.asarray(_ABSTAB, dtype=dtype)
+    xmuval = xp.asarray([0.0, 0.2, 0.5, 1.0], dtype=dtype)
 
-    # Each iteration is vectorized over columns.  Forty-nine kernel-sized
-    # array operations are preferable to a host round trip per column and
-    # preserve SWPARA's exact top-down recurrence.
+    # SWPARA's top-down recurrence, vectorized over columns, with the same
+    # expression forms the device kernel (kernels/dudhia_sw.cu) evaluates.
     for k in range(nlay):
         ww = ww + cloud_path[:, k]
         uv = uv + vapor_path[:, k]
@@ -191,32 +248,32 @@ def dudhia_shortwave_columns(
                      + real(5.925) * ugcm))
         xsca = cssca * air_path[:, k] / mu_safe
         safe_sdown = xp.where(daylight, sdown, real(1.0))
-        xabs = ((totabs - oldabs)
-                * (top_flux - dscld - dsca - dabsa) / safe_sdown)
+        xabs = (totabs - oldabs) * (top_flux - dscld - dsca) / safe_sdown
         xabs = xp.maximum(xabs, real(0.0))
 
         alw = xp.minimum(xp.log10(wgm + real(1.0)), real(3.999))
-        jlo = xp.floor(alw).astype(xp.int32)
-        wy = alw - jlo.astype(dtype)
-        ilo = xp.where(mu_safe > real(0.5), 2,
-                       xp.where(mu_safe > real(0.2), 1, 0)).astype(xp.int32)
-        xmu_lo = xp.where(ilo == 0, real(0.0),
-                          xp.where(ilo == 1, real(0.2), real(0.5)))
-        xmu_hi = xp.where(ilo == 0, real(0.2),
-                          xp.where(ilo == 1, real(0.5), real(1.0)))
-        wx = (mu_safe - xmu_lo) / (xmu_hi - xmu_lo)
-        ihi = ilo + 1
-        jhi = jlo + 1
+        # The last of XMUVAL(1..3) that XMU exceeds (one-based IIL).
+        iil = xp.where(mu_safe > real(0.5), 3,
+                       xp.where(mu_safe > real(0.2), 2, 1)).astype(xp.int32)
+        iu = iil + 1
+        xi = ((mu_safe - xmuval[iil - 1])
+              / (xmuval[iu - 1] - xmuval[iil - 1]) + iil.astype(dtype))
+        jjl = alw.astype(xp.int32) + 1
+        ju = jjl + 1
+        yj = alw + real(1.0)
+        wa = xi - iil.astype(dtype)
+        wb = iu.astype(dtype) - xi
+        wc = yj - jjl.astype(dtype)
+        wd = ju.astype(dtype) - yj
 
-        def bilinear(table):
-            return ((real(1.0) - wx) * (real(1.0) - wy)
-                    * table[ilo, jlo]
-                    + wx * (real(1.0) - wy) * table[ihi, jlo]
-                    + (real(1.0) - wx) * wy * table[ilo, jhi]
-                    + wx * wy * table[ihi, jhi])
+        def interp(table):
+            return (table[iu - 1, ju - 1] * wa * wc
+                    + table[iil - 1, ju - 1] * wb * wc
+                    + table[iu - 1, jjl - 1] * wa * wd
+                    + table[iil - 1, jjl - 1] * wb * wd)
 
-        alba = bilinear(albtab)
-        absc = bilinear(abstab)
+        alba = interp(albtab)
+        absc = interp(abstab)
         clear_available = top_flux - dsca - dabs
         xalb = xp.maximum(
             (alba - oldalb) * clear_available / safe_sdown, real(0.0))
@@ -229,17 +286,17 @@ def dudhia_shortwave_columns(
         oldabc = absc
 
         trans = (real(100.0) - xalb - xabsc
-                 - real(100.0) * xabs - real(100.0) * xsca)
+                 - xabs * real(100.0) - xsca * real(100.0))
         over = trans < real(1.0)
-        attenuation = (xalb + xabsc + real(100.0) * xabs
-                       + real(100.0) * xsca)
+        attenuation = (xalb + xabsc + xabs * real(100.0)
+                       + xsca * real(100.0))
         ff = real(99.0) / xp.maximum(attenuation, real(1.0e-30))
         xabsc = xp.where(over, xabsc * ff, xabsc)
         xabs = xp.where(over, xabs * ff, xabs)
         trans = xp.where(over, real(1.0), trans)
         heating[:, k] = xp.where(
             daylight,
-            sdown * (xabsc + real(100.0) * xabs) * real(0.01)
+            sdown * (xabsc + xabs * real(100.0)) * real(0.01)
             / (rho[:, k] * real(c.CP) * dz_a[:, k]),
             real(0.0))
         sdown = xp.where(
@@ -249,8 +306,10 @@ def dudhia_shortwave_columns(
 
     if exner is not None:
         heating = heating / xp.asarray(exner)
-    swdown = sdown
-    gsw = (real(1.0) - surface_albedo) * swdown
+    # GSW=(1.-ALBEDO)*SDOWN(kte+1); the driver's SWDOWN=GSW/(1.-ALBEDO)
+    # (module_radiation_driver.F:2877).
+    gsw = (real(1.0) - surface_albedo) * sdown
+    swdown = gsw / (real(1.0) - surface_albedo)
     return heating, swdown, gsw
 
 
@@ -278,8 +337,8 @@ class DudhiaShortwaveRadiation:
             raise ValueError("radiation latitude/longitude shapes must match")
         if (not np.isfinite(self.swrad_scat) or self.swrad_scat < 0.0):
             raise ValueError("swrad_scat must be finite and non-negative")
-        if self.icloud not in (0, 1):
-            raise ValueError("icloud must be 0 or 1")
+        if self.icloud not in (0, 1, 2):
+            raise ValueError("icloud=3 requires unported cal_cldfra3 condensate adjustment; choose 0, 1 or 2")
 
     @staticmethod
     def _top_down(array):
@@ -308,7 +367,7 @@ class DudhiaShortwaveRadiation:
         qg = self._state_field(state, "qg", zero)
         qc_cols = self._top_down(qc)
         qi_cols = self._top_down(qi)
-        active_bl = mynn_bl_cloud_active(
+        active_bl = self.icloud != 2 and mynn_bl_cloud_active(
             getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
         qc_bl = self._top_down(fields["qc_bl"]) if active_bl else None
         qi_bl = self._top_down(fields["qi_bl"]) if active_bl else None
@@ -318,7 +377,7 @@ class DudhiaShortwaveRadiation:
             qc_cols, qi_cols, None, qc_bl=qc_bl, qi_bl=qi_bl,
             cldfra_bl=cldfra_bl,
             bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
-            icloud_bl=getattr(cfg, "icloud_bl", 0),
+            icloud_bl=(getattr(cfg, "icloud_bl", 0) if self.icloud != 2 else 0),
             itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
                        if active_bl else 1),
         )
@@ -329,9 +388,12 @@ class DudhiaShortwaveRadiation:
                       + timedelta(seconds=float(state.elapsed_seconds)))
         radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
         interval = _physics_period_seconds(radt_minutes, cfg)
+        from gpuwm.core.solar import solar_period_seconds
+        interval = solar_period_seconds(cfg, interval)
         mu, solcon = wrf_solar_geometry(
             valid_time, self.latitude_deg, self.longitude_deg,
-            hour_offset_seconds=0.5 * interval)
+            hour_offset_seconds=0.5 * interval, generation=getattr(cfg, "solar_generation", "wrf_480"),
+            start_time=self.start_time, elapsed_seconds=state.elapsed_seconds)
         heating_top, swdown, gsw = dudhia_shortwave_columns(
             self._top_down(temperature),
             self._top_down(atmosphere["pressure"]),

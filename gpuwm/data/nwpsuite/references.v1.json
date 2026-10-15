@@ -1,0 +1,1884 @@
+{
+  "schema": "gpuwm.nwpsuite.references.v1",
+  "hex_commit": "14787f744eeb7ae869acd044e6241794463b7a77",
+  "registries": {
+    "recipes": {
+      "hrrr_v4_gsd41": {
+        "path": "configs/recipes/hrrr_v4_gsd41.toml",
+        "source": "configs/recipes/hrrr_v4_gsd41.toml:1"
+      }
+    },
+    "meshes": {
+      "conus12km": {
+        "source": "tree/src/hexcore/drivers/mpas_mesh_binding.py:1246"
+      },
+      "conus3km": {
+        "source": "tree/src/hexcore/drivers/mpas_mesh_binding.py:1275"
+      },
+      "patch48-3": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#hex-patch48-3-lts-1card-2026-10-11",
+        "runtime_registration_required": true
+      },
+      "x1.655362": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#hex-global-30km-2card-2026-10-11",
+        "runtime_registration_required": true
+      },
+      "x1.2621442": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#hex-global-15km-8card-2026-10-10",
+        "runtime_registration_required": true
+      },
+      "x5.6488066": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#hex-variable-mesh-plan-2026-10-12",
+        "runtime_registration_required": true
+      },
+      "ph48-3": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#hex-country-patch-2card-2026-10-11",
+        "runtime_registration_required": true
+      }
+    },
+    "source_profiles": {
+      "mpas-a-v8.4.2": {
+        "source": "tree/src/hexcore/data/profiles/source-profiles.v1.json:5"
+      },
+      "rrfs-v2": {
+        "source": "tree/src/hexcore/data/profiles/source-profiles.v1.json:128"
+      }
+    },
+    "polygons": {
+      "continental-grid": {
+        "bounds": [
+          -125,
+          24,
+          -66,
+          50
+        ],
+        "source": "configs/recipes/hrrr_v4_gsd41.toml:11",
+        "kind": "coverage-envelope"
+      },
+      "archipelago-grid": {
+        "bounds": [
+          116,
+          4,
+          127,
+          22
+        ],
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#hex-country-patch-2card-2026-10-11",
+        "kind": "coverage-envelope"
+      }
+    },
+    "timezones": {
+      "America/New_York": {
+        "registry": "IANA tzdb"
+      },
+      "Asia/Manila": {
+        "registry": "IANA tzdb"
+      }
+    },
+    "radar": {
+      "mrms": {
+        "source": "gpuwm/obs/mrms_fetch.py:1"
+      }
+    },
+    "qpe": {
+      "stage4": {
+        "source": "gpuwm/obs/sources.py:388"
+      }
+    },
+    "upper": {
+      "igra2": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#hex-global-30km-ensemble-igra2-2026-10-11"
+      }
+    },
+    "radars": {
+      "nexrad": {
+        "source": "gpuwm/obs/nexrad.py:1"
+      }
+    },
+    "obs": {
+      "conventional": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#stock-mpas-jedi-30km-cycling-2026-10-04"
+      },
+      "gnssro": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#stock-mpas-jedi-30km-gnssro-radiance-2026-10-11"
+      },
+      "radiance": {
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#stock-mpas-jedi-30km-gnssro-radiance-2026-10-11"
+      }
+    },
+    "products": {
+      "standard": {
+        "door_products": "all",
+        "source": "gpuwm/go_cli.py:6713"
+      }
+    },
+    "publish": {
+      "local-index": {
+        "kind": "local",
+        "source": "gpuwm/data/nwpsuite/receipts.v1.json#suite-capacity-plan-2026-10-12"
+      }
+    },
+    "physics_keys": {
+      "mp": {
+        "config_key": "mp_physics"
+      },
+      "mp_physics": {
+        "config_key": "mp_physics"
+      },
+      "pbl": {
+        "config_key": "bl_pbl_physics"
+      },
+      "bl_pbl_physics": {
+        "config_key": "bl_pbl_physics"
+      },
+      "cu_physics": {
+        "config_key": "cu_physics"
+      },
+      "sf_surface_physics": {
+        "config_key": "sf_surface_physics"
+      },
+      "ra_lw_physics": {
+        "config_key": "ra_lw_physics"
+      },
+      "ra_sw_physics": {
+        "config_key": "ra_sw_physics"
+      },
+      "nx": {
+        "config_key": "nx",
+        "source": "gpuwm/config.py:80"
+      },
+      "ny": {
+        "config_key": "ny",
+        "source": "gpuwm/config.py:81"
+      },
+      "nz": {
+        "config_key": "nz",
+        "source": "gpuwm/config.py:82"
+      },
+      "dx": {
+        "config_key": "dx",
+        "source": "gpuwm/config.py:83"
+      },
+      "dy": {
+        "config_key": "dy",
+        "source": "gpuwm/config.py:84"
+      },
+      "ztop": {
+        "config_key": "ztop",
+        "source": "gpuwm/config.py:85"
+      },
+      "dt": {
+        "config_key": "dt",
+        "source": "gpuwm/config.py:86"
+      },
+      "run_seconds": {
+        "config_key": "run_seconds",
+        "source": "gpuwm/config.py:87"
+      },
+      "clock_dt": {
+        "config_key": "clock_dt",
+        "source": "gpuwm/config.py:92"
+      },
+      "p_surf": {
+        "config_key": "p_surf",
+        "source": "gpuwm/config.py:93"
+      },
+      "time_step_sound": {
+        "config_key": "time_step_sound",
+        "source": "gpuwm/config.py:94"
+      },
+      "epssm": {
+        "config_key": "epssm",
+        "source": "gpuwm/config.py:95"
+      },
+      "smdiv": {
+        "config_key": "smdiv",
+        "source": "gpuwm/config.py:96"
+      },
+      "khdif": {
+        "config_key": "khdif",
+        "source": "gpuwm/config.py:97"
+      },
+      "kvdif": {
+        "config_key": "kvdif",
+        "source": "gpuwm/config.py:98"
+      },
+      "damp_opt": {
+        "config_key": "damp_opt",
+        "source": "gpuwm/config.py:99"
+      },
+      "zdamp": {
+        "config_key": "zdamp",
+        "source": "gpuwm/config.py:100"
+      },
+      "dampcoef": {
+        "config_key": "dampcoef",
+        "source": "gpuwm/config.py:101"
+      },
+      "output_interval_s": {
+        "config_key": "output_interval_s",
+        "source": "gpuwm/config.py:102"
+      },
+      "case": {
+        "config_key": "case",
+        "source": "gpuwm/config.py:103"
+      },
+      "hybrid_opt": {
+        "config_key": "hybrid_opt",
+        "source": "gpuwm/config.py:105"
+      },
+      "etac": {
+        "config_key": "etac",
+        "source": "gpuwm/config.py:106"
+      },
+      "moist": {
+        "config_key": "moist",
+        "source": "gpuwm/config.py:107"
+      },
+      "moist_adv_opt": {
+        "config_key": "moist_adv_opt",
+        "source": "gpuwm/config.py:113"
+      },
+      "no_mp_heating": {
+        "config_key": "no_mp_heating",
+        "source": "gpuwm/config.py:118"
+      },
+      "mp_tend_lim": {
+        "config_key": "mp_tend_lim",
+        "source": "gpuwm/config.py:122"
+      },
+      "diff_6th_opt": {
+        "config_key": "diff_6th_opt",
+        "source": "gpuwm/config.py:123"
+      },
+      "diff_6th_factor": {
+        "config_key": "diff_6th_factor",
+        "source": "gpuwm/config.py:124"
+      },
+      "diff_6th_slopeopt": {
+        "config_key": "diff_6th_slopeopt",
+        "source": "gpuwm/config.py:133"
+      },
+      "diff_6th_thresh": {
+        "config_key": "diff_6th_thresh",
+        "source": "gpuwm/config.py:134"
+      },
+      "km_opt": {
+        "config_key": "km_opt",
+        "source": "gpuwm/config.py:135"
+      },
+      "c_s": {
+        "config_key": "c_s",
+        "source": "gpuwm/config.py:136"
+      },
+      "w_damping": {
+        "config_key": "w_damping",
+        "source": "gpuwm/config.py:137"
+      },
+      "open_x": {
+        "config_key": "open_x",
+        "source": "gpuwm/config.py:138"
+      },
+      "open_y": {
+        "config_key": "open_y",
+        "source": "gpuwm/config.py:139"
+      },
+      "base_temp": {
+        "config_key": "base_temp",
+        "source": "gpuwm/config.py:141"
+      },
+      "specified": {
+        "config_key": "specified",
+        "source": "gpuwm/config.py:142"
+      },
+      "spec_bdy_width": {
+        "config_key": "spec_bdy_width",
+        "source": "gpuwm/config.py:143"
+      },
+      "spec_zone": {
+        "config_key": "spec_zone",
+        "source": "gpuwm/config.py:144"
+      },
+      "relax_zone": {
+        "config_key": "relax_zone",
+        "source": "gpuwm/config.py:145"
+      },
+      "spec_exp": {
+        "config_key": "spec_exp",
+        "source": "gpuwm/config.py:146"
+      },
+      "emdiv": {
+        "config_key": "emdiv",
+        "source": "gpuwm/config.py:152"
+      },
+      "h_sca_adv_order": {
+        "config_key": "h_sca_adv_order",
+        "source": "gpuwm/config.py:160"
+      },
+      "terrain_opt": {
+        "config_key": "terrain_opt",
+        "source": "gpuwm/config.py:161"
+      },
+      "hill_height": {
+        "config_key": "hill_height",
+        "source": "gpuwm/config.py:162"
+      },
+      "hill_halfwidth": {
+        "config_key": "hill_halfwidth",
+        "source": "gpuwm/config.py:163"
+      },
+      "map_proj": {
+        "config_key": "map_proj",
+        "source": "gpuwm/config.py:170"
+      },
+      "sf_sfclay_physics": {
+        "config_key": "sf_sfclay_physics",
+        "source": "gpuwm/config.py:173"
+      },
+      "ysu_topdown_pblmix": {
+        "config_key": "ysu_topdown_pblmix",
+        "source": "gpuwm/config.py:184"
+      },
+      "ra_physics": {
+        "config_key": "ra_physics",
+        "source": "gpuwm/config.py:190"
+      },
+      "radt_minutes": {
+        "config_key": "radt_minutes",
+        "source": "gpuwm/config.py:192"
+      },
+      "cudt_minutes": {
+        "config_key": "cudt_minutes",
+        "source": "gpuwm/config.py:193"
+      },
+      "radt": {
+        "config_key": "radt",
+        "source": "gpuwm/config.py:197"
+      },
+      "bldt": {
+        "config_key": "bldt",
+        "source": "gpuwm/config.py:198"
+      },
+      "hypsometric_opt": {
+        "config_key": "hypsometric_opt",
+        "source": "gpuwm/config.py:208"
+      },
+      "restart_interval_s": {
+        "config_key": "restart_interval_s",
+        "source": "gpuwm/config.py:215"
+      },
+      "nested": {
+        "config_key": "nested",
+        "source": "gpuwm/config.py:223"
+      },
+      "grid_id": {
+        "config_key": "grid_id",
+        "source": "gpuwm/config.py:224"
+      },
+      "top_lid": {
+        "config_key": "top_lid",
+        "source": "gpuwm/config.py:233"
+      },
+      "moist_cq": {
+        "config_key": "moist_cq",
+        "source": "gpuwm/config.py:239"
+      },
+      "morr_rimed_ice": {
+        "config_key": "morr_rimed_ice",
+        "source": "gpuwm/config.py:244"
+      },
+      "wsm6_hail_opt": {
+        "config_key": "wsm6_hail_opt",
+        "source": "gpuwm/config.py:249"
+      },
+      "icloud": {
+        "config_key": "icloud",
+        "source": "gpuwm/config.py:262"
+      },
+      "swrad_scat": {
+        "config_key": "swrad_scat",
+        "source": "gpuwm/config.py:263"
+      },
+      "wrf_rrtmg_compatibility": {
+        "config_key": "wrf_rrtmg_compatibility",
+        "source": "gpuwm/config.py:269"
+      },
+      "num_soil_layers": {
+        "config_key": "num_soil_layers",
+        "source": "gpuwm/config.py:278"
+      },
+      "ra_rrtmg_variant": {
+        "config_key": "ra_rrtmg_variant",
+        "source": "gpuwm/config.py:285"
+      },
+      "nest_microphysics_transition": {
+        "config_key": "nest_microphysics_transition",
+        "source": "gpuwm/config.py:292"
+      },
+      "isftcflx": {
+        "config_key": "isftcflx",
+        "source": "gpuwm/config.py:303"
+      },
+      "iz0tlnd": {
+        "config_key": "iz0tlnd",
+        "source": "gpuwm/config.py:304"
+      },
+      "usemonalb": {
+        "config_key": "usemonalb",
+        "source": "gpuwm/config.py:319"
+      },
+      "rdlai2d": {
+        "config_key": "rdlai2d",
+        "source": "gpuwm/config.py:320"
+      },
+      "opt_thcnd": {
+        "config_key": "opt_thcnd",
+        "source": "gpuwm/config.py:321"
+      },
+      "bl_mynn_closure": {
+        "config_key": "bl_mynn_closure",
+        "source": "gpuwm/config.py:326"
+      },
+      "bl_mynn_cloudpdf": {
+        "config_key": "bl_mynn_cloudpdf",
+        "source": "gpuwm/config.py:327"
+      },
+      "bl_mynn_mixlength": {
+        "config_key": "bl_mynn_mixlength",
+        "source": "gpuwm/config.py:328"
+      },
+      "bl_mynn_edmf": {
+        "config_key": "bl_mynn_edmf",
+        "source": "gpuwm/config.py:329"
+      },
+      "bl_mynn_edmf_mom": {
+        "config_key": "bl_mynn_edmf_mom",
+        "source": "gpuwm/config.py:330"
+      },
+      "bl_mynn_edmf_tke": {
+        "config_key": "bl_mynn_edmf_tke",
+        "source": "gpuwm/config.py:331"
+      },
+      "bl_mynn_mixscalars": {
+        "config_key": "bl_mynn_mixscalars",
+        "source": "gpuwm/config.py:346"
+      },
+      "bl_mynn_cloudmix": {
+        "config_key": "bl_mynn_cloudmix",
+        "source": "gpuwm/config.py:347"
+      },
+      "bl_mynn_mixqt": {
+        "config_key": "bl_mynn_mixqt",
+        "source": "gpuwm/config.py:348"
+      },
+      "bl_mynn_output": {
+        "config_key": "bl_mynn_output",
+        "source": "gpuwm/config.py:349"
+      },
+      "bl_mynn_tkeadvect": {
+        "config_key": "bl_mynn_tkeadvect",
+        "source": "gpuwm/config.py:350"
+      },
+      "icloud_bl": {
+        "config_key": "icloud_bl",
+        "source": "gpuwm/config.py:351"
+      },
+      "dveg": {
+        "config_key": "dveg",
+        "source": "gpuwm/config.py:364"
+      },
+      "opt_crs": {
+        "config_key": "opt_crs",
+        "source": "gpuwm/config.py:365"
+      },
+      "opt_btr": {
+        "config_key": "opt_btr",
+        "source": "gpuwm/config.py:366"
+      },
+      "opt_run": {
+        "config_key": "opt_run",
+        "source": "gpuwm/config.py:367"
+      },
+      "opt_sfc": {
+        "config_key": "opt_sfc",
+        "source": "gpuwm/config.py:368"
+      },
+      "opt_frz": {
+        "config_key": "opt_frz",
+        "source": "gpuwm/config.py:369"
+      },
+      "opt_inf": {
+        "config_key": "opt_inf",
+        "source": "gpuwm/config.py:370"
+      },
+      "opt_rad": {
+        "config_key": "opt_rad",
+        "source": "gpuwm/config.py:371"
+      },
+      "opt_alb": {
+        "config_key": "opt_alb",
+        "source": "gpuwm/config.py:372"
+      },
+      "opt_snf": {
+        "config_key": "opt_snf",
+        "source": "gpuwm/config.py:373"
+      },
+      "opt_tbot": {
+        "config_key": "opt_tbot",
+        "source": "gpuwm/config.py:374"
+      },
+      "opt_stc": {
+        "config_key": "opt_stc",
+        "source": "gpuwm/config.py:375"
+      },
+      "opt_gla": {
+        "config_key": "opt_gla",
+        "source": "gpuwm/config.py:376"
+      },
+      "opt_rsf": {
+        "config_key": "opt_rsf",
+        "source": "gpuwm/config.py:377"
+      },
+      "opt_soil": {
+        "config_key": "opt_soil",
+        "source": "gpuwm/config.py:378"
+      },
+      "opt_pedo": {
+        "config_key": "opt_pedo",
+        "source": "gpuwm/config.py:379"
+      },
+      "opt_crop": {
+        "config_key": "opt_crop",
+        "source": "gpuwm/config.py:380"
+      },
+      "opt_irr": {
+        "config_key": "opt_irr",
+        "source": "gpuwm/config.py:381"
+      },
+      "opt_irrm": {
+        "config_key": "opt_irrm",
+        "source": "gpuwm/config.py:382"
+      },
+      "opt_infdv": {
+        "config_key": "opt_infdv",
+        "source": "gpuwm/config.py:383"
+      },
+      "opt_tdrn": {
+        "config_key": "opt_tdrn",
+        "source": "gpuwm/config.py:384"
+      },
+      "soiltstep": {
+        "config_key": "soiltstep",
+        "source": "gpuwm/config.py:385"
+      },
+      "noahmp_output": {
+        "config_key": "noahmp_output",
+        "source": "gpuwm/config.py:386"
+      },
+      "noahmp_acc_dt": {
+        "config_key": "noahmp_acc_dt",
+        "source": "gpuwm/config.py:387"
+      },
+      "mosaic_lu": {
+        "config_key": "mosaic_lu",
+        "source": "gpuwm/config.py:393"
+      },
+      "mosaic_soil": {
+        "config_key": "mosaic_soil",
+        "source": "gpuwm/config.py:394"
+      },
+      "flag_sm_adj": {
+        "config_key": "flag_sm_adj",
+        "source": "gpuwm/config.py:395"
+      },
+      "spp_lsm": {
+        "config_key": "spp_lsm",
+        "source": "gpuwm/config.py:396"
+      },
+      "nwp_diagnostics": {
+        "config_key": "nwp_diagnostics",
+        "source": "gpuwm/config.py:406"
+      },
+      "isfflx": {
+        "config_key": "isfflx",
+        "source": "gpuwm/config.py:414"
+      },
+      "o3input": {
+        "config_key": "o3input",
+        "source": "gpuwm/config.py:418"
+      },
+      "use_mp_re": {
+        "config_key": "use_mp_re",
+        "source": "gpuwm/config.py:421"
+      },
+      "seaice_albedo_default": {
+        "config_key": "seaice_albedo_default",
+        "source": "gpuwm/config.py:424"
+      },
+      "rdmaxalb": {
+        "config_key": "rdmaxalb",
+        "source": "gpuwm/config.py:427"
+      },
+      "mix_isotropic": {
+        "config_key": "mix_isotropic",
+        "source": "gpuwm/config.py:438"
+      },
+      "mix_upper_bound": {
+        "config_key": "mix_upper_bound",
+        "source": "gpuwm/config.py:442"
+      },
+      "tke_heat_flux": {
+        "config_key": "tke_heat_flux",
+        "source": "gpuwm/config.py:449"
+      },
+      "tke_drag_coefficient": {
+        "config_key": "tke_drag_coefficient",
+        "source": "gpuwm/config.py:450"
+      },
+      "c_k": {
+        "config_key": "c_k",
+        "source": "gpuwm/config.py:455"
+      },
+      "tke_upper_bound": {
+        "config_key": "tke_upper_bound",
+        "source": "gpuwm/config.py:462"
+      },
+      "tke_budget": {
+        "config_key": "tke_budget",
+        "source": "gpuwm/config.py:469"
+      },
+      "aer_init_opt": {
+        "config_key": "aer_init_opt",
+        "source": "gpuwm/config.py:488"
+      },
+      "wif_input_opt": {
+        "config_key": "wif_input_opt",
+        "source": "gpuwm/config.py:496"
+      },
+      "sase_flux_diag": {
+        "config_key": "sase_flux_diag",
+        "source": "gpuwm/config.py:511"
+      },
+      "sase_moist_n2": {
+        "config_key": "sase_moist_n2",
+        "source": "gpuwm/config.py:521"
+      },
+      "sase_stable_dissipation": {
+        "config_key": "sase_stable_dissipation",
+        "source": "gpuwm/config.py:534"
+      },
+      "sase_additive_dissipation": {
+        "config_key": "sase_additive_dissipation",
+        "source": "gpuwm/config.py:560"
+      },
+      "hmix_k_diag": {
+        "config_key": "hmix_k_diag",
+        "source": "gpuwm/config.py:573"
+      },
+      "km_opt_zero_acknowledgement": {
+        "config_key": "km_opt_zero_acknowledgement",
+        "source": "gpuwm/config.py:579"
+      },
+      "inflow_perturbation": {
+        "config_key": "inflow_perturbation",
+        "source": "gpuwm/config.py:593"
+      },
+      "inflow_perturbation_seed": {
+        "config_key": "inflow_perturbation_seed",
+        "source": "gpuwm/config.py:596"
+      },
+      "inflow_perturbation_amplitude_scale": {
+        "config_key": "inflow_perturbation_amplitude_scale",
+        "source": "gpuwm/config.py:600"
+      },
+      "inflow_perturbation_faces": {
+        "config_key": "inflow_perturbation_faces",
+        "source": "gpuwm/config.py:604"
+      },
+      "moist_mix6_off": {
+        "config_key": "moist_mix6_off",
+        "source": "gpuwm/config.py:629"
+      },
+      "clos_choice": {
+        "config_key": "clos_choice",
+        "source": "gpuwm/config.py:637"
+      },
+      "ishallow": {
+        "config_key": "ishallow",
+        "source": "gpuwm/config.py:638"
+      },
+      "nssl_2moment_on": {
+        "config_key": "nssl_2moment_on",
+        "source": "gpuwm/config.py:652"
+      },
+      "nssl_hail_on": {
+        "config_key": "nssl_hail_on",
+        "source": "gpuwm/config.py:653"
+      },
+      "nssl_ccn_on": {
+        "config_key": "nssl_ccn_on",
+        "source": "gpuwm/config.py:654"
+      },
+      "nssl_density_on": {
+        "config_key": "nssl_density_on",
+        "source": "gpuwm/config.py:655"
+      },
+      "nssl_3moment": {
+        "config_key": "nssl_3moment",
+        "source": "gpuwm/config.py:656"
+      },
+      "wdm6_hail_opt": {
+        "config_key": "wdm6_hail_opt",
+        "source": "gpuwm/config.py:684"
+      },
+      "wdm6_ccn_conc": {
+        "config_key": "wdm6_ccn_conc",
+        "source": "gpuwm/config.py:685"
+      },
+      "surface_radiation_policy": {
+        "config_key": "surface_radiation_policy",
+        "source": "gpuwm/config.py:701"
+      },
+      "wif_climatology_path": {
+        "config_key": "wif_climatology_path",
+        "source": "gpuwm/config.py:713"
+      },
+      "mp28_aerosol_source": {
+        "config_key": "mp28_aerosol_source",
+        "source": "gpuwm/config.py:723"
+      },
+      "p3_backend": {
+        "config_key": "p3_backend",
+        "source": "gpuwm/config.py:739"
+      },
+      "ntiedtke_tiedtke_closure": {
+        "config_key": "ntiedtke_tiedtke_closure",
+        "source": "gpuwm/config.py:762"
+      },
+      "use_adaptive_time_step": {
+        "config_key": "use_adaptive_time_step",
+        "source": "gpuwm/config.py:780"
+      },
+      "step_to_output_time": {
+        "config_key": "step_to_output_time",
+        "source": "gpuwm/config.py:781"
+      },
+      "adaptation_domain": {
+        "config_key": "adaptation_domain",
+        "source": "gpuwm/config.py:782"
+      },
+      "target_cfl": {
+        "config_key": "target_cfl",
+        "source": "gpuwm/config.py:783"
+      },
+      "target_hcfl": {
+        "config_key": "target_hcfl",
+        "source": "gpuwm/config.py:784"
+      },
+      "max_step_increase_pct": {
+        "config_key": "max_step_increase_pct",
+        "source": "gpuwm/config.py:785"
+      },
+      "starting_time_step": {
+        "config_key": "starting_time_step",
+        "source": "gpuwm/config.py:791"
+      },
+      "starting_time_step_den": {
+        "config_key": "starting_time_step_den",
+        "source": "gpuwm/config.py:792"
+      },
+      "max_time_step": {
+        "config_key": "max_time_step",
+        "source": "gpuwm/config.py:793"
+      },
+      "max_time_step_den": {
+        "config_key": "max_time_step_den",
+        "source": "gpuwm/config.py:794"
+      },
+      "min_time_step": {
+        "config_key": "min_time_step",
+        "source": "gpuwm/config.py:795"
+      },
+      "min_time_step_den": {
+        "config_key": "min_time_step_den",
+        "source": "gpuwm/config.py:796"
+      },
+      "eta_levels": {
+        "config_key": "eta_levels",
+        "source": "gpuwm/config.py:820"
+      },
+      "relax_timescale_s": {
+        "config_key": "relax_timescale_s",
+        "source": "gpuwm/config.py:835"
+      },
+      "relax_w": {
+        "config_key": "relax_w",
+        "source": "gpuwm/config.py:843"
+      },
+      "min_time_step_sound": {
+        "config_key": "min_time_step_sound",
+        "source": "gpuwm/config.py:862"
+      },
+      "adaptive_nest_lattice": {
+        "config_key": "adaptive_nest_lattice",
+        "source": "gpuwm/config.py:864"
+      },
+      "sf_urban_physics": {
+        "config_key": "sf_urban_physics",
+        "source": "gpuwm/config.py:872"
+      },
+      "use_wudapt_lcz": {
+        "config_key": "use_wudapt_lcz",
+        "source": "gpuwm/config.py:876"
+      },
+      "num_urban_hi": {
+        "config_key": "num_urban_hi",
+        "source": "gpuwm/config.py:879"
+      },
+      "slope_rad": {
+        "config_key": "slope_rad",
+        "source": "gpuwm/config.py:886"
+      },
+      "topo_shading": {
+        "config_key": "topo_shading",
+        "source": "gpuwm/config.py:890"
+      },
+      "shadlen": {
+        "config_key": "shadlen",
+        "source": "gpuwm/config.py:893"
+      },
+      "zadvect_implicit": {
+        "config_key": "zadvect_implicit",
+        "source": "gpuwm/config.py:900"
+      },
+      "w_crit_cfl": {
+        "config_key": "w_crit_cfl",
+        "source": "gpuwm/config.py:909"
+      },
+      "sf_surface_mosaic": {
+        "config_key": "sf_surface_mosaic",
+        "source": "gpuwm/config.py:913"
+      },
+      "mosaic_cat": {
+        "config_key": "mosaic_cat",
+        "source": "gpuwm/config.py:915"
+      },
+      "mosaic_urban_canopy": {
+        "config_key": "mosaic_urban_canopy",
+        "source": "gpuwm/config.py:923"
+      },
+      "diff_opt": {
+        "config_key": "diff_opt",
+        "source": "gpuwm/config.py:926"
+      },
+      "mix_full_fields": {
+        "config_key": "mix_full_fields",
+        "source": "gpuwm/config.py:927"
+      },
+      "topo_wind": {
+        "config_key": "topo_wind",
+        "source": "gpuwm/config.py:937"
+      },
+      "gwd_opt": {
+        "config_key": "gwd_opt",
+        "source": "gpuwm/config.py:944"
+      },
+      "zadvect_implicit_variant": {
+        "config_key": "zadvect_implicit_variant",
+        "source": "gpuwm/config.py:950"
+      },
+      "scalar_pblmix": {
+        "config_key": "scalar_pblmix",
+        "source": "gpuwm/config.py:953"
+      },
+      "use_rap_aero_icbc": {
+        "config_key": "use_rap_aero_icbc",
+        "source": "gpuwm/config.py:957"
+      },
+      "sf_lake_physics": {
+        "config_key": "sf_lake_physics",
+        "source": "gpuwm/config.py:961"
+      },
+      "use_lakedepth": {
+        "config_key": "use_lakedepth",
+        "source": "gpuwm/config.py:962"
+      },
+      "lakedepth_default": {
+        "config_key": "lakedepth_default",
+        "source": "gpuwm/config.py:963"
+      },
+      "lake_min_elev": {
+        "config_key": "lake_min_elev",
+        "source": "gpuwm/config.py:964"
+      },
+      "spp_conv": {
+        "config_key": "spp_conv",
+        "source": "gpuwm/config.py:967"
+      },
+      "spp_pbl": {
+        "config_key": "spp_pbl",
+        "source": "gpuwm/config.py:968"
+      },
+      "ruc_soilprop": {
+        "config_key": "ruc_soilprop",
+        "source": "gpuwm/config.py:977"
+      },
+      "fractional_seaice": {
+        "config_key": "fractional_seaice",
+        "source": "gpuwm/config.py:990"
+      },
+      "mynn_sfclay_variant": {
+        "config_key": "mynn_sfclay_variant",
+        "source": "gpuwm/config.py:1002"
+      },
+      "terrain_clock": {
+        "config_key": "terrain_clock",
+        "source": "gpuwm/config.py:1045"
+      },
+      "diff_6th_form": {
+        "config_key": "diff_6th_form",
+        "source": "gpuwm/config.py:1057"
+      },
+      "diff_6th_factor2": {
+        "config_key": "diff_6th_factor2",
+        "source": "gpuwm/config.py:1062"
+      },
+      "mp_zero_out": {
+        "config_key": "mp_zero_out",
+        "source": "gpuwm/config.py:1067"
+      },
+      "mp_zero_out_thresh": {
+        "config_key": "mp_zero_out_thresh",
+        "source": "gpuwm/config.py:1068"
+      },
+      "mp_zero_out_all": {
+        "config_key": "mp_zero_out_all",
+        "source": "gpuwm/config.py:1073"
+      },
+      "upper_wind_limiter_form": {
+        "config_key": "upper_wind_limiter_form",
+        "source": "gpuwm/config.py:1078"
+      },
+      "v_sca_adv_order": {
+        "config_key": "v_sca_adv_order",
+        "source": "gpuwm/config.py:1091"
+      },
+      "v_mom_adv_order": {
+        "config_key": "v_mom_adv_order",
+        "source": "gpuwm/config.py:1093"
+      },
+      "h_mom_adv_order": {
+        "config_key": "h_mom_adv_order",
+        "source": "gpuwm/config.py:1098"
+      },
+      "ruc_irrigation": {
+        "config_key": "ruc_irrigation",
+        "source": "gpuwm/config.py:1110"
+      },
+      "ruc_qvg_cold_start": {
+        "config_key": "ruc_qvg_cold_start",
+        "source": "gpuwm/config.py:1118"
+      },
+      "ruc_2m_diagnostic": {
+        "config_key": "ruc_2m_diagnostic",
+        "source": "gpuwm/config.py:1124"
+      },
+      "ruc_snow": {
+        "config_key": "ruc_snow",
+        "source": "gpuwm/config.py:1135"
+      },
+      "bl_mynn_version": {
+        "config_key": "bl_mynn_version",
+        "source": "gpuwm/config.py:1145"
+      },
+      "bl_mynn_gsd41_unsquared_qtke": {
+        "config_key": "bl_mynn_gsd41_unsquared_qtke",
+        "source": "gpuwm/config.py:1152"
+      },
+      "bl_mynn_cloud_tendency_form": {
+        "config_key": "bl_mynn_cloud_tendency_form",
+        "source": "gpuwm/config.py:1160"
+      },
+      "swint_opt": {
+        "config_key": "swint_opt",
+        "source": "gpuwm/config.py:1180"
+      },
+      "aer_opt": {
+        "config_key": "aer_opt",
+        "source": "gpuwm/config.py:1181"
+      },
+      "alb_sol": {
+        "config_key": "alb_sol",
+        "source": "gpuwm/config.py:1185"
+      },
+      "thompson_version": {
+        "config_key": "thompson_version",
+        "source": "gpuwm/config.py:1204"
+      },
+      "thompson_fork_snow_fall": {
+        "config_key": "thompson_fork_snow_fall",
+        "source": "gpuwm/config.py:1220"
+      },
+      "rrtmg_cloud_optics_form": {
+        "config_key": "rrtmg_cloud_optics_form",
+        "source": "gpuwm/config.py:1226"
+      },
+      "rrtmg_smoke_manifest": {
+        "config_key": "rrtmg_smoke_manifest",
+        "source": "gpuwm/config.py:1230"
+      },
+      "surface_energy_diag": {
+        "config_key": "surface_energy_diag",
+        "source": "gpuwm/config.py:1235"
+      },
+      "cycling": {
+        "config_key": "cycling",
+        "source": "gpuwm/config.py:1244"
+      },
+      "rrtmg_aer3_type_source": {
+        "config_key": "rrtmg_aer3_type_source",
+        "source": "gpuwm/config.py:1253"
+      },
+      "bl_mynn_mixaerosols": {
+        "config_key": "bl_mynn_mixaerosols",
+        "source": "gpuwm/config.py:1266"
+      },
+      "bl_mynn_mixnumcon": {
+        "config_key": "bl_mynn_mixnumcon",
+        "source": "gpuwm/config.py:1267"
+      },
+      "tempo_ml_for_bl_nc": {
+        "config_key": "tempo_ml_for_bl_nc",
+        "source": "gpuwm/config.py:1272"
+      },
+      "tempo_surface_emission_before": {
+        "config_key": "tempo_surface_emission_before",
+        "source": "gpuwm/config.py:1273"
+      },
+      "thompson_table_dir": {
+        "config_key": "thompson_table_dir",
+        "source": "gpuwm/config.py:1279"
+      },
+      "constant_k_prandtl": {
+        "config_key": "constant_k_prandtl",
+        "source": "gpuwm/config.py:1288"
+      },
+      "chem_sets": {
+        "config_key": "chem_sets",
+        "source": "gpuwm/config.py:1303"
+      },
+      "chem_sources": {
+        "config_key": "chem_sources",
+        "source": "gpuwm/config.py:1306"
+      },
+      "chem_adv_opt": {
+        "config_key": "chem_adv_opt",
+        "source": "gpuwm/config.py:1311"
+      },
+      "chem_mix2_off": {
+        "config_key": "chem_mix2_off",
+        "source": "gpuwm/config.py:1315"
+      },
+      "chem_mix6_off": {
+        "config_key": "chem_mix6_off",
+        "source": "gpuwm/config.py:1316"
+      },
+      "chemdt": {
+        "config_key": "chemdt",
+        "source": "gpuwm/config.py:1318"
+      },
+      "kemit": {
+        "config_key": "kemit",
+        "source": "gpuwm/config.py:1321"
+      },
+      "biomass_burn_opt": {
+        "config_key": "biomass_burn_opt",
+        "source": "gpuwm/config.py:1324"
+      },
+      "plumerisefire_frq": {
+        "config_key": "plumerisefire_frq",
+        "source": "gpuwm/config.py:1325"
+      },
+      "dust_opt": {
+        "config_key": "dust_opt",
+        "source": "gpuwm/config.py:1328"
+      },
+      "seas_opt": {
+        "config_key": "seas_opt",
+        "source": "gpuwm/config.py:1329"
+      },
+      "dmsemis_opt": {
+        "config_key": "dmsemis_opt",
+        "source": "gpuwm/config.py:1330"
+      },
+      "wetscav_onoff": {
+        "config_key": "wetscav_onoff",
+        "source": "gpuwm/config.py:1333"
+      },
+      "chem_conv_tr": {
+        "config_key": "chem_conv_tr",
+        "source": "gpuwm/config.py:1336"
+      },
+      "vertmix_onoff": {
+        "config_key": "vertmix_onoff",
+        "source": "gpuwm/config.py:1338"
+      },
+      "aer_ra_feedback": {
+        "config_key": "aer_ra_feedback",
+        "source": "gpuwm/config.py:1340"
+      },
+      "aer_op_opt": {
+        "config_key": "aer_op_opt",
+        "source": "gpuwm/config.py:1341"
+      },
+      "dust_alpha": {
+        "config_key": "dust_alpha",
+        "source": "gpuwm/config.py:1343"
+      },
+      "dust_gamma": {
+        "config_key": "dust_gamma",
+        "source": "gpuwm/config.py:1344"
+      },
+      "dust_smtune": {
+        "config_key": "dust_smtune",
+        "source": "gpuwm/config.py:1345"
+      },
+      "dust_ustune": {
+        "config_key": "dust_ustune",
+        "source": "gpuwm/config.py:1346"
+      },
+      "mynn_chem_vertmx": {
+        "config_key": "mynn_chem_vertmx",
+        "source": "gpuwm/config.py:1348"
+      },
+      "fire_emission_mode": {
+        "config_key": "fire_emission_mode",
+        "source": "gpuwm/config.py:1354"
+      },
+      "plume_fire_properties": {
+        "config_key": "plume_fire_properties",
+        "source": "gpuwm/config.py:1357"
+      },
+      "aerosol_mp_coupling": {
+        "config_key": "aerosol_mp_coupling",
+        "source": "gpuwm/config.py:1360"
+      },
+      "_": {
+        "config_key": "_",
+        "source": "gpuwm/config.py:1365"
+      },
+      "nfmc": {
+        "config_key": "nfmc",
+        "source": "gpuwm/config.py:1366"
+      },
+      "fmoist_run": {
+        "config_key": "fmoist_run",
+        "source": "gpuwm/config.py:1367"
+      },
+      "fmoist_interp": {
+        "config_key": "fmoist_interp",
+        "source": "gpuwm/config.py:1368"
+      },
+      "fmoist_only": {
+        "config_key": "fmoist_only",
+        "source": "gpuwm/config.py:1369"
+      },
+      "fmoist_freq": {
+        "config_key": "fmoist_freq",
+        "source": "gpuwm/config.py:1370"
+      },
+      "fmoist_dt": {
+        "config_key": "fmoist_dt",
+        "source": "gpuwm/config.py:1371"
+      },
+      "fmep_decay_tlag": {
+        "config_key": "fmep_decay_tlag",
+        "source": "gpuwm/config.py:1372"
+      },
+      "ifire": {
+        "config_key": "ifire",
+        "source": "gpuwm/config.py:1373"
+      },
+      "fire_boundary_guard": {
+        "config_key": "fire_boundary_guard",
+        "source": "gpuwm/config.py:1374"
+      },
+      "fire_num_ignitions": {
+        "config_key": "fire_num_ignitions",
+        "source": "gpuwm/config.py:1375"
+      },
+      "fire_ignition_ros1": {
+        "config_key": "fire_ignition_ros1",
+        "source": "gpuwm/config.py:1376"
+      },
+      "fire_ignition_start_lon1": {
+        "config_key": "fire_ignition_start_lon1",
+        "source": "gpuwm/config.py:1377"
+      },
+      "fire_ignition_start_lat1": {
+        "config_key": "fire_ignition_start_lat1",
+        "source": "gpuwm/config.py:1378"
+      },
+      "fire_ignition_end_lon1": {
+        "config_key": "fire_ignition_end_lon1",
+        "source": "gpuwm/config.py:1379"
+      },
+      "fire_ignition_end_lat1": {
+        "config_key": "fire_ignition_end_lat1",
+        "source": "gpuwm/config.py:1380"
+      },
+      "fire_ignition_radius1": {
+        "config_key": "fire_ignition_radius1",
+        "source": "gpuwm/config.py:1381"
+      },
+      "fire_ignition_start_time1": {
+        "config_key": "fire_ignition_start_time1",
+        "source": "gpuwm/config.py:1382"
+      },
+      "fire_ignition_end_time1": {
+        "config_key": "fire_ignition_end_time1",
+        "source": "gpuwm/config.py:1383"
+      },
+      "fire_ignition_ros2": {
+        "config_key": "fire_ignition_ros2",
+        "source": "gpuwm/config.py:1384"
+      },
+      "fire_ignition_start_lon2": {
+        "config_key": "fire_ignition_start_lon2",
+        "source": "gpuwm/config.py:1385"
+      },
+      "fire_ignition_start_lat2": {
+        "config_key": "fire_ignition_start_lat2",
+        "source": "gpuwm/config.py:1386"
+      },
+      "fire_ignition_end_lon2": {
+        "config_key": "fire_ignition_end_lon2",
+        "source": "gpuwm/config.py:1387"
+      },
+      "fire_ignition_end_lat2": {
+        "config_key": "fire_ignition_end_lat2",
+        "source": "gpuwm/config.py:1388"
+      },
+      "fire_ignition_radius2": {
+        "config_key": "fire_ignition_radius2",
+        "source": "gpuwm/config.py:1389"
+      },
+      "fire_ignition_start_time2": {
+        "config_key": "fire_ignition_start_time2",
+        "source": "gpuwm/config.py:1390"
+      },
+      "fire_ignition_end_time2": {
+        "config_key": "fire_ignition_end_time2",
+        "source": "gpuwm/config.py:1391"
+      },
+      "fire_ignition_ros3": {
+        "config_key": "fire_ignition_ros3",
+        "source": "gpuwm/config.py:1392"
+      },
+      "fire_ignition_start_lon3": {
+        "config_key": "fire_ignition_start_lon3",
+        "source": "gpuwm/config.py:1393"
+      },
+      "fire_ignition_start_lat3": {
+        "config_key": "fire_ignition_start_lat3",
+        "source": "gpuwm/config.py:1394"
+      },
+      "fire_ignition_end_lon3": {
+        "config_key": "fire_ignition_end_lon3",
+        "source": "gpuwm/config.py:1395"
+      },
+      "fire_ignition_end_lat3": {
+        "config_key": "fire_ignition_end_lat3",
+        "source": "gpuwm/config.py:1396"
+      },
+      "fire_ignition_radius3": {
+        "config_key": "fire_ignition_radius3",
+        "source": "gpuwm/config.py:1397"
+      },
+      "fire_ignition_start_time3": {
+        "config_key": "fire_ignition_start_time3",
+        "source": "gpuwm/config.py:1398"
+      },
+      "fire_ignition_end_time3": {
+        "config_key": "fire_ignition_end_time3",
+        "source": "gpuwm/config.py:1399"
+      },
+      "fire_ignition_ros4": {
+        "config_key": "fire_ignition_ros4",
+        "source": "gpuwm/config.py:1400"
+      },
+      "fire_ignition_start_lon4": {
+        "config_key": "fire_ignition_start_lon4",
+        "source": "gpuwm/config.py:1401"
+      },
+      "fire_ignition_start_lat4": {
+        "config_key": "fire_ignition_start_lat4",
+        "source": "gpuwm/config.py:1402"
+      },
+      "fire_ignition_end_lon4": {
+        "config_key": "fire_ignition_end_lon4",
+        "source": "gpuwm/config.py:1403"
+      },
+      "fire_ignition_end_lat4": {
+        "config_key": "fire_ignition_end_lat4",
+        "source": "gpuwm/config.py:1404"
+      },
+      "fire_ignition_radius4": {
+        "config_key": "fire_ignition_radius4",
+        "source": "gpuwm/config.py:1405"
+      },
+      "fire_ignition_start_time4": {
+        "config_key": "fire_ignition_start_time4",
+        "source": "gpuwm/config.py:1406"
+      },
+      "fire_ignition_end_time4": {
+        "config_key": "fire_ignition_end_time4",
+        "source": "gpuwm/config.py:1407"
+      },
+      "fire_ignition_ros5": {
+        "config_key": "fire_ignition_ros5",
+        "source": "gpuwm/config.py:1408"
+      },
+      "fire_ignition_start_lon5": {
+        "config_key": "fire_ignition_start_lon5",
+        "source": "gpuwm/config.py:1409"
+      },
+      "fire_ignition_start_lat5": {
+        "config_key": "fire_ignition_start_lat5",
+        "source": "gpuwm/config.py:1410"
+      },
+      "fire_ignition_end_lon5": {
+        "config_key": "fire_ignition_end_lon5",
+        "source": "gpuwm/config.py:1411"
+      },
+      "fire_ignition_end_lat5": {
+        "config_key": "fire_ignition_end_lat5",
+        "source": "gpuwm/config.py:1412"
+      },
+      "fire_ignition_radius5": {
+        "config_key": "fire_ignition_radius5",
+        "source": "gpuwm/config.py:1413"
+      },
+      "fire_ignition_start_time5": {
+        "config_key": "fire_ignition_start_time5",
+        "source": "gpuwm/config.py:1414"
+      },
+      "fire_ignition_end_time5": {
+        "config_key": "fire_ignition_end_time5",
+        "source": "gpuwm/config.py:1415"
+      },
+      "fire_ignition_start_x1": {
+        "config_key": "fire_ignition_start_x1",
+        "source": "gpuwm/config.py:1416"
+      },
+      "fire_ignition_start_y1": {
+        "config_key": "fire_ignition_start_y1",
+        "source": "gpuwm/config.py:1417"
+      },
+      "fire_ignition_end_x1": {
+        "config_key": "fire_ignition_end_x1",
+        "source": "gpuwm/config.py:1418"
+      },
+      "fire_ignition_end_y1": {
+        "config_key": "fire_ignition_end_y1",
+        "source": "gpuwm/config.py:1419"
+      },
+      "fire_ignition_start_x2": {
+        "config_key": "fire_ignition_start_x2",
+        "source": "gpuwm/config.py:1420"
+      },
+      "fire_ignition_start_y2": {
+        "config_key": "fire_ignition_start_y2",
+        "source": "gpuwm/config.py:1421"
+      },
+      "fire_ignition_end_x2": {
+        "config_key": "fire_ignition_end_x2",
+        "source": "gpuwm/config.py:1422"
+      },
+      "fire_ignition_end_y2": {
+        "config_key": "fire_ignition_end_y2",
+        "source": "gpuwm/config.py:1423"
+      },
+      "fire_ignition_start_x3": {
+        "config_key": "fire_ignition_start_x3",
+        "source": "gpuwm/config.py:1424"
+      },
+      "fire_ignition_start_y3": {
+        "config_key": "fire_ignition_start_y3",
+        "source": "gpuwm/config.py:1425"
+      },
+      "fire_ignition_end_x3": {
+        "config_key": "fire_ignition_end_x3",
+        "source": "gpuwm/config.py:1426"
+      },
+      "fire_ignition_end_y3": {
+        "config_key": "fire_ignition_end_y3",
+        "source": "gpuwm/config.py:1427"
+      },
+      "fire_ignition_start_x4": {
+        "config_key": "fire_ignition_start_x4",
+        "source": "gpuwm/config.py:1428"
+      },
+      "fire_ignition_start_y4": {
+        "config_key": "fire_ignition_start_y4",
+        "source": "gpuwm/config.py:1429"
+      },
+      "fire_ignition_end_x4": {
+        "config_key": "fire_ignition_end_x4",
+        "source": "gpuwm/config.py:1430"
+      },
+      "fire_ignition_end_y4": {
+        "config_key": "fire_ignition_end_y4",
+        "source": "gpuwm/config.py:1431"
+      },
+      "fire_ignition_start_x5": {
+        "config_key": "fire_ignition_start_x5",
+        "source": "gpuwm/config.py:1432"
+      },
+      "fire_ignition_start_y5": {
+        "config_key": "fire_ignition_start_y5",
+        "source": "gpuwm/config.py:1433"
+      },
+      "fire_ignition_end_x5": {
+        "config_key": "fire_ignition_end_x5",
+        "source": "gpuwm/config.py:1434"
+      },
+      "fire_ignition_end_y5": {
+        "config_key": "fire_ignition_end_y5",
+        "source": "gpuwm/config.py:1435"
+      },
+      "fire_lat_init": {
+        "config_key": "fire_lat_init",
+        "source": "gpuwm/config.py:1436"
+      },
+      "fire_lon_init": {
+        "config_key": "fire_lon_init",
+        "source": "gpuwm/config.py:1437"
+      },
+      "fire_ign_time": {
+        "config_key": "fire_ign_time",
+        "source": "gpuwm/config.py:1438"
+      },
+      "fire_shape": {
+        "config_key": "fire_shape",
+        "source": "gpuwm/config.py:1439"
+      },
+      "fire_sprd_mdl": {
+        "config_key": "fire_sprd_mdl",
+        "source": "gpuwm/config.py:1440"
+      },
+      "fire_crwn_hgt": {
+        "config_key": "fire_crwn_hgt",
+        "source": "gpuwm/config.py:1441"
+      },
+      "fire_ext_grnd": {
+        "config_key": "fire_ext_grnd",
+        "source": "gpuwm/config.py:1442"
+      },
+      "fire_ext_crwn": {
+        "config_key": "fire_ext_crwn",
+        "source": "gpuwm/config.py:1443"
+      },
+      "fire_sfc_flx": {
+        "config_key": "fire_sfc_flx",
+        "source": "gpuwm/config.py:1444"
+      },
+      "fire_heat_peak": {
+        "config_key": "fire_heat_peak",
+        "source": "gpuwm/config.py:1445"
+      },
+      "fire_tg_ub": {
+        "config_key": "fire_tg_ub",
+        "source": "gpuwm/config.py:1446"
+      },
+      "fire_smk_scheme": {
+        "config_key": "fire_smk_scheme",
+        "source": "gpuwm/config.py:1447"
+      },
+      "fire_smk_peak": {
+        "config_key": "fire_smk_peak",
+        "source": "gpuwm/config.py:1448"
+      },
+      "fire_smk_ext": {
+        "config_key": "fire_smk_ext",
+        "source": "gpuwm/config.py:1449"
+      },
+      "fire_wind_height": {
+        "config_key": "fire_wind_height",
+        "source": "gpuwm/config.py:1450"
+      },
+      "fire_fuel_read": {
+        "config_key": "fire_fuel_read",
+        "source": "gpuwm/config.py:1451"
+      },
+      "fire_fuel_cat": {
+        "config_key": "fire_fuel_cat",
+        "source": "gpuwm/config.py:1452"
+      },
+      "fire_fmc_read": {
+        "config_key": "fire_fmc_read",
+        "source": "gpuwm/config.py:1453"
+      },
+      "fire_print_msg": {
+        "config_key": "fire_print_msg",
+        "source": "gpuwm/config.py:1454"
+      },
+      "fire_print_file": {
+        "config_key": "fire_print_file",
+        "source": "gpuwm/config.py:1455"
+      },
+      "fire_fuel_left_method": {
+        "config_key": "fire_fuel_left_method",
+        "source": "gpuwm/config.py:1456"
+      },
+      "fire_fuel_left_irl": {
+        "config_key": "fire_fuel_left_irl",
+        "source": "gpuwm/config.py:1457"
+      },
+      "fire_fuel_left_jrl": {
+        "config_key": "fire_fuel_left_jrl",
+        "source": "gpuwm/config.py:1458"
+      },
+      "fire_grows_only": {
+        "config_key": "fire_grows_only",
+        "source": "gpuwm/config.py:1459"
+      },
+      "fire_upwinding": {
+        "config_key": "fire_upwinding",
+        "source": "gpuwm/config.py:1460"
+      },
+      "fire_upwind_split": {
+        "config_key": "fire_upwind_split",
+        "source": "gpuwm/config.py:1461"
+      },
+      "fire_viscosity": {
+        "config_key": "fire_viscosity",
+        "source": "gpuwm/config.py:1462"
+      },
+      "fire_lfn_ext_up": {
+        "config_key": "fire_lfn_ext_up",
+        "source": "gpuwm/config.py:1463"
+      },
+      "fire_topo_from_atm": {
+        "config_key": "fire_topo_from_atm",
+        "source": "gpuwm/config.py:1464"
+      },
+      "fire_advection": {
+        "config_key": "fire_advection",
+        "source": "gpuwm/config.py:1465"
+      },
+      "fire_test_steps": {
+        "config_key": "fire_test_steps",
+        "source": "gpuwm/config.py:1466"
+      },
+      "fire_const_time": {
+        "config_key": "fire_const_time",
+        "source": "gpuwm/config.py:1467"
+      },
+      "fire_const_grnhfx": {
+        "config_key": "fire_const_grnhfx",
+        "source": "gpuwm/config.py:1468"
+      },
+      "fire_const_grnqfx": {
+        "config_key": "fire_const_grnqfx",
+        "source": "gpuwm/config.py:1469"
+      },
+      "fire_atm_feedback": {
+        "config_key": "fire_atm_feedback",
+        "source": "gpuwm/config.py:1470"
+      },
+      "fire_mountain_type": {
+        "config_key": "fire_mountain_type",
+        "source": "gpuwm/config.py:1471"
+      },
+      "fire_mountain_height": {
+        "config_key": "fire_mountain_height",
+        "source": "gpuwm/config.py:1472"
+      },
+      "fire_mountain_start_x": {
+        "config_key": "fire_mountain_start_x",
+        "source": "gpuwm/config.py:1473"
+      },
+      "fire_mountain_start_y": {
+        "config_key": "fire_mountain_start_y",
+        "source": "gpuwm/config.py:1474"
+      },
+      "fire_mountain_end_x": {
+        "config_key": "fire_mountain_end_x",
+        "source": "gpuwm/config.py:1475"
+      },
+      "fire_mountain_end_y": {
+        "config_key": "fire_mountain_end_y",
+        "source": "gpuwm/config.py:1476"
+      },
+      "delt_perturbation": {
+        "config_key": "delt_perturbation",
+        "source": "gpuwm/config.py:1477"
+      },
+      "xrad_perturbation": {
+        "config_key": "xrad_perturbation",
+        "source": "gpuwm/config.py:1478"
+      },
+      "yrad_perturbation": {
+        "config_key": "yrad_perturbation",
+        "source": "gpuwm/config.py:1479"
+      },
+      "zrad_perturbation": {
+        "config_key": "zrad_perturbation",
+        "source": "gpuwm/config.py:1480"
+      },
+      "hght_perturbation": {
+        "config_key": "hght_perturbation",
+        "source": "gpuwm/config.py:1481"
+      },
+      "stretch_grd": {
+        "config_key": "stretch_grd",
+        "source": "gpuwm/config.py:1482"
+      },
+      "stretch_hyp": {
+        "config_key": "stretch_hyp",
+        "source": "gpuwm/config.py:1483"
+      },
+      "z_grd_scale": {
+        "config_key": "z_grd_scale",
+        "source": "gpuwm/config.py:1484"
+      },
+      "sfc_full_init": {
+        "config_key": "sfc_full_init",
+        "source": "gpuwm/config.py:1485"
+      },
+      "sfc_lu_index": {
+        "config_key": "sfc_lu_index",
+        "source": "gpuwm/config.py:1486"
+      },
+      "sfc_tsk": {
+        "config_key": "sfc_tsk",
+        "source": "gpuwm/config.py:1487"
+      },
+      "sfc_tmn": {
+        "config_key": "sfc_tmn",
+        "source": "gpuwm/config.py:1488"
+      },
+      "fire_read_lu": {
+        "config_key": "fire_read_lu",
+        "source": "gpuwm/config.py:1489"
+      },
+      "fire_read_tsk": {
+        "config_key": "fire_read_tsk",
+        "source": "gpuwm/config.py:1490"
+      },
+      "fire_read_tmn": {
+        "config_key": "fire_read_tmn",
+        "source": "gpuwm/config.py:1491"
+      },
+      "fire_read_atm_ht": {
+        "config_key": "fire_read_atm_ht",
+        "source": "gpuwm/config.py:1492"
+      },
+      "fire_read_fire_ht": {
+        "config_key": "fire_read_fire_ht",
+        "source": "gpuwm/config.py:1493"
+      },
+      "fire_read_atm_grad": {
+        "config_key": "fire_read_atm_grad",
+        "source": "gpuwm/config.py:1494"
+      },
+      "fire_read_fire_grad": {
+        "config_key": "fire_read_fire_grad",
+        "source": "gpuwm/config.py:1495"
+      },
+      "sfc_vegfra": {
+        "config_key": "sfc_vegfra",
+        "source": "gpuwm/config.py:1496"
+      },
+      "sfc_canwat": {
+        "config_key": "sfc_canwat",
+        "source": "gpuwm/config.py:1497"
+      },
+      "sfc_ivgtyp": {
+        "config_key": "sfc_ivgtyp",
+        "source": "gpuwm/config.py:1498"
+      },
+      "sfc_isltyp": {
+        "config_key": "sfc_isltyp",
+        "source": "gpuwm/config.py:1499"
+      },
+      "fire_lsm_reinit": {
+        "config_key": "fire_lsm_reinit",
+        "source": "gpuwm/config.py:1500"
+      },
+      "fire_lsm_reinit_iter": {
+        "config_key": "fire_lsm_reinit_iter",
+        "source": "gpuwm/config.py:1501"
+      },
+      "fire_upwinding_reinit": {
+        "config_key": "fire_upwinding_reinit",
+        "source": "gpuwm/config.py:1502"
+      },
+      "fire_is_real_perim": {
+        "config_key": "fire_is_real_perim",
+        "source": "gpuwm/config.py:1503"
+      },
+      "fire_lsm_band_ngp": {
+        "config_key": "fire_lsm_band_ngp",
+        "source": "gpuwm/config.py:1504"
+      },
+      "fire_lsm_zcoupling": {
+        "config_key": "fire_lsm_zcoupling",
+        "source": "gpuwm/config.py:1505"
+      },
+      "fire_lsm_zcoupling_ref": {
+        "config_key": "fire_lsm_zcoupling_ref",
+        "source": "gpuwm/config.py:1506"
+      },
+      "fire_tracer_smoke": {
+        "config_key": "fire_tracer_smoke",
+        "source": "gpuwm/config.py:1507"
+      },
+      "fire_viscosity_bg": {
+        "config_key": "fire_viscosity_bg",
+        "source": "gpuwm/config.py:1508"
+      },
+      "fire_viscosity_band": {
+        "config_key": "fire_viscosity_band",
+        "source": "gpuwm/config.py:1509"
+      },
+      "fire_viscosity_ngp": {
+        "config_key": "fire_viscosity_ngp",
+        "source": "gpuwm/config.py:1510"
+      },
+      "fire_slope_factor": {
+        "config_key": "fire_slope_factor",
+        "source": "gpuwm/config.py:1511"
+      },
+      "fs_array_maxsize": {
+        "config_key": "fs_array_maxsize",
+        "source": "gpuwm/config.py:1512"
+      },
+      "fs_firebrand_gen_lim": {
+        "config_key": "fs_firebrand_gen_lim",
+        "source": "gpuwm/config.py:1513"
+      },
+      "fs_firebrand_gen_dt": {
+        "config_key": "fs_firebrand_gen_dt",
+        "source": "gpuwm/config.py:1514"
+      },
+      "fs_firebrand_gen_levels": {
+        "config_key": "fs_firebrand_gen_levels",
+        "source": "gpuwm/config.py:1515"
+      },
+      "fs_firebrand_gen_maxhgt": {
+        "config_key": "fs_firebrand_gen_maxhgt",
+        "source": "gpuwm/config.py:1516"
+      },
+      "fs_firebrand_gen_levrand": {
+        "config_key": "fs_firebrand_gen_levrand",
+        "source": "gpuwm/config.py:1517"
+      },
+      "fs_firebrand_gen_levrand_seed": {
+        "config_key": "fs_firebrand_gen_levrand_seed",
+        "source": "gpuwm/config.py:1518"
+      },
+      "fs_firebrand_gen_mom3d_dt": {
+        "config_key": "fs_firebrand_gen_mom3d_dt",
+        "source": "gpuwm/config.py:1519"
+      },
+      "fs_firebrand_gen_prop_diam": {
+        "config_key": "fs_firebrand_gen_prop_diam",
+        "source": "gpuwm/config.py:1520"
+      },
+      "fs_firebrand_gen_prop_effd": {
+        "config_key": "fs_firebrand_gen_prop_effd",
+        "source": "gpuwm/config.py:1521"
+      },
+      "fs_firebrand_gen_prop_temp": {
+        "config_key": "fs_firebrand_gen_prop_temp",
+        "source": "gpuwm/config.py:1522"
+      },
+      "fs_firebrand_gen_prop_tvel": {
+        "config_key": "fs_firebrand_gen_prop_tvel",
+        "source": "gpuwm/config.py:1523"
+      },
+      "fs_firebrand_dens": {
+        "config_key": "fs_firebrand_dens",
+        "source": "gpuwm/config.py:1524"
+      },
+      "fs_firebrand_dens_char": {
+        "config_key": "fs_firebrand_dens_char",
+        "source": "gpuwm/config.py:1525"
+      },
+      "fs_firebrand_max_life_dt": {
+        "config_key": "fs_firebrand_max_life_dt",
+        "source": "gpuwm/config.py:1526"
+      },
+      "fs_firebrand_land_hgt": {
+        "config_key": "fs_firebrand_land_hgt",
+        "source": "gpuwm/config.py:1527"
+      },
+      "fuel_crosswalk": {
+        "config_key": "fuel_crosswalk",
+        "source": "gpuwm/config.py:1528"
+      },
+      "trackember": {
+        "config_key": "trackember",
+        "source": "gpuwm/config.py:1529"
+      },
+      "sr_x": {
+        "config_key": "sr_x",
+        "source": "gpuwm/config.py:1530"
+      },
+      "sr_y": {
+        "config_key": "sr_y",
+        "source": "gpuwm/config.py:1531"
+      },
+      "fire_static": {
+        "config_key": "fire_static",
+        "source": "gpuwm/config.py:1532"
+      },
+      "fire_fuel_namelist": {
+        "config_key": "fire_fuel_namelist",
+        "source": "gpuwm/config.py:1533"
+      },
+      "fire_smoke": {
+        "config_key": "fire_smoke",
+        "source": "gpuwm/config.py:1534"
+      }
+    },
+    "ensemble_recipes": {
+      "time-lagged": {
+        "source": "gpuwm/ensemble/recipe_door.py:45"
+      },
+      "multi-model": {
+        "source": "gpuwm/ensemble/recipe_door.py:45"
+      },
+      "surface-state": {
+        "source": "gpuwm/ensemble/recipe_door.py:45"
+      },
+      "member-roster": {
+        "source": "gpuwm/ensemble/recipe_door.py:45"
+      }
+    },
+    "stochastic": {
+      "sppt": {
+        "kinds": [
+          "sppt"
+        ],
+        "source": "gpuwm/ensemble/stochastic.py:55"
+      },
+      "skebs": {
+        "kinds": [
+          "skebs_psi",
+          "skebs_theta"
+        ],
+        "source": "gpuwm/ensemble/stochastic.py:55"
+      },
+      "spp": {
+        "kinds": [
+          "spp_conv",
+          "spp_pbl",
+          "spp_lsm"
+        ],
+        "source": "gpuwm/ensemble/stochastic.py:56"
+      }
+    }
+  }
+}

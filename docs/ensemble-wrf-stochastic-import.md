@@ -1,14 +1,59 @@
 # WRF stochastic namelist import
 
-Public forecast and native-input doors recognise the `&stoch` selectors
-(`sppt`, `skebs`, `spp`, `spp_conv`, `spp_pbl`, `spp_lsm`, `rand_perturb` and
-the `pert_*` switches) and refuse active ones, exit 2, before source
-acquisition or GPU work, with the calibration reason. They stay refused until
-their amplitudes are calibrated against observations; until then ensemble
-spread and probabilities would be meaningless.
-All-off controls retain the ordinary path. The mapping below documents the
-internal stochastic representation; it does not authorize an uncalibrated run.
+Public ensemble and native-input doors admit connected SPPT, SKEBS and the
+GF (`spp_conv`), MYNN surface/PBL (`spp_pbl`) and RUC (`spp_lsm`) consumers.
+An active run prints a loud warning and records it in source-selection,
+runtime-authority, stochastic checkpoint and ensemble receipts:
+`uncalibrated spread, WRF default amplitudes`. Explicit parameter overrides
+remain recorded in the process configuration. This warning describes spread
+whose forecast-error calibration has not been established; it does not prevent
+execution. No observation-based skill or calibrated probability claim follows
+from a successful run.
+All-off controls retain the ordinary path, imported TOML bytes and state words.
 WRF `nens` is a random-stream label and never sets the ensemble member count.
+
+For example, an experiment can declare:
+
+```toml
+[ensemble]
+members = 2
+base_seed = 29
+[ensemble.stochastic]
+sppt = true
+skebs = true
+[ensemble.stochastic.spp]
+conv = 1
+pbl = 1
+lsm = 1
+```
+
+SPP still requires the corresponding GF, WRF MYNN and RUC physics selectors.
+Unsupported combinations refuse with the missing consumer's name. Native
+`rand_perturb`, `multi_perturb`, boundary and `pert_*` selectors have no runtime
+consumer for their requested increments. They refuse because their fields
+would stay unperturbed while the receipt claimed the selector. Turning the
+selector off is the remedy; changing an amplitude cannot supply its consumer.
+
+The shipped uniform-wind initial-condition kernel is also available through
+`[ensemble.perturbation]`, `kind = "uniform-wind"`, `amplitude = 0.5` (m/s).
+It draws one seeded uniform increment per wind axis and member, applies it
+after physics initialization and before the first step, and records the seed,
+amplitude and kernel identity. This is an illustrative engine amplitude,
+separately labelled in the receipt; it does not implement WRF `rand_perturb`.
+Reconstruction and restart retain advanced states rather than applying it twice.
+
+Ordinary concurrent members may have different physics configurations on one
+card. Each keeps its own original model, clock, stream and allocator. Admission
+charges the largest complete member envelope for each live member. Native
+component packs retain their separate compatibility checks.
+
+`tests/test_ensemble_random_admission_gpu.py` checks two members on a
+16x12x40 idealized case for three 12-second steps: SPPT, SKEBS, each connected
+SPP consumer and uniform-wind initialization. It checks seed replay, finite
+state, committed production receipts and an all-off byte control. Its concurrent
+WSM6/six-soil-layer and Thompson mp8/nine-soil-layer members each match their
+own sequential forecast words. The fixture supplies initialization directly;
+it does not qualify real-data preparation, rendered products or forecast skill.
 
 The mapping follows WRF v4.6.1's [Registry](https://github.com/wrf-model/WRF/blob/v4.6.1/Registry/registry.stoch)
 and [stochastic configuration checks](https://github.com/wrf-model/WRF/blob/v4.6.1/share/module_check_a_mundo.F).

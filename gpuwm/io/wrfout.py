@@ -202,7 +202,7 @@ _SNSO_LAYER_FIELDS = frozenset({SCHEME_OUTPUT_FIELDS["zsnsoxy"].netcdf_name})
 #: over a twenty-level column raises ``KeyError`` rather than picking a wrong
 #: axis.  That is what it did before these two names were added.
 _SOIL_LAYER_FIELDS = frozenset({"TSLB", "SMOIS", "SH2O",
-                                "SMFR3D", "KEEPFR3DFLAG"})
+                                "SMFR3D", "KEEPFR3DFLAG", "TVGL_URB", "SMG_URB"})
 
 #: The land-use table identity stamped on every history file.
 #:

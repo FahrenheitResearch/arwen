@@ -1,0 +1,29 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# -O0 (THE REFERENCE) libm/libmvec symbols, scheme + radar objects:
+U __powidf2
+U clog
+U csqrt
+U csqrtf
+U exp
+U expf
+U log
+U log10
+U logf
+U pow
+U powf
+U vssqrt_
+# -O2 -ftree-vectorize -funroll-loops (WRF's phys/ flags):
+U _ZGVbN2v_log10
+U _ZGVbN4v_expf
+U _ZGVbN4v_logf
+U exp
+U expf
+U log10
+U logf
+U pow
+U powf
+U vssqrt_
+# positive control (same EXP, vectorisable loop, WRF flags):
+U _ZGVbN4v_expf
+U expf

@@ -68,10 +68,19 @@ RRTM_ONEMINUS = np.float32(1.0 - 1.0e-6)
 #: module_ra_rrtm.F:6195-6265 (RTRN) and :6645 (GASABS).
 RRTM_SECANG = np.float32(1.66)
 RRTM_WTNUM = np.float32(0.5)
-#: module_ra_rrtm.F:7499.  ``BPADE = 1./0.278``.
-RRTM_BPADE = np.float32(1.0 / 0.278)
-#: module_ra_rrtm.F:6772-6773.  ``FLUXFAC = PI * 2.D4``.
-RRTM_FLUXFAC = np.float32(2.0 * np.arcsin(1.0) * 2.0e4)
+#: module_ra_rrtm.F:7499.  ``BPADE = 1./0.278``: two REAL literals, so the
+#: quotient is formed in float32 (3.5971224), not rounded from a binary64
+#: quotient (3.5971222, one ULP low).  The WRF column oracle
+#: (tools/rrtm_lw_wrf461_oracle) measured the binary64 spelling one ULP off
+#: BPADE itself and up to 3 ULP off 3,575 of the 5,001 TAU entries.
+RRTM_BPADE = np.float32(1.0) / np.float32(0.278)
+#: module_ra_rrtm.F:6771-6773.  ``PI = 2.*ASIN(1.)`` is REAL (gfortran folds
+#: ASIN(1.) to the float32 pi/2), then ``FLUXFAC = PI * 2.D4`` widens that
+#: float32 pi to binary64, multiplies and stores into the REAL FLUXFAC.  The
+#: binary64 pi the old spelling used gives 62831.85, one ULP below WRF's
+#: 62831.855, and that ULP reached every flux.
+_PI_F32 = np.float32(2.0) * np.float32(np.pi / 2.0)
+RRTM_FLUXFAC = np.float32(float(_PI_F32) * 2.0e4)
 
 # Fortran subscript expressions of the CMBGBn ABSA/ABSB writes, expressed
 # as the leading-dimension shape that is flattened in Fortran order.
@@ -303,7 +312,13 @@ def _pade_tables() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     tfn = (itre / np.float32(5.0e3)).astype(np.float32)
     interior = (RRTM_BPADE * tfn / (np.float32(1.0) - tfn)).astype(np.float32)
     tau[1:5000] = interior
-    trans_interior = np.exp(-interior).astype(np.float32)
+    # TRANS(ITRE) = EXP(-TAU(ITRE)) is gfortran's float32 EXP, the libm
+    # expf WOOF carries as its own (gpuwm.core.noahmp_libm.expf).  NumPy's
+    # float32 exp is a different function (its own vector loop on AVX-512
+    # hosts); the oracle measured it up to 127 ULP off TRANS.
+    from gpuwm.core.noahmp_libm import expf
+    trans_interior = np.fromiter((expf(-value) for value in interior),
+                                 dtype=np.float32, count=interior.size)
     trans[1:5000] = trans_interior
     linear = (interior / np.float32(6.0)).astype(np.float32)
     full = (np.float32(1.0) - np.float32(2.0)

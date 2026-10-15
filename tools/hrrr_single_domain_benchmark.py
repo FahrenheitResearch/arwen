@@ -2122,6 +2122,9 @@ _PROFILE_SWITCH_HOMES = MappingProxyType({
     "alb_sol": "shared",
     "bl_mynn_gsd41_unsquared_qtke": "shared",
     "bl_mynn_mixlength": "shared",
+    # Admitted with the MYNN TKE-advection port (QKE_ADV scalar transport);
+    # the HRRR profiles declare it false, as the operational namelists do.
+    "bl_mynn_tkeadvect": "shared",
     "bl_mynn_version": "shared",
     "bl_pbl_physics": "shared",
     "cu_physics": "shared",

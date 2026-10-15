@@ -1,0 +1,4 @@
+623c623
+<    if(ahoption==1) then
+---
+>    if(ahoption==1 .or. iri_scheme==1) then

@@ -148,11 +148,14 @@ def _normalized_row(row) -> tuple[str, object]:
     return dtype, layers
 
 
-def option_spec(option: int, module=None) -> dict[str, tuple[str, object]]:
+def option_spec(option: int, module=None, *, generation="wrf_471") -> dict[str, tuple[str, object]]:
     """The full array spec for ``option``: infra's rows plus the module's."""
     spec = dict(COMMON_SPEC)
     if option == 1:
         spec.update(UCM_SPEC)
+        if generation == "wrf_480":
+            from gpuwm.core.urban_ucm import state_spec_for_generation
+            spec.update({n: _normalized_row(r) for n, r in state_spec_for_generation(generation).items()})
     if option in (2, 3):
         spec.update(BEP_SPEC)
     if option == 3:
@@ -239,7 +242,7 @@ def urban_array_shapes(cfg, *, urban_columns: int | None = None
     dims = resolve_dimensions(option)
     hi = int(getattr(cfg, "num_urban_hi", 15))
     shapes: dict[str, tuple[int, ...]] = {}
-    for name, row in option_spec(option).items():
+    for name, row in option_spec(option, generation=getattr(cfg, "urban_ucm_generation", "wrf_471")).items():
         layers = _layers(row, dims, hi)
         shapes[name] = ((layers,) if layers else ()) + (ny, nx)
     if option in (2, 3):
@@ -563,6 +566,11 @@ def urban_var_init_host(*, option: int, use_wudapt_lcz: int,
             out["tgrl_urb3d"][...] = ladder
             out["smr_urb3d"][...] = np.array(
                 [0.2, 0.2, 0.2, 0.0], dtype=f4)[:, None, None]
+            if "tvg_urb2d" in out:
+                out["tvg_urb2d"][...] = t0 + f4(0.0)
+                out["tt_urb2d"][...] = t0 + f4(0.0)
+                out["tvgl_urb3d"][...] = ladder
+                out["smg_urb3d"][...] = np.array([0.2, 0.2, 0.2, 0.0], dtype=f4)[:, None, None]
         if "tgl_urb3d" in out:
             out["tgl_urb3d"][...] = tslb[:URBAN_LAYERS] + f4(0.0)
         if option in (2, 3):
@@ -673,7 +681,7 @@ def init_urban_state(cfg, params: UrbanParams, categories: UrbanCategories,
     option = int(cfg.sf_urban_physics)
     if module is None:
         module = load_model_module(option)
-    spec = option_spec(option, module)
+    spec = option_spec(option, module, generation=params.generation)
     dims = resolve_dimensions(option, module)
     host = urban_var_init_host(
         option=option, use_wudapt_lcz=int(cfg.use_wudapt_lcz),

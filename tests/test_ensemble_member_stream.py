@@ -94,7 +94,7 @@ def test_simultaneous_workers_use_distinct_streams_and_restore_their_scopes(monk
             both_running.wait(timeout=5)
             assert current.device == 0
             assert current.stream is scope.stream
-            assert current.allocator.__self__ is scope.pool
+            assert current.allocator.__self__ is scope
         assert current.device is None
         assert current.stream is None
         assert current.allocator is None

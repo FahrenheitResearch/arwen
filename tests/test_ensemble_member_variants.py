@@ -104,7 +104,7 @@ def test_member_surface_descriptor_detaches_values_and_keeps_identity_control():
     ([{"name": "duplicate"}, {"name": "duplicate"}], "unique"),
     ([{"name": "control"}, {"name": "bad", "physics": {"num_soil_layers": 4}}], "both integer"),
     ([{"name": "control"}, {"name": "bad", "physics": {"sf_surface_physics": 3, "num_soil_layers": 4}}], "wrong land column"),
-    ([{"name": "control"}, {"name": "bad", "physics": {"soil_diffusivity": 2}}], "existing land selectors"),
+    ([{"name": "control"}, {"name": "bad", "physics": {"soil_diffusivity": 2}}], "existing single-run physics selectors"),
     ([{"name": "control"}, {"name": "bad", "surface": {"sst_offset_k": [-1, 1]}}], "fixed scalar"),
     ([{"name": "control"}, {"name": "bad", "surface": {"soil_moisture_scale": 0}}], "must be positive"),
 ])

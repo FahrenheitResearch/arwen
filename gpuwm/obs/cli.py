@@ -608,6 +608,10 @@ def register_cli(subparsers) -> None:
     _register_instruments(obs_sub)
     from gpuwm.obs.scorecard import register_cli as register_scorecard
     register_scorecard(obs_sub)
+    # The data-assimilation observation streams (radiosondes, METAR, motion
+    # vectors, buoys, radio occultation, WIS2), the engine's own since 2.9.0.
+    from gpuwm.obs.streams import register_cli as register_streams
+    register_streams(obs_sub)
 
 
 __all__ = ["register_cli"]

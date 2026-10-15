@@ -1,0 +1,322 @@
+{
+  "schema": "gpuwm-physics-option-seeds-v1",
+  "components": {
+    "microphysics": {
+      "ferrier-aligo-mp5": {
+        "asset_requirements": [
+          {
+            "assets": [
+              {
+                "bytes": 43400,
+                "filename": "ETAMPNEW_DATA.expanded_rain",
+                "sha256": "28e60e6c83eb55889c4ab65eaa33e9fc3b557e5ab45c3dde7ee7153c2ef95a13"
+              }
+            ],
+            "id": "wrf-v4.6.1-ferrier-etampnew-expanded-rain-v1",
+            "installed_root": "gpuwm/data/ferrier/tables",
+            "kind": "bundled-package-data",
+            "note": "fer_hires_init READS this file (module_mp_fer_hires.F:2969-2983) and every rain and ice rate is a lookup into it; nothing regenerates it, so a missing or byte-modified table is refused by the SHA-256 check in gpuwm.core.fer_hires.load_table.",
+            "redistributed_by_gpuwm": true,
+            "resolution": {
+              "data_relative": "ferrier/tables",
+              "root_environment_override": "GPUWM_FERRIER_TABLE_ROOT"
+            },
+            "root_environment_override": "GPUWM_FERRIER_TABLE_ROOT",
+            "source": "WRF v4.6.1 (git tag v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28), file run/ETAMPNEW_DATA.expanded_rain"
+          }
+        ],
+        "compatible_previous_forbidden_settings": [
+          {
+            "mp28_aerosol_source": [
+              "climatology",
+              "synthetic"
+            ]
+          }
+        ],
+        "constraints": {
+          "forbidden_setting_values": {
+            "mp28_aerosol_source": [
+              "climatology",
+              "synthetic",
+              "analysis"
+            ],
+            "use_rap_aero_icbc": [
+              true
+            ]
+          },
+          "required_settings": {
+            "moist": true
+          },
+          "required_settings_reasons": {
+            "moist": "a dry state allocates no water vapour or hydrometeor fields, so the scheme would have nothing to integrate"
+          }
+        },
+        "consumers": {
+          "cloud_optics": {
+            "legacy_declares_radii": false,
+            "rte_rrtmgp_coupling": "ferrier",
+            "rte_rrtmgp_refusal": null
+          },
+          "lateral_forcing_dataset": null,
+          "moments": {
+            "mass_only": [
+              "qv",
+              "qc",
+              "qr",
+              "qi"
+            ],
+            "name": "Ferrier-Aligo",
+            "pairs": [],
+            "q_threshold": 1e-12,
+            "repair_authority": null,
+            "unpaired": []
+          },
+          "nest_transition": {
+            "mass_fields": null,
+            "mixed_edge_ported": false,
+            "moment_fields": null,
+            "refusal": "MP5 (Ferrier-Aligo) is ported and runs, but it has no validated cross-scheme entry closure for its moments (f_rimef); the reason is recorded at gpuwm.core.microphysics_transition._UNVALIDATED_MIXED_EDGE_REASONS[5]"
+          },
+          "offline_child": {
+            "refusal": "the offline child lane has no wrfout map row for F_RIMEF_PHY, the Ferrier-Aligo rime factor FER_HIRES carries between steps; a child started without it would integrate the parent's rimed ice as unrimed",
+            "same_scheme": false
+          },
+          "radar_da": {
+            "clear_air_floor_dbz": -20.0,
+            "clear_air_floor_reason": null,
+            "clear_air_floor_status": "one-number",
+            "reflectivity_route": "native-not-separable",
+            "reflectivity_route_reason": "the scheme's Z is fused with its state update, so there is no pure H(x); recorded at gpuwm.da.obsop.NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP[5]"
+          },
+          "reflectivity_input_species": null,
+          "reflectivity_native_reason": "the scheme produces REFL_10CM itself; recorded at gpuwm.core.refl.SCHEME_NATIVE_REFL_10CM[5]",
+          "restart_algorithm_identity": "ferrier-aligo-wrf-v4.6.1-v1-total-ice-transported-rimef-carried-etampnew-expanded-rain-rcw-from-lwc",
+          "ring_guard": {
+            "state_fields": [
+              "thp",
+              "qv",
+              "qc",
+              "qr",
+              "qi",
+              "qt",
+              "f_ice",
+              "f_rain",
+              "f_rimef"
+            ],
+            "surface_slots": [
+              "mp_rainnc",
+              "mp_rainncv",
+              "mp_sr"
+            ]
+          },
+          "stock_wrf_export": {
+            "inventoried": true,
+            "reason": null,
+            "registry_package": "fer_mp_hires",
+            "runtime_state_not_wrfinput": [
+              {
+                "dimensions": [
+                  "Time",
+                  "bottom_top",
+                  "south_north",
+                  "west_east"
+                ],
+                "dtype": "float32",
+                "initialization": "wrf_runtime",
+                "netcdf_name": "F_ICE_PHY",
+                "registry_name": "f_ice_phy"
+              },
+              {
+                "dimensions": [
+                  "Time",
+                  "bottom_top",
+                  "south_north",
+                  "west_east"
+                ],
+                "dtype": "float32",
+                "initialization": "wrf_runtime",
+                "netcdf_name": "F_RAIN_PHY",
+                "registry_name": "f_rain_phy"
+              },
+              {
+                "dimensions": [
+                  "Time",
+                  "bottom_top",
+                  "south_north",
+                  "west_east"
+                ],
+                "dtype": "float32",
+                "initialization": "wrf_runtime",
+                "netcdf_name": "F_RIMEF_PHY",
+                "registry_name": "f_rimef_phy"
+              }
+            ],
+            "scheme": "Ferrier-Aligo",
+            "wrfinput_fields": [
+              {
+                "collection": "moist",
+                "dimensions": [
+                  "Time",
+                  "bottom_top",
+                  "south_north",
+                  "west_east"
+                ],
+                "dtype": "float32",
+                "initialization": "source_specific_humidity",
+                "netcdf_name": "QVAPOR",
+                "registry_name": "qv",
+                "state_name": null,
+                "units": "kg kg-1"
+              },
+              {
+                "collection": "moist",
+                "dimensions": [
+                  "Time",
+                  "bottom_top",
+                  "south_north",
+                  "west_east"
+                ],
+                "dtype": "float32",
+                "initialization": "zero_if_source_absent",
+                "netcdf_name": "QCLOUD",
+                "registry_name": "qc",
+                "state_name": null,
+                "units": "kg kg-1"
+              },
+              {
+                "collection": "moist",
+                "dimensions": [
+                  "Time",
+                  "bottom_top",
+                  "south_north",
+                  "west_east"
+                ],
+                "dtype": "float32",
+                "initialization": "zero_if_source_absent",
+                "netcdf_name": "QRAIN",
+                "registry_name": "qr",
+                "state_name": null,
+                "units": "kg kg-1"
+              },
+              {
+                "collection": "moist",
+                "dimensions": [
+                  "Time",
+                  "bottom_top",
+                  "south_north",
+                  "west_east"
+                ],
+                "dtype": "float32",
+                "initialization": "zero_if_source_absent",
+                "netcdf_name": "QICE",
+                "registry_name": "qi",
+                "state_name": null,
+                "units": "kg kg-1"
+              },
+              {
+                "collection": "scalar",
+                "dimensions": [
+                  "Time",
+                  "bottom_top",
+                  "south_north",
+                  "west_east"
+                ],
+                "dtype": "float32",
+                "initialization": "zero_if_source_absent",
+                "netcdf_name": "CWM",
+                "registry_name": "qt",
+                "state_name": null,
+                "units": "# kg-1"
+              }
+            ]
+          },
+          "vertical_level_bounds": {
+            "contract_constant": "FERRIER_VERTICAL_LEVEL_BOUNDS",
+            "label": "Ferrier-Aligo microphysics",
+            "maximum": null,
+            "minimum": 2
+          }
+        },
+        "extensions": {
+          "family_siblings_refused": {
+            "eta_ferrier_mp95": "not ported; the old Eta scheme's qs holds the total ice and its RRTMG and cal_cldfra1 arms are weighted by F_ICE_PHY",
+            "ferrier_advect_mp15": "not admitted; mp_physics=15 advects the rime factor as the scalar qrimef, which this port carries as non-advected state, so admitting 15 would run 5's trajectory under 15's name"
+          },
+          "prognostic_species": {
+            "not_ported": [],
+            "note": "qi is the total ice (cloud ice and precipitating ice). qt is rebuilt from qc+qr+qi on every FER_HIRES entry and is carried, not transported; f_ice/f_rain/f_rimef are WRF state, never advected, and f_rimef crosses steps and checkpoints.",
+            "transported": [
+              "qi"
+            ]
+          },
+          "wrf_package": "Registry/Registry.EM_COMMON:3019 binds mp_physics==5 to the fer_mp_hires package: moist qv,qc,qr,qi, scalar qt, state f_ice_phy,f_rain_phy,f_rimef_phy"
+        },
+        "implemented": true,
+        "label": "Ferrier-Aligo / MP5",
+        "maturity": "implemented-unverified",
+        "parameters": {
+          "moist": true,
+          "moist_cq": true
+        },
+        "reachability": {
+          "state": "component-override"
+        },
+        "scientific_evidence": "none",
+        "selectors": {
+          "mp_physics": 5
+        },
+        "warnings": [
+          "The strict column check is tools/ferrier_hires_wrf461_oracle/check_port.py. No forecast skill claim is made. Stock WRF's Rcw arithmetic order is retained.",
+          "REFLECTIVITY: WRF v4.6.1 computes Ferrier's DBZ_col and discards it, leaving REFL_10CM unwritten under mp=5.  gpuwm writes that column (clear air -20 dBZ) as REFL_10CM; its 10*ALOG10 is CUDA's log10f, so the diagnostic alone is outside the 0 ULP claim.",
+          "NEST AND OFFLINE CHILD: no cross-scheme nest edge is ported for mp=5 and the offline child refuses a Ferrier parent (no F_RIMEF_PHY wrfout row); same-scheme online nests run."
+        ]
+      }
+    },
+    "cumulus": {
+      "new-sas": {
+        "asset_requirements": [],
+        "constraints": {
+          "required_settings": {
+            "moist": true
+          },
+          "required_settings_reasons": {
+            "moist": "the cumulus schemes are moist convective schemes; gpuwm/core/physics.py initialize_physics refuses a cumulus scheme on a dry DomainState, whose qv is None"
+          },
+          "requires_components": {}
+        },
+        "consumers": {
+          "restart_algorithm_identity": "new-sas-nscv-wrf461-cu_nsas-v1",
+          "stock_callable_class": "gpuwm.core.column_cumulus.ColumnCumulus",
+          "vertical_level_bounds": {
+            "contract_constant": "NEW_SAS_VERTICAL_LEVEL_BOUNDS",
+            "label": "New SAS cumulus",
+            "maximum": null,
+            "minimum": 4
+          }
+        },
+        "extensions": {},
+        "implemented": true,
+        "label": "New SAS (YSU) with NSCV shallow convection",
+        "maturity": "implemented-unverified",
+        "parameters": {
+          "cudt_minutes": 0.0,
+          "nsas_dx_factor": 0,
+          "sas_pgcon": 0.55
+        },
+        "reachability": {
+          "state": "template"
+        },
+        "scientific_evidence": "none",
+        "selectors": {
+          "cu_physics": 96
+        },
+        "warnings": [
+          "WRF 4.6.1 column conformance: all 1344 columns at 40 and 60 levels, including mixed-pressure rows, match deep, shallow and driver outputs at 0 ULP in both arithmetic arms. The oracle and one-bit mutation checks are in tests/test_nsas_column_oracle.py. This is implementation evidence; it does not establish observation-based forecast skill.",
+          "Deep cloud-search limits are reduced over the complete i-row as in module_cu_nsas.F:619-631. Workspace tiling does not split that reduction. Missing QC or QI tendencies follow WRF presence flags.",
+          "PRATEC is held between calls and RAINC grows by PRATEC*DT every model-clock step. Adaptive stepping requires cudt=0, as WRF requires of SAS schemes.",
+          "shcu_physics=4 is refused beside cu_physics=96 because NSAS already includes NSCV and the pairing would convect the same boundary layer twice."
+        ]
+      }
+    }
+  }
+}

@@ -365,6 +365,7 @@ _FROZEN_CONTRACT_MOIST_MEMBERS = frozenset({
 })
 
 _PACKAGE_FIELD_METADATA = {
+    "CWM": ("Total condensate mixing ratio", "kg kg-1"),
     "QHAIL": ("Hail mixing ratio", "kg kg-1"),
     "QNDROP": ("Droplet number mixing ratio", "# kg-1"),
     "QNICE": ("Ice Number concentration", "# kg-1"),
@@ -1067,8 +1068,10 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
                     dx: float, dy: float, dt: float,
                     geometry: Mapping[str, object],
                     physics_selection: Mapping[str, object] | None = None,
+                    run_config: Mapping[str, object] | None = None,
                     ) -> dict[str, object]:
     stamp = _date_text(valid_time)
+    cfg = dict(run_config or {})
     updates = {
         # WRF's input gate recognizes versioned initial data from the TITLE
         # token itself.  Preserve an accurate producer label while retaining
@@ -1097,6 +1100,12 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
         "DY": dy,
         "DT": dt,
         "GHG_INPUT": 0,
+        # These are this run's choices, never the prototype file's values.
+        # GHG_INPUT remains 0: the engine uses analytic year-dependent gas
+        # concentrations, not WRF's optional CAMtr file (ghg_input=1).
+        "SURFACE_INPUT_SOURCE": 3,
+        "DIFF_OPT": int(cfg.get("diff_opt", 2)),
+        "DIFF_6TH_SLOPEOPT": int(cfg.get("diff_6th_slopeopt", 0)),
         "CEN_LAT": geometry["center_lat"],
         "CEN_LON": geometry["center_lon"],
         "TRUELAT1": geometry["truelat1"],
@@ -1605,6 +1614,15 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     # (module_initialize_real.F:3108-3131): a land column whose soil map
     # says water carries silty clay loam, never water soil under land.
     soil = _wrf_soil_category(static["SCT_DOM"], lu)
+    # Match the model's existing WRF sea-ice category rule, including the
+    # fractional-ice threshold when that policy is selected.
+    from types import SimpleNamespace
+    from gpuwm.core.landuse import ruc_fractional_seaice
+    fractional_ice = ruc_fractional_seaice(SimpleNamespace(**dict(run_config or {})))
+    ice = np.asarray(surface["SEAICE"]) >= (0.02 if fractional_ice else 0.5)
+    lu = np.where(ice, 15, lu).astype(np.int32)
+    soil = np.where(ice, 16, soil).astype(np.int32)
+    surface["SNOALB"] = np.where(ice, 0.75, surface["SNOALB"])
     landmask = surface["LANDMASK"]
     snow = np.asarray(
         surface["SNOW"] if "SNOW" in surface else cache.array("met/SNOW"),
@@ -1663,7 +1681,7 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
         "C4F": cache.array("coord/c4f"),
         "Q2": cache.array("result/surface_qv"),
         "T2": t2,
-        "TH2": t2 * (_P0 / psfc) ** _RCP,
+        "TH2": t2 * (_P0 / total_pressure[0]) ** _RCP,
         "PSFC": psfc,
         "U10": 0.5 * (u10_face[:, :-1] + u10_face[:, 1:]),
         "V10": 0.5 * (v10_face[:-1, :] + v10_face[1:, :]),
@@ -1711,7 +1729,7 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
         "ALBBCK": surface["ALBBCK"],
         "TMN": surface["TMN"],
         "XLAND": surface["XLAND"],
-        "SNOWC": (snow > 0.0).astype(np.float64),
+        "SNOWC": (snow >= 10.0).astype(np.float64),
         "LANDMASK": landmask,
         "LAKEMASK": lake_mask.astype(np.float64),
         "SST": surface["TSK"],
@@ -2364,6 +2382,7 @@ def _hierarchy_global_updates(*, valid_time: datetime, cfg,
         geometry=geometry,
         physics_selection={"selectors": recorded_physics_selectors(
             cfg, label=f"d{domain.grid_id:02d} direct-export")},
+        run_config=cfg,
     )
     updates.update({
         "GRID_ID": domain.grid_id,
@@ -2747,6 +2766,7 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
         dx=float(cfg["dx"]), dy=float(cfg["dy"]), dt=float(cfg["dt"]),
         geometry=geometry,
         physics_selection=selection_selectors,
+        run_config=cfg,
     )
     num_soil_layers = int(cfg.get("num_soil_layers", 4))
     sf_surface_physics = int(cfg["sf_surface_physics"])

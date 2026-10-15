@@ -547,15 +547,20 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # words = 12,288 B per domain, 13,885 B of estimate and of envelope with
     # the 1.13 pool margin.  With only that slot removed from
     # scratch_slot_registry this config reproduces every previous pin.
-    assert payload["peak_envelope_bytes"] == 15298339398
-    assert payload["observed_peak_envelope_bytes"] == 15298339398
+    # The WRF 4.6.1 Kain-Fritsch port (golden/parity, lane/verify-kain-fritsch)
+    # keeps 66 column arrays in its workspace where the kernel it replaced
+    # kept 52: 14 * 49 levels * (170 SMs * 256 columns) * 4 B = 119,418,880 B
+    # more reserve on this configuration, which runs KF on its root.  The
+    # allocation estimate does not move.
+    assert payload["peak_envelope_bytes"] == 15417758278
+    assert payload["observed_peak_envelope_bytes"] == 15417758278
     assert payload["alloc_estimate_bytes"] == 12132074054
     # The reserve's 0.03 retention term follows the estimate: A163 moved
     # it by 0.03 x -212,355,128 = -6,370,653 B.
     # The density addition raises its retention reserve by 2,009,931 B, and
     # the CLDFRA buffer by the same 2,009,931 B again; the rim table by
     # 416 B.
-    assert payload["reserve_bytes"] == 3530227566
+    assert payload["reserve_bytes"] == 3649646446
     assert payload["budget_bytes"] == _FITS_STREAMED_GIB * GIB
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
     assert rc == 1
@@ -609,10 +614,10 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # change nothing this configuration is charged. The density allocation
     # and its unchanged pool and retention margins remain present in both,
     # as does the priced CLDFRA buffer, and the strict-rim health table.
-    assert old_payload["peak_envelope_bytes"] == 15298339398
-    assert old_payload["observed_peak_envelope_bytes"] == 15298339398
+    assert old_payload["peak_envelope_bytes"] == 15417758278
+    assert old_payload["observed_peak_envelope_bytes"] == 15417758278
     assert old_payload["alloc_estimate_bytes"] == 12132074054
-    assert old_payload["reserve_bytes"] == 3530227566
+    assert old_payload["reserve_bytes"] == 3649646446
     assert old_rc == rc == 1
     assert old_estimate == estimate
     for key in ("peak_envelope_bytes", "observed_peak_envelope_bytes",

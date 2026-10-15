@@ -1033,6 +1033,7 @@ fn inventory(
     hour: u32,
     expected_forecast_process_id: u8,
     pressure_levels_pa: &[f64],
+    snow_convention: SnowConvention,
 ) -> Result<Inventory, Box<dyn Error>> {
     let mut selected = Vec::with_capacity(PRESSURE_SPECS.len() * pressure_levels_pa.len() + 19);
     let mut fingerprint: Option<GridFingerprint> = None;
@@ -1073,7 +1074,13 @@ fn inventory(
         }
     }
     let mut land_mask_parameter = None;
-    for spec in SURFACE_SPECS.into_iter().chain(SOIL_SPECS) {
+    for mut spec in SURFACE_SPECS.into_iter().chain(SOIL_SPECS) {
+        if spec.name == "SNOWH" && snow_convention == SnowConvention::Wps {
+            // Vtable.GFS reads WEASD; WPS derives depth from that field.
+            // A WPS decode must not depend on SNOD being present.
+            spec.parameter.number = 13;
+            spec.maximum = 100_000.0; // input WEASD bounds, before conversion
+        }
         let (index, actual_spec) = if spec.name == "LANDSEA" {
             let (index, parameter_number) = land_mask_match(&file.messages)?;
             land_mask_parameter = Some(parameter_number);
@@ -1353,6 +1360,7 @@ fn write_field(
     writer: &mut BufWriter<File>,
     spec: FieldSpec,
     all_water_source: bool,
+    snow_convention: SnowConvention,
 ) -> Result<FieldSummary, Box<dyn Error>> {
     let (values, present) = scan_normalized(message)?;
     let expected = message.grid.nx as usize * message.grid.ny as usize;
@@ -1364,13 +1372,14 @@ fn write_field(
         )
         .into());
     }
-    emit_values_with_surface_support(
+    emit_converted_values(
         &values,
         present.as_deref(),
         spec,
         field_quantum(message),
         all_water_source,
         writer,
+        snow_convention,
     )
 }
 
@@ -1395,6 +1404,18 @@ fn emit_values_with_surface_support<W: Write>(
     quantum: f64,
     all_water_source: bool,
     writer: &mut W,
+) -> Result<FieldSummary, Box<dyn Error>> {
+    emit_converted_values(values, present, spec, quantum, all_water_source, writer, SnowConvention::Raw)
+}
+
+fn emit_converted_values<W: Write>(
+    values: &[f64],
+    present: Option<&[bool]>,
+    spec: FieldSpec,
+    quantum: f64,
+    all_water_source: bool,
+    writer: &mut W,
+    snow_convention: SnowConvention,
 ) -> Result<FieldSummary, Box<dyn Error>> {
     let bounds = spec.bounds();
     let mut finite = 0usize;
@@ -1423,6 +1444,7 @@ fn emit_values_with_surface_support<W: Write>(
                     return Err(out_of_range(spec, value, excursion, tolerance));
                 }
             }
+            value = snow_convention.convert(spec.name, value);
             finite += 1;
             minimum = minimum.min(value);
             maximum = maximum.max(value);
@@ -1587,6 +1609,36 @@ fn fnv1a64(values: &[u32]) -> u64 {
 /// decode of a multi-day GFS series took minutes on a 16-core box.
 const THREADS_ENV: &str = "GPUWM_GFS_BRIDGE_THREADS";
 
+/// WPS 4.6 rrpr.F:877-889 and its SNOWH derivation. Keep the raw GFS
+/// WEASD/SNOD choice explicit; both the bridge gate and preparation receipt
+/// name it. Default agrees with the MPAS met_intermediate.rs GFS path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnowConvention { Wps, Raw }
+
+impl SnowConvention {
+    fn parse(value: &str) -> Result<Self, Box<dyn Error>> {
+        match value {
+            "wps" => Ok(Self::Wps),
+            "raw" => Ok(Self::Raw),
+            _ => Err("GPUWM_GFS_SNOW_CONVENTION must be wps or raw".into()),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self { Self::Wps => "wps", Self::Raw => "raw" }
+    }
+
+    fn convert(self, name: &str, value: f64) -> f64 {
+        // Native ungrib stores the decoded field in REAL before rrpr.
+        // Retain its two FP32 operations for the derived depth.
+        match (self, name) {
+            (Self::Wps, "SNOW") => ((value as f32) * 2.0_f32) as f64,
+            (Self::Wps, "SNOWH") => (((value as f32) * 2.0_f32) * 0.005_f32) as f64,
+            _ => value,
+        }
+    }
+}
+
 fn bridge_threads() -> usize {
     env::var(THREADS_ENV)
         .ok()
@@ -1685,6 +1737,7 @@ fn write_hour(
     inv: &Inventory,
     file: &Grib2File,
     all_water_source: bool,
+    snow_convention: SnowConvention,
 ) -> Result<HourOutput, Box<dyn Error>> {
     use std::fmt::Write as _;
     let time_dir = partial.join(format!("f{:03}", input.hour));
@@ -1704,7 +1757,7 @@ fn write_hour(
         let mut writer = BufWriter::new(File::create(&path)?);
         for selected in inv.selected.iter().filter(|field| field.name == name) {
             let message = &file.messages[selected.index];
-            let summary = write_field(message, &mut writer, selected.spec, all_water_source)?;
+            let summary = write_field(message, &mut writer, selected.spec, all_water_source, snow_convention)?;
             output
                 .clamp_census
                 .entry(name)
@@ -2035,6 +2088,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     {
         return Err(usage.into());
     }
+    let snow_convention = SnowConvention::parse(
+        &env::var("GPUWM_GFS_SNOW_CONVENTION").unwrap_or_else(|_| "wps".to_string()))?;
     let inputs = parse_series_rows(Path::new(&args[1]), lead_batch)?;
     let output = PathBuf::from(&args[2]);
     let cycle = args[3].trim_end_matches('Z').replace('T', " ");
@@ -2087,6 +2142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 input.hour,
                 input.expected_forecast_process_id,
                 &pressure_levels_pa,
+                snow_convention,
             )
         })
         .collect::<Result<_, _>>()?;
@@ -2217,6 +2273,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             "land_mask_parameter\t{}",
             inventories[0].land_mask_parameter
         )?;
+        writeln!(gate, "snow_convention\t{}", snow_convention.name())?;
         writeln!(gate, "invariant_fields\tSOURCE_OROGRAPHY,LANDSEA")?;
         writeln!(
             gate,
@@ -2240,7 +2297,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // every document below is the serial bridge's byte for byte.
         let hours = in_index_order(inputs.len(), |index| {
             write_hour(&partial, &inputs[index], &inventories[index], &loaded[index].0,
-                       all_water_source)
+                       all_water_source, snow_convention)
         })?;
         for hour in hours {
             manifest.write_all(hour.manifest_rows.as_bytes())?;
@@ -2294,6 +2351,25 @@ fn main() -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+
+    #[test]
+    fn wps_snow_uses_weasd_for_both_outputs_and_preserves_missing() {
+        let mut spec = spec_named("SNOW");
+        for (name, expected) in [("SNOW", 24.0_f32), ("SNOWH", 24.0_f32 * 0.005_f32)] {
+            spec.name = name;
+            let mut bytes = Vec::new();
+            let summary = emit_converted_values(
+                &[12.0, f64::NAN], Some(&[true, false]), spec, 0.0,
+                false, &mut bytes, SnowConvention::Wps).unwrap();
+            assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), expected);
+            assert!(f32::from_le_bytes(bytes[4..8].try_into().unwrap()).is_nan());
+            assert_eq!((summary.finite, summary.missing), (1, 1));
+            assert_eq!(summary.maximum, expected as f64);
+        }
+        assert_eq!(SnowConvention::Raw.convert("SNOW", 12.0), 12.0);
+        assert_eq!(SnowConvention::Raw.convert("SNOWH", 0.3), 0.3);
+        assert!(SnowConvention::parse("unknown").is_err());
+    }
 
     fn valid_message(parameter_number: u8) -> Grib2Message {
         Grib2Message {
@@ -2584,7 +2660,7 @@ mod tests {
     fn an_all_land_nomads_crop_decodes_its_soil_and_snow() {
         let file = all_land_crop_fixture();
         let levels = observed_pressure_levels(&file).unwrap();
-        let selected = inventory(&file, "2026-09-27 12:00:00", 0, 81, &levels).unwrap();
+        let selected = inventory(&file, "2026-09-27 12:00:00", 0, 81, &levels, SnowConvention::Raw).unwrap();
         assert!(!source_is_all_water(&file, &selected).unwrap());
         let mut names = Vec::new();
         for field in selected.selected.iter().filter(|field| field.spec.allow_missing) {
@@ -3048,7 +3124,7 @@ mod tests {
         }
         let file = Grib2File { messages };
 
-        let selected = inventory(&file, "2026-07-20 00:00:00", 0, 81, &certified)
+        let selected = inventory(&file, "2026-07-20 00:00:00", 0, 81, &certified, SnowConvention::Raw)
             .expect("the certified request against a fuller file");
         assert_eq!(
             selected.selected.len(),
@@ -3062,7 +3138,7 @@ mod tests {
 
         let mut too_deep = certified.clone();
         too_deep.insert(0, 3_000.0);
-        let refusal = inventory(&file, "2026-07-20 00:00:00", 0, 81, &too_deep)
+        let refusal = inventory(&file, "2026-07-20 00:00:00", 0, 81, &too_deep, SnowConvention::Raw)
             .expect_err("a level the file lacks must refuse")
             .to_string();
         assert!(refusal.contains("missing required GFS field"), "{refusal}");

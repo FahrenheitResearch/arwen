@@ -154,7 +154,7 @@ def test_the_kf_phase_contract_admits_28_as_separate_ice_snow():
     assert kf_phase_mode_for_microphysics(0) == \
         KFPhaseMode.NO_SEPARATE_SNOW
     with pytest.raises(ValueError):
-        kf_phase_mode_for_microphysics(2)
+        kf_phase_mode_for_microphysics(7)
 
     cfg = _mp_only_cfg(mp_physics=28, cu_physics=1)
     assert _cumulus_optional_tendency_components(cfg) == ("rqr", "rqi", "rqs")

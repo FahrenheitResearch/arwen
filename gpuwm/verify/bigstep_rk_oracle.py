@@ -152,6 +152,7 @@ def load_rk_tendency_oracle(filename="rk-tendency.npz"):
 def replay_rk_tendency_case(arrays,case):
     import cupy as cp
     from gpuwm.config import RunConfig
+    from gpuwm import correct_mode
     from gpuwm.core.state import DomainState
     from gpuwm.core.dycore import (_add_slow_tendencies,_prepare_tendency_zero,
         enable_wrf_cfl_recording,record_wrf_vertical_cfl,take_wrf_cfl,
@@ -202,7 +203,9 @@ def replay_rk_tendency_case(arrays,case):
     cfg=RunConfig(nx=nx,ny=ny,nz=nz,dt=20.,dx=3000.,dy=3000.,
                   ztop=float(np.max(x[4]+x[5])/9.81),run_seconds=20.,specified=True,
                   h_sca_adv_order=5,top_lid=True,w_damping=0,mp_physics=6,
-                  moist=True,moist_cq=True)
+                  moist=True,moist_cq=True,
+                  # A WRF oracle names exact mode (2.9.0 default is correct).
+                  **correct_mode.resolve("exact").settings)
     # Its documented representation is pg_buoy_w's consumed reciprocal,
     # rather than calc_cq's pre-buoyancy mixing-ratio temporary.
     _generated_cqu,_generated_cqv,cqw,_use_cq=prepare_moist_cq(state,cfg)

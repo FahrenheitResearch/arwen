@@ -1,0 +1,11 @@
+--- a/tools/urban_bem_regime_oracle/run_bep_bem_regime.F90
++++ b/tools/urban_bem_regime_oracle/run_bep_bem_regime.F90
+@@ -102,7 +102,7 @@
+   integer, parameter :: map_zgrd = n_ndm * n_ngr * n_nz
+   integer, parameter :: isurban = 13
+   integer, parameter :: lcz(11) = (/ 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61 /)
+-  real, parameter :: frc_cycle(6) = (/ 0.0, 0.5, 0.9, 0.99, 0.3, 0.75 /)
++  real, parameter :: frc_cycle(6) = (/ 1.0e-40, 0.5, 0.9, 0.99, 0.3, 0.75 /)
+ 
+   integer :: ncol, ims, ime, jms, jme, kms, kme, its, ite, jts, jte, kts, kte
+   integer :: ids, ide, jds, jde, kds, kde

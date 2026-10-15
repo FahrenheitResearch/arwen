@@ -1,0 +1,36 @@
+#define NSAS_T0C 273.15f
+#define NSAS_QMIN 1e-30f
+#define NSAS_CLIQ 4190.0f
+#define NSAS_CICE 2106.0f
+#define NSAS_PSAT 610.78f
+#define NSAS_XLS 2850000.0f
+#define NSAS_C0 0.002f
+#define NSAS_C1 0.002f
+#define NSAS_XLAMDD 0.0001f
+#define NSAS_XLAMDE 0.0001f
+#define NSAS_CLAM 0.1f
+#define NSAS_CXLAMU 0.0001f
+#define NSAS_AAFAC 0.1f
+#define NSAS_DTHK 25.0f
+#define NSAS_CINCRMAX 180.0f
+#define NSAS_CINCRMIN 120.0f
+#define NSAS_MBDT 10.0f
+#define NSAS_EDTMAXL 0.3f
+#define NSAS_EDTMAXS 0.3f
+#define NSAS_EVFACTS 0.3f
+#define NSAS_EVFACTL 0.3f
+#define NSAS_ALPHAS 0.5f
+#define NSAS_BETAL 0.05f
+#define NSAS_BETAS 0.05f
+#define NSAS_TF 233.16f
+#define NSAS_TCR 263.16f
+#define NSCV_C0 0.002f
+#define NSCV_C1 0.0005f
+#define NSCV_CLAM 0.3f
+#define NSCV_AAFAC 0.1f
+#define NSCV_BETAW 0.03f
+#define NSCV_EVFACT 0.3f
+#define NSCV_EVFACTL 0.3f
+#define NSCV_H1 0.33333333f
+__device__ __constant__ float NSAS_PCRIT_TABLE[] = {850.0f, 800.0f, 750.0f, 700.0f, 650.0f, 600.0f, 550.0f, 500.0f, 450.0f, 400.0f, 350.0f, 300.0f, 250.0f, 200.0f, 150.0f};
+__device__ __constant__ float NSAS_ACRITT_TABLE[] = {0.0633f, 0.0445f, 0.0553f, 0.0664f, 0.075f, 0.1082f, 0.1521f, 0.2216f, 0.3151f, 0.3677f, 0.41f, 0.5255f, 0.7663f, 1.1686f, 1.6851f};

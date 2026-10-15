@@ -63,7 +63,7 @@ domain build and on every microphysics step, ahead of the nested boundary ring
 | scheme | WRF id | maturity | evidence |
 |---|---|---|---|
 | YSU | 1 | implemented-unverified | 24-column oracle vs unmodified `bl_ysu.F90`: theta tendency 1 ULP, exchange coefficients 7 ULP, PBLH 1 ULP; momentum/moisture tendencies 4.2e-8 m/s2 and 3.1e-11 kg/kg/s (near-total cancellations); part of the option set used in the historical matched WRF case alongside Thompson; its own maturity remains implemented-unverified |
-| MYJ (Mellor-Yamada-Janjic 2.5) | 2 | implemented-unverified | float32 CPU authority transcribed from byte-frozen source; no oracle comparison run. TKE cold-starts at WRF's `epsq2 = 0.2`, not zero. Declared divergence: interface heights carried above ground rather than above sea level, cancelling to within 69 ULP in float32 over 4.4 km terrain, `KPBL` unchanged. Selectable only as the 2/2 pair with Eta similarity |
+| MYJ (Mellor-Yamada-Janjic 2.5) | 2 | implemented-unverified | CUDA kernel bit-identical to WRF v4.6.1's MYJPBL on a 176-column gfortran oracle (every output, strict build; default arithmetic differs only in condensate tendencies, by less than 1.2e-38, from subnormal flushing). Interface heights start at the terrain height as in WRF. TKE cold-starts at WRF's `epsq2 = 0.2`, not zero. Selectable only as the 2/2 pair with Eta similarity |
 | MYNN (EDMF) | 5 | implemented-unverified | assembled driver bitwise on the warm step vs unmodified `module_bl_mynn.F`; 300-step coupled forecast gate |
 | Shin-Hong (scale-aware) | 11 | implemented-unverified | float32 CPU authority reproduces every output field of both `ctopo` arms at max ULP 0 over 30 cases x 6 grid spacings x 40 levels; CUDA kernel bitwise against WRF except flushed subnormal tendencies; resolved/subgrid partition scored across a 3200-100 m ladder against pre-registered Honnert (2011) envelope bands, every gated rung inside, 100 m LES anchor held |
 | SASE | 900 (ArWen-only) | implemented-unverified, permanently | see section 3.8 |
@@ -105,12 +105,12 @@ lines [docs/public/PHYSICS.md:940-952].
 
 | scheme | WRF id | maturity | evidence |
 |---|---|---|---|
-| Noah (4-layer) | 2 | implemented-unverified | 42-column oracle vs unmodified `module_sf_noahdrv.F`: 7 of 31 outputs bit-identical including the whole TSLB profile; TSK within 2 ULP, HFX worst at 375 ULP; part of the option set used in the historical matched WRF case; its own maturity remains implemented-unverified |
+| Noah (4-layer) | 2 | implemented-unverified | 42-column oracle vs unmodified `module_sf_noahdrv.F`: 7 of 31 outputs bit-identical including the whole TSLB profile; TSK within 2 ULP, HFX worst at 375 ULP; land ice runs WRF's `SFLX_GLACIAL`, graded on 24 more oracle columns (TSK, HFX and TSLB bit-identical); part of the option set used in the historical matched WRF case; its own maturity remains implemented-unverified |
 | RUC (9-level) | 3 | implemented-unverified | column family oracle-matched; full device residency measured at production width (0.47 s per call at 360,000 columns, snow-free) |
 | Noah-MP | 4 | implemented-unverified | `NOAHMP_SFLX` bitwise on all four whole-column fixtures; device slab path max ULP 0 vs the scalar authority at 360,000 columns; expert route pinned to the exact WRF Registry default option identity; cold start runs on the CUDA driver kernel by default, byte-identical across all 28 state carriers (host-vs-device timing in the commit receipt), `GPUWM_NOAHMP_HOST_COLD_START` the named escape [commit f4889208f] |
 
-Divergences stated on the page: Noah's glacial land-ice column (`SFLX_GLACIAL`) is
-not ported, so a domain with land-ice points must not use Noah; frozen-ground
+Divergences stated on the page: Noah's glacial land-ice column (`SFLX_GLACIAL`) runs
+as in WRF since 2026-10-12 (earlier releases left it untouched); frozen-ground
 infiltration on simultaneously-frozen-and-melting columns differs through CUDA vs
 glibc `expf`/`powf` (water redistributed, not lost). Noah-MP refuses glacier columns
 during post-static initialization rather than silently skipping; sea ice takes WRF's
@@ -128,7 +128,7 @@ the defined one-layer answer and documents the divergence (D11)
 | RTE+RRTMGP | 4/4 (default) | supported | the default modern k-distribution path; substitution token recorded in every config it touches |
 | legacy RRTMG | 4/4 + `ra_rrtmg_variant = "rrtmg_legacy"` | page's own term "verification tier" (not registry vocabulary) | line transcription of WRF v4.6.1 option 4/4; batched LW/SW engines bit-identical (max ULP 0) to the port oracle over the full fixture decks; McICA generators match every stored WRF Fortran mask; used for all matched-run comparisons |
 | Dudhia SW (LW off) | 0/1 | supported | certified-slice shortwave |
-| WRF RRTM + Dudhia | 1/1 | implemented-unverified | line transcription; column smoke of the shipped seams only, no oracle comparison against the Fortran |
+| WRF RRTM + Dudhia | 1/1 | implemented-unverified | RRTM longwave equals the unmodified WRF v4.6.1 Fortran word for word (0 ULP) on a 79-column oracle, every output and intermediate (tests/test_rrtm_lw_wrf461_parity.py); no matched forecast run; the Dudhia half is graded on its own |
 
 The two 4/4 paths are firewalled: a restart written under one refuses to resume
 under the other, and the RTE+RRTMGP path is byte-unchanged by the legacy port's

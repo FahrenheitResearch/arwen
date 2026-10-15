@@ -773,6 +773,30 @@ def test_named_roster_binds_actual_two_domain_four_and_six_layer_configurations(
         assert plan.variant_name == recipe.member_variants[plan.member.index]["name"]
 
 
+def test_named_physics_roster_plans_original_suites_on_every_domain(tmp_path):
+    from gpuwm.ensemble.door import request_for_config
+    config = _roster_case(tmp_path, variants=[{"name": "control"},
+        {"name": "other", "physics": {"mp_physics": 8, "bl_pbl_physics": 1,
+            "sf_sfclay_physics": 1, "sf_surface_physics": 2, "num_soil_layers": 4,
+            "ra_physics": 0, "ra_lw_physics": 1, "ra_sw_physics": 1,
+            "wrf_rrtmg_compatibility": "none"}}])
+    recipe, plans = _reviewed(config, request_for_config(config), tmp_path / "review")
+    assert len(plans) == 2
+    assert plans[0].preparation_key != plans[1].preparation_key
+    assert plans[0].source_key == plans[1].source_key
+    for domain in plans[1].experiment.domains:
+        assert (domain.run.mp_physics, domain.run.bl_pbl_physics,
+                domain.run.sf_surface_physics, domain.run.ra_lw_physics) == (8, 1, 2, 1)
+
+
+def test_named_physics_roster_retains_single_run_invalid_selector_refusal(tmp_path):
+    from gpuwm.ensemble.door import request_for_config
+    config = _roster_case(tmp_path, variants=[{"name": "control"},
+        {"name": "invalid", "physics": {"mp_physics": 999}}])
+    with pytest.raises(ValueError, match="mp_physics"):
+        _reviewed(config, request_for_config(config), tmp_path / "review")
+
+
 def test_named_roster_prepares_two_banks_and_shares_one_source_acquisition(
         tmp_path, door, stages, monkeypatch):
     from gpuwm import prepared_domain_tree_forecast, stage_cli
@@ -1430,7 +1454,7 @@ def _admit_arguments(tmp_path, monkeypatch, *, members=2, free=None):
     monkeypatch.setattr(go_cli, "memory_gate", lambda plan, experiment=None: asked.append(
         ("memory", plan["source"], Path(plan["config"]).is_file())) or {
             "verdict": "fits", "refuse": False, "warn": False})
-    monkeypatch.setattr(go_cli, "geography_refusal", lambda root, **_: asked.append(("geography", root)))
+    monkeypatch.setattr(go_cli, "geography_refusal", lambda root, **kw: asked.append(("geography", root, kw.get("config"))))
     monkeypatch.setattr(rustwx, "find_renderer", lambda: asked.append(("renderer",)) or Path("rw_wrfbatch"))
     monkeypatch.setattr(go_cli, "admit_render_products",
                         lambda spec, section=None: asked.append(("products", spec)))
@@ -1444,11 +1468,12 @@ def _admit_arguments(tmp_path, monkeypatch, *, members=2, free=None):
 def test_the_gates_are_asked_in_the_ordinary_doors_order(tmp_path, monkeypatch):
     plans, arguments, asked = _admit_arguments(tmp_path, monkeypatch)
     recipe_door.admit(plans, **arguments)
-    assert [row[0] for row in asked] == ["install", "device", "memory", "geography", "renderer", "products"]
+    assert [row[0] for row in asked] == ["install", "device", "memory", "geography", "geography", "renderer", "products"]
     assert asked[0] == ("install", "gpuwm ensemble")
     # The memory gate is asked once per source, of that member's own reviewed config.
     assert asked[2] == ("memory", "hrrr", True)
-    assert asked[3] == ("geography", tmp_path / "GEOG") and asked[5] == ("products", "refl")
+    assert asked[3:5] == [("geography", tmp_path / "GEOG", plan.config) for plan in plans]
+    assert asked[6] == ("products", "refl")
     assert not (tmp_path / "out").exists()
     asked.clear()
     recipe_door.admit(plans, **{**arguments, "options": {"no_memory_gate": True}})
@@ -1482,7 +1507,7 @@ def test_each_gate_refuses_before_the_run_folder_is_claimed(gate, words, tmp_pat
             f"{door}: this command needs cupy", requirement=capabilities.GPU_RUNTIME, command=door)),
         "device": lambda: (_ for _ in ()).throw(go_cli.GoRefusal("GPU readiness is missing: no card")),
         "memory": lambda plan, experiment=None: {"verdict": "over", "refuse": True, "warn": False},
-        "geography": lambda root: "the staged WPS_GEOG tree is not usable",
+        "geography": lambda root, **_: "the staged WPS_GEOG tree is not usable",
         "renderer": lambda: None,
         "products": lambda spec, section=None: (_ for _ in ()).throw(go_cli.GoRefusal(
             "--products names 'bogus', which the renderer's catalog does not carry")),
@@ -1671,10 +1696,9 @@ def test_recipes_pass_the_calibration_check_on_every_door(table, tmp_path):
 
 @pytest.mark.parametrize("table", ['[ensemble]\nmembers=2\nrecipe="time-lagged"\n', MULTI_TOML],
                          ids=["time-lagged", "multi-model"])
-def test_a_recipe_does_not_admit_random_perturbations(table):
-    with pytest.raises(ValueError) as caught:
-        request_for_payload((table + "[ensemble.stochastic]\nsppt=true\n").encode())
-    assert str(caught.value) == UNCALIBRATED_SPREAD_REASON
+def test_a_recipe_can_add_connected_stochastic_physics(table):
+    request = request_for_payload((table + "[ensemble.stochastic]\nsppt=true\n").encode())
+    assert request.stochastic == {"sppt": True}
 
 
 def _guarded(argv):
@@ -1707,13 +1731,12 @@ def test_real_entry_point_admits_a_recipe_past_the_calibration_check(command, re
 
 
 @pytest.mark.parametrize("command", ["ensemble", "go", "run"])
-def test_real_entry_point_still_refuses_random_spread_beside_a_recipe(command, tmp_path):
+def test_real_entry_point_admits_connected_random_spread_beside_a_recipe(command, tmp_path):
     config = tmp_path / "case.toml"
     config.write_text('[ensemble]\nmembers=2\nrecipe="time-lagged"\n[ensemble.stochastic]\nsppt=true\n')
     argv = [command, str(config)] + (["--outdir", str(tmp_path / "out")] if command == "run" else [])
     result = _guarded(argv)
-    assert "GUARD_EVENTS=[]" in result.stdout, result.stdout + result.stderr
-    assert result.returncode == 2 and UNCALIBRATED_SPREAD_REASON in result.stderr
+    assert 'GUARD_EVENTS=["process spawn"]' in result.stdout, result.stdout + result.stderr
 
 
 def test_planning_command_takes_the_multi_model_list(tmp_path, capsys):

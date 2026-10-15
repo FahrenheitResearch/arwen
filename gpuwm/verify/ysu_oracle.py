@@ -200,7 +200,7 @@ def load_ysu_oracle(directory: Path | None = None) -> YsuOracleFixture:
     )
 
 
-def ysu_port_outputs(fixture: YsuOracleFixture) -> dict[str, np.ndarray]:
+def ysu_port_outputs(fixture: YsuOracleFixture, *, ysu_version="wrf_461") -> dict[str, np.ndarray]:
     """Run ``launch_ysu`` on the fixture and bring the results back to host.
 
     ``ysu_topdown_pblmix`` is a launch-wide integer while the fixture varies it
@@ -224,6 +224,7 @@ def ysu_port_outputs(fixture: YsuOracleFixture) -> dict[str, np.ndarray]:
             br=device["br"], psim=device["psim"], psih=device["psih"],
             xland=device["xland"], u10=device["u10"], v10=device["v10"],
             dt=fixture.dt, ysu_topdown_pblmix=flag,
+            ysu_version=ysu_version,
         )
         host = {name: cp.asnumpy(value) for name, value in out.items()}
         take = flags == flag

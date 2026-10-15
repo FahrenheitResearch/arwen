@@ -653,7 +653,8 @@ class MpasColumnBatchPhysics:
                  vegfra=50.0, tsk=300.0, tmn=285.0, xice=0.0, snow=0.0,
                  snow_depth=0.0, soil_temperature=285.0,
                  soil_moisture=0.30, xice_threshold=0.5,
-                 wsm6_hail_opt=0):
+                 wsm6_hail_opt=0, physics_mode=None,
+                 physics_correct_skip=()):
         # ---- pure validation FIRST: every refusal below fires before a
         # single device allocation, so the CPU-hermetic contract tests
         # can exercise the whole refusal surface without touching a GPU.
@@ -689,6 +690,16 @@ class MpasColumnBatchPhysics:
                 "would be silently ignored, which reads as "
                 "configuration the run does not have.  Leave it 0 (the "
                 "default)")
+        # Correct mode (gpuwm/correct_mode.py; physics.mode).  None is the
+        # engine default: "correct" from 2.9.0, "exact" (forced, recorded)
+        # under GPUWM_WRF_EXACT=1.  The resolution authors every correction
+        # key, so "exact" builds the config -- and the restart identity --
+        # this seam built before the keys existed, whatever their RunConfig
+        # defaults; an identity proof against native MPAS names "exact".
+        from gpuwm import correct_mode
+        correct = correct_mode.resolve(
+            physics_mode, physics_correct_skip,
+            source="MpasColumnBatchPhysics physics_mode")
         threshold = float(xice_threshold)
         if not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
             raise ValueError(
@@ -771,8 +782,10 @@ class MpasColumnBatchPhysics:
             radt=cadences["radt_minutes"],
             radt_minutes=cadences["radt_minutes"],
             bldt=cadences["bldt_minutes"],
-            cudt_minutes=cadences["cudt_minutes"])
+            cudt_minutes=cadences["cudt_minutes"],
+            **correct.settings)
         self._cfg = cfg
+        self._correct_mode = correct
         self._cadences = cadences
         self._dt = float(cadences["dt"])
         self._nz, self._ncol = nz, ncol
@@ -810,6 +823,13 @@ class MpasColumnBatchPhysics:
             # restore refuses on the identity comparison (the key is
             # present on one side only).
             self._identity["microphysics"] = microphysics_scheme
+        if correct.applied:
+            # Present only in correct mode, for the same reason as the
+            # microphysics key above: an exact-mode payload stays
+            # byte-identical, and a restore across modes (or across a
+            # different skip list) refuses on the identity comparison
+            # rather than continuing a trajectory under other arithmetic.
+            self._identity["physics_correct"] = list(correct.applied)
 
         # ---- device construction from here on --------------------------
         import cupy as cp
@@ -1356,6 +1376,12 @@ class MpasColumnBatchPhysics:
             nwfa2d_source = "caller-aerosol"
         return {"ccn_filled": ccn_filled, "in_filled": in_filled,
                 "nwfa2d_source": nwfa2d_source}
+
+    @property
+    def correct_mode_receipt(self) -> dict:
+        """``physics.mode`` as this seam resolved it, and the findings the
+        switch changed (MODE-KEY.md rule 3; gpuwm/correct_mode.py)."""
+        return self._correct_mode.receipt()
 
     @property
     def aerosol_init_receipt(self):

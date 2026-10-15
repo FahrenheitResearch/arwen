@@ -1,0 +1,26 @@
+{
+  "fer_hires": {
+    "source_sha256": "6cd52af58f73e6cabb3e36572c230a468940e67dc9543a02880dad94ae5969c5",
+    "functions": {
+      "fer_hires_init_tables": {
+        "local_size_bytes": 0,
+        "num_regs": 18,
+        "shared_size_bytes": 0,
+        "max_threads_per_block": 1024
+      },
+      "fer_hires_init_scalars": {
+        "local_size_bytes": 0,
+        "num_regs": 18,
+        "shared_size_bytes": 0,
+        "max_threads_per_block": 1024
+      },
+      "fer_hires_column": {
+        "local_size_bytes": 0,
+        "num_regs": 110,
+        "shared_size_bytes": 0,
+        "max_threads_per_block": 512
+      }
+    },
+    "max_local_size_bytes": 0
+  }
+}

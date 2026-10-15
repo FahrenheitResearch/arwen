@@ -56,6 +56,25 @@ OPTION_ARG = {
 }
 
 
+def require_same_tree(entry_file: str | Path) -> None:
+    """Refuse when this module was imported from another tree than the script.
+
+    Breakage it prevents (D1, 2026-10-05): ``claim_census.py`` run by file
+    name resolved ``tools.ftz_receipt`` through an editable install of a
+    different checkout, took that checkout's git top level as its default
+    root and overwrote an untracked census file there.  The helper's code
+    and its default root must come from the tree the script lives in.
+    """
+    own = Path(__file__).resolve().parents[2]
+    entry = Path(entry_file).resolve().parents[2]
+    if own != entry:
+        raise SystemExit(
+            f"ftz_receipt: {Path(entry_file).name} lives in {entry} but "
+            f"imported its helpers from {own}; refusing so that nothing is "
+            f"read from or written into the other tree. Run it as "
+            f"`python -m tools.ftz_receipt.<tool>` from {entry}.")
+
+
 def repo_root(start: Path | None = None) -> Path:
     """Return the git top level containing ``start`` (default: this file)."""
     base = (start or Path(__file__).resolve().parent)

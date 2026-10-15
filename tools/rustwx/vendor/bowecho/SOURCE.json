@@ -933,10 +933,11 @@
     },
     {
       "path": "crates/nexrad_io/src/vwp.rs",
-      "bytes": 30288,
-      "sha256": "854caf779a4a073a5f42109d4e2c968aa42e6543bf36d9beda67809976f84ccc",
-      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
-      "origin_path": "crates/nexrad_io/src/vwp.rs"
+      "bytes": 30285,
+      "sha256": "8960e71153005a4e2b6ececd625ee0f6469ae9bd898b074cc9c3006099b70f77",
+      "origin": "vendoring",
+      "upstream_sha256": "854caf779a4a073a5f42109d4e2c968aa42e6543bf36d9beda67809976f84ccc",
+      "change": "The module doc comment names no person (public-push hygiene); code unchanged."
     },
     {
       "path": "crates/nexrad_io/tests/cfradial_real.rs",

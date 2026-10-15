@@ -199,6 +199,22 @@ class NestedInputCatalog:
     #: Same validated overlay owner used by root, child and moving footprints.
     static_highres: object | None = None
     water_temperature_policy: str | None = None
+    #: The root's horizontal-mapping conventions, carried for the same
+    #: reason as the policy above: a child sees the catalog, not the route.
+    #: A GFS tree maps its root with WPS ``fix_gfs_rh`` on RH and RH2
+    #: (``gfs_mixed``) and keeps its lakes on metgrid's whole-source water
+    #: search (``gfs_lake_skin = "wps"``); a child left on the defaults
+    #: initialized its 2 m humidity water-relative and its unresolved lakes
+    #: from the 2 m air temperature under the same parent.  The defaults
+    #: are every other regular-grid route's, unchanged.
+    relative_humidity_convention: str = "era5_mixed"
+    lake_whole_source_search: bool = False
+    #: Each corridor child's birth footprint (grid id ->
+    #: :class:`gpuwm.static.corridor.CorridorBirth`), cropped from the
+    #: statics corridor the preparation sealed BEFORE it initialized its
+    #: children, so the child is born on the ground its moves crop from.
+    #: Empty for a tree without a corridor.
+    statics_corridor_births: Mapping[int, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # A sequence is kept AS the sequence, exactly as
@@ -988,16 +1004,28 @@ def _prepare_child_input_on_grid_uncached(
     # top-level input catalog (gpuwm.ingest.preflight.build_input_catalog).
     # Absent/disabled is the identity 30-arc-second path.
     _highres = getattr(catalog, "static_highres", None)
-    if _highres is not None and getattr(_highres, "enabled", False):
-        from gpuwm.static.highres_production import apply_highres_statics
-        static_fields, _ = apply_highres_statics(
-            static_fields, grid, config=_highres,
-            domain_id=child_dc.grid_id,
-            case_date=child_dc.start_time.date(),
-            landuse_attrs=landuse_attrs, run=cfg)
-    from gpuwm.static.terrain_autosmooth import prepare_fields
-    static_fields = prepare_fields(
-        static_fields, grid, domain_id=child_dc.grid_id, run=cfg)
+    _birth = (getattr(catalog, "statics_corridor_births", None)
+              or {}).get(int(child_dc.grid_id))
+    if _birth is not None:
+        # A corridor child is born on its sealed corridor's crop (overlay
+        # and slope bound applied at corridor scale), not on a footprint
+        # build smoothed over its own cells only: plan call 5, 2.9.0.
+        from gpuwm.static.terrain_autosmooth import receipt_of, run_line
+        static_fields = _birth.footprint_statics(static_fields, grid)
+        if receipt_of(static_fields) is not None:
+            print(run_line(receipt_of(static_fields))
+                  + "; cropped from the statics corridor")
+    else:
+        if _highres is not None and getattr(_highres, "enabled", False):
+            from gpuwm.static.highres_production import apply_highres_statics
+            static_fields, _ = apply_highres_statics(
+                static_fields, grid, config=_highres,
+                domain_id=child_dc.grid_id,
+                case_date=child_dc.start_time.date(),
+                landuse_attrs=landuse_attrs, run=cfg)
+        from gpuwm.static.terrain_autosmooth import prepare_fields
+        static_fields = prepare_fields(
+            static_fields, grid, domain_id=child_dc.grid_id, run=cfg)
     # The child assembles its water temperature under the SAME policy as
     # its parent; the catalog carries it because the child sees no case
     # data of its own.  Lakes come from the child's OWN land-use table
@@ -1093,6 +1121,12 @@ def _prepare_child_input_on_grid_uncached(
             target_landmask=(None if child_landmask is None
                              else np.asarray(child_landmask) >= 0.5),
             water_temperature_statics=water_statics,
+            relative_humidity_convention=getattr(
+                catalog, "relative_humidity_convention", "era5_mixed"),
+            inland_water_search=(
+                np.asarray(lake_mask, dtype=bool)
+                if getattr(catalog, "lake_whole_source_search", False)
+                else None),
             backend=preprocess)
         mapping_receipt["source_adapter"] = "regular-grid-native-state-v1"
     return PreparedChildInput(

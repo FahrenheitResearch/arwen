@@ -107,7 +107,10 @@ _DRIVERLESS = {
     ("SURFACE_LAYER_ALGORITHM_IDENTITIES", 2): dict(sf_sfclay_physics=2),
     ("SURFACE_LAYER_ALGORITHM_IDENTITIES", 5): dict(sf_sfclay_physics=5),
     ("SURFACE_LAYER_ALGORITHM_IDENTITIES", 91): dict(sf_sfclay_physics=91),
-    ("PBL_ALGORITHM_IDENTITIES", 1): dict(moist=True, bl_pbl_physics=1),
+    # The bumped 2.8.8 YSU is the wrf_461 reproduction arm; the WRF 4.8
+    # default (ysu_version = "wrf_480") is a separate identity.
+    ("PBL_ALGORITHM_IDENTITIES", 1): dict(moist=True, bl_pbl_physics=1,
+                                          ysu_version="wrf_461"),
     ("PBL_ALGORITHM_IDENTITIES", 5): dict(moist=True, bl_pbl_physics=5),
     ("PBL_ALGORITHM_IDENTITIES", 11): dict(moist=True, bl_pbl_physics=11),
 }

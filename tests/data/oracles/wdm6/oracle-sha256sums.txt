@@ -1,0 +1,12 @@
+5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062  <wrf-4.6.1-checkout>/share/module_model_constants.F
+aa99da858be41efa579966680708d230123a7417560af0eb2e24f4c94e253688  <wrf-4.6.1-checkout>/phys/module_mp_radar.F
+78b7c148f7c29b55670f137636d632aba040bf338d8214e1a5dd191dacf67d70  <wrf-4.6.1-checkout>/phys/module_mp_wdm6.F
+449be0d252beba8c5a42ade42fceb2e582239d1a36db79ef3ad902f0ed82ede1  <wrf-4.6.1-checkout>/frame/libmassv.F
+38fc4c0e41d6e07f90de92322d8cba8536381b14544a67b3db8633f5399392da  <oracle-build>/module_mp_wdm6_defined.F
+ba7d44b22502f1b15de4f2cd0d2de408fd7b570a602698221813bcae0b5be977  <oracle-build>/module_mp_wdm6_only2.F
+05d752f84da82f52aa36c6b537841f780e7f7a3280d2c5d28d5811e0f3f8eea2  <oracle-build>/module_mp_wdm6_only5.F
+3f59fc0a70fc67ec8be8c844f364e603398b697283020e8c3e6fa5f49c9c58a0  <oracle-build>/module_mp_wdm6_only6.F
+290de93dd50de5f44492fc8c16b86a1bcc3c4c6a10b391761f6aa64a037ee163  <oracle-tools>/libmvec_positive_control.F90
+ce412356460250805bdcbac1c51e34c1e2f98eea40a1d632e0b6fa58663830ec  <oracle-tools>/run_wdm6.F90
+6bf8215fffe3dddceed883591917cd0f0e2242972611897de3e31602ba379924  <oracle-tools>/stub_wrf_error.F90
+9ec478be47e69a45614b21ebe7b7a53c2c26a14065bed65809a4aa5681d7ba54  <oracle-tools>/defined_arm.py

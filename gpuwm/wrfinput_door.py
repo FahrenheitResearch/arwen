@@ -392,9 +392,17 @@ def check_projection_agreement(experiment, metadata: Mapping[
 #:   (:func:`gpuwm.namelist_import.fine_input_stream_decision`, the one
 #:   function this door, the importer and the RW-WPS support report all
 #:   read the answer from).
+#: * ``fractional_seaice`` 1 -> 0 under a non-RUC land surface: the
+#:   fractional ice/water flux blend is ported in the RUC seam only.  Until
+#:   2026-10-12 this door accepted it with no word (the importer booked it
+#:   as "fixed"); it is now announced, with the only cells it changes
+#:   (sea-ice fraction strictly between 0.02 and 1).  Admitted rather than
+#:   refused because most WRF namelists set it and most domains have no
+#:   such cell; the Noah fractional-ice port is the fix that retires it.
 ADMITTED_DECLARED_DIVERGENCES = frozenset({
     ("use_theta_m", 1, 0),
     ("fine_input_stream", 2, 0),
+    ("fractional_seaice", 1, 0),
 })
 
 
@@ -466,6 +474,8 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
                          acknowledgements: Sequence[str] = (),
                          rrtmg_variant: str | None = None,
                          thompson_version: str | None = None,
+                         urban_ucm_generation: str | None = None,
+                         urban_controls: dict | None = None,
                          check_projection: bool = True,
                          restart_from: str | Path | None = None) -> WrfinputRun:
     """Read, translate and CHECK one real.exe handoff.  No field is decoded.
@@ -559,6 +569,7 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
     toml_text, report = _import_with_synthesized_wps(
         wps_text, namelist, inherited_eta=identities[min(identities)].eta_levels,
         restart_window=window, name=name, rrtmg_variant=rrtmg_variant,
+        urban_ucm_generation=urban_ucm_generation, urban_controls=urban_controls,
         acknowledgements=tuple(acknowledgements), landuse_identity=landuse_identity,
         wrfinput_qv_domains=tuple(
             grid_id for grid_id, item in metadata.items()

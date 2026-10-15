@@ -164,7 +164,7 @@ def test_the_namelist_door_refuses_black_carbon_in_the_same_words(tmp_path):
 
     _only, _citation, why = MP28_AEROSOL_SOURCE_OPTIONS['wif_input_opt']
     inp = (INPUT_TEXT
-           .replace(' mp_physics = 55, 55,', ' mp_physics = 28, 28,')
+           .replace(' mp_physics = 10, 10,', ' mp_physics = 28, 28,')
            .replace(' time_step = 60,',
                     ' time_step = 60,\n wif_input_opt = 2,'))
     wps_path = tmp_path/'namelist.wps'
@@ -397,7 +397,10 @@ def test_nested_finalizer_still_forces_every_supplied_scalar_back():
     from gpuwm.boundary_fields import SCALAR_ARRAY_BOUNDARY_FIELDS
     from gpuwm.ingest import lateral_bc
 
-    assert set(SCALAR_ARRAY_BOUNDARY_FIELDS) == {'nwfa', 'nifa', 'nc', 'nr', 'ni'}
+    # qke_adv joined with MYNN TKE advection (2.9.0): WRF's Registry scalar
+    # takes the same specified/nested boundary treatment when selected.
+    assert set(SCALAR_ARRAY_BOUNDARY_FIELDS) == {'nwfa', 'nifa', 'nc', 'nr', 'ni',
+                                                 'qke_adv'}
     fields = {'u': 0, 'v': 0, 'theta': 0, 'phi': 0, 'mu': 0,
               'qv': 0, 'nwfa': 0, 'nifa': 0}
     forced = []

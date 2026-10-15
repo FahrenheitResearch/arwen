@@ -31,7 +31,7 @@ needs_powershell = pytest.mark.skipif(
 # spelling passes it to a native program, so no command gpuwm prints
 # carries it.
 _AWKWARD = [
-    "plain", "with space", "owner's case", "Drew\u2019s case",
+    "plain", "with space", "owner's case", "Kai\u2019s case",
     "\u2018single\u2019 \u201adouble\u201b", "a,b", "$HOME", "`tick",
     "semi;colon", "x--%", "--", "@splat", "#hash", "(paren)", "{brace}",
     "100%", "0x10", "1.10", "5kb", "1e5", "-5", "-.5", "-name:value",
@@ -91,7 +91,7 @@ def test_the_windows_sim_line_parses_to_the_runner_argv(tmp_path, monkeypatch,
         root = _single_domain_bundle(tmp_path / "bundle's folder")
     else:
         root = _tree_bundle(tmp_path / "bundle's folder")
-    config, wps = _authority(tmp_path / "Drew\u2019s authority")
+    config, wps = _authority(tmp_path / "Kai\u2019s authority")
     output = tmp_path / "run folder"
     argv = ["sim", str(root), "--experiment-config", str(config),
             "--outdir", str(output), "--print-command"]

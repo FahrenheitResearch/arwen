@@ -1,0 +1,11 @@
+{
+  "source": "Reduced PyPI project JSON shape with historical totals recorded in the 2.9.0 intake; totals are historical, not a current account snapshot",
+  "gpuwm": {
+    "info": {"name": "gpuwm"},
+    "releases": {"recorded": [{"filename": "old.whl", "size": 10690000000, "digests": {"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}
+  },
+  "gpuwm-data": {
+    "info": {"name": "gpuwm-data"},
+    "releases": {"recorded": [{"filename": "old.whl", "size": 4170000000, "digests": {"sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}]}
+  }
+}

@@ -113,17 +113,17 @@ def test_the_derived_bar_agrees_with_the_real_index(real_index, real_levels):
     # The certified ladder already reaches a 100 hPa-class top: byte for
     # byte the request ArWen has always made.
     (None, 21, 100.0),
-    (10000.0, 21, 100.0),
+    (10000.0, 22, 70.0),
     (20000.0, 21, 100.0),
     # A 50 hPa-class top -- what every WRF-Runner GFS namelist declares.
     # 70 hPa is not low enough, 50 hPa is: exactly the 23-level request
     # his own generator makes.
-    (5000.0, 23, 50.0),
-    (7000.0, 22, 70.0),
+    (5000.0, 24, 40.0),
+    (7000.0, 23, 50.0),
     # Deeper still, walking the published ladder.
-    (1000.0, 28, 10.0),
-    (100.0, 33, 1.0),
-    (1.0, 41, 0.01),
+    (1000.0, 29, 7.0),
+    (100.0, 34, 0.7),
+    (2.0, 41, 0.01),
 ])
 def test_the_ladder_follows_the_requested_top(real_levels, top_pa,
                                               expected_levels,
@@ -133,7 +133,7 @@ def test_the_ladder_follows_the_requested_top(real_levels, top_pa,
     assert levels[0] == expected_top_hpa
     # Whatever the top, the ladder covers it and stays sorted and unique.
     if top_pa is not None:
-        assert levels[0] * 100.0 <= top_pa
+        assert levels[0] * 100.0 < top_pa
     assert list(levels) == sorted(levels)
     assert len(set(levels)) == len(levels)
     # And the certified ladder is still entirely inside it.
@@ -141,7 +141,7 @@ def test_the_ladder_follows_the_requested_top(real_levels, top_pa,
         float(level) for level in gfs_transport.PRESSURE_LEVELS_HPA)
 
 
-def test_a_50_hpa_top_adds_exactly_the_two_levels_wrf_runner_asks_for(
+def test_a_50_hpa_top_adds_a_level_strictly_above_the_model_top(
         real_levels):
     """The reconciliation delta, stated as a gate.
 
@@ -153,8 +153,8 @@ def test_a_50_hpa_top_adds_exactly_the_two_levels_wrf_runner_asks_for(
     levels = gfs_transport.levels_for_top(5000.0, available=real_levels)
     certified = tuple(float(level)
                       for level in gfs_transport.PRESSURE_LEVELS_HPA)
-    assert set(levels) - set(certified) == {50.0, 70.0}
-    assert len(levels) == 23
+    assert set(levels) - set(certified) == {40.0, 50.0, 70.0}
+    assert len(levels) == 24
 
 
 def test_an_unsatisfiable_top_refuses_and_names_the_deepest_available(
@@ -223,7 +223,7 @@ def test_the_nomads_query_names_every_selected_level(real_levels, top_pa,
 
 
 def test_sub_hpa_levels_keep_their_decimal_spelling(real_levels):
-    levels = gfs_transport.levels_for_top(1.0, available=real_levels)
+    levels = gfs_transport.levels_for_top(2.0, available=real_levels)
     url = gfs_transport.nomads_query(
         _CYCLE, 0, left_lon=260.0, right_lon=270.0, bottom_lat=30.0,
         top_lat=40.0, pressure_levels_hpa=levels)
@@ -263,8 +263,8 @@ def _fetch(tmp_path, monkeypatch, real_index, real_levels, **kwargs):
 
 
 @pytest.mark.parametrize("top_pa,levels,top_hpa", [
-    (None, 21, 100.0), (10000.0, 21, 100.0), (5000.0, 23, 50.0),
-    (1000.0, 28, 10.0),
+    (None, 21, 100.0), (10000.0, 22, 70.0), (5000.0, 24, 40.0),
+    (1000.0, 29, 7.0),
 ])
 def test_the_receipt_records_the_ladder_and_the_source_top(
         tmp_path, monkeypatch, real_index, real_levels, top_pa, levels,
@@ -338,7 +338,7 @@ def test_the_certified_ladder_stands_in_when_the_index_is_unreadable(
     lines: list[str] = []
     levels = fetch.gfs_available_levels(_CYCLE, progress=lines.append)
     assert levels == gfs_transport.CERTIFIED_AVAILABLE_LEVELS_HPA
-    assert gfs_transport.levels_for_top(5000.0, available=levels)[0] == 50.0
+    assert gfs_transport.levels_for_top(5000.0, available=levels)[0] == 40.0
 
 
 # ---------------------------------------------------------------------------
@@ -361,12 +361,12 @@ def test_the_front_door_manifest_declares_the_ladder_it_fetched(
         experiment_config=tmp_path / "experiment.toml",
         progress=lambda line: None)
     identity = json.loads(path.read_text())["source"]
-    assert len(identity["pressure_levels_hpa"]) == 23
-    assert identity["top_pressure_pa"] == 5000.0
+    assert len(identity["pressure_levels_hpa"]) == 24
+    assert identity["top_pressure_pa"] == 4000.0
     # And the front door reads that top instead of its own constant --
     # which is what let a p_top of 5000 Pa through at all.
     assert gfs_direct._manifest_source_top_pa(
-        {"source": identity}) == 5000.0
+        {"source": identity}) == 4000.0
 
 
 def test_a_receipt_without_a_ladder_still_means_the_certified_top():
@@ -405,7 +405,7 @@ def test_the_reconciliation_delta_itself(real_levels):
 
     new_top = min(gfs_transport.levels_for_top(
         5000.0, available=real_levels)) * 100.0
-    assert new_top == 5000.0
+    assert new_top == 4000.0
     checked = validate_explicit_eta_grid(
         eta, nz=80, p_top=5000.0, source_top_pressure_pa=new_top,
         context="the ladder --p-top-pa 5000 fetches")
@@ -535,7 +535,7 @@ def _bridge_output(root: Path, levels_hpa: tuple[float, ...],
 
 
 @pytest.mark.parametrize("top_pa,expected", [
-    (None, 21), (10000.0, 21), (5000.0, 23), (1000.0, 28),
+    (None, 21), (10000.0, 22), (5000.0, 24), (1000.0, 29),
 ])
 def test_the_bridge_loader_carries_whatever_ladder_was_decoded(
         tmp_path, real_levels, top_pa, expected):

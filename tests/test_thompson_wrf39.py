@@ -328,7 +328,7 @@ def test_the_operational_fork_signature_names_the_fork_s_own_keys():
 def test_a_public_wrf_namelist_imports_the_v461_thompson(tmp_path):
     from test_namelist_import import INPUT_TEXT, _load, _pair
     from gpuwm.namelist_import import import_namelists
-    inp = INPUT_TEXT.replace(" mp_physics = 55, 55,", " mp_physics = 28, 28,")
+    inp = INPUT_TEXT.replace(" mp_physics = 10, 10,", " mp_physics = 28, 28,")
     text, _ = import_namelists(*_pair(tmp_path, inp=inp), name="fork")
     assert "thompson_version" not in text
     exp = _load(tmp_path, text, "fork.toml")

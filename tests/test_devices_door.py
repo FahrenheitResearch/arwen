@@ -416,11 +416,22 @@ def test_default_authority_and_fingerprint_base_golden(name, authority, fingerpr
     # The retained golden predates 48847c9eb's local_face default. Inverse
     # only that declared value move, and prove the live identity binds it.
     assert all(domain.run.terrain_clock == "local_face" for domain in exp.domains)
-    historical = replace(exp, domains=tuple(replace(
-        domain, run=replace(domain.run, terrain_clock="measured"))
+    # ... and 2.9.0's WRF 4.7/4.8 upstream-fix defaults (golden/wrf-fixes):
+    # the golden was recorded under WRF 4.6.1's equation of time, YSU
+    # entrainment, Noah-MP daylight-only snow aging and SLUCM rain floors.
+    # Each declared move binds the live identity on its own.
+    assert all(domain.run.solar_generation == "wrf_480" for domain in exp.domains)
+    old_sun = replace(exp, domains=tuple(replace(
+        domain, run=replace(domain.run, solar_generation="wrf_461",
+                            ysu_version="wrf_461", noahmp_snow_age="wrf_461",
+                            urban_water_balance="wrf_471"))
         for domain in exp.domains))
+    historical = replace(old_sun, domains=tuple(replace(
+        domain, run=replace(domain.run, terrain_clock="measured"))
+        for domain in old_sun.domains))
     catalog = SimpleNamespace(run_provenance={})
-    assert experiment_fingerprint(exp, catalog) != experiment_fingerprint(historical, catalog)
+    assert experiment_fingerprint(exp, catalog) != experiment_fingerprint(old_sun, catalog)
+    assert experiment_fingerprint(old_sun, catalog) != experiment_fingerprint(historical, catalog)
     assert experiment_fingerprint(historical, catalog) == fingerprint
 
 

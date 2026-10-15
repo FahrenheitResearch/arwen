@@ -75,7 +75,7 @@ def test_window_binds_review_clock_and_geometry(tmp_path):
 
 
 def test_neutral_table_bytes_cannot_change_after_partial_analysis(tmp_path):
-    shared = pytest.importorskip('arwen_global.obs_table')
+    from gpuwm.obs import neutral_table as shared
     table = tmp_path / 'obs.csv'
     with table.open('w', newline='') as handle:
         writer = csv.writer(handle)

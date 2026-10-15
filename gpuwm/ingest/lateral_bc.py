@@ -30,6 +30,7 @@ from gpuwm.grid_requirements import boundary_axis
 from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
 
 COUPLED_SCALAR_STATE_FIELDS = frozenset({
+    "qke_adv",
     "qv", "qc", "qr", "qi", "qs", "qg",
     "nr", "ni", "ns", "ng", "nc", "nwfa", "nifa",
     # mp=9 (Milbrandt-Yau): hail number; the rest of its moments were

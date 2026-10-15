@@ -113,7 +113,7 @@ def test_reader_retains_exact_ruc_and_mynn_words_and_inactive_advected_record(tm
         # float32 value is represented exactly and restores to the same word.
         np.testing.assert_array_equal(result.raw[name], value)
         np.testing.assert_array_equal(result.raw[name].astype('f4').view('u4'), value.view('u4'))
-        assert (name in result.mapped_variables) is (name != 'qke_adv')
+        assert name in result.mapped_variables
 
 
 @pytest.mark.parametrize('name', ['ACRUNOFF', 'RHOSNF', 'SNOWFALLAC', 'SOILT1', 'qke', 'QKE', 'qke_adv'])
@@ -150,13 +150,12 @@ def test_new_fields_require_their_selected_consumer_and_qke_aliases_must_agree(t
         _read(path, cfg)
 
 
-def test_qke_adv_names_unsupported_operation_for_active_or_unresolved_selection(tmp_path):
+def test_qke_adv_is_retained_for_the_selected_transport(tmp_path):
     cfg = _cfg(); path = _input(tmp_path/'input', cfg, _values(cfg))
-    with pytest.raises(NotImplementedError, match='qke_adv transport.*MYNN feedback'):
-        _read(path, replace(cfg, bl_mynn_tkeadvect=True))
-    with pytest.raises(ValueError, match='explicit bl_mynn_tkeadvect=False'):
-        wi.read_wrfinput(path, cfg=None, expected_dimensions=_dimensions(cfg),
-                         require_complete=False)
+    restored = _read(path, replace(cfg, bl_mynn_tkeadvect=True))
+    np.testing.assert_array_equal(restored.raw['qke_adv'], _values(cfg)['qke_adv'])
+    wi.read_wrfinput(path, cfg=None, expected_dimensions=_dimensions(cfg),
+                     require_complete=False)
 
 
 def _surface_values(cfg):
@@ -182,11 +181,13 @@ def test_actual_initializer_forwards_supplied_fields_and_preserves_absent_cold_s
               for name, value in values.items() if name != 'qke_adv'}
     fields.update(albbck=np.zeros((cfg.ny,cfg.nx), np.float32),
                   lai=np.zeros((cfg.ny,cfg.nx), np.float32))
-    driver = SimpleNamespace(fields=fields, rainc=None)
+    driver = SimpleNamespace(fields=fields, rainc=None, ruc_params=None)
     monkeypatch.setitem(sys.modules, 'cupy', np)
     monkeypatch.setitem(sys.modules, 'gpuwm.core.physics', SimpleNamespace(
         physics_driver_required=lambda cfg: True,
         initialize_physics=lambda *args, **kwargs: driver))
+    monkeypatch.setitem(sys.modules, "gpuwm.core.ruc_runtime", SimpleNamespace(
+        ruc_cold_start=lambda *args,**kwargs: None))
     assert wi.initialize_wrfinput_physics(object(), restored, cfg) is driver
     for name, value in values.items():
         if name == 'qke_adv':
@@ -289,11 +290,13 @@ def test_a_cycled_start_forwards_the_subgrid_cloud_to_the_physics_fields(
               for name, value in cloud.items()}
     fields.update(albbck=np.zeros((cfg.ny, cfg.nx), np.float32),
                   lai=np.zeros((cfg.ny, cfg.nx), np.float32))
-    driver = SimpleNamespace(fields=fields, rainc=None)
+    driver = SimpleNamespace(fields=fields, rainc=None, ruc_params=None)
     monkeypatch.setitem(sys.modules, 'cupy', np)
     monkeypatch.setitem(sys.modules, 'gpuwm.core.physics', SimpleNamespace(
         physics_driver_required=lambda cfg: True,
         initialize_physics=lambda *args, **kwargs: driver))
+    monkeypatch.setitem(sys.modules, "gpuwm.core.ruc_runtime", SimpleNamespace(
+        ruc_cold_start=lambda *args,**kwargs: None))
     assert wi.initialize_wrfinput_physics(object(), restored, cfg) is driver
     for name, value in cloud.items():
         np.testing.assert_array_equal(fields[name.lower()].view('u4'),

@@ -3661,6 +3661,16 @@ const FIELD_SUPERCOOLED_WATER_PATH_3_6KM: GribFieldSpec = field_spec(
     &[],
 );
 
+const FIELD_CLOUD_FRACTION_COLUMN_MAX: GribFieldSpec = field_spec(
+    "cloud_fraction_column_max",
+    "Radiation Cloud Fraction, Column Maximum",
+    ProductFamily::Native,
+    GribLevelKind::ColumnMaximum,
+    None,
+    Some(FieldSelector::column_maximum(CanonicalField::TotalCloudCover)),
+    &[],
+);
+
 const FIELD_CLOUD_WATER_COLUMN_MAX: GribFieldSpec = field_spec(
     "cloud_water_column_max",
     "Cloud Water Mixing Ratio, Column Maximum",
@@ -5783,6 +5793,15 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         style: RenderStyle::WeatherSupercooledWaterPath,
     },
     PlotRecipe {
+        slug: "cloud_fraction_column_max",
+        title: "Radiation Cloud Fraction, Column Maximum",
+        filled: FIELD_CLOUD_FRACTION_COLUMN_MAX,
+        contours: None,
+        barbs_u: None,
+        barbs_v: None,
+        style: RenderStyle::WeatherCloudCover,
+    },
+    PlotRecipe {
         slug: "cloud_water_column_max",
         title: "Cloud Water, Column Maximum",
         filled: FIELD_CLOUD_WATER_COLUMN_MAX,
@@ -6487,7 +6506,8 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             VerticalSelector::EntireAtmosphere | VerticalSelector::HeightAboveGroundLayerMeters { .. },
         ) => matches!(model, ModelId::WrfGdex),
         (
-            CanonicalField::CloudWaterMixingRatio
+            CanonicalField::TotalCloudCover
+            | CanonicalField::CloudWaterMixingRatio
             | CanonicalField::RainWaterMixingRatio
             | CanonicalField::CloudIceMixingRatio
             | CanonicalField::SnowMixingRatio

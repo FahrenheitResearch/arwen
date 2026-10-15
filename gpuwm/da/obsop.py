@@ -205,8 +205,20 @@ Q_ACTIVE_THRESHOLD = 1.0e-9
 #: :data:`CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER`, which is a different
 #: statement from being absent.
 CLEAR_AIR_FLOOR_DBZ: dict[int, float] = {
+    2: -35.0,
+    # WSM7's own refl10cm kernel floors every clear cell at -35 dBZ.
+    # No standalone DA route is added here; its native field is available
+    # through the output-due WSM-family runner.
+    24: -35.0,
     1: -35.0,
+    # WSM3 runs refl10cm_wsm6's kernel on its phase-split qr
+    # (gpuwm.core.refl.wsm3_precipitation_phases), which floors every cell
+    # at -35 dBZ exactly as mp=6 does.
+    3: -35.0,
+    4: -35.0,  # wsm5_refl10cm_column final clamp.
     6: -35.0,
+    # WSM6R's H(x) is the same refl10cm_wsm6 operator (gpuwm.core.refl).
+    106: -35.0,
     8: -35.0,
     # WDM6 shares the refl10cm family's floor and always did: its operator
     # arm is gpuwm.core.refl.launch_refl10cm_wdm6, and
@@ -246,6 +258,11 @@ CLEAR_AIR_FLOOR_DBZ: dict[int, float] = {
     # gives P3 one floor.  Not interchangeable with the -35 family in one
     # obs array, as for NSSL's 0 and Milbrandt-Yau's -99.
     50: -36.98970031738281,
+    # Ferrier-Aligo: EGCP01COLUMN initialises every level's DBZ_col to
+    # DBZmin = -20 (module_mp_fer_hires.F:1191, :1279) and replaces it only
+    # where Zrain+Zsnow exceeds Zmin = 0.01 mm6 m-3 (:2496), so clear air
+    # reads -20 exactly (kernels/fer_hires.cu writes the same word).
+    5: -20.0,
 }
 
 #: Schemes whose H(x) has NO single clear-air value, and the paragraph that
@@ -758,6 +775,14 @@ def mass_point_winds(state, *, rotate_to_earth: bool = True):
 # reflectivity: adapter over the product-side authority
 # --------------------------------------------------------------------------
 
+#: Schemes whose H_Z(x) has a float64 column mirror on the host
+#: (:func:`_host_reflectivity`).  Every other routed scheme is answered on
+#: the CUDA path only, so a caller holding host arrays has to move them to
+#: the device for those (gpuwm.da.radar_assimilation.
+#: scheme_reflectivity_provider does).
+HOST_REFLECTIVITY_MIRRORS = frozenset({1, 6, 10})
+
+
 def _host_reflectivity(state, cfg, temperature, pressure):
     """Column-by-column float64 mirror path (host states only).
 
@@ -800,14 +825,26 @@ def _host_reflectivity(state, cfg, temperature, pressure):
                     qv[:, j, i], qr[:, j, i], nr[:, j, i],
                     qs[:, j, i], ns[:, j, i], qg[:, j, i], ng[:, j, i],
                     t[:, j, i], p[:, j, i], morr_rimed_ice=rimed)
-    elif mp == 6:
+    elif mp in (6, 106):
         qr, qs, qg = field("qr"), field("qs"), field("qg")
-        hail = int(getattr(cfg, "wsm6_hail_opt", 0))
+        hail = int(getattr(cfg, "wsm6_hail_opt", 0)) if mp == 6 else 0
         for j in range(ny):
             for i in range(nx):
                 out[:, j, i] = npref.np_refl10cm_wsm6_column(
                     qv[:, j, i], qr[:, j, i], qs[:, j, i], qg[:, j, i],
                     t[:, j, i], p[:, j, i], hail_opt=hail)
+    elif mp == 3:
+        from gpuwm.core.refl import wsm3_precipitation_phases
+        rain, snow = wsm3_precipitation_phases(
+            np, np.asarray(state.qr, np.float32), np.asarray(t, np.float32))
+        rain = rain.astype(np.float64)
+        snow = snow.astype(np.float64)
+        no_graupel = np.zeros_like(rain)
+        for j in range(ny):
+            for i in range(nx):
+                out[:, j, i] = npref.np_refl10cm_wsm6_column(
+                    qv[:, j, i], rain[:, j, i], snow[:, j, i],
+                    no_graupel[:, j, i], t[:, j, i], p[:, j, i], hail_opt=0)
     elif mp == 1:
         qr = field("qr")
         for j in range(ny):
@@ -1077,7 +1114,20 @@ def thompson_generation(cfg) -> str:
 #: gpuwm/core/kernels/p3_zdiag.cu over the forecast port's own device
 #: helpers, which updates nothing, and ``gpuwm.core.p3_device.reflectivity``
 #: is its scheme-diagnostic H(x).  The table stays, empty, for the class.
-NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP: dict[int, str] = {}
+NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP: dict[int, str] = {
+    5: (
+        "mp_physics=5: Ferrier-Aligo forms its reflectivity inside EGCP01COLUMN from "
+        "quantities that exist only in the middle of the column update: the "
+        "rain intercept N0r and mean diameter INDEXR2 of the rain_pass "
+        "iteration (module_mp_fer_hires.F:2292-2345), the updated rime "
+        "factor, the mean ice diameter INDEXS and the large-ice fraction "
+        "FLIMASS of the ice block (:2232-2251), and the falling rain and "
+        "snow fluxes from the levels above.  Recomputing them from a state "
+        "means running the scheme, which moves the background; the forecast "
+        "REFL_10CM (the scheme's own DBZ_col, stashed by "
+        "gpuwm/core/fer_hires.py) is the field, and gpuwm.da.hotstart "
+        "accepts it through simulated_dbz=."),
+}
 
 #: Schemes whose H_Z(x) is the scheme's own state-reading diagnostic and
 #: which take BOTH a device and a host state themselves, dispatched ahead

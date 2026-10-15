@@ -57,6 +57,22 @@ from tools.mynn_pbl_wrf461_oracle.validate_turbulence_oracle import (
     TURBULENCE_ULP_BUDGET,
 )
 
+# Consumer expectations come from the independent generated declarations.
+from gpuwm.physics_registry import implemented_selector_values as _intake_selectors
+from gpuwm.physics_registry import consumer_rows_by_selector as _intake_rows
+_INTAKE_MP = tuple(sorted(_intake_selectors("microphysics")))
+_INTAKE_REFL = tuple(mp for mp in _INTAKE_MP if mp)
+_INTAKE_PRODUCERS = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "reflectivity_input_species").items()
+    if row is not None))
+_INTAKE_NATIVE = tuple(sorted(set(_INTAKE_REFL) - set(_INTAKE_PRODUCERS)))
+_INTAKE_SNOW = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qs" in (row or {}).get("state_fields", ())))
+_INTAKE_SIX = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qg" in (row or {}).get("state_fields", ())))
+
 
 #: The total-order FP32 key is shared rather than re-derived here.
 #: Thirteen local copies of this two-line bit trick carried the same
@@ -609,13 +625,14 @@ def test_the_registry_publishes_the_mynn_snow_species_contract():
     # 900 (TEMPO, a named scheme) joins from its capability row, whose
     # ice masses carry qs (gpuwm/microphysics_schemes.py).
     assert species["flag_qs_true_microphysics_selectors"] == [
-        6, 8, 9, 10, 16, 18, 28, 30, 900]
+        2, 4, 6, 8, 9, 10, 16, 18, 24, 28, 30, 106, 900]
     # 50 (P3) is on the FALSE side substantively, not by omission: the
     # p3_1category package is moist:qv,qc,qr,qi with no qs at all
     # (Registry.EM_COMMON:3038), so WRF's F_QS is false and MYNN's sqs = 0
     # is P3's own answer rather than a field gpuwm withheld -- the opposite
     # of the mp=28 case this list was corrected for.
-    assert species["flag_qs_false_microphysics_selectors"] == [0, 1, 50]
+    # Registry.EM_COMMON:3017 gives WSM3 combined qc/qr, no separate qs.
+    assert species['flag_qs_false_microphysics_selectors'] == [0, 1, 3, 5, 50]
 
     from gpuwm.core.mynn_pbl_runtime import MYNN_SNOW_MICROPHYSICS
 

@@ -886,8 +886,8 @@ def main(argv=None):
         return 2
 
 
-if __name__ == '__main__':
-    raise SystemExit(main())
+
+
 
 
 def _smooth_cg_case(exp, case, held: dict):
@@ -915,3 +915,7 @@ def _smooth_cg_case(exp, case, held: dict):
     statics = dict(case.statics)
     statics["HGT_M"] = terrain
     return replace(case, terrain=terrain, statics=MappingProxyType(statics))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

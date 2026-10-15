@@ -5,31 +5,47 @@ use std::process::ExitCode;
 
 use rw_mpas::composite::{CompositePlan, CompositeSource, COMPOSITE_CONTEXT_FACTOR};
 use rw_mpas::convert::{
-    convert_frame, convert_frame_composite, CompositeGather, CompositeLayer, ConvertOptions,
+    convert_frame, convert_frame_composite, convert_frame_remapped, CompositeGather,
+    CompositeLayer, ConvertOptions,
 };
-use rw_mpas::history::{assert_mesh_agrees, read_history, MpasFrame, Timestamp};
+use rw_mpas::remap::{read_mesh_topology, ProductRemap};
+use rw_mpas::history::{
+    assert_mesh_agrees, read_history, read_history_with_init, read_init_fields, MpasFrame, Timestamp,
+};
 use rw_mpas::sha256_file;
 use rw_mpas::weights::{
     build_weights, read_mesh_cell_spacing, read_mesh_coordinates, ON_MESH_SPACING_FACTOR,
 };
-use rw_mpas::window::Window;
+use rw_mpas::window::{Window, GLOBAL_MESH_WINDOW, REGION_SPEC_PREFIX};
 use rw_store::netcdf_classic::NcFormat;
 
 const USAGE: &str = "\
 usage: rw_mpas_convert --history FILE... --mesh FILE --out-dir DIR
                        [--init FILE] [--mesh-sha256 HEX] [--init-sha256 HEX]
-                       [--window focus|global|mesh|composite]
+                       [--window focus|global|global-mesh|mesh|composite|region:...|lambert:...]
                        [--compose SOURCES.json] [--compose-base-only]
                        [--field-set full|surface]
                        [--simulation-start YYYY-MM-DD_HH:MM:SS]
                        [--prefix NAME] [--format cdf2|cdf5] [--clobber]
                        [--json FILE] [--model-label NAME]
+                       [--remap nearest|product]
        rw_mpas_convert --help | --abi
 
 windows:
   focus   a fixed 240x150 Lambert box at 22 km over the CONUS. Frozen
           geometry: its weights digests are already recorded in evidence.
   global  a fixed 0.25 degree lat-lon overview of the whole sphere.
+  global-mesh  DERIVED from --mesh: the whole sphere on a lat-lon grid at
+          the mesh's own median spacing (rounded down, never coarser), so a
+          15 km mesh draws at 15 km and a 60 km mesh at 60 km.
+  region:CLAT,CLON,WIDTH_KM,HEIGHT_KM[,TRUELAT1,TRUELAT2]
+          DERIVED from --mesh: a Lambert box of that ground extent (lat-lon
+          near the equator) whose dx is the median spacing of the mesh cells
+          inside it, rounded down. The caller names the ground; the mesh
+          names the resolution.
+  lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON
+          an explicit WRF-style Lambert grid, for landing on another
+          model's own grid point for point.
   mesh    DERIVED from --mesh: the cells within 2x the mesh's minimum
           spacing are its refined region, and the window is centred on
           them, at their median spacing, covering their extent. A mesh
@@ -57,6 +73,25 @@ seam can be drawn and audited.
 model the renderer names in a plot's metadata row in place of the generic
 WRF identity every wrfout-shaped frame imports under (at most 32 characters,
 no '|').
+
+Every single-source frame also carries GPUWM_GRID_LABEL, the grid a plot's
+headline names: the model label (or 'mesh') and the spacing the mesh is
+known by, read from the mesh itself -- 'hex 15 km', 'hex 60-3 km' -- in
+place of WRF's 'd01' nest token and the resample grid's spacing.
+
+--remap product (single-source only) carries each field the way its quantity
+needs: linear (barycentric on the mesh's own Delaunay triangles) for state,
+first-order area-conservative for accumulated precipitation, nearest cell for
+categories and soil.  Each frame records the method per variable
+(MPAS_RESAMPLE) and the remap digest; stdout adds REMAP and per-frame BUDGET
+lines comparing the window integral of RAINC+RAINNC with the mesh's own.
+--remap nearest (the default) is the frozen nearest-cell map.
+
+--jobs N (single-source only, default 1) converts N history frames at a
+time.  A frame is read, remapped, written and hashed on its own, so frames
+are independent; stdout lines and the JSON receipt keep the order of
+--history whatever N is, and every output file is the same bytes.  Each
+frame in flight holds its history and its output in memory.
 
 --compose-base-only frames the same window from the same sources and then
 converts the BASE alone, so the composite has a coarse counterpart over
@@ -100,6 +135,8 @@ struct Args {
     compose: Option<PathBuf>,
     compose_base_only: bool,
     model_label: Option<String>,
+    remap: String,
+    jobs: usize,
 }
 
 /// One run named in a `--compose` source list.
@@ -142,6 +179,8 @@ fn parse() -> Result<Args, String> {
         compose: None,
         compose_base_only: false,
         model_label: None,
+        remap: "nearest".to_string(),
+        jobs: 1,
     };
     let mut raw = std::env::args().skip(1).peekable();
     while let Some(flag) = raw.next() {
@@ -182,6 +221,19 @@ fn parse() -> Result<Args, String> {
             "--compose" => args.compose = Some(PathBuf::from(value()?)),
             "--compose-base-only" => args.compose_base_only = true,
             "--model-label" => args.model_label = Some(checked_model_label(&value()?)?),
+            "--remap" => {
+                args.remap = value()?;
+                if !matches!(args.remap.as_str(), "nearest" | "product") {
+                    return Err(format!("--remap '{}' is not nearest or product", args.remap));
+                }
+            }
+            "--jobs" => {
+                args.jobs = value()?
+                    .parse()
+                    .ok()
+                    .filter(|n| (1..=64).contains(n))
+                    .ok_or("--jobs takes a whole number from 1 to 64")?;
+            }
             other => return Err(format!("unknown flag {other}")),
         }
     }
@@ -205,6 +257,23 @@ fn checked_model_label(raw: &str) -> Result<String, String> {
         ));
     }
     Ok(label)
+}
+
+/// `{"min": .., "median": .., "max": ..}` of a mesh's per-cell spacing, in
+/// km, for the receipt: the numbers the grid label and a derived window's
+/// dx were read from.
+fn spacing_summary_km(spacing_m: &[f64]) -> String {
+    let mut sorted: Vec<f64> = spacing_m.iter().copied().filter(|v| v.is_finite()).collect();
+    if sorted.is_empty() {
+        return "null".to_string();
+    }
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    format!(
+        "{{\"min\": {:.4}, \"median\": {:.4}, \"max\": {:.4}}}",
+        sorted[0] / 1000.0,
+        sorted[sorted.len() / 2] / 1000.0,
+        sorted[sorted.len() - 1] / 1000.0
+    )
 }
 
 fn json_escape(s: &str) -> String {
@@ -300,6 +369,11 @@ fn composite_window(overlays: &[&ComposeEntry]) -> Result<Window, String> {
 }
 
 fn run_compose(args: Args, spec_path: &Path) -> Result<(), String> {
+    if args.remap != "nearest" {
+        return Err("--remap product interpolates across one mesh; a composite switches \
+                    source point by point, so it keeps the nearest-cell map"
+            .to_string());
+    }
     if !args.history.is_empty() || args.mesh.is_some() {
         return Err(
             "--compose owns the mesh and history list; passing --mesh or --history as well \
@@ -590,6 +664,37 @@ fn run() -> Result<(), String> {
             derived.description()
         );
         derived
+    } else if args.window == GLOBAL_MESH_WINDOW || args.window.starts_with(REGION_SPEC_PREFIX) {
+        let spacing = read_mesh_cell_spacing(&mesh_path).map_err(|e| e.to_string())?;
+        if spacing.spacing_metres.len() != mesh.n_cells() {
+            return Err(format!(
+                "mesh {} carries {} cell centre(s) but {} spacing value(s); a window sized \
+                 from mismatched arrays would pair one cell's position with another cell's \
+                 resolution",
+                mesh_path.display(),
+                mesh.n_cells(),
+                spacing.spacing_metres.len()
+            ));
+        }
+        let derived = if args.window == GLOBAL_MESH_WINDOW {
+            Window::global_at_mesh_spacing(&spacing.spacing_metres)
+        } else {
+            Window::region_at_mesh_spacing(
+                &args.window,
+                &mesh.latitude_degrees,
+                &mesh.longitude_degrees,
+                &spacing.spacing_metres,
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        eprintln!(
+            "rw_mpas_convert: advisory: --window {} derived from {} using {}: {}",
+            args.window,
+            mesh_path.display(),
+            spacing.source.label(),
+            derived.description()
+        );
+        derived
     } else {
         Window::named(&args.window).map_err(|e| e.to_string())?
     };
@@ -623,6 +728,11 @@ fn run() -> Result<(), String> {
     let off_mesh = weights
         .mark_footprint(&footprint_spacing.spacing_metres, ON_MESH_SPACING_FACTOR)
         .map_err(|e| e.to_string())?;
+    // The headline's grid name, from the mesh this run has just read: the
+    // footprint pass already holds every cell's spacing.
+    let grid_label =
+        rw_mpas::convert::grid_label(args.model_label.as_deref(), &footprint_spacing.spacing_metres);
+    let spacing_stats = spacing_summary_km(&footprint_spacing.spacing_metres);
     println!(
         "WINDOW\t{}\t{}x{}\tcells={}",
         args.window,
@@ -646,16 +756,46 @@ fn run() -> Result<(), String> {
         ON_MESH_SPACING_FACTOR
     );
 
-    let mut records: Vec<String> = Vec::new();
-    for history in &args.history {
-        let frame = read_history(
-            history,
-            args.init.as_deref(),
-            None,
-            None,
-            args.init_sha256.as_deref(),
+    let product = if args.remap == "product" {
+        let topology = read_mesh_topology(&mesh_path, mesh.n_cells()).map_err(|e| e.to_string())?;
+        let remap = ProductRemap::build(
+            &mesh,
+            &topology,
+            &footprint_spacing.spacing_metres,
+            &weights,
         )
         .map_err(|e| e.to_string())?;
+        println!(
+            "REMAP\tproduct\t{}\tbuild_s={:.3}\tlinear_contained={}\tlinear_widened={}\tlinear_clamped={}\tsamples_per_pixel={}..{}",
+            remap.sha256,
+            remap.build_seconds,
+            remap.linear.contained,
+            remap.linear.widened,
+            remap.linear.clamped,
+            remap.conservative.samples_min,
+            remap.conservative.samples_max
+        );
+        Some(remap)
+    } else {
+        None
+    };
+
+    // One frame: what it prints, in order, and its receipt record.  Frames
+    // share only read-only state (the mesh, the weights, the remap), so
+    // --jobs converts several at a time; results are consumed in --history
+    // order, so stdout and the receipt do not depend on which finished first.
+    // The init's fields are the same for every frame: hash and read the init
+    // once (read_init_fields names the 419 GB-per-view breakage this removes).
+    let init_fields = match args.init.as_deref() {
+        Some(path) => Some(
+            read_init_fields(path, args.init_sha256.as_deref()).map_err(|e| e.to_string())?,
+        ),
+        None => None,
+    };
+    let convert_one = |history: &PathBuf| -> Result<(Vec<String>, String), String> {
+        let mut lines: Vec<String> = Vec::new();
+        let frame = read_history_with_init(history, init_fields.as_ref(), None, None)
+            .map_err(|e| e.to_string())?;
         let (dlat, dlon) =
             assert_mesh_agrees(&frame, &mesh, 1.0e-4).map_err(|e| e.to_string())?;
         let stamp = frame.valid_time.label().replace(':', "_");
@@ -666,25 +806,74 @@ fn run() -> Result<(), String> {
             format: args.format,
             clobber: args.clobber,
             model_label: args.model_label.clone(),
+            grid_label: grid_label.clone(),
             ..ConvertOptions::default()
         };
-        let emitted =
-            convert_frame(&frame, &weights, &destination, &options).map_err(|e| e.to_string())?;
-        println!(
+        let emitted = match &product {
+            Some(remap) => convert_frame_remapped(&frame, remap, &destination, &options),
+            None => convert_frame(&frame, &weights, &destination, &options),
+        }
+        .map_err(|e| e.to_string())?;
+        // The accumulation budget: the window's integral of total
+        // precipitation against the mesh's own sum(value * areaCell).
+        let mut budget_json = "null".to_string();
+        if let Some(remap) = &product {
+            if let (Some((rc, 1)), Some((rnc, 1))) = (
+                frame.fields.get("RAINC").map(|(v, l)| (v, *l)),
+                frame.fields.get("RAINNC").map(|(v, l)| (v, *l)),
+            ) {
+                let total: Vec<f32> = rc.iter().zip(rnc.iter()).map(|(a, b)| a + b).collect();
+                let remapped = remap.conservative.gather(&total, 1);
+                let (mesh_integral, grid_integral, covered) =
+                    remap.conservative.budget(&total, &remap.area_unit, &remapped);
+                // The two integrals are the same water only when the window
+                // holds the whole mesh; a regional window holds part of it,
+                // and its difference from the mesh total is geography, not
+                // remap error, so no relative difference is claimed there.
+                let whole = (covered - 1.0).abs() <= 1.0e-3;
+                let rel = if !whole {
+                    None
+                } else if mesh_integral != 0.0 {
+                    Some(grid_integral / mesh_integral - 1.0)
+                } else {
+                    Some(0.0)
+                };
+                let rel_text = match rel {
+                    Some(v) => format!("{v:.3e}"),
+                    None => "n/a(partial-window)".to_string(),
+                };
+                lines.push(format!(
+                    "BUDGET\t{}\tRAINC+RAINNC\tmesh={:.9e}\tgrid={:.9e}\trel={}\tcovered={:.9}",
+                    frame.valid_time.label(),
+                    mesh_integral,
+                    grid_integral,
+                    rel_text,
+                    covered
+                ));
+                budget_json = format!(
+                    "{{\"field\": \"RAINC+RAINNC\", \"mesh_integral_unit_sphere_mm\": {mesh_integral:e}, \"grid_integral_unit_sphere_mm\": {grid_integral:e}, \"relative_difference\": {}, \"covered_mesh_area_fraction\": {covered}}}",
+                    match rel {
+                        Some(v) => format!("{v:e}"),
+                        None => "null".to_string(),
+                    }
+                );
+            }
+        }
+        lines.push(format!(
             "CONVERTED\t{}\t{:.3}s\t{} bytes\t{} written\t{} absent",
             emitted.path.display(),
             emitted.seconds,
             emitted.bytes,
             emitted.written.len(),
             emitted.absent.len()
-        );
+        ));
         // The receipt's output digest is the OUTPUT's.  It was the history's
         // digest written a second time under this name, so a consumer that
         // verified the frame it was handed against the receipt refused
         // every frame the converter had just written.
         let output_sha256 = sha256_file(&emitted.path).map_err(|e| e.to_string())?;
-        records.push(format!(
-            "{{\"output\": \"{}\", \"output_sha256\": \"{}\", \"output_bytes\": {}, \"valid_time\": \"{}\", \"simulation_start\": \"{}\", \"lead_seconds\": {}, \"convert_seconds\": {}, \"history_sha256\": \"{}\", \"init_sha256\": \"{}\", \"max_latitude_error_degrees\": {:e}, \"max_longitude_error_degrees\": {:e}, \"written_variables\": [{}], \"absent_wrf_fields\": [{}]}}",
+        let record = format!(
+            "{{\"output\": \"{}\", \"output_sha256\": \"{}\", \"output_bytes\": {}, \"valid_time\": \"{}\", \"simulation_start\": \"{}\", \"lead_seconds\": {}, \"convert_seconds\": {}, \"history_sha256\": \"{}\", \"init_sha256\": \"{}\", \"max_latitude_error_degrees\": {:e}, \"max_longitude_error_degrees\": {:e}, \"written_variables\": [{}], \"absent_wrf_fields\": [{}], \"precipitation_budget\": {}}}",
             json_escape(&emitted.path.display().to_string()),
             output_sha256,
             emitted.bytes,
@@ -708,19 +897,44 @@ fn run() -> Result<(), String> {
                 .map(|n| format!("\"{n}\""))
                 .collect::<Vec<_>>()
                 .join(", "),
-        ));
+            budget_json,
+        );
+        Ok((lines, record))
+    };
+    let mut records: Vec<String> = Vec::new();
+    for chunk in args.history.chunks(args.jobs.max(1)) {
+        let done: Vec<Result<(Vec<String>, String), String>> = if chunk.len() == 1 {
+            vec![convert_one(&chunk[0])]
+        } else {
+            use rayon::prelude::*;
+            chunk.par_iter().map(&convert_one).collect()
+        };
+        for result in done {
+            let (lines, record) = result?;
+            for line in lines {
+                println!("{line}");
+            }
+            records.push(record);
+        }
     }
 
     if let Some(path) = &args.json {
         let body = format!(
-            "{{\n  \"schema\": \"{}\",\n  \"engine\": \"rw-mpas {} (rust)\",\n  \"window\": \"{}\",\n  \"window_spec\": {},\n  \"mesh_sha256\": \"{}\",\n  \"weights_sha256\": \"{}\",\n  \"resample_method\": \"{}\",\n  \"field_set\": \"{}\",\n  \"weights_build_seconds\": {},\n  \"frames\": [\n    {}\n  ]\n}}\n",
+            "{{\n  \"schema\": \"{}\",\n  \"engine\": \"rw-mpas {} (rust)\",\n  \"product_remap\": {},\n  \"window\": \"{}\",\n  \"window_spec\": {},\n  \"window_description\": \"{}\",\n  \"grid_label\": {},\n  \"mesh_spacing_km\": {},\n  \"mesh_sha256\": \"{}\",\n  \"weights_sha256\": \"{}\",\n  \"resample_method\": \"{}\",\n  \"field_set\": \"{}\",\n  \"weights_build_seconds\": {},\n  \"frames\": [\n    {}\n  ]\n}}\n",
             rw_mpas::convert::BRIDGE_SCHEMA,
             env!("CARGO_PKG_VERSION"),
-            args.window,
+            product.as_ref().map(|r| r.summary_json()).unwrap_or_else(|| "null".to_string()),
+            json_escape(&args.window),
             window.spec_json(),
+            json_escape(window.description()),
+            match &grid_label {
+                Some(label) => format!("\"{}\"", json_escape(label)),
+                None => "null".to_string(),
+            },
+            spacing_stats,
             weights.mesh_sha256,
             weights.weights_sha256,
-            rw_mpas::weights::RESAMPLE_METHOD,
+            if product.is_some() { rw_mpas::remap::PRODUCT_REMAP_METHOD } else { rw_mpas::weights::RESAMPLE_METHOD },
             args.field_set,
             weights.build_seconds,
             records.join(",\n    ")

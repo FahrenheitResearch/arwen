@@ -1,6 +1,6 @@
 """Regional operators for the existing neutral observation table.
 
-Decode stays with the shared table reader. Pressure-level observations are
+Decode stays with the engine's neutral table reader (gpuwm.obs.neutral_table). Pressure-level observations are
 interpolated in each member's own column, with no vertical extrapolation.
 Surface diagnostics must be supplied from the end of the forecast leg.
 """
@@ -19,20 +19,7 @@ from gpuwm.da.radar_assimilation import member_earth_winds, grid_rotation
 
 def read_tables(paths):
     """Read local neutral tables through their decoder, never fetch data."""
-    try:
-        from arwen_global.obs_table import decode_neutral_csv
-    except ImportError as exc:
-        # The decoder really is missing, so this is a refusal rather than
-        # an admission question; what it owed and did not give was the way
-        # out.  A bare ImportError string reached the door and was printed
-        # as the whole of what the caller was told.
-        raise ImportError(
-            "A neutral observation table was given, and its decoder is not "
-            "installed: arwen_global.obs_table is absent, so these rows "
-            "cannot be read and no analysis can use them. Install "
-            "gpuwm-global to read neutral tables, or review and run without "
-            "--obs-table, which uses the radar and surface routes alone."
-        ) from exc
+    from gpuwm.obs.neutral_table import decode_neutral_csv
     rows, receipts = [], []
     for path in paths:
         raw = Path(path).read_bytes()
@@ -92,9 +79,8 @@ def point_batches(rows, *, states, setup, grid, analysis_time, analysis_times,
     applied before revision selection. Unknown arrival times are counted,
     not represented as proof of causal availability.
     """
-    from arwen_global.obs_table import VARIABLE_TABLE
-    from arwen_global.obs_operators import refractivity_n
-    from arwen_global.surface_energy import dewpoint_from_specific_humidity
+    from gpuwm.obs.neutral_table import VARIABLE_TABLE
+    from gpuwm.obs.column_operators import dewpoint_from_specific_humidity, refractivity_n
     if not np.isfinite(max_age_seconds) or max_age_seconds <= 0 or not np.isfinite(gross_sigma) or gross_sigma <= 0:
         raise ValueError('Observation age and QC thresholds must be finite and positive; correct the analysis settings.')
     if not np.isfinite(error_inflation) or error_inflation < 1.:

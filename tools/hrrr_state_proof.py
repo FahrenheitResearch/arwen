@@ -138,6 +138,8 @@ def _frozen_d01_config():
         time_step_sound=4, epssm=0.5,
         hybrid_opt=2, etac=0.2, moist=True, mp_physics=6,
         wsm6_hail_opt=0, moist_adv_opt=1,
+        # A state proof names exact mode (2.9.0 default is correct).
+        wsm6_conservative_surface=False, ntiedtke_dry_mass_coupling=False,
         terrain_opt=1, map_proj=1, base_temp=290.0,
         specified=True, spec_bdy_width=5, spec_zone=1, relax_zone=4,
         km_opt=4, c_s=0.25,

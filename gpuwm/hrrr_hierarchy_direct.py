@@ -61,7 +61,10 @@ from gpuwm.native_hierarchy import initialize_and_export_native_hierarchy
 from gpuwm.native_wrf_contract import validate_native_lambert_contracts
 from gpuwm.static.corridor import (
     STATICS_CORRIDOR_DIRNAME,
+    catalog_with_corridor_births,
+    corridor_birth_statics,
     emit_statics_corridor_set,
+    move_statics_corridor_set,
     validated_corridor_selection,
 )
 from gpuwm.static.lambert import grids_from_projection_config
@@ -106,7 +109,7 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     # cu_physics is 3, so a Grell-Freitas root with clos_choice = 1 has a
     # cumulus-off child holding 0.  Preparation reads neither
     # (gpuwm.ingest.prepared_cache.PREPARATION_INERT_RUN_FIELDS).
-    "clos_choice", "ishallow",
+    "clos_choice", "ishallow", "cugd_avedx",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
     "moist_cq", "nest_microphysics_transition",
     # The fork's second filter factor rides with diff_6th_factor beside
@@ -1413,8 +1416,23 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
     writer = None
     try:
         head_started = time.perf_counter()
+        # The corridor is sealed BEFORE the children initialize, so each
+        # corridor child is born on its crop (plan call 5, 2.9.0); it needs
+        # no boundary time, so a moving nest's forecast re-grounds over the
+        # head's copy from its first move, and the seal copies it into
+        # hierarchy-artifacts/ (A136 L7d).
+        corridor_directory = (staging / HIERARCHY_HEAD_DIRNAME
+                              / STATICS_CORRIDOR_DIRNAME)
+        corridor_receipt = emit_statics_corridor_set(
+            exp=c.native_exp, grids=c.grids, static_catalog=c.static_catalog,
+            directory=corridor_directory,
+            statics_corridor=c.statics_corridor,
+            static_highres=c.static_highres)
+        births = corridor_birth_statics(
+            corridor_directory, corridor_receipt, c.native_exp)
         child_results, child_seconds = initialize_native_hierarchy_children(
-            exp=exp, root_node=c.root, catalog=c.catalog,
+            exp=exp, root_node=c.root,
+            catalog=catalog_with_corridor_births(c.catalog, births),
             root_initial_result=c.restored.initial_result,
             workers=c.workers, preprocess_backend="cpu",
             cpu_bridge=c.cpu_bridge,
@@ -1440,15 +1458,6 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
             source_identity=c.hierarchy_source_identity,
             valid_time=exp.start_time,
             root_metadata=_root_preparation_metadata(None))
-        # The corridor needs no boundary time, so a moving nest's forecast
-        # re-grounds over the head's copy from its first move; the seal
-        # copies it into hierarchy-artifacts/ (A136 L7d).
-        corridor_receipt = emit_statics_corridor_set(
-            exp=c.native_exp, grids=c.grids, static_catalog=c.static_catalog,
-            directory=(staging / HIERARCHY_HEAD_DIRNAME
-                       / STATICS_CORRIDOR_DIRNAME),
-            statics_corridor=c.statics_corridor,
-            static_highres=c.static_highres)
         stock_copy = staging / "namelist.input"
         shutil.copyfile(c.stock_wrf_namelist_input, stock_copy)
         proof_head = {
@@ -2031,8 +2040,20 @@ def prepare_hrrr_hierarchy(
                 stock_wrf_namelist_input=Path(stock_wrf_namelist_input),
                 cache_header=cache_header, valid_time=valid_time))
         hierarchy_started = time.perf_counter()
+        # Sealed BEFORE the children initialize, so each corridor child is
+        # born on its crop (plan call 5, 2.9.0).  The export refuses an
+        # existing artifact folder, so the set waits beside it and moves in
+        # after the artifact join.
+        pending_corridor = staging / ".statics-corridor-pending"
+        corridor_receipt = emit_statics_corridor_set(
+            exp=native_exp, grids=grids, static_catalog=static_catalog,
+            directory=pending_corridor,
+            statics_corridor=statics_corridor, static_highres=static_highres)
+        births = corridor_birth_statics(
+            pending_corridor, corridor_receipt, native_exp)
         result = initialize_and_export_native_hierarchy(
-            exp=export_exp, root_node=root, catalog=catalog,
+            exp=export_exp, root_node=root,
+            catalog=catalog_with_corridor_births(catalog, births),
             artifact_output=staging / "hierarchy-artifacts",
             wrf_output=staging / "wrf-native-input",
             root_initial_result=restored.initial_result,
@@ -2066,15 +2087,14 @@ def prepare_hrrr_hierarchy(
         verify_overlay_sequence(snapshots)
         # AFTER the artifact join, and inside the same staging directory
         # the atomic publication renames: the hierarchy tree is already
-        # sealed on its own terms, and the corridor set lands beside it
-        # under hierarchy-artifacts/, which is where the tree runner
-        # looks for it whichever chain wrote the bundle.  The GFS chain
-        # emits through this same function.
-        corridor_receipt = emit_statics_corridor_set(
-            exp=native_exp, grids=grids, static_catalog=static_catalog,
-            directory=(staging / "hierarchy-artifacts"
-                       / STATICS_CORRIDOR_DIRNAME),
-            statics_corridor=statics_corridor, static_highres=static_highres)
+        # sealed on its own terms, and the corridor set (sealed before the
+        # children, above) moves in beside it under hierarchy-artifacts/,
+        # which is where the tree runner looks for it whichever chain wrote
+        # the bundle.  The GFS chain emits through the same function.
+        if corridor_receipt is not None:
+            move_statics_corridor_set(
+                pending_corridor,
+                staging / "hierarchy-artifacts" / STATICS_CORRIDOR_DIRNAME)
         stock_copy = staging / "namelist.input"
         shutil.copyfile(stock_wrf_namelist_input, stock_copy)
         payload = {

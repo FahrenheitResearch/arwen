@@ -222,8 +222,11 @@ def energy_seg2(s, g):
                      _f32(1.0e6), rsurf)
     psi = (-s["psisat"][:, 0]) \
         * slab_powf(fmx(_f32(0.01), sh2o0) / smcmax0, -s["bexp"][:, 0])
-    rhsur = fsno + ((_ONE - fsno)
-                    * slab_expf((psi * _f32(GRAV)) / (_f32(RW) * s["tg"])))
+    from gpuwm.core.noahmp_slab_libm import slab_add_product
+    # The exponential may be subnormal. CuPy's multiply would flush it
+    # before BARE_FLUX scales RHSUR into QSFC; retain both WRF roundings.
+    rhsur = slab_add_product(fsno, _ONE - fsno,
+                            slab_expf((psi * _f32(GRAV)) / (_f32(RW) * s["tg"])))
     # :2204-2206
     rsurf = cp.where(s["urban_flag"] & (s["snowh"] == _ZERO),
                      _f32(1.0e6), rsurf)

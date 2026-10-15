@@ -491,7 +491,7 @@ def family_breakdown(names) -> dict[str, int]:
 def load_any_experiment(path: Path):
     """Load an experiment TOML with or without a ``[case_data]`` table.
 
-    ``[case_data]`` is popped and DISCARDED rather than validated.  The
+    Companion tables are validated by the production experiment loader. The
     descriptor inventory is a property of the configuration's shape, not of
     whether this machine happens to hold the case's forcing files, and
     ``load_experiment_case`` refuses to return an experiment whose declared
@@ -502,17 +502,12 @@ def load_any_experiment(path: Path):
     census reads (dimensions, nest topology, per-domain physics, spec_bdy_
     width, run_seconds) comes from the validated ``ExperimentConfig``.
     """
-    import tomllib
-
     from gpuwm.config import load_config
-    from gpuwm.experiment import (build_experiment, experiment_from_run_config,
+    from gpuwm.experiment import (load_experiment, experiment_from_run_config,
                                   is_experiment_toml)
 
     if is_experiment_toml(path):
-        with open(path, "rb") as handle:
-            raw = tomllib.load(handle)
-        raw.pop("case_data", None)
-        return build_experiment(raw, source=str(path))
+        return load_experiment(path)
     return experiment_from_run_config(load_config(path), datetime(1970, 1, 1))
 
 

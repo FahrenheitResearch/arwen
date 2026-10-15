@@ -483,6 +483,54 @@ fn inside(p: Point, ring: &[Point]) -> bool {
     }
     result
 }
+/// Whether projected point `p` lies in the burned area of `polys`: inside an
+/// outer ring and inside none of that polygon's holes.  Bounding boxes skip
+/// polygons far from the point; the ring test is the same `inside` the
+/// coverage check uses.
+fn burned_at(p: Point, polys: &[(Polygon, [f64; 4])]) -> bool {
+    polys.iter().any(|(poly, b)| {
+        p[0] >= b[0]
+            && p[0] <= b[2]
+            && p[1] >= b[1]
+            && p[1] <= b[3]
+            && inside(p, &poly[0])
+            && !poly[1..].iter().any(|hole| inside(p, hole))
+    })
+}
+fn with_bounds(polys: Vec<Polygon>) -> Vec<(Polygon, [f64; 4])> {
+    polys
+        .into_iter()
+        .map(|poly| {
+            let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+            for p in &poly[0] {
+                b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+            }
+            (poly, b)
+        })
+        .collect()
+}
+/// Categorical overlap of two burned masks over the fire-grid nodes, each node
+/// standing for one nominal fine cell of `cell_m2`.
+fn overlap(modeled: &[bool], observed: &[bool], cell_m2: f64) -> Value {
+    let (mut both, mut model_only, mut observed_only) = (0usize, 0usize, 0usize);
+    for (m, o) in modeled.iter().zip(observed) {
+        match (*m, *o) {
+            (true, true) => both += 1,
+            (true, false) => model_only += 1,
+            (false, true) => observed_only += 1,
+            _ => {}
+        }
+    }
+    let ratio = |a: usize, b: usize| if b == 0 { Value::Null } else { json!(a as f64 / b as f64) };
+    json!({ "both_m2": both as f64 * cell_m2, "modeled_only_m2": model_only as f64 * cell_m2,
+        "observed_only_m2": observed_only as f64 * cell_m2,
+        "modeled_m2": (both + model_only) as f64 * cell_m2, "observed_m2": (both + observed_only) as f64 * cell_m2,
+        "sorensen": ratio(2 * both, 2 * both + model_only + observed_only),
+        "jaccard": ratio(both, both + model_only + observed_only),
+        "probability_of_detection": ratio(both, both + observed_only),
+        "false_alarm_ratio": ratio(model_only, both + model_only),
+        "area_ratio_modeled_to_observed": ratio(both + model_only, both + observed_only) })
+}
 struct Frame {
     path: PathBuf,
     record: usize,
@@ -496,6 +544,7 @@ struct Options {
     histories: Vec<PathBuf>,
     spacing: f64,
     max_delta: f64,
+    baseline: Option<i64>,
 }
 fn options() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
@@ -506,6 +555,7 @@ fn options() -> Result<Options, String> {
         histories: Vec::new(),
         spacing: 5.,
         max_delta: f64::NAN,
+        baseline: None,
     };
     while let Some(key) = args.next() {
         let value = args
@@ -518,6 +568,13 @@ fn options() -> Result<Options, String> {
             "--history" => o.histories.push(value.into()),
             "--sample-spacing-m" => {
                 o.spacing = value.parse().map_err(|_| "sample spacing is not numeric")?
+            }
+            "--baseline-observed-ms" => {
+                o.baseline = Some(
+                    value
+                        .parse()
+                        .map_err(|_| "baseline observation time is not integer unix_ms")?,
+                )
             }
             "--max-time-delta-s" => {
                 o.max_delta = value
@@ -536,7 +593,7 @@ fn options() -> Result<Options, String> {
         || !o.max_delta.is_finite()
         || o.max_delta < 0.
     {
-        return Err("usage: fire-observation-comparison --observations GEOJSON --contract JSON --history WRFOUT [--history WRFOUT ...] --output JSON --max-time-delta-s SECONDS [--sample-spacing-m 5]".into());
+        return Err("usage: fire-observation-comparison --observations GEOJSON --contract JSON --history WRFOUT [--history WRFOUT ...] --output JSON --max-time-delta-s SECONDS [--sample-spacing-m 5] [--baseline-observed-ms UNIX_MS]".into());
     }
     let output = if o.output.exists() {
         o.output.canonicalize().map_err(|e| e.to_string())?
@@ -590,6 +647,20 @@ fn run(o: Options) -> Result<Value, String> {
     if features.is_empty() {
         return Err("observed source has no perimeters".into());
     }
+    let baseline = match o.baseline {
+        None => None,
+        Some(ms) => {
+            let chosen = features
+                .iter()
+                .filter(|f| f["properties"][property].as_i64() == Some(ms))
+                .collect::<Vec<_>>();
+            if chosen.len() != 1 {
+                return Err("baseline observation time must select exactly one observed perimeter".into());
+            }
+            let geometry = chosen[0].get("geometry").ok_or("baseline feature lacks geometry")?;
+            Some((ms, with_bounds(polygons(geometry)?)))
+        }
+    };
     let mut frames = Vec::new();
     let mut input_receipts = Vec::new();
     for path in &o.histories {
@@ -685,6 +756,19 @@ fn run(o: Options) -> Result<Value, String> {
         }
         let native_area = fraction.iter().sum::<f64>() * f64::from(dx) * f64::from(dy);
         let (modeled_area, modeled_edges) = model_geometry(&points, &lfn, shape)?;
+        let cell_m2 = f64::from(dx) * f64::from(dy);
+        let observed_polys = with_bounds(polys.clone());
+        let observed_mask = points.iter().map(|p| burned_at(*p, &observed_polys)).collect::<Vec<_>>();
+        let modeled_mask = lfn.iter().map(|v| *v <= 0.).collect::<Vec<_>>();
+        let mut fire_grid_overlap = json!({ "method": "Fire-grid nodes; modeled burned where LFN<=0, observed burned where the projected node lies inside an outer ring and no hole; each node weighs one nominal fine cell (DX/SR_X by DY/SR_Y).",
+            "nominal_cell_m2": cell_m2, "whole": overlap(&modeled_mask, &observed_mask, cell_m2) });
+        if let Some((baseline_ms, baseline_polys)) = &baseline {
+            let base = points.iter().map(|p| burned_at(*p, baseline_polys)).collect::<Vec<_>>();
+            let grow = |mask: &[bool]| mask.iter().zip(&base).map(|(m, b)| *m && !*b).collect::<Vec<_>>();
+            fire_grid_overlap["baseline_observed_utc_epoch_ms"] = json!(baseline_ms);
+            fire_grid_overlap["growth_beyond_baseline"] = overlap(&grow(&modeled_mask), &grow(&observed_mask), cell_m2);
+            fire_grid_overlap["persistence_whole"] = overlap(&base, &observed_mask, cell_m2);
+        }
         records.push(json!({ "observed_utc_epoch_ms": observed, "observed_utc": Utc.timestamp_millis_opt(observed).single().ok_or("observed UTC outside supported calendar")?.to_rfc3339(),
             "geometry_sha256": digest(&serde_json::to_vec(geometry).map_err(|e| e.to_string())?),
             "model_utc_epoch_ms": frame.time, "model_utc": Utc.timestamp_millis_opt(frame.time).single().unwrap().to_rfc3339(),
@@ -697,7 +781,8 @@ fn run(o: Options) -> Result<Value, String> {
             "native_FIRE_AREA_error_m2": native_area - observed_area, "native_FIRE_AREA_error_percent": 100. * (native_area - observed_area) / observed_area,
             "projected_LFN_area_error_m2": modeled_area - observed_area, "projected_LFN_area_error_percent": 100. * (modeled_area - observed_area) / observed_area,
             "modeled_perimeter_m": modeled_edges.iter().map(length).sum::<f64>(), "modeled_perimeter_segment_count": modeled_edges.len(),
-            "perimeter_distance": distances(&observed_edges, &modeled_edges, o.spacing) }));
+            "perimeter_distance": distances(&observed_edges, &modeled_edges, o.spacing),
+            "fire_grid_overlap": fire_grid_overlap }));
     }
     records.sort_by_key(|r| r["observed_utc_epoch_ms"].as_i64().unwrap());
     let (executable_hash, _) = file_digest(&std::env::current_exe().map_err(|e| e.to_string())?)?;
@@ -710,7 +795,7 @@ fn run(o: Options) -> Result<Value, String> {
             "model_geometry": "LFN<=0 piecewise-linear clipping of two triangles per projected fine-grid quad, diagonal from lower-left to upper-right; shared interior zero edges cancel. An identically zero triangle inherits the sign of the quad's fourth node, preserving exact-node outer and hole corners; all-zero quads are included. Zero-area clips contribute no boundary edges.",
             "native_area": "Sum of stored FIRE_AREA fractions times WRF REAL DX/SR_X and DY/SR_Y; distinct from projected contour area and initialized burned-center count.",
             "distance": "Exact point-to-segment distances at length-weighted segment midpoints; symmetric mean and p95 pool both directions by boundary length. Endpoints also contribute to sampled Hausdorff. True Hausdorff is bounded above by reported sampled maximum plus at most half a sample interval.",
-            "limitations": "Observed time is the published polygon timestamp, not ignition time. Projection applies a geographic NAD83/WGS84 ballpark pass-through. LFN triangulation and finite spatial resolution affect contour area. Suppression, fuel age, observation uncertainty and atmospheric forcing remain physical interpretation limits. No IoU is claimed." },
+            "limitations": "Observed time is the published polygon timestamp, not ignition time. Projection applies a geographic NAD83/WGS84 ballpark pass-through. LFN triangulation and finite spatial resolution affect contour area. Suppression, fuel age, observation uncertainty and atmospheric forcing remain physical interpretation limits. Overlap scores (Sorensen, Jaccard, detection, false alarm) are node-sampled on the fire grid, so they carry one fine cell of edge uncertainty; the persistence reference scores the baseline perimeter itself as the forecast." },
         "comparisons": records }),
     )
 }
@@ -755,6 +840,27 @@ mod tests {
     }
     fn edges(r: &Ring) -> Vec<Segment> {
         r.windows(2).map(|s| [s[0], s[1]]).collect()
+    }
+    #[test]
+    fn overlap_scores_count_cells_and_respect_holes() {
+        let outer = square(0., 0., 4.);
+        let hole = square(1., 1., 1.);
+        let polys = with_bounds(vec![vec![outer, hole]]);
+        assert!(burned_at([0.5, 0.5], &polys));
+        assert!(!burned_at([1.5, 1.5], &polys));
+        assert!(!burned_at([5., 5.], &polys));
+        let modeled = [true, true, false, false];
+        let observed = [true, false, true, false];
+        let v = overlap(&modeled, &observed, 2.);
+        assert_eq!(v["both_m2"], 2.);
+        assert_eq!(v["modeled_m2"], 4.);
+        assert_eq!(v["observed_m2"], 4.);
+        assert_eq!(v["sorensen"], 0.5);
+        assert_eq!(v["jaccard"], 1. / 3.);
+        assert_eq!(v["probability_of_detection"], 0.5);
+        assert_eq!(v["false_alarm_ratio"], 0.5);
+        let none = overlap(&[false], &[false], 1.);
+        assert!(none["sorensen"].is_null());
     }
     #[test]
     fn holes_and_multipolygons_retain_area_and_every_boundary() {
@@ -938,6 +1044,7 @@ mod tests {
             output: folder.join("comparison.json"),
             spacing: 5.,
             max_delta: 60.,
+            baseline: None,
         };
         let result = run(opts()).unwrap();
         let record = &result["comparisons"][0];
@@ -951,6 +1058,19 @@ mod tests {
                 .unwrap()
                 < 1e-7
         );
+        let overlap = &record["fire_grid_overlap"];
+        assert_eq!(overlap["whole"]["sorensen"], 1.);
+        assert_eq!(overlap["whole"]["modeled_only_m2"], 0.);
+        assert!(overlap.get("growth_beyond_baseline").is_none());
+        let mut against_itself = opts();
+        against_itself.baseline = Some(record["observed_utc_epoch_ms"].as_i64().unwrap());
+        let persisted = run(against_itself).unwrap();
+        let overlap = &persisted["comparisons"][0]["fire_grid_overlap"];
+        assert_eq!(overlap["persistence_whole"]["sorensen"], 1.);
+        assert!(overlap["growth_beyond_baseline"]["sorensen"].is_null());
+        let mut unknown = opts();
+        unknown.baseline = Some(1);
+        assert!(run(unknown).unwrap_err().contains("baseline observation time"));
         let mut narrow = opts();
         narrow.max_delta = 20.;
         assert!(run(narrow)

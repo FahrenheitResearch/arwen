@@ -131,6 +131,8 @@ def test_candidate_command_uses_table_clock_and_the_existing_forecast_door(tmp_p
         history_every_minutes=60, **{k: tmp_path / k for k in
         ("grid", "static", "init", "lbc_dir", "invariant", "out")})
     argv = launch_command(preset(NAME), args)
+    assert argv[1:3] == ["-m", "hexcore.drivers.forecast_receipt"]
+    assert not any("tree/tools" in token for token in argv)
     assert argv[argv.index("--dt") + 1] == "60"
     assert argv[argv.index("--convection") + 1] == "ntiedtke"
     assert argv[argv.index("--physics-suite") + 1] == "rrfs_v2_tempo_candidate"

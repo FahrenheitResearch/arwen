@@ -135,6 +135,12 @@ def resolve_replay(run: ReplayRun, directory: Path):
             raise ValueError("cannot place acknowledgements: the imported TOML has no [experiment] table")
         text = text.replace("[experiment]\n", "[experiment]\nacknowledgements = "
                             + _toml_value(acknowledgements) + "\n", 1)
+    # A WRF comparison runs the matched arithmetic: from 2.9.0 the engine
+    # default is correct mode, so exact is named here, key by key, unless the
+    # combo's own WOOF settings name a correction key itself.
+    from gpuwm.correct_mode import CORRECTION_KEYS
+    for key in CORRECTION_KEYS:
+        settings.setdefault(key, False)
     for key, value in settings.items():
         if key == "ra_rrtmg_variant" and "ra_rrtmg_variant" not in text:
             continue

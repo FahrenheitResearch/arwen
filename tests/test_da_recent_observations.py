@@ -151,6 +151,18 @@ def test_archive_replay_keeps_the_refusal_for_genuinely_late_objects():
                              obs.utc("2024-05-21T18:00:00Z")) == obs.CAUSAL_BY_LAST_MODIFIED
 
 
+def test_archive_replay_covers_the_whole_migration():
+    # Real keys and LastModified stamps of the migration, oldest data first (measured 2026-10-12): every one
+    # is judged by its scan time.  The 2022 case was refused whole by the earlier row.
+    for key, stamp in (("1998/05/03/KTLX/KTLX19980503_235959", "2025-06-10T06:27:49.000Z"),
+                       ("2022/06/13/KIND/KIND20220613_181042_V06", "2025-07-11T00:09:07.000Z"),
+                       ("2024/05/21/KDMX/KDMX20240521_175821_V06", "2025-07-15T22:58:45.000Z"),
+                       ("2025/07/16/KTLX/KTLX20250716_120000_V06", "2025-07-18T21:04:43.000Z")):
+        row = {**obj("unidata-nexrad-level2", key), "last_modified": stamp}
+        assert obs.archive_restamp(row) is not None, key
+        assert obs.causal_object(row, obs.object_time(key) + obs.dt.timedelta(minutes=5)) == obs.CAUSAL_BY_SCAN_TIME
+
+
 def test_archive_restamps_are_table_rows():
     for row in obs.ARCHIVE_RESTAMPS:
         assert row["bucket"] in obs.BUCKETS

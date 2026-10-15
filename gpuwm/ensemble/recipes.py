@@ -338,7 +338,10 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
         if perturbation is not None:
             raise ValueError("member-roster uses each member's own surface controls; omit shared perturbation")
         variants = normalize_member_variants(member_variants, count)
-        selected = (base,) * count
+        if trajectories and len(trajectories) != count:
+            raise ValueError("member-roster needs one trajectory for each named arm; "
+                             "extra or missing trajectories would bind the wrong source to an arm")
+        selected = tuple(trajectories) if trajectories else (base,) * count
     elif kind == "surface-state":
         from gpuwm.ensemble.surface_controls import shared_surface_options
         surface = shared_surface_options(perturbation, count)

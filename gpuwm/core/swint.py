@@ -104,13 +104,18 @@ def calendar_scalars(start_time: datetime, elapsed_seconds: float):
     return julian, xtime, gmt
 
 
-def coszen_loc_host(xlat, xlon, julian, xtime, gmt):
+def coszen_loc_host(xlat, xlon, julian, xtime, gmt, *, generation="wrf_480"):
     """``radconst`` + ``calc_coszen`` per point (float32, NumPy libm).
 
     The statement order of ``swint_coszen_loc``; its transcendentals are
     NumPy's, so this twin is the shape check, and the kernel itself is
     held to the fork's words.
     """
+    from gpuwm.core.solar import solar_generation, solar_geometry_device
+    solar_generation(generation)
+    if generation == "wrf_480":
+        import cupy as cp
+        return cp.asnumpy(solar_geometry_device(julian, xtime, gmt, xlat, xlon, generation=generation)[1])
     from gpuwm.core.rrtmg_legacy import _DEGRAD, radconst
     declin, _solcon = radconst(F(julian))
     xlat = np.asarray(xlat, np.float32)
@@ -272,13 +277,16 @@ class ShortwaveInterpolation:
     """
 
     def __init__(self, *, start_time: datetime, latitude_deg, longitude_deg,
-                 shape):
+                 shape, generation="wrf_480"):
         import cupy as cp
         from gpuwm.core.kernels import load_module
 
         if not isinstance(start_time, datetime):
             raise TypeError("swint_opt = 1 needs the run's UTC start time "
                             "as a datetime")
+        from gpuwm.core.solar import solar_generation
+        solar_generation(generation)
+        self.solar_generation = generation
         self.start_time = start_time
         ny, nx = (int(shape[0]), int(shape[1]))
         self.shape = (ny, nx)
@@ -317,13 +325,19 @@ class ShortwaveInterpolation:
         """Fill and return the device ``coszen_loc`` (flat, ny*nx) for
         these calendar scalars (float32 julian, xtime in minutes, gmt in
         hours), at the latitude and longitude the carrier holds now."""
+        if self.solar_generation == 'wrf_480':
+            from gpuwm.core.solar import solar_geometry_device
+            _ds, cz, _ha = solar_geometry_device(julian, xtime, gmt,
+                self.latitude_deg, self.longitude_deg, generation=self.solar_generation)
+            self._coszen_loc[...] = cz.reshape(self.shape)
+            return self._coszen_loc.reshape(-1)
         from gpuwm.core.rrtmg_legacy import _DEGRAD, _DPD
         coszen_loc = self._coszen_loc.reshape(-1)
         self._k_coszen(self._grid, self._block,
                        (np.int64(self.ncol),
                         self._flat(self.latitude_deg, "latitude_deg"),
                         self._flat(self.longitude_deg, "longitude_deg"),
-                        F(julian), F(xtime), F(gmt), F(_DEGRAD), F(_DPD),
+                        F(julian), F(xtime), F(gmt), F(_DEGRAD), F(_DPD), np.int32(self.solar_generation == "wrf_480"),
                         coszen_loc))
         return coszen_loc
 

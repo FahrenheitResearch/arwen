@@ -233,3 +233,44 @@ def test_a_resolved_lake_keeps_its_own_source_water():
     assert np.all(skin[lakes] == np.float32(288.0))
     assert met.masked_field_repairs["SKINTEMP"].get(
         "inland_air_temperature", 0) == 0
+
+
+def test_a_route_can_keep_its_lakes_on_the_whole_source_search(capsys):
+    """``inland_water_search``: the GFS route's lakes (gfs_lake_skin = "wps").
+
+    A flagged lake the source does not resolve takes the nearest source
+    water, as metgrid does; an unflagged inland basin on the same grid
+    still takes the 2 m air temperature.  The GFS route declares no water
+    statics to the mapping, so neither does this call.
+    """
+    grid, land, lakes, _, landsea = _case()
+    big = np.zeros_like(lakes)
+    big[10:14, 12:17] = True
+    small = lakes & ~big
+    assert big.sum() == 20 and small.sum() == 2
+    snapshot = _snapshot(landsea, START, 291.5)
+    met = interpolate_era5_to_lambert(
+        snapshot, grid, target_landmask=land, backend=_NumpyBackend(),
+        inland_water_search=big)
+    skin = np.asarray(met.fields["SKINTEMP"], dtype=np.float64)
+    assert np.all(skin[big] == np.float32(288.0))
+    assert np.all(skin[small] == np.float32(291.5))
+    assert met.masked_field_repairs["SKINTEMP"]["inland_air_temperature"] == 2
+    # Every lake flagged: the whole chain is metgrid's, value for value.
+    every = interpolate_era5_to_lambert(
+        snapshot, grid, target_landmask=land, backend=_NumpyBackend(),
+        inland_water_search=lakes)
+    unlimited = np.asarray(every.fields["SKINTEMP"], dtype=np.float64)
+    assert np.all(unlimited[lakes] == np.float32(288.0))
+    assert every.masked_field_repairs["SKINTEMP"].get(
+        "inland_air_temperature", 0) == 0
+    capsys.readouterr()
+
+
+def test_a_whole_source_search_mask_off_the_mass_grid_is_refused():
+    grid, land, lakes, _, landsea = _case()
+    snapshot = _snapshot(landsea, START, 291.5)
+    with pytest.raises(ValueError, match="whole_source_search must be on"):
+        interpolate_era5_to_lambert(
+            snapshot, grid, target_landmask=land, backend=_NumpyBackend(),
+            inland_water_search=lakes[:-1])

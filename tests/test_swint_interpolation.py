@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -32,7 +33,8 @@ from gpuwm.core import swint
 
 F = np.float32
 REPO = Path(__file__).resolve().parents[1]
-FIXTURE = REPO / "tests" / "data" / "swint_oracle" / "swint_oracle.npz"
+FIXTURE = Path(os.environ.get('GPUWM_SWINT_ORACLE',
+    REPO / "tests" / "data" / "swint_oracle" / "swint_oracle.npz"))
 FIXTURE_SHA256 = REPO / "tests" / "data" / "swint_oracle" / "SHA256"
 
 gpu = pytest.mark.gpu
@@ -144,7 +146,7 @@ def test_coszen_twin_is_the_fork_shape(oracle):
     worst = 0.0
     for s, (julian, xtime, gmt) in enumerate(sets):
         got = swint.coszen_loc_host(o["coszen_in/xlat"], o["coszen_in/xlon"],
-                                    julian, xtime, gmt)
+                                    julian, xtime, gmt, generation='wrf_461')
         want = o["coszen_out/coszen"][s]
         worst = max(worst, float(np.max(np.abs(
             got.astype(np.float64) - want.astype(np.float64)))))
@@ -242,7 +244,7 @@ def _device_carrier(ncol, lat=None, lon=None):
     return ShortwaveInterpolation(start_time=datetime(2026, 6, 15, 12),
                                   latitude_deg=lat.reshape(1, ncol),
                                   longitude_deg=lon.reshape(1, ncol),
-                                  shape=(1, ncol)), lat, lon
+                                  shape=(1, ncol), generation='wrf_461'), lat, lon
 
 
 @gpu

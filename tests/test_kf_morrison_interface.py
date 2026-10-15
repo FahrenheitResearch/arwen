@@ -1,4 +1,4 @@
-"""CPU authority for WRF's KF-to-Morrison mixed-phase interface.
+"""WRF's KF-to-Morrison mixed-phase interface.
 
 WRF v4.6.1 keeps KF cloud water, cloud ice, rain, and snow tendencies
 independent (``module_cu_kfeta.F:2311-2382,2599-2634``).  Morrison consumes
@@ -16,9 +16,6 @@ import numpy as np
 import pytest
 
 
-_REAL74_COLUMNS = Path(__file__).parent / "data" / "kf_real74_12z_columns.npz"
-
-
 class _NumpyCupyShim:
     """CPU-only subset used to exercise the driver seam without a GPU."""
 
@@ -32,152 +29,56 @@ class _NumpyCupyShim:
     where = staticmethod(np.where)
 
 
-def _real74_sounding(label: str = "unstable") -> dict[str, np.ndarray | float]:
-    with np.load(_REAL74_COLUMNS, allow_pickle=False) as data:
-        fields = {
-            name: data[f"{label}_{name}"].astype(np.float64)
-            for name in ("u", "v", "temperature", "qv", "qc", "pressure",
-                         "exner", "dz", "w")
-        }
-    return {**fields, "dx": 12000.0, "dt": 60.0, "cudt": 300.0}
+_KF_ORACLE = Path(__file__).parent / "data" / "oracles" / "kf"
 
 
-def _mixed_phase_shallow_sounding() -> dict[str, np.ndarray | float]:
-    nz = 49
-    z_ifc = 16000.0 * np.linspace(0.0, 1.0, nz + 1) ** 1.18
-    z = 0.5 * (z_ifc[:-1] + z_ifc[1:])
-    dz = np.diff(z_ifc)
-    pressure = 98000.0 * np.exp(-z / 8100.0)
-    temperature = np.maximum(288.0 - 0.004 * z, 205.0)
-    qv = 1.25 * (
-        0.014 * np.exp(-z / 3500.0)
-        / (1.0 + np.exp((z - 1600.0) / 150.0))
-        + 0.001 * np.exp(-z / 5000.0))
-    return {
-        "u": 8.0 + 0.002 * z, "v": np.zeros(nz),
-        "temperature": temperature, "qv": qv, "qc": np.zeros(nz),
-        "pressure": pressure,
-        "exner": (pressure / 100000.0) ** (287.0 / 1004.5), "dz": dz,
-        "w": np.where(z < 2500.0, 0.01, 0.0),
-        "dx": 12000.0, "dt": 60.0, "cudt": 300.0,
-    }
+def test_wrf_returns_all_four_mixed_phase_tendencies_independently():
+    """The interface Morrison relies on, read off WRF itself.
 
+    With F_QS and F_QI, KF_eta_CPS returns cloud water, cloud ice, rain and
+    snow as four separate rates (module_cu_kfeta.F:2622-2634).  Deep
+    convection rains out through RAINCV (FBFRC = 0), so its QR/QS rates are
+    zero and its QC/QI rates carry the detrained condensate; shallow
+    convection (FBFRC = 1) feeds its fallout back as QR/QS too, so on the
+    ERA5 stable column all four are nonzero at once -- the category
+    structure Morrison's number seed consumes.  kernels/kf.cu reproduces
+    these words exactly (tests/test_kf_wrf461_oracle.py), which is what
+    replaced the float64 mirror this test used to read.
+    """
+    import json
 
-def test_kf_mirror_preserves_all_four_mixed_phase_tendencies():
-    from gpuwm.verify.npref import np_kf_column
+    from tools.kf_wrf461_oracle import kf_columns
 
-    # The real74 fixture specifically pins the independently nonzero liquid
-    # and ice tendencies reported by the audit.
-    real74 = np_kf_column(**_real74_sounding())
-    assert np.any(real74["rqccuten"] != 0.0)
-    assert np.any(real74["rqicuten"] != 0.0)
-
-    # KF's shallow fallback returns both liquid and frozen fallout to the
-    # resolved rain/snow fields, exercising all four outputs simultaneously.
-    result = np_kf_column(**_mixed_phase_shallow_sounding())
-
-    assert result["triggered"] and result["shallow"]
-    for name in ("rqccuten", "rqicuten", "rqrcuten", "rqscuten"):
-        assert name in result
-        assert np.isfinite(result[name]).all()
-    assert np.any(result["rqccuten"] != 0.0)
-    assert np.any(result["rqicuten"] != 0.0)
-    assert np.any(result["rqrcuten"] != 0.0)
-    assert np.any(result["rqscuten"] != 0.0)
-
-    active = slice(0, result["cloud_top"] + 1)
-    np.testing.assert_allclose(
-        result["rqccuten"][active],
-        result["closure_liquid"][active] / result["timec"],
-        rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(
-        result["rqicuten"][active],
-        result["closure_ice"][active] / result["timec"],
-        rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(
-        result["rqrcuten"][active],
-        result["closure_rain"][active] / result["timec"],
-        rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(
-        result["rqscuten"][active],
-        result["closure_snow"][active] / result["timec"],
-        rtol=0.0, atol=0.0)
-
-
-def test_kf_mirror_wrf_phase_modes_conserve_water_and_apply_latent_fusion():
-    """Pin all WRF 2599-2640 output branches from closure-local fields."""
-    from gpuwm.core.kf import KFPhaseMode
-    from gpuwm.verify.npref import np_kf_column
-
-    sounding = _mixed_phase_shallow_sounding()
-    mixed = np_kf_column(
-        **sounding, phase_mode=KFPhaseMode.SEPARATE_ICE_SNOW)
-    assert mixed["triggered"] and mixed["shallow"]
-    active = slice(0, mixed["cloud_top"] + 1)
-    timec = mixed["timec"]
-    ql = mixed["closure_liquid"][active]
-    qi = mixed["closure_ice"][active]
-    qr = mixed["closure_rain"][active]
-    qs = mixed["closure_snow"][active]
-    source_total_rate = (ql + qi + qr + qs) / timec
-    base_tg = mixed["closure_temperature"][active]
-    qg = mixed["closure_qv"][active]
-    exner = np.asarray(sounding["exner"])[active]
-    temperature = np.asarray(sounding["temperature"])[active]
-    cpm = 1004.5 * (1.0 + 0.887 * qg)
-    rlf = 3.339e5
-
-    warm = np_kf_column(**sounding, phase_mode=KFPhaseMode.WARM_RAIN)
-    np.testing.assert_allclose(
-        warm["rqccuten"][active], (ql + qi) / timec,
-        rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(
-        warm["rqrcuten"][active], (qr + qs) / timec,
-        rtol=0.0, atol=0.0)
-    np.testing.assert_array_equal(warm["rqicuten"], 0.0)
-    np.testing.assert_array_equal(warm["rqscuten"], 0.0)
-    np.testing.assert_allclose(
-        warm["rqccuten"][active] + warm["rqrcuten"][active],
-        source_total_rate, rtol=5.0e-16, atol=0.0)
-    expected_tg = base_tg - (qi + qs) * rlf / cpm
-    np.testing.assert_allclose(
-        warm["rthcuten"][active],
-        (expected_tg - temperature) / (exner * timec),
-        rtol=2.0e-15, atol=0.0)
-
-    no_snow = np_kf_column(
-        **sounding, phase_mode=KFPhaseMode.NO_SEPARATE_SNOW)
-    np.testing.assert_allclose(
-        no_snow["rqccuten"][active] + no_snow["rqrcuten"][active],
-        source_total_rate, rtol=5.0e-16, atol=0.0)
-    np.testing.assert_array_equal(no_snow["rqicuten"], 0.0)
-    np.testing.assert_array_equal(no_snow["rqscuten"], 0.0)
-    warm_levels = np.flatnonzero(
-        np.asarray(sounding["temperature"])[active] > 273.16)
-    melting_level = int(warm_levels[-1]) if warm_levels.size else -1
-    below = np.arange(mixed["cloud_top"] + 1) <= melting_level
-    expected_tg = base_tg.copy()
-    expected_tg[below] -= (qi[below] + qs[below]) * rlf / cpm[below]
-    expected_tg[~below] += (ql[~below] + qr[~below]) * rlf / cpm[~below]
-    np.testing.assert_allclose(
-        no_snow["rthcuten"][active],
-        (expected_tg - temperature) / (exner * timec),
-        rtol=2.0e-15, atol=0.0)
-
-    snow_only = np_kf_column(
-        **sounding, phase_mode=KFPhaseMode.SEPARATE_SNOW)
-    np.testing.assert_allclose(
-        snow_only["rqccuten"][active], ql / timec,
-        rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(
-        snow_only["rqrcuten"][active], qr / timec,
-        rtol=0.0, atol=0.0)
-    np.testing.assert_allclose(
-        snow_only["rqscuten"][active], (qs + qi) / timec,
-        rtol=0.0, atol=0.0)
-    np.testing.assert_array_equal(snow_only["rqicuten"], 0.0)
-    np.testing.assert_array_equal(
-        snow_only["rthcuten"], mixed["rthcuten"])
+    outs = kf_columns.read_outputs(_KF_ORACLE / "oracle-real74-O0.out")
+    meta = json.loads((_KF_ORACLE / "columns-real74.json").read_text(
+        encoding="utf-8"))
+    deep = [o for m, o in zip(meta, outs)
+            if m["regime"] == "real74_unstable" and m["branch"] == "qs_qi"]
+    assert deep and all(int(o["shall"]) == 0 for o in deep)
+    for o in deep:
+        assert np.any(o["rqccuten"] != 0.0) and np.any(o["rqicuten"] != 0.0)
+        np.testing.assert_array_equal(o["rqrcuten"], 0.0)
+        np.testing.assert_array_equal(o["rqscuten"], 0.0)
+        assert o["pratec"] > 0.0
+    shallow = [o for m, o in zip(meta, outs)
+               if m["regime"] == "real74_stable" and m["branch"] == "qs_qi"
+               and int(o["shall"]) == 1]
+    four = [o for o in shallow
+            if all(np.any(o[name] != 0.0) for name in
+                   ("rqccuten", "rqicuten", "rqrcuten", "rqscuten"))]
+    assert len(four) == 6
+    for o in shallow:
+        assert o["pratec"] == 0.0           # FBFRC = 1: nothing to RAINCV
+        for name in ("rqccuten", "rqicuten", "rqrcuten", "rqscuten"):
+            assert np.isfinite(o[name]).all()
+    # Without F_QS the frozen categories fold into QC/QR and WRF writes no
+    # QI/QS tendency at all (the -999 sentinel survives the call).
+    folded = [o for m, o in zip(meta, outs)
+              if m["regime"] == "real74_unstable" and m["branch"] == "no_qs"]
+    for o in folded:
+        np.testing.assert_array_equal(o["rqicuten"], np.float32(-999.0))
+        np.testing.assert_array_equal(o["rqscuten"], np.float32(-999.0))
+        assert np.any(o["rqccuten"] != 0.0)    # QL+QI, folded
 
 
 def test_kf_phase_mode_mapping_keeps_kessler_and_no_mp_distinct():
@@ -362,20 +263,16 @@ def test_cuda_sources_keep_four_rates_and_wrf_number_seed_statement_order():
     assert "KF_PHASE_WARM_RAIN" in kf
     assert "KF_PHASE_NO_SEPARATE_SNOW" in kf
     assert "KF_PHASE_SEPARATE_SNOW" in kf
-    assert "(parcel_q[nk]+thetaeu[nk])*KF_RLF/cpm" in kf
-    assert "rqccuten[index] = parcel_t[nk]/tendency_timec" in kf
-    assert "rqicuten[index] = parcel_q[nk]/tendency_timec" in kf
-    assert "rqrcuten[index] = resolved_precip[nk]/tendency_timec" in kf
-    assert "rqscuten[index] = thetaeu[nk]/tendency_timec" in kf
-    # WRF's warm-rain branch folds frozen mass only after applying the
-    # corresponding latent-fusion adjustment to TG.
-    assert ("rqccuten[index] = (parcel_t[nk]+parcel_q[nk])"
-            "/tendency_timec" in kf)
-    assert ("rqrcuten[index] = (resolved_precip[nk]+thetaeu[nk])"
-            "/tendency_timec" in kf)
-    latent = kf.index("tg[nk] -= (parcel_q[nk]+thetaeu[nk])*KF_RLF/cpm")
-    theta_rate = kf.rindex("rthcuten[index] =")
-    assert latent < theta_rate
+    # KF_eta_PARA's feedback (module_cu_kfeta.F:2599-2640): the F_QS arm
+    # keeps four rates, and the folding arms apply latent fusion to TG
+    # BEFORE DTDT is formed and divided by PI.
+    assert "dqidt = (qig - 0.0f) / timec;" in kf
+    assert "dqsdt = (qsg - 0.0f) / timec;" in kf
+    assert "dqrdt = (qrg - 0.0f) / timec;" in kf
+    assert "dqcdt = (qlg - 0.0f) / timec;" in kf
+    latent = kf.index("tgk = tgk - ((qig + qsg) * rlf) / cpm;")
+    theta_rate = kf.index("rthcuten[i3] = dtdt / pi3(kk);")
+    assert latent < kf.index("dtdt = (tgk - t0(kk)) / timec;") < theta_rate
 
     rain = morrison.index("if (qrcu >= 1.0e-10f)")
     snow = morrison.index("if (qscu >= 1.0e-10f)")

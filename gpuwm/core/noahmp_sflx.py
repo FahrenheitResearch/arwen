@@ -132,7 +132,7 @@ from typing import Sequence
 
 import numpy as np
 
-from gpuwm.core.noahmp_energy import (EnergyParameters, EnergyState,
+from gpuwm.core.noahmp_energy import (EnergyOptions, EnergyParameters, EnergyState,
                                       LeafRequest,
                                       drive_on_host as _drive_on_host,
                                       energy_steps as _energy_steps,
@@ -1118,7 +1118,7 @@ def sflx_steps(parameters: SflxParameters, col: SnowColumn, smc, *,
                acc_ssoil=_ZERO, acc_qinsur=_ZERO, acc_qseva=_ZERO,
                acc_etrani=None, acc_dwater=_ZERO, acc_prcp=_ZERO,
                acc_ecan=_ZERO, acc_etran=_ZERO, acc_edir=_ZERO,
-               calculate_soil: bool = True, **forcing):
+               calculate_soil: bool = True, noahmp_snow_age="wrf_470", **forcing):
     """One NOAHMP_SFLX column under the pinned option identity, as a generator.
 
     It yields :class:`gpuwm.core.noahmp_energy.LeafRequest` objects from inside
@@ -1151,6 +1151,7 @@ def sflx_steps(parameters: SflxParameters, col: SnowColumn, smc, *,
                             dict(acc_ssoil=acc_ssoil, wa=wa, **forcing))
     en = yield from _energy_steps(parameters.energy, nsnow=col.nsnow,
                                   nsoil=col.nsoil,
+                                  options=EnergyOptions(noahmp_snow_age=noahmp_snow_age),
                                   **pre.call.to_energy_kwargs())
     return (yield from sflx_post_steps(
         parameters, col, pre, en,

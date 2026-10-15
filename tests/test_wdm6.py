@@ -1,8 +1,8 @@
 """CPU-only WDM6 (mp_physics=16) integration and coefficient tests.
 
-The device half is ``tests/test_wdm6_column.py``.  Nothing here compares
-against WRF's own ``module_mp_wdm6.F``: no oracle exists for this scheme
-yet, and the registry option says so.
+The device half is ``tests/test_wdm6_column.py``.  The comparison against
+WRF's own ``module_mp_wdm6.F`` lives in ``tests/test_wdm6_wrf461_oracle.py``
+(the column oracle tools/wdm6_wrf461_oracle).
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from dataclasses import replace
 import json
 import math
 from pathlib import Path
-import re
 from types import SimpleNamespace
 
 import numpy as np
@@ -171,37 +170,30 @@ def test_wdm6_double_moment_coefficients_follow_the_fortran():
     assert c.precr1 == pytest.approx(2.0 * pi * 1.56, rel=1e-15)
 
 
-@pytest.mark.parametrize(
-    ("literal", "value"),
-    [
-        ("1.25663706e4", lambda c: c.pidnr),
-        ("5.23598776e2", lambda c: c.pidnc),
-        ("2.99849272e3", lambda c: c.pvtr),
-        ("1.41088450e3", lambda c: c.pvtrn),
-        ("8.37758041e-5", lambda c: c.qc0),
-        ("8.37758041e-4", lambda c: c.qc1),
-        ("2.00517852e1", lambda c: c.pvts),
-        ("6.28318531e8", lambda c: c.pidn0s),
-    ],
-)
-def test_the_kernel_s_baked_fp32_literals_match_the_float64_wdm6init(
-        literal, value):
-    """The kernel bakes wdm6init's products as FP32 literals.  This is the
-    pin that keeps the two spellings from drifting apart silently."""
+def test_the_kernel_bakes_wrf_s_words_not_the_float64_products():
+    """The kernel's coefficients are wdm6init's own float32 words
+    (gpuwm.core.wdm6_constants.WDM6_WRF_WORDS); the float64 derivation is
+    close to them but is NOT them, and baking it would move every fall
+    speed off WRF's word (tests/test_wdm6_wrf461_oracle.py)."""
+    from gpuwm.core.wdm6_constants import WDM6_WRF_WORDS, wrf_word
+
     source = _KERNEL.read_text(encoding="utf-8")
-    assert literal + "f" in source, f"{literal}f is not in wdm6.cu"
-    expected = value(coefficients(0))
-    assert float(literal) == pytest.approx(expected, rel=1.0e-8)
+    c = coefficients(0)
+    for name in ("pvtr", "pvtrn", "pvts", "pidnr", "pidnc", "precr1",
+                 "precr2", "precs2", "pacrc", "g4pbr", "g7pbr", "cdm2"):
+        word = np.float32(wrf_word(WDM6_WRF_WORDS[name]))
+        assert word == pytest.approx(getattr(c, name), rel=1.0e-5), name
+        assert f"#define WDM6_{name.upper()} " in source, name
+    # At least the rgmma-derived fall speeds really differ from float64.
+    assert np.float32(wrf_word(WDM6_WRF_WORDS["pvtr"])) != np.float32(c.pvtr)
 
 
-def test_the_kernel_source_states_it_has_no_oracle():
-    """ACCURACY PIN.  If someone runs the oracle campaign and the header
-    keeps saying there is none, or removes the sentence without running
-    it, this test is the thing that notices."""
+def test_the_kernel_source_names_its_oracle():
+    """ACCURACY PIN.  The header names the column oracle that grades it,
+    and no longer claims there is none."""
     source = _KERNEL.read_text(encoding="utf-8")
-    assert "implemented-unverified" in source
-    assert re.search(r"no oracle comparison against\s+// the WRF Fortran",
-                     source) or "no oracle comparison" in source
+    assert "tools/wdm6_wrf461_oracle" in source
+    assert "no oracle comparison" not in source
 
 
 # --------------------------------------------------------------------------
@@ -312,12 +304,13 @@ def test_wdm6_driver_seams_treat_it_as_a_full_ice_scheme():
     # v4 (A144): the rain condensation cap keeps the rate's sign, so rain
     # with no number no longer evaporates; checkpoints from v3 must refuse.
     # v5 (2.8.8): the shared finish clamps at WRF's REAL product
-    # mp_tend_lim*dt; checkpoints from v4 must refuse.
+    # mp_tend_lim*dt.  v6: WRF's own coefficient words and operation order
+    # (the column oracle); checkpoints from v5 must refuse.
     assert MICROPHYSICS_ALGORITHM_IDENTITIES[16].startswith(
-        "wdm6-double-moment-warm-rain-wrf-v4.6.1-v5")
+        "wdm6-double-moment-warm-rain-wrf-v4.6.1-v6")
     assert MICROPHYSICS_ALGORITHM_IDENTITIES[16].endswith(
         "conservative-rain-interface-flux-bounded-transport-time-"
-        "zero-rate-rain-no-evaporation-real-clamp-product")
+        "zero-rate-rain-no-evaporation-real-clamp-product-wrf-words")
 
 
 def test_the_ring_guard_captures_wdm6_s_number_moments():
@@ -424,7 +417,7 @@ def test_a_namelist_naming_wdm6_imports_natively(tmp_path):
                    for sub in report.substitutions)
 
 
-def test_the_registry_row_is_accurate_about_having_no_oracle():
+def test_the_registry_row_states_the_oracle_and_no_more():
     root = Path(__file__).resolve().parents[1]
     registry = json.loads(
         (root / "gpuwm/physics_registry_v2.json").read_text(
@@ -441,19 +434,14 @@ def test_the_registry_row_is_accurate_about_having_no_oracle():
     assert option["scientific_evidence"] == "none"
     first = option["warnings"][0]
     assert first.startswith(
-        "NO ORACLE COMPARISON AGAINST THE WRF FORTRAN HAS BEEN RUN")
-    assert "What is NOT established" in first
-    # The label may not creep without the measurement that would earn it.
-    # The sentence naming Shin-Hong's and Grell-Freitas's numbers is where
-    # the row says those campaigns are the MODEL for the next stage, so the
-    # forbidden words are checked against the claim clause, not the whole
-    # warning, which would only teach the next author to delete the model.
-    claim, _, _future = first.partition(
-        "The oracle campaign that produced")
-    for forbidden in ("max_ulp", "bitwise", "model-validated",
-                      "validation-candidate", "wrf-matched-run",
-                      "wrf-matched-run-candidate", "ULP parity"):
-        assert forbidden not in claim, forbidden
+        "WDM6's distance from WRF v4.6.1 is MEASURED by a column oracle")
+    assert "tools/wdm6_wrf461_oracle" in first
+    assert "tests/test_wdm6_wrf461_oracle.py" in first
+    # Conformance is not validation: the row still says what is missing.
+    assert "no gpuwm/WRF forecast trajectory comparison exists" in first
+    for forbidden in ("model-validated", "validation-candidate",
+                      "wrf-matched-run"):
+        assert forbidden not in first, forbidden
     # RETIRED with the same defect, and replaced by what the absence was
     # standing in for.  A template DOES register mp=16 now -- that is the
     # front door R-067 minted -- and the property that still matters is
@@ -553,8 +541,8 @@ def test_a_refused_selector_cannot_join_without_its_own_sentence():
 
     source = Path(mt.__file__).read_text(encoding="utf-8")
     patched = source.replace(
-        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (30,)",
-        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (30, 99)")
+        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (3, 5, 30)",
+        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (3, 5, 30, 99)")
     assert patched != source, "the selector tuple moved; re-point this test"
     namespace = {"__name__": "mt_probe", "__file__": mt.__file__}
     with pytest.raises(RuntimeError, match=r"\[99\]"):
@@ -584,51 +572,41 @@ def test_the_offline_lane_admits_wdm6_at_both_ends_of_an_edge():
 # The reflectivity constants have ONE statement
 # --------------------------------------------------------------------------
 
-def test_the_wdm6_refl_kernel_takes_its_rain_moments_from_the_host():
-    """No second, silent copy of xam_r/xcrg/xorg2 inside the kernel.
-
-    ``radar_init_wdm6`` derived them and the kernel re-spelled them as
-    literals, so changing xmu_r on the host would have left the kernel on
-    the old exponents with nothing failing.
-    """
-    from gpuwm.core.refl import radar_init_wdm6
+def test_the_wdm6_refl_kernel_takes_its_radar_words_from_the_host():
+    """No second, silent copy of the radar_init products inside the kernel:
+    every one arrives in the launcher's word tables, which are WRF's words
+    (gpuwm.core.refl.wdm6_radar_words, graded against the oracle's dump by
+    tests/test_wdm6_wrf461_oracle.py)."""
+    from gpuwm.core.refl import radar_init_wdm6, wdm6_radar_words
 
     source = (Path(__file__).resolve().parents[1]
               / "gpuwm/core/kernels/wdm6_refl.cu").read_text(encoding="utf-8")
-    for literal in ("const double xcrg3 = 24.0",
-                    "const double xam_r = RPI * 1000.0 / 6.0"):
-        assert literal not in source, (
-            f"{literal!r} is back in the kernel; it must arrive from "
-            "gpuwm.core.refl.radar_init_wdm6")
-    assert ("const double xam_r, const double xcrg3, const double xcrg4,"
-            in source)
-    # The two exponents that stay compile-time, and the values behind them.
-    rc = radar_init_wdm6(0)
-    assert rc.xcre == (4.0, 2.0, 5.0, 8.0)
-    assert rc.xcrg == (6.0, 1.0, 24.0, 5040.0)
-    assert rc.xorg2 == 1.0
-    assert rc.xam_r == 1000.0 * math.pi / 6.0
-    assert "lam * lam;   // lam**xcre(2), xcre(2) = 2" in source
-    assert "pow(ilamr[k], 8.0)" in source
+    kernel = source.split("extern \"C\" __global__ void refl10cm_wdm6_column")[1]
+    for literal in ("24.0", "5040.0", "RPI * 1000.0 / 6.0", "RGAMMA_7",
+                    "RGAMMA_4", "RPI5", "RLAMDA4"):
+        assert literal not in kernel, literal
+    assert "const float* __restrict__ rw, const double* __restrict__ rd" in (
+        kernel)
+    # The words are WRF's REAL values, which are near -- not equal to --
+    # the float64 derivation.
+    for hail_opt in (0, 1):
+        rc = radar_init_wdm6(hail_opt)
+        fw, dw = wdm6_radar_words(hail_opt)
+        assert float(fw[3]) == pytest.approx(rc.xcrg[3], rel=1e-6)
+        assert float(fw[3]) != rc.xcrg[3]          # WGAMMA(8.) = 5040.002
+        assert float(fw[1]) == pytest.approx(rc.xam_r, rel=1e-6)
+        assert float(dw[1]) == pytest.approx(rc.pi5, rel=1e-6)
+        assert float(dw[0]) == pytest.approx(rc.k_w, rel=1e-6)
 
     # Morrison's rain density (RHOW = 997) must not be reachable here.
     assert "#undef RXAM_R" in source and "#undef RXAM_S" in source
 
 
-def test_the_wdm6_refl_launcher_refuses_an_xcre_the_kernel_cannot_honour():
-    """Show the failing form: the guard is not decoration."""
-    import gpuwm.core.refl as refl_module
+def test_the_wdm6_refl_launcher_refuses_an_unknown_hail_opt():
+    from gpuwm.core.refl import wdm6_radar_words
 
-    original = refl_module.radar_init_wdm6
-    try:
-        refl_module.radar_init_wdm6 = lambda hail_opt=0: replace(
-            original(hail_opt), xcre=(4.0, 3.0, 6.0, 9.0))
-        shape = (2, 3, 4)
-        arrays = [np.zeros(shape, dtype=np.float32) for _ in range(8)]
-        with pytest.raises(ValueError, match="xcre"):
-            refl_module.launch_refl10cm_wdm6(*arrays)
-    finally:
-        refl_module.radar_init_wdm6 = original
+    with pytest.raises(ValueError, match="hail_opt"):
+        wdm6_radar_words(2)
 
 
 def test_the_plm_remap_clamp_divergence_is_documented_at_the_site():

@@ -715,8 +715,25 @@ FROZEN_MODULE_DIGESTS = {
         # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
         # identical to the base's); Blackwell cards now round these quotients
         # IEEE-correctly.  Previously fecf2e80/530faef7.
-        '80856acab86330c9533a391ea4a30f612791e767a810c7df02cb757002991de2',
-        'f6f6aa8d6089cb6ead3935594abfc8079cdb75fbcaf41e5c1f05472c8d608e24'),
+        #
+        # RE-PINNED by lane/verify-kessler-mp1: the six REAL**REAL powers
+        # and the EXP call WOOF's own gfk_pow/gfk_exp (glibc_flt32.cuh now
+        # prepended by _EXTRA_HEADERS, which moves the compiled string), the
+        # unit compiles --fmad=false, and qr = (qr + prod - qr) is evaluated
+        # as the Fortran writes it.  Reading: bitwise against the
+        # byte-unmodified WRF v4.6.1 kessler on 104 columns x 25 calls,
+        # tests/test_kessler_wrf461_parity.py.  Not an mp=8 unit.
+        # Previously 80856aca/f6f6aa8d.
+        #
+        # RE-PINNED by lane/verify-kessler-mp1-refute: es is capped at
+        # 0.99 p before qvs (WOOF's guard for the WRF defect where es >= p
+        # makes qvs negative and the top layers heat without bound).
+        # Reading: bitwise against WRF v4.6.1 on every word where
+        # es <= 0.98 p across the lane's fixture and five new column sets,
+        # and bounded (WRF: 4,435 K) where it engages,
+        # tests/test_kessler_refute_columns.py.  Previously 864f27a2/dc6cd6a4.
+        '437e750df30338848cc44b6c4a386839ba910551a2093c356228702a87017a7e',
+        '62d3b59550872560b7ab046abd81f445096ff14b0a593528d619a0bc163069ea'),
     'kf': (
         # Re-pinned for the column-workspace move (48ff6b813), measured
         # on node-1 with its two declared bit-moving placements named in
@@ -750,8 +767,31 @@ FROZEN_MODULE_DIGESTS = {
         # / C as a multiply by the rounded reciprocal on Blackwell targets.
         # Reading: sm_89 unchanged; Blackwell cards now round these quotients
         # IEEE-correctly. Previously 30308b1b/7d81bfc9.
-        '705dded69dccebdab5a2276e24d32f4e21186fdb985ed3ab06b389b8ace914c4',
-        '0ef80d84d30359e2dd407b0c75e591539a71c921c90344e48f27c9130cac8415'),
+        #
+        # RE-PINNED 2026-10-07 (lane/verify-kain-fritsch): kf.cu is now a
+        # line-for-line port of WRF v4.6.1 KF_eta_PARA and compiles on its
+        # own --fmad=false --ftz=false route with WOOF's own float32 libm
+        # (the assembled source gains glibc_flt32.cuh).  This MOVES ANSWERS
+        # on every convecting KF column: the re-derivation it replaces
+        # matched WRF's Fortran on none of 1,793 convecting columns; the
+        # port matches it on every output word of 4,326 columns (structured,
+        # sweep and ERA5 real74 sets), strict and default builds,
+        # tests/test_kf_wrf461_oracle.py and tools/kf_wrf461_oracle.  Not an
+        # mp=8 unit.  Previously 705dded6/0ef80d84.
+        #
+        # RE-PINNED 2026-10-12 (golden/parity): the port keeps d547dc8c3's
+        # floor on PPTFLX (fmaxf(TRPPT-TDER, 0)), the one statement where it
+        # leaves WRF on purpose.  Reading: no answer moves on any WRF oracle
+        # column -- the committed structured/real74 sets, the hex
+        # capped-downdraft set and the 4,096/32,768-column seeded sweeps have
+        # no negative PRATEC in WRF's own Fortran, and the GPU grade of the
+        # committed sets stays 0 differing words in both builds
+        # (tests/test_kf_wrf461_oracle.py, tests/test_kf.py).
+        # Previously 9eb33736/5e418a4f; then 78cf5577/0a8949d9 until one
+        # word of the header comment changed for the banned-word census
+        # (no statement moved).
+        '5c9ee212cd0fc3dcedf298883c5455166402cdf9539db0a567c78db5b2303733',
+        'd2bf09592bbbb85065586ad0e10911c9cffdf91ade07e4b4bbd82de52f38289d'),
     'lbc_flow': (
         # 4febd041f supplies resolved WDM6/NSSL inflow concentrations.
         # docs/dev/qnn-specified-inflow.md records 4 CPU + 10 GPU
@@ -1074,8 +1114,29 @@ FROZEN_MODULE_DIGESTS = {
         # merged file's.
         # Re-pinned 2026-10-01 for the ordinary-land register bound.
         # Direct before/after output words match on RTX 4090 and RTX 5090.
-        '2dcb1b598a16cd96a13fe1cc976d6244bc45e879d6ce02cebfafbd6e82802e68',
-        'd4dca1d07ce274991184b6f2f6cd48c1f04c84856950f5b4e08a208ffafc46ff'),
+        # Previously 2dcb1b59/d4dca1d0.
+        #
+        # RE-PINNED by golden/ports-pbl (2026-10-12), and this MOVES ANSWERS
+        # on land-ice columns only: SFLX_GLACIAL (glacial PENMAN, SNOPAC,
+        # HRTICE, SNOWZ0, the driver's ICE == -1 post-update) is ported where
+        # the column used to return untouched.  Reading (G1 RTX PRO 6000,
+        # sm_120, NVRTC 12.9.86 and 13.2 alike): the 41 ordinary land columns
+        # of all four switch fixtures are byte-identical to cd336e62d's
+        # kernel; case 28 and the 24-column land-ice fixtures sit at the
+        # GLACIAL_BASELINE_MAX_ULP of tests/test_noah_wrf461_parity.py (TSK,
+        # HFX and TSLB 0 ULP, worst flux SNOPCX 5).  Previously
+        # aaff81f7/de546677.
+        #
+        # RE-PINNED by lane/290-A5-fixes (2026-10-14), MOVES ANSWERS on
+        # sea-ice columns only: noah_seaice_column (WRF's seaice_noah,
+        # verify-noah-lsm 217a273cc) is appended, and the unit takes
+        # glibc_flt32.cuh for its gfk_exp/gfk_pow.  Reading (node-1 RTX 4090,
+        # sm_89, NVRTC 12.9.86): tests/test_noah_seaice_wrf461_parity.py 0 ULP
+        # on its 24 x 3 oracle columns; the release short case (ICON-EU, two
+        # domains, Noah, no sea ice) is byte-identical to integrate/2.9.0
+        # 0bf505764 in all 21,885,246 history words.
+        'f629470671d945dc253e5f42f575bd1197f072f8ba3400203083dcbec31bd585',
+        'b6e8ef8d8a7f0a7d3fa6a1da7638a39cd834a1eb8af7e1b83cf2c57c737fca50'),
     'noahmp_bareflux': (
         '54fb5065e95b24d4cf676e2deda29bae44b3e9305d3d98cbc1abf5ed55f444ce',
         'fbb19fc8b5668ea2edbcc1270f8ffe367475124ffa0ce99d3bc34639f3f31e9f'),
@@ -1113,9 +1174,16 @@ FROZEN_MODULE_DIGESTS = {
     'noahmp_libm_slab': (
         '0144fa7d142a8d24f5f0f52bd0dade987312cd97c2a2efad9a6f33edb1a35fda',
         'c7cdc57aa7d3d507d2b57935df13e16dba87dd783384e28a7240b95a536f39a7'),
+    # RE-FROZEN by the WRF 4.7 Noah-MP night snow-aging port (golden/wrf-fixes,
+    # merge 170b65f7b of upstream-noahmp-night-snow-age47 f77be93ec): the
+    # unit gains the night-aging entry (noahmp_radiation_batch_night_age);
+    # the daylight entry's statements are unchanged.  Reading: both
+    # generations 0 of 19,614 words against WRF 4.7.0 / 4.6.1 full columns
+    # (tests/test_noahmp_snow_age_gpu.py) and 0 of 9,120 leaf words against
+    # each release's Fortran (tools/noahmp_snow_age_oracle/compare.py).
     'noahmp_radiation': (
-        'c26d7a68ed86bd7182ddbea5e2005fb4761805dd5eaf13c3115e640eb2234c22',
-        'a454d07fefa080f986423d2f74bf0fe1ecf85959638e02a7a447b44d68aea24a'),
+        'f7317dcf918a73ac014aaf2b81f19757afb152e5cbe50c538253bedaedd5aa0e',
+        '520df954dbfeb613997fd59cd4fde99ec7c3120fd361eefda553b1900a50dfca'),
     'noahmp_sflx': (
         '47f51fed351b3f720203c07ea2d5e5a8902f4162afe17b634f5196447728365f',
         'f17caed98ec58c4d9836778f3a9edea9e88cf13808dbe64d5e099fd81ffebc77'),
@@ -1811,14 +1879,35 @@ FROZEN_MODULE_DIGESTS = {
         # Moved again with the file by 508691422 (above).
         'e2a3b92d48f02046a0804724cf6ad6f947333e7be9f541029a7367da094ab590'),
     'wsm6': (
-        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
-        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
-        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
-        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
-        # identical to the base's); Blackwell cards now round these quotients
-        # IEEE-correctly.  Previously 0526192b/1a6d20da.
-        '0028b0c2d88d6087095cd2d4afab27bb2cb76b2a5bf51e3e5e908e0fdf2f0886',
-        'd6798c079bbf2c6343d6d6575be2cd5fd67a128612c401b36e8ebfc3f1c10451'),
+        # Re-pinned for correct mode, finding WB5 (correct/mpas-water-budget-290):
+        # the WSM6_PLM_SURFACE arm books the below-ground part of the
+        # straddling sedimentation cell with the remap's own sloped profile.
+        # With the macro undefined (exact mode) the preprocessed unit is the
+        # c8e0db79 bytes and NVRTC returns the same image
+        # (tests/test_correct_mode_water_budget.py).  Previously c8e0db79:
+        # RE-PINNED by lane/verify-wsm6-mp6 (2026-10-07), and this MOVES
+        # ANSWERS on the default path: the kernel is rewritten as WRF
+        # v4.6.1's own WSM6 call chain (module_mp_wsm6.F wrapper, mp_wsm6_run,
+        # effectRad) plus refl10cm_wsm6 as a second kernel, with WRF's
+        # association, mp_wsm6_init's float32 words, WOOF's own float32 and
+        # binary64 libm words (glibc_flt32.cuh, glibc_flt64.cuh) and the unit
+        # compiled with --fmad=false (_NO_FMAD_MODULES).  Reading (W1 RTX PRO
+        # 6000, sm_120, NVRTC 12.9.86 and 13.4.92):
+        # tests/test_wsm6_wrf461_column_exact.py, 0 of 1,351,090 output
+        # words differ from gfortran WRF over 65 columns and six runs under
+        # GPUWM_WRF_EXACT=1; the default build differs only in the two
+        # columns whose WRF words are subnormal.  Previously 0028b0c2/d6798c07
+        # (A146, a98f2482e), before that 0526192b/1a6d20da.
+        '3ca83093da4bd99da1c440ef04f5190df9c324a8310b3d4eaf4aae04a49aa308',
+        # Compile string re-pinned with the file (correct/mpas-water-budget-290
+        # repair, 2026-10-13): the WB5 commit above left the old file digest
+        # c8e0db79 in place as a third element, so the entry no longer
+        # unpacked.  The loader's string now carries the #ifdef
+        # WSM6_PLM_SURFACE block (218,504 characters); with the macro
+        # undefined the preprocessed unit and NVRTC's image are the
+        # c8e0db79/b31ff1ff ones (test_wb5_exact_mode_compiles_the_same_ptx_as_2_8_7).
+        # Previously b31ff1ff.
+        '59764c7a90e93d5d8acb76d832cd1fc22507fceba3b69e13ddf57cace58846e6'),
     'ysu': (
         # Re-pinned for the column-workspace move (17cf943ef): per-thread
         # local arrays became a caller-sized global workspace, stride-32
@@ -1926,8 +2015,21 @@ FROZEN_MODULE_DIGESTS = {
         # hpbl/wstar/delta/dtheta 1 ULP to bitwise WRF on every lane but the
         # 11 FTZ-flushed subnormal tendencies; the BEP table and the topo_wind
         # table go to 0 the same way.
-        '46f4642c73cdc00ad08822bb89788d576fc4bc6ca7a9d8a68aa2272d66c7a669',
-        'bce0da685472dca163a1645e4d39fb9b164a3a749ea74d4dafa810cf13ee3a3e'),
+        # Previously 46f4642c/bce0da68.
+        #
+        # RE-PINNED by golden/ports-pbl (2026-10-12), and this MOVES ANSWERS
+        # wherever ust = hfx = qfx = 0 (or ust flushes to zero on the
+        # card): the zero-flux short circuit is removed.  It returned zero
+        # tendencies, PBLH = dz(1) and KPBL = 1 where bl_ysu_run has no such
+        # branch and runs the whole scheme.  Reading (G1 RTX PRO 6000, sm_120,
+        # NVRTC 12.9): tests/test_ysu_wrf461_parity.py case 12 joins the
+        # arithmetic table at 0 ULP on every field (KPBL 9, PBLH 703.36 m, as
+        # WRF), case 13 is WRF's word on every lane WRF wrote a number with
+        # KPBL/PBLH exact, and the 23-column maxima did not move.  No other
+        # statement changed; every column with any nonzero flux compiles from
+        # the same statements as before.
+        '1b7c38016ab5cca8c286c454d49b5247779e509e03435434b16298bdd9c97fb9',
+        '482f82fa058d10a860c57fab076819cc701550fb9b26c07b953893e2423c8bf9'),
 }
 
 # -- R2 --------------------------------------------------------------------
@@ -2935,6 +3037,9 @@ def test_loader_hook_is_inert_for_every_frozen_module(r1):
         "sfclay": ("glibc_flt32.cuh", "sfclay_classic.cuh"),
         "smag2d": ("glibc_flt32.cuh",),
     }
+
+    # New port headers have measured composed-source pins.
+    _EXPECTED_HEADERS.update({'fer_hires': ('glibc_flt32.cuh',)})
 
     # The header grant stays a CLOSED literal: the loader's own allow-list
     # must equal the historical mapping plus the selected literal grant,

@@ -1,0 +1,4 @@
+21a33ad0389d0320a1e5d2028a3ca9361c61e66d72297e834b78f5e478ca40ce  slucm-lcz-grch1-switches.csv
+c2193c346d38ce90e48976de461e6326dcf76bebc655599d43dde646e949bf36  slucm-lcz-grch1-table.csv
+04c406e28c64daaafcca9f582f8ed5aa35e87ebe0925454461e25d30fba66068  slucm-lcz-grch1.csv.gz
+0e8a236c10b848a1de3ed587bc2d88ebca2cb3770aa0e45563e4e16b4177e1de  CONTROL-tloc.diff

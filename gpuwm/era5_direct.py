@@ -308,7 +308,8 @@ def _static_from_geog(
         **selection_carrier_kwargs(static_highres))
     fields = build_static_for_domain(
         grid, catalog, 1,
-        **({"cfg": cfg} if getattr(cfg, "sf_lake_physics", 0) else {}))
+        **({"cfg": cfg} if any(getattr(cfg, option, 0) for option in
+            ("sf_lake_physics", "topo_wind", "gwd_opt")) else {}))
     # The land-use table's own ISLAKE/ISWATER, from the same GEOG index
     # the statics were built from, so the water-temperature assembly
     # and the statics cannot disagree about what a lake is.
@@ -619,7 +620,8 @@ def prepare_era5_wrf(
         exp, grids, root_terrain=static["HGT_M"],
         static_catalog=_survey_static_catalog(
             exp, paths["wps_namelist"], geog_root, static_highres),
-        static_highres=static_highres, announce=_announce_adaptation)
+        static_highres=static_highres, announce=_announce_adaptation,
+        statics_corridor=statics_corridor)
     cfg = exp.root.run
     source_terrain = (
         None if source_orography is None

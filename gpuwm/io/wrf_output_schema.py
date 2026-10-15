@@ -855,6 +855,22 @@ for _group in (MYNN_PBL_OUTPUT_FIELDS, NOAHMP_OUTPUT_FIELDS,
 #: which is what mp=28's four aerosol carriers are -- go in
 #: :data:`HISTORY_FIELDS_BY_NETCDF_NAME` below instead of here, so that pin
 #: keeps meaning what it says.  The writer consults the wider map.
+# WRF restart-only diagnostics are published as an explicit history extension.
+for _key, _description, _units, _line in (
+    ("gd_cloud", "CLOUD WATER/ICE MIXING RAIO IN GD CLOUD", "kg kg-1", 1653),
+    ("gd_cloud2", "TEST for GD CLOUD", "kg kg-1", 1654),
+    ("gd_cldfr", "GD CLOUD Fraction", " ? ", 1655),
+    ("raincv_a", "taveragd TIME-STEP CUMULUS PRECIPITATION", "mm", 1656),
+    ("raincv_b", "taveragd TIME-STEP CUMULUS PRECIPITATION", "mm", 1657),
+    ("gd_cloud_a", "taveragd CLOUD WATER MIXING RAIO IN GD CLOUD", "kg kg-1", 1658),
+    ("gd_cloud2_a", "taveragd cloud ice mix ratio in GD", "kg kg-1", 1659),
+    ("qc_cu", "CLOUD WATER MIXING RATIO FROM A CU SCHEME", "kg kg-1", 1660),
+    ("qi_cu", "CLOUD ICE MIXUNG RATIO FROM A CU SCHEME", "kg kg-1", 1661),
+):
+    SCHEME_OUTPUT_FIELDS[_key] = WrfOutputField(_key.upper(), "f4", "", _description,
+        _units, f"Registry.EM_COMMON:{_line}", False)
+
+
 OUTPUT_FIELDS_BY_NETCDF_NAME: dict[str, WrfOutputField] = {}
 for _group in (SCHEME_OUTPUT_FIELDS, PRECIPITATION_OUTPUT_FIELDS):
     for _key, _field in _group.items():
@@ -938,6 +954,17 @@ RADIATION_CLDFRA_ATTRIBUTES: dict[str, str] = {
 }
 
 REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
+    "IC_FLASHCOUNT": ("Accumulated IC flash count", "#"),
+    "CG_FLASHCOUNT": ("Accumulated CG flash count", "#"),
+    "IC_FLASHRATE": ("IC flash rate", "#/s"),
+    "CG_FLASHRATE": ("CG flash rate", "#/s"),
+    "LPI": ("Lightning Potential Index", "m^2 s-2"),
+    # Correct mode, finding WB1 (gpuwm/core/thompson_cloud_booking.py): no
+    # WRF Registry row (WRF drops the flux); the MPAS-A port of the same fix
+    # books it as cloudnc/cloudncv.  Present only in a correct-mode
+    # Thompson run.
+    "CLOUDNC": ("ACCUMULATED CLOUD WATER SETTLED TO THE SURFACE", "mm"),
+    "CLOUDNCV": ("CLOUD WATER SETTLED TO THE SURFACE IN THE LAST CALL", "mm"),
     "U": ("x-wind component", "m s-1"),
     "V": ("y-wind component", "m s-1"),
     "W": ("z-wind component", "m s-1"),
@@ -1011,10 +1038,26 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     # the dimension table and the FieldType default already describe it
     # correctly and it needs no row of its own.
     "OLR": ("TOA OUTGOING LONG WAVE", "W m-2"),
+    'SWDDNI': ('Shortwave surface downward direct normal irradiance', 'W m-2'),
+    'SWDDIR': ('Shortwave surface downward direct irradiance', 'W m-2'),
+    'SWDDIF': ('Shortwave surface downward diffuse irradiance', 'W m-2'),
+    'TLWDN': ('TOA LW downwelling flux', 'W m-2'),
+    'TLWUP': ('TOA LW upwelling flux', 'W m-2'),
+    'SLWDN': ('Surface LW downwelling flux', 'W m-2'),
+    'SLWUP': ('Surface LW upwelling flux', 'W m-2'),
+    'TSWDN': ('TOA SW downwelling flux', 'W m-2'),
+    'TSWUP': ('TOA SW upwelling flux', 'W m-2'),
+    'SSWDN': ('Surface SW downwelling flux', 'W m-2'),
+    'SSWUP': ('Surface SW upwelling flux', 'W m-2'),
     # Registry.EM_COMMON:1699 (``ikj``, ``irh``), verbatim: mass grid, no
     # stagger, real, unitless.  Written where a radiation scheme that
     # computes a cloud fraction runs; see RADIATION_CLDFRA_ATTRIBUTES.
     "CLDFRA": ("CLOUD FRACTION", ""),
+    "AOD5502D": ("Column aerosol optical depth at 550 nm", ""),
+    "AOD5503D": ("Aerosol optical depth in RRTMG band 10", ""),
+    "ANGEXP2D": ("Aerosol Angstrom exponent", ""),
+    "AERSSA2D": ("Aerosol single scattering albedo", ""),
+    "AERASY2D": ("Aerosol asymmetry parameter", ""),
     # Registry.EM_COMMON:1715, written where slope_rad = 1 runs.
     "SWNORM": ("NORMAL SHORT WAVE FLUX AT GROUND SURFACE (SLOPE-DEPENDENT)",
                "W m-2"),
@@ -1031,6 +1074,7 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     "ALBEDO": ("ALBEDO", ""),
     "EMISS": ("SURFACE EMISSIVITY", ""),
     "GSW": ("NET SHORT WAVE FLUX AT GROUND SURFACE", "W m-2"),
+    "AODTOT": ("TOTAL AEROSOL OPTICAL DEPTH AT 550 NM", "1"),
     "FRC_URB2D": ("URBAN FRACTION", "dimensionless"),
     "SH_URB": ("SENSIBLE HEAT FLUX FROM URBAN SFC", "W m{-2}"),
     "LH_URB": ("LATENT HEAT FLUX FROM URBAN SFC", "W m{-2}"),
@@ -1041,6 +1085,14 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     "TB_URB": ("WALL SURFACE TEMPERATURE", "K"),
     "TG_URB": ("ROAD SURFACE TEMPERATURE", "K"),
     "TC_URB": ("CANOPY AIR TEMPERATURE", "K"),
+    "TVG_URB": ("VEGETATED GROUND SURFACE TEMPERATURE", "K"),
+    "TT_URB": ("TREE TEMPERATURE", "K"),
+    "XXXVG_URB": ("VEGETATED GROUND STABILITY", "dimensionless"),
+    "TVGL_URB": ("VEGETATED GROUND LAYER TEMPERATURE", "K"),
+    "SMG_URB": ("VEGETATED GROUND SOIL MOISTURE", "dimensionless"),
+    "CMCG_URB": ("VEGETATED GROUND CANOPY INTERCEPTION", "m"),
+    "FLXHUMVG_URB": ("VEGETATED GROUND HUMIDITY FLUX", "m s-1"),
+    "FLXHUMT_URB": ("TREE HUMIDITY FLUX", "m s-1"),
     "TKE_SASE": ("SASE prognostic subgrid turbulence kinetic energy",
                  "m2 s-2"),
     "TKE_SHINHONG": ("Shin-Hong published subgrid turbulence kinetic "

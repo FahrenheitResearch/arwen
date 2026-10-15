@@ -81,6 +81,20 @@ def _run_config_field_names() -> tuple[str, ...]:
     return tuple(f.name for f in dataclasses.fields(RunConfig))
 
 
+def _correct_mode_scoped(name, scheme) -> bool:
+    """A correct-mode key (gpuwm/correct_mode.py) carries its own scope:
+    ``KEY_SCOPE`` drops it from the identity of every domain whose schemes do
+    not read it (gpuwm/core/model.py restart_identity_payload, the checkpoint
+    echo and the public documents), which is this gate's requirement.  The
+    off-scheme refusal does not apply: the mode authors EVERY key in both
+    modes, so an exact run carries ``False`` on keys no selected scheme
+    reads, and refusing that would refuse exact mode itself."""
+    from gpuwm.correct_mode import KEY_SCOPE
+    scope = KEY_SCOPE.get(name)
+    return (scope is not None and scope[0] == "mp_physics"
+            and scheme in scope[1])
+
+
 def _unscoped(field_names) -> list[tuple[str, int]]:
     """Scheme-prefixed fields missing from their scheme's scoped row."""
     offenders = []
@@ -88,7 +102,8 @@ def _unscoped(field_names) -> list[tuple[str, int]]:
         for prefix, scheme in SCHEME_FIELD_PREFIXES.items():
             if not name.startswith(prefix):
                 continue
-            if name not in SCHEME_SCOPED_RUN_FIELDS.get(scheme, ()):
+            if (name not in SCHEME_SCOPED_RUN_FIELDS.get(scheme, ())
+                    and not _correct_mode_scoped(name, scheme)):
                 offenders.append((name, scheme))
     return offenders
 

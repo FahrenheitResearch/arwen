@@ -1,0 +1,11 @@
+--- a/phys/module_mp_fer_hires.F
++++ b/phys/module_mp_fer_hires.F
+@@ -1745,7 +1745,7 @@
+               PIACW=FWS*QW
+               IF (TC<0.) THEN
+                 PIACWI=PIACW            !- Large ice riming
+-                Rcw=ARcw*DUM2**C1       !- Cloud droplet radius in microns
++                Rcw=ARcw*(RHO*QW)**C1   !- Cloud droplet radius in microns
+               ENDIF
+             ENDIF           ! End IF (QLICE .GT. EPSQ)
+           ENDIF             ! End IF (QW.GT.EPSQ .AND. TC.GE.T_ICE)

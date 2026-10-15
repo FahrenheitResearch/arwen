@@ -80,6 +80,13 @@ def check_main(args):
     return run(args)
 
 
+def combined_check_main(args):
+    if args.config is None:
+        print('gpuwm check: CONFIG is required for preflight; bare inventory uses gpuwm check --json', file=sys.stderr)
+        return 2
+    return args.ingest_preflight_handler(args) or check_main(args)
+
+
 def is_experiment_toml(path):
     from gpuwm.experiment import is_experiment_toml as check
     return check(path)
@@ -403,6 +410,7 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
     parser.add_argument("--help-all", nargs=0, action=AllCommandsHelp,
                         help="show every command")
     sub = parser.add_subparsers(prog=parser.prog, dest="command", metavar="COMMAND", required=True)
+    _lazy_register("gpuwm.nwpsuite.cli")(sub)
     if preset_only:
         # Metadata inspection does not need the numerical or NetCDF commands.
         # Importing their parsers made a preset list fail on an otherwise
@@ -423,9 +431,7 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
     # Combined check policy (T3 handoff): the cheap CPU input/static/table
     # preflight runs first; only a zero return advances to the memory
     # estimator, so --alloc is gated on valid inputs.
-    sub.choices["check"].set_defaults(
-        func=lambda args: args.ingest_preflight_handler(args)
-        or check_main(args))
+    sub.choices["check"].set_defaults(func=combined_check_main)
     fetch_register_cli(sub)
     fire_static_register_cli(sub)
     fire_ideal_register_cli(sub)
@@ -576,6 +582,11 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
                      help="WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation")
     run.add_argument("--thompson-version", choices=("wrf_461", "wrf_44"), default=None,
                      help="WRF inputs: override the classic Thompson generation selected from producer TITLE")
+    run.add_argument("--urban-ucm-generation", choices=("wrf_471","wrf_480"), default=None)
+    run.add_argument("--urban-treeoption", type=int, choices=(0,1), default=None)
+    run.add_argument("--urban-ttscheme", type=int, choices=(0,1), default=None)
+    run.add_argument("--urban-fvg", type=float, default=None)
+    run.add_argument("--urban-table-dir", default=None)
     run.add_argument("--vertical-grid", default=None,
                      help="met_em: native, wrf-auto, or explicit:PATH eta grid")
     run.add_argument("--vertical-levels", type=int, default=None,
@@ -671,7 +682,7 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
                      dest="rrtmg_variant",
                      help="implementation for a WRF RRTMG 4/4 request: "
                           "RTE+RRTMGP by default, or legacy RRTMG when "
-                          "the namelist selects GSD MYNN or aer_opt=3; "
+                          "the namelist selects GSD MYNN or aer_opt 1, 2 or 3; "
                           "an explicit choice retains its implementation")
     # No argparse default: the report records WHAT chose the line, and
     # "nobody did, the importer's default applied" is one of the answers.
@@ -684,6 +695,12 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
                           "default: 1, moist theta, booked as a "
                           "substitution). The report names the line and "
                           "what chose it")
+    imp.add_argument("--urban-ucm-generation", choices=("wrf_471", "wrf_480"), default=None,
+                     help="single-layer urban numerical generation; omitted imports retain wrf_471")
+    imp.add_argument("--urban-treeoption", type=int, choices=(0,1), default=None)
+    imp.add_argument("--urban-ttscheme", type=int, choices=(0,1), default=None)
+    imp.add_argument("--urban-fvg", type=float, default=None)
+    imp.add_argument("--urban-table-dir", default=None)
     imp.add_argument("--ack", action="append", default=[], metavar="ID",
                      help="declared-experiment acknowledgement id to "
                           "write into [experiment].acknowledgements of "
@@ -752,6 +769,15 @@ def main(argv: list[str] | None = None) -> int:
 def _dispatch_argv(argv: list[str] | None = None) -> int:
     tokens = _rewrite_version_alias(
         list(sys.argv[1:] if argv is None else argv))
+    if tokens and tokens[0] == "suite":
+        from gpuwm.nwpsuite.cli import main as suite_main
+        return suite_main(tokens[1:])
+    if tokens == ["check", "--json"]:
+        # The configured check door is unchanged. Bare check is inventory only.
+        from gpuwm.nwpsuite.hardware import inventory
+        from json import dumps as box_dumps
+        print(box_dumps(inventory(), sort_keys=True))
+        return 0
     if (len(tokens) > 1 and tokens[0] == "timeline"
             and tokens[1] not in {"report", "project", "--help", "-h"}):
         tokens.insert(1, "report")
@@ -818,6 +844,8 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
             parser.error("--benchmark times the WRF-input door (a WRF run folder, "
                          "--wrfinput DIR or --restart-from WRFRST); the other "
                          "routes do not read it")
+        if args.config is not None and any(getattr(args,key) is not None for key in ("urban_ucm_generation","urban_treeoption","urban_ttscheme","urban_fvg","urban_table_dir")):
+            parser.error("urban CLI controls are for --wrfinput; set the shared urban fields in CONFIG")
         if args.vertical_levels is not None and args.met_em is None:
             parser.error("--vertical-levels is for --met-em inputs")
         if args.vertical_grid is not None and args.met_em is None:
@@ -1258,6 +1286,8 @@ def _dispatch(args) -> int:
         try:
             toml_text, report = import_namelists(
                 args.wps, args.input, name=args.name,
+                urban_ucm_generation=args.urban_ucm_generation,
+                urban_controls={key:getattr(args,key) for key in ("urban_treeoption","urban_ttscheme","urban_fvg","urban_table_dir") if getattr(args,key) is not None},
                 static_cache_root=(None if args.static_cache_root is None
                                    else args.static_cache_root.resolve()),
                 **({} if args.rrtmg_variant is None else
@@ -1421,6 +1451,9 @@ def _dispatch(args) -> int:
         from gpuwm.metem_forecast import run_metem_forecast
         launch = run_metem_forecast if args.met_em is not None else run_wrf_forecast
         directory = args.met_em if args.met_em is not None else args.wrfinput
+        urban_controls = {key:getattr(args,key) for key in ("urban_treeoption","urban_ttscheme","urban_fvg","urban_table_dir") if getattr(args,key) is not None}
+        if args.met_em is not None and (args.urban_ucm_generation is not None or urban_controls):
+            raise ValueError("urban generation CLI controls currently require --wrfinput; metgrid imports can select them in the resolved experiment TOML")
         unsupported = [flag for flag, value in (
             ("--prep-timeout", args.prep_timeout),
             ("--directory-input-hash", args.directory_input_hash),
@@ -1437,6 +1470,7 @@ def _dispatch(args) -> int:
                                exclusive_gpu=not args.no_supervise,
                                rrtmg_variant=args.rrtmg_variant,
                                **({} if getattr(args,"thompson_version",None) is None else {"thompson_version":args.thompson_version}),
+                               **({} if args.wrfinput is None else {"urban_ucm_generation":args.urban_ucm_generation,"urban_controls":urban_controls}),
                                allow_shared_gpu=args.allow_shared_gpu,
                                **({} if ensemble_request is None else
                                   {"ensemble_request": ensemble_request.receipt()}),

@@ -123,7 +123,7 @@ _INPUT_TEXT = """\
  smooth_option = 0,
 /
 &physics
- mp_physics = 55, 55,
+ mp_physics = 10, 10,
  ra_lw_physics = 4, 4,
  ra_sw_physics = 4, 4,
  radt = 12, 3,

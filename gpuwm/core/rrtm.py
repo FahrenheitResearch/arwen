@@ -162,20 +162,43 @@ def load_rrtm_raw_tables(path: str | Path | None = None) -> RRTMRawTables:
 
 
 def rrtm_upper_layer_count(p_top_pa: float) -> int:
-    """Transcribe ``NINT(p_top*0.01/deltap)`` from ``rrtminit``."""
+    """Transcribe ``NINT(p_top*0.01/deltap)`` from ``rrtminit``.
+
+    ``p_top`` is REAL and ``0.01``/``deltap`` are REAL literals, so the
+    quotient is formed in float32 before NINT rounds it half away from
+    zero; the float32 value plus 0.5 is exact in binary64, so the floor
+    below is NINT for the positive operand.
+    """
     if not np.isfinite(p_top_pa) or p_top_pa <= 0.0:
         raise ValueError("p_top_pa must be finite and positive")
-    return int(np.floor(p_top_pa * 0.01 / RRTM_DELTAP_HPA + 0.5))
+    f32 = np.float32
+    quotient = f32(f32(f32(p_top_pa) * f32(0.01)) / f32(RRTM_DELTAP_HPA))
+    return int(np.floor(float(quotient) + 0.5))
 
 
 def rrtm_default_trace_gases(year: int, overrides=None) -> dict[str, float]:
-    """WRF v4.6.1 pre-CAM-gas RRTM trace-gas policy."""
+    """WRF v4.6.1 pre-CAM-gas RRTM trace-gas policy (RRTMLWRAD F:1854-1863).
+
+    The three variables are REAL(8), but every operand on the right is a
+    REAL literal: ``co2vmr = (280. + 90.*exp(0.02*(yr-2000)))*1.e-6`` is
+    evaluated in float32 (EXP is the float32 libm expf) and only then
+    widened, and ``319.e-9``/``1774.e-9`` are float32 literals widened.  The
+    values returned are those binary64 numbers exactly.  A binary64
+    evaluation of the same formula lands up to one float32 ULP away once
+    MM5ATM stores it into the REAL WKL; the WRF column oracle
+    (tools/rrtm_lw_wrf461_oracle) measured exactly that on WKL(2).
+    """
     if isinstance(year, bool) or not isinstance(year, (int, np.integer)):
         raise TypeError("year must be an integer")
+    from gpuwm.core.noahmp_libm import expf
+
+    f32 = np.float32
+    growth = expf(f32(f32(0.02) * f32(int(year) - 2000)))
+    co2 = f32(f32(f32(280.0) + f32(f32(90.0) * growth)) * f32(1.0e-6))
     gases = {
-        "co2": float((280.0 + 90.0 * np.exp(0.02 * (year - 2000))) * 1.0e-6),
-        "n2o": 319.0e-9,
-        "ch4": 1774.0e-9,
+        "co2": float(co2),
+        "n2o": float(f32(319.0e-9)),
+        "ch4": float(f32(1774.0e-9)),
     }
     if overrides is not None:
         from gpuwm.core.trace_gases import CLASSIC_GASES, validate_trace_gas_overrides

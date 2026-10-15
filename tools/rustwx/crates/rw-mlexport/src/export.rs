@@ -24,6 +24,50 @@ use crate::zarr::{self, Dtype};
 /// Largest uncompressed chunk before a level variable's levels are split.
 pub const CHUNK_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
+/// Planes with more cells than this are split into horizontal tiles by
+/// default (1024 x 1024 cells, a 4 MiB float32 plane).
+pub const AUTO_TILE_MIN_CELLS: usize = 1024 * 1024;
+
+/// The default tile edge, in cells, for planes above `AUTO_TILE_MIN_CELLS`.
+pub const AUTO_TILE_EDGE: usize = 512;
+
+/// The horizontal chunk shape `(y, x)` for an `ny` x `nx` output plane.
+///
+/// Breakage the default prevents: a 1 km CONUS plane (about 5,000 x 3,000
+/// cells, 60 MB per float32 level) was one chunk, so a training loader
+/// reading a 256 x 256 patch decompressed the whole plane for every level
+/// of every sample.  Planes up to `AUTO_TILE_MIN_CELLS` keep one chunk, so
+/// small domains are written exactly as before.
+pub fn spatial_chunks(requested: Option<[usize; 2]>, ny: usize, nx: usize) -> Result<(usize, usize)> {
+    match requested {
+        None if ny * nx > AUTO_TILE_MIN_CELLS => Ok((AUTO_TILE_EDGE.min(ny), AUTO_TILE_EDGE.min(nx))),
+        None | Some([0, 0]) => Ok((ny, nx)),
+        Some([y, x]) if y == 0 || x == 0 => Err(refuse(format!(
+            "chunk shape {y} x {x} has a zero edge; give two positive cell counts, or 0,0 for whole planes"
+        ))),
+        Some([y, x]) => Ok((y.min(ny), x.min(nx))),
+    }
+}
+
+/// Copy tile (`iy`, `ix`) of a `ny` x `nx` plane into a `ty` x `tx` chunk,
+/// padding the part past the grid's edge with `fill` (Zarr chunks are
+/// always full-size; readers drop the padding).
+#[allow(clippy::too_many_arguments)]
+fn tile_of<T: Copy>(plane: &[T], ny: usize, nx: usize, ty: usize, tx: usize, iy: usize, ix: usize, fill: T, out: &mut Vec<T>) {
+    let (y0, x0) = (iy * ty, ix * tx);
+    let w = tx.min(nx - x0);
+    for row in 0..ty {
+        let y = y0 + row;
+        if y < ny {
+            let start = y * nx + x0;
+            out.extend_from_slice(&plane[start..start + w]);
+            out.extend(std::iter::repeat(fill).take(tx - w));
+        } else {
+            out.extend(std::iter::repeat(fill).take(tx));
+        }
+    }
+}
+
 /// Accumulators may fall by this much between frames (float rounding of
 /// the stored values) before the drop is a refusal.
 const ACCUMULATION_TOLERANCE_MM: f64 = 0.01;
@@ -52,6 +96,7 @@ fn options_digest(request: &Request) -> String {
         "layout": request.layout,
         "skip_unavailable": request.skip_unavailable,
         "spacings_deg": request.spacings_deg,
+        "chunk_yx": request.chunk_yx,
         "engine": request.provenance.engine,
         "exporter_version": request.provenance.exporter_version,
         "config_sha256": request.provenance.config_sha256,
@@ -540,6 +585,32 @@ fn time_index(layout: Layout, t: usize) -> Vec<usize> {
     }
 }
 
+/// The output plane and its chunk shape.
+#[derive(Clone, Copy)]
+struct Tiling {
+    ny: usize,
+    nx: usize,
+    ty: usize,
+    tx: usize,
+}
+
+impl Tiling {
+    fn of(domain: &DomainState) -> Tiling {
+        let (ty, tx) = domain.chunk_yx();
+        Tiling { ny: domain.out_ny, nx: domain.out_nx, ty, tx }
+    }
+
+    fn whole(&self) -> bool {
+        self.ty >= self.ny && self.tx >= self.nx
+    }
+
+    fn tiles(&self) -> impl Iterator<Item = (usize, usize)> {
+        let (cy, cx) = (self.ny.div_ceil(self.ty), self.nx.div_ceil(self.tx));
+        (0..cy).flat_map(move |iy| (0..cx).map(move |ix| (iy, ix)))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_level_chunks<T: Copy>(
     store: &Path,
     name: &str,
@@ -549,30 +620,57 @@ fn write_level_chunks<T: Copy>(
     dtype: Dtype,
     layout: Layout,
     t: usize,
-    out_cells: usize,
+    tiling: Tiling,
     per_chunk: usize,
 ) -> Result<u64> {
+    let out_cells = tiling.ny * tiling.nx;
     let levels = data.len() / out_cells;
     let mut written = 0;
     let mut chunk_index = 0;
     let mut start = 0;
     while start < levels {
         let end = (start + per_chunk).min(levels);
-        let mut values = data[start * out_cells..end * out_cells].to_vec();
-        values.resize(per_chunk * out_cells, fill);
-        let mut index = time_index(layout, t);
-        index.extend([chunk_index, 0, 0]);
-        written += zarr::write_chunk(store, name, &index, &to_bytes(&values), dtype)?;
+        if tiling.whole() {
+            let mut values = data[start * out_cells..end * out_cells].to_vec();
+            values.resize(per_chunk * out_cells, fill);
+            let mut index = time_index(layout, t);
+            index.extend([chunk_index, 0, 0]);
+            written += zarr::write_chunk(store, name, &index, &to_bytes(&values), dtype)?;
+        } else {
+            let tile_cells = tiling.ty * tiling.tx;
+            for (iy, ix) in tiling.tiles() {
+                let mut values = Vec::with_capacity(per_chunk * tile_cells);
+                for level in start..end {
+                    let plane = &data[level * out_cells..(level + 1) * out_cells];
+                    tile_of(plane, tiling.ny, tiling.nx, tiling.ty, tiling.tx, iy, ix, fill, &mut values);
+                }
+                values.resize(per_chunk * tile_cells, fill);
+                let mut index = time_index(layout, t);
+                index.extend([chunk_index, iy, ix]);
+                written += zarr::write_chunk(store, name, &index, &to_bytes(&values), dtype)?;
+            }
+        }
         chunk_index += 1;
         start = end;
     }
     Ok(written)
 }
 
-fn write_surface_chunk(store: &Path, name: &str, plane: &[f32], layout: Layout, t: usize) -> Result<u64> {
-    let mut index = time_index(layout, t);
-    index.extend([0, 0]);
-    zarr::write_chunk(store, name, &index, &zarr::f32_bytes(plane), Dtype::F32)
+fn write_surface_chunk(store: &Path, name: &str, plane: &[f32], layout: Layout, t: usize, tiling: Tiling) -> Result<u64> {
+    if tiling.whole() {
+        let mut index = time_index(layout, t);
+        index.extend([0, 0]);
+        return zarr::write_chunk(store, name, &index, &zarr::f32_bytes(plane), Dtype::F32);
+    }
+    let mut written = 0;
+    for (iy, ix) in tiling.tiles() {
+        let mut values = Vec::with_capacity(tiling.ty * tiling.tx);
+        tile_of(plane, tiling.ny, tiling.nx, tiling.ty, tiling.tx, iy, ix, f32::NAN, &mut values);
+        let mut index = time_index(layout, t);
+        index.extend([iy, ix]);
+        written += zarr::write_chunk(store, name, &index, &zarr::f32_bytes(&values), Dtype::F32)?;
+    }
+    Ok(written)
 }
 
 /// Check each selected row against the first frame's file; returns the
@@ -752,7 +850,8 @@ fn init_domain(request: &Request, file: &WrfFile, meta: &FileMeta, t: usize, val
         LevelKind::Pressure => kept.len(),
         LevelKind::Model => model_levels.len(),
     };
-    let levels_per_chunk = level_chunking(levels, out_ny * out_nx * 4);
+    let (chunk_ny, chunk_nx) = spatial_chunks(request.chunk_yx, out_ny, out_nx)?;
+    let levels_per_chunk = level_chunking(levels, chunk_ny * chunk_nx * 4);
     state::save_plane(out, &format!("{}-xlat-0.f64", meta.domain), &xlat)?;
     state::save_plane(out, &format!("{}-xlong-0.f64", meta.domain), &xlong)?;
     let init_time = meta.simulation_start.unwrap_or(valid);
@@ -784,6 +883,8 @@ fn init_domain(request: &Request, file: &WrfFile, meta: &FileMeta, t: usize, val
         lid_stated,
         geopotential_between_interfaces,
         levels_per_chunk,
+        chunk_ny,
+        chunk_nx,
         variables,
         latlon_version: Vec::new(),
         latlon_versions: 1,
@@ -897,6 +998,7 @@ fn export_frame(
     let layout = request.layout;
     let regular = domain.native.regular.clone();
     let levels_per_chunk = domain.levels_per_chunk;
+    let tiling = Tiling::of(domain);
     let model_levels = domain.model_levels.clone();
     let levels_kept = domain.levels_kept.clone();
     let lid = if domain.lid_stated { Lid::PTop(domain.lid_pa) } else { Lid::TopMassLevel };
@@ -1035,7 +1137,7 @@ fn export_frame(
                     Dtype::F32,
                     layout,
                     t_pos,
-                    out_cells,
+                    tiling,
                     levels_per_chunk,
                 )?;
             }
@@ -1097,7 +1199,7 @@ fn export_frame(
                     _ => ops::surface_field(file, t, &op, scale, p_top_stated)?,
                 };
                 let plane32: Vec<f32> = plane.iter().map(|&v| v as f32).collect();
-                written += write_surface_chunk(&store, &var.name, &transform.plane(&plane32), layout, t_pos)?;
+                written += write_surface_chunk(&store, &var.name, &transform.plane(&plane32), layout, t_pos, tiling)?;
             }
             VariableKind::Static => {
                 // A moving nest samples different terrain at every time.
@@ -1105,7 +1207,7 @@ fn export_frame(
                 // moved; stationary exports collapse to the first plane.
                 let plane = ops::surface_field(file, t, &op, scale, None)?;
                 let plane32: Vec<f32> = plane.iter().map(|&v| v as f32).collect();
-                written += write_surface_chunk(&store, &var.name, &transform.plane(&plane32), layout, t_pos)?;
+                written += write_surface_chunk(&store, &var.name, &transform.plane(&plane32), layout, t_pos, tiling)?;
             }
         }
     }
@@ -1139,7 +1241,7 @@ fn export_frame(
             Dtype::U8,
             layout,
             t_pos,
-            out_cells,
+            tiling,
             levels_per_chunk,
         )?;
     }
@@ -1187,6 +1289,51 @@ mod tests {
         assert_eq!(level_chunking(29, plane), 15);
         // A plane over the limit is never split.
         assert_eq!(level_chunking(5, CHUNK_LIMIT_BYTES + 1), 1);
+    }
+
+    #[test]
+    fn large_planes_tile_by_default_and_small_planes_do_not() {
+        // 1 km CONUS-sized plane: 512 x 512 tiles.
+        assert_eq!(spatial_chunks(None, 3200, 5000).unwrap(), (512, 512));
+        // A 3 km HRRR-sized plane (1059 x 1799) is above 1024 x 1024 cells.
+        assert_eq!(spatial_chunks(None, 1059, 1799).unwrap(), (512, 512));
+        // Small domains keep one chunk per plane, exactly as before.
+        assert_eq!(spatial_chunks(None, 300, 400).unwrap(), (300, 400));
+        assert_eq!(spatial_chunks(None, 1024, 1024).unwrap(), (1024, 1024));
+        // Explicit shapes, the whole-plane opt-out, and a zero edge.
+        assert_eq!(spatial_chunks(Some([256, 128]), 3200, 5000).unwrap(), (256, 128));
+        assert_eq!(spatial_chunks(Some([4096, 4096]), 300, 400).unwrap(), (300, 400));
+        assert_eq!(spatial_chunks(Some([0, 0]), 3200, 5000).unwrap(), (3200, 5000));
+        assert!(spatial_chunks(Some([0, 64]), 3200, 5000).is_err());
+    }
+
+    #[test]
+    fn tiles_cover_the_plane_and_pad_only_past_the_edge() {
+        // A 5 x 7 plane in 2 x 3 tiles: 3 x 3 tiles, the last row and column padded.
+        let (ny, nx, ty, tx) = (5usize, 7usize, 2usize, 3usize);
+        let plane: Vec<i32> = (0..(ny * nx) as i32).collect();
+        let tiling = Tiling { ny, nx, ty, tx };
+        let mut rebuilt = vec![-1i32; ny * nx];
+        let mut tiles = 0;
+        for (iy, ix) in tiling.tiles() {
+            let mut out = Vec::new();
+            tile_of(&plane, ny, nx, ty, tx, iy, ix, -9, &mut out);
+            assert_eq!(out.len(), ty * tx);
+            for r in 0..ty {
+                for c in 0..tx {
+                    let (y, x) = (iy * ty + r, ix * tx + c);
+                    let v = out[r * tx + c];
+                    if y < ny && x < nx {
+                        rebuilt[y * nx + x] = v;
+                    } else {
+                        assert_eq!(v, -9);
+                    }
+                }
+            }
+            tiles += 1;
+        }
+        assert_eq!(tiles, 9);
+        assert_eq!(rebuilt, plane);
     }
 
     #[test]

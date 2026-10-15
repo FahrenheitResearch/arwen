@@ -1,0 +1,170 @@
+{
+ "ncol": 36,
+ "nz": 72,
+ "level_fields": [
+  "th",
+  "qv",
+  "qc",
+  "qr",
+  "qi",
+  "qs",
+  "qg",
+  "qh",
+  "den",
+  "pii",
+  "p",
+  "dz"
+ ],
+ "surface_fields": [
+  "rain",
+  "snow",
+  "graupel",
+  "hail"
+ ],
+ "columns": [
+  {
+   "name": "hail-convective-0",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-1",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-2",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-3",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-4",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-5",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-6",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-7",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-8",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-9",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-melting-0",
+   "regime": "hail melting sub-cloud"
+  },
+  {
+   "name": "hail-melting-1",
+   "regime": "hail melting sub-cloud"
+  },
+  {
+   "name": "hail-melting-2",
+   "regime": "hail melting sub-cloud"
+  },
+  {
+   "name": "hail-melting-3",
+   "regime": "hail melting sub-cloud"
+  },
+  {
+   "name": "hail-aloft-0",
+   "regime": "hail aloft sublimating"
+  },
+  {
+   "name": "hail-aloft-1",
+   "regime": "hail aloft sublimating"
+  },
+  {
+   "name": "hail-aloft-2",
+   "regime": "hail aloft sublimating"
+  },
+  {
+   "name": "convective-0",
+   "regime": "deep convection"
+  },
+  {
+   "name": "stratiform-0",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "snow-0",
+   "regime": "winter snow"
+  },
+  {
+   "name": "edge-thresholds",
+   "regime": "edge: branch thresholds"
+  },
+  {
+   "name": "edge-temperatures",
+   "regime": "edge: t0c and triple point"
+  },
+  {
+   "name": "edge-negative",
+   "regime": "edge: negative and subnormal inputs"
+  },
+  {
+   "name": "edge-top-only",
+   "regime": "edge: condensate in the top level only"
+  },
+  {
+   "name": "edge-top-two",
+   "regime": "edge: hail and rain in the two top levels"
+  },
+  {
+   "name": "edge-bottom-only",
+   "regime": "edge: condensate in the lowest level only"
+  },
+  {
+   "name": "edge-thin-layers",
+   "regime": "edge: thin layers force the CFL limiter"
+  },
+  {
+   "name": "edge-supersaturated-clear",
+   "regime": "edge: supersaturated, no condensate"
+  },
+  {
+   "name": "edge-subsaturated-cloud",
+   "regime": "edge: cloud in dry air evaporates"
+  },
+  {
+   "name": "edge-heavy-hail",
+   "regime": "edge: very large hail, graupel and rain"
+  },
+  {
+   "name": "edge-wet-growth-0",
+   "regime": "edge: hail wet-growth test both ways"
+  },
+  {
+   "name": "edge-wet-growth-1",
+   "regime": "edge: hail wet-growth test both ways"
+  },
+  {
+   "name": "edge-psaut",
+   "regime": "edge: cloud ice above the aggregation limit"
+  },
+  {
+   "name": "edge-dry-tiny",
+   "regime": "edge: near-zero vapour, qsum at qmin"
+  },
+  {
+   "name": "edge-cold-rain",
+   "regime": "edge: rain far below freezing (supcol > 50)"
+  },
+  {
+   "name": "edge-zero",
+   "regime": "edge: all hydrometeors zero, saturated"
+  }
+ ]
+}

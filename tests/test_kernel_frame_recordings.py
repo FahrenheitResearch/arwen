@@ -160,8 +160,10 @@ def test_every_kernel_source_has_a_row_or_is_declared_unmeasurable():
     assert priced - sources == set(), sorted(priced - sources)
 
 
-def test_a_recorded_platform_is_recognised_from_its_own_fingerprint():
+def test_a_recorded_platform_is_recognised_from_its_own_fingerprint(monkeypatch):
     """The gate has to know whether THIS box is one of the recorded ones."""
+    from gpuwm import wrf_exact
+    monkeypatch.setattr(wrf_exact, "ENABLED", False)
     row = pf.KERNEL_LOCAL_FRAME_RECORDINGS[0]
     fingerprint = {
         "device_compute_capability": row.compute_capability,

@@ -1,6 +1,6 @@
-"""Named member land-scheme and fixed surface-state controls.
+"""Named member physics selections and fixed surface-state controls.
 
-This roster changes existing land selectors and initial surface state.
+This roster changes existing single-run selectors and initial surface state.
 Preparation remains the ordinary source chain. A prepared authority is
 shared only when its trajectory and complete preparation configuration
 match; different soil layouts never borrow each other's prepared cache.
@@ -18,8 +18,25 @@ import struct
 from gpuwm.ensemble.surface_controls import DEFAULTS, OPTIONS, validate_surface_recipe
 
 LAND_KEYS = frozenset({"sf_surface_physics", "num_soil_layers"})
-LAND_LAYOUTS = frozenset({(3, 6), (3, 9), (2, 4)})
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+def member_physics_keys():
+    """Use the ordinary schema, keeping source layout and draws out of arms."""
+    from gpuwm.config import RunConfig
+    from gpuwm.experiment import _SHARED_FORBIDDEN
+    source = SOURCE_RUN_FIELDS | frozenset(_SHARED_FORBIDDEN) | frozenset({
+        "eta_levels", "map_proj", "terrain_opt", "hill_height", "hill_halfwidth",
+        "open_x", "open_y", "time_step_sound", "min_time_step_sound",
+        "use_adaptive_time_step", "step_to_output_time", "adaptation_domain",
+        "target_cfl", "target_hcfl", "max_step_increase_pct", "starting_time_step",
+        "starting_time_step_den", "max_time_step", "max_time_step_den",
+        "min_time_step", "min_time_step_den", "adaptive_nest_lattice",
+    })
+    # These mechanisms belong to the existing stochastic admission door.
+    # A physics table must not provide another route around its refusal.
+    return frozenset(item.name for item in fields(RunConfig)
+        if item.name not in source and not item.name.startswith(("spp_", "inflow_perturbation")))
 
 
 def normalize_member_variants(value, count):
@@ -39,16 +56,34 @@ def normalize_member_variants(value, count):
             raise ValueError(f"member variant names must be unique: {name}")
         names.add(name)
         physics = row.get("physics", {})
-        if not isinstance(physics, dict) or set(physics) - LAND_KEYS:
-            raise ValueError(f"member variant {name} physics takes existing land selectors only: "
-                             "sf_surface_physics and num_soil_layers")
-        if physics:
-            if set(physics) != LAND_KEYS or any(type(item) is not int for item in physics.values()):
+        if not isinstance(physics, dict):
+            raise ValueError(f"member variant {name} physics must be a table")
+        unknown = set(physics) - member_physics_keys()
+        if unknown:
+            raise ValueError(f"member variant {name} physics has unsupported keys {sorted(unknown)}; "
+                             "use existing single-run physics selectors. Geometry and clocks stay "
+                             "source-bound, and stochastic controls keep their own admission; "
+                             "otherwise the member would borrow the wrong prepared grid or bypass a refusal")
+        if set(physics) & LAND_KEYS:
+            if not LAND_KEYS <= set(physics) or any(type(physics[key]) is not int for key in LAND_KEYS):
                 raise ValueError(f"member variant {name} must name both integer land selectors")
-            layout = (physics["sf_surface_physics"], physics["num_soil_layers"])
-            if layout not in LAND_LAYOUTS:
-                raise ValueError(f"member variant {name} needs an existing RUC six/nine-layer or Noah four-layer "
-                                 "soil layout; another pairing would initialize the wrong land column")
+            from types import SimpleNamespace
+            from gpuwm.config import soil_layer_count
+            try:
+                soil_layer_count(SimpleNamespace(**{key: physics[key] for key in LAND_KEYS}))
+            except ValueError as exc:
+                raise ValueError(f"member variant {name}: {exc}; another pairing would initialize "
+                                 "the wrong land column") from exc
+            except ModuleNotFoundError as exc:
+                # The preparation-only RW-WPS package stages no forecast-side
+                # soil contract (gpuwm.config defers scheme 3's read for that
+                # reason; tools/build_rw_wps_release.py names why). The pairing
+                # is checked again by the forecast door that runs the member,
+                # which carries the contract; a preparation install cannot run
+                # the column the check protects. Any other missing module is a
+                # packaging defect and still raises.
+                if not (exc.name or "").startswith("gpuwm.core."):
+                    raise
         surface = row.get("surface", {})
         if not isinstance(surface, dict) or set(surface) - set(OPTIONS):
             raise ValueError(f"member variant {name} surface takes soil_moisture_scale and sst_offset_k")
@@ -61,7 +96,7 @@ def normalize_member_variants(value, count):
         descriptor = (_canonical(physics), surface_binding_key(surface))
         if descriptor in descriptors:
             raise ValueError(f"member variants {descriptors[descriptor]} and {name} select identical "
-                             "FP32 land and surface controls; repeating them would fabricate ensemble size")
+                             "FP32 physics and surface controls; repeating them would fabricate ensemble size")
         descriptors[descriptor] = name
         result.append({"name": name, "physics": dict(physics), "surface": surface})
     return tuple(result)
@@ -81,7 +116,11 @@ def member_surface_options(request, member_id):
 
 
 def variant_configuration(raw, variant):
-    """Override existing land selectors on every domain through config tables."""
+    """Override ordinary physics selectors through the existing config tables.
+
+    The ordinary loader validates the complete resolved combination before
+    preparation. No selector is translated into a separate scheme adapter.
+    """
     changed = deepcopy(raw)
     physics = variant["physics"]
     if physics:

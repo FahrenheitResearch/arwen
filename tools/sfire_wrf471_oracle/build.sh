@@ -26,6 +26,15 @@ objects=(stub_wrf.o module_model_constants.o module_wrf_error.o module_fr_fire_u
 gfortran -c "${flags[@]}" "$script_dir/stub_wrf.F90"
 for rel in share/module_model_constants.F frame/module_wrf_error.F phys/module_fr_fire_util.F phys/module_fr_fire_phys.F phys/module_fr_fire_core.F phys/module_fr_fire_model.F phys/module_fr_fire_atm.F; do
     source_file="$source_root/$rel"
+    if [[ "$rel" == phys/module_fr_fire_phys.F && -n "${SFIRE_CORRECTED_PHYS_SOURCE:-}" ]]; then
+        source_file=$(realpath "$SFIRE_CORRECTED_PHYS_SOURCE")
+    fi
+    if [[ "$rel" == phys/module_fr_fire_core.F && -n "${SFIRE_CORRECTED_CORE_SOURCE:-}" ]]; then
+        source_file=$(realpath "$SFIRE_CORRECTED_CORE_SOURCE")
+    fi
+    if [[ "$rel" == phys/module_fr_fire_model.F && -n "${SFIRE_CORRECTED_MODEL_SOURCE:-}" ]]; then
+        source_file=$(realpath "$SFIRE_CORRECTED_MODEL_SOURCE")
+    fi
     if [[ "$rel" == phys/module_fr_fire_atm.F && -n "${SFIRE_CORRECTED_ATM_SOURCE:-}" ]]; then
         source_file=$(realpath "$SFIRE_CORRECTED_ATM_SOURCE")
     fi
@@ -41,11 +50,15 @@ for obj in "${objects[@]}"; do
 done
 mkdir -p fixtures
 cp "$script_dir/namelist.fire" namelist.fire
-shopt -s nullglob
-drivers=("$script_dir"/run_*.F90)
-[[ ${#drivers[@]} -gt 0 ]] || { echo 'No executable oracle drivers' >&2; exit 5; }
-for driver in "${drivers[@]}"; do
-    name=$(basename "$driver" .F90)
+# Debug, wind and spotting drivers have separate module dependencies and
+# their own build scripts. Do not accidentally include them in this oracle.
+drivers=(run_atm run_controls run_core run_corrected_tg run_ignition run_math
+         run_model run_moisture_interp run_physics run_regimes)
+for name in "${drivers[@]}"; do
+    driver="$script_dir/$name.F90"
+    if [[ "$name" == run_regimes && ( -z "${SFIRE_CORRECTED_PHYS_SOURCE:-}" || -z "${SFIRE_CORRECTED_CORE_SOURCE:-}" || -z "${SFIRE_CORRECTED_ATM_SOURCE:-}" ) ]]; then
+        continue
+    fi
     if [[ "$name" == run_corrected_tg && -z "${SFIRE_CORRECTED_ATM_SOURCE:-}" ]]; then
         continue
     fi
@@ -58,14 +71,21 @@ for driver in "${drivers[@]}"; do
     gfortran -o "$name" "${objects[@]}" "$name.o"
     nice -n 10 "./$name" "$build_dir/fixtures" > "$name-stdout.txt"
 done
-gfortran --version | head -1 > compiler.txt
-ldd --version | head -1 > libc.txt
+# Consume the complete stream under pipefail; head can SIGPIPE the producer.
+gfortran --version | sed -n '1p' > compiler.txt
+ldd --version | sed -n '1p' > libc.txt
 printf '%s\n' "${flags[*]} ${defines[*]}" > compiler-flags.txt
 cp "$script_dir/SOURCES.sha256" source-sha256sums.txt
 (cd "$script_dir" && sha256sum *.F90 build.sh namelist.fire) > oracle-sha256sums.txt
 if [[ -n "${SFIRE_CORRECTED_ATM_SOURCE:-}" ]]; then
     digest=$(sha256sum "$SFIRE_CORRECTED_ATM_SOURCE" | cut -d' ' -f1)
     printf '%s  module_fr_fire_atm_corrected.F\n' "$digest" > corrected-atm-sha256.txt
+fi
+if [[ -n "${SFIRE_CORRECTED_PHYS_SOURCE:-}" && -n "${SFIRE_CORRECTED_CORE_SOURCE:-}" ]]; then
+    sha256sum "$SFIRE_CORRECTED_PHYS_SOURCE" "$SFIRE_CORRECTED_CORE_SOURCE" > corrected-regime-sha256.txt
+    if [[ -n "${SFIRE_CORRECTED_MODEL_SOURCE:-}" ]]; then
+        sha256sum "$SFIRE_CORRECTED_MODEL_SOURCE" >> corrected-regime-sha256.txt
+    fi
 fi
 find fixtures -type f -print0 | sort -z | xargs -0 sha256sum > fixture-sha256sums.txt
 echo "Native SFIRE oracle fixtures: $build_dir/fixtures"

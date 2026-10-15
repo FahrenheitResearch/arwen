@@ -279,6 +279,40 @@ def test_the_card_road_holds_no_host_preparation(resident_tiled_gfs):
     assert phases.host_preparation_warning(1) is None
 
 
+def _on_the_measured_ladder(monkeypatch):
+    """Price GFS on the isobaric ladder the measured rows below decoded.
+
+    Every row was measured (2026-09-26 to 09-28) on a fetch that extended
+    the certified ladder up to a level AT the model top.  GFS preparation
+    patch 0001 (2.9.0) extends it to a level strictly ABOVE the top, as
+    real.exe needs, which is one more level whenever the top is itself a
+    published level (50 hPa for every row here).  A measured peak describes
+    the ladder it decoded, so its row is priced on that ladder: the levels
+    at or below the top in height, as the fetch then took them.
+
+    The extra level, measured on one host before and after 0001 (8 CPUs,
+    GFS 2026-09-27 12Z, process-tree RSS every 50 ms; lane 290-A1 receipt):
+    786x628x76 moved 10.740 to 10.784 GB (+0.4%) and deep-d2 9.937 to
+    9.943 GB (+0.05%), while the estimate moved +0.9% and +0.7%.  Each test
+    also checks that the current ladder never prices under the measured one.
+    """
+    from gpuwm.fetch import container_subset_levels
+    from gpuwm.source_adapters import fetch_model_top_pa
+
+    current = preflight.source_analysis_levels
+
+    def as_measured(source, *, p_top_pa=None):
+        key = str(source).strip().lower()
+        top = fetch_model_top_pa(key, p_top_pa)
+        if key != "gfs" or top is None:
+            return current(source, p_top_pa=p_top_pa)
+        ladder = container_subset_levels(key, top_pressure_pa=top)
+        return max(preflight.SOURCE_ANALYSIS_LEVELS[key],
+                   sum(1 for level in ladder if level * 100.0 >= top))
+
+    monkeypatch.setattr(preflight, "source_analysis_levels", as_measured)
+
+
 #: Real GFS preparations on the CPU road through the ``gpuwm go`` stages,
 #: each a ``[tiles]`` config rendered as below, on the default install
 #: with eight preparation threads:
@@ -299,15 +333,19 @@ MEASURED_CPU_PREPARATIONS = (
 
 @pytest.mark.parametrize("nx, ny, nz, hours, peak", MEASURED_CPU_PREPARATIONS)
 def test_the_floor_stays_under_and_the_estimate_at_the_measured_peak(
-        nx, ny, nz, hours, peak):
+        nx, ny, nz, hours, peak, monkeypatch):
     text = wizard.render_config(
         name="measured", start_time=datetime(2026, 9, 26, 12), hours=hours,
         projection=wizard._projection_entries(35.3, -97.5, "auto"),
         dims=[(nx, ny)], ratios=(), fetch_hints={"source": "gfs"},
         case_data=None, root_dx_m=3000.0, nz=nz, tiles="auto")
     exp = wizard.experiment_from_text(text, source="<measured>")
+    current = preflight.estimate_phases(
+        exp, source="gfs", forcing_interval_seconds=10800.0)
+    _on_the_measured_ladder(monkeypatch)
     phases = preflight.estimate_phases(exp, source="gfs",
                                        forcing_interval_seconds=10800.0)
+    assert current.host_preparation_bytes >= phases.host_preparation_bytes
     assert phases.preprocess_backend == "cpu"
     # A refusal on the floor can never fire on a preparation that ran.
     assert phases.host_preparation_floor_bytes < peak
@@ -354,7 +392,7 @@ MEASURED_NESTED_CPU_PREPARATIONS = (
     MEASURED_NESTED_CPU_PREPARATIONS,
     ids=[row[0] for row in MEASURED_NESTED_CPU_PREPARATIONS])
 def test_nested_cpu_preparation_bounds_measured_process_tree_peak(
-        name, dimensions, nz, tiled, root_dx_m, peak_rss_bytes):
+        name, dimensions, nz, tiled, root_dx_m, peak_rss_bytes, monkeypatch):
     """Completed CPU preparations must fit between the floor and estimate."""
     text = wizard.render_config(
         name=name, start_time=datetime(2026, 9, 27, 12), hours=6,
@@ -363,9 +401,14 @@ def test_nested_cpu_preparation_bounds_measured_process_tree_peak(
         fetch_hints={"source": "gfs"}, case_data=None,
         root_dx_m=root_dx_m, nz=nz, tiles="auto" if tiled else None)
     exp = wizard.experiment_from_text(text, source="<measured>")
+    current = preflight.estimate_phases(
+        exp, source="gfs", preprocess_backend="cpu",
+        forcing_interval_seconds=10800.0)
+    _on_the_measured_ladder(monkeypatch)
     phases = preflight.estimate_phases(
         exp, source="gfs", preprocess_backend="cpu",
         forcing_interval_seconds=10800.0)
+    assert current.host_preparation_bytes >= phases.host_preparation_bytes
     peak = peak_rss_bytes
     assert phases.host_preparation_floor_bytes < peak
     assert phases.host_preparation_refusal(peak) is None

@@ -50,14 +50,17 @@ def remap_shared_column_loads(source, pointers, *, member_columns):
     return source
 
 
-def _native_column_kernel(module, entry, *, shared_pointers=(), member_columns):
+def _native_column_kernel(module, entry, *, shared_pointers=(), member_columns, defines=()):
     from gpuwm.core import kernels
     if not shared_pointers:
-        return kernels.get_kernel(module, entry), {"source_policy": "unchanged native kernel"}
+        kernel = (kernels.get_kernel_int_defines(module, entry, defines) if defines
+                  else kernels.get_kernel(module, entry))
+        return kernel, {"source_policy": "unchanged native kernel", "defines": list(defines)}
     import cupy as cp
     from gpuwm import wrf_exact
     from gpuwm.certify.kernel_manifest import record_module
-    original = kernels.module_source(module)
+    original = (kernels.module_source_int_defines(module, defines) if defines
+                else kernels.module_source(module))
     source = remap_shared_column_loads(original, shared_pointers, member_columns=member_columns)
     options = wrf_exact.effective_options(kernels.module_options(module)) if wrf_exact.ENABLED else kernels.module_options(module)
     key = f"gpuwm.ensemble.batch_physics:{module}:{entry}:shared-column-loads[columns={member_columns}]"
@@ -256,7 +259,7 @@ def ysu_output_plan(*, nz, ny, nx, members, reserved_bytes=0):
 
 def prepare_ysu_column_batch(inputs, *, members, ny, nx, dt, available_bytes,
                              topdown=1, array_module=None, reserved_bytes=0,
-                             shared_fields=()):
+                             shared_fields=(), ysu_version="wrf_480"):
     """Bind the unchanged native YSU kernel over already packed columns.
 
     Inputs must already have member rings, static ownership and A-grid winds
@@ -266,6 +269,9 @@ def prepare_ysu_column_batch(inputs, *, members, ny, nx, dt, available_bytes,
     if array_module is None:
         import cupy as array_module
     from gpuwm.core.physics_inventory import YSU_BLOCK
+    from gpuwm.ysu_generations import ysu_kernel_selection
+    from gpuwm.wrf_exact import ENABLED
+    module, defines = ysu_kernel_selection(ysu_version, strict=ENABLED)
     members, ny, nx = _positive(members, "members"), _positive(ny, "ny"), _positive(nx, "nx")
     if set(inputs) != set(YSU_COLUMNS + YSU_SURFACES):
         raise ValueError("YSU needs the complete named packed column/surface input inventory")
@@ -293,7 +299,7 @@ def prepare_ysu_column_batch(inputs, *, members, ny, nx, dt, available_bytes,
         array = storage.arrays[f"ysu:{name}"]
         shape = (nz, members * ny, nx) if name in YSU_VOLUME_OUTPUTS else (members * ny, nx)
         outputs[name] = array.reshape(shape)
-    kernel, source_receipt = _native_column_kernel("ysu", "ysu_column",
+    kernel, source_receipt = _native_column_kernel(module, "ysu_column", defines=defines,
         shared_pointers=shared_fields if members > 1 else (), member_columns=ny * nx)
     args = tuple(inputs[name] for name in YSU_COLUMNS + YSU_SURFACES)
     args += tuple(outputs[name] for name in ("du", "dv", "dtheta", "dqv", "dqc", "dqi", "hpbl", "kpbl", "exch_h", "exch_m", "wstar", "delta"))
@@ -312,7 +318,7 @@ def prepare_ysu_column_batch(inputs, *, members, ny, nx, dt, available_bytes,
     launch.outputs = outputs
     launch.inputs = dict(inputs)
     launch.members = members
-    launch.receipt = {"layout": "level-member-y-x", "members": members,
+    launch.receipt = {"layout": "level-member-y-x", "ysu_version": ysu_version, "members": members,
                       "launches_per_call": 1, "entry": "ysu_column",
                       **source_receipt,
                       "shared_fields": list(shared_fields),
@@ -375,7 +381,7 @@ NOAH_SHARED_FIELDS = frozenset({"ivgtyp", "isltyp", "shdmin", "shdmax", "tmn", "
 
 
 def prepare_noah_column_batch(fields, params, *, members, ny, nx, dt, dzs,
-                              shared_fields=(), isurban=13, isice=15,
+                              shared_fields=(), isurban=None, isice=None,
                               xice_threshold=0.5, frpcpn=False, usemonalb=False,
                               rdlai2d=False, opt_thcnd=1, array_module=None):
     """One nonurban Noah launch, shared lookup tables and explicit static loads.
@@ -386,7 +392,13 @@ def prepare_noah_column_batch(fields, params, *, members, ny, nx, dt, dzs,
     """
     if array_module is None:
         import cupy as array_module
-    from gpuwm.core.noah import _F2D, _F3D, _TPB, _device_tables, NUM_SOIL_LAYERS
+    from gpuwm.core.noah import (_F2D, _F3D, _TPB, _device_tables, NUM_SOIL_LAYERS,
+                                 noah_category_ids)
+    if isurban is None or isice is None:
+        # the dataset's own ISURBAN/ISICE, as launch_noah resolves them
+        dataset_isurban, dataset_isice = noah_category_ids(params)
+        isurban = dataset_isurban if isurban is None else isurban
+        isice = dataset_isice if isice is None else isice
     members, ny, nx = _positive(members, "members"), _positive(ny, "ny"), _positive(nx, "nx")
     shared_fields = tuple(shared_fields)
     if set(shared_fields) - NOAH_SHARED_FIELDS:
@@ -563,12 +575,21 @@ THOMPSON_SURFACE_SLOTS = (
 )
 
 
-def thompson_column_scratch_fields(*, nz, ny, nx, reflectivity=False):
+#: Correct mode, finding WB1 (RunConfig.thompson_cloud_surface_booking,
+#: gpuwm/core/thompson_cloud_booking.py): the settled-cloud total and its
+#: per-call amount.  Admitted only when the key is on, so an exact-mode
+#: packed state keeps the inventory it had before the correction.
+THOMPSON_CLOUD_BOOKING_SLOTS = ("mp_cloudnc", "mp_cloudncv")
+
+
+def thompson_column_scratch_fields(*, nz, ny, nx, reflectivity=False,
+                                   cloud_booking=False):
     """The stock classic adapter's named column scratch inventory.
 
     Its interface buffer mp_z8w remains present although the stock adapter
     no longer reads it. Reflectivity is reserved ahead of the output-due
     call so its zero-initialized specified ring exists before capture.
+    ``cloud_booking`` admits the correct-mode WB1 surface slots.
     """
     nz, ny, nx = _positive(nz, "nz"), _positive(ny, "ny"), _positive(nx, "nx")
     fields = [ColumnField(name, (nz, ny, nx)) for name in THOMPSON_VOLUME_SLOTS]
@@ -576,6 +597,9 @@ def thompson_column_scratch_fields(*, nz, ny, nx, reflectivity=False):
     fields.append(ColumnField("mp_z8w", (nz + 1, ny, nx)))
     if reflectivity:
         fields.append(ColumnField("refl_10cm", (nz, ny, nx)))
+    if cloud_booking:
+        fields += [ColumnField(name, (ny, nx))
+                   for name in THOMPSON_CLOUD_BOOKING_SLOTS]
     return tuple(fields)
 
 
@@ -673,7 +697,9 @@ def prepare_thompson_column_batch(state, cfg, *, members, ny, nx, dt,
         if array.shape not in ((levels,), (levels, ny, nx)) or array.dtype != np.dtype("float32") or not array.flags.c_contiguous:
             raise ValueError(f"Thompson {name} must be one shared base-state slab or vertical profile")
     # Check the complete scratch contract before a prognostic word moves.
-    for field in thompson_column_scratch_fields(nz=nz, ny=ny, nx=nx):
+    for field in thompson_column_scratch_fields(
+            nz=nz, ny=ny, nx=nx,
+            cloud_booking=getattr(cfg, "thompson_cloud_surface_booking", False) is True):
         packed_shape = ((field.shape[0], members * ny, nx) if len(field.shape) == 3 else (members * ny, nx))
         state.scratch(packed_shape, field.name)
     if members == 1:
@@ -710,6 +736,13 @@ def prepare_thompson_column_batch(state, cfg, *, members, ny, nx, dt,
                             if state.existing_scratch(slot) is not None})
         if state.existing_scratch("refl_10cm") is not None:
             ring_fields["refl_10cm"] = state.existing_scratch("refl_10cm")
+        # WB1's booking zeroes the specified-zone ring through the whole-domain
+        # ring guard, which on a packed state covers only the outer stripes;
+        # each member's own ring words are restored here as the stock guard
+        # leaves them, so a packed member books what its ordinary run books.
+        for slot in THOMPSON_CLOUD_BOOKING_SLOTS:
+            if state.existing_scratch(slot) is not None:
+                ring_fields[slot] = state.existing_scratch(slot)
         ring_fields["h_diabatic"] = state.h_diabatic
         ring = PreparedPhysicsRing(ring_fields, members=members, ny=ny, nx=nx,
                                    width=cfg.spec_zone, available_bytes=available_bytes,
@@ -1262,7 +1295,8 @@ def bind_owned_default_column_driver(driver, cfg, atmosphere, *, members, ny, nx
               "qfx": f["qfx"], "wspd": f["wspd"], "br": f["br"], "psim": f["fm"], "psih": f["fh"],
               "xland": f["xland"], "u10": f["u10"], "v10": f["v10"]}
     ysu = prepare_ysu_column_batch(inputs, members=members, ny=ny, nx=nx, dt=driver.bldt_seconds,
-        topdown=cfg.ysu_topdown_pblmix, available_bytes=available_bytes - extras_plan.required_bytes(members),
+        topdown=cfg.ysu_topdown_pblmix, ysu_version=cfg.ysu_version,
+        available_bytes=available_bytes - extras_plan.required_bytes(members),
         array_module=array_module, shared_fields=tuple(sorted(shared_surfaces & {"xland"})))
     sf_inputs = {"u": active["u"][0], "v": active["v"][0], "t": active["temperature"][0], "qv": active["qv"][0],
                  "p": active["pressure"][0], "dz8w": active["dz"][0], "psfc": active["p_interface"][0],
@@ -1318,6 +1352,8 @@ def bind_owned_default_column_driver(driver, cfg, atmosphere, *, members, ny, nx
     def native_ysu(*args, **kwargs):
         actual = list(args[:10]) + [kwargs["rthraten"]] + [kwargs[name] for name in YSU_SURFACES]
         verify_pointers(actual, [inputs[name] for name in YSU_COLUMNS + YSU_SURFACES])
+        if kwargs.get("ysu_version", "wrf_480") != cfg.ysu_version:
+            raise ValueError("YSU generation changed after admission; entrainment tendencies would use a different cap")
         if kwargs.get("bep") is not None or kwargs.get("topo") is not None or np.float32(kwargs["dt"]) != np.float32(driver.bldt_seconds):
             raise ValueError("YSU options changed after the native column launch was admitted")
         return ysu()

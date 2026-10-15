@@ -296,6 +296,10 @@ class StochasticModelProvider:
             return existing
         if self.sppt is None and self.skebs_psi is None and not levels:
             return None
+        import sys
+        from gpuwm.ensemble_admission import UNCALIBRATED_SPREAD_WARNING
+        print(f"WARNING ensemble member {member_id}: {UNCALIBRATED_SPREAD_WARNING}",
+              file=sys.stderr, flush=True)
         explicit = {} if self.spp_configs is None else {"spp_configs": {
             name: self.spp_configs[name] for name in levels}}
         if self.wrf_seed_labels is not None:

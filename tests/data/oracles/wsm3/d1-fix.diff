@@ -1,0 +1,4 @@
+604d603
+<         if((t0c-t(i,1)).gt.0) then
+605a605
+>         if((t0c-t(i,1)).gt.0) then

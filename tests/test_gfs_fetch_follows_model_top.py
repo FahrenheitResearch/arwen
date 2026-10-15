@@ -115,13 +115,13 @@ def test_a_default_gfs_plan_fetches_the_70_and_50_hpa_levels(
 
     assert offline_gfs, "the fetch asked NOMADS for nothing"
     for url in offline_gfs:
-        assert {70.0, 50.0} <= _levels_asked(url), url
+        assert {70.0, 50.0, 40.0} <= _levels_asked(url), url
     manifest = json.loads(
         (Path(plan["data"]) / fetch.FETCH_MANIFEST_NAME).read_text())
-    assert min(manifest["pressure_levels_hpa"]) == 50.0
-    assert manifest["source_top_pressure_pa"] == 5000.0
+    assert min(manifest["pressure_levels_hpa"]) == 40.0
+    assert manifest["source_top_pressure_pa"] == 4000.0
     (bar,) = manifest["record_bars"]
-    assert bar["expected"] == 134
+    assert bar["expected"] == 139
 
 
 def test_the_default_emission_and_its_printed_fetch_carry_50_hpa(
@@ -140,10 +140,10 @@ def test_the_default_emission_and_its_printed_fetch_carry_50_hpa(
 @pytest.mark.parametrize("p_top,flag,top_hpa", [
     # The certified ladder already reaches it: the request is the one
     # this route has always made, byte for byte.
-    (10000.0, None, 100.0),
+    (10000.0, "10000", 70.0),
     (20000.0, None, 100.0),
-    (5000.0, "5000", 50.0),
-    (2000.0, "2000", 20.0),
+    (5000.0, "5000", 40.0),
+    (2000.0, "2000", 15.0),
 ])
 def test_the_fetch_follows_the_configs_own_top(
         tmp_path, offline_gfs, capsys, p_top, flag, top_hpa):
@@ -166,7 +166,7 @@ def test_the_source_table_decides_not_the_source_name():
     # GFS: the certified ladder stops at 100 hPa and the fetch extends it.
     assert fetch_model_top_pa("gfs", 5000.0) == 5000.0
     assert fetch_model_top_pa("gfs-0p25", 5000) == 5000.0
-    assert fetch_model_top_pa("gfs", 10000.0) is None
+    assert fetch_model_top_pa("gfs", 10000.0) == 10000.0
     # A top above everything published is still asked for: the fetch
     # refuses it before any download, naming the deepest it can serve.
     assert fetch_model_top_pa("gfs", 0.5) == 0.5
@@ -196,9 +196,9 @@ def test_the_download_folder_is_keyed_on_the_top(tmp_path, capsys):
 
     assert go_cli.config_fetch_request(deep_raw)["p_top_pa"] == 5000.0
     # A config that needs nothing more keeps the key it always had.
-    assert go_cli.config_fetch_request(shallow_raw) == shallow_raw["fetch"]
+    assert go_cli.config_fetch_request(shallow_raw) == dict(shallow_raw["fetch"], p_top_pa=10000.0)
     assert (go_cli.managed_download_key(go_cli.config_fetch_request(shallow_raw))
-            == go_cli.managed_download_key(shallow_raw["fetch"]))
+            != go_cli.managed_download_key(shallow_raw["fetch"]))
     assert (go_cli.managed_download_key(go_cli.config_fetch_request(deep_raw))
             != go_cli.managed_download_key(deep_raw["fetch"]))
     deep_plan = go_cli.plan_from_config(default, outdir=tmp_path / "go")
@@ -232,8 +232,8 @@ def test_the_download_price_counts_the_added_records(budget_cycle_is_recent):
     certified = download_budget.download_estimate(dict(hints))
     deep = download_budget.download_estimate(dict(hints, p_top_pa=5000.0))
     assert deep["objects"] == certified["objects"] == 9
-    assert deep["bytes"] == pytest.approx(certified["bytes"] * 134 / 124, abs=9)
-    assert "134 records per file against the 124 measured" in deep["basis"]
+    assert deep["bytes"] == pytest.approx(certified["bytes"] * 139 / 124, abs=9)
+    assert "139 records per file against the 124 measured" in deep["basis"]
     assert "records per file" not in certified["basis"]
     # The same request spelled as fetch flags is read back with its top.
     request = download_budget.request_from_arguments(
@@ -256,9 +256,9 @@ def test_the_preparation_memory_estimate_counts_the_levels_the_fetch_takes(
     from gpuwm.core import preflight as pf
 
     deep_levels = len(fetch.container_subset_levels("gfs", top_pressure_pa=5000.0))
-    assert deep_levels == 23
+    assert deep_levels == 24
     assert pf.source_analysis_levels("gfs") == 21
-    assert pf.source_analysis_levels("gfs", p_top_pa=10000.0) == 21
+    assert pf.source_analysis_levels("gfs", p_top_pa=10000.0) == 22
     assert pf.source_analysis_levels("gfs", p_top_pa=5000.0) == deep_levels
     # A top the fetch refuses is counted as every level it could take.
     assert pf.source_analysis_levels("gfs", p_top_pa=0.5) == len(
@@ -266,7 +266,7 @@ def test_the_preparation_memory_estimate_counts_the_levels_the_fetch_takes(
     # ERA5 is fetched on its own full ladder whatever the top.
     assert pf.source_analysis_levels("era5", p_top_pa=5000.0) == 37
     assert (pf.source_analysis_fields_per_time("gfs", p_top_pa=5000.0)
-            - pf.source_analysis_fields_per_time("gfs")) == 2 * 5
+            - pf.source_analysis_fields_per_time("gfs")) == 3 * 5
 
     default = _emit(tmp_path)
     capsys.readouterr()
@@ -278,7 +278,7 @@ def test_the_preparation_memory_estimate_counts_the_levels_the_fetch_takes(
     run = deep_exp.root.run
     mass = deep.items[0]
     assert mass.shape == (deep_levels, run.ny, run.nx), mass
-    assert certified.items[0].shape == (21, run.ny, run.nx)
+    assert certified.items[0].shape == (22, run.ny, run.nx)
     added = (deep.category_bytes("analysis")
              - certified.category_bytes("analysis"))
     assert added == 4 * 2 * (3 * run.ny * run.nx + run.ny * (run.nx + 1)
@@ -303,7 +303,7 @@ def test_run_plan_prices_the_download_its_chain_makes(tmp_path, capsys,
     assert run_plan_main(build_parser().parse_args(
         ["run-plan", "--estimate", str(plan)])) == 0
     download = json.loads(capsys.readouterr().out)["download"]
-    assert "134 records per file" in download["basis"]
+    assert "139 records per file" in download["basis"]
 
 
 def test_an_interrupted_deep_fetch_resumes_on_its_own_ladder(
@@ -346,8 +346,8 @@ def test_a_folder_fetched_for_another_top_is_refused_with_the_reason(
 
     assert cli_main([*request, "--p-top-pa", "5000"]) != 0
     err = capsys.readouterr().err
-    assert "carries 124 GRIB2 messages, expected 134" in err
-    assert ("takes 23 isobaric levels up to 50 hPa and the file holds 21, "
+    assert "carries 124 GRIB2 messages, expected 139" in err
+    assert ("takes 24 isobaric levels up to 40 hPa and the file holds 21, "
             "so it was fetched for another model top") in err
 
 

@@ -236,6 +236,18 @@ def test_every_configured_family_is_gated(monkeypatch, table_name, field,
     assert any(gap.startswith(f"{label} scheme {value}") for gap in gaps), gaps
 
 
+def test_the_noahmp_snow_age_generation_is_gated(monkeypatch):
+    """The generation-keyed table is asked about by generation name."""
+    cfg = _cfg(moist=True, mp_physics=10)
+    assert restart.unidentifiable_checkpoint_schemes(cfg) == []
+    table = dict(restart.NOAHMP_SNOW_AGE_ALGORITHM_IDENTITIES)
+    table.pop(cfg.noahmp_snow_age)
+    monkeypatch.setattr(checkpoint_identity,
+                        "NOAHMP_SNOW_AGE_ALGORITHM_IDENTITIES", table)
+    gaps = restart.unidentifiable_checkpoint_schemes(cfg)
+    assert any(gap.startswith("Noah-MP snow aging generation") for gap in gaps), gaps
+
+
 _IDENTITY_TABLE_NAME = re.compile(
     r"^[A-Z0-9_]+_(ALGORITHM_IDENTITIES|ABOVE_ATMOSPHERE_POLICIES"
     r"|PARAMETER_SOURCES)$")
@@ -423,11 +435,11 @@ def test_a_mixed_radiation_pair_is_gated_on_the_split_tables(monkeypatch):
 def test_the_accepted_registries_are_the_loader_menus():
     """The tuples this suite iterates are the ones the loader gates on."""
     from gpuwm.microphysics_schemes import NAMED_MP_IDS
-    # 30 is FAST_SBM, which joined with its own restart identity in 2.8.9.
-    assert config_mod.MP_PHYSICS_ACCEPTED == (0, 1, 6, 8, 9, 10, 16, 18, 28,
-                                              30, 50) + NAMED_MP_IDS
-    assert config_mod.RA_LW_PHYSICS_ACCEPTED == (0, 1, 4, 90)
-    assert config_mod.RA_SW_PHYSICS_ACCEPTED == (0, 1, 4, 90)
+    # 5 is Ferrier-Aligo (its own identity row).  30 is FAST_SBM, which joined with its own restart identity in 2.8.9.
+    assert config_mod.MP_PHYSICS_ACCEPTED == (0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18,
+                                              24, 28, 30, 50, 106) + NAMED_MP_IDS
+    assert config_mod.RA_LW_PHYSICS_ACCEPTED == (0, 1, 4, 5, 90)
+    assert config_mod.RA_SW_PHYSICS_ACCEPTED == (0, 1, 4, 5, 90)
     with pytest.raises(ValueError, match="mp_physics must be"):
         validate_run_config(_cfg(moist=True, mp_physics=55))
     with pytest.raises(ValueError, match="ra_lw_physics must be"):

@@ -370,7 +370,7 @@ def test_batched_sw_refuses_aerosol_it_cannot_honour():
     dummy = [None] * 36
     with pytest.raises(ValueError, match="aer_opt=3 needs"):
         cuda.rrtmg_sw_batched_device(*dummy, aer_opt=3)
-    with pytest.raises(NotImplementedError, match="not transcribed"):
+    with pytest.raises(ValueError, match="aer_opt=2 needs"):
         cuda.rrtmg_sw_batched_device(*dummy, aer_opt=2)
     with pytest.raises(ValueError, match="aer_opt=0"):
         cuda.rrtmg_sw_batched_device(*dummy, aer_opt=0,

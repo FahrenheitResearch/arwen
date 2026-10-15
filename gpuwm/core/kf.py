@@ -1,8 +1,12 @@
 """Kain--Fritsch cumulus column scheme and CUDA launcher.
 
-The numerical authority is :func:`gpuwm.verify.npref.np_kf_column`.  This
-module owns the packaged ``KF_LUTAB`` data and the device-facing adapter for
-WRF ``cu_physics=1``.  Array layout is ``(nz, ny, nx)`` with x fastest.
+The numerical authority is WRF v4.6.1 itself: ``kernels/kf.cu`` is a
+line-for-line port of ``KF_eta_PARA`` (phys/module_cu_kfeta.F), graded at
+0 ULP on every output of ``KF_eta_CPS`` against the unmodified Fortran by
+the column oracle in ``tools/kf_wrf461_oracle`` (fixture and GPU gate:
+``tests/test_kf_wrf461_oracle.py``).  This module owns the packaged
+``KF_LUTAB`` data and the device-facing adapter for WRF ``cu_physics=1``.
+Array layout is ``(nz, ny, nx)`` with x fastest.
 """
 
 from __future__ import annotations
@@ -32,21 +36,20 @@ DTYPE = np.float32
 # ---------------------------------------------------------------------------
 # The per-thread column workspace
 # ---------------------------------------------------------------------------
-# kf.cu used to keep kf_column's 54 column arrays in the per-thread local
-# frame, and CUDA prices a local frame at the card's RESIDENT-THREAD
-# CAPACITY -- one per-context backing store of
+# One thread owns one whole column, and CUDA prices a per-thread local frame
+# at the card's RESIDENT-THREAD CAPACITY -- one per-context backing store of
 # ``(frame - 1024) * SMs * maxThreadsPerSM``, taken at first launch and never
 # returned.  MEASURED on node-1 (RTX 5070 Ti, 70 SMs x 1,536, sm_120, NVRTC
-# 13.0.48): the 9,216 B frame at nz = 49 took 840.0 MiB -- exactly the law --
-# while the kernel only ever had a fraction of that capacity in flight.
-# 52 of the 54 arrays now live in a global workspace this module allocates,
-# sized to the threads ACTUALLY in flight, and the columns are launched in
-# tiles of that size.  (The other two stay on the stack; kf.cu says why, and
-# they leave a 512 B frame that reserves nothing.)
+# 13.0.48) for the pre-workspace kernel: a 9,216 B frame at nz = 49 took
+# 840.0 MiB.  So every column array of the WRF port -- 66 of them -- lives in
+# a global workspace this module allocates, sized to the threads ACTUALLY in
+# flight, and the columns are launched in tiles of that size.  The kernel's
+# local frame is 0 B (MEASURED on W1, RTX PRO 6000 Blackwell, sm_120, NVRTC
+# 12.9, 2026-10-07).
 #
 # This must match kf.cu's KFWS_SLOTS; tests/test_kf_workspace.py re-derives
 # it from the .cu source and fails if either side moves alone.
-KFWS_SLOTS = 52
+KFWS_SLOTS = 66
 
 #: One eight-warp block keeps the previous 256-column cap per SM.
 #: The occupancy query can reduce the cap without increasing workspace.
@@ -83,8 +86,11 @@ def kf_tile_columns(fn, ncol: int) -> int:
     try:
         from cupy_backends.cuda.api import driver
 
+        # A RawKernel wrapper carries the function as ``.kernel``; the
+        # direct-NVRTC module's Function is the function itself.
+        handle = getattr(fn, "kernel", fn)
         resident = driver.occupancyMaxActiveBlocksPerMultiprocessor(
-            fn.kernel.ptr, _TPB, 0)
+            handle.ptr, _TPB, 0)
         # Never launch more blocks than the card can hold resident: those
         # columns would wait while their workspace slots stayed allocated.
         per_sm = min(per_sm, int(resident))
@@ -155,13 +161,29 @@ def kf_phase_mode_for_microphysics(mp_physics: int) -> KFPhaseMode:
     that package changes nothing here: KF's feedback pair is F_QI/F_QS and
     hail is not one of them.
     """
-    if int(mp_physics) in (6, 8, 9, 10, 16, 18, 28, 30):
+    from gpuwm.core.column_schemes import COLUMN_SCHEMES
+    row = COLUMN_SCHEMES.get(int(mp_physics))
+    if row is not None:
+        # WRF KF's phase flags come from the active Registry moist package.
+        return (KFPhaseMode.SEPARATE_ICE_SNOW if "qi" in row.species and "qs" in row.species
+                else KFPhaseMode.SEPARATE_SNOW if "qs" in row.species
+                else KFPhaseMode.NO_SEPARATE_SNOW)
+    if int(mp_physics) in (2, 6, 8, 9, 10, 16, 18, 24, 28, 30, 106):
         return KFPhaseMode.SEPARATE_ICE_SNOW
     if int(mp_physics) == 1:
         return KFPhaseMode.WARM_RAIN
-    if int(mp_physics) in (0, 50):
+    # mp_physics=3 (WSM3) takes this branch for the same two reasons
+    # P3 does: module_physics_init.F:4482 leaves warm_rain .false. for
+    # WSM3SCHEME, and the wsm3scheme package (Registry.EM_COMMON:3017)
+    # declares moist:qv,qc,qr, so F_QS is false.
+    if int(mp_physics) in (0, 3, 5, 50):
         # WRF sets WARM_RAIN only for Kessler.  With no microphysics scheme,
         # F_QS is false and KF uses the melting-level !F_QS closure.
+        #
+        # mp_physics=5 (Ferrier-Aligo) is the same case as P3 below:
+        # fer_mp_hires is moist:qv,qc,qr,qi (Registry.EM_COMMON:3019), so
+        # F_QS is false, and FER_MP_HIRES's init case does not set
+        # warm_rain (module_physics_init.F:4499-4505).
         #
         # mp_physics=50 (P3) reaches the SAME branch, and WRF's own control
         # flow says so without any interpretation on gpuwm's part.  The
@@ -193,6 +215,18 @@ def kf_phase_mode_for_microphysics(mp_physics: int) -> KFPhaseMode:
     raise ValueError(
         f"KF has no verified phase-output contract for mp_physics="
         f"{mp_physics}")
+
+
+def kf_has_rain_for_microphysics(mp_physics: int) -> bool:
+    """WRF's ``F_QR`` for a KF-admitted microphysics scheme.
+
+    Every admitted scheme but ``mp_physics=0`` carries a rain species, so
+    KF_eta_CPS returns DQRDT as RQRCUTEN.  With no microphysics there is no
+    QR and the rain tendency is folded into RQCCUTEN
+    (module_cu_kfeta.F:492-505).
+    """
+    kf_phase_mode_for_microphysics(mp_physics)       # same admission
+    return int(mp_physics) != 0
 
 
 def _model_clock_dt(cfg) -> float:
@@ -268,8 +302,12 @@ def _device_table_on(_device: int):
     import cupy as cp
 
     table = load_kf_table()
-    return tuple(cp.asarray(value) for value in
-                 (table.temperature, table.qsat, table.thetae_base,
+    # TTAB/QSTAB go up in FORTRAN order (the (250, 220) host arrays are
+    # TTAB(IT, IP) row-major; their transposes' C order is the Fortran
+    # column-major order), so the kernel's TTAB(IT, IP) is word
+    # (IT-1) + (IP-1)*250 exactly as the Fortran addresses it.
+    return tuple(cp.asarray(np.ascontiguousarray(value)) for value in
+                 (table.temperature.T, table.qsat.T, table.thetae_base,
                   table.log_ratio))
 
 
@@ -279,15 +317,81 @@ def _device_table():
     return _device_table_on(cp.cuda.runtime.getDevice())
 
 
-def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
-              dx: float, dt: float, cudt: float,
-              phase_mode: KFPhaseMode = KFPhaseMode.SEPARATE_ICE_SNOW):
-    """Run KF for a batch of FP32 device columns and return its outputs."""
+#: The KF translation unit's compile options, on its own direct-NVRTC
+#: route (the ruc_spp/sfire pattern).  ``--fmad=false``: the WRF 4.6.1
+#: column oracle is graded word for word and gfortran contracts nothing.
+#: ``--ftz=false``: CuPy's RawModule appends ``-ftz=true`` to every module
+#: it builds, and KF carries condensate through the subnormal range -- the
+#: updraft's QLIQ/QICE decay by EXP(-CONV) per level above the freezing and
+#: fallout levels.  MEASURED on W1 (RTX PRO 6000, sm_120, NVRTC 12.9) with
+#: the ported kernel on the loader's flushed route: 41,127 of 1,848,256
+#: output words off the oracle over the 4,096-column sweep (max 4,935,177
+#: ULP in RTHCUTEN, 1,042 of 1,270 deep columns), and 0 unflushed.
+KF_MODULE_OPTIONS = ("-std=c++17", "--fmad=false", "--ftz=false")
+KF_MODULE_KEY = "gpuwm.core.kernels:kf"
+
+
+@lru_cache(maxsize=None)
+def _kf_module(device):
+    """kernels/kf.cu for one device, compiled unflushed and uncontracted."""
+    import cupy as cp
+    from gpuwm import nvrtc_ptx_cache as compiler
+    from gpuwm.certify.kernel_manifest import record_module
+    from gpuwm.core.kernels import module_source
+    from gpuwm.kernel_compile_notice import observe_module_compile
+
+    source = module_source("kf")
+    with cp.cuda.Device(device), observe_module_compile(KF_MODULE_KEY):
+        binary, _ = compiler.compile_using_nvrtc(
+            source, KF_MODULE_OPTIONS, None, "kf.cu")
+        module = cp.cuda.function.Module()
+        module.load(binary.encode() if isinstance(binary, str) else binary)
+    from gpuwm.physics_params import note_compiled
+    note_compiled("kf")
+    record_module(KF_MODULE_KEY, source=source, options=KF_MODULE_OPTIONS,
+                  module=None)
+    return module
+
+
+def _kf_function(name: str):
+    """One entry of kernels/kf.cu on the current device."""
+    import cupy as cp
+
+    return _kf_module(cp.cuda.runtime.getDevice()).get_function(name)
+
+
+def launch_kf(u, v, temperature, qv, pressure, rho, exner, dz, w0avg, *,
+              dx: float, dt: float, cudt_minutes: float,
+              phase_mode: KFPhaseMode = KFPhaseMode.SEPARATE_ICE_SNOW,
+              f_qr: bool = True, cloud_diagnostics: bool = False):
+    """Run WRF KF (``KF_eta_PARA``) for a batch of FP32 device columns.
+
+    The inputs are KF_eta_CPS's own: ``temperature`` (T), ``qv``,
+    ``pressure`` (p_hyd), ``rho`` (WRF's (1+qv)/alt), ``exner`` (PI),
+    ``dz`` (DZ8W), ``u``/``v`` and the ALREADY ADVANCED running-mean
+    vertical velocity ``w0avg`` (:func:`advance_w0avg`).  ``dt`` is WRF's
+    model DT, ``cudt_minutes`` the namelist CUDT (the shallow NCA is
+    ``CUDT*60.``), ``phase_mode`` the (warm_rain, F_QS, F_QI) feedback
+    branch and ``f_qr`` WRF's F_QR (false folds the rain tendency into
+    RQCCUTEN, module_cu_kfeta.F:492-505).
+
+    Returns KF_eta_CPS's outputs: the six tendencies, ``raincv`` (RAINCV =
+    DT*PRATEC, also under the legacy key ``rainc``), ``pratec``,
+    ``nca_seconds`` (NCA where the column convected, 0 elsewhere: the
+    driver owns the timer), ``cutop``/``cubot``/``shall`` as WRF's REAL
+    words, and diagnostics (``cape_before`` = ABE, ``cape_after`` = ABEG,
+    ``timec``, ``updraft_mass_flux``/``downdraft_mass_flux``, and the
+    integer views ``triggered``/``shallow``/``cloud_base``/``cloud_top``,
+    0-based, -1 when the column did not convect).  With
+    ``cloud_diagnostics`` it also returns WRF's CLDFRA_DP_KF,
+    CLDFRA_SH_KF, QC_KF and QI_KF as ``cldfra_dp``/``cldfra_sh``/
+    ``qc_kf``/``qi_kf``.
+    """
     import cupy as cp
 
     columns = {"u": u, "v": v, "temperature": temperature, "qv": qv,
-               "qc": qc, "pressure": pressure, "exner": exner,
-               "dz": dz, "w": w}
+               "pressure": pressure, "rho": rho, "exner": exner,
+               "dz": dz, "w0avg": w0avg}
     shape = temperature.shape
     if len(shape) != 3:
         raise ValueError(f"temperature must have shape (nz,ny,nx), got {shape}")
@@ -301,9 +405,12 @@ def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
                 or array.dtype != DTYPE or not array.flags.c_contiguous):
             raise ValueError(f"{name} must be a C-contiguous float32 CuPy "
                              f"array with shape {shape}")
-    for name, value in (("dx", dx), ("dt", dt), ("cudt", cudt)):
+    for name, value in (("dx", dx), ("dt", dt)):
         if not np.isfinite(value) or value <= 0.0:
             raise ValueError(f"KF {name} must be positive and finite, got {value}")
+    if not np.isfinite(cudt_minutes) or cudt_minutes < 0.0:
+        raise ValueError(
+            f"KF cudt_minutes must be finite and >= 0, got {cudt_minutes}")
     if isinstance(phase_mode, (bool, np.bool_)):
         raise ValueError("KF phase_mode must be an explicit KFPhaseMode")
     try:
@@ -311,58 +418,104 @@ def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid KF phase_mode {phase_mode!r}") from exc
 
-    # The column kernel initializes every output before any scheme exit.
-    # Host fills would write the same arrays twice and add separate launches.
+    # The column kernel writes every output on every path.
     out = {name: cp.empty(shape, dtype=DTYPE) for name in
            ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
             "rqrcuten", "rqscuten",
             "updraft_mass_flux", "downdraft_mass_flux")}
-    out.update(
-        rainc=cp.empty((ny, nx), dtype=DTYPE),
-        triggered=cp.empty((ny, nx), dtype=cp.int32),
-        cape_before=cp.empty((ny, nx), dtype=DTYPE),
-        cape_after=cp.empty((ny, nx), dtype=DTYPE),
-        timec=cp.empty((ny, nx), dtype=DTYPE),
-        nca_seconds=cp.empty((ny, nx), dtype=DTYPE),
-        shallow=cp.empty((ny, nx), dtype=cp.int32),
-        cloud_base=cp.empty((ny, nx), dtype=cp.int32),
-        cloud_top=cp.empty((ny, nx), dtype=cp.int32),
-    )
-    from gpuwm.core.kernels import get_kernel
-
+    for name in ("raincv", "pratec", "nca_seconds", "cutop", "cubot",
+                 "shall", "cape_before", "cape_after", "timec"):
+        out[name] = cp.empty((ny, nx), dtype=DTYPE)
+    if cloud_diagnostics:
+        for name in ("cldfra_dp", "cldfra_sh", "qc_kf", "qi_kf"):
+            out[name] = cp.empty(shape, dtype=DTYPE)
+        cloud = (out["cldfra_dp"], out["cldfra_sh"], out["qc_kf"],
+                 out["qi_kf"])
+    else:
+        dummy = cp.empty((1,), dtype=DTYPE)
+        cloud = (dummy, dummy, dummy, dummy)
     table = load_kf_table()
     device_table = _device_table()
     kernel_capacity(nz)          # the refusal, on the same path as the launch
-    kernel = get_kernel("kf", "kf_column")
+    kernel = _kf_function("kf_column")
     ncol = ny * nx
     # The column arrays live in a global workspace sized to the threads in
-    # flight, not in the per-thread local frame (which CUDA prices at the
-    # card's whole resident-thread capacity).  Columns therefore go in tiles
-    # of `tile`, each launched with the SAME one-thread-one-column mapping
-    # the kernel has always had -- shifted by `col0`, because the state
-    # arrays are (nz, ny, nx) and a tile of columns is not a contiguous
-    # slice of them.
+    # flight; columns go in tiles of `tile`, each launched with the same
+    # one-thread-one-column mapping shifted by `col0`.
     tile = kf_tile_columns(kernel, ncol)
     ws = cp.empty(kf_workspace_floats(nz, tile), dtype=DTYPE)
     for col0 in range(0, ncol, tile):
         span = min(tile, ncol - col0)
         blocks = (span + _TPB - 1) // _TPB
         kernel((blocks,), (_TPB,), (
-            u, v, temperature, qv, qc, pressure, exner, dz, w,
+            u, v, temperature, qv, pressure, rho, exner, dz, w0avg,
             *device_table,
             out["rthcuten"], out["rqvcuten"], out["rqccuten"],
             out["rqicuten"], out["rqrcuten"], out["rqscuten"],
-            out["rainc"], out["triggered"],
+            out["raincv"], out["pratec"], out["nca_seconds"],
+            out["cutop"], out["cubot"], out["shall"],
             out["cape_before"], out["cape_after"], out["timec"],
-            out["nca_seconds"], out["shallow"],
-            out["cloud_base"], out["cloud_top"], out["updraft_mass_flux"],
-            out["downdraft_mass_flux"], ws,
+            out["updraft_mass_flux"], out["downdraft_mass_flux"],
+            *cloud, ws,
             DTYPE(table.pressure_top), DTYPE(table.pressure_reciprocal),
             DTYPE(table.thetae_reciprocal), DTYPE(dx), DTYPE(dt),
-            DTYPE(cudt), np.int32(phase_mode),
+            DTYPE(cudt_minutes), np.int32(phase_mode),
+            np.int32(1 if f_qr else 0),
+            np.int32(1 if cloud_diagnostics else 0),
             np.int32(nz), np.int32(ny), np.int32(nx), np.int32(col0)))
     del ws
+    # Integer views for callers that index levels (0-based; -1 = none).
+    convected = out["shall"] < DTYPE(1.5)
+    out["triggered"] = convected.astype(cp.int32)
+    out["shallow"] = (out["shall"] == DTYPE(1.0)).astype(cp.int32)
+    out["cloud_base"] = cp.where(
+        convected, out["cubot"].astype(cp.int32) - 1, -1).astype(cp.int32)
+    out["cloud_top"] = cp.where(
+        convected, out["cutop"].astype(cp.int32) - 1, -1).astype(cp.int32)
+    out["rainc"] = out["raincv"]
     return out
+
+
+def w0avg_factors(*, cudt_minutes: float, dt: float, stepcu: int,
+                  adaptive: bool) -> tuple:
+    """KF_eta_CPS's W0AVG weights (module_cu_kfeta.F:209-230), as binary32.
+
+    Fixed step: ``W0AVGfctr = TST-1``, ``W0fctr = 1``, ``W0den = TST`` with
+    ``TST = FLOAT(STEPCU*2)``.  Adaptive step:
+    ``W0AVGfctr = 2*MAX(CUDT*60,DT) - DT``, ``W0fctr = DT``,
+    ``W0den = 2*MAX(CUDT*60,DT)``.  Every operation is the Fortran's
+    single-precision one, in its order.
+    """
+    f32 = np.float32
+    if adaptive:
+        window = max(f32(f32(cudt_minutes) * f32(60.0)), f32(dt))
+        den = f32(f32(2.0) * f32(window))
+        return f32(den - f32(dt)), f32(dt), den
+    tst = f32(int(stepcu) * 2)
+    return f32(tst - f32(1.0)), f32(1.0), tst
+
+
+def advance_w0avg(w0avg, w, *, factors) -> None:
+    """Advance ``w0avg`` in place from full-level ``w`` (nz+1, ny, nx).
+
+    ``W0 = 0.5*(w(k)+w(k+1))`` and
+    ``W0AVG = (W0AVG*W0AVGfctr + W0*W0fctr)/W0den``, in the no-FMA KF unit
+    so the update rounds as the Fortran does.
+    """
+    nz = int(w0avg.shape[0])
+    ncol = int(np.prod(w0avg.shape[1:]))
+    if (tuple(w.shape) != (nz + 1,) + tuple(w0avg.shape[1:])
+            or w.dtype != DTYPE or w0avg.dtype != DTYPE
+            or not w.flags.c_contiguous or not w0avg.flags.c_contiguous):
+        raise ValueError("advance_w0avg needs C-contiguous float32 w "
+                         "(nz+1, ...) and w0avg (nz, ...)")
+    fctr, w0fctr, den = factors
+    total = nz * ncol
+    threads = 256
+    _kf_function("kf_w0avg_update")(
+        ((total + threads - 1) // threads,), (threads,),
+        (w, w0avg, DTYPE(fctr), DTYPE(w0fctr), DTYPE(den),
+         np.int32(nz), np.int32(ncol)))
 
 
 def validate_kf_outputs(
@@ -478,34 +631,30 @@ class KainFritsch:
 
         WRF's cumulus driver early-returns on non-due steps
         (``module_cumulus_driver.F:830-864``, ``RETURN`` at :863), so the
-        fixed-step W0AVG loop at the top of ``KF_eta_CPS``
-        (``module_cu_kfeta.F:232-250``) executes exactly once per STEPCU
-        due event, with weight ``1/TST`` and ``TST = 2*STEPCU`` built
-        from the model clock -- at cudt=5 that is one sample per 300 s
-        and a trigger memory of ~2850 s.  The physics driver invokes this
-        once per due call, immediately before the column scheme consumes
-        the mean and before the per-column NCA skip test, so held columns
-        still refresh their trigger memory.  (Controller re-adjudication
-        2026-07-16: the T1 every-step cadence misread the driver's early
-        return; v4.6.1 source wins.)
+        W0AVG loop at the top of ``KF_eta_CPS``
+        (``module_cu_kfeta.F:218-251``) executes exactly once per due
+        event.  Fixed step: weight ``1/TST``, ``TST = 2*STEPCU`` from the
+        model clock.  Adaptive step (``ADAPT_STEP_FLAG``): the DT-weighted
+        form over a ``2*MAX(CUDT*60, DT)`` window.  The physics driver
+        invokes this once per due call, immediately before the column
+        scheme consumes the mean and before the per-column NCA skip test,
+        so held columns still refresh their trigger memory.  The update
+        runs in the no-FMA KF unit (:func:`advance_w0avg`), so it rounds
+        as the Fortran does.
         """
-        import cupy as cp
-
-        instantaneous = cp.ascontiguousarray(
-            DTYPE(0.5) * (state.w[:-1] + state.w[1:]), dtype=DTYPE)
         self.ensure_trigger_history(state)
         clock_dt = _model_clock_dt(cfg)
         stepcu = (1 if cfg.cudt_minutes <= 0.0 else
                   max(int(np.floor(
                       cfg.cudt_minutes * 60.0 / clock_dt + 0.5)), 1))
-        tst = DTYPE(2 * stepcu)
-        self.w0avg[...] = (self.w0avg * (tst - DTYPE(1.0))
-                           + instantaneous) / tst
+        factors = w0avg_factors(
+            cudt_minutes=float(cfg.cudt_minutes), dt=clock_dt,
+            stepcu=stepcu,
+            adaptive=bool(getattr(cfg, "use_adaptive_time_step", False)))
+        advance_w0avg(self.w0avg, state.w, factors=factors)
         self._history_time = float(state.elapsed_seconds)
 
     def __call__(self, *, atmosphere, fields, state, cfg):
-        import cupy as cp
-
         # Direct callers still receive the first WRF history update.  A driver
         # call at the same elapsed time has already run the hook and must not
         # double-count that sample.
@@ -514,49 +663,31 @@ class KainFritsch:
             self.update_trigger_history(state=state, cfg=cfg)
         # WRF hands the scheme its model DT (module_cumulus_driver.F:1028),
         # which is the outer clock when the case integrates internal
-        # substeps: NIC/TIMEC rounding and the NCA durations stay on WRF's
-        # 60 s granularity.
+        # substeps, and the namelist CUDT in minutes (cudt_pass, :766-769):
+        # the shallow-convection NCA is CUDT*60. (module_cu_kfeta.F:2573),
+        # which is 0 at cudt = 0, not one model step.
         clock_dt = _model_clock_dt(cfg)
-        if bool(getattr(cfg, "use_adaptive_time_step", False)):
-            from gpuwm.core.physics import _physics_period_seconds
-            cudt = _physics_period_seconds(cfg.cudt_minutes, cfg)
-        else:
-            steps = (1 if cfg.cudt_minutes <= 0.0 else
-                     max(int(np.floor(cfg.cudt_minutes * 60.0 / clock_dt + 0.5)),
-                         1))
-            cudt = (clock_dt if cfg.cudt_minutes <= 0.0
-                    else steps * clock_dt)
-        # Documented deviation (Task 6b audit): the verified scheme derives
-        # environmental density internally as p/(Rd*Tv) with
-        # Tv = T*(1+0.608*qenv) (kf.cu:291-293; npref.py np_kf_column),
-        # where WRF's phy_prep hands the cumulus driver moist
-        # rho = 1/alt*(1+qv) (module_big_step_utilities_em.F:4856) --
-        # an O(0.1%) layer-mass difference in humid columns.  Adopting
-        # WRF's form would change the frozen kernel's input surface, so it
-        # is recorded here rather than silently absorbed.
+        # WRF's physics density (1+qv)/alt, as phy_prep hands it to the
+        # cumulus driver (module_big_step_utilities_em.F:4856): KF's layer
+        # masses are DP = RHO*G*DZ8W (module_cu_kfeta.F:779).
         phase_mode = kf_phase_mode_for_microphysics(cfg.mp_physics)
         result = launch_kf(
             atmosphere["u"], atmosphere["v"], atmosphere["temperature"],
-            atmosphere["qv"], atmosphere["qc"], atmosphere["pressure"],
+            atmosphere["qv"], atmosphere["pressure"], atmosphere["rho"],
             atmosphere["exner"], atmosphere["dz"], self.w0avg,
-            dx=cfg.dx, dt=clock_dt, cudt=cudt,
-            phase_mode=phase_mode)
+            dx=cfg.dx, dt=clock_dt, cudt_minutes=float(cfg.cudt_minutes),
+            phase_mode=phase_mode,
+            f_qr=kf_has_rain_for_microphysics(cfg.mp_physics))
         from gpuwm.core.physics import _NativeKFCumulusResult
 
-        # WRF's persistent rain rate PRATEC = PPTFLX*(1-FBFRC)/DXSQ in
-        # mm s-1 (module_cu_kfeta.F:2504).  The kernel reports the rain
-        # increment integrated over min(cudt, feedback_time) with
-        # nca_seconds = feedback_time for deep and cudt for (rain-free)
-        # shallow columns (kf.cu:1140-1149), so the matching division
-        # recovers the rate; columns that did not trigger report zero.
-        nca = result["nca_seconds"]
-        divisor = cp.minimum(DTYPE(cudt), nca)
-        safe = cp.where(divisor > DTYPE(0.0), divisor, DTYPE(1.0))
-        pratec = cp.where(divisor > DTYPE(0.0), result["rainc"] / safe,
-                          DTYPE(0.0))
+        # PRATEC = PPTFLX*(1-FBFRC)/DXSQ in mm s-1 and NCA come straight
+        # from the scheme (module_cu_kfeta.F:2570-2573, 2642); the driver
+        # forms RAINCV = DT*PRATEC itself, as WRF does.
         separate_ice = phase_mode == KFPhaseMode.SEPARATE_ICE_SNOW
         separate_snow = phase_mode in (
             KFPhaseMode.SEPARATE_SNOW, KFPhaseMode.SEPARATE_ICE_SNOW)
+        nca = result["nca_seconds"]
+        pratec = result["pratec"]
         return _NativeKFCumulusResult(
             owner=self,
             rthcuten=result["rthcuten"], rqvcuten=result["rqvcuten"],
@@ -568,7 +699,8 @@ class KainFritsch:
 
 
 __all__ = ["KFPhaseMode", "KFTable", "KainFritsch", "KFWS_SLOTS",
-           "KF_TILE_BLOCKS_PER_SM", "kernel_capacity",
+           "KF_TILE_BLOCKS_PER_SM", "advance_w0avg", "kernel_capacity",
+           "kf_has_rain_for_microphysics",
            "kf_phase_mode_for_microphysics", "kf_tile_columns",
            "kf_workspace_floats", "launch_kf", "load_kf_table",
-           "validate_kf_outputs"]
+           "validate_kf_outputs", "w0avg_factors"]

@@ -104,6 +104,24 @@ tools/urban_wrf471_oracle/couple_noahmpdrv_3363_3372_3689_3776.inc -whitespace
 tools/uwpbl_wrf471_oracle/libm64/*.objdump.txt -whitespace
 tools/uwpbl_wrf471_oracle/libm64/upstream/*.c -whitespace
 
+# 2.9.0: WRF v4.8's urban tables (the urban rain-evaporation water balance
+# port reads them as WRF ships them) and two byte-pinned kernel sources
+# (lin_wrf.cuh in tests/data/kernel_source_pins.json, ysu_480_topo.cuh in
+# tests/test_kernel_source_freeze_per_module.py) whose trailing blank line the
+# 2.9.0 pre-gate cut battery's export `git diff --check` refused.
+gpuwm/data/urban/wrf480/URBPARM.TBL -whitespace
+gpuwm/data/urban/wrf480/URBPARM_LCZ.TBL -whitespace
+gpuwm/core/kernels/lin_wrf.cuh -whitespace
+gpuwm/core/kernels/ysu_480_topo.cuh -whitespace
+# Also refused there, each kept as recorded: WRF's eclipse Besselian table
+# (gpuwm/data/wrf_radiation/eclipse_manifest.json pins it), the urban default
+# oracle's WRF patches (whose context lines are WRF's own), the WSM5 oracle's
+# recorded compile flags and the whole-model parity receipt summary.
+gpuwm/data/wrf_radiation/eclipse_besselian_elements.dat -whitespace
+tools/urban_default_oracle/*.patch -whitespace
+tests/data/oracles/wsm5/compile-flags.txt -whitespace
+tools/wrf_whole_model_parity/receipts/summary.txt -whitespace
+
 # Byte-unmodified WRF lake oracle sources retain upstream trailing blanks.
 # Their SHA-256 values are bound in gpuwm/data/lake/oracle/manifest.json.
 tools/lake_wrf461_oracle/upstream/** -whitespace
@@ -169,3 +187,6 @@ tools/fast_sbm_wrf480_oracle/wrf/phys/module_mp_fast_sbm.F -whitespace
 gpuwm/data/fast_sbm/SBM_input_33/BLKD_SDC.dat -whitespace
 gpuwm/data/fast_sbm/SBM_input_33/bulkradii33.asc -whitespace
 tools/thompson_generation_oracle/upstream/module_mp_thompson.F -whitespace
+# The Milbrandt-Yau WRF v4.6.1 oracle fixtures (tests/data/oracles/milbrandt2,
+# graded by tests/test_milbrandt2_wrf461_exact_gpu.py): xz streams, never text.
+tests/data/oracles/milbrandt2/*.xz binary

@@ -22,6 +22,7 @@ from gpuwm.wrf_physics_inventory import (
 @pytest.mark.parametrize(
     ("mp_physics", "expected"),
     [
+        (2, ("QVAPOR", "QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP")),
         (6, ("QVAPOR", "QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP")),
         (
             8,
@@ -360,7 +361,7 @@ def test_mp28_is_reachable_through_every_inventory_front_door():
     # 50 joined this tuple with the P3 front-door landing on top of the
     # mp=50 CUDA merge `b47a400a5`; the pin is extended rather than relaxed,
     # and the P3 row has its own exact-content gates below.
-    assert supported_stock_wrf_mp_physics() == (6, 8, 10, 18, 28, 30, 50)
+    assert supported_stock_wrf_mp_physics() == (2, 4, 5, 6, 8, 10, 18, 24, 28, 30, 50, 106)
 
     report = stock_wrf_physics_inventory(28).as_report()
     assert report["schema"] == "rw-wps.stock-wrf-physics-inventory.v1"

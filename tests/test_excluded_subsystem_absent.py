@@ -236,7 +236,7 @@ _FALSE_POSITIVE = re.compile("fore" + "cast" + "|" + "re" + "cast, transformed",
 
 _TIER1_RE = re.compile("|".join(re.escape(t) for t in _TIER1), re.I)
 
-#: The one sanctioned use of the org prefix in shipped files.  Drew,
+#: The one sanctioned use of the org prefix in shipped files.  Owner,
 #: 2026-10-03, in the coordinator session: simulated radar vendors the
 #: PUBLIC radar volume writers under tools/rustwx/vendor (MIT OR Apache-2.0),
 #: and their licence attribution, crate names, lockfile entries and imports
@@ -273,7 +273,7 @@ _RADAR_WRITER_NAME = re.compile(
     + "|" + "re" + "cast[-_]radar[A-Za-z0-9_-]*", re.I)
 
 
-#: The second sanctioned use: the product's display label.  Drew, 2026-10-05
+#: The second sanctioned use: the product's display label.  Owner, 2026-10-05
 #: (relayed to the integrator by the lead session, to be confirmed at the
 #: release yes): the renderer's two built-in product themes print the
 #: product's public display label, and the documents and tests that state

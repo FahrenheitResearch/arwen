@@ -32,7 +32,12 @@ def test_generic_namelist_keeps_current_staging_bytes_and_legacy_defaults(tmp_pa
     baseline = json.loads((FIXTURE / "identity-e62a72e48-dycore.json").read_text())
     from wrf_clock_lines import WRF_CLOCK_BLOCK, without_wrf_clock_lines
     assert WRF_CLOCK_BLOCK in text
-    assert hashlib.sha256(without_wrf_clock_lines(text).encode()
+    # Pinned before 2026-10-12: the input now asks for Morrison by its own
+    # number (55 is refused) and the omitted lid is WRF's open top; with
+    # exactly those two lines put back the parent's hash holds.
+    from ishmael_retirement import with_retired_line
+    assert hashlib.sha256(with_retired_line(
+        without_wrf_clock_lines(text)).encode()
                           ).hexdigest() == baseline["namelist"]
     raw = tomllib.loads(text)
     emitted = set(raw["shared"]) | {key for row in raw["domain"] for key in row}

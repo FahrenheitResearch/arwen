@@ -3,15 +3,7 @@
 A PLATFORM wheel now ships the compiled Rust itself: the artifacts below
 are staged into ``gpuwm/libexec/bridges`` by
 ``tools/stage_wheel_bridges.py`` before the wheel is built, so on a
-platform a bundle exists for, ``pip install gpuwm`` already runs every
-default path.  Three artifacts are left to this command on such an
-install -- the on-demand ones (:func:`on_demand_artifacts`: the
-simulated radar, the ML dataset exporter and the global globe packer),
-which the wheel stopped carrying at 2.8.9 because with them both
-platform wheels were over the 100,000,000-byte per-file limit.  Their
-doors refuse by name with this command until it has run.
-
-It also remains the route for everyone else: the ``py3-none-any`` fallback
+platform a bundle exists for, ``pip install gpuwm`` carries every declared artifact. This command remains the route for everyone else: the ``py3-none-any`` fallback
 wheel, which pip resolves wherever no platform bundle is published,
 carries no binaries at all.  Before either existed, the only way to get
 the GRIB decoders, the CPU preprocessing library, the fetch backbone,
@@ -21,10 +13,11 @@ the mapped decode engine, the Zarr reader, the observation remap, the
 isobaric-height reader, the radar superob, the native GRIB2 and ML dataset
 exporters, the nowcast frames converter, the global globe packer, the
 observation scorecard, the forecast verification scorer, the simulated
-radar and the terminal workspace onto a
+radar, the regular-grid intermediate producer, the MPAS point renderer, the
+TEMPO initialization library and the terminal workspace onto a
 wheel install was to clone the repository and run ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-forty-five files.
+forty-eight files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -33,7 +26,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the forty-five artifacts of
+One bundle per platform, holding the forty-eight artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges/<release>-<bundle digest>``)
 -- the staged rung of the resolution ladder every consumer already
@@ -233,18 +226,6 @@ class BundledArtifact:
     bytes and names the ABI this release speaks, on top of the size and
     SHA-256 every artifact is pinned by.
 
-    ``on_demand`` says the platform wheel does not carry the artifact.
-    It stays in this roster, in the per-platform bundle and in the pins,
-    so ``gpuwm fetch-bridges`` installs it and every proof of the bundle
-    still covers it; only the copy inside the wheel is left out, and the
-    door that needs it refuses by name with that command until it has
-    run.  Breakage this prevents (2.8.9 cut r1): both platform wheels
-    were over the 100,000,000-byte per-file limit, Linux at 107,777,663
-    bytes and Windows at 102,503,274, so neither could be published.
-    Only an artifact that no default path reaches may be marked: a
-    decoder, a writer or the renderer marked here would make a bare
-    install refuse its own forecast.  :func:`wheel_artifacts` is the one
-    place the two sets are told apart.
     """
 
     name: str
@@ -253,7 +234,6 @@ class BundledArtifact:
     env_var: str
     consumer: str
     vendored: bool = False
-    on_demand: bool = False
 
 
 #: The artifacts a bundle carries (every BundledArtifact below), in build order: the five
@@ -320,6 +300,12 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         bridges.BRIDGE_ENV["gdt101_remap"],
         "unstructured GDT-101 source normalization "
         "(gpuwm go --source icon-global or icon-d2)"),
+    # 2.9.0 (box/rrfs-shape) defect: public initial-condition preparation needs this producer,
+    # but fetch-bridges previously omitted the already-built executable.
+    BundledArtifact(
+        "met_intermediate", "executable", bridges.CRATE_RELATIVE,
+        bridges.BRIDGE_ENV["met_intermediate"],
+        "regular-grid meteorological intermediates for native initialization"),
     BundledArtifact(
         "gfs_grib2_bridge", "executable", bridges.CRATE_RELATIVE,
         bridges.BRIDGE_ENV["gfs_grib2_bridge"],
@@ -346,8 +332,7 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "GPUWM_RW_FETCH", "gpuwm fetch --engine rust"),
     BundledArtifact(
         "rw_globe_pack", "executable", bridges.RUSTWX_CRATE_RELATIVE,
-        "GPUWM_RW_GLOBE_PACK", "global globe frames and verified statics publication",
-        on_demand=True),
+        "GPUWM_RW_GLOBE_PACK", "global globe frames and verified statics publication"),
     BundledArtifact(
         "rw_wrfbatch", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_WRFBATCH", "gpuwm render --engine rust"),
@@ -372,8 +357,7 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     # Environment variable spelled to match gpuwm.rustwx's resolver.
     BundledArtifact(
         "rw_simradar", "executable", bridges.RUSTWX_CRATE_RELATIVE,
-        "GPUWM_RW_SIMRADAR", "WOOF simulated radar volumes and PPI images",
-        on_demand=True),
+        "GPUWM_RW_SIMRADAR", "WOOF simulated radar volumes and PPI images"),
     BundledArtifact(
         "rw_nexrad", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_NEXRAD", "radar observation ingest (the DA nowcast)"),
@@ -614,6 +598,27 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_mpas_lbc", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MPAS_LBC",
         "MPAS lateral boundaries for a limited-area mesh"),
+    # 2.9.0.  The gpuwm-hex product door draws soundings and meteograms
+    # with this binary and nothing else.  As a source-only cargo bin it
+    # reached no pip install: `gpuwm-hex doctor` exited 1 naming it and
+    # `gpuwm fetch-bridges` could not supply it.
+    BundledArtifact(
+        "rw_hex_points", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_HEX_POINTS",
+        "soundings and meteograms at named points from MPAS native history "
+        "(the gpuwm-hex product door)"),
+    # 2.9.0.  TEMPO's tempo_init port (crate rw-tempo), loaded through
+    # ctypes by gpuwm.core.tempo_rust whenever a run selects TEMPO.  It was
+    # built by every cut and carried by no bundle, so TEMPO -- and the
+    # rrfs-v2-hex-tempo preset with it -- could not initialize from a pip
+    # install: the loader's last word was "build it from a checkout".
+    # Environment variable spelled to match
+    # gpuwm.core.tempo_rust.TEMPO_BRIDGE_ENV.
+    BundledArtifact(
+        "rw_tempo", "library", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_TEMPO_BRIDGE",
+        "TEMPO microphysics initialization tables (mp TEMPO, the "
+        "rrfs-v2-hex-tempo preset)"),
     # The native GRIB2 exporter (2.8.7, crate rw-grib2export): reads
     # history, computes every product with the clean-room post-processor
     # rw-post (GPU by default, CPU reference path) and packs GRIB2 in Rust.
@@ -644,8 +649,7 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_mlexport", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MLEXPORT",
-        "machine-learning dataset export (gpuwm ml-export)",
-        on_demand=True),
+        "machine-learning dataset export (gpuwm ml-export)"),
     BundledArtifact(
         "rw_scoreboard", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_SCOREBOARD", "incremental forecast verification (gpuwm scoreboard)"),
@@ -685,31 +689,16 @@ LIBRARY_ABI: dict[str, tuple[str, int]] = {
     "obs_score": ("gpuwm_obsscore_abi_version", 1),
     # Matches gpuwm.isobaric_bridge.ISOBARIC_ABI; a test binds them.
     "rw_isobaric": ("gpuwm_isobaric_abi_version", 1),
+    # Matches gpuwm.core.tempo_rust.ABI_VERSION.
+    "rw_tempo": ("gpuwm_tempo_abi_version", 1),
     # Matches gpuwm.obs.superob_bridge.SUPEROB_ABI; a test binds them.
     "rw_superob": ("gpuwm_superob_abi_version", 1),
 }
 
 
 def wheel_artifacts() -> tuple[BundledArtifact, ...]:
-    """The artifacts a platform wheel carries, in roster order.
-
-    Every declared artifact except the on-demand ones.  Staging into the
-    package, the packaged ``BUNDLE.json`` and every check of an installed
-    or built wheel's native inventory read this, so the set is decided
-    once.  The bundle and the pins are not narrowed by it: they carry
-    :data:`BUNDLED_ARTIFACTS` whole.
-    """
-
-    return tuple(artifact for artifact in BUNDLED_ARTIFACTS
-                 if not artifact.on_demand)
-
-
-def on_demand_artifacts() -> tuple[BundledArtifact, ...]:
-    """The artifacts ``gpuwm fetch-bridges`` installs and the wheel omits."""
-
-    return tuple(artifact for artifact in BUNDLED_ARTIFACTS
-                 if artifact.on_demand)
-
+    """Every declared artifact ships in each platform wheel, in roster order."""
+    return BUNDLED_ARTIFACTS
 
 def library_abi_for(name: str) -> tuple[str, int]:
     """``(symbol, expected_version)`` for the library artifact ``name``.
@@ -1152,6 +1141,10 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
                      # workspace, so they list it too (the inputs test
                      # walks the closure).
                      "tools/region_global_dealias",
+                     # rw-mpas init reads its RUC soil and aerosol oracle columns by
+                     # include_str! (golden/hex-rrfs, 2.9.0).
+                     "gpuwm/data/ruc/oracle/soil_ingest.csv",
+                     "gpuwm/data/thompson/oracle-aero/aero-init-profile-column.csv",
                      # rw-wrfbatch's build.rs embeds the engine version it
                      # reads from the root pyproject.toml (0c1fc01f9), so a
                      # version bump must rebuild every crate that reaches it.
@@ -1168,6 +1161,8 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
                      # HRRR mappings (2ed5afdc7's HRRRv1 corner test).
                      "gpuwm/authorities/rw-wps-hrrr-prs-grib2.mapping.json",
                      "gpuwm/authorities/rw-wps-hrrr-native-grib2.mapping.json",
+                     "gpuwm/data/ruc/oracle/soil_ingest.csv",
+                     "gpuwm/data/thompson/oracle-aero/aero-init-profile-column.csv",
                      "pyproject.toml"),
     "tools/region_global_dealias": ("tools/region_global_dealias",),
     "tools/arwen-tui": (
@@ -1183,6 +1178,8 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
         "tools/region_global_dealias",
         "gpuwm/authorities/rw-wps-hrrr-prs-grib2.mapping.json",
         "gpuwm/authorities/rw-wps-hrrr-native-grib2.mapping.json",
+        "gpuwm/data/ruc/oracle/soil_ingest.csv",
+        "gpuwm/data/thompson/oracle-aero/aero-init-profile-column.csv",
         "pyproject.toml"),
 }
 
@@ -2222,6 +2219,14 @@ def _fetch_bridges_main(args) -> int:
     # would act on a picture that is about to change.
     try:
         with bridge_owner(dest, progress=print):
+            if getattr(args, "partial", False):
+                if getattr(args, "from_dir", None) or getattr(args, "keep_bundle", False):
+                    raise BridgeAssetError("--partial cannot be combined with --from or --keep-bundle; partial fetch installs pinned members through HTTP ranges")
+                from .bridge_partial import fetch_partial
+                fetch_partial(pins, bundle, dest, getattr(args, "artifact", None))
+                return 0
+            if getattr(args, "artifact", None):
+                raise BridgeAssetError("--artifact requires --partial")
             return _stage_estate(args, pins, bundle, dest)
     except BridgeFolderUnwritable as error:
         return _unwritable_estate(bundle, dest, error)
@@ -2405,6 +2410,14 @@ def register_cli(subparsers) -> None:
              "the default on its own; anywhere else needs the "
              "per-artifact environment variables)")
     parser.add_argument(
+        "--partial", action="store_true",
+        help="fetch only missing or stale pinned binaries with HTTP byte ranges; "
+             "map assets require a full fetch and servers must support ranges")
+    parser.add_argument(
+        "--artifact", action="append", metavar="NAME",
+        help="with --partial, select this artifact (repeatable); renderer "
+             "launchers also fetch their shared rw_wrfbatch executable")
+    parser.add_argument(
         "--keep-bundle", action="store_true",
         help=f"keep the verified archive under <dest>/{ARCHIVE_SUBDIR} "
              "after staging (default: remove it)")
@@ -2437,5 +2450,5 @@ __all__ = [
     "stage_from_bundle", "stage_from_dir",
     "stage_from_loose_files", "staging_available", "verify_contract_marker",
     "verify_pinned_file", "verify_source_revision",
-    "on_demand_artifacts", "wheel_artifacts",
+    "wheel_artifacts",
 ]

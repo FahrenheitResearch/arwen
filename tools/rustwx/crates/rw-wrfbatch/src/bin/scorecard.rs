@@ -9,7 +9,7 @@ use std::process::{Command, ExitCode};
 
 pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
-const ABI: &str = "gpuwm.obs-scorecard.manifest.v1\tgpuwm.obs-scorecard.receipt.v1\tnative-paired-scoring\tcase-block-bootstrap";
+use crate::cli_contracts::SCORECARD as ABI;
 const USAGE: &str = "rw_scorecard --manifest MANIFEST.json --out DIR [--verify-binary PATH]\nReads native requests, native receipts or digest-bound recorded paired CSV.\nWrites scorecard.csv, scorecard.json, scorecard.md and native Rust comparison sheets.\nExit 3 means a required comparison is missing; exit 1 means invalid input or a failed native step.";
 
 fn resolve_request_paths(request: &mut Value, root: &Path) {
@@ -198,7 +198,7 @@ fn run() -> Result<bool, String> {
     );
     Ok(document["missing_required"].as_array().unwrap().is_empty())
 }
-fn main() -> ExitCode {
+pub(crate) fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     match run() {
         Ok(true) => ExitCode::SUCCESS,

@@ -381,7 +381,58 @@ AIRNOW = FrontDoor(
 FRONT_DOORS = {"mrms": MRMS, "stage4": STAGE4, "asos": ASOS, "goes": GOES,
                "opera": OPERA, "odim": ODIM, "airnow": AIRNOW}
 
+#: The observation-stream doors of the data assimilation (gpuwm.obs.streams):
+#: radiosondes, motion vectors, ocean platforms, radio occultation and the
+#: WIS2 feed.  The crates are the engine's (``tools/rustwx/crates/rw-obs``,
+#: bins igra2, amv, ndbc, gnssro, wis2); until 2.9.0 their rows lived in
+#: gpuwm-global (``arwen_global.obs_doors``), which is why the engine's local
+#: data assimilation imported that package to reach them.  The markers are the
+#: binaries' own ``--abi`` lines on this line.  Kept apart from FRONT_DOORS so
+#: the ``gpuwm obs`` instruments and the verification routes that enumerate
+#: FRONT_DOORS do not grow five rows they have no product for.
+IGRA2 = FrontDoor(
+    name="rw_igra2", env_var="GPUWM_RW_IGRA2", subject="the radiosonde front door",
+    abi_marker=("gpuwm-obs.igra2-fetch.v1	gpuwm-obs.igra2-table.v1	gpuwm-obs.table.v2	"
+                "surface_pressure_pa	temperature_k	dewpoint_k	wind_u_m_s	wind_v_m_s	level_times"),
+)
+AMV = FrontDoor(
+    name="rw_amv", env_var="GPUWM_RW_AMV", subject="the atmospheric-motion-vector front door",
+    abi_marker=("gpuwm-obs.amv-fetch.v1	gpuwm-obs.amv-table.v1	gpuwm-obs.table.v2	"
+                "wind_u_m_s	wind_v_m_s	dqf	zenith	thin"),
+)
+NDBC = FrontDoor(
+    name="rw_ndbc", env_var="GPUWM_RW_NDBC", subject="the ocean-platform front door",
+    abi_marker=("gpuwm-obs.ndbc-fetch.v1	gpuwm-obs.ndbc-table.v1	gpuwm-obs.table.v2	"
+                "surface_pressure_pa	temperature_k	dewpoint_k	wind_u_m_s	wind_v_m_s	anemometer_reduction"),
+)
+GNSSRO = FrontDoor(
+    name="rw_gnssro", env_var="GPUWM_RW_GNSSRO", subject="the radio-occultation front door",
+    abi_marker=("gpuwm-obs.gnssro-fetch.v1	gpuwm-obs.gnssro-cdaac-fetch.v1	gpuwm-obs.gnssro-table.v1	"
+                "gpuwm-obs.table.v2	refractivity_n	height_anchored	dry_pressure	cdaac_tarballs"),
+)
+WIS2 = FrontDoor(
+    name="rw_wis2", env_var="GPUWM_RW_WIS2", subject="the WIS2 subscriber",
+    abi_marker=("gpuwm-obs.wis2-subscribe.v1	gpuwm-obs.wis2-probe.v1	gpuwm-obs.wis2-table.v1	"
+                "gpuwm-obs.table.v2	mqtt-3.1.1	messages	payloads	coverage	latency	bufr	synop	ship	temp"),
+)
 
-__all__ = ["AIRNOW", "ASOS", "CARGO_BUILD_HINT", "FRONT_DOORS", "GOES", "MRMS", "ODIM",  # noqa: F822 -- module __getattr__
-           "OPERA", "PREPBUFR",
-           "STAGE4", "FrontDoor", "crate_dir"]
+STREAM_DOORS = {"igra2": IGRA2, "amv": AMV, "ndbc": NDBC, "gnssro": GNSSRO, "wis2": WIS2}
+
+
+def door_by_binary(name: str) -> FrontDoor:
+    """The engine's front door for a binary name (``rw_asos``, ``rw_igra2``...).
+
+    A name in neither table refuses by naming every door that exists, because
+    a stream nobody can decode should say so rather than raise a bare KeyError.
+    """
+
+    for door in (*FRONT_DOORS.values(), *STREAM_DOORS.values(), PREPBUFR):
+        if door.name == name:
+            return door
+    known = ", ".join(sorted(d.name for d in (*FRONT_DOORS.values(), *STREAM_DOORS.values(), PREPBUFR)))
+    raise KeyError(f"{name} is not an observation front door on this install; the doors are: {known}")
+
+
+__all__ = ["AIRNOW", "AMV", "ASOS", "CARGO_BUILD_HINT", "FRONT_DOORS", "GNSSRO", "GOES", "IGRA2",  # noqa: F822 -- module __getattr__
+           "MRMS", "NDBC", "ODIM", "OPERA", "PREPBUFR", "STAGE4", "STREAM_DOORS", "WIS2",
+           "FrontDoor", "crate_dir", "door_by_binary"]

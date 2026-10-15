@@ -48,10 +48,7 @@ use rw_wrfbatch::wrf_process::{WrfProcessMessage, WrfProcessOptions, spawn_proce
 
 /// The `--abi` contract line, in the shape the two sibling binaries use:
 /// the vocabulary the PYTHON half parses, not a version number.
-const ABI_MARKER: &str = "gpuwm-rw-ensbatch-products-v1\tmean\tspread\tprob\tpmm\tpaintball\t\
-gpuwm-rw-ensbatch-fields-v1\tFIELD\tname\ttitle\tunits\tdefault_threshold\tunit_slug\t\
-gpuwm-rw-ensbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t\
-gpuwm-rw-ensbatch-vocabulary-v1\tMEMBERS\tCOVERAGE\tTIES";
+use crate::cli_contracts::ENSBATCH as ABI_MARKER;
 
 /// The uncalibrated-ensemble stamp.  These products have never been
 /// verified against observations, and a panel that does not say so gets
@@ -670,7 +667,7 @@ struct MemberPlane {
 pub static SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
-fn main() -> ExitCode {
+pub(crate) fn main() -> ExitCode {
     let _ = std::hint::black_box(SOURCE_REV_STAMP);
     if let Some(result) = rw_wrfbatch::ensemble_products::try_cli(
         &std::env::args().skip(1).collect::<Vec<_>>(),

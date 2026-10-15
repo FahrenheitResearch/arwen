@@ -46,6 +46,32 @@ def member_column_view(array, *, member, members, ny, nx):
     return array
 
 
+def borrow_physics_scratch(view, driver, *, member, members, ny, nx):
+    """Point ``view``'s WB1 cloud-booking slots at the physics owner's words.
+
+    Correct mode's Thompson books CLOUDNC/CLOUDNCV (finding WB1,
+    gpuwm/core/thompson_cloud_booking.py) into the scratch of the state its
+    physics driver runs on: the packed physics bank of a native ensemble
+    (PackedThompsonState), never the batch's own scratch. History, validation
+    and checkpoint frames read ``state._scratch``, so a member view built from
+    the batch alone wrote CLOUDNC as zeros (N > 1, where the registry priced
+    an unwritten batch slot of that name) or not at all (N = 1), while the
+    same member run ordinarily wrote its booked total.
+    """
+    from gpuwm.ensemble.batch_physics import THOMPSON_CLOUD_BOOKING_SLOTS
+    existing = getattr(getattr(driver, "state", None), "existing_scratch", None)
+    if existing is None:
+        return view
+    booked = {}
+    for slot in THOMPSON_CLOUD_BOOKING_SLOTS:
+        value = existing(slot)
+        if value is not None:
+            booked[slot] = member_column_view(value, member=member, members=members, ny=ny, nx=nx)
+    if booked:
+        view._scratch = {**view._scratch, **booked}
+    return view
+
+
 def member_output_view(owners, member, *, output_fields=None):
     """Expose the original physics writer's fields as borrowed member views."""
     from gpuwm.ensemble.batch_dycore import member_domain_view
@@ -56,6 +82,7 @@ def member_output_view(owners, member, *, output_fields=None):
                                                ny=cfg.ny, nx=cfg.nx)
     fields = {name: borrow(value) for name, value in output_fields.items()}
     view = member_domain_view(batch, member)
+    borrow_physics_scratch(view, driver, member=member, members=batch.members, ny=cfg.ny, nx=cfg.nx)
     microphysics = getattr(driver, "microphysics", None)
     if microphysics is not None:
         microphysics = replace(microphysics, **{

@@ -653,7 +653,7 @@ __device__ void d_twostream(const float *p, int ib1, int ic, float *o)
 //          albi(2) fabd(2) fabi(2) ftdd(2) ftid(2) ftii(2) frevd(2) frevi(2)
 //          fregd(2) fregi(2) albsnd(2) albsni(2)
 // --------------------------------------------------------------------------
-__device__ void d_albedo(const float *p, int ist, float *o)
+__device__ void d_albedo(const float *p, int ist, float *o, bool night_age=false)
 {
     float swemx = p[4];
     float dt = p[24], cosz = p[25], elai = p[26], esai = p[27];
@@ -678,6 +678,13 @@ __device__ void d_albedo(const float *p, int ist, float *o)
     float ftdi[2] = { K_ZERO, K_ZERO };
     float gdir = K_ZERO;
 
+    if (night_age) {
+        float sa_in[10] = { p[0], p[1], p[2], p[3], swemx,
+                            dt, tg, sneqvo, sneqv, tauss };
+        float sa_out[2];
+        d_snow_age(sa_in, sa_out);
+        tauss = sa_out[0]; fage = sa_out[1];
+    }
     if (cosz > K_ZERO) {
         float rho[2], tau[2], vai = K_ZERO;
         for (int ib = 0; ib < 2; ++ib) {
@@ -691,9 +698,11 @@ __device__ void d_albedo(const float *p, int ist, float *o)
         float sa_in[10] = { p[0], p[1], p[2], p[3], swemx,
                             dt, tg, sneqvo, sneqv, tauss };
         float sa_out[2];
-        d_snow_age(sa_in, sa_out);
-        tauss = sa_out[0];
-        fage = sa_out[1];
+        if (!night_age) {
+            d_snow_age(sa_in, sa_out);
+            tauss = sa_out[0];
+            fage = sa_out[1];
+        }
 
         float sc_in[4] = { swemx, qsnow, dt, albold };
         float sc_out[5];
@@ -842,10 +851,10 @@ extern "C" __global__ void noahmp_rad_albedo(const float *in, const int *ist,
 #define R_NIN 56
 #define R_NOUT 19
 
-__device__ void d_radiation(const float *p, int ist, float *o)
+__device__ void d_radiation(const float *p, int ist, float *o, bool night_age=false)
 {
     float alb[36];
-    d_albedo(p, ist, alb);
+    d_albedo(p, ist, alb, night_age);
 
     const float elai = p[26], esai = p[27];
     const float *solad = p + 52, *solai = p + 54;
@@ -902,6 +911,15 @@ extern "C" __global__ void noahmp_radiation_batch(const float *in,
 }
 
 // --------------------------------------------------------------------------
+extern "C" __global__ void noahmp_radiation_batch_night_age(const float *in,
+                                                          const int *ist,
+                                                          float *out, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+        d_radiation(in + (size_t) i * R_NIN, ist[i], out + (size_t) i * R_NOUT, true);
+}
+
 // Device-libm probe.
 //
 // This file's glibc_powf is one of the five narrow copies in the tree: outside

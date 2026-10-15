@@ -87,23 +87,25 @@ def test_invalid_operational_population_keeps_actionable_diagnostic():
         resolve_ensemble_sources(3, context(hours=1000))
 
 
-def test_unknown_artifact_refuses_uncalibrated_reference_fallback():
+def test_unknown_artifact_labels_uncalibrated_reference_fallback():
     value = context(None)
-    with pytest.raises(ValueError, match="calibrated against observations"):
-        resolve_ensemble_sources(3, value)
+    selection = resolve_ensemble_sources(3, value)
+    assert selection.mode == "stochastic"
+    assert selection.describe()["warnings"] == ["uncalibrated spread, WRF default amplitudes"]
     assert value.describe()["trajectory"] is None
 
 
 def test_cam_requires_measured_or_explicit_controls():
     with pytest.raises(ValueError, match="no fitted automatic source policy"):
         resolve_ensemble_sources(3, context("hrrr"))
-    with pytest.raises(ValueError, match="calibrated against observations"):
-        resolve_ensemble_sources({"members": 3, "stochastic": {"sppt": True}}, context("hrrr"))
+    selection = resolve_ensemble_sources({"members": 3, "stochastic": {"sppt": True}}, context("hrrr"))
+    assert selection.stochastic == {"sppt": True}
 
 
-def test_analysis_without_operational_ensemble_refuses_uncalibrated_fallback():
-    with pytest.raises(ValueError, match="calibrated against observations"):
-        resolve_ensemble_sources(3, context("era5"))
+def test_analysis_without_operational_ensemble_labels_uncalibrated_fallback():
+    selection = resolve_ensemble_sources(3, context("era5"))
+    assert selection.mode == "stochastic"
+    assert selection.describe()["warnings"] == ["uncalibrated spread, WRF default amplitudes"]
 
 
 def test_measured_policy_retains_donor_population_amplitude_and_native_brackets(tmp_path):
@@ -249,8 +251,7 @@ def test_original_domain_ids_and_activation_times_are_retained(tmp_path):
     domains = (DomainSourceContext(1, None, START, (authority,)),
                DomainSourceContext(4, 1, START + timedelta(hours=2), (authority,)))
     value = context(None, domains=domains)
-    with pytest.raises(ValueError, match="calibrated against observations"):
-        resolve_ensemble_sources(3, value)
+    assert resolve_ensemble_sources(3, value).mode == "stochastic"
     assert [item["grid_id"] for item in value.describe()["domains"]] == [1, 4]
     with pytest.raises(ValueError, match="parent-first"):
         context(None, domains=tuple(reversed(domains)))

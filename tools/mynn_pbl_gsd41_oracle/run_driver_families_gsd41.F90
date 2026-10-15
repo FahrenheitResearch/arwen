@@ -41,11 +41,11 @@ program run_mynn_bl_driver_families_gsd41_oracle
   character(len=32) :: nstep_arg
   character(len=1024) :: controls_path
   integer :: controls_unit, bl_mynn_mixlength = 2
-  logical :: cycling = .false.
+  logical :: cycling = .false., tkeadvect = .false.
   real :: initial_qke = 0.0, initial_qc_bl = 0.0, initial_cldfra_bl = 0.0
   real :: heat_scale = 1.0, vapor_scale = 1.0, wind_scale = 1.0
   namelist /review/ bl_mynn_mixlength, cycling, initial_qke, initial_qc_bl, &
-      initial_cldfra_bl, heat_scale, vapor_scale, wind_scale
+      initial_cldfra_bl, heat_scale, vapor_scale, wind_scale, tkeadvect
   integer :: nstep = 12
   integer :: c, k, s, unit, initflag
 
@@ -67,7 +67,7 @@ program run_mynn_bl_driver_families_gsd41_oracle
   ! the six families' state across steps
   real, dimension(nfam, nz) :: fdz, fu, fv, fw, fth, fqv, fqc, fqi, fp, &
       fexner, frho, ft3d, fqke, ftsq, fqsq, fcov, fel, fsh, fqcbl, fcfbl, &
-      frthraten
+      frthraten, fqke_adv
   real, dimension(nfam) :: fdx, fznt, fxland, fts, fqsfc, fps, fust, fch, &
       fhfx, fqfx, fwspd, fpblh, frmol
   integer, dimension(nfam) :: fkpbl
@@ -95,7 +95,7 @@ program run_mynn_bl_driver_families_gsd41_oracle
       'rthraten,qke_in,tsq_in,qsq_in,cov_in,el_in,sh_in,qc_bl_in,' //         &
       'cldfra_bl_in,pblh_in,kpbl_in,rublten,rvblten,rthblten,rqvblten,' //    &
       'rqcblten,rqiblten,exch_h,exch_m,qke,tsq,qsq,cov,el_pbl,sh3d,' //       &
-      'qc_bl,cldfra_bl,pblh,kpbl,maxmf,ktop_plume'
+      'qc_bl,cldfra_bl,pblh,kpbl,maxmf,ktop_plume,qke_adv_in,qke_adv'
 
   delt = 20.0
   ! ---- atmosphere: identical to run_driver_families.F90, mixing ratios --
@@ -201,6 +201,7 @@ program run_mynn_bl_driver_families_gsd41_oracle
         frthraten(c, k) = -1.5e-4
       end if
       fqke(c, k) = initial_qke
+      fqke_adv(c,k) = initial_qke
       ftsq(c, k) = 0.0
       fqsq(c, k) = 0.0
       fcov(c, k) = 0.0
@@ -233,7 +234,8 @@ program run_mynn_bl_driver_families_gsd41_oracle
       qnc = 0.0; qni = 0.0; qnwfa = 0.0; qnifa = 0.0
       p(1, :, 1) = fp(c, :); exner(1, :, 1) = fexner(c, :)
       rho(1, :, 1) = frho(c, :); t3d(1, :, 1) = ft3d(c, :)
-      qke(1, :, 1) = fqke(c, :); qke_adv = 0.0
+      if (tkeadvect .and. s > 1) fqke_adv(c,:) = fqke_adv(c,:) * 1.125
+      qke(1, :, 1) = fqke(c, :); qke_adv(1,:,1) = fqke_adv(c,:)
       tsq(1, :, 1) = ftsq(c, :); qsq(1, :, 1) = fqsq(c, :)
       cov(1, :, 1) = fcov(c, :); el_pbl(1, :, 1) = fel(c, :)
       sh3d(1, :, 1) = fsh(c, :)
@@ -270,7 +272,7 @@ program run_mynn_bl_driver_families_gsd41_oracle
           uoce, voce,                                                      &
           vdfg,                                                            &
           qke,                                                             &
-          qke_adv, .false.,                                                &
+          qke_adv, tkeadvect,                                                &
           tsq, qsq, cov,                                                   &
           rublten, rvblten, rthblten,                                      &
           rqvblten, rqcblten, rqiblten,                                    &
@@ -323,10 +325,12 @@ program run_mynn_bl_driver_families_gsd41_oracle
             sh3d(1, k, 1), qc_bl(1, k, 1), cldfra_bl(1, k, 1), pblh(1, 1)
         write(unit, '(",",I0)', advance='no') kpbl(1, 1)
         write(unit, '(",",ES24.16E3)', advance='no') maxmf(1, 1)
-        write(unit, '(",",I0)') ktop_plume(1, 1)
+        write(unit, '(",",I0)', advance='no') ktop_plume(1, 1)
+        write(unit, '(2(",",ES24.16E3))') fqke_adv(c,k), qke_adv(1,k,1)
       end do
 
       ! carry the driver's state and advance the family
+      fqke_adv(c,:) = qke_adv(1,:,1)
       fqke(c, :) = qke(1, :, 1); ftsq(c, :) = tsq(1, :, 1)
       fqsq(c, :) = qsq(1, :, 1); fcov(c, :) = cov(1, :, 1)
       fel(c, :) = el_pbl(1, :, 1); fsh(c, :) = sh3d(1, :, 1)

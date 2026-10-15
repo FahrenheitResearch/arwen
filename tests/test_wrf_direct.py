@@ -418,7 +418,7 @@ def test_number_moment_wrfinput_contract_writes_arbitrary_vertical_shape(
 
 def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
                                   *, boundary_scalars=None,
-                                  replace_start=None, intervals=1,
+                                  replace_start=None, intervals=1, surface_override=None,
                                   **run_overrides):
     """A real CPU cold start through the prepared cache and the export.
 
@@ -510,6 +510,12 @@ def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
         "SNOW": np.zeros((ny, nx), dtype=np.float32),
         "SNOWH": np.zeros((ny, nx), dtype=np.float32),
     }
+    if surface_override is not None:
+        surface_override(surface, static)
+        np.savez(static_path, **static)
+        geometry_doc = json.loads(geometry_path.read_text())
+        geometry_doc["cache"]["sha256"] = _sha256(static_path)
+        geometry_path.write_text(json.dumps(geometry_doc))
     cache_path = tmp_path / "prepared-cache"
     write_prepared_cache(
         cache_path,
@@ -1948,3 +1954,29 @@ def test_the_export_writes_the_vegetation_the_run_starts_with():
     assert not np.allclose(climatology["VEGFRA"],
                            100.0 * static["GREENFRAC"][4])
     assert not np.allclose(climatology["LAI"], static["LAI12M"][4])
+
+
+def test_stock_export_snow_ice_th2_and_attributes_are_read_back(tmp_path):
+    def surfaces(surface, static):
+        surface["SNOW"][0, :4] = [0.0, 9.999, 10.0, 100.0]
+        surface["SEAICE"][1, :2] = [0.0, 1.0]
+        surface["LANDMASK"][1, :2] = [0.0, 1.0]
+        surface["XLAND"][1, :2] = [2.0, 1.0]
+        static["LU_INDEX"][1, :2] = 21
+        static["SCT_DOM"][1, :2] = 14
+    output, cfg, _ = _export_a_real_prepared_cache(tmp_path, 8,
+        surface_override=surfaces, diff_opt=1, diff_6th_slopeopt=0)
+    with netCDF4.Dataset(output / "wrfinput_d01") as ds:
+        np.testing.assert_array_equal(ds["SNOWC"][0,0,:4], [0,0,1,1])
+        assert ds["IVGTYP"][0,1,1] == 15
+        assert ds["ISLTYP"][0,1,1] == 16
+        assert ds["SNOALB"][0,1,1] == 0.75
+        assert ds["IVGTYP"][0,1,0] == 17
+        pressure = ds["P"][0,0] + ds["PB"][0,0]
+        from gpuwm.wrf_direct import _RCP, _P0
+        expected = ds["T2"][0] * (_P0 / pressure) ** _RCP
+        np.testing.assert_allclose(ds["TH2"][0], expected, rtol=2e-7)
+        assert ds.SURFACE_INPUT_SOURCE == 3
+        assert ds.DIFF_OPT == 1
+        assert ds.DIFF_6TH_SLOPEOPT == 0
+        assert ds.GHG_INPUT == 0

@@ -149,7 +149,7 @@ def test_an_unmapped_selector_refuses_by_name_instead_of_going_ice_free():
     """Fails closed.  A future scheme raises rather than radiating clear."""
 
     with pytest.raises(NotImplementedError) as excinfo:
-        legacy_cloud_fraction_flags(2)
+        legacy_cloud_fraction_flags(7)
     message = str(excinfo.value)
     assert "Registry" in message
     assert "_LEGACY_ICE_ONLY_MICROPHYSICS" in message

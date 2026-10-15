@@ -877,3 +877,29 @@ def test_the_real_noahmp_descriptor_build_reaches_the_device():
 
     report = validator.validate(phase="noahmp-initialized-or-restored")
     assert report.ok, report
+
+
+def test_the_ebal_range_admits_every_case_the_noah_kernel_writes():
+    """surface.ebal's health bounds are exactly the codes noah.cu can store.
+
+    The SFLX_GLACIAL port (golden/ports-pbl) stores ebal = 4 on land-ice
+    columns.  With the rule still at [0, 3], a real met_em forecast whose
+    domain holds land ice died at its first post-d01-sync health check
+    (``surface.ebal(37, 22): value 4.0 exceeds upper bound 3.0``).  The
+    codes are read from the kernel source, so a new case cannot drift
+    past the gate again.
+    """
+    import re
+    from pathlib import Path
+
+    from gpuwm.core.health import rule_for_field
+
+    source = (Path(__file__).resolve().parents[1]
+              / "gpuwm" / "core" / "kernels" / "noah.cu").read_text()
+    codes = {int(v) for v in re.findall(
+        r"\bebal_(?:case|a\[idx\])\s*=\s*(\d+)\s*;", source)}
+    codes |= {int(v) for pair in re.findall(
+        r"ebal_case\s*=\s*\w+\s*\?\s*(\d+)\s*:\s*(\d+)", source) for v in pair}
+    assert codes == {0, 1, 2, 3, 4}, codes
+    rule = rule_for_field("surface.ebal")
+    assert (rule.lower, rule.upper) == (min(codes), max(codes))

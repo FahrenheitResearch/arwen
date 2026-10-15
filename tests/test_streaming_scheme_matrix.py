@@ -98,6 +98,9 @@ COMPONENT_ADAPTERS: dict[str, tuple[tuple[str, str], ...]] = {
     # these two now go through the same twinning proof as the rest.
     "grell-freitas": (("gpuwm.core.gf", "GrellFreitas"),),
     "new-tiedtke": (("gpuwm.core.ntiedtke", "NewTiedtke"),),
+    # New SAS is a row of the column-cumulus table, installed through the
+    # one table-driven adapter (gpuwm.core.physics, cu_physics = 96).
+    "new-sas": (("gpuwm.core.column_cumulus", "ColumnCumulus"),),
     "off": (),
 }
 
@@ -247,7 +250,10 @@ def test_the_default_suites_radiation_is_the_one_that_needed_a_recipe():
                  if not isinstance(resolved, ModuleNotFoundError)
                  and streaming.twin_support(resolved)
                  == streaming.TWIN_BY_RECIPE}
-    assert by_recipe == {"RRTMGLegacyRadiation"}, (
+    # The second entry is the column-cumulus table's adapter (New SAS,
+    # cu_physics = 96), whose constructor requires its row's cu_physics; this
+    # audit caught it the day its suite joined the template walk.
+    assert by_recipe == {"RRTMGLegacyRadiation", "ColumnCumulus"}, (
         f"recipes now cover {sorted(by_recipe)}; every other shipped adapter "
         "is a dataclass or empty-constructible, and a new entry here is a "
         "new scheme that could not be rebuilt without one")

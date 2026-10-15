@@ -127,7 +127,7 @@ def evolving_transport(tmp_path_factory):
         'int nz,float dtcld,double*out){float work1r[80],workn[80];\n' + block +
         '\nout[0]=fall_r_sfc*delz[0]*dtcld;out[3]=mstep;}\n'
         'extern "C" void rates(float*q,float*n,float*rho,float*dz,int nz,float*rm,float*rn){'
-        'for(int k=0;k<nz;++k){auto s=wdm6_rain_slope(q[k],n[k],rho[k],sqrtf(1.28f/rho[k]));'
+        'for(int k=0;k<nz;++k){auto s=wdm6_rain_slope(q[k],n[k],rho[k],wdm6_denfac(rho[k]));'
         'rm[k]=s.vt/dz[k];rn[k]=s.vtn/dz[k];}}')
     library = directory / "evolution.so"
     subprocess.run([compiler, "-std=c++17", "-O2", "-fPIC", "-shared", "-ffp-contract=off",

@@ -186,7 +186,10 @@ def test_complete_thompson_column_chain_and_member_rings_match_stock(members, te
     for name in names:
         arrays[name] = staged.pack(name, cp.stack([getattr(state, name) for state in states]))
     arrays.update(thb=states[0].thb, phb=states[0].phb)
-    scratch_fields = thompson_column_scratch_fields(nz=nz, ny=ny, nx=nx)
+    # The production admission (batch_physics_init) passes the run's
+    # correct-mode WB1 key; so does this fixture.
+    scratch_fields = thompson_column_scratch_fields(
+        nz=nz, ny=ny, nx=nx, cloud_booking=cfg.thompson_cloud_surface_booking)
     scratch = ColumnBuffers(scratch_fields, members=members, available_bytes=1 << 29)
     packed = PackedThompsonState(arrays, {field.name: scratch.packed(field.name) for field in scratch_fields})
     bound = prepare_thompson_column_batch(packed, cfg, members=members, ny=ny, nx=nx,

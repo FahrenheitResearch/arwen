@@ -213,15 +213,32 @@ def test_native_static_tool_applies_declared_overlay_and_reseals_prebuilt_bytes(
     assert receipt_path.read_bytes() == original_receipt
 
 
-def test_real_highres_corridor_crops_match_initial_and_moved_footprints(tmp_path, monkeypatch):
+def test_real_highres_corridor_births_the_child_its_moves_crop_from(tmp_path, monkeypatch):
+    """Plan call 5 (2.9.0): smooth at corridor scale and take the birth
+    footprint from the corridor crop.
+
+    The defect (c1227a11a, in 2.8.8 and 2.8.9): the corridor ran the terrain
+    slope bound over its whole extent (one 1-2-1 pass over steep ground)
+    while a footprint build smoothed only its own cells (none), so the
+    child's prepared HGT_M differed from every corridor crop and the first
+    relocation's overlap-statics comparison refused.  Now the child is born
+    on the crop: its statics are the crop's bytes, its slope receipt binds
+    them, and the first move's shared ground agrees.
+    """
     from datetime import datetime
     from types import SimpleNamespace
     from test_statics_corridor import _synthetic_wps_geog, _catalog
     from test_static_highres_warp_routing import HIGHRES_FIXTURES, _bound, _bridge_or_fail
+    from gpuwm.core.nest_relocation import Placement, plan_relocation
+    from gpuwm.ingest.relocation_init import (OVERLAP_STATIC_EQUALITY_FIELDS,
+                                              overlap_statics_mismatches)
     from gpuwm.static.lambert import LambertGrid
     from gpuwm.static.build import build_static, geog_selection_from_catalog
-    from gpuwm.static.corridor import (build_child_statics_corridor,
-        write_statics_corridor_set, load_child_statics_corridor, corridor_footprint_statics_builder)
+    from gpuwm.static.corridor import (
+        STATICS_CORRIDOR_BUILD_CONTRACT, build_child_statics_corridor,
+        corridor_birth_statics, load_child_statics_corridor,
+        write_statics_corridor_set)
+    from gpuwm.static.terrain_autosmooth import receipt_of, verify_receipt
     _bridge_or_fail()
     import test_statics_corridor as corridor_fixture
     original_regional = corridor_fixture._fine_regional
@@ -234,11 +251,13 @@ def test_real_highres_corridor_crops_match_initial_and_moved_footprints(tmp_path
     catalog = _catalog(geog, tmp_path)
     parent = LambertGrid(ref_lat=46.5, ref_lon=7.5, truelat1=46., truelat2=47.,
                          stand_lon=7.5, dx=750., dy=750., e_we=7, e_sn=7)
+    # Six child cells a side: a one-parent-cell move keeps three columns of
+    # shared ground for the overlap rule to compare.
     child = SimpleNamespace(grid_id=2, parent_id=1, parent_grid_ratio=3,
         i_parent_start=3, j_parent_start=3, start_time=datetime(2026, 9, 5),
-        run=SimpleNamespace(nx=3, ny=3))
+        run=SimpleNamespace(nx=6, ny=6))
     parent_run = SimpleNamespace(nx=6, ny=6)
-    reference = parent.nest(3, 3, 3, 4, 4)
+    reference = parent.nest(3, 3, 3, 7, 7)
     config = owner.load_static_highres(_config(tmp_path))
     source = _bound(HIGHRES_FIXTURES / "terrain_clip.tif", role="terrain")
     monkeypatch.setattr(owner, "_fetch_terrain", lambda *a, **k:
@@ -247,20 +266,41 @@ def test_real_highres_corridor_crops_match_initial_and_moved_footprints(tmp_path
         reference_grid=reference, static_catalog=catalog, static_highres=config)
     directory = tmp_path / "corridor"
     receipt = write_statics_corridor_set(directory, [built])
+    entry = receipt["domains"]["d02"]
+    assert entry["build_contract"] == STATICS_CORRIDOR_BUILD_CONTRACT
+    assert entry["terrain_autosmooth"]["smooth_passes"] >= 1
     corridor = load_child_statics_corridor(directory, expected_set_receipt=receipt,
         grid_id=2, child_dc=child, parent_run=parent_run, reference_grid=reference)
-    assert corridor_footprint_statics_builder(corridor).highres_applied is True
+
+    births = corridor_birth_statics(directory, receipt, SimpleNamespace(domains=[child]))
+    assert set(births) == {2}
     selection = geog_selection_from_catalog(catalog, 2)
-    for i, j in [(3, 3), (2, 4)]:
-        grid = parent.nest(i, j, 3, 4, 4)
-        baseline = build_static(grid, selection.root, selection=selection)
-        exact, _ = owner.apply_highres_statics(baseline, grid, config=config,
-            domain_id=2, case_date=child.start_time.date(),
-            landuse_attrs=selection.landuse_global_attrs())
-        cropped = corridor.crop(i, j)
-        assert set(cropped) == set(exact)
-        for key in exact:
-            assert cropped[key].tobytes() == exact[key].tobytes(), (i, j, key)
+    grid = parent.nest(3, 3, 3, 7, 7)
+    baseline = build_static(grid, selection.root, selection=selection)
+    born = births[2].footprint_statics(baseline, grid)
+    declared = corridor.crop(3, 3)
+    assert set(born) == set(baseline)
+    for key in born:
+        assert born[key].tobytes() == declared[key].tobytes(), key
+    # The terrain the child runs is the terrain its receipt binds.
+    verify_receipt(receipt_of(born), born["HGT_M"], domain_id=2)
+    assert receipt_of(born)["smooth_passes"] == entry["terrain_autosmooth"]["smooth_passes"]
+
+    moved = corridor.crop(2, 4)
+    plan = plan_relocation(
+        placement_from=Placement(grid_id=2, i_parent_start=3, j_parent_start=3),
+        placement_to=Placement(grid_id=2, i_parent_start=2, j_parent_start=4),
+        parent_grid_ratio=3, child_nx=6, child_ny=6)
+    assert overlap_statics_mismatches(born, moved, plan,
+        names=OVERLAP_STATIC_EQUALITY_FIELDS)["pass"]
+    # The footprint-scale build this replaces disagrees with the moved crop
+    # on the same ground: the refusal the first move used to meet.
+    footprint, _ = owner.apply_highres_statics(baseline, grid, config=config,
+        domain_id=2, case_date=child.start_time.date(),
+        landuse_attrs=selection.landuse_global_attrs())
+    shared = overlap_statics_mismatches(footprint, moved, plan,
+        names=OVERLAP_STATIC_EQUALITY_FIELDS)
+    assert not shared["pass"] and "HGT_M" in shared["mismatched_fields"]
 
 
 def test_native_publication_retains_captured_relative_paths_when_relocated(tmp_path, monkeypatch):

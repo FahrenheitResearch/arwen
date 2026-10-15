@@ -31,7 +31,7 @@ def test_fork_signature_with_another_microphysics_scheme_adds_no_selectors():
 
 def test_importer_emits_the_fork_selectors_for_a_supported_fork_configuration(tmp_path):
     from test_namelist_import import INPUT_TEXT, _pair
-    inp = INPUT_TEXT.replace(" mp_physics = 55, 55,",
+    inp = INPUT_TEXT.replace(" mp_physics = 10, 10,",
                              " mp_physics = 28, 28,\n bl_mynn_tkebudget = 0,")
     text, _ = import_namelists(*_pair(tmp_path, inp=inp), name="fork")
     path = tmp_path / "fork.toml"
@@ -45,7 +45,7 @@ def test_importer_emits_the_fork_selectors_for_a_supported_fork_configuration(tm
 
 def test_nonzero_fork_budget_still_names_the_missing_output_package(tmp_path):
     from test_namelist_import import INPUT_TEXT, _pair
-    inp = INPUT_TEXT.replace(" mp_physics = 55, 55,",
+    inp = INPUT_TEXT.replace(" mp_physics = 10, 10,",
                              " mp_physics = 28, 28,\n bl_mynn_tkebudget = 1,")
     with pytest.raises(ValueError, match="writes no TKE budget terms"):
         import_namelists(*_pair(tmp_path, inp=inp), name="fork")
@@ -74,8 +74,21 @@ def test_non_fork_import_is_byte_identical_to_the_previous_importer(tmp_path):
                                  without_wrf_clock_report)
     # The pinned-clock block and its report lines are 2.8.9's D8 ruling.
     assert WRF_CLOCK_BLOCK in actual
-    assert without_wrf_clock_lines(actual).encode() == expected.encode()
-    assert without_wrf_clock_report(report.format()) == old_report.format()
+    # One more deliberate difference since 2026-10-12: the pair omits
+    # &dynamics top_lid, which the previous importer resolved to the rigid
+    # lid (with a report line saying so) and this one reads as WRF's open
+    # top.  Exactly that TOML line and that report line, once each.
+    open_top, rigid = "\ntop_lid = false\n", "\ntop_lid = true\n"
+    assert actual.count(open_top) == 1 and expected.count(rigid) == 1
+    assert without_wrf_clock_lines(actual).replace(
+        open_top, rigid).encode() == expected.encode()
+    old_lines = old_report.format().splitlines()
+    lid_rows = [line for line in old_lines
+                if line.startswith("  top_lid = True: ")]
+    assert len(lid_rows) == 1
+    old_lines.remove(lid_rows[0])
+    assert (without_wrf_clock_report(report.format()).splitlines()
+            == old_lines)
 
 
 @pytest.mark.parametrize("name", ["hrrr_configuration_cut.toml",

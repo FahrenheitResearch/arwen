@@ -647,12 +647,19 @@ def admit(plans, *, config, geog_root, case_root, request, options=None,
     from gpuwm import capabilities, go_cli, rustwx
 
     options = options or {}
+    def admit_geography():
+        # Each member can select a different static source or land layout.
+        # The generic installation inventory would demand unused datasets
+        # and disagree with fetch-geog --config on complete published statics.
+        configs = tuple(dict.fromkeys(getattr(plan, "config", config) for plan in plans)) or (config,)
+        for member_config in configs:
+            geography = go_cli.geography_refusal(geog_root, config=member_config)
+            if geography is not None:
+                raise RecipeRefusal(geography)
     if options.get("prepare_only"):
         # Preparation needs geography and disk space, but no forecast card
         # or renderer. Forecast admission still runs on the launch route.
-        geography = go_cli.geography_refusal(geog_root)
-        if geography is not None:
-            raise RecipeRefusal(geography)
+        admit_geography()
         refusal = disk_refusal(plans, case_root=case_root, request=request, options=options)
         if refusal is not None:
             raise RecipeRefusal(refusal)
@@ -687,9 +694,7 @@ def admit(plans, *, config, geog_root, case_root, request, options=None,
                 if gate.get("preparation_warning"):
                     print(f"warning: {gate['preparation_warning']}.",
                           file=sys.stderr, flush=True)
-        geography = go_cli.geography_refusal(geog_root)
-        if geography is not None:
-            raise RecipeRefusal(geography)
+        admit_geography()
         try:
             renderer = rustwx.find_renderer()
         except FileNotFoundError as error:

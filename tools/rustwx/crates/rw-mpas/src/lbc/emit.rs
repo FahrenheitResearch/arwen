@@ -601,6 +601,7 @@ mod tests {
             coef_3rd_order: 0.25,
             fg_interval_seconds: 10800,
             oned_underflow: Underflow::ReproduceIfxFtz,
+            physics_mode: crate::lbc::PhysicsMode::Exact,
             attr_overrides: Default::default(),
             provenance: "test".to_string(),
         }

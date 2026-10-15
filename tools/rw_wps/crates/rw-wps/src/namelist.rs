@@ -83,7 +83,7 @@ pub const NAMELIST_SUPPORT_SCHEMA: &str = "rw-wps.namelist-support.v1";
 ///
 /// Public so `tests/engine_stock_inventory.rs` can hold it to the engine's
 /// own inventory (gpuwm/physics_consumer_export_v1.json).
-pub const STOCK_WRF_INVENTORIED_MP_PHYSICS: &[u16] = &[6, 8, 10, 18, 28, 50];
+pub const STOCK_WRF_INVENTORIED_MP_PHYSICS: &[u16] = &[2, 4, 5, 6, 8, 10, 18, 24, 28, 50, 106];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamelistSupportRequest {

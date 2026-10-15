@@ -277,7 +277,7 @@ def _glacier_execution_provenance(evaluator) -> str:
 
 
 def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
-                      dt, dzs, evaluator) -> None:
+                      dt, dzs, evaluator, noahmp_snow_age="wrf_470") -> None:
     """Run NOAHMP_GLACIER over the masked columns and write the driver's
     glacier arm back into ``fields``.
 
@@ -359,6 +359,7 @@ def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
         "snice": snice, "snliq": snliq,
         "zsoil": zsoil_from_dzs(dzs),
     }
+    inputs["noahmp_snow_age"] = noahmp_snow_age
     r = evaluator(inputs, count, float(dt32))
 
     # ---- write-back: the glacier arm (:1065-1150) + shared (:1223-1400)
@@ -1088,9 +1089,12 @@ class NoahmpSolarGeometry:
     every column on the equator at New Year and produce a plausible forecast.
     """
 
-    def __init__(self, start_time: datetime, latitude_deg, longitude_deg):
+    def __init__(self, start_time: datetime, latitude_deg, longitude_deg, *, generation="wrf_480"):
         if not isinstance(start_time, datetime):
             raise TypeError("Noah-MP start_time must be a datetime")
+        from gpuwm.core.solar import solar_generation
+        solar_generation(generation)
+        self.solar_generation = generation
         self.start_time = start_time
         self.latitude_deg = np.ascontiguousarray(
             np.asarray(latitude_deg, dtype=np.float32))
@@ -1111,7 +1115,9 @@ class NoahmpSolarGeometry:
 
         mu, _solcon = wrf_solar_geometry(
             self.valid_time(elapsed_seconds),
-            self.latitude_deg, self.longitude_deg, hour_offset_seconds=0.0)
+            self.latitude_deg, self.longitude_deg, hour_offset_seconds=0.0,
+            generation=self.solar_generation, start_time=self.start_time,
+            elapsed_seconds=elapsed_seconds)
         return np.asarray(mu, dtype=np.float32)
 
     def julian(self, elapsed_seconds: float) -> float:
@@ -1166,6 +1172,7 @@ def zsoil_from_dzs(dzs) -> np.ndarray:
 #: forecast seeded from an uninitialised array.
 _COLD_START_SLAB = ("snow", "snowh", "canwat", "tslb", "smois", "sh2o",
                     "tsk", "xice", "ivgtyp", "isltyp", "lai",
+                    "t2mvxy", "t2mbxy",
                     *NOAHMP_STATE_2D, *NOAHMP_STATE_INT_2D,
                     *NOAHMP_STATE_SNOW_3D, *NOAHMP_STATE_SNOWSOIL_3D)
 
@@ -1181,6 +1188,7 @@ COLD_START_WRITES = (
     "tvxy", "tgxy", "canicexy", "canliqxy", "eahxy", "tahxy",
     "cmxy", "chxy", "fwetxy", "sneqvoxy", "alboldxy",
     "qsnowxy", "qrainxy", "wslakexy", "waxy", "xsaixy",
+    "t2mvxy", "t2mbxy",
 )
 
 #: Setting this to ``1`` forces the paired numpy authority for the one-time
@@ -1411,7 +1419,8 @@ def cold_start_on_device(slab, *, params: NoahmpRuntimeParameters,
                           ("fwetxy", "fwet"), ("sneqvoxy", "sneqvo"),
                           ("alboldxy", "albold"), ("qsnowxy", "qsnow"),
                           ("qrainxy", "qrain"), ("wslakexy", "wslake"),
-                          ("waxy", "wa"), ("xsaixy", "xsai")):
+                          ("waxy", "wa"), ("xsaixy", "xsai"),
+                          ("t2mvxy", "t2mv"), ("t2mbxy", "t2mb")):
             slab[name].reshape(ncol)[span] = y[:, NI_OUT[out]]
         # ISNOWXY is the integer carrier; the kernel returns it as a float
         # over -3..0, which every integer dtype in the tree holds exactly.
@@ -1491,6 +1500,8 @@ def cold_start_on_host(slab, *, params: NoahmpRuntimeParameters,
             slab["canliqxy"][j, i] = cold.canliq
             slab["eahxy"][j, i] = cold.eah
             slab["tahxy"][j, i] = cold.tah
+            slab["t2mvxy"][j, i] = cold.t2mv
+            slab["t2mbxy"][j, i] = cold.t2mb
             slab["cmxy"][j, i] = cold.cm
             slab["chxy"][j, i] = cold.ch
             slab["fwetxy"][j, i] = cold.fwet
@@ -1532,6 +1543,7 @@ def noahmp_lsm_step(
     opt_tdrn: int,
     opt_soil: int,
     sf_urban_physics: int = 0,
+    noahmp_snow_age: str = "wrf_470",
 ) -> dict[str, int]:
     """One ``noahmplsm`` call.  Mutates ``fields`` in place.
 
@@ -1546,6 +1558,8 @@ def noahmp_lsm_step(
     """
     import cupy as cp
 
+    from gpuwm.noahmp_generation import snow_age_generation
+    snow_age_generation(noahmp_snow_age)
     if int(itimestep) < 1:
         raise ValueError("noahmplsm itimestep is one-based and starts at 1")
     if int(dveg) != SFLX_DVEG:
@@ -1580,6 +1594,7 @@ def noahmp_lsm_step(
             precipitation=precipitation, coszen=coszen,
             dt=dt, dx=dx, dzs=dzs, itimestep=itimestep,
             elapsed_seconds=elapsed_seconds,
+            noahmp_snow_age=noahmp_snow_age,
             **({"sf_urban_physics": int(sf_urban_physics)}
                if int(sf_urban_physics) else {}))
         _noahmp_post_lsm_diagnostics(fields, params=params)
@@ -1832,7 +1847,8 @@ def noahmp_lsm_step(
         # call that has a device batch, is answered there, and continues
         # in the same frame; nothing is replayed and no partially mutated
         # state is ever observed.
-        steps = sflx_steps(handle, col, column_smc, **sflx_kwargs)
+        steps = sflx_steps(handle, col, column_smc,
+                           noahmp_snow_age=noahmp_snow_age, **sflx_kwargs)
         try:
             first = steps.send(None)
         except StopIteration:
@@ -1856,7 +1872,8 @@ def noahmp_lsm_step(
         glacier_evaluator = _resolve_glacier_evaluator()
         _glacier_lsm_step(fields, atmosphere, glacier, params=params,
                           coszen=coszen, dt=dt32, dzs=dzs,
-                          evaluator=glacier_evaluator)
+                          evaluator=glacier_evaluator,
+                          noahmp_snow_age=noahmp_snow_age)
         census["glacier_path"] = _glacier_execution_provenance(
             glacier_evaluator)
     _noahmp_post_lsm_diagnostics(fields, params=params)
@@ -1959,6 +1976,7 @@ def _lsm_step_slab(
     itimestep: int,
     elapsed_seconds: float,
     sf_urban_physics: int = 0,
+    noahmp_snow_age: str = "wrf_470",
 ) -> dict[str, int]:
     """One ``noahmplsm`` call through the whole-slab orchestration.
 
@@ -2100,7 +2118,8 @@ def _lsm_step_slab(
         glacier_evaluator = _resolve_glacier_evaluator()
         _glacier_lsm_step(fields, atmosphere, glacier, params=params,
                           coszen=cosz, dt=float(dt32f), dzs=dzs,
-                          evaluator=glacier_evaluator)
+                          evaluator=glacier_evaluator,
+                          noahmp_snow_age=noahmp_snow_age)
         census["glacier_path"] = _glacier_execution_provenance(
             glacier_evaluator)
 
@@ -2172,7 +2191,7 @@ def _lsm_step_slab(
         })
         chunk.update(parameter_chunks[start // SLAB_COLUMN_CHUNK])
 
-        out = evaluate_sflx_slab(chunk, m)
+        out = evaluate_sflx_slab(chunk, m, noahmp_snow_age=noahmp_snow_age)
         _write_back_slab(fields, jc, ic, out, nsoil=nsoil, dt=dt32f)
 
     return census
@@ -2290,7 +2309,7 @@ _WRITE_BACK_DIRECT = (
     ("snowc", "fsno"), ("emiss", "emissi"), ("qsfc", "qsfc"),
     ("tvxy", "tv"), ("tgxy", "tg"), ("canliqxy", "canliq"),
     ("canicexy", "canice"), ("eahxy", "eah"), ("tahxy", "tah"),
-    ("cmxy", "cm"), ("chxy", "ch"), ("fwetxy", "fwet"),
+                          ("cmxy", "cm"), ("chxy", "ch"), ("fwetxy", "fwet"),
     ("sneqvoxy", "sneqvo"), ("alboldxy", "albold"), ("qsnowxy", "qsnow"),
     ("qrainxy", "qrain"), ("wslakexy", "wslake"),
     # WAXY is deliberately absent: opt_run=3 kills GROUNDWATER, so nothing in

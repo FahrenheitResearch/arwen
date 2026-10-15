@@ -1,8 +1,16 @@
 """Kain--Fritsch cumulus physics (WRF ``cu_physics=1``).
 
-The CPU mirror is the numerical authority.  These tests pin the KF lookup
-table, trigger/no-trigger behavior, 90 % CAPE closure, finite bounded
-tendencies, precipitation, and the one-thread-per-column CUDA port.
+The numerical authority is WRF v4.6.1 itself: ``kernels/kf.cu`` is graded
+word for word against the unmodified Fortran by
+``tests/test_kf_wrf461_oracle.py``.  These tests pin the KF lookup table
+(110,420 cells against the gfortran/glibc build of ``KF_LUTAB``), the
+W0AVG weights, the F_QR mapping, the driver binding (NCA hold, trigger
+history cadence) and the batched output validation.
+
+The float64 mirror (``np_kf_column``) and every test graded against it were
+retired on 2026-10-07 with the kernel they described: it re-derived the
+scheme instead of porting it, and the oracle measured it off WRF on every
+convecting column.
 """
 
 from __future__ import annotations
@@ -15,320 +23,6 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
-
-
-_REAL74_COLUMNS = Path(__file__).parent / "data" / "kf_real74_12z_columns.npz"
-
-
-def _sounding(*, unstable: bool, nz: int = 49):
-    """A hydrostatic Great-Plains-like pressure-level column."""
-    z_ifc = 16000.0 * np.linspace(0.0, 1.0, nz + 1) ** 1.18
-    z = 0.5 * (z_ifc[:-1] + z_ifc[1:])
-    dz = np.diff(z_ifc)
-    pressure = 98000.0 * np.exp(-z / 8100.0)
-    exner = (pressure / 100000.0) ** (287.0 / 1004.5)
-    if unstable:
-        # Deep but non-limiter branch: the 1.6-km moisture transition forces
-        # mixed-phase convection while retaining exact WRF water closure.
-        temperature = np.maximum(293.0 - 0.0070 * z, 205.0)
-        qv = (0.014 * np.exp(-z / 3500.0)
-              / (1.0 + np.exp((z - 1600.0) / 150.0))
-              + 0.001 * np.exp(-z / 5000.0))
-        u = 8.0 + 0.0020 * z
-        w = np.where(z < 2500.0, 0.01, 0.0)
-    else:
-        temperature = np.maximum(276.0 - 0.0040 * z, 215.0)
-        temperature += 5.0 * np.exp(-((z - 900.0) / 650.0) ** 2)
-        qv = 0.0032 * np.exp(-z / 1500.0)
-        u = 12.0 + 0.0008 * z
-        w = np.full(nz, -0.03)
-    return dict(
-        u=u, v=np.zeros(nz), temperature=temperature, qv=qv,
-        qc=np.zeros(nz), pressure=pressure, exner=exner, dz=dz,
-        w=w, dx=12000.0, dt=60.0, cudt=300.0,
-    )
-
-
-def _real74_sounding(label: str):
-    with np.load(_REAL74_COLUMNS, allow_pickle=False) as data:
-        result = {name: data[f"{label}_{name}"].astype(np.float64)
-                  for name in ("u", "v", "temperature", "qv", "qc",
-                               "pressure", "exner", "dz", "w")}
-    return {**result, "dx": 12000.0, "dt": 60.0, "cudt": 300.0}
-
-
-def _shallow_sounding():
-    """Deterministic failed-deep column whose deepest fallback is level 5."""
-    sounding = _sounding(unstable=True)
-    z = np.cumsum(sounding["dz"]) - 0.5 * sounding["dz"]
-    sounding["temperature"] = np.maximum(288.0 - 0.004 * z, 205.0)
-    sounding["qv"] = 1.25 * (
-        0.014 * np.exp(-z / 3500.0)
-        / (1.0 + np.exp((z - 1600.0) / 150.0))
-        + 0.001 * np.exp(-z / 5000.0))
-    return sounding
-
-
-def _guarded_sounding():
-    """Buoyant trigger rejected because its cloud violates WRF top bounds."""
-    sounding = _sounding(unstable=True)
-    z = np.cumsum(sounding["dz"]) - 0.5 * sounding["dz"]
-    sounding["temperature"] = np.maximum(276.0 - 0.002 * z, 205.0)
-    sounding["qv"] = 0.4 * (
-        0.014 * np.exp(-z / 3500.0)
-        / (1.0 + np.exp((z - 1600.0) / 150.0))
-        + 0.001 * np.exp(-z / 5000.0))
-    sounding["w"] = np.zeros_like(z)
-    return sounding
-
-
-def _noitr_revert_sounding():
-    """Deep column that exercises WRF's pre-revert PPTFLX behavior."""
-    sounding = _sounding(unstable=True)
-    z = np.cumsum(sounding["dz"]) - 0.5 * sounding["dz"]
-    sounding["temperature"] = np.maximum(
-        298.4098288149002 - 0.009160072858501657 * z
-        - 1.5910521383350194 * np.sin(z / 2714.0159533469146), 195.0)
-    sounding["qv"] = (
-        0.01577952015645559 * np.exp(-z / 4008.7493855872376)
-        / (1.0 + np.exp((z - 1975.874432519607) / 679.6869532216963))
-        + 0.0016032688726005835 * np.exp(-z / 5952.823988933326))
-    sounding["u"] = 13.868313809395254 + 0.0053811191228315515 * z
-    sounding["v"] = 6.891164372559324 + 0.00043676849781746274 * z
-    sounding["w"] = np.where(z < 1808.1232877308598,
-                              0.03092984493021217, 0.0)
-    sounding.update(dx=9000.0, dt=300.0, cudt=300.0)
-    return sounding
-
-
-def _tder_suppression_sounding():
-    """Deep column with 0 < trial TDER < 1, so WRF removes the downdraft."""
-    from gpuwm.verify.npref import _kf_saturation_mixing_ratio
-
-    sounding = _sounding(unstable=True)
-    sounding["qv"] = _kf_saturation_mixing_ratio(
-        sounding["temperature"], sounding["pressure"])
-    sounding.update(dx=300.0, dt=10.0, cudt=300.0)
-    return sounding
-
-
-def _independent_updraft_cape(sounding, source_bottom):
-    """Re-derive WRF ABE without calling ``np_kf_column`` or its outputs."""
-    from gpuwm.core.kf import load_kf_table
-    from gpuwm.verify.npref import (
-        _kf_condload, _kf_dtfrznew, _kf_environment_thetae,
-        _kf_mixed_virtual_temperature, _kf_prof5,
-        _kf_saturation_mixing_ratio, _kf_tpmix2,
-    )
-
-    table = load_kf_table()
-    temperature = np.asarray(sounding["temperature"], dtype=np.float64)
-    pressure = np.asarray(sounding["pressure"], dtype=np.float64)
-    qv = np.asarray(sounding["qv"], dtype=np.float64)
-    dz = np.asarray(sounding["dz"], dtype=np.float64)
-    w = np.asarray(sounding["w"], dtype=np.float64)
-    dx = float(sounding["dx"])
-    nz = temperature.size
-    z = np.cumsum(dz) - 0.5 * dz
-    qsat = _kf_saturation_mixing_ratio(temperature, pressure)
-    qenv = np.clip(np.minimum(qv, qsat), 1.0e-6, None)
-    tv_env = temperature * (1.0 + 0.608 * qenv)
-    rho = pressure / (287.0 * tv_env)
-    dp = rho * 9.81 * dz
-
-    source_top = source_bottom
-    source_dp = 0.0
-    while source_top < nz and source_dp <= 5000.0:
-        source_dp += dp[source_top]
-        source_top += 1
-    source = slice(source_bottom, source_top)
-    tmix = float(np.sum(dp[source] * temperature[source]) / source_dp)
-    qmix = float(np.sum(dp[source] * qenv[source]) / source_dp)
-    zmix = float(np.sum(dp[source] * z[source]) / source_dp)
-    pmix = float(np.sum(dp[source] * pressure[source]) / source_dp)
-    emix = max(qmix * pmix / (0.622 + qmix), 0.6112)
-    a1 = max(emix / 611.2, 0.001)
-    position = (a1 - 0.001) / 0.075
-    index = int(np.trunc(position))
-    base = 0.001 + 0.075 * index
-    fraction = (a1 - base) / 0.075
-    tlog = ((1.0 - fraction) * float(table.log_ratio[index])
-            + fraction * float(table.log_ratio[index + 1]))
-    dewpoint = (17.67 * 273.15 - 29.65 * tlog) / (17.67 - tlog)
-    tlcl = (dewpoint
-            - (0.212 + 1.571e-3 * (dewpoint - 273.16)
-               - 4.36e-4 * (tmix - 273.16)) * (tmix - dewpoint))
-    tlcl = min(tlcl, tmix)
-    zlcl = zmix + (tlcl - tmix) / (-9.81 / 1004.5)
-    klcl = int(np.searchsorted(z, zlcl, side="left"))
-    below = klcl - 1
-    lcl_fraction = (zlcl - z[below]) / (z[klcl] - z[below])
-    tenv_lcl = ((1.0 - lcl_fraction) * temperature[below]
-                + lcl_fraction * temperature[klcl])
-    qenv_lcl = ((1.0 - lcl_fraction) * qenv[below]
-                + lcl_fraction * qenv[klcl])
-    tven_lcl = tenv_lcl * (1.0 + 0.608 * qenv_lcl)
-    w_lcl = ((1.0 - lcl_fraction) * w[below] + lcl_fraction * w[klcl])
-    w_scaled = w_lcl * dx / 25000.0 - 0.02 * min(zlcl / 2000.0, 1.0)
-    dt_lcl = 0.0 if w_scaled < 1.0e-4 else 4.64 * w_scaled ** 0.33
-    plcl = ((1.0 - lcl_fraction) * pressure[below]
-            + lcl_fraction * pressure[klcl])
-    thetae = _kf_environment_thetae(
-        pmix, tmix, qmix, table.log_ratio)
-    radius = (1000.0 if w_scaled < 0.0 else
-              2000.0 if w_scaled > 0.1 else
-              1000.0 + 1000.0 * w_scaled / 0.1)
-    tv_lcl = tlcl * (1.0 + 0.608 * qmix)
-    base_mass_flux = plcl / (287.0 * tv_lcl) * 0.01 * dx * dx
-    kbase = klcl - 1
-    parcel_t = np.zeros(nz)
-    parcel_q = np.zeros(nz)
-    thetaeu = np.zeros(nz)
-    qliq = np.zeros(nz)
-    qice = np.zeros(nz)
-    updraft = np.zeros(nz)
-    updraft[kbase] = base_mass_flux
-    parcel_t[kbase] = tlcl
-    parcel_q[kbase] = qmix
-    thetaeu[kbase] = thetae
-    wlcl = (1.0 if dt_lcl <= 1.0e-4 else
-            min(1.0 + 0.5 * np.sqrt(
-                2.0 * 9.81 * dt_lcl * 500.0 / tven_lcl), 3.0))
-    w2 = wlcl * wlcl
-    ee1, ud1, rei = 1.0, 0.0, 0.0
-    upold = upnew = base_mass_flux
-    ttemp = 268.16
-    cape = 0.0
-    for nk in range(kbase, nz - 1):
-        nk1 = nk + 1
-        parcel_t[nk1] = temperature[nk1]
-        thetaeu[nk1] = thetaeu[nk]
-        parcel_q[nk1] = parcel_q[nk]
-        qliq[nk1] = qliq[nk]
-        qice[nk1] = qice[nk]
-        (parcel_t[nk1], parcel_q[nk1], qliq[nk1], qice[nk1],
-         qnewlq, qnewice) = _kf_tpmix2(
-             pressure[nk1], thetaeu[nk1], parcel_t[nk1], parcel_q[nk1],
-             qliq[nk1], qice[nk1], table)
-        if parcel_t[nk1] <= 268.16:
-            if parcel_t[nk1] > 248.16:
-                ttemp = min(ttemp, 268.16)
-                frozen_fraction = ((ttemp - parcel_t[nk1])
-                                   / (ttemp - 248.16))
-            else:
-                frozen_fraction = 1.0
-            ttemp = parcel_t[nk1]
-            frozen = (qliq[nk1] + qnewlq) * frozen_fraction
-            qnewice += qnewlq * frozen_fraction
-            qnewlq *= 1.0 - frozen_fraction
-            qice[nk1] += qliq[nk1] * frozen_fraction
-            qliq[nk1] *= 1.0 - frozen_fraction
-            (parcel_t[nk1], thetaeu[nk1], parcel_q[nk1],
-             qice[nk1]) = _kf_dtfrznew(
-                 parcel_t[nk1], pressure[nk1], thetaeu[nk1],
-                 parcel_q[nk1], frozen, qice[nk1])
-        tvu = parcel_t[nk1] * (1.0 + 0.608 * parcel_q[nk1])
-        if nk == kbase:
-            layer_depth = z[nk1] - zlcl
-            be = (tv_lcl + tvu) / (tven_lcl + tv_env[nk1]) - 1.0
-        else:
-            layer_depth = z[nk1] - z[nk]
-            tvu_below = parcel_t[nk] * (1.0 + 0.608 * parcel_q[nk])
-            be = (tvu_below + tvu) / (tv_env[nk] + tv_env[nk1]) - 1.0
-        (qliq[nk1], qice[nk1], w2, qnewlq, qnewice,
-         _qlqout, _qicout) = _kf_condload(
-             qliq[nk1], qice[nk1], w2, layer_depth,
-             2.0 * layer_depth * 9.81 * be / 1.5,
-             2.0 * rei * w2 / upold, qnewlq, qnewice)
-        if w2 < 1.0e-3:
-            break
-        environment_thetae = _kf_environment_thetae(
-            pressure[nk1], temperature[nk1], qenv[nk1], table.log_ratio)
-        rei = base_mass_flux * dp[nk1] * 0.03 / radius
-        tvqu = parcel_t[nk1] * (
-            1.0 + 0.608 * parcel_q[nk1] - qliq[nk1] - qice[nk1])
-        if nk == kbase:
-            dilbe = ((tv_lcl + tvqu) / (tven_lcl + tv_env[nk1]) - 1.0) \
-                * layer_depth
-        else:
-            tvqu_below = parcel_t[nk] * (
-                1.0 + 0.608 * parcel_q[nk] - qliq[nk] - qice[nk])
-            dilbe = ((tvqu_below + tvqu) / (tv_env[nk] + tv_env[nk1])
-                     - 1.0) * layer_depth
-        if dilbe > 0.0:
-            cape += dilbe * 9.81
-        if tvqu <= tv_env[nk1]:
-            ee2, ud2 = 0.5, 1.0
-        else:
-            f1, f2 = 0.95, 0.05
-            mixed_virtual = _kf_mixed_virtual_temperature(
-                pressure[nk1], f1 * environment_thetae + f2 * thetaeu[nk1],
-                f1 * qenv[nk1] + f2 * parcel_q[nk1],
-                f2 * qliq[nk1], f2 * qice[nk1], table)
-            if mixed_virtual > tv_env[nk1]:
-                ee2, ud2 = 1.0, 0.0
-            else:
-                f1, f2 = 0.10, 0.90
-                mixed_virtual = _kf_mixed_virtual_temperature(
-                    pressure[nk1],
-                    f1 * environment_thetae + f2 * thetaeu[nk1],
-                    f1 * qenv[nk1] + f2 * parcel_q[nk1],
-                    f2 * qliq[nk1], f2 * qice[nk1], table)
-                equilibrium = np.clip(
-                    (tv_env[nk1] - tvqu) * f1 / (mixed_virtual - tvqu),
-                    0.0, 1.0)
-                if equilibrium == 1.0:
-                    ee2, ud2 = 1.0, 0.0
-                elif equilibrium == 0.0:
-                    ee2, ud2 = 0.0, 1.0
-                else:
-                    ee2, ud2 = _kf_prof5(equilibrium)
-        ee2 = max(ee2, 0.5)
-        ud2 *= 1.5
-        entrainment = 0.5 * rei * (ee1 + ee2)
-        detrainment = 0.5 * rei * (ud1 + ud2)
-        if updraft[nk] - detrainment < 10.0:
-            if dilbe > 0.0:
-                cape -= dilbe * 9.81
-            break
-        ee1, ud1 = ee2, ud2
-        upold = updraft[nk] - detrainment
-        upnew = upold + entrainment
-        updraft[nk1] = upnew
-        parcel_q[nk1] = (upold * parcel_q[nk1]
-                         + entrainment * qenv[nk1]) / upnew
-        thetaeu[nk1] = (upold * thetaeu[nk1]
-                        + entrainment * environment_thetae) / upnew
-        qliq[nk1] *= upold / upnew
-        qice[nk1] *= upold / upnew
-    return float(cape)
-
-
-def _column_budget_residuals(sounding, result):
-    """Return applied total-water/MSE residuals and their numeric scales."""
-    temperature = np.asarray(sounding["temperature"], dtype=np.float64)
-    pressure = np.asarray(sounding["pressure"], dtype=np.float64)
-    qv = np.asarray(sounding["qv"], dtype=np.float64)
-    dz = np.asarray(sounding["dz"], dtype=np.float64)
-    es = 611.2 * np.exp((17.67 * temperature - 17.67 * 273.15)
-                        / (temperature - 29.65))
-    qsat = 0.622 * es / (pressure - es)
-    qenv = np.clip(np.minimum(qv, qsat), 1.0e-6, None)
-    mass = pressure / (287.0 * temperature * (1.0 + 0.608 * qenv)) * dz
-    rain_rate = float(result["rainc"]) / float(sounding["cudt"])
-    water_layers = mass * (
-        result["rqvcuten"] + result["rqccuten"] + result["rqicuten"]
-        + result["rqrcuten"] + result["rqscuten"])
-    water_residual = float(np.sum(water_layers) + rain_rate)
-    water_scale = float(np.sum(np.abs(water_layers)) + abs(rain_rate))
-    sensible_layers = (mass * 1004.5 * result["rthcuten"]
-                       * sounding["exner"])
-    latent_layers = (mass * (3.15e6 - 2370.0 * temperature)
-                     * result["rqvcuten"])
-    mse_residual = float(np.sum(sensible_layers + latent_layers))
-    mse_scale = float(np.sum(np.abs(sensible_layers)
-                             + np.abs(latent_layers)))
-    return water_residual, water_scale, mse_residual, mse_scale
 
 
 def test_kf_lookup_table_is_shipped_data_with_provenance():
@@ -368,11 +62,14 @@ def test_kf_lookup_table_is_shipped_data_with_provenance():
     assert "4.46e-5" in text
     assert "1.32e-6" in text
     assert "default-`REAL` arithmetic" in text
-    assert "Deliberate runtime deviations from WRF v4.6.1" in text
-    for documented_guard in ("0.99*p", "dewpoint/`ALU`", "zero `TMA`",
-                             "top two mass levels", "return zero outputs",
-                             "`DPTHMX > 5000 Pa`"):
-        assert documented_guard in text
+    # The runtime column is a port graded against WRF, and the only
+    # remaining differences are on paths where WRF is undefined or aborts.
+    assert "no deviations from WRF v4.6.1 on any defined path" in text
+    assert "Deliberate runtime deviations" not in text
+    for documented in ("`KLCL = 1`", "`wrf_error_fatal`",
+                       "Fortran column-major order", "zero `TMB`",
+                       "tools/kf_wrf461_oracle"):
+        assert documented in text
     assert "SHA-256" in text
     license_file = provenance.with_name("LICENSE.txt")
     license_text = license_file.read_text(encoding="utf-8")
@@ -531,500 +228,211 @@ def test_kf_lutab_generator_calls_no_numpy_transcendental(monkeypatch):
     assert _oracle_stream_digests(table) == _KF_LUTAB_ORACLE_SHA256
 
 
-def test_kf_mirror_strongly_unstable_closes_cape_and_rains():
-    from gpuwm.verify.npref import np_kf_column
+def test_w0avg_weights_are_kf_eta_cps_single_precision_forms():
+    """module_cu_kfeta.F:209-230, each operation in binary32."""
+    from gpuwm.core.kf import w0avg_factors
 
-    result = np_kf_column(**_sounding(unstable=True))
-    assert result["triggered"]
-    assert result["cape_before"] > 100.0
-    assert 0.0 <= result["cape_after"] / result["cape_before"] <= 0.15
-    assert 1 <= result["closure_iterations"] <= 10
-    np.testing.assert_allclose(
-        result["closure_fabe"],
-        result["cape_after"] / result["cape_before"], rtol=0.0, atol=1.0e-14)
-    assert result["closure_scale"] >= 0.05
-    assert result["rainc"] > 0.0
-    assert np.any(result["updraft_mass_flux"] > 0.0)
-    assert np.any(result["downdraft_mass_flux"] < 0.0)
-    # A deep mixed-phase column must exercise both TPMIX2 condensate
-    # categories, TTFRZ..TBFRZ glaciation, and CONDLOAD fallout.
-    assert np.any(result["updraft_liquid"] > 0.0)
-    assert np.any(result["updraft_ice"] > 0.0)
-    assert np.sum(result["liquid_precip_flux"]) > 0.0
-    assert np.sum(result["ice_precip_flux"]) > 0.0
-    for name, bound in (("rthcuten", 2.0e-2),
-                        ("rqvcuten", 2.0e-5),
-                        ("rqccuten", 2.0e-5), ("rqicuten", 2.0e-5),
-                        ("rqrcuten", 2.0e-5), ("rqscuten", 2.0e-5)):
-        value = result[name]
-        assert np.isfinite(value).all(), name
-        assert np.max(np.abs(value)) <= bound, name
+    f32 = np.float32
+    assert w0avg_factors(cudt_minutes=5.0, dt=60.0, stepcu=5,
+                         adaptive=False) == (f32(9.0), f32(1.0), f32(10.0))
+    assert w0avg_factors(cudt_minutes=0.0, dt=60.0, stepcu=1,
+                         adaptive=False) == (f32(1.0), f32(1.0), f32(2.0))
+    # ADAPT_STEP_FLAG: W0AVGfctr = 2*MAX(CUDT*60,DT) - DT, W0fctr = DT,
+    # W0den = 2*MAX(CUDT*60,DT).
+    fctr, w0fctr, den = w0avg_factors(cudt_minutes=5.0, dt=50.0, stepcu=6,
+                                      adaptive=True)
+    assert (fctr, w0fctr, den) == (f32(550.0), f32(50.0), f32(600.0))
+    fctr, w0fctr, den = w0avg_factors(cudt_minutes=0.0, dt=37.5, stepcu=1,
+                                      adaptive=True)
+    assert (fctr, w0fctr, den) == (f32(37.5), f32(37.5), f32(75.0))
+    assert all(type(x) is np.float32 for x in (fctr, w0fctr, den))
 
 
-def test_kf_mirror_stable_column_is_exact_noop():
-    from gpuwm.verify.npref import np_kf_column
+def test_f_qr_follows_the_admitted_microphysics():
+    """KF_eta_CPS folds DQRDT into RQCCUTEN without QR (:492-505)."""
+    from gpuwm.core.kf import kf_has_rain_for_microphysics
 
-    result = np_kf_column(**_sounding(unstable=False))
-    assert not result["triggered"]
-    assert result["rainc"] == 0.0
-    for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
-                 "rqrcuten", "rqscuten",
-                 "updraft_mass_flux", "downdraft_mass_flux"):
-        np.testing.assert_array_equal(result[name], 0.0, err_msg=name)
-
-
-def test_kf_mirror_selects_deepest_failed_deep_as_shallow():
-    """Pin WRF 818-845, 1367-1424, 1911-1948, and 2569-2575."""
-    from gpuwm.verify.npref import np_kf_column
-
-    sounding = _shallow_sounding()
-    result = np_kf_column(**sounding)
-    assert result["triggered"] and result["shallow"]
-    assert result["source_bottom"] == 5
-    assert result["source_top"] == 7
-    assert result["cloud_top"] > max(result["cloud_base"],
-                                      result["source_top"] - 1)
-    assert result["closure_iterations"] == 1
-    assert result["timec"] == 2400.0
-    assert result["nca_seconds"] == sounding["cudt"] == 300.0
-    assert result["rainc"] == result["precip_rate"] == 0.0
-    assert np.any(result["rqrcuten"] > 0.0)
-    np.testing.assert_array_equal(result["downdraft_mass_flux"], 0.0)
-    water, water_scale, mse, _ = _column_budget_residuals(sounding, result)
-    assert abs(water) <= (4.0 * sounding["temperature"].size
-                          * np.finfo(np.float64).eps
-                          * max(water_scale, 1.0e-12))
-    assert np.isfinite(mse)
+    assert kf_has_rain_for_microphysics(0) is False
+    # 2, 3, 4, 5, 24 and 106 joined with golden/ports-mp (2.9.0); each carries
+    # a rain species (WSM3 holds rain in qr above freezing).
+    for mp in (1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106):
+        assert kf_has_rain_for_microphysics(mp) is True
+    # 7 (Goddard 4-ice) is not ported, so KF refuses it.
+    with pytest.raises(ValueError):
+        kf_has_rain_for_microphysics(7)
 
 
-def test_kf_triggered_column_failing_cloud_top_guards_is_exact_noop():
-    from gpuwm.verify.npref import np_kf_column
+@pytest.mark.gpu
+@requires_gpu
+def test_kf_trigger_history_advances_per_due_call_and_scheme_consumes_it(
+        monkeypatch):
+    """Pin W0AVG cadence: one recursive-mean sample per STEPCU due event.
 
-    result = np_kf_column(**_guarded_sounding())
-    assert result["triggered_candidates"] == result["guard_rejections"] == 1
-    assert not result["triggered"]
-    assert result["nca_seconds"] == result["rainc"] == 0.0
-    for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
-                 "rqrcuten", "rqscuten",
-                 "updraft_mass_flux", "downdraft_mass_flux"):
-        np.testing.assert_array_equal(result[name], 0.0, err_msg=name)
-
-
-def test_kf_source_depth_and_shear_denominator_match_wrf_strict_forms():
-    from gpuwm.verify.npref import np_kf_column
-
-    root = Path(__file__).parents[1]
-    mirror = (root / "gpuwm" / "verify" / "npref.py").read_text(
-        encoding="utf-8")
-    kernel = (root / "gpuwm" / "core" / "kernels" / "kf.cu").read_text(
-        encoding="utf-8")
-    assert "source_dp <= 5000.0" in mirror
-    assert "sum_dp <= 5000.0f" in kernel
-    assert "max(z[cloud_top] - z[klcl], 1.0)" not in mirror
-    assert "fmaxf(z[cloud_top] - z[klcl], 1.0f)" not in kernel
-    for sounding in (_sounding(unstable=True), _real74_sounding("unstable"),
-                     _shallow_sounding(), _noitr_revert_sounding()):
-        result = np_kf_column(**sounding)
-        z = np.cumsum(sounding["dz"]) - 0.5 * sounding["dz"]
-        assert z[result["cloud_top"]] > z[result["cloud_base"]]
-
-
-def test_shallow_feedback_tendencies_divide_by_an_unrounded_2400():
-    """``module_cu_kfeta.F`` carries TWO values of TIMEC, one layer apart.
-
-    ``:1598-1600`` sets ``IF(ISHALL.EQ.1)TIMEC=2400.`` and then ROUNDS it,
-    ``NIC=NINT(TIMEC/DT)`` / ``TIMEC=FLOAT(NIC)*DT``.  That rounded value is
-    what the closure and advection arithmetic use -- ``AINCM1`` (:1883),
-    ``AINC`` (:1935), ``DTT``/``NSTEP``/``DTIME`` (:1961-1979) -- and what
-    ``TIMEC_KF`` (:2387) and the ``TADVEC.LT.TIMEC`` test (:2569) see.
-
-    Then ``:2571-2573`` RE-SETS it::
-
-        IF(ISHALL.EQ.1)THEN
-           TIMEC = 2400.
-
-    and every feedback tendency from ``:2603`` to ``:2640`` -- DQCDT, DQIDT,
-    DQRDT, DQSDT, DTDT, DQDT -- divides by that un-rounded 2400.
-
-    Named breakage: one ``timec`` for both is a systematic, one-signed bias
-    on RTHCUTEN/RQVCUTEN/RQCCUTEN/RQRCUTEN/RQICUTEN/RQSCUTEN for every
-    shallow column for the whole run, whenever DT does not divide 2400.  It
-    is invisible at the suite's default DT=60 s, which divides 2400 exactly
-    -- hence DT=90 s here, where NINT(2400/90)*90 = 2430 and the error is
-    2400/2430, i.e. **-1.23 per cent**.  The deep branch is unaffected.
-
-    The assertion is exact rather than tolerant: RTHCUTEN is rebuilt from
-    the mirror's own returned ``closure_temperature`` (WRF's TG after the
-    phase-dependent latent-fusion branch), which is the numerator of
-    ``:2640`` verbatim.
+    WRF's cumulus driver early-returns on non-due steps
+    (module_cumulus_driver.F:830-864, RETURN at :863), so the W0AVG loop
+    (module_cu_kfeta.F:218-251) runs once per due call with weight 1/TST,
+    TST = 2*STEPCU on the model clock.  The update is the KF unit's own
+    no-FMA kernel, so the expected mean is formed in binary32 on the host,
+    operation for operation.
     """
-    from gpuwm.verify.npref import np_kf_column
-
-    sounding = dict(_shallow_sounding())
-    sounding["dt"] = 90.0
-    result = np_kf_column(**sounding)
-    assert result["triggered"] and result["shallow"]
-    assert result["timec"] == 2430.0, (
-        "DT=90 no longer rounds TIMEC away from 2400, so this gate would "
-        f"pass on a mirror that divides by the rounded value: {result['timec']}")
-
-    active = slice(0, result["cloud_top"] + 1)
-    wrf = ((result["closure_temperature"][active] - sounding["temperature"][active])
-           / (sounding["exner"][active] * 2400.0))
-    rounded = ((result["closure_temperature"][active] - sounding["temperature"][active])
-               / (sounding["exner"][active] * result["timec"]))
-    assert not np.allclose(wrf, rounded, rtol=1.0e-3), (
-        "the two divisors agree here, so the gate cannot tell them apart")
-    np.testing.assert_array_equal(result["rthcuten"][active], wrf)
-    np.testing.assert_array_equal(result["raw_rthcuten"][active], wrf)
-
-    # The moisture tendency has no exported numerator, so it is held by the
-    # invariant instead: a shallow tendency cannot depend on DT at all.
-    at_60 = np_kf_column(**dict(_shallow_sounding(), dt=60.0))
-    assert at_60["timec"] == 2400.0
-    peak = int(np.abs(at_60["rqvcuten"]).argmax())
-    assert at_60["rqvcuten"][peak] != 0.0
-    ratio = result["rqvcuten"][peak] / at_60["rqvcuten"][peak]
-    assert abs(ratio - 1.0) < 1.0e-9, (
-        f"RQVCUTEN moved {100.0 * (ratio - 1.0):+.3f} per cent between "
-        "DT=60 s and DT=90 s; WRF divides both by exactly 2400")
-
-    kernel = (Path(__file__).parents[1] / "gpuwm" / "core" / "kernels"
-              / "kf.cu").read_text(encoding="utf-8")
-    assert "float tendency_timec = shallow ? 2400.0f : timec;" in kernel
-    assert "/timec" not in kernel.split("float tendency_timec")[1], (
-        "a feedback tendency in kf.cu still divides by the rounded timec")
-
-
-def test_real74_12z_extracted_column_gates_and_provenance():
-    """The plan's actual Phase-3 d01 warm-sector/northern column gates."""
-    from gpuwm.verify.npref import np_kf_column
-
-    with np.load(_REAL74_COLUMNS, allow_pickle=False) as data:
-        assert (int(data["unstable_j"]), int(data["unstable_i"])) == (53, 113)
-        assert 30.0 < float(data["unstable_latitude"]) < 40.0
-        assert (int(data["stable_j"]), int(data["stable_i"])) == (194, 5)
-        assert float(data["stable_latitude"]) > 45.0
-    provenance = _REAL74_COLUMNS.with_name("KF_REAL74_PROVENANCE.md")
-    provenance_text = provenance.read_text(encoding="utf-8")
-    assert "prepare_phase3_case()" in provenance_text
-    assert (hashlib.sha256(_REAL74_COLUMNS.read_bytes()).hexdigest()
-            in provenance_text)
-
-    unstable = np_kf_column(**_real74_sounding("unstable"))
-    assert unstable["triggered"]
-    # Both pins moved on 2026-07-25 when kf_lutab.npz was rebuilt against
-    # glibc's expf/powf/logf instead of NumPy's float32 ufuncs, i.e. onto the
-    # values WRF's own KF_LUTAB produces (see the table's PROVENANCE.md).
-    # cape_before 432.29333945446024 -> 432.29276931463795 (5.70e-4 absolute,
-    # 1.32e-6 relative), FABE 0.09302343911952345 -> 0.0930192928993745
-    # (4.15e-6 absolute, **4.46e-5 relative**).  The FABE figure was published
-    # here and in 4239185 as "4.5e-6"/"~1e-6" relative, which was its ABSOLUTE
-    # move; FABE is cape_after/cape_before out of a secant iteration, so it
-    # amplifies a table move by ~34x rather than tracking it.  See the erratum
-    # table in gpuwm/data/kf_lutab/PROVENANCE.md.
-    # Member attribution, by rerunning this column with each member reverted:
-    # temperature/qsat carry 5.78e-4 K of the 5.70e-4 K move, the 21 one-ULP
-    # log_ratio cells only 8.3e-6 (they partly cancel).  Tolerances are
-    # unchanged -- these are exact pins moved onto WRF, not a widened gate.
-    np.testing.assert_allclose(unstable["cape_before"],
-                               432.29276931463795,
-                               rtol=2.0e-13, atol=1.0e-10)
-    np.testing.assert_allclose(
-        unstable["cape_after"] / unstable["cape_before"],
-        0.0930192928993745, rtol=2.0e-13, atol=1.0e-12)
-    # Recompute the two published move sizes rather than trusting the prose
-    # above: this is exactly the arithmetic that was got wrong once.
-    cape_move = (432.29333945446024 - 432.29276931463795) / 432.29333945446024
-    fabe_move = (0.09302343911952345 - 0.0930192928993745) / 0.09302343911952345
-    np.testing.assert_allclose(cape_move, 1.32e-6, rtol=5.0e-3)
-    np.testing.assert_allclose(fabe_move, 4.46e-5, rtol=5.0e-3)
-    assert fabe_move > 30.0 * cape_move
-    assert 1 <= unstable["closure_iterations"] <= 10
-    assert unstable["rainc"] > 0.0
-    assert np.any(unstable["updraft_liquid"] > 0.0)
-    assert np.any(unstable["updraft_ice"] > 0.0)
-    for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
-                 "rqrcuten", "rqscuten"):
-        assert np.isfinite(unstable[name]).all(), name
-    for name, bound in (("rthcuten", 5.0e-3),
-                        ("rqvcuten", 5.0e-6),
-                        ("rqccuten", 5.0e-6), ("rqicuten", 5.0e-6),
-                        ("rqrcuten", 5.0e-6), ("rqscuten", 5.0e-6)):
-        assert np.max(np.abs(unstable[name])) <= bound, name
-    assert unstable["rainc"] <= 5.0
-    # Apply the converged tendencies, then re-integrate the original elevated
-    # source parcel with a separately coded WRF updraft/ABE diagnostic.  This
-    # never reads cape_after and never calls np_kf_column for the adjusted
-    # sounding, so an assigned scheme diagnostic cannot satisfy the gate.
-    independent_before = _independent_updraft_cape(
-        _real74_sounding("unstable"), source_bottom=12)
-    np.testing.assert_allclose(independent_before, unstable["cape_before"],
-                               rtol=2.0e-12, atol=1.0e-10)
-    adjusted = _real74_sounding("unstable")
-    adjusted["temperature"] += (
-        unstable["rthcuten"] * adjusted["exner"] * unstable["timec"])
-    adjusted["qv"] += unstable["rqvcuten"] * unstable["timec"]
-    adjusted["qc"] += unstable["rqccuten"] * unstable["timec"]
-    independent_after = _independent_updraft_cape(
-        adjusted, source_bottom=12)
-    assert 0.0 <= independent_after <= 0.15 * independent_before
-
-    # The scheme's rainc output is precip_rate*min(cudt, feedback_time)
-    # (kf.cu:1140-1149); the Task-6b driver divides that increment back out
-    # to recover WRF's persistent PRATEC, so the cudt scaling must be exact.
-    short = np_kf_column(**{**_real74_sounding("unstable"), "cudt": 60.0})
-    np.testing.assert_allclose(unstable["rainc"], 5.0 * short["rainc"],
-                               rtol=1.0e-12, atol=0.0)
-
-    stable = np_kf_column(**_real74_sounding("stable"))
-    assert not stable["triggered"]
-    assert stable["rainc"] == 0.0
-    for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
-                 "rqrcuten", "rqscuten",
-                 "updraft_mass_flux", "downdraft_mass_flux"):
-        np.testing.assert_array_equal(stable[name], 0.0, err_msg=name)
-
-
-@pytest.mark.parametrize("column", ("synthetic", "unstable", "shallow",
-                                    "stable"))
-def test_kf_mirror_closes_water_and_reports_uncorrected_mse(column):
-    from gpuwm.verify.npref import np_kf_column
-
-    sounding = (_sounding(unstable=True) if column == "synthetic"
-                else _shallow_sounding() if column == "shallow"
-                else _real74_sounding(column))
-    result = np_kf_column(**sounding)
-    water, water_scale, mse, mse_scale = _column_budget_residuals(
-        sounding, result)
-    accumulated_operations = 4.0 * sounding["temperature"].size
-    water_bound = (accumulated_operations * np.finfo(np.float64).eps
-                   * max(water_scale, 1.0e-12))
-    assert abs(water) <= water_bound
-    assert np.isfinite(mse)
-    assert "reported_mse_residual" in result
-    assert np.isfinite(result["reported_mse_residual"])
-    if result["triggered"]:
-        np.testing.assert_allclose(result["reported_mse_residual"], mse,
-                                   rtol=2.0e-12, atol=1.0e-10)
-        # raw_rthcuten is an INDEPENDENT transcription of the uncorrected
-        # feedback rate (tg - t0)/(timec*exner) from the closure locals
-        # (WRF DTDT=(TG-T0)/TIMEC at module_cu_kfeta.F:2640, theta
-        # conversion RTHCUTEN=DTDT/pi at :487), so this equality fails if
-        # any in-scheme "correction" ever touches the returned rate.
-        np.testing.assert_array_equal(result["raw_rthcuten"],
-                                      result["rthcuten"])
-        if not result["shallow"]:
-            # WRF KF does not close column enthalpy (Lv(T)/melt
-            # approximations are part of the scheme); a machine-zero
-            # residual on a triggered deep column means somebody "fixed"
-            # it, which the plan auto-rejects.
-            assert result["reported_mse_residual"] != 0.0
-    else:
-        assert mse == result["reported_mse_residual"] == 0.0
-        np.testing.assert_array_equal(result["raw_rthcuten"],
-                                      result["rthcuten"])
-    # Supplementary source-level tripwire only: the raw-rate equality above
-    # shares the closure locals tg/timec/exner, so it would not catch a
-    # correction folded into tg itself.  The independently re-derived CAPE
-    # removal bound is the behavioral guard for that remaining evasion path.
-    source = (Path(__file__).parents[1] / "gpuwm" / "core" / "kernels" /
-              "kf.cu").read_text(encoding="utf-8")
-    assert "temperature_rate_correction" not in source
-
-
-@pytest.mark.gpu
-@requires_gpu
-def test_kf_kernel_matches_float64_mirror_at_fp32_floors():
     import cupy as cp
 
-    from gpuwm.core.kf import launch_kf
-    from gpuwm.verify.npref import np_kf_column
+    from gpuwm.core.kf import KFPhaseMode, KainFritsch
 
-    columns = [_sounding(unstable=True), _real74_sounding("unstable"),
-               _shallow_sounding(), _guarded_sounding(),
-               _real74_sounding("stable")]
-    names = ("u", "v", "temperature", "qv", "qc", "pressure", "exner",
-             "dz", "w")
-    host = {
-        name: np.ascontiguousarray(
-            np.stack([column[name] for column in columns], axis=1)[:, None],
-            dtype=np.float32)
-        for name in names
+    shape = (8, 1, 1)
+    atmosphere = {
+        name: cp.ones(shape, dtype=cp.float32)
+        for name in ("u", "v", "temperature", "qv", "qc", "pressure",
+                     "rho", "exner", "dz")
     }
-    got = launch_kf(**{name: cp.asarray(value) for name, value in host.items()},
-                    dx=12000.0, dt=60.0, cudt=300.0)
+    state = SimpleNamespace(
+        w=cp.arange(9, dtype=cp.float32).reshape(9, 1, 1),
+        p=cp.ones(shape, dtype=cp.float32),
+    )
 
-    refs = [np_kf_column(**{
-        **{name: host[name][:, 0, i].astype(np.float64) for name in names},
-        "dx": 12000.0, "dt": 60.0, "cudt": 300.0,
-    }) for i in range(len(columns))]
-    for name, scale in (("rthcuten", 1.0e-3),
-                        ("rqvcuten", 1.0e-6),
-                        ("rqccuten", 1.0e-6), ("rqicuten", 1.0e-6),
-                        ("rqrcuten", 1.0e-6), ("rqscuten", 1.0e-6)):
-        ref = np.stack([item[name] for item in refs], axis=1)[:, None]
-        np.testing.assert_allclose(
-            cp.asnumpy(got[name]), ref, rtol=5.0e-4,
-            atol=256.0 * np.finfo(np.float32).eps * scale, err_msg=name)
-    for name in ("updraft_mass_flux", "downdraft_mass_flux"):
-        ref = np.stack([item[name] for item in refs], axis=1)[:, None]
-        fp32_floor = max(
-            0.5, 128.0 * np.finfo(np.float32).eps * np.max(np.abs(ref)))
-        np.testing.assert_allclose(cp.asnumpy(got[name]), ref,
-                                   rtol=5.0e-5, atol=fp32_floor, err_msg=name)
-    np.testing.assert_allclose(
-        cp.asnumpy(got["rainc"])[0], [item["rainc"] for item in refs],
-        rtol=5.0e-4, atol=2.0e-6)
-    np.testing.assert_array_equal(
-        cp.asnumpy(got["triggered"])[0],
-        [item["triggered"] for item in refs])
-    np.testing.assert_array_equal(
-        cp.asnumpy(got["shallow"])[0],
-        [item["shallow"] for item in refs])
-    np.testing.assert_allclose(
-        cp.asnumpy(got["nca_seconds"])[0],
-        [item["nca_seconds"] for item in refs], rtol=0.0, atol=0.0)
-    device = {name: cp.asnumpy(got[name]) for name in
-              ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
-               "rqrcuten", "rqscuten", "rainc")}
-    for column, sounding in enumerate(columns):
-        result = {
-            name: device[name][:, 0, column]
-            for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
-                         "rqrcuten", "rqscuten")
+    def scratch(requested_shape, _name):
+        return cp.zeros(requested_shape, dtype=cp.float32)
+
+    state.scratch = scratch
+    captured = {}
+
+    def fake_launch(*args, **kwargs):
+        captured["w0avg"] = args[8].copy()
+        captured["rho"] = args[5]
+        captured.update(kwargs)
+        zeros = cp.zeros(shape, dtype=cp.float32)
+        flat = cp.zeros((1, 1), dtype=cp.float32)
+        return {
+            "rthcuten": zeros, "rqvcuten": zeros.copy(),
+            "rqccuten": zeros.copy(), "rqicuten": zeros.copy(),
+            "rqrcuten": zeros.copy(), "rqscuten": zeros.copy(),
+            "rainc": flat, "nca_seconds": flat.copy(),
+            "pratec": flat.copy(),
         }
-        result["rainc"] = device["rainc"][0, column]
-        fp32_sounding = {
-            **{name: host[name][:, 0, column].astype(np.float64)
-               for name in names},
-            "dx": 12000.0, "dt": 60.0, "cudt": 300.0,
-        }
-        water, water_scale, mse, _mse_scale = _column_budget_residuals(
-            fp32_sounding, result)
-        accumulated_operations = 4.0 * fp32_sounding["temperature"].size
-        assert abs(water) <= (accumulated_operations
-                              * np.finfo(np.float32).eps
-                              * max(water_scale, 1.0e-12))
-        assert np.isfinite(mse)
-    for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
-                 "rqrcuten", "rqscuten"):
-        np.testing.assert_array_equal(device[name][:, 0, 4], 0.0,
-                                      err_msg=name)
+
+    monkeypatch.setattr("gpuwm.core.kf.launch_kf", fake_launch)
+    cfg = SimpleNamespace(cudt_minutes=5.0, dt=60.0, dx=12000.0,
+                          mp_physics=10)
+    scheme = KainFritsch()
+    f32 = np.float32
+    expected = np.zeros(shape, dtype=np.float32)
+    for event, offset in enumerate((0.0, 2.0, -1.0)):
+        state.elapsed_seconds = event * 300.0
+        w = np.arange(9, dtype=np.float32).reshape(9, 1, 1) + f32(offset)
+        state.w[...] = cp.asarray(w)
+        w0 = f32(0.5) * (w[:-1] + w[1:])
+        expected = (expected * f32(9.0) + w0 * f32(1.0)) / f32(10.0)
+        scheme.update_trigger_history(state=state, cfg=cfg)
+        np.testing.assert_array_equal(cp.asnumpy(scheme.w0avg), expected)
+
+    scheme(atmosphere=atmosphere, fields={}, state=state, cfg=cfg)
+
+    # The scheme call at the same elapsed time consumes the already-updated
+    # mean without double-counting the sample, and hands KF_eta_PARA the
+    # driver's RHO and the namelist CUDT in minutes.
+    np.testing.assert_array_equal(cp.asnumpy(captured["w0avg"]), expected)
+    assert captured["rho"] is atmosphere["rho"]
+    assert captured["cudt_minutes"] == 5.0
+    assert captured["dt"] == 60.0
+    assert captured["phase_mode"] == KFPhaseMode.SEPARATE_ICE_SNOW
+    assert captured["f_qr"] is True
+
+    # Under the compatibility substep integration (clock_dt > dt) a due
+    # call advances the mean exactly once with the CLOCK-derived
+    # TST = 2*NINT(cudt*60/clock_dt) = 10, and the scheme receives the
+    # model-clock DT (module_cumulus_driver.F:1028).
+    sub_cfg = SimpleNamespace(cudt_minutes=5.0, dt=7.5, clock_dt=60.0,
+                              dx=12000.0, mp_physics=10)
+    sub_scheme = KainFritsch()
+    w = np.arange(9, dtype=np.float32).reshape(9, 1, 1)
+    state.w[...] = cp.asarray(w)
+    w0 = f32(0.5) * (w[:-1] + w[1:])
+    state.elapsed_seconds = 292.5   # substep-calendar due instant
+    sub_scheme.update_trigger_history(state=state, cfg=sub_cfg)
+    first = (np.zeros(shape, np.float32) * f32(9.0)
+             + w0 * f32(1.0)) / f32(10.0)
+    np.testing.assert_array_equal(cp.asnumpy(sub_scheme.w0avg), first)
+    sub_scheme(atmosphere=atmosphere, fields={}, state=state, cfg=sub_cfg)
+    np.testing.assert_array_equal(cp.asnumpy(captured["w0avg"]), first)
+    assert captured["dt"] == 60.0
+    assert captured["cudt_minutes"] == 5.0
+
+    # ADAPT_STEP_FLAG: the DT-weighted mean over 2*MAX(CUDT*60, DT).
+    ada_cfg = SimpleNamespace(cudt_minutes=5.0, dt=50.0, dx=12000.0,
+                              mp_physics=10, use_adaptive_time_step=True)
+    ada_scheme = KainFritsch()
+    state.elapsed_seconds = 0.0
+    ada_scheme.update_trigger_history(state=state, cfg=ada_cfg)
+    adaptive = (np.zeros(shape, np.float32) * f32(550.0)
+                + w0 * f32(50.0)) / f32(600.0)
+    np.testing.assert_array_equal(cp.asnumpy(ada_scheme.w0avg), adaptive)
+
+
+#: The seven deep columns whose capped downdraft took all of the updraft's
+#: precipitation on a global 60 km hex forecast (d547dc8c3; GFS 2026-10-10
+#: 00Z, 163,842 cells, 55 levels, dt 360 s), written as KF_eta_CPS inputs by
+#: tools/kf_wrf461_oracle/capped_columns.py, and WRF v4.6.1's own outputs for
+#: them from the byte-unmodified module_cu_kfeta.F at -O0 (build.sh; the
+#: SNaN build wrote the same bytes).  WRF returns PRATEC = 0 exactly on all
+#: seven: the minus-a-few-ulp rain the pre-port kernel returned there was
+#: its own arithmetic, not WRF's.
+CAPPED = Path(__file__).parent / "data" / "oracles" / "kf"
+CAPPED_SHA256 = {
+    "columns-capped.bin":
+        "ee88310e4a93064ed8ce6e0909b38c18700c38f7890088b5bad24cdde03193ed",
+    "columns-capped.json":
+        "b399e0f8758e5c5cf0f5f86603b49a8db73daa6f1249d8a95906f795a6e4df07",
+    "oracle-capped-O0.out":
+        "a155dd9933116ffffd911d6fe28a49531ce5f289e9cd89183ade97bdf7cb256f",
+}
+#: kernels/kf.cu's floor on PPTFLX (declared divergence, d547dc8c3): the
+#: one statement where the port leaves WRF's arithmetic on purpose.
+PPTFLX_FLOOR = "pptflx = fmaxf(trppt - tder, 0.0f);"
+
+
+def test_the_capped_downdraft_fixture_is_wrfs_recorded_answer():
+    from tools.kf_wrf461_oracle import kf_columns
+
+    for name, digest in CAPPED_SHA256.items():
+        assert hashlib.sha256((CAPPED / name).read_bytes()).hexdigest()             == digest, name
+    out = kf_columns.read_outputs(str(CAPPED / "oracle-capped-O0.out"))
+    assert len(out) == 7
+    assert not any(column["fatal"] for column in out)
+    # Deep convection on every column, and WRF's rain is exactly zero.
+    assert [float(column["shall"]) for column in out] == [0.0] * 7
+    assert [float(column["pratec"]) for column in out] == [0.0] * 7
+    assert [float(column["raincv"]) for column in out] == [0.0] * 7
+
+
+def test_the_rain_flux_floor_is_the_one_declared_statement():
+    source = (Path(__file__).resolve().parents[1] / "gpuwm" / "core"
+              / "kernels" / "kf.cu").read_text(encoding="utf-8")
+    assert source.count(PPTFLX_FLOOR) == 1
+    assert source.count("pptflx = trppt - tder;") == 0
+    assert "d547dc8c3" in source
 
 
 @pytest.mark.gpu
 @requires_gpu
-def test_kf_kernel_warm_rain_and_no_snow_phase_energy_match_mirror():
-    """CUDA pins WRF's two latent-fusion feedback branches."""
-    import cupy as cp
+def test_kf_rain_is_wrfs_zero_when_the_downdraft_evaporates_it_all():
+    """The hex columns of d547dc8c3, graded word for word against WRF.
 
-    from gpuwm.core.kf import KFPhaseMode, launch_kf
-    from gpuwm.verify.npref import np_kf_column
+    Before the WRF port the kernel returned a rain increment of minus a few
+    ulp on these columns and RAINC, which accumulates PRATEC*DT signed, went
+    negative: a global 60 km forecast was refused at its first history frame
+    with "negative accumulated precipitation in rainc".  The port returns
+    WRF's own words on every output of all seven, rain exactly zero, and
+    the floor kept on PPTFLX can never make the answer negative.
+    """
+    from tools.kf_wrf461_oracle import compare_woof
 
-    sounding = _shallow_sounding()
-    names = ("u", "v", "temperature", "qv", "qc", "pressure", "exner",
-             "dz", "w")
-    host = {
-        name: np.ascontiguousarray(
-            np.asarray(sounding[name])[:, None, None], dtype=np.float32)
-        for name in names
-    }
-    reference_inputs = {
-        **{name: host[name][:, 0, 0].astype(np.float64) for name in names},
-        "dx": sounding["dx"], "dt": sounding["dt"],
-        "cudt": sounding["cudt"],
-    }
-    for mode in (KFPhaseMode.WARM_RAIN,
-                 KFPhaseMode.NO_SEPARATE_SNOW):
-        got = launch_kf(
-            **{name: cp.asarray(value) for name, value in host.items()},
-            dx=sounding["dx"], dt=sounding["dt"],
-            cudt=sounding["cudt"], phase_mode=mode)
-        reference = np_kf_column(**reference_inputs, phase_mode=mode)
-        assert reference["triggered"] and reference["shallow"]
-        for name, scale in (("rthcuten", 1.0e-3),
-                            ("rqvcuten", 1.0e-6),
-                            ("rqccuten", 1.0e-6),
-                            ("rqicuten", 1.0e-6),
-                            ("rqrcuten", 1.0e-6),
-                            ("rqscuten", 1.0e-6)):
-            np.testing.assert_allclose(
-                cp.asnumpy(got[name])[:, 0, 0], reference[name],
-                rtol=5.0e-4,
-                atol=256.0 * np.finfo(np.float32).eps * scale,
-                err_msg=f"{mode.name}:{name}")
-        # Both branches return only QC/QR, but the sum must still equal the
-        # independent four-category closure water rate.
-        active = slice(0, reference["cloud_top"] + 1)
-        expected_water = sum(
-            reference[name][active] for name in
-            ("closure_liquid", "closure_ice",
-             "closure_rain", "closure_snow")) / reference["timec"]
-        actual_water = (
-            cp.asnumpy(got["rqccuten"])[active, 0, 0]
-            + cp.asnumpy(got["rqrcuten"])[active, 0, 0])
-        np.testing.assert_allclose(
-            actual_water, expected_water, rtol=5.0e-4,
-            atol=256.0 * np.finfo(np.float32).eps * 1.0e-6)
-
-
-@pytest.mark.gpu
-@requires_gpu
-def test_kf_kernel_preserves_pre_revert_pptflx_on_noitr_column():
-    """WRF assigns PPTFLX at rescale (2262), not after AINC reversion."""
-    import cupy as cp
-
-    from gpuwm.core.kf import launch_kf
-    from gpuwm.verify.npref import np_kf_column
-
-    sounding = _noitr_revert_sounding()
-    reference = np_kf_column(**sounding)
-    assert reference["triggered"] and reference["closure_noitr_revert"]
-    assert reference["closure_precip_scale"] != reference["closure_scale"]
-    names = ("u", "v", "temperature", "qv", "qc", "pressure", "exner",
-             "dz", "w")
-    host = {name: np.ascontiguousarray(sounding[name][:, None, None],
-                                       dtype=np.float32)
-            for name in names}
-    got = launch_kf(
-        **{name: cp.asarray(value) for name, value in host.items()},
-        dx=sounding["dx"], dt=sounding["dt"], cudt=sounding["cudt"])
-    np.testing.assert_allclose(cp.asnumpy(got["rainc"])[0, 0],
-                               reference["rainc"], rtol=5.0e-4,
-                               atol=2.0e-6)
-    for name, scale in (("rthcuten", 1.0e-3), ("rqvcuten", 1.0e-6),
-                        ("rqccuten", 1.0e-6), ("rqicuten", 1.0e-6),
-                        ("rqrcuten", 1.0e-6), ("rqscuten", 1.0e-6)):
-        np.testing.assert_allclose(
-            cp.asnumpy(got[name])[:, 0, 0], reference[name], rtol=2.0e-3,
-            atol=256.0 * np.finfo(np.float32).eps * scale, err_msg=name)
-
-
-@pytest.mark.gpu
-@requires_gpu
-def test_kf_kernel_zeroes_tder_when_trial_downdraft_is_suppressed():
-    import cupy as cp
-
-    from gpuwm.core.kf import launch_kf
-    from gpuwm.verify.npref import np_kf_column
-
-    sounding = _tder_suppression_sounding()
-    reference = np_kf_column(**sounding)
-    assert 0.0 < reference["downdraft_evaporation_before_suppression"] < 1.0
-    assert reference["downdraft_evaporation"] == 0.0
-    np.testing.assert_array_equal(reference["downdraft_mass_flux"], 0.0)
-    names = ("u", "v", "temperature", "qv", "qc", "pressure", "exner",
-             "dz", "w")
-    host = {name: np.ascontiguousarray(sounding[name][:, None, None],
-                                       dtype=np.float32)
-            for name in names}
-    got = launch_kf(
-        **{name: cp.asarray(value) for name, value in host.items()},
-        dx=sounding["dx"], dt=sounding["dt"], cudt=sounding["cudt"])
-    np.testing.assert_allclose(cp.asnumpy(got["rainc"])[0, 0],
-                               reference["rainc"], rtol=5.0e-4,
-                               atol=2.0e-6)
+    report = compare_woof.run(str(CAPPED / "columns-capped.bin"),
+                              str(CAPPED / "oracle-capped-O0.out"),
+                              label="capped",
+                              meta_path=str(CAPPED / "columns-capped.json"))
+    assert report["graded"] == 7
+    assert report["mismatched_words"] == 0, report["per_field"]
+    assert report["exact_columns"] == 7
 
 
 @pytest.mark.gpu
@@ -1252,93 +660,3 @@ def test_kf_production_binding_nca_hold_and_domain_flag():
     off_driver = initialize_physics(state_for(cfg_off), cfg_off)
     assert off_driver.cu_physics == 0
     assert off_driver.cumulus_callable is None
-
-
-@pytest.mark.gpu
-@requires_gpu
-def test_kf_trigger_history_advances_per_due_call_and_scheme_consumes_it(
-        monkeypatch):
-    """Pin W0AVG cadence: one recursive-mean sample per STEPCU due event.
-
-    WRF's cumulus driver early-returns on non-due steps
-    (module_cumulus_driver.F:830-864, RETURN at :863), so the fixed-step
-    W0AVG loop (module_cu_kfeta.F:232-250) runs once per due call with
-    weight 1/TST, TST = 2*STEPCU on the model clock (controller
-    re-adjudication 2026-07-16 superseding the T1 every-step hook).
-    """
-    import cupy as cp
-
-    from gpuwm.core.kf import KFPhaseMode, KainFritsch
-
-    shape = (8, 1, 1)
-    atmosphere = {
-        name: cp.ones(shape, dtype=cp.float32)
-        for name in ("u", "v", "temperature", "qv", "qc", "pressure",
-                     "exner", "dz")
-    }
-    state = SimpleNamespace(
-        w=cp.arange(9, dtype=cp.float32).reshape(9, 1, 1),
-        p=cp.ones(shape, dtype=cp.float32),
-    )
-
-    def scratch(requested_shape, _name):
-        return cp.zeros(requested_shape, dtype=cp.float32)
-
-    state.scratch = scratch
-    captured = {}
-
-    def fake_launch(*args, **kwargs):
-        captured["w"] = args[8].copy()
-        captured.update(kwargs)
-        zeros = cp.zeros(shape, dtype=cp.float32)
-        return {
-            "rthcuten": zeros, "rqvcuten": zeros.copy(),
-            "rqccuten": zeros.copy(), "rqicuten": zeros.copy(),
-            "rqrcuten": zeros.copy(), "rqscuten": zeros.copy(),
-            "rainc": cp.zeros((1, 1), dtype=cp.float32),
-            "nca_seconds": cp.zeros((1, 1), dtype=cp.float32),
-        }
-
-    monkeypatch.setattr("gpuwm.core.kf.launch_kf", fake_launch)
-    cfg = SimpleNamespace(cudt_minutes=5.0, dt=60.0, dx=12000.0,
-                          mp_physics=10)
-    scheme = KainFritsch()
-    expected = cp.zeros(shape, dtype=cp.float32)
-    # Three consecutive STEPCU due events (cudt=5 min apart): each hook
-    # invocation advances the mean once with TST = 2*STEPCU = 10.
-    for event, offset in enumerate((0.0, 2.0, -1.0)):
-        state.elapsed_seconds = event * 300.0
-        state.w[...] = (cp.arange(9, dtype=cp.float32)
-                        .reshape(9, 1, 1) + offset)
-        instantaneous = 0.5 * (state.w[:-1] + state.w[1:])
-        expected = (expected * 9.0 + instantaneous) / 10.0
-        scheme.update_trigger_history(state=state, cfg=cfg)
-        cp.testing.assert_array_equal(scheme.w0avg, expected)
-
-    scheme(atmosphere=atmosphere, fields={}, state=state, cfg=cfg)
-
-    # The scheme call at the same elapsed time consumes the already-updated
-    # mean without double-counting the sample.
-    cp.testing.assert_array_equal(captured["w"], expected)
-    assert captured["cudt"] == 300.0
-    assert captured["dt"] == 60.0
-    assert captured["phase_mode"] == KFPhaseMode.SEPARATE_ICE_SNOW
-
-    # Under the compatibility substep integration (clock_dt > dt) a due
-    # call still advances the mean exactly once with the CLOCK-derived
-    # TST = 2*NINT(cudt*60/clock_dt) = 10 (not 2*40 from the substep dt),
-    # and the scheme receives the model-clock DT (WRF hands KF its model
-    # DT, module_cumulus_driver.F:1028).
-    sub_cfg = SimpleNamespace(cudt_minutes=5.0, dt=7.5, clock_dt=60.0,
-                              dx=12000.0, mp_physics=10)
-    sub_scheme = KainFritsch()
-    state.w[...] = cp.arange(9, dtype=cp.float32).reshape(9, 1, 1)
-    instantaneous = 0.5 * (state.w[:-1] + state.w[1:])
-    state.elapsed_seconds = 292.5   # substep-calendar due instant
-    sub_scheme.update_trigger_history(state=state, cfg=sub_cfg)
-    cp.testing.assert_array_equal(sub_scheme.w0avg, instantaneous / 10.0)
-    sub_scheme(atmosphere=atmosphere, fields={}, state=state, cfg=sub_cfg)
-    cp.testing.assert_array_equal(captured["w"], instantaneous / 10.0)
-    assert captured["dt"] == 60.0
-    assert captured["cudt"] == 300.0
-    assert captured["phase_mode"] == KFPhaseMode.SEPARATE_ICE_SNOW

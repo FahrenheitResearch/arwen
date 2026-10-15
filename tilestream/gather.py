@@ -115,6 +115,7 @@ signature build.
 from __future__ import annotations
 
 import ctypes
+import math
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -979,8 +980,17 @@ def build_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
                 f"{direction}: kind {kind!r} has zero segments; an empty "
                 "transfer is indistinguishable from a speedup")
 
-        depth = int(src_arr.shape[0]) if src_arr.ndim >= 3 else 1
-        if (int(dst_arr.shape[0]) if dst_arr.ndim >= 3 else 1) != depth:
+        # Every axis ahead of (y, x) is depth.  A rank-4 carrier -- Grell
+        # 3D's ``g3_lev`` is (9, nz, ny, nx) -- is a stack of 9 * nz planes
+        # of one C-contiguous (ny, nx) pitch, which is exactly what the 3-D
+        # block copy walks.  ``shape[0]`` alone copied its first 9 planes
+        # and left the rest of the store stale: measured, the streamed
+        # g3_lev differed from the resident one in all 9 slots after one
+        # step while every rank-2 and rank-3 G3 carrier was bit-exact.
+        depth = math.prod(int(n) for n in src_arr.shape[:-2]) if src_arr.ndim >= 3 else 1
+        if (math.prod(int(n) for n in dst_arr.shape[:-2])
+                if dst_arr.ndim >= 3 else 1) != depth or (
+                tuple(src_arr.shape[:-2]) != tuple(dst_arr.shape[:-2])):
             raise SpecError(
                 f"{name}: vertical extents differ, {src_arr.shape} vs "
                 f"{dst_arr.shape}")

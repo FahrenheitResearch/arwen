@@ -78,6 +78,23 @@ import pytest
 
 from conftest import requires_gpu
 
+# Consumer expectations come from the independent generated declarations.
+from gpuwm.physics_registry import implemented_selector_values as _intake_selectors
+from gpuwm.physics_registry import consumer_rows_by_selector as _intake_rows
+_INTAKE_MP = tuple(sorted(_intake_selectors("microphysics")))
+_INTAKE_REFL = tuple(mp for mp in _INTAKE_MP if mp)
+_INTAKE_PRODUCERS = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "reflectivity_input_species").items()
+    if row is not None))
+from gpuwm.core.column_schemes import COLUMN_SCHEMES
+_INTAKE_NATIVE = tuple(sorted((set(_INTAKE_REFL) - set(_INTAKE_PRODUCERS)) | set(COLUMN_SCHEMES)))
+_INTAKE_SNOW = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qs" in (row or {}).get("state_fields", ())))
+_INTAKE_SIX = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qg" in (row or {}).get("state_fields", ())))
+
 # ---------------------------------------------------------------------------
 # WRF's own bounds.  Every constant below is transcribed from
 # wrf461-pristine/phys/module_mp_thompson.F with its line number,
@@ -1311,7 +1328,7 @@ def test_the_runtime_history_lane_admits_28_for_refl_10cm():
     # loads refl.cu nor fills the slot, and the history lane leaves it out.
     assert (set(runtime.REFL_10CM_MICROPHYSICS)
             - set(pf._REFLECTIVITY_MICROPHYSICS)
-            == set(pf._SELF_REFLECTIVITY_MICROPHYSICS) - {30} == {9, 18, 50, 900})
+            == set(pf._SELF_REFLECTIVITY_MICROPHYSICS) - {30} == {4, 5, 9, 18, 24, 50, 900})
 
     runtime_source = (pathlib.Path(__file__).resolve().parent.parent
                       / "gpuwm" / "runtime.py").read_text(encoding="utf-8")

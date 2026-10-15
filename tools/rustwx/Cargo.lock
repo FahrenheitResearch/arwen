@@ -2488,6 +2488,7 @@ dependencies = [
 name = "rw-mpas"
 version = "0.1.0"
 dependencies = [
+ "libloading",
  "netcrust",
  "rayon",
  "rw-host-memory",
@@ -2695,6 +2696,7 @@ dependencies = [
  "rusty-weather",
  "rw-ingest",
  "rw-isobaric",
+ "rw-mpas",
  "rw-nexrad",
  "rw-obs",
  "rw-scoreboard",

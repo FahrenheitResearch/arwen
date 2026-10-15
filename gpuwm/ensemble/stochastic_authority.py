@@ -69,6 +69,7 @@ def configure_member_inputs(provider, inputs):
     def config(value):
         return None if value is None else asdict(value)
     receipt = {"schema": "gpuwm-ensemble-runtime-stochastic-authority.v1",
+        "warnings": ["uncalibrated spread, WRF default amplitudes"],
         "configuration_match": "all original typed configuration fields and float words; only declared SPP flags may differ",
         "prepared_authority_policy": "original source/static/cache/head verification retained without header edits",
         "runtime_overlay": "forecast-only; selected before original PhysicsDriver construction",

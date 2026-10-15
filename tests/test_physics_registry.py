@@ -1374,26 +1374,26 @@ def test_registry_advertises_every_mixed_edge_accurately():
         (rule["parent_option_id"], rule["child_option_id"])
         for rule in rules
     }
-    assert len(rules) == len(pairs) == 72
+    assert len(rules) == len(pairs) == 110
     others = ("kessler-mp1", "wsm6-mp6", "thompson-mp8", "morrison-mp10",
               "nssl2-mp18", "milbrandt2mom-mp9", "wdm6-mp16",
-              "thompson-aerosol-mp28")
+              "thompson-aerosol-mp28", "lin-mp2", "wsm7-mp24")
     p3_pairs = {pair for pair in pairs if "p3-mp50" in pair}
     assert p3_pairs == {
         *((other, "p3-mp50") for other in others),
         *(("p3-mp50", other) for other in others),
     }
     my2_pairs = {pair for pair in pairs if "milbrandt2mom-mp9" in pair}
-    assert len(my2_pairs) == 16
-    for option_id in ("wdm6-mp16", "thompson-aerosol-mp28"):
-        assert len({pair for pair in pairs if option_id in pair}) == 16
+    assert len(my2_pairs) == 20
+    for option_id in ("wdm6-mp16", "thompson-aerosol-mp28", "lin-mp2", "wsm7-mp24"):
+        assert len({pair for pair in pairs if option_id in pair}) == 20
     ratified = [rule for rule in rules if rule["status"] == "ratified"]
     assert [(rule["parent_option_id"], rule["child_option_id"])
             for rule in ratified] == [("thompson-mp8", "nssl2-mp18")]
     experimental = [
         rule for rule in rules if rule["status"] == "experimental"
     ]
-    assert len(experimental) == 71
+    assert len(experimental) == 109
     assert {
         rule["maturity"] for rule in experimental
     } == {"experimental-runtime"}
@@ -1822,7 +1822,7 @@ def test_expert_settings_are_generic_but_selectors_cannot_claim_implementation()
         error["code"] for error in blocked["errors"]
     }
 
-    plan["domains"][0]["expert_overrides"] = {"selectors": {"mp_physics": 3}}
+    plan["domains"][0]["expert_overrides"] = {"selectors": {"mp_physics": 7}}
     blocked_value = validate_physics_plan(plan, registry=registry)
     assert blocked_value["launchable"] is False
     assert "unknown-selector-combination" in {

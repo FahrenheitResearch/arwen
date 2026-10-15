@@ -10,6 +10,35 @@ SUPPORTED_SELECTORS = frozenset({"sppt", "skebs", "stoch_force_opt", "spp",
 UNSUPPORTED_SELECTORS = frozenset({"rand_perturb", "multi_perturb", "perturb_bdy",
     "perturb_chem_bdy", "pert_cld3", "pert_deng", "pert_farms", "pert_mynn",
     "pert_noah", "pert_thom"})
+#: What WRF v4.7.1 does under each selector the engine has no consumer for
+#: (Registry/registry.stoch, registry.bdy_perturb), so the refusal says which
+#: operation would be lost rather than one sentence for all ten.  A row
+#: leaves this table, and UNSUPPORTED_SELECTORS, when its consumer lands.
+UNSUPPORTED_SELECTOR_OPERATION = {
+    "rand_perturb": "WRF fills the RAND_PERT random-pattern array for a "
+                    "scheme to read (registry.stoch:205)",
+    "multi_perturb": "WRF's multi-perturbation option drives the pert_* "
+                     "scheme perturbations (registry.stoch:98)",
+    "perturb_bdy": "WRF perturbs the lateral boundary tendencies of U, V "
+                   "and T (registry.bdy_perturb:9: 1 with the SKEBS "
+                   "pattern, 2 with a supplied one)",
+    "perturb_chem_bdy": "WRF perturbs the lateral boundaries of chemical "
+                        "tracers with the RAND_PERT pattern "
+                        "(registry.bdy_perturb:10)",
+    "pert_farms": "WRF perturbs the FARMS shortwave scheme "
+                  "(registry.stoch:99)",
+    "pert_deng": "WRF perturbs the Deng shallow-cumulus scheme "
+                 "(registry.stoch:107)",
+    "pert_mynn": "WRF perturbs the MYNN boundary-layer scheme "
+                 "(registry.stoch:112)",
+    "pert_noah": "WRF perturbs the Noah land-surface scheme "
+                 "(registry.stoch:117)",
+    "pert_thom": "WRF perturbs the Thompson microphysics "
+                 "(registry.stoch:122)",
+    "pert_cld3": "WRF perturbs the CLD3 cloud-fraction scheme "
+                 "(registry.stoch:128)",
+}
+assert set(UNSUPPORTED_SELECTOR_OPERATION) == UNSUPPORTED_SELECTORS
 SEED_NOTICE = ("Stochastic physics uses engine keyed Philox and cuFFT, not WRF's "
     "date-dependent RANDOM_NUMBER realization. Authored nens and iseed_* labels "
     "are retained and bound to versioned process keys and complete checkpoints. "
@@ -31,15 +60,10 @@ def import_stochastic_section(section, *, max_dom, fix, drop, error):
     for key in sorted(UNSUPPORTED_SELECTORS & section.entries.keys()):
         values = section.take(key)
         if any(bool(value) for value in values):
-            # The same reason every run door gives for these selectors
-            # (gpuwm.ensemble_admission.RANDOM_SELECTORS), said here with
-            # the key that set it.  It used to read "consumer is not
-            # implemented", which named neither what would break nor what
-            # to do.
-            from gpuwm.ensemble_admission import UNCALIBRATED_SPREAD_REASON
+            from gpuwm.ensemble_admission import missing_random_consumer
             raise error("stoch", key, values,
-                f"{UNCALIBRATED_SPREAD_REASON} Next: turn {key} off in &stoch to "
-                "import this run without it.")
+                        f"{UNSUPPORTED_SELECTOR_OPERATION[key]}; "
+                        + missing_random_consumer(key))
         fix("stoch", key, values, 0, "selected stochastic consumer is disabled")
     selectors = {}
     for key in sorted(SUPPORTED_SELECTORS):

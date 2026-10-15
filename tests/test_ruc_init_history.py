@@ -42,12 +42,19 @@ def test_restore_keeps_initialized_soil_water_in_history(monkeypatch):
     for name, value in owned.items():
         r[name.upper()] = np.full_like(value, .125)
     driver = SimpleNamespace(fields=dict(**owned,
-        albbck=r["ALBBCK"].copy(), lai=r["LAI"].copy()), rainc=None,
+        albbck=r["ALBBCK"].copy(), lai=r["LAI"].copy()), rainc=None, ruc_params=None,
         scheme_dispatch={"sf_surface_physics": PHYSICS_SLOT_DISPATCH["sf_surface_physics"][3]})
     monkeypatch.setitem(sys.modules, "cupy", np)
     monkeypatch.setitem(sys.modules, "gpuwm.core.physics", SimpleNamespace(
         physics_driver_required=lambda cfg: True,
         initialize_physics=lambda *a, **k: driver))
+    # The door now reruns RUCLSMINIT after the restore (the device cold
+    # start, graded on a card by the test below); this CPU seam check stubs
+    # it and keeps checking that the restore leaves the initialized words.
+    from gpuwm.core.ruc_runtime import RUC_DIAGNOSTICS_2D, RUC_STATE_2D, RUC_STATE_3D
+    monkeypatch.setitem(sys.modules, "gpuwm.core.ruc_runtime", SimpleNamespace(
+        RUC_DIAGNOSTICS_2D=RUC_DIAGNOSTICS_2D, RUC_STATE_2D=RUC_STATE_2D, RUC_STATE_3D=RUC_STATE_3D,
+        ruc_cold_start=lambda *args, **kwargs: None))
     initialize_wrfinput_physics(object(), restored, cfg)
     got = live_state_history_fields(SimpleNamespace(physics=driver))["SH2O"]
     np.testing.assert_array_equal(got.view("u4"), expected.view("u4"))

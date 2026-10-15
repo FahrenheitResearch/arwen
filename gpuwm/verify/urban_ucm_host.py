@@ -24,8 +24,10 @@ class HostTwin:
         self.lib.ucm_host_columns.argtypes = [void] * 7 + [ctypes.c_int]
         self.lib.ucm_host_columns.restype = None
 
-    def run_columns(self, params, inputs, state):
+    def run_columns(self, params, inputs, state, *, generation=None):
         """Return outputs, renewed state and status codes as host arrays."""
+        from gpuwm.core.urban_ucm import water_balance_params
+        params = water_balance_params(params, generation)
         n = int(np.asarray(inputs["ta"]).size)
         incoming = []
         for name in UCM_COLUMN_INPUTS:

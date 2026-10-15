@@ -575,7 +575,8 @@ def test_compute_refl_10cm_admits_28_and_names_it_when_refusing():
     # is IN it and that the refusal names the admitted set rather than a
     # bare "unsupported".
     message = str(caught.value)
-    assert "1, 6, 8, 10, 16, or 28" in message
+    from gpuwm.core.refl import REFL_10CM_INPUT_SPECIES
+    assert all(str(selector) in message for selector in REFL_10CM_INPUT_SPECIES)
     assert "28" in message
 
 
@@ -914,17 +915,20 @@ def test_mp28_is_a_translation_not_a_substitution():
 
     Classic Thompson pins ``nc`` at ``Nt_c = 100e6`` and runs Cooper
     nucleation; 28 carries prognostic nc/nwfa/nifa, CCN activation and
-    iceDeMott.  Because the mapped value equals the WRF value, PHYSICS.md's
-    "exactly three ratified substitutions" claim is untouched.
+    iceDeMott.  The mapped value equals the WRF value, so it adds no
+    substitution -- and since 2026-10-12 the microphysics map has none
+    at all (55, ISHMAEL, is refused by name instead of run as Morrison).
     """
     from gpuwm.namelist_import import _MP_MAP
 
     assert _MP_MAP[28][0] == 28
     assert _MP_MAP[28][1] == _MP_MAP[28][2] == "Thompson aerosol-aware"
-    # The microphysics map's ONLY substitution stays 55 (ISHMAEL -> Morrison).
+    # The microphysics map substitutes nothing: every row runs the scheme
+    # its WRF number names.
     substitutions = {wrf for wrf, (mapped, _w, _g) in _MP_MAP.items()
                      if mapped != wrf}
-    assert substitutions == {55}
+    assert substitutions == set()
+    assert 55 not in _MP_MAP
 
 
 def test_every_wrf_mp28_aerosol_namelist_key_is_answered():

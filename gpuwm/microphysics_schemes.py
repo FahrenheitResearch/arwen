@@ -129,3 +129,6 @@ def mass_loading_species(mp) -> tuple[str, ...] | None:
     """Condensate masses in the acoustic mass loading (cq), beyond qc/qr."""
     s = scheme(mp)
     return None if s is None else s.ice_mass_species
+
+# WRF Registry.EM_COMMON package rows carrying a qs mass species.
+PORTED_WRF_SNOW_SELECTORS = ()

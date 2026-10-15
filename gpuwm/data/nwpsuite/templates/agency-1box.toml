@@ -1,0 +1,35 @@
+schema = "gpuwm.suite.v1"
+name = "agency-1box"
+region = "US"
+extends = "template:agency-2box"
+[[box]]
+id = "r"
+host = "local"
+cards = 8
+card_model = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+memory_mib = 97887
+host_memory_mib = 786432
+build = "2.8.9"
+[[system]]
+id = "cam-ens"
+members = { perturbed = 5, lagged = 6 }
+at = { "00" = { enabled = false } }
+[[system]]
+id = "global-det"
+mesh = "x1.655362"
+cards = 2
+box = "r"
+cycle = { lead = "120h" }
+rate = "global-coarse-2"
+[[system]]
+id = "global-ens"
+members = 16
+box = "r"
+cycle = { every = "24h", hours = [0], deadline = "ready+330m" }
+[[system]]
+id = "rrfs-3km"
+box = "r"
+[[system]]
+id = "global-15-3"
+box = "r"
+enabled = false

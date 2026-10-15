@@ -142,11 +142,14 @@ def decide(*, woof_status: str, nonfinite_step: int | None, referee: str | None,
 
     if woof_status == "REFUSED":
         return "WOOF-REFUSED"
+    # A post-forecast failure (for example checkpoint capture) can leave
+    # every history frame intact. Matching those frames must not turn the
+    # reported engine crash into a successful CLI verdict.
+    if woof_status == "CRASH":
+        return "WOOF-CRASH"
     repeat_missed = (repeat is None and repeat_required) or (
         repeat is not None and not repeat.matched)
     if referee is None or referee not in comparisons:
-        if woof_status == "CRASH":
-            return "WOOF-CRASH"
         if nonfinite_step is not None:
             return "WOOF-NONFINITE"
         if planned_last_step is not None and (woof_last_step is None

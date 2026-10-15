@@ -180,4 +180,5 @@ def test_topo_wind_reaches_ysu_on_a_tile(monkeypatch):
 
     monkeypatch.setattr(physics, "launch_ysu", launch)
     with pytest.raises(ReachedKernel):
-        driver._run_ysu(atmosphere, SimpleNamespace(ysu_topdown_pblmix=0))
+        driver._run_ysu(atmosphere, SimpleNamespace(
+            ysu_topdown_pblmix=0, ysu_version="wrf_480"))

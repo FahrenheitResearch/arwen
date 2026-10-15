@@ -1,0 +1,317 @@
+{
+  "checked_utc": "2026-10-12T05:15:14.898082+00:00",
+  "basis": "CPU fixture seeded from rw-wrfbatch/tests/winter.rs; default PNG size; both grid brackets",
+  "renderer_sha256": "536f50681e735487c4f356d574bc29c06d73781b214e8fc768942aafab3b835d",
+  "renderer_abi": "gpuwm-rw-wrfbatch-catalog-v1\tPRODUCT\tslug\tkind\tstatus\tdetail\tcode\tCATALOG\tgpuwm-rw-wrfbatch-requirements-v1\tNEEDS\tslug\tselector\tPLANNED\tstore_field\tgpuwm-rw-wrfbatch-wrfout-lane-v1\tWRFOUT\tslug\tkind\tverdict\tminimum_hour\tdetail\tgpuwm-rw-wrfbatch-events-v2\tRENDERED\tSKIPPED\tFAILED\tframe-attributed\tgpuwm-rw-wrfbatch-sections-v1\tSECTIONFILL\tslug\tlo\thi\tabsence\trule\tgpuwm-rw-wrfbatch-inputs-json-v1\tgpuwm-rw-wrfbatch-vocabulary-v2\tgeneric\tvar:\tvariables\txsec:\tmesh:\tmeshdiff:\tselectable_slugs\tgpuwm-rw-wrfbatch-layout-v1\t--layout\tauto\tfixed\t--size-class\t--scale\t--pair-sheet\tgpuwm-rw-wrfbatch-difference-v1\t--diff-against\t--diff-inputs-json\t--diff-label-a\t--diff-label-b\t--diff-labels\t--diff-sheet\tDIFFERENCE",
+  "product_catalog": {
+    "10m_wind_gusts": [
+      "direct",
+      0.0
+    ],
+    "categorical_rain": [
+      "direct",
+      0.0
+    ],
+    "categorical_freezing_rain": [
+      "direct",
+      0.0
+    ],
+    "categorical_ice_pellets": [
+      "direct",
+      0.0
+    ],
+    "categorical_snow": [
+      "direct",
+      0.0
+    ],
+    "precipitation_type": [
+      "direct",
+      0.0
+    ],
+    "snowfall_window": [
+      "direct",
+      0.0
+    ],
+    "snow_10to1_window": [
+      "direct",
+      0.0
+    ],
+    "snow_kuchera_window": [
+      "direct",
+      0.0
+    ]
+  },
+  "commands": [
+    [
+      "/work/r290-defects/target/release/rw_wrfbatch",
+      "--store-root",
+      "/work/r290-defects/tmp/measurement2/d01/store",
+      "--out-dir",
+      "/work/r290-defects/tmp/measurement2/d01/png",
+      "--products",
+      "10m_wind_gusts,categorical_rain,categorical_freezing_rain,categorical_ice_pellets,categorical_snow,precipitation_type,snowfall_window,snow_10to1_window,snow_kuchera_window",
+      "/work/r290-defects/tmp/measurement2/d01/wrfout_d01_2026-01-01_06_00_00"
+    ],
+    [
+      "/work/r290-defects/target/release/rw_wrfbatch",
+      "--store-root",
+      "/work/r290-defects/tmp/measurement2/d02/store",
+      "--out-dir",
+      "/work/r290-defects/tmp/measurement2/d02/png",
+      "--products",
+      "10m_wind_gusts,categorical_rain,categorical_freezing_rain,categorical_ice_pellets,categorical_snow,precipitation_type,snowfall_window,snow_10to1_window,snow_kuchera_window",
+      "/work/r290-defects/tmp/measurement2/d02/wrfout_d02_2026-01-01_06_00_00"
+    ]
+  ],
+  "frames": [
+    {
+      "attributes": {
+        "GRID_ID": 1,
+        "DX": 16000,
+        "DY": 16000
+      },
+      "dimensions": {
+        "west_east": 36,
+        "south_north": 36
+      }
+    },
+    {
+      "attributes": {
+        "GRID_ID": 1,
+        "DX": 16000,
+        "DY": 16000
+      },
+      "dimensions": {
+        "west_east": 36,
+        "south_north": 36
+      }
+    },
+    {
+      "attributes": {
+        "GRID_ID": 2,
+        "DX": 16000,
+        "DY": 16000
+      },
+      "dimensions": {
+        "west_east": 156,
+        "south_north": 124
+      }
+    },
+    {
+      "attributes": {
+        "GRID_ID": 2,
+        "DX": 16000,
+        "DY": 16000
+      },
+      "dimensions": {
+        "west_east": 156,
+        "south_north": 124
+      }
+    }
+  ],
+  "pictures": [
+    {
+      "product": "10m_wind_gusts",
+      "bytes": 247249,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_10m_wind_gusts.png",
+      "sha256": "0fbd588e82f0ad5b26e081f21f9fece86a2ea9edbc293a2bdd9d1a5696d8e3ba",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "categorical_freezing_rain",
+      "bytes": 224090,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_categorical_freezing_rain.png",
+      "sha256": "de2cb04dd755b671bc9c15f18af3b44bc61f51ac5fa4581d378682b6d04909ee",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "categorical_ice_pellets",
+      "bytes": 223652,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_categorical_ice_pellets.png",
+      "sha256": "c3cebb4f36006f8c6bd10cb0da2f8367f17f63622631d864607f383b54fa1859",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "categorical_rain",
+      "bytes": 222669,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_categorical_rain.png",
+      "sha256": "7d7700c033f126ba02e2698e4dc2aacbf87ac3ccc228d516e0f1b54a2577f687",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "categorical_snow",
+      "bytes": 226351,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_categorical_snow.png",
+      "sha256": "7a019b81b7919aaad3736b73f64eee96f010c7320c80d14b2e11e997267906c0",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "precipitation_type",
+      "bytes": 496803,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_precipitation_type.png",
+      "sha256": "9bc7d5e33f361d3803bc47db819b5248f72a1259cb17241a66aec36265b67492",
+      "pixels": [
+        1062,
+        1104
+      ]
+    },
+    {
+      "product": "snow_10to1_window",
+      "bytes": 237641,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_snow_10to1_window.png",
+      "sha256": "0b1ff3f471c24692461694eb06c98b3cd81065a8396ebf2411dd9b45dd065dc3",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "snow_kuchera_window",
+      "bytes": 240859,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_snow_kuchera_window.png",
+      "sha256": "e56920d9350038badfa6d9e1a30ea68eb497329e39afac26570666092f023af0",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "snowfall_window",
+      "bytes": 238332,
+      "path": "png/d01-fixture/rustwx_wrf_20260101_0z_f006_d01-16km_snowfall_window.png",
+      "sha256": "908ebcef8c1b865440cd4a8d61ffd4cfe44c6c1f94c7da697d9ebc12feebaf3a",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "10m_wind_gusts",
+      "bytes": 346061,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_10m_wind_gusts.png",
+      "sha256": "d0ab089cf3e30c4414872ac42626209d456f1e86e8bea69b07c114f30a37ccb7",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "categorical_freezing_rain",
+      "bytes": 224699,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_categorical_freezing_rain.png",
+      "sha256": "1827c89f3e24fe7f9660c8bec5034a942e16fcbed20a88dfc2e28f8a8469c408",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "categorical_ice_pellets",
+      "bytes": 224198,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_categorical_ice_pellets.png",
+      "sha256": "73cca57fbe4e2e95fafddba319f9034a634695d7b5a550f1baa74d70c84d1812",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "categorical_rain",
+      "bytes": 222856,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_categorical_rain.png",
+      "sha256": "dd94b0523814b8844c45e75248f50b7dc8ea6c6cb28e392e8d41e2817dc705a6",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "categorical_snow",
+      "bytes": 226726,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_categorical_snow.png",
+      "sha256": "2d83839fbe3fbebb306ad004c2aadd40eaca192e5ec127d52da9eef9a653b1eb",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "precipitation_type",
+      "bytes": 497454,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_precipitation_type.png",
+      "sha256": "4d4445223d745b6484622bea21b9f3d2d45b8d0944e34d221c91230aa6ab414c",
+      "pixels": [
+        1062,
+        1104
+      ]
+    },
+    {
+      "product": "snow_10to1_window",
+      "bytes": 328252,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_snow_10to1_window.png",
+      "sha256": "668fea1049a44d79c725bdd02d4531f0bbddb2a97f27dfe4de25b3abef597996",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "snow_kuchera_window",
+      "bytes": 303352,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_snow_kuchera_window.png",
+      "sha256": "7c14fd745472f6eedc4a52152ce3bf07bbceca71781e30016de353af7ea0e95b",
+      "pixels": [
+        882,
+        874
+      ]
+    },
+    {
+      "product": "snowfall_window",
+      "bytes": 328942,
+      "path": "png/d02-fixture/rustwx_wrf_20260101_0z_f006_d02-16km_snowfall_window.png",
+      "sha256": "e068a80fc49904d2c96fdbda0cfef0ce776c0aa510e8e1d77f9604b129b22144",
+      "pixels": [
+        882,
+        874
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "path": "wrfout_d01_2026-01-01_00_00_00",
+      "bytes": 304296,
+      "sha256": "c0f9d09b05e5cd454add91b5e35f596340ac38d7fe57508e4fe480cea78e037c"
+    },
+    {
+      "path": "wrfout_d01_2026-01-01_06_00_00",
+      "bytes": 304296,
+      "sha256": "0c393ab7867eac185566a8b5fb229cb493f3a1e17066a5192c998eef0d40f580"
+    },
+    {
+      "path": "wrfout_d02_2026-01-01_00_00_00",
+      "bytes": 4422568,
+      "sha256": "2e52a87316a8bd7547ec8cc920e13ba39a096fd64c5b49f7e9c1b7f0daef02dc"
+    },
+    {
+      "path": "wrfout_d02_2026-01-01_06_00_00",
+      "bytes": 4422568,
+      "sha256": "947725b13fdeafdf1dd2acad0039b11321d4f7e9ea1f2a59bf9615f2a0c5ae9a"
+    }
+  ],
+  "png_count": 18
+}

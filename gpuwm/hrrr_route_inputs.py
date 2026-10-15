@@ -1277,7 +1277,7 @@ def route_input_paths(config_path: Path) -> dict[str, Path]:
 #: same edit in the importer's words with no way out.
 ROUTE_SHARED_DOMAIN_KEYS = ("bldt", "diff_6th_opt", "isfflx",
                             "mp_physics", "sf_sfclay_physics",
-                            "mynn_sfclay_variant", "terrain_clock",
+                            "mynn_sfclay_variant", "ysu_version", "terrain_clock",
                             "diff_6th_form", "upper_wind_limiter_form",
                             "mp_zero_out", "mp_zero_out_thresh",
                             "mp_zero_out_all", "ruc_irrigation", "ruc_snow",
@@ -1436,9 +1436,11 @@ ROUTE_FORECAST_TOML_FIELDS: Mapping[str, str] = MappingProxyType({
     "moist_cq": (
         "gpuwm/core/acoustic.py prepare_moist_cq, the acoustic and "
         "big-step moisture coefficients"),
-    # THE CHEM OPERATOR'S SWITCHES (gpuwm/config.py CHEM_RUN_FIELDS).  The
-    # importer runs no WRF-Chem: a pair's &chem group is a declared
-    # divergence, dropped whole, so no pair can spell these.  The
+    # THE CHEM OPERATOR'S SWITCHES (gpuwm/config.py CHEM_RUN_FIELDS).  This
+    # route's emitted pair carries no &chem group (render_namelist_input
+    # writes none), so the route's pair cannot spell these -- although a
+    # WRF namelist's own &chem group has mapped onto them since 2026-10-12
+    # (gpuwm/namelist_chem.py; until then it was dropped whole).  The
     # forecast's chem step is built from the bound TOML (chem_sets decides
     # whether it runs at all, and is compared in its own right), and each
     # switch below is read there.  Before these entries the route compared

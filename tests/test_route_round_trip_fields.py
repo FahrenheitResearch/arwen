@@ -271,7 +271,9 @@ def test_a_forecast_toml_field_is_inert_unspelled_and_read_where_cited(field):
 
     * preparation-inert: preparing from the pair's default stamps the
       same cache, so the forecast's own cache comparison cannot object;
-    * no importer spelling: the pair cannot carry it at all;
+    * no spelling in the route's pair: the importer has none, or (the chem
+      door's fields, which a WRF &chem group maps onto since 2026-10-12)
+      the route's emitted pair carries no &chem group to spell it in;
     * the cited module names the field, so the reader is real.
     """
 
@@ -291,7 +293,17 @@ def test_a_forecast_toml_field_is_inert_unspelled_and_read_where_cited(field):
             r"\.(take|scalar|col|registry_col|peek)\(\s*[\"']" + field
             + r"[\"']", importer), field
     else:
-        assert field not in importer
+        from gpuwm.namelist_chem import CHEM_DOOR_RUN_FIELDS
+
+        if field in CHEM_DOOR_RUN_FIELDS:
+            import inspect
+
+            from gpuwm.hrrr_route_inputs import render_namelist_input
+
+            emitter = inspect.getsource(render_namelist_input)
+            assert "&chem" not in emitter and field not in emitter, field
+        else:
+            assert field not in importer
     reader = ROUTE_FORECAST_TOML_FIELDS[field].split()[0].rstrip(",")
     assert field in (ROOT / reader).read_text(encoding="utf-8"), reader
 
@@ -311,7 +323,11 @@ def test_every_compared_inert_field_has_a_spelling_in_the_pair():
     from gpuwm.namelist_import import imported_fire_fields
     from gpuwm.physics_source_defaults import PHYSICS_SELECTOR_VALUES
 
-    importer = (ROOT / "gpuwm/namelist_import.py").read_text(encoding="utf-8")
+    # The importer's text is two files since 2026-10-12: the &chem group and
+    # the chem array's &dynamics switches are read in gpuwm/namelist_chem.py.
+    importer = "".join(
+        (ROOT / path).read_text(encoding="utf-8")
+        for path in ("gpuwm/namelist_import.py", "gpuwm/namelist_chem.py"))
     # The &fire group is read by table, not key by key.
     table_read = set(imported_fire_fields())
     unspelled = sorted(
@@ -586,9 +602,12 @@ def test_the_operational_pinned_triplet_still_reads_as_the_fixed_step(
     wps = wps.replace("2026-09-29_12:00:00", "2018-08-26_12:00:00")
     wps = wps.replace("2026-09-30_06:00:00", "2018-08-26_18:00:00")
     (tmp_path / "namelist.wps").write_text(wps, encoding="utf-8")
-    text, _ = import_namelists(tmp_path / "namelist.wps",
-                               ROOT / "tests/data/hrrr_wrf_v4_1_21.nl",
-                               request_source="hrrr")
+    from operational_namelist_edits import write_importable
+    text, _ = import_namelists(
+        tmp_path / "namelist.wps",
+        write_importable(ROOT / "tests/data/hrrr_wrf_v4_1_21.nl",
+                         tmp_path / "hrrr_wrf.nl"),
+        request_source="hrrr")
     document = tomllib.loads(text)
     flat = dict(document["shared"])
     for table in document.get("domain", []):
@@ -618,8 +637,11 @@ def test_the_operational_namelist_still_imports_the_analyzed_spelling(
     wps = wps.replace("2026-09-29_12:00:00", "2018-08-26_12:00:00")
     wps = wps.replace("2026-09-30_06:00:00", "2018-08-26_18:00:00")
     (tmp_path / "namelist.wps").write_text(wps, encoding="utf-8")
-    text, _ = import_namelists(tmp_path / "namelist.wps",
-                               ROOT / "tests/data/hrrr_wrf_v4_1_21.nl")
+    from operational_namelist_edits import write_importable
+    text, _ = import_namelists(
+        tmp_path / "namelist.wps",
+        write_importable(ROOT / "tests/data/hrrr_wrf_v4_1_21.nl",
+                         tmp_path / "hrrr_wrf.nl"))
     shared = tomllib.loads(text)["shared"]
     assert shared["use_rap_aero_icbc"] is True
     assert shared["mp28_aerosol_source"] == "analysis"

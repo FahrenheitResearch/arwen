@@ -423,7 +423,7 @@ def pack_radiation_slab(fields, n: int):
     return inputs, cp.ascontiguousarray(ist)
 
 
-def evaluate_radiation_slab(fields, n: int) -> dict:
+def evaluate_radiation_slab(fields, n: int, *, noahmp_snow_age="wrf_470") -> dict:
     """One launch of RADIATION over ``n`` columns.
 
     Keys are the ones ``noahmp_radiation_gpu.unpack_radiation_row``
@@ -435,11 +435,13 @@ def evaluate_radiation_slab(fields, n: int) -> dict:
 
     from gpuwm.core.kernels import get_kernel
 
+    from gpuwm.noahmp_generation import radiation_kernel
+    kernel_name = radiation_kernel(noahmp_snow_age)
     inputs, ist = pack_radiation_slab(fields, n)
     out = cp.zeros((n, RADIATION_N_OUT), dtype=cp.float32)
     if n:
         assert out.flags.c_contiguous
-        get_kernel("noahmp_radiation", "noahmp_radiation_batch")(
+        get_kernel("noahmp_radiation", kernel_name)(
             (_blocks(n, RADIATION_THREADS),), (RADIATION_THREADS,),
             (cp.ascontiguousarray(inputs), cp.ascontiguousarray(ist), out,
              np.int32(n)))

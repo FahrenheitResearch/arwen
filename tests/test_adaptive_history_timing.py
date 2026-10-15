@@ -252,9 +252,15 @@ def test_offgrid_alarms_land_on_delayed_child_activation(physics_active):
                          for seconds in (60, 85, 110, 135, 160)]
 
 
-@pytest.mark.parametrize("adaptive,expected", [(True, 7.8), (False, 60.0)])
+# The WRF 4.8 solar generation (the default) reads the requested RADT for
+# the COSZEN midpoint whatever the time step (gpuwm.core.solar.
+# solar_period_seconds); the wrf_461 reproduction keeps the rounded period
+# off the adaptive step.
+@pytest.mark.parametrize("adaptive,generation,expected", [
+    (True, "wrf_480", 7.8), (False, "wrf_480", 7.8),
+    (True, "wrf_461", 7.8), (False, "wrf_461", 60.0)])
 def test_actual_dudhia_solar_receiver_uses_adaptive_requested_period(
-        monkeypatch, adaptive, expected):
+        monkeypatch, adaptive, generation, expected):
     from gpuwm.core import dudhia
 
     monkeypatch.setitem(sys.modules, "cupy", np)
@@ -270,18 +276,26 @@ def test_actual_dudhia_solar_receiver_uses_adaptive_requested_period(
     adapter.longitude_deg = np.zeros((1, 1))
     adapter.icloud, adapter.swrad_scat, adapter.update_count = 0, 1.0, 0
     cfg = replace(_experiment(ratios=(1,)).root.run,
-                  use_adaptive_time_step=adaptive, radt=0.13)
+                  use_adaptive_time_step=adaptive, radt=0.13,
+                  solar_generation=generation)
     atmosphere = {name: np.ones((2, 1, 1)) for name in (
         "temperature", "qc", "qi", "pressure", "qv", "dz", "exner")}
     adapter(atmosphere=atmosphere,
             fields={"albedo": np.zeros((1, 1)), "glw": np.ones((1, 1))},
             state=SimpleNamespace(elapsed_seconds=0.0), cfg=cfg)
-    assert seen == [0.5 * expected]
+    # radt 0.13 min * 60 s reads 7.800000000000001 s in binary64.
+    assert seen == [pytest.approx(0.5 * expected, rel=1e-12)]
 
 
-@pytest.mark.parametrize("adaptive,expected", [(True, 10.2), (False, 10.8)])
-def test_actual_kf_launcher_receives_requested_adaptive_cudt(
-        monkeypatch, adaptive, expected):
+@pytest.mark.parametrize("adaptive", [True, False])
+def test_actual_kf_launcher_receives_wrf_cudt_minutes(monkeypatch, adaptive):
+    """WRF hands KF_eta_CPS the namelist CUDT in minutes on both clocks
+    (module_cumulus_driver.F:766-769, cudt_pass), and the scheme's own
+    PRATEC goes to the driver unchanged.  Before the 2026-10-07 port the
+    adapter passed a seconds period (10.2 s adaptive, 10.8 s fixed here) and
+    recovered PRATEC by dividing the rain back out of it; the shallow NCA
+    (CUDT*60.) and PRATEC now come from the port, graded by
+    tests/test_kf_wrf461_oracle.py."""
     from gpuwm.core import kf
 
     monkeypatch.setitem(sys.modules, "cupy", np)
@@ -292,7 +306,8 @@ def test_actual_kf_launcher_receives_requested_adaptive_cudt(
         result = {name: np.zeros((2, 1, 1), np.float32) for name in (
             "rthcuten", "rqvcuten", "rqccuten", "rqicuten", "rqrcuten", "rqscuten")}
         result.update(nca_seconds=np.full((1, 1), 20.0, np.float32),
-                      rainc=np.full((1, 1), 2.0, np.float32))
+                      rainc=np.full((1, 1), 2.4, np.float32),
+                      pratec=np.full((1, 1), 2.0, np.float32))
         return result
 
     monkeypatch.setattr(kf, "launch_kf", launch)
@@ -304,9 +319,10 @@ def test_actual_kf_launcher_receives_requested_adaptive_cudt(
     adapter.w0avg = np.zeros((2, 1, 1))
     adapter._history_state, adapter._history_time = state, 10.2
     atmosphere = {name: np.ones((2, 1, 1)) for name in (
-        "u", "v", "temperature", "qv", "qc", "pressure", "exner", "dz")}
+        "u", "v", "temperature", "qv", "qc", "pressure", "rho", "exner",
+        "dz")}
     result = adapter(atmosphere=atmosphere, fields={}, state=state, cfg=cfg)
-    assert seen[0]["cudt"] == pytest.approx(expected)
+    assert seen[0]["cudt_minutes"] == pytest.approx(0.17)
+    assert "cudt" not in seen[0]
     assert seen[0]["dt"] == 1.2
-    np.testing.assert_array_equal(
-        result.pratec, np.float32(2.0) / np.float32(expected))
+    np.testing.assert_array_equal(result.pratec, np.float32(2.0))

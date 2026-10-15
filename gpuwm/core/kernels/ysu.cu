@@ -246,21 +246,9 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     YsuCol rhs     = YSUWS_AT(wsb, 16, wskp);
     YsuCol gamma   = YSUWS_AT(wsb, 17, wskp);
 
+    // bl_ysu_run has no zero-flux exit: a calm column (ust = hfx = qfx = 0)
+    // runs the whole scheme in WRF (703 m PBL on the oracle's case 12).
     real us = ust[col], hf = hfx[col], qf = qfx[col];
-    if (!BEP && us == 0.0f && hf == 0.0f && qf == 0.0f) {
-        for (int k = 0; k < nz; ++k) {
-            int q = k * st + col;
-            du[q] = dv[q] = dtheta[q] = dqv[q] = dqc[q] = dqi[q] = 0.0f;
-            exch_h[q] = exch_m[q] = 0.0f;
-        }
-        hpbl_out[col] = dz[col];
-        kpbl_out[col] = 1;
-        wstar_out[col] = delta_out[col] = 0.0f;
-        topdown_radsum_out[col] = wstar3_2_out[col] = 0.0f;
-        cloudflg_out[col] = 0; if constexpr (TOPO) ysu_topo_blend_u10(topo, u10, v10, u[col], v[col], col);
-        return;
-    }
-
     const real xkzminm = 0.1f, xkzminh = 0.01f, xkzmax = 1000.0f;
     const real rimin = -100.0f, rlam = 30.0f, prmin = 0.25f, prmax = 4.0f;
     const real brcr_ub = 0.0f, brcr_sb = 0.25f, cori = 1.0e-4f;

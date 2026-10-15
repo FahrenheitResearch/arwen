@@ -12,11 +12,11 @@ arrays.  This module states, in one place, which array operation reproduces
 which scalar one **bitwise**, and refuses to guess:
 
 ``+ - * /`` and ``sqrt``
-    IEEE-754 correctly rounded in binary32, so a CuPy float32 ufunc is
-    bit-identical to ``f32(a op b)`` with no wrapper at all.  Each ufunc is
-    its own launch, so nothing here can be contracted into an FMA either.
-    ``test_ieee_agreement`` and ``test_sqrt_agreement`` are the gates that say
-    so, over 40,006 argument pairs each.
+    The ordinary CuPy float32 route agrees over the normal arguments tested
+    by ``test_ieee_agreement`` and ``test_sqrt_agreement``. Its default FTZ
+    route can flush subnormal operands or results. Arithmetic crossing that
+    range uses the generated CUDA kernels with FTZ disabled. In particular,
+    ``slab_add_product`` retains the ground-humidity blend between leaf batches.
 
 ``min`` / ``max``
     **Not** ``cupy.minimum``/``cupy.maximum``.  ENERGY spells them
@@ -27,10 +27,10 @@ which scalar one **bitwise**, and refuses to guess:
     bugs to.  :func:`fmn` and :func:`fmx` are the ``where`` forms that match.
 
 ``powf`` / ``expf`` / ``logf`` / ``tanhf``
-    Neither numpy's float32 versions nor CUDA's device libm are glibc's, and
-    gfortran on x86-64 calls glibc's.  These go through
+    These use WOOF's own float32 routines, tested against the WRF oracle.
+    They go through
     ``gpuwm/core/kernels/noahmp_libm_slab.cu``, which is a bare elementwise
-    wrapper around the single audited device transcription already in this
+    wrapper around WOOF's own float32 routines already in this
     tree (``r_pow``/``r_exp``/``r_log`` in ``noahmp_leaves.cu`` and
     ``nmpe_tanhf`` in ``noahmp_energy.cu``).  No second copy is created here,
     which is also why the entry points are spelled ``slab_powf`` and not
@@ -54,6 +54,33 @@ from gpuwm.core.noahmp_kernel_sources import (compile_runtime_unit,
 
 #: One CUDA thread per column; these kernels are memory bound and elementwise.
 THREADS = 128
+
+_ADD_PRODUCT_KERNELS = {}
+
+
+def slab_add_product(a, b, c):
+    """Two binary32 roundings for a + b*c, retaining subnormal words."""
+    import cupy as cp
+    arrays = cp.broadcast_arrays(cp.asarray(a, dtype=cp.float32),
+                                 cp.asarray(b, dtype=cp.float32),
+                                 cp.asarray(c, dtype=cp.float32))
+    shape = arrays[0].shape
+    values = [cp.ascontiguousarray(v) for v in arrays]
+    out = cp.empty(shape, dtype=cp.float32)
+    n = int(out.size)
+    if n:
+        key = cp.cuda.runtime.getDevice()
+        kernel = _ADD_PRODUCT_KERNELS.get(key)
+        if kernel is None:
+            source = '''extern "C" __global__ void noahmp_add_product(
+                const float* a,const float* b,const float* c,float* o,int n) {
+                int i=blockDim.x*blockIdx.x+threadIdx.x;
+                if(i<n)o[i]=__fadd_rn(a[i],__fmul_rn(b[i],c[i]));
+            }'''
+            kernel = compile_generated_slab_kernel(source, 'noahmp_add_product')
+            _ADD_PRODUCT_KERNELS[key] = kernel
+        kernel(((n+THREADS-1)//THREADS,), (THREADS,), (*values, out, np.int32(n)))
+    return out
 
 _MODULE_NAME = "noahmp_libm_slab"
 
@@ -115,7 +142,7 @@ def _unary(name, x):
 
 
 def slab_powf(x, y):
-    """glibc 2.39 ``powf`` over arrays, elementwise.
+    """WOOF's float32 power over arrays, elementwise.
 
     ``y`` may be a scalar; it is broadcast to ``x``'s shape *before* the
     launch, because the kernel reads one exponent per element.
@@ -133,22 +160,22 @@ def slab_powf(x, y):
 
 
 def slab_expf(x):
-    """glibc 2.39 ``expf`` over arrays, elementwise."""
+    """WOOF's float32 exponential over arrays, elementwise."""
     return _unary("nmp_slab_expf", x)
 
 
 def slab_logf(x):
-    """glibc 2.39 ``logf`` over arrays, elementwise."""
+    """WOOF's float32 logarithm over arrays, elementwise."""
     return _unary("nmp_slab_logf", x)
 
 
 def slab_tanhf(x):
-    """glibc 2.39 ``tanhf`` over arrays, elementwise."""
+    """WOOF's float32 hyperbolic tangent over arrays, elementwise."""
     return _unary("nmp_slab_tanhf", x)
 
 
 def slab_sqrtf(x):
-    """IEEE-754 square root: correctly rounded, so CuPy's is glibc's."""
+    """IEEE-754 square root with binary32 rounding."""
     import cupy as cp
 
     return cp.sqrt(cp.asarray(x, dtype=cp.float32))
@@ -457,7 +484,7 @@ if(v_albedo[c]>-999.0f)o_albedo[p]=v_albedo[c];
 o_canwat[p]=A(v_canliq[c],v_canice[c]);
 o_acsnow[p]=A(o_acsnow[p],M(rainbl[p],v_fpice[c]));
 float pond=A(A(v_ponding[c],v_ponding1[c]),v_ponding2[c]);
-o_acsnom[p]=A(o_acsnom[p],A(M(v_qmelt[c],dt),pond));
+o_acsnom[p]=A(A(A(A(o_acsnom[p],M(v_qmelt[c],dt)),v_ponding[c]),v_ponding1[c]),v_ponding2[c]);
 o_pondingxy[p]=pond;
 o_q2mvxy[p]=D(v_q2v[c],S(1.0f,v_q2v[c]));
 o_q2mbxy[p]=D(v_q2b[c],S(1.0f,v_q2b[c]));

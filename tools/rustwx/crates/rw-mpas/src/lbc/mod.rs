@@ -77,6 +77,88 @@ use crate::init::DEG_PER_RAD;
 
 const MSGVAL: f32 = -1.0e30;
 
+/// `config_physics_mode` (the engine's correct-mode key, gpuwm/correct_mode.py): `Exact` reproduces native
+/// `init_atm_case_lbc` (MPAS-A v8.4.2) word for word; `Correct` applies the corrections of the
+/// patched init_atmosphere, each named by its finding id:
+///
+/// * IN4: edge winds extrapolate below and above the first-guess column with the same CONSTANT
+///   rule as the initial conditions (`init_atm_case_gfs`, [`crate::init::dynamics::interp_edge_column`]),
+///   so initial and boundary winds agree for the same input at the same valid time.  Native case 9
+///   extrapolates linearly; the two routines differ only in that flag, with no comment, and the
+///   commit that wrote case 9 says it borrows from case 7.
+/// * IN5: every record of a boundary time's intermediate file must carry that valid time (hdate).
+///   Native case 9 opens the hour's file for any time in the hour and stamps its data with the
+///   requested time without checking.
+///
+/// The default is `Correct` (2.9.0: correct mode is the engine default, fixed means default).
+/// `Exact` stays selectable, and every identity proof against native names it explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PhysicsMode {
+    Exact,
+    #[default]
+    Correct,
+}
+
+impl PhysicsMode {
+    /// Parse `--physics-mode`.  Anything but `exact` or `correct` is refused, so a typo never
+    /// silently means exact.
+    pub fn parse(text: &str) -> Result<PhysicsMode, String> {
+        match text {
+            "exact" => Ok(PhysicsMode::Exact),
+            "correct" => Ok(PhysicsMode::Correct),
+            other => Err(format!(
+                "--physics-mode takes exact or correct, not \"{other}\"; exact reproduces native init_atmosphere v8.4.2, correct applies IN4 and IN5"
+            )),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PhysicsMode::Exact => "exact",
+            PhysicsMode::Correct => "correct",
+        }
+    }
+
+    /// The finding ids this mode changes in the boundary producer.
+    pub fn corrections(self) -> Vec<String> {
+        match self {
+            PhysicsMode::Exact => Vec::new(),
+            PhysicsMode::Correct => vec!["IN4".to_string(), "IN5".to_string()],
+        }
+    }
+
+    /// IN4: the edge-wind extrapolation rule.
+    pub fn edge_wind_extrap(self) -> Extrap {
+        match self {
+            PhysicsMode::Exact => Extrap::Linear,
+            PhysicsMode::Correct => Extrap::Constant,
+        }
+    }
+}
+
+/// IN5: refuse a boundary file whose records are not valid at the requested time.  A record's
+/// `hdate` is `YYYY-MM-DD_HH:MM:SS`, possibly shortened to the hour or minute by its writer.
+pub fn check_valid_time(slabs: &[MetSlab], valid_time: &str, path: &std::path::Path) -> MpasResult<()> {
+    let want = valid_time.get(..19).unwrap_or(valid_time);
+    for slab in slabs {
+        let mut have = slab.hdate.trim_end().to_string();
+        if have.len() == 13 {
+            have.push_str(":00:00");
+        } else if have.len() == 16 {
+            have.push_str(":00");
+        }
+        if have.get(..19).unwrap_or(&have) != want {
+            return Err(MpasError::Refusal(format!(
+                "{}: field {} is valid at {}, not at the requested boundary time {want}.  Stale or mislabelled first-guess data would be written as the boundary state of another time (IN5, --physics-mode correct)",
+                path.display(),
+                slab.field.trim_end(),
+                slab.hdate.trim_end()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The literal `1.61` the Fortran uses in the hydrostatic loop, in `theta_m`
 /// and in the recovery of `lbc_theta` — not `rvord - 1`.  See
 /// `init::dynamics` for the history of that mix; the lbc case carries no
@@ -126,6 +208,8 @@ pub struct LbcConfig {
     /// registry metadata carried for the consumer.
     pub fg_interval_seconds: i64,
     pub oned_underflow: Underflow,
+    /// `--physics-mode`: exact (native) or correct (IN4, IN5).
+    pub physics_mode: PhysicsMode,
     /// Overrides for header config attributes that are namelist metadata
     /// rather than producer switches (met prefix, geography table names, ...).
     /// Names must exist in the v8.4.1 table and must not shadow a producer
@@ -168,6 +252,13 @@ pub struct LbcReceipt {
     pub extrap_airtemp: String,
     pub use_spechumd: bool,
     pub oned_underflow: String,
+    /// `--physics-mode correct` and the finding ids it changed.  Written only in correct mode, so an
+    /// exact-mode receipt stays byte-identical to the receipt of the producer before the mode existed
+    /// (the engine's correct-mode key, gpuwm/correct_mode.py).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub physics_mode: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub corrections: Vec<String>,
     pub intervals: Vec<IntervalReceipt>,
     pub seconds: f64,
 }
@@ -264,6 +355,8 @@ pub fn build_lbc(cfg: &LbcConfig) -> MpasResult<LbcReceipt> {
         extrap_airtemp: cfg.extrap_airtemp.label().to_string(),
         use_spechumd: cfg.use_spechumd,
         oned_underflow: cfg.oned_underflow.label().to_string(),
+        physics_mode: (cfg.physics_mode == PhysicsMode::Correct).then(|| cfg.physics_mode.label().to_string()),
+        corrections: cfg.physics_mode.corrections(),
         ..Default::default()
     };
 
@@ -297,6 +390,9 @@ fn build_one_time(
     };
 
     let slabs = read_met_file(&interval.met_path)?;
+    if cfg.physics_mode == PhysicsMode::Correct {
+        check_valid_time(&slabs, &interval.valid_time, &interval.met_path)?;
+    }
     let mut fg = horizontal_pass(&slabs, mesh, cfg, &mut receipt)?;
     let nfg = fg.vert_level.len();
     if nfg < 2 {
@@ -433,7 +529,9 @@ fn build_one_time(
     }
 
     // Edge wind columns: two-cell mean coordinate, four-point mean target,
-    // LINEAR extrapolation — and the stored-0 garbage cell contributes zeros.
+    // LINEAR extrapolation in exact mode (CONSTANT in correct mode, IN4) — and the
+    // stored-0 garbage cell contributes zeros.
+    let edge_extrap = cfg.physics_mode.edge_wind_extrap();
     let garbage_z = vec![0.0f32; nfg];
     let garbage_zgrid = vec![0.0f32; nz + 1];
     let zfg_of = |c: usize| -> &[f32] {
@@ -479,7 +577,7 @@ fn build_one_time(
             (0..nz)
                 .map(|k| {
                     let target = 0.25 * (g1[k] + g1[k + 1] + g2[k] + g2[k + 1]);
-                    vertical_interp(target, &coord[..nfg - 1], &value[..nfg - 1], Extrap::Linear)
+                    vertical_interp(target, &coord[..nfg - 1], &value[..nfg - 1], edge_extrap)
                         .unwrap_or(value[nfg - 2])
                 })
                 .collect()
@@ -928,6 +1026,80 @@ mod tests {
         for f in ["UU", "VV", "TT", "RH", "SPECHUMD", "GHT", "SOILHGT", "PRES", "PRESSURE"] {
             assert!(LBC_MET_FIELDS.contains(&f), "{f} must be consumed");
         }
+    }
+
+    fn slab(hdate: &str) -> MetSlab {
+        MetSlab {
+            hdate: hdate.to_string(),
+            map_source: String::new(),
+            field: "TT".to_string(),
+            units: String::new(),
+            desc: String::new(),
+            xlvl: 100000.0,
+            nx: 1,
+            ny: 1,
+            start_lat: 0.0,
+            start_lon: 0.0,
+            delta_lat: 1.0,
+            delta_lon: 1.0,
+            earth_radius_km: 6371.229,
+            values: vec![0.0],
+        }
+    }
+
+    #[test]
+    fn in4_correct_mode_extrapolates_boundary_winds_like_the_initial_conditions() {
+        // Input winds 10 and 20 m/s at 100 and 300 m; the lowest model edge sits at 50 m.
+        // Case 7 (initial conditions) holds the lowest wind constant: 10 m/s.
+        let (coord, value) = ([100.0f32, 300.0], [10.0f32, 20.0]);
+        let initial = crate::init::dynamics::interp_edge_column(50.0, &coord, &value);
+        assert_eq!(initial, 10.0);
+        let exact = vertical_interp(50.0, &coord, &value, PhysicsMode::Exact.edge_wind_extrap()).unwrap();
+        let correct = vertical_interp(50.0, &coord, &value, PhysicsMode::Correct.edge_wind_extrap()).unwrap();
+        assert_eq!(exact, 7.5, "native case 9 extrapolates linearly: IC and LBC disagree");
+        assert_eq!(correct.to_bits(), initial.to_bits(), "correct mode: IC and LBC agree");
+        // Inside the column both modes interpolate identically.
+        let inside = |m: PhysicsMode| vertical_interp(200.0, &coord, &value, m.edge_wind_extrap()).unwrap();
+        assert_eq!(inside(PhysicsMode::Exact).to_bits(), inside(PhysicsMode::Correct).to_bits());
+    }
+
+    #[test]
+    fn in5_correct_mode_refuses_records_of_another_time() {
+        let path = std::path::Path::new("MET:2023-03-31_12:15");
+        let hour = [slab("2023-03-31_12:00:00")];
+        let quarter = [slab("2023-03-31_12:15:00")];
+        let err = check_valid_time(&hour, "2023-03-31_12:15:00", path).unwrap_err().to_string();
+        assert!(err.contains("not at the requested boundary time 2023-03-31_12:15:00"), "{err}");
+        assert!(check_valid_time(&quarter, "2023-03-31_12:15:00", path).is_ok());
+        // Writers that shorten hdate to the hour or minute are read as that full time.
+        assert!(check_valid_time(&[slab("2023-03-31_12")], "2023-03-31_12:00:00", path).is_ok());
+        assert!(check_valid_time(&[slab("2023-03-31_12:15")], "2023-03-31_12:15:00", path).is_ok());
+        assert!(check_valid_time(&[slab("2023-03-31_12")], "2023-03-31_12:15:00", path).is_err());
+    }
+
+    #[test]
+    fn exact_mode_receipt_carries_no_mode_keys() {
+        // MODE-KEY plumbing: an exact-mode receipt is the receipt of the producer before the switch.
+        let receipt = |m: PhysicsMode| LbcReceipt {
+            physics_mode: (m == PhysicsMode::Correct).then(|| m.label().to_string()),
+            corrections: m.corrections(),
+            ..Default::default()
+        };
+        let exact = serde_json::to_string_pretty(&receipt(PhysicsMode::Exact)).unwrap();
+        assert!(!exact.contains("physics_mode") && !exact.contains("corrections"), "{exact}");
+        let correct = serde_json::to_value(receipt(PhysicsMode::Correct)).unwrap();
+        assert_eq!(correct["physics_mode"], "correct");
+        assert_eq!(correct["corrections"], serde_json::json!(["IN4", "IN5"]));
+    }
+
+    #[test]
+    fn the_mode_key_refuses_anything_but_exact_or_correct() {
+        assert_eq!(PhysicsMode::parse("exact").unwrap(), PhysicsMode::Exact);
+        assert_eq!(PhysicsMode::parse("correct").unwrap(), PhysicsMode::Correct);
+        assert!(PhysicsMode::parse("corect").is_err());
+        assert_eq!(PhysicsMode::default(), PhysicsMode::Correct);
+        assert!(PhysicsMode::Exact.corrections().is_empty());
+        assert_eq!(PhysicsMode::Correct.corrections(), vec!["IN4", "IN5"]);
     }
 
     #[test]

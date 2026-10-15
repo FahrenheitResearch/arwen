@@ -125,11 +125,16 @@ def test_rrtm_setup_policies_match_wrf_v461():
     assert rrtm_upper_layer_count(10000.0) == 25
     assert rrtm_upper_layer_count(5000.0) == 13  # NINT(12.5) -> 13
     gases = rrtm_default_trace_gases(1974)
+    # The REAL(8) values RRTMLWRAD holds: float32 arithmetic widened
+    # (tests/test_rrtm_lw_wrf461_parity.py grades them against the Fortran).
     assert gases == pytest.approx({
         "co2": 333.5068493173175e-6,
         "n2o": 319.0e-9,
         "ch4": 1774.0e-9,
-    }, rel=1.0e-14)
+    }, rel=1.0e-7)
+    assert gases["n2o"] == float(np.float32(319.0e-9))
+    assert gases["ch4"] == float(np.float32(1774.0e-9))
+    assert gases["co2"] == float(np.float32(gases["co2"]))
 
 
 def test_rrtm_asset_is_bound_by_active_restart_identity():
@@ -143,9 +148,13 @@ def test_rrtm_asset_is_bound_by_active_restart_identity():
 
 
 def test_wrf_solar_geometry_pins_midpoint_hour_angle_and_solcon():
+    # The pinned words are WRF 4.6.1's sun (the host float64 mirror); the
+    # WRF 4.8 default is computed on the device and graded there
+    # (tests/test_solar_generation_gpu.py).
     mu, solcon = wrf_solar_geometry(
         datetime(1974, 4, 3, 18, 12), np.asarray([39.0]),
-        np.asarray([-87.0]), hour_offset_seconds=360.0)
+        np.asarray([-87.0]), hour_offset_seconds=360.0,
+        generation="wrf_461")
     assert float(mu[0]) == pytest.approx(0.8238347270070797, abs=1.0e-14)
     assert solcon == pytest.approx(1369.697368038525, abs=1.0e-12)
 
@@ -280,7 +289,10 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
     }
     state = SimpleNamespace(
         elapsed_seconds=0.0, p=np.zeros(shape, np.float32))
-    cfg = _cfg(ra_lw_physics=0, ra_sw_physics=1, radt_minutes=12.0)
+    # A NumPy-shim seam test: it selects the host-computable WRF 4.6.1 sun
+    # (the WRF 4.8 default runs on the device only).
+    cfg = _cfg(ra_lw_physics=0, ra_sw_physics=1, radt_minutes=12.0,
+               solar_generation="wrf_461")
     driver = object.__new__(physics.PhysicsDriver)
     driver.swint = None
     driver.radiation_callable = adapter
@@ -290,6 +302,11 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
     driver.olr = None
     # Dudhia computes no cloud fraction, so no CLDFRA buffer (RULINGS 1).
     driver.cldfra = None
+    # No aer_opt = 1 or 2 is selected, so no aerosol diagnostic slots
+    # (golden/ports-rad: the seam reads them like the other optional slots).
+    driver.aod5503d = None
+    driver.aerosol2d = None
+    driver.aodtot = None
     # The fixture leaves swint_opt disabled, as the real driver's optional slot.
     driver.swint = None
     driver.fields = {

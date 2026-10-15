@@ -55,7 +55,12 @@ def test_unnamed_namelist_keeps_the_global_default(tmp_path):
     emitted_lines = text.splitlines(keepends=True)
     assert emitted_lines.count(scalar_line) == 1
     historical = "".join(line for line in emitted_lines if line != scalar_line)
-    assert hashlib.sha256(historical.encode()).hexdigest() == baseline["namelist"]
+    # The namelist omits &dynamics top_lid: the pinned importer resolved the
+    # rigid lid, this one reads WRF's open top (2026-10-12).  That one line
+    # put back, the pinned hash holds.
+    from operational_namelist_edits import with_parent_lid
+    assert hashlib.sha256(with_parent_lid(historical).encode()
+                          ).hexdigest() == baseline["namelist"]
     assert "mynn_sfclay_variant" not in document["shared"]
     run = build_experiment(document, source="unnamed import").root.run
     assert run.scalar_pblmix == 1

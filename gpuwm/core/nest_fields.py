@@ -59,11 +59,18 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
     kinds = ["u", "v", "w", "t", "ph", "mu"]
     if cfg.moist:
         kinds += ["qv", "qc", "qr"]
-        if cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
+        from gpuwm.core.column_schemes import COLUMN_SCHEMES
+        if cfg.mp_physics in COLUMN_SCHEMES:
+            kinds += [n for n in COLUMN_SCHEMES[cfg.mp_physics].species if n not in ("qv", "qc", "qr")]
+        if cfg.mp_physics in (2, 6, 8, 9, 10, 16, 18, 24, 28, 106):
             kinds += ["qi", "qs", "qg"]
         if cfg.mp_physics == 30:
             from gpuwm.core.fast_sbm_contract import EXTRA_SPECIES
             kinds += list(EXTRA_SPECIES)
+        if cfg.mp_physics == 24:
+            # WSM7's hail mass (gpuwm/core/moist.py
+            # SINGLE_MOMENT_HAIL_SPECIES) crosses a nest edge with the rest.
+            kinds += ["qh"]
         if cfg.mp_physics == 9:
             # The inventory follows what is transported
             # (gpuwm/core/moist.py::MY2_SPECIES): hail mass plus all six
@@ -83,6 +90,11 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
         if cfg.mp_physics == 18:
             kinds += ["qh", "qndrop", "qnr", "qni", "qns", "qng",
                       "qnh", "qnn", "qvolg", "qvolh"]
+        if cfg.mp_physics == 5:
+            # Ferrier-Aligo: the one transported species beyond qv/qc/qr is
+            # its total ice qi (gpuwm/core/moist.py::FERRIER_SPECIES).  The
+            # f_* state and qt are not transported, so they do not cross.
+            kinds += ["qi"]
         if cfg.mp_physics == 50:
             # P3 one-category: the inventory follows what is transported
             # (gpuwm/core/moist.py::P3_SPECIES), so the rime mass/volume
@@ -105,6 +117,11 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
                                         + named.moment_species
                                         + named.aerosol_species)
                       if name not in kinds]
+    # Read like chem_sets below: a caller may hand a partial configuration
+    # (the offline-child inventory passes only the microphysics fields).
+    if (getattr(cfg, "bl_pbl_physics", 0) == 5
+            and getattr(cfg, "bl_mynn_tkeadvect", False)):
+        kinds.append("qke_adv")
     # Chem species (gpuwm/core/chem_state.py), named by the chem table: WRF
     # declares every chem species with the nest interpolation and feedback
     # flags (registry.chem ``i0{12}rhusdf=(bdy_interp:dt)``) and forces a

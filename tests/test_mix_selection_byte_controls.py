@@ -16,6 +16,7 @@ from gpuwm.experiment import build_experiment_from_config_tables
 from gpuwm.fortran_namelist import parse_namelist_text
 from gpuwm.hrrr_route_inputs import render_namelist_input
 from gpuwm.namelist_import import import_namelists, import_parsed_namelists
+from ishmael_retirement import requested_by_own_number, without_retired_line
 from wrf_clock_lines import WRF_CLOCK_BLOCK, without_wrf_clock_lines
 from gpuwm.physics_source_defaults import (
     read_physics_selector_comment, with_physics_selector_comment)
@@ -41,7 +42,9 @@ def matrix():
 
 def documents(case):
     document, _ = matrix()
-    return deepcopy(document["cases"][case])
+    row = deepcopy(document["cases"][case])
+    row["input"] = requested_by_own_number(row["input"])
+    return row
 
 
 def import_documents(tmp_path, row, *, parsed=False, named=False, comment=False):
@@ -76,7 +79,7 @@ def test_generic_mix_bytes_match_exact_original_parent(case, parsed, tmp_path):
     assert hashlib.sha256(old).hexdigest() == expected["sha256"]
     emitted, report = import_documents(tmp_path, documents(case), parsed=parsed)
     assert WRF_CLOCK_BLOCK in emitted
-    assert without_wrf_clock_lines(emitted).encode("utf-8") == old
+    assert without_wrf_clock_lines(emitted).encode("utf-8") == without_retired_line(old)
     exp = build_experiment(tomllib.loads(emitted), source="generic mixing bytes")
     assert [domain.run.mix_full_fields for domain in exp.domains] == [True, True]
     substitutions = [row for row in report.substitutions if row.key == "mix_full_fields"]

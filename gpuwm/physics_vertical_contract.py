@@ -18,6 +18,13 @@ import numpy as np
 # is CuPy-free and staged wherever this one is, so the value is imported
 # rather than transcribed.  Re-exported under its own name below.
 from gpuwm.core.wdm6_constants import WDM6_VERTICAL_LEVEL_BOUNDS
+# WSM3's ceiling is owned the same way: the deepest WSM3_KMAX tier of the
+# CuPy-free constants leaf.
+from gpuwm.core.wsm3_constants import WSM3_VERTICAL_LEVEL_BOUNDS
+# WSM6R's window is owned by the WSM6 family's CuPy-free constants
+# module, which its launcher enforces; imported for the same reason.
+from gpuwm.core.wsm6_constants import WSM6R_VERTICAL_LEVEL_BOUNDS
+from gpuwm.core.wsm_family_constants import vertical_level_bounds as _wsm_family_bounds
 
 
 class PhysicsVerticalPreflightError(ValueError):
@@ -110,6 +117,13 @@ KF_VERTICAL_LEVEL_BOUNDS = (8, 128)
 # integer-define tier, so there is no fixed upper bound to declare.
 GF_VERTICAL_LEVEL_BOUNDS = (12, None)
 KESSLER_VERTICAL_LEVEL_BOUNDS = (None, 256)
+LIN_VERTICAL_LEVEL_BOUNDS = (2, 512)
+#: Ferrier-Aligo (mp_physics=5): the kernel streams the column top-down and
+#: keeps no level array (gpuwm/core/kernels/fer_hires.cu), so there is no
+#: ceiling; two levels are the least EGCP01DRV's top-level override and one
+#: level below it need.
+FERRIER_VERTICAL_LEVEL_BOUNDS = (2, None)
+from gpuwm.core.wsm6_constants import WSM5_VERTICAL_LEVEL_BOUNDS
 WSM6_VERTICAL_LEVEL_BOUNDS = (2, 80)
 THOMPSON_VERTICAL_LEVEL_BOUNDS = (2, 256)
 #: Aerosol-aware Thompson (mp_physics=28).  Identical to the classic
@@ -146,6 +160,10 @@ TEMPO_VERTICAL_LEVEL_BOUNDS = (3, 256)
 #: no level tier, so like Grell-Freitas the row is a floor with no declared
 #: ceiling.  The floor is the dycore's own: one level is a column.
 P3_VERTICAL_LEVEL_BOUNDS = (1, None)
+#: WSM7 (mp_physics=24): the floor the PLM remap needs (a layer above and
+#: below) and the deepest compiled ``WSM7_KMAX`` tier, read from the
+#: scheme's row in gpuwm/data/wsm_family/schemes.json rather than retyped.
+WSM7_VERTICAL_LEVEL_BOUNDS = _wsm_family_bounds(24)
 #: New Tiedtke (cu_physics=16).  ``kernels/ntiedtke.cu`` skips ``k >= nz-2``
 #: and loops ``k = nz-2 .. 1`` (the transcription of ``jk = klevm1, 2, -1``),
 #: so a column needs four levels before the cloud-base search has one
@@ -154,6 +172,18 @@ NEW_TIEDTKE_VERTICAL_LEVEL_BOUNDS = (4, None)
 # Original cu6 reads the same interior cloud-base levels; global arenas
 # carry the full vertical dimension without a compiled level ceiling.
 TIEDTKE_VERTICAL_LEVEL_BOUNDS = (4, None)
+#: Grell 3D (cu_physics=5).  ``kernels/g3.cu`` starts the k22 search at
+#: level 3 (cup_MAXIMI(..,3,..)), stops the cloud-top search at ktf-1 and
+#: smooths k = 3 .. nz-2 in conv_grell_spread3d, so a column needs six
+#: levels for every one of those ranges to hold an interior row; no fixed
+#: ceiling, the workspace is (nz+1) words per slot at run time.
+GRELL_3D_VERTICAL_LEVEL_BOUNDS = (6, None)
+#: New SAS (cu_physics=96).  nsas2d reads zi(3)-zi(2) for the bottom
+#: mass-flux level (module_cu_nsas.F:909) and needs kb < kbcon < kmax for
+#: a cloud base, and nscv2d's PBL and cloud searches run k = 2 .. kte-1,
+#: so four levels are the least with one interior row; no ceiling, the
+#: workspace is sized from nz at run time (gpuwm.core.column_cumulus).
+NEW_SAS_VERTICAL_LEVEL_BOUNDS = (4, None)
 #: The dynamical core's own vertical bound, from the top ``WPHI_MAX_LEV``
 #: tier ``gpuwm.core.acoustic`` compiles the implicit w''-phi'' solve at.
 #: Bound to the launcher's ladder by

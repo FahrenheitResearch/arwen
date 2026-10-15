@@ -20,6 +20,22 @@ from gpuwm.wrf461_compatibility import (
     iter_compatibility_matrix,
 )
 
+# Consumer expectations come from the independent generated declarations.
+from gpuwm.physics_registry import implemented_selector_values as _intake_selectors
+from gpuwm.physics_registry import consumer_rows_by_selector as _intake_rows
+_INTAKE_MP = tuple(sorted(_intake_selectors("microphysics")))
+_INTAKE_REFL = tuple(mp for mp in _INTAKE_MP if mp)
+_INTAKE_PRODUCERS = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "reflectivity_input_species").items()
+    if row is not None))
+_INTAKE_NATIVE = tuple(sorted(set(_INTAKE_REFL) - set(_INTAKE_PRODUCERS)))
+_INTAKE_SNOW = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qs" in (row or {}).get("state_fields", ())))
+_INTAKE_SIX = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qg" in (row or {}).get("state_fields", ())))
+
 
 _RADIATION_SETTINGS = {
     "off": {
@@ -99,7 +115,7 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     each increment was read off the enlarged matrix rather than derived.
     """
     cells = tuple(iter_compatibility_matrix())
-    assert len(cells) == MATRIX_CELL_COUNT == 17600
+    assert len(cells) == MATRIX_CELL_COUNT == 38080
     assert len({
         (
             cell.mp_physics,
@@ -133,19 +149,33 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     # and takes only a citation from cu_physics and mp_physics -- so every
     # verdict scaled by exactly 4/3 and then 10/6, and each count below was
     # read off the enlarged matrix, not derived.
+    #
+    # Re-pinned when cu_physics=5 (Grell 3D) joined the cumulus axis on the
+    # 2.9.0 line (17600 -> 21120): every verdict scaled by exactly 6/5, read
+    # off the enlarged matrix, which is again the evidence that cumulus is
+    # an independent axis of the WRF v4.6.1 authority table.
+    # And again when cu_physics=96 (New SAS) joined (21120 -> 24640): every
+    # verdict scaled by exactly 7/6, read off the enlarged matrix.
+    # And again on the 2.9.0 round-2 merge, when mp_physics 2, 3, 4, 5, 24
+    # and 106 (the six microphysics ports) joined the eleven-value mp axis
+    # beside the cumulus ports (24640 -> 38080): every verdict scaled by
+    # exactly 17/11 (LEGAL 10164 -> 15708, reconfigured 3388 -> 5236, FATAL
+    # 7700 -> 11900, not-expressible 3388 -> 5236), read off the merged
+    # tree's matrix -- the evidence that microphysics stays an independent
+    # axis with the new schemes in it.
     assert Counter(cell.verdict for cell in cells) == {
-        WRFVerdict.LEGAL: 7260,
-        WRFVerdict.LEGAL_RECONFIGURED: 2420,
-        WRFVerdict.FATAL: 5500,
-        WRFVerdict.NOT_EXPRESSIBLE: 2420,
+        WRFVerdict.LEGAL: 15708,
+        WRFVerdict.LEGAL_RECONFIGURED: 5236,
+        WRFVerdict.FATAL: 11900,
+        WRFVerdict.NOT_EXPRESSIBLE: 5236,
     }
     # Every represented cumulus value carries its own Registry citation,
     # on the same terms the mp assertion below states.
-    assert {cell.cu_physics for cell in cells} == {0, 1, 3, 6, 16}
+    assert {cell.cu_physics for cell in cells} == {0, 1, 3, 5, 6, 16, 96}
     # Every represented mp value carries its own Registry citation, so the
     # matrix cannot grow an axis value that is admitted without one.
     assert {cell.mp_physics for cell in cells} == {
-        0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50}
+        0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106}
     assert WRF_COMMIT == "d66e442fccc04111067e29274c9f9eaccc3cef28"
 
 
@@ -206,8 +236,9 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
                     "cu_physics=3 .* requires a PBL scheme")):
                 validate_run_config(cfg)
             observed["arwen-structural-gf-pbl"] += 1
-        elif cell.mp_physics == 30 and cell.radiation == "rrtmg-rte-rrtmgp":
-            # A JUDGED cloud-optics exclusion, not a WRF rule: WRF pairs
+        elif cell.mp_physics in (2, 30) and cell.radiation == "rrtmg-rte-rrtmgp":
+            # A JUDGED cloud-optics exclusion, not a WRF rule (Lin, mp=2, has no
+            # effective-radius producer at all): WRF pairs
             # FAST_SBM with RRTMG, but its bin effective-radius integrals
             # are not qualified for the RTE+RRTMGP substitution
             # (gpuwm.core.rrtmgp._NO_CLOUD_OPTICS_COUPLING), so the run door
@@ -268,10 +299,27 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
     # exactly; the cloud-optics refusal reaches 192 mp=30 RTE+RRTMGP cells
     # (the 151 measured on the four cumulus values the lane saw, plus 41 at
     # cu=6 that no earlier rule refuses), read off the merged tree's sweep.
+    #
+    # Re-measured when Grell 3D (cu 5) joined on the 2.9.0 line: 21120 cells.
+    # wrf-fatal and the LSM seam scale by 6/5 exactly; the GF/PBL seam does
+    # not move (it is a cu=3 rule); the cloud-optics refusal gains 41 cu=5
+    # cells, the same 41 cu=6 contributed; the remaining 2214 new cells are
+    # admitted.  Every number was read off the merged tree's sweep.
+    #
+    # And when New SAS (cu 96) joined: 24640 cells; wrf-fatal and the LSM
+    # seam x7/6, the GF/PBL seam unchanged, cloud optics +41 (the same 41
+    # per added cumulus value), the remaining 2214 new cells admitted.
+    # Re-pinned on the 2.9.0 round-2 merge (24640 -> 38080 cells, the six
+    # microphysics ports joining the cumulus ports' matrix): wrf-fatal,
+    # arwen-structural and the GF-without-PBL refusal scale by exactly 17/11
+    # (7700 -> 11900, 1155 -> 1785, 715 -> 1105); the judged cloud-optics
+    # refusal doubles (274 -> 548) because Purdue Lin (mp 2) is judged under
+    # RTE+RRTMGP exactly as mp 30 is, 274 cells each; the remaining 22742
+    # cells are admitted.  Every number was read off the merged tree's sweep.
     assert observed == {
-        "admitted": 10368,
-        "arwen-judged-cloud-optics": 192,
-        "arwen-structural": 825,
-        "arwen-structural-gf-pbl": 715,
-        "wrf-fatal": 5500,
+        "admitted": 22742,
+        "arwen-judged-cloud-optics": 548,
+        "arwen-structural": 1785,
+        "arwen-structural-gf-pbl": 1105,
+        "wrf-fatal": 11900,
     }

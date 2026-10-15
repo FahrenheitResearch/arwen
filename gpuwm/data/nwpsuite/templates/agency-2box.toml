@@ -1,0 +1,136 @@
+schema = "gpuwm.suite.v1"
+name = "agency-2box"
+region = "US"
+
+# Planning targets from the suite capacity plan (gpuwm/data/nwpsuite/receipts.v1.json#suite-capacity-plan-2026-10-12), not a live hardware receipt. init replaces these.
+[[box]]
+id = "r"
+host = "local"
+cards = 8
+card_model = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+memory_mib = 97887
+host_memory_mib = 262144
+build = "2.8.9"
+[[box]]
+id = "g"
+host = "ssh://box-g"
+cards = 8
+card_model = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+memory_mib = 97887
+host_memory_mib = 524288
+build = "2.8.9"
+
+[policy]
+headroom = 0.20
+single_box_profile = "template:agency-1box"
+[defaults]
+products = "standard"
+verify = { after_run = true, nightly = true }
+retention = { history = "36h", products = "14d", analyses = "7d", receipts = "30d", checkpoints = "latest", receipt_cap = "500MB", disk_floor_gb = 500 }
+on_fail = ["retry:3", "resume", "degrade", "skip"]
+publish = { targets = ["local-index"] }
+
+[[system]]
+id = "cam-det"
+shape = "regional-cam"
+recipe = "hrrr_v4_gsd41"
+domain = { from = "recipe", grid = "1797x1057x50" }
+ic = ["hrrr"]
+lbc = ["rap-native", "rap"]
+cycle = { every = "1h", lead = "18h", deadline = "ready+45m" }
+at = { "00,06,12,18" = { lead = "48h", deadline = "ready+110m" } }
+cards = 4
+box = "r"
+priority = 1
+rate = "cam-full-4"
+da = { method = "none" }
+
+[[system]]
+id = "cam-ens"
+from = "cam-det"
+shape = "regional-cam-ensemble"
+cycle = { every = "6h", lead = "18h", deadline = "ready+330m" }
+at = {}
+members = { perturbed = 6, lagged = 6 }
+perturb = { recipe = "surface-state", stochastic = ["sppt", "skebs", "spp"] }
+cards_per_member = 2
+fallback = "cam-ens-reduced"
+priority = 3
+rate = "cam-member-2"
+
+[[system]]
+id = "cam-ens-reduced"
+from = "cam-ens"
+enabled = false
+domain = { from = "recipe", grid = "1099x646x50" }
+fallback = ""
+
+[[system]]
+id = "rrfs-shape"
+shape = "regional-lam-mpas"
+preset = "rrfs-v2-hex-tempo"
+mesh = "conus12km"
+ic = ["gfs"]
+cycle = { every = "6h", lead = "18h" }
+cards = 1
+box = "r"
+priority = 2
+rate = "lam-coarse-1"
+
+[[system]]
+id = "rrfs-3km"
+from = "rrfs-shape"
+mesh = "conus3km"
+cards = 8
+box = "g"
+admit = "when-fits"
+enabled = false
+rate = "lam-fine-8"
+
+[[system]]
+id = "conus-patch"
+shape = "regional-patch"
+mesh = "patch48-3"
+lts = "one-card"
+ic = ["gfs"]
+cycle = { every = "6h", lead = "18h" }
+cards = 1
+box = "r"
+priority = 2
+rate = "patch-1"
+
+[[system]]
+id = "global-det"
+shape = "global-uniform"
+mesh = "x1.2621442"
+ic = ["gfs", "ifs", "icon"]
+cycle = { every = "6h", lead = "120h", deadline = "ready+150m" }
+cards = 8
+box = "g"
+priority = 1
+rate = "global-fine-8"
+checkpoint = { every = "24h" }
+da = { method = "jedi-3denvar", mode = "shadow", mesh = "x1.655362", every = "6h", backend = ["cpu"], b_from = "global-ens", obs = ["conventional", "gnssro", "radiance"], promote_when = { beats = "control", metrics = ["z500_rmse_24h", "wind250_rmse_24h", "t2m_rmse_24h"], cycles = 28 } }
+
+[[system]]
+id = "global-ens"
+shape = "global-ensemble"
+mesh = "x1.655362"
+members = 21
+ic = ["gefs"]
+cycle = { every = "6h", lead = "72h", deadline = "ready+300m" }
+cards_per_member = 1
+box = "g"
+priority = 3
+rate = "global-member-1"
+
+[[system]]
+id = "global-15-3"
+shape = "global-variable"
+mesh = "x5.6488066"
+cycle = { every = "7d", lead = "6h" }
+cards = 8
+box = "g"
+rollback = false
+admit = "measure"
+rate = "variable-fine-8-projected"

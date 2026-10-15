@@ -136,7 +136,11 @@ def test_component_options():
         assert row["implemented"] is True
         if value:
             assert row["maturity"] == "implemented-unverified"
-            assert row["parameters"] == {"use_wudapt_lcz": 0, "num_urban_hi": 15}
+            expected = {"use_wudapt_lcz": 0, "num_urban_hi": 15}
+            if value == 1:
+                expected.update(urban_ucm_generation="wrf_471", urban_treeoption=-1,
+                                urban_ttscheme=-1, urban_fvg=-1.0)
+            assert row["parameters"] == expected
             assert row["consumers"]["restart_algorithm_identity"].startswith(
                 "urban-") and row["consumers"]["vertical_level_bounds"] is None
         else:

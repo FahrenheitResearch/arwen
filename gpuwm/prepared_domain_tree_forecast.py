@@ -794,6 +794,11 @@ def _prepared_planning_nodes(inputs):
     return nodes
 
 
+def _correct_mode_receipt(configs):
+    from gpuwm.correct_mode import run_receipt
+    return run_receipt(configs)
+
+
 def _domain_rows(exp) -> list[dict[str, object]]:
     return [_with_history_window(domain, row) for domain, row in zip(
         exp.domains, _plain_domain_rows(exp))]
@@ -4489,6 +4494,11 @@ def run_prepared_tree(
         # ungoverned run says so in the same shape rather than by omission
         # (the morr_rimed_ice-into-receipt pattern, one axis wider).
         "physics_mode": exp.physics_mode.receipt(),
+        # physics.mode (gpuwm/correct_mode.py) as each domain's RunConfig
+        # resolved it: correct by default from 2.9.0, exact when named, and
+        # exact with forced_by under GPUWM_WRF_EXACT=1.
+        "correct_mode": _correct_mode_receipt(
+            {domain.grid_id: domain.run for domain in exp.domains}),
         # The initial-perturbation axis, same posture as physics_mode:
         # the arm says what it is in the receipt, not by omission.  None
         # when the config carries no block; configured, the full echo

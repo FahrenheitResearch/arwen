@@ -347,6 +347,21 @@ rates (measured: LW heating max delta 4.5e-5 K/s on a 3.5e-4 K/s scale).
 An MPAS caller is self-consistent with its own single pressure; pass
 ``exner`` explicitly when matching ARW behaviour is the goal.
 
+## Physics mode (2.9.0)
+
+`MpasColumnBatchPhysics` and `MpasColumnSuitePhysics` take
+`physics_mode` (`"correct"` or `"exact"`) and `physics_correct_skip`
+(finding ids). `physics_mode=None`, the default, is the engine default:
+`"correct"` from 2.9.0, and `"exact"` (forced, recorded) in a strict
+process (`GPUWM_WRF_EXACT=1`). The resolution sets every correction key of
+the seam's RunConfig explicitly, so `"exact"` builds the configuration and
+the restart identity this seam built before the keys existed, whatever the
+RunConfig defaults are. A caller proving identity against native MPAS
+passes `physics_mode="exact"` explicitly: passing nothing now runs
+correct. `correct_mode_receipt` records the mode and the findings it
+changed; the restore identity carries `physics_correct` only in correct
+mode, so a restore across modes is refused.
+
 ## Orchestration identity
 
 `MpasColumnBatchPhysics._PHASE1_ORCHESTRATION` is

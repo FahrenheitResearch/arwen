@@ -1,0 +1,33 @@
+{
+  "argv": [
+    "gfortran",
+    "-O0",
+    "-ffp-contract=off",
+    "-fcheck=all",
+    "-finit-real=snan",
+    "-ffree-line-length-none",
+    "solar.f90",
+    "driver.f90",
+    "-o",
+    "solar-oracle"
+  ],
+  "source": "/work/pool-upstream-radiation-eot48/sources/v4.8.0",
+  "source_revision": "06d4240ae989cc3e50af412bb472df3d9048783c",
+  "routines_sha256": "54962396bb95a761b2316f743db849bc3c576f38b29943fc946bb5a6f5d6ca79",
+  "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "scalar_kind": "REAL(4)",
+  "module_dependencies": [
+    "module_wrf_error (empty stub, neither routine calls it)"
+  ],
+  "tables": {},
+  "source_ranges": [
+    {
+      "routine": "radconst",
+      "start": 3469
+    },
+    {
+      "routine": "calc_coszen",
+      "start": 3512
+    }
+  ]
+}

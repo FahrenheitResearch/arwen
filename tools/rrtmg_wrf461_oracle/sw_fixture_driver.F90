@@ -47,6 +47,9 @@ program sw_fixture_driver
   use parrrsw, only : nbndsw, ngptsw, naerec, mxmol, jpband, jpb1, jpb2
   use rrsw_wvn, only : ngc, ngs
   use rrsw_tbl, only : od_lo, bpade, exp_tbl, tblint
+  use aer1_authority, only: aerosol_in, aer_time_int, aer_p_int
+  use parkind, only: rb => kind_rb
+  use rrsw_aer, only: rsrtaua, rsrpiza, rsrasya
   implicit none
 
   ! ---- program plumbing ----
@@ -159,14 +162,24 @@ program sw_fixture_driver
   real, allocatable :: c_swhr(:), c_swhrc(:)
 
   logical :: inited
-  integer :: ib
+  integer :: ib, aer_choice, ia
+  real :: monthly(1,12,1,12,6), timed(1,12,1,6), pin(12), aodtot(1,1)
+  real, allocatable :: aerod(:,:,:,:)
+  character(len=16) :: aer_argument
 
-  if (command_argument_count() /= 2) then
+  if (command_argument_count() < 2 .or. command_argument_count() > 3) then
      write(*,'(A)') 'usage: sw_fixture_driver input.txt output.swd'
      error stop 4
   end if
   call get_command_argument(1, infile)
   call get_command_argument(2, outfile)
+
+  aer_choice=0
+  if (command_argument_count()==3) then
+    call get_command_argument(3, aer_argument)
+    if (trim(aer_argument)/="aer1") error stop "unknown aerosol arm"
+    aer_choice=1
+  endif
 
   open(newunit=iu, file=trim(infile), status='old', action='read')
   open(newunit=ou, file=trim(outfile), status='replace', access='stream', &
@@ -180,6 +193,7 @@ program sw_fixture_driver
   its=1; ite=1; jts=1; jte=1; kts=1; kte=nz
 
   call alloc_all()
+  allocate(aerod(1,nz+1,1,6))
   inited = .false.
 
   ! WRF driver data statements
@@ -205,6 +219,19 @@ program sw_fixture_driver
         inited = .true.
      end if
 
+     aerod=0.
+     if (aer_choice==1) then
+       call aerosol_in(monthly,pin,12,12,6,xlat,xlong, &
+            ids,ide,jds,jde,kds,kde,ims,ime,jms,jme,kms,kme,its,ite,jts,jte,kts,kte)
+       call aer_time_int(julday,julian,monthly,timed,12,12,6, &
+            ids,ide,jds,jde,kds,kde,ims,ime,jms,jme,kms,kme,its,ite,jts,jte,kts,kte)
+       call aer_p_int(p3d,pin,12,timed,aerod,6,p8w,aodtot, &
+            ids,ide,jds,jde,kds,kde,ims,ime,jms,jme,kms,kme,its,ite,jts,jte,kts,kte)
+       call wr2(trim(cpre)//'aer/monthly',reshape(monthly,(/12,72/)))
+       call wr2(trim(cpre)//'aer/timed',reshape(timed,(/12,6/)))
+       call wr2(trim(cpre)//'aer/aerod',reshape(aerod,(/nz+1,6/)))
+       call wr0(trim(cpre)//'aer/AODTOT',aodtot(1,1))
+     endif
      call dump_inputs()
 
      ! ---------------- step 1: untouched WRF driver ----------------
@@ -238,7 +265,7 @@ program sw_fixture_driver
           qv3d=qv3d, qc3d=qc3d, qr3d=qr3d,                                 &
           qi3d=qi3d, qs3d=qs3d, qg3d=qg3d,                                 &
           o3input=o3input, o33d=o33d,                                      &
-          aer_opt=0, no_src=1,                                             &
+          aer_opt=aer_choice, no_src=6, aerod=aerod,                                             &
           sf_surface_physics=sfphys,                                       &
           f_qv=.true., f_qc=.true., f_qr=.true.,                           &
           f_qi=.true., f_qs=.true., f_qg=.true.,                           &
@@ -297,7 +324,7 @@ program sw_fixture_driver
          ciwpmcl ,clwpmcl ,cswpmcl ,reicmcl ,relqmcl ,resnmcl, &
          tauaer  ,ssaaer  ,asmaer  ,ecaer   , &
          swuflx  ,swdflx  ,swhr    ,swuflxc ,swdflxc ,swhrc, &
-         swuflxcln, swdflxcln, 0,  &
+         swuflxcln, swdflxcln, aer_choice,  &
          sibvisdir, sibvisdif, sibnirdir, sibnirdif, &
          swdkdir, swdkdif, swdkdirc, 0, &
          l_zbbcddir, l_dirdflux, l_difdflux )
@@ -906,7 +933,11 @@ contains
           ecaer(ncol,k,i) = 0.
        end do
     end do
-    ! aerod not present in oracle call; aer_opt=0 leaves ecaer zero
+    if (aer_choice==1) then
+      do i=1,6
+        ecaer(1,1:nz,i)=aerod(1,1:nz,1,i)
+      enddo
+    endif
   end subroutine prep_replicated
 
   subroutine dump_mcica_in_and_entry()
@@ -1009,7 +1040,8 @@ contains
     real :: zdpgcp
     real :: swnflx(nlay+2), swnflxc(nlay+2)
     zepzen = 1.e-10
-    iaer = 10   ! aer_opt == 0
+    iaer = 10
+    if (aer_choice==1) iaer=6
 
     call inatm_sw (1, nlay, icld, iaer, &
          play, plev, tlay, tlev, tsfc, h2ovmr, &
@@ -1135,14 +1167,36 @@ contains
        enddo
     endif
 
-    ! iaer == 10
-    do ib = 1 ,nbndsw
-       do i = 1 ,nlayers
-          ztaua(i,ib) = taua(i,ib)
-          zasya(i,ib) = asma(i,ib)
-          zomga(i,ib) = ssaa(i,ib)
-       enddo
-    enddo
+    if (iaer==6) then
+            do ib = 1, nbndsw
+               do i = 1, nlayers
+                  ztaua(i,ib) = 0._rb
+                  zasya(i,ib) = 0._rb
+                  zomga(i,ib) = 0._rb
+                  do ia = 1, naerec
+                     ztaua(i,ib) = ztaua(i,ib) + rsrtaua(ib,ia) * ecaer(1,i,ia)
+                     zomga(i,ib) = zomga(i,ib) + rsrtaua(ib,ia) * ecaer(1,i,ia) * &
+                                   rsrpiza(ib,ia)
+                     zasya(i,ib) = zasya(i,ib) + rsrtaua(ib,ia) * ecaer(1,i,ia) * &
+                                   rsrpiza(ib,ia) * rsrasya(ib,ia)
+                  enddo
+                  if (zomga(i,ib) /= 0._rb) then
+                     zasya(i,ib) = zasya(i,ib) / zomga(i,ib)
+                  endif
+                  if (ztaua(i,ib) /= 0._rb) then
+                     zomga(i,ib) = zomga(i,ib) / ztaua(i,ib)
+                  endif
+               enddo
+            enddo
+    else
+      do ib=1,nbndsw
+        do i=1,nlayers
+          ztaua(i,ib)=taua(i,ib)
+          zasya(i,ib)=asma(i,ib)
+          zomga(i,ib)=ssaa(i,ib)
+        enddo
+      enddo
+    endif
 
     call wr0(trim(cpre)//'spcin/cossza', cossza)
     call wr1(trim(cpre)//'spcin/albdir', albdir)

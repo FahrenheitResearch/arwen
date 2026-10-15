@@ -1,0 +1,7 @@
+gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+glibc: ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+wrf build: /work/wrf/build/scalar/WRF-4.6.1
+module_cu_nsas.F sha256: 092cfc6685a7006ecf9200b0dbb9296f0e7bb6af11e46bbbd92a843a4d1b911a
+module_cu_nsas.o sha256: e10c4f730468923dbb56f6bd37a58be43eb2538b99332005885a6f307affb478
+module_cu_nsas.f90 sha256: f3859fa290cebe86e1332aa306aa10c7a275c776de30b46066ec65152537883a
+FCOPTIM (scalar referee): -O2 -fno-fast-math -ffp-contract=off -fno-tree-vectorize

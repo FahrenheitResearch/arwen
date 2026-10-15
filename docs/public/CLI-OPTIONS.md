@@ -287,7 +287,7 @@ Takes no options of its own.
 
 | argument | what it does |
 |---|---|
-| `CONFIG` | experiment TOML (or legacy RunConfig TOML, wrapped as a one-domain experiment) |
+| `[CONFIG]` | experiment TOML (or legacy RunConfig TOML, wrapped as a one-domain experiment); omit only for gpuwm check --json context-free box inventory |
 
 | option | what it does |
 |---|---|
@@ -474,14 +474,19 @@ Takes no options of its own.
 | `--nz N` | vertical mass levels (default: 49); resamples the default eta ladder while preserving its stretching |
 | `--out TOML` | emitted experiment TOML path |
 | `--physics-choices JSON` | schemes to run in place of the suite's own, family by family, as the physics composer picks them: '{"microphysics": "thompson-mp8", "pbl": "myj", "surface_layer": "eta-similarity"}'. Checked by the engine the way `gpuwm physics-catalog --check` checks them and written into the config the way `--into` writes them, on every size the fit tries, so the card is priced for the schemes that run. The suite (--physics-profile, or the default at the finest grid) is the base the choices change; no suite is asserted, so a mix no named suite matches runs as written |
-| `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1,thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1,thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1,kessler-mp1-ysu-mm5-noah-dudhia-v1,thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1,thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1,thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1,wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1,20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1,milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1,wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1,thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1,wsm6-sase-revised-mm5-noah-closure-supplied-v1,wsm6-pbl-off-mm5-noah-tke-1-5-order-v1,wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1,wsm6-pbl-off-mm5-noah-constant-k-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the resolved radiation selectors: a suite with shortwave ON and longwave OFF is a daytime-only experiment; selecting it for a window that includes local night is REFUSED unless you declare it yourself with --ack. NOT every profile runs on every route: --source gem-gdps cannot prepare wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1 or thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1 or thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1 -- the wizard refuses those pairings and names the missing component rather than emitting a config the front door would reject. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; a run whose finest grid is under 1 km binds thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 instead, on every source whose route admits it; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
+| `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1,thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1,thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1,kessler-mp1-ysu-mm5-noah-dudhia-v1,thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1,thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1,thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1,wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1,wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1,20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1,lin-mp2-ysu-mm5-noah-rrtmg-legacy-implemented-unverified-v1,wsm6-ysu-mm5-noah-nsas-rrtmg-legacy-v1,milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1,wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1,thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1,wsm6-sase-revised-mm5-noah-closure-supplied-v1,wsm6-pbl-off-mm5-noah-tke-1-5-order-v1,wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1,wsm6-pbl-off-mm5-noah-constant-k-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the resolved radiation selectors: a suite with shortwave ON and longwave OFF is a daytime-only experiment; selecting it for a window that includes local night is REFUSED unless you declare it yourself with --ack. NOT every profile runs on every route: --source gem-gdps cannot prepare wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 or wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1 or wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1 or thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1 or thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1 or thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1 -- the wizard refuses those pairings and names the missing component rather than emitting a config the front door would reject. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; a run whose finest grid is under 1 km binds thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1 instead, on every source whose route admits it; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
 | `--point LAT,LON` | domain center in decimal degrees. \|lat\| 90 is refused. A point carries no extent, so the fit chooses one: the largest layout the budget affords, capped at --point-extent-km per axis, kept clear of the projection pole, where lat-lon source interpolation and static-tile windowing do not work, and kept to less than one trip around the globe in longitude. These caps SHRINK the domain rather than refuse it, and the plan summary states which one bound; the pole refusal is left for a center so close to one that even the smallest layout contains it. Draw a --polygon to ask for more ground than the cap. The projection is auto-selected from \|lat\| (<25 Mercator, 25-60 Lambert conformal, >60 polar stereographic) unless --projection is set. Negative (southern/western) values work in both forms: --point -33.87,151.21 and --point=-33.87,151.21 |
 | `--point-extent-km KM` | largest root extent per axis a --point request is sized to (default 6000). The projection pole, one trip around the globe, the source's coverage and the card still bound the fit; an extent below the smallest root the ladder hosts gets that root. The plan summary states the extent used |
 | `--polygon GEOJSON` | local GeoJSON Polygon, MultiPolygon, Feature, or FeatureCollection; the minimum antimeridian-aware bounds supply the center and every emitted level is fitted around the geometry |
 | `--projection {auto,lambert,mercator,polar}` | map projection override (default: auto by center latitude; all three are oracle-gated against WRF v4.6.1 module_llxy) |
+| `--recipe ID\|TOML` | complete recipe from the packaged table or a local TOML |
+| `--recipe-table` | recipe registry override; new recipes and aerosol policies are data |
+| `--region ID\|GEOJSON` | recipe region row id or local polygon GeoJSON |
+| `--region-table` | region JSON table override; adding a region requires data only |
 | `--root-dx KM` | custom root grid spacing in km [0.05, 200]; use with --chain instead of --ladder |
 | `--sf-surface-mosaic {0,1}` | Noah land-use tiles on every grid (WRF sf_surface_mosaic) |
 | `--source SOURCE` | forcing source: any registered source id or alias -- hrrr, hrrr-prs, gem-gdps, icon-global, icon-eu, icon-d2, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, ecmwf-ens, aifs, rap-native, hrrr-native, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf today (`gpuwm prep --list-sources` lists the whole registry). It sets the boundary cadence written into the companion namelist.wps, bounds the domain by the source's own grid where that grid is regional, and (era5) declares [case_data]. A source `gpuwm fetch` cannot download still emits the same geometry: one whose registry row declares a local input contract gets a [fetch] table (source, cycle, hours and its staging source_root) with the staging step named beside it, and any other has the acquisition step named in place of the table |
+| `--spacing-km` | recipe grid spacing in kilometres |
 | `--target-host-memory-json` | selected target host-memory snapshot for an explicit --card or --vram-gib budget; no local RAM sizing |
 | `--terrain-smoothing SPEC` | WPS terrain smoothing per domain, in domain order, the last repeating: none, 1-2-1, smth-desmth or smth-desmth_special, each with an optional :PASSES (e.g. none or smth-desmth_special,none); default: WPS's one smth-desmth_special pass |
 | `--terrain-smoothing-precision {float64,wps-float32}` | arithmetic of every domain whose terrain smoother is WPS's default smth-desmth_special x1: wps-float32 reproduces geogrid.exe's HGT_M exactly; default float64, ArWen's own smoother. Every other smoother always runs WPS's float32 |
@@ -506,6 +511,7 @@ Takes no options of its own.
 | `--point` | center LAT,LON; fit largest centered layout |
 | `--point-extent-km KM` | largest root extent per axis a --point fit is sized to (default 6000); the projection pole, one trip around the globe, the source's coverage and the card still bound it, and an extent below the template's smallest root gets that root |
 | `--polygon` | GeoJSON area; preserve its entire footprint |
+| `--root-dx KM` | explicit root cell spacing in km; scale the domain tree's spacing while preserving physics, vertical levels and clocks |
 | `--source` | input source, required only without [fetch].source |
 | `--start-time` | explicit new UTC start; otherwise preserve template |
 | `--target-host-memory-json` | selected target host-memory snapshot for an explicit --card or --vram-gib budget |
@@ -738,11 +744,13 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
+| `--artifact NAME` | with --partial, select this artifact (repeatable); renderer launchers also fetch their shared rw_wrfbatch executable |
 | `--dest DIR` | stage into DIR instead of this release's own ~/.gpuwm/bridges/<release>-<digest> (gpuwm finds the default on its own; anywhere else needs the per-artifact environment variables) |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--from DIR` | stage from a local directory instead of downloading (offline installs): either the bundle archive or the artifacts loose in it; verification is identical |
 | `--keep-bundle` | keep the verified archive under <dest>/.fetch-bridges after staging (default: remove it) |
 | `--list` | print the platform, bundle and per-artifact staged state, then exit without touching the network |
+| `--partial` | fetch only missing or stale pinned binaries with HTTP byte ranges; map assets require a full fetch and servers must support ranges |
 
 ## `gpuwm fetch-geog`
 
@@ -751,7 +759,7 @@ Takes no options of its own.
 | `--allow-upstream-drift` | legacy spelling; refused by the native production route because unpinned geography changes prepared fields under the same dataset version |
 | `--bundle` | fetch NCAR's single geog_high_res_mandatory.tar.gz (2.6 GiB) instead of the per-dataset tarballs and extract the requested datasets from it (fallback; NCAR only) |
 | `--config FILE` | resolve only the geography this experiment's domains read; includes selected published static sources |
-| `--datasets default\|all\|CONSUMER\|NAME,NAME` | which datasets to stage (default keeps the WRF and mesh set; chem-dust opts into the three upstream dust datasets; all selects every pin). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~12 GiB Noah-MP soil archive that only gpuwm mesh reads |
+| `--datasets default\|all\|CONSUMER\|NAME,NAME` | which datasets to stage (default keeps the WRF and mesh set; chem-dust opts into the three upstream dust datasets; all selects every pin). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~14 GiB Noah-MP soil archive that only gpuwm mesh reads |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--keep-archives` | keep the verified tarballs under <root>/.fetch-geog after extraction (default: remove each one after its datasets validate) |
 | `--list` | print the dataset/size/source table and per-dataset staged state, then exit without touching the network |
@@ -878,9 +886,14 @@ Takes no options of its own.
 | `--geogrid-tbl PATH` | GEOGRID.TBL (file or directory) whose HGT_M smooth_option/smooth_passes set every domain's terrain smoothing (default: the namelist.wps opt_geogrid_tbl_path, else ./geogrid/ beside it) |
 | `--name NAME` | [experiment].name for the resolved TOML (default derived from start time and domain count) |
 | `--output TOML` | write the resolved experiment TOML here (omit to print the report only) |
-| `--rrtmg-variant {rte-rrtmgp,rrtmg_legacy}` | implementation for a WRF RRTMG 4/4 request: RTE+RRTMGP by default, or legacy RRTMG when the namelist selects GSD MYNN or aer_opt=3; an explicit choice retains its implementation |
+| `--rrtmg-variant {rte-rrtmgp,rrtmg_legacy}` | implementation for a WRF RRTMG 4/4 request: RTE+RRTMGP by default, or legacy RRTMG when the namelist selects GSD MYNN or aer_opt 1, 2 or 3; an explicit choice retains its implementation |
 | `--static-cache-root DIR` | cache_root of the [static.highres] block a land-cover geog_data_res token (cglc_modis_lcz) imports as (default: the per-user high-resolution cache the engine's default terrain already uses); unused when the namelist names no such token |
 | `--terrain-smoothing-precision {float64,wps-float32}` | arithmetic of every domain whose terrain smoother is WPS's default smth-desmth_special x1: wps-float32 reproduces geogrid.exe's HGT_M exactly, float64 is ArWen's own smoother (default: the GEOGRID.TBL HGT_M smooth_precision, else float64); every other smoother always runs WPS's float32 |
+| `--urban-fvg` | _(the parser declares no help text for this option)_ |
+| `--urban-table-dir` | _(the parser declares no help text for this option)_ |
+| `--urban-treeoption {0,1}` | _(the parser declares no help text for this option)_ |
+| `--urban-ttscheme {0,1}` | _(the parser declares no help text for this option)_ |
+| `--urban-ucm-generation {wrf_471,wrf_480}` | single-layer urban numerical generation; omitted imports retain wrf_471 |
 | `--wrf-version {3,4}` | the WRF line the namelist was written for; selects only the Registry default an omitted &dynamics/use_theta_m takes (3: 0, dry theta, the line operational HRRR v4 runs; 4, the default: 1, moist theta, booked as a substitution). The report names the line and what chose it |
 
 ## `gpuwm ingest`
@@ -1057,6 +1070,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--append` | add these frames to the export in --out (one frame at a time) |
+| `--chunk-yx SHAPE` | horizontal chunk shape: auto (default; 512x512 tiles for planes over 1024x1024 cells, one chunk otherwise), full, or NY,NX |
 | `--config TOML` | the run's configuration; its SHA-256 is recorded |
 | `--domains LIST` | e.g. d01,d02 |
 | `--end TIME` | last valid time kept |
@@ -1221,6 +1235,59 @@ Takes no options of its own.
 
 Takes no options of its own.
 
+## `gpuwm obs streams`
+
+Takes no options of its own.
+
+## `gpuwm obs streams anchors`
+
+Takes no options of its own.
+
+## `gpuwm obs streams fetch`
+
+| option | what it does |
+|---|---|
+| `--archive` | wis2: a subscriber's archive directory to decode for the window instead of subscribing now |
+| `--end` | window end, ISO-8601 UTC |
+| `--missions` | cdaac-ro: comma-separated missions (default cosmic2,paz,kompsat5) |
+| `--networks` | iem-metar: comma-separated IEM networks, or 'all' (default) |
+| `--out` | directory; the stream lands under <out>/<stream>/ |
+| `--satellites` | goes-dmw: comma-separated, default G18,G19 |
+| `--seconds` | wis2: how long to subscribe (default 600) |
+| `--start` | window start, ISO-8601 UTC |
+| `--stations` | igra2 or ndbc: comma-separated station ids (default all) |
+| `--stream {awc-metar,cdaac-ro,gnss-ro,goes-dmw,iem-metar,igra2,madis-aircraft,ndbc,nws-upper-air-text,wis2}` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm obs streams hours`
+
+| option | what it does |
+|---|---|
+| `--cutoff` | information cutoff: an ISO-8601 instant, or 'analysis' for each hour's own instant; rows received later are dropped and counted, rows without a receipt time are kept and counted |
+| `--cycle-s` | cycle length in seconds |
+| `--end` | last analysis instant, ISO-8601 UTC |
+| `--out` | directory for the hourly tables and hours.json |
+| `--start` | first analysis instant, ISO-8601 UTC |
+| `--tables` | neutral tables (v2 or v1) |
+| `--thin-grid` | NLAT,NLON: keep one row per source, variable, cell and ln p layer, the one nearest the analysis instant |
+
+## `gpuwm obs streams streams`
+
+Takes no options of its own.
+
+## `gpuwm obs streams subscribe`
+
+| option | what it does |
+|---|---|
+| `--out` | directory; the archive lands under <out>/<stream>/archive/ |
+| `--seconds` | how long to stay subscribed (default 600) |
+| `--stream {wis2}` | the stream to subscribe to; only doors that read a live feed are listed |
+
+## `gpuwm obs streams summary`
+
+| option | what it does |
+|---|---|
+| `--dir` | the directory `fetch` wrote the streams under |
+
 ## `gpuwm physics-catalog`
 
 | option | what it does |
@@ -1345,6 +1412,19 @@ Takes no options of its own.
 ## `gpuwm preset list`
 
 Takes no options of its own.
+
+## `gpuwm preset prepare`
+
+| argument | what it does |
+|---|---|
+| `name` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--cycle` | UTC YYYYMMDDHH |
+| `--hours` | _(the parser declares no help text for this option)_ |
+| `--mesh` | _(the parser declares no help text for this option)_ |
+| `--out` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm preset run`
 
@@ -1849,6 +1929,11 @@ Takes no options of its own.
 | `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
 | `--thompson-version {wrf_461,wrf_44}` | WRF inputs: override the classic Thompson generation selected from producer TITLE |
 | `--trajectories FILE` | the multi-model member list: a JSON or TOML file of {source, cycle[, member]} entries, one per member (selects --recipe multi-model) |
+| `--urban-fvg` | _(the parser declares no help text for this option)_ |
+| `--urban-table-dir` | _(the parser declares no help text for this option)_ |
+| `--urban-treeoption {0,1}` | _(the parser declares no help text for this option)_ |
+| `--urban-ttscheme {0,1}` | _(the parser declares no help text for this option)_ |
+| `--urban-ucm-generation {wrf_471,wrf_480}` | _(the parser declares no help text for this option)_ |
 | `--vertical-grid` | met_em: native, wrf-auto, or explicit:PATH eta grid |
 | `--vertical-levels` | met_em: requested level count for the selected vertical grid |
 | `--wrfinput DIR` | WRF real.exe directory containing wrfinput_d0*, wrfbdy_d01 and producing namelist.input (instead of CONFIG) |
@@ -1885,7 +1970,7 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--from DIR` | stage the bridge and table artifacts from a local directory instead of downloading (offline installs); verification is identical. Does not apply to --with-geog, which has its own --source |
-| `--with-geog` | also stage the WPS_GEOG static geography (~2.2 GB compressed, ~33 GB unpacked); the size is printed before anything downloads |
+| `--with-geog` | also stage the WPS_GEOG static geography (~2.2 GB compressed, ~35 GB unpacked); the size is printed before anything downloads |
 
 ## `gpuwm sim`
 
@@ -2117,6 +2202,128 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm suite`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm suite apply`
+
+| argument | what it does |
+|---|---|
+| `file` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--bindings` | prepared/deployment bindings tied to the resolved suite hash |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--state-dir` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm suite events`
+
+| option | what it does |
+|---|---|
+| `--after` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--follow` | _(the parser declares no help text for this option)_ |
+| `--state-dir` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm suite halt`
+
+| argument | what it does |
+|---|---|
+| `row` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--state-dir` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm suite init`
+
+| option | what it does |
+|---|---|
+| `--boxes` | comma-separated gpuwm check --json receipts |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--output` | _(the parser declares no help text for this option)_ |
+| `--region` | _(the parser declares no help text for this option)_ |
+| `--registry-dir` | _(accepted, but not listed by --help)_ |
+
+## `gpuwm suite plan`
+
+| argument | what it does |
+|---|---|
+| `file` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--emit-commands` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--json` | _(the parser declares no help text for this option)_ |
+| `--what-if` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm suite rehearse`
+
+| argument | what it does |
+|---|---|
+| `file` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--bindings` | prepared/deployment bindings tied to the resolved suite hash |
+| `--cycles` | limit replay to first N cycles |
+| `--days` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--from` | _(the parser declares no help text for this option)_ |
+| `--state-dir` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm suite resume`
+
+| argument | what it does |
+|---|---|
+| `row` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--state-dir` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm suite run`
+
+| argument | what it does |
+|---|---|
+| `[file]` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--bindings` | prepared/deployment bindings tied to the resolved suite hash |
+| `--detach` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--once` | _(the parser declares no help text for this option)_ |
+| `--poll-seconds` | _(the parser declares no help text for this option)_ |
+| `--resume` | _(the parser declares no help text for this option)_ |
+| `--state-dir` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm suite status`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--json` | _(the parser declares no help text for this option)_ |
+| `--state-dir` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm suite validate`
+
+| argument | what it does |
+|---|---|
+| `file` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--json` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm timeline`
 

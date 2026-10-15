@@ -451,10 +451,15 @@ def causal_volume(volume, analysis, max_age):
 #: e.g. 2024/05/21/KDMX/KDMX20240521_175821_V06, so causal_object refused
 #: all of them and radar_tten_windows wrote "no volumes to grid").
 ARCHIVE_RESTAMPS = (
+    # The migration re-uploaded the archive oldest first over about six weeks, so the row spans it: measured
+    # LastModified of whole site-days (2026-10-12) -- 1998-05-03 KTLX 2025-06-10, 2008-05-10 KTLX 2025-06-25,
+    # 2015-06-01 KDMX 2025-07-02, 2022-06-13 KIND 2025-07-11, 2024-05-21 KDMX 2025-07-15, 2025-07-16 KTLX
+    # 2025-07-18.  The old row (from 2025-07-15) refused every volume of a 2022 replay case as "LastModified is
+    # after analysis cutoff", so radar_tten_windows stopped with "no volumes to grid".
     {"bucket": "unidata-nexrad-level2",
-     "restamped_from": "2025-07-15T00:00:00Z",
-     "scanned_before": "2025-07-15T00:00:00Z",
-     "reason": "bucket migration re-uploaded the pre-2025-07-15 archive"},
+     "restamped_from": "2025-06-01T00:00:00Z",
+     "scanned_before": "2025-07-17T00:00:00Z",
+     "reason": "bucket migration re-uploaded the archive scanned before 2025-07-17, oldest first, 2025-06 to 2025-07-18"},
 )
 
 #: ``causal_object``'s return values: which clock bounded publication.

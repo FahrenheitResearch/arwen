@@ -1,0 +1,25 @@
+# Source-dependent release leg
+
+Run `run_source_leg.py` inside an authorized GPU queue. Supply the actual
+WRF 4.6.1 tree, the WRF 4.8.0 MMM `bl_ysu.F90` source, the regenerated YSU
+step-zero fixture, and the coupled cloud/radiation fixture. The two WRF trees
+must be siblings named `v4.6.1` and `v4.8.0`, as required by the source test.
+
+```sh
+python tools/battery/run_source_leg.py \
+  --wrf461 "$SOURCES/v4.6.1" \
+  --wrf480-source "$SOURCES/v4.8.0/phys/physics_mmm/bl_ysu.F90" \
+  --ysu-fixture "$YSU_BUILD/wrf_480-step0" \
+  --coupled-fixture "$CLOUD_BUILD" --out "$EVIDENCE/source-leg"
+```
+
+The YSU build and fixture tools are `tools/ysu_generations_oracle/build.sh`
+and `gate.py`; the cloud fixture builder is
+`tools/cldfra2_wrf461_oracle/coupled_build.sh`. Their source hashes and
+build receipts remain required evidence. Supply their outputs explicitly;
+this leg never substitutes a Python reference or downloads a different source.
+
+The runner executes all five named suites in default and strict modes without
+a marker filter, writes per-arm logs and JUnit reports, and refuses any skip
+or empty collection. `source-leg.json` records the source paths, commands and
+results. A help invocation or an absent-input refusal is not a passing leg.

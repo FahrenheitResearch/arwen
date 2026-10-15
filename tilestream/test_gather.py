@@ -467,6 +467,52 @@ def test_layered_fields_gather_like_mass_fields():
           f"still refuses to guess nz")
 
 
+def test_rank4_carrier_gathers_and_scatters_every_plane():
+    """A (k, nz, ny, nx) carrier must move all k * nz planes, both ways.
+
+    Grell 3D carries ``fields/g3_lev`` at (9, nz, ny, nx).  The copy depth
+    used to be ``shape[0]``, so a gather moved its first 9 (ny, nx) planes
+    and a scatter wrote back only those: the streamed store's g3_lev
+    differed from the resident one in all 9 slots after one step.  Gather
+    against a modulo-indexed reference, then scatter every tile's interior
+    into a zeroed sink that must come back equal to the source.
+    """
+    import cupy as cp
+
+    from tilestream import spec as tspec
+
+    nz, ny, nx, halo, tile = 6, 40, 32, 8, 16
+    shapes = {"g3_lev": (9, nz, ny, nx), "thp": (nz, ny, nx), "mup": (ny, nx)}
+    dom = {n: cp.asarray(np.arange(int(np.prod(s)), dtype=np.float32)
+                         .reshape(s) + 1.0) for n, s in shapes.items()}
+    sink = {n: cp.zeros(s, dtype=cp.float32) for n, s in shapes.items()}
+    specs = tspec.plan_tiles(nx, ny, tile, tile, halo, True)
+    tspec.validate_plan(specs, ny, nx)
+    gy, gx = tile + 2 * halo, tile + 2 * halo
+    tiles = {n: cp.zeros(G.tile_shape_for(
+        G.classify(s, nz, ny, nx, layers_ok=True), s, gy, gx),
+        dtype=cp.float32) for n, s in shapes.items()}
+    assert tiles["g3_lev"].shape == (9, nz, gy, gx)
+    for spec in specs:
+        G.gather_tile(dom, tiles, spec, names=list(shapes), nz=nz)
+        cp.cuda.runtime.deviceSynchronize()
+        ys = np.arange(spec.cj0, spec.cj0 + gy) % ny
+        xs = np.arange(spec.ci0, spec.ci0 + gx) % nx
+        for name in shapes:
+            want = cp.asnumpy(dom[name])[..., ys[:, None], xs[None, :]]
+            got = cp.asnumpy(tiles[name])
+            assert np.array_equal(want, got), (
+                f"gather of {name} {shapes[name]} on tile {spec.index}: "
+                f"{int((want != got).sum())} elements differ")
+        G.scatter_tile(tiles, sink, spec, names=list(shapes), nz=nz)
+        cp.cuda.runtime.deviceSynchronize()
+    for name in shapes:
+        assert np.array_equal(cp.asnumpy(dom[name]), cp.asnumpy(sink[name])), (
+            f"scatter of {name} {shapes[name]} left "
+            f"{int((cp.asnumpy(dom[name]) != cp.asnumpy(sink[name])).sum())} "
+            "elements unwritten")
+
+
 def test_device_roundtrip_real_state():
     """Full-domain DomainState -> tiles -> zeroed DomainState, bitwise."""
     cfg = harness.make_config(NX, NY, NZ)
@@ -571,8 +617,20 @@ def test_host_roundtrip_pinned():
 #:                        restart graupel at a different density.  It joined
 #:                        the contract with the RRFS v2 hex + TEMPO preset; a
 #:                        plain 3-D mass-point field like qvolg.
+#:   ``qt``, ``f_ice``,   Ferrier-Aligo (mp_physics = 5, 2.9.0): WRF's
+#:   ``f_rain``,          fer_mp_hires package state (Registry.EM_COMMON
+#:   ``f_rimef``          :3019, restart stream).  F_RIMEF decides the
+#:                        trajectory: FER_HIRES keeps it for every ice cell
+#:                        between calls, so a streamed resume that re-set it
+#:                        to 1 would restore unrimed ice.  Plain 3-D
+#:                        mass-point fields.
+#:   ``qke_adv``          MYNN's advected TKE carrier (bl_mynn_tkeadvect,
+#:                        admitted in 2.9.0), a plain 3-D mass-point field.
+#: All five joined the contract in the 2.9.0 round-2 merge; the gate moved
+#: with them (192 -> 197) once this file reached the GPU shard there.
 NEW_SINCE_41 = ("qir", "qib", "th_old", "qv_old", "nh", "nn",
-                "rthften", "rqvften", "volg")
+                "rthften", "rqvften", "volg",
+                "qt", "f_ice", "f_rain", "f_rimef", "qke_adv")
 
 #: FAST_SBM (mp_physics = 30) spectral bins: ff1/ff5/ff6 at 33 bins each and
 #: ff8 at 43, 142 names (``gpuwm.core.fast_sbm_contract.BIN_SPECIES``).  They
@@ -609,9 +667,9 @@ def test_all_49_names_device_and_host():
     set the product no longer serialized.
     """
     names = G.serialized_attrs()
-    assert len(names) == 192, (
-        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 192 "
-        "(50 bulk + 142 FAST_SBM bins). "
+    assert len(names) == 197, (
+        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 197 "
+        "(55 bulk + 142 FAST_SBM bins). "
         "A new field joined (or left) the streamed serialization set: extend "
         "NEW_SINCE_41's justification block and this count TOGETHER, and "
         "check the new name's stagger against _synthetic_shapes")
@@ -1116,6 +1174,7 @@ TESTS = [
     test_classify_derives_stagger_from_shape,
     test_extents_inferred_from_inventory,
     test_layered_fields_gather_like_mass_fields,
+    test_rank4_carrier_gathers_and_scatters_every_plane,
     test_device_roundtrip_real_state,
     test_host_roundtrip_pinned,
     test_all_49_names_device_and_host,

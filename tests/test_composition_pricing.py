@@ -113,6 +113,12 @@ def decode(key: str) -> dict[str, object]:
         if part == "noradack":
             combination["_radiation_ack_withheld"] = True
             continue
+        if "=" in part:
+            # key_of spells the radiation-variant settings as name=value
+            # (ra_rrtmg_variant, wrf_rrtmg_compatibility).
+            name, value = part.split("=", 1)
+            combination[name] = value
+            continue
         matched = _PART.fullmatch(part)
         if matched is None:
             raise AssertionError(

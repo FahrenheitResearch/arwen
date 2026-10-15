@@ -138,6 +138,8 @@ GPU_INTEGER_EXCLUSIONS = frozenset({
     "nest.scratch.nest_sint_cj_y", "nest.scratch.nest_sint_jp_y",
 })
 _GPU_RANGE_CHECKED_INT32 = frozenset({
+    # G3 stores its four cloud levels and averaging clock as native integers.
+    "surface.g3_isfc", "surface.g3_diag_clock",
     # Noah writes one of four energy-balance solution cases.
     "surface.ebal",
     # YSU writes a one-based model level; zero is the pre-first-call value.
@@ -494,7 +496,11 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
         return FieldRule("soil_moisture", 0.0, 1.0)
     if lower_name.startswith("surface."):
         if leaf == "ebal":
-            return FieldRule("surface", 0.0, 3.0)
+            # Noah's energy-balance case (kernels/noah.cu): 0-3 are the land
+            # SFLX branches, 4 marks an SFLX_GLACIAL (land-ice) column.
+            # With the bound at 3, the first land-ice point of a real
+            # forecast failed the post-d01-sync health gate (g16 ports-pbl).
+            return FieldRule("surface", 0.0, 4.0)
         if leaf == "kpbl":
             # collect_state_fields supplies the state-dependent nz cap.
             return FieldRule("surface", 0.0)
@@ -671,7 +677,11 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
                 # every no-land-model WRF-file run at the initial gate
                 # (2026-10-07 combo sweep), so only finiteness is checked.
                 field = dataclasses.replace(field, rule=_FINITE)
-            if field.name == "surface.kpbl":
+            if field.name == "surface.g3_isfc":
+                field = dataclasses.replace(field, rule=FieldRule("surface", 0.0, float(nz)))
+            elif field.name == "surface.g3_diag_clock":
+                field = dataclasses.replace(field, rule=FieldRule("surface", 0.0, float(2**31-1)))
+            elif field.name == "surface.kpbl":
                 field = dataclasses.replace(
                     field, rule=FieldRule("surface", 0.0, float(nz)))
             elif field.name == "surface.ktop_plume":

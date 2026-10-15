@@ -644,6 +644,19 @@ def _background_radius_arms():
             from gpuwm.microphysics_schemes import NAMED_MP_IDS
             arms.append(tuple(NAMED_MP_IDS))
             continue
+        if (isinstance(test, ast.Compare) and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
+                and isinstance(test.comparators[0], ast.Constant)
+                and isinstance(test.comparators[0].value, int)):
+            arms.append((test.comparators[0].value,))
+            continue
+        if (isinstance(test, ast.Compare) and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.In)
+                and isinstance(test.comparators[0], ast.Name)
+                and test.comparators[0].id == "COLUMN_SCHEMES"):
+            from gpuwm.core.column_schemes import COLUMN_SCHEMES
+            arms.append(tuple(COLUMN_SCHEMES))
+            continue
         assert (isinstance(test, ast.Compare)
                 and len(test.ops) == 1
                 and isinstance(test.ops[0], ast.In)

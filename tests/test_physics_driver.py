@@ -268,7 +268,13 @@ def _cpu_surface_driver(monkeypatch, *, sf_surface_physics):
             "t2": -999.0, "q2": -999.0, "th2": -999.0,
         }.items()
     }
+    # Column 0 is land, column 1 water (the Noah stub below leaves the
+    # water column on its skipped values); the post-surface Q2 cap reads it.
+    driver.fields["xland"] = np.array([[1.0, 2.0]], np.float32)
     driver.surface_enabled = True
+    # No sub-radiation-step solar interpolation (PhysicsDriver.__init__ sets
+    # swint = None unless swint_opt is on); this fixture skips __init__.
+    driver.swint = None
     # THE CARRIER CONTRACT, wired rather than dodged.  A hand-built driver
     # is exactly the construction path the consumption check exists to
     # cover, so this fixture goes through it like a real driver: both of

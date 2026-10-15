@@ -194,6 +194,10 @@ _BRIDGE_CONSUMERS = {
                     "stage writes its regional intermediates with this "
                     "binary and "
                     "refuses rather than falling back without it",
+    "met_intermediate": "public initial-condition preparation that writes "
+                        "WPS intermediates from a regular-grid source "
+                        "(the installed gpuwm-hex RRFS preset and ICON init "
+                        "rows), which refuses by name without it",
 }
 
 #: The doors a box without CuPy cannot open, and the half it keeps.
@@ -239,47 +243,6 @@ SEVERITY_OPT_IN = "opt-in"
 #: the exit code would be a false claim in the one module that exists to
 #: stop those.  ``Check.blocking`` is the authority and
 #: :func:`blocking_gaps` states the rule.
-
-#: What an absent on-demand artifact's line says, in one sentence.
-_ON_DEMAND_NOTE = ("it is fetched on demand: the platform wheel does not "
-                   "carry it, and `gpuwm fetch-bridges` installs it")
-
-
-def _absent_severity(artifact: str, otherwise: str,
-                     crate_relative: str = bridges.RUSTWX_CRATE_RELATIVE) -> str:
-    """The severity of ``artifact`` being absent (not stale, not overridden).
-
-    An on-demand artifact is absent on every fresh platform install by
-    design, so its absence is a choice the user has not made yet and reads
-    ``opt-in``.  Breakage this prevents: from 2.8.9 the platform wheel
-    leaves three artifacts to ``gpuwm fetch-bridges``, and reporting them
-    as before would print ``unreachable`` and ``degraded`` on every correct
-    install.  Any other artifact keeps the severity its own check passes.
-
-    That holds only where the fetch can deliver it
-    (:func:`gpuwm.bridges.on_demand_fetch_offered`).  In a source checkout
-    the remedy is a cargo build, and an install without pins or on a
-    platform with no bundle has nothing to fetch: there the artifact is
-    simply not built, and the line keeps the severity it had before.
-    """
-
-    if bridges.on_demand_fetch_offered(artifact, crate_relative):
-        return SEVERITY_OPT_IN
-    return otherwise
-
-
-def _absent_note(artifact: str,
-                 crate_relative: str = bridges.RUSTWX_CRATE_RELATIVE) -> str:
-    """The on-demand sentence for ``artifact``'s absent line, or nothing.
-
-    Nothing wherever ``gpuwm fetch-bridges`` could not install it; naming
-    a command that refuses is worse than naming none.
-    """
-
-    if bridges.on_demand_fetch_offered(artifact, crate_relative):
-        return f"; {_ON_DEMAND_NOTE}"
-    return ""
-
 
 def _companion_distribution_name() -> str:
     """The companion row's name, so cross-references cannot drift."""
@@ -2835,6 +2798,7 @@ _CHECKED_ARTIFACTS = {
     "grib2_inventory": "the `bridge ...` and mapped/20CRv3 route lines",
     "grib2_dump": "the `bridge ...` and mapped/20CRv3 route lines",
     "gdt101_remap": "the `bridge ...` lines",
+    "met_intermediate": "the `bridge ...` lines",
     "gpuwm_preprocess_cpu": "the `cpu preprocess library` line",
     "rw_fetch": "the `fetch backbone` line",
     "rw_wrfbatch": "the `renderer` line",
@@ -2865,6 +2829,8 @@ _CHECKED_ARTIFACTS = {
     "rw_mpas_hostprep": "the `MPAS binary` lines",
     "rw_mpas_convert": "the `MPAS binary` lines",
     "rw_mpas_lbc": "the `MPAS binary` lines",
+    "rw_hex_points": "the `MPAS binary` lines",
+    "rw_tempo": "the `TEMPO initialization library` line",
     "rw_mlexport": "the `ML dataset exporter` line",
     "rw_grib2export": "the `GRIB2 exporter` line",
     "rw_verify": "the `observation verification engine` line",
@@ -2942,14 +2908,13 @@ def _bundle_coverage_checks() -> list[Check]:
                 f"in this release's bundle and not staged here; needed by: "
                 f"{artifact.consumer}.  Doctor has no contract probe for "
                 "this artifact, so staging it is all this line can ask for"
-                + _absent_note(artifact.name, artifact.crate),
+                ,
                 "gpuwm fetch-bridges\n"
                 "  # stages every pinned artifact, this one included",
                 action="gpuwm fetch-bridges",
                 brief="bundled, not staged, and unchecked",
                 group=_GROUP_BRIDGES, blocking=False,
-                severity=_absent_severity(artifact.name, SEVERITY_DEGRADED,
-                                          artifact.crate)))
+                severity=SEVERITY_DEGRADED))
             continue
         checks.append(Check(
             name, "untested",
@@ -3484,6 +3449,8 @@ _MPAS_DOORS = {
     "rw_mpas_hostprep": "MPAS forecast host preparation",
     "rw_mpas_convert": "MPAS history onto the renderer's tape",
     "rw_mpas_lbc": "MPAS lateral boundaries for a limited-area mesh",
+    "rw_hex_points": "soundings and meteograms from MPAS history "
+                     "(the gpuwm-hex product door)",
 }
 
 #: One action for all five: they share a clone, a cargo build and a
@@ -3625,11 +3592,11 @@ def _ml_export_check() -> Check:
     if found is None:
         return Check(
             label, "missing", f"not built and not staged -- {door} cannot run"
-            + _absent_note(binary.name),
+            ,
             binary.remedy(), action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
             brief=f"not staged; {door} cannot run",
             group=_GROUP_ENGINES, blocking=False,
-            severity=_absent_severity(binary.name, SEVERITY_UNREACHABLE))
+            severity=SEVERITY_UNREACHABLE)
     ok, evidence = bridges.bridge_abi_matches(binary.name, found)
     if not ok:
         return Check(
@@ -3909,10 +3876,10 @@ def _simulated_radar_check() -> Check:
                      group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE)
     if found is None:
         return Check(label, "missing",
-                     "not staged; simulated radar cannot run" + _absent_note("rw_simradar"),
+                     "not staged; simulated radar cannot run" ,
                      remedy, action=build, brief="not staged; simulated radar cannot run",
                      group=_GROUP_ENGINES, blocking=False,
-                     severity=_absent_severity("rw_simradar", SEVERITY_UNREACHABLE))
+                     severity=SEVERITY_UNREACHABLE)
     ok, evidence = bridges.bridge_abi_matches("rw_simradar", found)
     return Check(label, "verified" if ok else "missing", f"{found}: {evidence}",
                  None if ok else remedy, action=None if ok else build,
@@ -4438,15 +4405,12 @@ def _globe_pack_check() -> Check:
     else:
         reason = None if path is not None else f"{filename} is not staged"
     if path is None:
-        plain = reason == f"{filename} is not staged"
         return Check(name, "missing",
-                     f"{reason} -- {degrades}"
-                     + (_absent_note("rw_globe_pack") if plain else ""), remedy,
+                     f"{reason} -- {degrades}", remedy,
                      action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
                      brief="not staged; global statics build natively",
                      group=_GROUP_ENGINES, blocking=False,
-                     severity=(_absent_severity("rw_globe_pack", SEVERITY_DEGRADED)
-                               if plain else SEVERITY_DEGRADED))
+                     severity=SEVERITY_DEGRADED)
     marker = bridges.BRIDGE_ABI_MARKERS["rw_globe_pack"]
     try:
         carries = marker in path.read_bytes()
@@ -4510,6 +4474,54 @@ def _isobaric_reader_check() -> Check:
             group=_GROUP_ENGINES)
     return Check(name, "verified",
                  f"{path} -- ABI {isobaric_bridge.ISOBARIC_ABI}",
+                 brief="staged", group=_GROUP_ENGINES)
+
+
+def _tempo_library_check() -> Check | None:
+    """``rw_tempo``, the TEMPO tempo_init library (2.9.0).
+
+    ``gpuwm.core.tempo_rust`` loads it through ctypes whenever a run selects
+    TEMPO, and there is no Python implementation behind it.  Until 2.9.0 no
+    wheel and no bundle carried it, so TEMPO -- and the rrfs-v2-hex-tempo
+    preset -- stopped at "build it from a checkout" on every pip install.
+    Judged by loading it and reading its ABI, the way the loader does.
+
+    ``None`` where the seam itself is absent: the preparation-only RW-WPS
+    package stages no forecast physics (tools/build_rw_wps_release.py), runs
+    no TEMPO and bundles no TEMPO library, so a line there would report a
+    missing file for a door that package does not have.
+    """
+
+    name = "TEMPO initialization library (rw-tempo)"
+    degrades = ("a run selecting TEMPO microphysics, and the "
+                "rrfs-v2-hex-tempo preset, cannot build TEMPO's tables")
+    try:
+        from gpuwm.core import tempo_rust
+    except ImportError:
+        return None
+    remedy = bridges.artifact_remedy(
+        env_var=tempo_rust.TEMPO_BRIDGE_ENV,
+        filename=tempo_rust.library_name(),
+        subject="the TEMPO initialization library",
+        crate_relative=bridges.RUSTWX_CRATE_RELATIVE)
+    try:
+        path = tempo_rust.resolve()
+    except FileNotFoundError as error:
+        return Check(
+            name, "missing", f"{error} -- {degrades}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not staged; TEMPO cannot initialize",
+            group=_GROUP_ENGINES)
+    try:
+        tempo_rust.load()
+    except (OSError, RuntimeError, AttributeError) as error:
+        return Check(
+            name, "missing", f"{path} -- {error} -- {degrades}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not loadable; TEMPO cannot initialize",
+            group=_GROUP_ENGINES)
+    return Check(name, "verified",
+                 f"{path} -- ABI {tempo_rust.ABI_VERSION}",
                  brief="staged", group=_GROUP_ENGINES)
 
 
@@ -5469,8 +5481,10 @@ def _geog_tree_checks(geog: Path, *,
 def _mesh_geog_checks(geog: Path) -> list[Check]:
     """The mesh door's own completeness verdict over the same tree.
 
-    `gpuwm mesh` builds a static of 82 variables and five of them are the
-    Noah-MP soil group, which the WRF static builder never opens.  The
+    `gpuwm mesh` builds MPAS-A's native static (79 variables, 2.9.0) and
+    five of them are the Noah-MP soil group, which the WRF static builder
+    never opens; its land use and GWD mask come from two archives the WRF
+    builder does not read either.  The
     two doors therefore need different datasets out of one tree, and this
     report used to have one verdict for both: without this row doctor
     called the tree complete and `gpuwm mesh` then refused it, which is
@@ -6533,6 +6547,9 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_obs_score_check())
     checks.append(_noah_init_check())
     checks.append(_isobaric_reader_check())
+    tempo_check = _tempo_library_check()
+    if tempo_check is not None:
+        checks.append(tempo_check)
     checks.append(_globe_pack_check())
     checks.append(_radar_superob_check())
     checks.append(_region_dealias_check())

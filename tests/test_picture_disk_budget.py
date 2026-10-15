@@ -49,9 +49,17 @@ def test_default_picture_estimate_matches_measured_small_grid(tmp_path):
 def test_projection_covers_complete_measured_runs_without_old_inflation(tmp_path):
     records = json.loads((Path(__file__).parent / "fixtures" /
                           "picture-disk-measurements.json").read_text())
+    receipts = json.loads((Path(__file__).parents[1] / "tools/wiki_seed/runs/"
+                           "bytes-per-product/sizes.json").read_text())
     assert len(records) == 26
     for row in records:
-        predicted = projection(tmp_path, "all", row["nx"], row["ny"])["picture_bytes"]
+        # Price the inventory this historical audit actually drew. Today's
+        # all also draws the nine winter products absent from these audits.
+        pictures = [p for p in receipts["pictures"] if p[0] == row["source_sha256"][:16]]
+        assert len(pictures) == row["pictures"]
+        assert sum(p[4] for p in pictures) == row["bytes"]
+        products = ",".join(sorted({p[1] for p in pictures}))
+        predicted = projection(tmp_path, products, row["nx"], row["ny"])["picture_bytes"]
         assert row["bytes"] <= predicted <= 1.6 * row["bytes"], row
 
 

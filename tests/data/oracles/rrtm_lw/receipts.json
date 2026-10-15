@@ -1,0 +1,11 @@
+{
+ "wrf": "WRF v4.6.1 d66e442fccc04111067e29274c9f9eaccc3cef28, phys/module_ra_rrtm.F unmodified",
+ "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+ "libm_report": "# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\n# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39\n# -O0 (THE REFERENCE) libm symbols:\nU expf\nU logf\nU powf\n# -O2 -ftree-vectorize -funroll-loops (WRF's GNU phys/ flags) libm symbols:\nU _ZGVbN4vv_powf\nU expf\nU logf\nU powf\n",
+ "sha256": {
+  "columns.bin": "6a78a61f39a5317a30e8e88a2866ada02e5c38f14fd365e5d91594eacea5e515",
+  "wrf-out-O0.bin": "5592f3c2408f55efa6a6b06939cb625ab3b4a9cbe2294a59120d3d8590cde4ed",
+  "wrf-out-O2vec.bin": "11723b5ca735c4dceee14541c2e94966b66f38d7bb27e3b294e3155a49a2bd23"
+ },
+ "oracle_sha256sums": "9f54e70db6258a521921d89ada864857a45c7b0cd134e25f498350f5aa49428e  module_ra_rrtm.F\n45dc91514cf018e133301a1b667deeb17f5b65c49ccfaa9140761a8028bc8ae0  RRTM_DATA\n73efe32586d06ff65945c56a43290a5d10427ea1dcbf58cd3ea9b0412db2f509  run_rrtm_lw.F90\n8002ccd00906d1a6a6cf7b5fd65ffd2f7343ad658d65fb8d7adda0eb743bd752  stub_wrf.F90\n6a78a61f39a5317a30e8e88a2866ada02e5c38f14fd365e5d91594eacea5e515  columns.bin\n5592f3c2408f55efa6a6b06939cb625ab3b4a9cbe2294a59120d3d8590cde4ed  wrf-out-O0.bin\n11723b5ca735c4dceee14541c2e94966b66f38d7bb27e3b294e3155a49a2bd23  wrf-out-O2vec.bin\n"
+}

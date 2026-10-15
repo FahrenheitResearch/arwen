@@ -41,6 +41,36 @@ from dataclasses import dataclass
 #: the model's working precision reaches the scheme.
 from gpuwm.core.state import DTYPE
 
+#: cu_ntiedtke.F90:230 -- ``dxref``, the spacing below which the scheme's
+#: scale-dependency factor leaves the coarse-mesh formula.  Mirrors
+#: ``NT_DXREF`` in ntiedtke.cu, which is the value the kernels execute.
+NT_DXREF_M = 15000.0
+
+
+def nt_scale_factors_host(dx_m):
+    """Host mirror of ``nt_scale_factors`` (cu_ntiedtke.F90:230-238).
+
+    Returns ``(scale_fac, scale_fac2)`` as float32 arrays for a spacing in
+    metres.  ``scale_fac`` multiplies the deep closure's adjustment time
+    (:676) and ``scale_fac2`` divides the shallow cloud-base mass flux
+    (:715).  For receipts and tests: the device kernel is the arithmetic of
+    record and its logarithm is CUDA's, so the two agree to rounding, not
+    bit for bit.
+    """
+    import numpy as np
+
+    dx = np.asarray(dx_m, dtype=np.float32)
+    fine = dx < np.float32(NT_DXREF_M)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        base = np.float32(1.06133) + np.log(
+            np.float32(NT_DXREF_M) / dx, dtype=np.float32)
+    sf = np.where(fine, base * base * base,
+                  np.float32(1.0) + np.float32(1.33e-5) * dx).astype(np.float32)
+    sf2 = np.where(fine, np.sqrt(sf, dtype=np.float32),
+                   np.float32(1.0)).astype(np.float32)
+    return sf, sf2
+
+
 #: Threads per block for every New Tiedtke stage.
 #:
 #: CORRECTED.  This was documented as "the workspace's lane count, not a
@@ -1075,6 +1105,8 @@ class NtPipeline:
         import numpy as np
 
         self.w = NtWorkspace(ncol=ncol, nz=nz)
+        #: Correct-mode WB4; the adapter sets it per call from the RunConfig.
+        self.dry_mass_coupling = False
         self.geometry = NtLaunchGeometry(ncol=ncol, nz=nz)
         self.stages = NtStages(self.geometry)
         self._base = dict(NT_LEVEL_BASE if base is None else base)
@@ -1200,6 +1232,57 @@ class NtPipeline:
         self.w.bind("ztenu", 1)[...] = self.w.bind("pvom", 1)
         self.w.bind("ztenv", 1)[...] = self.w.bind("pvol", 1)
 
+    # -- correct mode, finding WB4 (RunConfig.ntiedtke_dry_mass_coupling) --
+    #
+    # THE CONTRACT.  cu_ntiedtke works in specific humidity on its own frame
+    # mass M = dp/g per layer (zdp = g/dp in cudtdqn, cu_ntiedtke.F90:
+    # 3101-3142), and its budget closes in that frame:
+    #     sum_k M_k (dq_v + dq_c + dq_i)_k + P = 0.
+    # The host (MPAS-A, hex, gpuwm's column batch) advances mixing ratios on
+    # FIXED dry mass m_d, and builds the very pressure it hands the scheme
+    # from rho_d*(1+qv) (mpas_atmphys_interface.F:342-343, 530-534; hex
+    # pres2_hyd_p), so M_k = m_d,k (1 + qv_k).  The matched arithmetic adds
+    # condensate in specific units straight onto mixing ratios
+    # (cu_ntiedtke.F90:296-305) and converts vapour as q/(1-q) of the
+    # UPDATED q (:308-314), which implicitly lets the dry mass change: about
+    # 1% of the convective precipitation is not removed from the column
+    # (audit 2026-10-13 09:31:51Z).  Correct mode maps every water increment
+    # through the frame factor (1 + qv_old):  dr_x = dq_x (1 + qv_old), so
+    #     sum_k m_d,k (dr_v + dr_c + dr_i)_k + P = 0
+    # holds to roundoff.  Heating and momentum are not touched.
+    def correct_forcing(self) -> None:
+        """WB4: hand the scheme dq/dt, not dr/dt, as its vapour forcing.
+
+        ``ntiedtke_convert`` copies the driver's mixing-ratio tendency into
+        pqte (cu_ntiedtke.F90:273) while converting the state itself to
+        specific humidity; the derivative of q = r/(1+r) is 1/(1+r)^2.
+        Runs between ``ntiedtke_convert`` and :meth:`snapshot_forcing`, so
+        zqq snapshots the converted forcing and the convective increment
+        (pqte - zqq) is unchanged in meaning.
+        """
+        nz = self.w.nz
+        q = self.w.bind("qvf", 0)[:nz]         # scheme order, input vapour
+        forcing = self.w.bind("pqte", 0)[:nz]  # scheme order
+        frame = q + 1.0
+        forcing[...] = forcing / (frame * frame)
+
+    def correct_water_tendencies(self) -> None:
+        """WB4: replace post_run's water tendencies with dry-mass ones.
+
+        WRF order (k = 1 the surface) as post_run writes them; the scheme's
+        increments are scheme order (k = 1 the top), flipped exactly as
+        post_run flips them (zz = klev + 1 - jk).
+        """
+        nz = self.w.nz
+        frame = self.w.bind("qv3d", 0)[:nz] + 1.0   # 1 + qv_old, WRF order
+        dq = (self.w.bind("pqte", 0)[:nz][::-1]
+              - self.w.bind("zqq", 0)[:nz][::-1])
+        self.w.bind("rqvcuten", 0)[:nz] = dq * frame
+        rqc = self.w.bind("rqccuten", 0)[:nz]
+        rqc[...] = rqc * frame
+        rqi = self.w.bind("rqicuten", 0)[:nz]
+        rqi[...] = rqi * frame
+
     def begin_llo3_batch(self) -> None:
         """Defer validation until the private chunk outputs are complete."""
         self._llo3_pending = []
@@ -1320,6 +1403,8 @@ def _nt_walk(pipeline) -> None:
     pipeline.zero_run_head()
     pipeline.run_stage("ntiedtke_prep")
     pipeline.run_stage("ntiedtke_convert")
+    if getattr(pipeline, "dry_mass_coupling", False):
+        pipeline.correct_forcing()
     pipeline.snapshot_forcing()
     for stage in NT_CALL_ORDER:
         if stage in ("ntiedtke_prep", "ntiedtke_convert"):
@@ -1329,6 +1414,8 @@ def _nt_walk(pipeline) -> None:
         if stage == "ntiedtke_cududvn":
             pipeline.snapshot_momentum()
         pipeline.run_stage(stage)
+    if getattr(pipeline, "dry_mass_coupling", False):
+        pipeline.correct_water_tendencies()
 
 
 def _nt_fused_walk(pipeline) -> None:
@@ -1343,6 +1430,8 @@ def _nt_fused_walk(pipeline) -> None:
     pipeline.zero_run_head()
     pipeline.run_stage("ntiedtke_prep")
     pipeline.run_stage("ntiedtke_convert")
+    if getattr(pipeline, "dry_mass_coupling", False):
+        pipeline.correct_forcing()
     pipeline.snapshot_forcing()
     for stage in NT_CALL_ORDER[2:]:
         if stage == group[0]:
@@ -1354,6 +1443,8 @@ def _nt_fused_walk(pipeline) -> None:
             if stage == "ntiedtke_cududvn":
                 pipeline.snapshot_momentum()
             pipeline.run_stage(stage)
+    if getattr(pipeline, "dry_mass_coupling", False):
+        pipeline.correct_water_tendencies()
 
 
 # ===========================================================================
@@ -1395,6 +1486,42 @@ class NewTiedtke:
     def __init__(self) -> None:
         self._driver = None
         self._pipeline = None
+        #: False holds every column finer than ``NT_DXREF_M`` at
+        #: ``NT_DXREF_M``, so the sub-15 km reduction of cu_ntiedtke.F90:
+        #: 232-234 never applies.  A sensitivity control; the scheme as
+        #: MPAS-A and WRF run it is True.
+        self.scale_aware = True
+
+    def _column_dx(self, cfg, ny: int, nx: int):
+        """The spacing the scheme sees: per column, or None for ``cfg.dx``.
+
+        MPAS-A hands cu_ntiedtke one dx PER CELL,
+        ``len_disp / meshDensity**0.25`` (mpas_atmphys_driver_convection.F:
+        840 at v8.4.1), and the scale-dependency factors are built from it
+        column by column (cu_ntiedtke.F90:230-238).  A column seam carries
+        that vector on the driver as ``gf_dx_column`` -- the same carrier
+        Grell-Freitas reads -- so a variable-resolution mesh gets each
+        cell's own factor.  A lat-lon ARW driver carries none and the
+        scheme sees ``cfg.dx``, as module_cu_ntiedtke.F hands it.
+        """
+        import cupy as cp
+
+        dx_column = (None if self._driver is None
+                     else getattr(self._driver, "gf_dx_column", None))
+        if dx_column is None:
+            if self.scale_aware:
+                return None
+            return cp.full(ny * nx, max(float(cfg.dx), NT_DXREF_M),
+                           dtype=DTYPE)
+        if dx_column.shape != (ny, nx):
+            raise ValueError(
+                f"driver gf_dx_column must be [ny, nx]={ny, nx}, "
+                f"got {dx_column.shape}")
+        dx = cp.ascontiguousarray(
+            cp.asarray(dx_column, dtype=DTYPE)).reshape(ny * nx)
+        if not self.scale_aware:
+            dx = cp.maximum(dx, DTYPE(NT_DXREF_M))
+        return dx
 
     def bind_driver(self, driver) -> None:
         """Driver hook: gives the adapter the held radiation and PBL rates.
@@ -1563,8 +1690,14 @@ class NewTiedtke:
         # only one of them is an argument.
         width = nt_tile_columns(ncol, _nt_multiprocessor_count())
         p = self._for(width, nz, cfg)
-        # The spacing is constant across chunks, including the padded tail.
-        p.w.bind("dx", 1).fill(DTYPE(cfg.dx))
+        p.dry_mass_coupling = bool(
+            getattr(cfg, "ntiedtke_dry_mass_coupling", False))
+        # One spacing per column where the driver carries it (a column
+        # seam on an MPAS mesh); otherwise cfg.dx, constant across chunks
+        # including the padded tail.
+        dx_flat = self._column_dx(cfg, ny, nx)
+        if dx_flat is None:
+            p.w.bind("dx", 1).fill(DTYPE(cfg.dx))
         p.begin_llo3_batch()
         for lo in range(0, ncol, width):
             # A previous invalid chunk must not suppress the next producers.
@@ -1586,6 +1719,11 @@ class NewTiedtke:
                 buf[:n] = a[lo:hi]
                 if n < width:
                     buf[n:] = a[lo]
+            if dx_flat is not None:
+                buf = p.w.bind("dx", 1)
+                buf[:n] = dx_flat[lo:hi]
+                if n < width:
+                    buf[n:] = dx_flat[lo]
             p.run_chunk()
             for name, dest in out_lev.items():
                 dest[:, lo:hi] = p.w.bind(name, 0)[:nz, :n]

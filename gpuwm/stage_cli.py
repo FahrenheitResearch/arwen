@@ -1052,6 +1052,9 @@ def preflight_bundle(bundle: dict, *, experiment_config: Path,
         from gpuwm import prepared_single_domain_forecast as runner
 
         args = runner.build_parser().parse_args(command[3:])
+        # Defect: parser defaults are None, while the normal forecast main
+        # resolves omitted clock flags from its bound config before preflight.
+        runner._resolve_clock_arguments(args)
         inputs = runner.preflight_prepared_forecast(
             source=args.source, prepared_root=args.prepared_root,
             proof_sha256=args.proof_sha256,

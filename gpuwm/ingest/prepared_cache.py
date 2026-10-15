@@ -242,6 +242,14 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
 #: the flag existed was prepared with, so "absent" and "default"
 #: describe the same prepared state provably rather than plausibly.
 DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
+    # G3 controls are absent from older trees; only their declared defaults tolerate absence.
+    "run.maxiens",
+    "run.maxens",
+    "run.maxens2",
+    "run.maxens3",
+    "run.ensdim",
+    "run.cu_diag",
+    "run.convtrans_avglen_m",
     # 2.6.1's members: top-level DomainConfig declarations whose
     # off state is None.
     "start_time", "spawn", "tiles", "output", "retire", "rearm", "follow",
@@ -269,6 +277,15 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # exists to close, reopened by the merge that adopted its fix.
     "run.mp28_aerosol_source", "run.wif_climatology_path",
     "run.ntiedtke_tiedtke_closure",
+    # Correct-mode keys (gpuwm/correct_mode.py, WB5/WB4): False is the
+    # matched arithmetic every prepared tree written before them describes.
+    "run.wsm6_conservative_surface", "run.ntiedtke_dry_mass_coupling",
+    "run.wdm6_conservative_surface", "run.thompson_cloud_surface_booking",
+    # The New SAS knobs (cu_physics = 96 port), on the p3_backend argument
+    # below: scheme-scoped (gpuwm.config refuses a non-default value under
+    # any other cumulus scheme), so a tree prepared before they existed
+    # could not have selected anything but their defaults.
+    "run.nsas_dx_factor", "run.sas_pgcon",
     # 2.6.1 added run.p3_backend to RunConfig without adding it here,
     # which refused EVERY tree prepared before it -- 16 of them on the
     # box that found this.  The FOURTH instance of this exact trap in
@@ -337,6 +354,7 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     "run.bl_mynn_edmf", "run.bl_mynn_edmf_mom", "run.bl_mynn_edmf_tke",
     "run.bl_mynn_mixscalars", "run.scalar_pblmix", "run.bl_mynn_cloudmix", "run.bl_mynn_mixqt",
     "run.bl_mynn_output", "run.bl_mynn_tkeadvect", "run.icloud_bl",
+    "run.scalar_adv_opt",
     # MM5/MYNN surface layer (76cd7f18b):
     "run.isftcflx", "run.iz0tlnd",
     # Noah LSM selector (9fae17c50), admitted for RUC as well. Prescribed
@@ -786,6 +804,24 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     # Only LSMRUC and SFCTMP read the snow lineage (core/ruc_tier.py, the
     # fused prologue and sfctmp); preparation computes no snow from it.
     "run.ruc_snow",
+    # The WRF 4.7/4.8 upstream-fix generations and the urban canopy
+    # controls are read by the forecast's physics alone: the solar
+    # generation by the radiation/LSM COSZEN calls (core/solar.py), the YSU
+    # generation by the PBL kernel selection (gpuwm/ysu_generations.py), the
+    # Noah-MP snow-age generation by the Noah-MP radiation/glacier units,
+    # and the urban water/canopy generations, tree and vegetation controls
+    # and table directory by the SLUCM/BEP column (core/urban_*); nothing
+    # under gpuwm/ingest reads any of them, so one prepared bundle serves
+    # every value.  Checkpoints still bind them (io/restart.py).
+    "run.solar_generation",
+    "run.ysu_version",
+    "run.noahmp_snow_age",
+    "run.urban_water_balance",
+    "run.urban_ucm_generation",
+    "run.urban_treeoption",
+    "run.urban_ttscheme",
+    "run.urban_fvg",
+    "run.urban_table_dir",
     # The vertical advection ladder and the (declaration-only) horizontal
     # momentum order are read by the flux-divergence launchers alone; no
     # initial field or boundary table depends on them, so one prepared
@@ -875,7 +911,7 @@ PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     # a Grell-Freitas root that runs clos_choice = 1, so binding them
     # refused a prepared domain for a key preparation never read.  They
     # stay in the experiment fingerprint and the restart identity.
-    "run.clos_choice", "run.ishallow",
+    "run.clos_choice", "run.ishallow", "run.cugd_avedx",
     # NOAH MOSAIC AND WHERE ITS URBAN CANOPY RUNS, on the same argument.
     # Preparation writes LANDUSEF whatever these say; the forecast's
     # initialization doors build the tiles from it after the cache is read

@@ -43,6 +43,10 @@ _SLUCM_OUTPUT_FIELDS = {
     "TR_URB": "tr_urb2d", "TB_URB": "tb_urb2d",
     "TG_URB": "tg_urb2d", "TC_URB": "tc_urb2d",
 }
+_SLUCM480_OUTPUT_FIELDS = {
+    "TVG_URB": "tvg_urb2d", "TT_URB": "tt_urb2d", "XXXVG_URB": "xxxvg_urb2d",
+    "TVGL_URB": "tvgl_urb3d", "SMG_URB": "smg_urb3d", "CMCG_URB": "cmcg_urb2d",
+    "FLXHUMVG_URB": "flxhumvg_urb2d", "FLXHUMT_URB": "flxhumt_urb2d"}
 
 
 #: SPLIT SUBGRID-FLUX DIAGNOSTIC history names -> buffer key.  Both
@@ -175,6 +179,20 @@ def live_state_history_fields(state) -> dict[str, object]:
         if value is not None:
             fields[output_name] = value
 
+    from gpuwm.lightning_contract import FLASH_FIELDS
+    for symbol in (*FLASH_FIELDS, "lpi"):
+        value = getattr(state, "_scratch", {}).get("ltng_" + symbol)
+        if value is not None:
+            fields[symbol.upper()] = value
+    # Correct mode, finding WB1 (gpuwm/core/thompson_cloud_booking.py): the
+    # settled-cloud total and its last-call amount, present exactly when the
+    # run carries them (a correct-mode Thompson run, after its first call).
+    for output_name, slot in (("CLOUDNC", "mp_cloudnc"),
+                              ("CLOUDNCV", "mp_cloudncv")):
+        value = getattr(state, "_scratch", {}).get(slot)
+        if value is not None:
+            fields[output_name] = value
+
     # UP_HELI_MAX rides in every frame of a run that carries the
     # accumulator (allocated eagerly under nwp_diagnostics = 1), keeping
     # the async writer's frame schema constant.  The post-write reset is
@@ -204,6 +222,11 @@ def live_state_history_fields(state) -> dict[str, object]:
     # PhysicsDriver refuses to build when a selector value is unrouted.
     dispatch = getattr(physics, "scheme_dispatch", None)
     live_surface = getattr(physics, "fields", {})
+    from gpuwm.core.physics_inventory import CUMULUS_HISTORY_LAYOUT
+    for name, (key, index) in CUMULUS_HISTORY_LAYOUT.items():
+        if key in live_surface:
+            fields[SCHEME_OUTPUT_FIELDS[name].netcdf_name] = (
+                live_surface[key] if index is None else live_surface[key][index])
     # MYNN's ten carried 3-D arrays and its four plume diagnostics exist only
     # under bl_pbl_physics=5, and wrfout does not auto-walk ``fields`` the way
     # the health collector does, so each emitted field is listed explicitly.
@@ -344,6 +367,7 @@ def physics_history_fields(physics) -> dict[str, object]:
     if urban is not None and urban.option == 1:
         output.update({name: urban.fields[field]
                        for name, field in _SLUCM_OUTPUT_FIELDS.items()})
+        output.update({name: urban.fields[field] for name,field in _SLUCM480_OUTPUT_FIELDS.items() if field in urban.fields})
     # Per-level radiative heating, output-only.  Both are live 3D
     # arrays (allocated :1869-1870, populated :2297-2300) that the
     # step consumes and then discards; the theta budget cannot be
@@ -389,6 +413,9 @@ def physics_history_fields(physics) -> dict[str, object]:
                 physics.hmix_k_diag["XKHH"][...] = kh
         output.update(physics.hmix_k_diag)
     if physics.radiation_active:
+        if hasattr(physics, "radiation_flux_diagnostics"):
+            output.update({name:physics.radiation_flux_diagnostics[index]
+                for index,name in enumerate(physics.radiation_callable.diagnostics)})
         output.update(SWDOWN=physics.fields["swdown"],
                       GLW=physics.fields["glw"])
         for name in ("albsol", "albbcksol"):
@@ -407,6 +434,10 @@ def physics_history_fields(physics) -> dict[str, object]:
         # zero when nothing produced them, and this follows that.
         if physics.olr is not None:
             output["OLR"] = physics.olr
+        aodtot = getattr(physics, "aodtot", None)
+        if aodtot is not None:
+            output["AODTOT"] = aodtot
+            output["GSW"] = physics.fields["gsw"]
         # CLDFRA, the cloud fraction the radiation radiated through, on
         # OLR's terms: present exactly when the attached scheme declares it
         # computes one, held from the most recent radiation call between
@@ -414,6 +445,9 @@ def physics_history_fields(physics) -> dict[str, object]:
         cldfra = getattr(physics, "cldfra", None)
         if cldfra is not None:
             output["CLDFRA"] = cldfra
+        if getattr(physics,"aod5503d",None) is not None:
+            output["AOD5503D"] = physics.aod5503d
+            output.update(physics.aerosol2d)
     output["RAINC"] = (physics._zero_accumulator() if physics.rainc is None
                        else physics.rainc)
     output["RAINSH"] = physics._zero_accumulator()
@@ -474,6 +508,12 @@ class _HistoryShape:
 
     shape: tuple[int, ...]
 
+    def __getitem__(self, index):
+        """Describe one row of a packed carrier without allocating data."""
+        if not isinstance(index, int) or not self.shape or not -self.shape[0] <= index < self.shape[0]:
+            raise IndexError(f"packed history carrier {self.shape} has no row {index!r}")
+        return _HistoryShape(self.shape[1:])
+
 
 def _run_config(cfg) -> RunConfig:
     """The resolved run settings the writer's inventory is read from.
@@ -514,6 +554,9 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
     carrier = lambda shape: _HistoryShape(tuple(shape))
     state = SimpleNamespace(**{name: carrier(shape)
                               for name, shape in state_array_shapes(cfg).items()})
+    if cfg.lightning_option:
+        from gpuwm.lightning_contract import LIGHTNING_OPTIONS
+        state._scratch = {"ltng_" + name: carrier(surface) for name in LIGHTNING_OPTIONS[cfg.lightning_option]["fields"]}
     state.p_top = 0.0
     state.physics = None
     uh = carrier(surface) if int(cfg.nwp_diagnostics) == 1 else None
@@ -540,6 +583,7 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
             topo_shortwave=object() if topography else None,
             olr=carrier(surface) if "olr" in allocated else None,
             cldfra=carrier(mass) if "cldfra" in allocated else None,
+            aodtot=carrier(surface) if "aodtot" in allocated else None,
             rainc=carrier(surface) if cfg.cu_physics else None,
             rthratenlw=carrier(mass), rthratensw=carrier(mass),
             _zero_accumulator=lambda: carrier(surface),
@@ -551,6 +595,9 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
         if int(cfg.sf_urban_physics) == 1:
             physics.urban = SimpleNamespace(option=1, fields={
                 field: carrier(surface) for field in _SLUCM_OUTPUT_FIELDS.values()})
+            if cfg.urban_ucm_generation == "wrf_480":
+                physics.urban.fields.update({field:carrier(((4,)+surface) if name in ("TVGL_URB","SMG_URB") else surface)
+                    for name,field in _SLUCM480_OUTPUT_FIELDS.items()})
         if physics.sase_active and cfg.sase_flux_diag:
             physics.sase_flux_diag = {
                 key: carrier(allocated[f"sase_flux_diag/{key}"])

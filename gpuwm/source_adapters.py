@@ -2062,7 +2062,7 @@ def fetch_model_top_pa(source, p_top_pa) -> float | None:
         return None
     ceiling = adapter.certified_source_top_pa
     if (adapter.extendable_source_top_pa is None or ceiling is None
-            or not math.isfinite(top) or top <= 0.0 or top >= float(ceiling)):
+            or not math.isfinite(top) or top <= 0.0 or top > float(ceiling)):
         return None
     return top
 

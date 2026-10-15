@@ -202,6 +202,12 @@ def test_the_file_is_lf_only() -> None:
 _TRANSITIVE_DEVICE_HELPERS = {
     "tests/test_mynn_sfclay_wrf461_column_oracle_gpu.py": (
         "tools.mynn_sfclay_wrf461_column_oracle.compare", "run"),
+    # BEP+BEM regimes against WRF 4.6.1: measure() replays every call on the
+    # card through run_port (cupy imported inside it).
+    "tests/test_urban_bem_regime_wrf461.py": ("_urban_bem_regime", "measure"),
+    # Grell 3D across the seam transport (golden/ports-cu): run_fixture launches
+    # the G3 driver on the card with test_g3_cu5_parity's module-scope cupy.
+    "tests/test_g3_halo.py": ("test_g3_cu5_parity", "run_fixture"),
     "tests/test_chem_dust_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
     "tests/test_chem_afwa_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
     "tests/test_chem_seasalt_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
@@ -211,6 +217,11 @@ _TRANSITIVE_DEVICE_HELPERS = {
         "tools.sfire_coupled_ideal.moisture_driver.grade", "replay"),
     "tests/test_sfire_open_geopotential_wrf471_parity.py": (
         "tools.sfire_coupled_ideal.rhs_ph_open.grade", "grade"),
+    # The seven-regime receipt's twenty-step check replays the corrected WRF
+    # 4.7.1 regimes on the card (cupy imported inside regime_receipt.replay);
+    # the file's other cells are CPU and also run on stage 1.
+    "tests/test_sfire_regime_receipt.py": (
+        "tools.sfire_wrf471_oracle.regime_receipt", "replay"),
     # The ideal initializer graders replay their native words on the card
     # (cupy imported inside the replay helpers).
     "tests/test_sfire_ideal_geometry_wrf471_parity.py": (
@@ -330,7 +341,15 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
                 str(REPOSITORY_ROOT / (helper.replace(".", "/") + ".py")))
             assert helper_whole or name in helper_functions, entry
         else:
-            assert _helper_opens_cuda(helper, name, REPOSITORY_ROOT / "tests"), entry
+            # A sibling test module that holds the device at module scope
+            # (test_g3_cu5_parity's ``cp = pytest.importorskip("cupy")``)
+            # reaches the card for every function it lends, by conftest's own
+            # detector; otherwise the named function's chain must.
+            from conftest import _cupy_scope
+            helper_whole, _ = _cupy_scope(
+                str(REPOSITORY_ROOT / "tests" / f"{helper}.py"))
+            assert helper_whole or _helper_opens_cuda(
+                helper, name, REPOSITORY_ROOT / "tests"), entry
         return
     whole, functions = _cupy_scope(str(REPOSITORY_ROOT / entry))
     if entry in DEVICE_ORACLE_IMPORTS:
@@ -557,6 +576,19 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
                                   REPOSITORY_ROOT / "tests"), (
             f"{entry}: {helper} no longer reaches a CuPy read of device words")
         return
+    if entry in INDIRECT_DEVICE_RUNNERS:
+        # The WRF 4.6.1 column-oracle suites of golden/parity keep their CPU
+        # provenance rows importable without CuPy and reach the card through
+        # a runner (a subprocess module or an oracle adapter imported inside
+        # the device rows).  The entry must still name its runner, and the
+        # runner must still open CUDA.
+        runner, needle = INDIRECT_DEVICE_RUNNERS[entry]
+        assert needle in (REPOSITORY_ROOT / entry).read_text(encoding="utf-8"), (
+            f"{entry} no longer names its device runner {needle}")
+        runner_whole, runner_functions = _cupy_scope(str(REPOSITORY_ROOT / runner))
+        assert runner_whole or runner_functions, (
+            f"{entry}: device runner {runner} no longer opens CUDA")
+        return
     assert whole or functions, (
         f"{entry} opens no CUDA device by conftest's own detector, so it is "
         "already covered by a CPU leg and does not belong on the GPU shard.  "
@@ -669,6 +701,21 @@ def test_compiled_wrf_dycore_device_oracles_remain_on_the_per_cut_shard() -> Non
         f"{missing} are absent from GPU shard 1; a cut would omit these "
         "compiled WRF device comparisons")
 
+
+#: Column-oracle suites whose device rows run through a runner rather than
+#: a CuPy import of their own: entry -> (the runner file, the text by which
+#: the entry names it).
+INDIRECT_DEVICE_RUNNERS = {
+    "tests/test_wsm6_wrf461_column_exact.py": (
+        "tools/wsm6_wrf461_column_oracle/run_gpu.py",
+        "tools.wsm6_wrf461_column_oracle.run_gpu"),
+    "tests/test_kessler_wrf461_parity.py": (
+        "gpuwm/verify/kessler_oracle.py", "kessler_oracle"),
+    "tests/test_myjpbl_wrf461_parity.py": (
+        "gpuwm/verify/myjpbl_oracle.py", "myjpbl_oracle"),
+    "tests/test_wdm6_wrf461_oracle.py": (
+        "tools/wdm6_wrf461_oracle/run_woof.py", "run_woof"),
+}
 
 #: The filename prefixes of the cumulus leaf-port families the weekly shard
 #: admits, one per byte-frozen WRF v4.6.1 oracle corpus.  Grell-Freitas was

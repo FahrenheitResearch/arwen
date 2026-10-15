@@ -58,6 +58,12 @@ _TOP_LEVEL_EXCLUDES = {
     # here, so staging it fails this builder's own unresolved-import
     # scan.  A preprocessing wheel has no domain to size.
     "domain_interactive.py",
+    # `gpuwm domain --recipe --region` (2.9.0, box/country-recipe): its only
+    # importer is domain_wizard.py, excluded above, and it imports the wizard
+    # back, so staging it failed this builder's unresolved-import scan and
+    # every standalone-package test with it.  A preprocessing wheel lays out
+    # no domain.
+    "region_recipe.py",
     # `gpuwm go` drives tools/prepared_single_domain_forecast.py through
     # the GPU forecast.  Its imports happen to resolve against what RW-WPS
     # stages, so the scan would not have caught it -- but the runner it
@@ -308,6 +314,11 @@ _CORE_MODULES = {
     # state and the WRF physics inventory (all staged) read it at module
     # scope; without it the wheel refused staging on ten unresolved imports.
     "fast_sbm_contract.py",
+    # aer_opt = 2's option and value validation: gpuwm.config and the
+    # namelist importer call validate_options when a namelist selects the
+    # user aerosol.  Module scope is stdlib and numpy; its device optics
+    # import the kernels only inside optics_device (recorded below).
+    "aer_opt2.py",
     # The namelist importer collapses equal adaptive-clock bounds using
     # wrf_num_sound_steps. Its module imports adaptive_timestep at module
     # scope; both use stdlib and numpy without initializing a forecast.
@@ -564,6 +575,7 @@ _CORE_MODULES = {
     # scope; it is staged as that module's dependency, not on its own
     # account -- nothing else in this wheel names it.
     "wsm6_constants.py",
+    "wsm_family_constants.py",
 }
 #: `nest_spawn_init.py` and `relocation_init.py` are forecast-time child
 #: initializers, not preprocessing: one builds a nest that is born mid-run,
@@ -762,6 +774,9 @@ _WRFRST_LIVE_OVERLAY = ("apply_warm_start_physics and apply_warm_start_clock "
                         "state; preparation only reads and checks the file")
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/core/aer_opt2.py", "gpuwm.core.kernels"):
+        "forecast-only aer_opt = 2 device optics (optics_device); standalone "
+        "configuration only validates the user-aerosol options and values",
     ("gpuwm/ingest/wrfrst.py", "gpuwm.io.restart"):
         "the checkpoint manifest carriers the overlay fills, inside apply_warm_start_physics; "
         + _WRFRST_LIVE_OVERLAY,
@@ -963,6 +978,12 @@ _OPTIONAL_STAGED_IMPORTS = {
         "decode_window, available_host_bytes, threads_available and "
         "gfs_decoded_lead_bytes, which price the window from the fetched "
         "files themselves and reach no preflight import",
+    ("gpuwm/doctor.py", "gpuwm.core.tempo_rust"):
+        "the TEMPO initialization library's doctor line (2.9.0), imported "
+        "function-locally inside _tempo_library_check, which returns no "
+        "line at all when the seam is absent.  TEMPO is forecast physics: "
+        "this wheel stages none of it and bundles no TEMPO library, so the "
+        "line belongs only to an install that can run the scheme",
     ("gpuwm/ingest/boundary_stream.py", "gpuwm.core.urban_state"):
         "the BEM workspace count reader in prepared_head_urban_columns; "
         "forecast_installed() is checked before this import, so a "
@@ -1000,6 +1021,12 @@ _OPTIONAL_STAGED_IMPORTS = {
     ("gpuwm/ingest/wrfinput.py", "gpuwm.core.physics"):
         "initialize_wrfinput_physics imports CuPy first and initializes an "
         "executing forecast; file reading and host state restoration do not call it",
+    ("gpuwm/ingest/wrfinput.py", "gpuwm.core.ruc_runtime"):
+        "RUC's cold start (ruc_cold_start, 2.9.0 aa76ba05b) inside "
+        "initialize_wrfinput_physics, on the same boundary as the "
+        "gpuwm.core.physics import above: it runs on the forecast's "
+        "constructed physics driver after the native file's fields are "
+        "restored onto it; file reading and host state restoration do not call it",
     ("gpuwm/experiment.py", "gpuwm.spectral_ops.config"):
         "the [spectral_numerics] TABLE PARSER, imported function-locally "
         "and only when a config actually carries the table.  The "
@@ -1275,8 +1302,127 @@ def _is_source_module(source_root: Path, module: str) -> bool:
             or (path / "__init__.py").is_file())
 
 
+def _complete_staged_import_closure(destination: Path, derived_modules=None) -> list[str]:
+    """Stage required package imports to a fixed point without importing code.
+
+    The existing manifest defines the preprocessing doors and their optional
+    forecast boundaries. New required modules follow their imports, including
+    imports inside functions and package aliases. An excluded executor, missing
+    source or verification dependency still refuses the build.
+    """
+    derived_modules = set() if derived_modules is None else derived_modules
+    added: list[str] = []
+    requested_imports = _staged_internal_imports(destination, source_root=REPO)
+    while missing := _staged_internal_imports(
+            destination, source_root=REPO, derived_modules=derived_modules):
+        pending: dict[str, Path] = {}
+        for record in missing:
+            module = str(record["module"])
+            parts = module.split(".")
+            for count in range(1, len(parts) + 1):
+                path = REPO.joinpath(*parts[:count])
+                source = path / "__init__.py" if path.is_dir() else path.with_suffix(".py")
+                relative = source.relative_to(REPO).as_posix()
+                if relative in _FORBIDDEN_STAGED_FILES or _names_verify(module):
+                    raise RuntimeError(
+                        "RW-WPS wheel staging has unresolved internal imports: "
+                        f"excluded executor or verification module: {record}; "
+                        f"required by {requested_imports}")
+                if not source.is_file():
+                    raise RuntimeError(
+                        "RW-WPS wheel staging has unresolved internal imports: "
+                        f"no package source: {record}; required by {requested_imports}")
+                if not (destination / relative).is_file():
+                    pending[relative] = source
+        if not pending:
+            raise RuntimeError(f"RW-WPS import closure made no progress: {missing}")
+        for relative, source in sorted(pending.items()):
+            _copy_source(source, destination / relative)
+            added.append(relative)
+            if source.name != "__init__.py":
+                derived_modules.add(".".join(Path(relative).with_suffix("").parts))
+    return added
+
+
+def _unreached_function_nodes(module, tree, sources, trees):
+    """Functions outside an added module's imported symbol closure.
+
+    A module import, star import or dynamic module lookup is conservative and
+    retains every function. Named imports retain module initialization and
+    all directly referenced local functions. Source bytes remain unchanged.
+    """
+    names = set()
+    for source, owner, is_package in sources:
+        relative = owner.replace(".", "/") + ("/__init__.py" if is_package else ".py")
+        if (relative, module) in _OPTIONAL_STAGED_IMPORTS:
+            continue
+        package = owner if is_package else owner.rpartition(".")[0]
+        for node in ast.walk(trees[source]):
+            if isinstance(node, ast.Import):
+                if any(alias.name == module for alias in node.names):
+                    return set()
+            elif isinstance(node, ast.ImportFrom):
+                resolved = node.module or ""
+                if node.level:
+                    parts = package.split(".")
+                    resolved = ".".join(parts[:len(parts) - node.level + 1]
+                                        + ([resolved] if resolved else []))
+                if resolved == module:
+                    if any(alias.name == "*" for alias in node.names):
+                        return set()
+                    names.update(alias.name for alias in node.names)
+                elif any(f"{resolved}.{alias.name}" == module for alias in node.names):
+                    return set()
+            elif isinstance(node, ast.Call) and node.args:
+                if isinstance(node.args[0], ast.Constant) and node.args[0].value == module:
+                    return set()
+    if not names:
+        return set()
+    definitions = {node.name: node for node in tree.body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    active = [node for node in tree.body if node not in definitions.values()]
+    for definition in definitions.values():
+        active.extend(definition.decorator_list)
+        if isinstance(definition, ast.ClassDef):
+            active.extend(definition.bases)
+            active.extend(definition.keywords)
+            active.extend(node for node in definition.body if not isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef)))
+            for method in definition.body:
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    active.extend(method.decorator_list)
+                    active.extend(method.args.defaults)
+                    active.extend(value for value in method.args.kw_defaults
+                                  if value is not None)
+        else:
+            active.extend(definition.args.defaults)
+            active.extend(value for value in definition.args.kw_defaults if value is not None)
+    for name in names & definitions.keys():
+        active.append(definitions.pop(name))
+    while active:
+        node = active.pop()
+        for used in ast.walk(node):
+            if isinstance(used, ast.Call) and isinstance(used.func, ast.Name) and used.func.id in {
+                    "globals", "locals", "eval", "exec"}:
+                return set()
+            if isinstance(used, ast.Name):
+                names.add(used.id)
+        for name in names & definitions.keys():
+            active.append(definitions.pop(name))
+    unreached = set()
+    for definition in definitions.values():
+        functions = ([definition] if not isinstance(definition, ast.ClassDef)
+                     else [node for node in ast.walk(definition)
+                           if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))])
+        for function in functions:
+            for statement in function.body:
+                unreached.update(ast.walk(statement))
+    return unreached
+
+
 def _staged_internal_imports(
     destination: Path, *, source_root: Path, optional: bool = False,
+    derived_modules=None,
 ) -> list[dict[str, object]]:
     """Return imports whose internal module is absent from wheel staging.
 
@@ -1303,9 +1449,13 @@ def _staged_internal_imports(
             modules.add(module)
             sources.append((source, module, is_package))
 
+    trees = {source: ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+             for source, _, _ in sources}
     violations: list[dict[str, object]] = []
     for source, current_module, is_package in sources:
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        tree = trees[source]
+        unreached = (_unreached_function_nodes(current_module, tree, sources, trees)
+                     if current_module in (derived_modules or ()) else set())
         type_checking_nodes = set()
         for conditional in ast.walk(tree):
             if not isinstance(conditional, ast.If):
@@ -1375,6 +1525,10 @@ def _staged_internal_imports(
                     relative_path = source.relative_to(destination).as_posix()
                     reason = _OPTIONAL_STAGED_IMPORTS.get(
                         (relative_path, module))
+                    if reason is None and node in unreached:
+                        reason = (
+                            "function outside the named imports from staged preprocessing "
+                            "modules; module imports and dynamic lookup retain all functions")
                     if (reason is not None) != optional:
                         continue
                     record = {
@@ -1461,6 +1615,7 @@ gpuwm = [
   "data/chem/wesely/*.json",
   "data/chem/wesely/*.md",
   "data/thompson/fork-build/*.F90",
+  "data/wsm_family/schemes.json",
 ]
 tools = ["*.sh"]
 """
@@ -1601,6 +1756,8 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
                 source,
                 package / "data" / "noah_tables" / source.name,
             )
+    _copy_source(REPO / "gpuwm/data/wsm_family/schemes.json",
+                 package / "data/wsm_family/schemes.json")
     # The chem table (gpuwm.chem_table, staged with the top-level modules):
     # its schema, rows, sets, sources and diagnostics, which a chem
     # preparation loads by name.  Not the oracle fixtures, which only the
@@ -1630,6 +1787,8 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
         newline="\n",
     )
 
+    derived_modules = set()
+    import_closure_files = _complete_staged_import_closure(destination, derived_modules)
     files = sorted(
         path.relative_to(destination).as_posix()
         for path in destination.rglob("*") if path.is_file()
@@ -1646,18 +1805,19 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
             f"modules: {verification_imports}"
         )
     internal_imports = _staged_internal_imports(
-        destination, source_root=REPO)
+        destination, source_root=REPO, derived_modules=derived_modules)
     if internal_imports:
         raise RuntimeError(
             "RW-WPS wheel staging has unresolved internal imports: "
             f"{internal_imports}"
         )
     optional_internal_imports = _staged_internal_imports(
-        destination, source_root=REPO, optional=True)
+        destination, source_root=REPO, optional=True, derived_modules=derived_modules)
     return {
         "distribution": PYTHON_DISTRIBUTION,
         "file_count": len(files),
         "files": files,
+        "import_closure_files": import_closure_files,
         "forecast_executor_files": forbidden,
         "verification_imports": verification_imports,
         "unresolved_internal_imports": internal_imports,

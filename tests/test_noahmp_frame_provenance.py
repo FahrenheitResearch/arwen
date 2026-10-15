@@ -174,6 +174,28 @@ def fake_cupy(monkeypatch):
                        nvrtc_build=SYNTHETIC_PLATFORM[1])
     monkeypatch.setattr(compile_platform, "compile_platform_fingerprint",
                         lambda: dict(fingerprint))
+    # Noah-MP compiles at the direct-NVRTC boundary (gpuwm.core.ieee_module,
+    # --ftz=false kept past CuPy's trailing override), not through
+    # cp.RawModule.  The stand-in keeps that boundary's contract -- refuse
+    # options without --ftz=false, take the strict options under
+    # GPUWM_WRF_EXACT, record the manifest row -- and hands the same Module
+    # double to the factories, so every count below still sees one compile.
+    from gpuwm.core import ieee_module
+
+    def compile_module(source, options, module_key, log_stream=None):
+        from gpuwm import wrf_exact
+        options = tuple(options)
+        if "--ftz=false" not in options:
+            raise ValueError("land kernels require --ftz=false")
+        if wrf_exact.ENABLED:
+            options = wrf_exact.effective_options(options)
+        module = Module(code=source, options=options)
+        module.compile(log_stream=log_stream)
+        manifest.record_module(module_key, source=source, options=options,
+                               module=module)
+        return module
+
+    monkeypatch.setattr(ieee_module, "compile_module", compile_module)
     manifest.reset_kernel_manifest()
     yield cp, events
     manifest.reset_kernel_manifest()
@@ -248,7 +270,9 @@ def test_reachable_runtime_factories_and_symbols_are_covered():
 
 def test_export_inventory_includes_inherited_globals():
     units = [ks.runtime_unit(name) for name in EXPECTED_PARTS]
-    assert sum(len(unit.exports) for unit in units) == 108
+    # 109 since the WRF 4.7 night snow-aging entry
+    # (noahmp_radiation_batch_night_age) joined noahmp_radiation's exports.
+    assert sum(len(unit.exports) for unit in units) == 109
     leaves = set(ks.runtime_unit("noahmp_leaves").exports)
     for name in ks.COMPOSED_UNITS:
         assert leaves <= set(ks.runtime_unit(name).exports)
@@ -296,7 +320,7 @@ def test_actual_runtime_factory_compiles_authoritative_source(name, fake_cupy, m
     assert record["source_sha256"] == unit.identity()["source_sha256"]
     assert record["options"] == list(unit.options)
     if name == "noahmp_vegeflux":
-        assert unit.options == ("-std=c++14",)
+        assert unit.options == ("-std=c++14", "--ftz=false")
         assert unit.source == (ks.KERNEL_DIR / (name + ".cu")).read_text(encoding="ascii")
     if name == "noahmp_fluxprep":
         assert tuple(p for p, _ in unit.parts) == (name,)
@@ -745,8 +769,8 @@ def test_measure_live_reads_every_export_and_never_launches(fake_cupy):
     assert reading["frames"] == synthetic_frames()
     assert reading["unit_identity"] == prov.unit_identities()
     assert len(reading["functions"]) == 15
-    assert sum(len(rows) for rows in reading["functions"].values()) == 108
-    assert len([e for e in events if e[0] == "attributes"]) == 108
+    assert sum(len(rows) for rows in reading["functions"].values()) == 109
+    assert len([e for e in events if e[0] == "attributes"]) == 109
     assert [e[0] for e in events].count("RawModule") == 15
     for name in EXPECTED_PARTS:
         unit = ks.runtime_unit(name)

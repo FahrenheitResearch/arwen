@@ -16,9 +16,9 @@
 //! ONE STATIC WRITER. `static_builder` is it, with `static_geog` reading the
 //! archive, `static_gwd` cutting the sub-grid orography, `static_operators`
 //! building the coefficient tables and `static_memory` deciding what fits.
-//! Both `rw_mpas_static` and `rw_mpas_static_bounded` run it and produce the
-//! identical file; they differ only in how the geography directories are
-//! named.
+//! Both `rw_mpas_static` and its `bounded` tool (formerly the
+//! `rw_mpas_static_bounded` binary) run it and produce the identical file;
+//! they differ only in how the geography directories are named.
 //!
 //! There were two, and the difference was invisible from outside. One wrote
 //! the 69 variables the mesh registry pins and owned the `rw_mpas_static`
@@ -51,11 +51,16 @@ pub mod hosttables;
 pub mod init;
 pub mod lbc;
 pub mod mesh;
+pub mod mslp;
+pub mod points;
+pub mod remap;
 pub mod staticfile;
 pub mod static_builder;
 pub mod static_geog;
 pub mod static_gwd;
 pub mod static_memory;
+pub mod static_native;
+pub mod static_namelist;
 pub mod static_operators;
 pub mod weights;
 pub mod window;
@@ -77,3 +82,5 @@ pub fn sha256_file(path: &Path) -> MpasResult<String> {
     }
     Ok(weights::hex(&hasher.finalize()))
 }
+
+pub mod native_gwd;

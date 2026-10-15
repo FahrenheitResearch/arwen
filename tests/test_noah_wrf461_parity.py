@@ -61,9 +61,9 @@ called with ``frzfact``.  nvcc is a third witness -- it emitted ``variable
 Held-out columns
 ----------------
 
-Three fixture columns are excluded from the ULP table and asserted
-individually.  None of them measures arithmetic; folding a branch or a
-not-ported routine into a ULP maximum hides it behind a big number.
+Two fixture columns are excluded from the ULP table and asserted
+individually.  Neither measures arithmetic; folding a branch into a ULP
+maximum hides it behind a big number.
 
 * **case 18** -- ``SNOW`` is the smallest positive float32 subnormal.  WRF's
   ``IF(SNOW(I,J).GT.0.0)`` is TRUE, so the column takes the ice-saturation
@@ -81,12 +81,24 @@ not-ported routine into a ULP maximum hides it behind a big number.
   0.464 soil moisture where WRF has NaN, and writes QFX = 0 where WRF writes
   147.7.  Neither answer is usable; the row is here so that "an unrunnable
   input is unrunnable in both" is a recorded fact rather than an assumption.
-* **case 28** -- ``ivgtyp == isice``.  WRF calls ``SFLX_GLACIAL``
-  (``module_sf_noahlsm_glacial_only.F``); gpuwm/core/noah.py's docstring
-  records that routine as not ported, and ``noah_column`` returns without
-  touching the column.  Measured size of that restriction on one 60 s step:
-  TSK 255.0 against 273.15 K, HFX 0 against 388.9 W/m2, LH 0 against
-  -319.1 W/m2, SH2O 0.28 against 1.0.
+Land ice (SFLX_GLACIAL), closed 2026-10-12
+------------------------------------------
+
+Case 28 is ``ivgtyp == isice``, where WRF's driver calls ``SFLX_GLACIAL``
+(``module_sf_noahlsm_glacial_only.F``).  Until golden/ports-pbl the kernel
+returned from it untouched -- after one 60 s step TSK 255.0 against WRF's
+273.15 K, HFX 0 against 388.9 W/m2, LH 0 against -319.1 W/m2, SH2O 0.28
+against 1.0, measured by this file and pinned as a restriction.  The routine
+is ported now and case 28 sits inside the ordinary table: every field 0 ULP
+except ZNT 1 (BURIAL = 7*Z0BRD - SNOWH, contracted to an FMA) and the
+float64 NOAHRES.  The one land-ice column grades a gap; it does not grade a
+port, so ``tools/noah_wrf461_oracle/run_lsm_glacial.F90`` adds 24 more, every
+one land ice, reaching SFLX_GLACIAL's branches (snowfall at both density
+laws and both 0.2 overrides, freezing rain, rain on a warm skin, melt, the
+dew adjustment's three arms, sublimation, snow aging both sides of ALB,
+SNOWZ0 both sides of its burial test, both SNOWPACK clamps, steep ice
+temperature profiles), run with and without ``frpcpn``.  Those are pinned in
+:data:`GLACIAL_BASELINE_MAX_ULP`.
 """
 
 from __future__ import annotations
@@ -108,6 +120,7 @@ from gpuwm.verify.noah_oracle import (
     FIXTURE_ISURBAN,
     FIXTURE_XICE_THRESHOLD,
     INPUT_COLUMNS,
+    NOAH_GLACIAL_ORACLE_FILES,
     NOAH_ORACLE_DIR,
     NOAH_ORACLE_FILES,
     OUTPUT_COLUMNS,
@@ -117,10 +130,11 @@ from gpuwm.verify.noah_oracle import (
 )
 from gpuwm.verify.npref import np_noah_column
 
-#: Columns whose disagreement with WRF is a branch or a missing routine, not a
-#: rounding.  Asserted one at a time below instead of being folded into a ULP
-#: maximum.  See the module docstring for what each one is.
-HELD_OUT_CASES = (18, 25, 28)
+#: Columns whose disagreement with WRF is a branch, not a rounding.  Asserted
+#: one at a time below instead of being folded into a ULP maximum.  See the
+#: module docstring for what each one is.  Case 28 (land ice) left this tuple
+#: when SFLX_GLACIAL was ported (golden/ports-pbl, 2026-10-12).
+HELD_OUT_CASES = (18, 25)
 
 #: SRT's own frozen-ground predicate, ``IF (DICE > 1.E-2)``
 #: (``module_sf_noahlsm.F:3794``): below this the infiltration limiter is
@@ -135,8 +149,9 @@ FROZEN_DICE_M = 1.0e-2
 FROZEN_RUNOFF_REL = 1.0e-4
 
 #: Worst ULP distance from ``kernels/noah.cu``'s ``noah_column`` to the word
-#: ``lsm`` wrote, over the 39 columns that take the same branches as WRF and
-#: over all four switch fixtures.
+#: ``lsm`` wrote, over the 40 columns that take the same branches as WRF and
+#: over all four switch fixtures (39 until case 28, land ice, joined with the
+#: SFLX_GLACIAL port: it moved ZNT 0 -> 1 and nothing else -- (4) below).
 #:
 #: The frozen-ground family was reached with REDPRM's FRZFACT instead of its
 #: FRZX until this branch -- see
@@ -241,6 +256,15 @@ FROZEN_RUNOFF_REL = 1.0e-4
 #:       snopcx 1125 -> 1141 (worse)
 #:
 #:     Every other row, the six FRZX rows in (1) included, read as before.
+#:
+#: (4) golden/ports-pbl, 2026-10-12: SFLX_GLACIAL ported, case 28 joins the
+#:     table.  Its every field is WRF's word except ZNT (1 ULP: SNOWZ0's
+#:     BURIAL = 7*Z0BRD - SNOWH contracted to an FMA) and NOAHRES (the float64
+#:     residual, 16286 ULP, inside the 164754 the land columns already set).
+#:     ZNT 0 -> 1 is the only row that moved.  The 41 non-glacial columns are
+#:     byte-identical to the kernel before the port on all four fixtures
+#:     (measured on the G1 RTX PRO 6000, sm_120, NVRTC 12.9.86, base cd336e62d
+#:     against the port), so no ordinary land column changed a word.
 BASELINE_MAX_ULP = {
     "noahres": 164754,
     "sfcrunoff": 2812,
@@ -259,7 +283,7 @@ BASELINE_MAX_ULP = {
     "albedo": 3,
     "smstav": 2,
     "tsk": 1,
-    "znt": 0,
+    "znt": 1,
     "lai": 1,
     "udrunoff": 1,
     "smstot": 1,
@@ -309,21 +333,65 @@ BASELINE_MAX_ULP_BY_ARCH_AND_BUILD = {
 #: Rows an (architecture, build) row may move from its architecture's row.
 ARCH_AND_BUILD_SENSITIVE_FIELDS = ("snow", "snowh")
 
-#: The absolute size of the SFLX_GLACIAL restriction on case 28, in each
-#: field's own units.  Not ULP: this is a routine gpuwm does not have, so a
-#: rounding metric would be a category error.  Pinned so the registry warning
-#: can quote a number and so the restriction cannot silently grow.
-GLACIAL_ABSOLUTE_GAP = {
-    "tsk": 18.14999389648438,
-    "hfx": 388.85174560546875,
-    "lh": 319.0890197753906,
-    "grdflx": 42.21175003051758,
-    "snopcx": 316.5550231933594,
+#: Worst ULP distance from the SFLX_GLACIAL port to the word ``lsm`` wrote,
+#: over the 24 land-ice columns of both glacial fixtures
+#: (``noah-lsm-glacial.csv`` and ``noah-lsm-glacial-frpcpn.csv``).
+#: MEASURED 2026-10-12 on the G1 RTX PRO 6000 (sm_120) under NVRTC 12.9.86
+#: and 13.2, identical.
+#: TSK, HFX, the whole TSLB profile,
+#: SNOW, ALBEDO, EMISS, SNOTIME and SNOWC are WRF's word on every column; the
+#: residue is FMA contraction and CUDA's expf/powf (CSNOW, SNOW_NEW, ALCALC's
+#: aging, SNOWPACK) carried into the latent-heat and melt bookkeeping, and the
+#: float64 NOAHRES this unit computes for every column (OPEN 3 in the
+#: registry).
+GLACIAL_BASELINE_MAX_ULP = {
+    "noahres": 165327,
+    "snopcx": 5,
+    "sfcrunoff": 4,
+    "acsnom": 4,
+    "potevp": 4,
+    "qfx": 3,
+    "lh": 2,
+    "qsfc": 2,
+    "snowh": 2,
+    "grdflx": 1,
+    "znt": 1,
+    "tsk": 0,
+    "hfx": 0,
+    "canwat": 0,
+    "snow": 0,
+    "snowc": 0,
+    "albedo": 0,
+    "albbck": 0,
+    "emiss": 0,
+    "z0": 0,
+    "snotime": 0,
+    "lai": 0,
+    "smstav": 0,
+    "smstot": 0,
+    "udrunoff": 0,
+    "acsnow": 0,
+    "chklowq": 0,
+    "smois": 0,
+    "tslb": 0,
+    "sh2o": 0,
+    "smcrel": 0,
 }
+
+#: How far the float64 mirror (``npref._noah_glacial``) may sit from WRF's
+#: float32 words on the land-ice columns, relative, with a 1e-3 floor on the
+#: denominator so a near-zero flux does not turn a 1e-8 W/m2 gap into a
+#: relative blow-up.  Measured worst 4.6e-05 (HFX on a near-cancelling
+#: -10.9 W/m2 column).
+GLACIAL_MIRROR_REL = 1.0e-4
 
 
 def _fixtures():
     return [load_noah_oracle(name) for name in NOAH_ORACLE_FILES]
+
+
+def _glacial_fixtures():
+    return [load_noah_oracle(name) for name in NOAH_GLACIAL_ORACLE_FILES]
 
 
 def _arithmetic_mask(fixture) -> np.ndarray:
@@ -399,7 +467,7 @@ def test_fixture_is_the_pinned_wrf_driver_and_its_own_receipts():
     for line in receipts:
         digest, path = line.split(maxsplit=1)
         recorded[path.strip().rsplit("/", 1)[-1]] = digest
-    for name in NOAH_ORACLE_FILES:
+    for name in (*NOAH_ORACLE_FILES, *NOAH_GLACIAL_ORACLE_FILES):
         blob = (NOAH_ORACLE_DIR / name).read_bytes()
         assert hashlib.sha256(blob).hexdigest() == recorded[name], name
     # The WRF sources the fixture came from are named in the same receipt, so a
@@ -410,6 +478,7 @@ def test_fixture_is_the_pinned_wrf_driver_and_its_own_receipts():
     for expected in ("module_sf_noahdrv.F", "module_sf_noahlsm.F",
                      "module_sf_noahlsm_glacial_only.F",
                      "module_model_constants.F", "module_wrf_error.F",
+                     "run_lsm.F90", "run_lsm_glacial.F90",
                      "VEGPARM.TBL", "SOILPARM.TBL", "GENPARM.TBL"):
         assert expected in joined, expected
 
@@ -657,19 +726,143 @@ def test_case_25_is_unusable_in_wrf_too():
         np.ascontiguousarray(port["smois"], np.float32)[0].reshape(-1)[i25])
 
 
+def test_the_land_ice_and_urban_categories_follow_the_dataset():
+    """ISURBAN and ISICE are the land-use dataset's, not MODIS's for everyone.
+
+    WRF hands its Noah driver the input file's ISURBAN/ISICE
+    (share/input_wrf.F:849-862).  The driver here used to pass 13 and 15 for
+    every dataset, so under USGS -- where 13 is evergreen broadleaf forest,
+    15 is mixed forest, 1 is urban and 24 is snow or ice -- the mixed forest
+    was skipped as land ice and the real ice ran ordinary SFLX.  Measured on
+    the float64 mirror with the USGS tables: category 15 runs SFLX (skip 0)
+    and category 24 runs SFLX_GLACIAL (skip 3); with the MODIS tables the
+    same two categories do the opposite.
+    """
+    from gpuwm.core.noah import NOAH_LANDUSE_CATEGORY_IDS, noah_category_ids
+
+    assert noah_category_ids(pack_params(load_tables())) == (13, 15)
+    usgs = pack_params(load_tables(mminlu="USGS"))
+    assert noah_category_ids(usgs) == (1, 24)
+    fixture = load_noah_oracle()
+    base = _mirror_column(fixture, fixture.cases.index(1))
+    expect = {"USGS": {15: 0, 24: 3}, "MODIFIED_IGBP_MODIS_NOAH": {15: 3}}
+    for dataset, cases in expect.items():
+        params = pack_params(load_tables(mminlu=dataset))
+        for category, skip in cases.items():
+            out = np_noah_column(dict(base, ivgtyp=category), params,
+                                 FIXTURE_DT, FIXTURE_DZS)
+            assert out["skip"] == skip, (dataset, category, out["skip"])
+            assert out["tsk"] != base["tsk"], (
+                dataset, category, "the column was left untouched")
+    # every dataset VEGPARM.TBL carries has an identity, and an unknown one
+    # is refused by name rather than run with somebody else's categories
+    for dataset in ("USGS", "MODIFIED_IGBP_MODIS_NOAH", "NLCD40", "USGS-RUC",
+                    "MODI-RUC"):
+        assert dataset in NOAH_LANDUSE_CATEGORY_IDS
+    # (the two -RUC blocks carry RUC's column layout and are not Noah's to
+    # load; the three below are)
+    for dataset in ("USGS", "MODIFIED_IGBP_MODIS_NOAH", "NLCD40"):
+        noah_category_ids(pack_params(load_tables(mminlu=dataset)))
+    import dataclasses
+    stranger = dataclasses.replace(usgs, lutype="NOT-A-DATASET")
+    with pytest.raises(ValueError, match="ISURBAN/ISICE"):
+        noah_category_ids(stranger)
+
+
+def test_the_glacial_fixtures_reach_the_branches_they_claim():
+    """Every column is land ice, the two passes differ, and WRF's own words
+    show the branches were taken: melt (SFCRUNOFF > 0), snowfall (SNOW up),
+    deposition (LH < 0), sublimation (LH > 0), the entry reset (SNOW set to
+    100 mm from less), snow aging (ALBEDO below the fresh-snow value), the
+    SNOWZ0 burial arm (ZNT above Z0S) and a skin pinned at TFREEZ."""
+    plain, frpcpn = _glacial_fixtures()
+    assert (NOAH_ORACLE_DIR / "noah-lsm-glacial.csv").read_bytes() != (
+        NOAH_ORACLE_DIR / "noah-lsm-glacial-frpcpn.csv").read_bytes()
+    for fixture in (plain, frpcpn):
+        assert fixture.ncase == 24 and fixture.glacial.all()
+        ref = {k: v.reshape(-1) for k, v in fixture.reference.items()}
+        snow_in = fixture.inputs["snow"].reshape(-1)
+        assert (ref["sfcrunoff"] > 0).sum() >= 3
+        assert (ref["snow"] > np.maximum(snow_in, 100.0)).sum() >= 3
+        assert (ref["lh"] < 0).sum() >= 3 and (ref["lh"] > 0).sum() >= 10
+        assert ((snow_in < 100.0) & (ref["snow"] == np.float32(100.0))).sum() >= 2
+        assert (ref["albedo"] < ref["albedo"].max()).sum() >= 2
+        assert (ref["znt"] > np.float32(0.001)).any()
+        assert (ref["tsk"] == np.float32(273.15)).sum() >= 3
+    # SR = 0.3 at case 6 and SR = 0.8 at case 23 send the frpcpn pass down
+    # the other precipitation arm
+    for case in (6, 23):
+        i = plain.cases.index(case)
+        assert plain.reference["snow"].reshape(-1)[i] != \
+            frpcpn.reference["snow"].reshape(-1)[i], case
+
+
+def test_the_mirror_reproduces_wrfs_land_ice_columns():
+    """The float64 mirror's SFLX_GLACIAL against WRF's float32 words, on every
+    land-ice column of every fixture -- the CPU half of the port's grade."""
+    params = pack_params(load_tables())
+    checked = 0
+    for fixture in (*_fixtures(), *_glacial_fixtures()):
+        for i in np.flatnonzero(fixture.glacial.reshape(-1)):
+            out = np_noah_column(_mirror_column(fixture, i), params,
+                                 FIXTURE_DT, FIXTURE_DZS,
+                                 isurban=FIXTURE_ISURBAN,
+                                 isice=FIXTURE_ISICE,
+                                 xice_threshold=FIXTURE_XICE_THRESHOLD,
+                                 **fixture.switches)
+            assert out["skip"] == 3, "the mirror skipped a land-ice column"
+            for field in OUTPUT_COLUMNS:
+                if field == "noahres":
+                    continue
+                want = float(fixture.reference[field].reshape(-1)[i])
+                got = float(out[field])
+                assert abs(got - want) <= GLACIAL_MIRROR_REL * max(
+                    abs(want), 1.0e-3), (fixture.name, fixture.cases[i],
+                                         field, got, want)
+            for field in SOIL_OUTPUT_COLUMNS:
+                want = fixture.soil_reference[field].reshape(4, -1)[:, i]
+                np.testing.assert_allclose(
+                    np.asarray(out[field], np.float64), want,
+                    rtol=GLACIAL_MIRROR_REL, atol=0.0,
+                    err_msg=f"{fixture.name} case {fixture.cases[i]} {field}")
+            checked += 1
+    assert checked == 4 + 2 * 24
+
+
 @pytest.mark.gpu
 @requires_gpu
-def test_the_glacial_restriction_is_this_big():
-    """SFLX_GLACIAL is not ported.  This is what that costs, in W/m2 and K."""
+def test_noah_cuda_land_ice_columns_hold_their_measured_distance_from_wrf():
+    """SFLX_GLACIAL on the card, over both glacial fixtures, asserted for
+    equality as the land table is."""
     import cupy  # noqa: F401
 
-    from gpuwm.verify.noah_oracle import glacial_divergence
+    measured: dict[str, int] = {}
+    for fixture in _glacial_fixtures():
+        port = noah_port_outputs(fixture)
+        one = _measure(fixture, port, np.ones(fixture.ncase, dtype=bool))
+        for name, value in one.items():
+            measured[name] = max(measured.get(name, 0), value)
+    assert measured == GLACIAL_BASELINE_MAX_ULP, (
+        "the land-ice port's distance from WRF changed.\n"
+        f"  measured {measured}\n  recorded {GLACIAL_BASELINE_MAX_ULP}")
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_a_land_ice_column_is_no_longer_left_untouched():
+    """The defect the port closed, asserted in WRF's own units: on case 28
+    the kernel used to leave TSK at 255.0 K and HFX at 0 where WRF writes
+    273.15 K and 388.9 W/m2.  Both are now WRF's word."""
+    import cupy  # noqa: F401
 
     fixture = load_noah_oracle()
     port = noah_port_outputs(fixture)
-    gaps = glacial_divergence(fixture, port)
-    assert gaps, ("the fixture no longer carries a land-ice column, so the"
-                  " documented restriction is no longer measured")
-    for field, expected in GLACIAL_ABSOLUTE_GAP.items():
-        assert gaps[field] == pytest.approx(expected, rel=1e-6), (
-            f"{field}: SFLX_GLACIAL gap moved to {gaps[field]}")
+    i = fixture.cases.index(28)
+    assert fixture.glacial.reshape(-1)[i]
+    assert float(fixture.inputs["tsk"].reshape(-1)[i]) == 255.0
+    for field in ("tsk", "hfx", "lh", "grdflx", "snopcx"):
+        got = np.ascontiguousarray(port[field], np.float32).reshape(-1)[i]
+        want = fixture.reference[field].reshape(-1)[i]
+        assert got.tobytes() == want.tobytes(), (field, got, want)
+    for field in ("smois", "sh2o", "smcrel"):
+        assert np.all(np.asarray(port[field])[:, 0, i] == 1.0), field

@@ -68,6 +68,49 @@ def args(path, out, **kw):
     return Namespace(**options)
 
 
+def test_explicit_spacing_prices_complete_recipe_and_emits_matching_wps(tmp_path, monkeypatch):
+    path, raw = starter(tmp_path)
+    original = path.read_bytes()
+    real = dw._sizing_phases
+    seen = []
+    def observe(exp, **kw):
+        seen.append(exp)
+        assert exp.domains[0].run.dx == 6000
+        assert exp.vertical.p_top == 4200
+        assert exp.domains[0].run.epssm == 0.65
+        return real(exp, **kw)
+    monkeypatch.setattr(dw, "_sizing_phases", observe)
+    out = tmp_path / "spacing" / "fitted.toml"
+    assert st.fit_main(args(path, out, root_dx=6, point_extent_km=120, write=True)) == 0
+    resolved = tomllib.loads(out.read_text())
+    assert resolved["shared"] == raw["shared"]
+    assert resolved["domain"][0]["time_step"] == raw["domain"][0]["time_step"]
+    assert resolved["domain"][0]["dx"] == resolved["domain"][0]["dy"] == 6000
+    from gpuwm.namelist_import import parse_namelist_text
+    assert parse_namelist_text(out.with_suffix(".namelist.wps").read_text())["geogrid"]["dx"] == [6000]
+    assert seen and path.read_bytes() == original
+
+
+def test_explicit_spacing_preserves_nested_spacing_and_time_ratios(tmp_path):
+    path, raw = starter(tmp_path, nested=True)
+    selected = st.Starter(path, tmp_path / "new.toml")
+    old = selected.exp
+    selected.set_root_spacing(6)
+    tables = selected.tables([(50, 50), (40, 40)])
+    for domain, table, before in zip(old.domains, tables["domain"], raw["domain"]):
+        assert table["dx"] == domain.run.dx * (6000 / old.domains[0].run.dx)
+        assert table["parent_grid_ratio"] == before["parent_grid_ratio"]
+        assert table["parent_time_step_ratio"] == before["parent_time_step_ratio"]
+    assert tables["shared"] == raw["shared"]
+
+
+@pytest.mark.parametrize("spacing", [0, -1, float("nan"), float("inf")])
+def test_spacing_refuses_geometry_corruption(tmp_path, spacing):
+    path, _ = starter(tmp_path)
+    with pytest.raises(ValueError, match="corrupt fitted geometry"):
+        st.fit_main(args(path, tmp_path / "bad.toml", root_dx=spacing))
+
+
 def test_every_priced_candidate_has_full_custom_authority(tmp_path, monkeypatch):
     path, raw = starter(tmp_path, nested=True)
     original = path.read_bytes()

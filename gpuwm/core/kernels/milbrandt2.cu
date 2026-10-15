@@ -27,22 +27,39 @@
 //   milbrandt2_sediment_*  Part 4  (:3134-3334)   column
 //   milbrandt2_diagnostics        (:3336-3473)    cell
 //
-// TRANSCENDENTALS ARE IEEE, NOT FAST-MATH.  powf/expf/logf/log10f
-// throughout, never the __powf/__expf/__logf/__log10f device intrinsics.
-// This file briefly shipped 90 intrinsic sites and was the only
-// microphysics kernel in the tree using any (thompson.cu, nssl2.cu,
-// morrison.cu, wsm6.cu, kessler.cu and shinhong.cu are all IEEE).
-// The lane's adversarial review measured the gap on an RTX 5090 over this
-// scheme's own argument ranges and reported up to 85 ULP -- 5.1e-6
-// relative on iLAMr**cexr6 at :3056, 36 ULP on the snow-aggregation
-// exponent -- which would put a reduced-precision floor under the WRF
-// oracle campaign before it starts.  That figure is cited from the
-// review, not re-measured here; what this lane measured directly is the
-// end-to-end move the swap caused, recorded in the commit that made it.
-// The shared loader compiles with
-// options=("-std=c++17",) and no --use_fast_math
-// (gpuwm/core/kernels/__init__.py), so this is a source-level choice and
-// nothing else can reintroduce it.
+// TRANSCENDENTALS ARE IEEE, NOT FAST-MATH -- AND THEY ARE WOOF'S OWN.
+// Every EXP, LOG, LOG10 and REAL**REAL of module_mp_milbrandt2mom.F is
+// gfk_exp / gfk_log / gfk_log10 / gfk_pow (glibc_flt32.cuh and
+// log10_flt32.cuh, prepended by the loader), never CUDA's expf/logf/
+// log10f/powf and never the __powf/__expf/__logf/__log10f intrinsics.
+// This file briefly shipped 90 intrinsic sites; later it used CUDA's IEEE
+// functions, which are different functions from the ones the WRF oracle's
+// gfortran calls, and the column oracle measured what that cost: with
+// CUDA's libm Part 1 already missed WRF in the diagnosed rain, ice, snow,
+// graupel and hail numbers by 1-2 ULP and the misses grew through the
+// later parts.
+//
+// HOW GFORTRAN EVALUATES A POWER, which this file follows site by site
+// (established on WRF's own -O2 object, whose libm call sites were mapped
+// to source lines through a -g build that disassembles identically):
+//   * REAL**2.0, including a constant exponent such as (2.+alpha_h), is
+//     one multiply; REAL**1.0 is the operand.  Every other REAL exponent,
+//     3.0 and 4.0 included, is a powf call.
+//   * REAL**integer is expanded by the power tree: x**3 = x*(x*x),
+//     x**4 = (x*x)*(x*x), x**5 = x**3 * x**2 -- never left to right.
+//   * A power binds before the product it sits in: a*b*T**2 is
+//     (a*b)*(T*T).
+//   * Constant factors are folded once as REAL constants: 3.*Dso**2 is the
+//     constant 3*(Dso*Dso), then multiplied in.
+//   * NINT is round-half-away on the REAL argument.
+//
+// VERIFICATION.  tools/milbrandt2_wrf461_oracle runs WRF v4.6.1's own
+// mp_milbrandt2mom_driver (the object WRF's GNU build links, byte for byte)
+// and this file through the shipped launcher on the same float32 columns;
+// tests/test_milbrandt2_wrf461_exact_gpu.py holds every output word equal.
+// The unit compiles without FMA contraction (gpuwm/core/kernels/
+// __init__.py _NO_FMAD_MODULES), so the default build and the strict
+// GPUWM_WRF_EXACT=1 build give the same words.
 //
 // FIXED SWITCHES.  The WRF wrapper hard-codes CCNtype=2 (continental,
 // :3615), precipDiag_ON/sedi_ON/warmphase_ON/autoconv_ON/icephase_ON/
@@ -387,32 +404,32 @@ __device__ __forceinline__ float my2_qsat(float temp, float pres, int wtype)
 __device__ __forceinline__ float my2_des_OF_Ds(float Ds, float desMax,
                                                float eds_, float fds_)
 {
-    float v = eds_ * expf(fds_ * logf(Ds));
+    float v = eds_ * gfk_exp(fds_ * gfk_log(Ds));
     return fminf(desMax, v);
 }
 
 __device__ __forceinline__ float my2_Dm_x(float DE, float QX, float iNX,
                                           float icmx, float idmx)
 {
-    return expf(idmx * logf(DE * QX * iNX * icmx));
+    return gfk_exp(idmx * gfk_log(DE * QX * iNX * icmx));
 }
 
 __device__ __forceinline__ float my2_iLAMDA_x(float DE, float QX, float iNX,
                                               float icex, float idmx)
 {
-    return expf(idmx * logf(DE * QX * iNX * icex));
+    return gfk_exp(idmx * gfk_log(DE * QX * iNX * icex));
 }
 
 // N_Cooper (:3513-3518), Nos_Thompson (:3520-3525)
 __device__ __forceinline__ float my2_N_Cooper(float T)
 {
-    return 5.0f * expf(0.304f * (MY2_TRPL - fmaxf(233.0f, T)));
+    return 5.0f * gfk_exp(0.304f * (MY2_TRPL - fmaxf(233.0f, T)));
 }
 
 __device__ __forceinline__ float my2_Nos_Thompson(float T)
 {
     return fminf(2.0e+8f,
-                 2.0e+6f * expf(-0.12f * fminf(-0.001f, T - MY2_TRPL)));
+                 2.0e+6f * gfk_exp(-0.12f * fminf(-0.001f, T - MY2_TRPL)));
 }
 
 // NccnFNC (:31-86), CCNtype == 2 (continental) only.  The WRF wrapper
@@ -421,7 +438,7 @@ __device__ __forceinline__ float my2_Nos_Thompson(float T)
 // continental identity and config.py refuses the others by name.
 __device__ __forceinline__ float my2_NccnFNC(float Win, float Tin, float Pin)
 {
-    float x = log10f(Win * 100.0f);
+    float x = gfk_log10(Win * 100.0f);
     float x2 = x * x, x3 = x2 * x, x4 = x2 * x2;
     float T = Tin - 273.15f;
     float T2 = T * T, T3 = T2 * T, T4 = T2 * T2;
@@ -441,7 +458,7 @@ __device__ __forceinline__ float my2_NccnFNC(float Win, float Tin, float Pin)
     float h = 5.811e-9f * T4 + 1.5589e-7f * T3 - 3.8623e-5f * T2
               + 1.4471e-3f * T + 0.1496f;
     float y = a * x4 + b * x3 + c * x2 + d * x + e + (f * g * h);
-    return powf(10.0f, fmaxf(0.0f, y)) * 1.0e6f;
+    return gfk_pow(10.0f, fmaxf(0.0f, y)) * 1.0e6f;
 }
 
 // SxFNC (:89-157) with WRT=1 (peak supersaturation w.r.t. water), CCNtype 2.
@@ -449,7 +466,7 @@ __device__ __forceinline__ float my2_NccnFNC(float Win, float Tin, float Pin)
 // is stated for -35 < T < -5 C, so that is the intended argument.
 __device__ __forceinline__ float my2_SxFNC_w(float Win, float Tin, float Pin)
 {
-    float x = log10f(fmaxf(Win, 1.0e-20f) * 100.0f);
+    float x = gfk_log10(fmaxf(Win, 1.0e-20f) * 100.0f);
     float x2 = x * x, x3 = x2 * x, x4 = x2 * x2;
     float T = Tin;
     float T2 = T * T;
@@ -547,8 +564,8 @@ void milbrandt2_prelim(
     }
     // rain (:1470-1479)
     if (qr > MY2_epsQ && nr < MY2_epsN) {
-        nr = powf(MY2_No_r_SM * GR31, 3.0f / (4.0f + MY2_alpha_r))
-             * powf(GR31 * iGR34 * de * qr * icmr,
+        nr = gfk_pow(MY2_No_r_SM * GR31, 3.0f / (4.0f + MY2_alpha_r))
+             * gfk_pow(GR31 * iGR34 * de * qr * icmr,
                       (1.0f + MY2_alpha_r) / (4.0f + MY2_alpha_r));
     } else if (qr <= MY2_epsQ || (qr < MY2_epsQ2 && tmp1 < 0.90f)) {
         tmp3 = fmaxf(0.0f, qr);
@@ -570,8 +587,8 @@ void milbrandt2_prelim(
     // snow (:1494-1504)
     if (qn > MY2_epsQ && nn < MY2_epsN) {
         float No_s = my2_Nos_Thompson(t);
-        nn = powf(No_s * GS31, dms * icexs2)
-             * powf(GS31 * iGS40 * icms * de * qn,
+        nn = gfk_pow(No_s * GS31, dms * icexs2)
+             * gfk_pow(GS31 * iGS40 * icms * de * qn,
                       (1.0f + MY2_alpha_s) * icexs2);
     } else if (qn <= MY2_epsQ || (qn < MY2_epsQ2 && tmp2 < 0.80f)) {
         tmp3 = fmaxf(0.0f, qn);
@@ -582,8 +599,8 @@ void milbrandt2_prelim(
     }
     // graupel (:1507-1516)
     if (qg > MY2_epsQ && ng < MY2_epsN) {
-        ng = powf(MY2_No_g_SM * GG31, 3.0f / (4.0f + MY2_alpha_g))
-             * powf(GG31 * iGG34 * de * qg * icmg,
+        ng = gfk_pow(MY2_No_g_SM * GG31, 3.0f / (4.0f + MY2_alpha_g))
+             * gfk_pow(GG31 * iGG34 * de * qg * icmg,
                       (1.0f + MY2_alpha_g) / (4.0f + MY2_alpha_g));
     } else if (qg <= MY2_epsQ || (qg < MY2_epsQ2 && tmp2 < 0.80f)) {
         tmp3 = fmaxf(0.0f, qg);
@@ -594,8 +611,8 @@ void milbrandt2_prelim(
     }
     // hail (:1519-1528)
     if (qh > MY2_epsQ && nh < MY2_epsN) {
-        nh = powf(MY2_No_h_SM * GH31, 3.0f / (4.0f + MY2_alpha_h))
-             * powf(GH31 * iGH34 * de * qh * icmh,
+        nh = gfk_pow(MY2_No_h_SM * GH31, 3.0f / (4.0f + MY2_alpha_h))
+             * gfk_pow(GH31 * iGH34 * de * qh * icmh,
                       (1.0f + MY2_alpha_h) / (4.0f + MY2_alpha_h));
     } else if (qh <= MY2_epsQ || (qh < MY2_epsQ2 && tmp2 < 0.80f)) {
         tmp3 = fmaxf(0.0f, qh);
@@ -697,21 +714,24 @@ void milbrandt2_cold(
     if (log3 || log4) return;                            // icephase_ON = .T.
 
     float Tc = t - MY2_TRPL;                             // :1614
+    // :1269 ``idt = 1./dt`` is a SAVE variable; every ``*idt`` in the
+    // scheme multiplies by that rounded reciprocal, it never divides by dt.
+    float idt = 1.0f / dt;
     // :1615-1618 -- WRF prints a warning for |Tc| outside [-120, 50] and does
     // not act on it (the ``stop`` is commented out).  Nothing to reproduce.
     float Cdiff = (2.2157e-5f + 0.0155e-5f * Tc) * 1.0e5f / pr;
     float MUdyn = 1.72e-5f * (393.0f / (t + 120.0f))
-                  * powf(__fdiv_rn(t, MY2_TRPL), 1.5f);
+                  * gfk_pow(__fdiv_rn(t, MY2_TRPL), 1.5f);
     float MUkin = MUdyn * ide;
     float iMUkin = 1.0f / MUkin;
-    float ScTHRD = powf(MUkin / Cdiff, MY2_thrd);
+    float ScTHRD = gfk_pow(MUkin / Cdiff, MY2_thrd);
     float Ka = 2.3971e-2f + 0.0078e-2f * Tc;
     float Kdiff = (9.1018e-11f * t * t + 8.8197e-8f * t - (1.0654e-5f));
     float gam = gamfact[gid];
 
     // :1629-1634 -- collection efficiencies
-    float Eis = fminf(0.05f * expf(0.1f * Tc), 1.0f);
-    float Eig = fminf(0.01f * expf(0.1f * Tc), 1.0f);
+    float Eis = fminf(0.05f * gfk_exp(0.1f * Tc), 1.0f);
+    float Eig = fminf(0.01f * gfk_exp(0.1f * Tc), 1.0f);
     float Eii = 0.1f * Eis;
     float Ess = Eis, Eih = Eig, Esh = Eig;
     float iEih = 1.0f / Eih;
@@ -755,9 +775,11 @@ void milbrandt2_cold(
         iLAMr2 = iLAMr * iLAMr;
         iLAMr3 = iLAMr2 * iLAMr;
         iLAMr4 = iLAMr2 * iLAMr2;
-        iLAMr5 = iLAMr4 * iLAMr;
+        // :1671 iLAMr**5 -- gfortran expands an integer power by its
+        // power tree (x**5 = x**3 * x**2), not left to right.
+        iLAMr5 = iLAMr3 * iLAMr2;
         vr0 = (Dr > 40.0e-6f)
-              ? gam * ckQr1 * powf(iLAMr, MY2_bfr) : 0.0f;
+              ? gam * ckQr1 * gfk_pow(iLAMr, MY2_bfr) : 0.0f;
     } else {
         iLAMr = 0.0f; Dr = 0.0f; vr0 = 0.0f;
         iLAMr2 = 0.0f; iLAMr3 = 0.0f; iLAMr4 = 0.0f; iLAMr5 = 0.0f;
@@ -774,10 +796,10 @@ void milbrandt2_cold(
         iLAMi2 = iLAMi * iLAMi;
         iLAMi3 = iLAMi2 * iLAMi;
         iLAMi4 = iLAMi2 * iLAMi2;
-        iLAMi5 = iLAMi4 * iLAMi;
-        iLAMiB0 = powf(iLAMi, MY2_bfi);
-        iLAMiB1 = powf(iLAMi, MY2_bfi + 1.0f);
-        iLAMiB2 = powf(iLAMi, MY2_bfi + 2.0f);
+        iLAMi5 = iLAMi3 * iLAMi2;                    // :1690, x**3 * x**2
+        iLAMiB0 = gfk_pow(iLAMi, MY2_bfi);
+        iLAMiB1 = gfk_pow(iLAMi, MY2_bfi + 1.0f);
+        iLAMiB2 = gfk_pow(iLAMi, MY2_bfi + 2.0f);
         vi0 = gam * ckQi1 * iLAMiB0;
         Di = my2_Dm_x(de, qi, iNY, icmi, MY2_thrd);
     } else {
@@ -798,9 +820,9 @@ void milbrandt2_cold(
         iLAMs_D3 = fmaxf(MY2_iLAMmin2,
                          my2_iLAMDA_x(de, qn, iNN, iGS20_D3, MY2_thrd));
         iLAMs2 = iLAMs * iLAMs;
-        iLAMsB0 = powf(iLAMs, MY2_bfs);
-        iLAMsB1 = powf(iLAMs, MY2_bfs + 1.0f);
-        iLAMsB2 = powf(iLAMs, MY2_bfs + 2.0f);
+        iLAMsB0 = gfk_pow(iLAMs, MY2_bfs);
+        iLAMsB1 = gfk_pow(iLAMs, MY2_bfs + 1.0f);
+        iLAMsB2 = gfk_pow(iLAMs, MY2_bfs + 2.0f);
         vs0 = gam * ckQs1 * iLAMsB0;
         Ds = fminf(MY2_DsMax, my2_Dm_x(de, qn, iNN, icms, idms));
         // snowSpherical = .false. (:1174) -> :1717
@@ -808,7 +830,7 @@ void milbrandt2_cold(
         No_s = nn * iGS31 / iLAMs_D3;                       // :1728
         VENTs = MY2_Avx * GS32 * (iLAMs_D3 * iLAMs_D3)
                 + MY2_Bvx * ScTHRD * sqrtf(gam * MY2_afs * iMUkin) * GS09
-                  * powf(iLAMs_D3, cexs1);                // :1729
+                  * gfk_pow(iLAMs_D3, cexs1);                // :1729
     } else {
         iLAMs = 0.0f; vs0 = 0.0f; Ds = 0.0f; iLAMs2 = 0.0f;
         iLAMs_D3 = 0.0f;
@@ -830,9 +852,9 @@ void milbrandt2_cold(
         iLAMg = fmaxf(MY2_iLAMmin1,
                       my2_iLAMDA_x(de, qg, iNG, iGG99, MY2_thrd));
         iLAMg2 = iLAMg * iLAMg;
-        iLAMgB0 = powf(iLAMg, MY2_bfg);
-        iLAMgB1 = powf(iLAMg, MY2_bfg + 1.0f);
-        iLAMgB2 = powf(iLAMg, MY2_bfg + 2.0f);
+        iLAMgB0 = gfk_pow(iLAMg, MY2_bfg);
+        iLAMgB1 = gfk_pow(iLAMg, MY2_bfg + 1.0f);
+        iLAMgB2 = gfk_pow(iLAMg, MY2_bfg + 2.0f);
         No_g = ng * iGG31 / iLAMg;                          // :1749
         vg0 = gam * ckQg1 * iLAMgB0;
         Dg = my2_Dm_x(de, qg, iNG, icmg, MY2_thrd);
@@ -849,10 +871,11 @@ void milbrandt2_cold(
         iLAMh = fmaxf(MY2_iLAMmin1,
                       my2_iLAMDA_x(de, qh, iNH, iGH99, MY2_thrd));
         iLAMh2 = iLAMh * iLAMh;
-        iLAMhB0 = powf(iLAMh, MY2_bfh);
-        iLAMhB1 = powf(iLAMh, MY2_bfh + 1.0f);
-        iLAMhB2 = powf(iLAMh, MY2_bfh + 2.0f);
-        No_h = nh * iGH31 / powf(iLAMh, 1.0f + MY2_alpha_h);   // :1766
+        iLAMhB0 = gfk_pow(iLAMh, MY2_bfh);
+        iLAMhB1 = gfk_pow(iLAMh, MY2_bfh + 1.0f);
+        iLAMhB2 = gfk_pow(iLAMh, MY2_bfh + 2.0f);
+        // :1766 ``iLAMh**(1.+alpha_h)`` is REAL**1.0 = iLAMh (folded).
+        No_h = nh * iGH31 / iLAMh;
         vh0 = gam * ckQh1 * iLAMhB0;
         Dh = my2_Dm_x(de, qh, iNH, icmh, MY2_thrd);
     } else {
@@ -887,8 +910,9 @@ void milbrandt2_cold(
     float Dgrg = 0.f, Dgrh = 0.f;                            // :1794
 
     float Si = q / qsi;                                      // :1798
-    float iABi = 1.0f / (CHLS * CHLS / (Ka * MY2_RGASV * t * t)
-                         + 1.0f / (de * qsi * Cdiff));       // :1799
+    // :1799 ``Ka*RGASV*T(i,k)**2``: the power binds first, (Ka*RGASV)*(T*T).
+    float iABi = 1.0f / (CHLS * CHLS / (Ka * MY2_RGASV * (t * t))
+                         + 1.0f / (de * qsi * Cdiff));
     float VDmax;
 
     // ---- Collection by SNOW (:1805-1866) ----
@@ -933,8 +957,8 @@ void milbrandt2_cold(
         }
         // snow self-collection / aggregation (:1856-1862)
         NCLss = dt * 0.93952f * Ess
-                * powf(de * qn, (2.0f + MY2_bfs) * MY2_thrd)
-                * powf(nn, (4.0f - MY2_bfs) * MY2_thrd);
+                * gfk_pow(de * qn, (2.0f + MY2_bfs) * MY2_thrd)
+                * gfk_pow(nn, (4.0f - MY2_bfs) * MY2_thrd);
         NCLss = fminf(NCLss, 0.5f * nn);
     } else {
         QCLcs = 0.0f; NCLcs = 0.0f; QCLis = 0.0f; NCLis = 0.0f;
@@ -947,7 +971,7 @@ void milbrandt2_cold(
         if (qc > MY2_epsQ) {
             float Kstoke = MY2_dew * vg0 * Dc * Dc / (9.0f * MUdyn * Dg);
             Kstoke = fmaxf(1.5f, fminf(10.0f, Kstoke));
-            float Ecg = 0.55f * log10f(2.51f * Kstoke);
+            float Ecg = 0.55f * gfk_log10(2.51f * Kstoke);
             QCLcg = dt * gam * MY2_afg * cmr * Ecg * PIov4 * ide
                     * (nc * ng) * iGC5 * iGG31
                     * (GC13 * GG13 * iLAMc3 * iLAMgB2
@@ -981,7 +1005,7 @@ void milbrandt2_cold(
         }
         VENTg = MY2_Avx * GG32 * iLAMg * iLAMg
                 + MY2_Bvx * ScTHRD * sqrtf(gam * MY2_afg * iMUkin) * GG09
-                  * powf(iLAMg, 2.5f + 0.5f * MY2_bfg + MY2_alpha_g);
+                  * gfk_pow(iLAMg, 2.5f + 0.5f * MY2_bfg + MY2_alpha_g);
         QVDvg = dt * ide * iABi * (PI2 * (Si - 1.0f) * No_g * VENTg);
         VDmax = (q - qsi) / (1.0f + ck6 * qsi / ((t - 7.66f) * (t - 7.66f)));
         if (Si >= 1.0f) {
@@ -999,7 +1023,7 @@ void milbrandt2_cold(
     float VENTh = 0.0f;
     if (qh > MY2_epsQ) {
         if (qc > MY2_epsQ) {
-            float Ech = expf(-8.68e-7f * powf(Dc, -1.6f) * Dh);
+            float Ech = gfk_exp(-8.68e-7f * gfk_pow(Dc, -1.6f) * Dh);
             QCLch = dt * gam * MY2_afh * cmr * Ech * PIov4 * ide
                     * (nc * nh) * iGC5 * iGH31
                     * (GC13 * GH13 * iLAMc3 * iLAMhB2
@@ -1057,9 +1081,11 @@ void milbrandt2_cold(
             QCLsh = dt * cms * ide * MY2_PI * 0.25f * Esh * tmp3 * nn * nh
                     * iGS31 * iGH31
                     * (GH33 * GS33 * (iLAMh * iLAMh) * (iLAMs * iLAMs)
-                       + 2.0f * GH32 * GS34 * iLAMh
-                         * (iLAMs * iLAMs * iLAMs)
-                       + GH31 * GS35 * (iLAMs * iLAMs * iLAMs * iLAMs));
+                       + 2.0f * GH32 * GS34 * iLAMh * gfk_pow(iLAMs, 3.0f)
+                       + GH31 * GS35 * gfk_pow(iLAMs, 4.0f));
+            // :1996-1997 -- ``**2.`` folds to a multiply, but ``iLAMs**3.``
+            // and ``iLAMs**4.`` stay powf calls in WRF's -O2 object (two
+            // powf at :1997), so they are gfk_pow here.
             NCLsh = dt * PIov4 * Esh * (nn * nh) * GS31 * GH31 * tmp3
                     * (GS33 * GH31 * iLAMs2
                        + 2.0f * GS32 * GH32 * iLAMs * iLAMh
@@ -1069,9 +1095,11 @@ void milbrandt2_cold(
         } else {
             QCLsh = 0.0f; NCLsh = 0.0f;
         }
-        VENTh = MY2_Avx * GH32 * powf(iLAMh, 2.0f + MY2_alpha_h)
+        // :2009 ``iLAMh**(2.+alpha_h)`` is REAL**2.0, which gfortran
+        // folds to one multiply at -O2 (no powf call at that site).
+        VENTh = MY2_Avx * GH32 * (iLAMh * iLAMh)
                 + MY2_Bvx * ScTHRD * sqrtf(gam * MY2_afh * iMUkin) * GH09
-                  * powf(iLAMh, 2.5f + 0.5f * MY2_bfh + MY2_alpha_h);
+                  * gfk_pow(iLAMh, 2.5f + 0.5f * MY2_bfh + MY2_alpha_h);
         QHwet = fmaxf(0.0f,
                       dt * PI2 * (de * MY2_CHLC * Cdiff * DELqvs - Ka * Tc)
                       * No_h * ide / (MY2_CHLF + MY2_CPW * Tc) * VENTh
@@ -1099,7 +1127,7 @@ void milbrandt2_cold(
         if (qn > MY2_epsQ) {
             QMLsr = dt * (PI2 * ide * iCHLF * No_s * VENTs
                           * (Ka * Tc - MY2_CHLC * Cdiff * DELqvs)
-                          + MY2_CPW * iCHLF * Tc * (QCLcs + QCLrs) / dt);
+                          + MY2_CPW * iCHLF * Tc * (QCLcs + QCLrs) * idt);
             QMLsr = fminf(fmaxf(QMLsr, 0.0f), qn);
             NMLsr = nn * iQN * QMLsr;
         } else {
@@ -1108,19 +1136,19 @@ void milbrandt2_cold(
         if (qg > MY2_epsQ) {
             QMLgr = dt * (PI2 * ide * iCHLF * No_g * VENTg
                           * (Ka * Tc - MY2_CHLC * Cdiff * DELqvs)
-                          + MY2_CPW * iCHLF * Tc * (QCLcg + QCLrg) / dt);
+                          + MY2_CPW * iCHLF * Tc * (QCLcg + QCLrg) * idt);
             QMLgr = fminf(fmaxf(QMLgr, 0.0f), qg);
             NMLgr = ng * iQG * QMLgr;
         } else {
             QMLgr = 0.0f; NMLgr = 0.0f;
         }
         if (qh > MY2_epsQ && Tc > 5.0f) {
-            VENTh = MY2_Avx * GH32 * powf(iLAMh, 2.0f + MY2_alpha_h)
+            VENTh = MY2_Avx * GH32 * (iLAMh * iLAMh)      // :2063, x**2.0
                     + MY2_Bvx * ScTHRD * sqrtf(gam * MY2_afh * iMUkin) * GH09
-                      * powf(iLAMh, 2.5f + 0.5f * MY2_bfh + MY2_alpha_h);
+                      * gfk_pow(iLAMh, 2.5f + 0.5f * MY2_bfh + MY2_alpha_h);
             QMLhr = dt * (PI2 * ide * iCHLF * No_h * VENTh
                           * (Ka * Tc - MY2_CHLC * Cdiff * DELqvs)
-                          + MY2_CPW / MY2_CHLF * Tc * (QCLch + QCLrh) / dt);
+                          + MY2_CPW / MY2_CHLF * Tc * (QCLch + QCLrh) * idt);
             QMLhr = fminf(fmaxf(QMLhr, 0.0f), qh);
             NMLhr = nh * iQH * QMLhr;
             if (QCLrh > 0.0f) NMLhr = NMLhr * 0.1f;
@@ -1144,7 +1172,7 @@ void milbrandt2_cold(
 
         // Probabilistic (Bigg) freezing of rain (:2099-2116)
         if (Tc < MY2_Tc_FZrh && qr > MY2_epsQ) {
-            NrFZrh = -dt * MY2_Bbigg * (expf(MY2_Abigg * Tc) - 1.0f)
+            NrFZrh = -dt * MY2_Bbigg * (gfk_exp(MY2_Abigg * Tc) - 1.0f)
                      * de * qr * idew;
             float Rz = 1.0f;
             NhFZrh = Rz * NrFZrh;
@@ -1156,13 +1184,13 @@ void milbrandt2_cold(
         // Homogeneous freezing of cloud to ice (:2122-2134)
         if (qc > MY2_epsQ) {
             tmp2 = Tc * Tc; tmp3 = tmp2 * Tc; tmp4 = tmp2 * tmp2;
-            float JJ = powf(10.0f,
+            float JJ = gfk_pow(10.0f,
                               fmaxf(-20.0f, (-606.3952f - 52.6611f * Tc
                                              - 1.7439f * tmp2
                                              - 0.0265f * tmp3
                                              - 1.536e-4f * tmp4)));
             tmp1 = 1.0e6f * (de * (qc * iNC) * icmr);
-            float FRAC = 1.0f - expf(-JJ * PIov6 * tmp1 * dt);
+            float FRAC = 1.0f - gfk_exp(-JJ * PIov6 * tmp1 * dt);
             if (Tc > -30.0f) FRAC = 0.0f;
             if (Tc < -50.0f) FRAC = 1.0f;
             QFZci = FRAC * qc;
@@ -1187,7 +1215,7 @@ void milbrandt2_cold(
                                  / (1.0f + ck6 * (qsi / (tmp1 * tmp1))));
             if (Tc < -5.0f && Si > 1.0f) {
                 NuDEPSOR = fmaxf(0.0f,
-                                 1.0e3f * expf(12.96f * (Simax - 1.0f)
+                                 1.0e3f * gfk_exp(12.96f * (Simax - 1.0f)
                                                  - 0.639f) - ny_);
             }
             if (qc > MY2_epsQ && Tc < -2.0f && wz > 0.001f) {
@@ -1203,18 +1231,18 @@ void milbrandt2_cold(
                     ssat = 0.0f;
                 }
                 float Tcc = Tc + GG * ssat * MY2_CHLC / Kdiff;
-                float Na = expf(4.11f - 0.262f * Tcc);
+                float Na = gfk_exp(4.11f - 0.262f * Tcc);
                 float Kn = MY2_LAMa0 * t * MY2_p0 / (MY2_T0 * pr * MY2_Ra);
                 float PSIa = -MY2_kBoltz * Tcc
                              / (6.0f * MY2_PI * MY2_Ra * MUdyn) * (1.0f + Kn);
                 float ft = 0.4f * (1.0f + 1.45f * Kn
-                                   + 0.4f * Kn * expf(-1.0f / Kn))
+                                   + 0.4f * Kn * gfk_exp(-1.0f / Kn))
                            * (Ka + 2.5f * Kn * MY2_KAPa)
                            / (1.0f + 3.0f * Kn)
                            / (2.0f * Ka + 5.0f * MY2_KAPa * Kn + MY2_KAPa);
                 // :2169 -- Dc is RECOMPUTED here without the icmr->thrd
                 // helper and overwrites the size-distribution Dc above.
-                Dc = powf(de * (qc * iNC) * icmr, MY2_thrd);
+                Dc = gfk_pow(de * (qc * iNC) * icmr, MY2_thrd);
                 float F1 = PI2 * Dc * Na * nc;
                 float F2 = Ka / pr * (Tc - Tcc);
                 float NuCONTA = __fdiv_rn(-F1 * F2 * MY2_RGASV * t, MY2_CHLC) * ide;
@@ -1232,7 +1260,7 @@ void milbrandt2_cold(
             float No_i = ny_ * iGI31 / iLAMi;                // :2203
             float VENTi = MY2_Avx * GI32 * iLAMi * iLAMi
                           + MY2_Bvx * ScTHRD * sqrtf(gam * MY2_afi * iMUkin)
-                            * GI6 * powf(iLAMi, 2.5f + 0.5f * MY2_bfi
+                            * GI6 * gfk_pow(iLAMi, 2.5f + 0.5f * MY2_bfi
                                                   + MY2_alpha_i);
             QVDvi = dt * ide * MY2_capFact_i * iABi
                     * (PI2 * (Si - 1.0f) * No_i * VENTi);
@@ -1256,14 +1284,21 @@ void milbrandt2_cold(
                                       my2_iLAMDA_x(de, tmp1, tmp3, icexi9,
                                                    MY2_thrd));
                 float No_i_h = tmp2 * iGI31 / iLAMi_h;
-                tmp4 = expf(-MY2_Dso / iLAMi_h);
+                tmp4 = gfk_exp(-MY2_Dso / iLAMi_h);
                 NiCNis = No_i_h * iLAMi_h * tmp4;
                 NsCNis = NiCNis;
+                // :2236-2237 -- gfortran folds the constant factors
+                // Dso**3, 3.*Dso**2 and 6.*Dso (each rounded once as a
+                // REAL constant), and expands iLAMi**2/**3/**4 by its power
+                // tree: x2 = x*x, x3 = x*x2, x4 = x2*x2.
+                float i2 = iLAMi_h * iLAMi_h;
+                float i3 = iLAMi_h * i2;
+                float i4 = i2 * i2;
                 QCNis = cmi * No_i_h * tmp4
-                        * (MY2_Dso * MY2_Dso * MY2_Dso * iLAMi_h
-                           + 3.0f * MY2_Dso * MY2_Dso * iLAMi_h * iLAMi_h
-                           + 6.0f * MY2_Dso * iLAMi_h * iLAMi_h * iLAMi_h
-                           + 6.0f * iLAMi_h * iLAMi_h * iLAMi_h * iLAMi_h);
+                        * ((MY2_Dso * MY2_Dso) * MY2_Dso * iLAMi_h
+                           + 3.0f * (MY2_Dso * MY2_Dso) * i2
+                           + 6.0f * MY2_Dso * i3
+                           + 6.0f * i4);
                 iLAMi = tmp5;
                 No_i = tmp6;
                 (void)No_i;
@@ -1327,8 +1362,8 @@ void milbrandt2_cold(
         if (qn > MY2_epsQ) {
             QVDvs = dt * ide * MY2_capFact_s * iABi
                     * (PI2 * (Si - 1.0f) * No_s * VENTs
-                       - CHLS * MY2_CHLF / (Ka * MY2_RGASV * t * t)
-                         * QCLcs / dt);
+                       - CHLS * MY2_CHLF / (Ka * MY2_RGASV * (t * t))
+                         * QCLcs * idt);
             VDmax = (q - qsi)
                     / (1.0f + ck6 * qsi / ((t - 7.66f) * (t - 7.66f)));
             if (Si >= 1.0f) {
@@ -1368,9 +1403,9 @@ void milbrandt2_cold(
                 QCLsr = dt * cms * ide * MY2_PI * 0.25f * MY2_Ers * tmp2
                         * nn * nr * iGS31 * iGR31
                         * (GR33 * GS33 * (iLAMr * iLAMr) * (iLAMs * iLAMs)
-                           + 2.0f * GR32 * GS34 * iLAMr
-                             * (iLAMs * iLAMs * iLAMs)
-                           + GR31 * GS35 * (iLAMs * iLAMs * iLAMs * iLAMs));
+                           + 2.0f * GR32 * GS34 * iLAMr * gfk_pow(iLAMs, 3.0f)
+                           + GR31 * GS35 * gfk_pow(iLAMs, 4.0f));
+                // :2361-2362 -- as :1997, two powf calls in WRF's object.
                 NCLsr = fminf(QCLsr * (nn * iQN), NCLrs);
                 QCLrs = fminf(QCLrs, qr);
                 QCLsr = fminf(QCLsr, qn);
@@ -1406,28 +1441,31 @@ void milbrandt2_cold(
                 tmp1 = 1.1e4f * de * (qc + qr) + 1.0f;
                 tmp1 = fmaxf(1.0f, tmp1);
                 float D_sll = 2.0f * 0.01f
-                              * (expf(fminf(20.0f, -Tc / tmp1)) - 1.0f);
+                              * (gfk_exp(fminf(20.0f, -Tc / tmp1)) - 1.0f);
                 D_sll = fminf(1.0f, fmaxf(0.0001f, D_sll));
                 tmp1 = iLAMg;
                 tmp2 = No_g;
                 tmp3 = qg + QCLcg + QCLrg;
-                float iLAMg_h = expf(MY2_thrd
-                                       * logf(de * tmp3
+                float iLAMg_h = gfk_exp(MY2_thrd
+                                       * gfk_log(de * tmp3
                                                 / (ng * 6.0f * cmg)));
                 float No_g_h = ng / iLAMg_h;
-                tmp4 = expf(-D_sll / iLAMg_h);
+                tmp4 = gfk_exp(-D_sll / iLAMg_h);
                 float Ng_tail = No_g_h * iLAMg_h * tmp4;
                 if (Ng_tail > MY2_Ngh_crit) {
                     NgCNgh = fminf(ng, Ng_tail);
+                    // :2419-2420 -- integer powers by gfortran's power
+                    // tree (x3 = x*x2, x4 = x2*x2), and ``3.*D_sll**2``
+                    // is 3.*(D_sll*D_sll), the power binding first.
+                    float d2 = D_sll * D_sll;
+                    float d3 = D_sll * d2;
+                    float g2 = iLAMg_h * iLAMg_h;
+                    float g3 = iLAMg_h * g2;
+                    float g4 = g2 * g2;
                     QCNgh = fminf(qg,
                                   cmg * No_g_h * tmp4
-                                  * (D_sll * D_sll * D_sll * iLAMg_h
-                                     + 3.0f * D_sll * D_sll * iLAMg_h
-                                       * iLAMg_h
-                                     + 6.0f * D_sll * iLAMg_h * iLAMg_h
-                                       * iLAMg_h
-                                     + 6.0f * iLAMg_h * iLAMg_h * iLAMg_h
-                                       * iLAMg_h));
+                                  * (d3 * iLAMg_h + 3.0f * d2 * g2
+                                     + 6.0f * D_sll * g3 + 6.0f * g4));
                     float Rz = 1.0f;
                     NhCNgh = Rz * NgCNgh;
                 } else {
@@ -1446,7 +1484,7 @@ void milbrandt2_cold(
                 float Kstoke = MY2_dew * fabsf(vg0 - vr0) * Dr * Dr
                                / (9.0f * MUdyn * Dg);
                 Kstoke = fmaxf(1.5f, fminf(10.0f, Kstoke));
-                float Erg = 0.55f * log10f(2.51f * Kstoke);
+                float Erg = 0.55f * gfk_log10(2.51f * Kstoke);
                 QCLrg = dt * cmr * Erg * PIov4 * ide * (ng * nr)
                         * iGR31 * iGG31 * tmp2
                         * (GR36 * GG31 * iLAMr5
@@ -1694,8 +1732,8 @@ void milbrandt2_cold(
         q = q + qc; t = t - LCP * qc; qc = 0.0f; nc = 0.0f;
     }
     if (qr > MY2_epsQ && nr < MY2_epsN) {
-        nr = powf(MY2_No_r_SM * GR31, 3.0f / (4.0f + MY2_alpha_r))
-             * powf(GR31 * iGR34 * tmp1 * qr * icmr,
+        nr = gfk_pow(MY2_No_r_SM * GR31, 3.0f / (4.0f + MY2_alpha_r))
+             * gfk_pow(GR31 * iGR34 * tmp1 * qr * icmr,
                       (1.0f + MY2_alpha_r) / (4.0f + MY2_alpha_r));
     } else if (qr <= MY2_epsQ) {
         q = q + qr; t = t - LCP * qr; qr = 0.0f; nr = 0.0f;
@@ -1707,22 +1745,22 @@ void milbrandt2_cold(
     }
     if (qn > MY2_epsQ && nn < MY2_epsN) {
         float Nos = my2_Nos_Thompson(t);
-        nn = powf(Nos * GS31, dms * icexs2)
-             * powf(GS31 * iGS40 * icms * tmp1 * qn,
+        nn = gfk_pow(Nos * GS31, dms * icexs2)
+             * gfk_pow(GS31 * iGS40 * icms * tmp1 * qn,
                       (1.0f + MY2_alpha_s) * icexs2);
     } else if (qn <= MY2_epsQ) {
         q = q + qn; t = t - LSP * qn; qn = 0.0f; nn = 0.0f;
     }
     if (qg > MY2_epsQ && ng < MY2_epsN) {
-        ng = powf(MY2_No_g_SM * GG31, 3.0f / (4.0f + MY2_alpha_g))
-             * powf(GG31 * iGG34 * tmp1 * qg * icmg,
+        ng = gfk_pow(MY2_No_g_SM * GG31, 3.0f / (4.0f + MY2_alpha_g))
+             * gfk_pow(GG31 * iGG34 * tmp1 * qg * icmg,
                       (1.0f + MY2_alpha_g) / (4.0f + MY2_alpha_g));
     } else if (qg <= MY2_epsQ) {
         q = q + qg; t = t - LSP * qg; qg = 0.0f; ng = 0.0f;
     }
     if (qh > MY2_epsQ && nh < MY2_epsN) {
-        nh = powf(MY2_No_h_SM * GH31, 3.0f / (4.0f + MY2_alpha_h))
-             * powf(GH31 * iGH34 * tmp1 * qh * icmh,
+        nh = gfk_pow(MY2_No_h_SM * GH31, 3.0f / (4.0f + MY2_alpha_h))
+             * gfk_pow(GH31 * iGH34 * tmp1 * qh * icmh,
                       (1.0f + MY2_alpha_h) / (4.0f + MY2_alpha_h));
     } else if (qh <= MY2_epsQ) {
         q = q + qh; t = t - LSP * qh; qh = 0.0f; nh = 0.0f;
@@ -1803,8 +1841,8 @@ void milbrandt2_warm(
         iLAMc = my2_iLAMDA_x(de, qc_in, iNC, icexc9, MY2_thrd);
         iLAMc3 = iLAMc * iLAMc * iLAMc;
         iLAMc6 = iLAMc3 * iLAMc3;
-        Dc = iLAMc * powf(GC2 * iGC1, MY2_thrd);
-        SIGc = iLAMc * powf(GC3 * iGC1 - (GC2 * iGC1) * (GC2 * iGC1),
+        Dc = iLAMc * gfk_pow(GC2 * iGC1, MY2_thrd);
+        SIGc = iLAMc * gfk_pow(GC3 * iGC1 - (GC2 * iGC1) * (GC2 * iGC1),
                               0.5f * MY2_thrd);
         L = 0.027f * de * qc_in * (6.25e18f * SIGc * SIGc * SIGc * Dc - 0.4f);
         if (SIGc > MY2_SIGcTHRS)
@@ -1875,7 +1913,7 @@ void milbrandt2_warm(
         // substitution, valid for alpha_r = 0).  Ec goes NEGATIVE for large
         // iLAMr, which turns self-collection into a number source; that is
         // WRF's behaviour and the min() below is its only bound.
-        if (iLAMr > 300.e-6f) Ec = 2.0f - expf(2300.0f * (iLAMr - 300.e-6f));
+        if (iLAMr > 300.e-6f) Ec = 2.0f - gfk_exp(2300.0f * (iLAMr - 300.e-6f));
         CRSCOR = fminf(Ec * CRSCOR, (0.5f * nr) * idt);
     }
 
@@ -1917,10 +1955,11 @@ void milbrandt2_warm(
     float qsw = my2_qsat(t, pr, 0);
     QSW[gid] = qsw;
     float X = q - qsw;
-    // :3001-3002 -- the morr2mom latent-heat denominator, not KY97's ck5
+    // :3001-3002 -- the morr2mom latent-heat denominator, not KY97's ck5.
+    // ``...*461.5*T(i,k)**2``: the power binds first, so T*T is one factor.
     X = X / (1.0f + ((3.1484e6f - 2370.0f * t) * (3.1484e6f - 2370.0f * t)
                      * qsw)
-                    / ((1005.0f * (1.0f + 0.887f * q)) * 461.5f * t * t));
+                    / ((1005.0f * (1.0f + 0.887f * q)) * 461.5f * (t * t)));
     X = fmaxf(X, -qc);
     qc = qc + X;
     q = q - X;
@@ -1952,11 +1991,11 @@ void milbrandt2_warm(
         float Ka = fmaxf(2.07e-2f, (2.3971e-2f + 0.0078e-2f * Tc));
         float MUkin = MUdyn * ide;
         float iMUkin = 1.0f / MUkin;
-        float ScTHRD = powf(MUkin / Cdiff, MY2_thrd);
+        float ScTHRD = gfk_pow(MUkin / Cdiff, MY2_thrd);
         X = qsw - q;
         X = X / (1.0f + ((3.1484e6f - 2370.0f * t)
                          * (3.1484e6f - 2370.0f * t) * qsw)
-                        / ((1005.0f * (1.0f + 0.887f * q)) * 461.5f * t * t));
+                        / ((1005.0f * (1.0f + 0.887f * q)) * 461.5f * (t * t)));
         (void)X;   // :3041-3045 computes X and never uses it again
         de = pr / (MY2_RGASD * t);            // :3046 in-place DE refresh
         ide = 1.0f / de;
@@ -1973,14 +2012,14 @@ void milbrandt2_warm(
         // drops.  No_r itself is declared `real, save` at :1013, so the
         // double result is ROUNDED BACK TO REAL(4) on assignment and
         // nothing downstream sees the extra bits.
-        float No_r = (float)((double)nr
-                             * pow((double)LAMr,
-                                   (double)(1.0f + MY2_alpha_r))
-                             * (double)iGR31);
-        float VENTr = MY2_Avx * GR32 * powf(iLAMr, cexr5)
+        // ``dble(LAMr)**dble(1.+alpha_r)`` is DOUBLE**1.0, which gfortran
+        // folds to the operand (no pow call at :3054 in WRF's object).
+        float No_r = (float)((double)nr * (double)LAMr * (double)iGR31);
+        float VENTr = MY2_Avx * GR32 * gfk_pow(iLAMr, cexr5)
                       + MY2_Bvx * ScTHRD * sqrtf(gam * MY2_afr * iMUkin)
-                        * GR17 * powf(iLAMr, cexr6);
-        float ABw = MY2_CHLC * MY2_CHLC / (Ka * MY2_RGASV * t * t)
+                        * GR17 * gfk_pow(iLAMr, cexr6);
+        // :3057 ``CHLC**2/(Ka*RGASV*T(i,k)**2)``: (Ka*RGASV)*(T*T).
+        float ABw = MY2_CHLC * MY2_CHLC / (Ka * MY2_RGASV * (t * t))
                     + 1.0f / (de * qsw * Cdiff);
         float ssat = q / qsw - 1.0f;
         // :3058 -- entirely single precision in the Fortran.  Every factor
@@ -2072,9 +2111,9 @@ __device__ void my2_sedi_1D(
     for (int k = 0; k <= ktop; ++k) {
         float qx = QX[(size_t)k * st], nxv = NX[(size_t)k * st];
         if (qx > epsQ && nxv > epsN) {
-            float iLAMx = powf((qx * DE[(size_t)k * st] / nxv) * ckQx4,
+            float iLAMx = gfk_pow((qx * DE[(size_t)k * st] / nxv) * ckQx4,
                                  idmx);
-            float iLAMxB0 = powf(iLAMx, bfx);
+            float iLAMxB0 = gfk_pow(iLAMx, bfx);
             VVQ[k] = gamfact[(size_t)k * st] * iLAMxB0 * ckQx1;
         }
     }
@@ -2083,7 +2122,13 @@ __device__ void my2_sedi_1D(
     float Vxmaxx = fminf(VxMax, vmax);                       // :672
     float dzMIN = DZ[0];                                     // :674, kdir==1
     for (int k = 1; k < nz; ++k) dzMIN = fminf(dzMIN, DZ[(size_t)k * st]);
-    int npassx = (int)(dt * Vxmaxx / (MY2_CoMAX * dzMIN) + 0.5f);  // NINT
+    // :677 NINT is round-half-away-from-zero on the REAL quotient (lroundf).
+    // ``(int)(x + 0.5f)`` is not: the float addition can round up across
+    // the half (x = 0.5 - 2^-25 gives 1, NINT gives 0).  The quotient is
+    // never negative, so trunc plus an exact fractional test is NINT.
+    float npx = dt * Vxmaxx / (MY2_CoMAX * dzMIN);
+    float npx_t = truncf(npx);
+    int npassx = (int)npx_t + ((npx - npx_t >= 0.5f) ? 1 : 0);
     if (npassx < 1) npassx = 1;
     float dtx = dt / (float)npassx;
 
@@ -2096,14 +2141,14 @@ __device__ void my2_sedi_1D(
                 if (firstPass) {
                     VVQ[k] = -VVQ[k];
                 } else {
-                    float iLAMx = powf((qx * DE[o] / nxv) * ckQx4, idmx);
-                    float iLAMxB0 = powf(iLAMx, bfx);
+                    float iLAMx = gfk_pow((qx * DE[o] / nxv) * ckQx4, idmx);
+                    float iLAMxB0 = gfk_pow(iLAMx, bfx);
                     VVQ[k] = -(gamfact[o] * iLAMxB0 * ckQx1);
                 }
                 if (cat == 5) {
                     // :697-702 -- hail size-sorting control.  NOTE the
                     // Fortran omits the DE factor here that Dm_x carries.
-                    float t1 = powf(icmx * qx / nxv, MY2_thrd);
+                    float t1 = gfk_pow(icmx * qx / nxv, MY2_thrd);
                     float t2 = fminf(50.0f, 0.1f * (1000.0f * t1));
                     ratio_Vn2Vq = ((3.0f + t2) * (2.0f + t2) * (1.0f + t2))
                                   / ((3.0f + bfx + t2) * (2.0f + bfx + t2)
@@ -2139,13 +2184,17 @@ __device__ void my2_sedi_1D(
                 NX[o] = fmaxf(epsN, NX[(size_t)kk * st]);
             }
             if (QX[o] > epsQ && NX[o] > epsN) {
-                float Dx = powf(DE[o] * QX[o] / (NX[o] * cmx), idmx);
+                float Dx = gfk_pow(DE[o] * QX[o] / (NX[o] * cmx), idmx);
                 if (cat == 1 && Dx > 3.e-3f) {
-                    NX[o] = NX[o] * fmaxf((1.0f + 2.e4f
-                                           * (Dx - 3.e-3f) * (Dx - 3.e-3f)),
-                                          powf(Dx * iDxMax, 3.0f));
+                    // :753 -- integer powers, expanded by gfortran's power
+                    // tree: (Dx-3e-3)**2 = d*d and (Dx*iDxMAX)**3 = y*(y*y),
+                    // with 2.e4*(d*d) (the power binds first).
+                    float d = Dx - 3.e-3f;
+                    float y = Dx * iDxMax;
+                    NX[o] = NX[o] * fmaxf((1.0f + 2.e4f * (d * d)),
+                                          y * (y * y));
                 } else {
-                    NX[o] = NX[o] * powf(fmaxf(Dx, DxMax) * iDxMax, dmx);
+                    NX[o] = NX[o] * gfk_pow(fmaxf(Dx, DxMax) * iDxMax, dmx);
                 }
             }
         }
@@ -2299,17 +2348,22 @@ __device__ void my2_sediment_impl(MY2_SEDIMENT_PARAMETERS)
             float iLAMs = fmaxf(MY2_iLAMmin2,
                                 my2_iLAMDA_x(DEc[o], qn, t1, iGS20, idms));
             t1 = fminf(nn / iLAMs, MY2_No_s_max);
-            nn = powf(t1, dms / (1.0f + dms))
-                 * powf(iGS20 * DEc[o] * qn, 1.0f / (1.0f + dms));
+            nn = gfk_pow(t1, dms / (1.0f + dms))
+                 * gfk_pow(iGS20 * DEc[o] * qn, 1.0f / (1.0f + dms));
             t1 = 1.0f / nn;
             iLAMs = fmaxf(MY2_iLAMmin2,
                           my2_iLAMDA_x(DEc[o], qn, t1, iGS20, idms));
             float t2 = 1.0f / iLAMs;
             float t4 = 0.6f * MY2_lamdas_min;
             float t5 = 2.0f * t4;
-            float t3 = t2 + t4 * powf(__fdiv_rn(fmaxf(0.0f, t5 - t2), t5), 2.0f);
+            // :3195 ``(...)**2.`` -- gfortran folds a REAL**2.0 into one
+            // multiply at WRF's -O2 (the object WRF links calls powf 68
+            // times, the same source at -O0 74; the six missing are the
+            // six **2. sites), so the square is x*x, not pow.
+            float t6 = __fdiv_rn(fmaxf(0.0f, t5 - t2), t5);
+            float t3 = t2 + t4 * (t6 * t6);
             t3 = fmaxf(t3, MY2_lamdas_min);
-            nn = nn * powf(t3 * iLAMs, dms);
+            nn = nn * gfk_pow(t3 * iLAMs, dms);
             NNc[o] = nn;
         }
     }
@@ -2334,7 +2388,7 @@ __device__ void my2_sediment_impl(MY2_SEDIMENT_PARAMETERS)
         // is defined behaviour, so it is transcribed rather than "fixed".
         float N_r = NRc[otop];
         if (QRc[obot] > MY2_epsQ && N_r > MY2_epsN) {
-            float Dm_r = powf(DEc[otop] * icmr * QRc[obot] / N_r,
+            float Dm_r = gfk_pow(DEc[otop] * icmr * QRc[obot] / N_r,
                                 MY2_thrd);
             if (Dm_r > MY2_Dr_large) { RT_rn2 = RT_rn1; RT_rn1 = 0.0f; }
         }
@@ -2434,7 +2488,7 @@ void milbrandt2_diagnostics(
     }
     float zet = tmp1 + tmp2 + tmp3 + tmp4 + tmp5;
     if (zet > 0.0f) {
-        zet = 10.0f * log10f(zet * MY2_zfact);
+        zet = 10.0f * gfk_log10(zet * MY2_zfact);
     } else {
         zet = MY2_minZET;
     }

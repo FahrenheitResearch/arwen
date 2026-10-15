@@ -1,0 +1,153 @@
+{
+ "schema": "gpuwm.wsm-family.schemes.v1",
+ "note": "One row per WRF single-moment WSM-family scheme the engine runs through gpuwm/core/wsm_family.py. A row is the whole admission of the scheme's column kernel: unit and entry points, kernel argument order of the mass species, precipitating classes with surface accumulators, compiled level tiers, and the frozen WRF words file.",
+ "schemes": {
+  "24": {
+   "name": "wsm7",
+   "source_absent_initialization": {"wrf_fields": ["QHAIL"], "state_defaults": {"qh": 0.0}},
+   "label": "WSM7",
+   "wrf_scheme": "WSM7SCHEME",
+   "wrf_source": "phys/module_mp_wsm7.F (WRF v4.6.1, d66e442f)",
+   "unit": "wsm7",
+   "column_kernel": "wsm7_column",
+   "refl_kernel": "wsm7_refl10cm_column",
+   "kmax_define": "WSM7_KMAX",
+   "level_tiers": [
+    64,
+    80
+   ],
+   "min_levels": 2,
+   "kernel_species": [
+    "qc",
+    "qi",
+    "qr",
+    "qs",
+    "qg",
+    "qh"
+   ],
+   "refl_species": [
+    "qr",
+    "qs",
+    "qg",
+    "qh"
+   ],
+   "precip": [
+    "rain",
+    "snow",
+    "graupel",
+    "hail"
+   ],
+   "words_file": "wsm7-wrf461-words.json",
+   "init_words": [
+    "pi",
+    "xlv1",
+    "qc0",
+    "qck1",
+    "pidnc",
+    "pidn0r",
+    "pidn0s",
+    "pidn0g",
+    "pidn0h",
+    "pvtr",
+    "pvts",
+    "pvtg",
+    "pvth",
+    "pacrr",
+    "pacrc",
+    "pacrg",
+    "pacrh",
+    "precr1",
+    "precr2",
+    "precs1",
+    "precs2",
+    "precg1",
+    "precg2",
+    "prech1",
+    "prech2",
+    "prech3",
+    "g6pbr",
+    "roqimax",
+    "rslopermax",
+    "rslopesmax",
+    "rslopegmax",
+    "rslopehmax",
+    "rsloperbmax",
+    "rslopesbmax",
+    "rslopegbmax",
+    "rslopehbmax",
+    "rsloper2max",
+    "rslopes2max",
+    "rslopeg2max",
+    "rslopeh2max",
+    "rsloper3max",
+    "rslopes3max",
+    "rslopeg3max",
+    "rslopeh3max"
+   ],
+   "radar_f32_words": [
+    "xam_r",
+    "xam_s",
+    "xam_g",
+    "xcre1",
+    "xcre4",
+    "xcrg3",
+    "xcrg4",
+    "xcse1",
+    "xcse4",
+    "xcsg3",
+    "xcsg4",
+    "xcge1",
+    "xcge4",
+    "xcgg3",
+    "xcgg4",
+    "xbm_s",
+    "xbm_g",
+    "xmu_s",
+    "xmu_g",
+    "xocms",
+    "xobms",
+    "xocmg",
+    "xobmg"
+   ],
+   "radar_f64_words": [
+    "k_w",
+    "pi5",
+    "lamda4",
+    "m_w_0_re",
+    "m_w_0_im",
+    "m_i_0_re",
+    "m_i_0_im",
+    "xxds",
+    "xdts",
+    "xxdg",
+    "xdtg",
+    "simpson"
+   ],
+   "restart_identity": "wsm7-single-moment-hail-wrf-v4.6.1-v1-remap-search-reaches-top-interface-refl-hail-term",
+   "declared_divergences": [
+    {
+     "id": "D1",
+     "what": "The PLM sedimentation remap (nislfv_rain_plm/plm6 find_kt) searches every arrival interface and the column top, so kt never falls below kb.",
+     "wrf": "WRF's search stops one interface short; a target layer whose top lies above every interface it tests falls through to kt = kb - 1 and its share of the arriving mass is dropped (the same search WSM6 and WDM6 carry, queue 073).",
+     "cause": "a WRF search-bound defect: mass is deleted from the column instead of being remapped"
+    },
+    {
+     "id": "D2",
+     "what": "REFL_10CM adds hail's dry-ice Rayleigh term (WSM7's own hail PSD: n0h 4e4 m-4, density 912 kg m-3, m = am D^3, mu = 0).",
+     "wrf": "refl10cm_wsm7 sums rain, snow and graupel only, so a hail core does not appear in the diagnostic.",
+     "cause": "a WRF omission: the seventh class is left out of the reflectivity diagnostic"
+    }
+   ],
+   "local_frame_bytes": {
+    "64": 7216,
+    "80": 9008
+   },
+   "local_frame_provenance": {
+    "date": "2026-10-09",
+    "compute_capability": "120",
+    "nvrtc_build": "12.8.93",
+    "basis": "production loader, both arithmetic modes; driver local-size attribute"
+   }
+  }
+ }
+}

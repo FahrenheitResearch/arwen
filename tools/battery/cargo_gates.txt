@@ -340,6 +340,16 @@ cpu  tools/rustwx  rw-mpas  418
 # the larger mesh suite so its three controls cannot disappear under its floor.
 cpu  tools/rustwx  rw-mpas  3  --test radar_history_contract
 
+# The stored-word stream comparator (`rw_mpas_static verify`, formerly the
+# rw_mpas_verify binary) driven through the gpuwm-hex CLI on synthetic
+# tapes. The CLI is another repository's, so in the cpu shard these three
+# could only panic for want of it, and they turned this crate's leg red
+# the day they merged. Run them where gpuwm-hex is installed, with
+# MPAS_VERIFY_TEST_ROOT naming a scratch folder (and MPAS_VERIFY_CLI or
+# MPAS_VERIFY_PYTHON if `python3 -m hexcore.cli` is not the CLI):
+#     python tools/battery/run_cargo_gates.py --shard fixtures
+fixtures  tools/rustwx  rw-mpas  3  --test verify_mpas_cli -- --ignored
+
 # rw-tempo: the Rust port of NCAR/TEMPO 9adf9ef's table builders
 # (params/utils), loaded through librw_tempo by gpuwm/tempo_assets.py when
 # the RRFS v2 hex TEMPO preset builds its collection and freezing tables.  A

@@ -308,6 +308,15 @@ _EXTRA_GATED: dict[str, tuple[tuple[str, ...], str]] = {
         "build-the-table dependency, not a read-the-table one. The import is "
         "guarded and names this extra.",
     ),
+    "yaml": (
+        ("dev",),
+        "2.9.0 (r290/publish-test-job): tools/workflow_job_replay.py and "
+        "tools/workflow_rehearsals.py read the repository's own workflow "
+        "YAML to replay a CI job and census the release rehearsals before a "
+        "publish. Both are release-engineering tools run from a checkout with "
+        "the [dev] extra, which already declares pyyaml for the publish.yml "
+        "contract tests; no forecast or data door imports them.",
+    ),
     "pytest": (
         ("dev",),
         "The test suite. tilestream/ ships 41 `test_*.py` modules inside the "
@@ -458,8 +467,15 @@ _TEST_TREE_IMPORT_SITES: dict[str, tuple[str, ...]] = {
     # directory. Their fixture helpers are verified by the liveness gate
     # below and are not runtime dependencies of an installed distribution.
     "tools/mynn_exact_review.py": ("_mynn_families", "_mynn_families_gsd41"),
+    "tools/mynn_tkeadvect_check.py": ("_mynn_families", "_mynn_families_gsd41"),
     "tools/mynn_review_restart.py": ("test_mynn_pbl_runtime",),
     "tools/terrain_clock_review_bench.py": ("test_terrain_clock_review",),
+    # The correct-mode water-budget receipt (2.9.0 7abd12219) runs the same
+    # WSM6 and New Tiedtke columns as tests/test_correct_mode_water_budget.py
+    # through that suite's mirror and residual helpers, so the receipt and
+    # the suite cannot measure different columns.  Checkout-only by the same
+    # construction as the rows above.
+    "tools/correct_mode_water_budget_receipt.py": ("test_correct_mode_water_budget",),
 }
 
 

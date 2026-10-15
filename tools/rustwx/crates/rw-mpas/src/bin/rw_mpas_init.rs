@@ -50,7 +50,15 @@ fn usage() -> String {
 \n                             what the reference build (mpiifx -O3, -ftz on by default) does
 
 \n         None of these has a default.  Each changes the numbers in a file that\n\
-         opens cleanly and reads plausibly either way."
+         opens cleanly and reads plausibly either way.\n\n\
+         --land-surface       noah | noahmp | ruc (optional, default noah); ruc writes the\n\
+        \x20                    nine RUC soil nodes from the source's nodes or layers\n\n\
+         Physics completion of an existing init (each mode stands alone):\n\
+        \x20 --augment-init INIT.nc --scalar-names a,b [--aerosol-fields DIR]\n\
+        \x20                    [--land-surface noah|noahmp|ruc]\n\
+        \x20 --aerosol-status INIT.nc\n\
+        \x20 --aerosol-target INIT.nc --target-dir DIR\n\
+        \x20 DIR holds little-endian float32 files, cell-major."
     )
 }
 
@@ -119,7 +127,27 @@ fn run() -> Result<String, String> {
         return Ok(ABI_MARKER.to_string());
     }
     let args = Args::parse(argv)?;
+    if let Some(path) = args.get_optional("aerosol-status") {
+        let supplied = rw_mpas::init::aerosol::analyzed_pair(PathBuf::from(&path).as_path()).map_err(|e|e.to_string())?;
+        let mismatch = rw_mpas::init::aerosol::soil_category_mismatches(PathBuf::from(path).as_path()).map_err(|e|e.to_string())?;
+        return Ok(serde_json::json!({"analysis_pair":supplied,"soil_category_mismatches":mismatch}).to_string());
+    }
+    if let Some(path) = args.get_optional("aerosol-target") {
+        let dir = args.path("target-dir")?;
+        let target = rw_mpas::init::aerosol::target(PathBuf::from(path).as_path(), &dir).map_err(|e|e.to_string())?;
+        return serde_json::to_string(&target).map_err(|e|e.to_string());
+    }
 
+    if let Some(path) = args.get_optional("augment-init") {
+        let names: Vec<String> = args.need("scalar-names")?.split(',').map(str::to_string).collect();
+        let fields = args.get_optional("aerosol-fields").map(PathBuf::from);
+        let land = args.get_optional("land-surface").unwrap_or_else(||"noah".into());
+        if !["noah", "noahmp", "ruc"].contains(&land.as_str()) { return Err("--land-surface takes noah, noahmp or ruc".into()); }
+        let receipt = rw_mpas::init::aerosol::enrich(PathBuf::from(path).as_path(), &names, fields.as_deref(), land != "noah").map_err(|e| e.to_string())?;
+        return serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string());
+    }
+    let land_surface = args.get_optional("land-surface").unwrap_or_else(|| "noah".into());
+    if !["noah", "noahmp", "ruc"].contains(&land_surface.as_str()) { return Err("--land-surface takes noah, noahmp or ruc".into()); }
     let cfg = InitConfig {
         met_path: args.path("met")?,
         static_path: args.path("static")?,
@@ -129,6 +157,7 @@ fn run() -> Result<String, String> {
         start_time: args.need("start-time")?.to_string(),
         n_fg_levels: args.number("nfglevels")?,
         n_fg_soil_levels: args.number("nfgsoillevels")?,
+        land_surface,
         extrap_airtemp: Extrap::parse(args.need("extrap-airtemp")?)?,
         use_spechumd: yes_no("use-spechumd", args.need("use-spechumd")?)?,
         theta_adv_order: args.number("theta-adv-order")?,

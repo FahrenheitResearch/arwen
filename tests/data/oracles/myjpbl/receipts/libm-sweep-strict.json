@@ -1,0 +1,28 @@
+{
+ "inputs_checked_each": 4294967296,
+ "strict": true,
+ "capa_bits": "0x3E924925",
+ "mismatches": {
+  "expf": 0,
+  "powf_capa": 0,
+  "expf_unfused_gfk_exp": 2
+ },
+ "first_mismatches": {
+  "expf": [],
+  "powf_capa": [],
+  "expf_unfused_gfk_exp": [
+   {
+    "x_bits": "0x4202422F",
+    "x": 32.564632415771484,
+    "gfk": "0x56FC9F1B",
+    "libc": "0x56FC9F1C"
+   },
+   {
+    "x_bits": "0xC27C65D9",
+    "x": -63.09946060180664,
+    "gfk": "0x11FA2992",
+    "libc": "0x11FA2993"
+   }
+  ]
+ }
+}

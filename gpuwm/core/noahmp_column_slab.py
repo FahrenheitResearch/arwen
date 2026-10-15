@@ -266,7 +266,7 @@ def _shaped(cp, fields, name, n, width):
     return cp.ascontiguousarray(value, dtype=cp.float32)
 
 
-def evaluate_sflx_slab(fields: dict, n: int) -> dict:
+def evaluate_sflx_slab(fields: dict, n: int, *, noahmp_snow_age="wrf_470") -> dict:
     """One NOAHMP_SFLX land-surface call for ``n`` columns, on the device.
 
     ``fields`` carries, each as one CuPy (or uploadable) array over the column
@@ -354,7 +354,7 @@ def evaluate_sflx_slab(fields: dict, n: int) -> dict:
         "fveg": c("fveg"), "smc": c("smc"), "albold": c("albold"),
         "tauss": c("tauss"), "solad": c("solad"), "solai": c("solai"),
         "ist": c("ist")})
-    rad = evaluate_radiation_slab(rad_fields, n)
+    rad = evaluate_radiation_slab(rad_fields, n, noahmp_snow_age=noahmp_snow_age)
 
     # ---- ENERGY seg2, then the two flux leaves -----------------------------
     e = energy_seg2(s, g)

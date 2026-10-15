@@ -415,7 +415,13 @@ def resolve_default_mynn_options(
 ) -> Mapping[str, bool | int | float]:
     """Resolve omitted MYNN values and reject unvalidated option modes."""
 
-    return _resolve_default_options("MYNN", supplied or {}, MYNN_NAMELIST_DEFAULTS)
+    options = dict(supplied or {})
+    advect = options.pop("bl_mynn_tkeadvect", False)
+    if type(advect) is not bool:
+        raise ValueError(f"bl_mynn_tkeadvect={advect!r} must be a bool")
+    resolved = dict(_resolve_default_options("MYNN", options, MYNN_NAMELIST_DEFAULTS))
+    resolved["bl_mynn_tkeadvect"] = advect
+    return MappingProxyType(resolved)
 
 
 def reference_contract_receipt(

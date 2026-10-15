@@ -452,9 +452,19 @@ def test_the_hardware_conversion_still_flushes_which_is_why_the_fix_exists():
     kernel((1,), (32,), (device, hardware, fixed, np.int32(values.size)))
     hardware = cp.asnumpy(hardware)
     fixed = cp.asnumpy(fixed)
-    assert (hardware.view(np.int32) != want.view(np.int32)).any(), (
-        "__double2float_rn no longer flushes subnormals on this toolchain; "
-        "nmp_d2f_rn in noahmp_leaves.cu can be retired")
+    from gpuwm import wrf_exact
+    if wrf_exact.ENABLED:
+        # GPUWM_WRF_EXACT=1 replaces cupy's -ftz=true with --ftz=false at
+        # the NVRTC boundary (gpuwm/wrf_exact.py), so the strict build has
+        # no flush to observe: the measurement there is that it keeps the
+        # subnormals.  Asserting the default route's flush under the strict
+        # build failed this control on every strict run (W1, 2026-10-07).
+        np.testing.assert_array_equal(hardware.view(np.int32),
+                                      want.view(np.int32))
+    else:
+        assert (hardware.view(np.int32) != want.view(np.int32)).any(), (
+            "__double2float_rn no longer flushes subnormals on this "
+            "toolchain; nmp_d2f_rn in noahmp_leaves.cu can be retired")
     np.testing.assert_array_equal(fixed.view(np.int32), want.view(np.int32))
 
 

@@ -1,0 +1,4335 @@
+{
+ "runs": {
+  "main-dt30-n12": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 11609,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      546,
+      37536
+     ],
+     "qv": [
+      1707,
+      1418125
+     ],
+     "qc": [
+      1,
+      8
+     ],
+     "qi": [
+      2788,
+      966509640
+     ],
+     "qs": [
+      1260,
+      1003141312
+     ],
+     "re_cloud": [
+      1,
+      1
+     ],
+     "re_ice": [
+      2508,
+      30716735
+     ],
+     "re_snow": [
+      1152,
+      30396303
+     ],
+     "refl_10cm": [
+      1100,
+      2209218733
+     ],
+     "t": [
+      546,
+      45146
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 12134,
+    "columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-4",
+     "convective-5",
+     "dry-warm-snow",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-4",
+     "convective-5",
+     "dry-warm-snow",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-4",
+     "convective-5",
+     "dry-warm-snow",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      1009,
+      33526
+     ],
+     "qv": [
+      1447,
+      3185341
+     ],
+     "qc": [
+      501,
+      912144254
+     ],
+     "qi": [
+      402,
+      662700032
+     ],
+     "qr": [
+      2480,
+      938483246
+     ],
+     "qs": [
+      988,
+      906188012
+     ],
+     "re_cloud": [
+      364,
+      5390558
+     ],
+     "re_ice": [
+      284,
+      2466
+     ],
+     "re_snow": [
+      932,
+      30841826
+     ],
+     "refl_10cm": [
+      2585,
+      6122746
+     ],
+     "t": [
+      1009,
+      31353
+     ],
+     "rain": [
+      63,
+      426416
+     ],
+     "rainncv": [
+      70,
+      1676869
+     ]
+    }
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 23731,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-4",
+     "convective-5",
+     "dry-warm-snow",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      1555,
+      37536
+     ],
+     "qv": [
+      3154,
+      3185341
+     ],
+     "qc": [
+      502,
+      912144254
+     ],
+     "qi": [
+      3186,
+      966509640
+     ],
+     "qr": [
+      2480,
+      938483246
+     ],
+     "qs": [
+      2243,
+      1003141312
+     ],
+     "re_cloud": [
+      365,
+      5390558
+     ],
+     "re_ice": [
+      2791,
+      30716735
+     ],
+     "re_snow": [
+      2083,
+      30841826
+     ],
+     "refl_10cm": [
+      3684,
+      2209218733
+     ],
+     "t": [
+      1555,
+      45146
+     ],
+     "rain": [
+      63,
+      426416
+     ],
+     "rainncv": [
+      70,
+      1676869
+     ]
+    }
+   }
+  },
+  "main-dt150-n3": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 2015,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      151,
+      28394
+     ],
+     "qv": [
+      264,
+      1163998
+     ],
+     "qi": [
+      397,
+      966509642
+     ],
+     "qs": [
+      237,
+      994515297
+     ],
+     "re_ice": [
+      370,
+      30716735
+     ],
+     "re_snow": [
+      226,
+      28303858
+     ],
+     "refl_10cm": [
+      219,
+      2207089942
+     ],
+     "t": [
+      151,
+      36447
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 966,
+    "columns": [
+     "convective-0",
+     "convective-4",
+     "dry-warm-snow",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "probe_columns": [
+     "convective-0",
+     "convective-4",
+     "dry-warm-snow",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-4",
+     "dry-warm-snow",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      120,
+      32448
+     ],
+     "qv": [
+      156,
+      2734722
+     ],
+     "qc": [
+      28,
+      915663869
+     ],
+     "qi": [
+      13,
+      679477248
+     ],
+     "qr": [
+      110,
+      929173668
+     ],
+     "qs": [
+      102,
+      930859112
+     ],
+     "re_cloud": [
+      27,
+      6773475
+     ],
+     "re_ice": [
+      9,
+      4272
+     ],
+     "re_snow": [
+      93,
+      36326820
+     ],
+     "refl_10cm": [
+      180,
+      2213747958
+     ],
+     "t": [
+      120,
+      30345
+     ],
+     "rain": [
+      4,
+      64392
+     ],
+     "rainncv": [
+      4,
+      515136
+     ]
+    }
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 2981,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-4",
+     "dry-warm-snow",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      271,
+      32448
+     ],
+     "qv": [
+      420,
+      2734722
+     ],
+     "qc": [
+      28,
+      915663869
+     ],
+     "qi": [
+      410,
+      966509642
+     ],
+     "qr": [
+      110,
+      929173668
+     ],
+     "qs": [
+      339,
+      994515297
+     ],
+     "re_cloud": [
+      27,
+      6773475
+     ],
+     "re_ice": [
+      379,
+      30716735
+     ],
+     "re_snow": [
+      319,
+      36326820
+     ],
+     "refl_10cm": [
+      399,
+      2213747958
+     ],
+     "t": [
+      271,
+      36447
+     ],
+     "rain": [
+      4,
+      64392
+     ],
+     "rainncv": [
+      4,
+      515136
+     ]
+    }
+   }
+  },
+  "main-dt300-n4": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 5282,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      272,
+      28625
+     ],
+     "qv": [
+      722,
+      1144932
+     ],
+     "qc": [
+      1,
+      2
+     ],
+     "qi": [
+      1211,
+      966588685
+     ],
+     "qr": [
+      6,
+      19
+     ],
+     "qs": [
+      617,
+      995580201
+     ],
+     "re_cloud": [
+      1,
+      1
+     ],
+     "re_ice": [
+      1045,
+      30652560
+     ],
+     "re_snow": [
+      574,
+      28617947
+     ],
+     "refl_10cm": [
+      561,
+      2207408331
+     ],
+     "t": [
+      272,
+      35570
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 6314,
+    "columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      746,
+      49336
+     ],
+     "qv": [
+      1005,
+      3506082
+     ],
+     "qc": [
+      99,
+      704643072
+     ],
+     "qi": [
+      188,
+      729808896
+     ],
+     "qr": [
+      1105,
+      940086397
+     ],
+     "qs": [
+      440,
+      924623072
+     ],
+     "re_cloud": [
+      89,
+      1955521
+     ],
+     "re_ice": [
+      124,
+      1607064
+     ],
+     "re_snow": [
+      393,
+      35014012
+     ],
+     "refl_10cm": [
+      1288,
+      2207715461
+     ],
+     "t": [
+      746,
+      46138
+     ],
+     "rain": [
+      41,
+      633957
+     ],
+     "rainncv": [
+      46,
+      280715564
+     ],
+     "sr": [
+      4,
+      54680
+     ]
+    }
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 11486,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      1018,
+      49336
+     ],
+     "qv": [
+      1727,
+      3506082
+     ],
+     "qc": [
+      99,
+      704643072
+     ],
+     "qi": [
+      1382,
+      966588685
+     ],
+     "qr": [
+      1110,
+      940086397
+     ],
+     "qs": [
+      1018,
+      995580201
+     ],
+     "re_cloud": [
+      89,
+      1955521
+     ],
+     "re_ice": [
+      1164,
+      30652560
+     ],
+     "re_snow": [
+      946,
+      35014012
+     ],
+     "refl_10cm": [
+      1824,
+      2207715461
+     ],
+     "t": [
+      1018,
+      46138
+     ],
+     "rain": [
+      41,
+      633957
+     ],
+     "rainncv": [
+      46,
+      280715564
+     ],
+     "sr": [
+      4,
+      54680
+     ]
+    }
+   }
+  },
+  "main-dt600-n2": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 2795,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      140,
+      23821
+     ],
+     "qv": [
+      380,
+      1144932
+     ],
+     "qi": [
+      628,
+      966567246
+     ],
+     "qr": [
+      12,
+      95
+     ],
+     "qs": [
+      332,
+      989900984
+     ],
+     "re_ice": [
+      549,
+      30646689
+     ],
+     "re_snow": [
+      311,
+      26866476
+     ],
+     "refl_10cm": [
+      303,
+      2203592969
+     ],
+     "t": [
+      140,
+      29600
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 3357,
+    "columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "sediment-aloft-0"
+    ],
+    "probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "sediment-aloft-0"
+    ],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "sediment-aloft-0"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      410,
+      50164
+     ],
+     "qv": [
+      531,
+      3519266
+     ],
+     "qc": [
+      47,
+      721420288
+     ],
+     "qi": [
+      100,
+      880428656
+     ],
+     "qr": [
+      591,
+      940743049
+     ],
+     "qs": [
+      216,
+      948501520
+     ],
+     "re_cloud": [
+      41,
+      1549581
+     ],
+     "re_ice": [
+      66,
+      18876746
+     ],
+     "re_snow": [
+      200,
+      41091611
+     ],
+     "refl_10cm": [
+      689,
+      2208165958
+     ],
+     "t": [
+      410,
+      46912
+     ],
+     "rain": [
+      24,
+      405484
+     ],
+     "rainncv": [
+      27,
+      988894965
+     ],
+     "sr": [
+      5,
+      190415
+     ]
+    }
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 6051,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "sediment-aloft-0"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      550,
+      50164
+     ],
+     "qv": [
+      909,
+      3519266
+     ],
+     "qc": [
+      47,
+      721420288
+     ],
+     "qi": [
+      721,
+      966567246
+     ],
+     "qr": [
+      592,
+      940743049
+     ],
+     "qs": [
+      517,
+      989900984
+     ],
+     "re_cloud": [
+      41,
+      1549581
+     ],
+     "re_ice": [
+      611,
+      30646689
+     ],
+     "re_snow": [
+      487,
+      41091611
+     ],
+     "refl_10cm": [
+      970,
+      2208165958
+     ],
+     "t": [
+      550,
+      46912
+     ],
+     "rain": [
+      24,
+      405484
+     ],
+     "rainncv": [
+      27,
+      988894965
+     ],
+     "sr": [
+      5,
+      190415
+     ]
+    }
+   }
+  },
+  "main-dt1800-n1": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 2016,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      79,
+      23821
+     ],
+     "qv": [
+      205,
+      1144932
+     ],
+     "qc": [
+      9,
+      1101
+     ],
+     "qi": [
+      374,
+      956317112
+     ],
+     "qr": [
+      157,
+      226
+     ],
+     "qs": [
+      238,
+      960758840
+     ],
+     "re_cloud": [
+      5,
+      311
+     ],
+     "re_ice": [
+      315,
+      28962107
+     ],
+     "re_snow": [
+      223,
+      19347067
+     ],
+     "refl_10cm": [
+      330,
+      2180176266
+     ],
+     "t": [
+      79,
+      29600
+     ],
+     "rain": [
+      1,
+      1
+     ],
+     "rainncv": [
+      1,
+      1
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 2635,
+    "columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1"
+    ],
+    "probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1"
+    ],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      321,
+      65309
+     ],
+     "qv": [
+      418,
+      3519239
+     ],
+     "qc": [
+      35,
+      910247964
+     ],
+     "qi": [
+      71,
+      882670993
+     ],
+     "qr": [
+      461,
+      950475779
+     ],
+     "qs": [
+      173,
+      856577780
+     ],
+     "re_cloud": [
+      32,
+      6411018
+     ],
+     "re_ice": [
+      54,
+      20362837
+     ],
+     "re_snow": [
+      151,
+      17536621
+     ],
+     "refl_10cm": [
+      548,
+      2211885125
+     ],
+     "t": [
+      321,
+      63681
+     ],
+     "rain": [
+      21,
+      454997
+     ],
+     "rainncv": [
+      22,
+      795807
+     ],
+     "snow": [
+      1,
+      228
+     ],
+     "snowncv": [
+      1,
+      228
+     ],
+     "sr": [
+      5,
+      485868
+     ]
+    }
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 4217,
+    "columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-temperatures",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "remap_probe_columns": [
+     "cirrus-0",
+     "cirrus-1",
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "edge-cold-rain",
+     "edge-dry-tiny",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-psaut",
+     "edge-warm-ice",
+     "edge-zero",
+     "fog-0",
+     "fog-1",
+     "saturated-clear",
+     "saturated-cold-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1",
+     "sediment-aloft-2",
+     "sediment-bottom-only",
+     "sediment-thin-layers",
+     "sediment-top-only",
+     "sediment-top-two",
+     "snow-0",
+     "snow-1",
+     "snow-2",
+     "snow-3",
+     "snow-4",
+     "snow-5",
+     "supercooled-0",
+     "supercooled-1"
+    ],
+    "psevp_probe_columns": [
+     "convective-0",
+     "convective-1",
+     "convective-2",
+     "convective-3",
+     "convective-4",
+     "convective-5",
+     "dry-evaporating",
+     "dry-warm-snow",
+     "edge-freezing-rain",
+     "edge-heavy",
+     "edge-temperatures",
+     "high-terrain-2",
+     "high-terrain-3",
+     "mixed-phase-0",
+     "mixed-phase-1",
+     "mixed-phase-2",
+     "mixed-phase-3",
+     "mixed-phase-4",
+     "mixed-phase-5",
+     "mixed-phase-6",
+     "mixed-phase-7",
+     "saturated-clear",
+     "sediment-aloft-0",
+     "sediment-aloft-1"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      399,
+      65309
+     ],
+     "qv": [
+      621,
+      3519239
+     ],
+     "qc": [
+      35,
+      910247964
+     ],
+     "qi": [
+      437,
+      956317112
+     ],
+     "qr": [
+      461,
+      950475779
+     ],
+     "qs": [
+      358,
+      960758840
+     ],
+     "re_cloud": [
+      32,
+      6411018
+     ],
+     "re_ice": [
+      368,
+      28962107
+     ],
+     "re_snow": [
+      330,
+      19347067
+     ],
+     "refl_10cm": [
+      727,
+      2211885125
+     ],
+     "t": [
+      399,
+      63681
+     ],
+     "rain": [
+      21,
+      454997
+     ],
+     "rainncv": [
+      22,
+      795807
+     ],
+     "snow": [
+      1,
+      228
+     ],
+     "snowncv": [
+      1,
+      228
+     ],
+     "sr": [
+      5,
+      485868
+     ]
+    }
+   }
+  },
+  "lev2-dt0.001-n3": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 616,
+    "columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "remap_probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      28,
+      10339
+     ],
+     "qv": [
+      56,
+      1842316
+     ],
+     "qc": [
+      24,
+      898011528
+     ],
+     "qi": [
+      28,
+      59661341
+     ],
+     "qr": [
+      51,
+      990056979
+     ],
+     "qs": [
+      66,
+      990057055
+     ],
+     "re_cloud": [
+      24,
+      2566763
+     ],
+     "re_ice": [
+      28,
+      7370894
+     ],
+     "re_snow": [
+      66,
+      49602286
+     ],
+     "refl_10cm": [
+      81,
+      2220415879
+     ],
+     "t": [
+      28,
+      9975
+     ],
+     "rain": [
+      32,
+      783169075
+     ],
+     "rainncv": [
+      32,
+      923759475
+     ],
+     "snow": [
+      24,
+      757600465
+     ],
+     "snowncv": [
+      24,
+      903347864
+     ],
+     "sr": [
+      24,
+      1065353204
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "probe_columns": [],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {}
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 616,
+    "columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "remap_probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "psevp_probe_columns": [
+     "lev2-bottom-only-dz100",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      28,
+      10339
+     ],
+     "qv": [
+      56,
+      1842316
+     ],
+     "qc": [
+      24,
+      898011528
+     ],
+     "qi": [
+      28,
+      59661341
+     ],
+     "qr": [
+      51,
+      990056979
+     ],
+     "qs": [
+      66,
+      990057055
+     ],
+     "re_cloud": [
+      24,
+      2566763
+     ],
+     "re_ice": [
+      28,
+      7370894
+     ],
+     "re_snow": [
+      66,
+      49602283
+     ],
+     "refl_10cm": [
+      81,
+      2220415878
+     ],
+     "t": [
+      28,
+      9975
+     ],
+     "rain": [
+      32,
+      783169075
+     ],
+     "rainncv": [
+      32,
+      923759474
+     ],
+     "snow": [
+      24,
+      757600465
+     ],
+     "snowncv": [
+      24,
+      903347853
+     ],
+     "sr": [
+      24,
+      1065353204
+     ]
+    }
+   }
+  },
+  "lev2-dt1-n3": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 765,
+    "columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "remap_probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      90,
+      10098
+     ],
+     "qv": [
+      90,
+      1800805
+     ],
+     "qc": [
+      15,
+      887240106
+     ],
+     "qi": [
+      28,
+      59608044
+     ],
+     "qr": [
+      51,
+      989966166
+     ],
+     "qs": [
+      66,
+      990041172
+     ],
+     "re_cloud": [
+      15,
+      105535
+     ],
+     "re_ice": [
+      28,
+      7361506
+     ],
+     "re_snow": [
+      66,
+      49553427
+     ],
+     "refl_10cm": [
+      90,
+      2220401682
+     ],
+     "t": [
+      90,
+      9742
+     ],
+     "rain": [
+      32,
+      968822684
+     ],
+     "rainncv": [
+      32,
+      1007173295
+     ],
+     "snow": [
+      24,
+      934460670
+     ],
+     "snowncv": [
+      24,
+      986619896
+     ],
+     "sr": [
+      24,
+      1065353216
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "probe_columns": [],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {}
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 765,
+    "columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "remap_probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "psevp_probe_columns": [
+     "lev2-bottom-only-dz100",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      90,
+      10098
+     ],
+     "qv": [
+      90,
+      1800805
+     ],
+     "qc": [
+      15,
+      887240106
+     ],
+     "qi": [
+      28,
+      59608044
+     ],
+     "qr": [
+      51,
+      989966166
+     ],
+     "qs": [
+      66,
+      990041172
+     ],
+     "re_cloud": [
+      15,
+      105535
+     ],
+     "re_ice": [
+      28,
+      7361506
+     ],
+     "re_snow": [
+      66,
+      49551942
+     ],
+     "refl_10cm": [
+      90,
+      2220401326
+     ],
+     "t": [
+      90,
+      9742
+     ],
+     "rain": [
+      32,
+      968822684
+     ],
+     "rainncv": [
+      32,
+      1007173295
+     ],
+     "snow": [
+      24,
+      934460670
+     ],
+     "snowncv": [
+      24,
+      986619896
+     ],
+     "sr": [
+      24,
+      1065353216
+     ]
+    }
+   }
+  },
+  "lev2-dt20-n4": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 974,
+    "columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "remap_probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      112,
+      7616
+     ],
+     "qv": [
+      112,
+      1264646
+     ],
+     "qc": [
+      16,
+      13009946
+     ],
+     "qi": [
+      38,
+      901322293
+     ],
+     "qr": [
+      54,
+      986579157
+     ],
+     "qs": [
+      88,
+      989621214
+     ],
+     "re_cloud": [
+      16,
+      4219189
+     ],
+     "re_ice": [
+      38,
+      24621362
+     ],
+     "re_snow": [
+      88,
+      49340726
+     ],
+     "refl_10cm": [
+      106,
+      2220180168
+     ],
+     "t": [
+      112,
+      7385
+     ],
+     "rain": [
+      48,
+      1031912401
+     ],
+     "rainncv": [
+      44,
+      1043788355
+     ],
+     "snow": [
+      36,
+      1019841610
+     ],
+     "snowncv": [
+      36,
+      1026090097
+     ],
+     "sr": [
+      30,
+      1065353216
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "probe_columns": [],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {}
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 974,
+    "columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "remap_probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz100",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz100",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz100",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "psevp_probe_columns": [
+     "lev2-bottom-only-dz100",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      112,
+      7616
+     ],
+     "qv": [
+      112,
+      1264646
+     ],
+     "qc": [
+      16,
+      13009946
+     ],
+     "qi": [
+      38,
+      901322293
+     ],
+     "qr": [
+      54,
+      986579157
+     ],
+     "qs": [
+      88,
+      989621214
+     ],
+     "re_cloud": [
+      16,
+      4219189
+     ],
+     "re_ice": [
+      38,
+      24621362
+     ],
+     "re_snow": [
+      88,
+      49340726
+     ],
+     "refl_10cm": [
+      106,
+      2220173468
+     ],
+     "t": [
+      112,
+      7385
+     ],
+     "rain": [
+      48,
+      1031912401
+     ],
+     "rainncv": [
+      44,
+      1043788355
+     ],
+     "snow": [
+      36,
+      1019841610
+     ],
+     "snowncv": [
+      36,
+      1026090097
+     ],
+     "sr": [
+      30,
+      1065353216
+     ]
+    }
+   }
+  },
+  "lev2-dt300-n2": {
+   "control_scalar_vs_stock_recompiled": 0,
+   "stock_fallthrough_columns": [],
+   "stock_nonzero_psevp_columns": [],
+   "strict_vs_scalar": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "fields": {}
+   },
+   "remap_vs_stock": {
+    "bit_mismatch": 367,
+    "columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "remap_probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {
+     "th": [
+      42,
+      22500
+     ],
+     "qv": [
+      42,
+      2030279
+     ],
+     "qc": [
+      8,
+      966677040
+     ],
+     "qi": [
+      20,
+      882782242
+     ],
+     "qr": [
+      9,
+      963121496
+     ],
+     "qs": [
+      26,
+      984440044
+     ],
+     "re_cloud": [
+      8,
+      25225793
+     ],
+     "re_ice": [
+      20,
+      21088542
+     ],
+     "re_snow": [
+      26,
+      48867124
+     ],
+     "refl_10cm": [
+      27,
+      2217440562
+     ],
+     "t": [
+      42,
+      21767
+     ],
+     "rain": [
+      26,
+      1055395226
+     ],
+     "rainncv": [
+      22,
+      1054702676
+     ],
+     "snow": [
+      20,
+      1040192972
+     ],
+     "snowncv": [
+      18,
+      1041092136
+     ],
+     "sr": [
+      11,
+      1065353216
+     ]
+    }
+   },
+   "psevp_vs_stock": {
+    "bit_mismatch": 0,
+    "columns": [],
+    "probe_columns": [],
+    "remap_probe_columns": [],
+    "psevp_probe_columns": [],
+    "equal": true,
+    "fields": {}
+   },
+   "defined_vs_stock": {
+    "bit_mismatch": 367,
+    "columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "remap_probe_columns": [
+     "lev2-all-dz100",
+     "lev2-all-dz600",
+     "lev2-bottom-only-dz600",
+     "lev2-ice-dz100",
+     "lev2-ice-dz600",
+     "lev2-rain-dz600",
+     "lev2-rain-snow-dz100",
+     "lev2-rain-snow-dz600",
+     "lev2-snow-dz100",
+     "lev2-snow-dz600",
+     "lev2-top-only-rain-dz600",
+     "lev2-top-only-snow-dz100",
+     "lev2-top-only-snow-dz600"
+    ],
+    "psevp_probe_columns": [
+     "lev2-rain-snow-dz600"
+    ],
+    "equal": true,
+    "fields": {
+     "th": [
+      42,
+      22500
+     ],
+     "qv": [
+      42,
+      2030279
+     ],
+     "qc": [
+      8,
+      966677040
+     ],
+     "qi": [
+      20,
+      882782242
+     ],
+     "qr": [
+      9,
+      962809816
+     ],
+     "qs": [
+      26,
+      984440044
+     ],
+     "re_cloud": [
+      8,
+      25225793
+     ],
+     "re_ice": [
+      20,
+      21088542
+     ],
+     "re_snow": [
+      26,
+      48867124
+     ],
+     "refl_10cm": [
+      27,
+      2217440562
+     ],
+     "t": [
+      42,
+      21767
+     ],
+     "rain": [
+      26,
+      1055395226
+     ],
+     "rainncv": [
+      22,
+      1054702676
+     ],
+     "snow": [
+      20,
+      1040192972
+     ],
+     "snowncv": [
+      18,
+      1041092136
+     ],
+     "sr": [
+      11,
+      1065353216
+     ]
+    }
+   }
+  }
+ },
+ "failures": [],
+ "remap_probe": {
+  "scalar": [
+   {
+    "nz": 2,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.1999990094993791,
+    "relative_error": 0.9999949999996817,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 1.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.995,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 20.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.8999999976716937,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.80000019306317,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.19999904442397565,
+    "relative_error": 0.039999806984906246,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 1.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.800000227987766,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.0398,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 20.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.800000227987766,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.035999999906867745,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.800000335555524,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.19999904442397565,
+    "relative_error": 0.024999879365566403,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 1.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.80000037048012,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.024875,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 20.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.80000037048012,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.02249999994179234,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   }
+  ],
+  "strict": [
+   {
+    "nz": 2,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.1999990094993791,
+    "relative_error": 0.9999949999996817,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 1.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.995,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 20.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.8999999976716937,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.80000019306317,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.19999904442397565,
+    "relative_error": 0.039999806984906246,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 1.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.800000227987766,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.0398,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 20.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.800000227987766,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.035999999906867745,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.800000335555524,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.19999904442397565,
+    "relative_error": 0.024999879365566403,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 1.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.80000037048012,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.024875,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 20.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.80000037048012,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.02249999994179234,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   }
+  ],
+  "stock": [
+   {
+    "nz": 2,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.1999990094993791,
+    "relative_error": 0.9999949999996817,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 1.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.995,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 20.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.8999999976716937,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.80000019306317,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.19999904442397565,
+    "relative_error": 0.039999806984906246,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 1.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.800000227987766,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.0398,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 20.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.800000227987766,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.035999999906867745,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.800000335555524,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.19999904442397565,
+    "relative_error": 0.024999879365566403,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 1.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.80000037048012,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.024875,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 20.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.80000037048012,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.02249999994179234,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   }
+  ],
+  "remap": [
+   {
+    "nz": 2,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.19999899668619037,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 1.2813188732252456e-08,
+    "relative_error": 6.406594061829339e-08,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009999899193644524
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 1.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.19900001352652907,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": -4.0745362639427185e-09,
+    "relative_error": 2.03726803520632e-08,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009900000877678394
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 20.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.18000000854954123,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": -4.656612873077393e-10,
+    "relative_error": 2.32830632595008e-09,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.000800000037997961
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.999999224673957,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 1.2813188732252456e-08,
+    "relative_error": 2.5626376247317356e-09,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009999902686104178
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 1.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.999000241514295,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": -4.0745362639427185e-09,
+    "relative_error": 8.14907214082528e-10,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009900000877678394
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 20.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.9800002365373075,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": -4.656612873077393e-10,
+    "relative_error": 9.313225303800319e-11,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.000800000037997961
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.9999993671663105,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 1.2813188732252456e-08,
+    "relative_error": 1.6016485154573346e-09,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009999902686104178
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 1.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.999000384006649,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": -4.0745362639427185e-09,
+    "relative_error": 5.0931700880158e-10,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009900000877678394
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 20.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.980000379029661,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": -4.656612873077393e-10,
+    "relative_error": 5.8207658148751997e-11,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.000800000037997961
+    ]
+   }
+  ],
+  "psevp": [
+   {
+    "nz": 2,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.1999990094993791,
+    "relative_error": 0.9999949999996817,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 1.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.995,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 20.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.0,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.8999999976716937,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.80000019306317,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.19999904442397565,
+    "relative_error": 0.039999806984906246,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 1.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.800000227987766,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.0398,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 20.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.800000227987766,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.035999999906867745,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.800000335555524,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 0.19999904442397565,
+    "relative_error": 0.024999879365566403,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 1.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.80000037048012,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": 0.1990000094519928,
+    "relative_error": 0.024875,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 20.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.80000037048012,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": 0.18000000808387995,
+    "relative_error": 0.02249999994179234,
+    "top_two_density": [
+     0.0,
+     0.0
+    ]
+   }
+  ],
+  "defined": [
+   {
+    "nz": 2,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.19999899668619037,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 1.2813188732252456e-08,
+    "relative_error": 6.406594061829339e-08,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009999899193644524
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 1.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.19900001352652907,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": -4.0745362639427185e-09,
+    "relative_error": 2.03726803520632e-08,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009900000877678394
+    ]
+   },
+   {
+    "nz": 2,
+    "dt": 20.0,
+    "initial_kg_m2": 0.20000000949949026,
+    "final_column_kg_m2": 0.18000000854954123,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": -4.656612873077393e-10,
+    "relative_error": 2.32830632595008e-09,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.000800000037997961
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.999999224673957,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 1.2813188732252456e-08,
+    "relative_error": 2.5626376247317356e-09,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009999902686104178
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 1.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.999000241514295,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": -4.0745362639427185e-09,
+    "relative_error": 8.14907214082528e-10,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009900000877678394
+    ]
+   },
+   {
+    "nz": 50,
+    "dt": 20.0,
+    "initial_kg_m2": 5.0000002374872565,
+    "final_column_kg_m2": 4.9800002365373075,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": -4.656612873077393e-10,
+    "relative_error": 9.313225303800319e-11,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.000800000037997961
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 0.0010000000474974513,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.9999993671663105,
+    "fallout_kg_m2": 1.0000001111620804e-06,
+    "lost_kg_m2": 1.2813188732252456e-08,
+    "relative_error": 1.6016485154573346e-09,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009999902686104178
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 1.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.999000384006649,
+    "fallout_kg_m2": 0.0010000000474974513,
+    "lost_kg_m2": -4.0745362639427185e-09,
+    "relative_error": 5.0931700880158e-10,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.0009900000877678394
+    ]
+   },
+   {
+    "nz": 80,
+    "dt": 20.0,
+    "initial_kg_m2": 8.00000037997961,
+    "final_column_kg_m2": 7.980000379029661,
+    "fallout_kg_m2": 0.020000001415610313,
+    "lost_kg_m2": -4.656612873077393e-10,
+    "relative_error": 5.8207658148751997e-11,
+    "top_two_density": [
+     0.0010000000474974513,
+     0.000800000037997961
+    ]
+   }
+  ]
+ }
+}

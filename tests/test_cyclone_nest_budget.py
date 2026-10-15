@@ -348,8 +348,12 @@ def layout(plan):
 # Refused against the fit target until A175, inside the budget all along (read
 # at 0.05 GiB steps from 4.6 to 5.05 at the 1.13 margin: 4.75 through 4.95;
 # 4.8 through 5.0 once the driver's held CLDFRA buffer is priced, RULINGS 1,
-# 2.8.7, read again at 0.05 GiB steps from 4.7 to 5.25).
-@pytest.mark.parametrize("budget_gib", [4.8, 4.9, 5.0])
+# 2.8.7, read again at 0.05 GiB steps from 4.7 to 5.25; 4.85 through 5.05
+# since the WRF 4.6.1 Kain-Fritsch port, 26779da4e via 3bf65e9c7, keeps 66
+# column arrays in its workspace, not 52, which prices the floor at
+# 5,192,867,947 B, read the same way at the 2.9.0 lane tip; with
+# KFWS_SLOTS set back to 52 the previous pins of this file all pass).
+@pytest.mark.parametrize("budget_gib", [4.85, 4.95, 5.05])
 def test_a_floor_inside_its_budget_is_the_preset_and_not_a_refusal(budget_gib):
     narrowed, bound = tc._budget_sizing(CARD, budget_gib)
     assert bound == "request"
@@ -438,9 +442,13 @@ def _assert_one_answer(dropped, flagged, reason):
 # 144x144, then 190x152 / 152x152, while dropping it kept 200x160 / 160x160);
 # `--tiles auto` agreed throughout, because the tree road's withholding binds
 # below both numbers there.  The sweep starts two steps under the band and
-# ends two over it, so both answers are reached on each road.
+# ends two over it, so both answers are reached on each road.  Since the
+# 66-array KF workspace (26779da4e), read at the 2.9.0 lane tip from 5.1 at
+# 0.025 / 0.05 GiB steps: `--tiles off` refuses through 5.325 and admits from
+# 5.35, and `--tiles auto` refuses through 5.6 and admits from 5.65, both
+# doors agreeing at every step; the auto sweep moves up to cross its edge.
 CARD_SWEEP_OFF = [round(5.2 + 0.025 * k, 3) for k in range(15)]
-CARD_SWEEP_AUTO = [round(5.2 + 0.05 * k, 3) for k in range(8)]
+CARD_SWEEP_AUTO = [round(5.5 + 0.05 * k, 3) for k in range(8)]
 
 
 @pytest.mark.parametrize("tiles,free_gib",
@@ -511,8 +519,10 @@ def test_the_request_bound_flag_and_the_flagless_door_give_one_answer(
 # the forecast margin at 1.13 of the subtotal, read again at 0.005 GiB steps
 # from 4.85 to 5.07.  The held CLDFRA buffer, RULINGS 1, 2.8.7, moved it to
 # 5.005 through 5.025, admitting at 5.03, read at 0.005 GiB steps from 4.98
-# to 5.10.)
-TILE_BAND = [5.005, 5.01, 5.02, 5.025]
+# to 5.10.  The 66-array KF workspace, 26779da4e, moved it to 5.095 through
+# 5.105, admitting at 5.11, read at 0.005 GiB steps from 4.98 to 5.20 at the
+# 2.9.0 lane tip.)
+TILE_BAND = [5.095, 5.1, 5.105]
 
 
 @pytest.mark.parametrize("budget_gib", TILE_BAND)
@@ -541,7 +551,7 @@ def test_the_tile_roads_band_ends_where_its_own_budget_clears_the_price():
     """And it ends there rather than where the flat road's budget or the fit
     target does, which is the whole reason neither can be the number quoted."""
     plan = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=CARD, hours=3,
-                           tiles="auto", nest_budget_gib=5.03)
+                           tiles="auto", nest_budget_gib=5.11)
     assert plan["nest"]["dimensions"] == list(tc.CHILD_DIMS)
 
 

@@ -634,6 +634,8 @@ def native_memory_model_from_node(inputs, node, *, runtime_reservation, allocato
         levels.update({name: 1 for name in row["surface_slots"] if name in slots})
         if "refl_10cm" in slots:
             levels["refl_10cm"] = 1
+        from gpuwm.ensemble.batch_physics import THOMPSON_CLOUD_BOOKING_SLOTS
+        levels.update({name: 1 for name in THOMPSON_CLOUD_BOOKING_SLOTS if name in slots})
         levels["h_diabatic"] = cfg.nz
         components.append(MemoryComponent("native_thompson_ring", "physics",
             plan=ring_memory_plan(levels, ny=cfg.ny, nx=cfg.nx, width=cfg.spec_zone, zero_fields=("h_diabatic",)),

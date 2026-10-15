@@ -117,6 +117,8 @@ _RUN_FIELD_SPELLING: dict[str, str] = {
     "restart_interval_s": "restart_interval_s",
     "output_interval_s": "domain.<grid_id>.history_interval_s",
     "surface_energy_diag": "domain.<grid_id>.surface_energy_diag",
+    # Correct mode WB1: output-only, so a branch may switch it (books CLOUDNC).
+    "thompson_cloud_surface_booking": "domain.<grid_id>.thompson_cloud_surface_booking",
 }
 
 _unspelled = (set(RESTART_TOLERATED_EXPERIMENT_FIELDS)

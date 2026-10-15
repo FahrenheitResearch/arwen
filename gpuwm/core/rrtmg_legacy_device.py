@@ -139,7 +139,7 @@ def _prep(sw, kw):
     hc, hi, hs = (int(k[n]) for n in ("has_reqc", "has_reqi", "has_reqs"))
     ref._require_radii(name, hc, hi, hs, k["re_cloud"], k["re_ice"], k["re_snow"])
     if sw:
-        ref._mp_guard(k["mp_physics"], allowed_extra=(85,))
+        ref._mp_guard(k["mp_physics"])
         if int(k["sf_surface_physics"]) == 8:
             raise NotImplementedError("sf_surface_physics=8 selects the SSiB "
                                       "albedo split outside this port's contract")
@@ -207,7 +207,8 @@ def _prep(sw, kw):
              for n in ("cldfrac", "clwpth", "ciwpth", "cswpth", "rel", "rei", "res")}
     args = (ncol, nk, nl, int(sw), int(k["icloud"]), int(k["warm_rain"]),
             *(int(k[n]) for n in ("f_qc", "f_qr", "f_qi", "f_qs")),
-            hc, hi, hs, inflg, iceflg, int(k["o3input"]), np.float32(k["g"]),
+            hc, hi, hs, inflg, iceflg, int(k["o3input"]),
+            int(ref._is_ferrier(k["mp_physics"])), np.float32(k["g"]),
             *(prof[n] for n in ("p3d", "p8w", "t3d", "t8w", "dz8w", "qv3d",
                                "qc3d", "qr3d", "qi3d", "qs3d", "cldfra3d", "o33d",
                                "re_cloud", "re_ice", "re_snow")),

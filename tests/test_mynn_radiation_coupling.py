@@ -85,7 +85,10 @@ def test_every_non_mynn_radiation_path_is_byte_identical(
         # and the merge is the rla_mynn kernel, which
         # tests/test_rrtmg_legacy_device_glue.py holds bitwise to
         # merge_mynn_bl_clouds + mynn_bl_cloud_supplied + unsized_mynn_radii.
-        assert "active_bl = mynn_bl_cloud_active(" in source
+        # golden/ports-rad gates the merge on icloud = 1 too: with icloud = 2
+        # the cloud fraction is WRF's binary cal_cldfra2, which the MYNN
+        # subgrid merge does not touch.
+        assert "active_bl = icloud == 1 and mynn_bl_cloud_active(" in source
         assert '"rla_mynn"' in source
         assert "if active_bl:" in source
     else:

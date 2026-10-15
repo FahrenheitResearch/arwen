@@ -61,6 +61,9 @@ def pack(build, destination, selected=None):
     }
     if (build / "corrected-atm-sha256.txt").exists():
         receipt["corrected_atm_sha256"] = (build / "corrected-atm-sha256.txt").read_text().split()[0]
+    if (build / "corrected-regime-sha256.txt").exists():
+        receipt["reference_kind"] = "explicitly corrected SFIRE regimes"
+        receipt["corrected_regime_sources"] = (build / "corrected-regime-sha256.txt").read_text()
     (destination / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps({"cases": len(cases), "words": sum(a.size for c in cases for a in np.load(destination / (c + '.npz')).values())}))
 

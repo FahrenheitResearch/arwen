@@ -1,0 +1,530 @@
+{
+  "arguments": [
+    {
+      "name": "lsolar",
+      "type": "bool",
+      "layers": 0
+    },
+    {
+      "name": "num_roof_layers",
+      "type": "int",
+      "layers": 0
+    },
+    {
+      "name": "num_wall_layers",
+      "type": "int",
+      "layers": 0
+    },
+    {
+      "name": "num_road_layers",
+      "type": "int",
+      "layers": 0
+    },
+    {
+      "name": "dzr",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "dzb",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "dzg",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "utype",
+      "type": "int",
+      "layers": 0
+    },
+    {
+      "name": "ta",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "qa",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "ua",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "u1",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "v1",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "ssg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "ssgd",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "ssgq",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "llg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "rain",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "rhoo",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "za",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "declin",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "cosz",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "omg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "xlat",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "delt",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "znt",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "chs",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "chs2",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tr",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tc",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "qc",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "uc",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "trl",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "tbl",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "tgl",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "xxxr",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "xxxb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "xxxg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "xxxc",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "ts",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "qs",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "sh",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "lh",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "lh_kinematic",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "sw",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "alb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "lw",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "g",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "rn",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "psim",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "psih",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "gz1oz0",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "cmr_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "chr_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "cmc_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "chc_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "u10",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "v10",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "th2",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "q2",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "ust",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "mh_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "stdh_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "lf_urb",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "lp_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "hgt_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "frc_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "lb_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "zo_check",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "cmcr",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tgr",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tgrl",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "smr",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "cmgr_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "chgr_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "jmonth",
+      "type": "int",
+      "layers": 0
+    },
+    {
+      "name": "drelr",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "drelb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "drelg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "flxhumr",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "flxhumb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "flxhumg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tvg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tt",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "xxxvg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "tvgl",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "smg",
+      "type": "float",
+      "layers": 4
+    },
+    {
+      "name": "cmcg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "flxhumvg",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "flxhumt",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "lf_urb_s",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "z0_urb",
+      "type": "float",
+      "layers": 0
+    },
+    {
+      "name": "vegfrac_in",
+      "type": "float",
+      "layers": 0
+    }
+  ],
+  "table": [
+    "zr",
+    "z0c",
+    "z0hc",
+    "zdc",
+    "svf",
+    "r",
+    "rw",
+    "hgt",
+    "ah",
+    "alh",
+    "betr",
+    "betb",
+    "betg",
+    "capr",
+    "capb",
+    "capg",
+    "aksr",
+    "aksb",
+    "aksg",
+    "albr",
+    "albb",
+    "albg",
+    "epsr",
+    "epsb",
+    "epsg",
+    "z0r",
+    "z0b",
+    "z0g",
+    "z0hb",
+    "z0hg",
+    "trlend",
+    "tblend",
+    "tglend",
+    "akanda_urban",
+    "albvg",
+    "albt",
+    "fvg",
+    "rtree",
+    "rtree_m",
+    "rw_m",
+    "htree",
+    "dtree",
+    "lai_tree",
+    "lai_veg",
+    "z0vg",
+    "z0hvg",
+    "capvg",
+    "epsvg",
+    "epst"
+  ]
+}

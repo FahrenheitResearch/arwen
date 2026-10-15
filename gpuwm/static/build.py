@@ -1875,12 +1875,16 @@ def geog_selection_from_catalog(catalog, domain_id: int) -> GeogSelection:
         raise ValueError(
             "catalog contains no geog_index files; run input preflight "
             "before child initialization")
-    roots = {path.resolve().parent.parent for path in geog_indices}
-    if len(roots) != 1:
-        raise ValueError(
-            "catalog geog_index files do not share one resolved GEOG root: "
-            f"{sorted(map(str, roots))}")
-    geog_root = roots.pop()
+    # Defect: resolving shared baseline symlinks loses the selected root,
+    # then optional physics looks for its supplemental datasets in the donor.
+    geog_root = getattr(catalog, "geog_root", None)
+    if geog_root is None:
+        roots = {path.resolve().parent.parent for path in geog_indices}
+        if len(roots) != 1:
+            raise ValueError(
+                "catalog geog_index files do not share one resolved GEOG root: "
+                f"{sorted(map(str, roots))}")
+        geog_root = roots.pop()
     return GeogSelection.from_case_data(
         SimpleNamespace(wps_namelist=wps_paths[0], geog_root=geog_root,
                         static_highres=getattr(catalog, "static_highres",
@@ -1909,8 +1913,10 @@ def build_static_for_domain(grid, catalog, domain_id: int, *, cfg=None,
     if not isinstance(grid, ProjectedGrid):
         raise TypeError("grid must be a ProjectedGrid")
     selection = geog_selection_from_catalog(catalog, domain_id)
-    from .lake import with_lake_statics
-    selection = with_lake_statics(selection, cfg)
+    # Preparation previously omitted the configured terrain-drag fields,
+    # leaving a sealed bundle that failed only after acquiring GPUs.
+    from .orographic import with_terrain_drag_statics
+    selection = with_terrain_drag_statics(selection, cfg)
     geog_root = selection.root
     # known_x/known_y are part of the projected geometry: two placements of
     # a relocating nest share every other parameter (translated grids keep

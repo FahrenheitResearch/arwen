@@ -435,7 +435,7 @@ pub fn read_mesh_cell_spacing(path: &Path) -> MpasResult<MeshSpacing> {
     })
 }
 
-fn unit_vector(lat_deg: f64, lon_deg: f64) -> [f64; 3] {
+pub(crate) fn unit_vector(lat_deg: f64, lon_deg: f64) -> [f64; 3] {
     let lat = lat_deg * RAD;
     let lon = lon_deg * RAD;
     let cos_lat = lat.cos();
@@ -575,7 +575,7 @@ impl KdTree {
 
     /// Index of the nearest stored point to `target`, by squared chord
     /// distance, with the distance.
-    fn nearest(&self, target: [f64; 3]) -> (u32, f64) {
+    pub(crate) fn nearest(&self, target: [f64; 3]) -> (u32, f64) {
         let mut best = (u32::MAX, f64::INFINITY);
         self.search(0, self.order.len(), target, &mut best);
         best

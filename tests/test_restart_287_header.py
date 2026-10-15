@@ -67,7 +67,8 @@ def test_the_stored_digest_rebuilds_under_the_clock_the_header_ran():
 def test_a_287_checkpoint_of_unchanged_schemes_resumes_under_measured(
         monkeypatch):
     header = _header("sfire-ideal-4s.json")
-    live = _run_config(header["config"], terrain_clock="measured")
+    live = _run_config(header["config"], terrain_clock="measured",
+                       solar_generation="wrf_461")
     restart._require_current_algorithm_identities(header, live, "recorded")
     restart._require_config_match(header["config"], live, "recorded")
     # The live identity is the recorded one with THIS build's digest of the
@@ -127,5 +128,6 @@ def test_a_tampered_identity_is_left_to_the_integrity_refusal():
         header["physics_setup"],
         algorithms=dict(header["physics_setup"]["algorithms"],
                         microphysics="silently-tampered"))
-    live = _run_config(header["config"], terrain_clock="measured")
+    live = _run_config(header["config"], terrain_clock="measured",
+                       solar_generation="wrf_461")
     restart._require_current_algorithm_identities(header, live, "recorded")

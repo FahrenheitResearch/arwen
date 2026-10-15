@@ -100,6 +100,12 @@ _WRF471 = "WRF v4.7.1, not vendored here"
 #: ``bl_ysu.F90`` is WRF's ``phys/physics_mmm/bl_ysu.F90`` (the refactored YSU
 #: body ``module_bl_ysu.F`` wraps), which is why both spellings appear.
 EXTERNAL: dict[str, str] = {
+    "module_cu_g3.F": "WRF v4.6.1 phys/module_cu_g3.F",
+    "module_cu_nsas.F": _WRF,
+    'module_mp_fer_hires.F': _WRF,
+
+    # Port authorities verified in the read-only WRF v4.6.1 source.
+
     "bl_ysu.F90": _WRF,
     "module_bl_shinhong.F": _WRF,
     "module_bl_ysu.F": _WRF,
@@ -131,6 +137,7 @@ EXTERNAL: dict[str, str] = {
     "phys/module_mp_milbrandt2mom.F": _WRF,
     "phys/module_mp_thompson.F": _WRF,
     "module_mp_wdm6.F": _WRF,
+    "module_mp_wsm3.F": _WRF,
     "phys/module_mp_wdm6.F": _WRF,
     "phys/module_pbl_driver.F": _WRF,
     "phys/module_physics_init.F": _WRF,
@@ -152,7 +159,6 @@ EXTERNAL: dict[str, str] = {
     "share/module_check_a_mundo.F": _WRF,
     "module_check_a_mundo.F": _WRF,
     "module_mp_nssl_2mom.F": _WRF,
-    "share/module_model_constants.F": _WRF,
 }
 
 #: A bare filename that resolves to more than one file in this worktree, and
@@ -169,13 +175,13 @@ AMBIGUOUS: dict[str, str] = {}
 #: bless a drifted citation as correct, which is the failure this table exists
 #: to prevent.
 RESOLVED: dict[str, tuple[str, str]] = {
-    "kernels/ysu.cu:250": (
-        "gpuwm/core/kernels/ysu.cu",
-        "us == 0.0f && hf == 0.0f && qf == 0.0f"),
+    # (The ``kernels/ysu.cu:250`` row -- the zero-flux short circuit -- left
+    # with the short circuit itself, golden/ports-pbl 2026-10-12.)
+    "module_ra_sw.F:193-203": ("gpuwm/data/wrf_radiation/module_ra_sw.F", "QI1D(K)=QC1D(K)"),
     # YSU: the guard that skips the top-down block where WRF would read
     # thlix(i,k+2) one past an array declared kts:kte.  The anchor is the
     # guard condition the warning names.
-    "kernels/ysu.cu:437": (
+    "kernels/ysu.cu:425": (
         "gpuwm/core/kernels/ysu.cu",
         "kpbl < nz"),
     # Shin-Hong: the two guards on WRF's out-of-bounds q2xk(kpbl+1) read --
@@ -261,10 +267,13 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # transport moved both ten lines, to :1294 and :1388.  Anchors unchanged.)
     # The restored selected integration resolves these declarations at
     # :1424 and :1518. Keep the original semantic anchors checked there.
-    "gpuwm/core/dycore.py:1424": (
+    # (golden/wrf-fixes moved both one line up and golden/ports-mp three
+    # down; on the combined 2.9.0 line they sit at :1425 and :1519.
+    # Anchors unchanged.)
+    "gpuwm/core/dycore.py:1425": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:1518": (
+    "gpuwm/core/dycore.py:1519": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

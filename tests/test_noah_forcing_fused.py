@@ -70,6 +70,9 @@ def _run(monkeypatch, cp, rng_seed, use_scheme_sr):
             seen[name] = cp.asnumpy(f[name]).view(np.uint32).copy()
 
     monkeypatch.setattr(physics, "launch_noah", probe)
+    # seaice_noah follows lsm in _run_noah (2.8.6); it reads none of the
+    # forcing statements under test and has its own WRF oracle gate.
+    driver._run_noah_seaice = lambda *args, **kwargs: None
     monkeypatch.setattr(physics, "microphysics_scheme_sr_available",
                         lambda mp: use_scheme_sr)
     driver._run_noah(atmosphere, None, 1)

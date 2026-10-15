@@ -155,6 +155,9 @@ def main(args: argparse.Namespace) -> int:
             for row in load_registry()["presets"]]}, indent=2))
         return 0
     row = preset(args.name)
+    if args.preset_action == "prepare":
+        import subprocess
+        return subprocess.call(prepare_command(row, args))
     if args.preset_action == "run":
         blockers = launch_blockers(row)
         if blockers and not args.experimental:
@@ -208,6 +211,13 @@ def register_cli(subparsers) -> None:
     export.add_argument("--seconds", required=True, type=int)
     export.add_argument("--out", type=Path)
     export.set_defaults(func=main)
+    prepare = verbs.add_parser("prepare", help="prepare public inputs through the paired hex package")
+    prepare.add_argument("name")
+    prepare.add_argument("--cycle", required=True, help="UTC YYYYMMDDHH")
+    prepare.add_argument("--mesh", required=True)
+    prepare.add_argument("--hours", type=int, default=6)
+    prepare.add_argument("--out", type=Path, required=True)
+    prepare.set_defaults(func=main)
     run = verbs.add_parser("run", help="run a table-defined configuration through the hex forecast door")
     run.add_argument("name")
     run.add_argument("--experimental", action="store_true",
@@ -244,15 +254,22 @@ def launch_command(row: dict, args: argparse.Namespace) -> list[str]:
         raise ValueError("hours must contain a positive whole number of model steps")
     datetime.strptime(args.start_time, "%Y-%m-%d_%H:%M:%S")
     root = Path(__file__).resolve().parents[1]
-    tool = root / "tree" / "tools" / "check_samehost_forecast_v841.py"
-    if not tool.is_file():
-        raise ValueError("model preset hex forecast runner is absent from this checkout")
+    module = runtime["runner_module"]
+    from importlib.util import find_spec
+    try:
+        available = find_spec(module) is not None
+    except ModuleNotFoundError:
+        available = False
+    if not available:
+        raise ValueError(
+            f"model preset forecast runner {module!r} is not installed; "
+            "install the paired gpuwm-hex package to execute this preset")
     fingerprint = getattr(args, "fingerprint_every", None)
     if fingerprint is None:
         fingerprint = int(round(args.history_every_minutes * 60 / dt))
     if fingerprint < 1:
         raise ValueError("fingerprint cadence must be positive to retain matched endpoint hashes")
-    command = [sys.executable, str(tool), "--measurement-mint", "--dt", str(dt),
+    command = [sys.executable, "-m", module, "--measurement-mint", "--dt", str(dt),
                "--card", args.card, "--fingerprint-every", str(fingerprint), "--report",
                str(args.out.with_name(args.out.name + ".measurement.json")), "--", "forecast",
                "--mesh", args.mesh, "--physics-suite", runtime["physics_suite"],
@@ -268,3 +285,23 @@ def launch_command(row: dict, args: argparse.Namespace) -> list[str]:
         else:
             command.extend(["--" + flag, str(value)])
     return command
+
+
+def prepare_command(row: dict, args: argparse.Namespace) -> list[str]:
+    """Select only the packaged preparation entry and its metadata row."""
+    import sys
+    from importlib.util import find_spec
+    runtime = row.get("runtime", {})
+    module = runtime.get("prepare_module")
+    if not module or args.mesh not in runtime.get("meshes", {}):
+        raise ValueError("model preset has no preparation row for this mesh")
+    try:
+        available = find_spec(module) is not None
+    except ModuleNotFoundError:
+        available = False
+    if not available:
+        raise ValueError(f"model preset preparation runner {module!r} is not installed; "
+                         "install the paired gpuwm-hex package to prepare public inputs")
+    return [sys.executable, "-m", module, "--source-profile", runtime["source_profile"],
+            "--physics-suite", runtime["physics_suite"], "--cycle", args.cycle,
+            "--mesh", args.mesh, "--hours", str(args.hours), "--out", str(args.out)]

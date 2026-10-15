@@ -1,0 +1,87 @@
+{
+  "schema": "measured-legacy-source-extension-v1",
+  "baseline": "cd336e62d6e6b6312c9636e0fdfff84801909b6a",
+  "measured_tip": "ee3d22dc28e27ddb47c427e3765450a047f69e49",
+  "sources": {
+    "gpuwm/core/acoustic.py": {
+      "before": {
+        "bytes": 34602,
+        "sha256": "2552a40bdf24715e611f5500786a4636a7fb77daac45a6e2bc4b04d6f6ca3384"
+      },
+      "after": {
+        "bytes": 34865,
+        "sha256": "16689b2b523cc188204acf28ee48fbd3ac03bc9f0415e8f685a2bea5136e8b8e"
+      }
+    },
+    "gpuwm/core/constants.py": {
+      "before": {
+        "bytes": 2979,
+        "sha256": "76c8c11d1a75d17fd54d0a80646cec9dde04f649247ec2347d3d32e6c0500e9e"
+      },
+      "after": {
+        "bytes": 5308,
+        "sha256": "5f1878bc3bb2b13f458814d7dc43a0062ac7e6c16363397ebda29169481d2c35"
+      }
+    },
+    "gpuwm/core/dycore.py": {
+      "before": {
+        "bytes": 247314,
+        "sha256": "d4cc20c6a23c94f169228d19937724bb678b51b4e597495af09a1672ce8c263b"
+      },
+      "after": {
+        "bytes": 248835,
+        "sha256": "0f9386925df53dd238566a97b89e954b83023c4980d8aaf8ca22434803617210"
+      }
+    },
+    "gpuwm/core/kernels/__init__.py": {
+      "before": {
+        "bytes": 28570,
+        "sha256": "e44a76e72880e6cbacee4a3cf299ab7e1a0b418e737355b3b64bfd60358b67cc"
+      },
+      "after": {
+        "bytes": 47043,
+        "sha256": "7f89014968269f1c606f295102a5cbb13d07cf5e3dbd1122badcb41afd8465b4"
+      }
+    },
+    "gpuwm/wrf_exact.py": {
+      "before": {
+        "bytes": 5198,
+        "sha256": "46a2451b5ac0408d8c1fb63ea801debd99c05a66bf110cb509f372020b1c3c57"
+      },
+      "after": {
+        "bytes": 5260,
+        "sha256": "d732e6ae4b6487302b4e06af8c3cdd601a8dfcdb8fe40599f1bc1a6be715406d"
+      }
+    }
+  },
+  "measurements": {
+    "acoustic": {
+      "arrays": 132,
+      "words": 305632,
+      "changed_arrays": 0,
+      "changes": {},
+      "different_words": 0,
+      "base_frozen_pass": true,
+      "tip_frozen_pass": true
+    },
+    "coordinate": {
+      "arrays": 272,
+      "words": 178128,
+      "changed_arrays": 0,
+      "changes": {},
+      "different_words": 0,
+      "base_frozen_pass": false,
+      "tip_frozen_pass": false
+    },
+    "drivers": {
+      "arrays": 2618,
+      "words": 31686592,
+      "changed_arrays": 0,
+      "changes": {},
+      "different_words": 0,
+      "base_frozen_pass": false,
+      "tip_frozen_pass": false
+    }
+  },
+  "scope": "Fresh base versus tip output hashes on one card. Where the older frozen coordinate and driver captures differ at both trees, no equality with those outputs is claimed."
+}

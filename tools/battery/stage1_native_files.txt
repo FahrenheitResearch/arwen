@@ -20,6 +20,7 @@
 # the integrator runs it on the candidate beside the Stage 1 leg and requires
 # 0 failures.
 
+tests/test_aer_opt2.py # rw_netcdf reads the aer_opt = 2 auxinput15 aerosol file.
 tests/test_analyzed_scalar_boundaries.py # rw_netcdf decodes analyzed NetCDF fields.
 tests/test_atmospheric_window.py # gpuwm_preprocess_cpu prepares each forcing slot.
 tests/test_canonical_radar_scene.py # rw_simradar converts native columns and writes independently decoded radar; missing native execution would leave temperature and wind conventions unchecked.

@@ -73,9 +73,10 @@ the division with optics whose range is proven normal for any layer of nonzero
 mass [gpuwm/core/rrtmg_aerosol_optics.py, tests/test_rrtmg_aerosol_optics.py].
 
 Other schemes carry subnormal-class records in the registry rather than silent
-behavior: YSU records one FTZ-class subnormal branch disagreement (a flushed
-subnormal `ust` reaching its zero-flux short circuit) after the same
-double-compare countermeasure closed its subnormal-`br` branch; Shin-Hong
+behavior: YSU's two FTZ-class branch disagreements are closed (the
+subnormal-`br` branch by the same double-compare countermeasure, and the
+flushed subnormal `ust` by removing the zero-flux short circuit it reached),
+leaving only WRF's own `prfac2` 0/0 recorded as a declared divergence; Shin-Hong
 records the subnormal-flush branch closed by a double-compare countermeasure with
 72 residual flush lanes pinned as counts; the radiation preparation path routes one
 subnormal-sensitive block through the host by design

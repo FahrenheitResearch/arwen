@@ -156,6 +156,20 @@ def test_the_odim_regime_is_on_the_allow_list_and_is_its_own_value():
     assert len(set(CLEAR_AIR_SOURCES)) == len(CLEAR_AIR_SOURCES)
 
 
+def test_every_radar_consumer_reads_the_regime_the_odim_gridder_writes():
+    """The superob writes ``undetect_and_finite_below_floor`` for an ODIM
+    pack, but the reflectivity adapter and the heating builder each held an
+    allow-list without it, so a European volume gridded with its clear air
+    was refused by the filter, the precipitation analysis and the heating
+    builder alike and the documented European route ended at the file.  One
+    list now, owned by the adapter."""
+    from gpuwm.da import obs_radar, radar_tten
+
+    assert CLEAR_AIR_SOURCE_ODIM in obs_radar.CLEAR_AIR_SOURCES
+    assert set(obs_radar.CLEAR_AIR_SOURCES) == set(CLEAR_AIR_SOURCES)
+    assert radar_tten._CLEAR_AIR_SOURCES is obs_radar.CLEAR_AIR_SOURCES
+
+
 def test_the_regime_is_chosen_by_the_pack_not_by_the_caller(tmp_path):
     """The flag says "use the decoder's codes"; the file says whose codes."""
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import math
 import tomllib
-from dataclasses import KW_ONLY, dataclass, fields
+from dataclasses import KW_ONLY, dataclass, fields, field as _config_field
 from pathlib import Path
 from typing import ClassVar
 from gpuwm.sfire_config import FireRunFields, validate_fire_config
@@ -22,6 +22,7 @@ from importlib import import_module as _import_module
 # gpuwm.verify.sase_ref: that tree is developer verification and the
 # standalone CPU preprocessing distribution omits it.
 from gpuwm.core import sase_limits as _sase_limits
+from gpuwm import correct_mode as _correct_mode
 
 DEFAULT_COLUMN_CHUNK = 3125
 
@@ -105,7 +106,7 @@ class RunConfig:
     hybrid_opt: int = 0          # 0/1 = B(eta)=eta (Phase 1); 2 = WRF cubic-B hybrid
     etac: float = 0.2
     moist: bool = False
-    # 0 off, 1 Kessler, 6 WSM6, 8 Thompson, 10 Morrison, 18 NSSL,
+    # 0 off, 1 Kessler, 2 Purdue Lin, 6 WSM6, 8 Thompson, 10 Morrison, 18 NSSL,
     # 28 Thompson aerosol-aware (Registry/Registry.EM_COMMON:3036).
     # Named WOOF schemes are given by name and resolve to their
     # WOOF-side id (gpuwm.microphysics_schemes) in __post_init__.
@@ -419,8 +420,9 @@ class RunConfig:
     # WRF's module_physics_init gate around the microphysics effective-radius
     # scheme table.  Only legacy RRTMG owns that wrapper branch.
     use_mp_re: int = 1
-    # RUC's live CASE(RUCLSMSCHEME) sea-ice albedo replacement.  The previous
-    # literal was 0.65, so that remains the gpuwm default.
+    # WRF &physics seaice_albedo_default (Registry default 0.65): RUC's live
+    # CASE(RUCLSMSCHEME) sea-ice albedo replacement, and the sea-ice albedo
+    # Noah's seaice_noah sets under seaice_albedo_opt = 0.
     seaice_albedo_default: float = 0.65
     # Noah LSMINIT snow-albedo source.  True preserves the supplied geogrid
     # SNOALB field; false transcribes WRF's MAXALB(IVGTYP)*0.01 branch.
@@ -1175,8 +1177,8 @@ class RunConfig:
     #   numbers (gpuwm.core.rrtmg_aerosol_optics; the driver's gt_aod plus
     #   module_ra_aerosol.F's calc_aerosol_rrtmg_sw).  0 runs zero
     #   aerosol.  1 (the ECMWF six-type climatology, iaer = 6) and 2 (the
-    #   aer_aod550/angexp/ssa/asy auxinput path) are not transcribed and
-    #   refuse by name (validate_radiation_driver_options).
+    #   aer_aod550/angexp/ssa/asy auxinput path) run on the legacy RRTMG
+    #   shortwave only (validate_radiation_driver_options).
     swint_opt: int = 0
     aer_opt: int = 0
     #: Sun-angle land albedo (WRF radiation driver's ALBSOL/ALBBCKSOL).
@@ -1277,6 +1279,67 @@ class RunConfig:
     #: positional construction keeps every earlier field where it was
     #: (tests/test_config_freeze.py); a header at None drops it.
     thompson_table_dir: str | None = None
+    # --- 2.9.0 (golden/wrf-fixes): appended after thompson_table_dir, ahead
+    # of the chem block (which stays the last positional block) and the
+    # keyword-only fire block, so no earlier positional index moves.
+    #: WRF's scalar-array advection selector; 1 is the only implemented
+    #: operator and what every earlier run used (a header drops it).
+    scalar_adv_opt: int = 1
+    #: Source numerical generation of the single-layer canopy.
+    urban_ucm_generation: str = "wrf_471"
+    #: -1 retains the corresponding URBPARM entry.
+    urban_treeoption: int = -1
+    urban_ttscheme: int = -1
+    urban_fvg: float = -1.0
+    #: Explicit URBPARM directory. Its resolved table bytes bind restart.
+    urban_table_dir: str = ""
+    # WRF 4.7/4.8 upstream correctness fixes, default-on (fixed means
+    # default).  Each keeps the previous generation selectable for
+    # reproduction; a checkpoint header without the key ran the previous
+    # generation, so continuing it under the corrected default is refused
+    # by name (gpuwm/io/restart.py ECHO_ABSENT_RUN_VALUES).
+    #: WRF 4.8 radconst/calc_coszen (julian - 0.5, 0.040849); ``wrf_461``
+    #: reproduces julian - 1 and 0.04089.
+    solar_generation: str = "wrf_480"
+    #: WRF 4.8 YSU capped top-down entrainment, min(0.2*8*tmp1, 0.4);
+    #: ``wrf_461`` reproduces 0.2*8*tmp1 + 0.2 on 2.8.9's kernel.
+    ysu_version: str = "wrf_480"
+    #: Snow-aging call placement only, not the complete Noah-MP version.
+    #: ``wrf_470`` ages at night; ``wrf_461`` reproduces daylight-only aging.
+    noahmp_snow_age: str = "wrf_470"
+    #: Impervious SLUCM stores: WRF 4.8 allows evaporation during weak rain.
+    #: Both generations retain the WRF 4.7.1 rho_air/1000 unit correction.
+    urban_water_balance: str = "wrf_480"
+    #: aer_opt = 2 (user AOD/Angstrom/ssa/asymmetry aerosol, WRF
+    #: module_radiation_driver.F aerosol_in branch).  Appended after
+    #: thompson_table_dir, ahead of the chem block, so positional
+    #: construction keeps every earlier field where it was; a run that
+    #: does not select aer_opt = 2 drops them from its identity.
+    aer_type: int = 1
+    aer_aod550_opt: int = 1
+    aer_angexp_opt: int = 1
+    aer_ssa_opt: int = 1
+    aer_asy_opt: int = 1
+    aer_aod550_val: float = 0.12
+    aer_angexp_val: float = 1.3
+    aer_ssa_val: float = 0.85
+    aer_asy_val: float = 0.9
+    aer_auxinput15: str = ''
+    aer_auxinput15_interval: int = 0
+    #: WRF lightning diagnostic package (lightning_option, Registry.EM_COMMON
+    #: :3332-3357).  Appended after the aer_opt = 2 controls, ahead of the
+    #: chem block, so positional construction keeps every earlier field where
+    #: it was (the lane first inserted them mid-class); off reads none.
+    lightning_option: int = 0
+    lightning_dt: float = 0.0
+    lightning_start_seconds: float = 0.0
+    flashrate_factor: float = 1.0
+    iccg_method: int = 0
+    iccg_prescribed_num: float = 0.0
+    iccg_prescribed_den: float = 1.0
+    cellcount_method: int = 0
+    cldtop_adjustment: float = 0.0
+    do_radar_ref: int = 0
 
     #: Turbulent Prandtl number of the km_opt = 1 constants: xkhh =
     #: khdif/prandtl and xkhv = kvdif/prandtl (isotropic_km,
@@ -1286,6 +1349,36 @@ class RunConfig:
     #: it, so it is a class constant, not a field: no TOML key, no
     #: namelist import, no configuration digest or restart identity entry.
     constant_k_prandtl: ClassVar[float] = 1.0 / 3.0
+
+    # Correct-mode mechanism keys (gpuwm/correct_mode.py; physics.mode =
+    # "correct" sets every one), appended last ahead of the chem block,
+    # which stays the last positional block.  From 2.9.0 correct mode is the
+    # default (fixed means default): each key defaults ON, except in a
+    # strict WRF process (GPUWM_WRF_EXACT=1), which forces the matched
+    # arithmetic (correct_mode.CORRECT_KEYS_DEFAULT).  False is the WRF
+    # v4.6.1 / MPAS-A v8.4.2 arithmetic, still selectable, and named by every
+    # parity and identity proof; a checkpoint header without the key ran it,
+    # so continuing that checkpoint under the new default is refused by name
+    # (gpuwm/io/restart.py ECHO_ABSENT_RUN_VALUES and
+    # CORRECT_MODE_RESTART_BREAK_NOTICE).
+    # WB5: WSM6 books the below-ground part of the straddling source cell
+    # with the remap's own piecewise-linear profile (kernels/wsm6.cu,
+    # WSM6_PLM_SURFACE) so column water + surface precipitation closes.
+    wsm6_conservative_surface: bool = _correct_mode.CORRECT_KEYS_DEFAULT
+    # WB4: New Tiedtke's water tendencies are per unit of its moist frame
+    # mass dp/g = m_dry*(1+qv); scale them by (1+qv) onto dry mass and hand
+    # the scheme a specific-humidity vapour forcing (gpuwm/core/ntiedtke.py).
+    ntiedtke_dry_mass_coupling: bool = _correct_mode.CORRECT_KEYS_DEFAULT
+    # WB5 in WDM6 (2.9.0, lane/290-A4): mp_wdm6.F carries the same
+    # sedimentation routine and books the below-ground part of the straddling
+    # cell at the flat cell mean; the correction books it with the remap's
+    # own piecewise-linear profile (kernels/wdm6.cu, WDM6_PLM_SURFACE).
+    wdm6_conservative_surface: bool = _correct_mode.CORRECT_KEYS_DEFAULT
+    # WB1 in classic Thompson (2.9.0, lane/290-A4): the cloud water the
+    # fallout takes out of the lowest level is booked in its own total,
+    # CLOUDNC (gpuwm/core/thompson_cloud_booking.py), instead of vanishing.
+    # Rain and the atmosphere are bit-identical with the key off.
+    thompson_cloud_surface_booking: bool = _correct_mode.CORRECT_KEYS_DEFAULT
 
     # Appended after the existing selectors.
     # The chem block (smoke, GOCART-lite aerosols, CAMS-carried gases;
@@ -1300,6 +1393,37 @@ class RunConfig:
     #: compared with the live config, and a tuple comes back from JSON as a
     #: list and would never match itself.  A TOML array is accepted by both
     #: loaders and joined.  gpuwm.chem_table.chem_names parses it.
+    # WRF v4.6.1 Registry default for cugd_avedx (Registry.EM_COMMON:2543),
+    # "number of grid boxes over which subsidence is spread".  Read only
+    # where cu_physics = 5 (Grell 3D): WRF's cumulus driver hands it to
+    # G3DRV and conv_grell_spread3d and to nothing else
+    # (module_cumulus_driver.F:1250, :1640).  1 is no spreading; > 1 turns
+    # on G3's high-resolution arm (3 x 3 forcing average, 3 x 3 subsidence
+    # spreading).  No frozen configuration selects 5, so appending it
+    # cannot move a frozen trajectory.
+    cugd_avedx: int = _config_field(default=1, kw_only=True)
+    maxiens: int = _config_field(default=1, kw_only=True)
+    maxens: int = _config_field(default=3, kw_only=True)
+    maxens2: int = _config_field(default=3, kw_only=True)
+    maxens3: int = _config_field(default=16, kw_only=True)
+    ensdim: int = _config_field(default=144, kw_only=True)
+    cu_diag: int = _config_field(default=0, kw_only=True)
+    convtrans_avglen_m: float = _config_field(default=30.0, kw_only=True)
+    # --- New SAS (cu_physics = 96) namelist knobs --------------------------
+    # Keyword-only, after G3's block and ahead of the chem and fire blocks
+    # (which stay last).  Both are WRF's own
+    # &physics keys at WRF's own Registry defaults: nsas_dx_factor
+    # (Registry.EM_COMMON:2493, scope 1, default 0 = the fixed
+    # trigger/closure velocities; 1 = the 250/dx scaling of
+    # module_cu_nsas.F:567-576) and sas_pgcon (:2651, default 0.55, the
+    # convectively forced pressure-gradient factor cu_nsas passes as pgcon).
+    # Read only where cu_physics = 96 (SAS_PGCON_SCHEMES,
+    # NSAS_DX_FACTOR_SCHEMES); validate_run_config refuses a non-default
+    # value under any other scheme, and both drop out of every identity
+    # while cu_physics != 96, so no earlier fingerprint or checkpoint moves.
+    nsas_dx_factor: int = _config_field(default=0, kw_only=True)
+    sas_pgcon: float = _config_field(default=0.55, kw_only=True)
+
     chem_sets: str = ""
     #: External chem sources enabled for this run, by name (files under
     #: gpuwm/data/chem/sources/), comma-separated in priority order.
@@ -1533,7 +1657,6 @@ class RunConfig:
     fire_fuel_namelist: str = ""
     fire_smoke: bool = False
 
-
 #: The ways a domain's clock meets the measured terrain rules
 #: (:attr:`RunConfig.terrain_clock`).
 TERRAIN_CLOCK_MODES: tuple[str, ...] = ("measured", "pinned", "local_face")
@@ -1551,6 +1674,22 @@ TERRAIN_CLOCK_RESTART_BREAK_NOTICE = (
     "can give a domain a longer step. To resume this checkpoint, write "
     "terrain_clock = \"measured\" explicitly; otherwise restart from t = 0.")
 
+#: The restart doors' accuracy about the 2.9.0 correct-mode default, beside
+#: the existing refusal (the mismatch already names the breakage: a WSM6 or
+#: New Tiedtke trajectory continued under other water-budget arithmetic).
+#: Said when a checkpoint written in exact mode (an absent key, the only
+#: arithmetic before 2.9.0) meets a run whose scheme reads a correct-mode key
+#: that is on, because from 2.9.0 a configuration that leaves the keys unset
+#: reads physics.mode = "correct".
+CORRECT_MODE_RESTART_BREAK_NOTICE = (
+    "note: the checkpoint was integrated in exact mode (physics.mode = "
+    "\"exact\", the only arithmetic before 2.9.0) and this run reads the "
+    "2.9.0 default, physics.mode = \"correct\", whose water budgets "
+    "differ. To resume this checkpoint, set every correct-mode key its "
+    "scheme reads to false explicitly (wsm6_conservative_surface, "
+    "wdm6_conservative_surface, ntiedtke_dry_mass_coupling); otherwise "
+    "restart from t = 0.")
+
 #: The same accuracy for the 2.8.9 WRF-folder default (D8): a fixed-step
 #: WRF namelist now imports with terrain_clock = "pinned", WRF's own
 #: acoustic count, so a checkpoint integrated under the terrain clock from
@@ -1562,6 +1701,34 @@ TERRAIN_CLOCK_PINNED_RESTART_NOTICE = (
     "checkpoint, put ! gpuwm-physics-selectors-v1: "
     "{\"terrain_clock\":\"local_face\"} (or the clock the checkpoint names) "
     "first in namelist.input; otherwise restart from t = 0.")
+
+
+G3_RUN_DEFAULTS = {"cugd_avedx": 1, "maxiens": 1, "maxens": 3,
+                   "maxens2": 3, "maxens3": 16, "ensdim": 144,
+                   "cu_diag": 0, "convtrans_avglen_m": 30.0}
+
+
+def validate_g3_dimensions(maxiens, maxens, maxens2, maxens3, ensdim, avedx=1):
+    """WRF's explicit member references determine the minimum array sizes."""
+    for name, value in zip(("maxiens", "maxens", "maxens2", "maxens3", "ensdim"),
+                           (maxiens, maxens, maxens2, maxens3, ensdim)):
+        if type(value) is not int or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if maxens < 3:
+        raise ValueError("maxens must be at least 3: massflx_stats reads cap member 3")
+    if maxens3 < 16:
+        raise ValueError("maxens3 must be at least 16: cup_forcing_ens_3d writes member 16")
+    if maxens2 < 2 or (avedx > 1 and maxens2 < 3):
+        raise ValueError("maxens2 must hold edtc member 2, and edtc member 3 when cugd_avedx > 1")
+    if ensdim < maxiens * maxens * maxens2 * maxens3:
+        raise ValueError("ensdim must hold maxiens*maxens*maxens2*maxens3: the closure writes would exceed XF_ENS/PR_ENS")
+
+
+def drop_inert_g3_fields(values: dict) -> None:
+    """Scheme-only fields cannot change unrelated configuration identities."""
+    if values.get("cu_physics", 0) != 5:
+        for name in G3_RUN_DEFAULTS:
+            values.pop(name, None)
 
 
 #: WRF vertical advection orders the kernels carry (module_advect_em.F
@@ -1701,7 +1868,6 @@ MYNN_PBL_OPTION_IDENTITY: dict[str, object] = {
     "bl_mynn_cloudmix": 1,
     "bl_mynn_mixqt": 0,
     "bl_mynn_output": 0,
-    "bl_mynn_tkeadvect": False,
     "icloud_bl": 1,
 }
 
@@ -1747,12 +1913,15 @@ _MYNN_QN_STATE_TO_FLAG: dict[str, str] = {
 #: (28) qni,qnr,qnc,qnwfa,qnifa,qnbca; p3_1category (50) qni,...;
 #: fast_khain_lynn_shpund (30, Registry/registry.sbm:318)
 #: qnn,qnc,qnr,qni,qns,qng, so F_QNC and F_QNI are true for it.  The
-#: moist-only schemes (kessler 1, wsm6 6, and 0) carry none: there every
+#: schemes with no number moment (kessler 1, lin 2, fer_mp_hires 5, wsm3 3, wsm5 4,
+#: wsm6 6, wsm6r 106, and 0) carry none: there every
 #: flag is false, ``mynn_bl_driver`` hands the solves zero columns and the
 #: key is WRF's no-op.  Any scheme not listed here is a new table row, not
 #: a new code path.
 MYNN_QN_FLAG_SPECIES: dict[int, tuple[str, ...]] = {
-    0: (), 1: (), 6: (),
+    2: (),  # Six Lin masses, no prognostic number species.
+    4: (),  # Single-moment package carries no number concentrations.
+    0: (), 1: (), 3: (), 5: (), 6: (), 24: (), 106: (),
     8: ("qni",), 9: ("qnc", "qni"), 10: ("qni",), 16: ("qnc",),
     18: ("qni",), 28: ("qnc", "qni", "qnwfa", "qnifa", "qnbca"),
     30: ("qnc", "qni"), 50: ("qni",),
@@ -1980,6 +2149,13 @@ def urban_model_in_build(option: int) -> bool:
         return False
 
 
+URBAN_WATER_BALANCE_DEFAULT = "wrf_480"
+URBAN_WATER_BALANCE_GENERATIONS = {
+    "wrf_471": {"code": 0, "algorithm": "urban-slucm-wrf-v4.7.1-v1"},
+    "wrf_480": {"code": 1, "algorithm": "urban-slucm-wrf-v4.7.1-water-balance-v4.8.0-v1"},
+}
+
+
 def validate_urban_config(cfg) -> None:
     """The ``sf_urban_physics`` law, each refusal naming what it prevents.
 
@@ -1988,6 +2164,12 @@ def validate_urban_config(cfg) -> None:
     run wrong and none is refused.
     """
     option = getattr(cfg, "sf_urban_physics", 0)
+    generation = getattr(cfg, "urban_water_balance", URBAN_WATER_BALANCE_DEFAULT)
+    if generation not in URBAN_WATER_BALANCE_GENERATIONS:
+        raise ValueError(
+            f"urban_water_balance={generation!r} must be one of "
+            f"{tuple(URBAN_WATER_BALANCE_GENERATIONS)}: an unknown generation "
+            "cannot decide whether weak rainfall suppresses evaporation.")
     lcz = getattr(cfg, "use_wudapt_lcz", 0)
     bins = getattr(cfg, "num_urban_hi", URBAN_HEIGHT_BINS)
     for name, value in (("sf_urban_physics", option),
@@ -2002,6 +2184,22 @@ def validate_urban_config(cfg) -> None:
             f"or 3 (BEP+BEM), WRF numbering, got {option}.")
     if option == 0:
         return
+    generation = getattr(cfg, "urban_ucm_generation", "wrf_471")
+    if generation not in ("wrf_471", "wrf_480"):
+        raise ValueError("urban_ucm_generation must be wrf_471 or wrf_480")
+    if generation != "wrf_471" and option != 1:
+        raise ValueError("urban_ucm_generation=wrf_480 requires sf_urban_physics=1; the new BEP/BEM generations are not implemented")
+    if generation == "wrf_480" and getattr(cfg, "sf_surface_mosaic", 0):
+        raise ValueError("wrf_480 with sf_surface_mosaic=1: the composed Noah mosaic canopy kernel does not carry TVG/TVGL/SMG or vegetated-ground flux feedback")
+    for name in ("urban_treeoption", "urban_ttscheme"):
+        value = getattr(cfg, name, -1)
+        if type(value) is not int or value not in (-1, 0, 1):
+            raise ValueError(f"{name} must be -1 (table), 0 or 1")
+    fvg = getattr(cfg, "urban_fvg", -1.0)
+    if isinstance(fvg, bool) or not isinstance(fvg, (int, float)) or not (fvg == -1 or 0 <= fvg <= 1):
+        raise ValueError("urban_fvg must be -1 (table) or between 0 and 1")
+    if generation == "wrf_471" and (fvg != -1 or any(getattr(cfg, n, -1) != -1 for n in ("urban_treeoption", "urban_ttscheme"))):
+        raise ValueError("vegetated-ground and tree controls require urban_ucm_generation=wrf_480; wrf_471 does not compute their fluxes")
     if lcz not in (0, 1):
         raise ValueError(
             f"use_wudapt_lcz must be 0 (URBPARM.TBL, 3 urban types) or 1 "
@@ -2073,7 +2271,10 @@ def validate_urban_config(cfg) -> None:
 # double-count radiative and PBL heating for Grell-Freitas and move
 # run_myj -- the baseline every intensity number is graded against. The
 # fold therefore belongs in the New Tiedtke adapter and nowhere else.
-CUMULUS_ADVECTIVE_FORCING_SCHEMES = frozenset({3, 6, 16})
+#
+# 5 JOINS IT ON THE SAME TERMS AS 16.  Grell 3D is the other scheme in
+# WRF's fold list; gpuwm/core/g3.py Grell3D does the fold in its adapter.
+CUMULUS_ADVECTIVE_FORCING_SCHEMES = frozenset({3, 5, 6, 16})
 #: ``bl_pbl_physics`` value selecting the SASE closure.
 #:
 #: SASE is an ArWen-only scheme -- a Scale-Adaptive Stress-Energetics
@@ -2152,7 +2353,8 @@ UW_PBL_ICE_NUMBER_SPECIES = {8: "ni", 9: "ni", 10: "ni", 18: "qni",
 #: gpuwm/core/physics.py) -- and 900 is :data:`SASE_PBL_SCHEME`,
 #: ArWen-only (see there).
 PBL_SCHEMES = (0, 1, MYJ_PBL_SCHEME, 5, UW_PBL_SCHEME, 11, SASE_PBL_SCHEME)
-# 0 = none, 1 = Kain-Fritsch, 3 = Grell-Freitas, 16 = New Tiedtke.
+# 0 = none, 1 = Kain-Fritsch, 3 = Grell-Freitas, 5 = Grell 3D, 6 = original
+# Tiedtke, 16 = New Tiedtke.
 #
 # 16 IS WRF'S OWN NUMBER for NTIEDTKESCHEME (module_cumulus_driver.F), not
 # an ArWen allocation. It became selectable once all six of the things
@@ -2162,10 +2364,85 @@ PBL_SCHEMES = (0, 1, MYJ_PBL_SCHEME, 5, UW_PBL_SCHEME, 11, SASE_PBL_SCHEME)
 # physics.py's optional tendency components. Each was a refusal that cost
 # nothing while 16 was unreachable and would have been a silent wrong
 # answer the moment it was not.
-CU_SCHEMES = (0, 1, 3, 6, 16)
+#
+# 5 IS WRF'S OWN NUMBER for G3SCHEME, the Grell 3D ensemble scheme
+# (phys/module_cu_g3.F), transcribed in gpuwm/core/kernels/g3.cu and held
+# word for word against tools/g3_wrf461_oracle.
+#
+# 96 IS WRF'S OWN NUMBER for NSASSCHEME, New SAS (YSU) with its built-in
+# NSCV shallow convection (module_cu_nsas.F). It is admitted as a row of
+# gpuwm.core.column_cumulus.COLUMN_CUMULUS_SCHEMES -- one table row, no
+# adapter module -- graded word for word against WRF v4.6.1's own object
+# by tests/test_nsas_column_oracle.py.
+CU_SCHEMES = (0, 1, 3, 5, 6, 16, 96)
 
-#: The cumulus scheme that reads the Grell-family keys below.
+#: The cumulus schemes that read ``sas_pgcon`` (WRF's convectively forced
+#: pressure-gradient factor, Registry.EM_COMMON:2651) and ``nsas_dx_factor``
+#: (:2493).  The SAS family's other members join their rows when ported.
+SAS_PGCON_SCHEMES = frozenset({96})
+NSAS_DX_FACTOR_SCHEMES = frozenset({96})
+
+#: Grell-Freitas, the cumulus scheme with the PBL requirement below.
 GRELL_FREITAS_CU_PHYSICS = 3
+
+#: Grell 3D (WRF's G3SCHEME), the scheme that reads ``cugd_avedx``.
+GRELL_3D_CU_PHYSICS = 5
+
+#: Cumulus schemes whose WRITTEN band is anchored to the domain's lateral
+#: edges even on a periodic axis.  Grell 3D's conv_grell_spread3d writes only
+#: ids+4..ide-5 in both axes whatever the boundary type
+#: (module_cu_g3.F:5211-5229, gpuwm.core.g3.spread_band), so on a periodic
+#: domain the four columns beside each domain edge get no convective
+#: tendency.  A streamed tile cannot reproduce that: its window wraps across
+#: the domain edge and the band it computes is the WINDOW's, not the
+#: domain's.  Measured (RTX 5090, 96x80 periodic, 2x2 and 3x3 tiles):
+#: rthcuten/rqvcuten, the G3 ensemble carriers and everything radiation and
+#: the dycore take from them differ from the resident run, while Kain-Fritsch
+#: and New SAS stream bit-exact on the same gate.  On a non-periodic axis the
+#: tile window is clamped to the domain, so a window edge that is a domain
+#: edge carries the same band and a seam's band falls inside the halo.
+#: :func:`gpuwm.core.streaming.attach` refuses these schemes on a periodic
+#: axis by this table; a new scheme with the same property joins it here.
+CU_DOMAIN_EDGE_BAND_SCHEMES = frozenset({GRELL_3D_CU_PHYSICS})
+
+#: The Grell-family cumulus schemes: each reads some of the keys in
+#: :data:`GRELL_FAMILY_DEFAULTS`, as :data:`GRELL_FAMILY_READS` lists.
+GRELL_FAMILY_CU_PHYSICS = frozenset({GRELL_FREITAS_CU_PHYSICS,
+                                     GRELL_3D_CU_PHYSICS})
+
+#: Which Grell-family keys each scheme reads, from WRF v4.6.1's cumulus
+#: driver: GFDRV takes ichoice and ishallow_g3 (module_cumulus_driver.F:
+#: 1296-1305); G3DRV takes those and cugd_avedx (:1250-1253).  A key a
+#: selected scheme does not read must stay at its Registry default.
+GRELL_FAMILY_READS = {
+    GRELL_FREITAS_CU_PHYSICS: ("clos_choice", "ishallow"),
+    GRELL_3D_CU_PHYSICS: ("clos_choice", "ishallow", "cugd_avedx"),
+}
+
+#: Cumulus schemes that run on the model step with no NCA hold: their
+#: RAINCV is a per-call amount the driver adds once, so cudt_minutes is
+#: pinned to 0 (WRF accumulates the held PRATEC every step between calls,
+#: module_physics_addtendc.F:2141, which this contract would not repeat).
+CU_MODEL_STEP_SCHEMES = frozenset({GRELL_FREITAS_CU_PHYSICS,
+                                   GRELL_3D_CU_PHYSICS, 16})
+
+#: Cumulus schemes that read the radiation-time net surface shortwave GSW:
+#: Grell 3D lowers its capping depth to 25 hPa wherever GSW < 1 W m-2
+#: (module_cu_g3.F:933).  The physics driver keeps the GSW plane, and
+#: preflight prices it, for these as for RUC and the chem readers.
+CU_GSW_READING_SCHEMES = frozenset({GRELL_3D_CU_PHYSICS})
+
+#: The stock cumulus callable for each admitted ``cu_physics``, by dotted
+#: path.  ``initialize_physics`` resolves the selector through this table
+#: rather than a branch per scheme, so admitting a scheme is a row here and
+#: in :data:`CU_SCHEMES`.
+CU_STOCK_CALLABLES = {
+    1: "gpuwm.core.kf.KainFritsch",
+    GRELL_FREITAS_CU_PHYSICS: "gpuwm.core.gf.GrellFreitas",
+    GRELL_3D_CU_PHYSICS: "gpuwm.core.g3.Grell3D",
+    6: "gpuwm.core.tiedtke.Tiedtke",
+    16: "gpuwm.core.ntiedtke.NewTiedtke",
+}
 
 #: The Grell-family keys, each with the WRF Registry default it is judged
 #: against: :func:`validate_run_config` refuses a non-default value on a
@@ -2177,6 +2454,17 @@ GRELL_FREITAS_CU_PHYSICS = 3
 GRELL_FAMILY_DEFAULTS = {
     "clos_choice": 0,
     "ishallow": 0,
+    "cugd_avedx": 1,
+}
+
+#: The SAS-family keys and their WRF Registry defaults, on the Grell
+#: table's terms: read only where cu_physics is in SAS_PGCON_SCHEMES /
+#: NSAS_DX_FACTOR_SCHEMES, so on a tree that mixes New SAS with another
+#: cumulus choice a [shared] value reaches the SAS domains and leaves the
+#: others on these defaults.
+SAS_FAMILY_DEFAULTS = {
+    "nsas_dx_factor": 0,
+    "sas_pgcon": 0.55,
 }
 
 #: Grell-Freitas closure selector, ``clos_choice`` (WRF's ``ichoice``).
@@ -2262,8 +2550,79 @@ def gf_clos_choice_advice(value: int) -> str | None:
 #: refusal string cannot be iterated.  The refusal sentences below still
 #: recite the names; these tuples are the membership they test.
 RA_PHYSICS_ACCEPTED = (0, 4, 90)
-RA_LW_PHYSICS_ACCEPTED = (0, 1, 4, 90)
-RA_SW_PHYSICS_ACCEPTED = (0, 1, 4, 90)
+RA_LW_PHYSICS_ACCEPTED = (0, 1, 4, 5, 90)
+RA_SW_PHYSICS_ACCEPTED = (0, 1, 4, 5, 90)
+
+#: Every other WRF v4.6.1/v4.7.1 radiation selector value, with the reason it
+#: is refused.  A value is never run as another scheme: the forecast and its
+#: receipt would name radiation that was never computed.  This is metadata
+#: only; admitting one means a ported scheme, its menu entry above and its
+#: registry row (tools/build_registry.py), never an edit here alone.
+RA_UNPORTED_REASONS: dict[str, dict[int, str]] = {
+    "ra_lw_physics": {
+        3: ("WRF CAM longwave is not on this line (port lane ra3-cam: CPU modes "
+            "pass, GPU legs and the coupled restart door unfinished)"),
+        7: ("WRF Fu-Liou-Gu longwave has a column port but no forecast driver "
+            "(port lane ra7-flg); there is no FLG radiation step to run"),
+        14: ("WRF RRTMG-K longwave is not ported; RRTMG (4, with "
+             "ra_rrtmg_variant = rrtmg_legacy for WRF's transcription) is the "
+             "nearest scheme and is a different k-distribution"),
+        24: ("WRF fast RRTMG longwave (module_ra_rrtmg_lwf) is a separately "
+             "coded solver that is not ported; ra_lw_physics = 4 with "
+             "ra_rrtmg_variant = rrtmg_legacy runs WRF's RRTMG transcription"),
+        31: ("WRF Held-Suarez forcing is a global idealized relaxation; it needs "
+             "global initialization and pole operators this regional engine "
+             "does not have (port lane ra31-held-suarez)"),
+        99: ("WRF GFDL longwave is not on this line (port lane ra99-gfdl: GPU "
+             "modes, paired controls and renewed doors unfinished, and it "
+             "changed checkpoint identity for runs that do not select it)"),
+    },
+    "ra_sw_physics": {
+        2: ("WRF old Goddard shortwave is not on this line (port ra2-sw-goddard-"
+            "old is carried by the 11-port batch, r290/ports)"),
+        3: ("WRF CAM shortwave is not on this line (port lane ra3-cam: CPU modes "
+            "pass, GPU legs and the coupled restart door unfinished)"),
+        7: ("WRF Fu-Liou-Gu shortwave has a column port but no forecast driver "
+            "(port lane ra7-flg); there is no FLG radiation step to run"),
+        14: ("WRF RRTMG-K shortwave is not ported; RRTMG (4, with "
+             "ra_rrtmg_variant = rrtmg_legacy for WRF's transcription) is the "
+             "nearest scheme and is a different k-distribution"),
+        24: ("WRF fast RRTMG shortwave (module_ra_rrtmg_swf) is a separately "
+             "coded solver that is not ported; ra_sw_physics = 4 with "
+             "ra_rrtmg_variant = rrtmg_legacy runs WRF's RRTMG transcription"),
+        99: ("WRF GFDL shortwave is not on this line (port lane ra99-gfdl: GPU "
+             "modes, paired controls and renewed doors unfinished, and it "
+             "changed checkpoint identity for runs that do not select it)"),
+    },
+}
+
+
+#: The aer_opt = 2 user-aerosol controls: read only under aer_opt = 2.
+AER_OPT2_RUN_KEYS = ("aer_type", "aer_aod550_opt", "aer_angexp_opt",
+                     "aer_ssa_opt", "aer_asy_opt", "aer_aod550_val",
+                     "aer_angexp_val", "aer_ssa_val", "aer_asy_val",
+                     "aer_auxinput15", "aer_auxinput15_interval")
+
+
+def drop_inactive_radiation_port_keys(values: dict) -> None:
+    """Drop, in place, the lightning and aer_opt = 2 RunConfig keys that the
+    run does not read (lightning_option = 0; aer_opt != 2).
+
+    One rule for every document that echoes a RunConfig -- the checkpoint
+    echo and digest, the resume comparison and the public experiment
+    document -- so a run that selects neither keeps the bytes it had before
+    the fields existed, and a 2.8.9 checkpoint still resumes.
+    """
+    from gpuwm.lightning_contract import drop_default_lightning_selectors
+    drop_default_lightning_selectors(values)
+    if values.get("aer_opt", 0) != 2:
+        for key in AER_OPT2_RUN_KEYS:
+            values.pop(key, None)
+
+
+def radiation_unported_reason(key: str, value: int) -> str:
+    """The named reason a WRF radiation selector value is refused, or ''."""
+    return RA_UNPORTED_REASONS.get(key, {}).get(int(value), "")
 
 #: The exact id :attr:`RunConfig.km_opt_zero_acknowledgement` must carry.
 #:
@@ -2628,12 +2987,13 @@ _P3_UNPORTED_VARIANTS = {
 #: separates the two kinds by exactly this recitation -- so a new mp value
 #: is added here once and both branches stay in the same form.
 _MP_PHYSICS_SCHEMA_MENU = (
-    "mp_physics must be 0 (off), 1 (Kessler), 6 (WSM6), 8 "
-    "(Thompson), 9 (Milbrandt-Yau two-moment), 10 (Morrison "
-    "two-moment), 16 (WDM6 double-moment warm rain), 18 (NSSL "
-    "two-moment), 28 (Thompson aerosol-aware), 30 (FAST_SBM "
-    "spectral bin), 50 (P3 one-category), or \"tempo\" (TEMPO, WOOF "
-    "id 900)"
+    "mp_physics must be 0 (off), 1 (Kessler), 2 (Purdue Lin), 3 (WSM3), "
+    "4 (WSM5), 5 (Ferrier-Aligo), 6 (WSM6), 8 (Thompson), 9 "
+    "(Milbrandt-Yau two-moment), 10 (Morrison two-moment), 16 (WDM6 "
+    "double-moment warm rain), 18 (NSSL two-moment), 24 (WSM7 "
+    "single-moment with hail), 28 (Thompson aerosol-aware), 30 "
+    "(FAST_SBM spectral bin), 50 (P3 one-category), 106 (WSM6R, the "
+    "revised WSM6), or \"tempo\" (TEMPO, WOOF id 900)"
 )
 
 #: Every ``mp_physics`` value the config loader admits, as the importable
@@ -2643,7 +3003,7 @@ _MP_PHYSICS_SCHEMA_MENU = (
 #: membership against this tuple and recites the menu when it refuses, so
 #: a new scheme is added in both places in the same edit or the loader
 #: and its refusal text disagree in front of a user.
-MP_PHYSICS_ACCEPTED = (0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50, 900)
+MP_PHYSICS_ACCEPTED = (0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106, 900)
 
 
 #: WDM6's two unported siblings, held as a table for the reason
@@ -2670,6 +3030,43 @@ _WDM_UNPORTED_SIBLINGS = {
         "by substituting WDM6 for it."
     ),
 }
+
+
+#: Other WRF microphysics packages with no port, one row each, for the same
+#: reason the P3 and WDM tables are rows: the refusal names what is missing,
+#: and retiring a row when its port lands is table work.
+#:
+#: 55 (Jensen-ISHMAEL) was imported as Morrison (10) until 2026-10-12: a
+#: model-form substitution with no error bound, printed in the import report
+#: as a "ratified substitution" but run as if the namelist had asked for
+#: Morrison.  Breakage it prevents: a run that a WRF namelist says is
+#: ISHMAEL integrates spherical, fixed-category ice instead.
+_MP_UNPORTED_SCHEMES = {
+    55: (
+        "mp_physics=55 (Jensen-ISHMAEL, Registry.EM_COMMON:3043 package "
+        "jensen_ishmael) is not ported. ISHMAEL carries three ice species "
+        "(qi, qi2, qi3) that each predict number, volume and aspect ratio "
+        "(qni/qvoli/qaoli and the _2/_3 sets), so ice habit and density "
+        "evolve with growth and riming; no gpuwm scheme carries those "
+        "moments. Morrison (mp_physics=10) has fixed spherical cloud ice, "
+        "snow and graupel/hail, and running it under an ISHMAEL request "
+        "would deposit, rime and sediment ice by a different model. Ask "
+        "for mp_physics=10 to run Morrison under its own name."
+    ),
+}
+
+
+def unported_mp_scheme_refusal(value: int) -> str | None:
+    """The by-name refusal for any unported WRF mp_physics package, or
+    ``None`` when ``value`` is not one: the P3 siblings, the WDM siblings
+    and :data:`_MP_UNPORTED_SCHEMES`, each its own missing physics followed
+    by the schema menu."""
+
+    for table in (_P3_UNPORTED_VARIANTS, _WDM_UNPORTED_SIBLINGS,
+                  _MP_UNPORTED_SCHEMES):
+        if value in table:
+            return f"{table[value]} {_MP_PHYSICS_SCHEMA_MENU}, got {value}."
+    return None
 
 
 def unported_wdm_sibling_refusal(value: int) -> str:
@@ -2898,15 +3295,13 @@ def validate_radiation_driver_options(cfg: RunConfig) -> None:
       fit rewrites SWDOWN, SWDDIR, SWDDIF, SWDDNI and GSW on every step,
       and with ``ra_sw_physics = 0`` it would overwrite a declared or
       externally supplied SWDOWN with the fit of a flux nothing computed.
-    * ``aer_opt`` is 0 or 3.  3 is the Thompson-coupled branch, which WRF
+    * ``aer_opt`` is 0, 1, 2 or 3. 1 is the root-domain six-type climatology and 2 the user AOD path, both for legacy RRTMG shortwave.  3 is the Thompson-coupled branch, which WRF
       gates on the water-friendly aerosol package being present
       (``F_QNWFA``) and on RRTMG shortwave; it is transcribed for the
       legacy RRTMG shortwave composition only.  Any other pairing would
       run zero aerosol under a configuration whose receipt says aerosol-
-      aware radiation, which is the silent substitution this refuses.  1
-      and 2 are untranscribed WRF branches (the ECMWF six-type aerosol
-      climatology with its ``rrsw_aer`` tables; the aod550/Angstrom/ssa/
-      asymmetry namelist and auxinput path).
+      aware radiation, which is the silent substitution this refuses.  1 is the unimplemented ECMWF six-type aerosol climatology.
+      2 reads user aerosol values through the WRF spectral producer.
     """
     alb_sol = cfg.alb_sol
     if type(alb_sol) is not int or alb_sol not in (0, 1):
@@ -2931,20 +3326,23 @@ def validate_radiation_driver_options(cfg: RunConfig) -> None:
         raise ValueError(
             f"aer_opt={aer!r}: WRF defines 0, 1, 2 and 3 (Registry.EM_COMMON"
             ":2389); nothing else is a WRF value")
-    if aer in (1, 2):
-        why = {
-            1: "the ECMWF six-type aerosol climatology (iaer = 6, the "
-               "rrsw_aer band tables and aer_time_int/aer_p_int) is not "
-               "transcribed",
-            2: "the aod550/Angstrom/ssa/asymmetry namelist and auxinput "
-               "path (aer_aod550_opt, aer_angexp_opt, aer_ssa_opt, "
-               "aer_asy_opt) is not transcribed",
-        }[aer]
-        raise ValueError(
-            f"aer_opt={aer}: {why}; the implemented values are 0 (no "
-            "aerosol) and 3 (Thompson water- and ice-friendly aerosol "
-            "optics)")
     lw, sw = radiation_scheme_ids(cfg)
+    if aer == 1:
+        if int(sw) != 4 or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY:
+            raise ValueError("aer_opt=1 requires legacy RRTMG shortwave: RRTMGP has no checked six-type aerosol mapping and would discard or mis-map these optics")
+        if cfg.nested:
+            raise ValueError("aer_opt=1 on a resident nest needs the domain-1 aerod parent forcing; child-grid climatology would change WRF's root-only aerosol routing")
+    if aer == 2:
+        from gpuwm.core.aer_opt2 import validate_options, OPTION_KEYS, VALUE_KEYS
+        validate_options(aer_type=cfg.aer_type,
+                         options=tuple(getattr(cfg,k) for k in OPTION_KEYS),
+                         values=tuple(getattr(cfg,k) for k in VALUE_KEYS))
+        if int(sw) != 4 or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY:
+            raise ValueError("aer_opt=2 requires legacy RRTMG shortwave (ra_sw_physics=4); another SW solver would discard its aerosol optics")
+        if any(getattr(cfg,k)==2 for k in OPTION_KEYS) and not cfg.aer_auxinput15:
+            raise ValueError("aer_opt=2 gridded aerosol options require auxinput15_inname; missing AOD5502D/ANGEXP2D/AERSSA2D/AERASY2D would replace the requested optics")
+        if cfg.aer_auxinput15_interval < 0:
+            raise ValueError("aer_auxinput15_interval must be nonnegative seconds")
     if alb_sol == 1 and int(sw) == 0:
         raise ValueError(
             "alb_sol=1 needs a shortwave scheme (ra_sw_physics != 0): "
@@ -3561,7 +3959,7 @@ def load_config(path: str | Path, *, accept_epssm_auto: bool = False,
     known_tables = (_KNOWN_TABLES + (_CHILD_STATIC_TABLE,) if child_static
                     else _KNOWN_TABLES)
     # The loader's own refusals, before any door acts on this file.
-    # Random-physics switches have no observation-calibrated amplitude.
+    # Refuse missing random consumers before acting on the configuration.
     from gpuwm.ensemble_admission import (
         OVERLAY_MARKERS, overlay_table_refusal, refuse_configured_random,
         table_not_honoured)
@@ -4207,6 +4605,8 @@ _DYNAMICS_CHOICES: dict[str, tuple] = {
                         "0 (moist array only, WRF v4.6.1 default) or 1 "
                         "(also the scalar number arrays, as the NOAA "
                         "WRFV3.9 fork always does)"),
+    "solar_generation": (("wrf_480", "wrf_461"),
+                         "WRF 4.8 corrected solar phase or WRF 4.6.1 reproduction; unknown phases change COSZEN"),
     "zadvect_implicit_variant": (("wrf_471", "wrf_legacy"),
                                  "'wrf_471' (module_ieva_em) or "
                                  "'wrf_legacy' (module_advect_em); the "
@@ -5482,6 +5882,9 @@ def _catalog_sources():
     return catalog().sources
 
 
+CUMULUS_PARAMETER_IDENTITY_RULES = {'nsas_dx_factor': (0, (96,)), 'sas_pgcon': (0.55, (96,))}
+
+
 def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> RunConfig:
     """The RunConfig invariant battery, shared by BOTH loaders.
 
@@ -5493,6 +5896,8 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
     experiment TOML fails exactly as it always has on the legacy path.
     Returns ``cfg`` unchanged on success.
     """
+    from gpuwm.lightning_contract import validate_lightning
+    validate_lightning(cfg)
     validate_fire_config(cfg)
     if type(cfg.surface_energy_diag) is not bool:
         raise ValueError("surface_energy_diag must be boolean")
@@ -5684,6 +6089,8 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
     # standalone user an ImportError instead of the sentence written for
     # them.  That is the exact defect that withdrew 1.8.8.
     validate_surface_radiation_policy(cfg.surface_radiation_policy)
+    from gpuwm.noahmp_generation import snow_age_generation
+    snow_age_generation(cfg.noahmp_snow_age)
     if (not math.isfinite(cfg.seaice_albedo_default)
             or not 0.0 <= cfg.seaice_albedo_default <= 1.0):
         raise ValueError(
@@ -5691,10 +6098,11 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             f"{cfg.seaice_albedo_default}."
         )
     if (cfg.seaice_albedo_default != 0.65
-            and cfg.sf_surface_physics != 3):
+            and cfg.sf_surface_physics not in (2, 3)):
         raise ValueError(
             "a nondefault seaice_albedo_default is implemented only by "
-            "RUC LSM (sf_surface_physics=3), got "
+            "Noah (sf_surface_physics=2, seaice_noah) and RUC LSM "
+            "(sf_surface_physics=3), got "
             f"sf_surface_physics={cfg.sf_surface_physics}."
         )
     if type(cfg.rdmaxalb) is not bool:
@@ -5796,8 +6204,21 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "registry says the same thing through the option's "
             "required_settings."
         )
-    if cfg.cu_physics == GRELL_FREITAS_CU_PHYSICS:
-        if not cfg.bl_pbl_physics:
+    if cfg.cu_physics == 5:
+        validate_g3_dimensions(cfg.maxiens, cfg.maxens, cfg.maxens2,
+                               cfg.maxens3, cfg.ensdim, cfg.cugd_avedx)
+        if type(cfg.cu_diag) is not int or cfg.cu_diag not in (0, 1):
+            raise ValueError("cu_diag must be 0 or 1")
+        if (not math.isfinite(cfg.convtrans_avglen_m)
+                or cfg.convtrans_avglen_m * 60. < cfg.dt):
+            raise ValueError("convtrans_avglen_m must span at least one model step: "
+                             "convtrans_prep would evaluate MOD(ktau,0)")
+    elif any(getattr(cfg, name) != default for name, default in
+             G3_RUN_DEFAULTS.items() if name != "cugd_avedx"):
+        raise ValueError("G3 ensemble dimensions and cu_diag are read only by cu_physics=5; "
+                         "other schemes would discard the requested ensemble or diagnostic window")
+    if cfg.cu_physics in GRELL_FAMILY_CU_PHYSICS:
+        if cfg.cu_physics == GRELL_FREITAS_CU_PHYSICS and not cfg.bl_pbl_physics:
             raise ValueError(
                 "cu_physics=3 (Grell-Freitas) requires a PBL scheme: the "
                 "trigger's temperature/moisture excesses and the shallow "
@@ -5807,29 +6228,58 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
                 "bl_pbl_physics=1 (YSU); note GF also requires "
                 "cudt_minutes=0, so set both in one edit."
             )
-        if cfg.cudt_minutes != 0.0:
+        if (cfg.cu_physics == GRELL_FREITAS_CU_PHYSICS
+                and cfg.cudt_minutes != 0.0):
             raise ValueError(
                 "cu_physics=3 (Grell-Freitas) requires cudt_minutes=0: GF "
                 "runs on the model step (WRF's usual GF configuration, "
                 "STEPCU=1) and carries no NCA hold; cudt is a Kain-Fritsch "
                 "cadence knob."
             )
+        if cfg.cu_physics == GRELL_3D_CU_PHYSICS and cfg.cudt_minutes != 0.0:
+            raise ValueError(
+                "cu_physics=5 (Grell 3D) requires cudt_minutes=0: gpuwm "
+                "adds the scheme's per-call RAINCV once per call, while WRF "
+                "adds its held PRATEC every step between calls "
+                "(module_physics_addtendc.F:2141), so a cadence above one "
+                "step would drop that rain. Run it on the model step, "
+                "WRF's usual G3 configuration."
+            )
         refusal = gf_clos_choice_refusal(cfg.clos_choice)
         if refusal is not None:
             raise ValueError(refusal)
-        advice = gf_clos_choice_advice(cfg.clos_choice)
-        if advice is not None:
-            from gpuwm.explain import warn_once
-            warn_once(f"gf-clos-choice-{cfg.clos_choice}", advice)
+        if cfg.cu_physics == GRELL_FREITAS_CU_PHYSICS:
+            advice = gf_clos_choice_advice(cfg.clos_choice)
+            if advice is not None:
+                from gpuwm.explain import warn_once
+                warn_once(f"gf-clos-choice-{cfg.clos_choice}", advice)
         if cfg.ishallow not in (0, 1):
             raise ValueError(
                 f"ishallow must be 0 or 1, got {cfg.ishallow}.")
+        if (isinstance(cfg.cugd_avedx, bool)
+                or not isinstance(cfg.cugd_avedx, int)):
+            raise ValueError(
+                f"cugd_avedx must be an integer (WRF Registry scalar, "
+                f"Registry.EM_COMMON:2543), got {cfg.cugd_avedx!r}.")
+        for name, default in GRELL_FAMILY_DEFAULTS.items():
+            if (name not in GRELL_FAMILY_READS[cfg.cu_physics]
+                    and getattr(cfg, name) != default):
+                readers = ", ".join(
+                    f"cu_physics={c}" for c, keys in
+                    sorted(GRELL_FAMILY_READS.items()) if name in keys)
+                raise ValueError(
+                    f"{name}={getattr(cfg, name)!r} is refused with "
+                    f"cu_physics={cfg.cu_physics}: WRF v4.6.1's cumulus "
+                    f"driver hands {name} only to {readers}, so this "
+                    f"scheme would run without the requested setting. "
+                    f"Leave it at the Registry default ({default}) or "
+                    f"select a scheme that reads it.")
     elif any(getattr(cfg, name) != default
              for name, default in GRELL_FAMILY_DEFAULTS.items()):
         raise ValueError(
-            "clos_choice/ishallow are Grell-family keys read only where "
-            "cu_physics=3; set them with the scheme or leave the Registry "
-            "defaults (0/0)."
+            "clos_choice/ishallow/cugd_avedx are Grell-family keys read "
+            "only where cu_physics is 3 or 5; set them with the scheme or "
+            "leave the Registry defaults (0/0/1)."
         )
 
     # PLACED AFTER THE GRELL CHAIN ABOVE, NOT INSIDE IT.  The first
@@ -5883,6 +6333,49 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
         # module_cumulus_driver.F:879-880.  The "cumastrn:509 zdhpbl"
         # integral runs from the CLOUD-BASE index kcbot, not from a PBL
         # index, and its non-positive cases have defined fallbacks.
+    if cfg.cu_physics in NSAS_DX_FACTOR_SCHEMES:
+        if type(cfg.nsas_dx_factor) is not int or cfg.nsas_dx_factor not in (0, 1):
+            raise ValueError(
+                "nsas_dx_factor must be 0 or 1 (module_cu_nsas.F:567: 1 "
+                "scales the trigger and closure velocities by 250/dx, any "
+                "other value takes the fixed branch), got "
+                f"{cfg.nsas_dx_factor!r}: a 2 would run the fixed branch "
+                "under a name that says otherwise.")
+    elif cfg.nsas_dx_factor != 0:
+        raise ValueError(
+            "nsas_dx_factor is read only by cu_physics=96 (New SAS); with "
+            f"cu_physics={cfg.cu_physics} it would reach nothing and the run "
+            "would not be the configuration it names. Leave it at 0.")
+    if cfg.cu_physics in SAS_PGCON_SCHEMES:
+        if not math.isfinite(float(cfg.sas_pgcon)):
+            raise ValueError(
+                "sas_pgcon must be finite: it multiplies every cloud "
+                "momentum term of the scheme (module_cu_nsas.F:937-944), so a "
+                f"non-finite value poisons RUCUTEN/RVCUTEN, got {cfg.sas_pgcon!r}.")
+    elif cfg.sas_pgcon != 0.55:
+        raise ValueError(
+            "sas_pgcon is read only by the SAS cumulus family "
+            f"(cu_physics in {sorted(SAS_PGCON_SCHEMES)}); with "
+            f"cu_physics={cfg.cu_physics} it would reach nothing and the run "
+            "would not be the configuration it names. Leave it at 0.55.")
+    if (cfg.cu_physics == 96 and cfg.use_adaptive_time_step
+            and cfg.cudt_minutes != 0.0):
+        # WRF's own rule (module_check_a_mundo.F:2142-2160): with an
+        # adaptive step every SAS scheme runs every step.  The breakage it
+        # prevents is concrete: the scheme forms its rates over
+        # delt = dt*stepcu (module_cu_nsas.F:163) with the step of the CALL,
+        # and holds them until the next call while the clock keeps moving,
+        # so the held rate and the accumulated rain describe an interval
+        # the run did not take.  WRF resets cudt to 0 and says so; the
+        # namelist door does the same, and a hand-built configuration is
+        # told here.
+        raise ValueError(
+            "cu_physics=96 (New SAS) with use_adaptive_time_step requires "
+            "cudt_minutes=0, as WRF requires of every SAS scheme "
+            "(module_check_a_mundo.F:2142-2160): the scheme's rates are "
+            "formed over dt*stepcu at the call and held while the adaptive "
+            "clock moves, so a nonzero cudt would apply them over an "
+            "interval the run did not take.")
     if cfg.sf_sfclay_physics not in (1, 91) and (
             cfg.isftcflx or cfg.iz0tlnd):
         raise ValueError(
@@ -5890,11 +6383,19 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "sf_sfclay_physics=1 or 91; the selected surface layer is "
             f"sf_sfclay_physics={cfg.sf_sfclay_physics}."
         )
+    from gpuwm.ysu_generations import ysu_generation
+    ysu_generation(cfg.ysu_version)
     if cfg.ysu_topdown_pblmix not in (0, 1):
         raise ValueError(
             "ysu_topdown_pblmix must be 0 or 1, got "
             f"{cfg.ysu_topdown_pblmix}."
         )
+    if type(cfg.bl_mynn_tkeadvect) is not bool:
+        raise TypeError("bl_mynn_tkeadvect must be a bool")
+    if type(cfg.scalar_adv_opt) is not int or cfg.scalar_adv_opt != 1:
+        raise ValueError("scalar_adv_opt must be 1: other scalar-array advection operators are not implemented")
+    if cfg.bl_mynn_tkeadvect and cfg.bl_pbl_physics != 5:
+        raise ValueError("bl_mynn_tkeadvect requires the MYNN bl_pbl_physics=5 owner")
     for name, admitted in MYNN_PBL_OPTION_IDENTITY.items():
         value = getattr(cfg, name)
         if type(value) is not type(admitted) or value != admitted:
@@ -6122,7 +6623,7 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             "one of two TKE conversions inside the gsd_41 mixing length, "
             "and a non-boolean value names neither.")
     if (cfg.bl_mynn_version == "gsd_41" and cfg.bl_pbl_physics == 5
-            and cfg.icloud_bl > 0 and radiation_enabled(cfg)
+            and cfg.icloud == 1 and cfg.icloud_bl > 0 and radiation_enabled(cfg)
             and (radiation_scheme_ids(cfg) != (4, 4)
                  or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY)):
         raise ValueError(
@@ -6210,15 +6711,19 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
         )
     ra_lw_physics, ra_sw_physics = radiation_scheme_ids(cfg)
     if ra_lw_physics not in RA_LW_PHYSICS_ACCEPTED:
+        why = radiation_unported_reason("ra_lw_physics", ra_lw_physics)
         raise ValueError(
             "ra_lw_physics must be 0 (off), 1 (WRF RRTM), 4 "
-            f"(RTE+RRTMGP), or 90 (analytic proxy), got {ra_lw_physics}.")
+            "(RTE+RRTMGP), 5 (WRF New Goddard) or 90 (analytic proxy), "
+            f"got {ra_lw_physics}." + (f" {why}." if why else ""))
     if ra_sw_physics not in RA_SW_PHYSICS_ACCEPTED:
+        why = radiation_unported_reason("ra_sw_physics", ra_sw_physics)
         raise ValueError(
             "ra_sw_physics must be 0 (off), 1 (WRF Dudhia), 4 "
-            f"(RTE+RRTMGP), or 90 (analytic proxy), got {ra_sw_physics}.")
-    if cfg.icloud not in (0, 1):
-        raise ValueError(f"icloud must be 0 or 1, got {cfg.icloud}.")
+            "(RTE+RRTMGP), 5 (WRF New Goddard) or 90 (analytic proxy), "
+            f"got {ra_sw_physics}." + (f" {why}." if why else ""))
+    if cfg.icloud not in (0, 1, 2):
+        raise ValueError(f"icloud={cfg.icloud} needs unported cal_cldfra3 condensate adjustment; choose 0, 1 or 2.")
     if not math.isfinite(cfg.swrad_scat) or cfg.swrad_scat < 0.0:
         raise ValueError(
             "swrad_scat must be finite and non-negative, got "
@@ -6280,10 +6785,9 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
                 raise NotImplementedError(
                     f"mp_physics={int(cfg.mp_physics)} has no RTE+RRTMGP "
                     "cloud-optics coupling, deliberately: "
-                    f"{optics['rte_rrtmgp_refusal']}. Set "
-                    f"ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}' (which "
-                    "computes its own radii the way WRF does), or select "
-                    "ra_lw_physics=0/ra_sw_physics=1 (Dudhia).")
+                    f"{optics['rte_rrtmgp_refusal']} "
+                    "For namelist import, use --rrtmg-variant "
+                    f"{RRTMG_VARIANT_LEGACY}.")
         if cfg.o3input != 2:
             raise ValueError(
                 f"o3input={cfg.o3input} is not implemented by "
@@ -6354,40 +6858,34 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             f"ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}' to run the legacy "
             "port, or wrf_rrtmg_compatibility='none' to run RTE+RRTMGP "
             "without a WRF mapping receipt.")
-    if 4 in (ra_lw_physics, ra_sw_physics) and cfg.icloud != 1:
-        # NOT A PHYSICAL INCOMPATIBILITY, and the text no longer says it
-        # is: icloud is WRF's clear-sky coupling switch, gpuwm honours it
-        # on the 1/1 pair today, and the legacy 4/4 preparation already
-        # carries both of its arms.  What is missing on the 4/4 pair is
-        # the anchor: both implementations pin icloud=1 in their adapters
-        # and every recorded RRTMG oracle case is an icloud=1 case, so
-        # admitting 0 here would ship a clear-sky arm with nothing bitwise
-        # behind it.  Retiring this needs the wiring AND one recorded LW
-        # and one recorded SW case at icloud=0 through
-        # tools/rrtmg_wrf461_oracle, which is a generator input, not a
-        # capability.  Stated in the message so a user knows which it is.
+    if 4 in (ra_lw_physics, ra_sw_physics) and cfg.icloud not in (1, 2):
+        # NOT A PHYSICAL INCOMPATIBILITY: icloud is WRF's clear-sky coupling
+        # switch, gpuwm honours it on the 1/1 pair, and the legacy 4/4
+        # preparation carries its arms.  What is missing on the 4/4 pair is
+        # the anchor: every recorded RRTMG oracle case is an icloud=1 (or,
+        # since golden/ports-rad, icloud=2 cal_cldfra2) case, so admitting 0
+        # here would ship a clear-sky arm with nothing bitwise behind it.
+        # The message says which kind of gap it is (2.9.0 round 2 restored
+        # this wording after the icloud=2 port had shortened it).
         raise ValueError(
             f"icloud={cfg.icloud} is not admitted with the 4/4 radiation "
-            "pair. Both 4/4 implementations pin the cloud-radiation "
-            "coupling on -- the legacy RRTMG adapter pins icloud=1 in its "
-            "option envelope and computes CLDFRA unconditionally, and the "
-            "RTE+RRTMGP arm is never handed the switch at all -- so a run "
-            "asking for clear-sky coupling would get the cloudy solve and "
-            "a receipt saying icloud=0: the run would not be the "
-            "configuration it names. This is an evidence gap rather than a "
-            "physical one (WRF's own clear-sky arms are transcribed in the "
-            "legacy preparation), and closing it means wiring the switch "
-            "through both arms AND recording one longwave and one "
-            "shortwave oracle case at icloud=0, because every recorded "
-            "case today is icloud=1. Run clear-sky coupling on the 1/1 "
-            "pair (ra_lw_physics=1 WRF RRTM with ra_sw_physics=1 Dudhia), "
-            "which honours icloud=0 end to end, or leave icloud=1 on the "
-            "4/4 pair.")
+            "pair. Neither 4/4 implementation has wired RRTMGP clear-sky "
+            "cloud optics or a recorded clear-sky solve, so a run asking for "
+            "clear-sky coupling would get the cloudy solve and a receipt "
+            "saying icloud=0: the run would not be the configuration it "
+            "names. This is an evidence gap rather than a physical one "
+            "(WRF's own clear-sky arms are transcribed in the legacy "
+            "preparation), and closing it means wiring the switch through "
+            "both arms AND recording one longwave and one shortwave oracle "
+            "case at icloud=0. Run clear-sky coupling on the 1/1 pair "
+            "(ra_lw_physics=1 WRF RRTM with ra_sw_physics=1 Dudhia), which "
+            "honours icloud=0 end to end, or use icloud=1 or 2 on the 4/4 "
+            "pair.")
     if cfg.cu_physics not in CU_SCHEMES:
         raise ValueError(
             f"cu_physics must be one of {CU_SCHEMES} -- 0 (off), "
-            f"1 (Kain-Fritsch), 3 (Grell-Freitas), 6 (original cu6) or 16 (New Tiedtke), "
-            f"got {cfg.cu_physics}."
+            f"1 (Kain-Fritsch), 3 (Grell-Freitas), 5 (Grell 3D), 6 (original cu6), "
+            f"16 (New Tiedtke) or 96 (New SAS), got {cfg.cu_physics}."
         )
     if cfg.hypsometric_opt not in (1, 2):
         raise ValueError(
@@ -6412,9 +6910,9 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
         # one of the three is ported instead of listing nine integers.  It
         # then recites the menu, the same way the P3 siblings above do,
         # because these too are out-of-schema VALUES.
-        if cfg.mp_physics in _WDM_UNPORTED_SIBLINGS:
-            raise ValueError(
-                unported_wdm_sibling_refusal(cfg.mp_physics))
+        named = unported_mp_scheme_refusal(cfg.mp_physics)
+        if named is not None:
+            raise ValueError(named)
         raise ValueError(f"{_MP_PHYSICS_SCHEMA_MENU}, got {cfg.mp_physics}.")
     validate_milbrandt2_options(cfg)
     validate_aerosol_source_options(cfg)
@@ -6453,6 +6951,22 @@ def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> R
             raise ValueError(f"{option} must be logical; interpreting a string would select the wrong TEMPO coupling")
         if getattr(cfg, option) and cfg.mp_physics != 900:
             raise ValueError(f"{option} selects TEMPO behavior but mp_physics={cfg.mp_physics} does not execute it")
+    for _correct_key in _correct_mode.CORRECTION_KEYS:
+        # A string "false" from a hand-built mapping is truthy in Python and
+        # would switch the correction ON while the file says off.
+        if not isinstance(getattr(cfg, _correct_key), bool):
+            raise ValueError(
+                f"{_correct_key} must be a boolean (correct-mode key, "
+                f"gpuwm/correct_mode.py), got "
+                f"{getattr(cfg, _correct_key)!r}.")
+        if _correct_mode.STRICT and getattr(cfg, _correct_key):
+            # Breakage: a strict 0 ULP WRF proof that ran corrected
+            # arithmetic under its strict label.  Strict mode forces exact.
+            raise ValueError(
+                f"{_correct_key} = true in a strict WRF process "
+                f"({_correct_mode.STRICT_FORCED_BY}): strict mode is the 0 "
+                "ULP proof of the matched arithmetic and forces physics.mode "
+                "= 'exact'.  Set it false, or run without GPUWM_WRF_EXACT.")
     _NSSL_SELECTOR_DEFAULTS = {
         "nssl_2moment_on": -1, "nssl_hail_on": -1, "nssl_ccn_on": -1,
         "nssl_density_on": -1, "nssl_3moment": 0,

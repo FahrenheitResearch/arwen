@@ -184,7 +184,7 @@ def refusal(repo_root: pathlib.Path,
     ]
     for name, location, other in offences:
         lines.append(f"  import {name}  ->  {location}")
-        lines.append(f"      which belongs to the checkout at {other}")
+        lines.append(f"      which belongs to {other}, not to this tree")
     lines.append("")
     lines.append(
         "An editable install binds the distribution name to one directory "
@@ -203,11 +203,52 @@ def refusal(repo_root: pathlib.Path,
     return "\n".join(lines)
 
 
+#: Packages shipped inside the gpuwm distribution beside ``gpuwm``.  When
+#: ``gpuwm`` comes from this tree they must too: an installed copy of one
+#: of them is another release's code running under this tree's gpuwm.
+COMPANIONS = ("tilestream",)
+
+
+def shadowed_companions(repo_root: pathlib.Path,
+                        modules: dict[str, types.ModuleType | None],
+                        ) -> list[tuple[str, pathlib.Path, pathlib.Path]]:
+    """``[(name, file, where it came from)]`` for installed companions.
+
+    Breakage it prevents (2026-10-05): a box lane venv layered over a base
+    venv holding the 2.8.5 wheel ran this tree's gpuwm with the base
+    ``site-packages`` tilestream, and a false multi-card refusal was filed
+    as an engine defect.  Only fires when ``gpuwm`` itself resolved inside
+    ``repo_root``: a deliberate wheel run (the user-door sweep) imports
+    both from ``site-packages`` and is not a split.
+    """
+
+    repo_root = pathlib.Path(repo_root).resolve()
+
+    def inside(location: pathlib.Path) -> bool:
+        return location == repo_root or repo_root in location.parents
+
+    gpuwm = modules.get("gpuwm")
+    if gpuwm is None or not any(inside(loc)
+                                for loc in _module_locations(gpuwm)):
+        return []
+    offences = []
+    for name in COMPANIONS:
+        module = modules.get(name)
+        if module is None:
+            continue
+        for location in _module_locations(module):
+            if not inside(location):
+                offences.append((name, location, location.parent.parent))
+                break
+    return offences
+
+
 def check(repo_root: pathlib.Path, project: str = "gpuwm") -> str | None:
     """The whole question in one call: the refusal, or ``None``."""
 
-    return refusal(repo_root, foreign_imports(
-        repo_root, imported_modules(), project))
+    modules = imported_modules()
+    return refusal(repo_root, foreign_imports(repo_root, modules, project)
+                   + shadowed_companions(repo_root, modules))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -134,7 +134,7 @@ undefined read, refusing with the Fortran line named where reproduction is refus
 | D4 | integer-tick clock: WRF-recurrent `dtbc` / running seconds, exact-calendar scope |
 | D5 | nest-interpolation (SINT) geometry precomputed FP64-on-host, stored FP32; bitwise-identical to WRF's per-op REAL construction for refinement ratios 1-4, proven in `tests/test_nest_interp.py`; diverges by exactly 1 ULP at ratio 5. Only geometry is precomputed; flux and limiter arithmetic is evaluated per field at force time |
 | D6 | `adjust_tempqv` evaluates FP64 on device, stores FP32; the temperature chain cancels ~275 K of magnitude and the Magnus exponential amplifies the residue, so a REAL-internal kernel is irreducibly hundreds of ULPs from any FP64 mirror in qv |
-| D7 | Noah sea-ice runtime thermodynamics not implemented; the four init behaviors are mirrored, WRF's separate `seaice_noah` call is not ported |
+| D7 | retired in 2.8.6: WRF's `seaice_noah` runs after Noah on sea-ice columns, graded against a WRF v4.6.1 column oracle |
 | D8 | the vertical diffusion of vertical velocity (`vertical_diffusion_w_2`) takes the vertical momentum exchange coefficient where WRF hands it the horizontal one; taking WRF's is unstable at dx 250 m against dz 17 m, and the WRF oracle lane measured the two coefficients equal at all 589,824 points on the idealized case where it can matter (section 2.7) |
 | D9 | Thompson aerosol-aware (mp=28) admission, aerosol ingest, lateral boundaries, PBL mixing |
 | D10 | LES-nest inflow perturbation, a designed ArWen-over-WRF extension |

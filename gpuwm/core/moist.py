@@ -139,6 +139,12 @@ NSSL_SCALAR_SPECIES = (
     "qvolg", "qvolh")
 NSSL_SPECIES = NSSL_MASS_SPECIES + NSSL_SCALAR_SPECIES
 
+# Single-moment hail: WSM7 (mp_physics=24, Registry.EM_COMMON:3034
+# ``moist:qv,qc,qr,qi,qs,qg,qh``) carries WSM6's three ice masses and a
+# hail mass, and no number moment at all.  Every entry is a ``moist``
+# array member, so all four load cq and the buoyancy sum.
+SINGLE_MOMENT_HAIL_SPECIES = ICE_MASS_SPECIES + ("qh",)
+
 # Milbrandt-Yau option 9 carries hail mass beside graupel and a number
 # moment for EVERY one of the six hydrometeors.  The tuples are defined in
 # gpuwm.core.milbrandt2_constants (with the WRF line references) so that
@@ -170,6 +176,14 @@ from gpuwm.core.milbrandt2_constants import (  # noqa: E402,F401 -- re-exported
 # ``calc_cq`` and out of the hydrostatic qtot sum, exactly like the number
 # moments beside them.
 P3_SPECIES = ("qi", "ni", "nr", "qir", "qib")
+
+# Ferrier-Aligo (mp=5) registers moist:qv,qc,qr,qi and scalar:qt
+# (Registry.EM_COMMON:3019).  qi is the total ice and is transported; qt is
+# rebuilt from qc+qr+qi at every FER_HIRES entry (module_mp_fer_hires.F:388)
+# so moving it would change nothing the scheme reads, and the three f_*
+# fields are WRF state, never advected.  One ice mass and no qs/qg, so the
+# arm sits before the generic filter for P3's reason.
+FERRIER_SPECIES = ("qi",)
 
 #: The scratch slot holding a zero plane for a moist-array mass species the
 #: active scheme does not allocate.  See :func:`absent_mass_plane`.
@@ -225,7 +239,7 @@ WRF_MOIST_ARRAY_SPECIES = frozenset(
     SPECIES + ICE_MASS_SPECIES + ("qh",))
 
 
-def extra_moist_species(state: DomainState) -> tuple[str, ...]:
+def _extra_water_species(state: DomainState) -> tuple[str, ...]:
     """Active transported species beyond qv/qc/qr.
 
     WSM6 owns the three ice mass fields.  Thompson owns those plus rain/ice
@@ -262,9 +276,16 @@ def extra_moist_species(state: DomainState) -> tuple[str, ...]:
         return ()
     if getattr(state, "qir", None) is not None:
         return P3_SPECIES
+    if getattr(state, "f_rimef", None) is not None:
+        # Ferrier-Aligo: f_rimef is allocated by exactly one scheme.
+        return FERRIER_SPECIES
     if getattr(state, "nh", None) is not None:
         return MY2_SPECIES
     if getattr(state, "qh", None) is not None:
+        # Hail mass with NO NSSL number set is the single-moment hail
+        # family (mp=24); NSSL alone allocates ``qnh`` beside ``qh``.
+        if getattr(state, "qnh", None) is None:
+            return SINGLE_MOMENT_HAIL_SPECIES
         return NSSL_SPECIES
     # Named schemes (gpuwm.microphysics_schemes) answer from their own
     # capability row, selected on their discriminator field; the
@@ -283,7 +304,14 @@ def extra_moist_species(state: DomainState) -> tuple[str, ...]:
         return ICE_MASS_SPECIES + WDM6_NUMBER_SPECIES
     numbers = tuple(name for name in TRANSPORTED_NUMBER_SPECIES
                     if getattr(state, name, None) is not None)
-    return ICE_MASS_SPECIES + numbers
+    return tuple(n for n in ICE_MASS_SPECIES
+                 if getattr(state, n, None) is not None) + numbers
+
+
+def extra_moist_species(state: DomainState) -> tuple[str, ...]:
+    """Extra transported Registry fields, including optional MYNN scalar QKE."""
+    return _extra_water_species(state) + (
+        ("qke_adv",) if getattr(state, "qke_adv", None) is not None else ())
 
 
 def moist_species(state: DomainState) -> tuple[str, ...]:
@@ -293,7 +321,7 @@ def moist_species(state: DomainState) -> tuple[str, ...]:
     exposing the exact prognostic mass/number moments carried by the active
     mixed-phase scheme.
     """
-    return SPECIES + extra_moist_species(state)
+    return tuple(name for name in SPECIES if getattr(state, name, None) is not None) + extra_moist_species(state)
 
 
 def _mut2d(mu, ny: int, nx: int) -> cp.ndarray:
@@ -790,11 +818,14 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
     # gpuwm deviation (open-BC benchmark pins).
     pd = (final and cfg.moist_adv_opt == 1
           and not (cfg.open_x or cfg.open_y))
+    scalar_pd = (final and getattr(state, "qke_adv", None) is not None
+                 and cfg.scalar_adv_opt == 1
+                 and not (cfg.open_x or cfg.open_y))
     # The coupled update rebuilds both column masses per element, so the only
     # consumer left of a materialized ``chm0`` is the PD source fold; ``chm``
     # has none at all.
     chm0 = (state.c1h[:, None, None] * mu0[None] + state.c2h[:, None, None]
-            if pd else None)
+            if pd or scalar_pd else None)
     # WRF captures qv's lateral spec+relax tendency ONCE per model step,
     # on RK step 1 from the time-t scalar (relax_bdy_scalar +
     # spec_bdy_scalar into moist_tend, solve_em.F:2255-2292, gated
@@ -859,14 +890,14 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                 name for name in supplied
                 if name in COUPLED_SCALAR_STATE_FIELDS
                 and name not in HELD_BOUNDARY_FIELDS)
-    if pd:
+    if pd or scalar_pd:
         bufs = (state.scratch((nz, ny, nx + 1), "pd_fxl"),
                 state.scratch((nz, ny, nx + 1), "pd_fxc"),
                 state.scratch((nz, ny + 1, nx), "pd_fyl"),
                 state.scratch((nz, ny + 1, nx), "pd_fyc"),
                 state.scratch((nz + 1, ny, nx), "pd_fzl"),
                 state.scratch((nz + 1, ny, nx), "pd_fzc"))
-    for name in SPECIES:
+    for name in (name for name in SPECIES if getattr(state, name, None) is not None):
         q = getattr(state, name)
         q0 = getattr(state, name + "0")
         if WRF_EXACT:
@@ -988,8 +1019,13 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                        if fixed_tendencies is not None else None),
                 clamp=final)
 
-    if getattr(state, "qi", None) is not None:
+    if extra_moist_species(state):
         for name in extra_moist_species(state):
+            # QKE follows scalar_adv_opt. Preserve every pre-existing
+            # field's selector when the new carrier is absent.
+            pd = (scalar_pd if name == "qke_adv" else
+                  (final and cfg.moist_adv_opt == 1
+                   and not (cfg.open_x or cfg.open_y)))
             q = getattr(state, name)
             q0 = getattr(state, name + "0")
             if WRF_EXACT:

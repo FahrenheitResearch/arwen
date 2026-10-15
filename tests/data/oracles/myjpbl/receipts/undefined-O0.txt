@@ -1,0 +1,4 @@
+U expf
+U free
+U malloc
+U powf

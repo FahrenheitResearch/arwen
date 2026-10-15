@@ -18,6 +18,11 @@
 //! ```
 
 use std::path::PathBuf;
+
+/// The source-revision stamp every bundled and battery binary carries, so a
+/// battery or release check can tell a build of this tree from a stale one.
+pub static SOURCE_REV_STAMP: &str =
+    concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 use std::process::ExitCode;
 
 use rustwx_render::{LegendControls, LegendMode, LevelDensity, RenderDensity};
@@ -168,6 +173,7 @@ fn parse_args() -> Result<Invocation, String> {
 }
 
 fn main() -> ExitCode {
+    std::hint::black_box(SOURCE_REV_STAMP);
     match parse_args() {
         Ok(Invocation::Abi) => {
             println!("{ABI_MARKER}");

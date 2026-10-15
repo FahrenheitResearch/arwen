@@ -15,7 +15,15 @@ import struct
 def source_absent_microphysics(cfg):
     """Return (WRF field names, native FP32 initial values) for active extras."""
     mp = int(cfg.mp_physics)
-    if mp in (0, 1, 6):
+    from gpuwm.core.column_schemes import COLUMN_SCHEMES
+    if mp in COLUMN_SCHEMES:
+        return (), {}  # Single-moment column rows have no number tracers.
+    from gpuwm.core.wsm_family_constants import (
+        selectors, source_absent_initialization,
+    )
+    if mp in selectors():
+        return source_absent_initialization(mp)
+    if mp in (0, 1, 2, 3, 6, 106):
         return (), {}
     if mp == 30:
         from gpuwm.core.fast_sbm_contract import BIN_SPECIES,NUMBER_SPECIES
@@ -40,6 +48,12 @@ def source_absent_microphysics(cfg):
         values["qnn"] = NSSL2_BACKGROUND_CCN_PER_KG
         return (("QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL",
                  "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL"), values)
+    if mp == 5:
+        # Ferrier-Aligo: the scalar qt (WRF output name CWM) has no analysed
+        # source and real.exe never computes it; FER_HIRES rebuilds it from
+        # qc+qr+qi on the first call (module_mp_fer_hires.F:388).  The
+        # f_* state starts where fer_hires_init puts it (gpuwm/core/state.py).
+        return ("CWM",), {"qt": 0.0}
     if mp == 50:
         return (("QNICE", "QNRAIN", "QIR", "QIB"),
                 dict.fromkeys(("ni", "nr", "qir", "qib"), 0.0))

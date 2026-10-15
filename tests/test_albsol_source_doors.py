@@ -10,8 +10,8 @@ from gpuwm.namelist_import import import_namelists
 from test_namelist_import import INPUT_TEXT, _pair
 
 
-def _input(tmp_path, *, name="namelist.input", settings="", mp=55):
-    text = INPUT_TEXT.replace("mp_physics = 55, 55", f"mp_physics = {mp}, {mp}")
+def _input(tmp_path, *, name="namelist.input", settings="", mp=10):
+    text = INPUT_TEXT.replace("mp_physics = 10, 10", f"mp_physics = {mp}, {mp}")
     text = text.replace("&physics\n", "&physics\n" + settings)
     wps, original = _pair(tmp_path, inp=text)
     path = tmp_path / name

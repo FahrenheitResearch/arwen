@@ -65,9 +65,15 @@ def apply(state,cfg,dt,*,refl_10cm_due=False):
     dz=state.scratch((nz,ny,nx),"mp_dz8w")
     z=state.scratch((nz+1,ny,nx),"mp_z8w"); z[:]=(phb+state.php)/np.float32(c.G)
     dz[:]=z[1:]-z[:-1]
+    # A state already on the physics grid (gpuwm/core/mpas_column_suite.py)
+    # hands over its A-grid winds; an ARW state's are destaggered here.
+    mass_winds=getattr(state,"mass_point_winds",None)
+    if mass_winds is not None: u_mass,v_mass=mass_winds()
+    else:
+        u_mass=np.float32(.5)*(state.u[:,:,:-1]+state.u[:,:,1:])
+        v_mass=np.float32(.5)*(state.v[:,:-1,:]+state.v[:,1:,:])
     source={"th":th,"rho":rho,"pii":pii,"dz8w":dz,"p":state.p,
-            "w":state.w,"u":np.float32(.5)*(state.u[:,:,:-1]+state.u[:,:,1:]),
-            "v":np.float32(.5)*(state.v[:,:-1,:]+state.v[:,1:,:]),
+            "w":state.w,"u":u_mass,"v":v_mass,
             "th_old":state.th_old,"qv_old":state.qv_old,"xland":driver.fields["xland"]}
     for name in ("qv","qc","qr","qi","qs","qg"):
         source[name]=getattr(state,name)

@@ -17,7 +17,8 @@ use rw_store::netcdf_classic::{
 
 use crate::composite::{COMPOSITE_SCHEMA, CompositePlan, SeamStat};
 use crate::error::{MpasError, MpasResult};
-use crate::fieldmap::{FIELD_MAP, FieldSource, Rank, field_set_allows, field_set_is_known};
+use crate::fieldmap::{FIELD_MAP, FieldSource, Rank, field_set_allows, field_set_is_known, remap_class};
+use crate::remap::{PRODUCT_REMAP_METHOD, ProductRemap};
 use crate::history::{MpasFrame, Timestamp, expected_levels};
 use crate::weights::NearestCellWeights;
 use crate::window::ProjAttr;
@@ -72,6 +73,10 @@ pub struct ConvertOptions {
     /// renderer's metadata row.  `None` writes nothing, and the frame's
     /// plots carry the generic wrfout identity (`WRF`) as before.
     pub model_label: Option<String>,
+    /// The grid the plots should name in their headline, written as
+    /// `GPUWM_GRID_LABEL` (`hex 15 km`).  `None` writes nothing, and the
+    /// renderer falls back to the WRF domain token (`d01 15 km`).
+    pub grid_label: Option<String>,
     pub format: NcFormat,
     pub clobber: bool,
 }
@@ -84,6 +89,75 @@ pub struct ConvertOptions {
 /// wrfout, so without it every one of its maps said `WRF`.
 pub const MODEL_LABEL_ATTRIBUTE: &str = "GPUWM_MODEL_LABEL";
 
+/// The global attribute the renderer reads a plot headline's grid name
+/// from (`rw_wrfbatch`'s `GRID_LABEL_ATTRIBUTE` pins the same literal).
+///
+/// THE BREAKAGE THIS PREVENTS, MEASURED (2026-10-10): every frame this
+/// converter wrote carried only WRF's `GRID_ID = 1` and the render grid's
+/// `DX`, so every hex map was headlined `(d01 20 km)` -- a WRF nest number
+/// the model does not have and the spacing of a resample grid instead of
+/// the model's own mesh. The converter is the one place that has read the
+/// mesh, so it says which mesh it was.
+pub const GRID_LABEL_ATTRIBUTE: &str = "GPUWM_GRID_LABEL";
+
+/// The longest grid label the renderer's headline takes (the same ceiling
+/// as the model label's metadata row).
+pub const GRID_LABEL_MAX_CHARS: usize = 32;
+
+/// Kilometres as a mesh is named: whole kilometres from 10 km up, one
+/// trimmed decimal below (`15`, `4.5`, `3`).
+fn km_token(metres: f64) -> String {
+    let km = metres / 1000.0;
+    if km >= 10.0 {
+        format!("{}", km.round() as i64)
+    } else {
+        let text = format!("{:.1}", (km * 10.0).round() / 10.0);
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// The spacing a mesh is known by, from its own per-cell spacing:
+/// `15 km` for a uniform mesh (its median), `60-3 km` for a graded one
+/// (coarsest to finest).  Uniform is the refined-region rule's own test --
+/// coarsest within [`crate::window::MESH_FOCUS_REFINEMENT_FACTOR`] of the
+/// finest -- so a mesh this calls uniform is one `--window mesh` refuses
+/// as having no refined region, and the two never disagree.
+pub fn mesh_spacing_label(cell_spacing_m: &[f64]) -> Option<String> {
+    let finite: Vec<f64> = cell_spacing_m
+        .iter()
+        .copied()
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .collect();
+    if finite.is_empty() || finite.len() != cell_spacing_m.len() {
+        return None;
+    }
+    let min = finite.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = finite.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if max <= crate::window::MESH_FOCUS_REFINEMENT_FACTOR * min {
+        let mut sorted = finite;
+        let mid = sorted.len() / 2;
+        sorted.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+        Some(format!("{} km", km_token(sorted[mid])))
+    } else {
+        Some(format!("{}-{} km", km_token(max), km_token(min)))
+    }
+}
+
+/// `MODEL SPACING` (`hex 15 km`), or `mesh SPACING` when no model was
+/// named, held to the headline's limits; `None` when the mesh carries no
+/// usable spacing.
+pub fn grid_label(model_label: Option<&str>, cell_spacing_m: &[f64]) -> Option<String> {
+    let spacing = mesh_spacing_label(cell_spacing_m)?;
+    let model = model_label
+        .map(|m| m.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "mesh".to_string());
+    let label = format!("{model} {spacing}");
+    (label.chars().count() <= GRID_LABEL_MAX_CHARS
+        && !label.chars().any(|ch| ch.is_control() || ch == '|'))
+    .then_some(label)
+}
+
 impl Default for ConvertOptions {
     fn default() -> Self {
         ConvertOptions {
@@ -92,6 +166,7 @@ impl Default for ConvertOptions {
             grid_id: 1,
             title: "MPAS-A v8.4.1 CUDA port history resampled for rw_wrfbatch".to_string(),
             model_label: None,
+            grid_label: None,
             format: NcFormat::Offset64,
             clobber: false,
         }
@@ -244,7 +319,20 @@ pub fn convert_frame(
     destination: &Path,
     options: &ConvertOptions,
 ) -> MpasResult<EmittedFrame> {
-    convert_frame_composite(frame, weights, None, destination, options)
+    convert_frame_inner(frame, weights, None, None, destination, options)
+}
+
+/// The single-source conversion through the product remap: each field by
+/// its [`crate::fieldmap::remap_class`] (linear state, conservative
+/// accumulations, nearest categories).  Same schema and variables as
+/// [`convert_frame`]; the frame records the method per variable.
+pub fn convert_frame_remapped(
+    frame: &MpasFrame,
+    remap: &ProductRemap<'_>,
+    destination: &Path,
+    options: &ConvertOptions,
+) -> MpasResult<EmittedFrame> {
+    convert_frame_inner(frame, remap.nearest, None, Some(remap), destination, options)
 }
 
 /// The same conversion, with the base frame's values replaced by a finer
@@ -259,6 +347,23 @@ pub fn convert_frame_composite(
     destination: &Path,
     options: &ConvertOptions,
 ) -> MpasResult<EmittedFrame> {
+    convert_frame_inner(frame, weights, composite, None, destination, options)
+}
+
+fn convert_frame_inner(
+    frame: &MpasFrame,
+    weights: &NearestCellWeights,
+    composite: Option<&CompositeGather<'_>>,
+    remap: Option<&ProductRemap<'_>>,
+    destination: &Path,
+    options: &ConvertOptions,
+) -> MpasResult<EmittedFrame> {
+    if composite.is_some() && remap.is_some() {
+        return Err(MpasError::Refusal(
+            "a composite frame switches source point by point and has no single mesh to              interpolate across, so it cannot take the product remap"
+                .to_string(),
+        ));
+    }
     let started = std::time::Instant::now();
     if !field_set_is_known(&options.field_set) {
         return Err(MpasError::Refusal(format!(
@@ -330,6 +435,9 @@ pub fn convert_frame_composite(
     if let Some(label) = options.model_label.as_deref() {
         gattrs.push(NcAttr::text(MODEL_LABEL_ATTRIBUTE, label));
     }
+    if let Some(label) = options.grid_label.as_deref() {
+        gattrs.push(NcAttr::text(GRID_LABEL_ATTRIBUTE, label));
+    }
     // A composite can declare a single physics identity only when every source
     // agrees. Missing metadata remains missing; no scheme is invented here.
     gattrs.extend(
@@ -385,7 +493,10 @@ pub fn convert_frame_composite(
         NcAttr::text("MPAS_INIT_FILE", file_name(frame.init_path.as_ref())),
         NcAttr::text("MPAS_WEIGHTS_SHA256", weights.weights_sha256.clone()),
         NcAttr::text("MPAS_WEIGHTS_SCHEMA", crate::weights::WEIGHTS_SCHEMA),
-        NcAttr::text("MPAS_RESAMPLE_METHOD", crate::weights::RESAMPLE_METHOD),
+        NcAttr::text(
+            "MPAS_RESAMPLE_METHOD",
+            if remap.is_some() { PRODUCT_REMAP_METHOD } else { crate::weights::RESAMPLE_METHOD },
+        ),
         NcAttr::text("MPAS_MESH_ANGLE_UNITS", weights.mesh_angle_units.label()),
         NcAttr::text("MPAS_RENDER_WINDOW", weights.window_name.clone()),
         NcAttr::text("MPAS_RENDER_WINDOW_SPEC", weights.window.spec_json()),
@@ -398,13 +509,21 @@ pub fn convert_frame_composite(
         ),
         NcAttr::text(
             "MPAS_NONCLAIM",
-            "nearest-cell visualization resample; not a conservative remap and not a forecast-skill claim",
+            if remap.is_some() {
+                "product remap for display: accumulations are area-conservative to the reported quadrature error; not a forecast-skill claim"
+            } else {
+                "nearest-cell visualization resample; not a conservative remap and not a forecast-skill claim"
+            },
         ),
         NcAttr::text(
             "MPAS_BRIDGE_ENGINE",
             concat!("rw-mpas ", env!("CARGO_PKG_VERSION"), " (rust)"),
         ),
     ]);
+    if let Some(r) = remap {
+        gattrs.push(NcAttr::text("MPAS_PRODUCT_REMAP", r.identity_json()));
+        gattrs.push(NcAttr::text("MPAS_PRODUCT_REMAP_SHA256", r.sha256.clone()));
+    }
     if let Some(gather) = composite {
         gattrs.push(NcAttr::text("MPAS_COMPOSITE_SCHEMA", COMPOSITE_SCHEMA));
         gattrs.push(NcAttr::text("MPAS_COMPOSITE_SPEC", gather.plan.spec_json()));
@@ -516,16 +635,22 @@ pub fn convert_frame_composite(
         )),
     ];
     for planned in &plan {
-        vars.push(
-            NcVarDef::new(planned.name, NcType::Float, planned.dims.clone()).with_attrs(
-                field_attrs(
-                    planned.rank_is_3d,
-                    planned.description,
-                    planned.units,
-                    planned.stagger,
-                ),
-            ),
+        let mut attrs = field_attrs(
+            planned.rank_is_3d,
+            planned.description,
+            planned.units,
+            planned.stagger,
         );
+        if remap.is_some() {
+            let class = remap_class(planned.name);
+            let constant = planned
+                .mapping
+                .is_some_and(|i| FIELD_MAP[i].source == FieldSource::Constant);
+            if !constant {
+                attrs.push(NcAttr::text("MPAS_RESAMPLE", class.label()));
+            }
+        }
+        vars.push(NcVarDef::new(planned.name, NcType::Float, planned.dims.clone()).with_attrs(attrs));
     }
     if radar_winds {
         for (name, description) in [
@@ -667,7 +792,10 @@ pub fn convert_frame_composite(
                             }
                             values
                         }
-                        None => weights.gather(source, levels)?,
+                        None => match remap {
+                            Some(r) => r.gather(remap_class(mapping.wrf_name), source, levels)?,
+                            None => weights.gather(source, levels)?,
+                        },
                     }
                 }
             };
@@ -816,6 +944,16 @@ mod tests {
         assert_eq!(out[1].to_bits(), ((0.1f32 + 0.2f32) * 0.5f32).to_bits());
     }
 
+    #[test]
+    fn grid_label_names_uniform_and_variable_meshes() {
+        let uniform = [29_000.0, 30_000.0, 31_500.0];
+        assert_eq!(grid_label(Some("hex"), &uniform).as_deref(), Some("hex 30 km"));
+        let variable = [3_000.0, 12_000.0, 52_000.0];
+        assert_eq!(grid_label(Some("hex"), &variable).as_deref(), Some("hex 52-3 km"));
+        assert_eq!(grid_label(None, &[937.5, 940.0]).as_deref(), Some("mesh 0.9 km"));
+        assert_eq!(grid_label(Some("hex"), &[]), None);
+    }
+
     /// The renderer reads this exact name (`rustwx_products::shared_context`
     /// pins the same literal), and a converter that writes nothing unless
     /// asked keeps every existing frame byte-identical.
@@ -823,6 +961,23 @@ mod tests {
     fn the_model_label_attribute_is_the_renderers_and_is_off_by_default() {
         assert_eq!(MODEL_LABEL_ATTRIBUTE, "GPUWM_MODEL_LABEL");
         assert_eq!(ConvertOptions::default().model_label, None);
+    }
+
+    #[test]
+    fn the_grid_label_names_the_mesh_spacing_not_the_render_grid() {
+        assert_eq!(GRID_LABEL_ATTRIBUTE, "GPUWM_GRID_LABEL");
+        assert_eq!(ConvertOptions::default().grid_label, None);
+        let uniform15: Vec<f64> = (0..101).map(|i| 14_400.0 + 12.0 * i as f64).collect();
+        assert_eq!(mesh_spacing_label(&uniform15).as_deref(), Some("15 km"));
+        assert_eq!(mesh_spacing_label(&[29_870.0; 5]).as_deref(), Some("30 km"));
+        assert_eq!(mesh_spacing_label(&[59_800.0, 61_000.0, 58_500.0]).as_deref(), Some("60 km"));
+        assert_eq!(mesh_spacing_label(&[4_500.0; 3]).as_deref(), Some("4.5 km"));
+        assert_eq!(mesh_spacing_label(&[3_000.0, 12_000.0, 60_000.0]).as_deref(), Some("60-3 km"));
+        assert_eq!(mesh_spacing_label(&[]), None);
+        assert_eq!(mesh_spacing_label(&[15_000.0, f64::NAN]), None);
+        assert_eq!(grid_label(Some("hex"), &uniform15).as_deref(), Some("hex 15 km"));
+        assert_eq!(grid_label(None, &uniform15).as_deref(), Some("mesh 15 km"));
+        assert_eq!(grid_label(Some("a|b"), &uniform15), None);
     }
 
     #[test]

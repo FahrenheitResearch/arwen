@@ -65,6 +65,15 @@ def test_off_does_not_read_count_or_change_checkpoint_identity():
     assert digest(legacy) != digest(historical)
     assert digest(historical) == "feb433beb07ab5f7056b98fd684ddea7ef7eaef00dd164d4bd2c93f5ac7519fb"
     before = asdict(cfg)
+    # This pre-G3 header has no inactive cumulus-only controls.
+    before.pop("cugd_avedx")
+    before.pop("maxiens")
+    before.pop("maxens")
+    before.pop("maxens2")
+    before.pop("maxens3")
+    before.pop("ensdim")
+    before.pop("cu_diag")
+    before.pop("convtrans_avglen_m")
     before.pop("sf_surface_mosaic")
     before.pop("mosaic_cat")
     before.pop("mosaic_urban_canopy")
@@ -76,6 +85,9 @@ def test_off_does_not_read_count_or_change_checkpoint_identity():
     # The CLM lake quartet appended later is dropped by the same echo when off.
     for name in ("sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev"):
         before.pop(name)
+    # The Noah-MP snow-aging selector (2.9.0) is read only by
+    # sf_surface_physics = 4; this Noah run's comparison drops it.
+    before.pop("noahmp_snow_age")
     assert _configuration_digest_values(asdict(cfg)) == _configuration_digest_values(before)
     assert _mosaic_checkpoint_config(asdict(cfg)) == before
     _require_config_match(before, cfg, "old checkpoint")

@@ -41,9 +41,11 @@ gfortran -o sw_dump_tables sw_stub_wrf.o module_ra_rrtmg_lw.o \
 # The fixture driver reproduces WRF's own sequence-association call forms
 # (rank-2 actuals against explicit-shape rank-1 dummies in inirad/relcalc),
 # so it needs -fallow-argument-mismatch exactly as WRF's build does.
+python "${script_dir}/aer1_extract.py" "${source_root}" "${build_dir}/aer1_authority.F90"
+gfortran -c $FFLAGS -I "${build_dir}" aer1_authority.F90
 gfortran -c $FFLAGS -I "${build_dir}" "${script_dir}/sw_fixture_driver.F90"
 gfortran -o sw_fixture_driver sw_stub_wrf.o module_ra_rrtmg_lw.o \
-    module_ra_rrtmg_sw.o sw_fixture_driver.o
+    module_ra_rrtmg_sw.o aer1_authority.o sw_fixture_driver.o
 
 cp -f "${source_root}/run/RRTMG_SW_DATA" .
 cp -f "${source_root}/run/RRTMG_LW_DATA" .

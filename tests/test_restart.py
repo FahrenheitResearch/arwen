@@ -540,8 +540,17 @@ def test_every_source_scratch_slot_is_classified():
     for slot in sorted(literals):
         restart.classify_scratch_slot(slot)   # raises on any new slot
     for prefix in sorted(prefixes):
+        if prefix == "mp_":
+            # The family executor's dynamic names are bounded by its table.
+            # They are serialized accumulators, never rebuilt scratch.
+            from gpuwm.core.wsm_family_constants import selectors, precipitation_classes
+            for selector in selectors():
+                for species in precipitation_classes(selector):
+                    for suffix in ("nc", "ncv"):
+                        assert restart.classify_scratch_slot(f"mp_{species}{suffix}") == "serialize"
+            continue
         assert (prefix.startswith(tuple(restart.REBUILT_SCRATCH_PREFIXES))
-                or prefix == "cu_"), prefix
+                or prefix in ("cu_", "ltng_")), prefix
     # The one dynamic serialized family: the KF stored per-column rates.
     for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
                  "rqrcuten", "rqscuten"):
@@ -2887,7 +2896,13 @@ _VOLATILE_CHECKPOINT_HEADER = ("created", "producer", "checkpoint_set_id",
 #: digest fixtures name the clock they were recorded with.  That the
 #: default moves the header and nothing else is
 #: test_the_local_face_default_moves_only_the_clock_binding below.
-_PINNED_UNDER_MEASURED_CLOCK = {"terrain_clock": "measured"}
+#: It also names the solar generation they were recorded with: from 2.9.0
+#: the default is WRF 4.8's equation of time ("wrf_480"), which the echo
+#: and the restart identity bind (COSZEN and HRANG change).  That the
+#: default moves the solar binding and nothing else is
+#: test_the_wrf480_solar_default_moves_only_the_solar_binding below.
+_PINNED_UNDER_MEASURED_CLOCK = {"terrain_clock": "measured",
+                                "solar_generation": "wrf_461"}
 
 #: The format stamp every historical digest in this file and its two
 #: per-change siblings was harvested under.  v6 declared the 2.7.0 break
@@ -3252,7 +3267,7 @@ def test_the_local_face_default_moves_only_the_clock_binding(
         return members
 
     default = write(tmp_path / "default", None)
-    measured = write(tmp_path / "measured", _PINNED_UNDER_MEASURED_CLOCK)
+    measured = write(tmp_path / "measured", {"terrain_clock": "measured"})
     assert sorted(default) == sorted(measured) == ["d01", "d02"]
     for member in default:
         live, live_arrays = default[member]
@@ -3272,6 +3287,67 @@ def test_the_local_face_default_moves_only_the_clock_binding(
                 | set(old["physics_setup"])
                 if live["physics_setup"].get(key)
                 != old["physics_setup"].get(key)} == {"configuration_sha256"}
+
+
+def test_the_wrf480_solar_default_moves_only_the_solar_binding(
+        monkeypatch, tmp_path):
+    """From 2.9.0 the default solar generation is "wrf_480" and it binds.
+
+    THE CONCRETE BREAKAGE THIS PREVENTS: a checkpoint-format change riding
+    in under the WRF 4.8 equation-of-time default (golden/wrf-fixes), hidden
+    because the digests above are pinned under "wrf_461".  The same tree
+    written under the default and under "wrf_461" must differ only in the
+    config echo's solar_generation, the "solar" algorithm identity and the
+    hashes the writer derives from them; every array member is byte for
+    byte the same.  (The YSU, Noah-MP snow-aging and urban water-balance
+    selectors are scheme-scoped and absent from this fixture's echo.)
+    """
+    def write(directory, overrides):
+        directory.mkdir()
+        source, start = _sealed_tree_fixture(
+            monkeypatch, forcing_count=2, run_seconds=3600.0,
+            payload_seed=31, run_overrides=overrides)
+        restart.write_tree_restart(
+            directory, source, start + timedelta(seconds=3600))
+        members = {}
+        for path in sorted(directory.glob("gpuwmrst_d0*_*.npz")):
+            with np.load(path, allow_pickle=False) as data:
+                header = json.loads(bytes(bytearray(
+                    data[restart._HEADER_KEY])).decode("utf-8"))
+                arrays = {name: (str(data[name].dtype), data[name].shape,
+                                 data[name].tobytes(order="C"))
+                          for name in data.files
+                          if name != restart._HEADER_KEY}
+            members[path.name.split("_")[1]] = (header, arrays)
+        return members
+
+    default = write(tmp_path / "default", None)
+    legacy = write(tmp_path / "legacy", {"solar_generation": "wrf_461"})
+    assert sorted(default) == sorted(legacy) == ["d01", "d02"]
+    for member in default:
+        live, live_arrays = default[member]
+        old, old_arrays = legacy[member]
+        assert live_arrays == old_arrays
+        assert live["config"]["solar_generation"] == "wrf_480"
+        assert "solar_generation" not in old["config"]
+        for scoped in ("ysu_version", "noahmp_snow_age",
+                       "urban_water_balance"):
+            assert scoped not in live["config"], scoped
+        moved = {key for key in set(live) | set(old)
+                 if key not in _VOLATILE_CHECKPOINT_HEADER
+                 and live.get(key) != old.get(key)}
+        assert moved == {"config", "physics_setup",
+                         "physics_setup_fingerprint"}
+        assert {key for key in set(live["config"]) | set(old["config"])
+                if live["config"].get(key) != old["config"].get(key)}             == {"solar_generation"}
+        assert {key for key in set(live["physics_setup"])
+                | set(old["physics_setup"])
+                if live["physics_setup"].get(key)
+                != old["physics_setup"].get(key)}             == {"configuration_sha256", "algorithms"}
+        assert {key for key in set(live["physics_setup"]["algorithms"])
+                | set(old["physics_setup"]["algorithms"])
+                if live["physics_setup"]["algorithms"].get(key)
+                != old["physics_setup"]["algorithms"].get(key)} == {"solar"}
 
 
 def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(

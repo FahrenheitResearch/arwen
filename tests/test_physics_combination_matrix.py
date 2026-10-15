@@ -524,20 +524,22 @@ def test_a_radiation_override_on_an_rrtmg_template_resolves_the_receipt_token():
             continue
         probe = dict(choice, radiation=radiation)
         plan = plan_for(route_id, route, "era5", probe)
-        template_id = plan["domains"][0]["template_id"]
+        # Exercise an override on the original template even when a named
+        # sibling already matches this tuple and plan_for selects it.
+        for domain in plan["domains"]:
+            domain["template_id"] = DEFAULT_TEMPLATE_ID
+            domain["components"] = dict(probe)
+        assert plan["domains"][0]["template_id"] == DEFAULT_TEMPLATE_ID
         report = validate_physics_plan(plan)
         settings = report["resolved_domains"][0]["settings"]
-        if template_id != DEFAULT_TEMPLATE_ID:
-            # Since ca920cb60 a template that carries this radiation itself
-            # (the Dudhia daytime suite) is reachable on this route, so the
-            # nearest plan overrides nothing; it still has to launch.
-            assert REGISTRY["templates"][template_id]["components"][
-                "radiation"] == radiation, radiation
-        else:
-            overridden.append(radiation)
-            if REGISTRY["components"]["radiation"]["options"][radiation]["selectors"] != {
-                    "ra_lw_physics": 4, "ra_sw_physics": 4}:
-                assert settings.get("wrf_rrtmg_compatibility") == "none", radiation
+        # Since ca920cb60 a template that carries this radiation itself (the
+        # Dudhia daytime suite) is reachable on this route and plan_for may
+        # pick it; the plan is pinned back to the RRTMG template above, so
+        # every option here is a real override of it.
+        overridden.append(radiation)
+        if REGISTRY["components"]["radiation"]["options"][radiation]["selectors"] != {
+                "ra_lw_physics": 4, "ra_sw_physics": 4}:
+            assert settings.get("wrf_rrtmg_compatibility") == "none", radiation
         if report["launchable"]:
             assert run_door(settings, nested=False) is None, radiation
     assert overridden, "no radiation option overrode the RRTMG template"

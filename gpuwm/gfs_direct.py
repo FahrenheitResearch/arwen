@@ -43,7 +43,6 @@ from gpuwm.ingest.source_coverage import (ForcingSeriesRefusal,
 from gpuwm.ingest.horiz import (
     _regular_coordinates,
     interpolate_era5_to_lambert,
-    interpolate_lake_skin_temperature,
     orient_global_source_longitudes,
     unrolled_source_ring,
 )
@@ -403,6 +402,22 @@ def _manifest_source_top_pa(manifest: Mapping[str, object]) -> float:
     return top
 
 
+def _decode_levels_above_model_top(manifest, p_top_pa):
+    """Keep the receipt's levels and at least one complete GFS level above p_top.
+
+    Older full-file manifests declare a truncated ladder although their GRIB
+    contains the extra levels. Request them from the same hash-bound input.
+    A genuinely truncated subset is refused by the bridge's inventory check,
+    naming the absent level, rather than silently extrapolated.
+    """
+    from tools.download_gfs_native_subset import levels_for_top
+
+    identity = manifest.get("source", {})
+    declared = identity.get("pressure_levels_hpa") if isinstance(identity, dict) else None
+    levels = tuple(float(v) for v in (declared or _CERTIFIED_PRESSURE_LEVELS_HPA))
+    return levels_for_top(float(p_top_pa), certified=levels)
+
+
 def _refuse_a_fetch_below_the_model_top(exp, source_top_pressure_pa: float):
     """Refuse a download that stops under the config's model top, with the way out.
 
@@ -526,15 +541,12 @@ def _source_coverage_receipt(snapshot: Era5Snapshot, grid, lake_mask) -> dict[st
         "water": int(np.sum(source_landsea < 0.5)),
     }
 
-    # Lake coverage is reported, not enforced, for the same reason.  The
-    # nearest GFS water to a lake is the crop's nearest (WPS searches the
-    # source it is given), and a lake whose nearer donor could lie past
-    # the crop's edge is counted rather than refused: refusing it stopped
-    # a preparation over the extent of its download.  A crop with no
-    # water at all gives its lakes the skin temperature GFS has there
-    # (:func:`lake_skin_with_source_skin_fallback`), counted the same way.
-    # A whole-globe file is a ring with no edge in longitude, searched as
-    # one exactly as the lake search itself does.
+    # A census of how far each lake's nearest GFS water lies inside the
+    # crop.  It sets no value: lake skin temperature is the masked WPS
+    # interpolation, whose whole-source search (gfs_lake_skin = "wps")
+    # also stops at the crop's edge.  A lake whose nearer
+    # water could lie past the crop's edge is counted here and announced
+    # (:func:`_announce_lake_source_water`).
     lakes = np.asarray(lake_mask, dtype=np.bool_)
     source_land = np.asarray(snapshot.fields["LANDSEA"], dtype=np.float64)
     skin = np.asarray(snapshot.fields["SKINTEMP"], dtype=np.float64)
@@ -583,7 +595,7 @@ def _source_coverage_receipt(snapshot: Era5Snapshot, grid, lake_mask) -> dict[st
         max_nearest_distance = max(max_nearest_distance, best_squared ** 0.5)
         max_search_radius = max(max_search_radius, search_radius)
     result["lake_cells"] = int(lakes.sum())
-    result["lake_source_search"] = "global expanding nearest-water"
+    result["lake_source_search"] = "global expanding nearest-water (coverage diagnostic only)"
     result["max_lake_source_search_radius_cells"] = max_search_radius
     result["max_lake_source_water_distance_cells"] = max_nearest_distance
     # Present only when they happened, so every other receipt keeps the
@@ -595,45 +607,24 @@ def _source_coverage_receipt(snapshot: Era5Snapshot, grid, lake_mask) -> dict[st
     return result
 
 
-def lake_skin_with_source_skin_fallback(lake_skin, lake_mask, mapped_skin):
-    """Each lake's nearest GFS water, or the skin GFS has at the lake.
+def _announce_lake_source_water(past_crop, *, lake_cells):
+    """One line when a lake's nearest GFS water could lie past the crop.
 
-    ``lake_skin`` is :func:`interpolate_lake_skin_temperature` on the
-    crop, NaN at every lake when the crop holds no water to search.  Such
-    a lake takes the mapped skin temperature at its own cells.  This route
-    maps its lakes as land, so that is the skin of the land GFS has where
-    the lake lies: the source model's own surface state there, and never
-    another basin's water.  Returns ``(lake_skin, cells)``, ``cells``
-    being how many lake cells took the mapped skin.
+    A crop that holds no GFS water at all needs no line here: the masked
+    chain gives such a lake the skin GFS has there and its repair receipt
+    counts it (``other_surface``).  This route's 2.8.x nearest-water lake
+    override (``lake_skin_with_source_skin_fallback``) is retired: lakes
+    are water targets of the masked chain, and its whole-source search
+    takes the nearest GFS water inside the crop.
     """
-    if hasattr(mapped_skin, "get"):
-        mapped_skin = mapped_skin.get()
-    lakes = np.asarray(lake_mask, dtype=bool)
-    lake_skin = np.array(lake_skin, dtype=np.float64, copy=True)
-    missing = lakes & ~np.isfinite(lake_skin)
-    if np.any(missing):
-        lake_skin[missing] = np.asarray(
-            mapped_skin, dtype=np.float64)[missing]
-    return lake_skin, int(np.count_nonzero(missing))
-
-
-def _announce_lake_source_water(on_source_skin, past_crop, *, lake_cells):
-    """One line when a lake's GFS water could not come from its nearest donor."""
-    parts = []
-    if on_source_skin:
-        parts.append(
-            f"{on_source_skin} took the skin temperature GFS has at the "
-            "lake, because the fetched area holds no GFS water at all")
     if past_crop:
-        parts.append(
-            f"{past_crop} took the nearest GFS water inside the fetched "
-            "area, though nearer GFS water could lie past its edge")
-    if parts:
         print(
             f"lake water temperature: of {lake_cells} lake cell(s), "
-            + "; ".join(parts) + " (counted under source_coverage in the "
-            "preparation proof); a wider fetch area gives every lake its "
-            "nearest GFS water", file=sys.stderr)
+            f"{past_crop} took the nearest GFS water inside the fetched "
+            "area, though nearer GFS water could lie past its edge "
+            "(counted under source_coverage in the preparation proof); a "
+            "wider fetch area gives every lake its nearest GFS water",
+            file=sys.stderr)
 
 
 def _read_series(path: Path) -> tuple[tuple[int, Path], ...]:
@@ -822,8 +813,12 @@ def _load_bridge_snapshots(
     records: tuple[tuple[int, Path], ...],
     expected_source_sha256: Mapping[int, str] | None = None,
     expected_levels_hpa: tuple[float, ...] | None = None,
+    expected_snow_convention: str | None = None,
 ) -> tuple[Era5Snapshot, ...]:
     gate = _parse_gate(root / "gate.tsv")
+    if (expected_snow_convention is not None
+            and gate.get("snow_convention") != expected_snow_convention):
+        raise ValueError("GFS bridge snow convention differs from preparation policy; rebuild the bridge")
     hours = tuple(int(value) for value in gate["forecast_hours"].split(","))
     if hours != tuple(hour for hour, _ in records):
         raise ValueError("GFS bridge forecast-hour inventory differs from series")
@@ -1499,7 +1494,8 @@ class _PostedGfsSeries:
                            for value in self.levels_pa_csv.split(","))
         loaded = _load_bridge_snapshots(
             decoded, self.cycle_time, batch, expected,
-            expected_levels_hpa=levels)
+            expected_levels_hpa=levels,
+            expected_snow_convention=(self.environment or {}).get("GPUWM_GFS_SNOW_CONVENTION"))
         if self.levels_pa_csv is None:
             # Every later batch decodes on the first batch's ladder, as the
             # one decode of the series derives its ladder from its first
@@ -2191,9 +2187,12 @@ def prepare_gfs_wrf(
     from gpuwm.static.highres_production import (
         load_static_highres, apply_prepared_highres, static_highres_identity)
     static_highres = load_static_highres(experiment_config)
-    from gpuwm.case_data import optional_case_data_from_config, preparation_case_policy
+    from gpuwm.case_data import (
+        gfs_preparation_policy, optional_case_data_from_config,
+        preparation_case_policy)
     case_data = optional_case_data_from_config(experiment_config)
-    case_policy = preparation_case_policy(case_data)
+    case_policy = {**preparation_case_policy(case_data),
+                   **gfs_preparation_policy(case_data)}
     from gpuwm.ingest.water_overlay import (
         load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
     water_overlay, water_overlay_binding = load_bound_water_overlay(
@@ -2277,13 +2276,9 @@ def prepare_gfs_wrf(
     cfg = exp.root.run
     # What the fetch actually reached, not what the default ladder would
     # have reached: the case's p_top is checked against this.
-    source_top_pressure_pa = _manifest_source_top_pa(manifest)
-    _refuse_a_fetch_below_the_model_top(exp, source_top_pressure_pa)
-    manifest_levels = manifest.get("source", {}).get("pressure_levels_hpa") \
-        if isinstance(manifest.get("source"), dict) else None
-    expected_levels_hpa = (tuple(float(level) for level in manifest_levels)
-                           if isinstance(manifest_levels, list)
-                           and manifest_levels else None)
+    _manifest_source_top_pa(manifest)  # Validate the original receipt unchanged.
+    expected_levels_hpa = _decode_levels_above_model_top(manifest, exp.vertical.p_top)
+    source_top_pressure_pa = min(expected_levels_hpa) * 100.0
     if len(exp.domains) == 1:
         grid = _validate_grid_and_vertical_contract(
             exp, Path(wps_namelist),
@@ -2360,7 +2355,8 @@ def prepare_gfs_wrf(
         exp, grids, root_terrain=static["HGT_M"],
         static_catalog=_survey_static_catalog(
             exp, wps_namelist, geog_root, static_highres),
-        static_highres=static_highres, announce=_announce_adaptation)
+        static_highres=static_highres, announce=_announce_adaptation,
+        statics_corridor=statics_corridor)
     cfg = exp.root.run
 
     # One descriptor per decoded array is held for the whole bundle
@@ -2393,11 +2389,10 @@ def prepare_gfs_wrf(
         target_longitudes = tuple(
             pair[1] for pair in (grid.latlon_mass(), grid.latlon_u(),
                                  grid.latlon_v()))
-        bridge_environment = None
+        bridge_environment = {
+            **os.environ, "GPUWM_GFS_SNOW_CONVENTION": case_policy["gfs_snow_convention"]}
         if preprocess_workers is not None:
-            bridge_environment = {
-                **os.environ,
-                "GPUWM_GFS_BRIDGE_THREADS": str(int(preprocess_workers))}
+            bridge_environment["GPUWM_GFS_BRIDGE_THREADS"] = str(int(preprocess_workers))
         posted_series = None
         if posted is not None:
             posted_series = _PostedGfsSeries(
@@ -2466,7 +2461,8 @@ def prepare_gfs_wrf(
             }
             decoded_snapshots = _load_bridge_snapshots(
                 decoded, cycle_time, records, expected_source_sha256,
-                expected_levels_hpa=expected_levels_hpa)
+                expected_levels_hpa=expected_levels_hpa,
+                expected_snow_convention=case_policy["gfs_snow_convention"])
         # A NOMADS box that crosses the source's own 0/360 origin cannot be
         # asked for as one subregion, so `Area.as_nomads` widens it to the
         # whole band (fetch.py:348-362) and the decode returns a ring stored
@@ -2589,10 +2585,22 @@ def prepare_gfs_wrf(
             spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
         interpolation_landmask = np.asarray(
             static["LANDMASK"] >= 0.5, dtype=np.bool_).copy()
-        # GEOG lakes can be much smaller than a 0.25-degree GFS cell.  Select
-        # their atmospheric/soil source as land here, then apply the existing
-        # explicit nearest-source-water lake initialization below.
-        interpolation_landmask[lake_mask] = True
+        # WPS metgrid treats lakes as water for skin temperature and ice,
+        # and excludes them from the land snow/soil donor pass.
+        interpolation_landmask[lake_mask] = False
+        # Lake skin temperature: by default (gfs_lake_skin = "wps") a lake
+        # keeps metgrid's whole-array water search, so a lake GFS does not
+        # resolve takes the nearest GFS water exactly as WPS and real.exe
+        # give it (TSK from SKINTEMP, no use_tavg_for_tsk) -- the answer
+        # the 2.8.x route gave its lakes through its own nearest-water
+        # override.  The inland-water reach would otherwise send every such
+        # lake to the 2 m air temperature: 10,410 cells and a 3.1 K
+        # lake-only RMS against the WPS 4.6.0 / real.exe 4.7.1 witness of
+        # 2026-03-02 12Z.  "air_temperature" keeps that reach for lakes
+        # too.  Non-lake inland water keeps the reach either way.
+        lake_skin_search = (
+            np.asarray(lake_mask, dtype=np.bool_)
+            if case_policy["gfs_lake_skin"] == "wps" else None)
         # WRF's smooth_cg_topo (gpuwm.ingest.cg_topo): the root terrain is
         # blended toward GFS's once, before the first initialization reads
         # it.  Off, this does nothing.
@@ -2615,7 +2623,12 @@ def prepare_gfs_wrf(
                 "sha256": decoder_digest,
                 "implementation": "gpuwm-all-rust-gfs-grib2-bridge",
             },
-            "relative_humidity_convention": "GFS water",
+            "relative_humidity_convention": "GFS mixed ice/water converted by WPS fix_gfs_rh",
+            "lake_skin_temperature": (
+                "WPS masked water interpolation, whole-source search"
+                if case_policy["gfs_lake_skin"] == "wps" else
+                "WPS masked water interpolation within the inland-water "
+                "reach, else the 2 m air temperature"),
             "soil_mapping": "exact GFS Noah 4-layer copy",
             "initial_hydrometeors": (
                 "explicit zero (WRF Vtable.GFS parity)"),
@@ -2665,8 +2678,9 @@ def prepare_gfs_wrf(
                 met = interpolate_era5_to_lambert(
                     source, grid,
                     target_landmask=interpolation_landmask,
-                    relative_humidity_convention="water",
+                    relative_humidity_convention="gfs_mixed",
                     backend=preprocess,
+                    inland_water_search=lake_skin_search,
                 )
             else:
                 met = physical_input.read(index)
@@ -2767,33 +2781,26 @@ def prepare_gfs_wrf(
         # state (gpuwm/core/chem_statics.py).
         from gpuwm.core.chem_statics import attach_chem_statics
         attach_chem_statics(initial_result.state, grid, geog_root, None)
-        lake_skin, lakes_on_source_skin = lake_skin_with_source_skin_fallback(
-            interpolate_lake_skin_temperature(
-                snapshots[0], grid, lake_mask,
-                workers=host_step_workers(preprocess)),
-            lake_mask, initial_met.fields["SKINTEMP"])
-        _announce_lake_source_water(
-            lakes_on_source_skin,
-            max((receipt.get("lake_cells_nearest_water_past_crop", 0)
-                 for receipt in coverage_receipt.values()), default=0),
-            lake_cells=int(np.count_nonzero(lake_mask)))
-        # The assembly runs HERE and not inside the mapping, because this
-        # route's water surface is only settled now: the interpolation
-        # landmask deliberately calls GEOG lakes land (they are smaller
-        # than a 0.25 degree GFS cell), and their skin temperature is the
-        # separately selected nearest source water above.  Feeding the
-        # mapping's landmask to the assembly would have classed every lake
-        # as land and handed the soil router a land value on exactly the
-        # cells the lake override makes water.
+        # Use the same WPS water interpolation that supplied lake ice.  The
+        # old nearest-water override was a workaround for mapping lakes as
+        # land and could replace a valid water-side interpolated temperature.
+        from gpuwm.ingest.horiz import _as_host_float64
+        lake_skin = _as_host_float64(initial_met.fields["SKINTEMP"]).copy()
+        if case_policy["gfs_lake_skin"] == "wps":
+            _announce_lake_source_water(
+                max((receipt.get("lake_cells_nearest_water_past_crop", 0)
+                     for receipt in coverage_receipt.values()), default=0),
+                lake_cells=int(np.count_nonzero(lake_mask)))
         water_temperature = None
         if water_statics is not None:
             from gpuwm.ingest.horiz import _as_host_float64
 
             assembly_skin = _as_host_float64(
                 initial_met.fields["SKINTEMP"]).copy()
+            # Reuse the already mapped water temperature where finite.
             # Every lake value is finite wherever the source carries a
             # skin temperature at all (see
-            # lake_skin_with_source_skin_fallback), and only finite ones
+            # masked surface mapping), and only finite ones
             # are substituted.
             usable_lake = lake_mask & np.isfinite(lake_skin)
             assembly_skin[usable_lake] = lake_skin[usable_lake]
@@ -3078,6 +3085,11 @@ def prepare_gfs_wrf(
                     static_highres=static_highres,
                     sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
                     water_temperature_policy=case_policy["water_temperature_policy"],
+                    # The root's mapping conventions, so a child's RH2 and
+                    # lakes are mapped as the root's are.
+                    relative_humidity_convention="gfs_mixed",
+                    lake_whole_source_search=(
+                        case_policy["gfs_lake_skin"] == "wps"),
                     # A child sees the catalog, not the config.  Without
                     # this a WRF-comparison reproduction would disable the
                     # soil reconstitution on the parent and silently keep
@@ -3491,6 +3503,9 @@ def _prepare_chained_gfs_tree(c) -> dict[str, object]:
             sfcp_to_sfcp=c.case_policy["sfcp_to_sfcp"],
             water_temperature_policy=c.case_policy[
                 "water_temperature_policy"],
+            relative_humidity_convention="gfs_mixed",
+            lake_whole_source_search=(
+                c.case_policy["gfs_lake_skin"] == "wps"),
             # A child sees the catalog, not the config.
             soil_texture_downscale=declared_soil_texture_downscale(
                 c.experiment_config),

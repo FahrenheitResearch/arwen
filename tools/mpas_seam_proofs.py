@@ -194,8 +194,11 @@ def scheme_cfg_kwargs(cumulus: str) -> dict:
     arm runs the pinned cumulus 120 s (GF's own cudt=0 law); the KF arm
     runs 600 s to exercise the NCA hold machinery across non-due steps.
     """
+    from gpuwm import correct_mode
     from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY
     kwargs = dict(
+        # An identity proof names exact mode (2.9.0 default is correct).
+        **correct_mode.resolve("exact").settings,
         moist=True, mp_physics=6, wsm6_hail_opt=0,
         ra_physics=4, ra_rrtmg_variant=RRTMG_VARIANT_LEGACY,
         sf_sfclay_physics=1, sf_surface_physics=4, bl_pbl_physics=1,
@@ -325,6 +328,7 @@ def build_seam(cumulus: str, seam_cls=None):
     sfc = surface_setup()
     cls = seam_cls or mcb.MpasColumnBatchPhysics
     return cls(
+        physics_mode="exact",
         n_levels=NZ, n_columns=NCOL, dt=DT,
         radiation_seconds=600.0, surface_pbl_seconds=120.0,
         cumulus_seconds=(120.0 if cumulus == "gf" else 600.0),

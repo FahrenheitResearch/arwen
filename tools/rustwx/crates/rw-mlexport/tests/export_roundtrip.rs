@@ -299,6 +299,7 @@ fn request(inputs: Vec<PathBuf>, out: &Path, variables: Vec<VariableRow>, hpa: V
         skip_unavailable: false,
         threads: None,
         spacings_deg: vec![0.05, 0.1, 0.25],
+        chunk_yx: None,
         provenance: Provenance {
             history_attributes: BTreeMap::new(),
             history_engines: BTreeMap::new(),
@@ -978,5 +979,106 @@ fn a_file_without_eta_levels_keeps_the_mass_level_geopotential_and_says_so() {
     let geopotential = json(&store.join("geopotential/.zattrs"));
     assert!(geopotential["vertical_interpolation"].as_str().unwrap().contains("mass levels"));
     assert!(json(&store.join(".zattrs")).get("geopotential_vertical_interpolation").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Reassemble a tiled array's `[levels?, ny, nx]` plane stack for time `t`
+/// from its chunk files, using the chunk shape its `.zarray` declares.
+fn untile(store: &Path, array: &str, t: Option<usize>, ny: usize, nx: usize) -> Vec<f32> {
+    let meta = json(&store.join(array).join(".zarray"));
+    let shape: Vec<usize> = meta["shape"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+    let chunks: Vec<usize> = meta["chunks"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+    let n = shape.len();
+    let (ty, tx) = (chunks[n - 2], chunks[n - 1]);
+    let has_levels = n == 4;
+    let (levels, per) = if has_levels { (shape[1], chunks[1]) } else { (1, 1) };
+    let mut out = vec![f32::NAN; levels * ny * nx];
+    for lc in 0..levels.div_ceil(per) {
+        for iy in 0..ny.div_ceil(ty) {
+            for ix in 0..nx.div_ceil(tx) {
+                let mut key = Vec::new();
+                if let Some(t) = t {
+                    key.push(t.to_string());
+                }
+                if has_levels {
+                    key.push(lc.to_string());
+                }
+                key.push(iy.to_string());
+                key.push(ix.to_string());
+                let values = read_f32(store, array, &key.join("."));
+                assert_eq!(values.len(), per * ty * tx, "{array} chunk {key:?} is not full-size");
+                for l in 0..per {
+                    let level = lc * per + l;
+                    if level >= levels {
+                        continue;
+                    }
+                    for r in 0..ty {
+                        for c in 0..tx {
+                            let (y, x) = (iy * ty + r, ix * tx + c);
+                            if y < ny && x < nx {
+                                out[(level * ny + y) * nx + x] = values[(l * ty + r) * tx + c];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn tiled_chunks_hold_the_whole_plane_values_and_append_matches_run() {
+    let dir = scratch("tiled");
+    let files = inputs(&dir);
+    let ids = ["temperature", "u_component_of_wind", "2m_temperature", "total_precipitation", "land_sea_mask"];
+    let whole = dir.join("whole");
+    run(request(files.clone(), &whole, rows(&ids), vec![850, 500]));
+    let tiled = dir.join("tiled");
+    let mut r = request(files.clone(), &tiled, rows(&ids), vec![850, 500]);
+    r.chunk_yx = Some([5, 7]);
+    run(r);
+    // Default stays whole-plane on these small grids.
+    let t_meta = json(&whole.join("d01.zarr/temperature/.zarray"));
+    assert_eq!(t_meta["chunks"].as_array().unwrap()[2..], [serde_json::json!(D01.ny), serde_json::json!(D01.nx)]);
+    let tiled_meta = json(&tiled.join("d01.zarr/temperature/.zarray"));
+    assert_eq!(tiled_meta["chunks"].as_array().unwrap()[2..], [serde_json::json!(5), serde_json::json!(7)]);
+    assert_eq!(json(&tiled.join("d01.zarr/land_sea_mask/.zarray"))["chunks"], serde_json::json!([5, 7]));
+    assert_eq!(json(&tiled.join("d01.zarr/below_ground/.zarray"))["chunks"].as_array().unwrap()[2..], [serde_json::json!(5), serde_json::json!(7)]);
+    for (store, d, frames) in [("d01.zarr", &D01, 3usize), ("d02.zarr", &D02, 2)] {
+        for t in 0..frames {
+            for array in ["temperature", "u_component_of_wind", "2m_temperature", "total_precipitation"] {
+                let a = untile(&whole.join(store), array, Some(t), d.ny, d.nx);
+                let b = untile(&tiled.join(store), array, Some(t), d.ny, d.nx);
+                assert_eq!(a.len(), b.len());
+                for (x, y) in a.iter().zip(&b) {
+                    assert!(x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan()), "{store} {array} t={t}");
+                }
+            }
+        }
+        let a = untile(&whole.join(store), "land_sea_mask", None, d.ny, d.nx);
+        let b = untile(&tiled.join(store), "land_sea_mask", None, d.ny, d.nx);
+        assert_eq!(a, b);
+    }
+    // Frame-at-a-time with tiles writes the same bytes as one tiled run.
+    let many = dir.join("many");
+    for file in &files {
+        let mut r = request(vec![file.clone()], &many, rows(&ids), vec![850, 500]);
+        r.mode = Mode::Append;
+        r.chunk_yx = Some([5, 7]);
+        run(r);
+    }
+    let mut r = request(vec![], &many, rows(&ids), vec![850, 500]);
+    r.mode = Mode::Finalize;
+    r.chunk_yx = Some([5, 7]);
+    run(r);
+    for store in ["d01.zarr", "d02.zarr"] {
+        let a = rw_mlexport::zipout::collect(&tiled.join(store), "s").unwrap();
+        let b = rw_mlexport::zipout::collect(&many.join(store), "s").unwrap();
+        assert_eq!(a.iter().map(|x| &x.0).collect::<Vec<_>>(), b.iter().map(|x| &x.0).collect::<Vec<_>>());
+        for ((name, pa), (_, pb)) in a.iter().zip(&b) {
+            assert_eq!(std::fs::read(pa).unwrap(), std::fs::read(pb).unwrap(), "{store} {name}");
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

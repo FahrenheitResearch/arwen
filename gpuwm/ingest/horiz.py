@@ -2010,17 +2010,33 @@ class _InlandReach:
         return filled
 
 
-def inland_water_reach(snapshot, target_land, target_lat, statics=None):
+def inland_water_reach(snapshot, target_land, target_lat, statics=None, *,
+                       whole_source_search=None):
     """The skin temperature's inland-water reach for one snapshot, or None.
 
     None when the target has no inland water or the source carries no
     2 m air temperature to fall back on (then metgrid's whole-array search
     stands, as before).
+
+    ``whole_source_search`` is a mask of target cells a route keeps on
+    metgrid's whole-array water search: they are never limited by the
+    reach, whatever else classes them as inland water.  The GFS route
+    hands it its land-use lakes by default (``gfs_lake_skin = "wps"``),
+    so a lake GFS does not resolve takes WPS's answer, the nearest GFS
+    water, as real.exe's TSK does without ``use_tavg_for_tsk``.
     """
     lake = None if statics is None else statics.lake
     if lake is not None and np.shape(lake) != np.shape(target_land):
         lake = None
     limited = inland_water_targets(target_land, lake)
+    if whole_source_search is not None:
+        keep = np.asarray(whole_source_search, dtype=bool)
+        if keep.shape != np.shape(target_land):
+            raise ValueError(
+                "whole_source_search must be on the target mass grid "
+                f"{np.shape(target_land)}, not {keep.shape}")
+        # A new array: ``limited`` may be the label cache's own.
+        limited = limited & ~keep
     if not np.any(limited):
         return None
     if (_INLAND_AIR_FIELD not in snapshot.fields
@@ -2131,6 +2147,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                                 relative_humidity_convention="era5_mixed",
                                 backend="cuda", workers=None,
                                 cpu_bridge=None,
+                                inland_water_search=None,
                                 ) -> HorizontalSnapshot:
     """Interpolate every field in ``snapshot`` to mass/U/V Lambert points.
 
@@ -2160,6 +2177,11 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     ``assemble_for_route`` itself instead of declaring statics it does
     not have yet, and the soil router refuses whichever route arrives
     having done neither.
+
+    ``inland_water_search`` is a mass-grid mask of water cells whose skin
+    temperature keeps metgrid's whole-array water search instead of the
+    inland-water reach (:func:`inland_water_reach`); None limits every
+    inland water cell, as before.
     """
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
@@ -2170,9 +2192,9 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
         raise TypeError("snapshot must be an Era5Snapshot")
     if not isinstance(grid, ProjectedGrid):
         raise TypeError("grid must be a ProjectedGrid")
-    if relative_humidity_convention not in {"era5_mixed", "water"}:
+    if relative_humidity_convention not in {"era5_mixed", "gfs_mixed", "water"}:
         raise ValueError(
-            "relative_humidity_convention must be 'era5_mixed' or 'water'")
+            "relative_humidity_convention must be 'era5_mixed', 'gfs_mixed' or 'water'")
 
     mass_lat, mass_lon = grid.latlon_mass()
     u_lat, u_lon = grid.latlon_u()
@@ -2205,7 +2227,8 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 water_temperature_statics=water_temperature_statics,
                 source_orography_catalog=source_orography_catalog,
                 relative_humidity_convention=relative_humidity_convention,
-                backend=backend, workers=workers, cpu_bridge=cpu_bridge)
+                backend=backend, workers=workers, cpu_bridge=cpu_bridge,
+                inland_water_search=inland_water_search)
 
     def operand(name, values):
         return (snapshot.operand(name, values)
@@ -2470,8 +2493,10 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 # soil initializer builds its column, so it is marked and
                 # counted as no_source_land, not as fill.
                 soil = mode == "land" and name in _SOIL_FAMILY_FIELDS
-                inland = (inland_water_reach(snapshot, target_land_host,
-                                             mass_lat, water_temperature_statics)
+                inland = (inland_water_reach(
+                    snapshot, target_land_host, mass_lat,
+                    water_temperature_statics,
+                    whole_source_search=inland_water_search)
                           if mode == "skin" else None)
                 called = native.wps_masked_chain(
                     layers, donors,
@@ -2517,13 +2542,15 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             out[output_name] = interpolated
             operators[output_name] = "+".join(chain)
         else:
-            if name == "RH":
-                if relative_humidity_convention == "era5_mixed":
-                    if "T" not in source_fields:
-                        raise ValueError(
-                            "T is required for ERA5 RH convention conversion")
-                    field = engine.era5_rh_to_water(
-                        field, source_fields["T"])
+            if (name == "RH" and relative_humidity_convention in {"era5_mixed", "gfs_mixed"}
+                    or name == "RH2" and relative_humidity_convention == "gfs_mixed"):
+                temperature_name = "T2" if name == "RH2" else "T"
+                if temperature_name not in source_fields:
+                    raise ValueError(
+                        f"{temperature_name} is required for {name} convention conversion")
+                # WPS ungrib repairs each RH/TT pair, including its surface
+                # pseudo-level, BEFORE metgrid interpolates either field.
+                field = engine.era5_rh_to_water(field, source_fields[temperature_name])
             method = regular_horizontal_method(name, field.ndim)
             operators[output_name] = method
             mapped_from = operand(name, field)

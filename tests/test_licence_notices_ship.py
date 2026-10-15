@@ -31,9 +31,10 @@ WHAT THIS FILE ASSERTS
     sits under a directory ``build_bridge_bundle`` actually walks.
 4.  The nineteen files that carry a per-file notice still carry it.
 5.  The Arm scope list in ``gpuwm/core/kernels/LICENSE-third-party.txt`` is
-    DERIVED FROM THE TREE, not typed: the sixteen files are exactly the ones
+    DERIVED FROM THE TREE, not typed: the eighteen files are exactly the ones
     that reproduce Arm's coefficient tables.  The FDLIBM list is pinned, and a
     kernel that starts defining an FDLIBM routine without joining it fails.
+    Both walks read every subdirectory of the kernel tree (tempo/ included).
 6.  Every first-party crate carrying a third-party licence marker, and every
     upstream Fortran project a first-party crate cites, is named in the NOTICE.
     This is the check that would have caught NumPy and MPAS.
@@ -100,7 +101,17 @@ def _read(path: pathlib.Path) -> str:
 
 
 def _kernel_sources() -> list[pathlib.Path]:
-    return sorted(list(KERNELS.glob("*.cu")) + list(KERNELS.glob("*.cuh")))
+    """Every CUDA source the wheel ships from the kernel tree, subdirectories
+    included.  The breakage the recursion prevents: tempo/tempo_common.cuh
+    carried FDLIBM's binary64 log10 in 2.8.9 outside both FDLIBM lists, and
+    the scope gates could not see it because they read the top level only."""
+    return sorted(list(KERNELS.rglob("*.cu")) + list(KERNELS.rglob("*.cuh")))
+
+
+def _kernel_name(path: pathlib.Path) -> str:
+    """The name the notices use: the file name at the top level, the path
+    under gpuwm/core/kernels/ below it (tempo/tempo_common.cuh)."""
+    return path.relative_to(KERNELS).as_posix()
 
 
 def _decommented(text: str) -> str:
@@ -344,21 +355,74 @@ _ARM_TABLE = re.compile(
 
 
 def _arm_files() -> list[str]:
-    return sorted(p.name for p in _kernel_sources()
+    return sorted(_kernel_name(p) for p in _kernel_sources()
                   if _ARM_TABLE.search(_read(p)))
 
 
+def test_the_arm_scope_list_is_derived_from_the_tree() -> None:
+    """The NOTICE says this list is machine-derived.  This is the machine.
+
+    The breakage it prevents: 7f00a76db (2026-10-08) deleted this test and
+    the FDLIBM one below, and the same day's mp28-exact and MYNN surface
+    intakes shipped mynn_libm.cuh and thompson_aerosol_libm.cuh, which
+    reproduce Arm's tables, outside the Arm scope list of both notices in
+    2.8.8 and 2.8.9.  Restored for 2.9.0 with both added (eighteen files,
+    glibc_trig_flt32.cuh's sinf/cosf tables among them).
+    """
+    _requires_source_tree()
+    derived = _arm_files()
+    assert len(derived) == 18, derived
+    assert len([name for name in derived if name != "glibc_trig_flt32.cuh"]) == 17, derived
+    assert "glibc_trig_flt32.cuh" in derived
+    listed = _read(KERNEL_NOTICE)
+    missing = [name for name in derived if name not in listed]
+    assert missing == [], (
+        "gpuwm/core/kernels/LICENSE-third-party.txt does not name every file "
+        f"that reproduces Arm's tables: {missing}")
+    notice = _read(NOTICE)
+    missing = [name for name in derived if name not in notice]
+    assert missing == [], f"the root NOTICE's Arm list is short of: {missing}"
 
 
 #: The kernel translation units carrying an FDLIBM-descended reduction
-#: (expm1f, tanhf, atanf, log10f).  Pinned rather than derived because each
-#: file names the routine differently -- r_atan, ng_atanf, glibc_atanf,
-#: mynn_tanhf, nmpe_expm1f, ruc_tanhf_glibc -- and the derivation below is
-#: what keeps the pin accurate.
+#: (expm1f, tanhf, atanf, log10f, log1pf, and binary64 log10, log1p, atan,
+#: atan2), by the name the notices use (_kernel_name).
+#: Pinned rather than derived because each file names the routine
+#: differently -- r_atan, ng_atanf, glibc_atanf, mynn_tanhf, nmpe_expm1f,
+#: ruc_tanhf_glibc -- and the derivation below is what keeps the pin accurate.
 FDLIBM_FILES: tuple[str, ...] = (
     "mynn_dmp_sibling.cu", "mynn_pbl.cu", "noahmp_bareflux.cu",
     "noahmp_energy.cu", "noahmp_fluxprep.cu", "noahmp_glacier.cu",
     "noahmp_leaves.cu", "noahmp_vegeflux.cu", "ruc.cu",
+    # gfk_log10, the Milbrandt-Yau units' log10 (the same reduction as
+    # mynn_pbl.cu's), lane/verify-milbrandt2mom-mp9.
+    "log10_flt32.cuh",
+    # Shipped in 2.8.8/2.8.9 outside the notice while the gate below was
+    # deleted (7f00a76db); joined the list for 2.9.0.
+    # mp28: binary32 log10f (e_log10f.c); binary64 log10 (e_log10.c),
+    # log1p (s_log1p.c), atan (s_atan.c) and atan2 (e_atan2.c).
+    "thompson_aerosol_libm.cuh",
+    # MYNN surface layer: mynn_pbl.cu's atanf (s_atanf.c, glibc's 2**25
+    # threshold), character for character.
+    "mynn_libm.cuh",
+    # MM5 surface layers, options 1 and 91: the same atanf and table words
+    # (sf_atan / SFC_ATANF_TAB, sfc_classic_atanf).
+    "sfclay.cu", "sfclay_classic.cuh",
+    # YSU get_pblh: mynn_pbl.cu's expm1f and tanhf (ysu_expm1f, ysu_tanhf).
+    "ysu_480_topo.cuh",
+    # Found by the 2.9.0 verifier after the five above, same defect class.
+    # Dudhia shortwave's dsw_log10f is e_log10f.c's reduction (FDLIBM's
+    # log10(2) split 0x3e9a2080/0x355427db and ivln10 0x3ede5bd9), the same
+    # code as gfk_log10 in log10_flt32.cuh; it had been excused below as
+    # WOOF's own.  New on the 2.9.0 line.
+    "dudhia_sw.cu",
+    # TEMPO's device log10 (tempo_device_log10) is FDLIBM's binary64
+    # e_log10.c line for line; shipped in 2.8.9 unlisted, below the top level.
+    "tempo/tempo_common.cuh",
+    # The Rust libm transcription's log1p (log1p.rs, from s_log1p.c) and
+    # glibc's s_log1pf.c (plm_log1p, plm_log1pf); the root NOTICE gives the
+    # file its own paragraph and its header carries the Sun notices.
+    "portable_libm64.cuh",
 )
 
 #: Device routines whose NAME looks like an FDLIBM one but which are not
@@ -386,12 +450,53 @@ _NOT_FDLIBM = {
     "noah_mosaic.cu": ("noah_log10", "noah_log10_special"),
     # slope_rad / topo_shading: (float)atan((double)x), (float)atan2((double)y, (double)x)
     "topo_radiation.cu": ("tr_atan", "tr_atan2"),
+    # mp28 column support: tc_atan calls CUDA's atan/atanf; tc_log10
+    # delegates to thompson_aa_log10f / thompson_aa_log10, whose
+    # transcription lives in thompson_aerosol_libm.cuh (on FDLIBM_FILES).
+    "thompson_column_support.cuh": ("tc_atan", "tc_log10"),
+    # Goddard bands: g_log10 is gfk_log(x) * log10(e), WOOF's own
+    # composition; no FDLIBM reduction is transcribed.
+    "goddard_bands.cuh": ("g_log10",),
 }
 
 _FDLIBM_DEF = re.compile(
-    r"__device__[^;{]{0,160}?\b(\w*(?:atan|tanh|log10|expm1)\w*)\s*\(")
+    r"__device__[^;{]{0,160}?\b(\w*(?:atan|tanh|log10|expm1|log1p)\w*)\s*\(")
 
 
+def test_the_fdlibm_scope_list_matches_the_tree() -> None:
+    """The breakage it prevents: 7f00a76db (2026-10-08) deleted this test,
+    and thompson_aerosol_libm.cuh, mynn_libm.cuh, sfclay.cu,
+    sfclay_classic.cuh and ysu_480_topo.cuh shipped FDLIBM reductions in
+    2.8.8/2.8.9 (ysu_480_topo.cuh new on the 2.9.0 line) outside the FDLIBM
+    scope list of both notices, which cover what they name and nothing
+    else.  The root NOTICE is read as well as the kernel notice, because
+    both lists were short.  The walk is recursive and knows log1p, because
+    tempo/tempo_common.cuh (binary64 log10, below the top level) and
+    portable_libm64.cuh (log1p) were outside the kernel notice too, and
+    dudhia_sw.cu's FDLIBM log10f had been excused as first-party."""
+    _requires_source_tree()
+    listed = _read(KERNEL_NOTICE)
+    missing = [name for name in FDLIBM_FILES if name not in listed]
+    assert missing == [], (
+        f"the kernel notice's FDLIBM list is short of: {missing}")
+    notice = _read(NOTICE)
+    missing = [name for name in FDLIBM_FILES if name not in notice]
+    assert missing == [], (
+        f"the root NOTICE's FDLIBM list is short of: {missing}")
+
+    unnotified = {}
+    for path in _kernel_sources():
+        name = _kernel_name(path)
+        names = sorted({m.group(1) for m
+                        in _FDLIBM_DEF.finditer(_decommented(_read(path)))})
+        real = [n for n in names if n not in _NOT_FDLIBM.get(name, ())]
+        if real and name not in FDLIBM_FILES:
+            unnotified[name] = real
+    assert unnotified == {}, (
+        "these kernels define an FDLIBM-shaped routine and are not on the "
+        "FDLIBM notice list; either they transcribe FDLIBM and the notice "
+        "must say so, or they are not FDLIBM and belong in _NOT_FDLIBM with the "
+        f"reason beside them: {unnotified}")
 
 
 # ---------------------------------------------------------------------------

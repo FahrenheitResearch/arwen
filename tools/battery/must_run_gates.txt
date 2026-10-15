@@ -213,3 +213,9 @@ tests/test_obs_parallel_native.py  needs the native rw-superob library staged; a
 tests/test_obs_superob_rust_parity.py  needs the native rw-superob library staged; a leg that builds or stages the bridges runs it (3aa8b242d).
 tests/test_tempo_rust_init.py  needs TEMPO_BLOB, a dump tools/tempo_ref/tempo_ref_driver.F90 writes from TEMPO 9adf9ef under gfortran, and TEMPO_TABLE_DIR with TEMPO's four table files, none of which ship in this repository (809cdc87b).
 tests/test_wrf_exact_round3.py  needs GPUWM_WRF_EXACT=1 set before import: the module flags are read at import under the opt-in strict compiler hook, which a default process never installs (01402fcb1).
+# G3 column fixtures ship; its CUDA execution is checked in the queued GPU leg.
+tests/test_g3_cu5_parity.py  needs a CUDA device; CPU legs skip this module, while both queued arithmetic arms run all committed column fixtures.
+# Module-level skips added on the 2.9.0 line without an entry here (declared
+# by lane 290-A6, each with the commit that added it).
+tests/test_fast_sbm_port_oracle.py  needs a C++ compiler (g++, c++ or clang++) on PATH to build the fast-SBM host replay library from tools/fast_sbm_host; the WRF fixtures ship, so every Linux leg with a compiler runs it (767819c79).
+tests/test_owner_identity_scan.py  needs the release cut tooling (tools/release/cut/drivers/owner_identity_scan.py), which RELEASE-EXCLUDE.txt drops from the public snapshot; every leg on the private tree runs it (7321ad1ea).

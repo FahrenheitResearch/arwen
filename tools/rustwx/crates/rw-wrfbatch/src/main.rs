@@ -1214,6 +1214,44 @@ fn validate_request(args: &Args) -> Result<(), CliError> {
 struct GridIdentity {
     domain: Option<String>,
     spacing_m: Option<f64>,
+    /// The grid a producer named for the headline (`GPUWM_GRID_LABEL`,
+    /// `hex 15 km`), which outranks the WRF nest token when present.
+    label: Option<String>,
+}
+
+/// The global attribute a wrfout-shaped file names its grid in, for the
+/// plot headline and the filename's domain slot (`rw_mpas_convert` writes
+/// it; `rw_mpas::convert::GRID_LABEL_ATTRIBUTE` pins the same literal).
+///
+/// THE BREAKAGE THIS PREVENTS, MEASURED (2026-10-10): a resampled hex mesh
+/// forecast carries `GRID_ID = 1` and the resample grid's `DX`, so every
+/// hex map was headlined `(d01 20 km)` and filed `..._d01-20km_...` -- a
+/// WRF nest the model does not have and a spacing the model does not run
+/// at. A file without the attribute (every WRF file) names its grid
+/// exactly as before.
+const GRID_LABEL_ATTRIBUTE: &str = "GPUWM_GRID_LABEL";
+
+/// A file's grid label as the headline may print it: whitespace collapsed,
+/// at most 32 characters, no control character and no `|`; anything else
+/// is ignored rather than drawn.
+fn checked_grid_label(raw: &str) -> Option<String> {
+    let label = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!label.is_empty()
+        && label.chars().count() <= 32
+        && !label.chars().any(|ch| ch.is_control() || ch == '|'))
+    .then_some(label)
+}
+
+/// `hex 15 km` -> `hex15km`, `hex 60-3 km` -> `hex60-3km`: the label as a
+/// filename token, lower case, with nothing but letters, digits, `-` and
+/// `.` kept.
+fn grid_label_slug(label: &str) -> Option<String> {
+    let slug: String = label
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '.')
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect();
+    (!slug.is_empty()).then_some(slug)
 }
 
 /// One identity for the whole invocation, or nothing.
@@ -1246,7 +1284,11 @@ fn file_grid_identity(path: &std::path::Path) -> GridIdentity {
         .as_ref()
         .and_then(|file| file.global_attr_f64("DX").ok())
         .filter(|value| value.is_finite() && *value > 0.0);
-    GridIdentity { domain, spacing_m }
+    let label = file
+        .as_ref()
+        .and_then(|file| file.global_attr_str(GRID_LABEL_ATTRIBUTE).ok())
+        .and_then(|raw| checked_grid_label(&raw));
+    GridIdentity { domain, spacing_m, label }
 }
 
 fn domain_token_from_id(grid_id: i32) -> Option<String> {
@@ -1279,6 +1321,9 @@ fn spacing_subtitle(spacing_m: f64) -> Option<String> {
 /// The slug that replaces `native_grid` in every output filename:
 /// `d02-3km`, or `d02` when the file declares no usable `DX`.
 fn native_domain_slug(identity: &GridIdentity) -> Option<String> {
+    if let Some(slug) = identity.label.as_deref().and_then(grid_label_slug) {
+        return Some(slug);
+    }
     let domain = identity.domain.as_ref()?;
     match identity.spacing_m.and_then(resolution_token) {
         Some(resolution) => Some(format!("{domain}-{resolution}")),
@@ -1296,6 +1341,9 @@ fn native_domain_slug(identity: &GridIdentity) -> Option<String> {
 /// stamped that catalog's dataset id -- a dataset this lane never read,
 /// naming an archive these numbers did not come from, on every frame.
 fn domain_title_label(identity: &GridIdentity) -> Option<String> {
+    if let Some(label) = &identity.label {
+        return Some(label.clone());
+    }
     let domain = identity.domain.as_ref()?;
     match identity.spacing_m.and_then(spacing_parts) {
         Some((value, unit)) => Some(format!("{domain} {value} {unit}")),
@@ -3161,6 +3209,7 @@ mod tests {
         let full = GridIdentity {
             domain: Some("d02".to_string()),
             spacing_m: Some(3_000.0),
+            label: None,
         };
         assert_eq!(native_domain_slug(&full).as_deref(), Some("d02-3km"));
 
@@ -3169,6 +3218,7 @@ mod tests {
         let no_spacing = GridIdentity {
             domain: Some("d02".to_string()),
             spacing_m: None,
+            label: None,
         };
         assert_eq!(native_domain_slug(&no_spacing).as_deref(), Some("d02"));
 
@@ -3177,8 +3227,38 @@ mod tests {
         let no_domain = GridIdentity {
             domain: None,
             spacing_m: Some(3_000.0),
+            label: None,
         };
         assert_eq!(native_domain_slug(&no_domain), None);
+    }
+
+    #[test]
+    fn a_producer_grid_label_names_the_headline_and_the_slug() {
+        // A resampled hex mesh frame: WRF's GRID_ID and the resample DX are
+        // present, and the producer's label outranks both.
+        let hex = GridIdentity {
+            domain: Some("d01".to_string()),
+            spacing_m: Some(14_900.0),
+            label: checked_grid_label("hex  15 km"),
+        };
+        assert_eq!(domain_title_label(&hex).as_deref(), Some("hex 15 km"));
+        assert_eq!(native_domain_slug(&hex).as_deref(), Some("hex15km"));
+        let graded = GridIdentity {
+            label: checked_grid_label("hex 60-3 km"),
+            ..GridIdentity::default()
+        };
+        assert_eq!(native_domain_slug(&graded).as_deref(), Some("hex60-3km"));
+        assert_eq!(checked_grid_label("a|b"), None);
+        assert_eq!(checked_grid_label("   "), None);
+        assert_eq!(checked_grid_label(&"x".repeat(33)), None);
+        // No label: the WRF identity, exactly as before.
+        let wrf = GridIdentity {
+            domain: Some("d02".to_string()),
+            spacing_m: Some(3_000.0),
+            label: None,
+        };
+        assert_eq!(domain_title_label(&wrf).as_deref(), Some("d02 3 km"));
+        assert_eq!(native_domain_slug(&wrf).as_deref(), Some("d02-3km"));
     }
 
     #[test]
@@ -3223,7 +3303,7 @@ fn dispatch() -> Result<(), CliError> {
     }
 }
 
-fn main() -> ExitCode {
+fn render_main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     if let Some(result) = rw_wrfbatch::ensemble_products::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
         return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
@@ -3264,5 +3344,31 @@ fn main() -> ExitCode {
             eprintln!("{message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+mod cli_contracts;
+#[path = "bin/ensbatch.rs"] mod ensbatch;
+#[path = "bin/compare.rs"] mod compare_cli;
+#[path = "bin/verify.rs"] mod verify_cli;
+#[path = "bin/scorecard.rs"] mod scorecard_cli;
+#[path = "bin/nowcast_frames.rs"] mod nowcast_frames;
+
+fn main() -> ExitCode {
+    // Launchers preserve argv[0] and every following argument.
+    let invoked = std::env::args_os().next().unwrap_or_default();
+    let name = std::path::Path::new(&invoked).file_stem().and_then(|name| name.to_str());
+    // Windows resolves the old executable names without regard to case.
+    #[cfg(windows)]
+    let normalized = name.map(str::to_ascii_lowercase);
+    #[cfg(windows)]
+    let name = normalized.as_deref();
+    match name {
+        Some("rw_ensbatch") => ensbatch::main(),
+        Some("rw_compare") => compare_cli::main(),
+        Some("rw_verify") => verify_cli::main(),
+        Some("rw_scorecard") => scorecard_cli::main(),
+        Some("rw_nowcast_frames") => nowcast_frames::main(),
+        _ => render_main(),
     }
 }

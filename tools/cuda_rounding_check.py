@@ -532,8 +532,10 @@ def capture_compiler_sources(destination: Path, compiler=None):
 
 
 def _options(unit: Unit, arch: int) -> tuple[str, ...]:
+    from gpuwm.cuda_subnormals import effective_options
     options = tuple(option for option in unit.options
                     if not option.startswith(("-arch=", "--gpu-architecture=")))
+    options = effective_options(unit.source, options)
     if not any(option.lstrip("-").startswith("ftz=") for option in options):
         options += ("-ftz=true",)
     if "--device-as-default-execution-space" not in options:

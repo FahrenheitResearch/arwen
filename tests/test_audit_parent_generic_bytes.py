@@ -14,6 +14,7 @@ import pytest
 
 from gpuwm.domain_wizard import render_config
 from gpuwm.namelist_import import import_namelists
+from ishmael_retirement import requested_by_own_number, without_retired_line
 from wrf_clock_lines import without_wrf_clock_lines
 
 
@@ -40,7 +41,13 @@ def controls(parent):
         *("namelist/" + name for name in NAMELISTS),
         *("recipe/" + source for source in RECIPES),
     }
-    return json.loads(payload), pins
+    matrix = json.loads(payload)
+    # The pinned namelists asked for ISHMAEL (55), refused by name since
+    # 2026-10-12; every test that imports them asks for Morrison by its own
+    # number instead (tests/ishmael_retirement.py).
+    for documents in matrix["namelists"].values():
+        documents["input"] = requested_by_own_number(documents["input"])
+    return matrix, pins
 
 
 def assert_old_bytes(parent, pins, key, candidate):
@@ -52,6 +59,11 @@ def assert_old_bytes(parent, pins, key, candidate):
     assert hashlib.sha256(old).hexdigest() == expected["sha256"]
     # A fixed-step WRF namelist gained the D8 pinned-clock block in 2.8.9;
     # everything else is the parent's bytes.
+    if key.startswith("namelist/"):
+        # ... and, for an imported namelist, exactly the two lines the
+        # 2026-10-12 door rule changed: the retired ISHMAEL header row and
+        # the omitted lid, now WRF's open top.
+        old = without_retired_line(old)
     assert without_wrf_clock_lines(candidate).encode("utf-8") == old
 
 

@@ -58,6 +58,21 @@ const fn f(
     }
 }
 
+/// MPAS-A v8.4.2 Registry.xml:1891-1896,2754-2756,3038-3040,
+/// 3183-3185,3810-3812: native stream names for existing rendered quantities.
+/// Legacy hex/WRF-derived history names remain the fallback; nothing is derived.
+pub fn native_history_name(wrf_name: &str) -> Option<&'static str> {
+    match wrf_name {
+        "U" => Some("uReconstructZonal"),
+        "V" => Some("uReconstructMeridional"),
+        "T2" => Some("t2m"),
+        "TSK" => Some("skintemp"),
+        "PBLH" => Some("hpbl"),
+        "SWDOWN" => Some("swdnb"),
+        _ => None,
+    }
+}
+
 pub static FIELD_MAP: &[FieldMapping] = &[
     // --- three-dimensional mass fields --------------------------------------
     f("T", Some("theta"), Rank::Mass3d, "K",
@@ -133,6 +148,47 @@ pub static ABSENT_WRF_FIELDS: &[(&str, &str, &str)] = &[
      "the pinned suite runs Grell-Freitas with no separate shallow bucket; total precipitation is RAINC + RAINNC and is complete"),
 ];
 
+/// How a product conversion carries each field onto the render grid
+/// (`crate::remap`).  Metadata, not code paths: a new history field takes
+/// the class of what it physically is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemapClass {
+    /// Continuous state: barycentric on the mesh's Delaunay triangles.
+    Linear,
+    /// Accumulations: first-order area-conservative.
+    Conservative,
+    /// Categories and land-only arrays: the cell's own value.
+    Nearest,
+}
+
+impl RemapClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            RemapClass::Linear => "linear",
+            RemapClass::Conservative => "conservative",
+            RemapClass::Nearest => "nearest",
+        }
+    }
+}
+
+/// Accumulated water: a pixel must carry the area mean of what fell on it,
+/// and the window's integral must be the mesh's.
+pub static CONSERVATIVE_FIELDS: &[&str] = &["RAINC", "RAINNC", "SNOWNC", "GRAUPELNC"];
+
+/// Categories have no average; soil arrays carry placeholders over water
+/// that a blend would smear into the coast.
+pub static NEAREST_FIELDS: &[&str] = &["LANDMASK", "LU_INDEX", "TSLB", "SMOIS"];
+
+pub fn remap_class(wrf_name: &str) -> RemapClass {
+    if CONSERVATIVE_FIELDS.contains(&wrf_name) {
+        RemapClass::Conservative
+    } else if NEAREST_FIELDS.contains(&wrf_name) {
+        RemapClass::Nearest
+    } else {
+        RemapClass::Linear
+    }
+}
+
 /// The named field sets. A global 0.25 degree window carries four million
 /// points per level, so the surface set keeps only what the surface,
 /// precipitation, MSLP and precipitable-water products read -- which is the
@@ -164,6 +220,21 @@ mod tests {
             .iter()
             .find(|m| m.wrf_name == wrf_name)
             .unwrap_or_else(|| panic!("{wrf_name} is not mapped; the obs referee's model bundle refuses frames without it"))
+    }
+
+    #[test]
+    fn every_accumulation_is_conservative_and_every_category_nearest() {
+        for m in FIELD_MAP {
+            let class = remap_class(m.wrf_name);
+            if m.units == "mm" {
+                assert_eq!(class, RemapClass::Conservative, "{} is an accumulation", m.wrf_name);
+            }
+            if m.units.is_empty() && m.source != FieldSource::Constant {
+                assert_eq!(class, RemapClass::Nearest, "{} is a category", m.wrf_name);
+            }
+        }
+        assert_eq!(remap_class("T2"), RemapClass::Linear);
+        assert_eq!(remap_class("REFL_10CM"), RemapClass::Linear);
     }
 
     #[test]

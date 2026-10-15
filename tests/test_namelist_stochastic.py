@@ -1,14 +1,4 @@
-"""WRF &stoch controls: the importer translates them, and the import refuses them.
-
-Two promises, tested apart:
-
-* an active random-physics selector is refused at import with the
-  calibration reason (its amplitude has not been measured against
-  observations), so no imported config can carry one into a run;
-* the translation itself still stands for the day calibration lands: the
-  importer's ``&stoch`` reader turns representable controls into the typed
-  provider's configuration, and names every control it cannot represent.
-"""
+"""WRF &stoch controls translate connected consumers and refuse lost operations."""
 from dataclasses import replace
 import tomllib
 
@@ -68,18 +58,22 @@ def mynn_experiment(tmp_path, flags):
         for index, domain in enumerate(exp.domains)))
 
 
-# ---- the import refuses every active selector ------------------------------
+# ---- supported selectors reach their provider ----------------------------
 
 @pytest.mark.parametrize("controls, replacements", [
     (SPPT, ()), (SKEBS, ()), (SKEBS_CLIP, ()), (SPP_PBL, MYNN),
     (" spp_pbl = 0, 1,\n gridpt_stddev_spp_pbl = 0.9, .075,", MYNN),
     (" spp_pbl = 1, 0,\n gridpt_stddev_spp_pbl = .075, 0.9,", MYNN),
 ], ids=["sppt", "skebs-legacy-selector", "skebs", "spp-pbl", "spp-pbl-child", "spp-pbl-root"])
-def test_an_active_stochastic_namelist_is_refused_with_the_calibration_reason(
+def test_an_active_supported_stochastic_namelist_reaches_the_provider(
         tmp_path, controls, replacements):
-    with pytest.raises(ValueError) as caught:
-        imported(tmp_path, controls, replacements)
-    assert UNCALIBRATED_SPREAD_REASON in str(caught.value)
+    text, _ = imported(tmp_path, controls, replacements)
+    experiment = build_experiment(tomllib.loads(text), source="supported stochastic import")
+    from gpuwm.ensemble.door import request_for_payload
+    request = request_for_payload(text.encode())
+    provider = StochasticModelProvider.from_mapping(request.stochastic)
+    configured = provider.configure_experiment(experiment)
+    assert provider.enabled_for_experiment(configured)
 
 
 @pytest.mark.parametrize("selector", ["rand_perturb", "multi_perturb", "perturb_bdy", "pert_mynn", "pert_thom"])
@@ -89,20 +83,20 @@ def test_the_unsupported_selectors_give_the_same_reason_and_name_their_key(tmp_p
     with pytest.raises(ValueError) as caught:
         imported(tmp_path, f" {selector} = {value},")
     message = str(caught.value)
-    assert UNCALIBRATED_SPREAD_REASON in message
+    assert "no runtime consumer" in message
+    assert "unperturbed" in message
     assert message.startswith(f"&stoch {selector} = ")
-    assert f"Next: turn {selector} off in &stoch" in message
+    assert f"Next: turn {selector} off" in message
 
 
-def test_the_config_loader_refuses_an_authored_spp_switch(tmp_path):
+def test_the_config_loader_keeps_an_authored_connected_spp_switch(tmp_path):
     """The builder every config door loads through, not a per-door check."""
     text, _ = import_namelists(*_pair(tmp_path, inp=INPUT_TEXT.replace(*MYNN[0]).replace(*MYNN[1])))
     raw = tomllib.loads(text)
     build_experiment(tomllib.loads(text), source="unperturbed")
     raw["shared"]["spp_pbl"] = 1
-    with pytest.raises(ValueError) as caught:
-        build_experiment(raw, source="authored spp_pbl")
-    assert str(caught.value) == UNCALIBRATED_SPREAD_REASON
+    experiment = build_experiment(raw, source="authored spp_pbl")
+    assert all(domain.run.spp_pbl == 1 for domain in experiment.domains)
 
 
 # ---- the translation ---------------------------------------------------------

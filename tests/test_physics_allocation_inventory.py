@@ -165,6 +165,7 @@ _PER_COLUMN_STRIDE_NAMES = frozenset((
 #: the no-``DomainState`` path used by the standalone harnesses, and the
 #: 256-byte validity words, built once per process.
 _PHYSICS_ALLOCATION_INVENTORY = {
+    "gpuwm/core/lin.py": {},  # Persistent DomainState scratch, no raw allocation sites.
     # Integer-define launchers are part of the same kernel family. Chem
     # vertical mixing and IEVA draw only declared caller/state buffers;
     # their empty rows reject any future raw allocation.
@@ -493,11 +494,13 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # half-level mean, which is not in ``_ALLOCATORS`` and never was.
     'gpuwm/core/kf.py': {
         'ensure_trigger_history': 1,
-        # The eleventh is the caller-sized column workspace the frame move
-        # added (48ff6b813): one cp.empty priced by the same commit's
-        # preflight row, replacing per-thread local frames the driver
-        # priced at full residency.
-        'launch_kf': 11,
+        # The WRF 4.6.1 port (2026-10-07): the 3-D outputs (one
+        # comprehension), the 2-D outputs (one loop), the optional cloud
+        # diagnostics (one loop) or their 1-word placeholder, and the
+        # caller-sized column workspace the frame move added (48ff6b813).
+        # Every array is (nz, ny, nx) or (ny, nx) float32 except the
+        # workspace, priced by preflight.kf_column_workspace_bytes.
+        'launch_kf': 5,
     },
     'gpuwm/core/microphysics.py': {},
     'gpuwm/core/microphysics_transition.py': {},
@@ -596,7 +599,13 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # bound to the urban pointer slots when no urban model ran) are gone: the
     # default path launches noah_column, which takes no urban argument, so
     # nothing is bound when no urban model runs.
-    'gpuwm/core/noah.py': {},
+    # launch_noah_seaice (lane/parity-noah, WRF's seaice_noah): one int32
+    # word per launch for SFLX_SEAICE's fatal flag, read back after the
+    # kernel to refuse an impossible snowpack by WRF's words.  One element,
+    # never grid-scaled, never nest-persistent.
+    'gpuwm/core/noah.py': {
+        'launch_noah_seaice': 1,
+    },
     # ---- the four Noah-MP leaf batches -----------------------------------
     # Entered 2026-07-27, having been committed unlisted since at least
     # 92216d0.  They were checked against the question that decides whether a
@@ -933,6 +942,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # (proof/node-reds-276).
     'gpuwm/core/wdm6.py': {'launch_wdm6': 1},
     'gpuwm/core/wsm6.py': {},
+    # WSM3 init words are one 25-word constant table per device,
+    # uploaded with cp.asarray, which this raw allocator scanner excludes.
+    # All timestep fields use DomainState scratch.
+    'gpuwm/core/wsm3.py': {},
     # ---- the urban canopy models (sf_urban_physics 1-3), 2026-09-30 --------
     # MYJURB (MYJ under BEP/BEM): ``launch_myjurb``'s per-call bundle, the MYJ
     # roster plus EXCH_M -- eight (nz, ny, nx) outputs from one comprehension,
@@ -961,9 +974,13 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # zeroed on the device per call; ``run_columns`` is the oracle-test
     # entry (``ucm_column_test``), not the forecast path, and sizes to the
     # columns a test hands it.
+    # ``_run_columns480`` is the same oracle-test entry for the explicit
+    # WRF 4.8 canopy generation (urban_ucm_generation = "wrf_480"): one
+    # status word per test column, never the forecast path.
     'gpuwm/core/urban_ucm.py': {
         '_status_word': 1,
         'run_columns': 2,
+        '_run_columns480': 1,
     },
     'gpuwm/core/ysu.py': {
         # The precedent this rule follows and the reason it is a ratchet
@@ -1374,6 +1391,32 @@ def test_real_device_helper_allocation_inventory():
         "surface_pressure_from_surface": 1,
     }
     assert _inventory((ROOT / rel).read_text(encoding="utf-8"), rel) == expected
+
+
+# Column adapters allocate their documented table and in-flight column slabs.
+_PHYSICS_ALLOCATION_INVENTORY.update({'gpuwm/core/fer_hires.py': {}})
+# golden/ports-rad (2.9.0 round 2): the radiation and switch ports' sites,
+# entered with their bounds when the round merged them (the lane left them out).
+_PHYSICS_ALLOCATION_INVENTORY.update({
+    # aer_opt = 2: the column AOD, single-scattering albedo, asymmetry and
+    # the two band arrays of one radiation call, each (ncol, nz) or (ncol,)
+    # float32 and released with the call; bounded by the column chunk.
+    'gpuwm/core/aer_opt2.py': {'optics_device': 5},
+    # Lightning: the flash-rate planes (ny, nx) of one due call and the
+    # history extension; nothing scales with nz.
+    'gpuwm/core/lightning.py': {'extend': 1, 'launch_lightning': 2,
+                                'update_lightning': 3},
+    # New Goddard: its column inputs and the two heating/flux outputs of one
+    # radiation call, (ncol, nz) or (ncol, nz+1) float32, released with it.
+    'gpuwm/core/radiation_composition.py': {'__call__': 15},
+})
+# icloud = 2: cal_cldfra2 returns one (ncol, nz) float32 cloud fraction, the
+# same output cal_cldfra1 allocates on the icloud = 1 path.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['cal_cldfra2'] = 1
+# The WRF 4.8 solar constant stays on the card so a radiation-due step can be
+# captured as a graph (2.9.0 round 2): one zero-length float32 coordinate pair
+# per radiation call, 0 bytes; the radconst output it reads is solar.py's.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_solar_constant_device'] = 1
 
 
 def _live_inventory() -> dict[str, dict[str, int]]:

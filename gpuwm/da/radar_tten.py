@@ -212,8 +212,8 @@ HRRR_MP_TEND_LIM = 0.07
 #: allow-list, for the same reason, as the reflectivity adapter's
 #: (``gpuwm/da/obs_radar.py``): a regime built from range-folded gates may
 #: be a storm, and reading it as clear would withhold heating from it.
-_CLEAR_AIR_SOURCES = ("finite_below_floor",
-                      "below_threshold_and_finite_below_floor")
+#: One list, owned by the adapter: a regime admitted there is admitted here.
+from gpuwm.da.obs_radar import CLEAR_AIR_SOURCES as _CLEAR_AIR_SOURCES  # noqa: E402
 
 
 class RadarTtenError(ValueError):

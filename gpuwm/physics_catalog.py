@@ -83,6 +83,19 @@ def table() -> dict[str, Any]:
     document = json.loads(TABLE_PATH.read_text(encoding="utf-8"))
     if document.get("schema") != TABLE_SCHEMA:
         raise ValueError(f"{TABLE_PATH.name}: expected schema {TABLE_SCHEMA!r}")
+    # Curated prose remains authoritative. A new scheme already declares its
+    # name and scope in the registry; staging it does not require a duplicate
+    # catalog option row. This fallback makes no cost or qualification claim.
+    descriptions = document["descriptions"]
+    for family, component in _registry()["components"].items():
+        rows = descriptions.setdefault(family, {})
+        for option_id, option in component["options"].items():
+            if option_id not in rows:
+                words = option.get("description") or option.get("label")
+                if not isinstance(words, str) or not words.strip():
+                    raise ValueError(
+                        f"{family}.{option_id}: registry needs a description or label")
+                rows[option_id] = words
     return document
 
 

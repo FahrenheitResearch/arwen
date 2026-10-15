@@ -63,9 +63,9 @@ SURFACE_MAP = {"hpbl": "hpbl", "wstar": "wstar", "delta": "delta"}
 
 #: Columns whose disagreement is a branch, not a rounding -- the v4.6.1
 #: test's cases 7 and 13 (subnormal br / ust under CuPy's -ftz=true).  Case 12
-#: (ust = hfx = qfx = 0) is NOT held out: ysu.cu's zero-flux short circuit is
-#: skipped under BEP, because BEP forcing makes such a column non-quiescent,
-#: so it takes WRF's path.
+#: (ust = hfx = qfx = 0) is NOT held out: it takes WRF's path under BEP, as
+#: every column of the plain kernel has since golden/ports-pbl removed the
+#: zero-flux short circuit.
 BRANCH_DIVERGENCE_CASES = (7, 13)
 
 #: Measured on an RTX 4090 (sm_89, NVRTC 13.4, cupy 14.2.0), over the 22
@@ -237,7 +237,11 @@ def _port(fx, *, bep: bool = True):
             ust=dev["ust"], hfx=dev["hfx"], qfx=dev["qfx"],
             wspd=dev["wspd"], br=dev["br"], psim=dev["psim"],
             psih=dev["psih"], xland=dev["xland"], u10=dev["u10"],
-            v10=dev["v10"], dt=fx["dt"], ysu_topdown_pblmix=flag, **kw)
+            v10=dev["v10"], dt=fx["dt"], ysu_topdown_pblmix=flag,
+            # The WRF 4.7.1 flag_bep reference grades the legacy kernel; the
+            # WRF 4.8 generation's BEP columns are graded against WRF 4.8 by
+            # tools/ysu_generations_oracle/gate.py.
+            ysu_version="wrf_461", **kw)
         take = fx["topdown"] == flag
         for name, value in out.items():
             host = cp.asnumpy(value)

@@ -102,7 +102,12 @@ def test_the_optional_keys_are_exactly_the_silent_exposure():
         # exists for would then compare two preparations.  The near-miss
         # refusal below fires for it like every other optional key, and an
         # unknown value is refused by name (tests/test_run_preprocess_backend.py).
-        "preprocess_backend",
+        "preprocess_backend", "gfs_snow_convention",
+        # Lane 290-A1.  Moved deliberately: a dropped
+        # `gfs_lake_skin = "air_temperature"` would run the WPS lake search
+        # under the name of the user's choice, so the comparison the knob
+        # exists for would compare two identical preparations.
+        "gfs_lake_skin",
     }
 
 

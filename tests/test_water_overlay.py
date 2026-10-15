@@ -151,8 +151,11 @@ def _under_the_anchor_clock(exp):
     from gpuwm.core.model import experiment_fingerprint, restart_identity_payload
 
     assert all(domain.run.terrain_clock == "local_face" for domain in exp.domains)
+    # ... and 2.9.0's WRF 4.8 solar default (golden/wrf-fixes), likewise.
+    assert all(domain.run.solar_generation == "wrf_480" for domain in exp.domains)
     historical = replace(exp, domains=tuple(replace(
-        domain, run=replace(domain.run, terrain_clock="measured"))
+        domain, run=replace(domain.run, terrain_clock="measured",
+                            solar_generation="wrf_461"))
         for domain in exp.domains))
     current_payload = restart_identity_payload(exp)
     historical_payload = restart_identity_payload(historical)
@@ -160,6 +163,8 @@ def _under_the_anchor_clock(exp):
             current_payload["domains"], historical_payload["domains"]):
         assert current_domain["run"].pop("terrain_clock") == "local_face"
         assert "terrain_clock" not in historical_domain["run"]
+        assert current_domain["run"].pop("solar_generation") == "wrf_480"
+        assert "solar_generation" not in historical_domain["run"]
     assert current_payload == historical_payload
     assert experiment_fingerprint(exp, _stability_anchor_catalog()) != (
         experiment_fingerprint(historical, _stability_anchor_catalog()))

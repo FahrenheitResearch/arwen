@@ -67,6 +67,7 @@ from __future__ import annotations
 
 from gpuwm.physics_registry import canonical_template_id
 
+import argparse
 import json
 import hashlib
 import math
@@ -2263,16 +2264,15 @@ def radiation_cadence_advisory(profile: str | None,
     wins at load).
 
     Silent for a single domain: nothing inherits, and the physics
-    summary already speaks the root's radt.  There is no radiation-off
-    condition because no shipped suite is radiation-off: every profile
-    in the registry runs at least shortwave (the ``*-no-radiation-*``
-    names mean longwave OFF, Dudhia shortwave still on, radt = 1), so
-    radt paces real work in every nested emission.
+    summary already speaks the root's radt.  Radiation-off compositions are silent because their cadence schedules no work.
     """
 
     if int(domains) < 2:
         return []
     switches = profile_switches(profile)
+    from gpuwm.physics_menu import radiation_scheme_ids
+    if not any(radiation_scheme_ids(switches)):
+        return []
     return [
         f"radt {float(switches['radt']):g} min on all {int(domains)} "
         "domains: nests inherit the root's radiation cadence rather than "
@@ -6081,6 +6081,14 @@ def _profile_help_route_note() -> str:
 DEFAULT_WIZARD_SOURCE = "era5"
 
 
+class _DeclaredSourceAction(argparse.Action):
+    """Keep the ordinary default and distinguish an explicit forcing choice."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace.source_explicit = True
+
+
 def _profile_help_default_note() -> str:
     """The ``--help`` sentence about what a bare run binds.
 
@@ -6461,6 +6469,11 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     # or the run stops with the registry's own words.  Everything below
     # reads the row -- coverage, cadence, forecast horizon -- so a name
     # that never resolved would have been re-guessed at four later points.
+    if getattr(args, "recipe", None):
+        from gpuwm.region_recipe import domain_recipe_main
+        return domain_recipe_main(args)
+    if getattr(args, "region", None) or getattr(args, "spacing_km", None):
+        raise ValueError("--region and --spacing-km require --recipe; otherwise the requested recipe settings would be lost")
     args.source = resolve_source(args.source)
     nz = getattr(args, "nz", None)
     tiles = getattr(args, "tiles", None)
@@ -7638,6 +7651,16 @@ def register_cli(subparsers) -> None:
         help="wizard: emit an experiment TOML for a point or polygon + GPU budget, "
              "sized by the in-process VRAM estimator")
     target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--region", metavar="ID|GEOJSON",
+                        help="recipe region row id or local polygon GeoJSON")
+    parser.add_argument("--recipe", metavar="ID|TOML",
+                        help="complete recipe from the packaged table or a local TOML")
+    parser.add_argument("--region-table", type=Path, default=None,
+                        help="region JSON table override; adding a region requires data only")
+    parser.add_argument("--recipe-table", type=Path, default=None,
+                        help="recipe registry override; new recipes and aerosol policies are data")
+    parser.add_argument("--spacing-km", type=positive_float, default=None,
+                        help="recipe grid spacing in kilometres")
     target.add_argument("--point", metavar="LAT,LON",
                         help="domain center in decimal degrees. |lat| 90 "
                              "is refused. A point carries no extent, so "
@@ -7845,6 +7868,7 @@ def register_cli(subparsers) -> None:
                         help="forecast length (run_seconds = N*3600)")
     parser.add_argument(
         "--source", default=DEFAULT_WIZARD_SOURCE, metavar="SOURCE",
+        action=_DeclaredSourceAction,
         # NO `choices=`, deliberately.  This used to be
         # choices=("gfs", "hrrr", "era5") while the product shipped
         # sixteen runnable sources, so argparse answered `--source rap`

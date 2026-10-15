@@ -379,11 +379,12 @@ def test_reflectivity_for_a_scheme_with_no_hx_route_is_refused_at_config_time():
     rows = consumer_rows_by_selector("microphysics", "radar_da")
     routes = {mp: row["reflectivity_route"] for mp, row in rows.items()}
     assert set(routes.values()) <= {
-        "operator", "scheme-diagnostic", "native-not-separable", "none",
-        "unrouted"}, routes
+        "operator", "scheme-diagnostic", "native-not-separable",
+        "native-not-routed", "none", "unrouted"}, routes
     fused = [mp for mp, route in routes.items()
              if route == "native-not-separable"]
-    # NO SCHEME IS "unrouted" ANY MORE, and mp=50 is the only fused one.
+    # WSM7 has a native diagnostic but no radar DA H(x) operator yet.
+    # Its route remains refused explicitly; earlier routes stay admitted.
     # mp=9 was unrouted, then recorded as fused when audit R-050 read its
     # kernel; its Z block has since been lifted into its own kernel
     # (gpuwm/core/kernels/milbrandt2_zet.cu), which updates nothing, so it
@@ -395,7 +396,7 @@ def test_reflectivity_for_a_scheme_with_no_hx_route_is_refused_at_config_time():
     # polar-scattering diagnostic is not ported), so there is no H(x) over
     # its bin spectra.  The gate refuses it here, at configuration, which is
     # the shipped positive control the synthesised row below stood in for.
-    assert [mp for mp, route in routes.items() if route == "unrouted"] == [30]
+    assert sorted(mp for mp, route in routes.items() if route == "unrouted") == [24, 30]
     with pytest.raises(RadarAssimilationError, match=r"no H\(x\) route"):
         _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
                 positivity_policy="clip", mp_physics=30)
@@ -406,9 +407,10 @@ def test_reflectivity_for_a_scheme_with_no_hx_route_is_refused_at_config_time():
     # The named schemes are the fused ones now: TEMPO (900) computes its Z
     # inside its own step (obsop.NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP), so a
     # reflectivity cycle on it is refused by name below, the positive
-    # control this arm lacked.
+    # control this arm lacked.  Ferrier-Aligo (5) computes its DBZ column
+    # inside EGCP01COLUMN, so it is fused too.
     from gpuwm.microphysics_schemes import NAMED_MP_IDS
-    assert set(fused) == set(NAMED_MP_IDS), routes
+    assert set(fused) == {5} | set(NAMED_MP_IDS), routes
     assert routes[50] == "scheme-diagnostic", routes
     for mp in fused:
         with pytest.raises(RadarAssimilationError,
@@ -888,6 +890,59 @@ def test_scheme_reflectivity_provider_kessler(world):
     assert np.all(np.isfinite(dbz))
     # Rain is present, so somewhere must read above the clear-air floor.
     assert float(dbz.max()) > -35.0
+
+
+@pytest.mark.parametrize("mp_physics, version", [(8, "wrf_461"),
+                                                  (28, "wrf_39_noaa"),
+                                                  (28, "wrf_461")])
+def test_scheme_reflectivity_provider_thompson_host_checkpoint(mp_physics, version):
+    """A host checkpoint of a Thompson scheme gets the scheme's own H(x).
+
+    The host fallback mirrors only Kessler, WSM6 and Morrison; the regional
+    door hands the provider host arrays, so before the device route every
+    Thompson analysis (the HRRR suite's mp 28 included) ran with no
+    reflectivity or clear-air batch at all.  The provider answers on the
+    device copy now, and the answer is the CUDA path's own value.
+    """
+    cp = pytest.importorskip("cupy")
+    try:
+        cp.cuda.runtime.getDeviceCount()
+    except Exception:
+        pytest.skip("no CUDA device")
+    from gpuwm.da.obsop import HOST_REFLECTIVITY_MIRRORS
+
+    assert mp_physics not in HOST_REFLECTIVITY_MIRRORS
+    rng = np.random.default_rng(7)
+    shape = (NZ, NY, NX)
+    p = np.linspace(95000.0, 30000.0, NZ)[:, None, None] * np.ones(shape)
+    theta = np.linspace(300.0, 330.0, NZ)
+    state = {"p": p, "thp": np.zeros(shape), "qv": np.full(shape, 8e-3),
+             "qc": np.zeros(shape), "qi": np.zeros(shape),
+             "qr": np.where(rng.random(shape) > 0.5, 2e-3, 0.0),
+             "nr": np.full(shape, 5e3), "qs": np.zeros(shape),
+             "qg": np.zeros(shape)}
+    run = types.SimpleNamespace(mp_physics=mp_physics, thompson_version=version,
+                                thompson_fork_snow_fall=(
+                                    "wrf_39_noaa" if version == "wrf_39_noaa"
+                                    else "blend"))
+    dbz = scheme_reflectivity_provider(run, base_theta=theta)(0, state)
+    assert dbz.shape == shape and dbz.dtype == np.float64
+    assert np.all(np.isfinite(dbz))
+    rain = state["qr"] > 0.0
+    assert float(dbz[rain].min()) > 20.0       # 2 g/kg of rain is an echo
+    assert float(dbz[~rain].max()) <= -30.0    # an empty cell reads the floor
+    # The same state, evaluated by the CUDA path directly.
+    view = types.SimpleNamespace(
+        **{k: cp.asarray(v, dtype=cp.float32) for k, v in state.items()},
+        thb=cp.asarray(theta, dtype=cp.float32), qh=None, ns=None, ng=None,
+        nc=None, ni=None)
+    buffers = {}
+    view.scratch = lambda shp, slot, dtype=None: buffers.setdefault(
+        slot, cp.zeros(tuple(shp), dtype=cp.float32 if dtype is None else dtype))
+    direct = cp.asnumpy(obsop.simulated_reflectivity(view, run))
+    np.testing.assert_array_equal(dbz, direct.astype(np.float64))
+    # The checkpoint itself is not written by the operator.
+    assert float(state["qg"].max()) == 0.0
 
 
 def test_scheme_provider_refuses_bad_base_theta():

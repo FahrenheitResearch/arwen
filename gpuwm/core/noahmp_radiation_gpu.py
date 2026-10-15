@@ -175,10 +175,21 @@ def evaluate_radiation_calls(
 
     from gpuwm.core.kernels import get_kernel
 
+    from gpuwm.noahmp_generation import radiation_kernel
+    generations = {args[1].noahmp_snow_age for args, _kw in calls}
+    if len(generations) > 1:
+        result = [None] * len(calls)
+        for generation in sorted(generations):
+            indices = [i for i, (args, _kw) in enumerate(calls)
+                       if args[1].noahmp_snow_age == generation]
+            values = evaluate_radiation_calls([calls[i] for i in indices])
+            for i, value in zip(indices, values):
+                result[i] = value
+        return result
     inputs, ist = pack_radiation_calls(calls)
     count = inputs.shape[0]
     device_out = cp.empty(count * N_OUTPUT, dtype=cp.float32)
-    kernel = get_kernel("noahmp_radiation", "noahmp_radiation_batch")
+    kernel = get_kernel("noahmp_radiation", radiation_kernel(next(iter(generations))))
     blocks = (count + THREADS - 1) // THREADS
     kernel((blocks,), (THREADS,),
            (cp.asarray(inputs.ravel()), cp.asarray(ist), device_out,

@@ -7,7 +7,7 @@ from test_namelist_import import _pair, INPUT_TEXT
 
 
 def _public_ruc_input():
-    return (INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 8, 8")
+    return (INPUT_TEXT.replace("mp_physics = 10, 10", "mp_physics = 8, 8")
             .replace("sf_sfclay_physics = 91, 91", "sf_sfclay_physics = 5, 5")
             .replace("sf_surface_physics = 2, 2", "sf_surface_physics = 3, 3")
             .replace("bl_pbl_physics = 11, 11", "bl_pbl_physics = 5, 5")

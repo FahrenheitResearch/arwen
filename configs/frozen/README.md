@@ -39,7 +39,7 @@ the remedy the project ruled on and ran (attempt #3).
 |---|---|---|---|---|
 | `les_nest_250m_km3.toml` | `68b56f8f74248313710db662ee8e64645952882d19167fa18fe4c42f04b309bf` | `2a3a279b6de1cef84771245410a875f354f6867736507da24d2f1a98d49e7b55` | d03 0.702 | `docs/superpowers/receipts/les/nested-les-scored-2026-08-02.md`, `docs/superpowers/receipts/les/INFLOW-FETCH-D90-2026-08-03.md`, `docs/superpowers/receipts/grayzone/P4-CAMPAIGN-20260804.md` R1 |
 | `les_nest_250m_grayzone.toml` | `25c65cddd8a622a51103ca48ab4dc7a755eb63986e00dc3ff43ca83b31260fe4` | `d3eb6c70c06e462829372902d1b0ceabe22b8d0bc58df5b7f1f67600a2304a25` | d03 0.702 | `docs/superpowers/receipts/grayzone/P4-CAMPAIGN-20260804.md` R2/R3 |
-| `les_tornado_100m_mayfield_20211210.toml` | `5cb25e5363804c5164db9397710bea19e11a77704094c50b4c15d533244d65b6` | `7aab68c6df535d63327218290b95743bc66580753e28d85a6791862180b34f73` | d03 0.169, d04 4.23 | `docs/les/ATTEMPT1-EXPECTATIONS.md` (registered before the run) |
+| `les_tornado_100m_mayfield_20211210.toml` | `5a2dcaf4e705965baea9f516b2467e8ac45ae276536644b58a30161107b8697f` | `7aab68c6df535d63327218290b95743bc66580753e28d85a6791862180b34f73` | d03 0.169, d04 4.23 | `docs/les/ATTEMPT1-EXPECTATIONS.md` (registered before the run) |
 
 ### Two digests, since 1.8.8, and they are different numbers
 

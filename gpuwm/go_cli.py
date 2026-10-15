@@ -4288,14 +4288,19 @@ def geography_refusal(geog_root: Path, *, config=None) -> str | None:
     """
 
     if config is not None:
-        from gpuwm.geog_assets import geography_for_run
+        from gpuwm.geog_assets import geography_for_run, archive_for
         required = geography_for_run(Path(config))["datasets"]
         # The tree is named once in the platform's own spelling, the way
         # `gpuwm doctor` names it; each missing index is named inside it
         # as `<dataset>/index`, the spelling the WPS tree and every pin
         # use, so a Windows reader and a Linux reader see the same names.
-        missing = [f"{name}/index" for name in required
-                   if not (Path(geog_root) / name / "index").is_file()]
+        # Defect: container archives have an index in each declared child,
+        # not at their root. The same archive metadata owns both doors.
+        indexes = [f"{name}/{child}/index" if child else f"{name}/index"
+                   for name in required
+                   for child in (archive_for(name).index_subdirs or ("",))]
+        missing = [index for index in indexes
+                   if not (Path(geog_root) / index).is_file()]
         if not missing:
             return None
         return layered(
@@ -4707,7 +4712,7 @@ def _registered_launch(args, *, config: Path, payload: dict,
             # fetch; a dry run that validates the route refuses it too.
             # It exited 0 on a --geog-root naming no directory, and the
             # real launch of the same command then refused.
-            geography = geography_refusal(geog_root)
+            geography = geography_refusal(geog_root, config=config)
             if geography is not None:
                 raise GoRefusal(geography)
             note = static_source_note(payload, geog_root,

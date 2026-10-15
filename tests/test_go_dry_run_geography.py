@@ -52,7 +52,12 @@ def test_the_dry_run_refuses_a_geog_root_that_does_not_exist(
                "--outdir", str(tmp_path / "out")])
     captured = capsys.readouterr()
     assert rc == 2, captured.out + captured.err
-    assert "the staged WPS_GEOG tree is not usable" in captured.err
+    # Either refusal names the missing tree and the fetch remedy. A source
+    # whose dry run validates the selected static fields first (2.9.0,
+    # box/hrrr-retime caf6501f5: the HRRR and ICON-EU recipes) names the
+    # exact indexes it lacks, which says more than the generic tree line.
+    assert ("the staged WPS_GEOG tree is not usable" in captured.err
+            or "require missing geography indexes in" in captured.err), captured.err
     assert str(missing) in captured.err
     assert "gpuwm fetch-geog" in captured.err
     assert not (tmp_path / "out").exists()

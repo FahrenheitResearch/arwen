@@ -61,6 +61,7 @@ import sys
 #: :mod:`gpuwm.source_cli`, so one mechanism serves both install modes.
 BRIDGE_ENV = {
     "grib1_bridge": "GPUWM_GRIB1_BRIDGE",
+    "met_intermediate": "GPUWM_MET_INTERMEDIATE",
     "gfs_grib2_bridge": "GPUWM_GFS_GRIB2_BRIDGE",
     "hrrr_grib2_bridge": "GPUWM_HRRR_DECODER",
     "grib2_inventory": "GPUWM_GRIB2_INVENTORY",
@@ -236,6 +237,7 @@ BRIDGE_ABI_MARKERS = {
     # Rust engine as present.
     "obs_regrid": b"gpuwm_obsregrid_build_plan",
     "obs_score": b"gpuwm_obsscore_masked_fss",
+    "met_intermediate": b"usage: met_intermediate --vtable VTABLE --date YYYY-MM-DD_HH:MM:SS",
     "rw_mpas_geometry": b"rw_mpas_geometry --protocol hex-geometry-v1",
     "rw_mpas_hostprep": b"rw_mpas_hostprep --protocol hex-hostprep-v1",
     # The isobaric-height reader cdylib (tools/rustwx/crates/rw-isobaric),
@@ -247,6 +249,13 @@ BRIDGE_ABI_MARKERS = {
     # Spelled to match gpuwm.isobaric_bridge.ABI_MARKER; a test binds the
     # two.
     "rw_isobaric": b"gpuwm_isobaric_heights",
+    # The TEMPO tempo_init port's ctypes seam (gpuwm.core.tempo_rust): the
+    # blob-layout contract symbol, which changes when the blob does.
+    "rw_tempo": b"gpuwm_tempo_init_v1",
+    # The MPAS point renderer: its --abi line (output schema and stdout
+    # tokens).  Spelled to match gpuwm.mpas_mesh.POINTS_ABI_MARKER.
+    "rw_hex_points": (
+        b"gpuwm-rw-hex-points-v1\tPOINT\tSOUNDING\tMETEOGRAM\tFINISHED"),
     # The radar superob cdylib (tools/rustwx/crates/rw-superob), behind
     # the DEFAULT superob stage of every radar observation build (gate
     # placement, QC, the alias masks, the multi-radar merge and the
@@ -299,15 +308,25 @@ BRIDGE_ABI_MARKERS = {
     "rw_mpas_init": (
         b"rw_mpas_init --met MET --static STATIC.nc --capsule CAPSULE.nc"),
     # The lateral-boundary producer, the fifth binary out of the same
-    # crate.  Truncated at the head for the reason the initial-condition
-    # builder's is: the crate's literal is four usage lines with embedded
+    # crate.  The crate's literal is four usage lines with embedded
     # newlines between them, and a marker that has to reproduce one
-    # exactly breaks on a reflow that changed nothing.  The head names
-    # the four arguments whose meaning a stale build would get wrong.
-    # Spelled to match gpuwm.mpas_mesh.LBC_ABI_MARKER; a test binds them.
+    # exactly breaks on a reflow that changed nothing, so this is the
+    # whole FIRST line and no more.  It runs through the physics-mode
+    # switch (2.9.0, correct by default, so spelled default first):
+    # unknown flags are read without complaint, so a build from before
+    # the switch takes --physics-mode correct, writes native case-9
+    # boundary winds (IN4) from any first-guess time (IN5), and a caller
+    # relying on the default gets exact while 2.9.0 says correct.
+    # Spelled to match gpuwm.mpas_mesh.LBC_ABI_MARKER; a test binds them,
+    # and binds both to the crate's literal.
     "rw_mpas_lbc": (
         b"rw_mpas_lbc --grid INIT.nc --out-dir DIR "
-        b"--start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS"),
+        b"--start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS "
+        b"--interval YYYY-MM-DD_HH:MM:SS=MET_PATH [--interval ...] "
+        b"--nfglevels N --fg-interval-seconds N --extrap-airtemp MODE "
+        b"--use-spechumd yes|no --theta-adv-order N --coef-3rd-order X "
+        b"--oned-underflow preserve|reproduce-ifx-ftz "
+        b"[--physics-mode correct|exact]"),
     # The history converter.  Its marker is the OUTPUT SCHEMA name and
     # the progress tokens, like the mapped engine's, because that is the
     # literal which changes exactly when the tape contract changes.
@@ -2199,51 +2218,6 @@ def bridge_abi_matches(name: str, path: Path) -> tuple[bool, str]:
         "correctly; rebuild it from a matching checkout")
 
 
-def fetched_on_demand(artifact: str | None) -> bool:
-    """Is ``artifact`` one the platform wheel leaves to ``gpuwm fetch-bridges``?
-
-    True for the artifacts :func:`gpuwm.bridge_assets.on_demand_artifacts`
-    declares: they are in the release bundle and its pins and not in the
-    wheel, so on a fresh pip install their absence is the expected state
-    and one command ends it.  A refusal and a doctor line both read this,
-    so neither calls that state a broken install.
-    """
-
-    if artifact is None:
-        return False
-    try:
-        from gpuwm import bridge_assets
-        return any(entry.name == artifact
-                   for entry in bridge_assets.on_demand_artifacts())
-    except Exception:                                # noqa: BLE001
-        return False
-
-
-def on_demand_fetch_offered(artifact: str | None,
-                            crate_relative: str = RUSTWX_CRATE_RELATIVE) -> bool:
-    """Would ``gpuwm fetch-bridges`` install the absent ``artifact`` HERE?
-
-    True only where :func:`artifact_remedy` leads with the fetch for an
-    on-demand artifact: the artifact is declared on demand, this install
-    carries no Rust sources for its crate, and the pins this install
-    carries name a bundle for this platform that holds it.  Breakage this
-    prevents: doctor read the roster flag alone, so in a source checkout,
-    on an install without pins and on a platform with no bundle it called
-    the absence ``opt-in`` and said ``gpuwm fetch-bridges`` installs it,
-    where that command refuses or the remedy printed beside it is a cargo
-    build.  That is the circular remedy :func:`prebuilt_bundle_offer`
-    exists to stop.
-    """
-
-    if not fetched_on_demand(artifact):
-        return False
-    try:
-        return (not sources_present(crate_relative)
-                and _offer_for(artifact) is not None)
-    except Exception:                                # noqa: BLE001
-        return False
-
-
 def artifact_remedy(*, env_var: str, filename: str, subject: str,
                     crate_relative: str = CRATE_RELATIVE,
                     one_liner: str = "", artifact: str | None = None) -> str:
@@ -2324,18 +2298,6 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
             f"# so {subject} must be built from a clone.  About two "
             "minutes, once:\n"
             f"{source_route}")
-    if fetched_on_demand(artifact):
-        # The expected state of a fresh pip install, so it is said as one:
-        # nothing is broken, and the download is the whole remedy.
-        return (
-            f"# {subject} is fetched on demand: the platform wheel does not\n"
-            "# carry it, and this one command installs it with the rest of\n"
-            "# this release's prebuilt bundle:\n"
-            + "\n".join(offer) + "\n"
-            "  # Or build it from source instead -- the route that works on\n"
-            "  # every platform, including ones with no published bundle.\n"
-            "  # Uncomment these to take it:\n"
-            + _as_comments(source_route))
     return (
         "# this install carries no Rust sources -- the wheel ships none --\n"
         f"# so there are two routes to {subject}: the prebuilt bundle\n"

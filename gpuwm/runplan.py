@@ -2211,6 +2211,12 @@ class EventStream:
                 self._native_parent_listener(record, line + "\n")
         return record
 
+    @property
+    def closed(self) -> bool:
+        """Whether this stream's file is closed (its owner is done with it)."""
+
+        return self._stream.closed
+
     def close(self) -> None:
         with self._lock:
             try:
@@ -2357,7 +2363,15 @@ class RunObserver:
         """C1 closes any failed stage and records the main-flow finish."""
         if self._timeline_closed:
             return
-        self.finish_stage()
+        # The command's ledger closes every observer at exit, after the
+        # door that owns this observer's event stream may already have
+        # closed it (a preparation door's ``finally``).  A stage a failure
+        # left open is then ended on the timeline only: writing its
+        # ``stage_finished`` record to the closed file raised "I/O operation
+        # on closed file", which replaced the run's own error and exit code
+        # (a failed ensemble member preparation ended "gpuwm ensemble: I/O
+        # operation on closed file." at exit 2 instead of its refusal at 1).
+        self.finish_stage(record=not getattr(self._events, "closed", False))
         if self._timeline_idle:
             self._timeline.emit("post.orchestration", "end")
             self._timeline_idle = False
@@ -2409,8 +2423,12 @@ class RunObserver:
             self._timeline_forecast = ForecastLedger(self._timeline, forecast_dir)
             self._timeline_forecast.start(watch=False)
 
-    def finish_stage(self, **fields: Any) -> None:
-        """Close the open stage, if any."""
+    def finish_stage(self, *, record: bool = True, **fields: Any) -> None:
+        """Close the open stage, if any.
+
+        ``record=False`` ends it on the timeline without a ``stage_finished``
+        event, for a stream its owner has already closed (:meth:`close`).
+        """
 
         if self._stage is None:
             return
@@ -2422,6 +2440,8 @@ class RunObserver:
         self._timeline.emit(RUN_STAGES[stage], "end", attrs={"phase": list(self._stage_phases), "role": "envelope"})
         self._timeline.emit("post.orchestration", "begin")
         self._timeline_idle = True
+        if not record:
+            return
         if stage == "finalize" and self._render_summary is not None:
             fields.setdefault("render_summary", self._render_summary)
         self._events.emit(

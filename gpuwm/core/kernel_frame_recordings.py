@@ -147,7 +147,7 @@ fourth platform is adding a row here; nothing else changes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Mapping
 
@@ -171,6 +171,9 @@ class KernelFrameRecording:
     measured: str
     complete: bool
     frames: Mapping[str, int]
+    # Optional sibling measured with GPUWM_WRF_EXACT compiler options.
+    # Legacy recordings retain their original selection and object identity.
+    strict_recording: KernelFrameRecording | None = None
 
     @property
     def platform_key(self) -> tuple[str, str]:
@@ -290,7 +293,11 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
         'wdm6': 9264,
         'wdm6_refl': 16128,
-        'wsm6': 7216,
+        # RE-READ 2026-10-07 on W1's RTX PRO 6000 (sm_120) with this NVRTC
+        # build, after lane/verify-wsm6-mp6 rewrote kernels/wsm6.cu as WRF's
+        # own call chain: 7,216 -> 6,448 B at WSM6_KMAX 64 (8,048 B at 80);
+        # wsm6_refl10cm_column, the module's other kernel, is 3,392 B.
+        'wsm6': 6448,
         'ysu': 0,
         'ysu_validation': 0,
     }),
@@ -417,7 +424,11 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
         'wdm6': 9264,
         'wdm6_refl': 16128,
-        'wsm6': 7216,
+        # RE-READ 2026-10-07 on W1's RTX PRO 6000 (sm_120) with this NVRTC
+        # build, after lane/verify-wsm6-mp6 rewrote kernels/wsm6.cu as WRF's
+        # own call chain: 7,216 -> 6,448 B at WSM6_KMAX 64 (8,048 B at 80);
+        # wsm6_refl10cm_column, the module's other kernel, is 3,392 B.
+        'wsm6': 6448,
         'ysu': 0,
         'ysu_validation': 0,
     }),
@@ -711,7 +722,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
     measured='2026-10-05',
     # FAST_SBM and the full-column Thompson generation arrived after this
     # full reading; their own rows (G2, V12) do not back-fill a measurement
-    # on this compile platform.
+    # on this compile platform.  Lin, Ferrier-Aligo and WSM-family (WSM7) units also arrived after it.
     complete=False,
     frames=MappingProxyType({
         # The original cu6 kernel (cu_physics = 6), read 2026-10-09 on V9's
@@ -719,6 +730,16 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # cupy-cuda13x 14.2.0 and nvidia-cuda-nvrtc 13.4.92: tiedtke_column
         # holds 16 B (255 registers), so this recording stays complete.
         'tiedtke': 16,
+        # 2.9.0 round 2: four units golden/ports-rad and golden/ports-cu brought
+        # with no row, read 2026-10-13 with tools/vram_reserve_probe.py frames
+        # through the production loader on node-4's RTX 5070 Ti (70 SMs), CuPy
+        # 14.2.0, nvidia-cuda-nvrtc 13.4.92, at 2f7194f53 (the two cards of this
+        # recording agree to the byte on every module both read): nsas through
+        # its no-FTZ route, lightning through its direct NVRTC site.
+        'aer_opt2': 0,
+        'lightning': 0,
+        'nsas': 64,
+        'rrtmg_aer1': 0,
         # Three standalone units the 2.8.6 staging line added without a row
         # (so this recording stopped being complete): the fork's order-five
         # vertical scalar flux pd_vertical_sl (f82847049), the fork's
@@ -971,7 +992,11 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'vert_interp': 512,
         'wdm6': 9264,
         'wdm6_refl': 16128,
-        'wsm6': 7216,
+        # RE-READ 2026-10-07 on W1's RTX PRO 6000 (sm_120) with this NVRTC
+        # build, after lane/verify-wsm6-mp6 rewrote kernels/wsm6.cu as WRF's
+        # own call chain: 7,216 -> 6,448 B at WSM6_KMAX 64 (8,048 B at 80);
+        # wsm6_refl10cm_column, the module's other kernel, is 3,392 B.
+        'wsm6': 6448,
         'ysu': 0,
         'ysu_validation': 0,
         # The urban canopy models joined after this reading.  Read on this
@@ -998,6 +1023,12 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # Production loader, RTX 5090, same compiler, 2026-10-04.
         # Oracle replay covers all 2,048 columns at three radiation calls.
         'solar_albedo': 0,
+        # Dudhia shortwave (lane/verify-dudhia-sw), read 2026-10-07 through
+        # the production loader (get_function().attributes) on box W1's RTX
+        # PRO 6000 Blackwell (sm_120), CuPy 14.2.0, nvidia-cuda-nvrtc
+        # 13.4.92: 0 B, 48 registers.  Same architecture and compiler as
+        # this recording; the frame is a property of the two.
+        'dudhia_sw': 0,
     }),
 )
 
@@ -1048,6 +1079,13 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
     measured='2026-10-02',
     complete=False,  # The new lake module has not been read on this compiler.
     frames=MappingProxyType({
+        # Dudhia shortwave (lane/verify-dudhia-sw): read 2026-10-07 through
+        # the production loader on box W1's RTX PRO 6000 Blackwell (sm_120),
+        # CuPy 14.2.0, NVRTC 12.9.86: 0 B, 48 registers.
+        'dudhia_sw': 0,
+        # Lin row measured on G2, same arch/compiler, 2026-10-08.
+        # Default tier 128; tiers 256/512 are 45488/60848 bytes.
+        "lin": 37808,
         'acoustic': 544,
         'advection': 0,
         'coriolis_map': 0,
@@ -1163,7 +1201,11 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
         'vert_interp': 512,
         'wdm6': 9264,
         'wdm6_refl': 16128,
-        'wsm6': 7216,
+        # RE-READ 2026-10-07 on W1's RTX PRO 6000 (sm_120) with this NVRTC
+        # build, after lane/verify-wsm6-mp6 rewrote kernels/wsm6.cu as WRF's
+        # own call chain: 7,216 -> 6,448 B at WSM6_KMAX 64 (8,048 B at 80);
+        # wsm6_refl10cm_column, the module's other kernel, is 3,392 B.
+        'wsm6': 6448,
         'ysu': 0,
         'ysu_validation': 0,
         # The original cu6 kernel (cu_physics = 6), read 2026-10-09 on V9's
@@ -1379,16 +1421,23 @@ SM89_NVRTC_13_4_59_COLD_START = KernelFrameRecording(
     frames=MappingProxyType({'thompson_cold_start': 48}),
 )
 
+# Driver attributes read through the production integer-define loader.
+# Lin 128/256/512: 37808/45488/60848 B; radar: 7040/14080/28160 B.
+# Higher tiers are priced by the matching TieredKernelFrame declarations.
 KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     # Direct NVRTC production loader on G2, f84cd9bf7. Driver local-size
     # attributes: f32 prepare 16656, columns 17968, tile 18016;
     # f64 columns 26576, tile 26736. Receipt: local-frame-fixed.log.
     # Partial: no other module was re-read in this measurement.
+    # Same card and build, tools/ysu_generations_oracle/kernel_receipt.py,
+    # 2026-10-08: all three ysu_480 (WRF 4.8 YSU) exports measured 0 local
+    # bytes under C++17, fmad=false and ftz=false (lane
+    # upstream-ysu-topdown-efficiency48, kernel.json carries the source hash).
     KernelFrameRecording(
         box='G2', device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
         compute_capability='120', nvrtc_build='12.9.86',
         platform_family='linux', measured='2026-10-08', complete=False,
-        frames=MappingProxyType({'fast_sbm': 26736}),
+        frames=MappingProxyType({'fast_sbm': 26736, 'ysu_480': 0}),
     ),
     KernelFrameRecording(
         box='V12', device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
@@ -1398,6 +1447,30 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
         # The source default is 64 levels; the 128/256 specializations
         # are priced separately from their measured driver readings.
         frames=MappingProxyType({'thompson_column': 50016}),
+    ),
+    KernelFrameRecording(
+        box='V12', device='NVIDIA RTX PRO 6000 Blackwell Workstation Edition',
+        compute_capability='120', nvrtc_build='12.9.86',
+        platform_family='linux', measured='2026-10-09', complete=False,
+        frames=MappingProxyType({'lin': 37808, 'lin_refl': 14080}),
+        strict_recording=KernelFrameRecording(
+            box='V16', device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
+            compute_capability='120', nvrtc_build='12.9.86',
+            platform_family='linux', measured='2026-10-10', complete=False,
+            frames=MappingProxyType({'lin': 35744, 'lin_refl': 14080}))),
+    # Current WSM5 source measured through the production loader on V12.
+    # Keep the older wider row as a conservative cross-platform ceiling.
+    KernelFrameRecording(
+        box="V12", device="NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+        compute_capability="120", nvrtc_build="12.9.86",
+        platform_family="linux", measured="2026-10-10", complete=False,
+        frames=MappingProxyType({"wsm5": 5664}),
+    ),
+    KernelFrameRecording(
+        box="G2", device="NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        compute_capability="120", nvrtc_build="12.9.86",
+        platform_family="linux", measured="2026-10-08", complete=False,
+        frames=MappingProxyType({"wsm5": 7072}),
     ),
     # The 2026-10-03 RTX PRO 6000 / NVRTC 12.8.93 lake reading (14,400 B)
     # described the local-frame source that the device arena replaced on
@@ -1553,7 +1626,12 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
             # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
             'wdm6': 9264,
             'wdm6_refl': 16128,
-            'wsm6': 7216,
+            # RE-READ 2026-10-07 on W1's RTX PRO 6000 (sm_120) with this
+            # NVRTC build, after lane/verify-wsm6-mp6 rewrote kernels/wsm6.cu
+            # as WRF's own call chain: 7,216 -> 6,448 B at WSM6_KMAX 64 (8,048
+            # B at 80); wsm6_refl10cm_column, the module's other kernel, is
+            # 3,392 B.
+            'wsm6': 6448,
             'ysu': 0,
             'ysu_validation': 0,
         }),
@@ -1899,13 +1977,21 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # here.  The reservation a Noah-MP configuration pays is then whatever
     # the rest of its kernel set pays (rrtmgp_rte at 3,600 B on this
     # platform, for instance), exactly as for scheme 2.
+    # golden/wrf-fixes, 2026-10-13: RE-READ.  The WRF 4.7 Noah-MP night snow-aging
+    # port compiles every unit with --ftz=false and adds the night-aging
+    # export (109 exports), which moved every unit identity and withdrew
+    # this row.  Re-read on G3 (RTX PRO 6000 Blackwell, 188 SMs, sm_120) in
+    # a venv pinned to this NVRTC build, same instrument and discipline;
+    # every frame equals the earlier reading above to the byte, and the
+    # 2.8.9 tree read on the same card at NVRTC 13.2.51 gives the same
+    # frames as this tree there.  box/device name the card re-read on.
     ComposedUnitFrameRecording(
-        box='weather-node-1',
-        device='NVIDIA GeForce RTX 5070 Ti',
+        box='g3-rtx-pro-6000',
+        device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
         compute_capability='120',
         nvrtc_build='13.3.33',
         platform_family='linux',
-        measured='2026-09-10',
+        measured='2026-10-13',
         frames=MappingProxyType({
             'noahmp_bareflux': 0,
             'noahmp_driver_composed': 352,
@@ -1925,35 +2011,35 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
         }),
         unit_identity=MappingProxyType({
             'noahmp_bareflux':
-                '0b93a806f083cf33808f147ea0ed104cbae32f26305e4476834dc0ddf747dfce',
+                'd2e09c2ccc2bcc6524f542b41aabcdfadced27c6e091274caef9a6afee96b701',
             'noahmp_driver_composed':
-                '287907ce202a69af463063c1308a7b2726582560999915cd9c7411908e16b18b',
+                'dbfa9c8b4ec51833c24ac9c9105f6638f76851aa12185531456685d1b947a673',
             'noahmp_energy_composed':
-                '531ed4d33a90371bd4c6ca0f2cac7a73704655960147421df7158add99933071',
+                '56229ed3168b83845f6d9820d2585d4485ee7cf7f479217d9838573c3654b55f',
             'noahmp_fluxprep':
-                '42b862510256d660d7f2a4e8d60fcb1d2fbca923509686a061034d6b8896f0ec',
+                'c1f15fefd60c05cb774135b7ad976a584432a0c5d19ef545720eb66d0c1a0f7a',
             'noahmp_glacier_composed':
-                '569ceb5fb679388581bc1b6fc718aa0aa5304b31d1c9cbfe35d0974427d3e2d1',
+                '0bcf3db1d33e20ce46234bbfcdce083f0652952bbe886bee63d61c67c61077a4',
             'noahmp_leaves':
-                '39bdbf3a366ac8b8876600a6becaa46754adc1142c7722a7965cc98945c60878',
+                '98d7020604c6fbd067d5b22b92c5c910b1119f84b9dc1b11ab51b3ab484c7e97',
             'noahmp_libm_slab_composed':
-                '88b3b10a4c35d6d86b199b77173cddf8e6d89be75da243adc773ff6b2dce959c',
+                '5240c4820d045777237e86a1cae372e79a65aad0ca415a955774b7a6f7c5ec81',
             'noahmp_radiation':
-                '77216cfeff3226232467eb91d8bf625ca661e9424f712ae8da748904eaee9acd',
+                'fd3a2198282ef306f58aa256471287c7cacbd25cd0a7daa6ccf7fdb320b6ef46',
             'noahmp_sflx':
-                '76ca4db5df80bce0ba053e65d615d64058ffcf6efd1a8a1e482568f8fed48f80',
+                'a40b1871465f6d795438483f8ade620a34dffdfe0f333833107404053cf072e4',
             'noahmp_snow':
-                '39205d245c1e334367ad7bef5c521f527fbfd9895adc2613b2e246c4963e7262',
+                '8fbb7ebd7e02544af651d2809e60e3a4acd2012ac20649ffb46e3209a7c1eeb0',
             'noahmp_soilwater':
-                '2eb119965a7759ce3b8f29c84526634db02d3830c9378a3426add974eeb5910f',
+                'f1c58630e24214d2312cb2c099adc8e280393cada155a379db4b5a3857c4d174',
             'noahmp_thermal_composed':
-                '6d9d80383b8a9a818238ae04e66c0779239a532b2e601b9a1d9e3e8c6dfa22a0',
+                '90edf4cb7b87d54a0062c8373decab6b510f77388beaaa5ac3c35b71a91a6342',
             'noahmp_vegeflux_runtime':
-                '517bc16aa14c818c1f0185dab3ab0142b62fbe6004d96a60d2fffea250c716ae',
+                '0a9737180d3150df8e5d226c825885ea2a7b934b2e4f0c0dfcdef13927f5e985',
             'noahmp_vegprecip':
-                '80e07bc9d36be385bf265617529f2c7b7111e0225b8fc738e357946bda1fd874',
+                '754bbe9b73b37bd9db74b40f5dc12bb58c27a66329a125b342b8d3c067d7dd7f',
             'noahmp_water':
-                '69844cbf94941db0aeaeeb23cdf7f41aa4fdf9f0b7e51e140425af3348c125fb',
+                '737546bb9ec00f4b1069dee8fc7ba9b0a436dd1153f1988e81e79a8f49e5a423',
         }),
     ),
     # weather-node-1, the same RTX 5070 Ti, Linux, sm_120 at NVRTC 13.4.59
@@ -1976,13 +2062,21 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # that compiler.  tests/test_kernel_frame_recordings.py holds the
     # gate that keeps the recorded builds in step with what the spec
     # resolves to (:data:`RESOLVED_TOOLCHAIN_PINS`).
+    # golden/wrf-fixes, 2026-10-13: RE-READ.  The WRF 4.7 Noah-MP night snow-aging
+    # port compiles every unit with --ftz=false and adds the night-aging
+    # export (109 exports), which moved every unit identity and withdrew
+    # this row.  Re-read on G3 (RTX PRO 6000 Blackwell, 188 SMs, sm_120) in
+    # a venv pinned to this NVRTC build, same instrument and discipline;
+    # every frame equals the earlier reading above to the byte, and the
+    # 2.8.9 tree read on the same card at NVRTC 13.2.51 gives the same
+    # frames as this tree there.  box/device name the card re-read on.
     ComposedUnitFrameRecording(
-        box='weather-node-1',
-        device='NVIDIA GeForce RTX 5070 Ti',
+        box='g3-rtx-pro-6000',
+        device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
         compute_capability='120',
         nvrtc_build='13.4.59',
         platform_family='linux',
-        measured='2026-09-10',
+        measured='2026-10-13',
         frames=MappingProxyType({
             'noahmp_bareflux': 0,
             'noahmp_driver_composed': 352,
@@ -2002,35 +2096,35 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
         }),
         unit_identity=MappingProxyType({
             'noahmp_bareflux':
-                '0b93a806f083cf33808f147ea0ed104cbae32f26305e4476834dc0ddf747dfce',
+                'd2e09c2ccc2bcc6524f542b41aabcdfadced27c6e091274caef9a6afee96b701',
             'noahmp_driver_composed':
-                '287907ce202a69af463063c1308a7b2726582560999915cd9c7411908e16b18b',
+                'dbfa9c8b4ec51833c24ac9c9105f6638f76851aa12185531456685d1b947a673',
             'noahmp_energy_composed':
-                '531ed4d33a90371bd4c6ca0f2cac7a73704655960147421df7158add99933071',
+                '56229ed3168b83845f6d9820d2585d4485ee7cf7f479217d9838573c3654b55f',
             'noahmp_fluxprep':
-                '42b862510256d660d7f2a4e8d60fcb1d2fbca923509686a061034d6b8896f0ec',
+                'c1f15fefd60c05cb774135b7ad976a584432a0c5d19ef545720eb66d0c1a0f7a',
             'noahmp_glacier_composed':
-                '569ceb5fb679388581bc1b6fc718aa0aa5304b31d1c9cbfe35d0974427d3e2d1',
+                '0bcf3db1d33e20ce46234bbfcdce083f0652952bbe886bee63d61c67c61077a4',
             'noahmp_leaves':
-                '39bdbf3a366ac8b8876600a6becaa46754adc1142c7722a7965cc98945c60878',
+                '98d7020604c6fbd067d5b22b92c5c910b1119f84b9dc1b11ab51b3ab484c7e97',
             'noahmp_libm_slab_composed':
-                '88b3b10a4c35d6d86b199b77173cddf8e6d89be75da243adc773ff6b2dce959c',
+                '5240c4820d045777237e86a1cae372e79a65aad0ca415a955774b7a6f7c5ec81',
             'noahmp_radiation':
-                '77216cfeff3226232467eb91d8bf625ca661e9424f712ae8da748904eaee9acd',
+                'fd3a2198282ef306f58aa256471287c7cacbd25cd0a7daa6ccf7fdb320b6ef46',
             'noahmp_sflx':
-                '76ca4db5df80bce0ba053e65d615d64058ffcf6efd1a8a1e482568f8fed48f80',
+                'a40b1871465f6d795438483f8ade620a34dffdfe0f333833107404053cf072e4',
             'noahmp_snow':
-                '39205d245c1e334367ad7bef5c521f527fbfd9895adc2613b2e246c4963e7262',
+                '8fbb7ebd7e02544af651d2809e60e3a4acd2012ac20649ffb46e3209a7c1eeb0',
             'noahmp_soilwater':
-                '2eb119965a7759ce3b8f29c84526634db02d3830c9378a3426add974eeb5910f',
+                'f1c58630e24214d2312cb2c099adc8e280393cada155a379db4b5a3857c4d174',
             'noahmp_thermal_composed':
-                '6d9d80383b8a9a818238ae04e66c0779239a532b2e601b9a1d9e3e8c6dfa22a0',
+                '90edf4cb7b87d54a0062c8373decab6b510f77388beaaa5ac3c35b71a91a6342',
             'noahmp_vegeflux_runtime':
-                '517bc16aa14c818c1f0185dab3ab0142b62fbe6004d96a60d2fffea250c716ae',
+                '0a9737180d3150df8e5d226c825885ea2a7b934b2e4f0c0dfcdef13927f5e985',
             'noahmp_vegprecip':
-                '80e07bc9d36be385bf265617529f2c7b7111e0225b8fc738e357946bda1fd874',
+                '754bbe9b73b37bd9db74b40f5dc12bb58c27a66329a125b342b8d3c067d7dd7f',
             'noahmp_water':
-                '69844cbf94941db0aeaeeb23cdf7f41aa4fdf9f0b7e51e140425af3348c125fb',
+                '737546bb9ec00f4b1069dee8fc7ba9b0a436dd1153f1988e81e79a8f49e5a423',
         }),
     ),
     # weather-node-1, the same RTX 5070 Ti (70 SMs x 1,536), Linux, sm_120
@@ -2069,13 +2163,21 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # WHAT IT PRICES: the widest unit is noahmp_glacier_composed at
     # 456 B, under the 1,024 B fresh default stack, so Noah-MP adds 0 B
     # to the launch-time reservation on this platform too.
+    # golden/wrf-fixes, 2026-10-13: RE-READ.  The WRF 4.7 Noah-MP night snow-aging
+    # port compiles every unit with --ftz=false and adds the night-aging
+    # export (109 exports), which moved every unit identity and withdrew
+    # this row.  Re-read on G3 (RTX PRO 6000 Blackwell, 188 SMs, sm_120) in
+    # a venv pinned to this NVRTC build, same instrument and discipline;
+    # every frame equals the earlier reading above to the byte, and the
+    # 2.8.9 tree read on the same card at NVRTC 13.2.51 gives the same
+    # frames as this tree there.  box/device name the card re-read on.
     ComposedUnitFrameRecording(
-        box='weather-node-1',
-        device='NVIDIA GeForce RTX 5070 Ti',
+        box='g3-rtx-pro-6000',
+        device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
         compute_capability='120',
         nvrtc_build='12.9.86',
         platform_family='linux',
-        measured='2026-09-11',
+        measured='2026-10-13',
         frames=MappingProxyType({
             'noahmp_bareflux': 0,
             'noahmp_driver_composed': 288,
@@ -2095,35 +2197,35 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
         }),
         unit_identity=MappingProxyType({
             'noahmp_bareflux':
-                '0b93a806f083cf33808f147ea0ed104cbae32f26305e4476834dc0ddf747dfce',
+                'd2e09c2ccc2bcc6524f542b41aabcdfadced27c6e091274caef9a6afee96b701',
             'noahmp_driver_composed':
-                '287907ce202a69af463063c1308a7b2726582560999915cd9c7411908e16b18b',
+                'dbfa9c8b4ec51833c24ac9c9105f6638f76851aa12185531456685d1b947a673',
             'noahmp_energy_composed':
-                '531ed4d33a90371bd4c6ca0f2cac7a73704655960147421df7158add99933071',
+                '56229ed3168b83845f6d9820d2585d4485ee7cf7f479217d9838573c3654b55f',
             'noahmp_fluxprep':
-                '42b862510256d660d7f2a4e8d60fcb1d2fbca923509686a061034d6b8896f0ec',
+                'c1f15fefd60c05cb774135b7ad976a584432a0c5d19ef545720eb66d0c1a0f7a',
             'noahmp_glacier_composed':
-                '569ceb5fb679388581bc1b6fc718aa0aa5304b31d1c9cbfe35d0974427d3e2d1',
+                '0bcf3db1d33e20ce46234bbfcdce083f0652952bbe886bee63d61c67c61077a4',
             'noahmp_leaves':
-                '39bdbf3a366ac8b8876600a6becaa46754adc1142c7722a7965cc98945c60878',
+                '98d7020604c6fbd067d5b22b92c5c910b1119f84b9dc1b11ab51b3ab484c7e97',
             'noahmp_libm_slab_composed':
-                '88b3b10a4c35d6d86b199b77173cddf8e6d89be75da243adc773ff6b2dce959c',
+                '5240c4820d045777237e86a1cae372e79a65aad0ca415a955774b7a6f7c5ec81',
             'noahmp_radiation':
-                '77216cfeff3226232467eb91d8bf625ca661e9424f712ae8da748904eaee9acd',
+                'fd3a2198282ef306f58aa256471287c7cacbd25cd0a7daa6ccf7fdb320b6ef46',
             'noahmp_sflx':
-                '76ca4db5df80bce0ba053e65d615d64058ffcf6efd1a8a1e482568f8fed48f80',
+                'a40b1871465f6d795438483f8ade620a34dffdfe0f333833107404053cf072e4',
             'noahmp_snow':
-                '39205d245c1e334367ad7bef5c521f527fbfd9895adc2613b2e246c4963e7262',
+                '8fbb7ebd7e02544af651d2809e60e3a4acd2012ac20649ffb46e3209a7c1eeb0',
             'noahmp_soilwater':
-                '2eb119965a7759ce3b8f29c84526634db02d3830c9378a3426add974eeb5910f',
+                'f1c58630e24214d2312cb2c099adc8e280393cada155a379db4b5a3857c4d174',
             'noahmp_thermal_composed':
-                '6d9d80383b8a9a818238ae04e66c0779239a532b2e601b9a1d9e3e8c6dfa22a0',
+                '90edf4cb7b87d54a0062c8373decab6b510f77388beaaa5ac3c35b71a91a6342',
             'noahmp_vegeflux_runtime':
-                '517bc16aa14c818c1f0185dab3ab0142b62fbe6004d96a60d2fffea250c716ae',
+                '0a9737180d3150df8e5d226c825885ea2a7b934b2e4f0c0dfcdef13927f5e985',
             'noahmp_vegprecip':
-                '80e07bc9d36be385bf265617529f2c7b7111e0225b8fc738e357946bda1fd874',
+                '754bbe9b73b37bd9db74b40f5dc12bb58c27a66329a125b342b8d3c067d7dd7f',
             'noahmp_water':
-                '69844cbf94941db0aeaeeb23cdf7f41aa4fdf9f0b7e51e140425af3348c125fb',
+                '737546bb9ec00f4b1069dee8fc7ba9b0a436dd1153f1988e81e79a8f49e5a423',
         }),
     ),
     # development-desktop, NVIDIA GeForce RTX 3080 (68 SMs x 1,536),
@@ -2166,63 +2268,17 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # values at this compiler.  That is what says this reading and the
     # standalone census are looking at the same card and the same
     # compiler, with the 13.0.48 -> 12.9.86 step visible in nothing.
-    ComposedUnitFrameRecording(
-        box='development-desktop',
-        device='NVIDIA GeForce RTX 3080',
-        compute_capability='86',
-        nvrtc_build='12.9.86',
-        platform_family='windows',
-        measured='2026-09-11',
-        frames=MappingProxyType({
-            'noahmp_bareflux': 0,
-            'noahmp_driver_composed': 304,
-            'noahmp_energy_composed': 208,
-            'noahmp_fluxprep': 0,
-            'noahmp_glacier_composed': 456,
-            'noahmp_leaves': 208,
-            'noahmp_libm_slab_composed': 208,
-            'noahmp_radiation': 0,
-            'noahmp_sflx': 0,
-            'noahmp_snow': 200,
-            'noahmp_soilwater': 0,
-            'noahmp_thermal_composed': 368,
-            'noahmp_vegeflux_runtime': 0,
-            'noahmp_vegprecip': 0,
-            'noahmp_water': 224,
-        }),
-        unit_identity=MappingProxyType({
-            'noahmp_bareflux':
-                '0b93a806f083cf33808f147ea0ed104cbae32f26305e4476834dc0ddf747dfce',
-            'noahmp_driver_composed':
-                '287907ce202a69af463063c1308a7b2726582560999915cd9c7411908e16b18b',
-            'noahmp_energy_composed':
-                '531ed4d33a90371bd4c6ca0f2cac7a73704655960147421df7158add99933071',
-            'noahmp_fluxprep':
-                '42b862510256d660d7f2a4e8d60fcb1d2fbca923509686a061034d6b8896f0ec',
-            'noahmp_glacier_composed':
-                '569ceb5fb679388581bc1b6fc718aa0aa5304b31d1c9cbfe35d0974427d3e2d1',
-            'noahmp_leaves':
-                '39bdbf3a366ac8b8876600a6becaa46754adc1142c7722a7965cc98945c60878',
-            'noahmp_libm_slab_composed':
-                '88b3b10a4c35d6d86b199b77173cddf8e6d89be75da243adc773ff6b2dce959c',
-            'noahmp_radiation':
-                '77216cfeff3226232467eb91d8bf625ca661e9424f712ae8da748904eaee9acd',
-            'noahmp_sflx':
-                '76ca4db5df80bce0ba053e65d615d64058ffcf6efd1a8a1e482568f8fed48f80',
-            'noahmp_snow':
-                '39205d245c1e334367ad7bef5c521f527fbfd9895adc2613b2e246c4963e7262',
-            'noahmp_soilwater':
-                '2eb119965a7759ce3b8f29c84526634db02d3830c9378a3426add974eeb5910f',
-            'noahmp_thermal_composed':
-                '6d9d80383b8a9a818238ae04e66c0779239a532b2e601b9a1d9e3e8c6dfa22a0',
-            'noahmp_vegeflux_runtime':
-                '517bc16aa14c818c1f0185dab3ab0142b62fbe6004d96a60d2fffea250c716ae',
-            'noahmp_vegprecip':
-                '80e07bc9d36be385bf265617529f2c7b7111e0225b8fc738e357946bda1fd874',
-            'noahmp_water':
-                '69844cbf94941db0aeaeeb23cdf7f41aa4fdf9f0b7e51e140425af3348c125fb',
-        }),
-    ),
+    # WITHDRAWN (golden/wrf-fixes, 2026-10-13): the development-desktop
+    # RTX 3080 row (sm_86, NVRTC 12.9.86, read 2026-09-11) no longer
+    # describes these units (the --ftz=false / night-aging change moved
+    # every identity) and no sm_86 card was available to re-read it (the
+    # desktop card is off-limits to lanes).  Its last frames (driver 304,
+    # energy/leaves/slab 208, glacier 456, thermal 368, snow 200, water
+    # 224, the rest 0) are each at or below the ceiling over the rows left
+    # (352 / 272 / 456 / 368 / 200 / 224), so sm_86 is priced from that
+    # ceiling, never below its last reading, and plan review says so.
+    # Re-read it with `python tools/measure_noahmp_frames.py measure` on
+    # an sm_86 card and restore "86" to the gpu-cu12 pin.
     # weather-node-2, RTX 5090 (170 SMs x 1,536), Linux, sm_120 at NVRTC
     # 13.4.92 -- the compiler a FRESH `pip install gpuwm[gpu-cu13]` has
     # installed since 2026-09-16, when cuda-toolkit 13.4.2 (the `[ctk]`
@@ -2244,13 +2300,21 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # rows (noahmp_leaves and the two units whose maximum it is at 272 B,
     # the CUDA-12 reading) and plan review said "not measured on this
     # card" about the card class the docs name as measured.
+    # golden/wrf-fixes, 2026-10-13: RE-READ.  The WRF 4.7 Noah-MP night snow-aging
+    # port compiles every unit with --ftz=false and adds the night-aging
+    # export (109 exports), which moved every unit identity and withdrew
+    # this row.  Re-read on G3 (RTX PRO 6000 Blackwell, 188 SMs, sm_120) in
+    # a venv pinned to this NVRTC build, same instrument and discipline;
+    # every frame equals the earlier reading above to the byte, and the
+    # 2.8.9 tree read on the same card at NVRTC 13.2.51 gives the same
+    # frames as this tree there.  box/device name the card re-read on.
     ComposedUnitFrameRecording(
-        box='weather-node-2',
-        device='NVIDIA GeForce RTX 5090',
+        box='g3-rtx-pro-6000',
+        device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
         compute_capability='120',
         nvrtc_build='13.4.92',
         platform_family='linux',
-        measured='2026-09-28',
+        measured='2026-10-13',
         frames=MappingProxyType({
             'noahmp_bareflux': 0,
             'noahmp_driver_composed': 352,
@@ -2270,35 +2334,35 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
         }),
         unit_identity=MappingProxyType({
             'noahmp_bareflux':
-                '0b93a806f083cf33808f147ea0ed104cbae32f26305e4476834dc0ddf747dfce',
+                'd2e09c2ccc2bcc6524f542b41aabcdfadced27c6e091274caef9a6afee96b701',
             'noahmp_driver_composed':
-                '287907ce202a69af463063c1308a7b2726582560999915cd9c7411908e16b18b',
+                'dbfa9c8b4ec51833c24ac9c9105f6638f76851aa12185531456685d1b947a673',
             'noahmp_energy_composed':
-                '531ed4d33a90371bd4c6ca0f2cac7a73704655960147421df7158add99933071',
+                '56229ed3168b83845f6d9820d2585d4485ee7cf7f479217d9838573c3654b55f',
             'noahmp_fluxprep':
-                '42b862510256d660d7f2a4e8d60fcb1d2fbca923509686a061034d6b8896f0ec',
+                'c1f15fefd60c05cb774135b7ad976a584432a0c5d19ef545720eb66d0c1a0f7a',
             'noahmp_glacier_composed':
-                '569ceb5fb679388581bc1b6fc718aa0aa5304b31d1c9cbfe35d0974427d3e2d1',
+                '0bcf3db1d33e20ce46234bbfcdce083f0652952bbe886bee63d61c67c61077a4',
             'noahmp_leaves':
-                '39bdbf3a366ac8b8876600a6becaa46754adc1142c7722a7965cc98945c60878',
+                '98d7020604c6fbd067d5b22b92c5c910b1119f84b9dc1b11ab51b3ab484c7e97',
             'noahmp_libm_slab_composed':
-                '88b3b10a4c35d6d86b199b77173cddf8e6d89be75da243adc773ff6b2dce959c',
+                '5240c4820d045777237e86a1cae372e79a65aad0ca415a955774b7a6f7c5ec81',
             'noahmp_radiation':
-                '77216cfeff3226232467eb91d8bf625ca661e9424f712ae8da748904eaee9acd',
+                'fd3a2198282ef306f58aa256471287c7cacbd25cd0a7daa6ccf7fdb320b6ef46',
             'noahmp_sflx':
-                '76ca4db5df80bce0ba053e65d615d64058ffcf6efd1a8a1e482568f8fed48f80',
+                'a40b1871465f6d795438483f8ade620a34dffdfe0f333833107404053cf072e4',
             'noahmp_snow':
-                '39205d245c1e334367ad7bef5c521f527fbfd9895adc2613b2e246c4963e7262',
+                '8fbb7ebd7e02544af651d2809e60e3a4acd2012ac20649ffb46e3209a7c1eeb0',
             'noahmp_soilwater':
-                '2eb119965a7759ce3b8f29c84526634db02d3830c9378a3426add974eeb5910f',
+                'f1c58630e24214d2312cb2c099adc8e280393cada155a379db4b5a3857c4d174',
             'noahmp_thermal_composed':
-                '6d9d80383b8a9a818238ae04e66c0779239a532b2e601b9a1d9e3e8c6dfa22a0',
+                '90edf4cb7b87d54a0062c8373decab6b510f77388beaaa5ac3c35b71a91a6342',
             'noahmp_vegeflux_runtime':
-                '517bc16aa14c818c1f0185dab3ab0142b62fbe6004d96a60d2fffea250c716ae',
+                '0a9737180d3150df8e5d226c825885ea2a7b934b2e4f0c0dfcdef13927f5e985',
             'noahmp_vegprecip':
-                '80e07bc9d36be385bf265617529f2c7b7111e0225b8fc738e357946bda1fd874',
+                '754bbe9b73b37bd9db74b40f5dc12bb58c27a66329a125b342b8d3c067d7dd7f',
             'noahmp_water':
-                '69844cbf94941db0aeaeeb23cdf7f41aa4fdf9f0b7e51e140425af3348c125fb',
+                '737546bb9ec00f4b1069dee8fc7ba9b0a436dd1153f1988e81e79a8f49e5a423',
         }),
     ),
 )
@@ -2433,7 +2497,9 @@ RESOLVED_TOOLCHAIN_PINS: tuple[ResolvedToolchainPin, ...] = (
         nvrtc_build='12.9.86',
         resolved='2026-09-10',
         current=True,
-        noahmp_architectures=('120', '86'),
+        # '86' withdrawn with its row (golden/wrf-fixes, 2026-10-13); see
+        # NOAHMP_COMPOSED_FRAME_RECORDINGS.
+        noahmp_architectures=('120',),
     ),
 )
 
@@ -2461,6 +2527,32 @@ def noahmp_composed_recording_for(
     return None
 
 
+# G3 was read through its actual direct-NVRTC loader on V16. The default
+# reading comes first for platform lookup; the configured 136-member
+# reading contributes its wider observed frame to the global ceiling.
+G3_SM120_NVRTC_13_2_86_DEFAULT = KernelFrameRecording(
+    box="V16", device="NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    compute_capability="120", nvrtc_build="13.2.86", platform_family="linux",
+    measured="2026-10-10", complete=False,
+    frames=MappingProxyType({"g3": 480}))
+G3_SM120_NVRTC_13_2_86_CONFIGURED = KernelFrameRecording(
+    box="V16", device="NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    compute_capability="120", nvrtc_build="13.2.86", platform_family="linux",
+    measured="2026-10-10", complete=False,
+    frames=MappingProxyType({"g3": 512}))
+KERNEL_LOCAL_FRAME_RECORDINGS += (
+    G3_SM120_NVRTC_13_2_86_DEFAULT, G3_SM120_NVRTC_13_2_86_CONFIGURED)
+# A partial reading of the newly admitted unit, not a claim about other units.
+KERNEL_LOCAL_FRAME_RECORDINGS += (
+    KernelFrameRecording(
+        box="V10", device="NVIDIA GeForce RTX 5090",
+        compute_capability="120", nvrtc_build="12.8.93",
+        platform_family="linux", measured="2026-10-09", complete=False,
+        frames=MappingProxyType({"wsm7": 7216}),
+    ),
+)
+
+
 def frame_ceiling() -> dict[str, int]:
     """The element-wise maximum over every recording.
 
@@ -2469,9 +2561,13 @@ def frame_ceiling() -> dict[str, int]:
     """
     ceiling: dict[str, int] = {}
     for recording in KERNEL_LOCAL_FRAME_RECORDINGS:
-        for module, frame in recording.frames.items():
-            if frame > ceiling.get(module, -1):
-                ceiling[module] = int(frame)
+        # Keep the admission ceiling safe even if a strict image is wider.
+        for measured in (recording, recording.strict_recording):
+            if measured is None:
+                continue
+            for module, frame in measured.frames.items():
+                if frame > ceiling.get(module, -1):
+                    ceiling[module] = int(frame)
     return ceiling
 
 
@@ -2513,7 +2609,49 @@ def recording_for(fingerprint: Mapping[str, object] | None
     for value in (capability, build):
         if not isinstance(value, str) or not value or value == "unavailable":
             return None
+    from gpuwm.wrf_exact import ENABLED
     for recording in KERNEL_LOCAL_FRAME_RECORDINGS:
         if recording.platform_key == (capability, build):
+            if ENABLED and recording.strict_recording is not None:
+                return recording.strict_recording
             return recording
     return None
+
+# Production-composed new port units read from driver function attributes on
+# V12, RTX PRO 6000 Blackwell Workstation, NVRTC 12.8.93, both arithmetic modes.
+# Historical platform rows retain their measurements but no longer cover all
+# source units. This partial recording adds no claim for older compilers.
+KERNEL_LOCAL_FRAME_RECORDINGS += (KernelFrameRecording(
+    box="V12", device="NVIDIA RTX PRO 6000 Blackwell WORKSTATION Edition",
+    compute_capability="120", nvrtc_build="12.8.93", platform_family="linux",
+    measured="2026-10-10", complete=False,
+    frames=MappingProxyType({'fer_hires': 0}),
+),)
+
+# Production-loader reading on sm_120 with NVRTC 12.8.93, both arithmetic arms.
+# Only WSM3 was measured; other modules retain their existing recordings.
+KERNEL_LOCAL_FRAME_RECORDINGS += (
+    KernelFrameRecording(
+        box='V10', device='NVIDIA GeForce RTX 5090',
+        compute_capability='120', nvrtc_build='12.8.93',
+        platform_family='linux', measured='2026-10-09', complete=False,
+        frames=MappingProxyType({'wsm3': 5664}),
+    ),
+)
+
+
+# A new standalone unit retires older completeness claims. Measured frame
+# values stay unchanged; the new unit has its separate measured recording.
+KERNEL_LOCAL_FRAME_RECORDINGS = tuple(
+    replace(row, complete=False) if not {'wsm3', 'wsm5', 'wsm6r'} <= row.frames.keys() else row
+    for row in KERNEL_LOCAL_FRAME_RECORDINGS)
+
+# WSM6R production-loader reading retained from the individual V12 intake.
+KERNEL_LOCAL_FRAME_RECORDINGS += (
+    KernelFrameRecording(
+        box="V12", device="NVIDIA RTX PRO 6000 Blackwell",
+        compute_capability="120", nvrtc_build="12.9.86",
+        platform_family="linux", measured="2026-10-09", complete=False,
+        frames=MappingProxyType({"wsm6r": 0}),
+    ),
+)

@@ -376,7 +376,28 @@ def _options_text(args) -> str:
         parts.append(f"--end {args.end}")
     if args.skip_unavailable:
         parts.append("--skip-unavailable")
+    if getattr(args, "chunk_yx", "auto") not in (None, "auto"):
+        parts.append(f"--chunk-yx {args.chunk_yx}")
     return " ".join(parts)
+
+
+def parse_chunk_yx(text: str | None) -> list[int] | None:
+    """``--chunk-yx``: ``auto`` (None), ``full`` ([0, 0]) or ``NY,NX``."""
+
+    if text is None or text == "auto":
+        return None
+    if text == "full":
+        return [0, 0]
+    parts = text.replace("x", ",").split(",")
+    try:
+        ny, nx = (int(p) for p in parts)
+    except ValueError:
+        raise MlExportRefusal(
+            f"--chunk-yx {text} is not auto, full or two cell counts like 256,256") from None
+    if ny <= 0 or nx <= 0:
+        raise MlExportRefusal(
+            f"--chunk-yx {text} has a zero or negative edge; give two positive cell counts")
+    return [ny, nx]
 
 
 def build_request(args, tables: Tables | None = None) -> dict:
@@ -428,6 +449,7 @@ def build_request(args, tables: Tables | None = None) -> dict:
         "skip_unavailable": bool(args.skip_unavailable),
         "threads": args.threads,
         "spacings_deg": tables.spacings,
+        "chunk_yx": parse_chunk_yx(getattr(args, "chunk_yx", None)),
         "provenance": {
             "engine": engine_name(),
             "exporter_version": engine_version(),
@@ -576,6 +598,9 @@ def register_cli(sub) -> None:
                         help="replace an earlier export in --out")
     parser.add_argument("--skip-unavailable", action="store_true",
                         help="write the variables the files can make and record the rest")
+    parser.add_argument("--chunk-yx", default="auto", metavar="SHAPE",
+                        help="horizontal chunk shape: auto (default; 512x512 tiles for planes "
+                             "over 1024x1024 cells, one chunk otherwise), full, or NY,NX")
     parser.add_argument("--threads", type=int, default=None, metavar="N",
                         help="worker threads (default: every core)")
     parser.add_argument("--append", action="store_true",

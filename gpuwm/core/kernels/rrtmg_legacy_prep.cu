@@ -80,7 +80,7 @@ extern "C" __global__ void rp_probe(const float* x, float* y) {
 extern "C" __global__ void rp_prep(
     int ncol, int nk, int nl, int sw, int icloud, int warm,
     int fqc, int fqr, int fqi, int fqs, int hc, int hi, int hs,
-    int inflg, int iceflg, int o3input, float g,
+    int inflg, int iceflg, int o3input, int ferrier, float g,
     const float* p, const float* pw, const float* t, const float* tw,
     const float* dz, const float* qv, const float* qc, const float* qr,
     const float* qi, const float* qs, const float* cf, const float* oz,
@@ -163,6 +163,12 @@ extern "C" __global__ void rp_prep(
             if (fqi) qice = rp_max(0.0f, qi[j]);
             if (fqs) qsnow = rp_max(0.0f, qs[j]);
         }
+        // FER_MP_HIRES remaps total ice outside ICLOUD in both wrappers.
+        if (ferrier) {
+            qice = rp_max(0.0f, qi[j]);
+            qsnow = 0.0f;
+            qcl = rp_max(0.0f, qc[j]);
+        }
         float rec=0.0f, ric=0.0f, rsc=0.0f;
         if (icloud) {
             rec = hc ? rp_max(2.5f, RP_MU(rc[j], 1.e6f)) : 5.0f;
@@ -213,4 +219,17 @@ extern "C" __global__ void rp_scon(int n, const float* sol, const float* obsc, f
 extern "C" __global__ void rp_day(int n, const float* coszen, unsigned char* night) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if (i<n) night[i]=coszen[i]<=0.0f;
+}
+
+// WRF 4.6.1 public-domain module_radiation_driver.F:3676-3749.
+// QI alone takes the zero arm. No clipping before the float32 sum.
+extern "C" __global__ void rp_cldfra2(
+    int n, int fqc, int fqi, const float* qc, const float* qi, float* cf) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float condensate;
+    if (fqi && fqc) condensate = RP_AD(qc[i], qi[i]);
+    else if (fqc) condensate = qc[i];
+    else { cf[i] = 0.0f; return; }
+    cf[i] = condensate > 1.0e-6f ? 1.0f : 0.0f;
 }

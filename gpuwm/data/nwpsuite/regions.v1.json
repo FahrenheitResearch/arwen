@@ -1,0 +1,89 @@
+{
+  "schema": "gpuwm.nwpsuite.regions.v1",
+  "regions": {
+    "US": {
+      "polygon": "continental-grid",
+      "time_zone": "America/New_York",
+      "sources": {
+        "global_ic": [
+          "gfs",
+          "ifs",
+          "icon"
+        ],
+        "regional_ic": [
+          "hrrr"
+        ],
+        "ensemble_ic": [
+          "gefs"
+        ],
+        "obs_da": [
+          "conventional",
+          "gnssro",
+          "radiance"
+        ]
+      },
+      "verify": {
+        "surface": [
+          "IA_ASOS",
+          "TX_ASOS"
+        ],
+        "radar": [
+          "mrms"
+        ],
+        "qpe": [
+          "stage4"
+        ],
+        "upper": [
+          "igra2"
+        ]
+      },
+      "radars": [
+        "nexrad"
+      ],
+      "mesh": "patch48-3",
+      "profiles": {
+        "agency-1box": "agency-1box",
+        "agency-2box": "agency-2box",
+        "agency-generic": "agency-generic"
+      },
+      "coverage_note": "Grid coverage envelope; station lists are seeds, not national qualification."
+    },
+    "PH": {
+      "polygon": "archipelago-grid",
+      "time_zone": "Asia/Manila",
+      "sources": {
+        "global_ic": [
+          "gfs",
+          "ifs"
+        ],
+        "regional_ic": [
+          "gfs"
+        ],
+        "ensemble_ic": [
+          "gefs"
+        ],
+        "obs_da": [
+          "conventional"
+        ]
+      },
+      "verify": {
+        "surface": [
+          "PH__ASOS"
+        ],
+        "radar": [],
+        "qpe": [],
+        "upper": [
+          "igra2"
+        ]
+      },
+      "radars": [],
+      "mesh": "ph48-3",
+      "profiles": {
+        "agency-1box": "agency-generic",
+        "agency-2box": "agency-generic",
+        "agency-generic": "agency-generic"
+      },
+      "coverage_note": "Demo mesh must be bound by its generated mesh-rows file; radar and QPE not configured."
+    }
+  }
+}

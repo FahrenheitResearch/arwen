@@ -439,8 +439,12 @@ def test_the_mesh_row_goes_quiet_on_the_tree_fetch_geog_actually_stages(
     geog = tmp_path / "WPS_GEOG"
     for consumer in geog_assets.GEOG_CONSUMERS:
         _stage_geog_as_fetch_geog_does(geog, consumer)
-    # The soil group sits under its container and nowhere else.
-    containers = [a for a in geog_assets.GEOG_ARCHIVES if a.index_subdirs]
+    # The soil group sits under its container and nowhere else.  Only the
+    # containers a consumer requires are staged here: 2.9.0's optional GSL
+    # terrain-drag container (orogwd3_10m, required by no consumer and not
+    # fetched by default) is not part of what this row checks.
+    containers = [a for a in geog_assets.GEOG_ARCHIVES if a.index_subdirs
+                  and set(a.required_by) & set(geog_assets.GEOG_CONSUMERS)]
     assert containers, "the pin table carries a container archive"
     for archive in containers:
         for child in archive.index_subdirs:
@@ -789,6 +793,10 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
                      "rw_isobaric", "rw_superob",
                      "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init", "rw_mpas_geometry", "rw_mpas_hostprep",
                      "rw_mpas_convert", "rw_mpas_lbc", "arwen-tui", "rw_zarr", "rw_netcdf",
+                     # 2.9.0: the MPAS point renderer (the MPAS binaries'
+                     # ladder and reason) and the TEMPO init library (its
+                     # own ladder, gpuwm.core.tempo_rust).
+                     "rw_hex_points", "rw_tempo",
                      "rw_mlexport", "rw_simradar", "rw_grib2export",
                      "rw_compare", "rw_verify", "rw_nowcast_frames",
                      # The ensemble reducer builds in tools/rustwx and

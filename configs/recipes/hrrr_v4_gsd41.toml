@@ -1,6 +1,6 @@
 # HRRR v4 source configuration on a trimmed 1797 x 1057 mass grid.
 # This removes one outer row on each side of the 1799 x 1059 HRRR grid.
-# Stage WIF, drag and lake-depth inputs.
+# Stage WIF and the published native-grid static fields.
 # The GSD MYNN source version is explicit. Remaining fork rows are in docs/dev/mynn-gsd41.md.
 # This grid needs a larger card than the home nodes. Do not run it there.
 [experiment]
@@ -21,6 +21,9 @@ ref_lon = -97.5
 truelat1 = 38.5
 truelat2 = 38.5
 stand_lon = -97.5
+
+[static]
+source = "hrrr-conus-v4"
 
 [shared]
 gwd_opt = 3

@@ -130,6 +130,7 @@ BASELINES = (
                                        "cudt": [0, 0]})),
     ("grell-freitas", _variant(physics={"cu_physics": [3, 3]})),
     ("new-tiedtke", _variant(physics={"cu_physics": [16, 16]})),
+    ("new-sas", _variant(physics={"cu_physics": [96, 96]})),
     ("thompson-aerosol", _variant(physics={"mp_physics": [28, 28]})),
     ("nssl", _variant(physics={"mp_physics": [18, 18]})),
     ("morrison", _variant(physics={"mp_physics": [10, 10]})),

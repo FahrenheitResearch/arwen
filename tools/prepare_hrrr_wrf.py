@@ -2006,6 +2006,14 @@ def _run_configured(args):
     if (configured.root.run.sf_lake_physics == 1
             and configured.root.run.use_lakedepth == 1):
         static_arguments.append("--lake-depth")
+    # The terrain-drag statistics the configured physics reads (gwd_opt,
+    # topo_wind).  Without them the forecast seam refused the prepared root
+    # after the whole preparation (prepared_terrain_drag_missing; QA R4).
+    from gpuwm.static.orographic import required_static_fields
+    drag_fields = required_static_fields(
+        configured.root.run.topo_wind or 0, configured.root.run.gwd_opt or 0)
+    if drag_fields:
+        static_arguments += ["--orographic", ",".join(drag_fields)]
     static_domain_arguments = ([] if args.domain_spec is None else [
         "--domain-spec", str(args.domain_spec.resolve())])
     geometry_receipt = output / "native-geometry-receipt.json"
@@ -2077,6 +2085,17 @@ def _run_configured(args):
                     *static_arguments,
                 ], env)
             else:
+                if drag_fields:
+                    stored = json.loads(static_receipt.read_text(
+                        encoding="utf-8")).get("array_sha256", {})
+                    missing_drag = [name for name in drag_fields
+                                    if name not in stored]
+                    if missing_drag:
+                        raise ValueError(
+                            "prepared_terrain_drag_missing: the static cache "
+                            f"{static_cache} has no {', '.join(missing_drag)} "
+                            "required by the configured terrain drag; build "
+                            "the static from --geog-root instead")
                 _link_file_create(static_cache, sealed_static)
                 _link_file_create(static_receipt, sealed_receipt)
             static_cache = sealed_static

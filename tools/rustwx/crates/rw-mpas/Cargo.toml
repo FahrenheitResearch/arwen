@@ -16,6 +16,12 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+[features]
+# Formerly gated the composition and raw-word proof binaries. They are tools
+# of rw_mpas_static now and always built; the name stays so recorded proof
+# recipes that pass `--features native-init-composition-test` still resolve.
+native-init-composition-test = []
+
 [dependencies]
 netcrust = { path = "../../vendor/netcrust" }
 rayon.workspace = true
@@ -25,6 +31,9 @@ static-fields = { path = "../static-fields" }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+# rw_mpas_static's stream comparator reads through the netCDF C library,
+# loaded at run time so no build or shipped binary needs it to link or start.
+libloading = "0.9"
 thiserror.workspace = true
 
 [[bin]]
@@ -55,13 +64,13 @@ path = "src/bin/rw_mpas_lbc.rs"
 name = "rw_mpas_mesh"
 path = "src/bin/rw_mpas_mesh.rs"
 
-# The writer the mesh registry pins, and the one `gpuwm mesh` runs.
+# The writer the mesh registry pins, and the one `gpuwm mesh` runs. It is
+# also five more tools that used to be binaries of their own: `bounded`
+# (rw_mpas_static_bounded), `words` (rw_mpas_static_words), `gwd-replace`
+# (rw_mpas_gwd_replace), `gwd-review` (rw_mpas_gwd_review) and `verify`
+# (rw_mpas_verify), reached as subcommands or by invoking this binary under
+# the old name. One copy of the shared code in each platform wheel instead
+# of six; see src/bin/rw_mpas_static/main.rs.
 [[bin]]
 name = "rw_mpas_static"
-path = "src/bin/rw_mpas_static.rs"
-
-# The bounded-memory arm. Not a drop-in for the door above: it writes 56 of
-# the pinned 69 variables, so it carries its own name until the schemas meet.
-[[bin]]
-name = "rw_mpas_static_bounded"
-path = "src/bin/rw_mpas_static_bounded.rs"
+path = "src/bin/rw_mpas_static/main.rs"

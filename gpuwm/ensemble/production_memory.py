@@ -53,7 +53,7 @@ def ordinary_output_memory_components(experiment, collector, *, other_experiment
 
 def ordinary_ensemble_memory_model(estimate, experiment, collector, *, inventory_id,
                                    stochastic_provider=None, fft_workspace_bytes=0,
-                                   other_variants=()):
+                                   other_variants=(), initial_wind=False):
     """Add ensemble allocations to the original complete forecast envelope."""
     from gpuwm.core.preflight import FORECAST_POOL_HEADROOM
     variants = ((estimate, experiment),) + tuple(other_variants)
@@ -72,6 +72,10 @@ def ordinary_ensemble_memory_model(estimate, experiment, collector, *, inventory
                       for _, exp in variants]
         external += max(stochastic, key=lambda components: sum(component.inventory(1)["required_bytes"]
                         for component in components))
+    if initial_wind:
+        external += (MemoryComponent("uniform_wind_initialization_seed", "stochastic",
+            fixed_bytes=512, basis="envelope",
+            evidence="one uint64 member seed rounded to the ordinary CuPy pool's 512-byte block; two in-place wind launches"),)
     # The forecast envelope already contains its original pool headroom,
     # context/kernel backing, health inventory and external minimum reserve.
     # Apply the same measured fractional headroom only to the new arrays.

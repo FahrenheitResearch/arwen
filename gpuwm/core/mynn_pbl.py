@@ -3708,7 +3708,7 @@ def mynn_bl_driver(
     ``bl_mynn_edmf=1``, ``bl_mynn_edmf_mom=1``, ``bl_mynn_edmf_tke=0``,
     ``bl_mynn_mixscalars=0``, ``bl_mynn_output=0``, ``bl_mynn_cloudmix=1``,
     ``bl_mynn_mixqt=0``, ``icloud_bl=1``, ``closure=2.6``,
-    ``bl_mynn_tkeadvect`` false, ``tke_budget=0``, ``spp_pbl`` in {0,1},
+    ``bl_mynn_tkeadvect`` logical, ``tke_budget=0``, ``spp_pbl`` in {0,1},
     ``mix_chem`` false, ``restart``/``cycling`` false, ``FLAG_QC``/``FLAG_QI``
     true, ``FLAG_QS`` either Registry-derived boolean value, and every other
     species flag false.  Three module parameters do the
@@ -3742,8 +3742,8 @@ def mynn_bl_driver(
         raise ValueError("MYNN driver lane requires bl_mynn_edmf=1")
     if bl_mynn_output != 0 or type(bl_mynn_output) is not int:
         raise ValueError("MYNN driver lane requires bl_mynn_output=0")
-    if bl_mynn_tkeadvect is not False:
-        raise ValueError("MYNN driver lane requires bl_mynn_tkeadvect false")
+    if type(bl_mynn_tkeadvect) is not bool:
+        raise TypeError("bl_mynn_tkeadvect must be a bool")
     if icloud_bl != 1 or type(icloud_bl) is not int:
         raise ValueError("MYNN driver lane requires icloud_bl=1")
     if tke_budget != 0 or type(tke_budget) is not int:
@@ -3879,6 +3879,17 @@ def mynn_bl_driver(
         )
         for name in ("el", "qke", "tsq", "qsq", "cov", "sm", "sh"):
             layers[name][...] = seeded[name]
+
+    # WRF :838 initializes the carrier on the cold call. On warm calls
+    # :862 imports its transported value before any regular MYNN solve.
+    if bl_mynn_tkeadvect:
+        if "qke_adv" not in values:
+            raise TypeError("MYNN TKE advection requires qke_adv[ncol,nz]")
+        carrier = np.asarray(values["qke_adv"], dtype=np.float32)
+        if carrier.shape != (ncol, nz):
+            raise ValueError("qke_adv must share the MYNN column shape")
+        if initflag <= 0:
+            layers["qke"][...] = carrier
 
     # ---- module_bl_mynn.F:866-1017 per-column assembly -------------------
     thl = np.empty((ncol, nz), dtype=np.float32)
@@ -4113,6 +4124,7 @@ def mynn_bl_driver(
         "rqnbcablten": tendencies["dqnbca"],
         "exch_h": exchange["k_h"], "exch_m": exchange["k_m"],
         "qke": predicted["qke"], "tsq": predicted["tsq"],
+        **({"qke_adv": predicted["qke"].copy()} if bl_mynn_tkeadvect else {}),
         "qsq": predicted["qsq"], "cov": predicted["cov"],
         "el": turbulence["el"], "sh": turbulence["sh"],
         "sm": turbulence["sm"], "qc_bl": qc_bl, "qi_bl": qi_bl,

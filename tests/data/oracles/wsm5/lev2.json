@@ -1,0 +1,87 @@
+{
+ "set": "lev2",
+ "ncol": 16,
+ "nz": 2,
+ "level_fields": [
+  "th",
+  "qv",
+  "qc",
+  "qr",
+  "qi",
+  "qs",
+  "den",
+  "pii",
+  "p",
+  "dz"
+ ],
+ "surface_fields": [
+  "rain",
+  "snow"
+ ],
+ "columns": [
+  {
+   "name": "lev2-rain-dz100",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-snow-dz100",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-ice-dz100",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-rain-snow-dz100",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-top-only-rain-dz100",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-top-only-snow-dz100",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-bottom-only-dz100",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-all-dz100",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-rain-dz600",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-snow-dz600",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-ice-dz600",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-rain-snow-dz600",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-top-only-rain-dz600",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-top-only-snow-dz600",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-bottom-only-dz600",
+   "family": "two levels"
+  },
+  {
+   "name": "lev2-all-dz600",
+   "family": "two levels"
+  }
+ ]
+}

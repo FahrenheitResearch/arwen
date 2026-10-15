@@ -112,8 +112,21 @@ CLEAR_AIR_NAME = "z0"
 #: it as clear air would assimilate "no echo" into cells that have one.
 #: Sources are refused by allow-list precisely so that adding such a regime
 #: has to be a deliberate edit here rather than a value that slips through.
+#:
+#: The third entry is that deliberate edit (2026-10-12).  It is ODIM's
+#: ``undetect``: the national processor's value for "this gate was looked at
+#: and held no echo" (:data:`gpuwm.obs.superob.CLEAR_AIR_SOURCE_ODIM`), the
+#: same claim as the RDA's below-threshold code from another instrument.
+#: ODIM's ``nodata`` and a file whose ``nodata`` and ``undetect`` share one
+#: raw value are never clear air and never reach a product under any regime
+#: (the superob refuses and counts both).  Until this entry the gridder
+#: wrote the regime and no consumer read it: a European volume gridded with
+#: its clear air was refused by the filter, the precipitation analysis and
+#: the heating builder alike, so the documented European route ended at the
+#: file.
 CLEAR_AIR_SOURCES = ("finite_below_floor",
-                     "below_threshold_and_finite_below_floor")
+                     "below_threshold_and_finite_below_floor",
+                     "undetect_and_finite_below_floor")
 
 #: Backwards-compatible alias for the measurement-only regime.
 CLEAR_AIR_SOURCE = CLEAR_AIR_SOURCES[0]

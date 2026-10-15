@@ -1,0 +1,85 @@
+--- a/tools/urban_bep_wrf461_oracle/bep461_cases.inc
++++ b/tools/urban_bep_wrf461_oracle/bep461_cases.inc
+@@ -26,7 +26,7 @@
+ ! on class 1, exactly 1.0 on the last class.
+   subroutine define_cases()
+     integer :: nclass, nreg, nrep, ic, ir, irep, n
+-    nreg = 16
++    nreg = 24
+     if (use_wudapt_lcz == 0) then
+       nclass = 3; nrep = 2
+     else
+@@ -143,6 +143,38 @@
+         th0 = 292.; lapse = 0.0045; ws = 5.5; wd = 4.6
+         cosz_urb2d(icol, 1) = 0.74; swdown(icol, 1) = 95.; glw(icol, 1) = 420.
+         omg_urb2d(icol, 1) = -0.12; frc = 0.72; tsfc_off = -0.6; morph = 3
++      case (17)
++        pbot = 55000.; th0 = 300.; lapse = 0.020; ws = 18.; wd = 1.2
++        cosz_urb2d(icol,1)=0.99999994; swdown(icol,1)=1300.; glw(icol,1)=180.
++        omg_urb2d(icol,1)=0.; frc=0.00000001; tsfc_off=-12.; morph=2
++      case (18)
++        pbot=103000.; th0=230.; lapse=0.040; ws=0.05; wd=0.5
++        cosz_urb2d(icol,1)=-1.; swdown(icol,1)=0.; glw(icol,1)=100.
++        omg_urb2d(icol,1)=3.14159; frc=0.95; tsfc_off=-20.; morph=1
++      case (19)
++        pbot=92000.; th0=335.; lapse=-0.015; ws=70.; wd=2.5
++        cosz_urb2d(icol,1)=1.; swdown(icol,1)=1450.; glw(icol,1)=500.
++        omg_urb2d(icol,1)=0.; frc=1.; tsfc_off=25.; morph=3
++      case (20)
++        th0=280.; lapse=0.012; ws=1.e-25; wd=0.3
++        cosz_urb2d(icol,1)=-0.9; swdown(icol,1)=0.; glw(icol,1)=230.
++        omg_urb2d(icol,1)=2.; frc=0.55; tsfc_off=-5.; morph=0
++      case (21)
++        th0=300.; lapse=-0.004; ws=1.e-18; wd=2.2
++        cosz_urb2d(icol,1)=0.00000001; swdown(icol,1)=0.001; glw(icol,1)=400.
++        omg_urb2d(icol,1)=-1.5708; frc=0.5; tsfc_off=3.; morph=4
++      case (22)
++        th0=305.; lapse=0.004; ws=35.; wd=5.8
++        cosz_urb2d(icol,1)=0.1234567; swdown(icol,1)=250.; glw(icol,1)=460.
++        omg_urb2d(icol,1)=1.7; frc=0.99999994; tsfc_off=-3.; morph=5
++      case (23)
++        th0=288.; lapse=0.030; ws=0.; wd=0.
++        cosz_urb2d(icol,1)=0.33333334; swdown(icol,1)=350.; glw(icol,1)=300.
++        omg_urb2d(icol,1)=0.8; frc=1.; tsfc_off=1.; morph=0
++      case (24)
++        th0=290.; lapse=0.001; ws=3.; wd=4.5
++        cosz_urb2d(icol,1)=0.; swdown(icol,1)=0.; glw(icol,1)=350.
++        omg_urb2d(icol,1)=1.5708; frc=0.02; tsfc_off=0.; morph=6
+       case default
+         ! strong surface inversion, near calm, clear night
+         th0 = 279.; lapse = 0.025; ws = 0.6; wd = 3.0
+--- a/tools/urban_bep_wrf461_oracle/bep461_driver.inc
++++ b/tools/urban_bep_wrf461_oracle/bep461_driver.inc
+@@ -35,8 +35,8 @@
+   use oracle_io
+   implicit none
+ 
+-  integer, parameter :: nz = 30          ! mass levels (kte)
+-  integer, parameter :: nstep = 4
++  integer, parameter :: nz = 40          ! mass levels (kte)
++  integer, parameter :: nstep = 6
+   integer, parameter :: ndm = 2, nz_um = 18, ng_u = 10, nwr_u = 10, nbui = 1
+   integer, parameter :: num_urban_ndm = ndm
+   integer, parameter :: urban_map_zrd = ndm * nwr_u * nz_um
+--- a/tools/urban_bep_wrf461_oracle/couple461_driver.inc
++++ b/tools/urban_bep_wrf461_oracle/couple461_driver.inc
+@@ -30,8 +30,8 @@
+   use oracle_io
+   implicit none
+ 
+-  integer, parameter :: nz = 30
+-  integer, parameter :: nstep = 2
++  integer, parameter :: nz = 40
++  integer, parameter :: nstep = 3
+   integer, parameter :: ndm = 2, nz_um = 18, ng_u = 10, nwr_u = 10, nbui = 1
+   integer, parameter :: num_urban_ndm = ndm
+   integer, parameter :: urban_map_zrd = ndm * nwr_u * nz_um
+@@ -293,6 +293,8 @@
+   do icol = 1, ncol
+     psfc(icol, 1) = p_phy(icol, 1, 1) + 0.5 * rho(icol, 1, 1) * 9.81 * dz8w(icol, 1, 1)
+     qv_curr(icol, :, 1) = 0.004 + 0.0003 * real(mod(icol, 9))
++    if (reg_in(icol)==18) qv_curr(icol,:,1)=0.
++    if (reg_in(icol)==22) qv_curr(icol,:,1)=0.06
+     t2(icol, 1) = -1.; th2(icol, 1) = -1.; q2(icol, 1) = -1.
+     u10(icol, 1) = -1.; v10(icol, 1) = -1.
+   end do

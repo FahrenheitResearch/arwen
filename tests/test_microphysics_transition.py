@@ -114,7 +114,7 @@ def test_every_ordered_edge_requires_its_explicit_policy():
     # mp=9 with the scheme's own consistency-block closure, and mp=16 and
     # mp=28 with their entry closures -- give 72 ordered mixed edges plus
     # 9 same-scheme edges.
-    assert len(resolved) == 81
+    assert len(resolved) == 121
 
     with pytest.raises(ValueError, match="closure of another edge"):
         resolve_microphysics_transition(
@@ -341,7 +341,7 @@ def test_a_mixed_p3_edge_resolves_both_directions_with_the_matrix_policy():
     from gpuwm.core import microphysics_transition as mt
 
     partners = [mp for mp in mt.PORTED_MP_PHYSICS if mp != 50]
-    assert partners == [1, 6, 8, 10, 18, 9, 16, 28]
+    assert partners == [1, 6, 8, 10, 18, 9, 16, 28, 2, 24]
     for other in partners:
         for source, target in ((other, 50), (50, other)):
             contract = resolve_microphysics_transition(
@@ -972,8 +972,9 @@ def test_no_selector_is_refused_for_a_missing_closure():
 
     An entry here is a refusal whose only reason is that a closure has
     not been validated.  The machinery survives for a scheme whose closure
-    is genuinely missing, and FAST_SBM (mp=30) is the one scheme in that
-    state: a mixed edge would have to build 142 spectral distributions
+    is genuinely missing, and three schemes are in that state: WSM3 (mp=3) has
+    no phase-split closure, Ferrier-Aligo (mp=5) no rime-factor closure, and
+    FAST_SBM (mp=30): a mixed edge would have to build 142 spectral distributions
     from another scheme's bulk moments, and no such entry closure is
     validated.  Every bulk scheme stays out.
     """
@@ -981,13 +982,15 @@ def test_no_selector_is_refused_for_a_missing_closure():
     from gpuwm.core.fast_sbm_contract import BIN_SPECIES
     from gpuwm.microphysics_schemes import NAMED_SCHEMES
 
-    # Every ported WRF scheme has its closure.  FAST_SBM (30) is refused at
-    # a mixed edge for its 142 bins.  The named WOOF schemes (2.8.8: TEMPO,
+    # Every ported WRF scheme has its closure.  Ferrier-Aligo (5) is refused
+    # at a mixed edge for its rime factor, FAST_SBM (30) for its 142 bins.  The named WOOF schemes (2.8.8: TEMPO,
     # for the RRFS v2 hex preset) run same-scheme nests and are refused at
     # a mixed edge by name, with their own moment list.
     named = tuple(s.mp_id for s in NAMED_SCHEMES.values())
-    assert mt.UNVALIDATED_MIXED_EDGE_SELECTORS == (30,) + named
+    assert mt.UNVALIDATED_MIXED_EDGE_SELECTORS == (3, 5, 30) + named
     assert mt.UNVALIDATED_MIXED_EDGE_MOMENTS == {
+        3: (),
+        5: ("f_rimef",),
         30: BIN_SPECIES,
         **{s.mp_id: s.moment_species + s.aerosol_species
            for s in NAMED_SCHEMES.values()}}
@@ -1082,7 +1085,7 @@ def test_the_registry_publishes_every_ratified_cross_edge():
          ).read_text(encoding="utf-8"))
     rows = registry["transitions"]["microphysics-one-way-v1"]["cross_options"]
     n = len(mt.PORTED_MP_PHYSICS)
-    assert len(rows) == n * (n - 1) == 72
+    assert len(rows) == n * (n - 1) == 110
     published = {(row["parent_option_id"], row["child_option_id"])
                  for row in rows}
     assert ("wdm6-mp16", "thompson-aerosol-mp28") in published

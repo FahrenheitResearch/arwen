@@ -183,7 +183,7 @@ def _run_whole(case, **override):
     x = SF[(case, "input")]
     p = _params(x)
     col = _column(x)
-    r = sflx(p, col, _vec(x, "smc", 1, NSOIL),
+    r = sflx(p, col, _vec(x, "smc", 1, NSOIL), noahmp_snow_age="wrf_461",
              ficeold=_vec(x, "ficeold", -NSNOW + 1, 0),
              wa=x[("wa", 0)], wslake=x[("wslake", 0)],
              **_forcing(x, **override))

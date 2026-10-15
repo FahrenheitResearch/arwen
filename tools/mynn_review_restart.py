@@ -22,6 +22,7 @@ def main():
     p.add_argument("--mixlength", type=int, choices=(1, 2), required=True)
     p.add_argument("--phase", choices=("reference", "split", "resume", "check"), required=True)
     p.add_argument("--cycling", action="store_true")
+    p.add_argument("--tkeadvect", action="store_true")
     p.add_argument("--out", type=Path)
     a = p.parse_args()
     a.folder.mkdir(parents=True, exist_ok=True)
@@ -49,7 +50,7 @@ def main():
                     "physics_setup", "driver", "array_manifest"):
             assert headers[0][key] == headers[1][key], key
         a.out.write_text(json.dumps(dict(version=a.version, mixlength=a.mixlength,
-            cycling=a.cycling, steps=40, restart_after=20,
+            cycling=a.cycling, tkeadvect=a.tkeadvect, steps=40, restart_after=20,
             elapsed_seconds=headers[1]["elapsed_seconds"],
             fields=len(rows), payload_bytes=sum(v["bytes"] for v in rows.values()),
             full_field_hashes=rows), indent=2) + "\n", encoding="utf-8")
@@ -59,7 +60,8 @@ def main():
     from gpuwm.io.restart import write_restart, restore_restart
     ctor = fixture.RunConfig
     fixture.RunConfig = lambda **kw: ctor(**kw, bl_mynn_version=a.version,
-        bl_mynn_mixlength=a.mixlength, cycling=a.cycling)
+        bl_mynn_mixlength=a.mixlength, cycling=a.cycling,
+        bl_mynn_tkeadvect=a.tkeadvect)
     state, cfg, driver = fixture._build()
     if a.cycling:
         driver.fields["qke"].fill(np.float32(0.0002))

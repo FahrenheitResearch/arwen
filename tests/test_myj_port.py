@@ -449,6 +449,12 @@ def test_the_cold_start_seed_is_wrfs_epsq2_and_it_decides_the_first_step_pbl():
 def test_the_dropped_terrain_height_cancels_in_float32():
     """The DECLARED divergence, measured instead of asserted.
 
+    Since the MYJPBL oracle campaign it is a divergence of the SURFACE
+    LAYER only: the PBL kernel seeds ZINT(KTE+1)=HT as WRF does and is
+    graded bit-identical (tests/test_myjpbl_wrf461_parity.py).  This test
+    still drives both CPU-authority halves, so it keeps measuring how far
+    the ground-relative column moves the words.
+
     WRF seeds the interface-height column with the terrain height
     (``ZINT(KTE+1)=HT``, module_bl_myjpbl.F:312, module_sf_myjsfc.F:162);
     gpuwm seeds 0 and carries heights above ground
@@ -889,13 +895,15 @@ def test_the_registry_rows_are_accurate_about_the_evidence():
         assert option["reachability"] == {"state": "template"}
         assert option["selectors"] == {selector: value}
         assert option["scientific_evidence"] == "none"
-    # The PBL's evidence string must SAY there is no oracle for it.  A
-    # maturity label alone has been read as "probably fine" before.
+    # The PBL's evidence string must name the oracle that grades it bitwise,
+    # and must no longer carry the ground-relative divergence it retired.
     myj_text = " ".join(myj["warnings"])
-    assert "NO ORACLE COMPARISON AGAINST THE WRF FORTRAN" in myj_text
-    assert "tests/test_myj_port.py" in myj_text
-    # The surface layer's must name the oracle that grades it bitwise, and
-    # must no longer carry the ground-relative divergence it retired.
+    assert "BIT-IDENTICAL" in myj_text
+    assert "tests/test_myjpbl_wrf461_parity.py" in myj_text
+    assert "tools/myjpbl_wrf461_oracle" in myj_text
+    assert "NO ORACLE COMPARISON" not in myj_text
+    assert "GROUND-relative" not in myj_text
+    # So must the surface layer's.
     eta_text = " ".join(eta["warnings"])
     assert "BIT-IDENTICAL" in eta_text
     assert "tests/test_myjsfc_wrf461_parity.py" in eta_text
@@ -1220,6 +1228,8 @@ def test_the_pbl_kernel_agrees_with_the_cpu_authority(xland, tsk, tag):
         "elflx": _to_device(cp, np.full(shape, 50.0)),
         "uz0": _to_device(cp, np.full(shape, float(sfc["uz0"]))),
         "vz0": _to_device(cp, np.full(shape, float(sfc["vz0"]))),
+        # ZINT(KTE+1)=HT; the CPU authority below runs its default ht=0.
+        "ht": _to_device(cp, np.zeros(shape)),
     }
     seed = {"thz0": float(sfc["thz0"]), "qz0": float(sfc["qz0"]),
             "qsfc": float(sfc["qsfc"]), "ct": float(sfc["ct"])}

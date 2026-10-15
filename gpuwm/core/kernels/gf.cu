@@ -2135,8 +2135,12 @@ __device__ void gfd_deep_column(
                         keep_going = true;
                     } else {
                         ierr = 9;
+                        keep_going = false;
+                        break;
                     }
-                    break;
+                    // CUP_gf continues this descending pass after a valid
+                    // origin adjustment. Later levels use the updated jmini
+                    // and the accumulated dh before the outer pass restarts.
                 }
             }
         }

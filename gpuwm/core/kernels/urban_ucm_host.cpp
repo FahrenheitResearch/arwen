@@ -1,5 +1,5 @@
 // Compiled CPU twin of the single-layer urban canopy CUDA implementation.
-// The physics and its glibc float32 functions are included verbatim below.
+// The physics and WOOF's own float32 math functions are included below.
 // These shims provide CPU equivalents of CUDA's explicit rounding operations.
 // Build with -fno-fast-math -ffp-contract=off; no CUDA toolkit is required.
 
@@ -74,6 +74,14 @@ extern "C" void ucm_host_columns(
         threadIdx.x = static_cast<std::size_t>(i);
         ucm_column_test(inputs, outputs, state, table, globals, switches, codes, n);
     }
+}
+
+extern "C" float ucm_host_water_update(float prior, float flux, float rain,
+    float rho_air, float dt, float porosity, int generation)
+{
+    UcmHostRounding rounding;
+    float rain1 = FDIV(FMUL(rain, 0.001f), 3600.0f);
+    return ucm_water_update(prior, flux, rain1, rho_air, dt, porosity, rain, generation);
 }
 
 extern "C" void ucm_host_noah_after_lsm(

@@ -112,8 +112,8 @@ def levels_for_top(
     behaviour, byte for byte, for every caller that does not care.
 
     Otherwise the certified ladder is extended UPWARD along whatever the
-    product actually publishes until a level sits at or above the
-    requested top (i.e. at a pressure at or below it), because that is
+    product actually publishes until a level sits strictly above the
+    requested top (i.e. at a pressure below it), because that is
     the condition ``gpuwm.vertical_contract`` enforces at ingest: the
     source atmosphere has to reach the model top, not stop under it.
     Extending rather than replacing keeps every level a certified run
@@ -132,7 +132,7 @@ def levels_for_top(
         raise ValueError(
             f"the requested model top must be a positive pressure in Pa, "
             f"got {top_pressure_pa!r}")
-    if min(ladder) * 100.0 <= top:
+    if min(ladder) * 100.0 < top:
         return ladder
     higher = sorted(
         (level for level in available if float(level) < min(ladder)),
@@ -140,15 +140,15 @@ def levels_for_top(
     extension: list[float] = []
     for level in higher:
         extension.append(float(level))
-        if float(level) * 100.0 <= top:
+        if float(level) * 100.0 < top:
             return tuple(sorted(extension)) + ladder
     deepest = min(available) if available else min(ladder)
     raise TopPressureUnavailable(
-        f"a model top of {top:g} Pa needs a GFS pgrb2.0p25 level at or "
+        f"a model top of {top:g} Pa needs a GFS pgrb2.0p25 level strictly "
         f"above it, and the deepest this product publishes for all of "
         f"{', '.join(PRESSURE_FIELDS)} is {deepest:g} hPa "
         f"({deepest * 100.0:g} Pa).  Raise --p-top-pa to "
-        f"{deepest * 100.0:g} Pa or above, or use a source whose "
+        f"{deepest * 100.0:g} Pa (strictly greater), or use a source whose "
         "atmosphere reaches higher.")
 
 

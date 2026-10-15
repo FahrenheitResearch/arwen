@@ -1,0 +1,27 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# scalar tree (THE REFERENCE) libm/libmvec symbols of module_mp_wsm5.o + module_mp_radar.o:
+U cabs
+U clog
+U csqrt
+U exp
+U expf
+U log
+U log10
+U logf
+U pow
+U powf
+U vssqrt_
+# strict tree (WRF's vectoriser on):
+U _ZGVbN2v_exp
+U cabs
+U clog
+U csqrt
+U exp
+U expf
+U log
+U log10
+U logf
+U pow
+U powf
+U vssqrt_

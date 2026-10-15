@@ -50,7 +50,9 @@ def test_diffusion_driver_producing_tools_and_receipts_are_sealed():
                                 isinstance(target, ast.Name) and target.id == "RECEIPT_CAPABILITY"
                                 for target in node.targets))
             assert capability(current) == capability(old) | {
-                "NVIDIA RTX PRO 6000 Blackwell Server Edition": (12, 0)}
+                "NVIDIA RTX PRO 6000 Blackwell Server Edition": (12, 0),
+                "NVIDIA RTX PRO 6000 Blackwell WORKSTATION Edition": (12, 0),
+                "NVIDIA RTX PRO 6000 Blackwell Workstation Edition": (12, 0)}
             import copy
             original_route = next(node for node in old.body if isinstance(node, ast.FunctionDef) and node.name == "_word_pins")
             current_route = copy.deepcopy(next(node for node in current.body if isinstance(node, ast.FunctionDef) and node.name == "_word_pins"))
@@ -107,7 +109,9 @@ def _measure(folder,name):
 # recapture uncertified receipts (89860a701), the same way the H100 advection
 # receipt held the advection pin test red after b70a94a48.
 RECEIPT_CAPABILITY={"NVIDIA GeForce RTX 5090":(12,0),"NVIDIA GeForce RTX 4090":(8,9),
-    "NVIDIA RTX PRO 6000 Blackwell Server Edition":(12,0)}
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition":(12,0),
+    "NVIDIA RTX PRO 6000 Blackwell WORKSTATION Edition":(12,0),
+    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition":(12,0)}
 _HEX64=re.compile(r"[0-9a-f]{64}")
 
 def _receipt_device(pin):

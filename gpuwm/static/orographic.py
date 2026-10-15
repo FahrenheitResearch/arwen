@@ -59,6 +59,22 @@ def with_terrain_drag_statics(selection, cfg):
     selected = selection.with_orographic(names) if names else selection
     return with_lake_statics(selected, cfg)
 
+
+def require_prepared_terrain_drag(fields, cfg):
+    """Refuse the incomplete static bundle before acquiring GPUs.
+
+    Defect: preparation once requested lake depth alone and omitted the
+    terrain-drag statistics despite carrying their enabled physics options.
+    """
+    required = required_static_fields(getattr(cfg, "topo_wind", 0) or 0,
+                                      getattr(cfg, "gwd_opt", 0) or 0)
+    missing = [name for name in required if name not in fields]
+    if missing:
+        raise ValueError(
+            "prepared_terrain_drag_missing: configured terrain drag requires "
+            + ", ".join(missing)
+            + "; prepare again with this configuration and its pinned geography")
+
 #: The land-use dataset whose mask the ``masked = water`` rows read is the
 #: build's own (``GeogSelection.landuse``).
 

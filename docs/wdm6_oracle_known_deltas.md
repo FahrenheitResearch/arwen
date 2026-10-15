@@ -1,18 +1,63 @@
-# WDM6 (mp_physics=16): known deltas before the oracle campaign
+# WDM6 (mp_physics=16): the column oracle and its documented deltas
 
 Read this before quoting any ULP or relative-agreement number for mp=16.
 
-**Status of the scheme:** implemented-unverified. No oracle comparison against
-`phys/module_mp_wdm6.F` has been run. This file is not evidence that one was;
-it is the list of places where a comparison is expected to disagree, or was
-suspected to and does not, written down before the campaign so nobody spends a
-night rediscovering them.
+**Status of the scheme:** implemented-unverified in the registry (no
+forecast-trajectory comparison against WRF exists), and graded word for word
+by a column oracle. `tools/wdm6_wrf461_oracle` drives WRF v4.6.1's own `wdm6`
+entry of the byte-frozen `phys/module_mp_wdm6.F` (sha256 `78b7c148...`) at
+gfortran 13.3 `-O0` (no FMA, scalar libm, glibc 2.39) over 84 columns in seven
+configurations, and records two Fortran arms:
+
+* **stock**: the unmodified file;
+* **defined**: the same file with exactly the three defined behaviours below
+  (sections 2, 5 and 6) substituted by `tools/wdm6_wrf461_oracle/defined_arm.py`.
+
+Measured on an RTX PRO 6000 (NVRTC 12.9, CuPy 14.2) on 2026-10-07: under the
+strict build (`GPUWM_WRF_EXACT=1`) every output word of the CUDA kernel --
+theta, the six masses, nn/nc/nr, the three effective radii, `refl_10cm` and
+the seven surface accumulators, every step of every configuration -- equals
+the defined arm (`tests/test_wdm6_wrf461_oracle.py`). Against the stock arm
+the kernel is bitwise in the 21 to 29 columns (of 84) where none of those
+behaviours fires, and differs only where section 5 or section 6 fires; the
+single-section arms (`run_wdm6_only{2,5,6}`) attribute every differing column.
+The default build (no `GPUWM_WRF_EXACT`) compiles the unit without
+multiply-add contraction too; what remains is the loader's flush-to-zero route
+(section 8).
+
+The fixture carries both `hail_opt` arms and both `xland` arms (land columns,
+ocean columns with `xland == 2`, and one just below 2): WDM6 is the first gpuwm
+microphysics whose PROCESS RATES read a surface field
+(`module_mp_wdm6.F:607-614`), so a land/sea mask that differed between the two
+sides would be a trajectory difference with no other symptom.
+
+The sections below were written before the campaign; each now carries what
+the oracle measured.
 
 The physics registry's `wdm6-mp16` warnings cite this file.
 
 ---
 
-## 1. `_rgmma` runs in float64 where the Fortran runs in REAL(4) -- REAL, unbounded a priori
+## 1. `_rgmma` runs in float64 where the Fortran runs in REAL(4) -- MEASURED, then CLOSED
+
+**Closed by the oracle campaign (lane/verify-wdm6-mp16).** The floor was real:
+the oracle's own `wdm6init` dump (`tests/data/oracles/wdm6/wdm6init-hail*.txt`)
+put `pvtr` at 2998.4763 against the float64-derived 2998.4927 (67 ULP),
+`pvtrn` 1410.880 against 1410.8845, `g4pbr`, `g7pbr`, `pvts`, `pvtg`,
+`precr2`, `precs2`, `precg2`, `pacrc`, `pacrg` and `cdm2` likewise, and
+single-rounding products off by one ULP as well (`pidnr = 4*pi*denr`,
+`pidnc`, `pidn0g`, `precr1`, the `rslope*max` squares and cubes). The kernel
+now bakes wdm6init's own float32 words (`kernels/wdm6.cu` `WDM6_*`,
+`gpuwm/core/wdm6_constants.py` `WDM6_WRF_WORDS`), pinned by
+`tests/test_wdm6_wrf461_oracle.py`. That is not bit-exactness to a defect:
+`wdm6init` declares these coefficients default REAL, so float32 arithmetic is
+the definition, and the float64 evaluation of the same truncated product is
+not more right in any physical sense -- the 10,000-term truncation it shares
+(0.1 per cent) is two orders of magnitude larger than the 5e-6 accumulation
+difference. The float64 derivation stays in `coefficients()` as the readable
+formula, checked against the words to 1e-5.
+
+The analysis below is the pre-campaign text, kept for the record.
 
 `gpuwm/core/wsm6_constants.py::_rgmma` is WRF's own truncated Weierstrass
 product, ported verbatim, and WDM6's coefficient block reuses it
@@ -53,6 +98,11 @@ Believed unreachable for `nz >= 2`, because the `con1 = 0.05` limiter forces
 an argument, not a measurement. If a column oracle ever shows a single-layer
 mass difference in sedimentation with everything else matching, this is it. The
 full reasoning is in a comment at the site.
+
+**Measured:** the oracle's `only2` arm (the stock file with only this clamp
+substituted) is bitwise equal to the stock arm on every word of all seven
+configurations, so the clamp never fired on the fixture. It remains a
+defined-behaviour guard, not an observed difference.
 
 ## 3. The rain-slope density inconsistency -- REAL, and it is WRF's
 
@@ -233,11 +283,101 @@ below zero. They are left as WRF has them.
 
 The checkpoint algorithm identity advances to v4.
 
-## What an oracle campaign for this scheme still has to build
+**Measured footprint of sections 5 and 6 against stock WRF** (the oracle's
+`only5` and `only6` arms against `stock`; one call unless stated):
 
-A `tools/wdm6_wrf461_oracle` harness driving the byte-frozen Fortran at
-`gfortran -O0` over a column fixture set, on the Shin-Hong / Grell-Freitas
-pattern. Both `hail_opt` arms, and both `xland` arms -- WDM6 is the first gpuwm
-microphysics whose PROCESS RATES read a surface field
-(`module_mp_wdm6.F:607-614`), so a land/sea mask that differs between the two
-sides is a trajectory difference with no other symptom.
+| configuration | section 5 columns | section 6 columns | largest theta difference | largest qv difference |
+|---|---|---|---|---|
+| dt 20 s, hail_opt 0 | 54 of 84 | 38 of 84 | 0.41 K | 1.0e-4 kg/kg |
+| dt 300 s (3 minor loops) | 57 | 38 | 0.40 K | 1.2e-4 kg/kg |
+| dt 60 s, 10 calls | 58 | 39 | 0.68 K | 1.1e-4 kg/kg |
+| dt 150 s, hail_opt 1, 3 calls | 59 | 36 | 1.06 K | 3.8e-4 kg/kg |
+
+Section 5 moves the rain accumulator by up to 8.9 mm over ten 60 s calls in
+the heaviest column; section 6 fires wherever rain mass carries no number,
+which the fixture's Gaussian tails supply in most rainy columns.
+
+**Section 5 split in two, and judged against a converged reference**
+(`tools/wdm6_wrf461_oracle/measure_split.sh`, `split_arm.py`,
+`convergence.py`). Section 5 changes two things: the transfer (the loss fix)
+and the sub-step count (WOOF's geometric count instead of WRF's count from
+the initial speeds). The `only5t` arm keeps the conservative transfer with
+WRF's own count; `fine8` and `fine32` run section 5 with 8 and 32 times
+WOOF's count. Measured 2026-10-07 on W1:
+
+| configuration | transfer alone (stock vs only5t): words / columns | count alone (only5t vs only5): words / columns |
+|---|---|---|
+| dt 20 s, hail_opt 0 | 2,384 / 53 | 10,593 / 54 |
+| dt 300 s | 5,363 / 54 | 12,038 / 57 |
+| dt 150 s, hail_opt 1, 3 calls | 15,386 / 59 | 37,377 / 58 |
+| dt 60 s, 10 calls | 53,012 / 55 | 121,533 / 58 |
+| 72 levels, dt 30 s, 2 calls | 9,035 / 60 | 30,386 / 63 |
+
+So most of section 5's word count against stock WRF comes from the count,
+not the loss fix. The count is not arbitrary: mean last-step surface-rain
+distance to the `fine32` reference (every arm differs from it only in the
+rain sedimentation loop):
+
+| configuration | stock WRF | transfer + WRF count | transfer + WOOF count (the kernel) | fine8 |
+|---|---|---|---|---|
+| dt 20 s, 1 call | 0.0018 mm | 0.0017 mm | 0.00047 mm | 0.000045 mm |
+| dt 300 s, 1 call | 0.045 mm | 0.015 mm | 0.0033 mm | 0.00026 mm |
+| dt 150 s, 3 calls | 0.078 mm | 0.037 mm | 0.0057 mm | 0.00050 mm |
+| 72 levels, dt 30 s, 2 calls | 0.0088 mm | 0.0062 mm | 0.0013 mm | 0.00013 mm |
+
+WOOF's count is four to fourteen times closer to the converged answer than
+WRF's count, with or without WRF's loss. WRF's count with the conservative
+transfer is the worst combination in the heaviest columns (conv_land_7 at
+dt 150 s: 1.16 mm off; theta up to 1.86 K off). Over ten 60 s calls the column
+physics feeds back and even `fine8` and `fine32` separate (3.8 mm in the
+heaviest column), so that row is not a convergence measurement and is left
+out of the table.
+
+## 7. The 10 cm reflectivity is now WRF's word too -- the radar words were not
+
+`refl10cm_wdm6` (and the radar module's melting-particle routines) are
+evaluated in the TYPES the Fortran declares: temperature, density, the rain,
+snow and graupel contents and the three `ze` arrays are default REAL; the
+slopes and intercepts are DOUBLE PRECISION, with `lamr`'s right-hand side all
+REAL. The radar constants are WRF's own words
+(`gpuwm.core.refl.wdm6_radar_words`), which the float64 `radar_init` mirror
+does not reproduce: radar_init's `xcrg(4) = WGAMMA(8.)` is 5040.002 and
+`xcsg(4)` 720.00006 (REAL `exp(gammln)`), `PI5` is a product of REAL
+literals (306.018463 against 306.018392), `lamda_radar = 0.10` is a REAL
+literal held in a DOUBLE PRECISION parameter (so `lamda4` is 1.00000006e-4),
+and `m_w_0` is the square root of a default single-precision COMPLEX. Complex
+division follows gfortran's Fortran-rules lowering (Smith's ratio form).
+LOG10, ATAN2 and HYPOT stay the device library's binary64 functions; the
+oracle measured no output word they moved. Morrison's and WSM6's
+reflectivity (`kernels/refl.cu`) still use the float64 radar mirror; they are
+outside this campaign.
+
+## 8. Default build: flush-to-zero only, where subnormal values enter a call
+
+The unit compiles with `--fmad=false` in every build (`_NO_FMAD_MODULES`),
+so the strict and default builds differ only in the loader's flush-to-zero
+route (docs/manual/04-gpu-numerics.md, 4.1). Measured: every default-build
+difference in the STATE (theta, masses, numbers, radii, reflectivity) lies in
+a column into which a subnormal moisture value enters a call, from the input
+or from the scheme's own output of an earlier step (17 to 22 of 84 columns;
+32 of 84 carry a subnormal input); WRF keeps those values, for instance
+growing snow by deposition from a 1e-40 seed, and the default build treats
+them as zero. Outside those columns, two columns in each of the two
+multi-call configurations lose a vanishing surface fallout (under 5e-34 mm)
+whose own product underflowed. Largest differences over
+ten 60 s calls: theta 9.2e-4 K, qs 4.8e-7 kg/kg, refl_10cm 0.26 dBZ. The
+strict build has no such difference.
+
+For scale, stock WRF against itself: the unmodified file compiled at WRF's
+own GNU physics flags (`-O2 -ftree-vectorize -funroll-loops`, which call
+glibc's libmvec `expf`, `logf` and `log10` in vectorised loops;
+`tools/wdm6_wrf461_oracle/measure_o2.sh`) differs from the `-O0` scalar
+reference in 59 to 77 of the 84 columns, by up to 1.0e-3 K in theta,
+3.1e-7 kg/kg in qv and 0.085 dBZ in refl_10cm (measured 2026-10-07). In theta and the
+masses the default build's flush-to-zero difference is of the same order as
+the spread of WRF's own production build around its reference, but it is
+concentrated in fewer columns.
+
+## The oracle, and how to rerun it
+
+`tools/wdm6_wrf461_oracle/README.md`.

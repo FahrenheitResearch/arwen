@@ -1,0 +1,19 @@
+cu0            wrf_vectorised_vs_scalar first-diff 2019-11-26_12:01:12  verdict inside-spread   max-ratio 1.0 outside3x 
+cu0            woof-base-default        first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 157.01 outside3x GLW,HFX,LH,MU,OLR,P,PBLH,PH,PSFC,Q2,QCLOUD,QGRAUP,QICE,QRAIN,QSNOW,QVAPOR,RAINNC,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W
+cu0            woof-tip-strict          first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 157.0 outside3x GLW,HFX,LH,MU,OLR,P,PBLH,PH,PSFC,Q2,QCLOUD,QGRAUP,QICE,QRAIN,QSNOW,QVAPOR,RAINNC,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W
+kessler        wrf_vectorised_vs_scalar first-diff 2019-11-26_12:01:12  verdict inside-spread   max-ratio 1.0 outside3x 
+kessler        woof-tip-strict          first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 107.7 outside3x HFX,LH,MU,OLR,PBLH,PH,PSFC,Q2,RAINC,RAINNC,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W
+kf-cudt0       wrf_vectorised_vs_scalar first-diff 2019-11-26_12:01:12  verdict inside-spread   max-ratio 1.0 outside3x 
+kf-cudt0       woof-base-default        first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 52.52 outside3x GLW,HFX,LH,MU,OLR,PBLH,PH,PSFC,Q2,QCLOUD,QGRAUP,QICE,QRAIN,QSNOW,QVAPOR,RAINC,RAINNC,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W
+kf-cudt0       woof-tip-strict          first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 52.51 outside3x GLW,HFX,LH,MU,OLR,P,PBLH,PH,PSFC,Q2,QCLOUD,QGRAUP,QICE,QRAIN,QSNOW,QVAPOR,RAINC,RAINNC,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W
+kf-default12   wrf_vectorised_vs_scalar first-diff 2019-11-26_12:01:12  verdict inside-spread   max-ratio 1.0 outside3x 
+kf-default12   woof-base-default        first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 44.71 outside3x HFX,LH,MU,OLR,PBLH,PH,PSFC,Q2,QGRAUP,QVAPOR,RAINNC,T,T2,TSK,U,U10,UST,V,V10,W
+kf-default12   woof-tip-strict          first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 44.55 outside3x HFX,LH,MU,OLR,PBLH,PH,PSFC,Q2,QGRAUP,QVAPOR,T,T2,TSK,U,U10,UST,V,V10,W
+milbrandt      wrf_vectorised_vs_scalar first-diff 2019-11-26_12:01:12  verdict inside-spread   max-ratio 1.0 outside3x 
+milbrandt      woof-tip-strict          first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 32.39 outside3x HFX,LH,MU,OLR,PBLH,PH,PSFC,Q2,QVAPOR,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W
+myj            wrf_vectorised_vs_scalar first-diff none                 verdict inside-spread   max-ratio 0.0 outside3x 
+myj            woof-tip-strict          first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio inf outside3x GLW,HFX,LH,MU,OLR,P,PBLH,PH,PSFC,Q2,QCLOUD,QGRAUP,QICE,QRAIN,QSNOW,QVAPOR,RAINC,RAINNC,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W
+wdm6           wrf_vectorised_vs_scalar first-diff 2019-11-26_12:01:12  verdict inside-spread   max-ratio 1.0 outside3x 
+wdm6           woof-tip-strict          first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 101.1 outside3x GLW,HFX,LH,MU,OLR,PBLH,PH,PSFC,Q2,QCLOUD,QGRAUP,QICE,QRAIN,QSNOW,QVAPOR,RAINC,RAINNC,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W
+wsm6           wrf_vectorised_vs_scalar first-diff 2019-11-26_12:01:12  verdict inside-spread   max-ratio 1.0 outside3x 
+wsm6           woof-tip-strict          first-diff 2019-11-26_12:00:00  verdict outside-spread  max-ratio 1116.5 outside3x HFX,LH,MU,OLR,P,PBLH,PH,PSFC,Q2,QGRAUP,QICE,QSNOW,QVAPOR,RAINC,RAINNC,SWDOWN,T,T2,TSK,U,U10,UST,V,V10,W

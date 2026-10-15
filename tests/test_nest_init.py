@@ -576,6 +576,88 @@ def test_prepare_child_input_dispatches_hrrr_on_own_static_landmask(
     assert prepared.preprocess_receipt["soil_mapping"] == {"status": "PASS"}
 
 
+def _hrrr_child_case(monkeypatch, static, *, catalog_extra=None):
+    """The HRRR child door of the test above, around one static build."""
+    valid_time = datetime(2026, 7, 20)
+    source = HrrrNativeSnapshot(
+        valid_time=valid_time, forecast_hour=0,
+        i_start=0, j_start=0, ny=4, nx=5, fields={})
+    static_catalog = object()
+    catalog = SimpleNamespace(
+        snapshots=(source,), valid_times=(valid_time,), inventory=(), files=(),
+        static_catalog=static_catalog, **(catalog_extra or {}))
+    child = SimpleNamespace(
+        grid_id=2, start_time=valid_time,
+        run=SimpleNamespace(moist=True, terrain_opt=1))
+    horizontal = HorizontalSnapshot(
+        valid_time=valid_time, levels_hpa=np.asarray([1000.0]), fields={
+            "SKINTEMP": np.asarray([[281.0, 282.0], [283.0, 284.0]])})
+
+    class Backend:
+        @staticmethod
+        def receipt():
+            return {"backend": "cpu", "workers": 2}
+
+    monkeypatch.setattr(
+        "gpuwm.ingest.preprocess_backend.resolve_preprocess_backend",
+        lambda *_args, **_kwargs: Backend())
+    monkeypatch.setattr(ni, "build_static_for_domain",
+                        lambda grid, catalog, grid_id: dict(static))
+    monkeypatch.setattr(
+        ni, "geog_selection_from_catalog",
+        lambda actual_catalog, grid_id: SimpleNamespace(
+            landuse_global_attrs=lambda: {"MMINLU": "MODIFIED_IGBP_MODIS_NOAH",
+                                          "ISWATER": 17, "ISLAKE": 21,
+                                          "ISICE": 15, "ISURBAN": 13}))
+
+    def map_hrrr(snapshot, actual_grid, **options):
+        options["soil_mapping_report"]["status"] = "PASS"
+        return horizontal
+
+    monkeypatch.setattr(ni, "interpolate_hrrr_to_lambert", map_hrrr)
+    return child, catalog
+
+
+def test_a_corridor_child_is_born_on_its_corridor_crop(monkeypatch):
+    """Plan call 5 (2.9.0): a child whose preparation sealed a statics
+    corridor initializes on that corridor's crop at its declared placement,
+    not on a footprint build, so its terrain is the ground its moves crop
+    from; the footprint's own slope pass does not run on it."""
+    from gpuwm.static.corridor import CorridorBirth
+    footprint = {"LANDMASK": np.asarray([[1.0, 1.0], [0.0, 1.0]]),
+                 "LU_INDEX": np.asarray([[21.0, 1.0], [16.0, 21.0]]),
+                 "HGT_M": np.zeros((2, 2))}
+    crop = {name: np.array(value, copy=True) for name, value in footprint.items()}
+    crop["HGT_M"] = np.asarray([[120.0, 130.0], [125.0, 128.0]])
+    crop["EXTRA_CORRIDOR_FIELD"] = np.ones((2, 2))
+    birth = CorridorBirth(grid_id=2, fields=crop, cache_sha256="0" * 64)
+    monkeypatch.setattr(
+        "gpuwm.static.terrain_autosmooth.prepare_fields",
+        lambda *a, **k: pytest.fail("a corridor child is not re-bounded"))
+    child, catalog = _hrrr_child_case(
+        monkeypatch, footprint, catalog_extra={"statics_corridor_births": {2: birth}})
+
+    prepared = ni._prepare_child_input_on_grid(
+        child, object(), catalog, preprocess_backend="cpu", preprocess_workers=2)
+
+    assert set(prepared.static_fields) == set(footprint)
+    for name in footprint:
+        np.testing.assert_array_equal(prepared.static_fields[name], crop[name])
+
+
+def test_a_corridor_crop_missing_a_footprint_field_is_refused_by_name(monkeypatch):
+    from gpuwm.static.corridor import CorridorBirth, CorridorRefusal
+    footprint = {"LANDMASK": np.ones((2, 2)), "LU_INDEX": np.ones((2, 2)),
+                 "HGT_M": np.zeros((2, 2))}
+    birth = CorridorBirth(grid_id=2, cache_sha256="0" * 64,
+                          fields={"LANDMASK": np.ones((2, 2)), "HGT_M": np.zeros((2, 2))})
+    child, catalog = _hrrr_child_case(
+        monkeypatch, footprint, catalog_extra={"statics_corridor_births": {2: birth}})
+    with pytest.raises(CorridorRefusal, match="LU_INDEX"):
+        ni._prepare_child_input_on_grid(
+            child, object(), catalog, preprocess_backend="cpu", preprocess_workers=2)
+
+
 @pytest.mark.parametrize("backend", ("cuda", "auto", object()))
 def test_pending_child_inputs_rejects_unsafe_parallel_backend(backend):
     domains = tuple(SimpleNamespace(grid_id=grid_id) for grid_id in (2, 3))
@@ -591,7 +673,8 @@ def test_pending_child_inputs_rejects_unbounded_or_invalid_workers(workers):
         ni.PendingChildInputs((), {}, object(), None, workers=workers)
 
 
-def _child_binding_case(monkeypatch, child_id, soil_case=None):
+def _child_binding_case(monkeypatch, child_id, soil_case=None,
+                        catalog_mapping=None, mapping_seen=None):
     """Review anchor: REAL -> SINT -> blend all 3 -> adjust -> rederive."""
     events = []
     # These ordering/soil tests replace interpolation; constructing its CUDA
@@ -647,7 +730,8 @@ def _child_binding_case(monkeypatch, child_id, soil_case=None):
     parent_node = SimpleNamespace(cfg=SimpleNamespace(grid_id=child_id - 1))
     catalog = SimpleNamespace(inventory=("SOILGEO",), valid_times=(object(),),
                               snapshots=(object(),), files=(),
-                              water_temperature_policy="wrf_compat")
+                              water_temperature_policy="wrf_compat",
+                              **(catalog_mapping or {}))
     vertical = VerticalConfig(eta_levels=(1.0, 0.5, 0.0), p_top=10000.0,
                               hybrid_opt=2, etac=0.2)
 
@@ -679,6 +763,8 @@ def _child_binding_case(monkeypatch, child_id, soil_case=None):
     def interpolate(*_args, **kwargs):
         assert kwargs["source_orography_catalog"] is catalog
         assert kwargs["backend"] is backend
+        if mapping_seen is not None:
+            mapping_seen.append(kwargs)
         events.append("era5-own-grid")
         return horizontal
 
@@ -762,6 +848,35 @@ def _child_binding_case(monkeypatch, child_id, soil_case=None):
 @pytest.mark.parametrize("child_id", (2, 3, 4))
 def test_initialize_child_binding_order_and_soil_never_readjusted(monkeypatch, child_id):
     _child_binding_case(monkeypatch, child_id)
+
+
+def test_a_child_maps_with_the_root_conventions_its_catalog_carries(monkeypatch):
+    """A GFS tree's child: WPS fix_gfs_rh on RH2 too, lakes on the WPS search."""
+    seen = []
+    _child_binding_case(
+        monkeypatch, 2, catalog_mapping={
+            "relative_humidity_convention": "gfs_mixed",
+            "lake_whole_source_search": True},
+        mapping_seen=seen)
+    (kwargs,) = seen
+    assert kwargs["relative_humidity_convention"] == "gfs_mixed"
+    lakes = kwargs["inland_water_search"]
+    # The stub's land use classes one cell as ISLAKE (21).
+    assert lakes.dtype == np.bool_ and lakes.shape == (4, 5)
+    assert lakes.sum() == 1 and lakes[0, 0]
+
+
+def test_a_child_catalog_without_them_keeps_the_regular_grid_defaults(monkeypatch):
+    seen = []
+    _child_binding_case(monkeypatch, 2, mapping_seen=seen)
+    (kwargs,) = seen
+    assert kwargs["relative_humidity_convention"] == "era5_mixed"
+    assert kwargs["inland_water_search"] is None
+    import dataclasses
+    defaults = {field.name: field.default
+                for field in dataclasses.fields(ni.NestedInputCatalog)}
+    assert defaults["relative_humidity_convention"] == "era5_mixed"
+    assert defaults["lake_whole_source_search"] is False
 
 
 @pytest.mark.parametrize("source", ("era5", "hrrr"))

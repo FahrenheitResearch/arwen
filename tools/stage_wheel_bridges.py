@@ -1,102 +1,10 @@
-"""Stage the built Rust artifacts INTO the package, for a platform wheel.
+"""Stage every declared native artifact into a platform wheel.
 
-``pip install gpuwm`` used to land a Python half with no compiled Rust at
-all: every decoder, the fetch backbone, the renderer and the radar front
-door were downloaded afterwards by ``gpuwm setup`` / ``gpuwm
-fetch-bridges``.  That made the post-install step a failure surface on
-the one command every user runs first, and it made "the decode runs in
-Rust" unreachable on a bare install -- which is the whole point of doing
-the decode in Rust.
-
-This tool closes that by copying the artifacts
-:data:`gpuwm.bridge_assets.BUNDLED_ARTIFACTS` declares out of the two
-Cargo workspaces and into :func:`gpuwm.bridges.packaged_bridge_dir`
-(``gpuwm/libexec/bridges``), which
-``[tool.setuptools.package-data]`` sweeps into the wheel.  Run it
-between ``cargo build --release`` and ``python -m build``; the resulting
-wheel is platform-tagged by ``setup.py`` because it now carries native
-code.
-
-It is deliberately NOT a build step: it copies bytes that already exist
-and refuses when they do not, so a wheel can never be built with a
-silently missing artifact and ship a door that dies at first use.
-
-    python tools/stage_wheel_bridges.py --platform win-x86_64
-    python tools/stage_wheel_bridges.py --clean
-
-``--dest DIR`` points the same table-driven copy at a directory other
-than the package, which is what completes a HOME from a build tree::
-
-    python tools/stage_wheel_bridges.py --dest ~/.gpuwm/bridges
-
-That rung -- ``gpuwm.bridges.default_bridge_dir`` -- is the last one
-every resolver searches, and it is the rung a wheel-less checkout user
-fills.  Filling it by hand is how a home came to carry sixteen of the
-declared artifacts, missing the NetCDF decoder and the NetCDF writer
-behind the default wrfout engine; a hand copy has no declaration to
-check itself against and this tool does.  Only the in-package
-destination is emptied first (a wheel carrying two platforms is both
-wrong and over PyPI's cap); any other destination keeps everything this
-tool did not stage.
-
-What is NOT staged into the package, and why: the on-demand artifacts
-(:func:`gpuwm.bridge_assets.on_demand_artifacts`).  They are in the
-release bundle and its pins and ``gpuwm fetch-bridges`` installs them;
-leaving them out of the wheel is what brought both platform wheels back
-under the 100,000,000-byte per-file limit at 2.8.9 (see
-:func:`staged_artifacts`).
-
-Also not staged: the renderer's basemap shapefiles.  They
-are 21.1 MB compressed, and there is no room for them.  They are also
-DATA (Natural Earth coastlines and county polygons), not a processing
-path.  Since 2.8.0 they ship in the ``gpuwm-data`` companion, which
-every install pulls, and :func:`gpuwm.rustwx.renderer_env` hands that
-copy to this wheel's renderer; before that they reached a wheel install
-only through ``gpuwm fetch-bridges``, which no install text ran, and
-every picture came out with no coastlines, borders or state lines.
-
-Sizes, measured 2026-08-17 at the 2.5.0 integration tip, against
-PyPI's 100 MB per-file cap read strictly as 100,000,000 B::
-
-    pure wheel      gpuwm-2.5.0-py3-none-any.whl          91,926,618 B
-    pure sdist      gpuwm-2.5.0.tar.gz                    95,245,042 B
-    win-x86_64      gpuwm-2.5.0-py3-none-win_amd64.whl   108,695,109 B
-    linux-x86_64    ...-manylinux_2_28_x86_64.whl        111,697,820 B
-
-The pure pair is what ``.github/workflows/publish.yml`` ships (it runs
-``--clean`` first) and it fits, with 8.07 MB of headroom on the wheel
-and 4.75 MB on the sdist -- the sdist, not the wheel, is the binding
-constraint of the published pair.  The win and linux numbers are this
-Windows host and weather-node-1 respectively; the linux one is from the
-2.5.0 Linux shakeout, everything else was measured together on one box.
-
-BOTH PLATFORM WHEELS ARE OVER THE CAP AT THIS TIP -- by 8.70 MB and
-11.70 MB.  The bridge payload has roughly doubled since these numbers
-were last written (compressed, it is now 16.77 MB on Windows and 19.77
-MB on Linux over the pure base), which is ``rw_netcdf``,
-``netcdf_writer`` and ``region_global_dealias`` joining
-:data:`gpuwm.bridge_assets.BUNDLED_ARTIFACTS`.  Whatever this docstring
-claimed before, do not read a headroom number off it again without
-re-measuring: the figures it carried into this tip (96.66 MB win, 98.35
-MB linux, "1.65 MB of headroom on Linux") were 12-13 MB low and had the
-sign inverted -- the wheels were over the cap while the doc said they
-were under it, and the whole documented rationale for excluding the
-basemaps rested on that dead number.
-
-Nothing published is broken by this: the per-platform wheel is not a
-shape PyPI receives today.  The remedy for making it one is the
-companion split -- the payload moves into a companion distribution
-rather than a decoder being dropped -- and until that lands, a platform
-wheel built here is a local artifact, not an uploadable one.
-``tools/verify_release_artifacts.py`` measures every distribution file
-in the dist directory against the cap and refuses the ones a cut is
-about to publish, so this cannot be discovered at upload time with the
-tag already public.
-
-67 MB of the pure base is physics tables (Thompson and RRTMGP).  If the
-PURE pair ever runs out of room, the remedy is externalising another
-table through ``gpuwm fetch-tables`` -- the route ``freezeH2O.dat`` and
-``qr_acr_qg_V4.dat`` already take -- rather than dropping a decoder.
+Run after the release Cargo builds and before ``python -m build``. The shared
+rw_wrfbatch executable and its five native launchers carry the old tool names.
+Both package staging and a user's bridge directory receive the full roster.
+Basemap assets stay in gpuwm-data and the downloadable bridge bundle.
+``tools.battery.wheel_size`` measures wheels before release gates.
 """
 
 from __future__ import annotations
@@ -205,25 +113,9 @@ def _is_packaged_destination(destination: Path) -> bool:
         return False
 
 
-def staged_artifacts(destination: Path
-                     ) -> tuple[bridge_assets.BundledArtifact, ...]:
-    """The artifacts this tool stages into ``destination``.
-
-    The in-package directory gets what a platform wheel carries
-    (:func:`gpuwm.bridge_assets.wheel_artifacts`): the on-demand
-    artifacts are left out of it, and so out of the ``BUNDLE.json``
-    written beside it, which must list exactly the files present.
-    Breakage this prevents (2.8.9 cut r1): with every artifact staged,
-    both platform wheels were over the 100,000,000-byte per-file limit
-    (Linux 107,777,663 bytes, Windows 102,503,274).  Any other
-    destination is a user's own bridge directory and gets the whole
-    roster, which is what ``gpuwm fetch-bridges`` installs too.
-    """
-
-    if _is_packaged_destination(destination):
-        return bridge_assets.wheel_artifacts()
-    return tuple(bridge_assets.BUNDLED_ARTIFACTS)
-
+def staged_artifacts(destination: Path) -> tuple[bridge_assets.BundledArtifact, ...]:
+    """Every staging destination receives the full declared roster."""
+    return bridge_assets.wheel_artifacts()
 
 def stage(platform: str, *, destination: Path | None = None) -> Path:
     """Copy every artifact ``destination`` takes into it, or refuse.
@@ -305,9 +197,7 @@ def stage_from_bundle(archive: Path, platform: str,
 
     Only the binaries are taken.  ``assets/`` members are the renderer's
     basemap shapefiles, deliberately not shipped in the wheel (see the
-    module docstring).  The on-demand artifacts are in the bundle and
-    are not copied into the package (:func:`staged_artifacts`).
-    """
+    module docstring).    """
 
     destination = destination or bridges.packaged_bridge_dir()
     wanted = {
@@ -358,11 +248,7 @@ def _staged_count(destination: Path) -> str:
     declared = len(bridge_assets.BUNDLED_ARTIFACTS)
     if staged == declared:
         return f"{staged} artifacts"
-    left_out = ", ".join(
-        artifact.name for artifact in bridge_assets.on_demand_artifacts())
-    return (f"{staged} of {declared} artifacts (on demand, installed by "
-            f"gpuwm fetch-bridges: {left_out})")
-
+    return f"{staged} of {declared} artifacts"
 
 def clean(destination: Path | None = None) -> None:
     purge_build_staging()

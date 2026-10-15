@@ -539,12 +539,13 @@ PER_DOMAIN_ROUTE_KEYS = tuple(_PROBE_VALUE)
 #: The route-held keys no [[domain]] table can set, added to
 #: ROUTE_SHARED_DOMAIN_KEYS at the fork-lane merges: bbf87e3e7 (the GSL
 #: surface layer), 08af6a3cd (the fork dynamics and its clock), 88f7ab4d2
-#: (RUC) and 9540c1857 (the Thompson fork).  Every one but terrain_clock is
+#: (RUC) and 9540c1857 (the Thompson fork), and ysu_version at the WRF 4.8
+#: YSU generation (7bbbb29d2, golden/wrf-fixes).  Every one but terrain_clock is
 #: a [shared] key of the schema, so the door refuses a one-domain edit of
 #: it with the schema's own tree-wide sentence before the route is asked;
 #: terrain_clock is no physics key of the schema at all, and the route
 #: sentence refuses it.  Pinned, so a further addition is a decision.
-TREE_WIDE_ROUTE_KEYS = ("mynn_sfclay_variant", "terrain_clock",
+TREE_WIDE_ROUTE_KEYS = ("mynn_sfclay_variant", "ysu_version", "terrain_clock",
                         "diff_6th_form", "upper_wind_limiter_form",
                         "mp_zero_out", "mp_zero_out_thresh",
                         "mp_zero_out_all", "ruc_irrigation", "ruc_snow",

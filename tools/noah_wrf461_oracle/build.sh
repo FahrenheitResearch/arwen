@@ -99,11 +99,20 @@ gfortran -c -O0 ${free} -I "${build_dir}" "${script_dir}/run_lsm.F90"
 gfortran -o run_lsm stub_wrf.o module_model_constants.o module_wrf_error.o \
     module_sf_noahlsm.o module_sf_noahlsm_glacial_only.o \
     module_sf_noahdrv.o run_lsm.o
+# The land-ice companion: same driver, same CSV layout, every column ICE = -1.
+gfortran -c -O0 ${free} -I "${build_dir}" "${script_dir}/run_lsm_glacial.F90"
+gfortran -o run_lsm_glacial stub_wrf.o module_model_constants.o \
+    module_wrf_error.o module_sf_noahlsm.o module_sf_noahlsm_glacial_only.o \
+    module_sf_noahdrv.o run_lsm_glacial.o
 
 # The driver must actually export the routines that read the tables; if
 # -Dwrfmodel were ever dropped this catches it before a fixture is written.
+# The symbol table is captured to a file first: under `set -o pipefail`,
+# `nm | grep -q` fails whenever grep's early exit SIGPIPEs nm, which refused
+# a correct object on a 48-core build host (2026-10-12) with this very message.
+nm module_sf_noahdrv.o > symbols-module_sf_noahdrv.txt
 for sym in lsm soil_veg_gen_parm lsminit; do
-    if ! nm module_sf_noahdrv.o | grep -q "__module_sf_noahdrv_MOD_${sym}\$"; then
+    if ! grep -q "__module_sf_noahdrv_MOD_${sym}\$" symbols-module_sf_noahdrv.txt; then
         echo "module_sf_noahdrv.o does not export ${sym}; is -Dwrfmodel set?" >&2
         exit 6
     fi
@@ -168,6 +177,10 @@ cp "${source_root}/run/VEGPARM.TBL" "${source_root}/run/SOILPARM.TBL" \
 ./run_lsm noah-lsm-thcnd2.csv   2 F F F > run-lsm-thcnd2-stdout.txt
 ./run_lsm noah-lsm-frpcpn.csv   1 T F F > run-lsm-frpcpn-stdout.txt
 ./run_lsm noah-lsm-monalb.csv   1 F T T > run-lsm-monalb-stdout.txt
+# SFLX_GLACIAL reads FFROZP, so frpcpn is the one switch that reaches it; the
+# fixture's SR column makes the two passes take different arms.
+./run_lsm_glacial noah-lsm-glacial.csv        1 F F F > run-lsm-glacial-stdout.txt
+./run_lsm_glacial noah-lsm-glacial-frpcpn.csv 1 T F F > run-lsm-glacial-frpcpn-stdout.txt
 
 # A switch the fixture cannot discriminate is a switch the gate cannot check.
 # This fired for real: with soil types 3 and 4 absent from the fixture,
@@ -175,6 +188,11 @@ cp "${source_root}/run/VEGPARM.TBL" "${source_root}/run/SOILPARM.TBL" \
 # TDFCND's opt_thcnd == 2 arm is reachable only for those two soil types
 # (module_sf_noahlsm.F:4173).  run_lsm.F90 cases 41 and 42 exist to make this
 # check pass, and it stays here so the coverage cannot silently regress.
+if cmp -s noah-lsm-glacial.csv noah-lsm-glacial-frpcpn.csv; then
+    echo "noah-lsm-glacial-frpcpn.csv is byte-identical to noah-lsm-glacial.csv:" \
+         "no land-ice column reaches what frpcpn changes" >&2
+    exit 7
+fi
 for variant in thcnd2 frpcpn monalb; do
     if cmp -s noah-lsm.csv "noah-lsm-${variant}.csv"; then
         echo "noah-lsm-${variant}.csv is byte-identical to noah-lsm.csv:" \
@@ -190,9 +208,11 @@ sha256sum "${source_root}/share/module_model_constants.F" \
     "${source_root}/phys/module_sf_noahdrv.F" \
     "${script_dir}/stub_wrf.F90" \
     "${script_dir}/run_lsm.F90" \
+    "${script_dir}/run_lsm_glacial.F90" \
     "${script_dir}/build.sh" \
     VEGPARM.TBL SOILPARM.TBL GENPARM.TBL \
     noah-lsm.csv noah-lsm-thcnd2.csv noah-lsm-frpcpn.csv noah-lsm-monalb.csv \
+    noah-lsm-glacial.csv noah-lsm-glacial-frpcpn.csv \
     > oracle-sha256sums.txt
 gfortran --version | head -1 > compiler.txt
 echo "oracle built in ${build_dir}"

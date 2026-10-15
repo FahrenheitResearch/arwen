@@ -71,6 +71,27 @@ pub const LAMBERT_SPEC_PREFIX: &str = "lambert:";
 
 pub const MESH_FOCUS_REFINEMENT_FACTOR: f64 = 2.0;
 
+/// The derived whole-sphere window: a lat-lon grid at the mesh's OWN
+/// spacing (see [`Window::global_at_mesh_spacing`]).
+pub const GLOBAL_MESH_WINDOW: &str = "global-mesh";
+
+/// The prefix of an extent-only regional window whose spacing the mesh
+/// decides (see [`Window::region_at_mesh_spacing`]).
+pub const REGION_SPEC_PREFIX: &str = "region:";
+
+/// The largest point count a derived global window may carry.
+///
+/// The breakage this prevents, named: a 3 km uniform global mesh asks for
+/// 13,344 x 6,673 points, and the converter writes every 3-D field at
+/// `(levels, ny, nx)` float32 -- 55 levels over 89 million points is 19.6 GB
+/// for ONE field, past the 4 GiB a classic 64-bit-offset variable may hold
+/// and past what the host can allocate several times over. Nine million
+/// points keeps one 55-level field at 2.0 GB, inside that format limit, and
+/// still covers every uniform mesh down to 10 km at its own spacing (15 km
+/// is 3.6 million points). When it binds, the spacing coarsens and the
+/// description records what it started from.
+pub const MESH_GLOBAL_MAX_POINTS: usize = 9_000_000;
+
 /// Margin added to each half-extent of the refined region, as a fraction.
 ///
 /// The refined core of a graded mesh is where the storm is; the transition
@@ -231,8 +252,21 @@ impl Window {
             spec if spec.starts_with(LAMBERT_SPEC_PREFIX) => {
                 Window::lambert_from_spec(&spec[LAMBERT_SPEC_PREFIX.len()..])
             }
+            GLOBAL_MESH_WINDOW => Err(MpasError::Refusal(
+                "render window 'global-mesh' is a whole-sphere grid at the spacing of the mesh \
+                 being converted, so it cannot be served before that mesh's per-cell spacing \
+                 has been read: build it with Window::global_at_mesh_spacing. Answering with \
+                 the fixed 0.25 degree box instead would draw a 15 km mesh on a 28 km grid"
+                    .to_string(),
+            )),
+            spec if spec.starts_with(REGION_SPEC_PREFIX) => Err(MpasError::Refusal(format!(
+                "render window '{spec}' takes its spacing from the mesh cells inside it, so it \
+                 cannot be served before that mesh has been read: build it with \
+                 Window::region_at_mesh_spacing. A fixed spacing here is how a 15 km mesh came \
+                 to be drawn on a 20 km grid"
+            ))),
             other => Err(MpasError::Refusal(format!(
-                "unknown render window '{other}' (known: focus, global, mesh, lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON)"
+                "unknown render window '{other}' (known: focus, global, mesh, global-mesh, region:CLAT,CLON,WIDTH_KM,HEIGHT_KM[,TRUELAT1,TRUELAT2], lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON)"
             ))),
         }
     }
@@ -361,6 +395,306 @@ impl Window {
                 format_centre(centre_lat, centre_lon)
             ),
         }))
+    }
+
+    /// The whole sphere on a lat-lon grid at the mesh's own spacing.
+    ///
+    /// THE BREAKAGE THIS PREVENTS, MEASURED (2026-10-10): every global map
+    /// of the 15 km hex mesh (x1.2621442) was drawn from the fixed `global`
+    /// window, a 0.25 degree grid that is 27.8 km at the equator -- nearly
+    /// twice the model's spacing -- and stamped `d01-27.794km`. The 60 km
+    /// mesh came out on the same 27.8 km grid, finer than the model holds.
+    /// A whole-sphere picture of a mesh forecast has to be drawn at the
+    /// spacing that mesh carries, and the mesh is the only source that
+    /// states that number.
+    ///
+    /// The spacing is the median per-cell spacing, rounded DOWN to three
+    /// significant figures (never coarser than the mesh), then shortened to
+    /// the nearest whole division of 180 degrees so both axes partition
+    /// their bounds exactly. Longitudes run -180 to 180 minus one step.
+    pub fn global_at_mesh_spacing(cell_spacing_m: &[f64]) -> MpasResult<Window> {
+        let median = Self::checked_median_spacing(cell_spacing_m, "a global window")?;
+        let target_m = finer_round_spacing(median);
+        let half_turn_m = PI * WRF_EARTH_RADIUS_M;
+        let mut intervals = (half_turn_m / target_m).ceil().max(2.0) as usize;
+        let points = |n: usize| 2 * n * (n + 1);
+        let mut coarsened_from: Option<f64> = None;
+        if points(intervals) > MESH_GLOBAL_MAX_POINTS {
+            coarsened_from = Some(180.0 / intervals as f64);
+            // Largest n with 2 n (n + 1) <= the ceiling.
+            intervals =
+                ((-1.0 + (1.0 + 2.0 * MESH_GLOBAL_MAX_POINTS as f64).sqrt()) / 2.0).floor() as usize;
+        }
+        let spacing_degrees = 180.0 / intervals as f64;
+        let spacing_m = spacing_degrees * RAD * WRF_EARTH_RADIUS_M;
+        Ok(Window::LatLon(LatLonWindow {
+            south: -90.0,
+            north: 90.0,
+            west: -180.0,
+            east: 180.0 - spacing_degrees,
+            spacing_degrees,
+            description: format!(
+                "mesh-derived global window (lat-lon): {}x{} points at {spacing_degrees:.6} \
+                 degrees ({:.3} km), from the mesh's median cell spacing {:.3} km rounded down \
+                 to {:.3} km{}",
+                2 * intervals,
+                intervals + 1,
+                spacing_m / 1000.0,
+                median / 1000.0,
+                target_m / 1000.0,
+                match coarsened_from {
+                    Some(was) => format!(
+                        "; coarsened from {was:.6} degrees because the whole sphere at that \
+                         spacing needed more than {MESH_GLOBAL_MAX_POINTS} points"
+                    ),
+                    None => String::new(),
+                }
+            ),
+        }))
+    }
+
+    /// A regional window of a stated ground extent whose spacing is the
+    /// mesh's own spacing INSIDE it:
+    /// `region:CLAT,CLON,WIDTH_KM,HEIGHT_KM[,TRUELAT1,TRUELAT2]`.
+    ///
+    /// THE BREAKAGE THIS PREVENTS, MEASURED (2026-10-10): the live hex
+    /// gallery framed its North America, Asia and polar zooms as explicit
+    /// `lambert:` specs with a hand-written 20,000 m dx, so a 15 km mesh was
+    /// drawn on a 20 km grid and every title said `d01 20 km`; the same
+    /// spec drew the 60 km mesh at 20 km, finer than it holds. An explicit
+    /// spec has to carry a dx, and a dx typed into a caller is a constant
+    /// that is wrong for every mesh but one. This form carries only the
+    /// ground the caller wants to see.
+    ///
+    /// What it decides, in order:
+    ///
+    /// - Lambert, with the given true latitudes or ones bracketing the
+    ///   centre the way [`Window::mesh_focus`] derives them; lat-lon when no
+    ///   truelats are given and the centre is within
+    ///   [`MESH_FOCUS_MIN_LAMBERT_LATITUDE_DEG`] of the equator.
+    /// - The cells whose centres fall inside the box (measured on that
+    ///   projection) are the region; with none inside, the cell nearest the
+    ///   centre stands in.
+    /// - `dx` is their median spacing rounded DOWN to three significant
+    ///   figures, so the grid is never coarser than the mesh there.
+    /// - `nx`/`ny` cover the extent at that dx, clamped by
+    ///   [`MESH_FOCUS_MAX_POINTS_PER_SIDE`]; a clamp coarsens dx instead of
+    ///   cropping, and the description says so.
+    pub fn region_at_mesh_spacing(
+        spec: &str,
+        latitude_degrees: &[f64],
+        longitude_degrees: &[f64],
+        cell_spacing_m: &[f64],
+    ) -> MpasResult<Window> {
+        let body = spec.strip_prefix(REGION_SPEC_PREFIX).unwrap_or(spec);
+        let parts: Vec<&str> = body.split(',').map(str::trim).collect();
+        if parts.len() != 4 && parts.len() != 6 {
+            return Err(MpasError::Refusal(format!(
+                "a region window takes CLAT,CLON,WIDTH_KM,HEIGHT_KM and optionally \
+                 TRUELAT1,TRUELAT2; '{body}' has {} value(s)",
+                parts.len()
+            )));
+        }
+        let mut values = Vec::with_capacity(parts.len());
+        for (index, text) in parts.iter().enumerate() {
+            let value: f64 = text.parse().map_err(|_| {
+                MpasError::Refusal(format!("region window value {} '{text}' is not a number", index + 1))
+            })?;
+            if !value.is_finite() {
+                return Err(MpasError::Refusal(format!(
+                    "region window value {} must be finite",
+                    index + 1
+                )));
+            }
+            values.push(value);
+        }
+        let (centre_lat, centre_lon) = (values[0], values[1]);
+        let (width_m, height_m) = (values[2] * 1000.0, values[3] * 1000.0);
+        if centre_lat.abs() > 89.0 {
+            return Err(MpasError::Refusal(
+                "a region window centre must lie within 89 degrees of the equator".to_string(),
+            ));
+        }
+        // Half a meridian: past it the box has wrapped past the horizon a
+        // projected window has, and would cover the same ground twice.
+        let max_extent_m = PI * WRF_EARTH_RADIUS_M;
+        if !(width_m > 0.0 && height_m > 0.0) || width_m > max_extent_m || height_m > max_extent_m {
+            return Err(MpasError::Refusal(format!(
+                "a region window's width and height must be positive and at most {:.0} km",
+                max_extent_m / 1000.0
+            )));
+        }
+        let n = latitude_degrees.len();
+        if longitude_degrees.len() != n || cell_spacing_m.len() != n {
+            return Err(MpasError::Refusal(format!(
+                "a region window needs one latitude, longitude and spacing per cell; got {n}, \
+                 {} and {}",
+                longitude_degrees.len(),
+                cell_spacing_m.len()
+            )));
+        }
+        Self::checked_median_spacing(cell_spacing_m, "a region window")?;
+        let explicit_truelats = (parts.len() == 6).then(|| (values[4], values[5]));
+        if let Some((t1, t2)) = explicit_truelats {
+            // `set_lc` takes the hemisphere from the sign of truelat1, so a
+            // pair that straddles (or touches) the equator flips the cone.
+            if t1.abs() > 89.0 || t2.abs() > 89.0 || t1 * t2 <= 0.0 {
+                return Err(MpasError::Refusal(
+                    "region window true latitudes must lie within 89 degrees of the equator, \
+                     both on one side of it"
+                        .to_string(),
+                ));
+            }
+        }
+        let centre = unit_vector(centre_lat, centre_lon);
+        let lambert = explicit_truelats.is_some()
+            || centre_lat.abs() >= MESH_FOCUS_MIN_LAMBERT_LATITUDE_DEG;
+        let (truelat1, truelat2) = explicit_truelats.unwrap_or_else(|| {
+            let hemi = if centre_lat >= 0.0 { 1.0 } else { -1.0 };
+            let abs_lat = centre_lat.abs();
+            let half_span = MESH_FOCUS_TRUELAT_HALF_SPAN_DEG.min(0.5 * abs_lat);
+            (
+                hemi * (abs_lat - half_span),
+                hemi * (abs_lat + half_span).min(MESH_FOCUS_MAX_ABS_TRUELAT_DEG),
+            )
+        });
+        // Cell membership, measured on the projection the window will use.
+        // A cell more than a quarter turn from the centre is past the
+        // horizon and never inside, whatever the cone maps it to.
+        let half_lat_deg = 0.5 * height_m / (RAD * WRF_EARTH_RADIUS_M);
+        let half_lon_deg =
+            0.5 * width_m / (RAD * WRF_EARTH_RADIUS_M * (centre_lat * RAD).cos().max(1.0e-6));
+        let probe = LambertProjection::set_lc(
+            truelat1, truelat2, centre_lon, 1.0, centre_lat, centre_lon, 0.0, 0.0,
+        );
+        let mut selected: Vec<usize> = Vec::new();
+        let mut nearest: Option<(usize, f64)> = None;
+        for i in 0..n {
+            let (lat, lon) = (latitude_degrees[i], longitude_degrees[i]);
+            let v = unit_vector(lat, lon);
+            let dot = v[0] * centre[0] + v[1] * centre[1] + v[2] * centre[2];
+            if nearest.is_none_or(|(_, best)| dot > best) {
+                nearest = Some((i, dot));
+            }
+            if dot <= 0.0 {
+                continue;
+            }
+            let inside = if lambert {
+                let (x, y) = probe.llij(lat, lon);
+                x.is_finite() && y.is_finite() && x.abs() <= 0.5 * width_m && y.abs() <= 0.5 * height_m
+            } else {
+                let dlon = (lon - centre_lon + 180.0).rem_euclid(360.0) - 180.0;
+                (lat - centre_lat).abs() <= half_lat_deg && dlon.abs() <= half_lon_deg
+            };
+            if inside {
+                selected.push(i);
+            }
+        }
+        let stood_in = selected.is_empty();
+        if stood_in {
+            selected.push(nearest.map(|(i, _)| i).unwrap_or(0));
+        }
+        let median = Self::median_spacing_of(cell_spacing_m, &selected);
+        let nominal_m = finer_round_spacing(median);
+        let span = (MESH_FOCUS_MAX_POINTS_PER_SIDE - 1) as f64;
+        let floor_m = width_m.max(height_m) / span;
+        let mut dx_metres = nominal_m;
+        let mut coarsened_from: Option<f64> = None;
+        if dx_metres < floor_m {
+            coarsened_from = Some(dx_metres);
+            dx_metres = floor_m * (1.0 + 1.0e-12);
+        }
+        let points = |extent: f64| -> usize {
+            ((extent / dx_metres).ceil() as usize + 1).clamp(2, MESH_FOCUS_MAX_POINTS_PER_SIDE)
+        };
+        let nx = points(width_m);
+        let mut ny = points(height_m);
+        let selection = format!(
+            "{} of {n} cells fall inside the {:.0} by {:.0} km box centred {}{}; their median \
+             spacing is {:.3} km, rounded down to {:.3} km{}",
+            if stood_in { 0 } else { selected.len() },
+            width_m / 1000.0,
+            height_m / 1000.0,
+            format_centre(centre_lat, centre_lon),
+            if stood_in { " (the cell nearest the centre stands in)" } else { "" },
+            median / 1000.0,
+            nominal_m / 1000.0,
+            match coarsened_from {
+                Some(was) => format!(
+                    ", coarsened from {:.3} km because that extent needed more than \
+                     {MESH_FOCUS_MAX_POINTS_PER_SIDE} points a side",
+                    was / 1000.0
+                ),
+                None => String::new(),
+            }
+        );
+        if lambert {
+            return Ok(Window::Lambert(LambertWindow {
+                centre_lat,
+                centre_lon,
+                dx_metres,
+                nx,
+                ny,
+                truelat1,
+                truelat2,
+                stand_lon: centre_lon,
+                description: format!(
+                    "mesh-spacing region window (Lambert): {selection}; {nx}x{ny} at dx \
+                     {:.3} km; truelats {truelat1:.3} and {truelat2:.3}, stand_lon the centre \
+                     longitude",
+                    dx_metres / 1000.0
+                ),
+            }));
+        }
+        let spacing_degrees = dx_metres / (RAD * WRF_EARTH_RADIUS_M);
+        let mut nx_ll =
+            ((2.0 * half_lon_deg / spacing_degrees).ceil() as usize + 1).clamp(2, MESH_FOCUS_MAX_POINTS_PER_SIDE);
+        if (nx_ll - 1) as f64 * spacing_degrees >= 360.0 {
+            nx_ll = (360.0 / spacing_degrees).floor() as usize;
+        }
+        let room = 2.0 * (90.0 - centre_lat.abs()) / spacing_degrees;
+        if (ny - 1) as f64 > room {
+            ny = (room.floor() as usize + 1).max(2);
+        }
+        let south = centre_lat - 0.5 * (ny - 1) as f64 * spacing_degrees;
+        let west = centre_lon - 0.5 * (nx_ll - 1) as f64 * spacing_degrees;
+        Ok(Window::LatLon(LatLonWindow {
+            south,
+            north: south + (ny - 1) as f64 * spacing_degrees,
+            west,
+            east: west + (nx_ll - 1) as f64 * spacing_degrees,
+            spacing_degrees,
+            description: format!(
+                "mesh-spacing region window (lat-lon): {selection}; {nx_ll}x{ny} at \
+                 {spacing_degrees:.6} degrees; the centre is within \
+                 {MESH_FOCUS_MIN_LAMBERT_LATITUDE_DEG:.0} degrees of the equator, where a \
+                 Lambert cone degenerates"
+            ),
+        }))
+    }
+
+    /// The median of a whole mesh's per-cell spacing, refusing an empty or
+    /// non-positive set by name: a window sized from a zero or a NaN is the
+    /// whole planet or a single point.
+    fn checked_median_spacing(cell_spacing_m: &[f64], role: &str) -> MpasResult<f64> {
+        if cell_spacing_m.is_empty() {
+            return Err(MpasError::Refusal(format!(
+                "{role} at the mesh's own spacing needs that spacing, and the mesh handed over \
+                 none"
+            )));
+        }
+        if let Some((i, bad)) = cell_spacing_m
+            .iter()
+            .enumerate()
+            .find(|(_, s)| !s.is_finite() || **s <= 0.0)
+        {
+            return Err(MpasError::Refusal(format!(
+                "mesh cell {i} carries spacing {bad} m; {role} cannot be sized from a spacing \
+                 that is not positive and finite"
+            )));
+        }
+        let all: Vec<usize> = (0..cell_spacing_m.len()).collect();
+        Ok(Self::median_spacing_of(cell_spacing_m, &all))
     }
 
     pub fn mesh_focus(
@@ -995,6 +1329,21 @@ impl Window {
             }
         }
     }
+}
+
+/// A spacing rounded DOWN to three significant figures: 14,987 m -> 14,900 m,
+/// 3,012 m -> 3,010 m, 15,000 m -> 15,000 m. Down, so a derived grid is
+/// never coarser than the mesh it samples; three figures, so the label a
+/// reader sees (`Δx 14.9 km`) is not a nine-digit float.
+pub fn finer_round_spacing(spacing_m: f64) -> f64 {
+    if !spacing_m.is_finite() || spacing_m <= 0.0 {
+        return spacing_m;
+    }
+    let step = 10f64.powf(spacing_m.log10().floor() - 2.0);
+    // The hair keeps an exact 15,000 from flooring to 14,900 through a
+    // division that lands one ulp under 150.
+    let rounded = ((spacing_m / step) * (1.0 + 1.0e-12)).floor() * step;
+    rounded.min(spacing_m)
 }
 
 /// The point on the unit sphere a latitude/longitude pair names.
@@ -1900,5 +2249,133 @@ mod lambert_spec_tests {
         assert!(Window::named("lambert:37,-96,-1,240,150,30,60,-96").is_err());
         assert!(Window::named("lambert:37,-96,22000,1,150,30,60,-96").is_err());
         assert!(Window::named("lambert:37,-96,22000,240.5,150,30,60,-96").is_err());
+    }
+}
+
+#[cfg(test)]
+mod mesh_spacing_window_tests {
+    use super::*;
+
+    /// A quasi-uniform lattice of cells `spacing_m` apart, covering the
+    /// latitude band given, as a stand-in for a uniform mesh.
+    fn lattice(spacing_m: f64, south: f64, north: f64) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let step = spacing_m / (RAD * MPAS_EARTH_RADIUS_M);
+        let (mut lat, mut lon, mut sp) = (Vec::new(), Vec::new(), Vec::new());
+        let mut la = south;
+        while la <= north {
+            let lon_step = step / (la * RAD).cos().max(0.05);
+            let mut lo = -180.0;
+            while lo < 180.0 {
+                lat.push(la);
+                lon.push(lo);
+                sp.push(spacing_m);
+                lo += lon_step;
+            }
+            la += step;
+        }
+        (lat, lon, sp)
+    }
+
+    #[test]
+    fn spacing_rounds_down_to_three_figures_and_never_up() {
+        assert_eq!(finer_round_spacing(15_000.0), 15_000.0);
+        assert_eq!(finer_round_spacing(14_987.3), 14_900.0);
+        assert_eq!(finer_round_spacing(29_870.0), 29_800.0);
+        assert!((finer_round_spacing(3_012.0) - 3_010.0).abs() < 1.0e-9);
+        for value in [999.9, 1_234.5, 59_812.0, 120_000.0] {
+            assert!(finer_round_spacing(value) <= value);
+        }
+    }
+
+    #[test]
+    fn a_15_km_mesh_draws_globally_at_15_km_or_finer_not_28() {
+        let spacing = vec![14_990.0; 1001];
+        let window = Window::global_at_mesh_spacing(&spacing).unwrap();
+        let Window::LatLon(grid) = &window else { panic!("global window is lat-lon") };
+        let metres = grid.spacing_degrees * RAD * WRF_EARTH_RADIUS_M;
+        assert!(metres <= 14_990.0, "{metres}");
+        assert!(metres > 14_000.0, "{metres}");
+        let (ny, nx) = window.shape().unwrap();
+        assert_eq!(nx, 2 * (ny - 1));
+        assert_eq!(grid.south, -90.0);
+        assert_eq!(grid.north, 90.0);
+        let (lat, lon) = window.coordinates().unwrap();
+        assert!(lat.iter().all(|v| v.abs() <= 90.0));
+        assert!(lon.iter().all(|v| (-180.0..180.0).contains(v)));
+        match window.projection_attributes().unwrap().iter().find(|(k, _)| k == "DX") {
+            Some((_, ProjAttr::Float(dx))) => assert!(*dx <= 14_990.0),
+            other => panic!("DX attribute {other:?}"),
+        }
+    }
+
+    #[test]
+    fn coarse_meshes_are_not_drawn_finer_than_they_hold() {
+        for (spacing, low, high) in [(59_800.0, 58_000.0, 59_800.0), (29_900.0, 29_000.0, 29_900.0)] {
+            let window = Window::global_at_mesh_spacing(&[spacing; 7]).unwrap();
+            let Window::LatLon(grid) = window else { panic!() };
+            let metres = grid.spacing_degrees * RAD * WRF_EARTH_RADIUS_M;
+            assert!(metres <= high && metres >= low, "{spacing} -> {metres}");
+        }
+    }
+
+    #[test]
+    fn a_global_window_too_large_to_write_coarsens_and_says_so() {
+        let window = Window::global_at_mesh_spacing(&[3_000.0; 3]).unwrap();
+        let (ny, nx) = window.shape().unwrap();
+        assert!(nx * ny <= MESH_GLOBAL_MAX_POINTS, "{nx}x{ny}");
+        assert!(window.description().contains("coarsened"), "{}", window.description());
+    }
+
+    #[test]
+    fn region_takes_its_dx_from_the_mesh_not_from_the_caller() {
+        let (lat, lon, sp) = lattice(15_000.0, 20.0, 70.0);
+        let window = Window::region_at_mesh_spacing(
+            "region:40,-105,9000,7000,30,60", &lat, &lon, &sp,
+        )
+        .unwrap();
+        let Window::Lambert(grid) = &window else { panic!("mid-latitude region is Lambert") };
+        assert_eq!(grid.dx_metres, 15_000.0);
+        assert!((grid.nx - 1) as f64 * grid.dx_metres >= 9_000_000.0);
+        assert!((grid.ny - 1) as f64 * grid.dx_metres >= 7_000_000.0);
+        assert_eq!((grid.truelat1, grid.truelat2, grid.stand_lon), (30.0, 60.0, -105.0));
+        assert!(window.coordinates().unwrap().0.iter().all(|v| v.is_finite()));
+
+        let (lat60, lon60, sp60) = lattice(60_000.0, 20.0, 70.0);
+        let coarse = Window::region_at_mesh_spacing(
+            "region:40,-105,9000,7000,30,60", &lat60, &lon60, &sp60,
+        )
+        .unwrap();
+        let Window::Lambert(grid60) = coarse else { panic!() };
+        assert_eq!(grid60.dx_metres, 60_000.0);
+    }
+
+    #[test]
+    fn region_truelats_default_to_bracketing_the_centre_and_tropics_fall_back() {
+        let (lat, lon, sp) = lattice(30_000.0, -30.0, 89.0);
+        let polar = Window::region_at_mesh_spacing("region:85,0,8400,8400", &lat, &lon, &sp).unwrap();
+        let Window::Lambert(grid) = polar else { panic!() };
+        assert_eq!((grid.truelat1, grid.truelat2), (80.0, 89.0));
+        let tropics = Window::region_at_mesh_spacing("region:0,-60,8000,3000", &lat, &lon, &sp).unwrap();
+        let Window::LatLon(band) = &tropics else { panic!("equatorial region is lat-lon") };
+        assert!(band.spacing_degrees * RAD * WRF_EARTH_RADIUS_M <= 30_000.0);
+        assert!(tropics.coordinates().is_ok());
+    }
+
+    #[test]
+    fn region_and_global_mesh_refuse_without_the_mesh_and_on_bad_specs() {
+        let need = Window::named(GLOBAL_MESH_WINDOW).unwrap_err().to_string();
+        assert!(need.contains("global_at_mesh_spacing"), "{need}");
+        let region = Window::named("region:40,-105,9000,7000").unwrap_err().to_string();
+        assert!(region.contains("region_at_mesh_spacing"), "{region}");
+        let (lat, lon, sp) = lattice(60_000.0, 0.0, 60.0);
+        for bad in [
+            "region:40,-105,9000",
+            "region:40,-105,-1,7000",
+            "region:95,-105,9000,7000",
+            "region:40,-105,9000,7000,-30,60",
+            "region:40,-105,90000,7000",
+        ] {
+            assert!(Window::region_at_mesh_spacing(bad, &lat, &lon, &sp).is_err(), "{bad}");
+        }
     }
 }

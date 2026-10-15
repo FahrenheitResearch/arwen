@@ -422,6 +422,7 @@ pub fn build_from_parent(cfg: &ParentConfig) -> MpasResult<ParentReceipt> {
         coef_3rd_order: REGISTRY_COEF_3RD_ORDER,
         fg_interval_seconds: cfg.fg_interval_seconds,
         oned_underflow: Underflow::Preserve,
+        physics_mode: crate::lbc::PhysicsMode::Exact,
         attr_overrides: cfg.attr_overrides.clone(),
         provenance: format!(
             "{} | route=parent-native source-row={} parent-grid={} one-cell-edges={}",

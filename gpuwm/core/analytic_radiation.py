@@ -130,9 +130,12 @@ class AnalyticClearSkyRadiation:
         from gpuwm.core.physics import _physics_period_seconds
         radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
         interval = _physics_period_seconds(radt_minutes, cfg)
+        from gpuwm.core.solar import solar_period_seconds
+        interval = solar_period_seconds(cfg, interval)
         coszen, _ = wrf_solar_geometry(
             valid_time, self.latitude_deg, self.longitude_deg,
-            hour_offset_seconds=0.5 * interval)
+            hour_offset_seconds=0.5 * interval, generation=getattr(cfg, "solar_generation", "wrf_480"),
+            start_time=self.start_time, elapsed_seconds=state.elapsed_seconds)
         gsw = swdown * (cp.float32(1.0) - fields["albedo"])
 
         # Imported lazily to keep the generic result contract in physics.py

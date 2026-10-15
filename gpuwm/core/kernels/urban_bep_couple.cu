@@ -23,6 +23,11 @@
 // -O0 emits 14 powf calls for each block and turns only the INTEGER `**2`
 // into a multiply.
 //
+// One departure from WRF, on purpose: a column whose level-1 wind speed is
+// zero.  WRF divides by that speed and writes -inf drag and a NaN ust; this
+// kernel leaves the directionless rural stress out of the drag and takes
+// ust's zero-wind limit (the calm guard below).  Every other word is WRF's.
+//
 // Layout: (k, ny, nx), x fastest; 2-D fields (ny, nx).  sf_bep has nz+1
 // levels (WRF's kms:kme); the couple touches its first nz, as WRF does.
 
@@ -105,12 +110,25 @@ void urban_bep_couple(const float *frc_urb2d, const float *dz8w,
     const float omf = FSUB(1.0f, frc);
     // ((u**2 + v**2.)**.5): integer square, REAL-constant square, powf .5
     const float spd = gfk_pow(FADD(FMUL(u1, u1), gfk_pow(v1, 2.0f)), 0.5f);
+    // Calm level 1 (WRF calm-column division, urban-bep v4.6.1 verify lane):
+    // WRF divides the rural stress by this speed at :1707-1718 with no
+    // guard, so a column whose lowest-level speed evaluates to zero (u = v
+    // = 0, or squares that underflow in float32) gets a_u_bep = a_v_bep = -inf and ust = NaN (0/0 in umom/vmom), on
+    // EVERY column of the tile, urban or not, and the PBL solve that reads
+    // them returns NaN.  A rural stress of magnitude ust**2 has no direction
+    // when the wind is zero; the rural drag and momentum-flux terms are
+    // left out on such a column (the urban terms stand).  Every column with
+    // a nonzero speed takes WRF's expressions unchanged, word for word.
+    // Gate: tests/test_urban_bep_wrf461_column_oracle.py.
+    const bool calm = (spd == 0.0f);
     // :1707 (1.-frc)*(-ust*ust)/dz8w/(spd)+a_u
-    a_u_bep[col] = FADD(FDIV(FDIV(FMUL(omf, FMUL(-us, us)), dz1), spd),
-                        a_u_bep[col]);
+    if (!calm)
+        a_u_bep[col] = FADD(FDIV(FDIV(FMUL(omf, FMUL(-us, us)), dz1), spd),
+                            a_u_bep[col]);
     const float spd2 = gfk_pow(FADD(FMUL(u1, u1), gfk_pow(v1, 2.0f)), 0.5f);
-    a_v_bep[col] = FADD(FDIV(FDIV(FMUL(omf, FMUL(-us, us)), dz1), spd2),
-                        a_v_bep[col]);
+    if (!calm)
+        a_v_bep[col] = FADD(FDIV(FDIV(FMUL(omf, FMUL(-us, us)), dz1), spd2),
+                            a_v_bep[col]);
     // :1711 (1.-frc)*hfx_rural/dz8w/rho/CP + b_t
     b_t_bep[col] = FADD(FDIV(FDIV(FDIV(FMUL(omf, hfx_rural), dz1), rho1),
                              UBC_CP), b_t_bep[col]);
@@ -119,11 +137,11 @@ void urban_bep_couple(const float *frc_urb2d, const float *dz8w,
                         b_q_bep[col]);
     // :1715 (1.-frc)*ust*ust*u/(spd)+umom_urb
     const float spd3 = gfk_pow(FADD(FMUL(u1, u1), gfk_pow(v1, 2.0f)), 0.5f);
-    const float umom = FADD(FDIV(FMUL(FMUL(FMUL(omf, us), us), u1), spd3),
-                            umom_urb);
+    const float umom = calm ? umom_urb
+        : FADD(FDIV(FMUL(FMUL(FMUL(omf, us), us), u1), spd3), umom_urb);
     const float spd4 = gfk_pow(FADD(FMUL(u1, u1), gfk_pow(v1, 2.0f)), 0.5f);
-    const float vmom = FADD(FDIV(FMUL(FMUL(FMUL(omf, us), us), v1), spd4),
-                            vmom_urb);
+    const float vmom = calm ? vmom_urb
+        : FADD(FDIV(FMUL(FMUL(FMUL(omf, us), us), v1), spd4), vmom_urb);
     sf_bep[col] = 1.0f;                                         // :1719
 
     if (frc > 0.0f) {                                           // :1726
@@ -171,8 +189,24 @@ void urban_bep_couple(const float *frc_urb2d, const float *dz8w,
         // rs_abs_urb+emiss_urb*glw-rl_up_urb
         rn_urb2d[col] = FSUB(FADD(rs_abs_urb[col], FMUL(eu, g)), rlu);
         // (umom**2.+vmom**2.)**.25
-        ust[col] = gfk_pow(FADD(gfk_pow(umom, 2.0f), gfk_pow(vmom, 2.0f)),
-                           0.25f);
+        if (!calm)
+            ust[col] = gfk_pow(FADD(gfk_pow(umom, 2.0f), gfk_pow(vmom, 2.0f)),
+                               0.25f);
+        else {
+            // Calm level 1 (see above): WRF's ust tends to
+            // ((1-frc)*ust**2)**.5 as the wind goes to zero from any
+            // direction (the urban stress vanishes with the wind, the rural
+            // stress keeps its magnitude).  The urban stress magnitude that
+            // remains is added to it. At full urban coverage both stresses
+            // can vanish. Define a 0.1 m/s surface-layer floor only when
+            // this limit is zero, so PBL consumers can divide by ust**3.
+            // This calm branch departs from WRF's NaN/-inf coupling result;
+            // every positive calm limit and every windy word is preserved.
+            const float murb = gfk_pow(FADD(gfk_pow(umom_urb, 2.0f),
+                                            gfk_pow(vmom_urb, 2.0f)), 0.5f);
+            ust[col] = gfk_pow(FADD(murb, FMUL(FMUL(omf, us), us)), 0.5f);
+            if (ust[col] == 0.0f) ust[col] = 0.1f;
+        }
     } else {
         sh_urb2d[col] = 0.0f;
         lh_urb2d[col] = 0.0f;

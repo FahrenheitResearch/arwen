@@ -60,10 +60,7 @@ def test_spp_parameter_map_roundtrips_and_reaches_exact_enabled_node_subset(monk
     import gpuwm.ensemble.stochastic_model as implementation
     controls = {"spp": {"conv": 1, "pbl": 1, "lsm": 1}, "spp_configs": {
         "conv": {}, "pbl": {"stddev": .075}, "lsm": {"stddev": .15}}}
-    # The public request refuses these uncalibrated amplitudes; the provider
-    # mapping below stays the calibration campaign's internal interface.
-    with pytest.raises(ValueError, match="calibrated against observations"):
-        EnsembleRequest.from_mapping({"members": 4, "stochastic": controls})
+    assert EnsembleRequest.from_mapping({"members": 4, "stochastic": controls}).stochastic == controls
     provider = StochasticModelProvider.from_mapping(controls)
     cfg = replace(config(), cu_physics=3, bl_pbl_physics=5, sf_sfclay_physics=5,
                   sf_surface_physics=3, num_soil_layers=9)

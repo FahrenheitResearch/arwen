@@ -99,6 +99,16 @@ impl ColumnPlane {
 /// The rows, in the order they are written.  A table, so a new layer or a
 /// new hydrometeor is a row here and a recipe row in `rustwx-models`.
 pub(crate) const COLUMN_PLANE_CATALOG: &[ColumnPlane] = &[
+    // The native radiation fraction, not a diagnosed total-cloud plane.
+    ColumnPlane {
+        filter_key: "cldfra_max",
+        store_name: "cloud_fraction_column_maximum",
+        units: "%",
+        kind: ColumnPlaneKind::ColumnMaximum {
+            variable: "CLDFRA",
+            field: CanonicalField::TotalCloudCover,
+        },
+    },
     ColumnPlane {
         filter_key: "isotherm",
         store_name: "isotherm_height_0c",
@@ -648,7 +658,15 @@ pub(crate) fn push_column_planes(
                 T_FREEZE_K + f64::from(celsius),
             ),
             ColumnPlaneKind::ColumnMaximum { variable, .. } => match read_volume(variable) {
-                Some(field) => column_maximum(&field, nz, cells),
+                Some(field) => {
+                    let mut maximum = column_maximum(&field, nz, cells);
+                    // Radiation CLDFRA is stored as a fraction. The cloud
+                    // map's existing color scale and canonical unit are percent.
+                    if plane.units == "%" {
+                        for value in &mut maximum { *value *= 100.0; }
+                    }
+                    maximum
+                },
                 None => {
                     fields
                         .notes
@@ -1194,5 +1212,23 @@ mod tests {
             ..WrfProcessOptions::default()
         });
         assert_eq!(planned.len() - skipped.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod radiation_fraction_tests {
+    use super::*;
+
+    #[test]
+    fn native_radiation_fraction_keeps_fractional_and_binary_column_maxima() {
+        let row = COLUMN_PLANE_CATALOG.iter().find(|p| p.filter_key == "cldfra_max").unwrap();
+        assert_eq!(row.units, "%");
+        assert!(rustwx_models::selector_supported_for_model(
+            row.selector(), rustwx_core::ModelId::WrfGdex));
+        assert!(matches!(row.kind, ColumnPlaneKind::ColumnMaximum { variable: "CLDFRA", .. }));
+        // Two columns share a lower clear layer; only the native upper
+        // fraction makes one partial and the other binary overcast.
+        let cf = [0.0, 0.0, 0.125, 1.0, 0.75, 0.0];
+        assert_eq!(column_maximum(&cf, 3, 2), vec![0.75, 1.0]);
     }
 }

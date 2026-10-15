@@ -36,6 +36,15 @@ the spelling the tree already uses, so there is ONE copy of each table and
 from __future__ import annotations
 
 
+def drop_default_cumulus_selectors(values: dict) -> None:
+    """Keep earlier identity bytes while binding every consumed setting."""
+    from gpuwm.config import CUMULUS_PARAMETER_IDENTITY_RULES
+    for name, (default, readers) in CUMULUS_PARAMETER_IDENTITY_RULES.items():
+        if (values.get(name, default) == default
+                and (not readers or values.get("cu_physics", 0) not in readers)):
+            values.pop(name, None)
+
+
 def drop_default_diffusion_selectors(values: dict) -> None:
     """Preserve pre-selector identity bytes for the unchanged metric form."""
     if values.get("diff_opt", 2) == 2 and values.get("mix_full_fields", True) is True:
@@ -92,7 +101,10 @@ def drop_default_spp_selectors(values: dict) -> None:
 #: ``sase_additive_dissipation``) move the trajectory and are NOT here.
 CONFIG_DIAGNOSTIC_FIELDS = frozenset(
     {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag",
-     "surface_energy_diag"})
+     "surface_energy_diag",
+     # Correct mode WB1 (gpuwm/correct_mode.py OUTPUT_ONLY_KEYS): books the
+     # settled-cloud total CLOUDNC and changes no prognostic word.
+     "thompson_cloud_surface_booking"})
 
 #: Versioned semantic identities.  These are deliberately explicit instead
 #: of inferred from scheme numbers: a trajectory-changing implementation or
@@ -120,6 +132,7 @@ CONFIG_DIAGNOSTIC_FIELDS = frozenset(
 #: not km_opt's, and it is closed by ONE string,
 #: :data:`DYCORE_MIXING_ALGORITHM_IDENTITY` below, not a per-option table.
 MICROPHYSICS_ALGORITHM_IDENTITIES = {
+    2: "lin-wrf461-six-class-v1",
     30: "fast-sbm-wrf461-33bin-corrected-d1-d20-v1",
     0: "disabled",
     # "real-clamp-product" (2.8.8) on every row whose scheme finishes
@@ -141,6 +154,13 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     8: ("classic-thompson-wrf-v4.6.1-v5-cloud-fallout-"
         "refl10cm-ng-shadow-snow-rime-mass-number-velocity-rain-density-condensation-history-"
         "one-slab-rain-graupel-real-clamp-product"),
+    3: "wsm3-simple-ice-three-class-wrf-v4.6.1-d1-default-stock-strict-d2-top-freeze-d3-default-remap-v3",
+    4: "wsm5-wrf-v4.6.1-remap-psevp-v1",
+    # WSM6R: the trajectory-defining facts are WRF's own module word for
+    # word plus gpuwm's two declared choices (per-step RAINNCV, WSM6's
+    # radii diagnosed for RTE+RRTMGP).
+    106: ("wsm6r-revised-wsm6-wrf-v4.6.1-v1-step-rainncv-"
+          "wsm6-effectrad-diagnosis"),
     # Milbrandt-Yau two-moment (WRF v4.6.1 MILBRANDT2MOM).  Named at the
     # mp=8/28/50 granularity -- the trajectory-defining configuration,
     # not the scheme name --
@@ -186,12 +206,26 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # zero rate (rain with no number) into evaporation, which changes the
     # vapour, ice and theta trajectory wherever such rain meets
     # subsaturated air (docs/wdm6_oracle_known_deltas.md, section 6).
-    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v5-prognostic-nc-nr-ccn-"
+    # v6 (lane/verify-wdm6-mp16, landed on 2.8.9's v5 by golden/parity):
+    # "wrf-words" -- the coefficients are wdm6init's own float32 words, the
+    # transcendentals WOOF's own float32 exp/log/pow, every expression in
+    # the Fortran's operation order and no multiply-add contraction, so the
+    # column kernel lands on WRF v4.6.1's words (tools/wdm6_wrf461_oracle);
+    # the last bits of every rate move, so a v5 checkpoint must not resume
+    # onto it.
+    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v6-prognostic-nc-nr-ccn-"
          "gamma-mu1-rain-ccn-activation-xland-autoconversion-ccn-conc-init-"
          "conservative-rain-interface-flux-bounded-transport-time-"
-         "zero-rate-rain-no-evaporation-real-clamp-product"),
+         "zero-rate-rain-no-evaporation-real-clamp-product-wrf-words"),
     18: ("nssl-two-moment-state-transport-v2-process-boundary-fail-loud-"
          "real-clamp-product"),
+    # WSM7 (WRF v4.6.1 WSM7SCHEME, Registry/Registry.EM_COMMON:3034).  The
+    # string is the scheme row's own (gpuwm/data/wsm_family/schemes.json):
+    # "single-moment-hail" is the seventh class, "remap-search-reaches-
+    # top-interface" the declared divergence D1 that moves the trajectory
+    # where WRF's PLM remap drops mass, "refl-hail-term" D2.
+    24: "wsm7-single-moment-hail-wrf-v4.6.1-v1-remap-search-reaches-"
+        "top-interface-refl-hail-term",
     # Thompson AEROSOL-AWARE (WRF v4.6.1 THOMPSONAERO,
     # Registry/Registry.EM_COMMON:3036).  Named at the granularity the mp=8
     # row uses -- the trajectory-defining pieces, not the scheme name --
@@ -248,6 +282,15 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # here to refuse.
     50: ("p3-one-category-wrf-v4.6.1-v2-2mom-ice-specified-nc-"
          "diagnosed-ssat-rime-mass-volume-transported-real-clamp-product"),
+    # Ferrier-Aligo (WRF v4.6.1 FER_MP_HIRES, Registry.EM_COMMON:3019).
+    # "total-ice-transported" records that qi advects and the f_* state
+    # does not; "rimef-carried" that F_RIMEF crosses steps (and a
+    # checkpoint); "etampnew-expanded-rain" names the table; "rcw-from-lwc"
+    # names the one statement fixed rather than transcribed (the droplet
+    # radius from RHO*QW, not its square; kernels/fer_hires.cu), which
+    # changes riming trajectories wherever cloud water exceeds QAUT0.
+    5: ("ferrier-aligo-wrf-v4.6.1-v1-total-ice-transported-rimef-carried-"
+        "etampnew-expanded-rain-rcw-from-lwc"),
 }
 from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES
 MICROPHYSICS_ALGORITHM_IDENTITIES.update({
@@ -335,8 +378,13 @@ LAND_SURFACE_ALGORITHM_IDENTITIES = {
     # under v7.  (The 2.8.8 RUC initialization carry and the real.exe soil
     # moisture floor act at cold start only and need no identity.)
     3: "ruc-lsm-wrf-v4.6.1-v7-woof-libm-fractional-seaice-gate",
-    4: "noahmp-lsm-wrf-v4.6.1-v1",
+    4: "noahmp-lsm-wrf-v4.6.1-v2-wrf470-night-snow-aging",
 }
+NOAHMP_SNOW_AGE_ALGORITHM_IDENTITIES = {
+    "wrf_461": "noahmp-lsm-wrf-v4.6.1-v1",
+    "wrf_470": LAND_SURFACE_ALGORITHM_IDENTITIES[4],
+}
+
 PBL_ALGORITHM_IDENTITIES = {
     0: "disabled",
     # v2 (2.8.8): YSU compiles without FMA contraction on WOOF's float32
@@ -408,12 +456,14 @@ LAND_SURFACE_PARAMETER_SOURCES = {
                           "noahmp_genparm")),
 }
 LONGWAVE_ALGORITHM_IDENTITIES = {
+    5: "wrf461-goddard-defined-visible-depth-v1",
     0: "disabled",
     1: "wrf-v4.6.1-rrtm-longwave-v1",
     4: "rte-rrtmgp-v1",
     90: "analytic-clear-sky-v1",
 }
 SHORTWAVE_ALGORITHM_IDENTITIES = {
+    5: "wrf461-goddard-defined-visible-depth-v1",
     0: "disabled",
     1: "wrf-v4.6.1-dudhia-shortwave-v1",
     4: "rte-rrtmgp-v1",
@@ -423,12 +473,14 @@ SHORTWAVE_ALGORITHM_IDENTITIES = {
 #: identity because changing the cap changes model-top fluxes while retaining
 #: the same packaged coefficient tables and solver.
 LONGWAVE_ABOVE_ATMOSPHERE_POLICIES = {
+    5: "model-column-top-interface-zero-hpa",
     0: "not-applicable-radiation-disabled",
     1: "wrf-v4.6.1-rrtm-deltap-4mb-buffer-layers",
     4: "wrf-v4.6.1-lw-4hpa-sw-half-ptop-clear-cap-to-rte-floor-v1",
     90: "not-applicable-analytic-surface-flux-proxy",
 }
 SHORTWAVE_ABOVE_ATMOSPHERE_POLICIES = {
+    5: "model-column-top-interface-zero-hpa",
     0: "not-applicable-radiation-disabled",
     1: "not-applicable-dudhia-model-column-only",
     4: "wrf-v4.6.1-lw-4hpa-sw-half-ptop-clear-cap-to-rte-floor-v1",
@@ -447,14 +499,37 @@ RADIATION_ABOVE_ATMOSPHERE_POLICIES = {
 #: column is graded against.
 URBAN_ALGORITHM_IDENTITIES = {
     0: "disabled",
-    1: "urban-slucm-wrf-v4.7.1-v1",
+    1: "urban-slucm-wrf-v4.7.1-water-balance-v4.8.0-v1",
     2: "urban-bep-wrf-v4.7.1-v1",
     3: "urban-bep-bem-wrf-v4.7.1-v1",
 }
+URBAN_UCM_GENERATION_IDENTITIES = {
+    "wrf_471": URBAN_ALGORITHM_IDENTITIES[1],
+    "wrf_480": "urban-slucm-wrf-v4.8.0-defined-entry-v1",
+}
+
+
+def urban_algorithm_identity(cfg):
+    option = int(cfg.sf_urban_physics)
+    if option == 1:
+        from gpuwm.config import URBAN_WATER_BALANCE_GENERATIONS
+        water = getattr(cfg, "urban_water_balance", "wrf_480")
+        if getattr(cfg, "urban_ucm_generation", "wrf_471") == "wrf_471":
+            return URBAN_WATER_BALANCE_GENERATIONS[water]["algorithm"]
+        if water == "wrf_471":
+            return URBAN_UCM_GENERATION_IDENTITIES["wrf_480"] + "-legacy-rain-clamps"
+    return (URBAN_UCM_GENERATION_IDENTITIES[getattr(cfg, "urban_ucm_generation", "wrf_471")]
+            if option == 1 else URBAN_ALGORITHM_IDENTITIES[option])
 
 CUMULUS_ALGORITHM_IDENTITIES = {
     0: "disabled",
-    1: "kain-fritsch-v3-wrf-phase-energy-feedback",
+    # The WRF v4.6.1 KF_eta_PARA port (2026-10-07), graded at 0 ULP on
+    # every KF_eta_CPS output by tools/kf_wrf461_oracle.  It replaced a
+    # re-derivation (v3) whose layer masses, trigger, closure arithmetic
+    # and shallow NCA all differed, so a v3 checkpoint must not resume
+    # under it: the held tendencies and W0AVG it carries were made by a
+    # different algorithm.
+    1: "kain-fritsch-wrf461-kfeta-port-v1",
     # The corrected-k22 identity IS the shipped algorithm (owner ruling);
     # a restart written under it must never resume under a WRF-faithful
     # build, which would be a different identity string.
@@ -470,6 +545,16 @@ CUMULUS_ALGORITHM_IDENTITIES = {
     # cross-resume this string exists to refuse.
     6: "tiedtke-wrf461-tiecnv-v1",
     16: "new-tiedtke-wrf461-cumastrn-v1",
+    # Grell 3D, G3DRV/CUP_enss_3d/conv_grell_spread3d as shipped in WRF
+    # v4.6.1. Shallow diagnostics are zero when ishallow=0.
+    # Closure member 16 keeps WRF's original copy order; diagnostics
+    # and ensemble arrays are carried by the canonical fields inventory.
+    5: "grell-3d-wrf461-g3drv-spread3d-v1",
+    # New SAS + NSCV, cu_nsas as shipped in WRF v4.6.1, complete row limits
+    # and persistent per-step rain. Equal to the scheme's
+    # table row (gpuwm.core.column_cumulus), held there by
+    # tests/test_nsas_admission.py.
+    96: "new-sas-nscv-wrf461-cu_nsas-v1",
 }
 
 #: The implementation of the dycore's once-per-step mixing: WRF's diff_opt
@@ -579,6 +664,11 @@ _CONFIGURED_IDENTITY_TABLES = (
     # written under; the table carries 0 ("disabled") too, so asking at
     # every value refuses nothing the writer would write.
     ("URBAN_ALGORITHM_IDENTITIES", "sf_urban_physics", "urban canopy"),
+    # Under Noah-MP the writer names the land surface by its snow-aging
+    # generation (gpuwm/io/restart.py); both generations carry a row, so
+    # asking at every value refuses nothing the writer would write.
+    ("NOAHMP_SNOW_AGE_ALGORITHM_IDENTITIES", "noahmp_snow_age",
+     "Noah-MP snow aging"),
 )
 
 #: Rows of :data:`_CONFIGURED_IDENTITY_TABLES` the writer reaches only for
@@ -653,6 +743,15 @@ def unidentifiable_checkpoint_schemes(cfg) -> list[str]:
 
     for name, attribute, label in _CONFIGURED_IDENTITY_TABLES:
         value = getattr(cfg, attribute, None)
+        table = _identity_table(name)
+        if isinstance(value, str) and table and all(
+                isinstance(row, str) for row in table):
+            # A generation-keyed table (NOAHMP_SNOW_AGE_ALGORITHM_IDENTITIES)
+            # is looked up by the generation name the writer resolves.
+            if value not in table:
+                _report(f"{label} generation {value!r} ({attribute}) has no "
+                        f"row in the checkpoint identity table")
+            continue
         try:
             key = int(value)
         except (TypeError, ValueError):

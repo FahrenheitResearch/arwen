@@ -89,6 +89,10 @@ COMPANION_TREES: tuple[str, ...] = (
     "case-catalog/historical.zip",
     "spp/native-wrf461.zip",
     "chem/optics",
+    # 2.9.0: the aer_opt=1 aerosol climatology (6.0 MB) put the platform
+    # wheel at 101,425,913 bytes, over PyPI's per-file limit.  Its
+    # directory keeps the other WRF radiation tables in this wheel.
+    "wrf_radiation/rrtmg_aer1_climatology.npz",
 )
 
 #: In-package data root: ``<site-packages>/gpuwm/data``.

@@ -183,11 +183,15 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
     bring it to thirty-nine, the nowcast frames converter to forty, and the
     air-quality program's AirNow reader and ensemble reducer to forty-two,
     2.8.9's global globe packer to forty-three, and the scoreboard lane's
-    observation scorecard and forecast verification scorer to forty-five.
+    observation scorecard and forecast verification scorer to forty-five,
+    and 2.9.0's regular-grid intermediate producer (met_intermediate, for
+    public initial-condition preparation), MPAS point renderer
+    (rw_hex_points) and TEMPO initialization library (rw_tempo) to
+    forty-eight.
     """
 
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 45
-    assert "forty-five artifacts" in bridge_assets.__doc__
+    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 48
+    assert "forty-eight artifacts" in bridge_assets.__doc__
     for stale in ("eight artifacts", "nine artifacts", "nine files",
                   "ten artifacts", "ten files", "eleven artifacts",
                   "eleven files", "fourteen artifacts", "fourteen files",
@@ -213,7 +217,10 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
                   "forty artifacts", "forty files",
                   "forty-two artifacts", "forty-two files",
                   "forty-three artifacts", "forty-three files",
-                  "forty-four artifacts", "forty-four files"):
+                  "forty-four artifacts", "forty-four files",
+                  "forty-five artifacts", "forty-five files",
+                  "forty-six artifacts", "forty-six files",
+                  "forty-seven artifacts", "forty-seven files"):
         # Match the complete count, so "eight" does not reject "twenty-eight".
         assert re.search(r"(?<![a-z-])" + re.escape(stale) + r"(?![a-z-])",
                          bridge_assets.__doc__) is None

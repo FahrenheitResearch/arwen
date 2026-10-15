@@ -382,5 +382,5 @@ def test_the_engine_tier_is_the_whole_registered_surface():
     from gpuwm.mcp.server import build_server
 
     _server, tiers = build_server(JobManager(Path("nowhere-jobs")))
-    assert set(tiers) == {"engine"}
+    assert set(tiers) == {"engine", "suite"}
     assert set(tiers["engine"]) == ENGINE_TOOLS

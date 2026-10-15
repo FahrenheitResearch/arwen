@@ -1,0 +1,21 @@
+# gfortran: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+# glibc:    ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+# libm shim (atanf/log10f correctly rounded): 0
+# module_sf_urban.F sha256: 433cc81d97f0096ead284cdcc984b4985f95e1bfb94c6e20d316818997e4e55e
+# -O0 module_sf_urban.o libm symbols:
+U __powisf2
+U acosf
+U asinf
+U atan2f
+U atanf
+U cosf
+U expf
+U log10f
+U logf
+U powf
+U sinf
+U tanf
+slucm-nlcd-gr: rows differing ref vs zero-init: 111; snan rows with NaN: 108
+slucm-nlcd-griri: rows differing ref vs zero-init: 111; snan rows with NaN: 108
+slucm-lcz-gr: rows differing ref vs zero-init: 407; snan rows with NaN: 376
+slucm-lcz-grch1: rows differing ref vs zero-init: 407; snan rows with NaN: 376

@@ -1,9 +1,9 @@
-"""One GPU job at a time, arbitrated by a lockfile the server owns.
+"""Disjoint physical card sets, arbitrated by a lockfile the server owns.
 
 Two CUDA compute contexts on one card contend for VRAM and can OOM or
 slow each other into uselessness -- ``gpuwm run`` itself documents
-shared-GPU operation as UNSUPPORTED -- so the MCP server admits ONE
-GPU-touching job at a time and REFUSES the second by sentence, naming
+shared-GPU operation as UNSUPPORTED -- so the MCP server refuses an
+overlapping GPU-touching job by sentence, naming
 the running job id.  Refusing rather than queueing is deliberate v1
 policy: a silent queue is a launch tool that lies about having
 launched.
@@ -164,7 +164,16 @@ class GpuLock:
         except (OSError, json.JSONDecodeError):
             return None
 
-    def held_by(self) -> dict | None:
+    def holders(self) -> list[dict]:
+        """Live card holders. Old machine-wide holders cover every card."""
+        held = self.holder()
+        if not isinstance(held, dict):
+            return [{"unreadable": True, "path": str(self.path), "cards": ["*"]}] if self.path.exists() else []
+        records = held.get("holders", [held])
+        return [dict(record, cards=record.get("cards", ["*"])) for record in records
+                if self._holder_alive(record)]
+
+    def held_by(self, cards=None) -> dict | None:
         """The record of the job that holds the card, or None when the card is free.
 
         This is what the refusal sentence is built from, for a reader that
@@ -183,17 +192,17 @@ class GpuLock:
         reclaims a stale file under the mutex.
         """
 
-        held = self.holder()
-        if not isinstance(held, dict):
-            if self.path.exists():
-                return {"unreadable": True, "path": str(self.path)}
-            return None
-        return held if self._holder_alive(held) else None
+        wanted = set(map(str, cards)) if cards is not None else None
+        for held in self.holders():
+            occupied = set(map(str, held["cards"]))
+            if wanted is None or "*" in occupied or wanted & occupied:
+                return held
+        return None
 
-    def refusal(self) -> str | None:
+    def refusal(self, cards=None) -> str | None:
         """The launch refusal sentence when the card is held (see :meth:`held_by`), else None."""
 
-        held = self.held_by()
+        held = self.held_by(cards)
         return None if held is None else self._refusal_for(held)
 
     def _refusal_for(self, held: dict) -> str:
@@ -213,7 +222,7 @@ class GpuLock:
                 f"{job_id}, or job_cancel it, then relaunch.")
 
     def claim(self, start: Callable[[], tuple[str, int, dict | None]],
-              before: Callable[[], None] | None = None) -> tuple[str, int, dict | None]:
+              before: Callable[[], None] | None = None, *, cards=(0,)) -> tuple[str, int, dict | None]:
         """Check the card, run ``start`` and record its job as the holder, as one step.
 
         ``start`` spawns the job and returns ``(job_id, wrapper_pid,
@@ -228,10 +237,13 @@ class GpuLock:
         with self.mutex():
             if before is not None:
                 before()
-            held = self.held_by()
+            cards = tuple(str(card) for card in cards)
+            if not cards or len(set(cards)) != len(cards) or any(not card.isdigit() for card in cards):
+                raise ValueError("MCP cards must be distinct nonnegative physical card ids")
+            held = self.held_by(cards)
             if held is not None:
                 raise CardHeld(self._refusal_for(held), held)
-            if self.path.exists():
+            if self.path.exists() and not self.holders():
                 # A stale holder (its process is gone): reclaimed here, under the mutex.
                 try:
                     self.path.unlink()
@@ -239,7 +251,7 @@ class GpuLock:
                     pass
             started = start()
             job_id, wrapper_pid, identity = started
-            self._write(job_id, wrapper_pid, identity)
+            self._write(job_id, wrapper_pid, identity, cards=cards)
             return started
 
     def acquire(self, job_id: str, wrapper_pid: int, identity: dict | None = None) -> None:
@@ -248,14 +260,18 @@ class GpuLock:
         with self.mutex():
             self._write(job_id, wrapper_pid, identity)
 
-    def _write(self, job_id: str, wrapper_pid: int, identity: dict | None) -> None:
+    def _write(self, job_id: str, wrapper_pid: int, identity: dict | None, *, cards=(0,)) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         document = {
             "job_id": job_id,
             "wrapper_pid": wrapper_pid,
             "wrapper_process": identity,
             "created_utc": datetime.now(timezone.utc).isoformat(),
+            "cards": list(map(str, cards)),
         }
+        existing = [held for held in self.holders() if held.get("job_id") != job_id]
+        if existing:
+            document = dict(document, holders=[*existing, document])
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(document, indent=2), encoding="utf-8")
         os.replace(tmp, self.path)
@@ -269,12 +285,22 @@ class GpuLock:
     def release_locked(self, job_id: str) -> None:
         """:meth:`release` for a caller already inside :meth:`mutex`."""
 
-        held = self.holder()
-        if held is not None and held.get("job_id") == job_id:
-            try:
-                self.path.unlink()
-            except OSError:
-                pass
+        document = self.holder()
+        if not isinstance(document, dict):
+            return
+        records = document.get("holders", [document])
+        remaining = [held for held in records if held.get("job_id") != job_id]
+        if len(records) == len(remaining):
+            return
+        if not remaining:
+            self.path.unlink(missing_ok=True)
+        else:
+            payload = dict(remaining[0])
+            if len(remaining) > 1:
+                payload["holders"] = remaining
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(tmp, self.path)
 
 
 class CardHeld(Exception):

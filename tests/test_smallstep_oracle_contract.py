@@ -126,7 +126,11 @@ def test_smallstep_fixture_builder_and_kernel_receipt_hashes():
         if name == self_name:
             continue  # Its immutable historical bytes were checked above.
         expected = source_byte_overlay.get(name, digest)
-        assert hashlib.sha256((root / name).read_bytes()).hexdigest() == expected, name
+        current = (root / name).read_bytes()
+        if name == "gpuwm/core/acoustic.py":
+            from assembled_legacy_proofs import acoustic_prior_selector_source
+            current = acoustic_prior_selector_source(current)
+        assert hashlib.sha256(current).hexdigest() == expected, name
 
 
 def test_published_acoustic_proof_refuses_changed_words_options_and_sources(monkeypatch):

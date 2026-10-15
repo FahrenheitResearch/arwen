@@ -232,7 +232,6 @@ _CRLF_DEBT = frozenset({
     "gpuwm/obs/goes_cwp.py",
     "gpuwm/obs/goes_grid.py",
     "gpuwm/obs/goes_pack.py",
-    "gpuwm/state_digest.py",
     "gpuwm/verify/cases/nest_spawn_ideal.py",
     "gpuwm/verify/feedback_reference.py",
     "gpuwm/verify/obs/battery.py",

@@ -172,6 +172,23 @@ def _self_continuum(xp, selfrefc, inds, selffac, selffrac):
     return selffac[..., None] * (low + selffrac[..., None] * (high - low))
 
 
+def _h2o_self_continuum(xp, colh2o, selfrefc, inds, selffac, selffrac):
+    """``COLH2O*SELFFAC*(SELFREF(INDS) + SELFFRAC*(...))``, left to right.
+
+    Bands 4, 5, 7, 9, 12, 13, 15 and 16 write the water-vapour
+    self-continuum as ``COLH2O(LAY) * SELFFAC(LAY) * (SELFREFCn(INDS,IG) +
+    ...)`` with no parentheses around the last two factors (e.g. F:4957-4960),
+    so Fortran forms ``COLH2O*SELFFAC`` first.  Bands 1-3, 6, 8, 11 and 14
+    bracket it differently and keep :func:`_self_continuum`.  Multiplying
+    COLH2O onto the bracketed product instead moved TAUG by up to 2 ULP in
+    the WRF column oracle.
+    """
+    low = _gather(xp, selfrefc, inds)
+    high = _gather(xp, selfrefc, inds + 1)
+    return (colh2o * selffac)[..., None] * (low + selffrac[..., None]
+                                             * (high - low))
+
+
 def _frac_interp(xp, table, js, fs):
     """``FRACREF(IG,JS) + FS*(FRACREF(IG,JS+1) - FRACREF(IG,JS))``.
 
@@ -390,8 +407,8 @@ def rrtm_taumol(*, coldry, colh2o, colco2, colo3, coln2o, colch4, colo2,
     facs = _eight_way(xp, real, fac00, fac01, fac10, fac11, fs)
     low = (speccomb[..., None]
            * _interp8(absa[4], ind_low(4, js), ind_low1(4, js), 9, facs, xp)
-           + colh2o[..., None]
-           * _self_continuum(xp, selfrefc[4], inds, selffac, selffrac))
+           + _h2o_self_continuum(xp, colh2o, selfrefc[4], inds,
+                                  selffac, selffrac))
     pfrac_low = _frac_interp(xp, cmb["FRACREFAC4"], js - 1, fs)
     speccomb_u, js_u, fs_u = _spec(xp, real, colo3, colco2, 35.7416, 4.0)
     # F:4967-4975: band 4's stratospheric first interval is split at
@@ -417,8 +434,8 @@ def rrtm_taumol(*, coldry, colh2o, colco2, colo3, coln2o, colch4, colo2,
     facs = _eight_way(xp, real, fac00, fac01, fac10, fac11, fs)
     low = (speccomb[..., None]
            * _interp8(absa[5], ind_low(5, js), ind_low1(5, js), 9, facs, xp)
-           + colh2o[..., None]
-           * _self_continuum(xp, selfrefc[5], inds, selffac, selffrac)
+           + _h2o_self_continuum(xp, colh2o, selfrefc[5], inds,
+                                  selffac, selffrac)
            + wx1[..., None] * ccl4c5)
     pfrac_low = _frac_interp(xp, cmb["FRACREFAC5"], js - 1, fs)
     speccomb_u, js_u, fs_u = _spec(xp, real, colo3, colco2, 0.900502, 4.0)
@@ -450,8 +467,8 @@ def rrtm_taumol(*, coldry, colh2o, colco2, colo3, coln2o, colch4, colo2,
     facs = _eight_way(xp, real, fac00, fac01, fac10, fac11, fs)
     low = (speccomb[..., None]
            * _interp8(absa[7], ind_low(7, js), ind_low1(7, js), 9, facs, xp)
-           + colh2o[..., None]
-           * _self_continuum(xp, selfrefc[7], inds, selffac, selffrac)
+           + _h2o_self_continuum(xp, colh2o, selfrefc[7], inds,
+                                  selffac, selffrac)
            + co2mult[..., None] * absco2c7)
     pfrac_low = _frac_interp(xp, cmb["FRACREFAC7"], js - 1, fs)
     high = (colo3[..., None]
@@ -535,8 +552,8 @@ def rrtm_taumol(*, coldry, colh2o, colco2, colo3, coln2o, colch4, colo2,
     low = (speccomb[..., None]
            * _interp8(absa[9], ind_low(9, js_l), ind_low1(9, js_l), 11,
                       facs, xp)
-           + colh2o[..., None]
-           * _self_continuum(xp, selfrefc[9], inds, selffac, selffrac)
+           + _h2o_self_continuum(xp, colh2o, selfrefc[9], inds,
+                                  selffac, selffrac)
            + n2omult9[..., None] * absn2o_row)
     high = colch4[..., None] * _interp4(
         absb[9], ind_high(9, 1), ind_high1(9, 1),
@@ -575,8 +592,8 @@ def rrtm_taumol(*, coldry, colh2o, colco2, colo3, coln2o, colch4, colo2,
     low = (speccomb[..., None]
            * _interp8(absa[12], ind_low(12, js), ind_low1(12, js), 9,
                       facs, xp)
-           + colh2o[..., None]
-           * _self_continuum(xp, selfrefc[12], inds, selffac, selffrac))
+           + _h2o_self_continuum(xp, colh2o, selfrefc[12], inds,
+                                  selffac, selffrac))
     zero = real(0.0)
     taug[:, :, band_slice(12)] = xp.where(trop3, low, zero)
     pfrac[:, :, band_slice(12)] = xp.where(
@@ -588,8 +605,8 @@ def rrtm_taumol(*, coldry, colh2o, colco2, colo3, coln2o, colch4, colo2,
     low = (speccomb[..., None]
            * _interp8(absa[13], ind_low(13, js), ind_low1(13, js), 9,
                       facs, xp)
-           + colh2o[..., None]
-           * _self_continuum(xp, selfrefc[13], inds, selffac, selffrac))
+           + _h2o_self_continuum(xp, colh2o, selfrefc[13], inds,
+                                  selffac, selffrac))
     taug[:, :, band_slice(13)] = xp.where(trop3, low, zero)
     pfrac[:, :, band_slice(13)] = xp.where(
         trop3, _frac_interp(xp, cmb["FRACREFAC13"], js - 1, fs), zero)
@@ -612,8 +629,8 @@ def rrtm_taumol(*, coldry, colh2o, colco2, colo3, coln2o, colch4, colo2,
     low = (speccomb[..., None]
            * _interp8(absa[15], ind_low(15, js), ind_low1(15, js), 9,
                       facs, xp)
-           + colh2o[..., None]
-           * _self_continuum(xp, selfrefc[15], inds, selffac, selffrac))
+           + _h2o_self_continuum(xp, colh2o, selfrefc[15], inds,
+                                  selffac, selffrac))
     taug[:, :, band_slice(15)] = xp.where(trop3, low, zero)
     pfrac[:, :, band_slice(15)] = xp.where(
         trop3, _frac_interp(xp, cmb["FRACREFAC15"], js - 1, fs), zero)
@@ -624,8 +641,8 @@ def rrtm_taumol(*, coldry, colh2o, colco2, colo3, coln2o, colch4, colo2,
     low = (speccomb[..., None]
            * _interp8(absa[16], ind_low(16, js), ind_low1(16, js), 9,
                       facs, xp)
-           + colh2o[..., None]
-           * _self_continuum(xp, selfrefc[16], inds, selffac, selffrac))
+           + _h2o_self_continuum(xp, colh2o, selfrefc[16], inds,
+                                  selffac, selffrac))
     taug[:, :, band_slice(16)] = xp.where(trop3, low, zero)
     pfrac[:, :, band_slice(16)] = xp.where(
         trop3, _frac_interp(xp, cmb["FRACREFAC16"], js - 1, fs), zero)

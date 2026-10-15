@@ -1217,3 +1217,49 @@ def test_a_waiting_target_takes_the_value_it_takes_among_every_target():
         np.testing.assert_array_equal(part[waiting], whole[waiting], err_msg=name)
         assert np.isnan(part[~waiting]).all(), name
         assert np.isnan(operator(np.zeros(yy.shape, dtype=bool))).all(), name
+
+
+@pytest.mark.parametrize("temperature", [210.0, 230.0, 250.0, 263.15, 273.15, 290.0])
+def test_gfs_wps_humidity_conversion_includes_the_two_metre_pair(temperature):
+    snapshot = _one_cloud_snapshot()
+    shape = snapshot.fields["T"].shape
+    from dataclasses import replace
+    snapshot = replace(snapshot, fields=dict(T=np.full(shape, temperature), RH=np.full(shape, 80.0),
+                           T2=np.full(shape[1:], temperature), RH2=np.full(shape[1:], 80.0)))
+    grid = _small_lambert()
+    gfs = interpolate_era5_to_lambert(snapshot, grid,
+        relative_humidity_convention="gfs_mixed", backend="cpu", workers=1)
+    water = interpolate_era5_to_lambert(snapshot, grid,
+        relative_humidity_convention="water", backend="cpu", workers=1)
+    # WPS ungrib rrpr.F fix_gfs_rh, evaluated independently in float64.
+    weight = min(1.0, max(0.0, (273.15 - temperature) / 20.0))
+    water_sat = 6.112 * np.exp(17.67 * (temperature-273.15)/(temperature-29.65))
+    ice_sat = 0.01 * np.exp(9.550426 - 5723.265/temperature + 3.53068*np.log(temperature) - 0.00728332*temperature)
+    expected = 80.0 * ((1-weight)*water_sat + weight*ice_sat) / water_sat
+    for field in ("RH", "RH2"):
+        np.testing.assert_allclose(gfs.fields[field], expected, rtol=2e-6)
+        np.testing.assert_allclose(water.fields[field], 80.0, rtol=2e-6)
+
+
+def test_water_mask_preserves_lake_ice_skin_and_excludes_land_snow():
+    snapshot = _one_cloud_snapshot()
+    shape = snapshot.fields["T"].shape[1:]
+    land = np.zeros(shape, dtype=bool)
+    land[:, :12] = True
+    from dataclasses import replace
+    snapshot = replace(snapshot, fields=dict(LANDSEA=land.astype(float),
+        SKINTEMP=np.where(land, 290.0, 260.0), XICE=np.where(land, 0.0, 1.0),
+        SNOW=np.where(land, 100.0, 0.0), SNOWH=np.where(land, 0.5, 0.0)))
+    grid = _small_lambert()
+    water = interpolate_era5_to_lambert(snapshot, grid,
+        target_landmask=np.zeros((20,20), dtype=bool), backend="cpu", workers=1)
+    old_land = interpolate_era5_to_lambert(snapshot, grid,
+        target_landmask=np.ones((20,20), dtype=bool), backend="cpu", workers=1)
+    # WPS fills ice with zero where the short donor chain finds no water.
+    # Where water donors exist, the lake retains their ice; treating this
+    # same target as land erases it everywhere.
+    np.testing.assert_allclose(water.fields["XICE"][:, 10:], 1.0)
+    np.testing.assert_allclose(water.fields["SKINTEMP"], 260.0)
+    np.testing.assert_allclose(water.fields["SNOW"], 0.0)
+    np.testing.assert_allclose(water.fields["SNOWH"], 0.0)
+    np.testing.assert_allclose(old_land.fields["XICE"], 0.0)

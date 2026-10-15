@@ -54,7 +54,9 @@ from gpuwm.config_keys import KeyRow, key_rows
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RADAR_HEATING_OFF, RadarHeatingConfig,
                           EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
                           EPSSM_AUTO,
-                          GRELL_FAMILY_DEFAULTS, GRELL_FREITAS_CU_PHYSICS,
+                          GRELL_FAMILY_CU_PHYSICS, GRELL_FAMILY_DEFAULTS,
+                          GRELL_FREITAS_CU_PHYSICS,
+                          SAS_FAMILY_DEFAULTS, SAS_PGCON_SCHEMES,
                           MIX_ISOTROPIC_AUTO, SASE_FAIL_CLOSED_DEFAULTS,
                           SASE_PBL_SCHEME, RunConfig,
                           anisotropic_w_mixing_ratio,
@@ -281,12 +283,23 @@ _SHARED_FORBIDDEN = {
 from gpuwm.sfire_config import FIRE_DOMAIN_FIELDS
 
 _DOMAIN_RUN_OVERRIDES = (
+    "lightning_option", "lightning_dt", "lightning_start_seconds",
+    "flashrate_factor", "iccg_method", "iccg_prescribed_num",
+    "iccg_prescribed_den", "cellcount_method", "cldtop_adjustment", "do_radar_ref",
     # clos_choice/ishallow ride with cu_physics: per-domain because the
     # scheme they configure is, and inert (validated zero) on any domain
     # that does not select cu_physics = 3.  On a tree that mixes
     # Grell-Freitas with another cumulus choice a [shared] value reaches
     # the Grell-Freitas domains only (see tree_runs_grell below).
-    "cu_physics", "cudt_minutes", "clos_choice", "ishallow",
+    # cugd_avedx joins them for Grell 3D (cu_physics = 5) on the same terms.
+    "cu_physics", "cudt_minutes", "clos_choice", "ishallow", "cugd_avedx",
+    "maxiens", "maxens", "maxens2", "maxens3", "ensdim", "cu_diag", "convtrans_avglen_m",
+    # The SAS-family keys, on the Grell keys' terms (tree_runs_sas below):
+    # per-domain because the scheme they configure is.  sas_pgcon is a WRF
+    # max_domains key; nsas_dx_factor is WRF scope 1, and the namelist door
+    # writes the one value onto every New SAS domain, so a per-domain
+    # difference is reachable only by writing the TOML directly.
+    "sas_pgcon", "nsas_dx_factor",
     "radt", "radt_minutes", "bldt",
     # Every domain owns its radiation driver. Spectrum composition, CAM
     # parent transport and shared workspace sizing resolve these choices
@@ -1903,9 +1916,14 @@ def drop_unreached_grell_selectors(raw: dict, kept_runs) -> None:
     ran the Registry defaults, and left in [shared] the keys would refuse
     it.  With a Grell-Freitas domain kept, they stay and reach it.
     """
-    if any(run.cu_physics == GRELL_FREITAS_CU_PHYSICS for run in kept_runs):
-        return
     shared = raw.get("shared")
+    if not any(run.cu_physics in SAS_PGCON_SCHEMES for run in kept_runs):
+        # The SAS-family keys, on the same terms.
+        if isinstance(shared, dict):
+            for key in SAS_FAMILY_DEFAULTS:
+                shared.pop(key, None)
+    if any(run.cu_physics in GRELL_FAMILY_CU_PHYSICS for run in kept_runs):
+        return
     if isinstance(shared, dict):
         for key in GRELL_FAMILY_DEFAULTS:
             shared.pop(key, None)
@@ -3246,12 +3264,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         from gpuwm.ingest.soil_downscale import parse_ingest_table
         raw = dict(raw)
         parse_ingest_table(raw.pop("ingest"), source=source)
-    # Random-physics switches (SPPT, SKEBS, SPP and the perturbation
-    # selectors) are refused HERE, in the builder every config door loads
-    # through, so no route can read past them and only fail at the first
-    # physics call, after its download and its preparation on the card.
-    # The reason is the calibration one: their amplitudes have not been
-    # measured against observations.
+    # Missing random-field/parameter consumers refuse before preparation:
+    # otherwise their requested increments would silently stay absent.
     from gpuwm.ensemble_admission import refuse_configured_random
     refuse_configured_random(raw)
     if isinstance(raw, dict) and "ensemble" in raw:
@@ -3753,7 +3767,17 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             "cu_physics",
             dom.get("cu_physics",
                     shared.get("cu_physics", RunConfig.cu_physics)))
-        == GRELL_FREITAS_CU_PHYSICS
+        in GRELL_FAMILY_CU_PHYSICS
+        for dom in domain_tables)
+    # And for the SAS-family keys (nsas_dx_factor, sas_pgcon), read only
+    # where cu_physics is a SAS scheme: a [shared] value reaches the SAS
+    # domains and leaves the others on the Registry defaults.
+    tree_runs_sas = any(
+        physics_mode.settings.get(
+            "cu_physics",
+            dom.get("cu_physics",
+                    shared.get("cu_physics", RunConfig.cu_physics)))
+        in SAS_PGCON_SCHEMES
         for dom in domain_tables)
     for index, dom in enumerate(domain_tables):
         _reject_moving_nest_keys("domain", dom, source)
@@ -4240,8 +4264,20 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 if key not in dom:
                     kw[key] = default
         if (tree_runs_grell and kw.get("cu_physics", RunConfig.cu_physics)
-                != GRELL_FREITAS_CU_PHYSICS):
+                not in GRELL_FAMILY_CU_PHYSICS):
             for key, default in GRELL_FAMILY_DEFAULTS.items():
+                if key not in dom:
+                    kw[key] = default
+        # G3-only shared controls reach only G3 domains. Explicit domain
+        # controls remain validated, so an off-scheme value is not discarded.
+        from gpuwm.config import G3_RUN_DEFAULTS
+        if tree_runs_grell and kw.get("cu_physics", RunConfig.cu_physics) != 5:
+            for key, default in G3_RUN_DEFAULTS.items():
+                if key not in dom:
+                    kw[key] = default
+        if (tree_runs_sas and kw.get("cu_physics", RunConfig.cu_physics)
+                not in SAS_PGCON_SCHEMES):
+            for key, default in SAS_FAMILY_DEFAULTS.items():
                 if key not in dom:
                     kw[key] = default
         # bl_pbl_physics is per-domain for every scheme, SASE included:
@@ -4832,7 +4868,11 @@ def ucm_first_level_refusal(experiment: ExperimentConfig, *,
         base_temp = float(run.base_temp)
         za_base = 0.5 * _first_layer_depth(float(eta[1]), vertical, base_temp)
         za_warm = za_base * UCM_PLAN_WARMEST_LAYER_K / base_temp
-        heights = ucm_canopy_heights(lcz)
+        table_options = {
+            "generation": getattr(run, "urban_ucm_generation", "wrf_471"),
+            "tbl_dir": getattr(run, "urban_table_dir", "") or None,
+        }
+        heights = ucm_canopy_heights(lcz, **table_options)
         over = {k: h for k, h in heights.items() if h >= za_warm}
         if not over:
             continue
@@ -4851,7 +4891,7 @@ def ucm_first_level_refusal(experiment: ExperimentConfig, *,
                 lo = mid
             else:
                 hi = mid
-        tallest_urbparm = max(ucm_canopy_heights(0).values())
+        tallest_urbparm = max(ucm_canopy_heights(0, **table_options).values())
         remedies = [
             (f"land cover whose urban classes stay below the level: NLCD "
              f"with use_wudapt_lcz = 0 (the three URBPARM classes, the "
@@ -5387,6 +5427,10 @@ def _public_config_value(value):
         run_document = (document if isinstance(value, RunConfig) else
                         document.get("run") if isinstance(value, DomainConfig) else None)
         if isinstance(run_document, dict):
+            from gpuwm.config import drop_inert_g3_fields
+            drop_inert_g3_fields(run_document)
+            from gpuwm.checkpoint_identity import drop_default_cumulus_selectors
+            drop_default_cumulus_selectors(run_document)
             # The generic forms existed before these selectors. Keep
             # their public bytes; an explicitly moved form remains bound.
             for name, default in (("ruc_irrigation", "wrf_461"),
@@ -5406,9 +5450,52 @@ def _public_config_value(value):
                                   ("bl_mynn_mixaerosols", 0),
                                   ("bl_mynn_mixnumcon", 0),
                                   ("tempo_ml_for_bl_nc", False),
-                                  ("tempo_surface_emission_before", False)):
+                                  ("tempo_surface_emission_before", False),
+                                  # 2.9.0 (golden/wrf-fixes).  WRF's one
+                                  # scalar advection operator and the WRF
+                                  # 4.7.1 urban canopy at their defaults.
+                                  ("scalar_adv_opt", 1),
+                                  ("urban_ucm_generation", "wrf_471"),
+                                  ("urban_treeoption", -1),
+                                  ("urban_ttscheme", -1),
+                                  ("urban_fvg", -1.0),
+                                  ("urban_table_dir", ""),
+                                  # The four WRF 4.7/4.8 fix selectors: a
+                                  # document written before them ran the
+                                  # PREVIOUS generation, so that value is
+                                  # the absent one (as in a checkpoint
+                                  # header, restart.ECHO_ABSENT_RUN_VALUES)
+                                  # and the corrected default is written.
+                                  ("solar_generation", "wrf_461"),
+                                  ("ysu_version", "wrf_461"),
+                                  ("noahmp_snow_age", "wrf_461"),
+                                  ("urban_water_balance", "wrf_471")):
                 if run_document.get(name, default) == default:
                     run_document.pop(name, None)
+            # ... and the scheme-scoped ones reach nothing while their
+            # scheme is off, so they leave such a document whatever they say.
+            if run_document.get("bl_pbl_physics", 0) != 1:
+                run_document.pop("ysu_version", None)
+            if run_document.get("sf_surface_physics", 0) != 4:
+                run_document.pop("noahmp_snow_age", None)
+            if int(run_document.get("sf_urban_physics", 0) or 0) != 1:
+                run_document.pop("urban_water_balance", None)
+            # The correct-mode keys (gpuwm/correct_mode.py), by the
+            # checkpoint echo's rule: written only where on AND read by a
+            # selected scheme, so a default document without WSM6 or New
+            # Tiedtke keeps its bytes under the 2.9.0 correct-mode default,
+            # and an exact-mode document keeps the bytes it had before them.
+            from gpuwm.correct_mode import (CORRECTION_KEYS,
+                                            OUTPUT_ONLY_KEYS, key_in_scope)
+            for name in CORRECTION_KEYS:
+                if (name in OUTPUT_ONLY_KEYS
+                        or not run_document.get(name, False)
+                        or not key_in_scope(name, run_document)):
+                    run_document.pop(name, None)
+            # Lightning and aer_opt = 2 controls (golden/ports-rad): absent
+            # while unread, so default public documents keep their bytes.
+            from gpuwm.config import drop_inactive_radiation_port_keys
+            drop_inactive_radiation_port_keys(run_document)
         return document
     if isinstance(value, tuple) and hasattr(value, "_fields"):
         return type(value)(*(_public_config_value(item) for item in value))

@@ -40,7 +40,7 @@ call must run the device McICA twin and the batched CUDA engines, never
 the NumPy compute chain.
 
 The implemented option envelope (dossier section 1) is pinned here and
-fails closed on anything else: ``icloud=1``, ``cldovrlp=2`` (McICA
+fails closed on anything else: ``icloud=1 or 2``, ``cldovrlp=2`` (McICA
 maximum-random), ``idcor=0``, ``o3input in {0, 2}``, ``ghg_input=0``,
 ``aer_opt=0``, ``swint_opt=0``.  ``o3input=0`` selects the wrapper's
 O3DATA branch; ``o3input=2`` selects CAM climatology.
@@ -106,8 +106,9 @@ per-band optics on the device from the radiation inputs and the Thompson
 numbers state.nwfa/state.nifa for each day-column chunk
 (gpuwm.core.rrtmg_aerosol_optics, held word for word to the fork's
 gt_aod and calc_aerosol_rrtmg_sw) and hands them to the engine, which
-feeds them to spcvmc unchanged (iaer = 10).  aer_opt 1 and 2 stay
-refused (SW-audit item 1).  The longwave takes no aerosol in that fork
+feeds them to spcvmc unchanged (iaer = 10).  aer_opt=1 uses the WRF six-type
+climatology and iaer=6 device optics on the root domain; aer_opt=2 takes the
+user AOD/Angstrom/ssa/asymmetry inputs (gpuwm.core.aer_opt2).  The longwave takes no aerosol in that fork
 under any aer_opt without chemistry.
 
 Sequencing/VRAM shape: the LW and SW pipelines run SEQUENTIALLY per
@@ -143,6 +144,7 @@ from gpuwm.core import rrtmg_lw as _lw
 from gpuwm.core import rrtmg_mcica as _mcica
 from gpuwm.core import rrtmg_sw as _sw
 from gpuwm.core import rrtmg_aerosol_optics as _aer3
+from gpuwm.core import aer_opt2 as _aer2
 
 __all__ = [
     "MAX_LONGWAVE_LAYERS", "MAX_SHORTWAVE_LAYERS",
@@ -177,17 +179,17 @@ _DPD = F(F(360.0) / F(365.0))
 #: driver carries (gpuwm.core.swint) and the adapter's call is the same
 #: for 0 and 1.  aer_opt = 3 (Thompson aerosol shortwave optics) is
 #: implemented by this adapter; validate_radiation_driver_options admits
-#: 0 and 3 and refuses 1 and 2 by name before a run starts.
-_PINNED_OPTIONS = {"icloud": 1, "cldovrlp": 2, "idcor": 0,
+#: 0, 1, 2 and 3; resident-nest aer_opt=1 refuses with its missing parent forcing path.
+_PINNED_OPTIONS = {"cldovrlp": 2, "idcor": 0,
                    "ghg_input": 0}
-_ADMITTED_AER_OPT = (0, 3)
+_ADMITTED_AER_OPT = (0, 1, 2, 3)
 
 
 # ---------------------------------------------------------------------------
 # Solar geometry: FP32 statement transcription of radconst / calc_coszen
 # (module_radiation_driver.F:3469-3541).  numpy transcendentals stand in
-# for the compiler libm -- dossier section 9.1 documents why this is a
-# seam with no bitwise oracle (ifx/gfortran/numpy differ at ~1 ulp).
+# for the preserved wrf_461 host calculations. The corrected wrf_480
+# consumers use the shared device sun and its word-for-word source oracle.
 # ---------------------------------------------------------------------------
 
 def radconst(julian):
@@ -213,17 +215,17 @@ def radconst(julian):
     return F(declin), F(solcon)
 
 
-def calc_coszen(julian, xtime, gmt, xlat, xlon, declin):
+def calc_coszen(julian, xtime, gmt, xlat, xlon, declin, *, generation="wrf_480"):
     """WRF ``calc_coszen`` per point; returns float32 coszen (n,).
 
     ``xtime`` is the minutes value WRF passes (the driver hands
     ``xtime + radt*0.5`` for the interval-midpoint hour angle while
     ``julian``/``declin`` stay at call time; driver lines 1206-1208).
     """
-    return calc_coszen_hrang(julian, xtime, gmt, xlat, xlon, declin)[0]
+    return calc_coszen_hrang(julian, xtime, gmt, xlat, xlon, declin, generation=generation)[0]
 
 
-def calc_coszen_hrang(julian, xtime, gmt, xlat, xlon, declin):
+def calc_coszen_hrang(julian, xtime, gmt, xlat, xlon, declin, *, generation="wrf_480"):
     """WRF ``calc_coszen``'s two outputs, ``(coszen, hrang)``, float32.
 
     HRANG is the hour angle WRF stores beside COSZEN (grid%hrang,
@@ -231,6 +233,13 @@ def calc_coszen_hrang(julian, xtime, gmt, xlat, xlon, declin):
     both (module_surface_driver.F TOPO_RAD_ADJ).
     """
     j = F(julian)
+    from gpuwm.core.solar import solar_generation, solar_geometry_device
+    solar_generation(generation)
+    if generation == "wrf_480":
+        import cupy as cp
+        _ds, cz, ha = solar_geometry_device(julian, xtime, gmt, xlat, xlon,
+            generation=generation, declination=declin)
+        return cp.asnumpy(cz), cp.asnumpy(ha)
     xt = F(xtime)
     g = F(gmt)
     d = F(declin)
@@ -311,7 +320,17 @@ _MP_DECLARES_RADII = {
     30: False,
     0: False,
     1: False,
+    2: False,
+    # WSM3.  WSM3SCHEME is in the use_mp_re disjunction
+    # (module_physics_init.F:1008) and not in the P3 has_reqs=0 override,
+    # so all three radii reach RRTMG; effectRad_wsm3 clamps them to
+    # [2.51, 50], [10.01, 125] and [25, 999] um (module_mp_wsm3.F:1553-1571).
+    3: True,
+    4: True,     # WSM5, module_physics_init.F use_mp_re
     6: True,     # WSM6
+    # WSM6R: NOT in WRF's use_mp_re list, so has_reqc = 0 and RRTMG
+    # computes its own radii, as WRF does.
+    106: False,
     8: True,     # Thompson
     # Milbrandt-Yau: NOT in WRF's use_mp_re list either
     # (module_physics_init.F:1004-1023 names THOMPSON, THOMPSONAERO,
@@ -333,6 +352,11 @@ _MP_DECLARES_RADII = {
     # 525 um) is False above, and WDM6's 125 um cap sits inside it.
     16: True,    # WDM6 (WDM6SCHEME)
     18: True,    # NSSL 2-moment (nssl_2moment_on=1)
+    # WSM7.  module_physics_init.F:1011 lists WSM7SCHEME in the use_mp_re
+    # disjunction beside WSM6SCHEME and the P3 has_reqs=0 override does
+    # not name it; effectRad_wsm7 (module_mp_wsm7.F:2964-3064) clamps
+    # the radii exactly as WSM6's does (ice to [10.01, 125] um).
+    24: True,    # WSM7 (WSM7SCHEME)
     # Thompson aerosol-aware.  WRF lists it EXPLICITLY and SEPARATELY from
     # THOMPSON in the same disjunction:
     #   module_physics_init.F:1005  config_flags%mp_physics .eq. THOMPSON
@@ -373,6 +397,10 @@ _MP_DECLARES_RADII = {
     # unreachable however large P3's lookup-table effective radius grows
     # (the shipped p3_lookupTable_1.dat-v5.4_2momI reaches 2.1e4 um).
     50: True,    # P3 one-category (P3_1CATEGORY)
+    # Ferrier-Aligo (FER_MP_HIRES) is absent from the use_mp_re
+    # disjunction (module_physics_init.F:1004-1023): has_reqc/i/s stay 0
+    # and the wrappers compute their own radii, as for Kessler.
+    5: False,
 }
 
 
@@ -487,7 +515,7 @@ def legacy_scheme_has_req(mp_physics, use_mp_re):
 #: would assert a ``qs`` its Registry package never declares.  Resolve the
 #: pair through :func:`legacy_cloud_fraction_flags`, never by reading one
 #: boolean into both flags.
-_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28, 30))
+_LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((2, 4, 6, 8, 9, 10, 16, 18, 24, 28, 30, 106))
 # Named schemes carrying both qi and qs (capability row).
 _LEGACY_ICE_ACTIVE_MICROPHYSICS = _LEGACY_ICE_ACTIVE_MICROPHYSICS | frozenset(
     _s.mp_id for _s in _NAMED_MP_SCHEMES.values()
@@ -515,14 +543,20 @@ _LEGACY_ICE_ACTIVE_MICROPHYSICS = _LEGACY_ICE_ACTIVE_MICROPHYSICS | frozenset(
 #: arm and is deliberately NOT listed: ``gpuwm/config.py`` does not accept
 #: 51, so it is refused by name at admission rather than half-answered
 #: here.
-_LEGACY_ICE_ONLY_MICROPHYSICS = frozenset((50,))
+#: Ferrier-Aligo (mp=5) is the second member on the same reading:
+#: Registry.EM_COMMON:3019 declares ``package fer_mp_hires mp_physics==5 -
+#: moist:qv,qc,qr,qi`` (qi is the total ice) with no qs, so cal_cldfra1
+#: takes the P3 arm and then WRF's Ferrier selector arm (:3926-3937),
+#: which ``cal_cldfra1(..., mp_physics=5)`` applies.
+_LEGACY_ICE_ONLY_MICROPHYSICS = frozenset((5, 50))
 
 #: WRF Registry ``not F_QI and not F_QS``: no frozen species in the package
 #: at all -- ``passiveqv`` (mp=0, Registry.EM_COMMON:3014, ``moist:qv``)
-#: and ``kesslerscheme`` (mp=1, :3015, ``moist:qv,qc,qr``).  These take
-#: ``cal_cldfra1``'s qc-only arm with its 273.15 K phase threshold
-#: (module_radiation_driver.F:3891-3899).
-_LEGACY_NO_ICE_MICROPHYSICS = frozenset((0, 1))
+#: ``kesslerscheme`` (mp=1, :3015, ``moist:qv,qc,qr``) and ``wsm3scheme``
+#: (mp=3, :3017, ``moist:qv,qc,qr``; WSM3's cloud ice and snow live inside
+#: qc and qr).  These take ``cal_cldfra1``'s qc-only arm with its 273.15 K
+#: phase threshold (module_radiation_driver.F:3891-3899).
+_LEGACY_NO_ICE_MICROPHYSICS = frozenset((0, 1, 3))
 
 
 def legacy_ice_active(mp_physics: int) -> bool:
@@ -727,6 +761,11 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
         # tsfc, four albedos, coszen and scon.
         held_sw += (8 * s_nl_s + 2 * _r512(nc_sw * (nlay_sw + 1) * f)
                     + 7 * _r512(nc_sw * f))
+        if int(aer_opt) == 2:
+            held_sw += (3 * _r512(nc_sw * _sw.NBNDSW * nlay_sw * f)
+                        + _r512(nc_sw * nz * f) + 2 * _r512(nc_sw * 4 * f))
+        if int(aer_opt) == 1:
+            held_sw += 3 * _r512(nc_sw * _sw.NBNDSW * nlay_sw * f) + _r512(ncol * nz * 6 * f) + _r512(ncol * 72 * f)
         if int(aer_opt) == 3:
             held_sw += (3 * _r512(nc_sw * _sw.NBNDSW * nlay_sw * f)
                         + 3 * _r512(nc_sw * nz * f))
@@ -741,6 +780,9 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     # SWDOWN is allocated after the engines and does not raise this peak.
     result_bytes = 2 * _r512(nz * ncol * f) + 3 * _r512(ncol * f)
     ozone_bytes = _r512(nz * ncol * f) if int(o3input) == 2 else 0
+    if int(aer_opt) == 2:
+        # Held history plus the current radiation call's diagnostics.
+        result_bytes += 2 * (_r512(nz*ncol*f) + 4*_r512(ncol*f))
     return estimate + result_bytes + ozone_bytes + constants
 
 
@@ -1304,6 +1346,7 @@ class RRTMGLegacyRadiation:
                 "prescribed smoke follows the HRRR fork's rural optics; the "
                 "NOAA MPAS land/water aerosol type has no smoke coupling")
         self.aer3_type_source = aer3_type_source
+        self.publishes_aodtot = self.shortwave and self.aer_opt == 1
         self._smoke_provider = smoke_provider
         self.publishes_olr = self.longwave
         from gpuwm.core.trace_gases import (
@@ -1338,6 +1381,8 @@ class RRTMGLegacyRadiation:
             raise ValueError(
                 "o3input=0 constructs ozone inside the legacy wrapper and "
                 "must not receive a parent o3rad provider")
+        if self.aer_opt == 1 and ozone_parent is not None:
+            raise ValueError("aer_opt=1 resident nest requires domain-1 aerod parent forcing; child-grid climatology would change WRF routing")
         self._ozone_provider = ozone_parent
         #: How this adapter obtains ozone, in the one vocabulary
         #: gpuwm.core.cam_ozone owns.  Derived from the construction unless
@@ -1366,7 +1411,7 @@ class RRTMGLegacyRadiation:
                 "packaged RRTMG_LW_DATA coefficients cannot be "
                 f"loaded/built: {exc}") from exc
         try:
-            self._sw_tables = _sw_tables() if self.shortwave else None
+            self._sw_tables = ((_sw.load_sw_tables(aer_opt=1) if self.aer_opt == 1 else _sw_tables()) if self.shortwave else None)
         except Exception as exc:
             raise RuntimeError(
                 "ra_rrtmg_variant='rrtmg_legacy' is selected but the "
@@ -1523,6 +1568,13 @@ class RRTMGLegacyRadiation:
                 "rrtmg_lw_statics.npz": RRTMG_LW_STATICS_SHA256,
             },
         }
+        if self.aer_opt == 2:
+            identity["aer2_tables_sha256"] = _aer2.TABLES_SHA256
+        if self.aer_opt == 1:
+            from gpuwm.ingest.rrtmg_coeffs import DATA_DIR
+            import json
+            identity["aer1_tables"] = json.loads((DATA_DIR / "rrtmg_aer1_manifest.json").read_text())
+            identity["aer1_routing"] = "domain-1-climatology"
         if self.aer_opt == 3:
             from gpuwm.core.rrtmg_aerosol_optics import AER3_TABLES_SHA256
             identity["aer3_tables_sha256"] = AER3_TABLES_SHA256
@@ -1556,6 +1608,10 @@ class RRTMGLegacyRadiation:
     # ------------------------------------------------------------------
     def _check_pins(self, cfg):
         """Fail closed on any option outside the ported combination."""
+        if int(getattr(cfg, "icloud", 1)) not in (1, 2):
+            raise NotImplementedError(
+                "icloud=0 lacks a recorded legacy clear-sky solve; "
+                "icloud=3 requires unported cal_cldfra3 condensate adjustment")
         for name, pinned in _PINNED_OPTIONS.items():
             value = getattr(cfg, name, pinned)
             if int(value) != pinned:
@@ -1567,7 +1623,7 @@ class RRTMGLegacyRadiation:
         if aer_opt not in _ADMITTED_AER_OPT:
             raise NotImplementedError(
                 f"rrtmg_legacy implements aer_opt in {_ADMITTED_AER_OPT} "
-                f"(0: no aerosol; 3: Thompson water- and ice-friendly "
+                f"(0: no aerosol; 1: root-domain six-type climatology; 3: Thompson water- and ice-friendly "
                 f"aerosol shortwave optics); got aer_opt={aer_opt!r} -- no "
                 "silent option substitution is applied")
         if self.shortwave and aer_opt != self.aer_opt:
@@ -1680,6 +1736,7 @@ class RRTMGLegacyRadiation:
 
         mp_physics = int(getattr(cfg, "mp_physics", 0))
         warm_rain = mp_physics == 1
+        icloud = int(getattr(cfg, "icloud", 1))
         # cal_cldfra1's two Registry package flags, resolved SEPARATELY.
         # One fused boolean cannot express P3's F_QI=true/F_QS=false, and
         # collapsing it sent mp=50 to the qc-only arm.
@@ -1804,7 +1861,7 @@ class RRTMGLegacyRadiation:
         fnp_d = cp.asarray(np.ascontiguousarray(
             np.asarray(self._host(state.fnp), np.float32)))
 
-        active_bl = mynn_bl_cloud_active(
+        active_bl = icloud == 1 and mynn_bl_cloud_active(
             getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
         if active_bl:
             g_bl = {}
@@ -1831,18 +1888,36 @@ class RRTMGLegacyRadiation:
                 + valid_time.second / 3600.0
                 + valid_time.microsecond / 3.6e9)
         julian = F((julday - 1) + hour / 24.0)
+        aer1_grid = None
+        aodtot = None
+        if self.shortwave and self.aer_opt == 1:
+            monthly = getattr(state, "aerodm", None)
+            if monthly is None:
+                monthly = _aer3.aer1_climatology_device(
+                    cp.asarray(self.latitude_deg.ravel()), cp.asarray(self.longitude_deg.ravel()),
+                    self._sw_tables.aer1_climatology)
+                state.aerodm = monthly
+            aer1_grid, aodtot, _ = _aer3.aer1_time_pressure_device(
+                monthly, julian, cp.ascontiguousarray(g_p3d.T), cp.ascontiguousarray(g_p8w.T),
+                self._sw_tables.aer1_climatology)
         gmt = F(self.start_time.hour + self.start_time.minute / 60.0
                 + self.start_time.second / 3600.0
                 + self.start_time.microsecond / 3.6e9)
         xtime = F(float(state.elapsed_seconds) / 60.0)
         radt_minutes = F(cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes)
-        declin, solcon = radconst(julian)
         # WRF: hour angle at the interval midpoint, declination/solcon at
         # call time (module_radiation_driver.F:1206-1208).
         xt_mid = xtime + radt_minutes * F(0.5)
-        coszen = calc_coszen(julian, xt_mid, gmt, lat_flat, lon_flat,
-                             declin)
-        coszen_d = cp.asarray(coszen)
+        if getattr(cfg, "solar_generation", "wrf_480") == "wrf_480":
+            from gpuwm.core.solar import solar_geometry_device
+            ds, coszen_d, _hrang = solar_geometry_device(julian, xt_mid, gmt, lat_flat, lon_flat)
+            declin, solcon = map(F, cp.asnumpy(ds))
+            coszen = cp.asnumpy(coszen_d)
+        else:
+            declin, solcon = radconst(julian)
+            coszen = calc_coszen(julian, xt_mid, gmt, lat_flat, lon_flat,
+                                 declin, generation='wrf_461')
+            coszen_d = cp.asarray(coszen)
 
         # ---- o33d: WRF's root-compute + parent->child routing ----------
         # Keep the interpolated grid for all chunk gathers. The retained
@@ -1910,7 +1985,7 @@ class RRTMGLegacyRadiation:
             del pin_d
 
         shared = dict(
-            icloud=1, warm_rain=warm_rain, cldovrlp=2, idcor=0,
+            icloud=icloud, warm_rain=warm_rain, cldovrlp=2, idcor=0,
             o3input=self.o3input,
             rrtmg_cloud_optics_form=getattr(cfg, "rrtmg_cloud_optics_form", "wrf_461"),
             has_reqc=has_req["effc"], has_reqi=has_req["effi"],
@@ -1931,6 +2006,16 @@ class RRTMGLegacyRadiation:
                             if g is not None)
         if active_bl:
             gather_grids.update(g_bl)
+        if icloud == 2:
+            # One driver CLDFRA field is shared by LW and SW. Gather only
+            # repacks it into each prep's column window; it never recomputes
+            # the threshold on separate moisture buffers.
+            zero_cloud = cp.zeros((nz, ncol), dtype=cp.float32)
+            gather_grids["binary_cldfra"] = _rrtmgp.cal_cldfra2(
+                zero_cloud if g_moist["qc"] is None else g_moist["qc"],
+                zero_cloud if g_moist["qi"] is None else g_moist["qi"],
+                f_qc=mp_physics != 0, f_qi=f_qi)
+            del zero_cloud
         gather_names = list(gather_grids)
         gather = _ColumnGather(gather_grids.values(), ncol)
 
@@ -1960,9 +2045,12 @@ class RRTMGLegacyRadiation:
             # cal_cldfra1 (icloud=1), the WRF transcription already gated
             # on the RTE+RRTMGP path -- imported, not copied; fed the raw
             # moisture before the MYNN merge writes qc/qi.
-            cldfra = _rrtmgp.cal_cldfra1(
-                moist["qv"], moist["qc"], moist["qi"], moist["qs"], t3d,
-                p3d, f_qc=True, f_qi=f_qi, f_qs=f_qs)
+            if icloud == 2:
+                cldfra = blocks["binary_cldfra"]
+            else:
+                cldfra = _rrtmgp.cal_cldfra1(
+                    moist["qv"], moist["qc"], moist["qi"], moist["qs"], t3d,
+                    p3d, f_qc=True, f_qi=f_qi, f_qs=f_qs, mp_physics=mp_physics)
             radii = _radius_meters_blocks({
                 key: None if g is None else blocks[key]
                 for key, g in g_radii.items()})
@@ -2120,6 +2208,26 @@ class RRTMGLegacyRadiation:
         chunk_sw = (self.column_chunk
                     or (_cuda_sw(self._sw_tables).batch_column_chunk(nz + 1)
                         if self.shortwave else _sw.SW_BATCH_COLUMN_CHUNK))
+        aerosol_aod = cp.empty((nz,ncol),cp.float32) if self.aer_opt==2 else None
+        aerosol_diag = cp.empty((ncol,4),cp.float32) if self.aer_opt==2 else None
+        user_inputs = _aer2.auxiliary_inputs(cfg,self.start_time,state.elapsed_seconds,(ny,nx)) if self.aer_opt==2 else {}
+        def user_optics(kw,sel):
+            if self.aer_opt != 2:
+                return None
+            selected = {key:cp.asarray(value,dtype=cp.float32).reshape(-1)[sel]
+                        for key,value in user_inputs.items()}
+            produced = _aer2.optics_device(
+                kw["p3d"],kw["t3d"],kw["qv3d"],kw["dz8w"],_device_flat(state.ht)[sel],
+                aer_type=cfg.aer_type,options=tuple(getattr(cfg,k) for k in _aer2.OPTION_KEYS),
+                values=tuple(getattr(cfg,k) for k in _aer2.VALUE_KEYS),
+                inputs=selected,nlayers=nz+1)
+            aerosol_aod[:,sel] = produced[3].T
+            aerosol_diag[sel,:] = produced[4]
+            return produced[0],produced[2],produced[1]
+        if self.aer_opt == 2:
+            for off in range(0,night_idx.size,chunk_sw):
+                sel=cp.asarray(night_idx[off:off+chunk_sw].astype(np.int64))
+                user_optics(chunk_inputs(sel),sel)
         day_idx_d = cp.asarray(day_idx.astype(np.int64))
         for c0 in range(0, day_idx.size if self.shortwave else 0, chunk_sw):
             sel = day_idx_d[c0:c0 + chunk_sw]
@@ -2131,7 +2239,7 @@ class RRTMGLegacyRadiation:
             diagnostic_sink = getattr(self, "_sw_diagnostic_sink", None)
             diagnostic_cloud = (kw["cldfra3d"] if diagnostic_sink else None)
             diagnostic_aerosol = None
-            aerosol = None
+            aerosol = user_optics(kw,sel)
             if aer_gather is not None:
                 # The driver builds the optics from its own p, t, qv and
                 # dz8w before RRTMG_SWRAD runs (module_radiation_driver.F
@@ -2158,6 +2266,11 @@ class RRTMGLegacyRadiation:
                 del smoke_options
                 del aerosol_result
                 del nwfa_c, nifa_c
+            if aer1_grid is not None:
+                aerosol = _aer3.aer1_sw_optics_device(
+                    cp.ascontiguousarray(aer1_grid[sel]), nz + 1, self._sw_tables)
+                if diagnostic_sink is not None:
+                    diagnostic_aerosol = dict(aerod=aer1_grid[sel], aodtot=aodtot[sel])
             ps = _prep_device.swrad_prep_batch_device(
                 **kw, albedo=surf["albedo"][sel],
                 xcoszen=coszen_d[sel], solcon=solcon,
@@ -2181,7 +2294,7 @@ class RRTMGLegacyRadiation:
                 ps["ssacmcl"], ps["asmcmcl"], ps["fsfcmcl"],
                 ps["ciwpmcl"], ps["clwpmcl"], ps["cswpmcl"],
                 ps["reicmcl"], ps["relqmcl"], ps["resnmcl"],
-                aer_opt=0 if aerosol is None else 3, aerosol=aerosol,
+                aer_opt=0 if aerosol is None else self.aer_opt, aerosol=aerosol,
                 column_chunk=chunk_sw, _stage_probe=self._stage_probe, mcica_layout="column")
             del ps, aerosol
             if diagnostic_sink is not None:
@@ -2242,4 +2355,7 @@ class RRTMGLegacyRadiation:
                  else None),
             swddir=(None if swddir is None else swddir.reshape(ny, nx)),
             swddif=(None if swddif is None else swddif.reshape(ny, nx)),
-            cldfra=cp.ascontiguousarray(cldfra_cols.T).reshape(nz, ny, nx))
+            cldfra=cp.ascontiguousarray(cldfra_cols.T).reshape(nz, ny, nx),
+            aodtot=None if aodtot is None else aodtot.reshape(ny, nx),
+            aod5503d=None if aerosol_aod is None else aerosol_aod.reshape(nz,ny,nx),
+            aerosol2d=None if aerosol_diag is None else {key:cp.ascontiguousarray(aerosol_diag[:,i]).reshape(ny,nx) for i,key in enumerate(_aer2.INPUT_FIELDS)})

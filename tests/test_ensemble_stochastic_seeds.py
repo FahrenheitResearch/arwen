@@ -123,10 +123,7 @@ def test_provider_retains_global_member_seed_and_optional_label_constructor(monk
     from test_ensemble_stochastic_model import config
     from gpuwm.ensemble.request import EnsembleRequest
     controls = {"sppt": True, "wrf_seed_labels": {"nens": 19, "iseed_sppt": 117}}
-    # Public requests refuse uncalibrated amplitudes; the provider keeps
-    # its seed contract for the calibration campaign.
-    with pytest.raises(ValueError, match="calibrated against observations"):
-        EnsembleRequest(4, stochastic=controls)
+    assert EnsembleRequest(4, stochastic=controls).stochastic == controls
     provider = implementation.StochasticModelProvider.from_mapping(controls)
     calls = []
     monkeypatch.setattr(implementation, "StochasticTimestepHook", lambda *args, **kwargs:

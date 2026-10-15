@@ -64,3 +64,33 @@ def test_invalid_metadata_refuses(comment, tmp_path):
     namelist.write_text(comment + "\n" + (FIXTURE / "hrrr_wrf.nl.c18c").read_text())
     with pytest.raises(ValueError, match="physics selector comment"):
         import_namelists(FIXTURE / "hrrr_namelist.wps.c18", namelist)
+
+
+@pytest.mark.parametrize("value", ("wrf_471", "wrf_480"))
+def test_urban_water_balance_generation_survives_an_unnamed_import(tmp_path, value):
+    """WHATS-NEW 2.9.0 names urban_water_balance = "wrf_471" as the way back
+    to the 2.8.9 urban rain-evaporation rule. A stock WRF namelist has no
+    spelling for it, so a route file carries it in the selector comment; the
+    comment refused the key before it had a row, and the old rule could not
+    ride a WRF route file."""
+    from gpuwm.namelist_import import import_namelists
+    text = (FIXTURE / "hrrr_wrf.nl.c18c").read_text()
+    carried = with_physics_selector_comment(text, {"urban_water_balance": value})
+    assert read_physics_selector_comment(carried) == {"urban_water_balance": value}
+    namelist = tmp_path / "namelist.input"
+    namelist.write_text(carried)
+    resolved, _ = import_namelists(FIXTURE / "hrrr_namelist.wps.c18", namelist)
+    run = build_experiment(tomllib.loads(resolved), source="carried selector").root.run
+    assert run.urban_water_balance == value
+
+
+def test_every_default_on_wrf_correction_has_a_route_carrier_for_its_old_generation():
+    """The four WRF 4.7/4.8 corrections that change default output in 2.9.0
+    each name an earlier generation users can select; each pair must be a
+    selector-comment row, or the HRRR route file drops the user's choice."""
+    from gpuwm.config import RunConfig
+    from gpuwm.physics_source_defaults import PHYSICS_SELECTOR_VALUES
+    for key, old in (("solar_generation", "wrf_461"), ("ysu_version", "wrf_461"),
+                     ("noahmp_snow_age", "wrf_461"), ("urban_water_balance", "wrf_471")):
+        default = RunConfig.__dataclass_fields__[key].default
+        assert {default, old} <= set(PHYSICS_SELECTOR_VALUES[key]), key

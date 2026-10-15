@@ -1,0 +1,314 @@
+{
+ "ncol": 72,
+ "nz": 45,
+ "level_fields": [
+  "th",
+  "qv",
+  "qc",
+  "qr",
+  "qi",
+  "qs",
+  "qg",
+  "qh",
+  "den",
+  "pii",
+  "p",
+  "dz"
+ ],
+ "surface_fields": [
+  "rain",
+  "snow",
+  "graupel",
+  "hail"
+ ],
+ "columns": [
+  {
+   "name": "hail-convective-0",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-1",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-2",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-3",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-4",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-5",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-6",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-7",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-8",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-convective-9",
+   "regime": "deep hail convection"
+  },
+  {
+   "name": "hail-melting-0",
+   "regime": "hail melting sub-cloud"
+  },
+  {
+   "name": "hail-melting-1",
+   "regime": "hail melting sub-cloud"
+  },
+  {
+   "name": "hail-melting-2",
+   "regime": "hail melting sub-cloud"
+  },
+  {
+   "name": "hail-melting-3",
+   "regime": "hail melting sub-cloud"
+  },
+  {
+   "name": "hail-aloft-0",
+   "regime": "hail aloft sublimating"
+  },
+  {
+   "name": "hail-aloft-1",
+   "regime": "hail aloft sublimating"
+  },
+  {
+   "name": "hail-aloft-2",
+   "regime": "hail aloft sublimating"
+  },
+  {
+   "name": "convective-0",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-1",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-2",
+   "regime": "deep convection"
+  },
+  {
+   "name": "convective-3",
+   "regime": "deep convection"
+  },
+  {
+   "name": "stratiform-0",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-1",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-2",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-3",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-4",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "stratiform-5",
+   "regime": "stratiform melting layer"
+  },
+  {
+   "name": "freezing-rain-0",
+   "regime": "freezing rain"
+  },
+  {
+   "name": "freezing-rain-1",
+   "regime": "freezing rain"
+  },
+  {
+   "name": "freezing-rain-2",
+   "regime": "freezing rain"
+  },
+  {
+   "name": "freezing-rain-3",
+   "regime": "freezing rain"
+  },
+  {
+   "name": "stable-night-0",
+   "regime": "stable clear night"
+  },
+  {
+   "name": "stable-night-1",
+   "regime": "stable clear night"
+  },
+  {
+   "name": "stable-night-2",
+   "regime": "stable clear night"
+  },
+  {
+   "name": "stable-night-3",
+   "regime": "stable clear night"
+  },
+  {
+   "name": "fog-0",
+   "regime": "radiation fog"
+  },
+  {
+   "name": "fog-1",
+   "regime": "radiation fog"
+  },
+  {
+   "name": "fog-2",
+   "regime": "radiation fog"
+  },
+  {
+   "name": "ocean-sc-0",
+   "regime": "ocean stratocumulus"
+  },
+  {
+   "name": "ocean-sc-1",
+   "regime": "ocean stratocumulus"
+  },
+  {
+   "name": "ocean-sc-2",
+   "regime": "ocean stratocumulus"
+  },
+  {
+   "name": "ocean-sc-3",
+   "regime": "ocean stratocumulus"
+  },
+  {
+   "name": "snow-0",
+   "regime": "winter snow"
+  },
+  {
+   "name": "snow-1",
+   "regime": "winter snow"
+  },
+  {
+   "name": "snow-2",
+   "regime": "winter snow"
+  },
+  {
+   "name": "snow-3",
+   "regime": "winter snow"
+  },
+  {
+   "name": "snow-4",
+   "regime": "winter snow"
+  },
+  {
+   "name": "high-terrain-0",
+   "regime": "high terrain"
+  },
+  {
+   "name": "high-terrain-1",
+   "regime": "high terrain"
+  },
+  {
+   "name": "high-terrain-2",
+   "regime": "high terrain"
+  },
+  {
+   "name": "high-terrain-3",
+   "regime": "high terrain"
+  },
+  {
+   "name": "high-terrain-4",
+   "regime": "high terrain"
+  },
+  {
+   "name": "cirrus-0",
+   "regime": "cirrus"
+  },
+  {
+   "name": "cirrus-1",
+   "regime": "cirrus"
+  },
+  {
+   "name": "supercooled-0",
+   "regime": "supercooled below -40C"
+  },
+  {
+   "name": "supercooled-1",
+   "regime": "supercooled below -40C"
+  },
+  {
+   "name": "edge-thresholds",
+   "regime": "edge: branch thresholds"
+  },
+  {
+   "name": "edge-temperatures",
+   "regime": "edge: t0c and triple point"
+  },
+  {
+   "name": "edge-negative",
+   "regime": "edge: negative and subnormal inputs"
+  },
+  {
+   "name": "edge-top-only",
+   "regime": "edge: condensate in the top level only"
+  },
+  {
+   "name": "edge-top-two",
+   "regime": "edge: hail and rain in the two top levels"
+  },
+  {
+   "name": "edge-bottom-only",
+   "regime": "edge: condensate in the lowest level only"
+  },
+  {
+   "name": "edge-thin-layers",
+   "regime": "edge: thin layers force the CFL limiter"
+  },
+  {
+   "name": "edge-supersaturated-clear",
+   "regime": "edge: supersaturated, no condensate"
+  },
+  {
+   "name": "edge-subsaturated-cloud",
+   "regime": "edge: cloud in dry air evaporates"
+  },
+  {
+   "name": "edge-heavy-hail",
+   "regime": "edge: very large hail, graupel and rain"
+  },
+  {
+   "name": "edge-wet-growth-0",
+   "regime": "edge: hail wet-growth test both ways"
+  },
+  {
+   "name": "edge-wet-growth-1",
+   "regime": "edge: hail wet-growth test both ways"
+  },
+  {
+   "name": "edge-psaut",
+   "regime": "edge: cloud ice above the aggregation limit"
+  },
+  {
+   "name": "edge-dry-tiny",
+   "regime": "edge: near-zero vapour, qsum at qmin"
+  },
+  {
+   "name": "edge-cold-rain",
+   "regime": "edge: rain far below freezing (supcol > 50)"
+  },
+  {
+   "name": "edge-zero",
+   "regime": "edge: all hydrometeors zero, saturated"
+  }
+ ]
+}

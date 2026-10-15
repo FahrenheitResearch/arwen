@@ -37,8 +37,8 @@ def test_the_operational_hrrr_values_pass_on_legacy_rrtmg_with_mp28():
     (dict(swint_opt=2), "swint_opt=2"),
     (dict(swint_opt=True), "swint_opt=True"),
     (dict(aer_opt=4), "aer_opt=4"),
-    (dict(aer_opt=1, **_HRRR), "ECMWF six-type"),
-    (dict(aer_opt=2, **_HRRR), "aod550"),
+    (dict(aer_opt=1, nested=True, **_HRRR), "domain-1 aerod parent forcing"),
+
     # aer_opt = 3 without the Thompson aerosol numbers
     (dict(aer_opt=3, mp_physics=8, ra_physics=4,
           ra_rrtmg_variant="rrtmg_legacy"), "mp_physics=28"),
@@ -104,7 +104,28 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
         "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest",
         "surface_energy_diag", "cycling", "rrtmg_aer3_type_source",
         "bl_mynn_mixaerosols", "bl_mynn_mixnumcon", "tempo_ml_for_bl_nc",
-        "tempo_surface_emission_before", "thompson_table_dir"]
+        "tempo_surface_emission_before", "thompson_table_dir",
+        # 2.9.0 (golden/wrf-fixes): scalar advection selector, urban
+        # canopy controls and the four WRF 4.7/4.8 fix selectors.
+        "scalar_adv_opt", "urban_ucm_generation", "urban_treeoption",
+        "urban_ttscheme", "urban_fvg", "urban_table_dir",
+        "solar_generation", "ysu_version", "noahmp_snow_age",
+        "urban_water_balance",
+        # golden/ports-rad: aer_opt = 2 controls and the lightning package.
+        "aer_type", "aer_aod550_opt", "aer_angexp_opt",
+        "aer_ssa_opt", "aer_asy_opt", "aer_aod550_val", "aer_angexp_val",
+        "aer_ssa_val", "aer_asy_val", "aer_auxinput15", "aer_auxinput15_interval",
+        "lightning_option", "lightning_dt", "lightning_start_seconds",
+        "flashrate_factor", "iccg_method", "iccg_prescribed_num",
+        "iccg_prescribed_den", "cellcount_method", "cldtop_adjustment",
+        "do_radar_ref",
+        # 2.9.0 correct mode (gpuwm/correct_mode.py): the WB5 and WB4 keys.
+        "wsm6_conservative_surface", "ntiedtke_dry_mass_coupling",
+        "wdm6_conservative_surface", "thompson_cloud_surface_booking",
+        # golden/ports-cu: Grell 3D and New SAS controls.
+        "cugd_avedx", "maxiens", "maxens", "maxens2", "maxens3",
+        "ensdim", "cu_diag", "convtrans_avglen_m",
+        "nsas_dx_factor", "sas_pgcon"]
     assert _cfg().cycling is False
     assert "cycling" not in restart.configuration_echo(_cfg())
     for name, default in {"thompson_version": "wrf_461",
@@ -162,3 +183,9 @@ def test_the_fork_cloud_wrapper_is_explicit_and_legacy_only():
                  ra_rrtmg_variant="rte-rrtmgp")):
         with pytest.raises(ValueError, match="rrtmg_cloud_optics_form"):
             validate_radiation_driver_options(_cfg(**overrides))
+
+
+def test_six_type_aerosol_legacy_admission_is_independent_of_microphysics():
+    for mp in (1, 6, 8, 10):
+        validate_radiation_driver_options(_cfg(aer_opt=1, mp_physics=mp,
+            ra_physics=4, ra_rrtmg_variant="rrtmg_legacy"))

@@ -156,6 +156,61 @@ def test_promotion_uses_prepared_bytes_and_keeps_existing_packaging_checks(workf
         assert f"tests/test_{name}.py" in test_script
 
 
+#: What marks a listed test file as one that stages through the fetcher:
+#: table staging (``fetch_tables``) and static assets (``geog_assets``) are
+#: pin-checked by rw_fetch since 2.8.9, and the other two name it directly.
+FETCHER_USE = ("fetch_tables", "geog_assets", "rw_fetch", "find_fetch_bin")
+
+
+def test_the_test_job_builds_the_fetcher_before_the_files_that_need_it(workflow):
+    """The job that roots the publish chain has the one native its files use.
+
+    The breakage, named: the v2.8.9 publish run 38124857348 failed in this
+    job on five tests of tests/test_table_fetch.py ("rw_fetch is missing"),
+    after the tag was public and the draft release created. ci.yml had a
+    fetcher on the leg that builds no natives; this job had not, and nothing
+    compared the two. This file runs in ci.yml on every push.
+    """
+    steps = workflow["jobs"]["test"]["steps"]
+    runners = [i for i, step in enumerate(steps) if "python -m pytest" in step.get("run", "")]
+    assert len(runners) == 1, runners
+    tests = steps[runners[0]]
+    listed = re.findall(r"tests/\S+\.py", tests["run"])
+    needing = [name for name in listed
+               if any(mark in (ROOT / name).read_text(encoding="utf-8") for mark in FETCHER_USE)]
+    assert "tests/test_table_fetch.py" in needing, needing
+    command = "rustup run 1.94.0 cargo build --release --locked --offline -p rw-fetch"
+    builders = [i for i, step in enumerate(steps) if command in step.get("run", "")]
+    assert len(builders) == 1 and builders[0] < runners[0], (
+        f"the test job runs {needing} with no earlier step that builds rw_fetch")
+    build = steps[builders[0]]
+    assert "if" not in build and "if" not in tests
+    assert "rustup toolchain install 1.94.0 --profile minimal" in build["run"]
+    # Outside the checkout, and named to the tests: nothing is left to the
+    # resolution ladder or to whatever a runner image happens to carry.
+    target = build["env"]["CARGO_TARGET_DIR"]
+    assert target.startswith("${{ runner.temp }}/"), target
+    assert tests["env"]["GPUWM_RW_FETCH"] == target + "/release/rw_fetch"
+    # The same toolchain pin and cargo flags as ci.yml's fetcher-only leg.
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    for line in build["run"].splitlines():
+        assert line.strip() in ci, line
+
+
+def test_publish_selection_has_no_unbuilt_stage1_native_dependencies(workflow):
+    job = workflow["jobs"]["test"]
+    # This job has one supported runner/interpreter; the platform matrix is
+    # qualify, which consumes the sealed packet instead of running these tests.
+    assert job["runs-on"] == "ubuntu-24.04" and "strategy" not in job
+    setup = [step for step in job["steps"] if step.get("uses", "").startswith("actions/setup-python@")]
+    assert len(setup) == 1 and setup[0]["with"]["python-version"] == "3.11"
+    listed = set(re.findall(r"tests/\S+\.py", scripts(job)))
+    native = {line.split("#", 1)[0].strip() for line in
+              (ROOT / "tools/battery/stage1_native_files.txt").read_text().splitlines()}
+    native.discard("")
+    assert not listed & native, f"new publish tests need additional native builds: {sorted(listed & native)}"
+
+
 def test_docker_publisher_upload_paths_are_workspace_relative(workflow):
     steps = workflow["jobs"]["publish"]["steps"]
     for phase in ("data", "native", "pure"):

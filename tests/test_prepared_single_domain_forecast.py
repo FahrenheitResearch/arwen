@@ -2623,6 +2623,8 @@ _EXPECTED_280_PREFLIGHT_REFUSALS = {
         "registry physics of components.pbl.options.ysu (changed)",
         "registry physics of components.surface_layer.options.classic-mm5 "
         "(changed)",
+        # golden/ports-rad: icloud gained the value 2 (declared).
+        "registry physics of parameters.icloud (changed)",
         "registry physics of parameters.moist_cq (changed)",
     ],
     None: [
@@ -2630,6 +2632,8 @@ _EXPECTED_280_PREFLIGHT_REFUSALS = {
         "registry physics of components.pbl.options.ysu (changed)",
         "registry physics of components.surface_layer.options.classic-mm5 "
         "(changed)",
+        # golden/ports-rad: icloud gained the value 2 (declared).
+        "registry physics of parameters.icloud (changed)",
         "registry physics of parameters.moist_cq (changed)",
     ],
 }
@@ -4644,8 +4648,12 @@ def test_the_runner_accepts_the_manifest_this_release_s_fetch_authors(
     identity = manifest["source"]
     assert sorted(identity) == [
         "cycle", "model", "pressure_levels_hpa", "product", "top_pressure_pa"]
-    assert len(identity["pressure_levels_hpa"]) == 23
-    assert identity["top_pressure_pa"] == 5000.0
+    # A 50 hPa top takes one published level strictly above it (40 hPa):
+    # real.exe needs source atmosphere above the model top, not at it
+    # (GFS preparation patch 0001).
+    assert len(identity["pressure_levels_hpa"]) == 24
+    assert min(identity["pressure_levels_hpa"]) == 40.0
+    assert identity["top_pressure_pa"] == 4000.0
 
     roles, receipt = runner._manifest_file_specs(
         "gfs", manifest,
@@ -4660,7 +4668,7 @@ def test_the_runner_accepts_the_manifest_this_release_s_fetch_authors(
     # Routed, not ignored: the ladder reaches the receipt and the derived
     # source top is the one the vertical contract is entitled to.
     assert receipt["pressure_levels_hpa"] == identity["pressure_levels_hpa"]
-    assert receipt["source_top_pressure_pa"] == 5000.0
+    assert receipt["source_top_pressure_pa"] == 4000.0
     assert receipt["experiment_p_top_pa"] == 5000.0
 
 
@@ -4721,7 +4729,7 @@ def test_the_runner_holds_the_level_ladder_to_the_vertical_contract(
     manifest = _authored_gfs_front_door_manifest(
         tmp_path, monkeypatch, top_pressure_pa=5000.0)
 
-    with pytest.raises(ValueError, match="reaching 5000 Pa"):
+    with pytest.raises(ValueError, match="reaching 4000 Pa"):
         runner._manifest_file_specs(
             "gfs", manifest,
             _experiment_stub(start_time=_GFS_FETCH_CYCLE, p_top_pa=1000.0),

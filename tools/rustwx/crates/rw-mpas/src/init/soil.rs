@@ -30,6 +30,31 @@ use crate::error::{MpasError, MpasResult};
 /// NOAH's four layer thicknesses, in metres.  MPAS refuses any other count.
 pub const NOAH_LAYER_THICKNESS: [f32; 4] = [0.10, 0.30, 0.60, 1.00];
 
+/// WRF real.exe, module_initialize_real.F:3108-3131. Soil and vegetation
+/// maps are independent at shorelines. Keep the land-use classification and
+/// give a land cell with water soil the defined silty-clay-loam category.
+pub fn reconcile_soil_category(xland: &[f32], soil: &mut [i32]) -> usize {
+    assert_eq!(xland.len(), soil.len());
+    let mut changed = 0;
+    for (&surface, category) in xland.iter().zip(soil) {
+        let wanted = if surface >= 1.5 { 14 } else if *category == 14 { 8 } else { *category };
+        if *category != wanted { *category = wanted; changed += 1; }
+    }
+    changed
+}
+
+#[cfg(test)]
+mod category_tests {
+    #[test]
+    fn wrf_shoreline_categories_are_consistent_and_idempotent() {
+        let xland = [1., 2., 1., 1., 2.];
+        let mut soil = [14, 6, 8, 16, 14];
+        assert_eq!(super::reconcile_soil_category(&xland, &mut soil), 2);
+        assert_eq!(soil, [8, 14, 8, 16, 14]);
+        assert_eq!(super::reconcile_soil_category(&xland, &mut soil), 0);
+    }
+}
+
 /// Which first-guess level seeds the bottom of the augmented soil column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeepMoisture {
@@ -410,7 +435,7 @@ pub struct SeaiceCounts {
 /// rather than a sea-ice one: `tslb`, `smois`, `sh2o`, `tmn` and `xland` all
 /// come out of the soil step correct and are then legitimately rewritten here.
 #[allow(clippy::too_many_arguments)]
-pub fn physics_init_seaice(
+pub fn physics_init_seaice<T: std::ops::IndexMut<usize, Output=f32> + AsRef<[f32]>>(
     frac_seaice: bool,
     tsk_seaice_threshold: f32,
     isice_lu: i32,
@@ -427,10 +452,10 @@ pub fn physics_init_seaice(
     isltyp: &mut [i32],
     xland: &mut [f32],
     tmn: &mut [f32],
-    tslb: &mut [[f32; 4]],
-    smois: &mut [[f32; 4]],
-    sh2o: &mut [[f32; 4]],
-    smcrel: &mut [[f32; 4]],
+    tslb: &mut [T],
+    smois: &mut [T],
+    sh2o: &mut [T],
+    smcrel: &mut [T],
 ) -> SeaiceCounts {
     let mut counts = SeaiceCounts::default();
     let threshold = if frac_seaice {
@@ -443,7 +468,7 @@ pub fn physics_init_seaice(
         0.5
     };
     counts.xice_threshold = threshold;
-    let n_soil = 4usize;
+    let n_soil = tslb.first().map(|v| v.as_ref().len()).unwrap_or(4);
 
     for c in 0..landmask.len() {
         if xice[c] >= threshold

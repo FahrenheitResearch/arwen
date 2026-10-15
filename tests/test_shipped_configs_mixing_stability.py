@@ -86,8 +86,11 @@ FROZEN_RECORDS: dict[str, tuple[str, str]] = {
         "their 1.8.8 declaration; as-run digest d3eb6c70c0..., at "
         "`git show 4152fcb31:configs/les_nest_250m_grayzone.toml`",
     ),
+    # Re-pinned at 2.9.0 for a comment-only edit: one comment line reworded so
+    # the file names no person (public-push hygiene).  tomllib reads the same
+    # document from both byte strings; the as-run digest is unchanged.
     "configs/frozen/les_tornado_100m_mayfield_20211210.toml": (
-        "5cb25e5363804c5164db9397710bea19e11a77704094c50b4c15d533244d65b6",
+        "5a2dcaf4e705965baea9f516b2467e8ac45ae276536644b58a30161107b8697f",
         "the tornado-LES attempt #1 configuration, plus its 1.8.8 "
         "declaration; as-run digest 7aab68c6df..., which is what "
         "docs/les/ATTEMPT1-EXPECTATIONS.md registered before the run, at "

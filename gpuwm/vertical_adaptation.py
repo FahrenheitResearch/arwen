@@ -399,8 +399,8 @@ def _domain_start(domain, exp):
 
 
 def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
-                       static_highres=None, corridors: bool = True
-                       ) -> list[TerrainField]:
+                       static_highres=None, corridors: bool = True,
+                       statics_corridor=None) -> list[TerrainField]:
     """Every terrain field this experiment's run can touch, in one list.
 
     The root's is the array the caller already built (post-overlay, so it
@@ -424,7 +424,8 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
     from gpuwm.static.build import (build_static_for_domain, build_terrain,
                                     geog_selection_from_catalog)
     from gpuwm.static.corridor import (corridor_grid, moving_grid_ids,
-                                       planned_corridor, relocating_subtree_grid_ids)
+                                       planned_corridor, relocating_subtree_grid_ids,
+                                       validated_corridor_selection)
 
     from gpuwm.static.terrain_smoothing import catalog_with_smoothing
     static_catalog = catalog_with_smoothing(static_catalog, static_highres)
@@ -447,6 +448,11 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
     by_id = {int(dc.grid_id): dc for dc in exp.domains}
     grid_by_id = {int(dc.grid_id): grid
                   for dc, grid in zip(exp.domains, grids)}
+    # A child this preparation seals a statics corridor for is born on the
+    # corridor's crop, smoothed at corridor scale (plan call 5, 2.9.0), so
+    # its moves share edge heights whatever its own footprint would need.
+    born_on_corridor = (frozenset(validated_corridor_selection(
+        exp, statics_corridor)) if len(exp.domains) > 1 else frozenset())
     for dc in exp.domains[1:]:
         gid = int(dc.grid_id)
         selection = geog_selection_from_catalog(static_catalog, gid)
@@ -467,13 +473,15 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
             terrain, grid_by_id[gid], domain_id=gid, run=dc.run)
         if highres_on and smoothing is None:
             smoothing = receipt_of(built)
-        if smoothing is not None and gid in relocating_subtree_grid_ids(exp):
+        if (smoothing is not None and gid in relocating_subtree_grid_ids(exp)
+                and gid not in born_on_corridor):
             raise ValueError(
                 f"d{gid:02d} requires terrain auto-smoothing and moves; "
                 "independent footprint smoothing changes shared edge heights "
                 "and would fail the relocation overlap-statics check. Use "
-                "a fixed domain, or pre-smooth a shared statics corridor "
-                "below the measured slope limit before preparing again.")
+                "a fixed domain, or prepare it with --statics-corridor: the "
+                "corridor is smoothed once over everything the nest can "
+                "reach and the nest starts on its crop.")
         fields.append(TerrainField(f"d{gid:02d} static terrain",
                                    np.asarray(terrain, dtype=np.float64),
                                    float(dc.run.base_temp)))
@@ -504,8 +512,13 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
                 static_highres=static_highres)
             terrain = built.fields["HGT_M"]
         else:
-            terrain = build_terrain(corridor_grid(reference, plan.geometry),
-                                    selection.root, selection=selection)
+            from gpuwm.static.terrain_autosmooth import smooth_to_limit
+            grid = corridor_grid(reference, plan.geometry)
+            # The corridor the run crops from is bounded at corridor scale
+            # (build_child_statics_corridor); survey that terrain.
+            terrain, _ = smooth_to_limit(
+                build_terrain(grid, selection.root, selection=selection),
+                grid, domain_id=gid, run=dc.run)
         fields.append(TerrainField(
             f"d{gid:02d} statics corridor",
             np.asarray(terrain, dtype=np.float64), float(dc.run.base_temp)))
@@ -513,7 +526,8 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
 
 
 def adapt_experiment_for_statics(exp, grids, *, root_terrain, static_catalog,
-                                 static_highres=None, announce=None):
+                                 static_highres=None, announce=None,
+                                 statics_corridor=None):
     """The prepare door's one call: survey this run's ground, then adapt.
 
     Every source door goes through here, so adding a source adds no
@@ -523,7 +537,7 @@ def adapt_experiment_for_statics(exp, grids, *, root_terrain, static_catalog,
 
     fields = run_terrain_fields(
         exp, grids, root_terrain=root_terrain, static_catalog=static_catalog,
-        static_highres=static_highres)
+        static_highres=static_highres, statics_corridor=statics_corridor)
     return adapt_experiment_vertical(exp, fields, announce=announce)
 
 

@@ -1,11 +1,12 @@
-"""Observation-calibration admission for public ensemble requests."""
+"""Implementation admission and notices for public random ensemble requests."""
 from __future__ import annotations
 
 # The reason, the selector names and the config scan live in a module the
 # config loaders can import without the ensemble runtime; this module is
 # where the ensemble doors have always found them.
 from gpuwm.ensemble_admission import (
-    RANDOM_SELECTORS, UNCALIBRATED_SPREAD_REASON, refuse_configured_random)
+    RANDOM_SELECTORS, UNCALIBRATED_SPREAD_REASON, UNCALIBRATED_SPREAD_WARNING,
+    refuse_configured_random)
 
 
 def stochastic_requested(controls):
@@ -44,9 +45,20 @@ def random_descriptor_requested(perturbation):
 
 
 def refuse_uncalibrated_random(*, perturbation=None, stochastic=None):
-    """No caller-supplied amplitude can authorize public random spread."""
+    """Compatibility entry point: refuse only descriptors with no consumer."""
+    if random_descriptor_requested(perturbation):
+        from gpuwm.ensemble.initial_perturbation import validate_initial_perturbation
+        validate_initial_perturbation(perturbation)
+    if stochastic is not None:
+        from gpuwm.ensemble.stochastic_model import StochasticModelProvider
+        StochasticModelProvider.from_mapping(stochastic)
+
+
+def random_warnings(*, perturbation=None, stochastic=None):
+    """An inactive request adds neither a receipt key nor a log entry."""
     if random_descriptor_requested(perturbation) or stochastic_requested(stochastic):
-        raise ValueError(UNCALIBRATED_SPREAD_REASON)
+        return [UNCALIBRATED_SPREAD_WARNING]
+    return []
 
 
 def refuse_native_random(directory):

@@ -1,0 +1,19 @@
+scenario,regime,ta_K,qa_kgkg,ua_ms,ssg_Wm2,llg_Wm2,rain_mmh,rhoo_kgm3,delt_s,month,surface_start_K,za
+1,convective hot afternoon,305 to 307,0.010,2.0,950 to 900,420,0,1.12,60,7,318,max(35;zr+15)
+2,convective tropical humid,303 to 303.5,0.021,3.0,800,450,0,1.13,60,7,307,max(35;zr+15)
+3,convective shower on hot pavement,296,0.017,8.0,150,420,25,1.16,60,7,305,max(35;zr+15)
+4,stable night clear and calm,285 to 283.5,0.006,0.4,0,280,0,1.22,60,7,283,max(35;zr+15)
+5,stable night cold inversion,271 to 270,0.0025,1.2,0,220,0,1.30,60,11,268,max(35;zr+15)
+6,snow season day (frozen surfaces),255 to 256,0.0008,4.0,350,190,0,1.37,60,1,258,max(35;zr+15)
+7,freezing rain,272.5,0.0042,6.0,60,300,2,1.29,60,12,271,max(35;zr+15)
+8,arctic night,235 to 234.5,0.0002,2.0,0,140,0,1.47,60,1,238,max(35;zr+15)
+9,coastal marine near saturation,288,0.0108,9.0,200,380,0,1.22,60,6,289,max(35;zr+15)
+10,high terrain day (about 1900 m),290 to 291.5,0.006,5.0,1050,300,0,0.97,60,7,302,max(35;zr+15)
+11,high terrain night (about 1900 m),268 to 267,0.0025,3.0,0,200,0,0.99,60,10,266,max(35;zr+15)
+12,desert hot dry surface,316,0.0025,4.0,1000,400,0,1.08,60,7,335,max(35;zr+15)
+13,windstorm,290,0.008,28.0,300,350,0,1.18,30,3,291,max(35;zr+15)
+14,humid dew night (green-roof dew arm),291,0.0165,1.5,0,360,0,1.19,60,7,286,max(35;zr+15)
+15,canopy-wind edge (za just above zdc+z0c+2),301,0.010,5.0,700,380,0,1.15,60,7,300,zdc+z0c+3 or +2.5
+16,night after rain (irrigation hour),290,0.011,2.0,0,350,3 then 0,1.19,300,7,289,max(35;zr+15)
+17,near calm sunny,304,0.009,0.15,850,400,0,1.14,60,7,310,max(35;zr+15)
+18,first level 3 m above the roof,306,0.011,4.0,900,410,0,1.13,60,7,312,zr+3

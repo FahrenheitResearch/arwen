@@ -1,0 +1,287 @@
+{
+ "set": "main",
+ "ncol": 66,
+ "nz": 45,
+ "level_fields": [
+  "th",
+  "qv",
+  "qc",
+  "qr",
+  "qi",
+  "qs",
+  "den",
+  "pii",
+  "p",
+  "dz"
+ ],
+ "surface_fields": [
+  "rain",
+  "snow"
+ ],
+ "columns": [
+  {
+   "name": "warm-rain-0",
+   "family": "warm rain"
+  },
+  {
+   "name": "warm-rain-1",
+   "family": "warm rain"
+  },
+  {
+   "name": "warm-rain-2",
+   "family": "warm rain"
+  },
+  {
+   "name": "warm-rain-3",
+   "family": "warm rain"
+  },
+  {
+   "name": "warm-rain-4",
+   "family": "warm rain"
+  },
+  {
+   "name": "warm-rain-5",
+   "family": "warm rain"
+  },
+  {
+   "name": "warm-rain-6",
+   "family": "warm rain"
+  },
+  {
+   "name": "warm-rain-7",
+   "family": "warm rain"
+  },
+  {
+   "name": "mixed-phase-0",
+   "family": "mixed phase"
+  },
+  {
+   "name": "mixed-phase-1",
+   "family": "mixed phase"
+  },
+  {
+   "name": "mixed-phase-2",
+   "family": "mixed phase"
+  },
+  {
+   "name": "mixed-phase-3",
+   "family": "mixed phase"
+  },
+  {
+   "name": "mixed-phase-4",
+   "family": "mixed phase"
+  },
+  {
+   "name": "mixed-phase-5",
+   "family": "mixed phase"
+  },
+  {
+   "name": "mixed-phase-6",
+   "family": "mixed phase"
+  },
+  {
+   "name": "mixed-phase-7",
+   "family": "mixed phase"
+  },
+  {
+   "name": "convective-0",
+   "family": "deep convection"
+  },
+  {
+   "name": "convective-1",
+   "family": "deep convection"
+  },
+  {
+   "name": "convective-2",
+   "family": "deep convection"
+  },
+  {
+   "name": "convective-3",
+   "family": "deep convection"
+  },
+  {
+   "name": "convective-4",
+   "family": "deep convection"
+  },
+  {
+   "name": "convective-5",
+   "family": "deep convection"
+  },
+  {
+   "name": "snow-0",
+   "family": "deep cold"
+  },
+  {
+   "name": "snow-1",
+   "family": "deep cold"
+  },
+  {
+   "name": "snow-2",
+   "family": "deep cold"
+  },
+  {
+   "name": "snow-3",
+   "family": "deep cold"
+  },
+  {
+   "name": "snow-4",
+   "family": "deep cold"
+  },
+  {
+   "name": "snow-5",
+   "family": "deep cold"
+  },
+  {
+   "name": "cirrus-0",
+   "family": "deep cold"
+  },
+  {
+   "name": "cirrus-1",
+   "family": "deep cold"
+  },
+  {
+   "name": "supercooled-0",
+   "family": "deep cold"
+  },
+  {
+   "name": "supercooled-1",
+   "family": "deep cold"
+  },
+  {
+   "name": "fog-0",
+   "family": "saturated"
+  },
+  {
+   "name": "fog-1",
+   "family": "saturated"
+  },
+  {
+   "name": "fog-2",
+   "family": "saturated"
+  },
+  {
+   "name": "ocean-sc-0",
+   "family": "saturated"
+  },
+  {
+   "name": "ocean-sc-1",
+   "family": "saturated"
+  },
+  {
+   "name": "ocean-sc-2",
+   "family": "saturated"
+  },
+  {
+   "name": "saturated-clear",
+   "family": "saturated"
+  },
+  {
+   "name": "saturated-cold-clear",
+   "family": "saturated"
+  },
+  {
+   "name": "stable-night-0",
+   "family": "dry"
+  },
+  {
+   "name": "stable-night-1",
+   "family": "dry"
+  },
+  {
+   "name": "stable-night-2",
+   "family": "dry"
+  },
+  {
+   "name": "dry-evaporating",
+   "family": "dry"
+  },
+  {
+   "name": "dry-warm-snow",
+   "family": "dry"
+  },
+  {
+   "name": "sediment-aloft-0",
+   "family": "sedimentation-heavy"
+  },
+  {
+   "name": "sediment-aloft-1",
+   "family": "sedimentation-heavy"
+  },
+  {
+   "name": "sediment-aloft-2",
+   "family": "sedimentation-heavy"
+  },
+  {
+   "name": "sediment-thin-layers",
+   "family": "sedimentation-heavy"
+  },
+  {
+   "name": "sediment-top-only",
+   "family": "sedimentation-heavy"
+  },
+  {
+   "name": "sediment-top-two",
+   "family": "sedimentation-heavy"
+  },
+  {
+   "name": "sediment-bottom-only",
+   "family": "sedimentation-heavy"
+  },
+  {
+   "name": "high-terrain-0",
+   "family": "high terrain"
+  },
+  {
+   "name": "high-terrain-1",
+   "family": "high terrain"
+  },
+  {
+   "name": "high-terrain-2",
+   "family": "high terrain"
+  },
+  {
+   "name": "high-terrain-3",
+   "family": "high terrain"
+  },
+  {
+   "name": "edge-thresholds",
+   "family": "edge: branch thresholds"
+  },
+  {
+   "name": "edge-temperatures",
+   "family": "edge: t0c and triple point"
+  },
+  {
+   "name": "edge-negative",
+   "family": "edge: negative and subnormal inputs"
+  },
+  {
+   "name": "edge-psaut",
+   "family": "edge: cloud ice above the aggregation limit"
+  },
+  {
+   "name": "edge-dry-tiny",
+   "family": "edge: near-zero vapour and snow"
+  },
+  {
+   "name": "edge-cold-rain",
+   "family": "edge: rain far below freezing (supcol > 50)"
+  },
+  {
+   "name": "edge-heavy",
+   "family": "edge: very large rain and snow"
+  },
+  {
+   "name": "edge-zero",
+   "family": "edge: all hydrometeors zero, saturated"
+  },
+  {
+   "name": "edge-warm-ice",
+   "family": "edge: cloud ice above freezing melts at once"
+  },
+  {
+   "name": "edge-freezing-rain",
+   "family": "edge: warm nose over a cold surface"
+  }
+ ]
+}

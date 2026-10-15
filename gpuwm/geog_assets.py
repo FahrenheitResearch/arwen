@@ -18,7 +18,9 @@ WHICH DOOR needs a pin is a column of that table too
 (:data:`GEOG_CONSUMERS`, and each pin's ``required_by``), not a branch
 in the code that reads it.  ``wrf`` is the WRF static builder's nine;
 ``mesh`` is what ``gpuwm mesh`` must open to write the static half of
-its pair, which is seven of those nine plus the soil archive.  Every
+its pair: six of those nine, the soil archive, and (since its default
+became MPAS-A's own static in 2.9.0) the lake-free MODIS land use and
+the USGS land use native ``init_atmosphere`` reads.  Every
 reader -- the default fetch set, ``--datasets wrf``, and each of
 ``gpuwm doctor``'s two completeness verdicts -- is that column read at
 a different scope, so adding a dataset for a future door is a row and a
@@ -215,7 +217,7 @@ _WRF_AND_MESH = (GEOG_CONSUMER_WRF, GEOG_CONSUMER_MESH)
 _WRF_ONLY = (GEOG_CONSUMER_WRF,)
 _MESH_ONLY = (GEOG_CONSUMER_MESH,)
 
-#: The pin inventory, with opt-in consumers after the default ten.
+#: The pin inventory, with opt-in consumers after the default rows.
 #: A test binds the ``wrf``-scoped names to
 #: gpuwm.domain_wizard.GEOG_DATASETS and the ``mesh``-scoped ones to
 #: gpuwm.rustwx_static.REQUIRED_GEOG_DATASETS through the child
@@ -226,11 +228,14 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "topo_gmted2010_30s", "topo_gmted2010_30s.tar.bz2", 182721518,
         "20e02ef61b16c8d66753db8f1ede0edc0ac74e6e1b87961cdbdc483040ff22d7",
         1884949355, required_by=_WRF_AND_MESH),
+    # The WRF static builder's land use. The mesh door read it too until
+    # 2.9.0; its native default reads the two rows after the soil archive,
+    # and only `rw_mpas_static --legacy-static` still opens this one.
     GeogArchive(
         "modis_landuse_20class_30s_with_lakes",
         "modis_landuse_20class_30s_with_lakes.tar.bz2", 32532921,
         "fe052cc1000638c32ac7191c779ad070efae458ff0751bc4aa2a716e38bec578",
-        933120358, required_by=_WRF_AND_MESH),
+        933120358, required_by=_WRF_ONLY),
     GeogArchive(
         "soiltype_top_30s", "soiltype_top_30s.tar.bz2", 1639561,
         "6d45d93cc0d14ac4019f1a2857e56fb1fbc860f135e12d89fc0a569278242315",
@@ -284,6 +289,24 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
          "texture_layer1", "texture_layer2",
          "texture_layer3", "texture_layer4"),
         in_mandatory_bundle=False, required_by=_MESH_ONLY),
+    # The mesh door's native static (2.9.0 default) reads land use exactly
+    # as MPAS-A v8.4.2 init_atmosphere does: MODIFIED_IGBP_MODIS_NOAH from
+    # the 20-class archive WITHOUT lakes (a lake is water, category 17;
+    # mpas_init_atm_static.F:403), and the gravity-wave-drag statistics over
+    # the USGS 30 s water mask (mpas_init_atm_gwd.F). Neither is on the
+    # mirror or verified in the mandatory bundle. Pinned from official TLS
+    # downloads on 2026-10-14 (sizes equal the server's Content-Length).
+    GeogArchive(
+        "modis_landuse_20class_30s", "modis_landuse_20class_30s.tar.bz2",
+        32334661,
+        "b21ca154d1038ec271abaa1be2fd38a0cd055b8a4ddfaab520719478ac48d326",
+        933120348, in_mandatory_bundle=False, required_by=_MESH_ONLY,
+        available_sources=("ncar",), pin_date="2026-10-14"),
+    GeogArchive(
+        "landuse_30s", "landuse_30s.tar.bz2", 20988479,
+        "143cd195ae91f64011a43eae52ca00228709672c6a2ba614cb437eeb4cd41160",
+        933120263, in_mandatory_bundle=False, required_by=_MESH_ONLY,
+        available_sources=("ncar",), pin_date="2026-10-14"),
     # CLM lake physics reads depth only when sf_lake_physics=1. This NCAR
     # archive is outside the mandatory bundle and is not on the mirror:
     # gpuwm fetch-geog --datasets lake_depth --source ncar
@@ -293,6 +316,18 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "7f016173f4999e67d9757bddb9e80f1b1f3794bfe820fd78b215eb599d59fd76",
         1884949370, in_mandatory_bundle=False,
         required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
+    # GSL terrain drag reads all twenty children together. Verified from
+    # the official TLS archive on 2026-10-12; optional to the baseline.
+    GeogArchive(
+        "orogwd3_10m", "orogwd3_10m.tar.bz2", 14957055,
+        "0ffb24427670e4114a8a64dc7106c260152e35ad0f3176e1da4149ed9eb10c84",
+        93319204,
+        tuple(f"{stat}{scale}" for scale in ("ls", "ss")
+              for stat in ("con", "var", "oa1", "oa2", "oa3", "oa4",
+                           "ol1", "ol2", "ol3", "ol4")),
+        in_mandatory_bundle=False, required_by=(), optional_for=_WRF_ONLY,
+        available_sources=("ncar",), fetch_by_default=False,
+        download_source="ncar", pin_date="2026-10-12"),
     # TLS pins measured 2026-09-30 on www2.mmm.ucar.edu. These products
     # are absent from the Hugging Face mirror and the mandatory bundle.
     GeogArchive("erod", "erod.tar.bz2", 131569,
@@ -322,6 +357,47 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "49306298749e3ed2a6172dfe7af0023a5be0e9f5f5230a2cfd6421ebce3e81b1",
         933120273, in_mandatory_bundle=False,
         required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
+    # The native MPAS static path's other selectors (rw_mpas_static,
+    # MPAS-A v8.4.2 mpas_init_atm_static.F): --topo-data GTOPO30,
+    # --landuse-data MODIFIED_IGBP_MODIS_NOAH_15s, and the NCEP vegetation,
+    # albedo and snow-albedo choices, each read by its native directory name.
+    # The two land-use archives the native DEFAULT reads are required rows
+    # above; these are read only when a namelist or flag selects them, so
+    # they are optional for the mesh door and not in the default fetch.
+    # None was fetchable before 2.9.0, so selecting one stopped at "WPS_GEOG
+    # index ... is unreadable". Not on the mirror or in the mandatory bundle;
+    # downloaded from NCAR. Pinned from the official TLS downloads on
+    # 2026-10-14 (sha256 of the bytes, extracted size the sum of member sizes).
+    GeogArchive(
+        "topo_30s", "topo_30s.tar.bz2", 167515986,
+        "c4ce6bac221767e7946fe3e544a97c1fa5b10cc0c5ee02d9fee5319ddc12a51b",
+        1884949330, in_mandatory_bundle=False,
+        required_by=(), optional_for=_MESH_ONLY, available_sources=("ncar",),
+        fetch_by_default=False, download_source="ncar", pin_date="2026-10-14"),
+    GeogArchive(
+        "modis_landuse_20class_15s", "modis_landuse_20class_15s.tar.bz2", 65224208,
+        "9dd85b97221062c9a69ece3fe1dfd964702d516c35ff25cdc06c16aea6411028",
+        3732480347, in_mandatory_bundle=False,
+        required_by=(), optional_for=_MESH_ONLY, available_sources=("ncar",),
+        fetch_by_default=False, download_source="ncar", pin_date="2026-10-14"),
+    GeogArchive(
+        "greenfrac", "greenfrac.tar.bz2", 2377411,
+        "38f4d78f386094d73bb384d7bdce99cf5dffb4231b245b6dad8d847fd2a38079",
+        37861126, in_mandatory_bundle=False,
+        required_by=(), optional_for=_MESH_ONLY, available_sources=("ncar",),
+        fetch_by_default=False, download_source="ncar", pin_date="2026-10-14"),
+    GeogArchive(
+        "albedo_ncep", "albedo_ncep.tar.bz2", 2074979,
+        "d13ad7b44ffaadaf9fab8a731eb0cc9f1db0a2a03e4254a4a3dbe6c7a4d54461",
+        37861126, in_mandatory_bundle=False,
+        required_by=(), optional_for=_MESH_ONLY, available_sources=("ncar",),
+        fetch_by_default=False, download_source="ncar", pin_date="2026-10-14"),
+    GeogArchive(
+        "maxsnowalb", "maxsnowalb.tar.bz2", 8886,
+        "62267cec1ea4b2b6868d646a27911bf097527e602abfc06c4ce006f1c86d6d1c",
+        69404, in_mandatory_bundle=False,
+        required_by=(), optional_for=_MESH_ONLY, available_sources=("ncar",),
+        fetch_by_default=False, download_source="ncar", pin_date="2026-10-14"),
 )
 
 #: NCAR's "highest resolution mandatory fields" bundle: the fallback
@@ -697,21 +773,20 @@ def _content_range_start(value: str) -> int | None:
 
 def _rw_asset(kind: str, *, on_progress=None, **options) -> dict:
     """Drive the existing Rust bridge; no transport or hashing in Python."""
-    from gpuwm.rustwx_fetch import find_fetch_bin, fetch_remedy, _run
+    from gpuwm.rustwx_fetch import find_fetch_bin, fetch_remedy, probe_fetch_bin, _run
     binary = find_fetch_bin()
     if binary is None:
         raise GeogFetchError("rw_fetch is missing; static downloads cannot be "
                              "verified and published through Rust. " + fetch_remedy())
+    ok, evidence = probe_fetch_bin(binary)
+    if not ok:
+        raise GeogFetchError(evidence)
     command = [os.fspath(binary), kind]
     for name, value in options.items():
         command.extend(["--" + name.replace("_", "-"), str(value)])
     try:
         return _run(command, what=kind, on_progress=on_progress)
     except (RuntimeError, OSError) as error:
-        if "unknown subcommand" in str(error):
-            raise GeogFetchError("the installed rw_fetch predates pinned static assets; "
-                                 "unverified Python fallback would bypass the static pin. "
-                                 + fetch_remedy()) from error
         raise GeogFetchError(str(error)) from error
 
 
@@ -1439,6 +1514,23 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
     return staged
 
 
+def archive_names_for_paths(required) -> set[str]:
+    """Resolve dataset children using the archive table's container metadata.
+
+    Defect: a static reader asks for a child dataset directory, while the
+    fetcher stages its whole container. Comparing those names directly refused
+    a supported full-physics recipe before any input preparation.
+    """
+    owners = {archive.dataset: archive.dataset for archive in GEOG_ARCHIVES}
+    for archive in GEOG_ARCHIVES:
+        for child in archive.index_subdirs:
+            owners[f"{archive.dataset}/{child}"] = archive.dataset
+    missing = set(required) - set(owners)
+    if missing:
+        raise GeogFetchError(f"selected datasets {sorted(missing)} have no archive pins; fetching another resolution would change the static fields")
+    return {owners[name] for name in required}
+
+
 def geography_for_run(config_path: Path) -> dict:
     """Read the same selectors and grid applicability as the static builder.
 
@@ -1503,9 +1595,7 @@ def geography_for_run(config_path: Path) -> dict:
             paths = orographic_paths(drag, selection.root, selection.resolution_tokens)
             required.update(path.relative_to(selection.root).as_posix() for path in paths.values())
             required.add(selection.landuse)
-    missing = required - set(geog_datasets())
-    if missing:
-        raise GeogFetchError(f"selected datasets {sorted(missing)} have no archive pins; fetching another resolution would change the static fields")
+    required = archive_names_for_paths(required)
     datasets = [a.dataset for a in GEOG_ARCHIVES if a.dataset in required]
     from gpuwm.static.external_source import static_source_row
     return {"datasets": datasets, "static_sources": sorted(statics),

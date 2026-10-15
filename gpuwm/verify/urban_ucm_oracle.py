@@ -189,7 +189,7 @@ def _reference(rows, sel):
     return ref
 
 
-def replay(name: str, root: Path | None = None):
+def replay(name: str, root: Path | None = None, *, generation="wrf_471"):
     """Every row from its own ``*_in`` state: ``(port, ref, codes)``."""
     from gpuwm.core.urban_ucm import run_columns
 
@@ -197,11 +197,11 @@ def replay(name: str, root: Path | None = None):
     params = port_params(table, switches)
     sel = np.ones(rows["ta"].shape[0], dtype=bool)
     outputs, after, codes = run_columns(params, _inputs(rows, sel),
-                                        _state_from(rows, sel, "_in"))
+                                        _state_from(rows, sel, "_in"), generation=generation)
     return _flatten(outputs, after), _reference(rows, sel), codes
 
 
-def carried_replay(name: str, root: Path | None = None):
+def carried_replay(name: str, root: Path | None = None, *, generation="wrf_471"):
     """Each column's first step from the fixture, later steps from the
     port's OWN state: the prognostic layers must stay on WRF's words."""
     from gpuwm.core.urban_ucm import run_columns
@@ -219,7 +219,8 @@ def carried_replay(name: str, root: Path | None = None):
         sel[idx] = True
         if not np.all(rows["step"][idx] == step):
             raise ValueError(f"{name}: rows are not step-major within a column")
-        outputs, after, codes = run_columns(params, _inputs(rows, idx), state)
+        outputs, after, codes = run_columns(params, _inputs(rows, idx), state,
+                                           generation=generation)
         if np.any(codes):
             raise RuntimeError(f"{name}: kernel error codes {np.unique(codes)}")
         state = after

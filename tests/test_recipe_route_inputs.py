@@ -239,8 +239,8 @@ def test_the_recipes_that_read_the_hrrr_static_file_are_the_ones_that_name_it():
         "conus_hrrr_configuration": ["hrrr-conus-v4"],
         "hrrr_configuration_clock": ["hrrr-conus-v4"],
         "hrrr_configuration_cut": ["hrrr-conus-v4"],
-        # No [static] table and a source whose metadata selects no file.
-        "hrrr_v4_gsd41": [],
+        # The static grid is explicit even when forcing comes from another source.
+        "hrrr_v4_gsd41": ["hrrr-conus-v4"],
     }
 
 

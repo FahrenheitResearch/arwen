@@ -43,19 +43,26 @@ from gpuwm.ingest.real import (
 )
 
 #: The root domain the 16 GiB sizing emits at that centre, and its nest:
+#: 276x220 / 552x440 since 3bf65e9c7 (golden/parity, whose WRF 4.6.1
+#: line-for-line Kain-Fritsch port 26779da4e keeps 66 column arrays in the
+#: KF workspace, not 52, so the 12 km root's cumulus prices more device
+#: memory; a first-parent bisect from the previous pin fcffda7bc names that
+#: merge alone; this cell is on no battery list, so it moved unseen);
 #: 276x222 / 552x448 since dad24232a (via 76a3c1979) priced device items
 #: the estimate had left out, physics._prepare_atmosphere's rho transient
 #: among them (a first-parent bisect from the previous pin names that
 #: merge alone); 278x222 / 560x448 after
 #: A163 measured the forecast margin at 1.13 of the subtotal, and
 #: 276x220 / 552x440 on the plan's 1.15 before that.
-SIZED_16GIB_LAYOUTS = [(276, 222), (552, 448)]
+SIZED_16GIB_LAYOUTS = [(276, 220), (552, 440)]
 #: The plan whose run measured MEASURED_PEAK_BYTES: the 16 GiB sizing's
 #: layouts at the plan's 1.15 margin.
 MEASURED_16GIB_LAYOUTS = [(276, 220), (552, 440)]
 #: The 8 GiB sizing of the same centre, which never met the undershoot
-#: (154x124 / 304x248 on the plan's 1.15 margin).
-SIZED_8GIB_LAYOUTS = [(156, 124), (312, 248)]
+#: (154x124 / 304x248 on the plan's 1.15 margin, 156x124 / 312x248 from
+#: A163's 1.13 margin, and 154x124 / 304x248 again since 3bf65e9c7's
+#: 66-array KF workspace, the same bisected move as the 16 GiB pin above).
+SIZED_8GIB_LAYOUTS = [(154, 124), (304, 248)]
 #: The source field the mapper was handed for the root's first valid time
 #: (ERA5 SPFH, 37 levels, 117x173 source cells, 748,917 values), which is
 #: also where the whole file's two extremes fall: its other valid time

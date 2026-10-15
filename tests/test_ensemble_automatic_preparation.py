@@ -64,15 +64,19 @@ def test_automatic_singleton_allocates_no_owner_directory(tmp_path):
     assert not (tmp_path/"owner").exists()
 
 
-def test_reference_fallback_refuses_before_owner_or_acquisition(tmp_path, monkeypatch):
+def test_reference_fallback_needs_no_acquisition_and_records_warning(tmp_path, monkeypatch):
     from datetime import datetime
     start = datetime(2026, 10, 1, tzinfo=timezone.utc)
     context = EnsembleSourceContext(start, start+timedelta(hours=12), object())
     monkeypatch.setattr(AutomaticPreparationOwner, "_launch",
         lambda *a, **k: pytest.fail("uncalibrated fallback started acquisition"))
-    with pytest.raises(ValueError, match="calibrated against observations"):
-        resolve_ensemble_sources(3, context)
-    assert not (tmp_path/"owner").exists()
+    selection = resolve_ensemble_sources(3, context)
+    owner = AutomaticPreparationOwner(selection, context, output_root=tmp_path/"owner").start()
+    assert owner.inputs is context.ordinary_inputs
+    assert owner.session_arguments["stochastic_provider"].sppt is not None
+    assert json.loads((tmp_path/"owner"/"source-selection.json").read_text())["warnings"] == [
+        "uncalibrated spread, WRF default amplitudes"]
+    owner.finish()
 
 
 def test_tree_head_is_admitted_by_the_existing_tree_reader(tmp_path, monkeypatch):

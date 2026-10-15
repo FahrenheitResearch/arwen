@@ -147,16 +147,30 @@ INIT_ABI_MARKER = (
 CONVERT_ABI_MARKER = (
     "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED")
 
-#: ``rw_mpas_lbc``'s contract, at the head of its argument vector.  The
-#: crate's literal is four usage lines with newlines between them, so
-#: this is a prefix rather than the whole thing, for the reason
-#: :data:`INIT_ABI_MARKER` states: a marker that has to reproduce an
-#: embedded newline exactly breaks on a reflow that changed nothing.
+#: ``rw_mpas_lbc``'s contract, its first usage line through the
+#: physics-mode switch.  The crate's literal is four usage lines with
+#: newlines between them, so this is a prefix rather than the whole thing,
+#: for the reason :data:`INIT_ABI_MARKER` states: a marker that has to
+#: reproduce an embedded newline exactly breaks on a reflow that changed
+#: nothing.  It reaches ``[--physics-mode correct|exact]`` (2.9.0: correct
+#: by default, spelled default first) because the producer reads unknown
+#: flags without complaint: a build from before the switch would take
+#: ``--physics-mode correct`` and write native case-9 boundary winds.
 #: Spelled to match :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS`; a test
-#: binds the two.
+#: binds the two, and both to the crate's literal.
 LBC_ABI_MARKER = (
     "rw_mpas_lbc --grid INIT.nc --out-dir DIR "
-    "--start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS")
+    "--start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS "
+    "--interval YYYY-MM-DD_HH:MM:SS=MET_PATH [--interval ...] "
+    "--nfglevels N --fg-interval-seconds N --extrap-airtemp MODE "
+    "--use-spechumd yes|no --theta-adv-order N --coef-3rd-order X "
+    "--oned-underflow preserve|reproduce-ifx-ftz "
+    "[--physics-mode correct|exact]")
+
+#: ``rw_hex_points``'s contract: its ``--abi`` line (schema name and the
+#: stdout progress tokens).  Spelled to match
+#: :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS`.
+POINTS_ABI_MARKER = "gpuwm-rw-hex-points-v1\tPOINT\tSOUNDING\tMETEOGRAM\tFINISHED"
 
 #: ``CARGO_BUILD_HINT``: the one-liner that builds the mesh tools, from a
 #: checkout root, spelled for the shell rule when it is read.
@@ -358,11 +372,24 @@ LBC = MpasBridge(
     abi_marker=LBC_ABI_MARKER,
 )
 
-#: Every MPAS binary the crate builds, by artifact name.  Read by
+#: Soundings and meteograms at named points straight off MPAS native
+#: history: the gpuwm-hex product door's third binary (2.9.0).  It is a bin
+#: of rw-wrfbatch, not rw-mpas, but it sits on this ladder because this is
+#: the table gpuwm-hex resolves its engines through and ``gpuwm doctor``
+#: reports from; left off it, a pip install of both packages had no point
+#: pictures and ``gpuwm-hex doctor`` exited 1 naming it.
+POINTS = MpasBridge(
+    name="rw_hex_points",
+    env_var="GPUWM_RW_HEX_POINTS",
+    subject="the MPAS sounding and meteogram renderer",
+    abi_marker=POINTS_ABI_MARKER,
+)
+
+#: Every MPAS binary the bundle carries, by artifact name.  Read by
 #: ``gpuwm doctor`` and by the bundle-coverage test, so a sixth binary
 #: is a row here and is reported without a second edit.
 BRIDGES: dict[str, MpasBridge] = {
-    bridge.name: bridge for bridge in (MESH, STATIC, INIT, GEOMETRY, HOSTPREP, CONVERT, LBC)}
+    bridge.name: bridge for bridge in (MESH, STATIC, INIT, GEOMETRY, HOSTPREP, CONVERT, LBC, POINTS)}
 
 
 # ---------------------------------------------------------------------------
@@ -1243,13 +1270,20 @@ def default_static_path(grid: Path) -> Path:
 
 def build_static(*, grid: Path, out: Path, geog: Path | None = None,
                  nominal_dx_m: float | None = None, clobber: bool = False,
-                 receipt: Path | None = None, progress=None) -> dict:
+                 receipt: Path | None = None, progress=None,
+                 legacy_static: bool = False) -> dict:
     """Build the static half of the pair and return the engine's document.
 
     Separated from :func:`generate` because the two binaries are separate
     artifacts with separate contracts, and joined at the door because a
     grid without its static is not a deliverable: the mesh registry pins
     both by byte count and SHA-256 and refuses a mesh carrying one.
+
+    The static is MPAS-A v8.4.2's native one by default (2.9.0).
+    ``legacy_static`` asks for the pre-2.9.0 stream (82 variables, the
+    with-lakes land use, where a lake cell whose soil is not water stays
+    land), for a consumer that still needs that schema.  It is not the bytes
+    of a pre-2.9.0 build: 2.9.0's shared static arithmetic applies to it.
     """
 
     from gpuwm import rustwx_static
@@ -1267,6 +1301,8 @@ def build_static(*, grid: Path, out: Path, geog: Path | None = None,
         argv += ["--receipt", str(receipt)]
     if clobber:
         argv.append("--clobber")
+    if legacy_static:
+        argv.append("--legacy-static")
     try:
         return rustwx_static.run_static(binary, argv, on_progress=progress)
     except rustwx_static.StaticEngineError as error:

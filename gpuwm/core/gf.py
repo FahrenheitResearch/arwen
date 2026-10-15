@@ -457,6 +457,9 @@ class GrellFreitas:
                 np.int32(0),      # SHIPPED default: corrected k22 indexing
                 np.int32(hi - lo), np.int32(nz)))
         del ws
+        if cfg.lightning_option == 11:
+            cloud_top = state.scratch((ny, nx), "ltng_ktop_deep", dtype=np.int32)
+            cloud_top[...] = isc[:, _OUT_ISCA.index("ktop_deep")].reshape(ny, nx)
 
         def grid(j):
             # (ncol, nz) slice -> (nz, ny, nx)

@@ -56,6 +56,23 @@ pub extern "C" fn gpuwm_tempo_abi_version() -> u32 {
     TEMPO_ABI_VERSION
 }
 
+/// The source revision this library was built from, as a NUL-terminated
+/// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>` literal (`build.rs` injects it).
+/// The release cut reads the literal out of the file's bytes to prove a
+/// staged library matches the commit being released; exporting it keeps it
+/// in the cdylib under LTO.  2.9.0: this library joined the bridge bundle,
+/// because no wheel carried it and TEMPO could not initialize from a pip
+/// install.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_tempo_source_rev() -> *const std::os::raw::c_char {
+    static SOURCE_REV_STAMP: &str = concat!(
+        "GPUWM_BRIDGE_SOURCE_REV=",
+        env!("GPUWM_BRIDGE_SOURCE_REV"),
+        "\0"
+    );
+    SOURCE_REV_STAMP.as_ptr().cast()
+}
+
 /// Contract marker: TEMPO 9adf9ef tempo_init, blob layout v1.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_tempo_init_v1() -> u32 {

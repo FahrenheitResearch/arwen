@@ -70,8 +70,9 @@ def _profile(seed=0):
     return {name: cp.asarray(value) for name, value in fields.items()}
 
 
-def _seam(cumulus_scheme="kf", cumulus_seconds=600.0):
+def _seam(cumulus_scheme="kf", cumulus_seconds=600.0, **extra):
     return mcb.run_mpas_column_batch(
+        **extra,
         n_levels=NZ, n_columns=NCOL, dt=DT,
         radiation_seconds=600.0, surface_pbl_seconds=120.0,
         cumulus_seconds=cumulus_seconds, cumulus_scheme=cumulus_scheme,
@@ -412,8 +413,9 @@ def _p3_profile(seed=0):
     return inputs
 
 
-def _p3_seam(cumulus_scheme="kf", cumulus_seconds=600.0):
+def _p3_seam(cumulus_scheme="kf", cumulus_seconds=600.0, **extra):
     return mcb.run_mpas_column_batch(
+        **extra,
         n_levels=NZ, n_columns=NCOL, dt=DT,
         microphysics_scheme="p3",
         radiation_seconds=600.0, surface_pbl_seconds=120.0,
@@ -873,12 +875,19 @@ def test_wsm6_and_p3_payload_layouts_are_unchanged_by_the_mp28_arm():
           "state/th_old", "state/qv_old"}),
     )
     for factory, profile, phase2, expected_identity, expected_state in cases:
-        seam = factory()
-        inputs = profile()
-        seam.run_phase1(dt=DT, **inputs)
-        seam.run_phase2(**phase2(inputs))
-        payload = seam.export_state()
-        assert set(payload["identity"]) == expected_identity
+        # The pre-mp28 layout is the EXACT-mode layout: from 2.9.0 the seam
+        # defaults to correct mode, which adds one identity key,
+        # ``physics_correct`` (a restore across modes refuses on it), and
+        # nothing else.
+        for mode, identity in (
+                ("exact", expected_identity),
+                (None, expected_identity | {"physics_correct"})):
+            seam = factory(physics_mode=mode)
+            inputs = profile()
+            seam.run_phase1(dt=DT, **inputs)
+            seam.run_phase2(**phase2(inputs))
+            payload = seam.export_state()
+            assert set(payload["identity"]) == identity, mode
         assert set(payload["scalars"]) == scalar_keys
         assert {key for key in payload["arrays"]
                 if key.startswith("state/")} == expected_state

@@ -1,0 +1,100 @@
+--- a/tools/urban_slucm_regime_oracle/slucm_regime_oracle.F90
++++ b/tools/urban_slucm_regime_oracle/slucm_regime_oracle.F90
+@@ -49,8 +49,8 @@
+   implicit none
+ 
+   integer, parameter :: nsoil = 4
+-  integer, parameter :: nstep = 6
+-  integer, parameter :: nscen = 18
++  integer, parameter :: nstep = 12
++  integer, parameter :: nscen = 30
+   real :: dzr(nsoil), dzb(nsoil), dzg(nsoil)
+   character(len=16) :: table, variant
+   character(len=512) :: prefix, arg
+@@ -139,7 +139,7 @@
+     zr_u = zr_tbl(ut)
+     zdc_u = zdc_tbl(ut)
+     z0c_u = z0c_tbl(ut)
+-    do sc = 1, nscen
++    do sc = 19, nscen
+       call scenario_init()
+       do st = 1, nstep
+         call scenario_forcing()
+@@ -250,6 +250,21 @@
+     case (18)           ! first level 3 m above the roof, afternoon
+       tsurf0 = 312.
+       tlay0 = (/ 308., 302., 297. /)
++    case (19:30)
++      tsurf0 = 300.
++      tlay0 = (/ 298., 296., 294. /)
++      jmonth = mod(sc - 19,12) + 1
++      if (sc == 19) then
++        tsurf0 = 365.
++        tlay0 = (/ 345., 325., 305. /)
++      else if (sc == 20) then
++        tsurf0 = 215.
++        tlay0 = (/ 225., 240., 260. /)
++      else if (sc == 27) then
++        sm0 = 0.01
++      else if (sc == 28) then
++        sm0 = 0.439
++      end if
+     end select
+ 
+     tr = tsurf0 + 0.
+@@ -527,6 +542,40 @@
+       omg = 0.6
+       cosz = 0.85
+       za = zr_u + 3.
++    case (19:30)
++      ta = 295. + 0.01*s
++      qa = 0.009
++      ua = 4.
++      ssg = 500.
++      llg = 350.
++      rhoo = 1.1
++      omg = 2.4
++      cosz = 0.5
++      if (sc == 19) then
++        ta = 340.; qa = 0.0001; ssg = 1300.; llg = 450.
++      else if (sc == 20) then
++        ta = 210.; qa = 1.e-7; ssg = 0.; llg = 80.; rhoo = 1.6
++      else if (sc == 21) then
++        ta = 275.; qa = 0.025; ssg = 0.; llg = 320.
++      else if (sc == 22) then
++        rhoo = 0.6; ta = 270.; qa = 0.002; ua = 40.; ssg = 1100.
++      else if (sc == 23) then
++        delt = 0.001
++      else if (sc == 24) then
++        delt = 3600.
++      else if (sc == 25) then
++        ua = 0.; ssg = 0.; chs = 0.0001; chs2 = 0.0001
++      else if (sc == 26) then
++        rain = 1000.; delt = 1.
++      else if (sc == 27) then
++        qa = 0.0001; ssg = 1200.
++      else if (sc == 28) then
++        rain = 50.; ssg = 0.
++      else if (sc == 29) then
++        rain = 1.e-30
++      else if (sc == 30) then
++        rain = 1.e-40
++      end if
+     end select
+     u1 = dir_u * ua
+     v1 = dir_v * ua
+--- a/tools/urban_slucm_regime_oracle/build.sh
++++ b/tools/urban_slucm_regime_oracle/build.sh
+@@ -104,6 +104,12 @@
+     "nlcd griri       -9 -9 1  -9 2  1  1  0.7 -9"
+     "lcz  gr          -9 -9 -9 -9 -9 -9 1  0.4 -9"
+     "lcz  grch1       1  -9 -9 -9 -9 1  1  0.6 -9"
++    "lcz  grts2       -9 2  0  0  1  0  1  0.5 2"
++    "lcz  grall       1  2  1  1  2  1  1  1.0 2"
++    "nlcd grfgr0      1  -9 0  1  2  1  1  0.0 2"
++    "lcz  grfgr1      1  -9 0  1  2  1  1  1.0 2"
++    "lcz  grbound2    -9 -9 1  1  1  1  1  0.4 2"
++    "nlcd gralhonly   1  -9 0  1  1  1  1  0.5 1"
+ )
+ run_set() {   # $1 = build tag, $2.. = variant lines
+     local tag=$1; shift

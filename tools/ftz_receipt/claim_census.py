@@ -60,7 +60,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tools.ftz_receipt import route_inventory as ri
+if not __package__:
+    # Run by file name: make `tools` resolve to this tree, not to another
+    # installed checkout (D1; see route_inventory.require_same_tree).
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.ftz_receipt import route_inventory as ri  # noqa: E402
 
 SCHEMA_ID = "gpuwm.ftz-claim-census/v2"
 
@@ -395,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=None)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
+    ri.require_same_tree(__file__)
     root = Path(args.root).resolve() if args.root else ri.repo_root()
     out = default_output(root)
     previous = (json.loads(out.read_text(encoding="utf-8"))

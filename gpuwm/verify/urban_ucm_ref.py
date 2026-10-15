@@ -321,7 +321,7 @@ def _routines():
 
 def urban_step(table_row: Mapping[str, np.float32], switches: Mapping[str, object],
                forcing: Mapping[str, np.float32], state: MutableMapping[str, object],
-               *, jmonth: int) -> dict[str, np.float32]:
+               *, jmonth: int, generation: str = "wrf_471") -> dict[str, np.float32]:
     """Advance one four-layer urban column, renewing ``state`` in place."""
     if switches.get('distributed_aerodynamics_option', False):
         raise NotImplementedError('distributed_aerodynamics_option (slucm_distributed_drag)')
@@ -329,6 +329,10 @@ def urban_step(table_row: Mapping[str, np.float32], switches: Mapping[str, objec
         raise NotImplementedError('NUDAPT (mh_urb > 0)')
     e = {k:F(v) for k,v in table_row.items()}
     g = dict(switches)
+    from gpuwm.config import URBAN_WATER_BALANCE_GENERATIONS
+    if generation not in URBAN_WATER_BALANCE_GENERATIONS:
+        raise ValueError(f"unknown urban_water_balance {generation!r}")
+    g['legacy_water_balance'] = generation == 'wrf_471'
     for name, n in [('dzr',4),('dzb',4),('dzg',4),('dzgr',4),('porimp',3),('dengimp',3),('ahdiuprf',24),('alhseason',4),('alhdiuprf',48)]:
         g[name]=np.asarray(g[name] if name in g else [g[f'{name}{i}'] for i in range(1,n+1)],dtype=np.float32)
     g['distributed_aerodynamics_option']=False
@@ -657,7 +661,7 @@ endif
 if (imp_scheme==2) then
 if (flxhumrp <= 0.) flxhumrp = 0.
 drelr = drelrp+(rain1-flxhumrp*rhoo/1000.)*delt/porimp(impr)
-if (rain > 0. .and. drelr < drelrp) drelr = drelrp
+if (legacy_water_balance .and. rain > 0. .and. drelr < drelrp) drelr = drelrp
 if (drelr <= 0.) then
 drelr  = 0.0
 betr	  = 0.0
@@ -813,9 +817,9 @@ if (imp_scheme==2) then
 if (flxhumbp <= 0.) flxhumbp = 0.
 if (flxhumgp <= 0.) flxhumgp = 0.
 drelb = drelbp+(rain1-flxhumbp*rhoo/1000.)*delt/porimp(impb)
-if (rain > 0. .and. drelb < drelbp) drelb = drelbp
+if (legacy_water_balance .and. rain > 0. .and. drelb < drelbp) drelb = drelbp
 drelg = drelgp+(rain1-flxhumgp*rhoo/1000.)*delt/porimp(impg)
-if (rain > 0. .and. drelg < drelgp) drelg = drelgp
+if (legacy_water_balance .and. rain > 0. .and. drelg < drelgp) drelg = drelgp
 if (drelb <= 0.) then
 drelb   = 0.0
 betb    = 0.0

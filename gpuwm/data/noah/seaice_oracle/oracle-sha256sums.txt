@@ -1,0 +1,12 @@
+5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062  <wrf-4.6.1-checkout>/share/module_model_constants.F
+2ed7dc6e90e0fe442ffee84512b4998d31c8ec3400d3a7ab6078404065f784a6  <wrf-4.6.1-checkout>/frame/module_wrf_error.F
+034bf1d5f48b0b734702f200e3bcefe67db441b170cdcec8592992eb7d358e8c  <wrf-4.6.1-checkout>/phys/module_sf_noahlsm.F
+7a98113351f79ef746383402230a3552518a105be0b21cbd96718c43b0bccf78  <wrf-4.6.1-checkout>/phys/module_sf_noah_seaice.F
+be92b5f605f8dfe26a7a790a263de106ebb34f2414864a81d933cc6713da86ea  <wrf-4.6.1-checkout>/phys/module_sf_noah_seaice_drv.F
+1e04450ec44399144437c37b4230239e25d4379f0454c90a3fed3518ea407794  <oracle-workspace>/tools/noah_wrf461_oracle/stub_wrf.F90
+0ab77a445fcdc1bdc1101565a3805d6c99dddd58b3a20af3d985a5404d10413d  <oracle-workspace>/tools/noah_seaice_wrf461_oracle/stub_state.F90
+a37bff23299037243e00564c500ee7f71eacf9a5cf1c37e6d0d8d58b8b3f144c  <oracle-workspace>/tools/noah_seaice_wrf461_oracle/run_seaice.F90
+6c25a787a84ec84e3f3b327959367887d643e6d50ec3f58f169c2778b38eeb5e  <oracle-workspace>/tools/noah_seaice_wrf461_oracle/build.sh
+035f6e98ccc3f0c1736e156e8d6a565b1a99d14c0822518e711e7f762d15da71  noah-seaice.csv
+b4f66b09ffc5f110a3188204df734307069675244db92c4ebd36a4193cdda615  noah-seaice-frpcpn.csv
+8b4bb8f7f991dd91c3b54128fd06f68520a43f97bcfaa630f8d5cf52093ca471  noah-seaice-alb075.csv

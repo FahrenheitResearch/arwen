@@ -201,6 +201,90 @@ def test_default_domain_restart_interval_keeps_every_selected_card(tmp_path, ide
     assert [row["status"] for row in document["members"]] == ["completed"] * 3
 
 
+class RetiringCollector(Collector):
+    """finish_run retires a private diagnostic its checkpoint snapshot named.
+
+    The real collector does this with .ensemble-diagnostics/<domain>/
+    coordinates.nc (retire_private_coordinates), after the last member's
+    checkpoint roster was sealed.
+    """
+    finished = False
+
+    def save_resume(self):
+        scratch = self.root / ".ensemble-diagnostics" / "d01" / "coordinates.nc"
+        files = []
+        if not self.finished:
+            scratch.parent.mkdir(parents=True, exist_ok=True)
+            scratch.write_bytes(b"worker-only coordinates")
+            files.append(scratch.relative_to(self.root).as_posix())
+        restart_roster.atomic_json(self.root / ".ensemble-resume" / "collector.json",
+            {"rows": self.rows, "files": files})
+
+    def finish_run(self):
+        self.finished = True
+        (self.root / ".ensemble-diagnostics" / "d01" / "coordinates.nc").unlink(missing_ok=True)
+        return super().finish_run()
+
+
+def test_completed_checkpointed_roster_still_validates(tmp_path, identity):
+    # 2.9.0 defect (ensemble showcase, 2026-10-12): a checkpointed roster that
+    # completed rc 0 failed its own restart validator ("ensemble resume file is
+    # missing or hash-mismatched: .ensemble-diagnostics/d01/coordinates.nc"):
+    # the roster was last sealed at the last member's completion, before
+    # finish_run retired private diagnostics and the PASS manifest replaced
+    # ensemble-run.json.
+    collector = RetiringCollector(tmp_path)
+    def complete(inputs, **options):
+        collector.submit(member_id=current_capture().member_id)
+        return {"status": "PASS"}
+    report = session(tmp_path, collector).run_prepared(complete, prepared(0))
+    assert report["status"] == "PASS"
+    identities = json.loads((tmp_path / restart_roster.IDENTITIES).read_text())
+    document = restart_roster.verify_roster(tmp_path / restart_roster.ROSTER, identities, root=tmp_path)
+    assert [row["status"] for row in document["members"]] == ["completed"] * 3
+    assert not any(item["path"].endswith("coordinates.nc") for item in document["files"])
+
+
+class CancelledCollector(Collector):
+    """The failure path cancels the product worker, then seals the roster.
+
+    The real collector's save_resume waits for that worker to go idle and
+    raises the cancellation the failure path just caused ("isolated
+    ensemble product process exited -15").
+    """
+    cancelled = False
+
+    def cancel_products(self):
+        self.cancelled = True
+
+    def save_resume(self):
+        if self.cancelled:
+            raise RuntimeError("ensemble product consumer failed: isolated "
+                               "ensemble product process exited -15")
+        super().save_resume()
+
+
+def test_member_error_survives_the_roster_seal_after_cancellation(tmp_path, identity):
+    # Fresh-install QA (2026-10-12, published 2.8.9): a member failed with
+    # "member cumulative precipitation reset", and the user saw only the
+    # product worker's -15 exit, because the failure path's roster seal
+    # raised the cancellation it had just caused and replaced the error.
+    collector = CancelledCollector(tmp_path)
+    def failing(inputs, **options):
+        member = current_capture().member_id
+        if member == 1:
+            raise ValueError("member cumulative precipitation reset; QPF would be invalid")
+        collector.submit(member_id=member)
+        return {"status": "PASS"}
+    with pytest.raises(ValueError, match="cumulative precipitation reset") as caught:
+        session(tmp_path, collector).run_prepared(failing, prepared(0))
+    assert any("exited -15" in note for note in getattr(caught.value, "__notes__", ()))
+    manifest = json.loads((tmp_path / "ensemble-run.json").read_text())
+    assert manifest["status"] == "failed"
+    assert "cumulative precipitation reset" in manifest["error"]
+    assert "exited -15" in manifest["restart_roster_seal_error"]
+
+
 def test_production_collector_hold_blocks_other_member_submissions(tmp_path):
     import threading
     from gpuwm.ensemble.batch_product_output import HeadlineDiagnosticCollector

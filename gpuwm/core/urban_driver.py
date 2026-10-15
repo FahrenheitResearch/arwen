@@ -56,7 +56,7 @@ class UrbanModelMissing(RuntimeError):
 
 def solar_geometry(start_time: datetime, elapsed_seconds: float,
                    latitude_deg, longitude_deg, *,
-                   radt_seconds: float) -> UrbanSolar:
+                   radt_seconds: float, generation="wrf_480") -> UrbanSolar:
     """WRF's radconst + calc_coszen at a radiation call.
 
     module_radiation_driver.F:1188-1208: DECLIN from the call-time Julian
@@ -69,6 +69,19 @@ def solar_geometry(start_time: datetime, elapsed_seconds: float,
     hour = (valid.hour + valid.minute / 60.0 + valid.second / 3600.0
             + valid.microsecond / 3.6e9)
     julian = valid.timetuple().tm_yday - 1.0 + hour / 24.0
+    from gpuwm.core.solar import solar_generation, geometry_at
+    solar_generation(generation)
+    if generation == "wrf_480":
+        import cupy as cp
+        ds, cz, ha = geometry_at(valid, latitude_deg, longitude_deg,
+            hour_offset_seconds=0.5 * radt_seconds, generation=generation,
+            start_time=start_time, elapsed_seconds=elapsed_seconds)
+        return UrbanSolar(declin=float(ds[0].get()), solcon=float(ds[1].get()),
+            coszen=cp.asnumpy(cz), hrang=cp.asnumpy(ha),
+            xlat=np.asarray(latitude_deg, np.float32), xlong=np.asarray(longitude_deg, np.float32),
+            gmt=float(start_time.hour + start_time.minute/60. + start_time.second/3600. + start_time.microsecond/3.6e9),
+            julday=int(start_time.timetuple().tm_yday), julian=float(julian),
+            julyr=int(valid.year), model_time=float(elapsed_seconds))
     degrad = np.pi / 180.0
     dpd = 360.0 / 365.0
     slong = dpd * (julian - 80.0 if julian >= 80.0 else julian + 285.0)
@@ -109,7 +122,7 @@ class UrbanCoupler:
 
     def __init__(self, state: UrbanState, *, lsm: int,
                  start_time: datetime | None, latitude_deg=None,
-                 longitude_deg=None, module=None) -> None:
+                 longitude_deg=None, module=None, generation="wrf_480") -> None:
         self.state = state
         self.lsm = int(lsm)
         self.module = module if module is not None else load_model_module(
@@ -125,6 +138,9 @@ class UrbanCoupler:
                 "longitude: the UCM reads DECLIN, COSZEN, HRANG and XLAT and "
                 "BEP/BEM the same plus GMT/JULDAY/XLONG, and a silent zero "
                 "would put every city on the equator at New Year")
+        from gpuwm.core.solar import solar_generation
+        solar_generation(generation)
+        self.solar_generation = generation
         self.start_time = start_time
         self.latitude_deg = np.asarray(latitude_deg, dtype=np.float32)
         self.longitude_deg = np.asarray(longitude_deg, dtype=np.float32)
@@ -137,7 +153,7 @@ class UrbanCoupler:
 
         host = solar_geometry(self.start_time, elapsed_seconds,
                               self.latitude_deg, self.longitude_deg,
-                              radt_seconds=radt_seconds)
+                              radt_seconds=radt_seconds, generation=self.solar_generation)
         solar = self.state.solar
         solar.declin = host.declin
         solar.coszen = cp.asarray(host.coszen)

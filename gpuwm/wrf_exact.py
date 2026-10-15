@@ -1,7 +1,8 @@
 """Opt-in strict arithmetic for WRF verification, selected before import.
 
-The default process does not import CuPy or alter its compiler. CuPy adds
-FTZ after caller options, so verification normalizes options at the final
+This strict installer does not import CuPy in a default process. Urban
+modules have their own source-scoped subnormal policy. CuPy adds FTZ
+after caller options, so verification normalizes options at the final
 NVRTC program boundary as well as before forming the compiled-image cache key.
 """
 

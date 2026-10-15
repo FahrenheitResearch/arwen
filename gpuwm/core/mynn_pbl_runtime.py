@@ -102,11 +102,11 @@ VERTICAL_LEVEL_BOUNDS = (5, None)
 #:
 #: A named scheme (gpuwm/microphysics_schemes.py) joins from its own row: it
 #: belongs here exactly when its mass species carry ``qs``.
-from gpuwm.microphysics_schemes import NAMED_SCHEMES as _NAMED_MP_SCHEMES  # noqa: E402
+from gpuwm.core.mynn_pbl_metadata import MYNN_SNOW_MICROPHYSICS  # noqa: E402
 
-MYNN_SNOW_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28, 30)) | frozenset(
-    _s.mp_id for _s in _NAMED_MP_SCHEMES.values()
-    if "qs" in _s.ice_mass_species)
+
+from gpuwm.microphysics_schemes import PORTED_WRF_SNOW_SELECTORS
+MYNN_SNOW_MICROPHYSICS |= frozenset(PORTED_WRF_SNOW_SELECTORS)
 
 
 def mynn_flag_qs(mp_physics: int) -> bool:
@@ -276,6 +276,11 @@ def mynn_pbl_step(
     source["w"] = cp.ascontiguousarray(w[:nz]).reshape(nz, ncol)
     for solver_name, field_name in _STATE_FIELD.items():
         source[solver_name] = fields[field_name].reshape(nz, ncol)
+    if options.get("bl_mynn_tkeadvect", False) and int(itimestep) != 1:
+        # Stage the transported carrier into the existing priced QKE
+        # column slot. A cold call still stages QKE for initialization,
+        # whose source routine replaces QKE_ADV with its initialized QKE.
+        source["qke"] = fields["qke_adv"].reshape(nz, ncol)
     flat_columns = {name: fields[key].reshape(ncol)
                     for name, key in _COLUMN_FIELDS}
     flat_kpbl = fields["kpbl"].reshape(ncol)
@@ -326,6 +331,8 @@ def mynn_pbl_step(
             values.update({name: stage[name] for name in ("qv", "qc", "qi")})
         for solver_name in _STATE_FIELD:
             values[solver_name] = stage[solver_name]
+        if options.get("bl_mynn_tkeadvect", False):
+            values["qke_adv"] = stage["qke"]
         values["dx"] = spacing
         # gpuwm has no ocean-current coupling; WRF's uncoupled path passes
         # the zero-initialised UOCE/VOCE arrays (Registry default 0.0).
@@ -361,6 +368,8 @@ def mynn_pbl_step(
 
         for name, target in out_state.items():
             target[:, lo:hi] = out[name].T
+        if options.get("bl_mynn_tkeadvect", False):
+            fields["qke_adv"].reshape(nz, ncol)[:, lo:hi] = out["qke_adv"].T
         for name in ("pblh", "rmol", "kpbl"):
             fields[name].reshape(ncol)[lo:hi] = out[name]
         for name in (*MYNN_PBL_DIAGNOSTICS_2D, *MYNN_PBL_DIAGNOSTICS_INT_2D):

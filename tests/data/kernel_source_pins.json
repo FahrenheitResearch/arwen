@@ -1,0 +1,37 @@
+{
+  "schema": "gpuwm-kernel-source-pins-v1",
+  "modules": {
+    "g3": "a3625a4975eb8f2300b2b0e299636a325d327e5be17a960ec3ee56938778c571",
+    "nsas": "13d4580fcbe5c70b9921882f9f73f96a5383d8123d4f57252d943e8587965fc6",
+    "lin": "54224a77822a0bd0c5ded4a2857a03f24ecb535658aeef0be7564e79775e63ca",
+    "lin_refl": "789bd95b575aea27728eea4cc4f2915114f1dba01dcdc15dac0e7c13dd909a6d",
+    "fer_hires": "47ee958bc19f8f95367720b1ec0c2ec3751d799dc5e51a2d00bc03ba88eb9874",
+    "wsm3": "0daed0b8f2b80fe5deb8c0cc8d090b3ad79669500b15a8f1bc423151e8e619d2",
+    "wsm5": "8fbdf5f51f71bc67de4b9859957fde136ff0eb1fd8b0de5dd5f9fdcf53987467",
+    "wsm6r": "0551464ba27713acf90df5ece69ef3c9ab9cedb191ef838ed63fe506d48d0c2c"
+  },
+  "headers": {
+    "nsas_constants.cuh": "e50bd02c62e11ec3c4bf5619bab6e30805832401df930c1235a136db2fb4c907",
+    "lin_support.cuh": "0d169a555cfb91673a7439e24ca4c43c853d22e2cda2563d4e8b1819b26ed18a",
+    "lin_wrf.cuh": "3954ddbef0420d1f88f0eba3ae81e5db9df3918a58f60779d1b5055e9ee8c2d0",
+    "refl.cu": "1e2c45699a721b4b042769f9f868d85d8a6eb4960fc547ce9affb59b69f43f66"
+  },
+  "composed_headers": {},
+  "loader_headers": {
+    "nsas": [
+      "glibc_flt32.cuh",
+      "nsas_constants.cuh"
+    ],
+    "lin": [
+      "glibc_flt32.cuh",
+      "lin_support.cuh",
+      "lin_wrf.cuh"
+    ],
+    "lin_refl": [
+      "refl.cu"
+    ],
+    "fer_hires": [
+      "glibc_flt32.cuh"
+    ]
+  }
+}

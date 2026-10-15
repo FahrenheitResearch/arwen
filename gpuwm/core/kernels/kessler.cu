@@ -32,6 +32,18 @@
 // geopotential -- all per moist_physics_prep_em
 // (dyn_em/module_big_step_utilities_em.F).  Mirror:
 // gpuwm/verify/npref.py np_kessler_column.
+//
+// Arithmetic: every REAL**REAL is WOOF's own gfk_pow and the EXP is gfk_exp
+// (glibc_flt32.cuh, prepended by the loader), and the unit compiles with
+// --fmad=false, so each expression rounds where gfortran's does.  Graded
+// bitwise against the byte-unmodified WRF v4.6.1 routine over 104 columns,
+// 13 regimes and 25 calls by tests/test_kessler_wrf461_parity.py
+// (tools/kessler_wrf461_oracle).
+//
+// One deliberate departure from the Fortran: es is capped at 0.99 p before
+// qvs, because WRF's routine heats without bound where es >= p (a WRF
+// defect, documented here and not copied; see the production sweep).  It
+// changes no word where es <= 0.99 p: tests/test_kessler_refute_columns.py.
 
 // Per-thread column work arrays (local memory); the launcher rejects
 // nz > KESS_KMAX.
@@ -70,7 +82,7 @@ void kessler_column(real* __restrict__ t,          // (nz, ny, nx) theta (K)
         rhok[k] = rho[IDX3(k, j, i)];
         real qrr = fmaxf(0.0f, qr[IDX3(k, j, i)] * 0.001f * rhok[k]);
         vtden[k] = sqrtf(rho0 / rhok[k]);
-        vt[k] = 36.34f * powf(qrr, 0.1364f) * vtden[k];
+        vt[k] = 36.34f * gfk_pow(qrr, 0.1364f) * vtden[k];
         real rdzw = 1.0f / dz8w[IDX3(k, j, i)];
         crmax = fmaxf(vt[k] * dt * rdzw, crmax);
     }
@@ -107,7 +119,7 @@ void kessler_column(real* __restrict__ t,          // (nz, ny, nx) theta (K)
             crmax = 0.0f;
             for (int k = 0; k < nz; ++k) {
                 real qrr = fmaxf(0.0f, prodk[k] * 0.001f * rhok[k]);
-                vt[k] = 36.34f * powf(qrr, 0.1364f) * vtden[k];
+                vt[k] = 36.34f * gfk_pow(qrr, 0.1364f) * vtden[k];
                 real rdzw = 1.0f / dz8w[IDX3(k, j, i)];
                 crmax = fmaxf(vt[k] * time_sediment * rdzw, crmax);
             }
@@ -133,27 +145,42 @@ void kessler_column(real* __restrict__ t,          // (nz, ny, nx) theta (K)
         real piik = pii[idx];
 
         real factorn = 1.0f / (1.0f + c3k * dt
-                               * powf(fmaxf(0.0f, qrk), c4k));
+                               * gfk_pow(fmaxf(0.0f, qrk), c4k));
         real qrprod = qck * (1.0f - factorn)
                     + factorn * c1k * dt * fmaxf(qck - c2k, 0.0f);
         real rcgs = 0.001f * rho[idx];
 
         qck = fmaxf(qck - qrprod, 0.0f);
-        qrk = prodk[k];                         // qr = (qr + prod - qr)
+        // module_mp_kessler.F: qr = (qr + prod - qr).  In float32 that is
+        // NOT prod: (qr + prod) rounds before qr is taken back off.  WRF's
+        // words are this expression's words, so it is evaluated as written
+        // (the WRF column oracle, tests/test_kessler_wrf461_parity.py).
+        qrk = (qrk + prodk[k]) - qrk;
         qrk = fmaxf(qrk + qrprod, 0.0f);
 
         real temp = piik * tk;
-        real pressure = 1.0e5f * powf(piik, 1004.0f / 287.0f);
+        real pressure = 1.0e5f * gfk_pow(piik, 1004.0f / 287.0f);
         real gam = 2.5e6f / (1004.0f * piik);
-        real es = 1000.0f * SVP1 * expf(SVP2 * (temp - SVPT0)
+        real es = 1000.0f * SVP1 * gfk_exp(SVP2 * (temp - SVPT0)
                                         / (temp - SVP3));
+        // WOOF guard, NOT in module_mp_kessler.F: es is capped at 0.99 p,
+        // the cap WRF's own Morrison (EVS = min(0.99*pres, ...)) and Ferrier
+        // (ESW = MIN(..., 0.99*PP)) apply before the same ep2*es/(p - es).
+        // The breakage it prevents (lane/verify-kessler-mp1-refute): with a
+        // model top near 1-3 hPa and a 255-275 K stratopause, es >= p, so
+        // WRF's qvs goes negative, the adjustment "condenses" ~100 times the
+        // vapour present (qv clamped to 0, water created) and heats the top
+        // layers without bound: the WRF v4.6.1 column oracle reaches 4,435 K
+        // after four 60 s calls from 4 ppmv of vapour.  Where es <= 0.99 p
+        // the min returns es itself, so every other word stays WRF's.
+        es = fminf(es, 0.99f * pressure);
         real qvs = EP2 * es / (pressure - es);
         real prod = (qvk - qvs)
                   / (1.0f + pressure / (pressure - es) * qvs * f5
                             / ((temp - SVP3) * (temp - SVP3)));
         real ern = fminf(fminf(
-            dt * (((1.6f + 124.9f * powf(rcgs * qrk, 0.2046f))
-                   * powf(rcgs * qrk, 0.525f))
+            dt * (((1.6f + 124.9f * gfk_pow(rcgs * qrk, 0.2046f))
+                   * gfk_pow(rcgs * qrk, 0.525f))
                   / (2.55e8f / (pressure * qvs) + 5.4e5f))
                * (fmaxf(qvs - qvk, 0.0f) / (rcgs * qvs)),
             fmaxf(-prod - qck, 0.0f)), qrk);

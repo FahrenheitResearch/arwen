@@ -36,6 +36,13 @@ move (``identical source + identical cells = identical bytes``), and
 tests/test_statics_corridor.py proves it against the build rather than
 assuming it.
 
+THE ONE EXCEPTION is the terrain slope bound
+(:mod:`gpuwm.static.terrain_autosmooth`): over ground steeper than the
+measured limit it smooths, and its passes depend on the extent smoothed.
+It runs once, over the whole corridor, and the child is BORN on the crop at
+its declared placement (:class:`CorridorBirth`, plan call 5, 2.9.0), so the
+prepared child and every later crop read the same smoothed field.
+
 It also needs the SOURCE side to be placement-independent, which is what
 the corridor's own extent put at risk: a corridor over a parent that
 spans the antimeridian reads a source window crossing the wrap seam
@@ -102,7 +109,20 @@ STATICS_CORRIDOR_FLAG = "--statics-corridor"
 #: dateline-spanning parent therefore disagreed with the footprint build on
 #: the categorical fields, and the first relocation refused on the
 #: overlap-statics equality.
-STATICS_CORRIDOR_BUILD_CONTRACT = "canonical-source-column-binning-v1"
+#:
+#: ``+corridor-scale-terrain-smoothing-v1`` (2.9.0): the terrain slope bound
+#: (:mod:`gpuwm.static.terrain_autosmooth`) runs over the WHOLE corridor
+#: with the child's own dynamics, with or without ``[static.highres]``, and
+#: the child is born on the corridor's crop at its declared placement
+#: (:func:`corridor_birth_statics`).  Before it a footprint build smoothed
+#: only its own cells while the corridor smoothed its whole extent (with
+#: the overlay) or not at all (without it), so over steep ground the birth
+#: footprint and every later crop disagreed on HGT_M and the first
+#: relocation could refuse on the overlap-statics equality.  A corridor
+#: sealed under the older contract is re-verified against the tree's own
+#: sealed child statics at load, which refuses exactly those trees.
+STATICS_CORRIDOR_BUILD_CONTRACT = (
+    "canonical-source-column-binning-v1+corridor-scale-terrain-smoothing-v1")
 
 #: Receipt-stated provenance for statics a relocation crops from the
 #: corridor (the prepared-route counterpart of
@@ -801,7 +821,19 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
         from gpuwm.static.highres_production import apply_highres_statics
         fields, highres_receipt = apply_highres_statics(
             fields, grid, config=static_highres, domain_id=child_dc.grid_id,
-            case_date=child_dc.start_time.date(), landuse_attrs=landuse)
+            case_date=child_dc.start_time.date(), landuse_attrs=landuse,
+            run=child_dc.run)
+    # The slope bound runs at CORRIDOR scale, overlay or not, with the
+    # child's own dynamics (the run a footprint build bounds with), and
+    # the child is born on this corridor's crop (corridor_birth_statics),
+    # so a moving nest's terrain is the same whichever builder made it.
+    from .terrain_autosmooth import prepare_fields, receipt_of
+    label = f"d{int(child_dc.grid_id):02d}"
+    fields = prepare_fields(
+        fields, grid, domain_id=child_dc.grid_id, run=child_dc.run,
+        announce=lambda line: print(line.replace(
+            f"terrain: {label}", f"terrain: {label} statics corridor", 1)))
+    terrain_autosmooth = receipt_of(fields)
     if _has_dust_statics(child_dc.run):
         from gpuwm.chem_table import catalog
         from gpuwm.core.chem_statics import static_specs
@@ -840,6 +872,9 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
     }
     if highres_receipt is not None:
         entry["highres"] = highres_receipt
+    if terrain_autosmooth is not None:
+        entry["terrain_autosmooth"] = json.loads(
+            json.dumps(terrain_autosmooth, allow_nan=False))
     if reach is not None:
         entry["reach"] = json.loads(json.dumps(reach, allow_nan=False))
     return CorridorBuild(grid_id=int(child_dc.grid_id), fields=fields,
@@ -1162,6 +1197,153 @@ def _require(condition: bool, message: str) -> None:
         raise CorridorRefusal(message)
 
 
+def _declared_crop(corridor: ChildStaticsCorridor, child_dc):
+    """The crop at the child's DECLARED placement, in its corridor's frame."""
+    geometry = corridor.geometry
+    if int(geometry["frame_grid_id"]) == int(child_dc.parent_id):
+        return corridor.crop(child_dc.i_parent_start, child_dc.j_parent_start)
+    # corridor_frame_kwargs derives this validated prepared origin via
+    # origin_in_frame_cells, as the mover does for its live placements.
+    return corridor.crop_at(*geometry["reference_origin_child_cells"])
+
+
+@dataclass(frozen=True)
+class CorridorBirth:
+    """A corridor child's birth footprint: its sealed corridor's crop at
+    the declared placement (plan call 5, 2.9.0).
+
+    Child initialization reads it in place of a footprint build, so the
+    sealed child statics, the first relocation's outgoing statics and every
+    later crop come from one smoothed field, whichever builder made it.
+    """
+
+    grid_id: int
+    fields: Mapping[str, np.ndarray]
+    cache_sha256: str
+    terrain_autosmooth: Mapping[str, object] | None = None
+
+    def footprint_statics(self, baseline, grid):
+        """``baseline`` (the footprint build) with every field taken from
+        the corridor crop, plus the slope receipt binding the crop's terrain.
+
+        The baseline fixes the inventory and the shapes; a crop lacking one
+        of its fields is refused, because initialization would otherwise
+        mix corridor and footprint ground in one child.
+        """
+        from .terrain_autosmooth import SCHEMA, SmoothedFields, field_hash
+        from gpuwm.acoustic_adaptation import steepest_slope
+
+        label = f"d{int(self.grid_id):02d}"
+        missing = sorted(set(baseline) - set(self.fields))
+        _require(not missing,
+                 f"{label} statics corridor lacks the footprint fields "
+                 f"{missing}; the child cannot be born on its corridor. "
+                 f"Prepare again with {STATICS_CORRIDOR_FLAG}")
+        fields = {}
+        for name, value in baseline.items():
+            crop = np.asarray(self.fields[name])
+            _require(crop.shape == np.shape(value),
+                     f"{label} statics corridor crop {name} has shape "
+                     f"{crop.shape}, the footprint {np.shape(value)}; the "
+                     "corridor was built for a different footprint")
+            fields[name] = np.array(crop, dtype=np.asarray(value).dtype,
+                                    copy=True)
+        corridor = self.terrain_autosmooth
+        if corridor is None:
+            return fields
+        after = steepest_slope(
+            fields["HGT_M"], grid.dx, grid.dy, msfu=grid.mapfac_u(),
+            msfv=grid.mapfac_v(), label=label)
+        # A crop's faces are a subset of the corridor's, so its slope is
+        # inside the bound the corridor was smoothed to.
+        _require(after.slope < corridor["slope_limit"],
+                 f"{label} statics corridor crop slope {after.slope:.6g} is "
+                 f"not inside the corridor's limit "
+                 f"{corridor['slope_limit']:.6g}; the corridor was smoothed "
+                 "for a different grid")
+        receipt = {
+            "schema": SCHEMA, "domain_id": int(self.grid_id),
+            "smooth_option": corridor["smooth_option"],
+            "smooth_passes": corridor["smooth_passes"],
+            "max_passes": corridor["max_passes"],
+            "slope_limit": corridor["slope_limit"],
+            "slope_before": corridor["slope_before"],
+            "slope_after": after.slope,
+            "degrees_after": after.degrees, "face_after": list(after.face),
+            "terrain_after_sha256": field_hash(fields["HGT_M"]),
+            "scope": "statics corridor crop at the declared placement",
+            "corridor_terrain_before_sha256": corridor["terrain_before_sha256"],
+            "corridor_terrain_after_sha256": corridor["terrain_after_sha256"],
+            "corridor_cache_sha256": self.cache_sha256,
+            "measured_map": corridor["measured_map"],
+            "dynamics_arms": list(corridor["dynamics_arms"]),
+            "static_compute": corridor["static_compute"],
+        }
+        return SmoothedFields(fields, receipt)
+
+
+def corridor_birth_statics(directory: Path, receipt, exp
+                           ) -> dict[int, CorridorBirth]:
+    """Every sealed child's birth footprint, cropped from the set just
+    written under ``directory`` (``receipt`` is what the writer returned).
+
+    Read back from the sealed caches, so the birth is the sealed bytes and
+    host memory holds one corridor at a time.
+    """
+    if receipt is None:
+        return {}
+    directory = Path(directory)
+    by_id = {int(domain.grid_id): domain for domain in exp.domains}
+    births: dict[int, CorridorBirth] = {}
+    for label, entry in sorted(receipt["domains"].items()):
+        grid_id = int(label[1:])
+        cache_path = directory / entry["cache"]["path"]
+        observed = _sha256(cache_path)
+        _require(observed == entry["cache"]["sha256"],
+                 f"{label} statics corridor cache changed after it was "
+                 f"sealed ({cache_path}); the child cannot be born on it")
+        with np.load(cache_path, allow_pickle=False) as archive:
+            fields = {name: np.asarray(archive[name], dtype=np.float64)
+                      for name in archive.files}
+        corridor = ChildStaticsCorridor(geometry=entry, fields=fields,
+                                        cache_sha256=observed)
+        crop = _declared_crop(corridor, by_id[grid_id])
+        del corridor, fields
+        births[grid_id] = CorridorBirth(
+            grid_id=grid_id, fields=crop, cache_sha256=observed,
+            terrain_autosmooth=entry.get("terrain_autosmooth"))
+    return births
+
+
+def catalog_with_corridor_births(catalog, births):
+    """``catalog`` carrying ``births`` as ``statics_corridor_births`` (the
+    children's catalog reads them), or ``catalog`` itself when empty."""
+    if not births:
+        return catalog
+    import copy
+    import dataclasses
+
+    if dataclasses.is_dataclass(catalog):
+        return dataclasses.replace(catalog, statics_corridor_births=births)
+    carried = copy.copy(catalog)
+    carried.statics_corridor_births = births
+    return carried
+
+
+def move_statics_corridor_set(source: Path, directory: Path) -> None:
+    """Move a set emitted ahead of an export into the export's tree.
+
+    The receipt names caches relative to its own folder, so the move keeps
+    every digest; refusing an existing target keeps the writer's rule.
+    """
+    source, directory = Path(source), Path(directory)
+    if directory.exists():
+        raise FileExistsError(
+            f"refusing to overwrite statics corridor set {directory}")
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(source, directory)
+
+
 def _verify_legacy_child_statics(corridor, child_dc, sealed_child_statics,
                                  label):
     """Check the first move's shared ground against this tree's own bytes.
@@ -1192,13 +1374,7 @@ def _verify_legacy_child_statics(corridor, child_dc, sealed_child_statics,
                      - set(sealed_child_statics))
     if missing:
         refuse(f"sealed child statics are missing fields {missing}")
-    geometry = corridor.geometry
-    if int(geometry["frame_grid_id"]) == int(child_dc.parent_id):
-        crop = corridor.crop(child_dc.i_parent_start, child_dc.j_parent_start)
-    else:
-        # corridor_frame_kwargs derives this validated prepared origin via
-        # origin_in_frame_cells, as the mover does for its live placements.
-        crop = corridor.crop_at(*geometry["reference_origin_child_cells"])
+    crop = _declared_crop(corridor, child_dc)
     placement = Placement(
         grid_id=int(child_dc.grid_id),
         i_parent_start=int(child_dc.i_parent_start),
@@ -1386,7 +1562,8 @@ def corridor_footprint_statics_builder(corridor: ChildStaticsCorridor):
 __all__ = [
     "CORRIDOR_BYTES_PER_CELL", "CORRIDOR_PLANES_PER_CELL",
     "CORRIDOR_REBUILT_STATICS", "CORRIDOR_STRIP_FILL_SOURCE",
-    "ChildStaticsCorridor", "CorridorBuild", "CorridorRefusal",
+    "ChildStaticsCorridor", "CorridorBirth", "CorridorBuild",
+    "CorridorRefusal",
     "STATICS_CORRIDOR_BUILD_CONTRACT",
     "STATICS_CORRIDOR_DIRNAME", "STATICS_CORRIDOR_FLAG",
     "STATICS_CORRIDOR_RECEIPT", "STATICS_CORRIDOR_SCHEMA",
@@ -1399,7 +1576,9 @@ __all__ = [
     "moving_grid_ids", "origin_in_frame_cells",
     "relocating_subtree_grid_ids",
     "copy_statics_corridor_set", "corridor_grid",
+    "catalog_with_corridor_births", "corridor_birth_statics",
     "emit_statics_corridor_set", "grid_identity_probes",
+    "move_statics_corridor_set",
     "grid_probe_drift",
     "load_child_statics_corridor", "validated_corridor_selection",
     "write_statics_corridor_set",

@@ -207,6 +207,7 @@ class PreparedEnsembleSession:
         self._stochastic_authorities = {}
         self._stochastic_input_bindings = {}
         self._surface_receipts = {}
+        self._initial_receipts = {}
         self._member_land_layouts = {}
         if self.stochastic_provider is None and self.request.stochastic is not None:
             from gpuwm.ensemble.stochastic_model import StochasticModelProvider
@@ -224,7 +225,9 @@ class PreparedEnsembleSession:
                              "and this session has no bound member inputs: every member would "
                              "run one prepared land column under its variant's name. "
                              "Next: gpuwm ensemble CONFIG --recipe member-roster")
-        if ((self.request.sources or self.request.perturbation is not None)
+        from gpuwm.ensemble.initial_perturbation import is_initial_perturbation
+        if ((self.request.sources or (self.request.perturbation is not None
+                                    and not is_initial_perturbation(self.request.perturbation)))
                 and input_provider is None and member_roster is None and source_execution is None):
             # Breakage it prevents: the request names a source (or a
             # perturbation) per member, and this session would run every
@@ -234,6 +237,9 @@ class PreparedEnsembleSession:
 
     def _random_members(self, experiment):
         """Does stochastic physics make this session's members differ?"""
+        from gpuwm.ensemble.initial_perturbation import is_initial_perturbation
+        if is_initial_perturbation(self.request.perturbation):
+            return True
         selected = any(getattr(domain.run, f"spp_{name}", 0)
                        for domain in getattr(experiment, "domains", ()) or ()
                        for name in ("conv", "pbl", "lsm"))
@@ -274,7 +280,11 @@ class PreparedEnsembleSession:
             "would run the same prepared inputs."))
 
     def run_prepared(self, runner, inputs, *, output_directory=None, **runner_options):
-        self._require_member_inputs(getattr(inputs, "experiment", None))
+        from gpuwm.ensemble.initial_perturbation import is_initial_perturbation
+        experiment = getattr(inputs, "experiment", None)
+        if self.stochastic_provider is not None:
+            experiment = self.stochastic_provider.configure_experiment(experiment)
+        self._require_member_inputs(experiment)
         started = time.perf_counter()
         out = Path(output_directory or self.output_directory)
         out.mkdir(parents=True, exist_ok=True)
@@ -314,6 +324,18 @@ class PreparedEnsembleSession:
             member_inputs_by_id = {member: self._configured_member_inputs(prepared)
                                   for member, prepared in member_inputs_by_id.items()}
         self._remember_member_land_layouts(member_inputs_by_id)
+        from gpuwm.ensemble.calibration_admission import random_warnings
+        warnings = random_warnings(perturbation=self.request.perturbation,
+                                   stochastic=self.request.stochastic)
+        if (not warnings and self.stochastic_provider is not None and any(
+                self.stochastic_provider.enabled_for_experiment(prepared.experiment)
+                for prepared in member_inputs_by_id.values())):
+            from gpuwm.ensemble_admission import UNCALIBRATED_SPREAD_WARNING
+            warnings = [UNCALIBRATED_SPREAD_WARNING]
+        if warnings:
+            import sys
+            for warning in warnings:
+                print("WARNING ensemble: " + warning, file=sys.stderr, flush=True)
         checkpoint_members = self.restart_roster is not None or any(
             float(getattr(prepared.experiment, "restart_interval_s", 0) or 0) > 0
             for prepared in member_inputs_by_id.values())
@@ -432,7 +454,8 @@ class PreparedEnsembleSession:
                         priced, external, margin = ordinary_ensemble_memory_model(estimate, forecast_exp, self.collector,
                             inventory_id=f"ordinary-ensemble-device-{card.device_id}",
                             stochastic_provider=self.stochastic_provider,
-                            fft_workspace_bytes=fft_workspaces.get(card.device_id, 0), other_variants=estimates[1:])
+                            fft_workspace_bytes=fft_workspaces.get(card.device_id, 0), other_variants=estimates[1:],
+                            initial_wind=is_initial_perturbation(self.request.perturbation))
                         model[card.device_id] = priced
                         ordinary_admissions[card.device_id] = (external, margin)
         cards = tuple(cards)
@@ -605,6 +628,10 @@ class PreparedEnsembleSession:
             manifest["prepared_component_waves"] = []
             if component_plans:
                 manifest["time_step_policy"] = "original per-member adaptive clocks; native components join only ready compatible groups"
+        if warnings:
+            manifest["warnings"] = warnings
+        if self._initial_receipts or self.request.perturbation is not None and is_initial_perturbation(self.request.perturbation):
+            manifest["initial_perturbations"] = []
         _atomic_json(out / "ensemble-run.json", manifest)
         if original_reasons:
             import sys
@@ -827,6 +854,8 @@ class PreparedEnsembleSession:
                     record = dict(record, member_variant=self._variant_receipt(member))
             if batch.execution_mode != "member_batched" and member in self._surface_receipts:
                 record = dict(record, surface_perturbation=self._surface_receipts[member])
+            if batch.execution_mode != "member_batched" and member in self._initial_receipts:
+                record = dict(record, initial_perturbation=self._initial_receipts[member])
             if batch.execution_mode != "member_batched" and overlay is not None and overlay.get("changed"):
                 record = dict(record, ensemble_execution_overlay=overlay)
             if batch.execution_mode != "member_batched" and capture.counter_calendars:
@@ -852,6 +881,9 @@ class PreparedEnsembleSession:
                     manifest["completed_member_results"].append({"member_id": member, "result": record})
                 manifest["surface_perturbations"] = [self._surface_receipts[member]
                     for member in self.member_order if member in self._surface_receipts]
+                if self._initial_receipts:
+                    manifest["initial_perturbations"] = [self._initial_receipts[member]
+                        for member in self.member_order if member in self._initial_receipts]
                 if self.source_execution is not None:
                     manifest["posted_source_execution"] = self.source_execution.receipt()
                 _atomic_json(out / "ensemble-run.json", manifest)
@@ -1002,6 +1034,9 @@ class PreparedEnsembleSession:
             manifest["surface_perturbations"] = [self._surface_receipts[member]
                 for member in self.member_order if member in self._surface_receipts]
             manifest["surface_realization_inventory"] = surface_inventory()
+            if self._initial_receipts:
+                manifest["initial_perturbations"] = [self._initial_receipts[member]
+                    for member in self.member_order if member in self._initial_receipts]
             _atomic_json(out / "ensemble-run.json", manifest)
             self.last_manifest = manifest
             self.last_output_directory = out
@@ -1011,6 +1046,16 @@ class PreparedEnsembleSession:
                 "requested_run_seconds": float(exp.run_seconds),
                 "members_completed": list(manifest["members_completed"]),
                 "ensemble_manifest": "ensemble-run.json"})
+            if checkpoint_members:
+                # The completed tree is the durable one. The roster last
+                # sealed at the final member's completion named files that
+                # finish_run then retired (the worker-only coordinates.nc)
+                # and the ensemble-run.json this PASS manifest replaced, so a
+                # completed rc-0 run failed its own restart validator
+                # (2.9.0 ensemble showcase, restart_roster.verify_roster).
+                from gpuwm.ensemble.restart_roster import seal
+                save = getattr(self.collector, "save_resume", None)
+                seal(out, collector=self.collector if callable(save) else None)
             return manifest
         except BaseException as error:
             cancel = getattr(self.collector, "cancel_products", None)
@@ -1031,13 +1076,30 @@ class PreparedEnsembleSession:
                                                    if member not in completed])
             manifest["surface_perturbations"] = [self._surface_receipts[member]
                 for member in self.member_order if member in self._surface_receipts]
+            if self._initial_receipts:
+                manifest["initial_perturbations"] = [self._initial_receipts[member]
+                    for member in self.member_order if member in self._initial_receipts]
             manifest["surface_realization_inventory"] = surface_inventory()
             _atomic_json(out / "ensemble-run.json", manifest)
             if checkpoint_members:
                 from gpuwm.ensemble.restart_roster import seal
                 save = getattr(self.collector, "save_resume", None)
                 if callable(save):
-                    seal(out, collector=self.collector)
+                    # The roster seal waits for the product worker this
+                    # handler just cancelled, so it can raise that
+                    # cancellation ("product process exited -15").  It must
+                    # not replace the error that stopped the run: a user saw
+                    # only the -15 while the member's own error sat unread
+                    # in ensemble-run.json (fresh-install QA, 2026-10-12).
+                    try:
+                        seal(out, collector=self.collector)
+                    except Exception as seal_error:
+                        note = (f"the restart roster could not be sealed after "
+                                f"this failure: {type(seal_error).__name__}: "
+                                f"{seal_error}")
+                        manifest["restart_roster_seal_error"] = note
+                        _atomic_json(out / "ensemble-run.json", manifest)
+                        error.add_note(note)
             raise
 
     def completed_products(self):
@@ -1067,9 +1129,11 @@ class PreparedEnsembleSession:
 
     def _initialization_callback(self, member_id, *, seed=None, prepared_member=None):
         from gpuwm.ensemble.surface_recipe import is_surface_recipe
+        from gpuwm.ensemble.initial_perturbation import is_initial_perturbation, initial_perturbation_callback
         from gpuwm.ensemble.member_variants import member_surface_options
         surface_options = member_surface_options(self.request, member_id)
-        if self.stochastic_provider is None and not is_surface_recipe(surface_options):
+        if (self.stochastic_provider is None and not is_surface_recipe(surface_options)
+                and not is_initial_perturbation(self.request.perturbation)):
             return None
         prepared = (prepared_member if prepared_member is not None else None
                     if self.member_roster is None else self.member_roster.select((member_id,))[0])
@@ -1079,6 +1143,8 @@ class PreparedEnsembleSession:
         def initialize(*, model=None, prepared_case=None, state=None, cfg=None, grid=None, clock=None):
             binding = (self.source_execution.stochastic_member_binding(member_id)
                        if self.source_execution is not None else prepared)
+            if self.stochastic_provider is None:
+                return
             if model is not None:
                 self.stochastic_provider.bind_model(model=model, member_id=member_id,
                     seed=seed, prepared_member=binding)
@@ -1093,10 +1159,20 @@ class PreparedEnsembleSession:
                 receipt = dict(receipt, member_variant=self._variant_receipt(member_id,
                     seed=seed, prepared_member=prepared))
             self._surface_receipts[member_id] = receipt
-        return surface_initialization_callback(selected, member_id=member_id, seed=seed,
+        callback = surface_initialization_callback(selected, member_id=member_id, seed=seed,
             previous=(None if self.stochastic_provider is None else initialize),
             record=record,
             array_module=self.array_module)
+        if is_initial_perturbation(self.request.perturbation):
+            def record_initial(receipt):
+                self._initial_receipts[member_id] = receipt
+                if self.last_manifest is not None:
+                    self.last_manifest["initial_perturbations"] = [self._initial_receipts[member]
+                        for member in self.member_order if member in self._initial_receipts]
+            callback = initial_perturbation_callback(self.request.perturbation,
+                member_id=member_id, seed=seed, previous=callback,
+                record=record_initial, array_module=self.array_module)
+        return callback
 
     def _member_seed(self, member_id, *, seed=None, prepared_member=None):
         """Keep a supplied/source seed authoritative through member callbacks."""
@@ -1120,7 +1196,9 @@ class PreparedEnsembleSession:
                 "name": variant["name"], "physics": dict(variant["physics"]),
                 "surface": dict(variant["surface"]),
                 **({} if member_id not in self._member_land_layouts else {
-                    "resolved_land": [dict(row) for row in self._member_land_layouts[member_id]]})}
+                    "resolved_land": [dict(row) for row in self._member_land_layouts[member_id]]}),
+                **({} if member_id not in getattr(self, "_member_physics_selections", {}) else {
+                    "resolved_physics": self._member_physics_selections[member_id]})}
 
     def _remember_member_land_layouts(self, member_inputs):
         """Record each member's loaded domain selectors before initialization."""
@@ -1133,15 +1211,27 @@ class PreparedEnsembleSession:
              "num_soil_layers": soil_layer_count(domain.run)}
             for domain in inputs.experiment.domains]
             for member, inputs in member_inputs.items()}
+        self._member_physics_selections = {}
+        from gpuwm.ensemble.member_variants import LAND_KEYS
+        from gpuwm.microphysics_schemes import resolve_mp_physics
         for member, rows in self._member_land_layouts.items():
             requested = self.request.member_variants[member]["physics"]
-            for row in rows:
+            selected_rows = []
+            for row, domain in zip(rows, member_inputs[member].experiment.domains):
+                selected = {"grid_id": row["grid_id"]}
                 for key, value in requested.items():
-                    if row[key] != value:
+                    actual = row[key] if key in LAND_KEYS else getattr(domain.run, key)
+                    expected = resolve_mp_physics(value) if key == "mp_physics" else value
+                    if actual != expected:
                         raise ValueError(
                             f"member {member} domain {row['grid_id']} requests {key}={value}, "
-                            f"but its input provider bound {key}={row[key]}; "
-                            "the wrong land column would run this member's forecast")
+                            f"but its input provider bound {key}={actual}; " +
+                            ("the wrong land column would run this member's forecast" if key in LAND_KEYS
+                             else "the wrong physics selection would run this member's forecast"))
+                    selected[key] = actual
+                selected_rows.append(selected)
+            if set(requested) - LAND_KEYS:
+                self._member_physics_selections[member] = selected_rows
 
     def _configured_member_inputs(self, inputs):
         if self.stochastic_provider is None:

@@ -17,6 +17,8 @@ lookup, :mod:`gpuwm.boundary_fields`, is function-local.  No CuPy.
 """
 from __future__ import annotations
 
+from gpuwm.core.column_schemes import COLUMN_SCHEMES
+
 from dataclasses import dataclass
 
 from gpuwm.microphysics_schemes import scheme as _named_scheme
@@ -246,7 +248,13 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
             # and for nobody else.
             shapes["rthften"] = m
             shapes["rqvften"] = m
-        if cfg.mp_physics == 50:
+        if cfg.mp_physics == 5:
+            # Ferrier-Aligo (Registry.EM_COMMON:3019, and the mp==5 arm of
+            # gpuwm/core/state.py): total ice, the qt carrier, the three
+            # WRF state fields, and qi's RK time-t copy.
+            for name in ("qi", "qt", "f_ice", "f_rain", "f_rimef", "qi0"):
+                shapes[name] = m
+        elif cfg.mp_physics == 50:
             # P3 one-category (Registry.EM_COMMON:3038, and the mp==50 arm
             # of gpuwm/core/state.py): ONE ice mass with rime mass and rime
             # volume, no qs/qg/effs, plus the two cross-step supersaturation
@@ -256,7 +264,23 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
                          "th_old", "qv_old",
                          "qi0", "ni0", "nr0", "qir0", "qib0"):
                 shapes[name] = m
-        elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
+        elif cfg.mp_physics == 2:
+            for name in ("qi","qs","qg","qi0","qs0","qg0"):
+                shapes[name] = m
+        elif cfg.mp_physics == 3:
+            # WSM3 (Registry.EM_COMMON:3017, and the mp==3 arm of
+            # gpuwm/core/state.py): moist:qv,qc,qr plus the three radiation
+            # radii; no qi/qs/qg and no RK copies beyond the qv/qc/qr ones
+            # every moist state carries.
+            for name in ("effc", "effi", "effs"):
+                shapes[name] = m
+        elif cfg.mp_physics in COLUMN_SCHEMES:
+            for name in COLUMN_SCHEMES[cfg.mp_physics].species:
+                if name not in ("qv", "qc", "qr"):
+                    shapes[name] = shapes[name + "0"] = m
+            for name in ("effc", "effi", "effs"):
+                shapes[name] = m
+        elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 24, 28, 106):
             # WRF's SIX-MASS moist package, transcribed.  This tuple is
             # not "the schemes with ice" -- it is the schemes whose
             # Registry package is moist:qv,qc,qr,qi,qs,qg
@@ -309,6 +333,11 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
                 shapes[name]=m
             for name in EXTRA_SPECIES:
                 shapes[name+"0"]=m
+        if cfg.mp_physics == 24:
+            # WSM7: the hail mass beside the six (Registry.EM_COMMON:3034)
+            # with its RK time-t copy, as gpuwm/core/state.py allocates.
+            for name in ("qh", "qh0"):
+                shapes[name] = m
         if cfg.mp_physics == 9:
             # Milbrandt-Yau two-moment: hail mass beside graupel plus a
             # number moment for EVERY one of the six hydrometeors
@@ -359,6 +388,9 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
                 shapes[name] = m
             for name in named.surface_fields:
                 shapes[name] = s2
+    if cfg.bl_pbl_physics == 5 and cfg.bl_mynn_tkeadvect:
+        shapes["qke_adv"] = m
+        shapes["qke_adv0"] = m
     if cfg.km_opt == 2:
         # WRF's two-time-level prognostic TKE (Registry.EM_COMMON:312):
         # the SERIALIZED carrier plus its REBUILT time-t copy.

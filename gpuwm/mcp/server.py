@@ -32,8 +32,8 @@ stdout, stderr, events, progress), collect with job_result, stop with
 job_cancel, enumerate with job_list.  Jobs survive a server restart:
 state lives on disk.
 
-One GPU job runs at a time: a second GPU launch is refused with a
-sentence naming the running job id -- wait, or cancel it.
+One job per physical card: disjoint card sets run concurrently. An
+overlapping launch is refused naming the holder. Pass cards to arwen_forecast.
 
 A typical forecast: arwen_plan_domain (point + budget -> config TOML),
 arwen_estimate (does it fit), arwen_forecast mode "go" (fetch through
@@ -53,6 +53,8 @@ def build_server(manager: JobManager | None = None):
 
     from gpuwm.mcp import engine_tools
     tiers = {"engine": engine_tools.register(server, manager)}
+    from gpuwm.mcp import suite_tools
+    tiers["suite"] = suite_tools.register(server, manager)
     return server, tiers
 
 

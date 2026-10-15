@@ -324,7 +324,11 @@ def receipt_r3_species() -> dict:
 #: pinned literals in the gate are for exactly these dimensions.
 PREFLIGHT_PROBE_CONFIG = dict(
     nx=8, ny=6, nz=4, dx=1000.0, dy=1000.0, ztop=10000.0,
-    dt=1.0, run_seconds=10.0, moist=True, mp_physics=8)
+    dt=1.0, run_seconds=10.0, moist=True, mp_physics=8,
+    # The frozen mp=8 contract is the EXACT-mode one: from 2.9.0 the default
+    # (correct mode, WB1) adds the two CLOUDNC slots, pinned separately in
+    # tests/test_correct_mode_default.py.
+    thompson_cloud_surface_booking=False)
 
 
 def _preflight_probe_config():

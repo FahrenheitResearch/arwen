@@ -1,0 +1,4 @@
+schema = "gpuwm.suite.v1"
+name = "us-2box"
+region = "US"
+extends = "template:agency-2box"

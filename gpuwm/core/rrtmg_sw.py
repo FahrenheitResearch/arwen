@@ -186,6 +186,7 @@ class SWTables:
         "extice3", "ssaice3", "asyice3", "fdlice3",
         "abari", "bbari", "cbari", "dbari", "ebari", "fbari",
         "ngb", "wavenum1", "wavenum2", "rsrtaua", "rsrpiza", "rsrasya",
+        "aer1_climatology", "aer1_optics_sha256",
     )
 
 
@@ -2455,7 +2456,47 @@ def tables_from_coeffs(coeffs) -> SWTables:
     return t
 
 
-def load_sw_tables(path=None) -> SWTables:
+#: The aer_opt=1 climatology, ``gpuwm/data``-relative.  It ships in the
+#: gpuwm-data companion (gpuwm.data_assets.COMPANION_TREES): at 6.0 MB it
+#: was what put the 2.9.0 platform wheel at 101,425,913 bytes, over PyPI's
+#: 100,000,000-byte per-file limit.
+AER1_CLIMATOLOGY_ASSET = "wrf_radiation/rrtmg_aer1_climatology.npz"
+
+
+def encode_aer1_climatology(climatology) -> np.ndarray:
+    """The climatology's float32 words, stored losslessly and compactly.
+
+    Each word's bits as little-endian uint32, differenced along the last
+    (longitude) axis modulo 2**32, the four bytes of every word split into
+    four planes, then xz.  6,027,855 bytes as plain deflate become about 4.6
+    MB, which is what lets the companion wheel carry it under PyPI's per-file
+    limit.  :func:`decode_aer1_climatology` inverts it exactly; the
+    manifest's sha256 of the decoded words is what the loader checks.
+    """
+    import lzma
+
+    words = np.ascontiguousarray(climatology, dtype="<f4").view("<u4")
+    delta = np.diff(words, axis=-1, prepend=np.zeros(
+        words.shape[:-1] + (1,), dtype="<u4")).astype("<u4")
+    planes = delta.reshape(-1).view(np.uint8).reshape(-1, 4).T.tobytes()
+    return np.frombuffer(
+        lzma.compress(planes, preset=9 | lzma.PRESET_EXTREME), dtype=np.uint8)
+
+
+def decode_aer1_climatology(payload, shape) -> np.ndarray:
+    """Inverse of :func:`encode_aer1_climatology`: the float32 climatology."""
+    import lzma
+
+    shape = tuple(int(n) for n in shape)
+    raw = np.frombuffer(lzma.decompress(np.asarray(payload, np.uint8).tobytes()),
+                        dtype=np.uint8)
+    if raw.size != 4 * int(np.prod(shape)):
+        raise ValueError("aer_opt=1 climatology payload has the wrong length for its shape")
+    delta = np.ascontiguousarray(raw.reshape(4, -1).T).view("<u4").reshape(shape)
+    return np.cumsum(delta, axis=-1, dtype="<u4").view("<f4")
+
+
+def load_sw_tables(path=None, *, aer_opt=0, data_dir=None) -> SWTables:
     """Production entry: load coefficients via gpuwm.ingest.rrtmg_coeffs
     (imported lazily; lands on the integration branch) and assemble tables.
     """
@@ -2466,7 +2507,34 @@ def load_sw_tables(path=None) -> SWTables:
             "gpuwm.ingest.rrtmg_coeffs is not available on this branch; "
             "it lands with the radiation foundation lane.  Tests use "
             "tables_from_dump() on the oracle dump instead.") from exc
-    return tables_from_coeffs(load_rrtmg_sw_coefficients(path))
+    tables = tables_from_coeffs(load_rrtmg_sw_coefficients(path))
+    if aer_opt == 1:
+        from gpuwm.ingest.rrtmg_coeffs import DATA_DIR
+        import hashlib
+        import json
+        from pathlib import Path
+        root = DATA_DIR if data_dir is None else Path(data_dir)
+        manifest = json.loads((root / "rrtmg_aer1_manifest.json").read_text())
+        if data_dir is None:
+            from gpuwm import data_assets
+            asset = data_assets.data_path(AER1_CLIMATOLOGY_ASSET)
+        else:
+            asset = root / Path(AER1_CLIMATOLOGY_ASSET).name
+        if asset.stat().st_size != manifest["asset_size"] or hashlib.sha256(asset.read_bytes()).hexdigest() != manifest["asset_sha256"]:
+            raise ValueError("aer_opt=1 climatology manifest hash mismatch; altered aerosol values would change AODTOT and shortwave")
+        with np.load(asset, allow_pickle=False) as source:
+            tables.aer1_climatology = {
+                name: (decode_aer1_climatology(source["climatology_xz"],
+                                               manifest["arrays"][name]["shape"])
+                       if name == "climatology" else source[name])
+                for name in manifest["arrays"]}
+        for name, pin in manifest["arrays"].items():
+            value = tables.aer1_climatology[name]
+            if list(value.shape) != pin["shape"] or str(value.dtype) != pin["dtype"] or hashlib.sha256(value.tobytes()).hexdigest() != pin["sha256"]:
+                raise ValueError(f"aer_opt=1 {name} array manifest mismatch")
+        tables.aer1_optics_sha256 = manifest["optics_sha256"]
+        validate_aer1_optics_tables(tables)
+    return tables
 
 
 # ===========================================================================
@@ -3219,7 +3287,7 @@ class CudaSW:
                  inflgsw, iceflgsw, liqflgsw,
                  cldfmcl, taucmcl, ssacmcl, asmcmcl, fsfcmcl,
                  ciwpmcl, clwpmcl, cswpmcl, reicmcl, relqmcl, resnmcl,
-                 aer_opt=0):
+                 aer_opt=0, aerosol=None):
         """CUDA twin of :func:`rrtmg_sw` (zero-aerosol option-4 path).
 
         The campaign path always has zero aerosol arrays, so taua/ssaa/asma
@@ -3227,16 +3295,26 @@ class CudaSW:
         zero inputs.  Returns numpy arrays (downloaded once at the end).
         """
         cp = self.cp
+        if aer_opt in (1,2,3):
+            if aerosol is None or len(aerosol)!=3:
+                raise ValueError(f"aer_opt={aer_opt} needs caller-supplied aerosol optics; missing arrays would run clean shortwave")
+            columns=lambda a:cp.asarray(a,dtype=cp.float32).reshape(1,-1)
+            scalar=lambda a:np.asarray([a],np.float32)
+            mc=lambda a:cp.asarray(a,dtype=cp.float32)[:,None,:]
+            tau,ssa,asy=aerosol
+            optics=tuple(cp.ascontiguousarray(cp.asarray(a,dtype=cp.float32).T[None,:,:]) for a in (tau,asy,ssa))
+            result=self.rrtmg_sw_batched_device(
+                1,nlay,icld,*[columns(a) for a in (play,plev,tlay,tlev)],scalar(tsfc),
+                *[columns(a) for a in (h2ovmr,o3vmr,co2vmr,ch4vmr,n2ovmr,o2vmr)],
+                *[scalar(a) for a in (asdir,asdif,aldir,aldif,coszen,adjes)],dyofyr,scalar(scon),
+                inflgsw,iceflgsw,liqflgsw,
+                *[mc(a) for a in (cldfmcl,taucmcl,ssacmcl,asmcmcl,fsfcmcl,ciwpmcl,clwpmcl,cswpmcl)],
+                *[columns(a) for a in (reicmcl,relqmcl,resnmcl)],aer_opt=aer_opt,aerosol=optics)
+            return {key:value[0] for key,value in sw_batched_to_host(result).items()}
         if aer_opt != 0:
-            # SW-audit fail-closed gap: this composition builds
-            # taua/ssaa/asma as 0/1/0 -- an aer_opt=2/3 caller's nonzero
-            # aerosol optics would be silently DISCARDED here (the NumPy
-            # rrtmg_sw preserves them).  Reject until aerosols are
-            # implemented on-device.
-            raise NotImplementedError(
-                f"aer_opt={aer_opt!r}: the CUDA SW composition implements "
-                "the zero-aerosol option-4 path only; nonzero aerosol "
-                "optics would be silently discarded -- fails closed")
+            raise NotImplementedError(f"aer_opt={aer_opt!r} is not a WRF aerosol option this twin carries; clean air would replace its optics")
+        if aerosol is not None:
+            raise ValueError("caller-supplied optics with aer_opt=0 would be discarded")
         if int(dyofyr) > 0:
             earth_sun(dyofyr)
         nlayers = _radiation_layer_count(nlay)
@@ -3408,7 +3486,7 @@ class CudaSW:
         rsw_spcvmc_gpt_b's per-column band-major layout
         (gpuwm.core.rrtmg_aerosol_optics builds them); RRTMG_SWRAD runs
         that branch with iaer = 10 and hands them to spcvmc unchanged
-        (module_ra_rrtmg_sw.F:9183, :9329-9331).  aer_opt = 1 and 2 stay
+        (module_ra_rrtmg_sw.F:9183, :9329-9331).  aer_opt = 1 stays
         refused (their aerosol inputs are not transcribed; the optics
         would be silently discarded, 2026-07-27 SW transcription audit,
         item 1).
@@ -3444,18 +3522,18 @@ class CudaSW:
         if mcica_layout not in ("gpoint", "column"):
             raise ValueError("mcica_layout must be gpoint or column")
         cp = self.cp
-        if aer_opt == 3:
+        if aer_opt in (1, 2, 3):
             if aerosol is None or len(aerosol) != 3:
                 raise ValueError(
-                    "aer_opt=3 needs the caller's per-band aerosol optics "
+                    f"aer_opt={aer_opt} needs the caller's per-band aerosol optics "
                     "aerosol=(ztaua, zasya, zomga); without them the "
-                    "batch would run zero aerosol under aer_opt=3")
+                    f"batch would run zero aerosol under aer_opt={aer_opt}")
         elif aer_opt != 0:
-            # The aer_opt = 1 and 2 inputs are not transcribed: running
-            # zero aerosol under them would be silently wrong.
+            # No other WRF aer_opt exists: running zero aerosol under an
+            # unknown value would be silently wrong.
             raise NotImplementedError(
                 f"aer_opt={aer_opt!r}: the CUDA SW composition implements "
-                "aer_opt 0 (zero aerosol) and 3 (caller-supplied per-band "
+                "aer_opt 0 (zero aerosol), 1, 2 and 3 (caller-supplied per-band "
                 "optics); this option's aerosol inputs are not "
                 "transcribed and would be silently discarded -- fails "
                 "closed")
@@ -3477,7 +3555,7 @@ class CudaSW:
                         or a.shape != (ncol, NBNDSW, nlayers)
                         or not a.flags.c_contiguous):
                     raise ValueError(
-                        f"aer_opt=3 {name} must be a C-contiguous float32 "
+                        f"aer_opt={aer_opt} {name} must be a C-contiguous float32 "
                         f"device array {(ncol, NBNDSW, nlayers)}, got "
                         f"{getattr(a, 'dtype', None)} "
                         f"{getattr(a, 'shape', None)}")
@@ -4243,3 +4321,12 @@ def sw_batched_to_host(out):
     h["sibnirdif"] = h["pnifd"] - h["sibnirdir"]
     del h["puvfd"], h["pnifd"]
     return h
+
+
+def validate_aer1_optics_tables(tables):
+    """Check the existing rrsw_aer tables against the climatology manifest."""
+    import hashlib
+    for name in ("rsrtaua", "rsrpiza", "rsrasya"):
+        value = np.ascontiguousarray(getattr(tables, name), dtype=F)
+        if value.shape != (14, 6) or hashlib.sha256(value.tobytes()).hexdigest() != tables.aer1_optics_sha256[name]:
+            raise ValueError(f"aer_opt=1 rrsw_aer {name} manifest hash mismatch; altered optics would change shortwave flux and heating")

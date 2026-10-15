@@ -20,10 +20,8 @@ gpuwm ml-export run/wrfout --out ml/x --levels model --variables +vertical_veloc
 gpuwm ml-export --list                                            # level sets, variables, naming schemes
 ```
 
-The exporter is fetched on first use: run `gpuwm fetch-bridges` once after
-installing, because the platform wheel does not carry it (with it the wheel
-was over the package index's 100 MB per-file limit). Until then
-`gpuwm ml-export` exits 3 with a message naming that command.
+Platform wheels carry the native exporter. Fallback installs can obtain it
+with `gpuwm fetch-bridges --partial --artifact rw_mlexport`.
 
 Inputs can be history files, folders holding them (searched for
 `wrfout_dNN_*`), gzip-compressed history files, or ZIPs whose members are
@@ -45,6 +43,7 @@ read and deleted just after, so the disk holds one frame at a time.
 | `--config` | the run's configuration file; its SHA-256 is recorded | none |
 | `--zip` | also write `<out>-ml.zip` | off |
 | `--overwrite`, `--skip-unavailable`, `--threads` | replace an earlier export; write what the files can make and record the rest; worker threads | off, off, every core |
+| `--chunk-yx` | `auto`, `full` (one chunk per plane), or `NY,NX` cells | `auto`: 512 x 512 tiles when a plane has more than 1024 x 1024 cells, one chunk otherwise |
 | `--append`, `--finalize` | add frames to the export in `--out` one call at a time, then close it | |
 
 `--append` then `--finalize` writes exactly the bytes one call over the same
@@ -71,7 +70,11 @@ previous time, metres of water, empty at the first time),
 another) and `total_column_water_vapour`. Static, dims `(y, x)`:
 `geopotential_at_surface` and `land_sea_mask`. With `--levels model` the
 model's own mass levels are kept with no interpolation and `pressure` is
-added.
+added. On model levels only, `radar_reflectivity` (ERA5-style name `refl`,
+dBZ, option: `--variables +radar_reflectivity`) is the history file's
+`REFL_10CM`; it needs a history preset that keeps that field (`severe`
+does, `minimal` does not). It is not offered on pressure levels, where
+interpolating dBZ would define a new reflectivity convention.
 
 For a moving native grid, interval and six-hour precipitation compare
 accumulators at the same geographic points. Newly exposed ground has NaN
@@ -162,8 +165,15 @@ ds = xr.open_zarr(zarr.storage.ZipStore("ml/my-run-ml.zip", mode="r"), group="my
 ```
 
 Zarr format 2 with consolidated metadata, which xarray reads under
-zarr-python 2.18 and 3. Chunks hold one time and every level of one
-variable, so one training sample is one read per variable; arrays are
+zarr-python 2.18 and 3. Chunks hold one time and up to a 64 MiB block of
+levels of one variable. Planes larger than 1024 x 1024 cells (a 3 km
+CONUS or 1 km domain) are split into 512 x 512 tiles by default, so a
+training loader reading a patch decompresses only the tiles it touches:
+on a synthetic 2700 x 4500 x 8 export, random 256 x 256 patches through
+an NVIDIA DALI pipeline took 3.4 to 4.2 s per batch of eight with
+whole-plane chunks and 0.32 to 0.44 s with tiles over two runs, with
+identical values. `--chunk-yx full`
+keeps the earlier whole-plane layout. Arrays are
 float32, compressed losslessly with Blosc (Zstandard, byte shuffle). The
 ZIP stores its entries uncompressed so it can be read in place.
 

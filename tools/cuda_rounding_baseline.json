@@ -224,8 +224,8 @@
    {
     "call_sha256": "5f0783593f1e65eddf6bda1e4a1e48e8d7f04f3579d043b72fbc0e4c2ed97af3",
     "constructor": "ElementwiseKernel",
-    "factory": "<module>",
-    "factory_sha256": "5f0783593f1e65eddf6bda1e4a1e48e8d7f04f3579d043b72fbc0e4c2ed97af3",
+    "factory": "_mp_zero_out_kernel",
+    "factory_sha256": "c11c0ebaddadbc52265ad46ebb81f9e73f22223b387bf8c22ccf6cf0cb665a25",
     "file": "gpuwm/core/microphysics.py",
     "status": "unresolved"
    },
@@ -520,8 +520,8 @@
    {
     "call_sha256": "ecc24293f4f0d7070269e8b7fe43c1527df2c186e231b9eae9a932efb07defe5",
     "constructor": "ElementwiseKernel",
-    "factory": "<module>",
-    "factory_sha256": "ecc24293f4f0d7070269e8b7fe43c1527df2c186e231b9eae9a932efb07defe5",
+    "factory": "_mp_zero_out_kernel",
+    "factory_sha256": "c11c0ebaddadbc52265ad46ebb81f9e73f22223b387bf8c22ccf6cf0cb665a25",
     "file": "gpuwm/core/microphysics.py",
     "status": "unresolved"
    },
@@ -673,7 +673,7 @@
    },
    {
     "file": "gpuwm/core/kernels/kf.cu",
-    "sha256": "705dded69dccebdab5a2276e24d32f4e21186fdb985ed3ab06b389b8ace914c4"
+    "sha256": "84947291f25437c65eecf2783cae20d729792e87a25710b1ff0973f014c34de0"
    },
    {
     "file": "gpuwm/core/kernels/kf_validation.cu",
@@ -1077,7 +1077,7 @@
    },
    {
     "file": "gpuwm/core/kernels/urban_bep.cu",
-    "sha256": "11dc0497fe8442684622e1fa08194f54d1d5daf0101ca210161dfcfe51212818"
+    "sha256": "255ab9f79dd10c3bb68c03997e91a361a58ad18695db38071e3a91412352a6c6"
    },
    {
     "file": "gpuwm/core/kernels/urban_bep_bem.cu",
@@ -1085,7 +1085,7 @@
    },
    {
     "file": "gpuwm/core/kernels/urban_bep_couple.cu",
-    "sha256": "31c547530a46c866859b2de0b259ec7e77e42f69dde894860c2efb90684b7ef2"
+    "sha256": "c1e2e00082d6c6fadbba2cadc09ae7435f8db4c5af330a8c53399541b5a82240"
    },
    {
     "file": "gpuwm/core/kernels/urban_ucm.cu",
@@ -1129,7 +1129,7 @@
    },
    {
     "file": "gpuwm/core/kernels/wdm6.cu",
-    "sha256": "e1c1a666004e43f2471b69469b6938ec188d43e542330c741ed546c3a8d771aa"
+    "sha256": "d5277e0fa7e2dd3cc8bd2e4b02443c2a453e18c9f5d0e002fbfc37d3bdb53743"
    },
    {
     "file": "gpuwm/core/kernels/wdm6_refl.cu",
@@ -1141,7 +1141,7 @@
    },
    {
     "file": "gpuwm/core/kernels/wsm6.cu",
-    "sha256": "0028b0c2d88d6087095cd2d4afab27bb2cb76b2a5bf51e3e5e908e0fdf2f0886"
+    "sha256": "3ca83093da4bd99da1c440ef04f5190df9c324a8310b3d4eaf4aae04a49aa308"
    },
    {
     "file": "gpuwm/core/kernels/ysu.cu",
@@ -1191,7 +1191,7 @@
    },
    {
     "file": "gpuwm/core/microphysics.py",
-    "sha256": "1dd77ff048db45711acaabc33c00ab0ab2df5ad1198283b8a55de9cc6c66b350"
+    "sha256": "df81d1f401e771322a94e6fcdea7b629584f4fb5ae0471bbca685a2dcd9d6f2d"
    },
    {
     "file": "gpuwm/core/moist.py",
@@ -1243,7 +1243,7 @@
    },
    {
     "file": "gpuwm/core/ntiedtke.py",
-    "sha256": "ad24fc80bce9998e84e73d5cc87c8241831a11e8fc67cc21d2b37505bc4b1fcf"
+    "sha256": "bbb2974a5674c0dc58055a9d72d0d0da5b204da38e33bce09639439c951dd55e"
    },
    {
     "file": "gpuwm/core/ntiedtke_fused.py",
@@ -3718,13 +3718,13 @@
    },
    "errors": {},
    "native_dataflow_differences": {
-    "sha256": "72d1cd959f3fada20c6548c95f960a77a0feac87c71387fd17b623429006131f",
+    "sha256": "d89c75143511d9c71e7ef265e20db2508179c56637f83116440936a01e64a505",
     "sites": {
-     "100": 336
+     "100": 341
     }
    },
    "native_differences": {
-    "sha256": "6d98bfea6e07bd973e72260bdf93b9338a56feebfa20d4aced96dde2656992fa",
+    "sha256": "a9e7a5f1195072e06e57cc719cbb6318cfcd74ed1ae23da1f34ef0f9518b8f94",
     "sites": {
      "100": 37
     }
@@ -3746,7 +3746,7 @@
      "-arch=compute_120"
     ]
    },
-   "source_sha256": "0ef80d84d30359e2dd407b0c75e591539a71c921c90344e48f27c9130cac8415"
+   "source_sha256": "4f8b1320d88afadd3666908b73433c12b1a6f9c08b5f221dc709243f410cda84"
   },
   "kernels:kf_validation": {
    "assessment": "static_diagnostic_only",
@@ -6681,13 +6681,13 @@
    },
    "errors": {},
    "native_dataflow_differences": {
-    "sha256": "49a6042ef7e13efe0cc699380b437312c0e20429fe1b4fdded39a5e996c1d3cc",
+    "sha256": "a4a728a1c48965b2cf082e301e82ecb8e77a6b65fd70b2cd4d30ab10d8fa7a7c",
     "sites": {
-     "100": 11
+     "100": 12
     }
    },
    "native_differences": {
-    "sha256": "35d9b2bae1896910b6f9b3a81d2ef74b2665457ce34b64e6eeca1260d0ee0afb",
+    "sha256": "41549390631e0aa14a4278e1920ea92f3cf64b44433ae4c86d2eec94affa3667",
     "sites": {
      "100": 3
     }
@@ -6709,7 +6709,7 @@
      "-arch=compute_120"
     ]
    },
-   "source_sha256": "c74cb5d40618c13abec94027800deebf68e23758771e9990204f3ee9864dfce7"
+   "source_sha256": "74935919425e79cb9d6c5f29269bfe1308af2fc7cf95d42cba4ad58effdbf185"
   },
   "kernels:urban_ucm": {
    "assessment": "static_diagnostic_only",
@@ -6884,6 +6884,7 @@
    "options": {
     "100": [
      "-std=c++17",
+     "--fmad=false",
      "-ftz=true",
      "--device-as-default-execution-space",
      "-lineinfo",
@@ -6891,13 +6892,14 @@
     ],
     "120": [
      "-std=c++17",
+     "--fmad=false",
      "-ftz=true",
      "--device-as-default-execution-space",
      "-lineinfo",
      "-arch=compute_120"
     ]
    },
-   "source_sha256": "3203826df51980bd6c5bb6f38bc7fca6cb1c49a6cae2f962467c5dbefda1f60a"
+   "source_sha256": "14f3dad88277a2b734bc5154b72303358e4e16a4b749d0e1d95f4a01a35963fc"
   },
   "kernels:wdm6_refl": {
    "assessment": "static_diagnostic_only",
@@ -7025,6 +7027,7 @@
    "options": {
     "100": [
      "-std=c++17",
+     "--fmad=false",
      "-ftz=true",
      "--device-as-default-execution-space",
      "-lineinfo",
@@ -7032,13 +7035,14 @@
     ],
     "120": [
      "-std=c++17",
+     "--fmad=false",
      "-ftz=true",
      "--device-as-default-execution-space",
      "-lineinfo",
      "-arch=compute_120"
     ]
    },
-   "source_sha256": "d6798c079bbf2c6343d6d6575be2cd5fd67a128612c401b36e8ebfc3f1c10451"
+   "source_sha256": "59764c7a90e93d5d8acb76d832cd1fc22507fceba3b69e13ddf57cace58846e6"
   },
   "kernels:ysu": {
    "assessment": "static_diagnostic_only",

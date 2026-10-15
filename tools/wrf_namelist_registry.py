@@ -76,10 +76,22 @@ def _read(path: Path, defines: dict[str, str], seen: list[Path],
             })
 
 
-def build_table(registry: Path, *, tag: str, commit: str) -> dict:
+#: The WRF-Chem build's top file and settings (``./configure -chem``):
+#: Registry.EM_CHEM with WRF_CHEM set.  ``--chem`` writes only its
+#: ``&chem`` rows, the vocabulary the namelist door maps onto WOOF's
+#: chemistry (gpuwm/namelist_chem.py).
+CHEM_DEFINES = {**ARW_DEFINES, "WRF_CHEM": "1"}
+
+
+def build_table(registry: Path, *, tag: str, commit: str,
+                chem: bool = False) -> dict:
     seen: list[Path] = []
     rows: dict[tuple[str, str], dict] = {}
-    _read(registry / "Registry.EM", ARW_DEFINES, seen, rows)
+    if chem:
+        _read(registry / "Registry.EM_CHEM", CHEM_DEFINES, seen, rows)
+        rows = {key: row for key, row in rows.items() if key[0] == "chem"}
+    else:
+        _read(registry / "Registry.EM", ARW_DEFINES, seen, rows)
     return {
         "schema": "gpuwm.wrf-namelist-registry.v1",
         "wrf": {"tag": tag, "commit": commit,
@@ -99,8 +111,11 @@ def main(argv=None) -> int:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--chem", action="store_true",
+                        help="the WRF-Chem build's &chem keys only")
     args = parser.parse_args(argv)
-    table = build_table(args.registry, tag=args.tag, commit=args.commit)
+    table = build_table(args.registry, tag=args.tag, commit=args.commit,
+                        chem=args.chem)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(table, indent=1) + "\n", encoding="utf-8",
                         newline="\n")

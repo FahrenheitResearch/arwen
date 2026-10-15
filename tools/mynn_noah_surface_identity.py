@@ -35,6 +35,7 @@ def _hash_array(digest, name, array):
 def run_identity() -> dict[str, object]:
     import cupy as cp
 
+    from gpuwm import correct_mode
     from gpuwm.config import RunConfig
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.dycore import step
@@ -42,12 +43,15 @@ def run_identity() -> dict[str, object]:
     from gpuwm.core.moist import init_moist_balanced
     from gpuwm.core.physics import initialize_physics
 
+    # An identity baseline names exact (2.9.0 plan call 1): correct mode is
+    # the RunConfig default and changes WSM6's surface booking (WB5).
     cfg = RunConfig(
         nx=6, ny=4, nz=24, dx=3000.0, dy=3000.0, ztop=12000.0,
         dt=12.0, run_seconds=0.0, time_step_sound=4, moist=True,
         mp_physics=6, sf_sfclay_physics=5, sf_surface_physics=2,
         bl_pbl_physics=5, bldt=0.0, ra_sw_physics=1, ra_lw_physics=0,
         radt=1.0, top_lid=True, num_soil_layers=4,
+        **correct_mode.resolve("exact").settings,
     )
 
     def theta(z):

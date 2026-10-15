@@ -39,9 +39,16 @@ def test_ordinary_oxygen_and_positive_high_co2_are_owned_not_trace_capped():
 
 @pytest.mark.parametrize("year", [1900, 1974, 2000, 2021, 2050])
 def test_default_year_formulas_remain_distinct_and_byte_exact(year):
-    # Independent old wrapper expressions, including the two rounding orders.
-    classic = dict(co2=float((280 + 90*np.exp(.02*(year-2000)))*1e-6),
-                   n2o=319e-9, ch4=1774e-9)
+    # Independent wrapper expressions, including the two rounding orders.
+    # RRTMLWRAD's REAL(8) gases take REAL right-hand sides: the CO2 formula
+    # is evaluated in float32 with the float32 EXP and then widened, and
+    # 319.e-9/1774.e-9 are float32 literals widened (module_ra_rrtm.F
+    # :1854-1863; the WRF column oracle tests/test_rrtm_lw_wrf461_parity.py
+    # holds these bits to the Fortran's).
+    classic = dict(
+        co2=float(F(F(F(280) + F(F(90) * expf(F(F(.02) * (year - 2000)))))
+                    * F(1e-6))),
+        n2o=float(F(319e-9)), ch4=float(F(1774e-9)))
     legacy_co2 = F(F(1e-6) * F(F(280) + F(F(90) * expf(F(F(.02)*(year-2000))))))
     legacy = np.array([legacy_co2, F(1774e-9), F(319e-9), F(.209488)], F)
     assert rrtm_default_trace_gases(year) == classic

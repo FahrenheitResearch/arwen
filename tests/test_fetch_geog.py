@@ -409,11 +409,16 @@ def test_a_consumer_name_selects_that_doors_datasets():
     assert "soilgrids" not in parse_datasets("wrf")
     assert parse_datasets("mesh") == geog_assets.datasets_required_by(
         geog_assets.GEOG_CONSUMER_MESH)
-    # and it composes with explicit names, in canonical order
-    assert parse_datasets("wrf,soilgrids") == tuple(
+    # and it composes with explicit names and the other door, in canonical
+    # order (the mesh door's native static reads two land-use archives the
+    # WRF builder does not, so wrf plus the soil archive is no longer all)
+    assert parse_datasets("wrf,mesh") == tuple(
         archive.dataset for archive in geog_assets.GEOG_ARCHIVES
         if archive.required_by and archive.fetch_by_default)
-    explicit = "wrf,soilgrids,lake_depth,bnu_soiltype_top,bnu_soiltype_bot"
+    assert parse_datasets("wrf,soilgrids") == tuple(
+        archive.dataset for archive in geog_assets.GEOG_ARCHIVES
+        if archive.dataset in GEOG_DATASETS + ("soilgrids",))
+    explicit = "wrf,mesh,lake_depth,bnu_soiltype_top,bnu_soiltype_bot"
     assert parse_datasets(explicit) == tuple(
         a.dataset for a in geog_assets.GEOG_ARCHIVES if a.fetch_by_default)
 
@@ -1430,3 +1435,45 @@ def test_the_mirror_publisher_knows_every_pinned_archive():
     for archive in geog_assets.GEOG_ARCHIVES:
         assert f"`{archive.filename}` | {archive.archive_bytes:,} | `{archive.archive_sha256}`" in readme
         assert f"| `{archive.dataset}` |" in readme
+
+
+def test_every_dataset_the_native_mpas_static_path_reads_is_pinned():
+    """The native static path is table work on both sides: the crate's
+    option table names a WPS_GEOG directory for every native selector, and
+    each must be a pin `gpuwm fetch-geog` can stage through rw_fetch.
+
+    The breakage this prevents: a native selector (or the native default:
+    ``landuse_30s`` for the GWD statistics, ``modis_landuse_20class_30s``
+    for MODIFIED_IGBP_MODIS_NOAH) naming a directory no pin stages, so a
+    native static on a clean install stops at "WPS_GEOG index ... is
+    unreadable" with no fetch that could fix it.
+    """
+    import re
+    crate = Path(__file__).resolve().parents[1] / "tools/rustwx/crates/rw-mpas/src"
+    builder = (crate / "static_builder.rs").read_text(encoding="utf-8")
+    table = builder[builder.index("pub const MPAS_STATIC_SOURCE_TABLE"):]
+    table = table[:table.index("];")]
+    native = set(re.findall(r'\(\s*"[a-z-]+"\s*,\s*"[A-Za-z0-9_]+"\s*,\s*"([a-z0-9_]+)"\s*\)', table))
+    defaults = builder[builder.index("pub const GEOG_DATASET_TABLE"):]
+    defaults = defaults[:defaults.index("];")]
+    native |= set(re.findall(r'\(\s*"[a-z_0-9]+"\s*,\s*"([a-z0-9_]+)"\s*\)', defaults))
+    gwd = (crate / "native_gwd.rs").read_text(encoding="utf-8")
+    native |= set(re.findall(r'\(\s*"(?:GTOPO30|GMTED2010)"\s*,\s*"([a-z0-9_]+)"', gwd))
+    native |= set(re.findall(r'root\.join\("([a-z0-9_]+)"\)', gwd))
+    assert {"landuse_30s", "modis_landuse_20class_30s", "topo_30s",
+            "topo_gmted2010_30s"} <= native, native
+    pinned = set(geog_assets.geog_datasets())
+    for archive in geog_assets.GEOG_ARCHIVES:
+        pinned.update(archive.index_subdirs)
+    assert sorted(native - pinned) == []
+    for name in ("landuse_30s", "modis_landuse_20class_30s"):
+        archive = geog_assets.archive_for(name)
+        assert geog_assets.GEOG_CONSUMER_MESH in archive.required_by, name
+        assert archive.available_sources == ("ncar",) and not archive.in_mandatory_bundle
+    for name in ("topo_30s", "modis_landuse_20class_15s", "greenfrac",
+                 "albedo_ncep", "maxsnowalb"):
+        archive = geog_assets.archive_for(name)
+        assert archive.required_by == () and geog_assets.GEOG_CONSUMER_MESH in archive.optional_for
+        assert not archive.fetch_by_default, f"{name} would join the default fetch bill"
+        assert archive.download_source == "ncar" and archive.available_sources == ("ncar",)
+        assert not archive.in_mandatory_bundle

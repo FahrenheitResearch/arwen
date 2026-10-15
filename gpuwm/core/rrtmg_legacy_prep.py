@@ -134,8 +134,9 @@ Fortran oddities found (implemented as WRF defines them, reported):
   WRF); COSZR is written unconditionally.
 
 Fail-closed exclusions (paths WRF option 4 as configured cannot reach or
-that need inputs outside this contract): Ferrier microphysics
-(mp_physics 5/15/85), the MP option-5 F_ICE_PHY branch, prognostic
+that need inputs outside this contract): the HWRF-only Eta Ferrier
+package (mp_physics 85), the old Eta Ferrier F_ICE_PHY branch (qs
+carrying total ice, mp_physics 95, refused at admission), prognostic
 aerosol/cloud-drop paths (progn=1, F_QNDROP), WRF_CHEM aerosol feedback,
 CAMMGMP radii, the SSiB albedo split (sf_surface_physics == 8), and
 o3input values other than the two WRF defines (0-ish default and 2).
@@ -378,11 +379,19 @@ def lw_trace_gases(yr, overrides=None):
 
 
 def _moist_prep(kte, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
-                t1d, qv3d, qc3d, qr3d, qi3d, qs3d, qg3d, cldfra3d):
+                t1d, qv3d, qc3d, qr3d, qi3d, qs3d, qg3d, cldfra3d,
+                ferrier=False):
     """The moist-variable assembly common to both wrappers.
 
     Returns (qv1d, qc1d, qr1d, qi1d, qs1d, qg1d, cldfra1d), each float32
     (kte,).  qg1d mirrors WRF (copied but unused downstream).
+
+    ``ferrier`` (mp_physics 5 or 15) is the wrappers' FER_MP_HIRES arm
+    (module_ra_rrtmg_lw.F:12131-12146, module_ra_rrtmg_sw.F:10732-10747):
+    OUTSIDE the ICLOUD block, QI1D = MAX(0, QI3D) (the total ice), QS1D = 0
+    and QC1D = MAX(0, QC3D).  Under icloud /= 0 it rewrites the same words
+    the F_QC/F_QI arms just wrote; under icloud = 0 it hands the optics
+    the condensate at zero cloud fraction, as WRF does.
     """
     qv1d = np.zeros(kte, np.float32)
     qc1d = np.zeros(kte, np.float32)
@@ -414,7 +423,13 @@ def _moist_prep(kte, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
             qs1d = np.maximum(_ZERO, _f32(qs3d)).astype(np.float32)
         if f_qg:
             qg1d = np.maximum(_ZERO, _f32(qg3d)).astype(np.float32)
-        # MP option 5 branch requires F_ICE_PHY: outside this contract.
+        # The old Eta Ferrier branch (F_QC .and. .not. F_QI .and. F_QS
+        # with F_ICE_PHY) belongs to mp_physics=95, refused at admission.
+
+    if ferrier:
+        qi1d = np.maximum(_ZERO, _f32(qi3d)).astype(np.float32)
+        qs1d = np.zeros(kte, np.float32)
+        qc1d = np.maximum(_ZERO, _f32(qc3d)).astype(np.float32)
 
     qv1d = np.maximum(qv1d, F("1.e-12")).astype(np.float32)
     return qv1d, qc1d, qr1d, qi1d, qs1d, qg1d, cldfra1d
@@ -655,11 +670,25 @@ def _o3data(prlevh):
     return (acc / (pk - pk1).astype(np.float32)).astype(np.float32)
 
 
-def _mp_guard(mp_physics, allowed_extra=()):
-    if int(mp_physics) in (5, 15) + tuple(allowed_extra):
+def _mp_guard(mp_physics):
+    """Refuse the HWRF-only Eta Ferrier package.
+
+    Breakage this prevents: ETAMP_HWRF (mp_physics 85) joins the wrappers'
+    Ferrier arm only in an HWRF build (``#if (HWRF == 1)``,
+    module_ra_rrtmg_lw.F:12130, _sw.F:10731) and is an NMM-core scheme
+    gpuwm does not carry; prepping it as anything would radiate a species
+    set the run cannot have.  The ARW arm for mp_physics 5 and 15 is
+    ported (``ferrier`` in :func:`_moist_prep`).
+    """
+    if int(mp_physics) == 85:
         raise NotImplementedError(
-            "Ferrier-class microphysics reroutes qi/qs/qc inside the RRTMG "
-            "wrappers; that branch is outside the ported contract")
+            "mp_physics=85 (ETAMP_HWRF) is an HWRF/NMM-only package; its "
+            "RRTMG species remap exists only in HWRF builds")
+
+
+def _is_ferrier(mp_physics):
+    """The wrappers' FER_MP_HIRES / FER_MP_HIRES_ADVECT selector test."""
+    return int(mp_physics) in (5, 15)
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +771,8 @@ def lwrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
         zeros if qc3d is None else qc3d, zeros if qr3d is None else qr3d,
         zeros if qi3d is None else qi3d, zeros if qs3d is None else qs3d,
         zeros if qg3d is None else qg3d,
-        zeros if cldfra3d is None else cldfra3d)
+        zeros if cldfra3d is None else cldfra3d,
+        ferrier=_is_ferrier(mp_physics))
 
     ncol = 1
     nlay = nlayers
@@ -992,7 +1022,7 @@ def swrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
     fork_cloud = cloud_form_is_fork(rrtmg_cloud_optics_form)
     _require_radii("swrad_prep", has_reqc, has_reqi, has_reqs,
                    re_cloud, re_ice, re_snow)
-    _mp_guard(mp_physics, allowed_extra=(85,))
+    _mp_guard(mp_physics)
     if int(sf_surface_physics) == 8:
         raise NotImplementedError(
             "sf_surface_physics=8 selects the SSiB four-component albedo "
@@ -1031,7 +1061,8 @@ def swrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
         zeros if qc3d is None else qc3d, zeros if qr3d is None else qr3d,
         zeros if qi3d is None else qi3d, zeros if qs3d is None else qs3d,
         zeros if qg3d is None else qg3d,
-        zeros if cldfra3d is None else cldfra3d)
+        zeros if cldfra3d is None else cldfra3d,
+        ferrier=_is_ferrier(mp_physics))
 
     ncol = 1
     nlay = kte + 1
@@ -1273,7 +1304,8 @@ def _surf_b(xp, v, ncol, name):
 
 
 def _moist_prep_b(xp, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
-                  t1d, qv3d, qc3d, qr3d, qi3d, qs3d, qg3d, cldfra3d):
+                  t1d, qv3d, qc3d, qr3d, qi3d, qs3d, qg3d, cldfra3d,
+                  ferrier=False):
     """Batch twin of :func:`_moist_prep` on (ncol, kte) float32 arrays."""
     f32 = np.float32
     shape = t1d.shape
@@ -1304,6 +1336,11 @@ def _moist_prep_b(xp, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
             qs1d = xp.maximum(_ZERO, qs3d).astype(f32)
         if f_qg:
             qg1d = xp.maximum(_ZERO, qg3d).astype(f32)
+
+    if ferrier:                      # see _moist_prep
+        qi1d = xp.maximum(_ZERO, qi3d).astype(f32)
+        qs1d = xp.zeros(shape, f32)
+        qc1d = xp.maximum(_ZERO, qc3d).astype(f32)
 
     qv1d = xp.maximum(qv1d, F("1.e-12")).astype(f32)
     return qv1d, qc1d, qr1d, qi1d, qs1d, qg1d, cldfra1d
@@ -1767,7 +1804,7 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     qv1d, qc1d, qr1d, qi1d, qs1d, qg1d, cldfra1d = _moist_prep_b(
         np, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg, hb(t1d),
         hb(qv3d), hb(qc3d), hb(qr3d), hb(qi3d), hb(qs3d), hb(qg3d),
-        cldfra_h)
+        cldfra_h, ferrier=_is_ferrier(mp_physics))
 
     icld = int(cldovrlp)
     juldat = int(F(julian))          # Fortran INT() on the REAL julian
@@ -2008,7 +2045,7 @@ def swrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     fork_cloud = cloud_form_is_fork(rrtmg_cloud_optics_form)
     _require_radii("swrad_prep_batch", has_reqc, has_reqi, has_reqs,
                    re_cloud, re_ice, re_snow)
-    _mp_guard(mp_physics, allowed_extra=(85,))
+    _mp_guard(mp_physics)
     if int(sf_surface_physics) == 8:
         raise NotImplementedError(
             "sf_surface_physics=8 selects the SSiB four-component albedo "
@@ -2081,7 +2118,7 @@ def swrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     qv1d, qc1d, qr1d, qi1d, qs1d, qg1d, cldfra1d = _moist_prep_b(
         np, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg, hb(t1d),
         hb(qv3d), hb(qc3d), hb(qr3d), hb(qi3d), hb(qs3d), hb(qg3d),
-        cldfra_h)
+        cldfra_h, ferrier=_is_ferrier(mp_physics))
 
     nlay = kte + 1
     icld = int(cldovrlp)

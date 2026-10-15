@@ -13,10 +13,11 @@ provenance recorded there).
 
 Deliberately out of scope (documented): UA_PHYS, FASDAS, WRF_HYDRO,
 urban canopy models (the plain VEGTYP==ISURBAN parameter overrides ARE
-ported), SFCDIF_off (CH comes from the surface layer), and
-SFLX_GLACIAL (module_sf_noahlsm_glacial_only.F is not a Task-10
-authority file; land-ice columns are skipped, and the bundle's d01 has
-none -- pinned below).
+ported) and SFCDIF_off (CH comes from the surface layer).  SFLX_GLACIAL
+(module_sf_noahlsm_glacial_only.F) was out of scope here and land-ice
+columns were skipped until 2026-10-12; it is ported now, in the kernel and
+the mirror, and graded against WRF's own words by
+tests/test_noah_wrf461_parity.py.
 
 Gates (plan Task 10):
   * mirror-vs-kernel on randomized columns, every d01 veg/soil category;
@@ -164,7 +165,8 @@ def _storage_m(col_or_out):
 def _sweep_cols(params, snow=False, seed=7):
     """One column per (veg, soil) pair over the full tables (superset of
     the d01 categories); land-ice veg (15) and water veg (17) excluded --
-    they are skip categories, pinned separately."""
+    land ice runs SFLX_GLACIAL, graded against WRF in
+    test_noah_wrf461_parity, and water is a driver skip."""
     rng = np.random.default_rng(seed)
     cols = []
     for veg in range(1, params.lucats + 1):
@@ -409,9 +411,7 @@ def test_shipped_tables_byte_identical_to_wrf_run_dir():
 @requires_bundle
 def test_d01_categories_covered_by_sweep():
     """The plan gate 'all soil/veg categories present in d01 exercised':
-    the sweep runs every table category, so d01's sets must be subsets
-    (and d01 must have no glacial land points, or the skip would hide
-    physics)."""
+    the sweep runs every table category, so d01's sets must be subsets."""
     import netCDF4
     with netCDF4.Dataset(GEO_EM_D01) as ds:
         lu = ds.variables["LU_INDEX"][0].astype(int)
@@ -422,8 +422,6 @@ def test_d01_categories_covered_by_sweep():
     veg = set(np.unique(lu[lm == 1]).tolist())
     soil = set(np.unique(sct[lm == 1]).tolist())
     assert veg == D01_VEG and soil == D01_SOIL
-    assert 15 not in veg, "d01 has glacial land points; SFLX_GLACIAL " \
-                          "is not ported (Task 10 scope)"
 
 
 def test_redprm_derived_parameters(params):
@@ -601,27 +599,40 @@ def test_mirror_bare_soil_no_transpiration(params):
     assert out["ett_w"] == 0.0 and out["ec_w"] == 0.0   # SHDFAC forced 0
 
 
-def test_mirror_water_seaice_glacial_skips(params):
+def test_mirror_water_and_seaice_skip_and_land_ice_runs_glacial(params):
     base = _base_col(params, veg=10, soil=6)
     for patch, code in ((dict(xland=2.0), 1),
-                        (dict(xice=0.6), 2),
-                        (dict(ivgtyp=15), 3)):
+                        (dict(xice=0.6), 2)):
         col = dict(base)
         col.update(patch)
         out = np_noah_column(col, params, DT, DZS)
         assert out["skip"] == code
         assert out["tsk"] == col["tsk"]
         np.testing.assert_array_equal(out["smois"], col["smois"])
+    # Land ice is no longer a skip: WRF's ICE == -1 arm runs SFLX_GLACIAL and
+    # holds the soil saturated (module_sf_noahdrv.F:1137-1190).
+    col = dict(base)
+    col.update(ivgtyp=15)
+    out = np_noah_column(col, params, DT, DZS)
+    assert out["skip"] == 3 and out["ebal_case"] == 4
+    assert out["tsk"] != col["tsk"]
+    np.testing.assert_array_equal(out["smois"], np.ones(4))
+    np.testing.assert_array_equal(out["sh2o"], np.ones(4))
+    assert out["lai"] == 0.01 and out["snowc"] == 1.0
+    assert out["snow"] >= 100.0          # SFLX_GLACIAL holds SNEQV >= 0.10 m
 
 
 def test_mirror_land_copies_cqs2_to_chs2_but_skips_hold_it(params):
-    """WRF noahdrv assigns CHS2=CQS2 only after an ordinary-land SFLX."""
+    """WRF noahdrv assigns CHS2=CQS2 after SFLX or SFLX_GLACIAL -- the
+    post-update block both land arms share -- and never on water or sea ice."""
     base = _base_col(params, veg=10, soil=6)
     base.update(cqs2=0.023, chs2=0.011)
     land = np_noah_column(base, params, DT, DZS)
     assert land["chs2"] == base["cqs2"]
+    ice = np_noah_column(dict(base, ivgtyp=15), params, DT, DZS)
+    assert ice["chs2"] == base["cqs2"]
 
-    for patch in (dict(xland=2.0), dict(xice=0.6), dict(ivgtyp=15)):
+    for patch in (dict(xland=2.0), dict(xice=0.6)):
         col = dict(base)
         col.update(patch)
         skipped = np_noah_column(col, params, DT, DZS)

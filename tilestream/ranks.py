@@ -296,7 +296,15 @@ class RankedRun(multigpu.MultiGPUDomain):
                 self._drain_after_error()
                 raise RankedRunError(
                     f"rank {rank} card {dev} build failed: {exc}") from exc
-        self.arrays = [self.inventory_fn(tile) for tile in self.tiles]
+        # Each rank's inventory is taken on that rank's card: an inventory
+        # member may launch work (chem history diagnostics refresh their
+        # buffers), and card 0 is current here.  Without this, fire smoke
+        # on two cards with no peer path failed to build ("Peer access is
+        # unavailable", MULTICARD-CHECK 2026-10-08).
+        self.arrays = []
+        for dev, tile in zip(self.devices, self.tiles):
+            with cp.cuda.Device(dev):
+                self.arrays.append(self.inventory_fn(tile))
         self.names = list(self.arrays[0])
         for rank, arrays in enumerate(self.arrays):
             expected_names = set(store) - set(self.global_keys)
@@ -772,7 +780,8 @@ class RankedRun(multigpu.MultiGPUDomain):
             self._home[key][...] = 0
             return
         for rank, dev in enumerate(self.devices):
-            arrays = self.inventory_fn(self.tiles[rank], [key])
+            with cp.cuda.Device(dev):
+                arrays = self.inventory_fn(self.tiles[rank], [key])
             if key not in arrays:
                 raise RankedRunError(f"slab {rank} carries no {key!r} to zero")
             with cp.cuda.Device(dev), self.compute_streams[rank]:

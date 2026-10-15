@@ -561,7 +561,10 @@ def test_the_permitted_keys_are_the_ones_the_help_text_publishes():
     # may ride along.
     run_fields = set(RESTART_TOLERATED_RUN_FIELDS)
     assert run_fields - CONFIG_DIAGNOSTIC_FIELDS == set(CONFIG_RUN_LENGTH_FIELDS)
-    assert run_fields & CONFIG_DIAGNOSTIC_FIELDS == {"surface_energy_diag"}
+    # The 2.9.0 correct-mode WB1 switch joined the same way: output-only
+    # (it books CLOUDNC and moves no prognostic word), tolerated by both.
+    assert run_fields & CONFIG_DIAGNOSTIC_FIELDS == {
+        "surface_energy_diag", "thompson_cloud_surface_booking"}
     # WRF's history window (history_begin_s / history_end_s, cb8af5ccb)
     # chooses which frames are written, like the cadence beside it, and
     # both published --restart texts now name it.

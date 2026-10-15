@@ -174,6 +174,7 @@ tests/test_physics_md_reachability_claims.py
 # as the census miss this sweep opened with, so it belongs on the list
 # the battery runs every cut.
 tests/test_ftz_route_inventory.py
+tests/test_ftz_tool_root.py
 
 # Task #125 (prov-wire): the provenance policy at the shared config
 # load.  build_experiment now refuses a version disagreement, warns one
@@ -492,6 +493,7 @@ tests/test_cargo_gate_manifest.py
 tests/test_verify_release_artifacts.py
 tests/test_release_snapshot_front_door.py
 tests/test_release_snapshot_machine_paths.py
+tests/test_owner_identity_scan.py
 tests/test_release_snapshot_modes.py
 
 # ---------------------------------------------------------------------------
@@ -522,12 +524,11 @@ tests/test_publish_workflow_state_machine.py
 # Prepared-packet identity, native/metadata checks and bounded retry behavior
 # moved from the old inline Bash workflow fixtures into this controller suite.
 tests/test_prepared_publication.py
-# 2.8.9 cut r1: both platform wheels were over the 100,000,000-byte per-file
-# limit, so three artifacts are fetched on demand and left out of the wheel.
-# This suite holds the split: which three, what staging leaves out, that the
-# bundle and pins still carry all, and that doctor and the two doors name
-# `gpuwm fetch-bridges`.  CPU-only, no binary built or run, a few seconds.
+# Wheel-size recovery: every declared artifact ships in each platform wheel.
+# Staging, publication and doctor must agree on the restored full roster.
 tests/test_on_demand_artifacts.py
+# Refuse a wheel above 100,000,000 bytes before spending the release gate.
+tests/test_wheel_size_pre_gate.py
 
 # Three more release-machinery suites on no leg, matching the 2.1.0
 # rationale above verbatim: CPU-only, fixtures built through the real tools,
@@ -2270,6 +2271,7 @@ tests/test_prepared_history_capture_receipt.py
 # of uncalibrated random perturbation at every door; unlisted, the refusal
 # could be removed with nothing red.
 tests/test_ensemble_calibration_admission.py
+tests/test_ensemble_random_admission.py
 tests/test_ensemble_calibration_score.py
 tests/test_ensemble_campaign_run.py
 tests/test_ensemble_campaign_score.py
@@ -2532,10 +2534,12 @@ tests/test_sfire_ideal_inputs.py
 tests/test_sfire_namelist.py
 tests/test_sfire_native_input.py
 tests/test_sfire_negative_burn_gpu.py
+tests/test_sfire_regime_receipt.py
 tests/test_sfire_restart_io.py
 tests/test_sfire_smoke.py
 tests/test_sfire_smoke_tile_contract.py
 tests/test_sfire_source_cache.py
+tests/test_sfire_static_routes.py
 tests/test_sfire_tile_geometry.py
 tests/test_sfire_wrfinput.py
 tests/test_sfire_wrfout_io.py
@@ -2695,6 +2699,12 @@ tests/test_hrrr_route_cycling.py
 tests/test_mynn_sfclay_wrf461_column_oracle.py
 tests/test_mynn_wrf461_exact_gpu.py
 tests/test_namelist_import.py
+# golden/namelist (2026-10-12): the namelist door rule -- every swap the
+# importer used to make (ISHMAEL, radar heating, eclipse, the lid, chem)
+# maps or refuses -- and the Registry-wide audit that keeps a consumed key
+# from going unrecorded.  Both CPU-only, importer and tables only.
+tests/test_namelist_door_rule.py
+tests/test_namelist_door_audit.py
 tests/test_preflight.py
 tests/test_registry_history_export.py
 tests/test_ruc_gpu_column_oracle.py
@@ -2814,3 +2824,160 @@ tests/test_fast_sbm_tables.py
 tests/test_fast_sbm_transport_integration.py
 tests/test_fast_sbm_warm_column.py
 tests/test_fast_sbm_water_budget.py
+tests/test_health_census_companions.py
+tests/test_fetch_command_abi.py
+tests/test_picture_catalog_receipts.py
+
+# Publication rehearsal completeness, isolation, project capacity and vendor hygiene.
+tests/test_workflow_rehearsals.py
+tests/test_workflow_job_replay.py
+tests/test_pypi_capacity.py
+tests/test_publish_preflight.py
+tests/test_vendor_cache_ignore.py
+
+# Hex init threading identity (2026-10-12, 8e): rw_mpas_init columns run on
+# Rayon workers; the real-binary test proves 1 and 16 workers write the same
+# bytes. Opt-in: it skips unless GPUWM_HEX_INIT_IDENTITY_MANIFEST names inputs.
+tests/test_mpas_init_thread_identity.py
+
+# Country recipe door (2026-10-12, 2.9.0 integration): the packaged
+# gpuwm/data/recipes copy of hrrr_v4_gsd41.toml missed box/hrrr-retime's
+# [static] source, and the analysed-aerosol row wrote a config the HRRR
+# namelist route refused at go --dry-run. Neither file was on any list.
+tests/test_region_recipe.py
+
+# Front-page receipts (2026-10-12, 2.9.0 integration): both were red on the
+# line unseen after the docs merges moved README lines and added pages, and the
+# Linux geography note must quote the tool's own figures for the set the
+# steps fetch. The Node article cells skip where Node is absent.
+tests/test_resolved_scale_receipt.py
+tests/test_gui_failure_text.py
+
+# HRRR route terrain drag (2026-10-13, 2.9.0 verify round 1, QA R4): the
+# hrrr route's root static omitted the drag statistics gwd_opt/topo_wind read,
+# so a recipe-door --source hrrr run refused after its whole preparation. The
+# strict receipt verifier it extends (test_hrrr_native_static) was on no list.
+tests/test_hrrr_static_terrain_drag.py
+tests/test_hrrr_native_static.py
+
+# Event stream closed before the run's observers (2026-10-13, 2.9.0 verify
+# round 1): a failed ensemble member preparation ended "I/O operation on closed
+# file" at exit 2 instead of its own refusal at exit 1.
+tests/test_run_observer_closed_stream.py
+
+# Kain-Fritsch against WRF v4.6.1 (golden/parity, 2026-10-12).  cu_physics = 1
+# is the wizard's default 12 km root cumulus, and until this landing its suites
+# were on no list: tests/test_kf.py's CPU rows (the KF_LUTAB oracle digests,
+# the adapter's CUDT/PRATEC contract, the capped-downdraft fixture of WRF's own
+# answer and the one declared PPTFLX floor) and tests/test_kf_wrf461_oracle.py's
+# (the committed WRF fixture bytes, its regime/branch/outcome coverage, the ULP
+# metric), and tests/test_kf_morrison_interface.py (KF's phase contract with
+# Morrison, all CPU rows).  Device rows are on tools/battery/gpu_shard_files.txt.
+tests/test_kf.py
+tests/test_kf_wrf461_oracle.py
+tests/test_kf_morrison_interface.py
+
+# The WRF v4.6.1 column oracles of the seven other schemes that shipped in
+# 2.8.9 with no WRF comparison (golden/parity, 2026-10-12): WSM6, Kessler,
+# Dudhia shortwave, RRTM longwave, MYJ, Milbrandt-Yau and WDM6.  CPU rows:
+# the committed WRF fixture bytes and their provenance, the kernels' frozen
+# WRF words and arithmetic spellings, and the host paths graded against the
+# oracle (RRTM longwave's NumPy path is word for word on CPU).  Collected on
+# G1 under the leg's marker expression: 3, 3, 3, 6, 3, 4 and 9 rows.  Device
+# rows are on tools/battery/gpu_shard_files.txt.
+tests/test_wsm6_wrf461_column_exact.py
+tests/test_kessler_wrf461_parity.py
+tests/test_kessler_refute_columns.py
+tests/test_dudhia_sw_wrf461_parity.py
+tests/test_rrtm_lw_wrf461_parity.py
+tests/test_myjpbl_wrf461_parity.py
+tests/test_milbrandt2_wrf461_exact_gpu.py
+tests/test_wdm6_wrf461_oracle.py
+# WRF radiation and switch ports of 2.9.0 (golden/ports-rad): New Goddard (ra_lw/ra_sw
+# = 5) checker and driver wiring, icloud = 2 admission, aer_opt = 1 and 2 contracts, the
+# lightning_option contract, every unported radiation value's named refusal, and the
+# registry rebuild that once dropped the aer_opt = 2 rows. Breakage: the ports joined
+# on no battery list, so a lost refusal, contract or registry row would have passed every
+# leg. Their device rows run on gpu_shard_files.txt.
+tests/test_aer_opt2.py
+tests/test_goddard_column_check.py
+tests/test_goddard_driver.py
+tests/test_icloud2_admission.py
+tests/test_lightning_contract.py
+tests/test_ports_rad_regeneration.py
+tests/test_radiation_unported_refusals.py
+tests/test_rrtmg_aer1.py
+
+# 2.9.0 round 2 (integrate/2.9.0 round-2 merge): the new suites of golden/ports-mp (WSM3, WSM5,
+# WSM6R, WSM7, Ferrier-Aligo, Purdue Lin), golden/ports-cu (Grell 3D, New SAS), golden/wrf-fixes (solar,
+# YSU 4.8, Noah-MP snow age, urban water, MYNN TKE advection) and golden/ports-pbl's rotted surface-
+# ordering fixture (tests/test_physics_driver.py, red at 2.8.9 unseen; device-only, so it runs on the
+# GPU shard). Breakage: these lanes joined
+# with their suites on no battery list, so a lost admission, identity, oracle or registry row passed
+# every leg. Device rows are on tools/battery/gpu_shard_files.txt.
+tests/test_additive_loader_proof.py
+tests/test_catalog_registry_extension.py
+tests/test_fer_hires_port.py
+tests/test_ferrier_mp5_oracle.py
+tests/test_g3_config_identity.py
+tests/test_g3_cu5_admission.py
+tests/test_g3_diag_api.py
+tests/test_kernel_pin_manifest.py
+tests/test_kernel_site_extension.py
+tests/test_lin_consumer_repairs.py
+tests/test_lin_contract.py
+tests/test_lin_frame_arithmetic.py
+tests/test_lin_identity_extension.py
+tests/test_lin_oracle_rebuild.py
+tests/test_metem_module_entry.py
+tests/test_noahmp_snow_age_generation.py
+tests/test_nsas_admission.py
+tests/test_nsas_column_oracle.py
+tests/test_nsas_config_identity.py
+tests/test_physics_option_seeds.py
+tests/test_registry_history_extension.py
+tests/test_rw_wps_import_closure.py
+tests/test_solar_generation.py
+tests/test_urban480_generation.py
+tests/test_urban480_history.py
+tests/test_urban480_import.py
+tests/test_urban480_input_static.py
+tests/test_urban48_ground_water.py
+tests/test_urban48_oracle_driver.py
+tests/test_urban48_root_uptake.py
+tests/test_urban_bem_regime_wrf461.py
+tests/test_urban_bep_wrf461_column_oracle.py
+tests/test_urban_default_subnormals.py
+tests/test_urban_slucm_regime_wrf461.py
+tests/test_urban_water_balance.py
+tests/test_urban_wrf480_table_bounds.py
+tests/test_urban_wrf480_tables.py
+tests/test_wrfinput_mp_names.py
+tests/test_wsm3_admission.py
+tests/test_wsm3_wrf461_column_exact.py
+tests/test_wsm5.py
+tests/test_wsm5_intake_consumers.py
+tests/test_wsm6r.py
+tests/test_wsm6r_intake_consumers.py
+tests/test_wsm7_admission.py
+tests/test_wsm7_registry_metadata.py
+tests/test_wsm7_staging.py
+tests/test_wsm7_wrf461_column_exact.py
+tests/test_wsm_family_frame_pricing.py
+tests/test_ysu_generation_batch_gpu.py
+tests/test_ysu_generation_source.py
+tests/test_ysu_generations.py
+tests/test_source_leg_controller.py
+
+# Correct mode as the 2.9.0 default (plan call 1, lane/290-A3): the switch, the
+# strict-mode force to exact, the per-domain run receipt, the scheme-scoped echo
+# and digest, the 2.8.9-checkpoint refusal with its remedy, and rw_mpas_lbc's
+# correct default with the ABI pin that refuses a build from before the switch.
+# Breakage: without them on a leg, the default could fall back to exact (the
+# WB4/WB5 defects back in a bare default run), a strict proof could run
+# corrected arithmetic, the flip could move every non-WSM6 run's digest, or a
+# stale boundary producer could ignore --physics-mode.  Collected under the
+# leg's marker expression: 20 and 6 rows.  The device budget tests are
+# tests/test_correct_mode_water_budget.py on tools/battery/gpu_shard_files.txt.
+tests/test_correct_mode_default.py
+tests/test_rw_mpas_lbc_physics_mode.py

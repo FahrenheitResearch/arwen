@@ -409,7 +409,39 @@ _MP_CLOUD_OPTICS_SCHEME = {
     # Registry.EM_COMMON:3015, package kesslerscheme mp_physics==1 -
     # moist:qv,qc,qr.  No qi, no qs, no re_* state.
     1: "kessler",
+    # Ferrier-Aligo.  Registry.EM_COMMON:3019, package fer_mp_hires -
+    # moist:qv,qc,qr,qi;scalar:qt;state:f_ice_phy,f_rain_phy,f_rimef_phy:
+    # qi (the total ice) and no qs, so F_QI is true and F_QS false, and
+    # cal_cldfra1 takes the P3 arm and then its own selector arm
+    # (module_radiation_driver.F:3879-3887, :3926-3937).  FER_MP_HIRES is
+    # absent from the use_mp_re disjunction (module_physics_init.F:
+    # 1004-1023), so WRF hands radiation no radii; with no RRTMGP in WRF
+    # to copy, the coupling takes Kessler's constant 10 um liquid radius
+    # and 50 um ice diameter over qc and the total ice.
+    5: "ferrier",
+    # WSM3.  Its OWN coupling name, because neither neighbour is right:
+    # Registry.EM_COMMON:3017 declares ``package wsm3scheme mp_physics==3 -
+    # moist:qv,qc,qr;state:re_cloud,re_ice,re_snow`` -- no qi and no qs, so
+    # cal_cldfra1's F_QI and F_QS are both FALSE and it takes the qc-only
+    # arm with its 273.15 K phase threshold (module_radiation_driver.F:
+    # 3891-3899), unlike WSM6's row -- while module_physics_init.F:1008
+    # puts WSM3SCHEME in the use_mp_re disjunction, so the scheme's own
+    # radii reach cloud optics, unlike Kessler's row.  WRF's wrappers move
+    # cold qc into qi and cold qr into qs for a scheme without F_QI and
+    # without warm_rain before reading them (module_ra_sw.F:193-203 and the
+    # RRTMG wrappers); that conversion is the radiation side's, keyed on
+    # these same Registry flags.
+    3: "wsm3",       # Registry.EM_COMMON:3017, wsm3scheme
+    4: "wsm6",       # Same cloud/ice/snow radii contract, no graupel.
     6: "wsm6",       # Registry.EM_COMMON:3021, wsm6scheme
+    # WSM6R.  Registry.EM_COMMON:3022 declares wsm6rscheme as
+    # moist:qv,qc,qr,qi,qs,qg (WSM6's inventory, so F_QI/F_QS are true).
+    # WRF hands radiation no radii for it (WSM6RSCHEME is not in the
+    # use_mp_re disjunction, module_physics_init.F:1004-1023); RTE+RRTMGP has
+    # no WRF referent, and gpuwm/core/wsm6.py writes effc/effi/effs every
+    # step from WSM6's own mp_wsm6_effectRad_run on the WSM6R state, whose
+    # size distributions are WSM6's.  So the coupling is WSM6's.
+    106: "wsm6",     # Registry.EM_COMMON:3022, wsm6rscheme
     8: "thompson",   # Registry.EM_COMMON:3024, thompson
     # Milbrandt-Yau two-moment.  The VALUE is its own coupling name because
     # the radii are the scheme's own and no other row's: WRF hands
@@ -456,6 +488,11 @@ _MP_CLOUD_OPTICS_SCHEME = {
     # supplies, not in how radiation consumes them, so it changes the
     # values on this path and not the path.
     16: "wsm6",      # Registry.EM_COMMON:3031, wdm6scheme
+    # WSM7: WSM6's coupling on both counts -- F_QI/F_QS true
+    # (Registry.EM_COMMON:3034 moist:qv,qc,qr,qi,qs,qg,qh) and explicit
+    # radii (WSM7SCHEME in the use_mp_re list, module_physics_init.F:1011)
+    # -- and, as in WRF, hail is not a radiating species.
+    24: "wsm6",      # Registry.EM_COMMON:3034, wsm7scheme
     18: "nssl",      # Registry.EM_COMMON:3033, nssl_2mom
     28: "thompson",  # Registry.EM_COMMON:3036, thompsonaero
     # P3 one-category.  The VALUE is its own coupling name and not a
@@ -530,7 +567,7 @@ _MP_CLOUD_OPTICS_SCHEME.update({
 # the radii from a gamma distribution that is not this scheme's", which
 # was true and was the argument for a row of the scheme's own, not for
 # refusing the pairing.  P3's entry went the same way before it.
-_NO_CLOUD_OPTICS_COUPLING: dict[int, str] = {30: "the spectral effective-radius integration has not been qualified; reusing bulk radii would replace the size-distribution optics"}
+_NO_CLOUD_OPTICS_COUPLING: dict[int, str] = {2: "Lin supplies no effective radii to this adapter; borrowing another scheme would change its cloud distribution", 30: "the spectral effective-radius integration has not been qualified; reusing bulk radii would replace the size-distribution optics"}
 
 #: The two adapters that DO serve these selectors, named by every refusal
 #: so none of them is a dead end.  One copy: a user told different things
@@ -570,7 +607,7 @@ _require_agreement_with_the_registry()
 #: (module_radiation_driver.F:3870-3877).  Derived from the table above so
 #: the two can never disagree; Kessler's package has neither species.
 _ICE_ACTIVE_SCHEMES = ("wsm6", "thompson", "milbrandt2", "morrison", "nssl",
-                       "p3")
+                       "p3", "ferrier")
 
 #: The subset of the above whose Registry package ALSO carries ``qs`` in
 #: ``moist``, i.e. the ones for which the driver's ``F_QS`` is true.  P3 is
@@ -959,6 +996,26 @@ def _extend_above_model_profile(
                        * xp.arange(1, upper_nlay + 1, dtype=DTYPE))[None, :]
             upper_plev = top_pressure - offsets
             upper_plev[:, -1] = DTYPE(pressure_floor)
+            if upper_nlay > 1:
+                # THE BREAKAGE THIS PREVENTS: the layer count comes from the
+                # one declared p_top, the ladder from each column's own top
+                # interface.  WRF's mass coordinate makes those the same
+                # number; a height-coordinate caller (the MPAS column seam)
+                # hands a top pressure per column, and a column whose top
+                # sits more than one 4-hPa step below the declared value got
+                # an interface at or below the coefficient floor -- zero or
+                # negative pressure, and a non-finite longwave heating rate
+                # at the first call (global 30 km, 2026-10-11).  Such a
+                # column takes the same number of layers evenly spaced from
+                # its own top to the floor; every other column keeps WRF's
+                # ladder to the bit.
+                below = upper_plev[:, -2:-1] <= DTYPE(pressure_floor)
+                fraction = (xp.arange(1, upper_nlay + 1, dtype=DTYPE)
+                            / DTYPE(upper_nlay))[None, :]
+                even = top_pressure + (
+                    DTYPE(pressure_floor) - top_pressure) * fraction
+                even[:, -1] = DTYPE(pressure_floor)
+                upper_plev = xp.where(below, even, upper_plev)
             all_upper_interfaces = xp.concatenate(
                 (top_pressure, upper_plev), axis=1)
             upper_play = DTYPE(0.5) * (
@@ -2200,11 +2257,11 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
     clwp = cp.ascontiguousarray(clwp)
     ciwp = cp.ascontiguousarray(ciwp)
     scheme = str(microphysics).lower()
-    if scheme == "kessler":
+    if scheme in ("kessler", "ferrier"):
         return HydrometeorPaths(
             clwp, ciwp, cp.full_like(qc, DTYPE(10.0)),
             cp.full_like(qc, DTYPE(50.0)))
-    if scheme in ("wsm6", "thompson", "nssl"):
+    if scheme in ("wsm3", "wsm6", "thompson", "nssl"):
         if any(x is None for x in (effc, effi, effs)):
             raise ValueError(
                 f"{scheme} radii require effc, effi, and effs")
@@ -2459,8 +2516,37 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
                                      DTYPE(10.0), DTYPE(180.0))))
 
 
+def cal_cldfra2(qc, qi, *, f_qc=True, f_qi=True, out=None):
+    """WRF binary radiation CLDFRA through the shared no-FTZ loader.
+
+    Raw FP32 columns feed the same kernel in default and strict mode.
+    With neither Registry flag, the driver retains its initialized out.
+    """
+    import cupy as cp
+    from gpuwm.core import rrtmg_legacy_device as dev
+    if (not isinstance(qc, cp.ndarray) or not isinstance(qi, cp.ndarray)
+            or qc.dtype != cp.float32 or qi.dtype != cp.float32
+            or qc.shape != qi.shape):
+        raise TypeError("cal_cldfra2 requires matching CuPy float32 columns")
+    if out is None:
+        out = cp.zeros(qc.shape, dtype=cp.float32)
+    if (not isinstance(out, cp.ndarray) or out.dtype != cp.float32
+            or out.shape != qc.shape or not out.flags.c_contiguous):
+        raise TypeError("cal_cldfra2 out must be contiguous CuPy float32 columns")
+    if not f_qc and not f_qi:
+        return out
+    n = qc.size
+    if n:
+        dev.gpu_preflight()
+        dev._gpu_module(cp.cuda.runtime.getDevice()).get_function("rp_cldfra2")(
+            ((n + 127) // 128,), (128,),
+            (np.int32(n), np.int32(bool(f_qc)), np.int32(bool(f_qi)),
+             cp.ascontiguousarray(qc), cp.ascontiguousarray(qi), out))
+    return out
+
+
 def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
-                f_qs=True):
+                f_qs=True, mp_physics=None):
     """WRF icloud=1 Xu-Randall cloud fraction on device (FP32).
 
     Exact transcription of WRF v4.6.1 ``module_radiation_driver.F``
@@ -2481,6 +2567,12 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
     species; ``f_qc`` alone is the Kessler-class branch (lines 3891-3899,
     QCLD=QC, 273.15 K phase threshold).  Rain never enters QCLD (lines
     3904-3916).
+
+    ``mp_physics`` 5 or 15 (Ferrier-Aligo, fer_mp_hires and its advected
+    sibling) adds WRF's own selector arm at lines 3926-3937, which runs
+    AFTER the P3 arm above for the same qc+qi/no-qs package: QCLD is
+    QC+QI, the weight QI/QCLD, and below -40 C the weight is 1 (all
+    condensate ice at homogeneous freezing, the scheme's T_ICE).
     """
     import cupy as cp
 
@@ -2493,15 +2585,25 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
     tlay = _device_profile(tlay, qv.shape, "tlay")
     play = _device_profile(play, qv.shape, "play")
     if not f_qc or (f_qs and not f_qi):
+        # Breakage this prevents: f_qs without f_qi is WRF's arm for the
+        # OLD Eta Ferrier package (etampnew, mp_physics=95, whose qs holds
+        # the total ice) at module_radiation_driver.F:3902-3922, weighted
+        # by F_ICE_PHY.  gpuwm admits no package with that species set
+        # (95 is refused at admission), so a caller reaching it has built
+        # flags no accepted scheme has; any other arm would weight the
+        # saturation blend with the wrong ice fraction.  The current
+        # Ferrier-Aligo (mp_physics=5) is f_qi without f_qs and is ported
+        # below.
         raise NotImplementedError(
             "cal_cldfra1 port carries WRF's three F_QC arms: qc+qi+qs "
             "(module_radiation_driver.F:3870-3877), qc+qi with no snow "
-            "species (the P3 arm, :3879-3887) and qc alone (:3891-3899). "
+            "species (the P3 arm, :3879-3887, and the Ferrier-Aligo arm "
+            ":3926-3937 after it) and qc alone (:3891-3899). "
             f"f_qc={bool(f_qc)}/f_qi={bool(f_qi)}/f_qs={bool(f_qs)} is "
-            "WRF's Ferrier arm (mp_physics=5) at :3902-3922, whose weight "
-            "is the F_ICE_PHY ice fraction this port does not carry -- "
-            "taking any other arm for it would weight the saturation "
-            "blend with a field that does not exist")
+            "WRF's arm for the old Eta Ferrier package (mp_physics=95, "
+            "qs carrying total ice) at :3902-3922, whose weight is the "
+            "F_ICE_PHY ice fraction; no accepted scheme has that species "
+            "set")
     qcldmin = DTYPE(1.0e-12)
     svpt0 = DTYPE(273.15)
     tc = tlay - svpt0
@@ -2524,6 +2626,13 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
         qcld = qi + qc
         weight = cp.where(qcld < qcldmin, DTYPE(0.0),
                           qi / cp.maximum(qcld, qcldmin))
+        if mp_physics is not None and int(mp_physics) in (5, 15):
+            # module_radiation_driver.F:3926-3937, FER_MP_HIRES and
+            # FER_MP_HIRES_ADVECT: QCLD = QC + QI (the same sum), weight
+            # QI/QCLD, and weight = 1 where tc < -40.
+            weight = cp.where(
+                qcld < qcldmin, DTYPE(0.0),
+                cp.where(tc < DTYPE(-40.0), DTYPE(1.0), weight))
     else:
         qcld = qc
         weight = cp.where(qcld < qcldmin, DTYPE(0.0),
@@ -2546,7 +2655,7 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
 #: P3 is in it for the liquid radius only: WRF moves P3's ice onto the snow
 #: species at P3's own radius (module_ra_rrtmg_sw.F:10851-10863), so the ice
 #: rule below never reaches it.
-SCHEME_RADII_COUPLINGS = ("wsm6", "thompson", "nssl", "p3")
+SCHEME_RADII_COUPLINGS = ("wsm3", "wsm6", "thompson", "nssl", "p3")
 
 #: A cloudy layer whose liquid radius is at or below this (microns) carries
 #: the microphysics' no-cloud background, not a droplet size: WRF's 2.5 um
@@ -3433,13 +3542,30 @@ class RRTMGPRadiation:
         return xp.ascontiguousarray(vmr)
 
     @staticmethod
-    def _solar_constant(valid_time) -> float:
+    def _solar_constant_device(valid_time):
+        """The wrf_480 SOLCON as a float32 0-d device array, capture-safe.
+
+        The same rls_radconst launch :meth:`_solar_constant` reads back, with
+        device-resident empty coordinates so nothing crosses the bus.
+        """
+        import cupy as cp
+        from gpuwm.core.solar import geometry_at
+        empty = cp.empty((0,), cp.float32)
+        return geometry_at(valid_time, empty, empty, generation="wrf_480")[0][1]
+
+    @staticmethod
+    def _solar_constant(valid_time, *, generation="wrf_480") -> float:
         """WRF SOLCON = 1370 * ECCFAC (Paltridge & Platt eccentricity).
 
         Transcribes ``radconst`` (module_radiation_driver.F:3504-3509) with
         WRF's 0-based fractional julian day (frame/module_domain.F:2165):
         1369.704 W/m2 at julian 92.75 (eccfac 0.999784).
         """
+        from gpuwm.core.solar import solar_generation, geometry_at
+        solar_generation(generation)
+        if generation == 'wrf_480':
+            empty = np.empty((0,), np.float32)
+            return float(geometry_at(valid_time, empty, empty, generation=generation)[0][1].get())
         hour = (valid_time.hour + valid_time.minute / 60.0
                 + valid_time.second / 3600.0
                 + valid_time.microsecond / 3.6e9)
@@ -3450,8 +3576,8 @@ class RRTMGPRadiation:
                   + 0.000077 * np.sin(2.0 * da))
         return 1370.0 * eccfac
 
-    def _cosine_zenith(self, valid_time, *, hour_offset_seconds=0.0):
-        """WRF v4.6.1 ``radconst``/``calc_coszen`` solar geometry.
+    def _cosine_zenith(self, valid_time, *, hour_offset_seconds=0.0, generation="wrf_480"):
+        """Selected WRF ``radconst``/``calc_coszen`` solar generation.
 
         This transcribes the standard real74 path in
         ``module_radiation_driver.F:3469-3541``.  WRF deliberately uses a
@@ -3469,6 +3595,13 @@ class RRTMGPRadiation:
         hour = (valid_time.hour + valid_time.minute / 60.0
                 + valid_time.second / 3600.0
                 + valid_time.microsecond / 3.6e9)
+        from gpuwm.core.solar import solar_generation, geometry_at
+        solar_generation(generation)
+        if generation == "wrf_480":
+            start = getattr(self, 'start_time', valid_time)
+            return geometry_at(valid_time, self.latitude_deg, self.longitude_deg,
+                hour_offset_seconds=hour_offset_seconds, generation=generation,
+                start_time=start, elapsed_seconds=(valid_time-start).total_seconds())[1]
         julian = valid_time.timetuple().tm_yday - 1.0 + hour / 24.0
         degrad = np.pi / 180.0
         dpd = 360.0 / 365.0
@@ -3641,7 +3774,7 @@ class RRTMGPRadiation:
             # fails the micron band every time.
             effective_fields = {name: kwargs[name] for name in effective}
             effective_fields["effs"] = kwargs["effi"]
-        elif scheme in ("wsm6", "thompson", "nssl"):
+        elif scheme in ("wsm3", "wsm6", "thompson", "nssl"):
             effective = {
                 name: self._field_from_state(state, (name,), None)
                 for name in ("effc", "effi", "effs")}
@@ -3668,9 +3801,24 @@ class RRTMGPRadiation:
         # moves.
         ice_active = scheme_is_ice_active(scheme)
         snow_species = scheme_has_snow_species(scheme)
-        cldfra = cal_cldfra1(qv, qc_cols, qi_cols, qs_cols, tlay, play,
-                             f_qc=True, f_qi=ice_active, f_qs=snow_species)
-        active_bl = mynn_bl_cloud_active(
+        icloud = int(getattr(cfg, "icloud", 1))
+        if icloud == 2:
+            cldfra = cal_cldfra2(qc_cols, qi_cols,
+                f_qc=int(getattr(cfg, "mp_physics", 0)) != 0, f_qi=ice_active)
+        else:
+            cldfra = cal_cldfra1(qv, qc_cols, qi_cols, qs_cols, tlay, play,
+                                 f_qc=True, f_qi=ice_active, f_qs=snow_species,
+                                 mp_physics=int(getattr(cfg, "mp_physics", 0)))
+        if scheme == "wsm3":
+            # WSM3 stores cloud ice in qc and snow in qr. WRF splits
+            # these carriers below freezing in module_ra_sw.F:193-203
+            # after cal_cldfra1 has consumed the original combined cloud.
+            frozen = tlay < DTYPE(273.15)
+            qi_cols = cp.ascontiguousarray(cp.where(frozen, qc_cols, DTYPE(0.0)))
+            qs_cols = cp.ascontiguousarray(cp.where(frozen, qr_cols, DTYPE(0.0)))
+            qc_cols = cp.ascontiguousarray(cp.where(frozen, DTYPE(0.0), qc_cols))
+            qr_cols = cp.ascontiguousarray(cp.where(frozen, DTYPE(0.0), qr_cols))
+        active_bl = icloud == 1 and mynn_bl_cloud_active(
             getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
         qc_bl = self._columns(fields["qc_bl"]) if active_bl else None
         qi_bl = self._columns(fields["qi_bl"]) if active_bl else None
@@ -3681,12 +3829,12 @@ class RRTMGPRadiation:
             qc_cols, qi_cols, qc_bl=qc_bl, qi_bl=qi_bl,
             cldfra_bl=cldfra_bl,
             bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
-            icloud_bl=getattr(cfg, "icloud_bl", 0))
+            icloud_bl=(getattr(cfg, "icloud_bl", 0) if icloud == 1 else 0))
         qc_cols, qi_cols, cldfra = merge_mynn_bl_clouds(
             qc_cols, qi_cols, cldfra, qc_bl=qc_bl, qi_bl=qi_bl,
             cldfra_bl=cldfra_bl,
             bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
-            icloud_bl=getattr(cfg, "icloud_bl", 0),
+            icloud_bl=(getattr(cfg, "icloud_bl", 0) if icloud == 1 else 0),
             itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
                        if active_bl else 1),
         )
@@ -3909,8 +4057,11 @@ class RRTMGPRadiation:
         from gpuwm.core.physics import _physics_period_seconds
         radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
         radt_seconds = _physics_period_seconds(radt_minutes, cfg)
+        from gpuwm.core.solar import solar_period_seconds
+        radt_seconds = solar_period_seconds(cfg, radt_seconds)
         mu_raw = self._cosine_zenith(
-            valid_time, hour_offset_seconds=0.5 * radt_seconds)
+            valid_time, hour_offset_seconds=0.5 * radt_seconds,
+            generation=getattr(cfg, "solar_generation", "wrf_480"))
         daylight = mu_raw > DTYPE(0.0)
         mu = cp.where(daylight, mu_raw, DTYPE(1.0)).reshape(-1)
         albedo_surface = cp.asarray(
@@ -3921,10 +4072,24 @@ class RRTMGPRadiation:
         # solcon*(1-obscur)', 9867-9871 'solvar(ib) = scon/rrsw_scon');
         # the RRTMGP-native equivalent normalizes the g-point source total
         # (the shipped table sums to tsi_default = 1360.8577 W/m2).
-        solar = solar * DTYPE(
-            self._solar_constant(valid_time)
-            / float(np.sum(np.asarray(self.sw_tables.solar_source,
-                                      dtype=np.float64))))
+        source_total = float(np.sum(np.asarray(self.sw_tables.solar_source,
+                                               dtype=np.float64)))
+        generation = getattr(cfg, 'solar_generation', 'wrf_480')
+        if generation == 'wrf_480':
+            # The WRF 4.8 SOLCON is the device sun's REAL(4) radconst value.
+            # It stays on the card: reading it back (or staging host inputs
+            # for it) is refused inside a CUDA graph capture, which made
+            # every radiation-due step uncapturable (tilestream graphcap,
+            # 2.9.0 round 2).  float32 -> float64 division -> float32 is the
+            # host expression below, evaluated on the device, so the scale
+            # carries the same bits.
+            solcon = self._solar_constant_device(valid_time)
+            solar = solar * (solcon.astype(cp.float64)
+                             / source_total).astype(DTYPE)
+        else:
+            solar = solar * DTYPE(
+                self._solar_constant(valid_time, generation=generation)
+                / source_total)
         # A dark column's shortwave result is replaced by zero below, so
         # it is never computed: every SW stage is a function of its own
         # column (per-cell optics, a McICA seed from the column's own
@@ -5081,7 +5246,7 @@ __all__ = ["CloudOpticsResult", "CloudTables", "DATA_DIR", "FluxResult",
            "PlanckSourceResult", "RFMIPResult", "RRTMGPRadiation",
            "RRTMGP_TOA_PRESSURE_PA", "TRACE_CLIMATOLOGY_SHA256",
            "TRACE_CLIMATOLOGY_SOURCE", "TraceClimatology",
-           "add_cloud_optics", "cal_cldfra1",
+           "add_cloud_optics", "cal_cldfra1", "cal_cldfra2",
            "cloud_optics", "delta_scale", "gas_optics",
            "gas_table_temperature_range_k",
            "hydrometeor_paths", "load_cloud_tables", "load_gas_tables",

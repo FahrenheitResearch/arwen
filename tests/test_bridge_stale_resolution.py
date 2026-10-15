@@ -347,6 +347,7 @@ def test_the_mesh_door_ladder_refuses_the_stale_binary(
     empty.mkdir()
     monkeypatch.setattr("gpuwm.mpas_mesh.crate_dir", lambda: empty)
     monkeypatch.setattr("gpuwm.mpas_mesh._repo_root", lambda: empty)
+    monkeypatch.setattr("gpuwm.mpas_mesh.packaged_bridge_dir", lambda: empty)
     monkeypatch.setenv(bridge_assets.ASSET_URL_BASE_ENV,
                        "https://127.0.0.1:9/unreachable")
     monkeypatch.setattr("gpuwm.mpas_mesh.default_bridge_dir",

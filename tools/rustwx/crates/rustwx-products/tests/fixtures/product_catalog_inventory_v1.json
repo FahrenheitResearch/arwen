@@ -96,6 +96,7 @@
       "categorical_snow",
       "cloud_cover",
       "cloud_cover_levels",
+      "cloud_fraction_column_max",
       "cloud_ice_column_max",
       "cloud_water_column_max",
       "composite_reflectivity",
@@ -573,14 +574,14 @@
   "summary": {
     "blocked_entries": 7,
     "derived_entries": 48,
-    "direct_entries": 247,
+    "direct_entries": 248,
     "experimental_entries": 11,
     "heavy_entries": 1,
-    "partial_entries": 287,
+    "partial_entries": 288,
     "proof_entries": 1,
     "proxy_entries": 2,
     "supported_entries": 51,
-    "total_entries": 345,
+    "total_entries": 346,
     "windowed_entries": 49
   }
 }

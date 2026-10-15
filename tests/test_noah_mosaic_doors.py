@@ -97,7 +97,8 @@ def test_fit_gate_prices_every_tile_and_selects_kernel():
     off = physics_array_shapes(replace(cfg, sf_surface_mosaic=0))
     assert not any("mosaic" in name or "landusef2" in name for name in off)
     modules = domain_kernel_modules(SimpleNamespace(run=cfg, grid_id=1), prices_refl=False)
-    assert "noah_mosaic_unit" in modules and "noah" not in modules
+    # noah stays priced: seaice_noah (noah.cu) runs after lsm_mosaic too.
+    assert "noah_mosaic_unit" in modules and "noah" in modules
     assert "noah_mosaic" in UNMEASURED_KERNEL_MODULES
     # Priced from the measured unit, never at the assumed bound.
     from gpuwm.core.preflight import (CHAINED_TRANSLATION_UNIT_FRAMES,
@@ -123,7 +124,7 @@ def test_ucm_tile_memory_and_composed_unit_are_priced():
     assert urban["trl_urb3d_mosaic"][0] == (12, cfg.ny, cfg.nx)
     modules = domain_kernel_modules(SimpleNamespace(run=cfg, grid_id=1), prices_refl=False)
     assert "noah_mosaic_ucm_unit" in modules
-    assert "noah_mosaic_unit" not in modules and "noah" not in modules
+    assert "noah_mosaic_unit" not in modules and "noah" in modules
 
 
 def test_missing_fractions_refuses_dominant_column():

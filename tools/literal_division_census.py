@@ -147,7 +147,7 @@ def _preamble_pieces(kdir: Path):
 
 
 def production_units(root) -> list[Unit]:
-    """Every -ftz=true translation unit the package compiles, as compiled
+    """Every runtime translation unit, with its caller arithmetic options,
     from the tree at ``root`` (its repository root).
 
     Every source text is read under ``root`` (A193).  The loader's own
@@ -186,6 +186,10 @@ def production_units(root) -> list[Unit]:
         "sfire_ideal_atmos": (sfire_ideal_atmos.module_source, sfire_ideal_atmos.MODULE_OPTIONS),
         "chem_sfire": (chem_sfire.module_source, chem_sfire.MODULE_OPTIONS),
         "urban_bep_bem": (urban_bem.module_source, urban_bem.MODULE_OPTIONS),
+        # KF compiles on its own direct-NVRTC route (gpuwm/core/kf.py
+        # _kf_module) with KF_MODULE_OPTIONS, not the generic loader's.
+        "kf": (lambda kernel_dir: K.module_source("kf", kernel_dir=kernel_dir),
+               _kf_module_options()),
     }
     for parts in N.NOAHMP_TRANSLATION_UNITS.values():
         noahmp_parts.update(parts)
@@ -198,7 +202,9 @@ def production_units(root) -> list[Unit]:
         if name in noahmp_parts:
             continue
         extra = [kfile(h) for h in K.EXTRA_HEADERS.get(name, ())]
-        unit = _segmented(f"kernels:{name}", pre + extra + [kfile(path.name)],
+        from gpuwm.cuda_subnormals import MARKER
+        prefix = [("<GPUWM_RETAIN_SUBNORMALS>", MARKER)] if name in K._URBAN_NO_FTZ_MODULES else []
+        unit = _segmented(f"kernels:{name}", prefix + pre + extra + [kfile(path.name)],
                           K.module_options(name))
         if unit.source != K.module_source(name, kernel_dir=kdir):
             raise AssertionError(f"census source for {name} drifted")
@@ -263,9 +269,34 @@ def _is_exact_divisor(bits: int) -> bool:
     return (bits & 0x007FFFFF) == 0
 
 
+def _kf_module_options() -> tuple[str, ...]:
+    from gpuwm.core.kf import KF_MODULE_OPTIONS
+    return tuple(KF_MODULE_OPTIONS)
+
+
+def unflushed_route(options) -> bool:
+    """Does a unit compile with ``--ftz=false`` on its production route?
+
+    A146's rewrite (``x / C`` into ``x * RN(1/C)``) needs ``-ftz=true``.  A
+    unit whose own options carry ``--ftz=false`` (KF, Grell 3D, New SAS,
+    lightning, the surface layers and the other unflushed routes in
+    gpuwm.core.kernels) keeps ``div.rn`` for a constant divisor, which is the
+    IEEE quotient, so both census passes report no site for it rather than
+    compiling it under a flush mode production never uses.  The source
+    scan's FTZ_FALSE_SOURCES is the same rule at the source layer.
+    """
+    return any(str(option).replace("--", "-") == "-ftz=false"
+               for option in options)
+
+
 def census_unit(unit: Unit, arch: str = "compute_89") -> dict:
     """Constant-divisor float divisions of one unit, with source lines."""
-    opts = tuple(unit.options) + ("-ftz=true", "-lineinfo", f"-arch={arch}")
+    if unflushed_route(unit.options):
+        return {"unit": unit.key, "arch": arch, "div_rn_f32": None,
+                "constant_divisor_sites": [], "unflushed_route": True}
+    from gpuwm.cuda_subnormals import effective_options
+    opts = effective_options(unit.source, tuple(unit.options) +
+                             ("-ftz=true", "-lineinfo", f"-arch={arch}"))
     ptx = compile_ptx(unit.source, opts)
     sites, loc, total = [], None, 0
     for text in ptx.splitlines():
@@ -381,6 +412,9 @@ def rewrite_sites(unit: Unit, arch: str = "compute_120") -> dict:
     differs between the two builds (A174): a compute_89 reference read
     NVRTC 12.9.86's compute_120 code for ``powf`` and ``logf``, which is not
     its compute_89 code, as rewritten divisions."""
+    if unflushed_route(unit.options):
+        return {"unit": unit.key, "arch": arch, "rewritten_sites": [],
+                "unflushed_route": True}
     base = tuple(unit.options) + ("-lineinfo", f"-arch={arch}")
     before = _line_counts(compile_ptx(unit.source, base + ("-ftz=false",)))
     after = _line_counts(compile_ptx(unit.source, base + ("-ftz=true",)))

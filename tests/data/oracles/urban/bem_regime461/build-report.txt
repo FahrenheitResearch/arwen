@@ -1,0 +1,25 @@
+# gfortran: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+# glibc:    ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+# libm shim (atanf/asinf/acosf/tanf/log10f double-rounded-once): 0
+# -O0 libm symbols per WRF object:
+## module_sf_urban: __powisf2 acosf asinf atan2f atanf cosf expf log10f logf powf sinf tanf
+## module_sf_bem: __powisf2 atanf logf powf
+## module_sf_bep_bem: __powisf2 acosf asinf atanf cosf expf log10f logf powf sinf tanf
+nlcd-summer: snan build identical to ref
+nlcd-summer: v4.7.1 module_sf_bep_bem.F identical to v4.6.1
+nlcd-winter: snan build identical to ref
+nlcd-winter: v4.7.1 module_sf_bep_bem.F identical to v4.6.1
+lcz-summer: snan build identical to ref
+lcz-summer: v4.7.1 module_sf_bep_bem.F identical to v4.6.1
+lcz-winter: snan build identical to ref
+lcz-winter: v4.7.1 module_sf_bep_bem.F identical to v4.6.1
+gr1pv-summer: snan build identical to ref
+gr1pv-summer: v4.7.1 module_sf_bep_bem.F identical to v4.6.1
+gr2-winter: snan build identical to ref
+gr2-winter: v4.7.1 module_sf_bep_bem.F identical to v4.6.1
+long-summer: snan build identical to ref
+long-summer: v4.7.1 module_sf_bep_bem.F identical to v4.6.1
+stop-summer: snan build identical to ref
+stop-summer: v4.7.1 module_sf_bep_bem.F identical to v4.6.1
+# WRF stops (Fortran STOP inside BEP_BEM; the engine must stop in the same call):
+ref stop-summer: WRF stopped: in upward_rad 7 1 32765 89.9064941

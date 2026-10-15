@@ -248,11 +248,10 @@ def test_default_other_card_bootstrap_uses_original_initializer_and_stops_before
 
 
 def test_spp_true_without_declared_consumers_fails_before_any_initializer(tmp_path):
-    # The public session now refuses uncalibrated SPP before it exists,
-    # which is earlier than the consumer check this test first pinned.
-    with pytest.raises(ValueError, match="calibrated against observations"):
-        PreparedEnsembleSession({"members": 2, "stochastic": {"spp": True}},
-            output_directory=tmp_path, collector=Collector(2), array_module=object())
+    session = PreparedEnsembleSession({"members": 2, "stochastic": {"spp": True}},
+        output_directory=tmp_path, collector=Collector(2), array_module=object())
+    with pytest.raises(ValueError, match="requires selected spp_conv"):
+        session.run_prepared(lambda **kw: pytest.fail("initializer was entered"), prepared())
 
 
 def test_stochastic_memory_declares_original_words_2d_spp_and_measured_fft_workspace():

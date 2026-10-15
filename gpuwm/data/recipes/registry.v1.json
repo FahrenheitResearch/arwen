@@ -1,0 +1,23 @@
+{
+  "schema": "gpuwm.recipes.v1",
+  "recipes": [
+    {
+      "id": "hrrr_v4_gsd41",
+      "config": "hrrr_v4_gsd41.toml",
+      "default_source": "gfs",
+      "aerosol_sources": [
+        {
+          "id": "analysed",
+          "providers": ["hrrr", "hrrr-native", "rap", "rap-native"],
+          "settings": {"use_rap_aero_icbc": true, "aer_init_opt": 1, "wif_input_opt": 1},
+          "difference": "Analysed aerosol initial and boundary pair; actual fields required on every frame."
+        },
+        {
+          "id": "monthly-climatology",
+          "settings": {"mp28_aerosol_source": "climatology", "use_rap_aero_icbc": false, "aer_init_opt": 1, "wif_input_opt": 1},
+          "difference": "Monthly WRF aerosol climatology replaces analysed aerosol. This forcing differs from operational HRRR outside RAP coverage."
+        }
+      ]
+    }
+  ]
+}

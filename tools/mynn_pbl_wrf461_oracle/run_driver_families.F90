@@ -93,7 +93,9 @@ program run_mynn_bl_driver_families_oracle
   integer :: initflag
   logical, parameter :: restart = .false.
   logical :: cycling = .false.
-  logical, parameter :: tkeadvect = .false.
+  logical :: tkeadvect = .false.
+  character(len=32) :: transport_arg
+  real :: qke_adv_in(ims:ime,kms:kme)
   logical, parameter :: mix_chem = .false., enh_mix = .false.
   logical, parameter :: rrfs_sd = .false., smoke_dbg = .false.
   logical, parameter :: flag_qc = .true., flag_qi = .true.
@@ -113,6 +115,8 @@ program run_mynn_bl_driver_families_oracle
   call get_command_argument(1, output_path)
   call get_command_argument(2, mixlength_arg)
   if (len_trim(mixlength_arg) > 0) read(mixlength_arg, *) bl_mynn_mixlength
+  call get_command_argument(5, transport_arg)
+  if (len_trim(transport_arg) > 0) read(transport_arg, *) tkeadvect
   call get_command_argument(3, nstep_arg)
   if (len_trim(nstep_arg) > 0) read(nstep_arg, *) nstep
   ! Optional cycled-start control. TRANSFER constructs exact adjacent words
@@ -147,7 +151,7 @@ program run_mynn_bl_driver_families_oracle
       'qc_bl_in,qi_bl_in,cldfra_bl_in,pblh_in,kpbl_in,rmol_in,rublten,' //   &
       'rvblten,rthblten,rqvblten,rqcblten,rqiblten,rqsblten,dozone,exch_h,' // &
       'exch_m,qke,tsq,qsq,cov,el_pbl,sh3d,sm3d,qc_bl,qi_bl,cldfra_bl,' //    &
-      'pblh,kpbl,rmol,maxwidth,maxmf,ztop_plume,ktop_plume'
+      'pblh,kpbl,rmol,maxwidth,maxmf,ztop_plume,ktop_plume,qke_adv_in,qke_adv'
 
   delt = 20.0
   ! ---- atmosphere: six column families, one block --------------------
@@ -343,6 +347,8 @@ program run_mynn_bl_driver_families_oracle
   do s = 1, nstep
     initflag = 0
     if (s == 1) initflag = 1
+    if (tkeadvect .and. s > 1) qke_adv = qke_adv * 1.125
+    qke_adv_in = qke_adv
     qke_in = qke
     tsq_in = tsq
     qsq_in = qsq
@@ -437,7 +443,8 @@ program run_mynn_bl_driver_families_oracle
         write(unit, '(",",I0)', advance='no') kpbl(c)
         write(unit, '(4(",",ES24.16E3))', advance='no')                    &
             rmol(c), maxwidth(c), maxmf(c), ztop_plume(c)
-        write(unit, '(",",I0)') ktop_plume(c)
+        write(unit, '(",",I0)', advance='no') ktop_plume(c)
+        write(unit, '(2(",",ES24.16E3))') qke_adv_in(c,k), qke_adv(c,k)
       end do
     end do
     ! Advance the atmosphere with the driver's own tendencies.

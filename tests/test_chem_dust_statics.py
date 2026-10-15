@@ -27,7 +27,9 @@ def test_dust_pins_and_default_scope():
     assert len(GEOG_DATASETS) == 9
     assert set(geog.parse_datasets("default")) == (
         set(GEOG_DATASETS) | {"soilgrids", "lake_depth",
-                              "bnu_soiltype_top", "bnu_soiltype_bot"})
+                              "bnu_soiltype_top", "bnu_soiltype_bot",
+                              # the mesh door's native static land use (2.9.0)
+                              "modis_landuse_20class_30s", "landuse_30s"})
     assert set(geog.parse_datasets("default")).isdisjoint(DUST)
     for name in DUST:
         pin = geog.archive_for(name)

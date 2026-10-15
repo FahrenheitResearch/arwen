@@ -536,16 +536,25 @@ def test_regular_source_hierarchy_emits_corridors_only_on_opt_in(
         written["grid_ids"] = [build.grid_id for build in builds]
         return set_receipt
 
+    moved = []
     monkeypatch.setattr(
         corridor_module, "build_child_statics_corridor", fake_build)
     monkeypatch.setattr(
         corridor_module, "write_statics_corridor_set", fake_write)
+    monkeypatch.setattr(
+        source_hierarchy, "move_statics_corridor_set",
+        lambda source, target: moved.append((Path(source), Path(target))))
 
     result, _ = _call(tmp_path, monkeypatch, statics_corridor="all")
     assert dict(result.statics_corridor_receipt) == set_receipt
     assert written["grid_ids"] == [2, 3]
+    # Sealed beside the artifact folder BEFORE the children initialize
+    # (plan call 5: each corridor child is born on its crop), then moved in
+    # after the artifact join, which refuses an existing artifact folder.
     assert written["directory"] == (
-        tmp_path / "artifacts" / "statics-corridor")
+        tmp_path / "artifacts.statics-corridor-pending")
+    assert moved == [(tmp_path / "artifacts.statics-corridor-pending",
+                      tmp_path / "artifacts" / "statics-corridor")]
     assert calls == [(2, 60, "d02-grid"), (3, 60, "d03-grid")]
 
     calls.clear()
@@ -594,6 +603,10 @@ def test_a_chained_head_builds_the_corridor_its_seal_copies(
 
     monkeypatch.setattr(
         corridor_module, "build_child_statics_corridor", fake_build)
+    # The stand-in builds carry no corridor geometry, so no child is born
+    # on them; the set's sealing and copying is this test's question.
+    monkeypatch.setattr(source_hierarchy, "corridor_birth_statics",
+                        lambda *a: {})
 
     # The one-shot tree: the reference set.
     oneshot, _ = _call(tmp_path, monkeypatch, statics_corridor="all")

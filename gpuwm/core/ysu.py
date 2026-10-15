@@ -1,15 +1,16 @@
 """YSU planetary-boundary-layer column kernel.
 
-This module is the device launcher for the WRF v4.6.1 YSU transcription in
-``kernels/ysu.cu``.  The scheme consumes mass-point wind, potential
+This module selects the corrected WRF 4.8 generation by default, or the
+exported engine's explicit WRF 4.6.1 reproduction path. The scheme consumes mass-point wind, potential
 temperature, moisture, pressure/Exner, layer depths, and the surface-layer
 coupling fields (UST, HFX/QFX, PSIM/PSIH).  It returns tendencies rather than
 updating the state; Phase 3 Task 12's physics driver owns their application.
 
 Array layout is gpuwm's standard ``(nz, ny, nx)`` with x fastest.  Every CUDA
 thread owns one complete column and performs the implicit vertical solves
-in-thread, matching the acoustic Thomas-solve pattern.  The float64 authority
-is :func:`gpuwm.verify.npref.np_ysu_column`.
+in-thread, matching the acoustic Thomas-solve pattern. The independent
+referee is the pinned public Fortran scheme driven by
+``tools/ysu_generations_oracle``; the NumPy mirror is a secondary check.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from typing import Mapping
 import numpy as np
 import cupy as cp
 
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 # The workspace constants and the pricing function live in the
 # runtime-free inventory so the VRAM estimator can read them without
 # cupy resolving; this module is their launcher-side re-export.  The
@@ -30,6 +31,7 @@ from gpuwm.core.physics_inventory import (YSUWS_SLOTS, YSU_BLOCK,
                                           YSU_TILE_BLOCKS_PER_SM,
                                           ysu_workspace_floats)
 from gpuwm.core.state import DTYPE
+from gpuwm.ysu_generations import YSU_DEFAULT_GENERATION, ysu_generation, ysu_kernel_selection
 from gpuwm.physics_vertical_contract import (
     outside_vertical_bounds, refuse_vertical_levels)
 
@@ -53,8 +55,12 @@ def ysu_tile_columns(fn, ncol: int) -> int:
     try:
         from cupy_backends.cuda.api import driver
 
+        # A RawKernel wraps its CUDA function (``.kernel``); the shared
+        # no-FTZ loader the WRF 4.8 generation compiles through hands back
+        # the function itself.  Ask whichever it is, so the default
+        # generation's tile is bounded by the card's occupancy too.
         resident = driver.occupancyMaxActiveBlocksPerMultiprocessor(
-            fn.kernel.ptr, YSU_BLOCK, 0)
+            getattr(fn, "kernel", fn).ptr, YSU_BLOCK, 0)
         # Never launch more blocks than the card can hold resident: those
         # columns would wait while their workspace slots stayed allocated.
         per_sm = min(per_sm, int(resident))
@@ -95,6 +101,7 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                rthraten=None, *,
                psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland,
                u10, v10, dt: float, ysu_topdown_pblmix: int = 1,
+               ysu_version: str = YSU_DEFAULT_GENERATION,
                bep: Mapping[str, cp.ndarray] | None = None,
                frc_urb2d: cp.ndarray | None = None,
                topo: tuple[cp.ndarray, cp.ndarray] | None = None,
@@ -125,6 +132,7 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
     are read, never written, so the returned dict keeps its layout.  It
     does not combine with ``bep``.
     """
+    generation = ysu_generation(ysu_version)
     columns = {"u": u, "v": v, "theta": theta, "qv": qv, "qc": qc,
                "qi": qi, "p": p, "exner": exner, "dz": dz}
     shape = theta.shape
@@ -220,8 +228,11 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                wstar3_2=cp.empty((ny, nx), dtype=DTYPE),
                cloudflg=cp.empty((ny, nx), dtype=cp.int32))
     ncol = ny * nx
-    kernel = get_kernel("ysu", "ysu_column_bep" if bep_args
-                        else "ysu_column_topo" if topo_args else "ysu_column")
+    from gpuwm.wrf_exact import ENABLED
+    module, defines = ysu_kernel_selection(ysu_version, strict=ENABLED)
+    entry = "ysu_column_bep" if bep_args else "ysu_column_topo" if topo_args else "ysu_column"
+    kernel = (get_kernel_int_defines(module, entry, defines) if defines
+              else get_kernel(module, entry))
     # The column arrays live in a global workspace sized to the threads in
     # flight, not in the per-thread local frame (which CUDA prices at the
     # card's whole resident-thread capacity).  Columns therefore go in

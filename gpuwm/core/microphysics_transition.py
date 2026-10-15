@@ -253,7 +253,7 @@ def mixed_edge_entry_note(contract) -> str | None:
 #: target's moments are diagnosed from target mass by the arms already in
 #: the kernel and the departing scheme's reservoir/aerosol fields are
 #: dropped, which is what ``species_actions`` has always receipted.
-PORTED_MP_PHYSICS = (1, 6, 8, 10, 18, 50, 9, 16, 28)
+PORTED_MP_PHYSICS = (1, 6, 8, 10, 18, 50, 9, 16, 28, 2, 24)
 
 #: Selectors that carry graupel and hail as SEPARATE prognostic categories,
 #: so ``qg`` means graupel unambiguously and ``qh`` is its own species.
@@ -263,7 +263,7 @@ PORTED_MP_PHYSICS = (1, 6, 8, 10, 18, 50, 9, 16, 28)
 #: because ``mass_source`` asked ``== 18`` in four places and a second
 #: dual-rimed scheme would otherwise have had its hail dropped and its
 #: graupel mapped by a rimed-category comparison that returns None for it.
-_DUAL_RIMED_SELECTORS = (9, 18)
+_DUAL_RIMED_SELECTORS = (9, 18, 24)
 
 #: Schemes ArWen has ported but whose MIXED nest edges are refused rather
 #: than approximated.  Consulted by :func:`resolve_microphysics_transition`
@@ -282,10 +282,14 @@ _DUAL_RIMED_SELECTORS = (9, 18)
 #: scheme-independent, it is held to its two tables by the import-time
 #: check below, and it is how the next scheme with a genuinely missing
 #: closure gets named instead of falling into the generic message.
-UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (30,)
+#:
+#: mp=3 (WSM3) is a member for a reason of its own: WSM3 has no
+#: moments at all; what a mixed edge lacks for it is a PHASE closure.
+UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (3, 5, 30)
 
 _DYNAMIC_FIELDS = ("u", "v", "w", "t", "ph", "mu")
 _MASS_FIELDS = {
+    2: ("qv", "qc", "qr", "qi", "qs", "qg"),
     1: ("qv", "qc", "qr"),
     # Milbrandt-Yau (Registry.EM_COMMON:3025): the six-species set plus a
     # separate hail category, the same mass shape NSSL carries.
@@ -304,8 +308,12 @@ _MASS_FIELDS = {
     # Thompson aerosol-aware (Registry.EM_COMMON:3036) carries classic
     # Thompson's six masses unchanged and adds no rimed category.
     28: ("qv", "qc", "qr", "qi", "qs", "qg"),
+    # WSM7 (Registry.EM_COMMON:3034): WSM6's six masses plus a separate
+    # hail category, no moments.
+    24: ("qv", "qc", "qr", "qi", "qs", "qg", "qh"),
 }
 _MOMENT_FIELDS = {
+    2: (),
     1: (),
     # A number moment for every one of the six hydrometeors; the WRF
     # driver binds qnc/qnr/qni/qns/qng/qnh at
@@ -314,6 +322,7 @@ _MOMENT_FIELDS = {
     # hold codes 6..9; ``nc`` and ``nh`` took 22 and 23.
     9: ("nc", "nr", "ni", "ns", "ng", "nh"),
     6: (),
+    24: (),
     8: ("nr", "ni"),
     10: ("nr", "ni", "ns", "ng"),
     18: (
@@ -343,7 +352,13 @@ _MOMENT_FIELDS = {
 #: ratification means -- the append discipline this comment describes was
 #: followed and no pre-existing code moved.
 from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
-UNVALIDATED_MIXED_EDGE_MOMENTS: dict[int, tuple[str, ...]] = {30: _FSBM_BIN_SPECIES}
+UNVALIDATED_MIXED_EDGE_MOMENTS: dict[int, tuple[str, ...]] = {
+    # WSM3 carries no number moment; its refusal is about the phase split
+    # of its two condensate masses (see its reason below).
+    3: (),
+    5: ("f_rimef",),
+    30: _FSBM_BIN_SPECIES,
+}
 
 #: The scheme's own name, and the paragraph that says why ITS closure is
 #: missing.  One row per :data:`UNVALIDATED_MIXED_EDGE_SELECTORS` entry: the
@@ -360,7 +375,22 @@ UNVALIDATED_MIXED_EDGE_MOMENTS: dict[int, tuple[str, ...]] = {30: _FSBM_BIN_SPEC
 #: LATERAL boundary of a domain running that very scheme.  The closures
 #: they asked for are now on :data:`PORTED_MP_PHYSICS`, with the WRF lines
 #: that define them.
-_UNVALIDATED_MIXED_EDGE_REASONS: dict[int, tuple[str, str]] = {30: ("FAST_SBM", "142 spectral distributions have no validated cross-scheme entry closure; transferring bulk moisture would not specify their shape") }
+_UNVALIDATED_MIXED_EDGE_REASONS: dict[int, tuple[str, str]] = {
+    3: ("WSM3",
+        "WSM3 keeps cloud ice inside qc and snow inside qr below 0 C "
+        "(phys/module_mp_wsm3.F:172-180, the phase split its own "
+        "effectRad_wsm3 reads), so a WSM3 parent's cold qc would enter a "
+        "child with separate ice, snow and graupel classes as cloud WATER, "
+        "and a six-class parent's qi/qs/qg have no WSM3 field to land in "
+        "unless folded into qc/qr; nest_microphysics.cu defines neither "
+        "temperature split, so the edge is refused rather than "
+        "mis-phased"),
+    5: ("Ferrier-Aligo", "qi carries all ice together and f_rimef carries "
+        "its fall-speed history. Mapping a separated-ice parent into qi "
+        "without a rime-factor closure changes sedimentation. Same-scheme "
+        "nests preserve the Ferrier state; mixed edges need that closure."),
+    30: ("FAST_SBM", "142 spectral distributions have no validated cross-scheme entry closure; transferring bulk moisture would not specify their shape"),
+}
 
 # Named schemes (gpuwm.microphysics_schemes) run same-scheme nests; a mixed
 # edge into or out of one has no validated entry closure for its moments
@@ -464,6 +494,8 @@ def _rimed_category(cfg) -> str | None:
         # module_mp_thompson.F declares one rho_g/am_g/bm_g set used by the
         # classic and the aerosol-aware path alike, and mp=28 adds no hail
         # category.
+        return "graupel"
+    if mp == 2:
         return "graupel"
     if mp == 6:
         return "hail" if int(getattr(cfg, "wsm6_hail_opt", 0)) else "graupel"
@@ -981,7 +1013,9 @@ def resolve_microphysics_transition(
         {source, target} & set(UNVALIDATED_MIXED_EDGE_SELECTORS))
     if unvalidated:
         mp = unvalidated[0]
-        moments = ", ".join(UNVALIDATED_MIXED_EDGE_MOMENTS[mp])
+        moments = (", ".join(UNVALIDATED_MIXED_EDGE_MOMENTS[mp])
+                   or "none: its two condensate classes change phase at "
+                   "0 C")
         scheme, reason = _UNVALIDATED_MIXED_EDGE_REASONS[mp]
         raise ValueError(
             f"mixed nest microphysics edge MP{source}->MP{target} is REFUSED: "
@@ -1465,6 +1499,20 @@ __all__ = [
 # without this tuple -- fails this import instead of a tree load.  The two
 # selectors in neither tuple are cited by defect id; a mixed edge touching
 # them falls through to the generic refusal today.
+MIXED_EDGE_ABSENCES = {
+    4: "WSM5 has no validated mixed-edge closure for parent graupel entering its five-class package; same-scheme edges do not convert species.",
+    0: ("mp_physics=0 carries no hydrometeors to close a mixed edge "
+        "over; a 0->X or X->0 edge falls through to the generic "
+        "refusal"),
+    106: ("mp_physics=106 (WSM6R) has no ratified mixed-edge "
+          "receipt: its masses are WSM6's, but no per-species "
+          "ratification of a 106<->X edge has been run, so a mixed "
+          "edge touching it falls through to the generic refusal; "
+          "a same-scheme WSM6R edge resolves before either tuple "
+          "is consulted"),
+}
+
+
 def _require_agreement_with_the_registry() -> None:
     from gpuwm.physics_registry import require_consumer_rows_agreement
 
@@ -1490,11 +1538,7 @@ def _require_agreement_with_the_registry() -> None:
         "gpuwm.core.microphysics_transition (PORTED_MP_PHYSICS, "
         "UNVALIDATED_MIXED_EDGE_SELECTORS, _MASS_FIELDS, _MOMENT_FIELDS)",
         "microphysics", "nest_transition", observed, project=project,
-        cited_absences={
-            0: ("mp_physics=0 carries no hydrometeors to close a mixed edge "
-                "over; a 0->X or X->0 edge falls through to the generic "
-                "refusal"),
-        })
+        cited_absences=MIXED_EDGE_ABSENCES)
 
 
 _require_agreement_with_the_registry()

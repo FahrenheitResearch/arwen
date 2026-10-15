@@ -21,7 +21,7 @@ CHOICES = (
 @pytest.mark.parametrize("choices", CHOICES)
 @pytest.mark.parametrize("signature", ("albedo", "factor2"))
 def test_actual_generated_fork_content_preserves_explicit_thompson_choices(tmp_path, choices, signature):
-    text = INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 28, 28")
+    text = INPUT_TEXT.replace("mp_physics = 10, 10", "mp_physics = 28, 28")
     if signature == "albedo":
         text = text.replace("&physics\n", "&physics\n alb_sol = 1,\n")
     else:

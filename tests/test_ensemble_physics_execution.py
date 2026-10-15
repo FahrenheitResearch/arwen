@@ -32,6 +32,7 @@ def _cfg(**changes):
 
 def test_matrix_covers_every_implemented_registry_row_and_dispatch_selector():
     from gpuwm.core.physics_inventory import PHYSICS_SLOT_DISPATCH
+    from gpuwm.config import MP_PHYSICS_ACCEPTED
     registry = deepcopy(physics_registry())
     matrix = capability_matrix(registry=registry)
     expected = {(component, option_id) for component, item in registry["components"].items()
@@ -41,8 +42,8 @@ def test_matrix_covers_every_implemented_registry_row_and_dispatch_selector():
         values = {dict(row.selectors)[selector] for row in matrix if selector in dict(row.selectors)}
         assert values == set(dispatch)
     assert {dict(row.selectors)["mp_physics"] for row in matrix if row.component == "microphysics"} == {
-        0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50, 900}
-    assert {dict(row.selectors)["cu_physics"] for row in matrix if row.component == "cumulus"} == {0, 1, 3, 6, 16}
+        0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106, 900}
+    assert {dict(row.selectors)["cu_physics"] for row in matrix if row.component == "cumulus"} == {0, 1, 3, 5, 6, 16, 96}
     assert all(row.receipt()["fallback"] == "original_member_operation" for row in matrix)
 
 

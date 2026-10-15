@@ -30,6 +30,7 @@ from gpuwm.core.fp32_ulp import fp32_ulp_distance
 __all__ = [
     "NOAH_ORACLE_DIR",
     "NOAH_ORACLE_FILES",
+    "NOAH_GLACIAL_ORACLE_FILES",
     "NoahOracleFixture",
     "load_noah_oracle",
     "noah_port_outputs",
@@ -52,6 +53,17 @@ NOAH_ORACLE_FILES = {
                                 usemonalb=False, rdlai2d=False),
     "noah-lsm-monalb.csv": dict(opt_thcnd=1, frpcpn=False,
                                 usemonalb=True, rdlai2d=True),
+}
+
+#: The land-ice fixtures (``run_lsm_glacial.F90``): 24 columns, every one
+#: ``ivgtyp == isice``, so WRF's driver takes its ICE == -1 arm and calls
+#: SFLX_GLACIAL on all of them.  frpcpn is the one driver switch that reaches
+#: SFLX_GLACIAL (through FFROZP); the others do not, so two passes.
+NOAH_GLACIAL_ORACLE_FILES = {
+    "noah-lsm-glacial.csv": dict(opt_thcnd=1, frpcpn=False,
+                                 usemonalb=False, rdlai2d=False),
+    "noah-lsm-glacial-frpcpn.csv": dict(opt_thcnd=1, frpcpn=True,
+                                        usemonalb=False, rdlai2d=False),
 }
 
 #: ``run_lsm.F90:42-44``.  The harness fixes these rather than sweeping them,
@@ -103,13 +115,10 @@ OUTPUT_COLUMNS = {
 #: Soil profiles, compared layer by layer.
 SOIL_OUTPUT_COLUMNS = ("smois", "tslb", "sh2o", "smcrel")
 
-#: The one fixture column gpuwm does not compute.  ``ivgtyp == isice`` selects
-#: WRF's ``SFLX_GLACIAL`` (``module_sf_noahlsm_glacial_only.F``), which
-#: gpuwm/core/noah.py's docstring records as out of scope, so ``noah_column``
-#: returns without touching the column.  Excluding it from the parity
-#: measurement is a statement of that restriction, not a way to make a number
-#: smaller: :func:`glacial_divergence` reports how far WRF moved the column
-#: that gpuwm left alone.
+#: ``ivgtyp == isice`` selects WRF's ``SFLX_GLACIAL``
+#: (``module_sf_noahlsm_glacial_only.F``).  ``noah_column`` returned from such
+#: a column untouched until 2026-10-12; it now runs the port of that routine,
+#: and the glacial columns are measured like every other column.
 GLACIAL_CASE_PREDICATE = "ivgtyp == isice"
 
 
@@ -132,7 +141,7 @@ class NoahOracleFixture:
 
     @property
     def glacial(self) -> np.ndarray:
-        """Boolean mask of the columns gpuwm skips by documented restriction."""
+        """Boolean mask of the land-ice (SFLX_GLACIAL) columns."""
         return self.ivgtyp.reshape(-1) == FIXTURE_ISICE
 
 
@@ -146,9 +155,10 @@ def _column(rows, key) -> np.ndarray:
 def load_noah_oracle(name: str = "noah-lsm.csv",
                      directory: Path | None = None) -> NoahOracleFixture:
     """Load one fixture CSV into ``launch_noah``'s ``(1, ncase)`` layout."""
-    if name not in NOAH_ORACLE_FILES:
+    known = {**NOAH_ORACLE_FILES, **NOAH_GLACIAL_ORACLE_FILES}
+    if name not in known:
         raise ValueError(f"{name!r} is not a packaged Noah oracle fixture; "
-                         f"expected one of {sorted(NOAH_ORACLE_FILES)}")
+                         f"expected one of {sorted(known)}")
     directory = Path(directory) if directory is not None else NOAH_ORACLE_DIR
     with (directory / name).open(newline="", encoding="ascii") as fh:
         rows = list(csv.DictReader(fh))
@@ -181,7 +191,7 @@ def load_noah_oracle(name: str = "noah-lsm.csv",
         soil_reference[field] = np.ascontiguousarray(profile)
 
     return NoahOracleFixture(
-        name=name, switches=dict(NOAH_ORACLE_FILES[name]), cases=cases,
+        name=name, switches=dict(known[name]), cases=cases,
         ivgtyp=ivgtyp, isltyp=isltyp, inputs=inputs, reference=reference,
         soil_reference=soil_reference,
     )
@@ -267,13 +277,12 @@ def _worst(fixture, field, got, want, keep) -> FieldParity:
 
 def measure_noah_parity(fixture: NoahOracleFixture,
                         port: dict[str, np.ndarray],
-                        *, include_glacial: bool = False
+                        *, include_glacial: bool = True
                         ) -> dict[str, FieldParity]:
     """ULP distance from every port output to the word ``lsm`` wrote.
 
-    ``include_glacial`` is False by default because gpuwm does not implement
-    ``SFLX_GLACIAL`` and says so; see :func:`glacial_divergence` for the size
-    of what is being excluded.
+    Land-ice columns are included: SFLX_GLACIAL is ported.
+    ``include_glacial=False`` measures the ordinary land columns alone.
     """
     keep = np.ones(fixture.ncase, dtype=bool)
     if not include_glacial:
@@ -286,25 +295,3 @@ def measure_noah_parity(fixture: NoahOracleFixture,
         result[field] = _worst(fixture, field, port[field],
                                fixture.soil_reference[field], keep)
     return result
-
-
-def glacial_divergence(fixture: NoahOracleFixture,
-                       port: dict[str, np.ndarray]) -> dict[str, float]:
-    """How far ``SFLX_GLACIAL`` moved the columns gpuwm leaves untouched.
-
-    Reported as a plain difference, not ULP: this is not a rounding gap, it is
-    a routine gpuwm does not have.  The number belongs in the registry warning
-    so a user can see the size of the restriction rather than only its name.
-    """
-    mask = fixture.glacial
-    out: dict[str, float] = {}
-    if not mask.any():
-        return out
-    for field in OUTPUT_COLUMNS:
-        got = np.ascontiguousarray(port[field], np.float32)[..., mask]
-        want = fixture.reference[field][..., mask]
-        gap = float(np.max(np.abs(got.astype(np.float64)
-                                  - want.astype(np.float64))))
-        if gap != 0.0:
-            out[field] = gap
-    return out

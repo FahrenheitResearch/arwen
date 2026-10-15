@@ -668,3 +668,68 @@ def test_announce_for_main_returns_the_refusal_instead_of_raising(
     assert "[[explain]]" not in message
     assert "rw-wps --explain" in message
     provenance_gate.reset_announcement()
+
+
+# ---------------------------------------------------------------------------
+# Companion packages from another release (D4, 2026-10-05)
+# ---------------------------------------------------------------------------
+
+
+def _installed_tilestream(site: Path, version: str) -> Path:
+    (site / "tilestream").mkdir(parents=True)
+    (site / "tilestream" / "__init__.py").write_text("", encoding="utf-8")
+    info = site / f"gpuwm-{version}.dist-info"
+    info.mkdir()
+    (info / "RECORD").write_text(
+        "gpuwm/__init__.py,,\ntilestream/__init__.py,sha256=x,0\n",
+        encoding="utf-8")
+    return site
+
+
+def _roots(monkeypatch, gpuwm_root: Path, tilestream_root: Path) -> None:
+    roots = {"gpuwm": gpuwm_root, "tilestream": tilestream_root}
+    monkeypatch.setattr(provenance_gate, "_companion_root", roots.get)
+
+
+def test_a_base_venv_tilestream_of_another_release_refuses(tmp_path,
+                                                           monkeypatch):
+    """The box venv shape: 2.8.6 source gpuwm, 2.8.5 wheel tilestream."""
+
+    prov = _checkout(tmp_path, declared="2.8.6")
+    site = _installed_tilestream(tmp_path / "gvenv" / "site-packages",
+                                 "2.8.5")
+    _roots(monkeypatch, Path(prov.source_root), site)
+    refusal = provenance_gate.companion_identity_refusal(prov)
+    assert refusal is not None and "REFUSING" in refusal
+    assert "2.8.5" in refusal and "2.8.6" in refusal and str(site) in refusal
+    with pytest.raises(ValueError, match="mixed releases"):
+        provenance_gate.require_consistent_version("run", prov)
+    provenance_gate.require_consistent_version("doctor", prov)
+
+
+def test_a_companion_from_the_same_root_is_silent(tmp_path, monkeypatch):
+    prov = _checkout(tmp_path, declared="2.8.6")
+    _roots(monkeypatch, Path(prov.source_root), Path(prov.source_root))
+    assert provenance_gate.companion_identity_refusal(prov) is None
+
+
+def test_a_companion_of_the_same_release_elsewhere_is_silent(tmp_path,
+                                                            monkeypatch):
+    prov = _checkout(tmp_path, declared="2.8.6")
+    site = _installed_tilestream(tmp_path / "shared" / "site-packages",
+                                 "2.8.6")
+    _roots(monkeypatch, Path(prov.source_root), site)
+    assert provenance_gate.companion_identity_refusal(prov) is None
+
+
+def test_a_companion_whose_release_cannot_be_read_is_silent(tmp_path,
+                                                           monkeypatch):
+    prov = _checkout(tmp_path, declared="2.8.6")
+    loose = tmp_path / "loose"
+    (loose / "tilestream").mkdir(parents=True)
+    _roots(monkeypatch, Path(prov.source_root), loose)
+    assert provenance_gate.companion_identity_refusal(prov) is None
+
+
+def test_the_live_process_has_no_companion_split():
+    assert provenance_gate.companion_identity_refusal() is None

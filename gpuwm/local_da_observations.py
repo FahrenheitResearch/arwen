@@ -4,7 +4,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import timedelta
-import importlib.util
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -110,29 +109,27 @@ def inspect_routes(request, rung, experiment):
                 continue
             rows.append(dict(id=name, route='registered-observation', status='unavailable', batch_bound=0,
                              reason='Registered ingest exists, but this launcher has no corresponding 3D analysis product. Composite and accumulation products remain verification inputs.'))
-        if importlib.util.find_spec('arwen_global') is not None:
-            from arwen_global.obs_streams import STREAMS
-            from arwen_global.obs_doors import front_door
-            for name, spec in sorted(STREAMS.items()):
-                status, binary = 'unavailable', None
-                reason = spec.notes
-                if spec.account_gated:
-                    reason = 'This route requires an account; it is not fetched by this launcher. ' + reason
-                elif not spec.decoder_built or spec.door is None:
-                    reason = 'The registered route has no decoded table; raw payloads cannot enter the analysis. ' + reason
-                elif spec.subscribes:
-                    reason = 'A subscription is not a bounded analysis-window fetch; supply its decoded neutral table.'
-                else:
-                    binary, reason = _door_record(front_door(spec.door))
-                    if binary:
-                        status = 'candidate'
-                        reason = 'Registered window fetch; local coverage, arrival time and supported operators are checked before use.'
-                rows.append(dict(id=name, route='neutral-stream', status=status, reason=reason,
-                                 binary=binary, stream=asdict(spec), batch_bound=max(1, len(spec.variables) * len(spec.measurements) * len(spec.sources)),
-                                 networks=sorted(networks), latency_class=spec.latency_class))
-        else:
-            rows.append(dict(id='neutral-streams', route='neutral-stream', status='unavailable', batch_bound=0,
-                reason='The shared neutral-table package is not installed; install gpuwm-global to reuse its registered observation streams.'))
+        # The streams and their doors are the engine's own since 2.9.0 (gpuwm.obs.streams,
+        # gpuwm.obs.frontdoor.STREAM_DOORS); this route no longer depends on gpuwm-global.
+        from gpuwm.obs.streams import STREAMS
+        from gpuwm.obs.frontdoor import door_by_binary as front_door
+        for name, spec in sorted(STREAMS.items()):
+            status, binary = 'unavailable', None
+            reason = spec.notes
+            if spec.account_gated:
+                reason = 'This route requires an account; it is not fetched by this launcher. ' + reason
+            elif not spec.decoder_built or spec.door is None:
+                reason = 'The registered route has no decoded table; raw payloads cannot enter the analysis. ' + reason
+            elif spec.subscribes:
+                reason = 'A subscription is not a bounded analysis-window fetch; supply its decoded neutral table.'
+            else:
+                binary, reason = _door_record(front_door(spec.door))
+                if binary:
+                    status = 'candidate'
+                    reason = 'Registered window fetch; local coverage, arrival time and supported operators are checked before use.'
+            rows.append(dict(id=name, route='neutral-stream', status=status, reason=reason,
+                             binary=binary, stream=asdict(spec), batch_bound=max(1, len(spec.variables) * len(spec.measurements) * len(spec.sources)),
+                             networks=sorted(networks), latency_class=spec.latency_class))
         if request.obs_tables:
             from gpuwm.da.obs_point import read_tables
             decoded, receipts = read_tables(request.obs_tables)

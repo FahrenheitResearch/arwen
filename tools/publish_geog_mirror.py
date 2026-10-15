@@ -63,6 +63,10 @@ _DUST_WPS = ("NCAR WPS geography distribution; exact pins captured "
              "2026-09-30; underlying source/licence not declared in "
              "this engine pin receipt")
 
+_NATIVE_MPAS_WPS = ("NCAR WPS geography distribution, read by the native MPAS "
+                    "static path; pins captured 2026-10-14; the download index "
+                    "does not state a separate redistribution licence")
+
 _PROVENANCE = {
     "topo_gmted2010_30s": (
         "30-arc-second terrain elevation",
@@ -99,10 +103,23 @@ _PROVENANCE = {
         "datasets under one parent); required by the `gpuwm mesh` door "
         "only",
         _SOILGRIDS),
+    "modis_landuse_20class_30s": (
+        "Noah-modified 20-category IGBP land use without a lake class "
+        "(lakes are water); the `gpuwm mesh` door's native MPAS static",
+        "NASA MODIS (MCD12Q1-derived); NASA data are free and open"),
+    "landuse_30s": (
+        "USGS 24-category land use; the water mask of the `gpuwm mesh` "
+        "door's native gravity-wave-drag statistics",
+        "USGS global land cover characteristics, distributed for WPS by "
+        "NCAR; U.S. public domain"),
     "lake_depth": (
         "30-arc-second lake depth for optional CLM lake physics",
         "distributed for WPS by NCAR; the download index does not state "
         "an ultimate source or a separate redistribution licence"),
+    "orogwd3_10m": (
+        "10-arc-minute GSL terrain-drag statistics in twenty datasets",
+        "NCAR WPS geography distribution for gwd_opt=3; the download "
+        "index does not state a separate redistribution licence"),
     "bnu_soiltype_top": (
         "alternative 30-arc-second, 16-category top-layer soil texture",
         "NCAR WPS geography distribution; the download index does not "
@@ -111,6 +128,22 @@ _PROVENANCE = {
         "alternative 30-arc-second, 16-category bottom-layer soil texture",
         "NCAR WPS geography distribution; the download index does not "
         "state a separate redistribution licence"),
+    "topo_30s": (
+        "30-arc-second terrain elevation (native MPAS GTOPO30 option)",
+        _NATIVE_MPAS_WPS),
+    "modis_landuse_20class_15s": (
+        "15-arc-second Noah-modified IGBP land use (native MPAS "
+        "MODIFIED_IGBP_MODIS_NOAH_15s option)",
+        _NATIVE_MPAS_WPS),
+    "greenfrac": (
+        "monthly green-vegetation fraction (native MPAS NCEP option)",
+        _NATIVE_MPAS_WPS),
+    "albedo_ncep": (
+        "monthly surface albedo (native MPAS NCEP option)",
+        _NATIVE_MPAS_WPS),
+    "maxsnowalb": (
+        "maximum snow albedo (native MPAS NCEP option)",
+        _NATIVE_MPAS_WPS),
     "erod": (
         "erodible surface fractions for sand, silt and clay dust classes",
         _DUST_WPS),

@@ -1,0 +1,51 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# -O0 (THE REFERENCE) libm/libmvec symbols:
+U exp
+U expf
+U log
+U log10
+U log10f
+U logf
+U pow
+U powf
+U vssqrt_
+# -O2 -ftree-vectorize -funroll-loops (WRF's phys/ flags):
+U _ZGVbN2v_acos
+U _ZGVbN2v_asin
+U _ZGVbN2v_cos
+U _ZGVbN2v_cosh
+U _ZGVbN2v_exp
+U _ZGVbN2v_log
+U _ZGVbN2v_log10
+U _ZGVbN2v_sin
+U _ZGVbN2v_sinh
+U _ZGVbN2v_tan
+U _ZGVbN2v_tanh
+U _ZGVbN2vv_atan2
+U _ZGVbN2vv_pow
+U _ZGVbN4v_acosf
+U _ZGVbN4v_asinf
+U _ZGVbN4v_cosf
+U _ZGVbN4v_coshf
+U _ZGVbN4v_expf
+U _ZGVbN4v_log10f
+U _ZGVbN4v_logf
+U _ZGVbN4v_sinf
+U _ZGVbN4v_sinhf
+U _ZGVbN4v_tanf
+U _ZGVbN4v_tanhf
+U _ZGVbN4vv_atan2f
+U _ZGVbN4vv_powf
+U exp
+U expf
+U log
+U log10
+U log10f
+U logf
+U pow
+U powf
+U vssqrt_
+# positive control:
+U _ZGVbN4v_expf
+U expf

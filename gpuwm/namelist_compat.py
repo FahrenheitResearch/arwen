@@ -124,7 +124,9 @@ _PHYSICS_STATE_KEYS = {
         "num_soil_layers", "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi",
         "slucm_distributed_drag", "distributed_ahe_opt", "sf_lake_physics", "mosaic_lu",
         "mosaic_soil", "mosaic_cat", "icloud", "morr_rimed_ice", "hail_opt",
-        "ghg_input", "o3input", "aer_opt", "sst_update", "surface_input_source",
+        "ghg_input", "o3input", "aer_opt",
+        "aer_type", "aer_aod550_opt", "aer_angexp_opt", "aer_ssa_opt", "aer_asy_opt",
+        "aer_aod550_val", "aer_angexp_val", "aer_ssa_val", "aer_asy_val", "sst_update", "surface_input_source",
         "num_land_cat", "fractional_seaice",
         # Land-surface state selectors WRF-Runner-generated namelists carry
         # (2026-07-30 interop verification).  Each changes what real.exe

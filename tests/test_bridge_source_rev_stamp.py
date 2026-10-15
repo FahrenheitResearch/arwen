@@ -317,7 +317,9 @@ _STAMP_SOURCES = {
     "rw_ensbatch": "crates/rw-wrfbatch/src/bin/ensbatch.rs",
     "rw_verify": "crates/rw-wrfbatch/src/bin/verify.rs",
     "rw_mpas_mesh": "crates/rw-mpas/src/bin/rw_mpas_mesh.rs",
-    "rw_mpas_static": "crates/rw-mpas/src/bin/rw_mpas_static.rs",
+    # One executable with several tools since 2.9.0; the stamp sits in the
+    # dispatcher every tool runs through.
+    "rw_mpas_static": "crates/rw-mpas/src/bin/rw_mpas_static/main.rs",
     "rw_mpas_init": "crates/rw-mpas/src/bin/rw_mpas_init.rs",
     "rw_mpas_convert": "crates/rw-mpas/src/bin/rw_mpas_convert.rs",
     # The fifth rw-mpas binary, added to BUNDLED_ARTIFACTS by commit
@@ -328,6 +330,11 @@ _STAMP_SOURCES = {
     # file rather than exempting it: the artifact was provable and simply
     # unmapped here.
     "rw_mpas_lbc": "crates/rw-mpas/src/bin/rw_mpas_lbc.rs",
+    # 2.9.0: the MPAS point renderer (a bin of rw-wrfbatch, stamped by that
+    # crate's build.rs) and the TEMPO init library (its own crate and
+    # build.rs; the stamp is exported from the ctypes seam).
+    "rw_hex_points": "crates/rw-wrfbatch/src/bin/hex_points.rs",
+    "rw_tempo": "crates/rw-tempo/src/capi.rs",
     # The ML dataset exporter: its own crate, its own build.rs.
     "rw_mlexport": "crates/rw-mlexport/src/bin/rw_mlexport.rs",
     # The simulated radar: its own crate, whose build.rs injects the
@@ -350,6 +357,10 @@ _STAMP_SOURCES = {
     # crate's own SOURCE_REV_STAMP; the row below makes this test READ that
     # file rather than exempting it.
     "gdt101_remap": "src/bin/gdt101_remap.rs",
+    # The regular-grid intermediate producer, bundled in 2.9.0 (box/
+    # rrfs-shape) for public initial-condition preparation: a bin of the
+    # bridge crate, stamped by its build.rs, black_boxing SOURCE_REV_STAMP.
+    "met_intermediate": "src/bin/met_intermediate.rs",
     "rw_nexrad": "crates/rw-nexrad/src/main.rs",
     "rw_odim": "crates/rw-odim/src/bin/rw_odim.rs",
     "rw_mrms": "crates/rw-obs/src/bin/mrms.rs",

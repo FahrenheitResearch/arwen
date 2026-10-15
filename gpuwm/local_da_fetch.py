@@ -288,7 +288,7 @@ def observation_window(backend, cycle_index, when, member_states):
                     add('surface', filename)
                 report.update(status='fetched', files=[str(p) for p in paths], latency='unverified')
             elif route['route'] == 'neutral-stream':
-                from arwen_global.obs_streams import fetch_stream
+                from gpuwm.obs.streams import fetch_stream
                 from gpuwm.local_da_observations import registry_inspection
                 with registry_inspection():
                     fetched = fetch_stream(route['id'], _stamp(when - timedelta(seconds=backend.plan['selected']['cadence_seconds'])),

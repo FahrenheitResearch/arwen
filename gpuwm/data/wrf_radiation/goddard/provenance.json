@@ -1,0 +1,19 @@
+{
+  "source": "WRF 4.6.1 run/BROADBAND_CLOUD_GODDARD.bin",
+  "source_sha256": "ad4bb1dd8446a2b00559ac425e21255a01b79a4cac7b5e3e693a3c98c222a1c8",
+  "source_bytes": 172680,
+  "source_consumed_bytes": 172656,
+  "decoded_sha256": "b0a7e597580cdb32fd293485519967b140be1753fe7cf8451fa10df1d8c89d04",
+  "decoded_bytes": 172656,
+  "dtype": "float32",
+  "order": "property,SW/LW,band,species,radius",
+  "shape": [
+    3,
+    2,
+    11,
+    6,
+    109
+  ],
+  "decoder": "tools/goddard_wrf461_oracle/decode_cloud_table.rs",
+  "decoder_sha256": "84ac834ce223e11411c491f6c1144b755ff412f9b7e7c1bae5caaada22ce3126"
+}

@@ -99,6 +99,25 @@ import pytest
 
 from conftest import requires_gpu
 
+# Consumer expectations come from the independent generated declarations.
+from gpuwm.physics_registry import implemented_selector_values as _intake_selectors
+from gpuwm.physics_registry import consumer_rows_by_selector as _intake_rows
+_INTAKE_MP = tuple(sorted(_intake_selectors("microphysics")))
+_INTAKE_REFL = tuple(mp for mp in _INTAKE_MP if mp)
+_INTAKE_EDGES = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "nest_transition").items()
+    if (row or {}).get("mixed_edge_ported")))
+_INTAKE_PRODUCERS = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "reflectivity_input_species").items()
+    if row is not None))
+_INTAKE_NATIVE = tuple(sorted(set(_INTAKE_REFL) - set(_INTAKE_PRODUCERS)))
+_INTAKE_SNOW = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qs" in (row or {}).get("state_fields", ())))
+_INTAKE_SIX = tuple(sorted(mp for mp, row in
+    _intake_rows("microphysics", "ring_guard").items()
+    if "qg" in (row or {}).get("state_fields", ())))
+
 #: The three driven-door tests below type `gpuwm run` and `gpuwm run-plan`
 #: and read the mp=28 dataset precondition off the door's own sentence.
 #: On an install with no cupy those doors refuse the install first, at plan
@@ -144,7 +163,7 @@ STALE_REFL_ADMISSION = frozenset({1, 6, 8, 10, 18})
 #: own 10 cm reflectivity (``native_reflectivity``), so the carrier is due on
 #: the same cadence.
 from gpuwm.microphysics_schemes import NAMED_MP_IDS  # noqa: E402
-REFL_ADMISSION = frozenset({1, 6, 8, 9, 10, 16, 18, 28, 50} | set(NAMED_MP_IDS))
+REFL_ADMISSION = frozenset({1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106} | set(NAMED_MP_IDS))
 
 #: The deliberate exceptions -- NONE remain.  This ledger is the census of
 #: sites that are stale ON PURPOSE, so it is the last place that may itself
@@ -205,12 +224,12 @@ DELIBERATE_STALE_SITES: set[tuple[str, str]] = set()
 #:   NAMED FOLLOW-UP for the restart lane, not a census suppression.
 #: * ``gpuwm/wrf_physics_inventory.py`` ``_INVENTORIES`` omits 9 and 16
 #:   deliberately: it records EVIDENCED stock-WRF export contracts, which
-#:   exist for exactly (6, 8, 10, 18, 28, 50); the rw-wps consuming half
+#:   exist for exactly (6, 8, 10, 18, 24, 28, 50); the rw-wps consuming half
 #:   documents the same decision (tools/rw_wps/crates/rw-wps/src/
 #:   namelist.rs STOCK_WRF_INVENTORIED_MP_PHYSICS).
 #: * ``gpuwm/core/preflight.py`` and ``gpuwm/core/rrtmg_legacy.py`` key
 #:   all ten accepted selectors -- complete, nothing to judge.
-ACCEPTED_MP_PHYSICS = frozenset({0, 1, 6, 8, 9, 10, 16, 18, 28, 50})
+ACCEPTED_MP_PHYSICS = frozenset({0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106})
 
 #: Scheme-KEYED DICTS that omit 28, and the judgement for each.  A dict is a
 #: third shape the same defect comes in and the AST membership scan cannot
@@ -378,7 +397,7 @@ def test_no_new_scheme_keyed_dict_omits_28():
     assert (set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS)
             == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS)
             == set(mt._UNVALIDATED_MIXED_EDGE_REASONS)
-            == {30} | set(NAMED_MP_IDS))
+            == {3, 5, 30} | set(NAMED_MP_IDS))
     # WDM6 is double-moment in cloud AND rain and carries a CCN reservoir:
     # ncr(:,:,1)=nn, ncr(:,:,2)=nc, ncr(:,:,3)=nr (module_mp_wdm6.F:238-240),
     # all three prognostic scalars in the WRF Registry.  It has no ni/ns/ng.
@@ -459,14 +478,15 @@ def test_the_hrrr_route_admission_is_derived_not_respelled():
     # R-003 -- so the ported set is the stale admission plus 50 and 9.
     # 16 and 28 were APPENDED next, with their own entry closures, so the
     # ported set is the stale admission plus 50, 9, 16 and 28.
-    assert set(mt.PORTED_MP_PHYSICS) == STALE_REFL_ADMISSION | {50, 9, 16, 28}
-    # FAST_SBM (30) is refused for a genuine missing closure (no
+    assert set(mt.PORTED_MP_PHYSICS) == STALE_REFL_ADMISSION | {50, 9, 16, 28, 2, 24}
+    # WSM3 (3, phase split), Ferrier-Aligo (5, rime factor) and FAST_SBM (30) are refused for a
+    # genuine missing closure (no
     # bulk-to-spectrum entry closure is validated for a mixed edge), and the
     # named schemes are refused by name; both are therefore outside
     # PORTED_MP_PHYSICS and this route's admission.  Any other refused
     # selector is a regression.
-    assert set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {30} | set(NAMED_MP_IDS), (
-        "a selector other than FAST_SBM or a named scheme is refused for a "
+    assert set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {3, 5, 30} | set(NAMED_MP_IDS), (
+        "a selector other than WSM3, Ferrier-Aligo, FAST_SBM or a named scheme is refused for a "
         "missing closure again; every other mixed edge in this release runs "
         "with its mapping named")
 
@@ -843,12 +863,12 @@ def test_every_refl_10cm_admission_constant_admits_28():
     # the table; the asymmetry arithmetic below is unchanged.
     from gpuwm.core.refl import REFL_10CM_INPUT_SPECIES
     producer = frozenset(REFL_10CM_INPUT_SPECIES)
-    assert producer == frozenset({1, 6, 8, 10, 16, 28})
+    assert producer == frozenset({1, 2, 3, 4, 6, 8, 10, 16, 28, 106})
     assert "cfg.mp_physics not in REFL_10CM_INPUT_SPECIES" in refl_source
     # The named schemes stash their own native reflectivity (TEMPO's,
     # ``native_reflectivity``), so they sit on 18's side as well.
     from gpuwm.microphysics_schemes import SCHEMES_BY_ID
-    assert REFL_ADMISSION - producer == {9, 18, 50} | {
+    assert REFL_ADMISSION - producer == {5, 9, 18, 24, 50} | {
         mp for mp, scheme in SCHEMES_BY_ID.items() if scheme.native_reflectivity}
     assert "elif cfg.mp_physics in (8, 28):" in refl_source, (
         "mp=28 no longer shares mp=8's calc_refl10cm branch; WRF has ONE "
@@ -1182,7 +1202,7 @@ def test_the_restart_identity_names_the_scheme_and_its_provenance():
     # registered its own identity with the port, held to the same two
     # properties below.  The WRF-numbered rows are otherwise unchanged.
     assert set(restart.MICROPHYSICS_ALGORITHM_IDENTITIES) == {
-        0, 1, 6, 8, 9, 10, 16, 18, 28, 30, 50} | set(NAMED_MP_IDS)
+        0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106} | set(NAMED_MP_IDS)
     fsbm_identity = restart.MICROPHYSICS_ALGORITHM_IDENTITIES[30]
     assert fsbm_identity not in {
         value for key, value in restart.MICROPHYSICS_ALGORITHM_IDENTITIES.items()
@@ -1834,8 +1854,7 @@ def test_the_offline_child_lane_converts_every_ported_edge():
     from gpuwm.core import microphysics_transition as mt
 
     assert 28 in OFFLINE_CHILD_MP_PHYSICS
-    assert _CAPABILITIES["same_scheme_mp_physics"] == [
-        0, 1, 6, 8, 9, 10, 16, 18, 28, 50]
+    assert _CAPABILITIES["same_scheme_mp_physics"] == [0, 1, 2, 3, 4, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106]
     assert _CAPABILITIES["cross_scheme_transitions"]["mp_physics"] == sorted(
         PARENT_SCHEME_CONTRACT)
     assert PARENT_SCHEME_CONTRACT == (

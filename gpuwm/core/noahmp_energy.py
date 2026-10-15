@@ -275,8 +275,11 @@ class EnergyOptions:
     opt_irr: int = 0
     soil_update_steps: int = 1
     calculate_soil: bool = True
+    noahmp_snow_age: str = "wrf_470"
 
     def check(self) -> None:
+        from gpuwm.noahmp_generation import snow_age_generation
+        snow_age_generation(self.noahmp_snow_age)
         if self.opt_sfc != 1:
             raise NotImplementedError(
                 "opt_sfc != 1 selects SFCDIF2, dead under the Registry "
@@ -287,8 +290,8 @@ class EnergyOptions:
                 "default opt_crs=1; they are deliberately not transcribed")
         if self.opt_alb != 2:
             raise NotImplementedError(
-                "opt_alb != 2 selects SNOWALB_BATS, dead under the Registry "
-                "default opt_alb=2; it is deliberately not transcribed")
+                "opt_alb must be 2 (CLASS); opt_alb=1 needs SNOWALB_BATS's "
+                "snow-age-dependent albedo calculation, which is not implemented")
         if self.opt_btr != 1:
             raise NotImplementedError(
                 "opt_btr != 1 selects the CLM (2) or SSiB (3) BTRAN leg at "
@@ -318,10 +321,11 @@ class EnergyOptions:
                 "FVEG and LAI before ENERGY is reached")
 
     def radiation_options(self) -> RadiationOptions:
-        return RadiationOptions(opt_rad=self.opt_rad, opt_alb=self.opt_alb)
+        return RadiationOptions(opt_rad=self.opt_rad, opt_alb=self.opt_alb,
+                                noahmp_snow_age=self.noahmp_snow_age)
 
 
-PINNED_OPTIONS = EnergyOptions()
+PINNED_OPTIONS = EnergyOptions(noahmp_snow_age="wrf_461")
 
 
 # ---------------------------------------------------------------------------

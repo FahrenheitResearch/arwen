@@ -2,7 +2,11 @@
 
 The physics is ``gpuwm/core/kernels/urban_ucm.cu``, a line-faithful
 transcription of WRF v4.7.1 ``phys/module_sf_urban.F`` (subroutine ``urban``
-and every helper it reaches) plus the three places WRF couples it:
+and every helper it reaches) plus the three places WRF couples it. The
+impervious-store water balance defaults to the WRF 4.8 clamp removal;
+``urban_water_balance="wrf_471"`` explicitly reproduces the older rule.
+Both retain rho_air/1000. urban_ucm_generation selects the separately qualified full canopy.
+The coupling sites are:
 
 * Noah (``sf_surface_physics = 2``): ``module_sf_noahdrv.F`` 1317-1600, which
   in WRF runs INSIDE Noah's column loop.  Columns are independent, so here it
@@ -20,8 +24,9 @@ This module owns the model-lane entry points the urban driver loads by name
 (DESIGN.md section 3.4): :data:`STATE_SPEC`, :data:`DIMENSIONS`,
 :func:`init_state`, :func:`after_lsm` and :func:`after_surface_diagnostics`.
 
-Proven against a WRF column oracle (``tools/urban_wrf471_oracle/run_ucm.F90``,
-fixture ``gpuwm/data/urban/oracle/ucm/``); see
+The explicit older generation is proven against the WRF 4.7.1 column oracle;
+the changed water terms are checked by ``tools/urban_water_balance_oracle``.
+The water selector is independent of the full-canopy generation. See
 ``tests/test_urban_ucm_wrf471_parity.py``.
 
 Not transcribed, and refused rather than approximated:
@@ -82,6 +87,9 @@ UCM_TABLE_COLUMNS = (
     "albr", "albb", "albg", "epsr", "epsb", "epsg", "z0r", "z0b", "z0g",
     "z0hb", "z0hg", "trlend", "tblend", "tglend", "akanda_urban",
 )
+UCM480_TABLE_COLUMNS = UCM_TABLE_COLUMNS + (
+    "albvg", "albt", "fvg", "rtree", "rtree_m", "rw_m", "htree", "dtree",
+    "lai_tree", "lai_veg", "z0vg", "z0hvg", "capvg", "epsvg", "epst")
 _TBL_NAME = {name: f"{name.upper()}_TBL" for name in UCM_TABLE_COLUMNS}
 
 #: The module-level arrays and scalars ``urban`` reads, in the kernel's PG_*
@@ -124,6 +132,15 @@ UCM_STATE_PLANES = (
     ("gz1oz0_urb2d", 0), ("u10_urb2d", 0), ("v10_urb2d", 0),
     ("th2_urb2d", 0), ("q2_urb2d", 0), ("ust_urb2d", 0), ("akms_urb2d", 0),
 )
+UCM480_STATE_PLANES = (
+    ("tvg_urb2d", 0), ("tt_urb2d", 0), ("xxxvg_urb2d", 0),
+    ("tvgl_urb3d", 4), ("smg_urb3d", 4), ("cmcg_urb2d", 0),
+    ("flxhumvg_urb2d", 0), ("flxhumt_urb2d", 0))
+
+
+def state_spec_for_generation(generation):
+    return ({n: ("float32", k) for n, k in UCM480_STATE_PLANES}
+            if generation == "wrf_480" else {})
 
 #: Arrays every urban option carries (DESIGN.md 3.1); the infra state owns
 #: them, this option reads and writes them.
@@ -162,6 +179,11 @@ _ERRORS = {
     2: ("an urban column's UTYPE is outside the loaded URBPARM table: the "
         "kernel would read another category's row"),
 }
+_ERRORS480 = {
+    1: "WRF v4.8 rejected the column's first-level log profile or tree geometry; canopy displacement and roughness must remain below the first model level and the crown must fit the canyon",
+    2: "MH_URB2D > 0 needs the missing NUDAPT gridded-morphology calculation; table morphology cannot represent that column",
+    3: _ERRORS[2],
+}
 
 
 class UrbanCanopyError(RuntimeError):
@@ -178,8 +200,9 @@ class UcmParams:
 
     table: np.ndarray        # (n_utype, len(UCM_TABLE_COLUMNS))
     globals_: np.ndarray     # (99,)
-    switches: np.ndarray     # (len(UCM_SWITCHES) + 1,) last = n_utype
+    switches: np.ndarray     # table switches, n_utype, water-balance generation
     frc_urb: np.ndarray      # (n_utype,) FRC_URB_TBL, for init defaulting
+    generation: str = "wrf_471"
 
     @property
     def n_utype(self) -> int:
@@ -187,11 +210,12 @@ class UcmParams:
 
 
 def _pack(table_rows: np.ndarray, glob: Mapping[str, object],
-          switches: Mapping[str, int], frc_urb) -> UcmParams:
+          switches: Mapping[str, int], frc_urb, *, generation="wrf_471") -> UcmParams:
     table = np.ascontiguousarray(np.asarray(table_rows, dtype=np.float32))
-    if table.ndim != 2 or table.shape[1] != len(UCM_TABLE_COLUMNS):
+    columns = UCM480_TABLE_COLUMNS if generation == "wrf_480" else UCM_TABLE_COLUMNS
+    if table.ndim != 2 or table.shape[1] != len(columns):
         raise ValueError("UCM table must be (n_utype, "
-                         f"{len(UCM_TABLE_COLUMNS)}) float32")
+                         f"{len(columns)}) float32")
     flat = []
     for name, length in UCM_GLOBAL_LAYOUT:
         values = np.atleast_1d(np.asarray(glob[name], dtype=np.float32))
@@ -210,9 +234,30 @@ def _pack(table_rows: np.ndarray, glob: Mapping[str, object],
                 "take its fall-through arm")
         ints.append(value)
     ints.append(table.shape[0])
+    if generation == "wrf_480":
+        tree, tt = int(switches["treeoption"]), int(switches["ttscheme"])
+        if tree not in (0, 1) or tt not in (0, 1):
+            raise ValueError("TREEOPTION and TTscheme must be 0 or 1")
+        if tree == 1 and int(switches["ts_scheme"]) == 2:
+            raise UrbanCanopyError(
+                "wrf_480 TREEOPTION=1 with TS_SCHEME=2 does not solve vegetated "
+                "ground temperature or moisture and reads ALPHAVG/ETAG before "
+                "assignment (module_sf_urban.F:2187-2303); its canyon and "
+                "vegetated-ground flux feedback are undefined")
+        if not np.all(np.isfinite(table)):
+            raise UrbanCanopyError("urban table contains nonfinite coefficients; canopy temperatures and fluxes would be undefined")
+        if np.any((table[:,36] < 0) | (table[:,36] > 1)):
+            raise UrbanCanopyError("FVG must be between 0 and 1; the ground-flux weights would be negative")
+        if tree == 1:
+            if np.any((table[:,7]<=0) | (table[:,6]<=0) | (table[:,37]<=0) | (table[:,40]<=0) | (table[:,42]<=0)):
+                raise UrbanCanopyError("TREEOPTION=1 requires positive canyon height/width, crown radius/height and LAI_TREE; the source divides by them in view factors and leaf radiation and does not define their zero limits")
+            if np.any((np.float32(2)*table[:,37] > table[:,6]) | (table[:,40]+table[:,37] > table[:,7])):
+                raise UrbanCanopyError("Invalid tree geometry: 2*rt must be <= W and ht+rt <= H (VF_TREE_ANALYTICAL)")
+        ints.extend((tree, tt))
+    ints.append(1)  # Corrected water balance follows the generation controls.
     return UcmParams(table=table, globals_=globals_,
                      switches=np.asarray(ints, dtype=np.int32),
-                     frc_urb=np.asarray(frc_urb, dtype=np.float32))
+                     frc_urb=np.asarray(frc_urb, dtype=np.float32), generation=generation)
 
 
 def _field(obj, *names):
@@ -232,9 +277,12 @@ def pack_params(params) -> UcmParams:
     and module arrays by WRF's own names, so this is the only place that
     knows the kernel's column order.
     """
-    rows = np.stack([np.asarray(_field(params, _TBL_NAME[c], _TBL_NAME[c].lower(), c),
+    generation = ("wrf_480" if isinstance(params, Mapping) and "FVG_TBL" in params
+                  else getattr(params, "generation", "wrf_471"))
+    columns = UCM480_TABLE_COLUMNS if generation == "wrf_480" else UCM_TABLE_COLUMNS
+    rows = np.stack([np.asarray(_field(params, c.upper()+"_TBL", c+"_tbl", c),
                                 dtype=np.float32)
-                     for c in UCM_TABLE_COLUMNS], axis=1)
+                     for c in columns], axis=1)
     glob = {name: _field(params, name.upper(), name) for name, _ in UCM_GLOBAL_LAYOUT}
     sw = {}
     for name in UCM_SWITCHES:
@@ -244,10 +292,30 @@ def pack_params(params) -> UcmParams:
         else:
             sw[name] = _field(params, name.upper(), name)
     frc = np.asarray(_field(params, "FRC_URB_TBL", "frc_urb_tbl"), np.float32)
-    return _pack(rows, glob, sw, frc)
+    if generation == "wrf_480":
+        sw.update(treeoption=_field(params, "TREEOPTION"), ttscheme=_field(params, "TTscheme"))
+    return _pack(rows, glob, sw, frc, generation=generation)
 
 
 _PACKED: dict = {}
+
+
+def controlled_params(params, cfg):
+    """Apply explicit source-table controls without changing the shipped rows."""
+    from dataclasses import replace
+    values = dict(params.values)
+    for attr, key in (("urban_treeoption", "TREEOPTION"), ("urban_ttscheme", "TTscheme")):
+        value = getattr(cfg, attr, -1)
+        if value != -1:
+            values[key] = np.asarray(value, np.int32)
+            values[key].setflags(write=False)
+    value = getattr(cfg, "urban_fvg", -1.0)
+    if value != -1:
+        values["FVG_TBL"] = np.full(params.icate, value, np.float32)
+        values["FVG_TBL"].setflags(write=False)
+    result = replace(params, values=MappingProxyType(values))
+    pack_params(result)
+    return result
 
 
 def _packed(params) -> UcmParams:
@@ -278,6 +346,31 @@ def pack_params_from_rows(table: Mapping[str, np.ndarray],
 
 
 _DEVICE_PARAMS: dict = {}
+
+_GENERATION_PARAMS: dict = {}
+
+
+def water_balance_params(params, generation=None) -> UcmParams:
+    """Bind the generation in every route's shared integer parameter block."""
+    from dataclasses import replace
+    from gpuwm.config import (URBAN_WATER_BALANCE_DEFAULT,
+                              URBAN_WATER_BALANCE_GENERATIONS)
+    generation = URBAN_WATER_BALANCE_DEFAULT if generation is None else generation
+    if generation not in URBAN_WATER_BALANCE_GENERATIONS:
+        raise ValueError(f"unknown urban_water_balance {generation!r}: "
+                         "the weak-rain evaporation rule is not defined")
+    p = _packed(params)
+    code = URBAN_WATER_BALANCE_GENERATIONS[generation]["code"]
+    if p.switches[-1] == code:
+        return p
+    key = (id(p), generation)
+    held = _GENERATION_PARAMS.get(key)
+    if held is None:
+        switches = np.concatenate((p.switches[:-1],
+                                   np.asarray([code], np.int32)))
+        held = (p, replace(p, switches=switches))
+        _GENERATION_PARAMS[key] = held
+    return held[1]
 
 
 def _device_params(p: UcmParams):
@@ -362,9 +455,9 @@ def _checked(arr, shape, name, dtype=None):
     return arr
 
 
-def _state_arrays(state, ny, nx):
+def _state_arrays(state, ny, nx, *, generation="wrf_471"):
     out = []
-    for name, layers in UCM_STATE_PLANES:
+    for name, layers in UCM_STATE_PLANES + (UCM480_STATE_PLANES if generation == "wrf_480" else ()):
         shape = (ny, nx) if layers == 0 else (layers, ny, nx)
         out.append(_checked(_get(state, name), shape, name))
     return out
@@ -386,24 +479,24 @@ def _status_word(state):
     return held[1]
 
 
-def _describe_status(flags: int) -> None:
+def _describe_status(flags: int, *, generation="wrf_471") -> None:
     """Raise for a UCM status word: bit ``code - 1`` per kernel code."""
-    reasons = [text for code, text in sorted(_ERRORS.items())
+    reasons = [text for code, text in sorted((_ERRORS480 if generation == "wrf_480" else _ERRORS).items())
                if flags & (1 << (code - 1))]
     raise UrbanCanopyError("; ".join(reasons) or f"UCM status {flags:#x}")
 
 
-def _raise_on(err) -> None:
+def _raise_on(err, *, generation="wrf_471") -> None:
     """Report the kernel's status word through the engine's health path:
     read now when no ledger is active, else recorded for the ledger's drain
     (``gpuwm.core.health_ledger``), so a deferring step keeps a launch
     sequence that does not depend on device values."""
     from gpuwm.core import health_ledger
 
-    flags = health_ledger.read_status(err, site="urban_ucm",
-                                      describe=_describe_status)
+    describe = lambda flags: _describe_status(flags, generation=generation)
+    flags = health_ledger.read_status(err, site="urban_ucm", describe=describe)
     if flags:
-        _describe_status(flags)
+        describe(flags)
 
 
 def _jmonth(solar) -> int:
@@ -457,8 +550,8 @@ def after_lsm(state, params, *, lsm: int, fields: dict, atmosphere: Mapping,
 
     from gpuwm.core.kernels import get_kernel
 
-    del itimestep, cfg
-    p = _packed(params)
+    del itimestep
+    p = water_balance_params(params, getattr(cfg, "urban_water_balance", None))
     tab, glob, isw = _device_params(p)
     tsk = fields["tsk"]
     ny, nx = tsk.shape
@@ -469,7 +562,12 @@ def after_lsm(state, params, *, lsm: int, fields: dict, atmosphere: Mapping,
     v1 = cp.ascontiguousarray(atmosphere["v"][0])
     hrang = _checked(cp.ascontiguousarray(_field(solar, "hrang", "omg")),
                      (ny, nx), "hrang")
-    sp = _pointer_table(_state_arrays(state, ny, nx))
+    new = p.generation == "wrf_480"
+    unit = "urban_ucm480" if new else "urban_ucm"
+    solar_args = ((_checked(cp.ascontiguousarray(solar.coszen), (ny, nx), "coszen"),
+                   _checked(cp.ascontiguousarray(solar.xlat), (ny, nx), "xlat"),
+                   np.float32(solar.declin)) if new else ())
+    sp = _pointer_table(_state_arrays(state, ny, nx, generation=p.generation))
     fp = _pointer_table([_checked(fields[n], (ny, nx), n) for n in _GRID_FIELDS])
     err = _status_word(state)
     blocks = (ny * nx + _TPB - 1) // _TPB
@@ -478,9 +576,9 @@ def after_lsm(state, params, *, lsm: int, fields: dict, atmosphere: Mapping,
         rural = _field(state, "rural")
         rp = _pointer_table([_checked(_get(rural, n), (ny, nx), f"rural {n}")
                              for n in _NOAH_RURAL])
-        kern = get_kernel("urban_ucm", "ucm_noah_after_lsm")
+        kern = get_kernel(unit, "ucm480_noah_after_lsm" if new else "ucm_noah_after_lsm")
         kern((blocks,), (_TPB,),
-             (urban, utype, frc, u1, v1, hrang, rp, fp, sp, tab, glob, isw,
+             (urban, utype, frc, u1, v1, hrang, *solar_args, rp, fp, sp, tab, glob, isw,
               np.float32(dt), jmonth, err, np.int32(ny), np.int32(nx)))
     elif int(lsm) == 4:
         t3d1 = cp.ascontiguousarray(atmosphere["temperature"][0])
@@ -489,16 +587,16 @@ def after_lsm(state, params, *, lsm: int, fields: dict, atmosphere: Mapping,
         p8w1 = cp.ascontiguousarray(p8w[0])
         p8w2 = cp.ascontiguousarray(p8w[1])
         dz1 = cp.ascontiguousarray(atmosphere["dz"][0])
-        kern = get_kernel("urban_ucm", "ucm_noahmp_after_lsm")
+        kern = get_kernel(unit, "ucm480_noahmp_after_lsm" if new else "ucm_noahmp_after_lsm")
         kern((blocks,), (_TPB,),
-             (urban, utype, frc, u1, v1, t3d1, qv1, p8w1, p8w2, dz1, hrang,
+             (urban, utype, frc, u1, v1, t3d1, qv1, p8w1, p8w2, dz1, hrang, *solar_args,
               fp, sp, tab, glob, isw, np.float32(dt), jmonth, err,
               np.int32(ny), np.int32(nx)))
     else:
         raise ValueError(
             f"sf_surface_physics={lsm} never calls module_sf_urban (WRF couples "
             "the UCM only through Noah and Noah-MP)")
-    _raise_on(err)
+    _raise_on(err, generation=p.generation)
 
 
 def after_surface_diagnostics(state, *, lsm: int, fields: dict,
@@ -546,7 +644,7 @@ UCM_COLUMN_OUTPUTS = ("ts", "qs", "sh", "lh", "lh_kinematic", "sw", "alb",
 
 
 def run_columns(params: UcmParams, inputs: Mapping[str, np.ndarray],
-                state: Mapping[str, np.ndarray]):
+                state: Mapping[str, np.ndarray], *, generation=None):
     """Run ``urban`` over n independent columns on the device.
 
     ``state`` maps every :data:`UCM_STATE_PLANES` name to a host array of
@@ -556,6 +654,9 @@ def run_columns(params: UcmParams, inputs: Mapping[str, np.ndarray],
     import cupy as cp
 
     from gpuwm.core.kernels import get_kernel
+
+    if params.generation == "wrf_480":
+        return _run_columns480(water_balance_params(params, generation), inputs, state)
 
     n = int(np.asarray(inputs["ta"]).shape[0])
     dev_in = []
@@ -572,7 +673,7 @@ def run_columns(params: UcmParams, inputs: Mapping[str, np.ndarray],
             raise ValueError(f"{name}: expected {shape}, got {host.shape}")
         dev_state.append(cp.asarray(host))
     codes = cp.zeros(n, dtype=cp.int32)
-    tab, glob, isw = _device_params(params)
+    tab, glob, isw = _device_params(water_balance_params(params, generation))
     kern = get_kernel("urban_ucm", "ucm_column_test")
     ip = cp.asarray(np.asarray([a.data.ptr for a in dev_in], dtype=np.uint64))
     op = cp.asarray(np.asarray([a.data.ptr for a in dev_out], dtype=np.uint64))
@@ -581,4 +682,55 @@ def run_columns(params: UcmParams, inputs: Mapping[str, np.ndarray],
          (ip, op, sp, tab, glob, isw, codes, np.int32(n)))
     outputs = {name: a.get() for name, a in zip(UCM_COLUMN_OUTPUTS, dev_out)}
     after = {name: a.get() for (name, _), a in zip(UCM_STATE_PLANES, dev_state)}
+    return outputs, after, codes.get()
+
+
+UCM480_LOCAL_STATE = {
+    **{n.split("_urb")[0]: n for n, _ in UCM_STATE_PLANES if "_urb" in n},
+    **{n.split("_urb")[0]: n for n, _ in UCM480_STATE_PLANES},
+    **{n+"_urb": n+"_sfcdif" for n in ("cmr", "chr", "cmc", "chc", "cmgr", "chgr")},
+}
+
+
+def _run_columns480(params, inputs, state):
+    """The same full argument entry used by the independent column oracle."""
+    import json
+    from pathlib import Path
+    import cupy as cp
+    from gpuwm.core.kernels import get_kernel
+    schema = json.loads((Path(__file__).resolve().parents[1]/"data/urban/oracle/ucm480/schema.json").read_text())["arguments"]
+    n = len(inputs["ta"])
+    values = {}
+    for v in schema:
+        name, layers = v["name"], v["layers"]
+        dtype = np.int32 if v["type"] in ("int", "bool") else np.float32
+        shape = (4, n) if layers else (n,)
+        local = UCM480_LOCAL_STATE.get(name)
+        if local is not None:
+            value = state.get(local, np.zeros(shape, dtype))
+        elif name in ("dzr", "dzb", "dzg"):
+            offset = {"dzr": 0, "dzb": 4, "dzg": 8}[name]
+            value = np.repeat(params.globals_[offset:offset+4, None], n, axis=1)
+        elif name.startswith("num_"):
+            value = np.full(n, 4, dtype)
+        elif name == "znt":
+            value = inputs["znt_in"]
+        elif name in inputs:
+            value = inputs[name]
+        else:
+            value = np.zeros(shape, dtype)
+        array = np.ascontiguousarray(value, dtype=dtype)
+        if array.shape != shape:
+            raise ValueError(f"{name}: expected {shape}, got {array.shape}")
+        values[name] = cp.asarray(array)
+    for required in ("declin", "cosz", "xlat"):
+        if required not in inputs:
+            raise ValueError(f"wrf_480 column requires {required} for solar shading")
+    pointers = _pointer_table(list(values.values()))
+    codes = cp.zeros(n, dtype=cp.int32)
+    tab, glob, sw = _device_params(params)
+    get_kernel("urban_ucm480", "urban480_columns")(((n+_TPB-1)//_TPB,), (_TPB,),
+        (pointers, tab, glob, sw, codes, np.int32(n)))
+    outputs = {name: values[name].get() for name in UCM_COLUMN_OUTPUTS}
+    after = {local: values[name].get() for name, local in UCM480_LOCAL_STATE.items() if name in values}
     return outputs, after, codes.get()

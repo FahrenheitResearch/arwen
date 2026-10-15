@@ -302,6 +302,13 @@ class FireCoupler:
         self.data.update(uah=wind["uah"], vah=wind["vah"])
         self.grid.advance(dt, vx=wind["uf"], vy=wind["vf"], time_start=time_seconds,
                           surface=surface, interpolate_moisture=classes)
+        result = self._feedback(state, cfg, atmosphere, feedback=feedback)
+        if report:
+            self._report_step(cfg)
+        return result
+
+    def _feedback(self, state, cfg, atmosphere, *, feedback=True):
+        """Exchange completed fire fluxes through the native coupling path."""
         d, g = self.data, self.grid.data
         # A tile may have a smaller physical fire domain inside its atmosphere
         # halo. Its exchange planes still have the complete compute-window
@@ -324,8 +331,6 @@ class FireCoupler:
                 fire_sfc_flx=cfg.fire_sfc_flx, fire_heat_peak=cfg.fire_heat_peak,
                 fire_tg_ub=cfg.fire_tg_ub,
                 domain=getattr(self, "_tile_exchange_domain", (1, nx - 2, 1, ny - 2)))
-        if report:
-            self._report_step(cfg)
         return d["rthfrten"], d["rqvfrten"]
 
     def _report_step(self, cfg):

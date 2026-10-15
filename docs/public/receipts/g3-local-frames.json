@@ -1,0 +1,213 @@
+{
+  "box": "V16",
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "compute_capability": "120",
+  "nvrtc_version": [
+    13,
+    2
+  ],
+  "nvrtc_build": "13.2.86",
+  "measured": "2026-10-10",
+  "source_sha256": "a3625a4975eb8f2300b2b0e299636a325d327e5be17a960ec3ee56938778c571",
+  "variants": [
+    {
+      "dimensions": [
+        1,
+        3,
+        3,
+        16,
+        144
+      ],
+      "attributes": {
+        "g3_column": {
+          "max_threads_per_block": 256,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 480,
+          "num_regs": 254,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 28,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag_clock": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 29,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag_finish": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 6,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_slot_count": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 8,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_spread": {
+          "max_threads_per_block": 640,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 96,
+          "ptx_version": 120,
+          "binary_version": 120
+        }
+      },
+      "maximum_local_size_bytes": 480
+    },
+    {
+      "dimensions": [
+        1,
+        4,
+        2,
+        17,
+        136
+      ],
+      "attributes": {
+        "g3_column": {
+          "max_threads_per_block": 256,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 512,
+          "num_regs": 255,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 28,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag_clock": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 29,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag_finish": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 6,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_slot_count": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 8,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_spread": {
+          "max_threads_per_block": 640,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 96,
+          "ptx_version": 120,
+          "binary_version": 120
+        }
+      },
+      "maximum_local_size_bytes": 512
+    },
+    {
+      "dimensions": [
+        2,
+        3,
+        3,
+        16,
+        288
+      ],
+      "attributes": {
+        "g3_column": {
+          "max_threads_per_block": 256,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 480,
+          "num_regs": 246,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 28,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag_clock": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 29,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_diag_finish": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 6,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_slot_count": {
+          "max_threads_per_block": 1024,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 8,
+          "ptx_version": 120,
+          "binary_version": 120
+        },
+        "g3_spread": {
+          "max_threads_per_block": 640,
+          "shared_size_bytes": 0,
+          "const_size_bytes": 0,
+          "local_size_bytes": 0,
+          "num_regs": 96,
+          "ptx_version": 120,
+          "binary_version": 120
+        }
+      },
+      "maximum_local_size_bytes": 480
+    }
+  ],
+  "maximum_local_size_bytes": 512
+}

@@ -192,23 +192,27 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 8 distinct caller-supplied option tuples across the 91
-  compile sites in the shipped package, each listed here with a site that
+  The inventory records 10 distinct caller-supplied option tuples across the
+  98 compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 55 other site(s)
-  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:419` (cp.RawModule), and
+    (xp.ElementwiseKernel), and 60 other site(s)
+  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:659` (cp.RawModule), and
     12 other site(s)
   - `--std=c++17` -- `gpuwm/ensemble/batch_perturbation.py:51`
     (xp.RawModule), and 8 other site(s)
   - `-std=c++17` `--ftz=false` -- `gpuwm/core/chem_plumerise_cache.py:37`
     (compiler.compile_using_nvrtc), and 5 other site(s)
-  - `-fmad=false` -- `gpuwm/core/dycore.py:301` (cp.ElementwiseKernel), and
+  - `-fmad=false` -- `gpuwm/core/dycore.py:300` (cp.ElementwiseKernel), and
     2 other site(s)
-  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:366`
+  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:529`
     (cp.RawModule), and 1 other site(s)
   - `--fmad=false` `-std=c++14` -- `gpuwm/da/letkf_device.py:363`
     (cp.RawModule)
+  - `-std=c++17` `--fmad=false` `--ftz=false` --
+    `gpuwm/core/wsm_family.py:206` (compiler.compile_using_nvrtc)
+  - `-std=c++17` `--ftz=false` `--fmad=false` --
+    `gpuwm/core/kernels/__init__.py:645` (compiler.compile_using_nvrtc)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:261`
     (cp.RawModule)
   `R5` and `R1` are kernels inside ONE compiled object -- same device, same
@@ -540,10 +544,12 @@ the 2.8.7 release carries the file; later releases point at it there.
 
 #### D3c — physics substitutions and comparison scope
 
-- The importer maps mp 55 (ISHMAEL) to Morrison 2-moment and ra_lw/ra_sw 4
-  (RRTMG) to RTE+RRTMGP, emitting a structured `SubstitutionReport`; every
-  other unimplemented scheme id is a hard error.  These are **model-form
-  changes with no error bound**.  bl_pbl 11 (Shin-Hong) was a third
+- The importer maps ra_lw/ra_sw 4 (RRTMG) to RTE+RRTMGP, emitting a
+  structured `SubstitutionReport`; every other unimplemented scheme id is a
+  hard error.  That is a **model-form change with no error bound**.  mp 55
+  (ISHMAEL) was mapped to Morrison 2-moment the same way until 2026-10-12;
+  it is now refused by name, and a configuration that runs Morrison in its
+  place asks for mp 10.  bl_pbl 11 (Shin-Hong) was a third
   substitution (to YSU) until the Shin-Hong port; it now imports natively
   as 11 and runs the ported scheme.  The campaign-era configs and
   comparisons below predate that admission and record the substitution
@@ -741,6 +747,16 @@ the 2.8.7 release carries the file; later releases point at it there.
   arbitrate REAL-faithful internals against the gate design.
 
 ### D7 — Noah sea-ice runtime thermodynamics are not implemented (Phase 5, lane L4)
+
+- **RETIRED in 2.8.6 (lane/parity-noah)**: `seaice_noah` and `SFLX_SEAICE`
+  are ported as `noah_seaice_column` (`gpuwm/core/kernels/noah.cu`) on WRF's
+  default namelist path (seaice_albedo_opt, seaice_thickness_opt and
+  seaice_snowdepth_opt 0, fractional_seaice 0) and run after both `lsm` and
+  `lsm_mosaic`, with the model time step, as the surface driver orders them.
+  It is graded against a WRF v4.6.1 column oracle
+  (`tools/noah_seaice_wrf461_oracle`, 24 columns x 3 fixtures) by
+  `tests/test_noah_seaice_wrf461_parity.py`.  The text below records the
+  deviation as it stood before the port.
 
 - **WRF initialization semantics, verified in the bundled v4.6.1 source**:
   for `fractional_seaice=0`, `adjust_for_seaice_post` uses an XICE threshold

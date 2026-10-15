@@ -1,6 +1,6 @@
 //! NEXRAD Level III Product 48 (VAD Wind Profile) decoder.
 //!
-//! This is a Rust port of Drew's standalone `nexrad-vwp-parser.js`.  It keeps
+//! This is a Rust port of the standalone `nexrad-vwp-parser.js`.  It keeps
 //! the tabular-block-first/symbology-fallback behavior, while fixing two
 //! timeline bugs in the original utility: NEXRAD Julian day one is
 //! 1970-01-01 (not 1970-01-02), and rolling HHMM columns must be anchored to

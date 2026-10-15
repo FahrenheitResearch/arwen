@@ -45,6 +45,19 @@ def test_public_emitted_config_bytes_match_independent_staging(
     raw = tomllib.loads(row["input_toml"])
     raw.pop("fetch", None)
     exp = build_experiment(raw, source=baseline["source_label"])
+    # Declared default correction, 2.9.0: an input that leaves
+    # solar_generation unset reads "wrf_480" (WRF 4.8's equation of time);
+    # the baseline was captured under WRF 4.6.1's.  The default binds that
+    # one key and nothing else; the pinned bytes below are read under the
+    # generation they were captured with, which the document omits.
+    assert all(domain.run.solar_generation == "wrf_480" for domain in exp.domains)
+    assert all(domain["run"]["solar_generation"] == "wrf_480"
+               for domain in experiment_config_document(exp)["domains"])
+    exp = replace(exp, domains=tuple(replace(
+        domain, run=replace(domain.run, solar_generation="wrf_461"))
+        for domain in exp.domains))
+    assert all("solar_generation" not in domain["run"]
+               for domain in experiment_config_document(exp)["domains"])
     if inactive_nondefaults:
         exp = replace(exp, domains=tuple(replace(
             domain, run=replace(domain.run, chem_adv_opt=2, kemit=17,

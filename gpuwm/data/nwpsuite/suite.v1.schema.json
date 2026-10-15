@@ -1,0 +1,921 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gpuwm.suite.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "gpuwm.suite.v1"
+    },
+    "name": {
+      "type": "string"
+    },
+    "extends": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string"
+    },
+    "box": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "check": {
+            "type": "string"
+          },
+          "cards": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "card_model": {
+            "type": "string"
+          },
+          "memory_mib": {
+            "type": "number",
+            "minimum": 0
+          },
+          "host_memory_mib": {
+            "type": "number",
+            "minimum": 0
+          },
+          "disk_free_gb": {
+            "type": "number",
+            "minimum": 0
+          },
+          "build": {
+            "type": "string"
+          },
+          "inventory": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "uuid": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "memory_mib": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "id",
+          "host"
+        ]
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "headroom": {
+          "type": "number",
+          "minimum": 0.2,
+          "exclusiveMaximum": 1
+        },
+        "rates": {
+          "type": "string"
+        },
+        "single_box_profile": {
+          "type": "string"
+        },
+        "registry_dir": {
+          "type": "string"
+        }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "products": {
+          "type": "string"
+        },
+        "verify": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "after_run": {
+              "type": "boolean"
+            },
+            "nightly": {
+              "type": "boolean"
+            }
+          }
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "history": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "products": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "analyses": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "receipts": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "checkpoints": {
+              "const": "latest"
+            },
+            "receipt_cap": {
+              "type": "string"
+            },
+            "disk_floor_gb": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "on_fail": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "publish": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "targets": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "system": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "shape": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "recipe": {
+            "type": "string"
+          },
+          "preset": {
+            "type": "string"
+          },
+          "mesh": {
+            "type": "string"
+          },
+          "source_profile": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "enum": [
+                  "recipe",
+                  "region"
+                ]
+              },
+              "spacing_km": {
+                "type": "number",
+                "minimum": 0
+              },
+              "grid": {
+                "type": "string"
+              }
+            }
+          },
+          "ic": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lbc": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cycle": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "every": {
+                "type": "string",
+                "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+              },
+              "lead": {
+                "type": "string",
+                "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+              },
+              "deadline": {
+                "type": "string",
+                "pattern": "^ready\\+[0-9]+(?:\\.[0-9]+)?[smhd]$"
+              },
+              "hours": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 23
+                }
+              }
+            }
+          },
+          "at": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^(?:[01][0-9]|2[0-3])(?:,(?:[01][0-9]|2[0-3]))*$"
+            },
+            "additionalProperties": {
+              "$ref": "#/$defs/patch"
+            }
+          },
+          "cards": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "box": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "da": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "enum": [
+                  "none",
+                  "jedi-3denvar",
+                  "jedi-letkf",
+                  "local-da"
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "shadow",
+                  "production"
+                ]
+              },
+              "mesh": {
+                "type": "string"
+              },
+              "every": {
+                "type": "string",
+                "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+              },
+              "backend": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "b_from": {
+                "type": "string"
+              },
+              "obs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "promote_when": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "beats": {
+                    "type": "string"
+                  },
+                  "metrics": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "cycles": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "rate": {
+                "type": "string"
+              },
+              "cards": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "lead": {
+                "type": "string",
+                "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+              },
+              "host_memory_mib": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          },
+          "members": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "perturbed": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "lagged": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            ]
+          },
+          "perturb": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "recipe": {
+                "type": "string"
+              },
+              "stochastic": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "cards_per_member": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fallback": {
+            "type": "string"
+          },
+          "admit": {
+            "enum": [
+              "required",
+              "when-fits",
+              "measure"
+            ]
+          },
+          "lts": {
+            "enum": [
+              "off",
+              "one-card"
+            ]
+          },
+          "checkpoint": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "every": {
+                "type": "string",
+                "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+              }
+            }
+          },
+          "rollback": {
+            "type": "boolean"
+          },
+          "rate": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "prepared": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "mesh": {
+                "type": "string"
+              },
+              "init": {
+                "type": "string"
+              },
+              "lbc": {
+                "type": "string"
+              },
+              "terrain": {
+                "type": "string"
+              },
+              "vtable": {
+                "type": "string"
+              },
+              "outdir": {
+                "type": "string"
+              },
+              "manifest": {
+                "type": "string"
+              },
+              "namelist": {
+                "type": "string"
+              },
+              "invariant": {
+                "type": "string"
+              },
+              "layouts": {
+                "type": "string"
+              },
+              "part": {
+                "type": "string"
+              },
+              "mesh_rows": {
+                "type": "string"
+              }
+            }
+          },
+          "physics": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          },
+          "products": {
+            "type": "string"
+          },
+          "verify": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "after_run": {
+                "type": "boolean"
+              },
+              "nightly": {
+                "type": "boolean"
+              }
+            }
+          },
+          "on_fail": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "degrade": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "door_flags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "override": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "system": {
+            "type": "string"
+          },
+          "set": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean"
+              ]
+            }
+          }
+        },
+        "required": [
+          "system",
+          "set"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "name",
+    "region"
+  ],
+  "$defs": {
+    "patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "shape": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "recipe": {
+          "type": "string"
+        },
+        "preset": {
+          "type": "string"
+        },
+        "mesh": {
+          "type": "string"
+        },
+        "source_profile": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "from": {
+              "enum": [
+                "recipe",
+                "region"
+              ]
+            },
+            "spacing_km": {
+              "type": "number",
+              "minimum": 0
+            },
+            "grid": {
+              "type": "string"
+            }
+          }
+        },
+        "ic": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lbc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "every": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "lead": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "deadline": {
+              "type": "string",
+              "pattern": "^ready\\+[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "hours": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 23
+              }
+            }
+          }
+        },
+        "at": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^(?:[01][0-9]|2[0-3])(?:,(?:[01][0-9]|2[0-3]))*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/patch"
+          }
+        },
+        "cards": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "box": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "da": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "enum": [
+                "none",
+                "jedi-3denvar",
+                "jedi-letkf",
+                "local-da"
+              ]
+            },
+            "mode": {
+              "enum": [
+                "shadow",
+                "production"
+              ]
+            },
+            "mesh": {
+              "type": "string"
+            },
+            "every": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "backend": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "b_from": {
+              "type": "string"
+            },
+            "obs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "promote_when": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "beats": {
+                  "type": "string"
+                },
+                "metrics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "cycles": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "rate": {
+              "type": "string"
+            },
+            "cards": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "lead": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            },
+            "host_memory_mib": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "members": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "perturbed": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lagged": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "perturb": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "recipe": {
+              "type": "string"
+            },
+            "stochastic": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "cards_per_member": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fallback": {
+          "type": "string"
+        },
+        "admit": {
+          "enum": [
+            "required",
+            "when-fits",
+            "measure"
+          ]
+        },
+        "lts": {
+          "enum": [
+            "off",
+            "one-card"
+          ]
+        },
+        "checkpoint": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "every": {
+              "type": "string",
+              "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+            }
+          }
+        },
+        "rollback": {
+          "type": "boolean"
+        },
+        "rate": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "prepared": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mesh": {
+              "type": "string"
+            },
+            "init": {
+              "type": "string"
+            },
+            "lbc": {
+              "type": "string"
+            },
+            "terrain": {
+              "type": "string"
+            },
+            "vtable": {
+              "type": "string"
+            },
+            "outdir": {
+              "type": "string"
+            },
+            "manifest": {
+              "type": "string"
+            },
+            "namelist": {
+              "type": "string"
+            },
+            "invariant": {
+              "type": "string"
+            },
+            "layouts": {
+              "type": "string"
+            },
+            "part": {
+              "type": "string"
+            },
+            "mesh_rows": {
+              "type": "string"
+            }
+          }
+        },
+        "physics": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "products": {
+          "type": "string"
+        },
+        "verify": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "after_run": {
+              "type": "boolean"
+            },
+            "nightly": {
+              "type": "boolean"
+            }
+          }
+        },
+        "on_fail": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "degrade": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lead": {
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+        },
+        "deadline": {
+          "type": "string",
+          "pattern": "^ready\\+[0-9]+(?:\\.[0-9]+)?[smhd]$"
+        },
+        "every": {
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+)?[smhd]$"
+        },
+        "door_flags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

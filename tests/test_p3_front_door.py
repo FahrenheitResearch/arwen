@@ -550,7 +550,8 @@ def test_no_existing_profile_changed_its_microphysics():
     assert (set(SINGLE_DOMAIN_PHYSICS_PROFILES)
             == set(before) | {P3_LEGACY_RRTMG_PROFILE_ID}
             | set(COMPOSITION_SUITE_PROFILE_IDS) | set(aggregate_kf)
-            | thompson_mynn_ruc | set(thompson_mynn_ruc_siblings))
+            | thompson_mynn_ruc | set(thompson_mynn_ruc_siblings)
+            | {"lin-mp2-ysu-mm5-noah-rrtmg-legacy-implemented-unverified-v1"})
     # ...and none of those six moved an EXISTING profile's microphysics,
     # which is what this test is named for: each is its own row.
     assert not set(COMPOSITION_SUITE_PROFILE_IDS) & set(before)

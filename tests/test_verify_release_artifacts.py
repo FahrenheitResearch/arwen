@@ -746,14 +746,15 @@ def test_the_release_ships_six_libraries_with_different_abi_symbols() -> None:
     assert {a.name for a in artifacts} == {
         "gpuwm_preprocess_cpu", "region_global_dealias", "netcdf_writer",
         "static_fields", "obs_regrid", "obs_score", "rw_isobaric",
-        "rw_superob"}
+        "rw_superob", "rw_tempo"}
     symbols = {bridge_assets.library_abi_for(a.name)[0] for a in artifacts}
     assert symbols == {"gpuwm_preprocess_cpu_abi_version", "bw_abi_version",
                        "gpuwm_ncwrite_abi_version",
                        "gpuwm_static_abi_version",
                        "gpuwm_obsregrid_abi_version", "gpuwm_obsscore_abi_version",
                        "gpuwm_isobaric_abi_version",
-                       "gpuwm_superob_abi_version"}
+                       "gpuwm_superob_abi_version",
+                       "gpuwm_tempo_abi_version"}
 
 
 @pytest.mark.parametrize("platform", bridge_assets.SUPPORTED_PLATFORMS)

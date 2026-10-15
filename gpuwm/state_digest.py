@@ -129,7 +129,10 @@ def _is_chem_nest_slot(slot: str | None) -> bool:
 _CANONICAL_LBC_SLOTS = frozenset({"lbc_weights_0"})
 _CANONICAL_REFL_SLOTS = frozenset({"refl_10cm"})
 _CANONICAL_EXTRA_PREFIXES = ("nest_", "lbc_weights_", "refl_")
-_CANONICAL_EXCLUDED_FRAME_SCRATCH = frozenset({"refl_t"})
+# Reflectivity phase arrays are overwritten on each WSM3 diagnostic call.
+_CANONICAL_EXCLUDED_FRAME_SCRATCH = frozenset({
+    "refl_t", "refl_wsm3_rain", "refl_wsm3_snow", "refl_wsm3_graupel",
+})
 CHILD_DUTY_SCRATCH_MEMBERS = (
     "scratch/nest_parent_field",
     "scratch/nest_child_field",

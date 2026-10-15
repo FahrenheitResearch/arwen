@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{MpasError, MpasResult};
-use crate::fieldmap::{FIELD_MAP, FieldMapping, FieldSource};
+use crate::fieldmap::{FIELD_MAP, FieldMapping, FieldSource, native_history_name};
 use crate::weights::MeshCoordinates;
 use rw_store::netcdf_classic::{NcAttr, NcAttrValue};
 
@@ -269,6 +269,63 @@ fn read_cell_field(
     Ok(Some((out, levels)))
 }
 
+/// The init-sourced fields of a pinned init file, read (and hashed) once.
+///
+/// Every frame of a run shares them, so a converter that draws many frames
+/// reads them here once and hands them to [`read_history_with_init`].
+///
+/// THE BREAKAGE THIS PREVENTS: [`read_history`] with an init hashed and read
+/// the whole init for every frame.  On the 1,604,031-cell 20 -> 2.5 km global
+/// case (a hex run, 2026-10-13) one product view's `rw_mpas_convert` read
+/// 419 GB in 12 minutes for seven frames, 15 GB of init per frame twice over,
+/// and the product stage outlasted the forecast.
+#[derive(Debug, Clone)]
+pub struct InitFields {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub n_cells: usize,
+    /// WRF name -> (values, levels), as in [`MpasFrame::fields`].
+    pub fields: BTreeMap<String, (Vec<f32>, usize)>,
+    /// Init-sourced WRF names the file does not carry.
+    pub absent: Vec<String>,
+}
+
+/// Hash `path` (refusing a mismatch against `init_sha256`) and read every
+/// init-sourced field of the field map from it.
+pub fn read_init_fields(path: &Path, init_sha256: Option<&str>) -> MpasResult<InitFields> {
+    let d = crate::sha256_file(path)?;
+    if let Some(want) = init_sha256 {
+        if d != want {
+            return Err(MpasError::Refusal(format!(
+                "init {} is sha256 {d}, expected {want}",
+                path.display()
+            )));
+        }
+    }
+    let init = netcrust::File::open(path)?;
+    let n_cells = init
+        .dimension("nCells")
+        .ok_or_else(|| MpasError::Refusal("init has no nCells dimension".to_string()))?
+        .len();
+    let mut fields = BTreeMap::new();
+    let mut absent = Vec::new();
+    for mapping in FIELD_MAP.iter() {
+        if mapping.source != FieldSource::Init {
+            continue;
+        }
+        let Some(mpas_name) = mapping.mpas_name else {
+            continue;
+        };
+        match read_cell_field(&init, mpas_name, n_cells)? {
+            Some(value) => {
+                fields.insert(mapping.wrf_name.to_string(), value);
+            }
+            None => absent.push(mapping.wrf_name.to_string()),
+        }
+    }
+    Ok(InitFields { path: path.to_path_buf(), sha256: d, n_cells, fields, absent })
+}
+
 /// Read a history frame and, when given, the pinned init file beside it.
 pub fn read_history(
     history_path: &Path,
@@ -276,6 +333,22 @@ pub fn read_history(
     valid_time: Option<Timestamp>,
     history_sha256: Option<&str>,
     init_sha256: Option<&str>,
+) -> MpasResult<MpasFrame> {
+    let init = match init_path {
+        Some(path) => Some(read_init_fields(path, init_sha256)?),
+        None => None,
+    };
+    read_history_with_init(history_path, init.as_ref(), valid_time, history_sha256)
+}
+
+/// [`read_history`] with the init's fields already read by
+/// [`read_init_fields`]: the frame gets a copy of them, and the init file is
+/// not opened again.
+pub fn read_history_with_init(
+    history_path: &Path,
+    init: Option<&InitFields>,
+    valid_time: Option<Timestamp>,
+    history_sha256: Option<&str>,
 ) -> MpasResult<MpasFrame> {
     let digest = crate::sha256_file(history_path)?;
     if let Some(want) = history_sha256 {
@@ -315,7 +388,13 @@ pub fn read_history(
         let Some(mpas_name) = mapping.mpas_name else {
             continue;
         };
-        match read_cell_field(&file, mpas_name, n_cells)? {
+        // Prefer the canonical MPAS Registry carrier when both spellings
+        // exist. Native winds/t2m must not become absent evidence just because
+        // older hex output used u_zonal/v_meridional/t2.
+        let name = native_history_name(mapping.wrf_name)
+            .filter(|name| file.variable(name).is_some())
+            .unwrap_or(mpas_name);
+        match read_cell_field(&file, name, n_cells)? {
             Some(value) => {
                 fields.insert(mapping.wrf_name.to_string(), value);
             }
@@ -326,43 +405,20 @@ pub fn read_history(
 
     let mut init_resolved: Option<PathBuf> = None;
     let mut init_digest: Option<String> = None;
-    match init_path {
-        Some(path) => {
-            let d = crate::sha256_file(path)?;
-            if let Some(want) = init_sha256 {
-                if d != want {
-                    return Err(MpasError::Refusal(format!(
-                        "init {} is sha256 {d}, expected {want}",
-                        path.display()
-                    )));
-                }
-            }
-            let init = netcrust::File::open(path)?;
-            let init_cells = init
-                .dimension("nCells")
-                .ok_or_else(|| MpasError::Refusal("init has no nCells dimension".to_string()))?
-                .len();
-            if init_cells != n_cells {
+    match init {
+        Some(init) => {
+            if init.n_cells != n_cells {
                 return Err(MpasError::Refusal(format!(
-                    "init and history disagree on nCells ({init_cells} vs {n_cells})"
+                    "init and history disagree on nCells ({} vs {n_cells})",
+                    init.n_cells
                 )));
             }
-            for mapping in FIELD_MAP.iter() {
-                if mapping.source != FieldSource::Init {
-                    continue;
-                }
-                let Some(mpas_name) = mapping.mpas_name else {
-                    continue;
-                };
-                match read_cell_field(&init, mpas_name, n_cells)? {
-                    Some(value) => {
-                        fields.insert(mapping.wrf_name.to_string(), value);
-                    }
-                    None => absent.push(mapping.wrf_name.to_string()),
-                }
+            for (name, value) in &init.fields {
+                fields.insert(name.clone(), value.clone());
             }
-            init_resolved = Some(path.to_path_buf());
-            init_digest = Some(d);
+            absent.extend(init.absent.iter().cloned());
+            init_resolved = Some(init.path.clone());
+            init_digest = Some(init.sha256.clone());
         }
         None => {
             for mapping in FIELD_MAP.iter() {
@@ -400,6 +456,219 @@ pub fn read_history(
         init_sha256: init_digest,
         valid_time: resolved_time,
         n_cells,
+        n_levels,
+        n_soil_levels: n_soil,
+        fields,
+        latitude_degrees: latitude.iter().map(|v| v * deg).collect(),
+        longitude_degrees: longitude
+            .iter()
+            .map(|v| (v * deg + 180.0).rem_euclid(360.0) - 180.0)
+            .collect(),
+        absent,
+        science_attributes,
+    })
+}
+
+/// One cell-indexed variable at the listed cells only, as `(values, levels)`
+/// with `values` laid out `(cells.len(), levels)` row-major -- the layout
+/// [`read_cell_field`] gives the whole mesh, so a gather written for one reads
+/// the other.  The cell axis must be the first non-`Time` dimension, as it is
+/// in every MPAS stream.  Each cell is one hyperslab read.
+fn read_cells_f64(
+    file: &netcrust::File,
+    name: &str,
+    n_cells: usize,
+    cells: &[u32],
+) -> MpasResult<Option<(Vec<f64>, usize)>> {
+    use netcrust::{NcSliceInfo, NcSliceInfoElem};
+    let Some(variable) = file.variable(name) else {
+        return Ok(None);
+    };
+    let has_time = variable
+        .dimensions()
+        .first()
+        .map(|d| d.name() == "Time")
+        .unwrap_or(false);
+    let shape: Vec<usize> = variable.shape();
+    if has_time && shape.first() != Some(&1) {
+        return Err(MpasError::Refusal(format!(
+            "{name} carries {} time records; expected exactly 1",
+            shape.first().copied().unwrap_or(0)
+        )));
+    }
+    let rest = if has_time { &shape[1..] } else { &shape[..] };
+    if rest.first() != Some(&n_cells) {
+        return Err(MpasError::Refusal(format!(
+            "{name} leads with {:?} values, not nCells ({n_cells}): a cell subset cannot be read from it",
+            rest.first()
+        )));
+    }
+    let levels: usize = rest[1..].iter().product();
+    let mut out = Vec::with_capacity(cells.len() * levels);
+    for &cell in cells {
+        if cell as usize >= n_cells {
+            return Err(MpasError::Refusal(format!(
+                "{name}: cell {cell} is outside the {n_cells}-cell mesh"
+            )));
+        }
+        let mut selections = Vec::with_capacity(rest.len() + 1);
+        if has_time {
+            selections.push(NcSliceInfoElem::Index(0));
+        }
+        selections.push(NcSliceInfoElem::Index(u64::from(cell)));
+        for &n in &rest[1..] {
+            selections.push(NcSliceInfoElem::Slice { start: 0, end: n as u64, step: 1 });
+        }
+        let values = file
+            .read_array_f64_slice(name, &NcSliceInfo { selections })?
+            .into_values();
+        if values.len() != levels {
+            return Err(MpasError::Refusal(format!(
+                "{name} cell {cell} read back {} value(s), not its {levels} level(s)",
+                values.len()
+            )));
+        }
+        out.extend_from_slice(&values);
+    }
+    Ok(Some((out, levels)))
+}
+
+/// [`read_cells_f64`] narrowed to `f32` exactly as [`read_cell_field`] narrows
+/// a whole field, refusing a non-finite value at a cell it reads.
+fn read_cell_field_at(
+    file: &netcrust::File,
+    name: &str,
+    n_cells: usize,
+    cells: &[u32],
+) -> MpasResult<Option<(Vec<f32>, usize)>> {
+    let Some((values, levels)) = read_cells_f64(file, name, n_cells, cells)? else {
+        return Ok(None);
+    };
+    let mut out = Vec::with_capacity(values.len());
+    for v in values {
+        let f = v as f32;
+        if !f.is_finite() {
+            return Err(MpasError::Refusal(format!("history {name} is not finite")));
+        }
+        out.push(f);
+    }
+    Ok(Some((out, levels)))
+}
+
+/// A history frame at a few mesh cells only: what point columns
+/// ([`crate::points::columns`]) draw from.
+///
+/// The returned frame's cell axis is `cells` in the order given
+/// (`n_cells == cells.len()`), so it pairs with
+/// [`crate::points::PointSampler::compacted`]'s sampler, whose weights index
+/// that list.  Only the WRF names in `wanted` are read: history-sourced ones
+/// from the history, init-sourced ones (zgrid) from `init_path`; a name the
+/// file lacks is recorded in `absent` as [`read_history`] records it.
+///
+/// THE BREAKAGE THIS PREVENTS: `rw_hex_points` called [`read_history`] once
+/// per frame, which hashes the whole history and the whole init and reads
+/// every mapped field of both on one thread to keep a handful of columns.  On
+/// the 1,472,532-cell 20 km global case (a hex run, 2026-10-13) that read about
+/// 300 GB for six points and seven hourly frames and took 2,150 s, longer than
+/// the 1,600 s forecast it drew; the 4-card run's cards sat idle behind it.
+/// Neither file is hashed here (`history_sha256` says so): the point pictures
+/// are drawn from the cells read, and the forecast receipt already pins both
+/// files' bytes.
+pub fn read_history_cells(
+    history_path: &Path,
+    init_path: Option<&Path>,
+    cells: &[u32],
+    wanted: &[&str],
+    valid_time: Option<Timestamp>,
+) -> MpasResult<MpasFrame> {
+    let mut fields: BTreeMap<String, (Vec<f32>, usize)> = BTreeMap::new();
+    let mut absent: Vec<String> = Vec::new();
+    let wanted_from = |source: FieldSource| {
+        FIELD_MAP
+            .iter()
+            .filter(move |m| m.source == source && wanted.contains(&m.wrf_name))
+            .filter_map(|m| m.mpas_name.map(|mpas| (m.wrf_name, mpas)))
+    };
+
+    let file = netcrust::File::open(history_path)?;
+    let science_attributes = read_science_attributes(&file)?;
+    let mesh_cells = file
+        .dimension("nCells")
+        .ok_or_else(|| MpasError::Refusal("history has no nCells dimension".to_string()))?
+        .len();
+    let n_levels = file
+        .dimension("nVertLevels")
+        .ok_or_else(|| MpasError::Refusal("history has no nVertLevels dimension".to_string()))?
+        .len();
+    let n_soil = file.dimension("nSoilLevels").map(|d| d.len()).unwrap_or(0);
+    let centre = |name: &str| -> MpasResult<Vec<f64>> {
+        read_cells_f64(&file, name, mesh_cells, cells)?
+            .map(|(v, _)| v)
+            .ok_or_else(|| MpasError::Refusal(format!("history has no {name}")))
+    };
+    let latitude = centre("latCell")?;
+    let longitude = centre("lonCell")?;
+    for (wrf_name, mpas_name) in wanted_from(FieldSource::History) {
+        match read_cell_field_at(&file, mpas_name, mesh_cells, cells)? {
+            Some(value) => {
+                fields.insert(wrf_name.to_string(), value);
+            }
+            None => absent.push(wrf_name.to_string()),
+        }
+    }
+    drop(file);
+
+    let mut init_resolved: Option<PathBuf> = None;
+    match init_path {
+        Some(path) => {
+            let init = netcrust::File::open(path)?;
+            let init_cells = init
+                .dimension("nCells")
+                .ok_or_else(|| MpasError::Refusal("init has no nCells dimension".to_string()))?
+                .len();
+            if init_cells != mesh_cells {
+                return Err(MpasError::Refusal(format!(
+                    "init and history disagree on nCells ({init_cells} vs {mesh_cells})"
+                )));
+            }
+            for (wrf_name, mpas_name) in wanted_from(FieldSource::Init) {
+                match read_cell_field_at(&init, mpas_name, mesh_cells, cells)? {
+                    Some(value) => {
+                        fields.insert(wrf_name.to_string(), value);
+                    }
+                    None => absent.push(wrf_name.to_string()),
+                }
+            }
+            init_resolved = Some(path.to_path_buf());
+        }
+        None => absent.extend(wanted_from(FieldSource::Init).map(|(w, _)| w.to_string())),
+    }
+
+    if let Some((_, levels)) = fields.get("PHB") {
+        if *levels != n_levels + 1 {
+            return Err(MpasError::Refusal(format!(
+                "init zgrid carries {levels} levels; expected {}",
+                n_levels + 1
+            )));
+        }
+    }
+    let resolved_time = match valid_time {
+        Some(t) => t,
+        None => Timestamp::parse(
+            history_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default(),
+        )?,
+    };
+    let deg = 180.0 / std::f64::consts::PI;
+    Ok(MpasFrame {
+        history_path: history_path.to_path_buf(),
+        history_sha256: "not hashed: cell-subset read (read_history_cells)".to_string(),
+        init_path: init_resolved,
+        init_sha256: None,
+        valid_time: resolved_time,
+        n_cells: cells.len(),
         n_levels,
         n_soil_levels: n_soil,
         fields,

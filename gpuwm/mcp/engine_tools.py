@@ -409,7 +409,8 @@ def register(server: Any, manager: JobManager) -> list[str]:
                        dry_run: bool = False,
                        as_posted: bool | None = None,
                        extra_args: list[str] | None = None,
-                       timeout_s: float = 300.0) -> dict[str, Any]:
+                       timeout_s: float = 300.0,
+                       cards: list[int] | None = None) -> dict[str, Any]:
         """Run a forecast as a job -- the whole chain, or the model alone.
 
         Two spellings of the same forecast: mode "go" runs the composed
@@ -467,6 +468,7 @@ def register(server: Any, manager: JobManager) -> list[str]:
         declared_out = outdir or ""
         launched = manager.launch(
             mode, [*_engine_prefix(), *args], cwd=TREE_ROOT, gpu=True,
+            cards=cards,
             outputs={"outdir": declared_out} if declared_out else {})
         return {**launched, "as_posted": streams}
 

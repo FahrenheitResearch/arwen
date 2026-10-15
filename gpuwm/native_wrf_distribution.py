@@ -46,6 +46,7 @@ from gpuwm.runtime_manifest import RUNTIME_SCHEMA
 # here would have been a second copy inside the declaration that exists
 # to end second copies.
 from gpuwm.rustwx_fetch import FETCH_ENV as _FETCH_BACKBONE_ENV
+from gpuwm.rustwx_fetch import FETCH_ABI_MARKER as _FETCH_BACKBONE_ABI
 PYTHON_DISTRIBUTION = "rw-wps"
 
 
@@ -208,11 +209,7 @@ _BRIDGE_ABI_MARKERS = {
     # usage line while emitting a record missing, say, ``mode_reason``
     # would pass a usage-only probe and then break the manifest author
     # after a distribution had already been built and installed.
-    "rw_fetch": (
-        b"gpuwm-rw-fetch-record-v1\tmode\tmode_reason\tsource\tgrib_url\t"
-        b"idx_url\tidx_sha256\tidx_record_count\tselected_record_count\t"
-        b"ranges\tsha256"
-    ),
+    "rw_fetch": _FETCH_BACKBONE_ABI.encode("ascii"),
 }
 
 

@@ -66,7 +66,7 @@ COLD_START_SEEDED_NUMBERS = {
 #: RK scalar update integrates onto the table.  Water vapour and the
 #: hydrometeor masses are moist-array species and are forced back on both
 #: kinds of domain.  The seeded number moments are scalar-array species.
-SCALAR_ARRAY_BOUNDARY_FIELDS = (*AEROSOL_BOUNDARY_FIELDS, "nc", "nr", "ni")
+SCALAR_ARRAY_BOUNDARY_FIELDS = (*AEROSOL_BOUNDARY_FIELDS, "nc", "nr", "ni", "qke_adv")
 
 #: The supplied scalars whose specified-domain lateral tendency is captured
 #: once per model step into a held full-domain array
@@ -162,6 +162,11 @@ def admissible_boundary_inventory(cfg, scalars) -> bool:
     if len(rest) != len(scalars) or "qv" not in rest:
         return False
     rest.discard("qv")
+    if "qke_adv" in rest:
+        if not (int(getattr(cfg, "bl_pbl_physics", 0)) == 5
+                and getattr(cfg, "bl_mynn_tkeadvect", False)):
+            return False
+        rest.discard("qke_adv")
     aerosol = rest & set(AEROSOL_BOUNDARY_FIELDS)
     if aerosol and (aerosol != set(AEROSOL_BOUNDARY_FIELDS)
                     or int(getattr(cfg, "mp_physics", 0)) != 28):

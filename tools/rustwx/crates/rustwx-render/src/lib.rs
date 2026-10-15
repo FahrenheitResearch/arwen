@@ -117,6 +117,12 @@ pub use crate::text::{format_tick, format_tick_labels};
 // with (`rw_compare`): the same font owner and the same pixel sizes the
 // panels' own titles use, so a header band does not bring a second face.
 pub use crate::text::{draw_text, draw_text_bold, text_width, text_width_bold};
+// The stroke, fill and barb primitives a point product (sounding, meteogram)
+// draws with, so its lines and wind barbs are the maps' own.
+pub use crate::draw::{
+    draw_circle_fill_aa, draw_circle_stroke_aa, draw_line_aa_width, draw_polyline_aa,
+    draw_wind_barb, fill_polygon,
+};
 pub use crate::theme::{
     FooterTheme, MeshTheme, PresentationTheme, RenderTheme, RenderThemeFile, THEME_ENV,
     active_theme, install_theme,

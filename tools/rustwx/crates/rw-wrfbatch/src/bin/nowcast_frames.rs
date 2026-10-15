@@ -57,8 +57,7 @@ use serde_json::{Value, json};
 pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
-const ABI_MARKER: &str = "gpuwm-rw-nowcast-frames-v1\tfrom-netcdf\t--netcdf\t--out\t--source-id\t--lattice\t\
---variable\t--lat\t--lon\t--issue\t--causal\t--receipt\t--source-kind\t--package\t--revision";
+use crate::cli_contracts::NOWCAST_FRAMES as ABI_MARKER;
 
 const USAGE: &str = "usage: rw_nowcast_frames from-netcdf --netcdf FILE --out ROOT --source-id ID \
 --lattice lambert:truelat1=..,truelat2=..,stand_lon=..,ref_lat=..,earth_radius_m=.. | --lattice latlon \
@@ -542,7 +541,7 @@ fn run(args: &Args) -> Result<Value, String> {
     }))
 }
 
-fn main() -> ExitCode {
+pub(crate) fn main() -> ExitCode {
     // Keep the stamp in the binary so a bundle cut can prove its revision.
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let args: Vec<String> = std::env::args().skip(1).collect();

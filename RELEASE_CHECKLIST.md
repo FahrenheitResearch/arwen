@@ -14,6 +14,10 @@ complete and the machine-readable support matrix matches the documentation.
       signatures are reproducible and retained.
 - [ ] Wheel/archive scans contain no credentials, node addresses, personal
       paths, private evidence, or unreviewed redistributable data.
+- [ ] The owner-identity gate (`verify_final_packet.py`, through
+      `owner_identity_scan.py` in the private cut drivers) reads every member of
+      every packet asset, code and binaries included, and finds 0 hits for the
+      owner's name, e-mail address and home directory.
 - [ ] Threat review covers malformed inputs, resource bounds, path traversal,
       symlinks, atomic publication, cancellation, and no-clobber behavior.
 - [ ] README, install, CLI, examples, compatibility matrix, changelog,
@@ -106,7 +110,25 @@ reproduce them, not because their proofs are optional:
       The list is the one in `.github/workflows/publish.yml`; its files are
       on `tools/battery/stage1_files.txt` so a lane runs them too, but the
       list alone does not close this -- running them WITHOUT CuPy is the
-      half that catches the class.
+      half that catches the class.  The same holds for natives: run the
+      job's steps in a fresh clone that holds no built binary, so the only
+      `rw_fetch` the tests can find is the one the job's own step builds.
+      v2.8.9 was tagged and then refused by this job (run 38124857348) on
+      five rows of `tests/test_table_fetch.py`, because every box the list
+      had been run on carried a built `tools/rustwx/target` and the job
+      built nothing.
+- [ ] Rehearse every workflow job before the push. `python -m
+      tools.workflow_rehearsals` lists the jobs and their executable session
+      routes. The session collector must retain a complete commit-bound
+      `workflow-rehearsals.json`; `tools.release.cut publish` requires it at
+      `<cut>/evidence/workflow-rehearsals.json` (or `ARWEN_WORKFLOW_REHEARSAL`).
+      A new job with no route, failed route, or changed workflow refuses.
+- [ ] Check both PyPI project totals plus the exact new packet files before
+      pushing, and again after the CI wait before the tag. The cut publisher
+      calls `tools.release.publish_preflight`; `python -m
+      tools.release.pypi_capacity --packet <packet> --out <receipt>` also
+      performs the read-only check. Configure granted limits in
+      `tools/release/pypi_limits.json` in decimal bytes, one line per project.
 - [ ] **The committed public snapshot tree equals the verified snapshot,
       file for file, BEFORE the tag.**  Compare `git ls-tree -r HEAD
       --name-only` in the public repo against `find . -type f` in the

@@ -26,57 +26,65 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 from build_registry import canonical_json  # noqa: E402
 
 YSU_WARNINGS = [
-"YSU RUNS and is BITWISE against WRF on its oracle. Until 2026-07-26 "
+    "YSU RUNS and is BITWISE against WRF on its oracle. Until 2026-07-26 "
     "this option was maturity 'supported' with no warnings and no WRF "
     "number of any kind: the CUDA kernel had only ever been compared to "
     "gpuwm.verify.npref.np_ysu_column, a float64 mirror of the same "
     "transcription. tools/ysu_wrf461_oracle drives bl_ysu_run in the "
     "byte-unmodified phys/physics_mmm/bl_ysu.F90 at the pinned commit and "
-    "dumps 24 columns x 40 levels of inputs and outputs. Since "
-    "lane/parity-286 (2026-10-05) every word the kernel writes on the 22 "
-    "columns that take WRF's branches is WRF's word "
-    "(tests/test_ysu_wrf461_parity.py, RTX PRO 6000 under NVRTC 13.4.92 and"
-    " 12.9.86 alike), except 11 subnormal tendencies the card flushes "
-    "(below). That took: glibc's powf and expf in place of CUDA's, every "
+    "dumps 24 columns x 40 levels of inputs and outputs. Every word the "
+    "kernel writes on the 23 columns where WRF writes numbers is WRF's word "
+    "(tests/test_ysu_wrf461_parity.py, RTX PRO 6000 under NVRTC 13.4.92 and "
+    "12.9.86 alike), except 11 subnormal tendencies the card flushes "
+    "(below), and KPBL is WRF's on all 24. That took (lane/parity-286, "
+    "2026-10-05): glibc's powf and expf in place of CUDA's, every "
     "real-exponent ** spelled as the powf call gfortran makes, WRF's "
     "association expression by expression, the unit compiled without "
     "multiply-add contraction, WRF's thx = (th*pi)/pi and (ttend*pi)/pi "
     "round trips, the br > 0 regime compare made in double so a positive "
     "subnormal br takes WRF's stable arm, and WRF's ctopo surface-drag arm "
     "(bl_ysu.F90:1308), which WRF's driver passes on every run "
-    "(module_bl_ysu.F:404), in place of the ctopo-absent arm no WRF run "
-    "reaches.",
+    "(module_bl_ysu.F:404).",
 
-    "gpuwm SHORT CIRCUITS a case WRF computes. kernels/ysu.cu:250 returns zero "
-    "tendencies, PBLH = dz(1) and KPBL = 1 whenever UST, HFX and QFX are all "
-    "zero (outside the urban flag_bep arm, which takes its surface flux from "
-    "the BEP terms). bl_ysu_run has no such branch: measured on that column it produces "
-    "a 703 m PBL with nine levels in it, EXCH_M of 0.143 m2/s and nonzero "
-    "momentum tendencies. -ftz makes the same branch fire on a SUBNORMAL ust, "
-    "i.e. on a nonzero input. Not fixed here because removing the branch "
-    "exposes WRF's own 0/0 (next warning) and is not a one-line change.",
+    "CLOSED 2026-10-12 (golden/ports-pbl): the zero-flux short circuit. The "
+    "kernel used to return zero tendencies, PBLH = dz(1) and KPBL = 1 "
+    "whenever UST, HFX and QFX were all zero, and -ftz made the same branch "
+    "fire on a subnormal UST. bl_ysu_run has no such branch; the kernel and "
+    "the float64 mirror now run the whole scheme there, and the oracle's "
+    "calm column (a 703 m PBL with nine levels, EXCH_M 0.143 m2/s) is WRF's "
+    "word on every lane.",
 
-    "DELIBERATE DIVERGENCE, WRF is undefined: with ust**3 underflowed to zero, "
-    "wstar3 zero and sfcflg true, bl_ysu.F90:963 computes prfac2 = "
-    "15.9*(wstar3+wstar3_2)/ust3/(1.+4.*karman*(...)/ust3) = 0/0 and fills the "
-    "column with NaN -- pinned in the oracle fixture. gpuwm returns finite "
-    "numbers. Separately, at kpbl == kte with cloud at kpbl-1, bl_ysu.F90:846 "
-    "reads thlix(i,k+2) one element past an array declared kts:kte; "
-    "kernels/ysu.cu:437 guards that access with kpbl < nz and skips the "
+    "DELIBERATE DIVERGENCE, WRF is undefined: with ust**3 underflowed to "
+    "zero, wstar3 zero and sfcflg true, bl_ysu.F90:963 computes prfac2 = "
+    "15.9*(wstar3+wstar3_2)/ust3/(1.+4.*karman*(...)/ust3) = 0/0 and fills "
+    "the heat-tendency column with NaN -- pinned in the oracle fixture "
+    "(case 13). gpuwm returns the defined algebraic value there and is "
+    "WRF's word on every lane WRF wrote a number, KPBL and PBLH included. "
+    "Separately, at kpbl == kte with cloud at kpbl-1, bl_ysu.F90:846 reads "
+    "thlix(i,k+2) one element past an array declared kts:kte; "
+    "kernels/ysu.cu:425 guards that access with kpbl < nz and skips the "
     "top-down block instead.",
 
-    "-ftz=true also FLUSHES SUBNORMAL TENDENCIES to exactly zero. Eleven lanes "
-    "of the oracle fixture carry a subnormal qv/qc/qi tendency from WRF and the "
-    "kernel writes zero in all eleven, which reads as up to 207470 ULP but is "
-    "3.3e-13 kg/kg/s. Physically nil; it is recorded because it is the same "
-    "mechanism as the subnormal-br regime bug closed above, where the "
-    "consequence was not nil.",
+    "WRF's default surface-drag arm is implemented: module_bl_ysu.F:404 "
+    "passes ctopo and ctopo2 and bl_ysu.F90:1308 applies their drag. The "
+    "selected kernel carries the paj, GET_PBLH and Beljaars vconv "
+    "calculation; tests/test_ysu_wrf461_parity.py pins zero momentum ULP "
+    "against that arm and retains the separate 182 ULP comparison to the "
+    "historical ctopo-absent reference. This is column evidence, not "
+    "qualification against a WRF forecast.",
 
-    "UNVERIFIED against a WRF forecast. The oracle compares one YSU call at a "
-    "time on synthetic columns. No gpuwm/WRF trajectory comparison exists for "
-    "this scheme, and no gpuwm run has ever been checked against WRF with "
-    "bl_pbl_physics=1. That, plus the open items above, is why this is no "
-    "longer 'supported'.",
+    "-ftz=true also FLUSHES SUBNORMAL TENDENCIES to exactly zero. Eleven "
+    "lanes of the oracle fixture carry a subnormal qv/qc/qi tendency from "
+    "WRF and the kernel writes zero in all eleven, which reads as up to "
+    "207470 ULP but is 3.3e-13 kg/kg/s. Physically nil; it is recorded "
+    "because it is the same mechanism as the subnormal-br regime bug closed "
+    "above, where the consequence was not nil.",
+
+    "UNVERIFIED against a WRF forecast. The oracle compares one YSU call at "
+    "a time on synthetic columns. No gpuwm/WRF trajectory comparison exists "
+    "for this scheme, and no gpuwm run has ever been checked against WRF "
+    "with bl_pbl_physics=1. That is why this is 'implemented-unverified' "
+    "and not 'supported'.",
 ]
 
 NOAH_WARNINGS = [

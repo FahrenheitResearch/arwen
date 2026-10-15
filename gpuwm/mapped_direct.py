@@ -1955,7 +1955,8 @@ def prepare_mapped_wrf(
         exp, grids, root_terrain=static["HGT_M"],
         static_catalog=_survey_static_catalog(
             exp, wps_namelist, geog_root, static_highres),
-        static_highres=static_highres, announce=_announce_adaptation)
+        static_highres=static_highres, announce=_announce_adaptation,
+        statics_corridor=statics_corridor)
     cfg = exp.root.run
 
     # Priced from the decoded composition, before the first device

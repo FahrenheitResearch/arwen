@@ -40,7 +40,7 @@
 extern "C" __global__ void swint_coszen_loc(
     long long n, const float* __restrict__ xlat,
     const float* __restrict__ xlon, float julian, float xtime, float gmt,
-    float degrad, float dpd, float* __restrict__ coszen_loc)
+    float degrad, float dpd, int solar_480, float* __restrict__ coszen_loc)
 {
     long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
@@ -57,12 +57,12 @@ extern "C" __global__ void swint_coszen_loc(
     float arg = FMUL(sinob, glibc_sinf(sxlong));
     float declin = glibc_asinf(arg);
     // calc_coszen: da, eot, xt24 (per call), then the point
-    float da = FDIV(FMUL(6.2831853071795862f, FSUB(julian, 1.0f)), 365.0f);
+    float da = FDIV(FMUL(6.2831853071795862f, FSUB(julian, solar_480 ? 0.5f : 1.0f)), 365.0f);
     float two_da = FMUL(2.0f, da);
     float eot = FADD(0.000075f, FMUL(0.001868f, glibc_cosf(da)));
     eot = FSUB(eot, FMUL(0.032077f, glibc_sinf(da)));
     eot = FSUB(eot, FMUL(0.014615f, glibc_cosf(two_da)));
-    eot = FSUB(eot, FMUL(0.04089f, glibc_sinf(two_da)));
+    eot = FSUB(eot, FMUL(solar_480 ? 0.040849f : 0.04089f, glibc_sinf(two_da)));
     eot = FMUL(eot, 229.18f);
     float xt24 = FADD(fmodf(xtime, 1440.0f), eot);
     float tloctm = FADD(FADD(gmt, FDIV(xt24, 60.0f)), FDIV(xlon[i], 15.0f));

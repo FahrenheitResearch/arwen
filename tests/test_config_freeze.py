@@ -54,7 +54,8 @@ def _frozen_constructors():
 def _pop_fork_dycore_defaults(actual: dict) -> bool:
     """The diff_6th_form / mp_zero_out fields at the values every earlier
     configuration ran: WRF v4.6.1's filter and no zero-out pass."""
-    return (actual.pop("upper_wind_limiter_form") == "wrf_461"
+    return (actual.pop("scalar_adv_opt") == 1
+            and actual.pop("upper_wind_limiter_form") == "wrf_461"
             and actual.pop("diff_6th_form") == "wrf_461"
             and actual.pop("diff_6th_factor2") is None
             and actual.pop("mp_zero_out") == 0
@@ -66,6 +67,25 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    from gpuwm.config import G3_RUN_DEFAULTS
+    assert [name for name in names if name in G3_RUN_DEFAULTS] == list(G3_RUN_DEFAULTS)
+    for name, default in G3_RUN_DEFAULTS.items():
+        field = RunConfig.__dataclass_fields__[name]
+        assert field.kw_only and field.default == default
+    # The New SAS knobs (cu_physics = 96) sit keyword-only right after G3's
+    # block at WRF's Registry defaults, ahead of the chem and fire blocks
+    # (which the chem and checkpoint-echo pins keep last); read only by
+    # cu_physics = 96, which no frozen configuration selects, and dropped
+    # from every identity outside it.
+    sas = ["nsas_dx_factor", "sas_pgcon"]
+    last_g3 = names.index(list(G3_RUN_DEFAULTS)[-1])
+    assert names[last_g3 + 1:last_g3 + 3] == sas
+    assert RunConfig.__dataclass_fields__["nsas_dx_factor"].default == 0
+    assert RunConfig.__dataclass_fields__["sas_pgcon"].default == 0.55
+    for field in sas:
+        assert RunConfig.__dataclass_fields__[field].kw_only, field
+    names = [name for name in names
+             if name not in G3_RUN_DEFAULTS and name not in sas]
     # The fire block is appended keyword-only after every other field.
     assert names[-len(FIRE_RUN_FIELDS):] == list(FIRE_RUN_FIELDS)
     for field in FIRE_RUN_FIELDS:
@@ -73,6 +93,50 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     names = names[:-len(FIRE_RUN_FIELDS)]
     assert names[-len(CHEM_RUN_FIELDS):] == list(CHEM_RUN_FIELDS)
     names = names[:-len(CHEM_RUN_FIELDS)]
+    # Correct-mode keys (gpuwm/correct_mode.py), appended last ahead of the
+    # chem block.  From 2.9.0 correct mode is the default (declared default
+    # correction): each key defaults on, off in a strict WRF process, which
+    # forces exact.
+    from gpuwm import correct_mode
+    assert names.pop() == "thompson_cloud_surface_booking"
+    assert names.pop() == "wdm6_conservative_surface"
+    assert names.pop() == "ntiedtke_dry_mass_coupling"
+    assert names.pop() == "wsm6_conservative_surface"
+    for field in ("ntiedtke_dry_mass_coupling", "wsm6_conservative_surface",
+                  "wdm6_conservative_surface", "thompson_cloud_surface_booking"):
+        assert (RunConfig.__dataclass_fields__[field].default
+                is correct_mode.CORRECT_KEYS_DEFAULT)
+        assert correct_mode.CORRECT_KEYS_DEFAULT is (not correct_mode.STRICT)
+    # The WRF lightning package, appended off (golden/ports-rad): off reads
+    # none of these, and every earlier configuration runs without them.
+    from gpuwm.lightning_contract import LIGHTNING_DEFAULTS
+    lightning = ("lightning_option", "lightning_dt", "lightning_start_seconds",
+                 "flashrate_factor", "iccg_method", "iccg_prescribed_num",
+                 "iccg_prescribed_den", "cellcount_method", "cldtop_adjustment",
+                 "do_radar_ref")
+    assert names[-len(lightning):] == list(lightning)
+    for name in lightning:
+        assert RunConfig.__dataclass_fields__[name].default == LIGHTNING_DEFAULTS[name]
+    names = names[:-len(lightning)]
+    # The aer_opt = 2 user-aerosol controls, appended at WRF's Registry
+    # defaults; read only under aer_opt = 2.
+    from gpuwm.config import AER_OPT2_RUN_KEYS
+    assert names[-len(AER_OPT2_RUN_KEYS):] == list(AER_OPT2_RUN_KEYS)
+    names = names[:-len(AER_OPT2_RUN_KEYS)]
+    # 2.9.0 (golden/wrf-fixes), appended after thompson_table_dir and ahead
+    # of the chem block: the four WRF 4.7/4.8 upstream-fix selectors, each at
+    # its corrected default (fixed means default), then the urban canopy
+    # controls at the WRF 4.7.1 canopy, then WRF's scalar advection selector.
+    for name, default in reversed((
+            ("scalar_adv_opt", 1), ("urban_ucm_generation", "wrf_471"),
+            ("urban_treeoption", -1), ("urban_ttscheme", -1),
+            ("urban_fvg", -1.0), ("urban_table_dir", ""),
+            ("solar_generation", "wrf_480"), ("ysu_version", "wrf_480"),
+            ("noahmp_snow_age", "wrf_470"),
+            ("urban_water_balance", "wrf_480"))):
+        assert names.pop() == name
+        assert RunConfig.__dataclass_fields__[name].default == default, name
+        assert not RunConfig.__dataclass_fields__[name].kw_only, name
     # The Thompson generation's table directory, appended at None: every
     # earlier configuration reads the tables it read.
     assert names.pop() == "thompson_table_dir"
@@ -695,6 +759,18 @@ def _declares_a_run_config_table(path: Path) -> bool:
     return any(table in raw for table in _KNOWN_TABLES)
 
 
+def _pop_radiation_port_defaults(actual: dict) -> bool:
+    """The lightning and aer_opt = 2 controls (golden/ports-rad) at the
+    defaults under which nothing reads them."""
+    from gpuwm.config import AER_OPT2_RUN_KEYS
+    from gpuwm.lightning_contract import LIGHTNING_DEFAULTS
+    fields = RunConfig.__dataclass_fields__
+    return (all(actual.pop(name) == default
+                for name, default in LIGHTNING_DEFAULTS.items())
+            and all(actual.pop(name) == fields[name].default
+                    for name in AER_OPT2_RUN_KEYS))
+
+
 def _pop_topo_radiation_defaults(actual: dict) -> bool:
     """WRF's slope_rad/topo_shading/shadlen, appended after the golden was
     captured, popped at their defaults the way adaptive_nest_lattice is."""
@@ -716,10 +792,26 @@ def test_every_existing_legacy_toml_resolves_identically():
             "tests/data/config_freeze_golden.json consciously.")
         cfg = load_config(path)
         actual = dataclasses.asdict(cfg)
+        for field,value in (("urban_ucm_generation","wrf_471"),("urban_treeoption",-1),
+                            ("urban_ttscheme",-1),("urban_fvg",-1.),("urban_table_dir","")):
+            assert actual.pop(field) == value
         from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
         for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
             assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
+        # WRF 4.7/4.8 upstream fixes, default-on (declared default changes).
+        assert actual.pop("solar_generation") == "wrf_480"
+        assert actual.pop("ysu_version") == "wrf_480"
+        assert actual.pop("noahmp_snow_age") == "wrf_470"
+        assert actual.pop("urban_water_balance") == "wrf_480"
+        assert actual.pop("nsas_dx_factor") == 0
+        assert actual.pop("sas_pgcon") == 0.55
         assert actual.pop("surface_energy_diag") is False
+        # Declared default correction, 2.9.0: correct mode is the default.
+        from gpuwm.correct_mode import CORRECT_KEYS_DEFAULT
+        assert actual.pop("wsm6_conservative_surface") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("ntiedtke_dry_mass_coupling") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("wdm6_conservative_surface") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("thompson_cloud_surface_booking") is CORRECT_KEYS_DEFAULT
         # Declared default correction, 2.8.8 (test above).
         assert actual.pop("terrain_clock") == "local_face"
         assert actual.pop("use_rap_aero_icbc") is False
@@ -760,6 +852,8 @@ def test_every_existing_legacy_toml_resolves_identically():
         assert actual.pop("mynn_sfclay_variant") == "wrf_461"
         assert actual.pop("fractional_seaice") == 0
         # The WRF v4.6.1 filter form and no zero-out pass, as before.
+        from gpuwm.config import G3_RUN_DEFAULTS
+        assert {k: actual.pop(k) for k in G3_RUN_DEFAULTS} == G3_RUN_DEFAULTS
         assert _pop_fork_dycore_defaults(actual)
         # Generic RUC preserves irrigation and snow from WRF v4.6.1.
         assert actual.pop("ruc_irrigation") == "wrf_461"
@@ -770,6 +864,7 @@ def test_every_existing_legacy_toml_resolves_identically():
         assert actual.pop("v_mom_adv_order") == 3
         assert actual.pop("h_mom_adv_order") == 5
         assert _pop_topo_radiation_defaults(actual)
+        assert _pop_radiation_port_defaults(actual)
         # These legacy files omit CQ. Its default-on defect fix is the
         # only approved change from the recorded field dictionary.
         assert actual == dict(GOLDEN[key], moist_cq=True), key
@@ -784,10 +879,26 @@ def test_frozen_case_constructed_configs_resolve_identically():
         cfg = ctor()
         assert key in GOLDEN, key
         actual = dataclasses.asdict(cfg)
+        for field,value in (("urban_ucm_generation","wrf_471"),("urban_treeoption",-1),
+                            ("urban_ttscheme",-1),("urban_fvg",-1.),("urban_table_dir","")):
+            assert actual.pop(field) == value
         from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
         for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
             assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
+        # WRF 4.7/4.8 upstream fixes, default-on (declared default changes).
+        assert actual.pop("solar_generation") == "wrf_480"
+        assert actual.pop("ysu_version") == "wrf_480"
+        assert actual.pop("noahmp_snow_age") == "wrf_470"
+        assert actual.pop("urban_water_balance") == "wrf_480"
+        assert actual.pop("nsas_dx_factor") == 0
+        assert actual.pop("sas_pgcon") == 0.55
         assert actual.pop("surface_energy_diag") is False
+        # Declared default correction, 2.9.0: correct mode is the default.
+        from gpuwm.correct_mode import CORRECT_KEYS_DEFAULT
+        assert actual.pop("wsm6_conservative_surface") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("ntiedtke_dry_mass_coupling") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("wdm6_conservative_surface") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("thompson_cloud_surface_booking") is CORRECT_KEYS_DEFAULT
         # Declared default correction, 2.8.8 (test above).
         assert actual.pop("terrain_clock") == "local_face"
         assert actual.pop("use_rap_aero_icbc") is False
@@ -828,6 +939,8 @@ def test_frozen_case_constructed_configs_resolve_identically():
         assert actual.pop("mynn_sfclay_variant") == "wrf_461"
         assert actual.pop("fractional_seaice") == 0
         # The WRF v4.6.1 filter form and no zero-out pass, as before.
+        from gpuwm.config import G3_RUN_DEFAULTS
+        assert {k: actual.pop(k) for k in G3_RUN_DEFAULTS} == G3_RUN_DEFAULTS
         assert _pop_fork_dycore_defaults(actual)
         # Generic RUC preserves irrigation and snow from WRF v4.6.1.
         assert actual.pop("ruc_irrigation") == "wrf_461"
@@ -838,6 +951,7 @@ def test_frozen_case_constructed_configs_resolve_identically():
         assert actual.pop("v_mom_adv_order") == 3
         assert actual.pop("h_mom_adv_order") == 5
         assert _pop_topo_radiation_defaults(actual)
+        assert _pop_radiation_port_defaults(actual)
         # The constructors omit CQ too. Dry cases remain numerically
         # unchanged because their qv=None bypass does no CQ work.
         assert actual == dict(GOLDEN[key], moist_cq=True), key

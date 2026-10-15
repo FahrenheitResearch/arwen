@@ -219,7 +219,7 @@ def mode_frames() -> dict:
 
     import cupy as cp  # noqa: F401  -- load_module needs it
 
-    from gpuwm.core.kernels import load_module
+    from gpuwm.core.kernels import load_module, kernel_local_size_bytes
 
     kdir = ROOT / "gpuwm" / "core" / "kernels"
     frames: dict[str, int] = {}
@@ -233,10 +233,10 @@ def mode_frames() -> dict:
         widest = 0
         for name in sorted(set(_SYMBOL.findall(path.read_text()))):
             try:
-                attributes = module.get_function(name).attributes
+                local_bytes = kernel_local_size_bytes(module.get_function(name))
             except Exception:  # noqa: BLE001
                 continue
-            widest = max(widest, int(attributes["local_size_bytes"]))
+            widest = max(widest, local_bytes)
         frames[path.stem] = widest
     return {
         "mode": "frames",

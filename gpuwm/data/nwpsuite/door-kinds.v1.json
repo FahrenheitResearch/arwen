@@ -1,0 +1,25 @@
+{
+  "schema": "gpuwm.suite.door-kinds.v1",
+  "regional": {
+    "event_schema": "gpuwm.run-plan.event.v1",
+    "events": "events.jsonl",
+    "heartbeat": "run-progress.json",
+    "receipt_schema": null,
+    "exit_classes": {"0": "completed", "1": "failed", "2": "refused", "75": "source_behind", "130": "interrupted"}
+  },
+  "hex": {
+    "event_schema": null,
+    "events": null,
+    "heartbeat": null,
+    "receipt_schema": "gpuwm-hex.forecast-run/v1",
+    "receipt": "forecast-receipt.json",
+    "success_field": "status",
+    "success_values": ["passed"],
+    "receipt_classes": {"preflight_refused": "refused", "driver_rc_nonzero": "failed"},
+    "exit_classes": {"0": "completed", "1": "failed", "2": "refused", "75": "source_behind", "130": "interrupted"}
+  },
+  "command": {
+    "receipt_schema": null,
+    "exit_classes": {"0": "completed", "1": "failed", "2": "refused", "75": "source_behind", "130": "interrupted"}
+  }
+}

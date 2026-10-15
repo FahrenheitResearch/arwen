@@ -105,3 +105,52 @@ zero-ULP agreement. The optimized arithmetic probe explicitly records
 The routine corpus and six-pass fire model do not establish full coupled
 atmospheric agreement or observed perimeter skill. Those require the
 separate compiled ideal case and real-data runs.
+
+## Strict and default regime verdict
+
+`regime_receipt.py` fails with exit 1 if a required regime, field, source
+label or fixture is absent, a fixture hash changes, or any output word
+differs. Strict and default run in separate processes. Both require zero
+different words, with no tolerance or unregistered default exception.
+
+```sh
+bash tools/sfire_wrf471_oracle/build_regimes.sh WRF_ROOT LANE_ROOT
+python -m tools.sfire_wrf471_oracle.regime_receipt \
+    --fixtures LANE_ROOT/regime-fixtures --out LANE_ROOT/regime-receipt.json
+```
+
+Run the second command through the sprint GPU queue. The corpus includes
+20 carried steps each for light-wind flat grass, strong-wind sloping timber,
+rain-driven wet fuel, corrected central and Sethian normals, negative-x
+split advection, and a strong-wind grass cap/boundary stress control. Timber
+uses category 8 and a 0.25 s step; the other controls use category 1 and
+1 s steps. The native caller selects supplied-fuel mode, and the grader
+checks the actual fuel categories. The stress control retains CFL diagnostics
+and is an arithmetic control rather than a forecast qualification.
+
+Initialization and subsequent device state are computed independently.
+Reference-produced level sets, fuel parameters and moisture arrays never
+seed the replay. Each field carries full-field hashes, different-word counts
+and maximum ULP. The same production `FireCoupler._feedback` path aggregates
+the 2x2 fire cells and inserts heat and water into seven atmospheric mass
+levels. Final NVRTC flags and compiled source/PTX hashes are recorded for
+all six SFIRE modules, including the smoke source module.
+
+`correct_regime_sources.py` creates separate, hashed corrected sources.
+They retain the declared normal, split-advection, ignition-count, extinction,
+spread-cap, chaparral-base, TG and monotonic-fuel divergences. The fuel
+correction prevents rounded fuel recovery from creating negative heat and
+smoke, as the existing compiled driver-burn capture demonstrates. The
+standalone caller supplies the completed physical-boundary halo before
+fuel quadrature, which requires its neighbor node state. Original WRF source
+pins remain checked before every build; corrected source hashes are separate.
+
+```sh
+python -m tools.sfire_wrf471_oracle.regime_receipt --plant-one-ulp \
+    --fixtures LANE_ROOT/regime-fixtures --out LANE_ROOT/planted-receipt.json
+```
+
+This negative control inserts `nextafterf` in one actual compiled heat-flux
+kernel cell. It must exit 1 in both modes. It never changes a host output
+array or a production source file. `run_lane.sh` builds, runs the zero-word
+gate, runs this negative control and runs focused native/device regressions.

@@ -1,0 +1,12 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# -O0 module_sf_noahlsm libm symbols:
+U expf
+U logf
+U powf
+# -O0 module_sf_noah_seaice libm symbols:
+U expf
+U powf
+# -O0 module_sf_noah_seaice_drv libm symbols:
+U expf
+U powf

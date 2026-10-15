@@ -82,14 +82,15 @@ def test_the_loader_compiles_through_the_observer():
     The sites are load_module, the no-FMA site (the CLM lake and, since
     01402fcb1, the YSU, Shin-Hong and MYNN oracle units), the integer-define
     tier and, since 01402fcb1, the integer-define tier of a no-FMA unit
-    (the gsd_41 MYNN generation): each RawModule the loader builds is
-    observed beside its compile.
+    (the gsd_41 MYNN generation), and the SLUCM/BEP no-FTZ site (the WRF
+    4.8 urban water balance, golden/wrf-fixes): each RawModule the loader
+    builds is observed beside its compile.
     """
 
     source = (Path(__file__).resolve().parents[1] / "gpuwm" / "core"
               / "kernels" / "__init__.py").read_text(encoding="utf-8")
     sites = source.count("cp.RawModule(")
-    assert sites == 4
+    assert sites == 5
     assert source.count("_compile_observed(mod, ") == sites
     assert "mod.compile()" not in source
 
@@ -182,7 +183,10 @@ def test_every_shipped_profile_hands_initialize_physics_a_longwave_it_accepts(
             assert glw == DECLARED_CONSTANT_GLW_WM2, profile
             assert "declared constant" in said, profile
             declared += 1
-    assert declared == 13
+    from gpuwm.domain_wizard import profile_switches
+    from types import SimpleNamespace
+    assert declared == sum(not radiation_scheme_ids(SimpleNamespace(**profile_switches(profile)))[0]
+                           for profile in physics_menu.shipped_profiles())
 
 
 def test_all_profiles_exits_by_what_failed_and_runs_past_it(
