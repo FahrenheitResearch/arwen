@@ -7,6 +7,12 @@
 //! on the missing variable before this) and run with hex installed:
 //!   MPAS_VERIFY_TEST_ROOT=DIR cargo test -p rw-mpas --test verify_mpas_cli -- --ignored
 //! The fixtures shard of tools/battery/cargo_gates.txt lists them.
+//!
+//! Unix only: they stage the native run's input links with std::os::unix::fs::symlink
+//! and drive `python3`, as the native MPAS reference does. Breakage: 2.9.0's public CI
+//! (run 38718383587, native windows-2025) could not compile this file, so the whole
+//! rw-mpas cargo gate failed on Windows before any test ran.
+#![cfg(unix)]
 use rw_store::netcdf_classic::{NcClassicWriter,NcFormat,NcDim,NcVarDef,NcType,NcData};
 use serde_json::{json,Value};
 use std::path::{Path,PathBuf};

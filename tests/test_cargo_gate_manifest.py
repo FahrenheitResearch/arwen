@@ -536,3 +536,139 @@ def test_the_netcdf_link_scan_sees_a_directive_and_not_a_comment(tmp_path) -> No
     (tmp_path / "build.rs").write_text('println!("cargo:rustc-link-lib=netcdf");\n')
     found = _netcdf_link_sites(tmp_path, ["examples/linked.rs", "examples/doc.rs", "build.rs"])
     assert found == ["examples/linked.rs:1", "build.rs:1"]
+
+
+# ---------------------------------------------------------------------------
+# Unix-only and Windows-only std APIs sit under a matching cfg
+# ---------------------------------------------------------------------------
+# THE BREAKAGE: ci.yml's native job builds every test target of each cargo-gate
+# package on windows-2025 as well as ubuntu-24.04. 2.9.0's public ci on P8 (run
+# 38718383587) failed the Windows rw-mpas gate before any test ran, because
+# tests/verify_mpas_cli.rs called std::os::unix::fs::symlink with no cfg; the
+# release hosts and the rehearsal build on Linux only, so nothing local saw it.
+# A use of std::os::unix (or std::os::windows) must sit in a file, item or block
+# whose cfg names that platform family.
+
+_OS_API = _re.compile(r"\bstd::os::(unix|windows)\b|\bos::(unix|windows)::")
+_CFG_ATTR = _re.compile(r"#\s*(!?)\s*\[\s*cfg\s*\((.*)\)\s*\]")
+
+
+def _cfg_family(condition: str) -> str | None:
+    """The platform family a cfg condition restricts to, or None."""
+
+    text = condition.replace(" ", "")
+    if "not(windows)" in text or "not(target_os=\"windows\")" in text or "unix" in text \
+            or "target_os=\"linux\"" in text or "target_os=\"macos\"" in text:
+        return "unix"
+    if "windows" in text:
+        return "windows"
+    return None
+
+
+_MOD_DECL = _re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+
+
+def _module_families(root: Path, names: list[str]) -> dict[str, str]:
+    """Files compiled only under a platform cfg because their `mod` declaration carries it."""
+
+    families: dict[str, str] = {}
+    for name in names:
+        path = root / name
+        if not path.is_file():
+            continue
+        pending = None
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            code = line.split("//", 1)[0]
+            attribute = _CFG_ATTR.search(code)
+            if attribute and attribute.group(1) != "!":
+                pending = _cfg_family(attribute.group(2))
+                continue
+            declared = _MOD_DECL.match(code)
+            if declared and pending:
+                # A crate root (lib.rs, main.rs, or any [[bin]]/[[test]] path) keeps its
+                # modules beside it; any other file keeps them in a folder of its name.
+                for base in (path.parent, path.parent / path.stem):
+                    for candidate in (base / f"{declared.group(1)}.rs", base / declared.group(1) / "mod.rs"):
+                        families[candidate.relative_to(root).as_posix()] = pending
+            if code.strip():
+                pending = None
+    return families
+
+
+def _unguarded_os_api_sites(root: Path, names: list[str]) -> list[str]:
+    sites = []
+    gated_files = _module_families(root, names)
+    for name in names:
+        path = root / name
+        if not path.is_file():
+            continue
+        file_family = gated_files.get(name)
+        stack: list[str | None] = []
+        pending: str | None = None
+        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            code = line.split("//", 1)[0]
+            attribute = _CFG_ATTR.search(code)
+            if attribute:
+                family = _cfg_family(attribute.group(2))
+                if attribute.group(1) == "!":
+                    file_family = family or file_family
+                else:
+                    pending = family
+                code = code[:attribute.start()] + code[attribute.end():]
+            use = _OS_API.search(code)
+            if use:
+                wanted = use.group(1) or use.group(2)
+                guarded = wanted in (file_family, pending) or wanted in stack
+                if not guarded:
+                    sites.append(f"{name}:{number}")
+            for character in code:
+                if character == "{":
+                    stack.append(pending)
+                    pending = None
+                elif character == "}" and stack:
+                    stack.pop()
+            if code.strip().endswith(";") and pending is not None and "{" not in code:
+                pending = None
+    return sites
+
+
+def test_no_exported_cargo_gate_target_uses_a_platform_api_outside_its_cfg() -> None:
+    packages = _package_directories()
+    gated = {entry.package for entry in _entries()}
+    offenders = []
+    for package in sorted(gated):
+        directory = packages.get(package)
+        if directory is None:
+            continue
+        offenders += _unguarded_os_api_sites(REPOSITORY_ROOT, _exported_rust_files(directory))
+    assert not offenders, (
+        "these exported targets use std::os::unix or std::os::windows outside a cfg for that "
+        "platform, so the other platform's public ci cannot build them (`cargo test -p` builds "
+        "every test target): " + ", ".join(offenders))
+
+
+def test_the_platform_api_scan_reads_files_items_blocks_and_statements(tmp_path) -> None:
+    (tmp_path / "t").mkdir()
+    (tmp_path / "t" / "bare.rs").write_text(
+        "fn f() {\n    std::os::unix::fs::symlink(a, b).unwrap();\n}\n")
+    (tmp_path / "t" / "file.rs").write_text(
+        "//! doc\n#![cfg(unix)]\nfn f() { std::os::unix::fs::symlink(a, b).unwrap(); }\n")
+    (tmp_path / "t" / "statement.rs").write_text(
+        "fn f() {\n    #[cfg(unix)]\n    std::os::unix::fs::symlink(a, b).unwrap();\n"
+        "    #[cfg(not(unix))]\n    std::fs::copy(a, b).unwrap();\n}\n")
+    (tmp_path / "t" / "block.rs").write_text(
+        "fn f() {\n    #[cfg(unix)]\n    {\n        use std::os::unix::fs::PermissionsExt;\n"
+        "        let x = 1;\n    }\n}\n")
+    (tmp_path / "t" / "item.rs").write_text(
+        "#[cfg(windows)]\nfn f() {\n    if x {\n        use std::os::windows::process::CommandExt;\n    }\n}\n")
+    (tmp_path / "t" / "wrong.rs").write_text(
+        "#[cfg(windows)]\nfn f() {\n    use std::os::unix::fs::MetadataExt;\n}\n")
+    (tmp_path / "t" / "after.rs").write_text(
+        "#[cfg(unix)]\nuse std::os::unix::fs::MetadataExt;\nfn g() { std::os::unix::fs::symlink(a, b); }\n")
+    (tmp_path / "t" / "main.rs").write_text("#[cfg(windows)]\nmod launcher;\nmod plain;\nfn main() {}\n")
+    (tmp_path / "t" / "launcher.rs").write_text("use std::os::windows::ffi::OsStrExt;\n")
+    (tmp_path / "t" / "plain.rs").write_text("use std::os::windows::ffi::OsStrExt;\n")
+    names = [f"t/{n}.rs" for n in ("bare", "file", "statement", "block", "item", "wrong", "after",
+                                   "main", "launcher", "plain")]
+    assert _unguarded_os_api_sites(tmp_path, names) == [
+        "t/bare.rs:2", "t/wrong.rs:3", "t/after.rs:3", "t/plain.rs:1"]

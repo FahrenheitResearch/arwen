@@ -491,20 +491,47 @@ mod tests {
         assert_eq!(count,1152);
     }
 
+    /// The polygons native fitted for polynomial.words, as the binary32 words it read.
+    ///
+    /// They are recorded (tests/native_static/polynomial.inputs, made on the glibc 2.43
+    /// hosts that recorded the native words) rather than recomputed, because a polygon's
+    /// corners are cos(t)*r and sin(t)*r and a host's cosf/sinf decide their last bits.
+    /// polynomial_pseudoinverse itself calls no maths library, so from these words every
+    /// host must reach native's fits bit for bit. Breakage: recomputing the corners with
+    /// the MSVC runtime (windows-2025), with glibc 2.28, or in binary64 rounded once gave
+    /// other q=12 corners, and that case's ill-conditioned fit then differed from native
+    /// although the pseudoinverse was right. Each recorded corner is still checked against
+    /// the formula with this host's cos and sin, within 2 binary32 steps.
+    fn native_polygons() -> Vec<(Vec<f32>, Vec<f32>)> {
+        let mut polygons: Vec<(Vec<f32>, Vec<f32>)> = (0..256).map(|_| (Vec::new(), Vec::new())).collect();
+        for line in include_str!("../tests/native_static/polynomial.inputs").lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let q: usize = fields[0].parse().unwrap();
+            let i: usize = fields[1].parse().unwrap();
+            let word = |k: usize| f32::from_bits(u32::from_str_radix(fields[k], 16).unwrap());
+            let edges = 5 + q % 4;
+            let t = (i - 1) as f32 * std::f32::consts::TAU / edges as f32 + q as f32 * 0.013;
+            let r = 1000.0 + ((q * 17 + i * 31) % 700) as f32;
+            for (recorded, formula) in [(word(2), t.cos() * r), (word(3), t.sin() * r)] {
+                let steps = (recorded.to_bits() as i64 - formula.to_bits() as i64).unsigned_abs();
+                assert!(recorded.is_sign_negative() == formula.is_sign_negative() && steps <= 2 || recorded.abs() < 1.0e-3 && formula.abs() < 1.0e-3,
+                        "recorded corner q={q} i={i} {:08X} is not cos/sin(t)*r ({:08X})", recorded.to_bits(), formula.to_bits());
+            }
+            assert_eq!(polygons[q].0.len() + 1, i, "corners of q={q} out of order");
+            polygons[q].0.push(word(2));
+            polygons[q].1.push(word(3));
+        }
+        for (q, (x, _)) in polygons.iter().enumerate() {
+            assert_eq!(x.len(), 5 + q % 4, "q={q} lacks corners");
+        }
+        polygons
+    }
+
     #[test]
     fn polynomial_fit_matches_pristine_native_words() {
-        let mut fits=Vec::new();
-        for q in 0..256 {
-            let edges=5+q%4;
-            let mut x=Vec::new();
-            let mut y=Vec::new();
-            for i in 1..=edges {
-                let t=(i-1) as f32*std::f32::consts::TAU/edges as f32+q as f32*0.013;
-                let r=1000.0+((q*17+i*31)%700) as f32;
-                x.push(t.cos()*r); y.push(t.sin()*r);
-            }
-            fits.push(polynomial_pseudoinverse(&x,&y).unwrap());
-        }
+        let fits: Vec<_> = native_polygons().iter()
+            .map(|(x, y)| polynomial_pseudoinverse(x, y).unwrap())
+            .collect();
         let mut count=0;
         let mut differences=Vec::new();
         for line in include_str!("../tests/native_static/polynomial.words").lines() {
@@ -520,27 +547,153 @@ mod tests {
         assert_eq!(count,11520);
         assert!(differences.is_empty(),"native polynomial words differ: {differences:?}");
     }
+    /// The polygon of case `q`: the same hexagon at four scales, flat for q % 8 >= 4.
+    fn gradient_case(q: usize) -> ([f32; 6], [f32; 6]) {
+        let scale = [1.0f32, 1.0e-11, 1.0e-23, 0.0][q % 4];
+        let xp = [0.0, 2.0, 3.0, 2.0, 0.0, -1.0].map(|v| v * scale);
+        let mut yp = [0.0, 0.0, 1.0, 3.0, 2.0, 1.0].map(|v| v * scale);
+        if q % 8 >= 4 { yp = [0.0; 6]; }
+        (xp, yp)
+    }
+
+    /// The four single-precision maths-library calls tangent_gradient makes.
+    struct Maths {
+        atan2: fn(f32, f32) -> f32,
+        cos: fn(f32) -> f32,
+        sin: fn(f32) -> f32,
+        asin: fn(f32) -> f32,
+    }
+
+    /// This host's library: what tangent_gradient itself calls.
+    const HOST: Maths = Maths { atan2: f32::atan2, cos: f32::cos, sin: f32::sin, asin: f32::asin };
+
+    /// A correctly rounded library: each call made in binary64 and rounded to
+    /// binary32 once. A binary64 result is within one binary64 ulp of the true
+    /// value, far inside half a binary32 ulp, so for these inputs this is the
+    /// correctly rounded binary32 answer, the one native MPAS read from the
+    /// glibc 2.43 (CORE-MATH) float functions on the hosts that recorded
+    /// gradient.words.
+    const ROUNDED_ONCE: Maths = Maths {
+        atan2: |y, x| (y as f64).atan2(x as f64) as f32,
+        cos: |a| (a as f64).cos() as f32,
+        sin: |a| (a as f64).sin() as f32,
+        asin: |a| (a as f64).asin() as f32,
+    };
+
+    /// tangent_gradient's arithmetic, statement for statement, with the maths
+    /// library supplied. With HOST it must equal tangent_gradient word for word.
+    fn tangent_gradient_with(xp: &[f32], yp: &[f32], m: &Maths) -> ([f32; FIFTEEN], [f32; FIFTEEN]) {
+        let ne = xp.len();
+        let pi = 2.0 * (m.asin)(1.0f32);
+        let mut area = 0.0f32;
+        let mut angle = [0.0f32; FIFTEEN];
+        let mut gx = [0.0f32; FIFTEEN];
+        let mut gy = [0.0f32; FIFTEEN];
+        for i in 0..ne {
+            let j = (i + 1) % ne;
+            let dx = xp[j] - xp[i];
+            let dy = yp[j] - yp[i];
+            area = area + 0.25 * (xp[i] + xp[j]) * (yp[j] - yp[i])
+                - 0.25 * (yp[i] + yp[j]) * (xp[j] - xp[i]);
+            angle[i] = (m.atan2)(dy, dx) - pi / 2.0;
+        }
+        for i in 0..ne {
+            let j = (i + 1) % ne;
+            let dl = ((xp[j] - xp[i]).powi(2) + (yp[j] - yp[i]).powi(2)).sqrt();
+            gx[i] = dl * (m.cos)(angle[i]) / area;
+            gy[i] = dl * (m.sin)(angle[i]) / area;
+        }
+        (gx, gy)
+    }
+
+    /// The calls of case `q` where this host's library is not correctly
+    /// rounded, as "call(input bits) = host bits, correctly rounded bits".
+    fn maths_library_witness(q: usize) -> Vec<String> {
+        let (xp, yp) = gradient_case(q);
+        let mut found = Vec::new();
+        let mut check = |name: &str, input: String, host: f32, rounded: f32| {
+            if host.to_bits() != rounded.to_bits() {
+                found.push(format!("{name}({input}) = {:08X}, correctly rounded {:08X}", host.to_bits(), rounded.to_bits()));
+            }
+        };
+        check("asinf", format!("{:08X}", 1.0f32.to_bits()), (HOST.asin)(1.0), (ROUNDED_ONCE.asin)(1.0));
+        let pi = 2.0 * (ROUNDED_ONCE.asin)(1.0f32);
+        for i in 0..xp.len() {
+            let j = (i + 1) % xp.len();
+            let (dx, dy) = (xp[j] - xp[i], yp[j] - yp[i]);
+            check("atan2f", format!("{:08X},{:08X}", dy.to_bits(), dx.to_bits()), (HOST.atan2)(dy, dx), (ROUNDED_ONCE.atan2)(dy, dx));
+            let angle = (ROUNDED_ONCE.atan2)(dy, dx) - pi / 2.0;
+            check("cosf", format!("{:08X}", angle.to_bits()), (HOST.cos)(angle), (ROUNDED_ONCE.cos)(angle));
+            check("sinf", format!("{:08X}", angle.to_bits()), (HOST.sin)(angle), (ROUNDED_ONCE.sin)(angle));
+        }
+        found
+    }
+
+    /// Distance in binary32 steps between two finite words of one sign.
+    fn ulps(a: f32, b: f32) -> u32 {
+        (a.to_bits() as i64 - b.to_bits() as i64).unsigned_abs() as u32
+    }
+
+    /// The native words (tests/native_static/gradient.words) of a tangent-plane
+    /// gradient over tiny and zero-area cells, retained as native MPAS writes
+    /// them: tiny words, zero words, infinities and NaNs.
+    ///
+    /// Three checks, so the claim holds on every host and says where it is exact:
+    /// 1. tangent_gradient_with(HOST) is tangent_gradient, word for word: the
+    ///    copy below is the port's arithmetic.
+    /// 2. With a correctly rounded maths library the port reproduces all 384
+    ///    native words, bit for bit, on any host.
+    /// 3. With this host's own library: bit for bit wherever the host's
+    ///    atan2f/cosf/sinf/asinf are correctly rounded on the case's calls. Where
+    ///    they are not, the gap is the maths library (declared residue, never
+    ///    "identical"): every zero, infinity and NaN is still the native word
+    ///    and every other word is within 4 binary32 steps, with the differing
+    ///    calls named. Breakage: 2.9.0's public CI (run 38718383587,
+    ///    ubuntu-24.04, glibc 2.39, whose atan2f/cosf/sinf predate CORE-MATH)
+    ///    read one word 1 step off (q=1 i=1 axis=0) and failed the cargo gate,
+    ///    while the release hosts (glibc 2.43) passed it.
     #[test]
     fn tangent_gradient_retains_native_tiny_and_zero_area_words() {
-        let mut results = Vec::new();
+        let native: Vec<(usize, usize, [u32; 2])> = include_str!("../tests/native_static/gradient.words")
+            .lines()
+            .map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                let word = |k: usize| u32::from_str_radix(fields[k], 16).unwrap();
+                (fields[0].parse().unwrap(), fields[1].parse::<usize>().unwrap() - 1, [word(2), word(3)])
+            })
+            .collect();
+        assert_eq!(native.len() * 2, 384);
+        let mut residue = Vec::new();
         for q in 0..32 {
-            let scale = [1.0f32, 1.0e-11, 1.0e-23, 0.0][q % 4];
-            let xp = [0.0, 2.0, 3.0, 2.0, 0.0, -1.0].map(|v| v * scale);
-            let mut yp = [0.0, 0.0, 1.0, 3.0, 2.0, 1.0].map(|v| v * scale);
-            if q % 8 >= 4 { yp = [0.0; 6]; }
-            results.push(tangent_gradient(&xp, &yp));
-        }
-        let mut count = 0;
-        for line in include_str!("../tests/native_static/gradient.words").lines() {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            let q: usize = fields[0].parse().unwrap();
-            let i: usize = fields[1].parse::<usize>().unwrap() - 1;
-            for (axis, actual) in [results[q].0[i], results[q].1[i]].into_iter().enumerate() {
-                let expected = u32::from_str_radix(fields[axis + 2], 16).unwrap();
-                assert_eq!(actual.to_bits(), expected, "native gradient q={q} i={i} axis={axis}");
-                count += 1;
+            let (xp, yp) = gradient_case(q);
+            let port = tangent_gradient(&xp, &yp);
+            let host = tangent_gradient_with(&xp, &yp, &HOST);
+            let rounded = tangent_gradient_with(&xp, &yp, &ROUNDED_ONCE);
+            for i in 0..xp.len() {
+                assert_eq!((port.0[i].to_bits(), port.1[i].to_bits()), (host.0[i].to_bits(), host.1[i].to_bits()),
+                           "the copy is not the port's arithmetic: q={q} i={i}");
+            }
+            let witness = maths_library_witness(q);
+            for &(_, i, expected) in native.iter().filter(|row| row.0 == q) {
+                for (axis, (actual, cr)) in [(port.0[i], rounded.0[i]), (port.1[i], rounded.1[i])].into_iter().enumerate() {
+                    assert_eq!(cr.to_bits(), expected[axis],
+                               "correctly rounded maths: native gradient q={q} i={i} axis={axis}");
+                    if witness.is_empty() || actual.to_bits() == expected[axis] {
+                        assert_eq!(actual.to_bits(), expected[axis], "native gradient q={q} i={i} axis={axis}");
+                        continue;
+                    }
+                    let want = f32::from_bits(expected[axis]);
+                    let kept = actual.is_finite() && want.is_finite() && actual != 0.0 && want != 0.0
+                        && actual.is_sign_negative() == want.is_sign_negative() && ulps(actual, want) <= 4;
+                    assert!(kept, "native gradient q={q} i={i} axis={axis}: {:08X} against native {:08X} \
+                                   is outside the maths-library residue; host calls not correctly rounded: {witness:?}",
+                            actual.to_bits(), expected[axis]);
+                    residue.push(format!("q={q} i={i} axis={axis}: {} steps", ulps(actual, want)));
+                }
             }
         }
-        assert_eq!(count, 384);
+        if !residue.is_empty() {
+            eprintln!("declared residue (this host's maths library is not correctly rounded on these calls): {residue:?}");
+        }
     }
 }

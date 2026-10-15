@@ -2,6 +2,54 @@
 //! Regenerate with tests/native_static/interpolation.f90 and the pinned module.
 use rw_mpas::static_native::Plane;
 
+/// Is this host's single-precision maths library the one the native words were
+/// recorded with? tests/native_static/float_library.words holds 3,072 calls of
+/// sinf, cosf, asinf, acosf, atanf and atan2f as glibc 2.43 (the release hosts,
+/// where native MPAS wrote the words) answers them; this host must answer every
+/// one bit for bit.
+fn reference_float_library() -> bool {
+    include_str!("native_static/float_library.words").lines().all(|line| {
+        let f: Vec<_> = line.split_whitespace().collect();
+        let word = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+        let host = match f[0] {
+            "sin" => word(f[1]).sin(),
+            "cos" => word(f[1]).cos(),
+            "asin" => word(f[1]).asin(),
+            "acos" => word(f[1]).acos(),
+            "atan" => word(f[1]).atan(),
+            "atan2" => { let (y, x) = f[1].split_once(',').unwrap(); word(y).atan2(word(x)) }
+            other => panic!("float_library.words: unknown call {other}"),
+        };
+        host.to_bits() == u32::from_str_radix(f[2], 16).unwrap()
+    })
+}
+
+/// The words of a test that calls the host's sinf/cosf/asinf through the port:
+/// bit for bit on the reference library, and otherwise the maths-library residue
+/// (declared, never "identical"): every word finite where native's is, and within
+/// 1e-4 of native relative to max(|native|, scale). Breakage: 2.9.0's public CI
+/// ran these on windows-2025, whose MSVC runtime differs from glibc 2.43 by up to
+/// 194 binary32 steps (1.8e-5 relative) on 2,035 of these words, and failed the
+/// rw-mpas cargo gate though the port is native's arithmetic.
+fn judge(test: &str, words: &[(usize, usize, u32, f32)], scale: impl Fn(usize) -> f32) {
+    let differing: Vec<_> = words.iter().filter(|w| w.3.to_bits() != w.2).collect();
+    if reference_float_library() {
+        let shown: Vec<_> = differing.iter().take(20).map(|w| (w.0, w.1, w.2, w.3.to_bits())).collect();
+        assert!(differing.is_empty(), "{test}: native words differ on the reference maths library: {shown:?}");
+        return;
+    }
+    let mut worst = 0.0f32;
+    for &&(q, k, expected, actual) in &differing {
+        let want = f32::from_bits(expected);
+        let gap = (actual - want).abs() / want.abs().max(scale(k));
+        assert!(want.is_finite() == actual.is_finite() && gap <= 1.0e-4,
+                "{test}: q={q} k={k}: {:08X} against native {expected:08X} is outside the maths-library residue",
+                actual.to_bits());
+        worst = worst.max(gap);
+    }
+    eprintln!("{test}: declared residue on a non-reference maths library: {} of {} words differ, largest gap {worst:e}", differing.len(), words.len());
+}
+
 #[test]
 fn static_support_neighbor_walk_and_owned_diameter_match_pristine_words() {
     use rw_mpas::static_native::{nearest_cell,max_cell_diameter};
@@ -20,6 +68,7 @@ fn static_support_neighbor_walk_and_owned_diameter_match_pristine_words() {
         }
     }
     let mut n=0;
+    let mut diameters=Vec::new();
     for line in include_str!("native_static/static_support.words").lines() {
         let fields:Vec<_>=line.split_whitespace().collect();
         let q:usize=fields[0].parse().unwrap();
@@ -29,17 +78,21 @@ fn static_support_neighbor_walk_and_owned_diameter_match_pristine_words() {
         assert_eq!(cell,fields[1].parse::<usize>().unwrap(),"neighbor walk q={q}");
         let radius=6371229.0*(1.0+(q%11) as f32*0.001);
         let diameter=max_cell_diameter(q%17,4,&counts,&vertices,&lat,&lon,&vertex_lat,&vertex_lon,radius);
-        assert_eq!(diameter.to_bits(),u32::from_str_radix(fields[2],16).unwrap(),"diameter q={q}");
+        diameters.push((q,0,u32::from_str_radix(fields[2],16).unwrap(),diameter));
         n+=1;
     }
     assert_eq!(n,2048);
+    // The neighbour walk above is native's on every host; the diameters (metres) go
+    // through cosf/sinf/asinf. Breakage: glibc 2.28 reads q=2 one step off native.
+    judge("owned diameter",&diameters,|_| 1.0);
 }
 
 #[test]
 fn regional_containment_matches_pristine_math_and_decisions() {
     use rw_mpas::static_native::{xyz,arc_length,sphere_angle,mirror_point,in_cell};
     let r=6371229.0;
-    let mut differences=Vec::new();
+    let mut words=Vec::new();
+    let mut flips=Vec::new();
     let mut count=0;
     for line in include_str!("native_static/containment.words").lines() {
         let fields:Vec<_>=line.split_whitespace().collect();
@@ -55,15 +108,17 @@ fn regional_containment_matches_pristine_math_and_decisions() {
         let mirror=mirror_point(unit(cell),unit(a),unit(b));
         let actual=[arc_length(p,cell),sphere_angle(unit(a),unit(cell),unit(b)),mirror[0],mirror[1],mirror[2]];
         for k in 0..5 {
-            let expected=u32::from_str_radix(fields[k+1],16).unwrap();
-            if actual[k].to_bits()!=expected && differences.len()<20 { differences.push((q,k,expected,actual[k].to_bits())); }
+            words.push((q,k,u32::from_str_radix(fields[k+1],16).unwrap(),actual[k]));
         }
         let inside=in_cell(p,cell,&vertices);
-        if inside!=(fields[6]=="1") && differences.len()<20 { differences.push((q,5,u32::from(fields[6]=="1"),u32::from(inside))); }
+        if inside!=(fields[6]=="1") { flips.push(q); }
         count+=1;
     }
     assert_eq!(count,4096);
-    assert!(differences.is_empty(),"pristine containment differs: {differences:?}");
+    // The containment decisions are native's on every host.
+    assert!(flips.is_empty(),"pristine containment decisions differ: {flips:?}");
+    // Arc length in metres, the angle in radians, the mirror point on the unit sphere.
+    judge("pristine containment",&words,|_| 1.0);
 }
 
 #[test]
@@ -101,7 +156,7 @@ fn interpolation_matches_pristine_mpas_on_all_fallbacks() {
 #[test]
 fn tile_coordinates_cartesian_points_and_sphere_distance_match_native_words() {
     use rw_mpas::static_native::{tile_latlon,xyz,sphere_distance};
-    let mut mismatches=Vec::new();
+    let mut words=Vec::new();
     let mut n=0;
     for line in include_str!("native_static/geometry.words").lines() {
         let f:Vec<_>=line.split_whitespace().collect();
@@ -116,15 +171,18 @@ fn tile_coordinates_cartesian_points_and_sphere_distance_match_native_words() {
         let (lat,lon)=tile_latlon(lat0,lon0,dy,dx,xs,ys,i,j,s);
         let [x,y,z]=xyz(6371229.0,lat,lon);
         let d=sphere_distance(lat,lon,lat+0.01,lon+0.02,6371229.0);
-        let actual=[lat,lon,x,y,z,d].map(f32::to_bits);
+        let actual=[lat,lon,x,y,z,d];
         for k in 0..6 {
             let expected=u32::from_str_radix(f[k+1],16).unwrap();
-            if actual[k]!=expected && mismatches.len()<20 { mismatches.push((q,k,expected,actual[k])); }
+            // The tile's latitude and longitude call no maths library: native's on every host.
+            if k<2 { assert_eq!(actual[k].to_bits(),expected,"native tile coordinate q={q} k={k}"); }
+            words.push((q,k,expected,actual[k]));
         }
         n+=1;
     }
     assert_eq!(n,4096);
-    assert!(mismatches.is_empty(),"native coordinate words differ: {mismatches:?}");
+    // x, y and z are judged against the sphere's radius, the distance in metres.
+    judge("native coordinates",&words,|k| if (2..5).contains(&k) { 6371229.0 } else { 1.0 });
 }
 
 #[test]
