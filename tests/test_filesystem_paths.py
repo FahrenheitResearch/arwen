@@ -49,9 +49,31 @@ def test_replace_does_not_retry_or_hide_other_io_failures(tmp_path, monkeypatch,
     def replace(*args):
         raise failure
     monkeypatch.setattr(filesystem_paths.os, 'replace', replace)
+    # The Windows POSIX-semantics rename declines here, so the os.replace
+    # backoff loop is what this measures on every platform.
+    monkeypatch.setattr(filesystem_paths, '_windows_posix_replace', lambda *args: False)
     monkeypatch.setattr(filesystem_paths.time, 'sleep', lambda _: pytest.fail('non-permission error was retried'))
     with pytest.raises(OSError) as caught:
         filesystem_paths.replace_file_with_retry(source, target)
     assert caught.value is failure
     assert source.read_bytes() == b'complete new bytes'
     assert target.read_bytes() == b'prior bytes'
+
+
+def test_a_shared_read_handle_never_blocks_the_writers_replace(tmp_path):
+    """The 2.9.2 publish's hosted Windows CI, twice: a polling reader held the
+    receipt open without delete sharing and the writer's replace was refused
+    for longer than any backoff.  A handle from open_shared_read lets the
+    replace through at once and keeps reading the revision it opened."""
+    from gpuwm import filesystem_paths
+
+    target = tmp_path / "status.json"
+    target.write_bytes(b'{"revision": 1}')
+    partial = tmp_path / "status.json.partial"
+    with filesystem_paths.open_shared_read(target) as held:
+        partial.write_bytes(b'{"revision": 2}')
+        filesystem_paths.replace_file_with_retry(partial, target)   # no PermissionError
+        assert held.read() == b'{"revision": 1}'
+    assert filesystem_paths.read_shared_bytes(target) == b'{"revision": 2}'
+    with pytest.raises(FileNotFoundError):
+        filesystem_paths.open_shared_read(tmp_path / "absent.json")

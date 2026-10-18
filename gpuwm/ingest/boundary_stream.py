@@ -520,8 +520,10 @@ def _read_json(path: Path):
 #: The waits between reads of a file another process keeps replacing: the
 #: writer's own permission-error backoff
 #: (:func:`gpuwm.filesystem_paths.replace_file_with_retry`), so a read
-#: outlasts one replace however the two interleave.
-_REPLACED_READ_BACKOFF_SECONDS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.19)
+#: outlasts one replace however the two interleave.  About 2 s in all: the
+#: hosted Windows CI of the 2.9.2 publish showed a polling reader and a
+#: replacing writer colliding for longer than half a second.
+_REPLACED_READ_BACKOFF_SECONDS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.19, 0.25, 0.25, 0.5, 0.5)
 
 
 def read_replaced_json(path, *, sleep: Callable[[float], None] = time.sleep):
@@ -538,10 +540,15 @@ def read_replaced_json(path, *, sleep: Callable[[float], None] = time.sleep):
     is still said by name.
     """
 
+    # Opened with delete sharing (filesystem_paths.open_shared_read): on
+    # Windows a plain open would hold the name against the writer's replace,
+    # and a reader that polls would starve it (2.9.2 publish, hosted CI).
+    from gpuwm.filesystem_paths import read_shared_bytes
+
     path = Path(path)
     for delay in (*_REPLACED_READ_BACKOFF_SECONDS, None):
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(read_shared_bytes(path).decode("utf-8"))
         except (OSError, ValueError):
             if delay is None:
                 raise

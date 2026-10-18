@@ -201,12 +201,15 @@ pub fn cgroup_memory_limit(proc_self_cgroup: &Path, cgroup_root: &Path) -> Optio
 ///   `memory.usage_in_bytes`.
 ///
 /// The usage counts page cache, which the kernel reclaims inside the
-/// cgroup before it kills anything, so the inactive file pages
-/// (`inactive_file`, v1 `total_inactive_file`, in `memory.stat`) are not
-/// counted as used in the room: the same working set a container runtime
-/// evicts on.  Without that, a container that had read its wrfout files
-/// through the page cache would read no room at all, the reason
-/// `MemAvailable` is read rather than `MemFree`.  A limit whose usage
+/// cgroup before it kills anything, so the file pages on both LRU lists
+/// (`inactive_file` and `active_file`, v1 `total_inactive_file` and
+/// `total_active_file`, in `memory.stat`) are not counted as used in the
+/// room: the same working set a container runtime evicts on.  Without
+/// that, a container that had read its wrfout files through the page
+/// cache would read no room at all, the reason `MemAvailable` is read
+/// rather than `MemFree`; and counting the inactive list alone read
+/// 0.6 GiB of room in a 16 GiB cgroup whose cache sat on the active list
+/// after a release build (2.9.2, the hosted-runner emulation).  A limit whose usage
 /// cannot be read is the room.  An unreadable `proc_self_cgroup` reads the
 /// mounts' own roots.
 pub fn cgroup_memory_limits(proc_self_cgroup: &Path, cgroup_root: &Path) -> Vec<CgroupMemoryLimit> {
@@ -231,12 +234,12 @@ pub fn cgroup_memory_limits(proc_self_cgroup: &Path, cgroup_root: &Path) -> Vec<
     }
     let mut limits = Vec::new();
     for (controllers, relative) in &memberships {
-        let (mounts, limit_name, usage_name, inactive_key) = if controllers.is_empty() {
+        let (mounts, limit_name, usage_name, reclaimable_keys) = if controllers.is_empty() {
             (
                 vec![cgroup_root.to_path_buf()],
                 "memory.max",
                 "memory.current",
-                "inactive_file",
+                ["inactive_file", "active_file"],
             )
         } else if controllers.split(',').any(|name| name == "memory") {
             let mut mounts = vec![cgroup_root.join(controllers)];
@@ -247,7 +250,7 @@ pub fn cgroup_memory_limits(proc_self_cgroup: &Path, cgroup_root: &Path) -> Vec<
                 mounts,
                 "memory.limit_in_bytes",
                 "memory.usage_in_bytes",
-                "total_inactive_file",
+                ["total_inactive_file", "total_active_file"],
             )
         } else {
             continue;
@@ -264,11 +267,12 @@ pub fn cgroup_memory_limits(proc_self_cgroup: &Path, cgroup_root: &Path) -> Vec<
                 let room = match usage {
                     None => limit,
                     Some(usage) => {
-                        let inactive = std::fs::read_to_string(directory.join("memory.stat"))
-                            .ok()
-                            .and_then(|stat| stat_field(&stat, inactive_key))
-                            .unwrap_or(0);
-                        limit.saturating_sub(usage.saturating_sub(inactive))
+                        let stat = std::fs::read_to_string(directory.join("memory.stat")).unwrap_or_default();
+                        let reclaimable: u64 = reclaimable_keys
+                            .iter()
+                            .map(|key| stat_field(&stat, key).unwrap_or(0))
+                            .sum();
+                        limit.saturating_sub(usage.saturating_sub(reclaimable))
                     }
                 };
                 limits.push(CgroupMemoryLimit { limit, usage, room });

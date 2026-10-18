@@ -53,17 +53,81 @@ def canonical_path(path: str | os.PathLike[str]) -> Path:
     return resolved
 
 
+def _windows_posix_replace(source: str, destination: str) -> bool:
+    """Rename ``source`` over ``destination`` with POSIX semantics (Windows 10 1607+).
+
+    ``os.replace`` is MoveFileExW, which is refused with "Access is denied"
+    while any handle is open on the destination, even one opened with
+    FILE_SHARE_DELETE (measured on the desktop, 2.9.2).  FileRenameInfoEx
+    with FILE_RENAME_FLAG_POSIX_SEMANTICS supersedes the name at once; a
+    reader holding the old file through :func:`open_shared_read` keeps
+    reading it whole, and a reader without delete sharing is still refused,
+    so the caller falls back to the backoff loop.  Returns False where the
+    call is not supported (an older Windows or an exotic filesystem).
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.HANDLE)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.SetFileInformationByHandle.argtypes = (wintypes.HANDLE, ctypes.c_int,
+                                                    ctypes.c_void_p, wintypes.DWORD)
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    delete_access, share_all, open_existing, attribute_normal = 0x00010000, 0x7, 3, 0x80
+    handle = kernel32.CreateFileW(source, delete_access, share_all, None, open_existing,
+                                  attribute_normal, None)
+    if handle == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        raise OSError(None, ctypes.FormatError(error).strip(), source, error)
+    try:
+        class RenameInfo(ctypes.Structure):
+            _fields_ = [("Flags", wintypes.DWORD), ("RootDirectory", wintypes.HANDLE),
+                        ("FileNameLength", wintypes.DWORD),
+                        ("FileName", wintypes.WCHAR * (len(destination) + 1))]
+        info = RenameInfo()
+        info.Flags = 0x1 | 0x2          # REPLACE_IF_EXISTS | POSIX_SEMANTICS
+        info.RootDirectory = None
+        info.FileNameLength = len(destination) * 2
+        info.FileName = destination
+        file_rename_info_ex = 22
+        if kernel32.SetFileInformationByHandle(handle, file_rename_info_ex, ctypes.byref(info),
+                                               ctypes.sizeof(info)):
+            return True
+        error = ctypes.get_last_error()
+    finally:
+        kernel32.CloseHandle(handle)
+    if error in (50, 87):               # ERROR_NOT_SUPPORTED, ERROR_INVALID_PARAMETER
+        return False
+    raise OSError(None, ctypes.FormatError(error).strip(), source, error)
+
+
 def replace_file_with_retry(source: str | os.PathLike[str],
                             destination: str | os.PathLike[str]) -> Path:
     """Atomically replace after at most about 4 s of permission-error backoff.
 
-    Windows readers commonly hold a publication briefly without delete sharing.
-    The source stays complete and the prior destination stays intact until one
-    replace succeeds. Persistent permission failures and all other I/O failures
-    remain visible to the caller; this helper never discards either revision.
+    On Windows the replace is first tried with POSIX rename semantics
+    (:func:`_windows_posix_replace`), which succeeds while readers that
+    opened the file through :func:`open_shared_read` still hold it: that is
+    the pair that ends the writer-starved-by-a-polling-reader failure the
+    2.9.2 publish met twice on the hosted Windows CI.  Readers that hold the
+    file without delete sharing still refuse it, and the ``os.replace``
+    backoff below covers them.  The source stays complete and the prior
+    destination stays intact until one replace succeeds. Persistent
+    permission failures and all other I/O failures remain visible to the
+    caller; this helper never discards either revision.
     """
     target = Path(destination)
     source, destination = io_path(source), io_path(destination)
+    if os.name == "nt":
+        try:
+            if _windows_posix_replace(os.fsdecode(os.fspath(source)), os.fsdecode(os.fspath(destination))):
+                return target
+        except PermissionError:
+            pass                        # a reader without delete sharing: back off below
     for delay in (*_REPLACE_BACKOFF_SECONDS, None):
         try:
             os.replace(source, destination)
@@ -72,6 +136,52 @@ def replace_file_with_retry(source: str | os.PathLike[str],
             if delay is None:
                 raise
             time.sleep(delay)
+
+
+def open_shared_read(path: str | os.PathLike[str]):
+    """A binary read handle that lets another process replace the file meanwhile.
+
+    Python's ``open`` on Windows shares reads and writes but not deletes, so
+    while a reader holds a file, ``os.replace`` onto that name fails with
+    "Access is denied"; a reader that re-opens continuously (a status poll)
+    starves the writer whatever its backoff.  Measured twice on the hosted
+    Windows CI of the 2.9.2 publish: the receipt writer gave up after 0.5 s,
+    then after 4 s, against the test's polling reader.  This handle is opened
+    with FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, so a replace
+    proceeds at once; the handle keeps reading the revision it opened, whole.
+    On POSIX it is a plain binary open, where a rename never waits on readers.
+    A missing file raises ``FileNotFoundError`` on both.
+    """
+    if os.name != "nt":
+        return open(path, "rb")
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                     wintypes.HANDLE)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    generic_read, share_all, open_existing, attribute_normal = 0x80000000, 0x1 | 0x2 | 0x4, 3, 0x80
+    name = os.fsdecode(os.fspath(io_path(path)))
+    handle = kernel32.CreateFileW(name, generic_read, share_all, None, open_existing,
+                                  attribute_normal, None)
+    if handle == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        raise OSError(None, ctypes.FormatError(error).strip(), name, error)
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except OSError:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        raise
+    return os.fdopen(descriptor, "rb")
+
+
+def read_shared_bytes(path: str | os.PathLike[str]) -> bytes:
+    """The whole file through :func:`open_shared_read`."""
+    with open_shared_read(path) as stream:
+        return stream.read()
 
 
 def publish_new(source: str | os.PathLike[str],

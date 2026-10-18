@@ -815,12 +815,17 @@ def _cgroup_memory_limits() -> list[tuple[int, int]]:
     Every directory from the process's own cgroup (``/proc/self/cgroup``)
     up to its mount is read (:func:`_cgroup_memory_walk`), because a limit
     on an ancestor (a systemd slice, a pod) binds as hard as one on the
-    leaf.  The room is the limit minus the working set.  The inactive file
-    pages in ``memory.stat`` (``inactive_file``, v1
-    ``total_inactive_file``) are not counted as used: the kernel reclaims
-    them inside the cgroup before it kills anything, so a container that
-    had read its inputs through the page cache still has that room.  A
-    limit whose usage cannot be read is the room.  The same answer as
+    leaf.  The room is the limit minus the working set.  The file pages in
+    ``memory.stat`` (``inactive_file`` and ``active_file``, v1
+    ``total_inactive_file`` and ``total_active_file``) are not counted as
+    used: the kernel reclaims them inside the cgroup before it kills
+    anything, so a container that had read its inputs through the page
+    cache still has that room.  Measured (2.9.2, the hosted-runner
+    emulation, a 16 GiB cgroup after a release build of every crate): the
+    cache sat on the ACTIVE list, 15 GiB of it, and counting only the
+    inactive list read 0.6 GiB of room, so a CPU preparation was refused
+    beside 14 GiB the kernel would have handed over.  A limit whose usage
+    cannot be read is the room.  The same answer as
     ``rw_host_memory::cgroup_memory_limits``.
     """
     return [(level.limit, level.room) for level in _cgroup_memory_walk()
@@ -832,7 +837,8 @@ class _CgroupMemoryLevel(NamedTuple):
 
     ``limit`` is None when the directory publishes no limit (absent,
     ``max``, unreadable, or the v1 "unlimited" sentinel); ``usage`` is None
-    when its usage cannot be read, and ``inactive`` is then 0.
+    when its usage cannot be read, and ``inactive`` (the reclaimable file
+    cache: inactive and active file pages) is then 0.
     """
 
     limit_file: str
@@ -886,15 +892,15 @@ def _cgroup_memory_walk() -> list[_CgroupMemoryLevel]:
     for controllers, relative in memberships:
         if controllers == "":
             mounts = [_CGROUP_ROOT]
-            names = ("memory.max", "memory.current", "inactive_file")
+            names = ("memory.max", "memory.current", ("inactive_file", "active_file"))
         elif "memory" in controllers.split(","):
             mounts = list(dict.fromkeys([os.path.join(_CGROUP_ROOT, controllers),
                                          os.path.join(_CGROUP_ROOT, "memory")]))
             names = ("memory.limit_in_bytes", "memory.usage_in_bytes",
-                     "total_inactive_file")
+                     ("total_inactive_file", "total_active_file"))
         else:
             continue
-        limit_name, usage_name, inactive_key = names
+        limit_name, usage_name, reclaimable_keys = names
         parts = [part for part in relative.split("/") if part and part != ".."]
         for mount in mounts:
             for depth in range(len(parts), -1, -1):
@@ -909,8 +915,9 @@ def _cgroup_memory_walk() -> list[_CgroupMemoryLevel]:
                     continue
                 inactive = 0
                 if usage is not None:
-                    inactive = _cgroup_stat_field(
-                        os.path.join(directory, "memory.stat"), inactive_key) or 0
+                    stat_path = os.path.join(directory, "memory.stat")
+                    inactive = sum(_cgroup_stat_field(stat_path, key) or 0
+                                   for key in reclaimable_keys)
                 levels.append(_CgroupMemoryLevel(limit_file, limit, usage,
                                                  inactive))
     return levels
