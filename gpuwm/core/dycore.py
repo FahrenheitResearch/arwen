@@ -990,7 +990,7 @@ def _add_slow_tendencies_ieva(state: DomainState, cfg: RunConfig,
         add_coriolis_curvature(state, cfg, ru, rv)
 
 
-def capture_advective_theta_forcing(state: DomainState) -> None:
+def capture_advective_theta_forcing(state: DomainState, *, cfg=None) -> None:
     """EXPORT the stage's pure advective theta rate as WRF ``RTHFTEN``.
 
     The exact inverse of :func:`add_h_diabatic_tendency`'s coupling:
@@ -1028,6 +1028,12 @@ def capture_advective_theta_forcing(state: DomainState) -> None:
     buffers are ``None``.
     """
     if getattr(state, "rthften", None) is None:
+        return
+    if WRF_EXACT and getattr(cfg, "cu_physics", 0) == 3:
+        # set_tend saves the last RK transport in coupled units. GF's
+        # next phy_prep_part2 decouples it with the carried acoustic mass.
+        state.rthften[...] = (state.rth_t * state.msft[None]
+                             if state.has_msf else state.rth_t)
         return
     if type(state) is DomainState and capture_theta_forcing(state):
         return
@@ -2055,6 +2061,20 @@ def initialize_coordinate_reference(state, cfg) -> None:
     initial -= c.T0
 
 
+def _coordinate_theta_field(state, thp):
+    """Keep canonical strict theta words at the coordinate-mixing boundary."""
+    if WRF_EXACT:
+        # Native exact initialization and the strict RK kernels keep thp in
+        # WRF's theta - 300 basis. Adding 300 and subtracting it again loses
+        # evolved perturbation bits before horizontal_diffusion_3dmp.
+        return thp
+    theta = state.scratch(thp.shape, "diff1_theta_work")
+    base = state.thb.reshape((-1, 1, 1)) if state.thb.ndim == 1 else state.thb
+    theta[...] = thp + base
+    theta -= c.T0
+    return theta
+
+
 def _compute_coordinate_tendencies(state, cfg, km, kh, specs, *, time_t):
     """WRF diff_opt=1's forward horizontal mixing, module_em.F:801-840.
 
@@ -2072,14 +2092,16 @@ def _compute_coordinate_tendencies(state, cfg, km, kh, specs, *, time_t):
     mut[...] = state.mub2d + (state.mup0 if time_t else state.mup)
     suffix = "0" if time_t else ""
     thp = getattr(state, "thp" + suffix)
-    theta = state.scratch(thp.shape, "diff1_theta_work")
-    theta[...] = thp + state.thb.reshape((-1, 1, 1)) if state.thb.ndim == 1 else thp + state.thb
-    theta -= c.T0
+    theta = _coordinate_theta_field(state, thp)
     initialize_coordinate_reference(state, cfg)
     initial = state._scratch["diff1_theta_initial"]
     for f, _tend, _xk, c1, c2, slot, stag in specs:
         buf = state.scratch(f.shape, slot)
         buf[...] = 0
+        if WRF_EXACT and time_t and _tend is None:
+            # rk_scalar_tend runs after the first acoustic loop, with
+            # grid%muts as its mass. The physics slot is folded below.
+            continue
         is_theta = slot == "smag_rth"
         launch_coordinate_horizontal(
             theta if is_theta else f, km if stag else kh,
@@ -2087,7 +2109,8 @@ def _compute_coordinate_tendencies(state, cfg, km, kh, specs, *, time_t):
             cfg.dx, cfg.dy, buf, stagger=stag,
             boundary_x=_boundary_x(cfg), boundary_y=_boundary_y(cfg),
             theta_initial=initial if is_theta else None)
-    if cfg.km_opt == 2 and not getattr(cfg, "tke_mix2_off", False):
+    if (cfg.km_opt == 2 and not getattr(cfg, "tke_mix2_off", False)
+            and not (WRF_EXACT and time_t)):
         tke = getattr(state, "tke" + suffix)
         buf = state.scratch(tke.shape, "smag_rtke")
         buf[...] = 0
@@ -2098,6 +2121,40 @@ def _compute_coordinate_tendencies(state, cfg, km, kh, specs, *, time_t):
         budget = tke_budget.term(state, cfg, "diffusion_h")
         if budget is not None:
             budget[...] = buf
+
+
+def add_scalar_coordinate_wrf(state: DomainState, cfg: RunConfig) -> None:
+    """Add coordinate scalar mixing at rk_scalar_tend's mass boundary.
+
+    Dry coordinate mixing uses the stage-start mass. Moisture, TKE and
+    chem use the first acoustic loop's MUTS, before scalar sixth order
+    and lateral relaxation. Their coefficient remains the time-t Kh.
+    """
+    if not (WRF_EXACT and cfg.diff_opt == 1 and cfg.km_opt in (2, 3, 4)):
+        return
+    rows = [row for row in _smag2d_specs(state, None, None, time_t=True)
+            if row[1] is None]
+    exempt = chem_mix2_exempt_slots(state, cfg)
+    rows = [row for row in rows if row[5] not in exempt]
+    if cfg.km_opt == 2 and not getattr(cfg, "tke_mix2_off", False):
+        rows.append((state.tke0, None, None, state.c1h, state.c2h,
+                     "smag_rtke", ""))
+    if not rows:
+        return
+    mut = _wrf_muts(state)
+    if mut is None:
+        raise RuntimeError("strict coordinate scalar mixing needs the acoustic loop's muts")
+    kh = state._scratch["smag_kh"]
+    for field, _tend, _xk, c1, c2, slot, _stag in rows:
+        target = state._scratch[slot]
+        launch_coordinate_horizontal(
+            field, kh, mut, c1, c2, state.msft, state.msfu, state.msfv,
+            cfg.dx, cfg.dy, target,
+            boundary_x=_boundary_x(cfg), boundary_y=_boundary_y(cfg))
+        if slot == "smag_rtke":
+            budget = tke_budget.term(state, cfg, "diffusion_h")
+            if budget is not None:
+                budget[...] = target
 
 
 def _compute_wrf_smag_tendencies(state: DomainState, cfg: RunConfig,
@@ -2460,7 +2517,7 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig,
 #: Strict mode: WRF's ``grid%muts`` as the last acoustic loop left it,
 #: ``MUT + MU''`` (advance_mu_t), which every later calc_p_rho_phi reads
 #: until the next acoustic loop (restart class: carried, gpuwm/io/restart.py).
-WRF_MUTS_SLOT = "wrf_exact_muts"
+from gpuwm.state_serialization_contract import WRF_MUTS_SLOT
 
 
 def _wrf_muts(state: DomainState):
@@ -4527,7 +4584,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                                      state, cfg, ww))
         else:
             _add_slow_tendencies(state, cfg, ru, rv, ww, cq=stage_cq)
-        if istage == 0:
+        if istage == 0 or (WRF_EXACT and cfg.cu_physics == 3):
             # WRF RTHFTEN for the cumulus schemes that take it.  THIS LINE
             # is the whole contract: rth_t holds the stage reference
             # fluxes' theta advection and nothing else until the next
@@ -4535,7 +4592,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             # docstring for the GFSCHEME double-count trap).  Stage 1
             # matches the once-per-step capture convention h_diabatic and
             # the qv lateral tendency already use.
-            capture_advective_theta_forcing(state)
+            capture_advective_theta_forcing(state, cfg=cfg)
         if WRF_EXACT:
             # WRF solve_em order: rk_tendency (w_damp inside, see
             # _add_slow_tendencies), relax_bdy_dry folded into the held
@@ -4565,6 +4622,10 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         apply_open_radiative_bc(state, cfg)           # open_x/open_y only
         if WRF_EXACT:
             exact_small_step_inits[istage]()
+            if cfg.cu_physics == 3:
+                # Stock leaves reference WW in the ring that advance_mu_th
+                # does not overwrite. sumflux still reads that ring.
+                state.ww_pp[...] = ww
             _init_wrf_acoustic_muts(state, istage)
         else:
             launch_small_step_init()                 # additive stage seed
@@ -4634,6 +4695,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             _capture_wrf_muts(state, cfg)
         small_step_finishes[istage]()
         if istage == 0:
+            add_scalar_coordinate_wrf(state, cfg)     # strict coordinate branch
             add_scalar_diff6_wrf(state, cfg)          # strict mode only
         if scalars:                                   # stage length nsub*dtau
             # WRF sumflux (iteration == number_of_small_timesteps): the
@@ -4714,6 +4776,9 @@ def _step_epilogue(state: DomainState, cfg: RunConfig,
                    refl_10cm_due: bool) -> None:
     """The default step end: boundary values, surface w and diagnosis,
     then the nwp diagnostics and the microphysics adjustment."""
+    finish = getattr(state.physics, "finish_history_mass", None)
+    if finish is not None:  # stand-in PBL/physics drivers carry no history rows
+        finish(state, cfg)
     apply_state_boundary_values(state, cfg,
                                 state.elapsed_seconds + cfg.dt)
     set_w_surface(state, cfg)                         # WRF solve_em epilogue
@@ -4762,6 +4827,9 @@ def _wrf_step_epilogue(state: DomainState, cfg: RunConfig,
     values first, then the diagnosis -- moved P on the ring (337 words at
     the first step of the round-3 pair).
     """
+    finish = getattr(state.physics, "finish_history_mass", None)
+    if finish is not None:  # stand-in PBL/physics drivers carry no history rows
+        finish(state, cfg, muts=_wrf_muts(state))
     update_diagnostics(state, cfg.hypsometric_opt, muts=_wrf_muts(state))
     # WRF lightning diagnostics (lightning_option): off touches nothing here.
     lightning_refl_due = False

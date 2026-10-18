@@ -1,0 +1,344 @@
+                  ac_opt            0
+                 advisc0 3799ADE7   1.832000089E-05
+                 advisc1 37901DC5   1.718000021E-05
+                  alphah 00000000   0.000000000E+00
+               alphahacx 00000000   0.000000000E+00
+                 alphahl 3F800000   1.000000000E+00
+                alphamax 41700000   1.500000000E+01
+                alphamin 00000000   0.000000000E+00
+                  alphar 00000000   0.000000000E+00
+               alpharaut 00000000   0.000000000E+00
+               alpharmax 41000000   8.000000000E+00
+                  alphas 00000000   0.000000000E+00
+              alphasmlr0 41600000   1.400000000E+01
+                      ar 44527FC9   8.419966431E+02
+                  aradcw BE8D0679  -2.754400074E-01
+                   bfnu0 40C00001   6.000000477E+00
+            biggsnowdiam BF800000  -1.000000000E+00
+                      br 3F4CCCCD   8.000000119E-01
+                  bradcw 48802B40   2.624900000E+05
+                    bta1 3F19999A   6.000000238E-01
+                    c1f3 3EAAAAAB   3.333333433E-01
+                    c1sw 3F1EB8A7   6.200050712E-01
+                     cai 41AEFF14   2.187454987E+01
+                     caw 418A27B5   1.726938820E+01
+                     cbi 40F51EB8   7.659999847E+00
+                     cbw 420F70A4   3.586000061E+01
+                     cck 3F19999A   6.000000238E-01
+                    cckm BECCCCCC  -3.999999762E-01
+                     ccn 4DEE6B28   5.000000000E+08
+                   ccne0 41BFE0CE   2.398476791E+01
+            ccntimeconst 45610000   3.600000000E+03
+                cdhdnmax 44480000   8.000000000E+02
+                cdhdnmin 43FA0000   5.000000000E+02
+               cdhldnmax 44480000   8.000000000E+02
+               cdhldnmin 43FA0000   5.000000000E+02
+                 cdhlmax 3F19999A   6.000000238E-01
+                 cdhlmin 3EE66666   4.499999881E-01
+                  cdhmax 3F4CCCCD   8.000000119E-01
+                  cdhmin 3EE66666   4.499999881E-01
+                  cfnfac 3DCCCCCD   1.000000015E-01
+                 ciintmx 49742400   1.000000000E+06
+                  cimas0 2E919349   6.619999687E-11
+                  cimas1 2B41A7A0   6.880000042E-13
+                    cimn 447A0000   1.000000000E+03
+                    cimx 49742400   1.000000000E+06
+                    cinu 00000000   0.000000000E+00
+                   cnexp 3EB13B15   3.461538851E-01
+                    cnit 3C23D70A   9.999999776E-03
+                 cnohlmn 3C23D70A   9.999999776E-03
+                  cnohmn 3C23D70A   9.999999776E-03
+                      cp 447B0000   1.004000000E+03
+                     cpi 3A828CC0   9.960159659E-04
+                   cpigb 4503A000   2.106000000E+03
+                     cpl 4582F000   4.190000000E+03
+                  cradcw D08CC942  -1.889599898E+10
+                      cs 4146B852   1.242000008E+01
+                      cv 44334000   7.170000000E+02
+                     cvv 44B01000   1.408500000E+03
+                    cwc1 3AFA543E   1.909859246E-03
+                   cwccn 4DEE6B28   5.000000000E+08
+                  cwdiap 37A7C5AC   1.999999949E-05
+                  cwdisp 3E19999A   1.500000060E-01
+          cwfrz2snowfrac 00000000   0.000000000E+00
+         cwfrz2snowratio 40A00000   5.000000000E+00
+                  cwmasn 2916EACA   3.351033779E-14
+                 cwmasn5 2B136148   5.235989593E-13
+                  cwmasx 3078B42B   9.047790850E-10
+                  cwradn 360637BD   1.999999995E-06
+                   cxmin 322BCC77   9.999999939E-09
+                  depfac 3F800000   1.000000000E+00
+                    dfrz 391D4952   1.500000071E-04
+               dg0thresh 3E19999A   1.500000060E-01
+                    dgam 3F847AE140000000   9.99999977648258209E-03
+                   dgami 4059000000000000   1.00000000000000000E+02
+                    dhmn 399D4952   3.000000142E-04
+                 dmhlopt            0
+                  dmincw 377BA882   1.499999962E-05
+                    dmlt 3B449BA6   3.000000026E-03
+                 dmrauto            0
+                  dmropt            0
+                    dmuh 3F800000   1.000000000E+00
+                   dmuhl 3F800000   1.000000000E+00
+                   dnz00 3F9CCCCD   1.225000024E+00
+             dqiacralpha 3D4CCCCD   5.000000075E-02
+          dqiacralphainv 41A00000   2.000000000E+01
+             dqiacrratio 3E800000   2.500000000E-01
+          dqiacrratioinv 40800000   4.000000000E+00
+                  dradcw 57CAEF80   4.462599870E+14
+                   dragh 3F19999A   6.000000238E-01
+                      ds 3ED70A3D   4.199999869E-01
+                    dshd 3A83126F   1.000000047E-03
+                dwehwmin 00000000   0.000000000E+00
+                   dwmax 3C75C28F   1.499999966E-02
+                   dwmin 3BA3D70A   4.999999888E-03
+               dwtempmin 43720000   2.420000000E+02
+                  ehimax 3F800000   1.000000000E+00
+                  ehimin 00000000   0.000000000E+00
+                   ehlr0 3F800000   1.000000000E+00
+                   ehlw0 3F666666   8.999999762E-01
+                    ehr0 3F800000   1.000000000E+00
+                    ehs0 3DCCCCCD   1.000000015E-01
+                    ehs1 3DCCCCCD   1.000000015E-01
+                  ehsmax 3F000000   5.000000000E-01
+                    ehw0 3F666666   8.999999762E-01
+                    eii0 3DCCCCCD   1.000000015E-01
+                  eii0hl 3E4CCCCD   2.000000030E-01
+                    eii1 3DCCCCCD   1.000000015E-01
+                  eii1hl 00000000   0.000000000E+00
+                   eqtot 3089705F   9.999999717E-10
+                  eqtset            1
+                    eri0 3DCCCCCD   1.000000015E-01
+               eri_cimin 3727C5AC   9.999999747E-06
+                    esi0 3DCCCCCD   1.000000015E-01
+                    ess0 3F000000   5.000000000E-01
+                    ess1 3D4CCCCD   5.000000075E-02
+                essfrac1 3F000000   5.000000000E-01
+                essfrac2 3F400000   7.500000000E-01
+                 essrmax 3CA3D70A   1.999999955E-02
+                 esstem1 C1700000  -1.500000000E+01
+                 esstem2 C1200000  -1.000000000E+01
+                 evapfac 3F800000   1.000000000E+00
+                   ewfac 3F800000   1.000000000E+00
+               ewi_dcmin 377BA882   1.499999962E-05
+               ewi_dimin 37FBA882   2.999999924E-05
+              exwmindiam 00000000   0.000000000E+00
+                     f2h 3F800000   1.000000000E+00
+                   ffrzs 00000000   0.000000000E+00
+                   fscni 3F800000   1.000000000E+00
+                      gr 411CCCCD   9.800000191E+00
+          graupelfallfac 3F800000   1.000000000E+00
+             hailfallfac 3F800000   1.000000000E+00
+                   hdnmn 432A0000   1.700000000E+02
+                hlcnhdia 3A83126F   1.000000047E-03
+               hlcnhqmin 38D1B717   9.999999747E-05
+                  hldia1 3C23D70A   9.999999776E-03
+                  hldnmn 43FA0000   5.000000000E+02
+                 hlssflg            1
+                  hssflg            1
+             i_uf_or_ccn            0
+                    iacr            2
+                iacrsize            5
+                    ibfc            1
+                    ibfr            2
+                ibiggopt            2
+          ibiggsmallrain            0
+               ibiggsnow            3
+               ibinhlmlr            0
+                ibinhmlr            0
+                 ibinnum            2
+                 iccwflg            1
+                    icdx            6
+                  icdxhl            6
+              icefallfac 3F800000   1.000000000E+00
+              icefallopt            3
+               icenucopt            1
+              icespheres            0
+                    icfn            2
+              icnuclimit            0
+                   icond            1
+                  icracr            1
+            icracrthresh            1
+                  icrcev            1
+                 icvhl2h            0
+            idiagnosecnu            0
+                 iehlr0c            0
+                   iehlw            1
+                  iehr0c            0
+                    iehw            1
+             iessec0flag            0
+                 iessopt            1
+            iferwisventr            2
+                 ifiacrg 3F800000   1.000000000E+00
+                   ifrzg 3F800000   1.000000000E+00
+                   ifrzs 3F800000   1.000000000E+00
+                 iglcnvi            1
+                 iglcnvs            2
+                  ihlcnh            3
+                   ihmlt            2
+                    ihrn            0
+                  ilimit            0
+              imaxdiaopt            3
+              imaxsupopt            4
+                imeyers5  F
+             imixedphase            0
+              imltshddmr            1
+                 imurain            1
+                 imusnow            3
+            imydiagalpha            0
+                  incwet            0
+               invertccn  F
+             ioldlimiter            0
+                  ipconc            5
+                  ipelec            0
+                 iqcinit            2
+               iqhacrmlr            1
+               iqhacwshr            1
+              iqhlacrmlr            1
+              iqhlacwshr            1
+                   iqis0            2
+                   ircnw            5
+                  irenuc            2
+         irescalerainopt            3
+           iresetmoments            0
+              irimdenopt            1
+                  irwfrz            1
+                   iscni            4
+                isedonly            0
+               isnowdens            1
+               isnowfall            2
+                isnwfrac            0
+                  itype1            0
+                  itype2            2
+                  iusedw            0
+              ivhmltsoak            1
+                 ivshdgs            1
+                iwetsoak  T
+               ixtaltype            1
+              izwisventr            2
+     lawson_splinter_fac 2DDBE6FF   2.500000033E-11
+                      lc            3
+                    lccn            9
+                   lccna            0
+                  lccnuf            0
+                    lcin            0
+                   lcina            0
+                      lf            0
+                      lg            7
+                      lh            7
+                    lhab            8
+                     lhl            8
+                    lhlw            0
+                  lhlwlg            0
+                     lhw            0
+                   lhwlg            0
+                      li            5
+                     lis            0
+                     lnc           10
+                     lnh           14
+                    lnhf            0
+                    lnhl           15
+                   lnhlf            0
+                     lni           12
+                    lnis            0
+                     lnr           11
+                     lns           13
+                    lqmx           30
+                      lr            4
+                      ls            6
+                     lss            0
+                     lsw            0
+                      lt            1
+                      lv            2
+                     lvh           16
+                    lvhl           17
+                     lvs            0
+                   lwsm6  F
+                     lzh            0
+                    lzhl            0
+                     lzr            0
+                     lzs            0
+              maxalphalu 41700000   1.500000000E+01
+            maxlowtempss 3F8A3D71   1.080000043E+00
+              maxratiolu 42C80000   1.000000000E+02
+             maxsupersat 3FF33333   1.899999976E+00
+                 meltfac 3F800000   1.000000000E+00
+              minalphalu BF733333  -9.499999881E-01
+              mixedphase  F
+                mltdiam1 3C1374BC   8.999999613E-03
+                mltdiam2 3C83126F   1.600000076E-02
+                mltdiam3 3C9BA5E3   1.899999939E-02
+                mltdiam4 3E4CCCCD   2.000000030E-01
+                      na           17
+                 ncdebug            0
+                  ndebug           -1
+                  ngdnmm            9
+             nqiacralpha          300
+             nqiacrratio          400
+               nsplinter            0
+          numshedregimes            3
+                   nxtra            1
+                      pi 40490FDB   3.141592741E+00
+                    pid4 3F490FDB   7.853981853E-01
+                   piinv 3EA2F983   3.183098733E-01
+                    qccn 4DC2A09E   4.081632640E+08
+                 qhacidn 432A0000   1.700000000E+02
+                 qhdpvdn 432A0000   1.700000000E+02
+                qminrncw 3B03126F   2.000000095E-03
+                 qsvtmod  F
+             rainfallfac 3F800000   1.000000000E+00
+                   rcond            2
+                      rd 438F851F   2.870400085E+02
+               renucfrac 00000000   0.000000000E+00
+      rescale_high_alpha  F
+       rescale_low_alpha  T
+      rescale_low_alphah  T
+     rescale_low_alphahl  T
+      rescale_low_alphar  T
+      rescale_tempthresh 00000000   0.000000000E+00
+         rescale_wthresh 40400000   3.000000000E+00
+              restoreccn  T
+          restoreccnfrac 3F800000   1.000000000E+00
+                   rho00 3F9CCCCD   1.225000024E+00
+                  rho_qh 43FA0000   5.000000000E+02
+                 rho_qhl 44610000   9.000000000E+02
+                  rho_qs 42C80000   1.000000000E+02
+                  rhofrz 44610000   9.000000000E+02
+                   rimc1 43960000   3.000000000E+02
+                   rimc2 3EE147AE   4.399999976E-01
+                   rimc3 432A0000   1.700000000E+02
+                   rimc4 44610000   9.000000000E+02
+              rimdenvwgt 00000000   0.000000000E+00
+                     rnu BF4CCCCD  -8.000000119E-01
+                  rnumax 41700000   1.500000000E+01
+                  rnumin BF4CCCCD  -8.000000119E-01
+                 roqimax 38AA64C8   8.125003660E-05
+                   rovcp 3E926104   2.858964205E-01
+                  rssflg            1
+                      rw 43E6C000   4.615000000E+02
+                      rz 3F800000   1.000000000E+00
+                    rzhl 3EE00000   4.375000000E-01
+                     rzs 3E99999B   3.000000417E-01
+                sheddiam 3C03126F   8.000000380E-03
+               sheddiam0 3CA3D70A   1.999999955E-02
+             snowfallfac 3F800000   1.000000000E+00
+             snowmeltdia 00000000   0.000000000E+00
+                     snu BF4CCCCD  -8.000000119E-01
+            splintermass 2B41A7A0   6.880000042E-13
+                ssf2kmax 41200000   1.000000000E+01
+                ssmxinit 3ECCCCCD   4.000000060E-01
+                  ssmxuf 40800000   4.000000000E+00
+                  sssflg            1
+            takshedsize1 3E19999A   1.500000060E-01
+            takshedsize2 3E99999A   3.000000119E-01
+            takshedsize3 3EE66666   4.499999881E-01
+                     tfr 43889333   2.731499939E+02
+                  tfrcbi 4384BEB8   2.654899902E+02
+                  tfrcbw 436D4A3D   2.372899933E+02
+                    tfrh 43692666   2.331499939E+02
+                    tka0 3CC710CB   2.429999970E-02
+                   ventc 3F649A4E   8.929795027E-01
+                   ventr 3F800000   1.000000000E+00
+                  ventrn 3FE9E6C7   1.827355266E+00
+                warmonly 00000000   0.000000000E+00
+                   zxmin 10FD87B6   1.000000003E-28

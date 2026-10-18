@@ -1,0 +1,439 @@
+{
+  "schema": "smag-compiled-wrf-word-extension-v1",
+  "original_fixture_sha256": "321745139ca1843ca59f30409fddcbd2d8dc37ff8064da50b21c88b13f708c2a",
+  "generator_sha256": "ad31496fe9f9514dc99fe90fa4fda3fa582a7e1e00dc81519ddf215cb4f71079",
+  "reason": "449e3d697af merged compiled-WRF N2, TKE coefficient and tendency fixes after the original randomized fixture",
+  "module_source_sha256": {
+    "production": "e0ddc6075c1da84434eea66c55f39340e40a273c1080ae32578540a706b8e270",
+    "direct_w": "0f83440da0fe78d28d0efa6febaf47b17483503f510b6effb550015ddd5389a9"
+  },
+  "options": [
+    "-std=c++17",
+    "-ftz=true",
+    "-arch=compute_120",
+    "--device-as-default-execution-space"
+  ],
+  "device": "b'NVIDIA RTX PRO 6000 Blackwell Workstation Edition'",
+  "scenarios": [
+    {
+      "scenario": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "kernels": [
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "88c57c6c4a6ca97ce64966629993508c6887c9824ffacb8c12fb163c558f34f0",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "ad27cf9ba3d6e020ab04bbbeba9ae1b2d2a04d37d16410cc9cd0a17a46980916",
+            "0b4f71154d714b1f2685042c289d0388a11961b89d61da7b04b5b2897f65f223",
+            "39178d17ec9721e7142640ddbe64e4452acf5d3b8f5c87a97ca996e0ce0f5e50",
+            "beed27a9108abb0dd931fbbca6a07ca4b749426dd4a313841f2f1e280a99ef57",
+            "618b82259c33fb3f450274e6d56d025488a6908631e28c17ee61c8faa53febb0"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "a7cf89a9773a91adb1ecf388a182cb26adc4e0e35d8075a7517425b3276b380b",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "b1dff0124153b9dff4d1299b3708a30e6574673405bda69e76d10d74886f00a7",
+            "f78c7df0ca97d0c89c130d305b8df64717a48ce7b36d3a92e1e3c582d7136fed",
+            "dd904636d28d2e83e8a206da7cad9183f177be3ad3601df2c8f14c930b5e793b",
+            "c56bb9395aa3121d0feb347396b7388d60e913ac1f7204aa21e5cf602088e5c8"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "kernels": [
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "4d2e5bb7fbca31203dac9478934b0f07a087d8434d8cc8ecefe65930f8e690ac",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "686eb20674d5e0a61c11f094f92e58c85142e30b2cb3d599118dda8a128cfcdc",
+            "b171d25e28f51be9a7fd6f910b15e230936761159b9dc95ea87c167f79877678",
+            "18f84e2af3788439e8b0e288fa89d14fad5f95c868b62632cc10706b956f1e06",
+            "6735944854c334f74d29c12c6cc0df7a4d7102c2c4a1fe50353f685f1c28d82e",
+            "4ba949278a3f2e1f3e9a9fa635c0242c9485ac83b15dc99b14c1538edf134a05"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "caec3ab29cf69b4624bae542d1e528c02ff8fedbc75fc84b09fb0e85669f3d9f",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "ccda1590ca84134e21c181f7c32d68af2e26467d38d5a34bbf77933c74f5f037"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "54812002c0bb5a2779073a9bb2a07c71c0b25b9c790786d73e8f40532204ccf7",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "be78b03754f78511b04a7a41e07cefb887352d5a6667570c0d713fb1da1fb7c7",
+            "3382d6ef92ef7fc8eb67b78aa095bb6856384bd4a94f0b3bf54e017d708052f8",
+            "0131fb5d73c458da8c3ba0576572454774310661824a5d756ad3528d46d727da",
+            "65b648e5a72e5500737cfb0291a91f4232c2665819dd10a0444a503d71985c03"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        true,
+        true,
+        false,
+        false,
+        true
+      ],
+      "kernels": [
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "8390ee250d6ad768028ac479a6bbb18343c284edb72df2784676c1025331c505",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "b03103cd8facd0b703cae199bb5d48d39958fc9c239746f47eaf5c8d8cf4ec4e",
+            "7d7949bf5f85cbe031a427c025b1482c713639120fb59e14f385c88180c86379",
+            "1b869ad13c939751472b6b0e88e8f6a738f51b2a7c2edd4fe27ce17084f3b742",
+            "0de041608d38b7446598aed92283394c8db305bebf49f6f6bce66e3f9c0ad3ef",
+            "5fa0b9fea122bba6d35082222b563d4b18ea96c012069c07869d913484c01b29"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "578a9281217a39527d57bf77c33ddce219ad3013203b3108a2976bc2e4a024f8",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "3f43a24dfa666aec758ddba9b4d64be58843815b391caedc7ff906147f757b6c"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "455e3b74f63519638b1db25286c3189d8990ac400b654180e7036a8a35c84ec1",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "3e87a3947a709dd03ce4fc42134f5c31422a844024f6db5969e0460821992522",
+            "60854f0ae10d6036e08284beb0e21fdc2e3b316fa78c47e9f5724c983e2e4678",
+            "3e87a3947a709dd03ce4fc42134f5c31422a844024f6db5969e0460821992522",
+            "60854f0ae10d6036e08284beb0e21fdc2e3b316fa78c47e9f5724c983e2e4678"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        true,
+        true,
+        true,
+        false,
+        false
+      ],
+      "kernels": [
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "35fe4bb961727d765ac193e68fe2bb8a7079e2c6ca05d74a73c6e74be4796d8e",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "f06f9f9abbf4421bd4838a02a620b6e5c6e018933d9bff23e53bc49767c14de5",
+            "5b5c868e29221a1e94589a525dd8debcfbe53064bc5931ea6c1b606c90711799",
+            "1ba03eb9ffc03e8bd033519ddc7fd0230ae07c4ad6eb02a369e05f05f1b0337f",
+            "cecd8305501aec7624d480cf4b1e4d6e7e649eecebebb50b48a7e663096c0f36",
+            "78747dfb8ce60b6c3fb85b53d91543218869aad028f01c258135ed7ec8b24e9f"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "c67a16a8da83b7d45963a601e053a34794c0d52e0e07efb2899a2dc8e9b7a642",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "909c09048d022235616a09252193caa959689d5fd4afaccffedcd02a880f59d2"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "03c98d11dd6c2b0426a2221eae4b4b6bc31bb9ef2870b8e667826e73aa0a2610",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "3e87a3947a709dd03ce4fc42134f5c31422a844024f6db5969e0460821992522",
+            "60854f0ae10d6036e08284beb0e21fdc2e3b316fa78c47e9f5724c983e2e4678",
+            "3e87a3947a709dd03ce4fc42134f5c31422a844024f6db5969e0460821992522",
+            "60854f0ae10d6036e08284beb0e21fdc2e3b316fa78c47e9f5724c983e2e4678"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        true,
+        true,
+        false,
+        true,
+        true
+      ],
+      "kernels": [
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "4d0d7a0d68e8a2094ec9b57b495c69e73c45c96ee4aafc60583e241765a7e96d",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "7a66c5874603bea5b9d31ca579485c7aa9e77a3247c3836168bdd23b90ffcfed",
+            "9ce3b5753c5b3af504e1a0783a8447224638ec39dd0193c5c8dbb951b138ed7f",
+            "afb7af8d0f34ce771129de646ddf68df4cef56cc88e366c106c16ca669bbb101",
+            "9f0d7dcb9dfb8960ac8f124d795381016fbaceaebdde70aa9dc7681c4241eb4e",
+            "fa4820494f91c939c3f83b0df6987ae4230539b67a05ba33e5484a875adee379"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "023a5eee852673f18d4f8242f86c076ac1f852869c9e8e660a78a3af95c62d2f",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "23a41d55cb7e3a3e821d9c2c24a3f6e56334168974affe47b2340e7a72478f83"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "7a18c886b8e7df7149599d90b4d213154c040ec9a1ba7922bcd790eadef72a4e",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "3e87a3947a709dd03ce4fc42134f5c31422a844024f6db5969e0460821992522",
+            "60854f0ae10d6036e08284beb0e21fdc2e3b316fa78c47e9f5724c983e2e4678",
+            "3e87a3947a709dd03ce4fc42134f5c31422a844024f6db5969e0460821992522",
+            "60854f0ae10d6036e08284beb0e21fdc2e3b316fa78c47e9f5724c983e2e4678"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        false,
+        true,
+        true,
+        true,
+        false
+      ],
+      "kernels": [
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "ae014da2a11353aa5706f6ee299b06dc3013be2e57f85e8ee52b1d9ea3a5f4c6",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "98e5f949acf10c46b66609beda02b2a5db96e5f080760787b5f57e3120ec7956",
+            "d7486316b8ef11e9a588cbd1b08086f172e972a88c7c54525f4dba7626b402ea",
+            "18c99ea7bb73d15d29d8552bcccb09279684efea4120b84df55d9f3d36ca2d58",
+            "408e102d4a050abb3c5a95ff06516011e31e054c053b1b8d7e88fac88cc0c8d8",
+            "aaefa45a9daff34c1aa35d21b7ec7e9b62386965e6b3431a28ee22718f6eba04"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "e6663b9d7a147a60c233a27503ee4ee6eb38798dfaf6c54b50ca0646242afe12",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "9c9bd93a6e90ea8fd29c9d5e7364084026fc6ba02c953a78a4c613b403146fc7",
+            "77f5564d7208721c17de75fc4208f51378dfc8f09bf22fc0ca74cd9fa9be315d",
+            "9c9bd93a6e90ea8fd29c9d5e7364084026fc6ba02c953a78a4c613b403146fc7",
+            "77f5564d7208721c17de75fc4208f51378dfc8f09bf22fc0ca74cd9fa9be315d"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        false,
+        false,
+        true,
+        false,
+        true
+      ],
+      "kernels": [
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "98bfd0dd4750f3108d575e28cad63b8dad7ec30543b0e44d458cad1d6e7fdf13",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "5caddcc140bd11bde77871695b4b798cdd18e41d165e10c2a6741eb867b32c48",
+            "1b242433d40f58fd8903138dd392da093be88f505353aa5ab5144c2ec6a511e3",
+            "5c4d0e696e9cd1145c81af692edfcc135d6bc4caf3a1dd7913f70be8911124ae",
+            "04111d7c1925947044c90c09b12cc0d6591576a1f5953c6895dfb2056276b276",
+            "03a6880ebc7ac0433738ff7536de3cea201ceab1819811297d48232b0f29c606"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "5789b19b5f99f26bffdd76da7456e65af114e577fc3a3dcd5409db18e17c164d",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "b1dff0124153b9dff4d1299b3708a30e6574673405bda69e76d10d74886f00a7",
+            "f78c7df0ca97d0c89c130d305b8df64717a48ce7b36d3a92e1e3c582d7136fed",
+            "804b59a0b8e22db85910332a927c6bb4875559d2d593732586b54ce26b7d26b0",
+            "a64996e0017586df77a6961d523d0c0a96f3a6847d720bfaac27dbf3b96952a1"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        false,
+        true,
+        false,
+        true,
+        true
+      ],
+      "kernels": [
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "66c0aab7734daf3b343a7e164df324e95e5feb5da0bd0a8d33848c88616fd5d7",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "9d94f60375c25d7b72356d954c6065097c9aa82fd2bc5203a1078d75567bbf5a",
+            "6a9016773c6c24c5708d7ea31d1036a7510e559bac613f60e778d361b608270c",
+            "303c13f4ba52179c43da2d219443cd520cceb10dc5464e36a61553a0c2477745",
+            "ba20abdd55c041ddcfd3c201dac0f4ca262a21c2add9776c5e30082bc4100e2a",
+            "9d381a919c0e7cd4357f1713fa8f85d1cb81cd82e4dd4db54066de08872dcf17"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "d79beec830dc92674bcba438237fc53a1517eaf0706897c72f1e6f261e4f32cd",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "9c9bd93a6e90ea8fd29c9d5e7364084026fc6ba02c953a78a4c613b403146fc7",
+            "77f5564d7208721c17de75fc4208f51378dfc8f09bf22fc0ca74cd9fa9be315d",
+            "9c9bd93a6e90ea8fd29c9d5e7364084026fc6ba02c953a78a4c613b403146fc7",
+            "77f5564d7208721c17de75fc4208f51378dfc8f09bf22fc0ca74cd9fa9be315d"
+          ]
+        }
+      ]
+    }
+  ]
+}

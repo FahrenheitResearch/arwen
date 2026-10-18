@@ -84,7 +84,7 @@ def _cpu_wsm6_diagnostics_driver(monkeypatch, *, dt=60.0):
     driver.state = SimpleNamespace(mup=zeros())
     driver.mp_physics = 6
     (driver._sr_roundoff_upper, driver._sr_roundoff_max_ulps,
-     driver._wsm6_minor_loops) = physics._wsm6_sr_roundoff_limit(dt)
+     driver._wsm6_minor_loops) = physics._sr_roundoff_envelope(6, dt)
     driver.microphysics = MicrophysicsDiagnostics(
         rainnc=zeros(), rainncv=zeros(), sr=zeros(),
         snownc=zeros(), snowncv=zeros(),
@@ -101,10 +101,10 @@ def test_wsm6_sr_accepts_only_proven_wrf_fp32_roundoff_without_mutation(
     physics, driver, diagnostics, shape = _cpu_wsm6_diagnostics_driver(
         monkeypatch, dt=60.0)
     assert driver._wsm6_minor_loops == 1
-    assert driver._sr_roundoff_max_ulps == 3
+    assert driver._sr_roundoff_max_ulps == 7
     upper_bits = np.asarray(
         driver._sr_roundoff_upper, np.float32).view(np.uint32).item()
-    assert upper_bits - np.asarray(np.float32(1.0)).view(np.uint32).item() == 3
+    assert upper_bits - np.asarray(np.float32(1.0)).view(np.uint32).item() == 7
 
     one_ulp = np.nextafter(
         np.float32(1.0), np.float32(np.inf), dtype=np.float32)
@@ -118,7 +118,7 @@ def test_wsm6_sr_accepts_only_proven_wrf_fp32_roundoff_without_mutation(
     assert driver.microphysics.sr[0, 0] >= one_ulp
 
     beyond = np.asarray(upper_bits + 1, np.uint32).view(np.float32)
-    with pytest.raises(ValueError, match="roundoff_ulps=3"):
+    with pytest.raises(ValueError, match="roundoff_ulps=7"):
         driver.accept_microphysics(diagnostics(
             rainnc=np.ones(shape, np.float32),
             rainncv=np.ones(shape, np.float32),
@@ -238,12 +238,24 @@ def test_physics_interval_config_defaults_roundtrip_and_validation(tmp_path):
 
 
 def _cpu_surface_driver(monkeypatch, *, sf_surface_physics):
-    """Minimal CPU-only PhysicsDriver.compute fixture for surface ordering."""
+    """Host driver fixture with real device SFCDIAGS for surface ordering."""
     from types import SimpleNamespace
     import gpuwm.core.physics as physics
 
     monkeypatch.setattr(physics, "cp", np)
+    # refresh_any accepts CuPy carriers. This synthetic driver uses host
+    # arrays; move only the actual diagnostic call across that boundary.
+    def host_sfcdiags(fields, qv1, **constants):
+        import cupy as cp
+        names = ("psfc", "tsk", "cqs2", "chs2", "qsfc", "qfx", "hfx",
+                 "q2", "t2", "th2")
+        device = {name: cp.asarray(fields[name]) for name in names}
+        physics.noah_sfcdiags.refresh(device, cp.asarray(qv1), **constants)
+        for name in ("q2", "t2", "th2"):
+            fields[name][...] = cp.asnumpy(device[name])
+    monkeypatch.setattr(physics.noah_sfcdiags, "refresh_any", host_sfcdiags)
     atmosphere = {
+        "pressure": np.array([[[97500.0, 87500.0]]], np.float32),
         "p_interface": np.array(
             [[[100000.0, 90000.0]], [[95000.0, 85000.0]]], np.float32),
         # SFCDIAGS needs the lowest model level's vapour, which is what
@@ -253,24 +265,31 @@ def _cpu_surface_driver(monkeypatch, *, sf_surface_physics):
     }
     monkeypatch.setattr(
         physics, "_prepare_atmosphere", lambda state: atmosphere)
-    state = SimpleNamespace(elapsed_seconds=0.0)
+    state = SimpleNamespace(elapsed_seconds=0.0, p=atmosphere["pressure"],
+                            c1h=np.ones(1, np.float32), c2h=np.zeros(1, np.float32),
+                            total_mu=lambda: np.ones((1, 2), np.float32))
     cfg = SimpleNamespace(
         dt=60.0, bldt=0.0, ra_physics=0, sf_sfclay_physics=91,
         sf_surface_physics=sf_surface_physics, bl_pbl_physics=1,
-        cu_physics=0)
+        cu_physics=0, ra_rrtmg_variant="rte_rrtmgp")
     driver = object.__new__(physics.PhysicsDriver)
     driver.state = state
+    driver._wrf_rthraten = None
+    driver._wrf_rthraten_coupled = False
+    driver.swint = None
     driver.fields = {
         name: np.full((1, 2), value, np.float32)
         for name, value in {
             "psfc": -123.0, "tsk": 290.0, "hfx": 0.0, "qfx": 0.0,
             "qsfc": 0.0, "chs2": 0.0, "cqs2": 0.0,
             "t2": -999.0, "q2": -999.0, "th2": -999.0,
+            "lh": 0.0, "grdflx": 0.0, "achfx": 0.0, "aclhf": 0.0, "acgrdflx": 0.0,
         }.items()
     }
-    # Column 0 is land, column 1 water (the Noah stub below leaves the
-    # water column on its skipped values); the post-surface Q2 cap reads it.
+    driver.fields["p_hyd"] = np.zeros_like(state.p)
     driver.fields["xland"] = np.array([[1.0, 2.0]], np.float32)
+    from gpuwm.core.physics_inventory import PBL_HISTORY_RATES
+    driver.fields.update({name: np.zeros_like(state.p) for name in PBL_HISTORY_RATES})
     driver.surface_enabled = True
     # No sub-radiation-step solar interpolation (PhysicsDriver.__init__ sets
     # swint = None unless swint_opt is on); this fixture skips __init__.
@@ -417,10 +436,13 @@ def test_ysu_tendencies_are_mass_coupled_and_staggered_like_wrf():
     v_faces = 0.5 * (mass_v + cp.roll(mass_v, 1, axis=1))
     v_faces = cp.concatenate([v_faces, v_faces[:, :1, :]], axis=1)
 
-    cp.testing.assert_array_equal(got.ru, u_faces / state.msfu[None])
-    cp.testing.assert_array_equal(got.rv, v_faces / state.msfv[None])
-    cp.testing.assert_array_equal(
-        got.rtheta, chm * ysu["dtheta"] / state.msft[None])
+    from gpuwm.wrf_exact import ENABLED as strict
+    # Strict keeps the undivided phy_bl_ten slot; rk_addtend_dry divides
+    # the complete held sum later. Default predivides this contribution.
+    cp.testing.assert_array_equal(got.ru, u_faces if strict else u_faces / state.msfu[None])
+    cp.testing.assert_array_equal(got.rv, v_faces if strict else v_faces / state.msfv[None])
+    expected_theta = chm * ysu["dtheta"]
+    cp.testing.assert_array_equal(got.rtheta, expected_theta if strict else expected_theta / state.msft[None])
     cp.testing.assert_array_equal(got.rqv, chm * ysu["dqv"])
     cp.testing.assert_array_equal(got.rqc, chm * ysu["dqc"])
     # RQIBLTEN couples like the other moist scalars (WRF phy_bl_ten
@@ -686,8 +708,12 @@ def test_radiation_and_cumulus_contracts_hold_and_accumulate_rainc():
         + chm * returned["cumulus"].rthcuten)
     cp.testing.assert_array_equal(
         driver.rthratenlw, returned["radiation"].rthratenlw)
-    cp.testing.assert_array_equal(
-        driver.rthratensw, returned["radiation"].rthratensw)
+    from gpuwm.wrf_exact import ENABLED as strict
+    input_lw = returned["radiation"].rthratenlw
+    input_sw = returned["radiation"].rthratensw
+    # radiation_driver.F:2870 publishes total minus saved longwave.
+    expected_sw = (input_lw + input_sw) - input_lw if strict else input_sw
+    cp.testing.assert_array_equal(driver.rthratensw, expected_sw)
     cp.testing.assert_array_equal(
         got.rqv, chm * returned["cumulus"].rqvcuten)
     cp.testing.assert_array_equal(
@@ -996,11 +1022,13 @@ def test_rrtmgp_scheme_is_selected_through_ra_physics_4():
 
 @pytest.mark.gpu
 @requires_gpu
-def test_physics_computed_once_pre_rk_and_added_to_all_three_stages():
+def test_physics_computed_once_pre_rk_and_added_to_all_three_stages(monkeypatch):
     import cupy as cp
 
     from gpuwm.core.dycore import step
+    import gpuwm.core.dycore as dycore
     from gpuwm.core.physics import PhysicsTendencies
+    from gpuwm.wrf_exact import ENABLED as strict
 
     state, cfg, _ = _full_state(sf_surface_physics=0)
     events = []
@@ -1012,15 +1040,26 @@ def test_physics_computed_once_pre_rk_and_added_to_all_three_stages():
         original_add(s)
 
     tendency.add_to_slow = add_spy
+    original_fold = dycore._fold_physics_wrf
+    def fold_spy(s, specs, held):
+        assert held is tendency
+        events.append("fold")
+        return original_fold(s, specs, held)
+    monkeypatch.setattr(dycore, "_fold_physics_wrf", fold_spy)
 
     class DriverSpy:
         def compute(self, s, c):
             events.append("compute")
             return tendency
 
+        def finish_history_mass(self, s, c, **kwargs):
+            events.append("finish_history")
+
     state.physics = DriverSpy()
     step(state, cfg)
-    assert events == ["compute", "add", "add", "add"]
+    expected = (["compute", "fold", "finish_history"] if strict else
+                ["compute", "add", "add", "add", "finish_history"])
+    assert events == expected
 
 
 @pytest.mark.gpu
@@ -1115,7 +1154,7 @@ def test_wsm6_sr_real_device_accepts_upper_and_rejects_beyond_envelope():
     upper_bits = np.asarray(
         driver._sr_roundoff_upper, np.float32).view(np.uint32).item()
     beyond = np.asarray(upper_bits + 1, np.uint32).view(np.float32)
-    with pytest.raises(ValueError, match="roundoff_ulps=3"):
+    with pytest.raises(ValueError, match="roundoff_ulps=7"):
         driver.accept_microphysics(MicrophysicsDiagnostics(
             rainnc=ones, rainncv=ones,
             sr=cp.full(shape, beyond, cp.float32)))
@@ -1957,7 +1996,24 @@ def test_prepare_atmosphere_builds_wrf_hydrostatic_pressures():
     # AGREE numerically -- the split only shows under nonhydrostatic
     # motion, which is exactly why WRF separates them).
     assert atmosphere["pressure"] is not state.p
-    # ...while exner stays the EOS-based pi_phy.
-    cp.testing.assert_array_equal(
-        atmosphere["exner"],
-        (state.p / cp.float32(c.P0)) ** cp.float32(c.RCP))
+    # ...while exner stays the EOS-based pi_phy. The independent scalar
+    # WRF oracle uses REAL(4) division followed by its linked powf. CUDA's
+    # power is a different implementation and cannot be the word referee.
+    import ctypes
+    import ctypes.util
+    oracle = ctypes.CDLL(ctypes.util.find_library("m") or "msvcrt")
+    powf = oracle.powf
+    powf.argtypes = (ctypes.c_float, ctypes.c_float)
+    powf.restype = ctypes.c_float
+    ratio = cp.asnumpy(state.p) / np.float32(c.P0)
+    stock_exner = np.array(
+        [powf(float(x), float(np.float32(c.RCP))) for x in ratio.flat],
+        np.float32).reshape(ratio.shape)
+    from gpuwm.wrf_exact import ENABLED as strict
+    if strict:
+        np.testing.assert_array_equal(
+            cp.asnumpy(atmosphere["exner"]).view("u4"), stock_exner.view("u4"))
+    else:
+        # A default process keeps 2.9.1's array power (physics._physics_exner).
+        cp.testing.assert_array_equal(
+            atmosphere["exner"], (state.p / cp.float32(c.P0)) ** cp.float32(c.RCP))

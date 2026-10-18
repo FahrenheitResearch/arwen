@@ -175,7 +175,7 @@ from __future__ import annotations
 import queue
 import threading
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -235,6 +235,7 @@ _DERIVED_RULES = {
     "FMOIST_LASTTIME": "fire clock moisture_lasttime",
     "FMOIST_NEXTTIME": "fire clock moisture_nexttime",
     "T": "(thb + thp) - 300",
+    "THM": "(thb + thp) - 300 (USE_THETA_M=0: the T record's words)",
     "P": "p - pb",
     "PB": "broadcast(pb)",
     "PHB": "broadcast(phb)",
@@ -276,6 +277,12 @@ class FramePlan:
     origin: dict[str, str]
     shape: dict[str, tuple[int, ...]]
     dtype: dict[str, Any]
+    #: ``name -> first-axis index`` for a carrier field that is ONE ROW of a
+    #: stacked store member rather than the whole member: the driver's
+    #: ``history_extension`` stack (SST, COSZEN, the radiation boundary
+    #: fluxes and the AC* accumulations) publishes each row as a view of
+    #: ``diag/history_extension``.  Absent for every whole-member carrier.
+    row: dict[str, int] = field(default_factory=dict)
 
     def names(self, kind: str) -> tuple[str, ...]:
         return tuple(n for n in self.order if self.source[n] == kind)
@@ -324,8 +331,8 @@ def _frame_plan_on_device(state, *, include_diagnostic_pressure,
 
     fields = wrfout._device_state_frame(
         state, include_diagnostic_pressure=include_diagnostic_pressure)
-    carriers = {id(value): key
-                for key, value in physinv.carrier_manifest(state).items()}
+    manifest = physinv.carrier_manifest(state)
+    carriers = {id(value): key for key, value in manifest.items()}
     extra = {str(key) for key in extra_available}
     setup = {}
     for name in STATE_SETUP_ARRAYS:
@@ -335,6 +342,7 @@ def _frame_plan_on_device(state, *, include_diagnostic_pressure,
 
     source: dict[str, str] = {}
     origin: dict[str, str] = {}
+    row: dict[str, int] = {}
     shape: dict[str, tuple[int, ...]] = {}
     dtype: dict[str, Any] = {}
     from gpuwm.io.sfire_schema import (SFIRE_GRID_FIELD_MAP, SFIRE_COARSE_FIELD_NAMES,
@@ -383,6 +391,14 @@ def _frame_plan_on_device(state, *, include_diagnostic_pressure,
                 break
         if name in source:
             continue
+        # One row of a stacked carrier (the driver's history_extension
+        # stack): the frame holds a fresh view each time it is built, so
+        # identity cannot match it, but its memory is the carrier's own.
+        stacked = _stacked_row(manifest, value)
+        if stacked is not None:
+            source[name], origin[name] = SOURCE_CARRIER, stacked[0]
+            row[name] = stacked[1]
+            continue
         if name in _ZERO_ROWS:
             # Assert rather than assume: the classification says "the driver
             # handed out a fresh _zero_accumulator() because its producer is
@@ -398,7 +414,44 @@ def _frame_plan_on_device(state, *, include_diagnostic_pressure,
         source[name] = SOURCE_DRIVER_DIAGNOSTIC
         origin[name] = diagnostic_path
     return FramePlan(order=tuple(fields), source=source, origin=origin,
-                     shape=shape, dtype=dtype)
+                     shape=shape, dtype=dtype, row=row)
+
+
+def _data_pointer(array):
+    data = getattr(array, "data", None)
+    pointer = getattr(data, "ptr", None)              # cupy
+    if pointer is not None:
+        return int(pointer)
+    if isinstance(array, np.ndarray):
+        return int(array.__array_interface__["data"][0])
+    return None
+
+
+def _stacked_row(manifest, value):
+    """``(store key, index)`` when ``value`` is exactly ``carrier[index]``.
+
+    Exact: same array type and dtype, the row's shape and strides, and a
+    start address on a whole first-axis step inside the carrier.
+    """
+    ndim = getattr(value, "ndim", None)
+    pointer = _data_pointer(value)
+    if ndim is None or pointer is None:
+        return None
+    for key, carrier in manifest.items():
+        if (type(carrier) is not type(value)
+                or getattr(carrier, "ndim", 0) != ndim + 1
+                or carrier.dtype != value.dtype
+                or tuple(carrier.shape[1:]) != tuple(value.shape)
+                or tuple(carrier.strides[1:]) != tuple(value.strides)
+                or int(carrier.strides[0]) <= 0):
+            continue
+        base = _data_pointer(carrier)
+        if base is None:
+            continue
+        index, remainder = divmod(pointer - base, int(carrier.strides[0]))
+        if remainder == 0 and 0 <= index < int(carrier.shape[0]):
+            return key, int(index)
+    return None
 
 
 def _host(value) -> np.ndarray:
@@ -518,7 +571,8 @@ def domain_frame_plan(plan: FramePlan, store, cfg, *,
         held = (arrays.get(plan.origin[name])
                 if plan.source[name] == SOURCE_CARRIER else None)
         if held is not None:
-            shape[name] = tuple(int(s) for s in np.shape(held))
+            held_shape = tuple(int(s) for s in np.shape(held))
+            shape[name] = held_shape[1:] if name in plan.row else held_shape
             continue
         try:
             shape[name] = _domain_row_shape(plan.shape[name], template_hw,
@@ -538,7 +592,7 @@ def domain_frame_plan(plan: FramePlan, store, cfg, *,
             shape[name] = tuple(int(s) for s in plan.shape[name])
     return FramePlan(order=plan.order, source=dict(plan.source),
                      origin=dict(plan.origin), shape=shape,
-                     dtype=dict(plan.dtype))
+                     dtype=dict(plan.dtype), row=dict(plan.row))
 
 
 def _domain_row_shape(shape, template_hw, domain_hw) -> tuple[int, ...]:
@@ -828,7 +882,7 @@ class StoreFrame:
     #: the carriers' own origins.  Kept next to ``fields`` so the two cannot
     #: drift: a road that copies only a frame's members to the host
     #: (``tilestream.ranks.RankedRun.download``) copies exactly these.
-    _DERIVED_INPUTS = {"T": ("state/thp",), "P": ("state/p",),
+    _DERIVED_INPUTS = {"T": ("state/thp",), "THM": ("state/thp",), "P": ("state/p",),
                        "PSFC": ("state/php", "state/p"),
                        "FS_GEN_IDMAX": ("fire/spotting.control",)}
 
@@ -852,6 +906,8 @@ class StoreFrame:
 
     def _carrier(self, name):
         array = self._store[self.plan.origin[name]]
+        if name in self.plan.row:
+            array = array[self.plan.row[name]]
         from gpuwm.io.sfire_schema import SFIRE_FINE_FIELDS, SFIRE_SPOTTING_COARSE_FIELDS
         if name in SFIRE_FINE_FIELDS and name != "FS_FIRE_ROSDT":
             array = array[1:-1, 1:-1]
@@ -906,9 +962,9 @@ class StoreFrame:
                     continue
                 if name in ("PB", "PHB", "P_TOP"):
                     out[name] = self._statics[name]
-                elif name == "T":
+                elif name in ("T", "THM"):
                     out[name] = derive_t(self._thb, store["state/thp"],
-                                         self._dst["T"])
+                                         self._dst[name])
                 elif name == "P":
                     pb3 = (self._pb if self._pb.ndim == 3
                            else self._pb[:, None, None])

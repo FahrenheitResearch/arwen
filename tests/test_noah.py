@@ -515,10 +515,10 @@ def test_mirror_snow_accumulates_when_snowing(params):
 
 def test_wsm6_sr_exact_upper_is_noah_trajectory_and_output_identical(params):
     """Noah consumes SR only through WRF's FFROZP > 0.5 phase branch."""
-    from gpuwm.core.physics import _wsm6_sr_roundoff_limit
+    from gpuwm.core.physics import _sr_roundoff_envelope
 
-    upper, max_ulps, loops = _wsm6_sr_roundoff_limit(60.0)
-    assert (max_ulps, loops) == (3, 1)
+    upper, max_ulps, loops = _sr_roundoff_envelope(6, 60.0)
+    assert (max_ulps, loops) == (7, 1)
     unit = _base_col(params, veg=10, soil=6, snow=True, sfctmp=265.0,
                      tsk=264.0, swdown=100.0, rain=3.0, sr=1.0)
     rounded = {

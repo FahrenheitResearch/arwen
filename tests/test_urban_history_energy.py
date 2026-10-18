@@ -55,11 +55,16 @@ def test_energy_carriers_are_output_only_and_disabled_fields_stay_absent():
     before = physics_history_fields(off)
     off.surface_energy_diag = True
     after = physics_history_fields(off)
-    assert set(after) - set(before) == {"ALBEDO", "EMISS"}
+    # Standard WRF history rows since the 2.9.1 exact-chain intake
+    # (Registry h, the carried surface fields): present without the opt-in,
+    # which therefore adds nothing.
+    assert {"ALBEDO", "EMISS"} <= set(before)
+    assert set(after) == set(before)
     assert after["ALBEDO"] is off.fields["albedo"]
     shapes_before = produced_history_shapes(cfg)
     shapes_after = produced_history_shapes(enabled)
-    assert set(shapes_after) - set(shapes_before) == {"ALBEDO", "EMISS"}
+    assert {"ALBEDO", "EMISS"} <= set(shapes_before)
+    assert set(shapes_after) == set(shapes_before)
     off.fields["gsw"] = np.full((3, 4), 500.0)
     assert physics_history_fields(off)["GSW"] is off.fields["gsw"]
     ruc_shapes = produced_history_shapes(replace(enabled, sf_surface_physics=3,

@@ -290,3 +290,58 @@ mixing ratios derived from them. A field the target requires cannot be
 `dependency_only`; that mapping is refused because its frames would lack
 the field. A field a composition borrows from a donor is published even
 when the donor's own mapping marks it `dependency_only`.
+
+A NetCDF source names its interface coordinate the way it names its mass-level
+coordinate: `vertical.interface_selector` (for a WRF-shaped file,
+`{"format": "netcdf", "name": ["bottom_top_stag"]}`) beside `vertical.selector`.
+Fields on `["time", "half_level", "y", "x"]` then read on that dimension, and
+`height_from_interfaces` averages them to mass levels exactly as on GRIB.
+
+Two closed-catalog derivations serve height-coordinate producers that publish
+potential temperature and mixing ratios:
+
+- `air_temperature_from_potential_temperature` (`potential_temperature`,
+  `pressure`; optional `kappa`, default 2/7, and `reference_pressure_pa`,
+  default 1e5): T = theta (p / p0)^kappa, with the producer's own constants.
+- `specific_humidity_from_mixing_ratio` (`mixing_ratio`): q = r / (1 + r),
+  which initialization's r = q / (1 - q) inverts.
+
+The packaged `hex-global` row (profile `hex-history-netcdf-v1`) uses all three:
+a `gpuwm-hex export --field-set full --window region-latlon:CLAT,CLON,W_KM,H_KM`
+frame set is an ArWen domain's initial and boundary source. Lat-lon export
+frames carry CF 1-D `lat`, `lon`, `Time`, `bottom_top`, `bottom_top_stag` and
+`soil_layers_stag` coordinates (rw_mpas_convert writes them on every lat-lon
+window). The row declares no boundary cadence of its own -- the spacing is
+whatever the export carries -- so `gpuwm domain` takes it from `--cadence`,
+and the frames handed to `gpuwm prep` are the ones covering the run's window
+(f00/f03/f06 of a 3-hourly export for a 6 h run from the export's first
+time), each one also named as its own in-band surface supplement. The whole
+route, as run on 2026-10-17 (a 3 km 300x240 domain prepared in 23 s from
+three 60 km hex frames):
+
+```bash
+# 1. plan the domain; --cadence 3 is the export's 3 h frame spacing
+gpuwm domain --source hex-global --cadence 3 --point 36,-91 --root-dx 3 \
+  --point-extent-km 900 --hours 6 --cycle 2026-10-16T00 --name hexarwen \
+  --out hexarwen.toml
+# 2. stage the geography this config reads (gpuwm check names any dataset
+#    still missing, with this same remedy)
+gpuwm fetch-geog --config hexarwen.toml
+# 3. prepare from the frames covering the window; the manifest path is
+#    written by prep (authored), not supplied
+gpuwm prep --source hex-global \
+  --input frames/wrfout_d01_2026-10-16_00_00_00 \
+  --input frames/wrfout_d01_2026-10-16_03_00_00 \
+  --input frames/wrfout_d01_2026-10-16_06_00_00 \
+  --supplement hex_in_band_surface=frames/wrfout_d01_2026-10-16_00_00_00 \
+  --supplement hex_in_band_surface=frames/wrfout_d01_2026-10-16_03_00_00 \
+  --supplement hex_in_band_surface=frames/wrfout_d01_2026-10-16_06_00_00 \
+  --author-input-manifest inputs.json \
+  --experiment-config hexarwen.toml --wps-namelist hexarwen.namelist.wps \
+  --geog-root WPS_GEOG --output-root prepared
+# 4. run and render (the line prep prints); the config has no [fetch] table,
+#    so it is driven by `gpuwm sim prepared`, not `gpuwm go`
+gpuwm sim prepared --experiment-config hexarwen.toml \
+  --wps-namelist hexarwen.namelist.wps --outdir prepared-forecast \
+  --render-products all
+```

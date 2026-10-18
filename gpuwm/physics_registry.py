@@ -475,6 +475,7 @@ REGISTRY_EVIDENCE_RECORDS: Mapping[str, str] = {
 #: string, a list of strings, or null).  A field of the same name that
 #: holds an object is walked, not dropped.
 REGISTRY_DOCUMENTATION_FIELDS: Mapping[str, str] = {
+    "implementation_origin": "implementation provenance for display; no numerical consumer reads it",
     # User-facing caveats.  They cite file:line and are re-pinned when the
     # cited code moves; both A153 cases were edits here.
     "warnings": "user-facing caveats with file:line citations",

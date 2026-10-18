@@ -182,7 +182,7 @@ def test_the_flushed_route_is_what_the_unflushed_compile_prevents(
                                     "--ftz=false")
     capability = int(cp.cuda.Device().compute_capability)
     if report["mismatched_words"] == 0 and capability < 100:
-        # MEASURED 2026-10-12 on node-1 (RTX 4090, sm_89, NVRTC 12.9): the
+        # MEASURED 2026-10-12 on test host A (RTX 4090, sm_89, NVRTC 12.9): the
         # -ftz=true build matches WRF on all 71,968 words of this set and
         # all 38,112 of real74, while the same control misses on Blackwell
         # (sm_120: G1 today, and 41,127 of 1,848,256 sweep words on W1).  The

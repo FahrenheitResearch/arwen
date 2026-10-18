@@ -14,7 +14,7 @@ use std::{
     io::{BufWriter, Write},
     ops::Range,
     path::Path,
-    sync::Arc,
+    sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex},
 };
 use zarrs::{
     array::Array,
@@ -25,6 +25,26 @@ use zarrs::{
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 type SourceArray = Array<dyn ReadableStorageTraits>;
 const SCHEMA: &str = "arwen.regular-forcing.v1";
+/// How many fields of one record are read from the store at once.
+///
+/// THE DEFECT THIS EXISTS TO END.  The reads were serial: one field of
+/// one hour at a time, each a HEAD and a GET to the store, so a 12 MB
+/// request took 146 s at 3 % CPU on a link that was mostly idle
+/// (measured 2026-10-17 on the ArWen box).  The fields of a record are
+/// independent chunks, so they are read concurrently and written in the
+/// request's order, which leaves the output byte for byte what it was.
+/// Bounded so a wide request does not open a hundred transfers at once;
+/// `GPUWM_RW_ZARR_WORKERS` names another bound.
+const DEFAULT_READ_WORKERS: usize = 8;
+
+fn read_workers(fields: usize) -> usize {
+    let bound = std::env::var("GPUWM_RW_ZARR_WORKERS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_READ_WORKERS);
+    bound.min(fields).max(1)
+}
 
 #[used]
 pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
@@ -630,7 +650,9 @@ fn extract(request: Request, output: &Path) -> Result<Value> {
             VarData::F64(&[times[record].and_utc().timestamp() as f64]),
         )?;
         let mut retained = BTreeMap::new();
-        for (field, array) in request.fields.iter().zip(&arrays) {
+        // One field's chunk, read and cropped to the requested window.
+        let read_field = |index: usize| -> std::result::Result<Vec<f64>, String> {
+            let (field, array) = (&request.fields[index], &arrays[index]);
             eprintln!(
                 "Zarr: {} {}/{} {}",
                 times[record],
@@ -646,7 +668,7 @@ fn extract(request: Request, output: &Path) -> Result<Value> {
                 ranges.push(0..levels.len() as u64);
             }
             ranges.extend([y0 as u64..y1 as u64, 0..longitude.len() as u64]);
-            let source = numbers(array, &ranges)?;
+            let source = numbers(array, &ranges).map_err(|e| e.to_string())?;
             let mut values =
                 Vec::with_capacity(plane * if field.pressure { levels.len() } else { 1 });
             for zi in if field.pressure {
@@ -660,6 +682,32 @@ fn extract(request: Request, output: &Path) -> Result<Value> {
                     }
                 }
             }
+            Ok(values)
+        };
+        // The record's fields are read concurrently (DEFAULT_READ_WORKERS)
+        // and written below in the request's order.
+        let slots: Vec<Mutex<Option<std::result::Result<Vec<f64>, String>>>> =
+            (0..request.fields.len()).map(|_| Mutex::new(None)).collect();
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..read_workers(request.fields.len()) {
+                scope.spawn(|| loop {
+                    let index = next.fetch_add(1, Ordering::SeqCst);
+                    if index >= request.fields.len() {
+                        break;
+                    }
+                    let result = read_field(index);
+                    *slots[index].lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(result);
+                });
+            }
+        });
+        for (field, slot) in request.fields.iter().zip(slots) {
+            let values = slot
+                .into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .ok_or_else(|| format!("{} was not read", field.source))?
+                .map_err(|message| format!("{}: {message}", field.source))?;
             write_field(
                 &mut writer,
                 record as u64,

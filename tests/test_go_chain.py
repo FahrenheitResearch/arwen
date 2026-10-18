@@ -1020,6 +1020,10 @@ def test_a_failing_stage_replays_its_output_and_stops(
                 stderr="line two, naming the actual problem\n")
         return _FakeCompleted(0, stdout="chatty success\n")
 
+    # This double counts chain stages. The concurrent kernel warm-up uses
+    # Popen too, but is independent of stage failure and output replay.
+    monkeypatch.setattr(go_cli.SpeedHooks, "warm_kernels_spawn",
+                        lambda args, plan: None)
     monkeypatch.setattr(subprocess, "Popen", _popen_double(fake_run))
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")

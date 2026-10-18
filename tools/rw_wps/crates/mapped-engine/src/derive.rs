@@ -385,10 +385,26 @@ impl CanonicalField {
                 axes
             )));
         }
-        if values.iter().any(|value| value.is_infinite()) {
+        // One scan for both counts, over chunks on every core when the
+        // array is contiguous in memory (in any axis order): a whole/any
+        // answer, so neither the split nor the order can move it.  Named breakage: a 3 km CONUS native-level valid
+        // time's 762 MB fields were scanned twice each on one thread,
+        // about 1.3 s of every frame's plan with the pool idle.
+        let (infinite, nan) = match values.as_slice_memory_order() {
+            Some(flat) => crate::threads::install(|| {
+                use rayon::prelude::*;
+                flat.par_chunks(1 << 20)
+                    .map(|chunk| chunk.iter().fold((false, 0usize), |(infinite, nan), value| {
+                        (infinite || value.is_infinite(), nan + usize::from(value.is_nan()))
+                    }))
+                    .reduce(|| (false, 0), |a, b| (a.0 || b.0, a.1 + b.1))
+            }),
+            None => (values.iter().any(|value| value.is_infinite()), array::count_nan(values)),
+        };
+        if infinite {
             return Err(frame_invalid(format!("{} contains infinity", name)));
         }
-        if array::count_nan(values) != missing_count {
+        if nan != missing_count {
             return Err(frame_invalid(format!(
                 "{} missing count does not match its data",
                 name
@@ -433,6 +449,8 @@ pub fn derivation_dependencies(operation: &Node, vertical: &Node, name: &str) ->
         "relative_humidity_from_dewpoint" => &["dewpoint", "temperature"],
         "specific_humidity_from_rh" => &["temperature", "pressure", "relative_humidity"],
         "specific_humidity_from_dewpoint" => &["temperature", "pressure", "dewpoint"],
+        "air_temperature_from_potential_temperature" => &["potential_temperature", "pressure"],
+        "specific_humidity_from_mixing_ratio" => &["mixing_ratio"],
         "volumetric_soil_moisture_from_layer_mass" => &["layer_mass"],
         "surface_pressure_from_sea_level" =>
             &["sea_level_pressure", "level_height", "pressure", "surface_height"],
@@ -481,6 +499,8 @@ pub fn derivation_shape_operand(operation: &Node) -> Option<(&'static str, bool)
         "geopotential_height" => Some(("geopotential", false)),
         "relative_humidity_from_dewpoint" => Some(("dewpoint", false)),
         "specific_humidity_from_rh" | "specific_humidity_from_dewpoint" => Some(("temperature", false)),
+        "air_temperature_from_potential_temperature" => Some(("potential_temperature", false)),
+        "specific_humidity_from_mixing_ratio" => Some(("mixing_ratio", false)),
         "volumetric_soil_moisture_from_layer_mass" => Some(("layer_mass", false)),
         _ => None,
     }
@@ -1038,6 +1058,86 @@ pub fn evaluate_derivation(
                     .expect("shape preserved elementwise"),
                 axes,
                 references,
+            )
+        }
+        "air_temperature_from_potential_temperature" => {
+            // T = theta * (p / p0) ** kappa with the PRODUCER's kappa and p0
+            // (`mapped_source._evaluate_derivation`, same defaults: WRF's 2/7
+            // and 1e5 Pa).
+            let (Some(theta), Some(pressure)) = (
+                dependency(operation, "potential_temperature", available),
+                dependency(operation, "pressure", available),
+            ) else {
+                return Ok(None);
+            };
+            if theta.axes != pressure.axes || theta.values.shape() != pressure.values.shape() {
+                return Err(frame_invalid(format!(
+                    "{name} potential temperature and pressure disagree in axes or shape"
+                )));
+            }
+            if theta.units != "K" || pressure.units != "Pa" {
+                return Err(frame_invalid(format!(
+                    "{name} requires potential temperature in K and pressure in Pa"
+                )));
+            }
+            let reference = operation
+                .field("reference_pressure_pa")
+                .and_then(Node::as_f64)
+                .unwrap_or(100000.0);
+            let kappa = operation
+                .field("kappa")
+                .and_then(Node::as_f64)
+                .unwrap_or(2.0 / 7.0);
+            if !reference.is_finite() || reference <= 0.0 || !kappa.is_finite() || kappa <= 0.0 || kappa >= 1.0 {
+                return Err(mapping_invalid(format!(
+                    "{name} declares an invalid reference pressure or kappa"
+                )));
+            }
+            let theta_flat = array::contiguous(&theta.values);
+            let pressure_flat = array::contiguous(&pressure.values);
+            let mut values = Vec::with_capacity(theta_flat.len());
+            for (t, p) in theta_flat.iter().copied().zip(pressure_flat.iter().copied()) {
+                if t.is_finite() && p.is_finite() && (t <= 0.0 || p <= 0.0) {
+                    return Err(frame_invalid(format!(
+                        "{name} requires positive potential temperature and pressure"
+                    )));
+                }
+                values.push(t * (p / reference).powf(kappa));
+            }
+            let mut references = theta.source_references.clone();
+            references.extend(pressure.source_references.iter().cloned());
+            (
+                ArrayD::from_shape_vec(IxDyn(theta.values.shape()), values)
+                    .expect("shape preserved elementwise"),
+                theta.axes.clone(),
+                references,
+            )
+        }
+        "specific_humidity_from_mixing_ratio" => {
+            // q = r / (1 + r); initialization's r = q / (1 - q) inverts it.
+            let Some(ratio) = dependency(operation, "mixing_ratio", available) else {
+                return Ok(None);
+            };
+            if ratio.units != "kg kg-1" {
+                return Err(frame_invalid(format!(
+                    "{name} requires a mixing ratio in kg kg-1"
+                )));
+            }
+            let flat = array::contiguous(&ratio.values);
+            let mut values = Vec::with_capacity(flat.len());
+            for r in flat.iter().copied() {
+                if r.is_finite() && r <= -1.0 {
+                    return Err(frame_invalid(format!(
+                        "{name} mixing ratio at or below -1 has no specific humidity"
+                    )));
+                }
+                values.push(r / (1.0 + r));
+            }
+            (
+                ArrayD::from_shape_vec(IxDyn(ratio.values.shape()), values)
+                    .expect("shape preserved elementwise"),
+                ratio.axes.clone(),
+                ratio.source_references.clone(),
             )
         }
         "volumetric_soil_moisture_from_layer_mass" => {

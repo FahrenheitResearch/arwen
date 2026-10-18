@@ -282,6 +282,21 @@ fn take_subset(
     Ok(result.select(Axis(position("x")?), longitude))
 }
 
+/// The refusal [`take_subset`] makes, without taking the subset: the
+/// field must name a `y` axis, then an `x` axis.
+fn check_subset_axes(axes: &[String]) -> Result<()> {
+    for name in ["y", "x"] {
+        if !axes.iter().any(|axis| axis == name) {
+            return Err(frame_invalid(format!(
+                "a borrowed field declares axes {} with no '{name}' axis to \
+                 subset along",
+                python_list_repr(axes)
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn array_digest(values: &ArrayD<f64>) -> String {
     crate::digest::array_sha256(values.shape(), &crate::array::contiguous(values))
 }
@@ -638,31 +653,37 @@ pub fn apply_bound_fields(
     slice: &mut DecodedCollection,
     key: &TimeKey,
 ) -> Result<()> {
-    for ((name, time), donor_key) in &plan.chosen {
-        if *time != key.0 {
-            continue;
-        }
-        let value = donor.direct.get(donor_key).ok_or_else(|| {
-            frame_invalid(format!(
-                "the contributing source no longer carries {} at {}",
-                crate::refusal::python_repr(name),
-                naive_isoformat(donor_key.0)
-            ))
-        })?;
-        let values = take_subset(
-            &value.values,
-            &value.axes,
-            &plan.latitude_indices,
-            &plan.longitude_indices,
-        )?;
-        let missing_count = crate::array::contiguous(&values)
-            .iter()
-            .filter(|item| item.is_nan())
-            .count();
-        slice.direct.insert(
-            (key.0, key.1.clone(), name.clone()),
-            DirectValue {
-                name: name.clone(),
+    // Each borrowed field is its own subset of its own donor array, so
+    // they are cut on every core and inserted in the plan's order; the
+    // refusal is the first one in that order.  Named breakage: the
+    // borrowed soil and vegetation fields were cut one after another,
+    // about 0.6 s of every 3 km CONUS valid time on one core.
+    let chosen: Vec<(&String, &crate::assemble::DirectKey)> = plan.chosen.iter()
+        .filter(|((_name, time), _donor_key)| *time == key.0)
+        .map(|((name, _time), donor_key)| (name, donor_key))
+        .collect();
+    let cut: Vec<Result<DirectValue>> = crate::threads::install(|| {
+        use rayon::prelude::*;
+        chosen.par_iter().map(|(name, donor_key)| {
+            let value = donor.direct.get(*donor_key).ok_or_else(|| {
+                frame_invalid(format!(
+                    "the contributing source no longer carries {} at {}",
+                    crate::refusal::python_repr(name),
+                    naive_isoformat(donor_key.0)
+                ))
+            })?;
+            let values = take_subset(
+                &value.values,
+                &value.axes,
+                &plan.latitude_indices,
+                &plan.longitude_indices,
+            )?;
+            let missing_count = crate::array::contiguous(&values)
+                .iter()
+                .filter(|item| item.is_nan())
+                .count();
+            Ok(DirectValue {
+                name: (*name).clone(),
                 valid_time: key.0,
                 member: key.1.clone(),
                 source_cycle: value.source_cycle,
@@ -672,8 +693,11 @@ pub fn apply_bound_fields(
                 // need not fall inside the borrowed window.
                 missing_count,
                 references: value.references.clone(),
-            },
-        );
+            })
+        }).collect()
+    });
+    for ((name, _donor_key), value) in chosen.iter().zip(crate::threads::in_order(cut)?) {
+        slice.direct.insert((key.0, key.1.clone(), (*name).clone()), value);
     }
     Ok(())
 }
@@ -773,6 +797,14 @@ pub fn plan_bound_fields(
     let mut matched_times: BTreeSet<NaiveDateTime> = BTreeSet::new();
     let mut broadcast_times: BTreeSet<NaiveDateTime> = BTreeSet::new();
     let mut subset_hashes: BTreeMap<&str, String> = BTreeMap::new();
+    // The first valid time's subset of each field, digested once the plan
+    // is resolved: the subset and its digest are whole-array work per
+    // field, so they run on every core.  Every refusal they could make
+    // (`check_subset_axes`) is still made in place, in the plan's order.
+    // Named breakage: the borrowed soil, terrain and vegetation fields
+    // were cut and hashed one after another on one core, about 1 s of a
+    // 3 km CONUS compose's start with the pool idle.
+    let mut deferred_hashes: Vec<(&str, &DirectValue)> = Vec::new();
     for name in &binding.fields {
         let supplied = &by_field[name.as_str()];
         let carrier: Option<(&DirectValue, &crate::assemble::DirectKey)> = match alignment {
@@ -879,17 +911,22 @@ pub fn plan_bound_fields(
             // as it always did; the rest are taken when their valid time
             // is composed, so the plan holds keys rather than arrays.
             if !hashed {
-                let values = take_subset(
-                    &value.values,
-                    &value.axes,
-                    &latitude_indices,
-                    &longitude_indices,
-                )?;
-                subset_hashes.insert(name.as_str(), array_digest(&values));
+                check_subset_axes(&value.axes)?;
+                deferred_hashes.push((name.as_str(), value));
                 hashed = true;
             }
             chosen.insert((name.clone(), key.0), entry.clone());
         }
+    }
+    let digests: Vec<Result<String>> = crate::threads::install(|| {
+        use rayon::prelude::*;
+        deferred_hashes.par_iter().map(|(_name, value)| {
+            take_subset(&value.values, &value.axes, &latitude_indices, &longitude_indices)
+                .map(|values| array_digest(&values))
+        }).collect()
+    });
+    for ((name, _value), digest) in deferred_hashes.iter().zip(crate::threads::in_order(digests)?) {
+        subset_hashes.insert(name, digest);
     }
     let donor_cycles: BTreeSet<NaiveDateTime> = donor
         .direct

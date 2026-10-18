@@ -1,0 +1,42 @@
+{
+  "schema": "gpuwm-surface-ocean-v1",
+  "options": {
+    "1": {
+      "name": "omlscheme",
+      "module": "oml",
+      "state_fields": [
+        "tml",
+        "t0ml",
+        "hml",
+        "h0ml",
+        "huml",
+        "hvml",
+        "tmoml"
+      ],
+      "input_fields": [
+        "H0ML",
+        "HUML",
+        "HVML",
+        "TMOML"
+      ],
+      "call_slot": "after_lsm_before_lake",
+      "cadence": "bldt",
+      "constants": {
+        "rhowater": 1000.0,
+        "cwater": 4200.0,
+        "stbolt": 5.67051e-08
+      },
+      "namelist_defaults": {
+        "oml_hml0": 50.0,
+        "oml_gamma": 0.14,
+        "oml_relaxation_time": 0.0
+      },
+      "algorithm_identity": "oml-wrf461-ordered-f32-v1",
+      "constant_sources": {
+        "rhowater": "phys/module_sf_oml.F:71",
+        "cwater": "phys/module_sf_oml.F:72",
+        "stbolt": "share/module_model_constants.F:84"
+      }
+    }
+  }
+}

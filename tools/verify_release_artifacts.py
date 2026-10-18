@@ -131,12 +131,15 @@ def _sibling_distributions(directory: Path, published: set[str]) -> list[Path]:
 
 def private_host_members(wheel: Path,
                          repo_root: Path | None = None) -> list[dict]:
-    """Data members of ``wheel`` that name a private machine.
+    """Members of ``wheel`` that name a private machine or internal folder.
 
     The breakage this refuses: a private machine's name published in a
     wheel.  2.8.1's fetch route table carried the lab host that watched
     the posting times in 20 measured rows (A154), and nothing between the
-    tree and PyPI read a wheel's data files for one.  The rule, its scope,
+    tree and PyPI read a wheel's data files for one; 2.9.0's wheel carried
+    lab host and internal folder names in 61 members, nearly all code,
+    because this read data members only.  Every installed member is read,
+    code included; the wheel's own metadata is not.  The rule, its scope,
     its patterns and its one allowance are ``tools/release_exclusions.py``'s,
     the same the public-tree scan applies; a member is read as text when its
     first block holds no NUL, and a NetCDF container by its printable runs.
@@ -146,15 +149,16 @@ def private_host_members(wheel: Path,
     """
 
     from tools.release_exclusions import (PRIVATE_HOST_MARKERS,
-                                          is_wheel_data_member,
+                                          is_wheel_member,
+                                          pinned_kernel_source_digests,
                                           pinned_record_digests)
 
-    pinned = (frozenset() if repo_root is None
-              else pinned_record_digests(repo_root))
+    pinned = pinned_kernel_source_digests() | (
+        frozenset() if repo_root is None else pinned_record_digests(repo_root))
     rows = []
     with zipfile.ZipFile(wheel) as archive:
         for info in archive.infolist():
-            if info.is_dir() or not is_wheel_data_member(info.filename):
+            if info.is_dir() or not is_wheel_member(info.filename):
                 continue
             payload = archive.read(info)
             if info.filename.lower().endswith((".nc", ".nc4")):
@@ -184,9 +188,10 @@ def _refuse_private_hosts(wheel: Path, repo_root: Path) -> list[str]:
     if rows:
         raise SystemExit(
             f"{wheel.name} publishes a private machine's name in "
-            f"{len(rows)} data member line(s): {rows[:10]}.  Reword the "
+            f"{len(rows)} member line(s): {rows[:10]}.  Reword the "
             "record to name the measurement rather than the machine it "
-            "ran on (tools/release_exclusions.py holds the rule).")
+            "ran on or the folder it was filed in "
+            "(tools/release_exclusions.py holds the rule).")
     return sorted({row["member"] for row in found})
 
 
@@ -585,7 +590,7 @@ def main(argv: list[str] | None = None) -> int:
             "sha256": distributions[0]["sha256"],
             "pins_bytes_exact": True,
             "record_digest_and_size_exact": True,
-            "private_machine_names_in_data_members": 0,
+            "private_machine_names_in_members": 0,
             "pinned_records_allowed_their_machine_names":
                 pinned_records_with_machine_names,
         },

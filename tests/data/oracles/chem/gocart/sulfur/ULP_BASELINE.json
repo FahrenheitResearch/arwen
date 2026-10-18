@@ -2,8 +2,8 @@
   "dt1_clock1_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 25,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -12,8 +12,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -178,8 +178,8 @@
   "dt1_clock1_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 25,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -188,8 +188,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -354,8 +354,8 @@
   "dt1_clock1_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 25,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -364,8 +364,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -441,8 +441,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 25,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -451,8 +451,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -644,8 +644,8 @@
   "dt1_clock1_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 25,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -654,8 +654,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -731,8 +731,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 25,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -741,8 +741,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -934,8 +934,8 @@
   "dt1_clock2_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 19,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -1110,8 +1110,8 @@
   "dt1_clock2_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 19,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -1286,8 +1286,8 @@
   "dt1_clock2_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 19,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -1373,8 +1373,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 19,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -1576,8 +1576,8 @@
   "dt1_clock2_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 19,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -1663,8 +1663,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 19,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -1866,8 +1866,8 @@
   "dt1_clock3_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 5,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -1876,13 +1876,13 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step1_so4": {
@@ -1901,13 +1901,13 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step2_so4": {
@@ -1926,13 +1926,13 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step3_so4": {
@@ -2042,8 +2042,8 @@
   "dt1_clock3_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 5,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -2052,13 +2052,13 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step1_so4": {
@@ -2077,13 +2077,13 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step2_so4": {
@@ -2102,13 +2102,13 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step3_so4": {
@@ -2218,8 +2218,8 @@
   "dt1_clock3_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 5,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -2228,8 +2228,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -2253,8 +2253,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -2278,8 +2278,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -2305,8 +2305,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 5,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -2315,8 +2315,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -2330,8 +2330,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -2345,8 +2345,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -2508,8 +2508,8 @@
   "dt1_clock3_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 5,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -2518,8 +2518,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -2543,8 +2543,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -2568,8 +2568,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -2595,8 +2595,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 5,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -2605,8 +2605,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -2620,8 +2620,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -2635,8 +2635,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -2798,8 +2798,8 @@
   "dt2_clock1_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 4,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -2808,8 +2808,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -2833,13 +2833,13 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step2_so4": {
@@ -2858,13 +2858,13 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step3_so4": {
@@ -2974,8 +2974,8 @@
   "dt2_clock1_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 4,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -2984,8 +2984,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -3009,13 +3009,13 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step2_so4": {
@@ -3034,13 +3034,13 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 40
       },
       "step3_so4": {
@@ -3150,8 +3150,8 @@
   "dt2_clock1_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 4,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -3160,8 +3160,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -3185,8 +3185,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -3210,8 +3210,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -3237,8 +3237,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 4,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -3247,8 +3247,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -3262,8 +3262,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -3277,8 +3277,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -3440,8 +3440,8 @@
   "dt2_clock1_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 4,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -3450,8 +3450,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -3475,8 +3475,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -3500,8 +3500,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -3527,8 +3527,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 4,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -3537,8 +3537,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -3552,8 +3552,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -3567,8 +3567,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -3730,8 +3730,8 @@
   "dt2_clock2_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -3906,8 +3906,8 @@
   "dt2_clock2_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -4082,8 +4082,8 @@
   "dt2_clock2_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -4169,8 +4169,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -4372,8 +4372,8 @@
   "dt2_clock2_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -4459,8 +4459,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -4662,8 +4662,8 @@
   "dt2_clock3_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -4672,8 +4672,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -4697,8 +4697,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -4722,8 +4722,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -4838,8 +4838,8 @@
   "dt2_clock3_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -4848,8 +4848,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -4873,8 +4873,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -4898,8 +4898,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -5014,8 +5014,8 @@
   "dt2_clock3_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -5024,8 +5024,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -5049,8 +5049,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -5074,8 +5074,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -5101,8 +5101,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -5111,8 +5111,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -5126,8 +5126,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -5141,8 +5141,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -5304,8 +5304,8 @@
   "dt2_clock3_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -5314,8 +5314,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -5339,8 +5339,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -5364,8 +5364,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -5391,8 +5391,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 2,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -5401,8 +5401,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -5416,8 +5416,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -5431,8 +5431,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -5594,8 +5594,8 @@
   "dt3_clock1_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 21,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -5604,8 +5604,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -5654,8 +5654,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -5770,8 +5770,8 @@
   "dt3_clock1_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 21,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -5780,8 +5780,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -5830,8 +5830,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -5946,8 +5946,8 @@
   "dt3_clock1_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 21,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -5956,8 +5956,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -6006,8 +6006,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -6033,8 +6033,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 21,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -6043,8 +6043,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -6073,8 +6073,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -6236,8 +6236,8 @@
   "dt3_clock1_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 21,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -6246,8 +6246,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -6296,8 +6296,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -6323,8 +6323,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 21,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -6333,8 +6333,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -6363,8 +6363,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 1,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -6526,8 +6526,8 @@
   "dt3_clock2_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -6702,8 +6702,8 @@
   "dt3_clock2_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -6878,8 +6878,8 @@
   "dt3_clock2_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -6965,8 +6965,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -7168,8 +7168,8 @@
   "dt3_clock2_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -7255,8 +7255,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 20,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -7458,8 +7458,8 @@
   "dt3_clock3_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 3,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -7468,8 +7468,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -7493,8 +7493,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -7518,8 +7518,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -7634,8 +7634,8 @@
   "dt3_clock3_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 3,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -7644,8 +7644,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -7669,8 +7669,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -7694,8 +7694,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -7810,8 +7810,8 @@
   "dt3_clock3_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 3,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -7820,8 +7820,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -7845,8 +7845,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -7870,8 +7870,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -7897,8 +7897,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 3,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -7907,8 +7907,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -7922,8 +7922,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -7937,8 +7937,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -8100,8 +8100,8 @@
   "dt3_clock3_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 3,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -8110,8 +8110,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -8135,8 +8135,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -8160,8 +8160,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -8187,8 +8187,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 3,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -8197,8 +8197,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -8212,8 +8212,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -8227,8 +8227,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 2,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -8390,8 +8390,8 @@
   "dt4_clock1_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -8400,8 +8400,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -8425,8 +8425,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -8450,8 +8450,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -8566,8 +8566,8 @@
   "dt4_clock1_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -8576,8 +8576,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -8601,8 +8601,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -8626,8 +8626,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -8742,8 +8742,8 @@
   "dt4_clock1_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -8752,8 +8752,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -8777,8 +8777,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -8802,8 +8802,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -8829,8 +8829,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -8839,8 +8839,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -8854,8 +8854,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -8869,8 +8869,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -9032,8 +9032,8 @@
   "dt4_clock1_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -9042,8 +9042,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -9067,8 +9067,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -9092,8 +9092,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -9119,8 +9119,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 24,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -9129,8 +9129,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -9144,8 +9144,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -9159,8 +9159,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 4,
-        "n_nonzero": 1,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -9322,8 +9322,8 @@
   "dt4_clock2_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 22,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -9498,8 +9498,8 @@
   "dt4_clock2_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 22,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -9674,8 +9674,8 @@
   "dt4_clock2_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 22,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -9761,8 +9761,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 22,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -9964,8 +9964,8 @@
   "dt4_clock2_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 22,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -10051,8 +10051,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 22,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -10254,8 +10254,8 @@
   "dt4_clock3_zero0_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -10264,8 +10264,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -10289,8 +10289,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 18,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -10314,8 +10314,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 36,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -10430,8 +10430,8 @@
   "dt4_clock3_zero0_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -10440,8 +10440,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -10465,8 +10465,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 18,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -10490,8 +10490,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 36,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -10606,8 +10606,8 @@
   "dt4_clock3_zero1_cloud0": {
     "native": {
       "tcosz": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -10616,8 +10616,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -10641,8 +10641,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 18,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -10666,8 +10666,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 36,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -10693,8 +10693,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -10703,8 +10703,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -10718,8 +10718,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 18,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -10733,8 +10733,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 36,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {
@@ -10896,8 +10896,8 @@
   "dt4_clock3_zero1_cloud1": {
     "native": {
       "tcosz": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -10906,8 +10906,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_msa": {
@@ -10931,8 +10931,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 18,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_msa": {
@@ -10956,8 +10956,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 36,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_msa": {
@@ -10983,8 +10983,8 @@
     },
     "native_lite": {
       "tcosz": {
-        "max_ulp": 1,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "ttday": {
@@ -10993,8 +10993,8 @@
         "n": 8
       },
       "cossza_1": {
-        "max_ulp": 14,
-        "n_nonzero": 2,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step1_so4": {
@@ -11008,8 +11008,8 @@
         "n": 40
       },
       "cossza_2": {
-        "max_ulp": 18,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step2_so4": {
@@ -11023,8 +11023,8 @@
         "n": 40
       },
       "cossza_3": {
-        "max_ulp": 36,
-        "n_nonzero": 3,
+        "max_ulp": 0,
+        "n_nonzero": 0,
         "n": 8
       },
       "step3_so4": {

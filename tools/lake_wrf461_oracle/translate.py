@@ -171,6 +171,9 @@ class Expression:
                     left = "lake_sum(" + rawargs[0].split("(")[0] + ")"
                 elif tok == "sign": left = "copysign(" + ",".join(args) + ")"
                 elif tok == "abs": left = "lake_abs(" + ",".join(args) + ")"
+                elif tok in ("exp", "log", "log10", "sin", "atan"):
+                    # Correctly rounded binary64 intrinsics (lake_support.cuh).
+                    left = "lake_" + tok + "(" + ",".join(args) + ")"
                 else: left = tok + "(" + ",".join(args) + ")"
             elif tok in self.symbols and self.symbols[tok].dims and tok in self.slices:
                 left = tok + ".data[_slice]"

@@ -16,6 +16,11 @@ class RangeReader(io.RawIOBase):
     def __init__(self, url, size, opener):
         self.url, self.size, self.opener, self.position = url, size, opener, 0
         self.transferred = 0
+        # The first network error, kept because zipfile reports any OSError
+        # while it looks for the central directory as "File is not a zip
+        # file", which named a refused connection or an HTTP 404 as a
+        # damaged bundle (2.9.1 verify of the on-demand doors).
+        self.network_error = None
 
     def seekable(self):
         return True
@@ -41,7 +46,13 @@ class RangeReader(io.RawIOBase):
             return b""
         start, end = self.position, self.position + count - 1
         request = Request(self.url, headers={"Range": f"bytes={start}-{end}", "Accept-Encoding": "identity"})
-        with self.opener(request) as response:
+        try:
+            response_cm = self.opener(request)
+        except OSError as error:
+            if self.network_error is None:
+                self.network_error = error
+            raise
+        with response_cm as response:
             if response.status != 206 or response.headers.get("Content-Range") != f"bytes {start}-{end}/{self.size}":
                 raise BridgeAssetError("partial fetch requires exact HTTP byte ranges; server refused or bundle size changed. Use fetch-bridges without --partial for a full download")
             data = response.read(count + 1)
@@ -89,6 +100,11 @@ def fetch_partial(pins, bundle, dest: Path, artifacts=None, *, progress=print, u
                 installed.append(final)
                 progress(f"gpuwm fetch-bridges: staged {pin.filename} by partial download")
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
+        if reader.network_error is not None:
+            raise assets.BridgeAssetError(
+                f"partial fetch failed: the release bundle could not be read "
+                f"from {assets.bundle_url(pins, bundle)}: "
+                f"{reader.network_error}") from error
         raise assets.BridgeAssetError(f"partial fetch failed: {error}") from error
     progress(f"gpuwm fetch-bridges: fetched {reader.transferred} of {bundle.bytes} bundle bytes")
     return installed

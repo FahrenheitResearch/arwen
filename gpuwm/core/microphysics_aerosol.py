@@ -290,6 +290,80 @@ def _wrf39_table_root() -> str:
     return str(ensure_thompson_fork_tables())
 
 
+def _apply_thompson_fork_call(
+        state: DomainState, cfg: RunConfig, dt: float, table_root: str, *,
+        refl_10cm_due: bool) -> MicrophysicsDiagnostics:
+    """One ``mp_physics=28`` call as the operational HRRR fork.
+
+    The whole of the fork's mp_gt_driver runs in one column kernel
+    (gpuwm/core/kernels/thompson_fork.cu, gpuwm.core.thompson_fork), in the
+    fork's own tendency form and arithmetic, so a column agrees with the
+    fork's Fortran word for word (tools/thompson_fork_oracle/
+    gpu_column_oracle.py).  The bracket around it is WOOF's: the full theta
+    and the Exner function formed as every scheme forms them, the pre-call
+    theta saved for ``h_diabatic``, the reflectivity stashed for output and
+    moist_physics_finish's clamped theta increment.
+    """
+    from gpuwm.core.mynn_radiation import wrf_itimestep
+    from gpuwm.core.refl import refl_melting_for, stash_refl_10cm
+    from gpuwm.core.thompson_aerosol_runtime import load_aerosol_device_tables
+    from gpuwm.core.thompson_fork import launch_thompson_fork_column
+    from gpuwm.core.thompson_runtime import load_classic_device_tables
+
+    nz, ny, nx = state.p.shape
+    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
+    th = state.scratch((nz, ny, nx), "mp_th")
+    pii = state.scratch((nz, ny, nx), "mp_pii")
+    dz = state.scratch((nz, ny, nx), "mp_dz8w")
+    z8w = state.scratch((nz + 1, ny, nx), "mp_z8w")
+    th[...] = thb + state.thp
+    from gpuwm.core.microphysics import prepare_microphysics_exner
+    prepare_microphysics_exner(state.p, pii)
+    z8w[...] = (phb + state.php) / DTYPE(c.G)
+    dz[...] = z8w[1:] - z8w[:-1]
+
+    surface_shape = (ny, nx)
+    rainnc = state.scratch(surface_shape, "mp_rainnc")
+    rainncv = state.scratch(surface_shape, "mp_rainncv")
+    snownc = state.scratch(surface_shape, "mp_snownc")
+    snowncv = state.scratch(surface_shape, "mp_snowncv")
+    graupelnc = state.scratch(surface_shape, "mp_graupelnc")
+    graupelncv = state.scratch(surface_shape, "mp_graupelncv")
+    sr = state.scratch(surface_shape, "mp_sr")
+
+    table_owner = load_classic_device_tables(_wrf39_table_root(),
+                                             version="wrf_39_noaa")
+    ccn_table = load_aerosol_device_tables(table_root).ccn_activation_table
+
+    save_pre_mp_theta(state)
+    refl = state.scratch((nz, ny, nx), "refl_10cm") if refl_10cm_due \
+        else None
+    # calc_refl10cm's melting-snow term: off on the fork's first step
+    # (itimestep 1, :5374-5379) and wherever WOOF's state policy turns the
+    # melting term off (gpuwm.core.refl.refl_melting_for).
+    elapsed = getattr(state, "elapsed_seconds", None)
+    first_step = (elapsed is not None
+                  and wrf_itimestep(float(elapsed), float(dt)) == 1)
+    launch_thompson_fork_column(
+        th, pii, state.p, state.w, dz, state.qv, state.qc, state.qr,
+        state.qi, state.qs, state.qg, state.ni, state.nr, state.nc,
+        state.nwfa, state.nifa, state.nwfa2d, th, rainnc, rainncv, snownc,
+        snowncv, graupelnc, graupelncv, sr, refl, state.effc, state.effi,
+        state.effs, table_owner, ccn_table, dt,
+        first_time_step=first_step or not refl_melting_for(state),
+        do_refl=bool(refl_10cm_due),
+        singular_fall=getattr(cfg, "thompson_fork_snow_fall",
+                              "blend") == "wrf_39_noaa")
+    if refl_10cm_due:
+        stash_refl_10cm(state, refl)
+    moist_physics_finish(state, cfg, th, dt)
+    return MicrophysicsDiagnostics(
+        rainnc=rainnc, rainncv=rainncv, sr=sr,
+        snownc=snownc, snowncv=snowncv,
+        graupelnc=graupelnc, graupelncv=graupelncv)
+
+
 def _apply_thompson_aerosol_call(
         state: DomainState, cfg: RunConfig, dt: float, *,
         refl_10cm_due: bool, version: str) -> MicrophysicsDiagnostics:
@@ -308,6 +382,11 @@ def _apply_thompson_aerosol_call(
     if missing:
         raise ValueError(
             "Thompson mp=28 state lacks " + ", ".join(missing))
+
+    from gpuwm.wrf_exact import ENABLED
+    if ENABLED and version == "wrf_39_noaa":
+        return _apply_thompson_fork_call(state, cfg, dt, table_root,
+                                        refl_10cm_due=refl_10cm_due)
 
     # The frozen mp=8 column masks, reused byte-for-byte.  Imported here
     # (not at module scope) for the same reason _apply_thompson does: it
@@ -781,12 +860,28 @@ def _apply_thompson_aerosol_call(
             working_cloud(condensation_rate), snowncv)
     else:
         launch_hydrometeor_column_mask(cloud_presence, snowncv)
+    # Correct mode, finding WB1 (RunConfig.thompson_cloud_surface_booking,
+    # gpuwm/core/thompson_cloud_booking.py): the cloud water this fallout
+    # takes out of the lowest level is booked in CLOUDNC instead of
+    # vanishing.  The fallout adds its divergence to qcten, so the column sum
+    # of qcten on the kernel's own density, before minus after, times DT is
+    # that water.  Exact mode (the key off) issues exactly the launcher
+    # sequence above and below, nothing more.
+    book_cloud = getattr(cfg, "thompson_cloud_surface_booking", False) is True
+    if book_cloud:
+        from gpuwm.core.thompson_cloud_booking import (
+            book_settled_cloud_tendency, cloud_column_water)
+        cloud_before = cloud_column_water(
+            qcten, temperature, state.p, state.qv, dz)
     launch_aa_cloud_sedimentation(
         state.qc, state.nc, ncten, temperature, state.p, state.qv,
         state.w[:-1], dz, dt,
         reference_density=frozen_reference_density,
         rain_active_columns=rainncv, cloud_active_columns=snowncv,
         qcten=qcten)
+    if book_cloud:
+        book_settled_cloud_tendency(state, cfg, cloud_before, qcten, dt,
+                                    temperature, state.p, state.qv, dz)
     if wrf39:
         launch_wrf39_ice_sedimentation(
             state.qi, state.ni, temperature, state.p, state.qv, dz,

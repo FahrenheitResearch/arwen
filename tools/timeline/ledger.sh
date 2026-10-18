@@ -8,7 +8,7 @@ ledger_emit() {
     attrs="${3-}"
     [[ -n "$attrs" ]] || attrs='{}'
     diagnostic=$("${GPUWM_LEDGER_PYTHON:-python3}" "$_GPUWM_LEDGER_PY" \
-        "${1-}" "${2:-mark}" --attrs "$attrs" 2>&1) || :
+        "${1-}" "${2:-mark}" --attrs "$attrs" --cpu-pid "$$" 2>&1) || :
     if [[ -n "$diagnostic" && "${_GPUWM_LEDGER_WARNED_PATH:-}" != "${GPUWM_TIME_LEDGER:-<unset>}" ]]; then
         if [[ "$diagnostic" == 'time ledger:'* ]]; then
             printf '%s\n' "$diagnostic" >&2 || :

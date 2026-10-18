@@ -137,8 +137,23 @@ class HealthLedger:
         import cupy as cp
 
         i = self._slot(site)
-        cp.bitwise_or(self._slots[i:i + 1], status[:1].reshape(1),
-                      out=self._slots[i:i + 1])
+        flags = status[:1].reshape(1)
+        if flags.dtype != self._slots.dtype:
+            # A site's status word may be a signed 32-bit integer (BEP's
+            # error_flags carries a Fortran line number).  uint32 | int32
+            # promotes to int64, which cannot be written back into the
+            # uint32 slot, so every BEP and BEM run under a deferred ledger
+            # crashed at its first urban call (17 combo-sweep runs,
+            # 2026-10-07 round 2, hidden until then by the door's urban
+            # refusal).  The words are flags: reinterpret the same 32 bits,
+            # which keeps the record a view (no allocation, capturable).
+            if (flags.dtype.kind not in "iu"
+                    or flags.dtype.itemsize != self._slots.dtype.itemsize):
+                raise TypeError(
+                    f"health site {site!r} reported a {flags.dtype} status; "
+                    "a status word is a 32-bit integer")
+            flags = flags.view(self._slots.dtype)
+        cp.bitwise_or(self._slots[i:i + 1], flags, out=self._slots[i:i + 1])
         self._describe[site] = describe
         self.records += 1
 

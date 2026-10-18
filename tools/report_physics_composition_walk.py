@@ -407,6 +407,15 @@ REMEDIES = (
      "after": _suite(mp_physics=2, ra_lw_physics=4, ra_sw_physics=4,
                      ra_rrtmg_variant="rrtmg_legacy",
                      wrf_rrtmg_compatibility="wrf-rrtmg-4-4-legacy-v1")},
+    {"id": "ccpp-tke-edmf-needs-surface-stability-functions",
+     "remedy": "Select revised MM5 (sf_sfclay_physics=1), which supplies "
+               "the FM/FH stability functions the CCPP closure divides by",
+     "before": _suite(bl_pbl_physics=901, sf_sfclay_physics=0,
+                      sf_surface_physics=0, ra_lw_physics=0,
+                      ra_sw_physics=0),
+     "after": _suite(bl_pbl_physics=901, sf_sfclay_physics=1,
+                     sf_surface_physics=0, ra_lw_physics=0,
+                     ra_sw_physics=0)},
     # Independent spectrum composition retired the coupled-LW/SW and
     # classic-RRTM/Dudhia-only refusals. Their former before cases now
     # accept unchanged and are covered by the positive composition gate.

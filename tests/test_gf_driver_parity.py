@@ -24,20 +24,17 @@ into 8e-3 relative.  So the gate runs twice -- once with the model and once
 with the oracle's own ``fzu`` for all three profiles -- and the pinned run is
 the one asserted bitwise.
 
-**The driver's own mixed precision, on 8 of the 216 columns.**  Those 8 are
-exactly ``gf_oracle.stage_rows_to_distrust`` -- the rows where
-``run_cup_gf.F90``'s reconstruction of this same algebra also disagrees with
-GFDRV, measured in session two and traced to ``module_gfs_physcons``
-declaring ``real(8)`` constants and initialising them from ``real(4)``
-literals.  The port is not adding anything: on ALL 216 columns it reproduces
-the stage path -- preparation, both schemes, both ``neg_check`` calls, and
-the ten post-``neg_check`` tendency fields -- bitwise
-(:func:`test_the_port_reproduces_the_stage_path_on_every_column`), so the
-residual is entirely GFDRV's.  It is a 1-2 ULP shift in ``xmb`` that scales
-the tendency profile; no branch flips, and ``GDC``/``GDC2``/``HTOP``/
-``HBOT``/``ktop_deep`` and the shallow diagnostics are bitwise on all 216
-because none of them carries ``xmb``.
+**No driver residual.**  Until 2026-10-07 this gate carried 8 of the 216
+columns as "GFDRV's own mixed precision".  The cause was ours: the reference
+(and the oracle's own decomposition, ``run_cup_gf.F90``) spelled the
+``module_gfs_physcons`` constants as accurate doubles, where WRF computes
+with ``float64(float32(9.80665))`` because the real(8) parameters are
+initialised from default-real literals.  With WRF's own words the pinned
+reference is bitwise against GFDRV on all 216 columns, and the guard that
+accepted the 8 is retired.
 """
+# Replaced in 2.9.1 (the WRF exact chain): test_on_those_eight_the_residual_is_amplitude_not_structure -> test_no_column_is_inexact.
+# Replaced in 2.9.1 (the WRF exact chain): test_the_eight_inexact_columns_are_the_fixtures_own -> test_no_column_is_inexact.
 
 from __future__ import annotations
 
@@ -52,7 +49,6 @@ from gpuwm.verify.gf_oracle import (
     GF_NZ,
     GF_ORACLE_DIR,
     load_gf_oracle,
-    stage_rows_to_distrust,
 )
 
 NZ = GF_NZ
@@ -108,7 +104,7 @@ def drv():
     return dict(fixture=fixture, got=got, pin=pin, gl=gl, gs=gs,
                 ncol=fixture.ncol, sl=fixture.stage_levels,
                 ss=fixture.stage_surface,
-                driver_exact=~stage_rows_to_distrust(fixture))
+                driver_exact=np.ones(fixture.ncol, dtype=bool))
 
 
 def _level(rs, name):
@@ -146,8 +142,7 @@ def _ulp(a, b, mask=None):
      "gdc", "gdc2"],
 )
 def test_gfdrv_level_output_bitwise(drv, field):
-    """Bitwise on the 208 columns where GFDRV and its own decomposition
-    agree; see this module's docstring for the other 8."""
+    """Bitwise on all 216 columns."""
     ok = drv["driver_exact"]
     w, bad, loc = _ulp(_level(drv["pin"], field)[ok], drv["gl"][field][ok])
     assert bad == 0
@@ -164,8 +159,7 @@ def test_gfdrv_precip_bitwise(drv, field):
 
 @pytest.mark.parametrize("field", ["htop", "hbot", "xmb_shallow"])
 def test_gfdrv_xmb_free_surface_output_bitwise_everywhere(drv, field):
-    """These three carry no deep ``xmb``, so the driver's mixed-precision
-    residual cannot reach them and all 216 columns are exact."""
+    """All 216 columns exact."""
     w, bad, loc = _ulp(_scalar(drv["pin"], field), drv["gs"][field])
     assert bad == 0
     assert w == 0, f"{field}: {w} ULP at column {loc[0]}"
@@ -174,22 +168,18 @@ def test_gfdrv_xmb_free_surface_output_bitwise_everywhere(drv, field):
 @pytest.mark.parametrize("field", ["gdc", "gdc2"])
 def test_the_cloud_water_diagnostics_are_bitwise_on_all_216(drv, field):
     """``GDC``/``GDC2`` carry ``cupclw``, which ``cup_up_moisture`` builds
-    without the mass flux, so the 8 mixed-precision columns cannot move them
-    -- and do not.  A useful witness that the residual really is confined to
-    ``xmb``."""
+    without the mass flux.  All 216 columns exact."""
     w, bad, _ = _ulp(_level(drv["pin"], field), drv["gl"][field])
     assert bad == 0 and w == 0
 
 
 # ==========================================================================
-# the 8 columns, and where they come from
+# the stage seam
 # ==========================================================================
 def test_the_port_reproduces_the_stage_path_on_every_column(drv):
     """The port against ``run_cup_gf.F90``'s own capture: preparation, both
     schemes, both ``neg_check`` calls.  Bitwise on all 216 columns and all
-    ten fields -- which is what proves the 8-column disagreement with GFDRV
-    below is the DRIVER's, inherited, and not something this port introduces.
-    """
+    ten fields."""
     for f in ["outt", "outq", "outqc", "outu", "outv", "outts", "outqs",
               "outqcs"]:
         w, bad, loc = _ulp(_level(drv["pin"], f), drv["sl"][f])
@@ -205,36 +195,13 @@ def test_the_port_reproduces_the_stage_path_on_every_column(drv):
         assert bad == 0 and w == 0, f
 
 
-def test_the_eight_inexact_columns_are_the_fixtures_own(drv):
-    """Not a new set: exactly ``stage_rows_to_distrust``.  If a change to the
-    port made a 9th column inexact this fails, and if a change made one exact
-    it fails too -- either is a finding, not an improvement."""
-    ok = drv["driver_exact"]
+def test_no_column_is_inexact(drv):
+    """Every column of GFDRV's tendency output is reproduced word for word.
+    Replaces the retired 8-column residual gate (see the module docstring)."""
     got = _level(drv["pin"], "rthcuten")
     want = drv["gl"]["rthcuten"]
     inexact = ~np.all(got.view(np.int32) == want.view(np.int32), axis=1)
-    assert np.array_equal(inexact, ~ok)
-    assert int(inexact.sum()) == 8
-
-
-def test_on_those_eight_the_residual_is_amplitude_not_structure(drv):
-    """A 1-2 ULP shift in ``xmb`` scaling the whole profile.  Bounded here,
-    and shown to flip no branch: ``ktop_deep``, ``HTOP``, ``HBOT`` and the
-    shallow indices agree with GFDRV on those columns too."""
-    bad = ~drv["driver_exact"]
-    got = _level(drv["pin"], "rthcuten")[bad]
-    want = drv["gl"]["rthcuten"][bad]
-    live = np.abs(want) > np.float32(1e-12)
-    rel = np.abs(got[live] - want[live]) / np.abs(want[live])
-    assert float(rel.max()) < 1e-4, f"grew to {float(rel.max()):.3e}"
-    w, _, _ = _ulp(got, want)
-    assert w <= 34, f"the 8-column ULP spread grew to {w}"
-    assert np.array_equal(
-        _int(drv["pin"], "ktop_deep")[bad],
-        drv["gs"]["ktop_deep"].astype(np.int64)[bad],
-    )
-    assert _ulp(_scalar(drv["pin"], "htop")[bad], drv["gs"]["htop"][bad])[0] == 0
-    assert _ulp(_scalar(drv["pin"], "hbot")[bad], drv["gs"]["hbot"][bad])[0] == 0
+    assert int(inexact.sum()) == 0, np.flatnonzero(inexact).tolist()
 
 
 @pytest.mark.parametrize(
@@ -435,9 +402,8 @@ def test_the_pinned_run_is_bitwise_on_every_output_word(drv):
     """The single claim this file exists to make, counted.
 
     With the oracle's own ``fzu``, the float32 reference reproduces GFDRV
-    word for word on the 208 columns where the driver's own decomposition is
-    exact: eight level fields and five surface fields, 208 * 40 * 8 + 208 * 5
-    = 67600 words, zero differing.
+    word for word on all 216 columns: eight level fields and five surface
+    fields, 216 * 40 * 8 + 216 * 5 = 70200 words, zero differing.
     """
     ok = drv["driver_exact"]
     n = 0
@@ -452,5 +418,5 @@ def test_the_pinned_run_is_bitwise_on_every_output_word(drv):
         b = drv["gs"][f][ok]
         assert np.array_equal(a.view(np.int32), b.view(np.int32)), f
         n += a.size
-    assert int(ok.sum()) == 208
-    assert n == 208 * NZ * 8 + 208 * 5
+    assert int(ok.sum()) == 216
+    assert n == 216 * NZ * 8 + 216 * 5

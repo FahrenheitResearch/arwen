@@ -201,7 +201,8 @@ def fixture_calls(scenario):
                 cp.asarray(coord.fnm, dtype=cp.float32), cp.asarray(coord.fnp, dtype=cp.float32),
                 map_factor, np.float32(1.0 / 900.0), np.float32(1.0 / 1100.0),
                 np.int32(nz), np.int32(ny), np.int32(nx),
-                np.int32(boundary_x), np.int32(boundary_y), np.int32(has_msf), np.int32(specified))
+                np.int32(boundary_x), np.int32(boundary_y), np.int32(has_msf), np.int32(specified),
+                np.int32(3))  # The production launcher's default vertical order.
         calls.append((kernel, (1, shape[-2], shape[0]), args))
     return calls
 

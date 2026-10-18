@@ -195,6 +195,13 @@ def test_parse_minimal_wps_namelist(tmp_path):
     assert abs(float(lon) - lon1[0, 0]) < 1e-9
 
 
+def test_wps_twin_without_geogrid_arrays_names_the_missing_fields(tmp_path):
+    nml = tmp_path / "namelist.wps"
+    nml.write_text("stub\n")
+    with pytest.raises(ValueError, match=r"&geogrid names no e_we, e_sn"):
+        grids_from_wps_namelist(nml)
+
+
 def test_unimplemented_projection_namelist_rejected(tmp_path):
     """Worldwide contract: mercator/polar namelists now BUILD grids
     (gpuwm.static.projection); only genuinely unimplemented WPS

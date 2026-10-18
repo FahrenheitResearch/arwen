@@ -27,6 +27,7 @@
 //! `GeogSelection`) STAYS PYTHON -- it is namelist/config orchestration
 //! -- and arrives here as nine resolved dataset paths.
 
+use rayon::prelude::*;
 use std::path::PathBuf;
 
 use crate::error::{Result, StaticError};
@@ -240,22 +241,34 @@ pub fn build_static_with_sampler_smoothed(
             nx: dom.nx,
             data: Vec::with_capacity(nz * dom.ny * dom.nx),
         };
-        for z in 0..nz {
-            let win = dom.window_plane(&ds, 3, z)?;
-            if z == 0 {
-                // Coverage is geometric and identical for every source month.
-                require(set, field, &ds, &win)?;
-            }
+        // Month 0 first, alone: it proves coverage (geometric, identical
+        // for every month) and fills the sampler's pixel-to-cell map, which
+        // every month of this dataset shares.  The other months then build
+        // on every core and are appended in month order, so the stack is
+        // the same words the month-at-a-time loop appended.
+        let plane = |z: usize, win: &crate::geog::GeogWindow| -> Result<Grid2> {
             let plane = dom.continuous(
                 &ds,
-                &win,
+                win,
                 z,
                 seq,
                 fill,
                 true,
                 Some(&active_e),
             )?;
-            months.data.extend_from_slice(&crop_grid(dom, &plane).data);
+            Ok(crop_grid(dom, &plane))
+        };
+        if nz > 0 {
+            let win = dom.window_plane(&ds, 3, 0)?;
+            require(set, field, &ds, &win)?;
+            months.data.extend_from_slice(&plane(0, &win)?.data);
+        }
+        let rest: Vec<Result<Grid2>> = (1..nz)
+            .into_par_iter()
+            .map(|z| plane(z, &dom.window_plane(&ds, 3, z)?))
+            .collect();
+        for month in rest {
+            months.data.extend_from_slice(&month?.data);
         }
         let plane_len = dom.ny * dom.nx;
         for z in 0..nz {

@@ -242,7 +242,7 @@ def _frame(seed: int) -> dict:
 
 
 def _write_wrfout(path, stamps, *, grid_id=2, dx=1000.0, seed_offset=0,
-                  model_label=None):
+                  model_label=None, t2_offset=0.0):
     grid = SimpleNamespace(truelat1=38.5, truelat2=39.5, stand_lon=-96.5,
                            ref_lat=39.0, ref_lon=-96.5)
     attrs = wrf_global_attrs(
@@ -254,7 +254,9 @@ def _write_wrfout(path, stamps, *, grid_id=2, dx=1000.0, seed_offset=0,
     with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=dx, dy=dx,
                       global_attrs=attrs) as writer:
         for index, stamp in enumerate(stamps):
-            writer.write_frame(stamp, _frame(seed=7 + index + seed_offset))
+            fields = _frame(seed=7 + index + seed_offset)
+            fields["T2"] = (fields["T2"] + np.float32(t2_offset)).astype(np.float32)
+            writer.write_frame(stamp, fields)
     return path
 
 
@@ -1521,8 +1523,11 @@ def test_the_render_after_the_availability_listing_imports_nothing(
     assert len(transcripts) == 2, "one availability listing, one render"
     listing, draw = transcripts
     assert "PROCESS Opening WRF " in listing
-    assert "PROCESS Reusing the imported WRF run " in draw, draw
+    # The listing drops the unavailable wind window, changing the scoped
+    # field set. Its saved import still supplies all surviving products.
+    assert "IMPORTED from " in draw and "(no frame reopened)" in draw, draw
     assert "PROCESS Opening WRF " not in draw, draw
+    assert "PROCESS Computing WRF " not in draw, draw
 
 
 @needs_renderer
@@ -2040,6 +2045,125 @@ def test_native_run_difference_reaches_the_cli_and_publishes_its_pictures(
                                           encoding="utf-8")
         (folder / "stdout.log").write_text(transcript.out, encoding="utf-8")
         (folder / "stderr.log").write_text(transcript.err, encoding="utf-8")
+
+
+def _png_rgb(path) -> tuple[int, int, list[tuple[int, int, int]]]:
+    """(width, height, RGB pixels) of an 8-bit RGB or RGBA PNG, decoded with
+    zlib alone, so the pixel checks add no image-library dependency."""
+
+    import zlib
+
+    data = Path(render_layout.fs_path(path)).read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", f"{path} is not a PNG"
+    offset, idat, header = 8, b"", None
+    while offset < len(data):
+        length, kind = struct.unpack(">I4s", data[offset:offset + 8])
+        body = data[offset + 8:offset + 8 + length]
+        if kind == b"IHDR":
+            header = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            idat += body
+        offset += 12 + length
+    width, height, depth, color, _, _, interlace = header
+    assert depth == 8 and color in (2, 6) and interlace == 0, header
+    channels = 3 if color == 2 else 4
+    stride = width * channels
+    raw = zlib.decompress(idat)
+    rows, previous = [], bytearray(stride)
+    for y in range(height):
+        start = y * (stride + 1)
+        kind, line = raw[start], bytearray(raw[start + 1:start + 1 + stride])
+        for i in range(stride):
+            left = line[i - channels] if i >= channels else 0
+            up = previous[i]
+            corner = previous[i - channels] if i >= channels else 0
+            if kind == 1:
+                line[i] = (line[i] + left) & 255
+            elif kind == 2:
+                line[i] = (line[i] + up) & 255
+            elif kind == 3:
+                line[i] = (line[i] + (left + up) // 2) & 255
+            elif kind == 4:
+                guess = left + up - corner
+                pa, pb, pc = abs(guess - left), abs(guess - up), abs(guess - corner)
+                pick = left if pa <= pb and pa <= pc else (up if pb <= pc else corner)
+                line[i] = (line[i] + pick) & 255
+        rows.append(bytes(line))
+        previous = line
+    pixels = [tuple(row[x * channels:x * channels + 3])
+              for row in rows for x in range(width)]
+    return width, height, pixels
+
+
+def _blue_share(path) -> float:
+    """The share of the map's middle that is drawn in a blue difference band.
+
+    The middle of the canvas (left of the colour bar, below the header) is
+    all map, so a uniform negative difference that the bar draws fills it
+    with blue, and one the bar's neutral bands swallow leaves it white.
+    """
+
+    width, height, pixels = _png_rgb(path)
+    xs = range(int(width * 0.15), int(width * 0.75))
+    ys = range(int(height * 0.25), int(height * 0.85))
+    blue = sum(1 for y in ys for x in xs
+               if pixels[y * width + x][2] - pixels[y * width + x][0] > 50)
+    return blue / (len(xs) * len(ys))
+
+
+@needs_renderer
+def test_a_difference_inside_the_fixed_bars_neutral_bands_is_drawn_not_blank(
+        tmp_path, capsys):
+    """WHAT BREAKAGE THIS PREVENTS (gate law): a 2 m temperature difference
+    of 0.9 °F on every cell drew as a blank white map, because the fixed
+    +/-10 °F bar's neutral middle bands reach 2 °F; two runs that differ
+    everywhere looked identical.  Now the bar is fitted to the difference,
+    the map is coloured, the receipt names the rule, and identical runs
+    still say so on the fixed bar."""
+
+    name = "wrfout_d02_1974-04-03_18_00_00.nc"
+    a_dir, b_dir, same_dir = tmp_path / "a", tmp_path / "b", tmp_path / "same"
+    for folder in (a_dir, b_dir, same_dir):
+        folder.mkdir()
+    _write_wrfout(a_dir / name, _STAMPS[:1])
+    _write_wrfout(b_dir / name, _STAMPS[:1], t2_offset=0.5)
+    _write_wrfout(same_dir / name, _STAMPS[:1])
+
+    def draw(other, case, *extra):
+        command = ["render", "--diff", str(a_dir), str(other), "--products", "t2",
+                   "--out", str(tmp_path / case), *extra]
+        rc = cli.main(command)
+        transcript = capsys.readouterr()
+        out = run_stamp.latest(tmp_path / case)
+        pictures = sorted(out.rglob("*.png")) if out is not None else []
+        return rc, transcript, pictures
+
+    rc, transcript, pictures = draw(b_dir, "warm")
+    assert rc == 0, transcript.err
+    line = next(row for row in transcript.out.splitlines()
+                if "difference d02-1km_2m_temperature" in row)
+    assert "(adaptive(table=10," in line, line
+    assert "differing=192" in line and "cells=192" in line, line
+    assert re.search(r"max_abs=0\.90\d", line), line
+    assert len(pictures) == 1, pictures
+    assert _blue_share(pictures[0]) > 0.5, "the difference was drawn as no difference"
+
+    rc, transcript, pictures = draw(same_dir, "same")
+    assert rc == 0, transcript.err
+    line = next(row for row in transcript.out.splitlines()
+                if "difference d02-1km_2m_temperature" in row)
+    assert "(table)" in line and "differing=0" in line, line
+    assert _blue_share(pictures[0]) < 0.01
+
+    # Every bar fitted to its own difference, by name; an unreadable table
+    # is refused before anything is drawn.
+    rc, transcript, _ = draw(b_dir, "auto", "--diff-table", "auto")
+    assert rc == 0, transcript.err
+    assert "(p99=0.90" in transcript.out, transcript.out
+    rc, transcript, pictures = draw(b_dir, "missing", "--diff-table",
+                                    str(tmp_path / "no-such-table.json"))
+    assert rc == 2 and "--diff-table" in transcript.err, transcript.err
+    assert pictures == []
 
 
 @needs_renderer

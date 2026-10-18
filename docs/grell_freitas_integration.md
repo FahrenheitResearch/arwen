@@ -9,11 +9,11 @@ file is only the set of things that will bite someone folding the lane in.
 ## 1. The label is `implemented-unverified`, and a run does not change that
 
 `scientific_evidence: none`. Grell-Freitas is bitwise against WRF v4.6.1
-at the whole-driver boundary — 216 oracle columns, 208 of them word for
-word on both the float32 CPU authority and the CUDA translation unit, the
-remaining 8 bounded by the driver's own `module_gfs_physcons` mixed
-precision at max 34 ULP — and that is **conformance evidence, not
-scientific validation**. No gpuwm/WRF forecast comparison (code
+at the whole-driver boundary — all 216 branch-targeted oracle columns on
+both the float32 CPU authority and the CUDA translation unit, and all 280
+realistic regime columns on the CUDA translation unit with nothing pinned
+(WRF linked with the correctly rounded gamma WOOF ships) — and that is
+**conformance evidence, not scientific validation**. No gpuwm/WRF forecast comparison (code
 verification) is recorded for this scheme, and no GF forecast score
 against observations (validation) is published here.
 
@@ -61,8 +61,8 @@ The WRF-faithful off-by-one exists only behind a launch argument
 so. An integrator should not add one.
 
 The restart identity binds the choice:
-`grell-freitas-wrf461-gfdrv-corrected-k22-v1`. A checkpoint written under
-the shipped identity cannot resume under a WRF-faithful build.
+`grell-freitas-wrf461-gfdrv-corrected-k22-v2`. A checkpoint written under
+the shipped identity cannot resume under a WRF-faithful build. Version 2 also binds the shallow closure top bound and lower-face W, so a version 1 checkpoint cannot silently resume with the changed defaults.
 
 Measured ledger for the difference: k22 moves on 3 of 18 fixture cases,
 all three rejected under both modes with identical `ierr`, and **zero**
@@ -106,8 +106,10 @@ The kernel is bitwise; these are about what the engine can hand it today.
    checkpoints move.
 2. **Convective momentum tendencies.** The kernel computes GF's
    `dudt`/`dvdt`; `CumulusResult` carries no momentum slots, so they are
-   not coupled. WRF couples them.
-3. **w on mass levels** is the KF-precedent average `0.5*(w[k]+w[k+1])`.
+   not coupled. Stock WRF 4.6.1's `module_physics_addtendc.F`
+   `CASE(GDSCHEME,G3SCHEME,GFSCHEME)` adds the scalar slots only.
+   The computed momentum rates still need diagnostic history output.
+3. **Vertical velocity** is lower-face `w[k]` in strict and default arithmetic, matching GFDRV. The former adjacent-face average changed closure forcing and rain.
 
 **MEASURED regime behaviour (2026-08-17).** Two 12 km single-domain 6 h
 real-case twin pairs (150x120x49, tree route, KF control differing only

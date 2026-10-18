@@ -652,6 +652,9 @@ def test_go_prepares_on_the_cpu_instead_of_refusing_the_run(
     config = tmp_path / "prep-fit.toml"
     config.write_text(_STREAMED_ERA5, encoding="utf-8")
     monkeypatch.setattr(streaming, "_host_total_bytes", lambda: 2048 * GIB)
+    # The host's AVAILABLE bytes too: the gate weighs the CPU preparation against them, and on a 16 GB runner
+    # busy with its own test workers the real reading fell under the preparation's 9.2 GiB (2.9.2 R7b route B).
+    monkeypatch.setattr(preflight, "host_available_bytes", lambda: 2048 * GIB)
     exp = preflight._load_experiment_any(config)
     # The gate's own machine, built from the stand-in card's reading: no
     # process here stands up a CUDA context.

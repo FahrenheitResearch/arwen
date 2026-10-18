@@ -378,40 +378,27 @@ def _check_fields(fields: dict, shape) -> None:
 
 def launch_refl10cm_morrison(qv, qr, nr, qs, ns, qg, ng, t, p, refl, *,
                              morr_rimed_ice: int = 1) -> None:
-    """One CUDA thread per column: Morrison ``refl10cm_hm`` into ``refl``.
+    """Morrison ``refl10cm_hm`` into ``refl``: WRF's own routine, the
+    transcription in ``kernels/morrison.cu`` (``mo_refl10cm``, graded
+    against WRF's Fortran with the scheme by
+    ``tools/morrison_wrf461_oracle``).
 
     All arrays are contiguous FP32 ``(nz, ny, nx)``; ``t`` is air
     temperature (K), ``p`` full pressure (Pa), mixing ratios kg/kg and
     number concentrations kg-1 (the scheme's own prognostic moments).
     ``refl`` receives dBZ with the wrapper's -35 floor
-    (module_mp_morr_two_moment.F:913-917).
-
-    As in WRF, an active mass moment requires a finite, strictly positive
-    matching number moment.  WRF's routine has no number-moment guard
-    (:4544-4584); post-Morrison states meet the precondition through the
-    scheme's nonnegative clipping and bounded-slope reconstruction
-    (:1528-1635).  Inputs outside that production contract have no defined
-    meteorological interpretation; gpuwm returns non-finite output at the
-    affected level rather than silently mapping it to clear air.
+    (module_mp_morr_two_moment.F:913-917).  ``refl.cu``'s former column
+    kernel ``refl10cm_morrison_column`` stays in that byte-frozen file and
+    is no longer launched.
     """
     shape = refl.shape
     if len(shape) != 3:
         raise ValueError(f"refl fields must be 3-D, got {shape}")
-    nz, ny, nx = shape
-    if nz > _KMAX:
-        raise ValueError(f"nz={nz} exceeds REFL_KMAX={_KMAX}")
     _check_fields({"qv": qv, "qr": qr, "nr": nr, "qs": qs, "ns": ns,
                    "qg": qg, "ng": ng, "t": t, "p": p, "refl": refl}, shape)
-    rc = radar_init(morr_rimed_ice)
-    kernel = _column_kernel("refl10cm_morrison_column", nz)
-    blocks = (ny * nx + _COLUMN_TPB - 1) // _COLUMN_TPB
-    kernel((blocks,), (_COLUMN_TPB,),
-           (qv, qr, nr, qs, ns, qg, ng, t, p, _device_tables(),
-            np.float64(rc.k_w),
-            np.float64(rc.m_w_0.real), np.float64(rc.m_w_0.imag),
-            np.float64(rc.m_i_0.real), np.float64(rc.m_i_0.imag),
-            np.float64(rc.xam_g),
-            refl, np.int32(nz), np.int32(ny), np.int32(nx)))
+    from gpuwm.core.morrison import launch_refl10cm_wrf
+    launch_refl10cm_wrf(qv, qr, nr, qs, ns, qg, ng, t, p, refl,
+                        morr_rimed_ice=morr_rimed_ice)
 
 
 def launch_refl10cm_kessler(qv, qr, t, p, refl) -> None:
@@ -467,7 +454,8 @@ def refl_melting_for(state) -> bool:
 wsm6_refl_melting_for = refl_melting_for
 
 def launch_refl10cm_wsm6(qv, qr, qs, qg, t, p, refl, *,
-                          hail_opt: int = 0, melting: bool = True) -> None:
+                          hail_opt: int = 0, melting: bool = True,
+                          radar_initialization="column_oracle") -> None:
     """WRF ``refl10cm_wsm6`` into dBZ.
 
     ``melting=True`` (the WRF/MPAS-A routine verbatim, one CUDA thread per
@@ -493,13 +481,36 @@ def launch_refl10cm_wsm6(qv, qr, qs, qg, t, p, refl, *,
     nz, ny, nx = shape
     _check_fields({"qv": qv, "qr": qr, "qs": qs, "qg": qg,
                    "t": t, "p": p, "refl": refl}, shape)
-    from gpuwm.core.wsm6 import wsm6_kernel, wsm6_radar_words_on_device
-    rf, rd = wsm6_radar_words_on_device(hail_opt)
-    blocks = (ny * nx + _COLUMN_TPB - 1) // _COLUMN_TPB
-    wsm6_kernel("wsm6_refl10cm_column", nz)(
-        (blocks,), (_COLUMN_TPB,),
-        (qv, qr, qs, qg, t, p, rf, rd, refl, np.int32(1 if melting else 0),
-         np.int32(nz), np.int32(ny), np.int32(nx)))
+    import cupy as cp
+    from gpuwm.core.wsm6 import (wsm6_kernel, wsm6_radar_words_on_device,
+                                 wsm6_tile_columns)
+    rf, rd = wsm6_radar_words_on_device(hail_opt, initialization=radar_initialization)
+    kernel = wsm6_kernel("wsm6_refl10cm_column", nz)
+    # Column arrays in a workspace for the columns in flight, as
+    # launch_wsm6 (kernels/wsm6.cu, COLUMN WORKSPACE): five float, four
+    # double and one byte row per level per column, tiles by column offset.
+    ncol = ny * nx
+    tile = wsm6_tile_columns(kernel, ncol)
+    if tile < ncol and tile % _COLUMN_TPB:
+        # Same breakage as launch_wsm6: a partial tile's last block would
+        # also write the next tile's first columns.
+        raise ValueError(f"WSM6 reflectivity tile {tile} must be a multiple "
+                         f"of {_COLUMN_TPB} columns when it splits the mesh")
+    lanes = ((tile + _COLUMN_TPB - 1) // _COLUMN_TPB) * _COLUMN_TPB
+    wsf = cp.empty(lanes * 5 * nz, dtype=cp.float32)
+    wsd = cp.empty(lanes * 4 * nz, dtype=cp.float64)
+    wsc = cp.empty(lanes * nz, dtype=cp.uint8)
+    try:
+        for lo in range(0, ncol, tile):
+            count = min(tile, ncol - lo)
+            kernel(
+                ((count + _COLUMN_TPB - 1) // _COLUMN_TPB,), (_COLUMN_TPB,),
+                (qv, qr, qs, qg, t, p, rf, rd, refl,
+                 np.int32(1 if melting else 0),
+                 np.int32(nz), np.int32(ny), np.int32(nx),
+                 wsf, wsd, wsc, np.int32(lo)))
+    finally:
+        del wsf, wsd, wsc
 
 
 #: WRF v4.6.1's own radar words for WDM6, as ``wdm6init`` then
@@ -1060,11 +1071,21 @@ def compute_refl_10cm(
         launch_refl10cm_wsm6(
             state.qv, state.qr, state.qs, state.qg, t, p, refl,
             hail_opt=cfg.wsm6_hail_opt if mp == 6 else 0,
-            melting=refl_melting_for(state))
+            melting=refl_melting_for(state),
+            # A strict (GPUWM_WRF_EXACT=1) run replays the stock scalar
+            # build's radar_init words; a default run keeps the column
+            # oracle's, as 2.9.1 did.
+            radar_initialization=("scalar_build" if _wrf_exact_enabled()
+                                  else "column_oracle"))
     else:
         launch_refl10cm_kessler(state.qv, state.qr, t, p, refl)
     return refl
 
+
+
+def _wrf_exact_enabled() -> bool:
+    from gpuwm.wrf_exact import ENABLED
+    return bool(ENABLED)
 
 def wsm3_precipitation_phases(xp, qr, t):
     """WSM3's own phase split of its one precipitation class: ``(rain, snow)``.
@@ -1188,6 +1209,16 @@ def compute_and_stash_refl_10cm(
         state, cfg, temperature, pressure, *,
         thompson_graupel_number=None) -> None:
     """Compute from WRF's microphysics-time inputs and stage for output."""
+    from gpuwm.wrf_exact import ENABLED
+    from gpuwm.core.physics_inventory import WRF_INACTIVE_REFL_MICROPHYSICS
+    if ENABLED and cfg.mp_physics in WRF_INACTIVE_REFL_MICROPHYSICS:
+        # Stock Kessler never writes the forecast radar slot. Retain its
+        # real initialized value; standalone reflectivity still computes
+        # the rain diagnostic and default forecast arithmetic is unchanged.
+        refl = state.scratch(state.p.shape, "refl_10cm")
+        refl.fill(0.0)
+        stash_refl_10cm(state, refl)
+        return
     stash_refl_10cm(
         state, compute_refl_10cm(
             state, cfg, temperature=temperature, pressure=pressure,

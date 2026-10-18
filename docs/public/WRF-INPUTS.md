@@ -25,8 +25,9 @@ cumulus persistence, accumulators and clock come from the file; moist theta
 is converted to ArWen's dry theta. The run ends where the namelist ends;
 `--run-seconds` sets the window after the restart instant. State the file
 holds for a scheme ArWen cannot continue, or a scheme that differs from the
-one that wrote it, is refused by name. NCAR's v4.4 benchmark folders run as
-shipped.
+one that wrote it, is refused by name. NCAR's v4.4 benchmark folders
+(https://www2.mmm.ucar.edu/wrf/users/benchmark/v44/, for example
+`v4.4_bench_conus12km.tar.gz`, 517 MB, 3.2 GB unpacked) run as shipped.
 
 To time a run the way WRF's `rsl.out` reports it, add `--benchmark`:
 
@@ -103,9 +104,11 @@ Metgrid soil can contain depth-node stacks (`SOILT`, `SOILM`, `SOIL_LEVELS`) or
 layer stacks (`ST`, `SM`, `SOIL_LAYERS`) with the corresponding WPS layer names.
 The actual depths must support the selected land model's target geometry.
 Flagged analyzed mass categories are retained according to the active physics
-package. If a flagged number concentration is active but its native
-initialization is unavailable, use `real.exe` and the `--wrfinput` door to retain
-that state. Likewise, a request for WRF's sea-level-pressure reconstruction is
+package. Flagged number concentrations (QNI, QNC, QNR, QNWFA, QNIFA) are
+initialized natively for every package that transports them and are discarded,
+as an inactive WRF species is, by a package that does not. The one flagged field
+with no species in this build is QNBCA: under `mp_physics = 28` the door refuses
+`FLAG_QNBCA = 1` by name, so regenerate the met_em without QNBCA. Likewise, a request for WRF's sea-level-pressure reconstruction is
 distinct from the implemented source-pressure/terrain reconstruction.
 
 Moving nests need forcing and static coverage at their future positions. A

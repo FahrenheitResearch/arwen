@@ -30,6 +30,15 @@ program run_cup_gf_oracle
   use module_cu_gf_sh, only: cup_gf_sh
   use module_cu_gf_wrfdrv, only: gfdrv
   use gf_cases
+  ! The driver's GFS constants come from the pinned module_gfs_physcons
+  ! itself, NOT from respelled literals.  WRF declares them real(8) and
+  ! initialises them from DEFAULT-REAL literals (con_g = 9.80665e+0), so
+  ! the words GFDRV computes with are float64(float32(9.80665)) =
+  ! 0x40239D0140000000, not the accurate double 0x40239D013A92A305.  An
+  ! earlier revision of this program spelled them 9.80665e+0_kind_phys and
+  ! so disagreed with GFDRV on 8 of 216 rows; with WRF's own words the
+  ! decomposition is exact on all 216 (gf-stage-consistency.csv).
+  use module_gfs_physcons, only: con_g, con_cp, con_hvap
   implicit none
 
   integer, parameter :: nz = gf_nz
@@ -62,10 +71,8 @@ program run_cup_gf_oracle
   ! omeg and dhdt, and this fixture measured that: with float32 constants the
   ! decomposition disagreed with GFDRV on 10 of 216 rows, all of them columns
   ! sitting on a branch boundary where one ULP flips the answer.
-  integer, parameter :: kind_phys = selected_real_kind(13, 60)
-  real(kind=kind_phys), parameter :: con_g = 9.80665e+0_kind_phys
-  real(kind=kind_phys), parameter :: con_cp = 1.0046e+3_kind_phys
-  real(kind=kind_phys), parameter :: con_hvap = 2.5000e+6_kind_phys
+  ! (con_g, con_cp and con_hvap are USEd from module_gfs_physcons above:
+  ! WRF's own parameters, not respellings.  See the note at the USE.)
 
   ! --- the prepared column (GFDRV's locals, by their WRF names) -------------
   real, dimension(its:ite, kts:kte) :: zo, t2d, q2d, po, p2d, us, vs, rhoi

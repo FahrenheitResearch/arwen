@@ -7,7 +7,7 @@ Runge-Kutta outer integration wrapping split-explicit acoustic steps
 (forward-backward horizontal, implicit vertical, recoupled to the large step), on a
 hybrid terrain-following dry-mass vertical coordinate, FP32 on CUDA
 [docs/gpuwm-project-history.md:65; README.md, current release scope]. The RK stage table is a
-config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:959].
+config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:983].
 
 Advection is WRF's stencils: horizontal momentum and scalars are the WRF flux5
 (5th-order) stencil, and the vertical faces take WRF's `vert_order` ladder,

@@ -78,6 +78,7 @@ impl VirtualFactor {
 /// respect to liquid water (see `fix_gfs_rh` in `WPS/ungrib/src/rrpr.F`), so
 /// this is the right saturation to divide by and an ice saturation is not.
 #[allow(clippy::excessive_precision)]
+/// MPAS v8.4.2 core_atmosphere/physics/mpas_atmphys_functions.F:156-186.
 pub fn rslf(p: f32, t: f32) -> f32 {
     // Transcribed at the Fortran's own written precision, not rounded to what
     // f32 can hold: the digits are the provenance.
@@ -104,6 +105,7 @@ pub fn rslf(p: f32, t: f32) -> f32 {
 /// Rewrite RH with respect to ice below freezing, after it has been used for
 /// `qv`.  The ungrib reconstruction, including the linear blend GFS applies
 /// between -20 C and 0 C.
+/// MPAS v8.4.2 core_init_atmosphere/mpas_init_atm_cases.F:7990-8035.
 pub fn convert_relhum_wrt_ice(t: &[f32], relhum: &mut [f32]) {
     for (i, &temp) in t.iter().enumerate() {
         if temp <= 273.15 {
@@ -126,6 +128,7 @@ pub fn convert_relhum_wrt_ice(t: &[f32], relhum: &mut [f32]) {
 
 /// Two-metre specific humidity from the two-metre temperature, surface
 /// pressure and two-metre relative humidity.
+/// MPAS v8.4.2 core_init_atmosphere/mpas_init_atm_cases.F:5248-5251.
 pub fn diagnose_q2(t2m: f32, psfc: f32, rh2: f32) -> f32 {
     let es = 6.112 * ((17.27 * (t2m - 273.16)) / (t2m - 35.86)).exp();
     let rs = 0.622 * es * 100.0 / (psfc - es * 100.0);
@@ -137,6 +140,7 @@ pub fn diagnose_q2(t2m: f32, psfc: f32, rh2: f32) -> f32 {
 /// 6.112/17.27/35.86 triple used later.  Both are in the Fortran; both are
 /// kept, because the later one overwrites the earlier one and a reader
 /// comparing the two needs to see that.
+/// MPAS v8.4.2 core_init_atmosphere/mpas_init_atm_cases.F:4128-4130.
 pub fn diagnose_q2_surface_pass(t2m: f32, psfc: f32, rh2: f32) -> f32 {
     let mut es = SVP1 * 10.0 * (SVP2 * (t2m - SVPT0) / (t2m - SVP3)).exp();
     es = es.min(0.99 * 0.01 * psfc);
@@ -175,6 +179,7 @@ pub struct ColumnState {
 /// potential temperature and then `theta_m`, exactly as the Fortran reuses its
 /// own array.
 #[allow(clippy::too_many_arguments)]
+/// MPAS v8.4.2 core_init_atmosphere/mpas_init_atm_cases.F:5177-5410.
 pub fn build_column(
     t_in: &[f32],
     pressure_in: &[f32],
@@ -308,6 +313,71 @@ pub fn build_column(
     }
 
     s
+}
+
+/// Coupled horizontal/vertical winds at the case-7 driver boundary.
+pub struct WindState {pub ru:Vec<Vec<f32>>,pub rw:Vec<Vec<f32>>,pub w:Vec<Vec<f32>>}
+/// MPAS v8.4.2 core_init_atmosphere/mpas_init_atm_cases.F:5336-5395.
+/// Connectivity here retains the file's one-based indexing.
+#[allow(clippy::too_many_arguments)]
+pub fn diagnose_winds(u_edge:&[Vec<f32>],rho_zz:&[&[f32]],owners:&[[usize;2]],
+    counts:&[usize],edges:&[Vec<usize>],metrics:&super::capsule::VerticalMetrics,
+    order:i32,coefficient:f32)->WindState {
+    use rayon::prelude::*;
+    let n_cells=rho_zz.len();let n_edges=owners.len();let nz=metrics.n_vert_levels;
+    // ru, rw and w.
+    // Columns are independent. Keep the level arithmetic in its original
+    // order while assigning each output column to one Rayon worker.
+    let mut ru: Vec<Vec<f32>> = (0..n_edges).into_par_iter().map(|_| vec![0.0f32; nz]).collect();
+    ru.par_iter_mut().enumerate().for_each(|(e, out)| {
+        let [c1, c2] = owners[e];
+        let c1 = (c1.max(1) - 1).min(n_cells - 1);
+        let c2 = (c2.max(1) - 1).min(n_cells - 1);
+        for k in 0..nz {
+            out[k] = u_edge[e][k] * 0.5 * (rho_zz[c1][k] + rho_zz[c2][k]);
+        }
+    });
+    // w and rw are dimensioned against nVertLevelsP1 in the file, and the
+    // case code fills only k = 2 .. nVertLevels; the bottom and the top stay
+    // at zero.  Allocating nz here instead would emit a short slab.
+    let nzp1 = nz + 1;
+    let mut rw: Vec<Vec<f32>> = (0..n_cells).into_par_iter().map(|_| vec![0.0f32; nzp1]).collect();
+    rw.par_iter_mut().enumerate().for_each(|(c, out)| {
+        for i in 0..counts[c] {
+            let e = edges[c][i];
+            if e == 0 || e > n_edges {
+                continue;
+            }
+            let e = e - 1;
+            let side_one = owners[e][0] == c + 1;
+            for k in 1..nz {
+                let flux = metrics.fzm[k] * ru[e][k] + metrics.fzp[k] * ru[e][k - 1];
+                let metric = metrics.fzm[k] * metrics.zz[c][k] + metrics.fzp[k] * metrics.zz[c][k - 1];
+                if side_one {
+                    out[k] -= metric * metrics.zb[e][0][k] * flux;
+                } else {
+                    out[k] += metric * metrics.zb[e][1][k] * flux;
+                }
+                if order == 3 {
+                    let sign = if ru[e][k].is_sign_negative() { -1.0f32 } else { 1.0f32 };
+                    if side_one {
+                        out[k] += sign * coefficient * metric * metrics.zb3[e][0][k] * flux;
+                    } else {
+                        out[k] -= sign * coefficient * metric * metrics.zb3[e][1][k] * flux;
+                    }
+                }
+            }
+        }
+    });
+    let mut w: Vec<Vec<f32>> = (0..n_cells).into_par_iter().map(|_| vec![0.0f32; nzp1]).collect();
+    w.par_iter_mut().enumerate().for_each(|(c, out)| {
+        for k in 1..nz {
+            out[k] = rw[c][k]
+                / (metrics.fzp[k] * rho_zz[c][k - 1] + metrics.fzm[k] * rho_zz[c][k]);
+        }
+    });
+
+    WindState {ru,rw,w}
 }
 
 /// Rotate a first-guess wind pair to the edge normal.

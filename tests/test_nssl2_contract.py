@@ -135,27 +135,27 @@ def test_the_low_temperature_cnuc_hack_reads_the_raw_staggered_w():
     than absent.
 
     The gate is two-sided on purpose: it requires the raw element in the
-    cnuc block AND requires the mass-level average to survive at the two
-    ``wvel`` sites, so it pins WRF's own distinction rather than banning
+    cnuc block AND requires the mass-level average to survive at the
+    ``wvel`` site, so it pins WRF's own distinction rather than banning
     one spelling outright.
     """
     kernel = (Path(__file__).parents[1] / "gpuwm" / "core" / "kernels"
               / "nssl2_nucond.cu").read_text(encoding="utf-8")
-    average = ("0.5f * (\n                w_interface[idx] "
-               "+ w_interface[idx + horizontal_size])")
+    average = ("0.5f * (w_interface[(kp1 - 1) * horizontal_size + col]\n"
+               "                                       + w_interface[idx])")
 
-    start = kernel.index("float diagnostic_cnuc = 0.0f;")
-    block = kernel[start:kernel.index("float cloud_mean_mass", start)]
-    assert "const float cnuc_w = w_interface[idx];" in block, (
+    start = kernel.index("// cnuc (:10113-10129)")
+    block = kernel[start:kernel.index("// w and ssfilt neighbours", start)]
+    assert "w_interface[idx] > 2.0f" in block, (
         ":10122's raw w(igs,jgs,kgs) read is gone from the cnuc block")
     assert "horizontal_size" not in block, (
         "the cnuc block reads a second interface, so it is averaging to "
         "the mass level where WRF reads the cell's own bottom face")
 
     # The averaged form is correct at :10381 and must not be swept away.
-    assert kernel.count(average) == 2, (
-        "wvel's mass-level average (:10381) no longer appears twice; this "
-        "gate would then pass for the wrong reason")
+    assert kernel.count(average) == 1, (
+        "wvel's mass-level average (:10381) is gone; this gate would then "
+        "pass for the wrong reason")
 
 
 def test_effective_radius_oracle_fixture_is_content_addressed():

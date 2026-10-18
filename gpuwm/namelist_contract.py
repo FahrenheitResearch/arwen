@@ -268,9 +268,17 @@ def _value_rules() -> dict[tuple[str, str], dict]:
         ("sf_surface_physics", sorted(ni._SFSFC_ALLOWED)),
         ("cu_physics", sorted(ni._CU_ALLOWED)),
     )
+    from gpuwm.config import unported_scheme_reasons
     for key, values in maps:
         rule("physics", key, values,
              f"no ratified gpuwm mapping (implemented: {values}).")
+        # The WRF values that are refused by name, with the sentence the
+        # importer prints for each, so a site can say why before a box boots.
+        rules[("physics", key)]["unported"] = {
+            str(value): reason for value, reason
+            in sorted(unported_scheme_reasons(key).items())}
+    rule("physics", "sf_ocean_physics", [0, 1],
+         "must be 0 or 1; the 3-D PWP ocean (2) is not ported", scalar=True)
     rule("physics", "sf_lake_physics", [0, 1],
          "must be integer 0 (off) or 1 (CLM lake).")
     rule("physics", "use_lakedepth", [0, 1],
@@ -322,9 +330,11 @@ def _value_rules() -> dict[tuple[str, str], dict]:
         rule("noah_mp", key, [admitted],
              f"gpuwm's Noah-MP port implements {key} = {admitted!r} only "
              f"({evidence}).")
-    rule("physics", "num_land_cat", [21, 61],
+    rule("physics", "num_land_cat", [20, 21, 61],
          "the MODIFIED_IGBP_MODIS_NOAH category count the static build "
-         "stamps: 21, or 61 where geog_data_res names a Local Climate Zone "
+         "stamps: 21, 20 where geog_data_res selects the 15 arc-second "
+         "MODIS land use without its lake class (modis_15s), "
+         "or 61 where geog_data_res names a Local Climate Zone "
          "land cover (cglc_modis_lcz) and the urban canopy runs with "
          "use_wudapt_lcz = 1 (the importer checks that pairing).")
     # geog_data_res is a '+'-joined token list per domain, so its rule is

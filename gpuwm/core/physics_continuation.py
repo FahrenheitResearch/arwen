@@ -166,9 +166,14 @@ def capture_continuation(state, driver, *, store=None) -> dict[str, np.ndarray]:
 
 #: The accumulated-precipitation slots a moving nest's fresh ground takes
 #: from its parent instead of from cold (module notes).  RAINSH has no slot:
-#: the driver writes it as zero on every domain.
+#: the driver writes it as zero on every domain.  ``mp_cloudnc`` is correct
+#: mode's settled-cloud total (finding WB1, gpuwm/core/thompson_cloud_booking
+#: .py), a run-long accumulator like RAINNC: fresh ground takes the parent's
+#: total, so a moved nest holds the settled cloud since the run began, not a
+#: zero band along its leading edge.  A parent that does not book it seeds
+#: nothing and the strip stays cold, as for any slot the parent lacks.
 STRIP_ACCUMULATORS = ("mp_rainnc", "mp_snownc", "mp_graupelnc", "mp_hailnc",
-                      "cu_rainc")
+                      "cu_rainc", "mp_cloudnc")
 
 #: What the receipt says the rule is.
 STRIP_ACCUMULATION_RULE = (
@@ -456,7 +461,7 @@ def restore_continuation(state, driver,
 # The surface-radiation carriers
 # ---------------------------------------------------------------------------
 #
-# WHY THIS EXISTS (node-2 GPU campaign, 2026-08-24).  A relocation
+# WHY THIS EXISTS (test host B GPU campaign, 2026-08-24).  A relocation
 # rebuilds the moved child's physics driver from cold
 # (`gpuwm.runtime.rebuild_child_driver_from_land_state` ->
 # `initialize_physics`), which allocates a fresh buffer for every

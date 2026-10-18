@@ -746,7 +746,7 @@ def test_the_release_ships_six_libraries_with_different_abi_symbols() -> None:
     assert {a.name for a in artifacts} == {
         "gpuwm_preprocess_cpu", "region_global_dealias", "netcdf_writer",
         "static_fields", "obs_regrid", "obs_score", "rw_isobaric",
-        "rw_superob", "rw_tempo"}
+        "rw_superob", "rw_tempo", "rw_projected_intermediate"}
     symbols = {bridge_assets.library_abi_for(a.name)[0] for a in artifacts}
     assert symbols == {"gpuwm_preprocess_cpu_abi_version", "bw_abi_version",
                        "gpuwm_ncwrite_abi_version",
@@ -754,7 +754,8 @@ def test_the_release_ships_six_libraries_with_different_abi_symbols() -> None:
                        "gpuwm_obsregrid_abi_version", "gpuwm_obsscore_abi_version",
                        "gpuwm_isobaric_abi_version",
                        "gpuwm_superob_abi_version",
-                       "gpuwm_tempo_abi_version"}
+                       "gpuwm_tempo_abi_version",
+                       "gpuwm_projected_intermediate_abi_version"}
 
 
 @pytest.mark.parametrize("platform", bridge_assets.SUPPORTED_PLATFORMS)
@@ -991,7 +992,7 @@ def test_a_wheel_data_member_naming_a_private_machine_is_refused(
     receipt = json.loads(
         _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist).read_text(
             encoding="utf-8"))
-    assert receipt["wheel"]["private_machine_names_in_data_members"] == 0
+    assert receipt["wheel"]["private_machine_names_in_members"] == 0
 
     with zipfile.ZipFile(wheel, "a") as archive:
         archive.writestr("gpuwm/authorities/routes.json",
@@ -1004,9 +1005,16 @@ def test_a_wheel_data_member_naming_a_private_machine_is_refused(
     assert "gpuwm/authorities/routes.json" in message, message
 
 
-def test_the_wheel_scan_reads_data_members_and_netcdf_not_code(
+# Replaces test_the_wheel_scan_reads_data_members_and_netcdf_not_code
+# (122ce03da): the wheel scan now reads code members too (see the docstring).
+def test_the_wheel_scan_reads_code_data_and_netcdf_not_metadata(
     tmp_path: Path,
 ) -> None:
+    """Every installed member is read, code included.
+
+    2.9.0's wheel shipped lab host names and internal folder names in 61
+    members, nearly all code, because the scan read data members only.
+    """
     wheel = tmp_path / f"gpuwm-{VERSION}-py3-none-any.whl"
     hdf5_like = (b"\x89HDF\r\n\x1a\n" + b"\x00" * 32 + b"history\x00"
                  + ("met_em on " + _HOST + " (" + _LAN + ")").encode("ascii")
@@ -1017,6 +1025,10 @@ def test_the_wheel_scan_reads_data_members_and_netcdf_not_code(
         archive.writestr("gpuwm/data/governor.json",
                          '{"note": "the node-wide governor"}\n')
         archive.writestr("gpuwm/core/timing.py", "# measured on " + _HOST + "\n")
+        archive.writestr("gpuwm/core/report.py",
+                         "# see " + "Down" + "loads/RUN-REPORT/REPORT.md\n")
+        archive.writestr("gpuwm/go_cli.py",
+                         "# the engine's own downloads/<key>/<object>.part\n")
         archive.writestr("gpuwm/libexec/bridges/rw_tool",
                          b"\x7fELF\x00\x00" + _HOST.encode("ascii"))
         archive.writestr(f"gpuwm-{VERSION}.dist-info/METADATA",
@@ -1025,7 +1037,35 @@ def test_the_wheel_scan_reads_data_members_and_netcdf_not_code(
     rows = verify_release_artifacts.private_host_members(wheel)
     assert sorted((row["member"], row["kind"]) for row in rows) == [
         ("configs/demo.toml", "private machine name"),
-        ("configs/real/terrain.nc", "private machine name")]
+        ("configs/real/terrain.nc", "private machine name"),
+        ("gpuwm/core/report.py", "internal folder name"),
+        ("gpuwm/core/timing.py", "private machine name")]
+
+
+def test_a_frozen_kernel_source_is_allowed_by_its_exact_bytes_only(
+    tmp_path: Path,
+) -> None:
+    """The rule's second allowance: a byte-pinned kernel source as it is.
+
+    An edited copy of the same kernel names its host and is refused.
+    """
+
+    from tools.release_exclusions import PINNED_KERNEL_SOURCES
+
+    repo = Path(verify_release_artifacts.__file__).resolve().parents[1]
+    rel = sorted(PINNED_KERNEL_SOURCES)[0]
+    payload = (repo / rel).read_bytes()
+
+    exact = tmp_path / "exact.whl"
+    with zipfile.ZipFile(exact, "w") as archive:
+        archive.writestr(rel, payload)
+    assert verify_release_artifacts._refuse_private_hosts(exact, repo) == [rel]
+
+    edited = tmp_path / "edited.whl"
+    with zipfile.ZipFile(edited, "w") as archive:
+        archive.writestr(rel, payload + b"// edited\n")
+    with pytest.raises(SystemExit):
+        verify_release_artifacts._refuse_private_hosts(edited, repo)
 
 
 def test_a_pinned_reference_config_is_allowed_by_its_exact_bytes_only(

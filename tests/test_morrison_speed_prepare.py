@@ -1,4 +1,9 @@
-"""Preserve CuPy preparation bits, including flushed subnormal inputs."""
+"""Preserve CuPy preparation bits, including flushed subnormal inputs.
+
+theta and dz keep the CuPy ufunc roundings; the Exner function is WRF's
+phy_prep (p/p1000mb)**rcp with glibc's powf (morrison.cu mo_exner) since
+lane/parity-mp-libm, graded against the host glibc on normal pressures.
+"""
 import numpy as np
 import pytest
 
@@ -30,14 +35,13 @@ def test_prepare_bits(thb_full,phb_full):
     phb.flat[2*ncol if phb_full else 2] = np.float32(2)*tiny
     php.flat[ncol] = np.float32(0)
     php.flat[2*ncol] = np.float32(0)
-    theta=cp.empty(shape,dtype="f4"); pii=cp.empty_like(theta); dz=cp.empty_like(theta)
+    theta=cp.empty(shape,dtype="f4"); dz=cp.empty_like(theta)
     tb=thb if thb_full else thb[:,None,None]
     pb=phb if phb_full else phb[:,None,None]
     expected_theta=tb+thp
-    expected_pii=cp.power(pressure/np.float32(c.P0),np.float32(c.RCP))
     z=(pb+php)/np.float32(c.G)
     expected_dz=z[1:]-z[:-1]
-    _prepare_fields(thb,phb,thp,php,pressure,np.int32(ncol),np.int32(thb_full),np.int32(phb_full),
-                    np.float32(c.P0),np.float32(c.RCP),np.float32(c.G),theta,pii,dz)
-    for actual,expected in zip((theta,pii,dz),(expected_theta,expected_pii,expected_dz)):
+    _prepare_fields(thb,phb,thp,php,np.int32(ncol),np.int32(thb_full),np.int32(phb_full),
+                    np.float32(c.G),theta,dz)
+    for actual,expected in zip((theta,dz),(expected_theta,expected_dz)):
         np.testing.assert_array_equal(cp.asnumpy(actual).view("u4"),cp.asnumpy(expected).view("u4"))

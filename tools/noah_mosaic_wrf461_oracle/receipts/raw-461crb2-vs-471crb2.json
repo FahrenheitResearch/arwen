@@ -1,0 +1,3885 @@
+{
+ "a": "/work/pverify/noah-mosaic/oracle461crb2",
+ "b": "/work/pverify/noah-mosaic/oracle471crb2",
+ "arrays_a": 24524,
+ "arrays_b": 24524,
+ "identical": 21930,
+ "families": {
+  "base": {
+   "arrays": 4080,
+   "differing_arrays": 0,
+   "words": 502928,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "cats": {
+   "arrays": 2040,
+   "differing_arrays": 0,
+   "words": 251464,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ftz": {
+   "arrays": 255,
+   "differing_arrays": 0,
+   "words": 31433,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "lcz": {
+   "arrays": 1020,
+   "differing_arrays": 0,
+   "words": 171812,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "mosaic_init": {
+   "arrays": 800,
+   "differing_arrays": 0,
+   "words": 197904,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "terrain": {
+   "arrays": 1020,
+   "differing_arrays": 0,
+   "words": 125732,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "twins": {
+   "arrays": 765,
+   "differing_arrays": 0,
+   "words": 61467,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm": {
+   "arrays": 2424,
+   "differing_arrays": 647,
+   "words": 232080,
+   "differing_words": 21820,
+   "max_ulp": 2137075857
+  },
+  "ucm_lcz": {
+   "arrays": 2424,
+   "differing_arrays": 650,
+   "words": 302320,
+   "differing_words": 27969,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz_table": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 302320,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_lcz_wrfinit": {
+   "arrays": 2424,
+   "differing_arrays": 650,
+   "words": 302320,
+   "differing_words": 26447,
+   "max_ulp": 2109629120
+  },
+  "ucm_table": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 232080,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_wrfinit": {
+   "arrays": 2424,
+   "differing_arrays": 647,
+   "words": 232080,
+   "differing_words": 18698,
+   "max_ulp": 2140139711
+  }
+ },
+ "only_in_a_families": [],
+ "only_in_b_families": [],
+ "differing_arrays": 2594,
+ "differing_by_family_array": {
+  "ucm/akms_override.bin": {
+   "cases": 4,
+   "differing_words": 32,
+   "max_ulp": 1606338
+  },
+  "ucm/akms_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 99,
+   "max_ulp": 1956441
+  },
+  "ucm/akms_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 99,
+   "max_ulp": 1956441
+  },
+  "ucm/drelb_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 961656599
+  },
+  "ucm/drelb_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 961656599
+  },
+  "ucm/drelg_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm/drelg_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm/drelr_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm/drelr_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm/flxhumb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 910980678
+  },
+  "ucm/flxhumb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 910980678
+  },
+  "ucm/flxhumg_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 924249399
+  },
+  "ucm/flxhumg_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 924249399
+  },
+  "ucm/flxhumr_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 943662976
+  },
+  "ucm/flxhumr_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 943662976
+  },
+  "ucm/g_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm/g_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm/g_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm/g_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm/grdflx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm/grdflx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm/grdflx_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 1972446
+  },
+  "ucm/grdflx_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 1972446
+  },
+  "ucm/hfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm/hfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm/hfx_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 13770504
+  },
+  "ucm/hfx_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 13770504
+  },
+  "ucm/lh_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 40637731
+  },
+  "ucm/lh_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 40637731
+  },
+  "ucm/lh_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 6660098
+  },
+  "ucm/lh_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 6660098
+  },
+  "ucm/lh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 45464649
+  },
+  "ucm/lh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 45464649
+  },
+  "ucm/lh_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 45464649
+  },
+  "ucm/lh_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 45464649
+  },
+  "ucm/psih_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 2116245258
+  },
+  "ucm/psih_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2116245258
+  },
+  "ucm/psih_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2116245258
+  },
+  "ucm/psim_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 2108375708
+  },
+  "ucm/psim_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2108375708
+  },
+  "ucm/psim_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2108375708
+  },
+  "ucm/q2_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 1922894
+  },
+  "ucm/q2_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 1922894
+  },
+  "ucm/qc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7989550
+  },
+  "ucm/qc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7989550
+  },
+  "ucm/qc_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7989550
+  },
+  "ucm/qc_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7989550
+  },
+  "ucm/qfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 40822061
+  },
+  "ucm/qfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 40822061
+  },
+  "ucm/qfx_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7042840
+  },
+  "ucm/qfx_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7042840
+  },
+  "ucm/qsfc_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7181703
+  },
+  "ucm/qsfc_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7181703
+  },
+  "ucm/qsfc_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 1972492
+  },
+  "ucm/qsfc_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 1972492
+  },
+  "ucm/rn_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 409627
+  },
+  "ucm/rn_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 409627
+  },
+  "ucm/rn_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 409627
+  },
+  "ucm/rn_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 409627
+  },
+  "ucm/sh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm/sh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm/sh_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm/sh_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm/tb_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 11089
+  },
+  "ucm/tb_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 11089
+  },
+  "ucm/tb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 11089
+  },
+  "ucm/tb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 11089
+  },
+  "ucm/tbl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 313,
+   "max_ulp": 680
+  },
+  "ucm/tbl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 313,
+   "max_ulp": 680
+  },
+  "ucm/tbl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 313,
+   "max_ulp": 680
+  },
+  "ucm/tbl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 313,
+   "max_ulp": 680
+  },
+  "ucm/tc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 14389
+  },
+  "ucm/tc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 14389
+  },
+  "ucm/tc_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 14389
+  },
+  "ucm/tc_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 14389
+  },
+  "ucm/tg_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 36376
+  },
+  "ucm/tg_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 36376
+  },
+  "ucm/tg_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 36376
+  },
+  "ucm/tg_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 36376
+  },
+  "ucm/tgl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 175,
+   "max_ulp": 843
+  },
+  "ucm/tgl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 175,
+   "max_ulp": 843
+  },
+  "ucm/tgl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 175,
+   "max_ulp": 843
+  },
+  "ucm/tgl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 175,
+   "max_ulp": 843
+  },
+  "ucm/tr_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 91933
+  },
+  "ucm/tr_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 91933
+  },
+  "ucm/tr_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 91933
+  },
+  "ucm/tr_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 91933
+  },
+  "ucm/trl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 383,
+   "max_ulp": 5695
+  },
+  "ucm/trl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 383,
+   "max_ulp": 5695
+  },
+  "ucm/trl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 383,
+   "max_ulp": 5695
+  },
+  "ucm/trl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 383,
+   "max_ulp": 5695
+  },
+  "ucm/ts_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm/ts_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm/ts_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm/ts_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm/tsk_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm/tsk_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm/tsk_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 31328
+  },
+  "ucm/tsk_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 31328
+  },
+  "ucm/u10_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 2090172
+  },
+  "ucm/u10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2090172
+  },
+  "ucm/u10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2090172
+  },
+  "ucm/v10_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 1779280
+  },
+  "ucm/v10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 1779280
+  },
+  "ucm/v10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 1779280
+  },
+  "ucm/akms_in.bin": {
+   "cases": 3,
+   "differing_words": 26,
+   "max_ulp": 1606338
+  },
+  "ucm/akms_out.bin": {
+   "cases": 3,
+   "differing_words": 26,
+   "max_ulp": 1606338
+  },
+  "ucm/akms_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 78,
+   "max_ulp": 1956441
+  },
+  "ucm/chc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 472227
+  },
+  "ucm/chc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 472227
+  },
+  "ucm/chr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1198746
+  },
+  "ucm/chr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1198746
+  },
+  "ucm/cmc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 724387
+  },
+  "ucm/cmc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 724387
+  },
+  "ucm/cmr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1857984
+  },
+  "ucm/cmr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1857984
+  },
+  "ucm/drelb_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 961656599
+  },
+  "ucm/drelg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 981668463
+  },
+  "ucm/drelr_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 981668463
+  },
+  "ucm/flxhumb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 910980678
+  },
+  "ucm/flxhumg_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 924249399
+  },
+  "ucm/flxhumr_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 943662976
+  },
+  "ucm/g_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3222498
+  },
+  "ucm/g_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3222498
+  },
+  "ucm/grdflx_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1972446
+  },
+  "ucm/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3222498
+  },
+  "ucm/hfx_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 13770504
+  },
+  "ucm/hfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2134468213
+  },
+  "ucm/lh_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 6660098
+  },
+  "ucm/lh_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 40637731
+  },
+  "ucm/lh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 45464649
+  },
+  "ucm/lh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 45464649
+  },
+  "ucm/psih_in.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2116245258
+  },
+  "ucm/psih_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2116245258
+  },
+  "ucm/psih_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 51,
+   "max_ulp": 2116245258
+  },
+  "ucm/psim_in.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2108375708
+  },
+  "ucm/psim_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2108375708
+  },
+  "ucm/psim_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 51,
+   "max_ulp": 2108375708
+  },
+  "ucm/q2_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1770200
+  },
+  "ucm/qc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3841832
+  },
+  "ucm/qc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3841832
+  },
+  "ucm/qfx_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 7042840
+  },
+  "ucm/qfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 40822061
+  },
+  "ucm/qsfc_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1972492
+  },
+  "ucm/qsfc_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3564874
+  },
+  "ucm/rn_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 409627
+  },
+  "ucm/rn_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 409627
+  },
+  "ucm/sh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2134468213
+  },
+  "ucm/sh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2134468213
+  },
+  "ucm/tb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 11089
+  },
+  "ucm/tb_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 11089
+  },
+  "ucm/tbl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 227,
+   "max_ulp": 470
+  },
+  "ucm/tbl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 227,
+   "max_ulp": 470
+  },
+  "ucm/tc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 12549
+  },
+  "ucm/tc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 12549
+  },
+  "ucm/tg_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 36376
+  },
+  "ucm/tg_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 36376
+  },
+  "ucm/tgl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 122,
+   "max_ulp": 598
+  },
+  "ucm/tgl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 122,
+   "max_ulp": 598
+  },
+  "ucm/tr_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 91933
+  },
+  "ucm/tr_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 91933
+  },
+  "ucm/trl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 276,
+   "max_ulp": 3692
+  },
+  "ucm/trl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 276,
+   "max_ulp": 3692
+  },
+  "ucm/ts_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 58630
+  },
+  "ucm/ts_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 58630
+  },
+  "ucm/tsk_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 31328
+  },
+  "ucm/tsk_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 58630
+  },
+  "ucm/u10_in.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2090172
+  },
+  "ucm/u10_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2090172
+  },
+  "ucm/u10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 51,
+   "max_ulp": 2090172
+  },
+  "ucm/ust_out.bin": {
+   "cases": 3,
+   "differing_words": 98,
+   "max_ulp": 783816
+  },
+  "ucm/ust_override.bin": {
+   "cases": 3,
+   "differing_words": 98,
+   "max_ulp": 783816
+  },
+  "ucm/ust_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 85,
+   "max_ulp": 823691
+  },
+  "ucm/ust_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 85,
+   "max_ulp": 823691
+  },
+  "ucm/v10_in.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 1779280
+  },
+  "ucm/v10_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 1779280
+  },
+  "ucm/v10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 51,
+   "max_ulp": 1779280
+  },
+  "ucm/xxxb_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 28,
+   "max_ulp": 2137075857
+  },
+  "ucm/xxxb_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 28,
+   "max_ulp": 2137075857
+  },
+  "ucm/xxxg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 10,
+   "max_ulp": 2424763
+  },
+  "ucm/xxxg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 10,
+   "max_ulp": 2424763
+  },
+  "ucm/chc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 472227
+  },
+  "ucm/chr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 1198746
+  },
+  "ucm/cmc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 724387
+  },
+  "ucm/cmr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 1857984
+  },
+  "ucm/ust_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 783816
+  },
+  "ucm/ust_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 823691
+  },
+  "ucm/xxxb_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 14,
+   "max_ulp": 14782341
+  },
+  "ucm/xxxg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 10,
+   "max_ulp": 2424763
+  },
+  "ucm_lcz/akms_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 797777
+  },
+  "ucm_lcz/akms_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 104,
+   "max_ulp": 797777
+  },
+  "ucm_lcz/akms_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 104,
+   "max_ulp": 797777
+  },
+  "ucm_lcz/drelb_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 961656599
+  },
+  "ucm_lcz/drelb_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 961656599
+  },
+  "ucm_lcz/drelg_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz/drelg_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz/drelr_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz/drelr_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz/flxhumb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 918064019
+  },
+  "ucm_lcz/flxhumb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 918064019
+  },
+  "ucm_lcz/flxhumg_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 924347238
+  },
+  "ucm_lcz/flxhumg_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 924347238
+  },
+  "ucm_lcz/flxhumr_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 939469414
+  },
+  "ucm_lcz/flxhumr_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 939469414
+  },
+  "ucm_lcz/g_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz/g_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz/g_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz/g_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz/grdflx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 3022730
+  },
+  "ucm_lcz/grdflx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 3022730
+  },
+  "ucm_lcz/grdflx_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2405149
+  },
+  "ucm_lcz/grdflx_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2405149
+  },
+  "ucm_lcz/hfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 26263064
+  },
+  "ucm_lcz/hfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 26263064
+  },
+  "ucm_lcz/hfx_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 12621644
+  },
+  "ucm_lcz/hfx_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 12621644
+  },
+  "ucm_lcz/lh_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 36689061
+  },
+  "ucm_lcz/lh_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 36689061
+  },
+  "ucm_lcz/lh_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 13526287
+  },
+  "ucm_lcz/lh_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 13526287
+  },
+  "ucm_lcz/lh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz/lh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz/lh_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz/lh_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz/psih_override.bin": {
+   "cases": 4,
+   "differing_words": 37,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz/psih_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 18956555
+  },
+  "ucm_lcz/psih_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 18956555
+  },
+  "ucm_lcz/psim_override.bin": {
+   "cases": 4,
+   "differing_words": 37,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz/psim_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 19327776
+  },
+  "ucm_lcz/psim_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 19327776
+  },
+  "ucm_lcz/q2_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3135343
+  },
+  "ucm_lcz/q2_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3135343
+  },
+  "ucm_lcz/qc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 9710598
+  },
+  "ucm_lcz/qc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 9710598
+  },
+  "ucm_lcz/qc_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 9710598
+  },
+  "ucm_lcz/qc_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 9710598
+  },
+  "ucm_lcz/qfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 36246403
+  },
+  "ucm_lcz/qfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 36246403
+  },
+  "ucm_lcz/qfx_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 13061152
+  },
+  "ucm_lcz/qfx_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 13061152
+  },
+  "ucm_lcz/qsfc_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 6393949
+  },
+  "ucm_lcz/qsfc_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 6393949
+  },
+  "ucm_lcz/qsfc_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3605942
+  },
+  "ucm_lcz/qsfc_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3605942
+  },
+  "ucm_lcz/rn_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 216962
+  },
+  "ucm_lcz/rn_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 216962
+  },
+  "ucm_lcz/rn_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 216962
+  },
+  "ucm_lcz/rn_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 216962
+  },
+  "ucm_lcz/sh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz/sh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz/sh_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz/sh_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz/tb_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 8617
+  },
+  "ucm_lcz/tb_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 8617
+  },
+  "ucm_lcz/tb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 8617
+  },
+  "ucm_lcz/tb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 8617
+  },
+  "ucm_lcz/tbl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 485,
+   "max_ulp": 717
+  },
+  "ucm_lcz/tbl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 485,
+   "max_ulp": 717
+  },
+  "ucm_lcz/tbl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 282,
+   "max_ulp": 717
+  },
+  "ucm_lcz/tbl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 282,
+   "max_ulp": 717
+  },
+  "ucm_lcz/tc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 5208
+  },
+  "ucm_lcz/tc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 5208
+  },
+  "ucm_lcz/tc_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 4832
+  },
+  "ucm_lcz/tc_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 4832
+  },
+  "ucm_lcz/tg_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 20989
+  },
+  "ucm_lcz/tg_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 20989
+  },
+  "ucm_lcz/tg_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 20989
+  },
+  "ucm_lcz/tg_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 20989
+  },
+  "ucm_lcz/tgl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 298,
+   "max_ulp": 904
+  },
+  "ucm_lcz/tgl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 298,
+   "max_ulp": 904
+  },
+  "ucm_lcz/tgl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 158,
+   "max_ulp": 904
+  },
+  "ucm_lcz/tgl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 158,
+   "max_ulp": 904
+  },
+  "ucm_lcz/tr_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 35608
+  },
+  "ucm_lcz/tr_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 35608
+  },
+  "ucm_lcz/tr_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 35608
+  },
+  "ucm_lcz/tr_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 35608
+  },
+  "ucm_lcz/trl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 721,
+   "max_ulp": 3898
+  },
+  "ucm_lcz/trl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 721,
+   "max_ulp": 3898
+  },
+  "ucm_lcz/trl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 459,
+   "max_ulp": 3898
+  },
+  "ucm_lcz/trl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 459,
+   "max_ulp": 3898
+  },
+  "ucm_lcz/ts_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 21413
+  },
+  "ucm_lcz/ts_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 21413
+  },
+  "ucm_lcz/ts_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 21413
+  },
+  "ucm_lcz/ts_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 21413
+  },
+  "ucm_lcz/tsk_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 21199
+  },
+  "ucm_lcz/tsk_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 21199
+  },
+  "ucm_lcz/tsk_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 16171
+  },
+  "ucm_lcz/tsk_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 16171
+  },
+  "ucm_lcz/u10_override.bin": {
+   "cases": 4,
+   "differing_words": 37,
+   "max_ulp": 807644
+  },
+  "ucm_lcz/u10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 807644
+  },
+  "ucm_lcz/u10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 807644
+  },
+  "ucm_lcz/v10_override.bin": {
+   "cases": 4,
+   "differing_words": 37,
+   "max_ulp": 979985
+  },
+  "ucm_lcz/v10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 979985
+  },
+  "ucm_lcz/v10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 979985
+  },
+  "ucm_lcz/akms_in.bin": {
+   "cases": 3,
+   "differing_words": 54,
+   "max_ulp": 797777
+  },
+  "ucm_lcz/akms_out.bin": {
+   "cases": 3,
+   "differing_words": 54,
+   "max_ulp": 797777
+  },
+  "ucm_lcz/akms_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 83,
+   "max_ulp": 797777
+  },
+  "ucm_lcz/chc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 81,
+   "max_ulp": 542420
+  },
+  "ucm_lcz/chc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 81,
+   "max_ulp": 542420
+  },
+  "ucm_lcz/chr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 92,
+   "max_ulp": 1013238
+  },
+  "ucm_lcz/chr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 92,
+   "max_ulp": 1013238
+  },
+  "ucm_lcz/cmc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 984114
+  },
+  "ucm_lcz/cmc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 984114
+  },
+  "ucm_lcz/cmr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 98,
+   "max_ulp": 1687229
+  },
+  "ucm_lcz/cmr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 98,
+   "max_ulp": 1687229
+  },
+  "ucm_lcz/drelb_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 961656599
+  },
+  "ucm_lcz/drelg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz/drelr_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz/flxhumb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 909601980
+  },
+  "ucm_lcz/flxhumg_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 924347238
+  },
+  "ucm_lcz/flxhumr_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 939469414
+  },
+  "ucm_lcz/g_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz/g_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz/grdflx_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2405149
+  },
+  "ucm_lcz/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 3022730
+  },
+  "ucm_lcz/hfx_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 12621644
+  },
+  "ucm_lcz/hfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 26263064
+  },
+  "ucm_lcz/lh_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 13526287
+  },
+  "ucm_lcz/lh_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 36689061
+  },
+  "ucm_lcz/lh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz/lh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz/psih_in.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz/psih_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz/psih_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 56,
+   "max_ulp": 18956555
+  },
+  "ucm_lcz/psim_in.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz/psim_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz/psim_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 56,
+   "max_ulp": 19327776
+  },
+  "ucm_lcz/q2_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2070188
+  },
+  "ucm_lcz/qc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2753522
+  },
+  "ucm_lcz/qc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 2753522
+  },
+  "ucm_lcz/qfx_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 13061152
+  },
+  "ucm_lcz/qfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 36246403
+  },
+  "ucm_lcz/qsfc_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3106462
+  },
+  "ucm_lcz/qsfc_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 3903190
+  },
+  "ucm_lcz/rn_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 216962
+  },
+  "ucm_lcz/rn_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 216962
+  },
+  "ucm_lcz/sh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz/sh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz/tb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 4605
+  },
+  "ucm_lcz/tb_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 4605
+  },
+  "ucm_lcz/tbl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 205,
+   "max_ulp": 344
+  },
+  "ucm_lcz/tbl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 348,
+   "max_ulp": 344
+  },
+  "ucm_lcz/tc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 4832
+  },
+  "ucm_lcz/tc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 5208
+  },
+  "ucm_lcz/tg_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 20989
+  },
+  "ucm_lcz/tg_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 20989
+  },
+  "ucm_lcz/tgl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 617
+  },
+  "ucm_lcz/tgl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 204,
+   "max_ulp": 617
+  },
+  "ucm_lcz/tr_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 35608
+  },
+  "ucm_lcz/tr_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 35608
+  },
+  "ucm_lcz/trl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 333,
+   "max_ulp": 2632
+  },
+  "ucm_lcz/trl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 523,
+   "max_ulp": 2632
+  },
+  "ucm_lcz/ts_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 21413
+  },
+  "ucm_lcz/ts_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 21413
+  },
+  "ucm_lcz/tsk_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 16171
+  },
+  "ucm_lcz/tsk_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 21199
+  },
+  "ucm_lcz/u10_in.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 807644
+  },
+  "ucm_lcz/u10_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 807644
+  },
+  "ucm_lcz/u10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 56,
+   "max_ulp": 807644
+  },
+  "ucm_lcz/ust_out.bin": {
+   "cases": 3,
+   "differing_words": 98,
+   "max_ulp": 779149
+  },
+  "ucm_lcz/ust_override.bin": {
+   "cases": 3,
+   "differing_words": 98,
+   "max_ulp": 779149
+  },
+  "ucm_lcz/ust_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 85,
+   "max_ulp": 779149
+  },
+  "ucm_lcz/ust_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 85,
+   "max_ulp": 779149
+  },
+  "ucm_lcz/v10_in.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 979985
+  },
+  "ucm_lcz/v10_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 979985
+  },
+  "ucm_lcz/v10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 56,
+   "max_ulp": 979985
+  },
+  "ucm_lcz/xxxb_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 30,
+   "max_ulp": 15296810
+  },
+  "ucm_lcz/xxxb_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 30,
+   "max_ulp": 15296810
+  },
+  "ucm_lcz/xxxg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 8,
+   "max_ulp": 1632017
+  },
+  "ucm_lcz/xxxg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 8,
+   "max_ulp": 1632017
+  },
+  "ucm_lcz/chc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 60,
+   "max_ulp": 542420
+  },
+  "ucm_lcz/chr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 56,
+   "max_ulp": 1013238
+  },
+  "ucm_lcz/cmc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 984114
+  },
+  "ucm_lcz/cmr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 62,
+   "max_ulp": 1687229
+  },
+  "ucm_lcz/ust_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 779149
+  },
+  "ucm_lcz/ust_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 779149
+  },
+  "ucm_lcz/xxxb_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 14,
+   "max_ulp": 15296810
+  },
+  "ucm_lcz/xxxg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 8,
+   "max_ulp": 1632017
+  },
+  "ucm_lcz_wrfinit/akms_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 797777
+  },
+  "ucm_lcz_wrfinit/akms_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 104,
+   "max_ulp": 797777
+  },
+  "ucm_lcz_wrfinit/akms_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 104,
+   "max_ulp": 797777
+  },
+  "ucm_lcz_wrfinit/drelb_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 961656599
+  },
+  "ucm_lcz_wrfinit/drelb_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 961656599
+  },
+  "ucm_lcz_wrfinit/drelg_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz_wrfinit/drelg_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz_wrfinit/drelr_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz_wrfinit/drelr_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz_wrfinit/flxhumb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 918064019
+  },
+  "ucm_lcz_wrfinit/flxhumb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 918064019
+  },
+  "ucm_lcz_wrfinit/flxhumg_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 924347238
+  },
+  "ucm_lcz_wrfinit/flxhumg_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 924347238
+  },
+  "ucm_lcz_wrfinit/flxhumr_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 939469414
+  },
+  "ucm_lcz_wrfinit/flxhumr_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 939469414
+  },
+  "ucm_lcz_wrfinit/g_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz_wrfinit/g_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz_wrfinit/g_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz_wrfinit/g_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz_wrfinit/grdflx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 2900600
+  },
+  "ucm_lcz_wrfinit/grdflx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 2900600
+  },
+  "ucm_lcz_wrfinit/grdflx_out.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 2329669
+  },
+  "ucm_lcz_wrfinit/grdflx_override.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 2329669
+  },
+  "ucm_lcz_wrfinit/hfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 26263064
+  },
+  "ucm_lcz_wrfinit/hfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 26263064
+  },
+  "ucm_lcz_wrfinit/hfx_out.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 2109629120
+  },
+  "ucm_lcz_wrfinit/hfx_override.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 2109629120
+  },
+  "ucm_lcz_wrfinit/lh_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 19579564
+  },
+  "ucm_lcz_wrfinit/lh_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 19579564
+  },
+  "ucm_lcz_wrfinit/lh_out.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 12051595
+  },
+  "ucm_lcz_wrfinit/lh_override.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 12051595
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz_wrfinit/psih_override.bin": {
+   "cases": 4,
+   "differing_words": 37,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz_wrfinit/psih_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 18956555
+  },
+  "ucm_lcz_wrfinit/psih_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 18956555
+  },
+  "ucm_lcz_wrfinit/psim_override.bin": {
+   "cases": 4,
+   "differing_words": 37,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz_wrfinit/psim_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 19327776
+  },
+  "ucm_lcz_wrfinit/psim_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 19327776
+  },
+  "ucm_lcz_wrfinit/q2_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3135343
+  },
+  "ucm_lcz_wrfinit/q2_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3135343
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 9710598
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 9710598
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 9710598
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 9710598
+  },
+  "ucm_lcz_wrfinit/qfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 19338017
+  },
+  "ucm_lcz_wrfinit/qfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 19338017
+  },
+  "ucm_lcz_wrfinit/qfx_out.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 12308922
+  },
+  "ucm_lcz_wrfinit/qfx_override.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 12308922
+  },
+  "ucm_lcz_wrfinit/qsfc_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 5780343
+  },
+  "ucm_lcz_wrfinit/qsfc_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 5780343
+  },
+  "ucm_lcz_wrfinit/qsfc_out.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 2981356
+  },
+  "ucm_lcz_wrfinit/qsfc_override.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 2981356
+  },
+  "ucm_lcz_wrfinit/rn_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 216962
+  },
+  "ucm_lcz_wrfinit/rn_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 216962
+  },
+  "ucm_lcz_wrfinit/rn_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 216962
+  },
+  "ucm_lcz_wrfinit/rn_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 216962
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz_wrfinit/tb_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 8617
+  },
+  "ucm_lcz_wrfinit/tb_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 8617
+  },
+  "ucm_lcz_wrfinit/tb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 8617
+  },
+  "ucm_lcz_wrfinit/tb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 8617
+  },
+  "ucm_lcz_wrfinit/tbl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 485,
+   "max_ulp": 717
+  },
+  "ucm_lcz_wrfinit/tbl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 485,
+   "max_ulp": 717
+  },
+  "ucm_lcz_wrfinit/tbl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 282,
+   "max_ulp": 717
+  },
+  "ucm_lcz_wrfinit/tbl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 282,
+   "max_ulp": 717
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 5208
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 5208
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 4832
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 4832
+  },
+  "ucm_lcz_wrfinit/tg_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 20989
+  },
+  "ucm_lcz_wrfinit/tg_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 20989
+  },
+  "ucm_lcz_wrfinit/tg_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 20989
+  },
+  "ucm_lcz_wrfinit/tg_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 20989
+  },
+  "ucm_lcz_wrfinit/tgl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 298,
+   "max_ulp": 904
+  },
+  "ucm_lcz_wrfinit/tgl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 298,
+   "max_ulp": 904
+  },
+  "ucm_lcz_wrfinit/tgl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 158,
+   "max_ulp": 904
+  },
+  "ucm_lcz_wrfinit/tgl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 158,
+   "max_ulp": 904
+  },
+  "ucm_lcz_wrfinit/tr_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 35608
+  },
+  "ucm_lcz_wrfinit/tr_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 35608
+  },
+  "ucm_lcz_wrfinit/tr_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 35608
+  },
+  "ucm_lcz_wrfinit/tr_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 35608
+  },
+  "ucm_lcz_wrfinit/trl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 721,
+   "max_ulp": 3898
+  },
+  "ucm_lcz_wrfinit/trl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 721,
+   "max_ulp": 3898
+  },
+  "ucm_lcz_wrfinit/trl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 459,
+   "max_ulp": 3898
+  },
+  "ucm_lcz_wrfinit/trl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 459,
+   "max_ulp": 3898
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 21413
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 228,
+   "max_ulp": 21413
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 21413
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 21413
+  },
+  "ucm_lcz_wrfinit/tsk_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 20343
+  },
+  "ucm_lcz_wrfinit/tsk_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 184,
+   "max_ulp": 20343
+  },
+  "ucm_lcz_wrfinit/tsk_out.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 15505
+  },
+  "ucm_lcz_wrfinit/tsk_override.bin": {
+   "cases": 4,
+   "differing_words": 92,
+   "max_ulp": 15505
+  },
+  "ucm_lcz_wrfinit/u10_override.bin": {
+   "cases": 4,
+   "differing_words": 37,
+   "max_ulp": 807644
+  },
+  "ucm_lcz_wrfinit/u10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 807644
+  },
+  "ucm_lcz_wrfinit/u10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 807644
+  },
+  "ucm_lcz_wrfinit/v10_override.bin": {
+   "cases": 4,
+   "differing_words": 37,
+   "max_ulp": 979985
+  },
+  "ucm_lcz_wrfinit/v10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 979985
+  },
+  "ucm_lcz_wrfinit/v10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 67,
+   "max_ulp": 979985
+  },
+  "ucm_lcz_wrfinit/akms_in.bin": {
+   "cases": 3,
+   "differing_words": 54,
+   "max_ulp": 797777
+  },
+  "ucm_lcz_wrfinit/akms_out.bin": {
+   "cases": 3,
+   "differing_words": 54,
+   "max_ulp": 797777
+  },
+  "ucm_lcz_wrfinit/akms_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 83,
+   "max_ulp": 797777
+  },
+  "ucm_lcz_wrfinit/chc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 81,
+   "max_ulp": 542420
+  },
+  "ucm_lcz_wrfinit/chc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 81,
+   "max_ulp": 542420
+  },
+  "ucm_lcz_wrfinit/chr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 92,
+   "max_ulp": 1013238
+  },
+  "ucm_lcz_wrfinit/chr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 92,
+   "max_ulp": 1013238
+  },
+  "ucm_lcz_wrfinit/cmc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 984114
+  },
+  "ucm_lcz_wrfinit/cmc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 984114
+  },
+  "ucm_lcz_wrfinit/cmr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 98,
+   "max_ulp": 1687229
+  },
+  "ucm_lcz_wrfinit/cmr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 98,
+   "max_ulp": 1687229
+  },
+  "ucm_lcz_wrfinit/drelb_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 961656599
+  },
+  "ucm_lcz_wrfinit/drelg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz_wrfinit/drelr_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 981668463
+  },
+  "ucm_lcz_wrfinit/flxhumb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 909601980
+  },
+  "ucm_lcz_wrfinit/flxhumg_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 924347238
+  },
+  "ucm_lcz_wrfinit/flxhumr_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 939469414
+  },
+  "ucm_lcz_wrfinit/g_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz_wrfinit/g_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 3053263
+  },
+  "ucm_lcz_wrfinit/grdflx_in.bin": {
+   "cases": 3,
+   "differing_words": 68,
+   "max_ulp": 2329669
+  },
+  "ucm_lcz_wrfinit/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 136,
+   "max_ulp": 2900600
+  },
+  "ucm_lcz_wrfinit/hfx_in.bin": {
+   "cases": 3,
+   "differing_words": 68,
+   "max_ulp": 2109629120
+  },
+  "ucm_lcz_wrfinit/hfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 136,
+   "max_ulp": 26263064
+  },
+  "ucm_lcz_wrfinit/lh_in.bin": {
+   "cases": 3,
+   "differing_words": 68,
+   "max_ulp": 12051595
+  },
+  "ucm_lcz_wrfinit/lh_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 136,
+   "max_ulp": 19579564
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 38994200
+  },
+  "ucm_lcz_wrfinit/psih_in.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz_wrfinit/psih_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz_wrfinit/psih_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 56,
+   "max_ulp": 18956555
+  },
+  "ucm_lcz_wrfinit/psim_in.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz_wrfinit/psim_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 8648856
+  },
+  "ucm_lcz_wrfinit/psim_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 56,
+   "max_ulp": 19327776
+  },
+  "ucm_lcz_wrfinit/q2_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2070188
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2753522
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 2753522
+  },
+  "ucm_lcz_wrfinit/qfx_in.bin": {
+   "cases": 3,
+   "differing_words": 68,
+   "max_ulp": 12308922
+  },
+  "ucm_lcz_wrfinit/qfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 136,
+   "max_ulp": 19338017
+  },
+  "ucm_lcz_wrfinit/qsfc_in.bin": {
+   "cases": 3,
+   "differing_words": 68,
+   "max_ulp": 2981356
+  },
+  "ucm_lcz_wrfinit/qsfc_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 136,
+   "max_ulp": 3745996
+  },
+  "ucm_lcz_wrfinit/rn_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 216962
+  },
+  "ucm_lcz_wrfinit/rn_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 216962
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 20341729
+  },
+  "ucm_lcz_wrfinit/tb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 4605
+  },
+  "ucm_lcz_wrfinit/tb_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 4605
+  },
+  "ucm_lcz_wrfinit/tbl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 205,
+   "max_ulp": 344
+  },
+  "ucm_lcz_wrfinit/tbl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 348,
+   "max_ulp": 344
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 4832
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 5208
+  },
+  "ucm_lcz_wrfinit/tg_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 20989
+  },
+  "ucm_lcz_wrfinit/tg_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 20989
+  },
+  "ucm_lcz_wrfinit/tgl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 617
+  },
+  "ucm_lcz_wrfinit/tgl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 204,
+   "max_ulp": 617
+  },
+  "ucm_lcz_wrfinit/tr_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 35608
+  },
+  "ucm_lcz_wrfinit/tr_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 35608
+  },
+  "ucm_lcz_wrfinit/trl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 333,
+   "max_ulp": 2632
+  },
+  "ucm_lcz_wrfinit/trl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 523,
+   "max_ulp": 2632
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 21413
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 168,
+   "max_ulp": 21413
+  },
+  "ucm_lcz_wrfinit/tsk_in.bin": {
+   "cases": 3,
+   "differing_words": 68,
+   "max_ulp": 15505
+  },
+  "ucm_lcz_wrfinit/tsk_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 136,
+   "max_ulp": 20343
+  },
+  "ucm_lcz_wrfinit/u10_in.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 807644
+  },
+  "ucm_lcz_wrfinit/u10_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 807644
+  },
+  "ucm_lcz_wrfinit/u10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 56,
+   "max_ulp": 807644
+  },
+  "ucm_lcz_wrfinit/ust_out.bin": {
+   "cases": 3,
+   "differing_words": 67,
+   "max_ulp": 762525
+  },
+  "ucm_lcz_wrfinit/ust_override.bin": {
+   "cases": 3,
+   "differing_words": 67,
+   "max_ulp": 762525
+  },
+  "ucm_lcz_wrfinit/ust_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 85,
+   "max_ulp": 779149
+  },
+  "ucm_lcz_wrfinit/ust_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 85,
+   "max_ulp": 779149
+  },
+  "ucm_lcz_wrfinit/v10_in.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 979985
+  },
+  "ucm_lcz_wrfinit/v10_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 979985
+  },
+  "ucm_lcz_wrfinit/v10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 56,
+   "max_ulp": 979985
+  },
+  "ucm_lcz_wrfinit/xxxb_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 30,
+   "max_ulp": 15296810
+  },
+  "ucm_lcz_wrfinit/xxxb_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 30,
+   "max_ulp": 15296810
+  },
+  "ucm_lcz_wrfinit/xxxg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 8,
+   "max_ulp": 1632017
+  },
+  "ucm_lcz_wrfinit/xxxg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 8,
+   "max_ulp": 1632017
+  },
+  "ucm_lcz_wrfinit/chc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 60,
+   "max_ulp": 542420
+  },
+  "ucm_lcz_wrfinit/chr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 56,
+   "max_ulp": 1013238
+  },
+  "ucm_lcz_wrfinit/cmc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 984114
+  },
+  "ucm_lcz_wrfinit/cmr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 62,
+   "max_ulp": 1687229
+  },
+  "ucm_lcz_wrfinit/ust_in.bin": {
+   "cases": 2,
+   "differing_words": 44,
+   "max_ulp": 762525
+  },
+  "ucm_lcz_wrfinit/ust_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 779149
+  },
+  "ucm_lcz_wrfinit/xxxb_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 14,
+   "max_ulp": 15296810
+  },
+  "ucm_lcz_wrfinit/xxxg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 8,
+   "max_ulp": 1632017
+  },
+  "ucm_wrfinit/akms_override.bin": {
+   "cases": 4,
+   "differing_words": 32,
+   "max_ulp": 1606338
+  },
+  "ucm_wrfinit/akms_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 99,
+   "max_ulp": 1956441
+  },
+  "ucm_wrfinit/akms_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 99,
+   "max_ulp": 1956441
+  },
+  "ucm_wrfinit/drelb_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 961656599
+  },
+  "ucm_wrfinit/drelb_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 961656599
+  },
+  "ucm_wrfinit/drelg_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_wrfinit/drelg_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_wrfinit/drelr_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_wrfinit/drelr_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 104,
+   "max_ulp": 981668463
+  },
+  "ucm_wrfinit/flxhumb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 910980678
+  },
+  "ucm_wrfinit/flxhumb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 910980678
+  },
+  "ucm_wrfinit/flxhumg_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 924249399
+  },
+  "ucm_wrfinit/flxhumg_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 924249399
+  },
+  "ucm_wrfinit/flxhumr_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 943662976
+  },
+  "ucm_wrfinit/flxhumr_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 943662976
+  },
+  "ucm_wrfinit/g_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm_wrfinit/g_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm_wrfinit/g_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm_wrfinit/g_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 3222498
+  },
+  "ucm_wrfinit/grdflx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 3008069
+  },
+  "ucm_wrfinit/grdflx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 3008069
+  },
+  "ucm_wrfinit/grdflx_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 2093947
+  },
+  "ucm_wrfinit/grdflx_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 2093947
+  },
+  "ucm_wrfinit/hfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 2140139711
+  },
+  "ucm_wrfinit/hfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 2140139711
+  },
+  "ucm_wrfinit/hfx_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 2124525040
+  },
+  "ucm_wrfinit/hfx_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 2124525040
+  },
+  "ucm_wrfinit/lh_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 17398400
+  },
+  "ucm_wrfinit/lh_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 17398400
+  },
+  "ucm_wrfinit/lh_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 5745659
+  },
+  "ucm_wrfinit/lh_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 5745659
+  },
+  "ucm_wrfinit/lh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 45464649
+  },
+  "ucm_wrfinit/lh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 45464649
+  },
+  "ucm_wrfinit/lh_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 45464649
+  },
+  "ucm_wrfinit/lh_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 45464649
+  },
+  "ucm_wrfinit/psih_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 2116245258
+  },
+  "ucm_wrfinit/psih_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2116245258
+  },
+  "ucm_wrfinit/psih_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2116245258
+  },
+  "ucm_wrfinit/psim_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 2108375708
+  },
+  "ucm_wrfinit/psim_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2108375708
+  },
+  "ucm_wrfinit/psim_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2108375708
+  },
+  "ucm_wrfinit/q2_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 1922894
+  },
+  "ucm_wrfinit/q2_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 1922894
+  },
+  "ucm_wrfinit/qc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7989550
+  },
+  "ucm_wrfinit/qc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7989550
+  },
+  "ucm_wrfinit/qc_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7989550
+  },
+  "ucm_wrfinit/qc_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 7989550
+  },
+  "ucm_wrfinit/qfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 17444850
+  },
+  "ucm_wrfinit/qfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 17444850
+  },
+  "ucm_wrfinit/qfx_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 6274505
+  },
+  "ucm_wrfinit/qfx_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 6274505
+  },
+  "ucm_wrfinit/qsfc_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 4630379
+  },
+  "ucm_wrfinit/qsfc_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 4630379
+  },
+  "ucm_wrfinit/qsfc_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 1868958
+  },
+  "ucm_wrfinit/qsfc_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 1868958
+  },
+  "ucm_wrfinit/rn_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 409627
+  },
+  "ucm_wrfinit/rn_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 409627
+  },
+  "ucm_wrfinit/rn_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 409627
+  },
+  "ucm_wrfinit/rn_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 409627
+  },
+  "ucm_wrfinit/sh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm_wrfinit/sh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm_wrfinit/sh_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm_wrfinit/sh_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 2134468213
+  },
+  "ucm_wrfinit/tb_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 11089
+  },
+  "ucm_wrfinit/tb_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 11089
+  },
+  "ucm_wrfinit/tb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 11089
+  },
+  "ucm_wrfinit/tb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 11089
+  },
+  "ucm_wrfinit/tbl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 313,
+   "max_ulp": 680
+  },
+  "ucm_wrfinit/tbl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 313,
+   "max_ulp": 680
+  },
+  "ucm_wrfinit/tbl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 313,
+   "max_ulp": 680
+  },
+  "ucm_wrfinit/tbl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 313,
+   "max_ulp": 680
+  },
+  "ucm_wrfinit/tc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 14389
+  },
+  "ucm_wrfinit/tc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 14389
+  },
+  "ucm_wrfinit/tc_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 14389
+  },
+  "ucm_wrfinit/tc_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 14389
+  },
+  "ucm_wrfinit/tg_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 36376
+  },
+  "ucm_wrfinit/tg_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 36376
+  },
+  "ucm_wrfinit/tg_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 36376
+  },
+  "ucm_wrfinit/tg_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 36376
+  },
+  "ucm_wrfinit/tgl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 175,
+   "max_ulp": 843
+  },
+  "ucm_wrfinit/tgl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 175,
+   "max_ulp": 843
+  },
+  "ucm_wrfinit/tgl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 175,
+   "max_ulp": 843
+  },
+  "ucm_wrfinit/tgl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 175,
+   "max_ulp": 843
+  },
+  "ucm_wrfinit/tr_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 91933
+  },
+  "ucm_wrfinit/tr_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 91933
+  },
+  "ucm_wrfinit/tr_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 91933
+  },
+  "ucm_wrfinit/tr_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 91933
+  },
+  "ucm_wrfinit/trl_urb3d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 383,
+   "max_ulp": 5695
+  },
+  "ucm_wrfinit/trl_urb3d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 383,
+   "max_ulp": 5695
+  },
+  "ucm_wrfinit/trl_urb3d_out.bin": {
+   "cases": 4,
+   "differing_words": 383,
+   "max_ulp": 5695
+  },
+  "ucm_wrfinit/trl_urb3d_override.bin": {
+   "cases": 4,
+   "differing_words": 383,
+   "max_ulp": 5695
+  },
+  "ucm_wrfinit/ts_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm_wrfinit/ts_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm_wrfinit/ts_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm_wrfinit/ts_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 136,
+   "max_ulp": 58630
+  },
+  "ucm_wrfinit/tsk_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 49662
+  },
+  "ucm_wrfinit/tsk_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 49662
+  },
+  "ucm_wrfinit/tsk_out.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 29701
+  },
+  "ucm_wrfinit/tsk_override.bin": {
+   "cases": 4,
+   "differing_words": 46,
+   "max_ulp": 29701
+  },
+  "ucm_wrfinit/u10_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 2090172
+  },
+  "ucm_wrfinit/u10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2090172
+  },
+  "ucm_wrfinit/u10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 2090172
+  },
+  "ucm_wrfinit/v10_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 1779280
+  },
+  "ucm_wrfinit/v10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 1779280
+  },
+  "ucm_wrfinit/v10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 54,
+   "max_ulp": 1779280
+  },
+  "ucm_wrfinit/akms_in.bin": {
+   "cases": 3,
+   "differing_words": 26,
+   "max_ulp": 1606338
+  },
+  "ucm_wrfinit/akms_out.bin": {
+   "cases": 3,
+   "differing_words": 26,
+   "max_ulp": 1606338
+  },
+  "ucm_wrfinit/akms_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 78,
+   "max_ulp": 1956441
+  },
+  "ucm_wrfinit/chc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 472227
+  },
+  "ucm_wrfinit/chc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 472227
+  },
+  "ucm_wrfinit/chr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1198746
+  },
+  "ucm_wrfinit/chr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1198746
+  },
+  "ucm_wrfinit/cmc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 724387
+  },
+  "ucm_wrfinit/cmc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 724387
+  },
+  "ucm_wrfinit/cmr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1857984
+  },
+  "ucm_wrfinit/cmr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1857984
+  },
+  "ucm_wrfinit/drelb_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 961656599
+  },
+  "ucm_wrfinit/drelg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 981668463
+  },
+  "ucm_wrfinit/drelr_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 68,
+   "max_ulp": 981668463
+  },
+  "ucm_wrfinit/flxhumb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 910980678
+  },
+  "ucm_wrfinit/flxhumg_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 924249399
+  },
+  "ucm_wrfinit/flxhumr_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 943662976
+  },
+  "ucm_wrfinit/g_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3222498
+  },
+  "ucm_wrfinit/g_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3222498
+  },
+  "ucm_wrfinit/grdflx_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 2093947
+  },
+  "ucm_wrfinit/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 3008069
+  },
+  "ucm_wrfinit/hfx_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 2124525040
+  },
+  "ucm_wrfinit/hfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 2140139711
+  },
+  "ucm_wrfinit/lh_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 5745659
+  },
+  "ucm_wrfinit/lh_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 17398400
+  },
+  "ucm_wrfinit/lh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 45464649
+  },
+  "ucm_wrfinit/lh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 45464649
+  },
+  "ucm_wrfinit/psih_in.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2116245258
+  },
+  "ucm_wrfinit/psih_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2116245258
+  },
+  "ucm_wrfinit/psih_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 51,
+   "max_ulp": 2116245258
+  },
+  "ucm_wrfinit/psim_in.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2108375708
+  },
+  "ucm_wrfinit/psim_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2108375708
+  },
+  "ucm_wrfinit/psim_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 51,
+   "max_ulp": 2108375708
+  },
+  "ucm_wrfinit/q2_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 1770200
+  },
+  "ucm_wrfinit/qc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3841832
+  },
+  "ucm_wrfinit/qc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 3841832
+  },
+  "ucm_wrfinit/qfx_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 6274505
+  },
+  "ucm_wrfinit/qfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 17444850
+  },
+  "ucm_wrfinit/qsfc_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 1868958
+  },
+  "ucm_wrfinit/qsfc_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 3114929
+  },
+  "ucm_wrfinit/rn_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 409627
+  },
+  "ucm_wrfinit/rn_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 409627
+  },
+  "ucm_wrfinit/sh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2134468213
+  },
+  "ucm_wrfinit/sh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 2134468213
+  },
+  "ucm_wrfinit/tb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 11089
+  },
+  "ucm_wrfinit/tb_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 11089
+  },
+  "ucm_wrfinit/tbl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 227,
+   "max_ulp": 470
+  },
+  "ucm_wrfinit/tbl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 227,
+   "max_ulp": 470
+  },
+  "ucm_wrfinit/tc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 12549
+  },
+  "ucm_wrfinit/tc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 12549
+  },
+  "ucm_wrfinit/tg_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 36376
+  },
+  "ucm_wrfinit/tg_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 36376
+  },
+  "ucm_wrfinit/tgl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 122,
+   "max_ulp": 598
+  },
+  "ucm_wrfinit/tgl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 122,
+   "max_ulp": 598
+  },
+  "ucm_wrfinit/tr_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 91933
+  },
+  "ucm_wrfinit/tr_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 91933
+  },
+  "ucm_wrfinit/trl_urb3d_in.bin": {
+   "cases": 3,
+   "differing_words": 276,
+   "max_ulp": 3692
+  },
+  "ucm_wrfinit/trl_urb3d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 276,
+   "max_ulp": 3692
+  },
+  "ucm_wrfinit/ts_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 58630
+  },
+  "ucm_wrfinit/ts_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 100,
+   "max_ulp": 58630
+  },
+  "ucm_wrfinit/tsk_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 29701
+  },
+  "ucm_wrfinit/tsk_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 49662
+  },
+  "ucm_wrfinit/u10_in.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2090172
+  },
+  "ucm_wrfinit/u10_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 2090172
+  },
+  "ucm_wrfinit/u10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 51,
+   "max_ulp": 2090172
+  },
+  "ucm_wrfinit/ust_out.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 705434
+  },
+  "ucm_wrfinit/ust_override.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 705434
+  },
+  "ucm_wrfinit/ust_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 85,
+   "max_ulp": 823691
+  },
+  "ucm_wrfinit/ust_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 85,
+   "max_ulp": 823691
+  },
+  "ucm_wrfinit/v10_in.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 1779280
+  },
+  "ucm_wrfinit/v10_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 1779280
+  },
+  "ucm_wrfinit/v10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 51,
+   "max_ulp": 1779280
+  },
+  "ucm_wrfinit/xxxb_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 28,
+   "max_ulp": 2137075857
+  },
+  "ucm_wrfinit/xxxb_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 28,
+   "max_ulp": 2137075857
+  },
+  "ucm_wrfinit/xxxg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 10,
+   "max_ulp": 2424763
+  },
+  "ucm_wrfinit/xxxg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 10,
+   "max_ulp": 2424763
+  },
+  "ucm_wrfinit/chc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 472227
+  },
+  "ucm_wrfinit/chr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 1198746
+  },
+  "ucm_wrfinit/cmc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 724387
+  },
+  "ucm_wrfinit/cmr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 1857984
+  },
+  "ucm_wrfinit/ust_in.bin": {
+   "cases": 2,
+   "differing_words": 22,
+   "max_ulp": 705434
+  },
+  "ucm_wrfinit/ust_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 64,
+   "max_ulp": 823691
+  },
+  "ucm_wrfinit/xxxb_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 14,
+   "max_ulp": 14782341
+  },
+  "ucm_wrfinit/xxxg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 10,
+   "max_ulp": 2424763
+  }
+ }
+}

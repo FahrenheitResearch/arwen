@@ -556,8 +556,21 @@ _SKIP_SITES = frozenset({
      "test_non_aerosol_int_define_source_is_byte_identical", "call:skip"),
     # Opt-in empirical mp=8 gate: needs gfortran, the pristine WRF tree and
     # ~380 MB of regenerated tables.  WP-12b RAN it; see the document.
+    # One launcher-shape test per arithmetic leg (2.9.1 intake of the WRF
+    # exact chain): a default process runs 2.9.1's mp=8 adapter, which
+    # still calls the reused thompson.cu launchers, so _default compares
+    # live; under GPUWM_WRF_EXACT=1 mp=8 is the classic unit and _strict
+    # holds the pinned shape.  Exactly one of the two runs on every leg.
+    ("test_thompson_aerosol_adapter.py",
+     "test_reused_classic_launchers_receive_the_mp8_argument_shape_default",
+     "marker:skipif"),
+    ("test_thompson_aerosol_adapter.py",
+     "test_reused_classic_launchers_receive_the_mp8_argument_shape_strict",
+     "marker:skipif"),
+    # Renamed by the WRF exact chain (2.9.1 intake): it reproduces the
+    # committed oracle on the receipt's libc, bounded on another.
     ("test_mp8_frozen.py",
-     "test_clean_oracle_rebuild_matches_except_the_four_documented_files",
+     "test_clean_oracle_rebuild_reproduces_the_committed_oracle",
      "marker:skipif"),
     # CCN_ACTIVATE.BIN ships as of 2026-08-01, so on a clean checkout these
     # do NOT fire.  They are kept as defence: a tree where the asset was

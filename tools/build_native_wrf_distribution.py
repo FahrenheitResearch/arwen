@@ -88,6 +88,7 @@ REQUIRED_WHEEL_PAYLOADS = {
     "gpuwm/core/nest_interp.py",
     "gpuwm/core/noah.py",
     "gpuwm/core/state.py",
+    "gpuwm/core/physics_inventory.py",
     "gpuwm/data/noah_tables/LANDUSE.TBL",
     "gpuwm/data/noah_tables/VEGPARM.TBL",
     "gpuwm/data/noah_tables/SOILPARM.TBL",

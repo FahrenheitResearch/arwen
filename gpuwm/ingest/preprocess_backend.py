@@ -1044,7 +1044,7 @@ def _selection(requested: str, backend, reason: str, *, device_load=None):
 
 
 # Auto leaves a card other work is using, because there the preparation
-# ran slower than on the CPU: on node-2's RTX 5090, shared with a running
+# ran slower than on the CPU: on test host B's RTX 5090, shared with a running
 # forecast or beside a loaded host, the CUDA preparation took 796 to 990 s
 # against 678 s for the CPU backend on the same case.  The busy reading is
 # NVML's utilization.gpu, the share of the last sample period in which a
@@ -1592,6 +1592,172 @@ def _sealed_distribution_preprocess_backends() -> tuple[str, ...] | None:
     _path, payload = bound
     backends = payload["contract"]["platform"]["backends"]
     return tuple(backends)
+
+
+def start_time_backend(backend):
+    """The backend the START time is built on: the whole card when it fits.
+
+    ``admit_preparation`` stages a mapped build over 1 GiB in bounded
+    batches so a forecast can run beside the LATER forcing times.  The
+    start time is built before the head exists, so no forecast sits beside
+    it yet, and the bounded batches cost it about 40 s of per-batch host
+    round trips on the HRRR CONUS grid (126.8 s against 86.4 s full-device,
+    every prepared array byte-identical).  When the whole build's price
+    fits the free bytes the admission just read, the start time takes the
+    full-device backend; its caller moves the result to the host
+    (:func:`move_start_result_to_host`) and releases the pool before the
+    head is admitted, so the later bounded times and any forecast beside
+    them see the card exactly as the bounded start left it.  Same CUDA
+    kernels, same vertical-route record (shared with ``backend``) and the
+    same scientific receipt; the route taken is a measurement under
+    ``selection.chunking.start_time``.  Anything else returns ``backend``.
+    """
+
+    if not getattr(backend, "bounded_cuda", False):
+        return backend
+    selection = getattr(backend, "selection", None) or {}
+    fit = selection.get("device_fit") or {}
+    chunking = selection.get("chunking")
+    need, free = fit.get("unchunked_need_bytes"), fit.get("free_bytes")
+    if not isinstance(chunking, dict) or type(need) is not int or type(free) is not int:
+        return backend
+    if need > free:
+        chunking["start_time"] = {
+            "route": "bounded CUDA batches",
+            "reason": f"the whole build needs {_gib(need)} and the card has {_gib(free)} free"}
+        return backend
+    full = CudaPreprocessBackend(host_workers=backend.host_workers)
+    # One receipt: the start time's vertical geometries land in the
+    # bounded backend's own route list, as they do when it builds them.
+    full._vertical_routes = backend._vertical_routes
+    full.selection = selection
+    chunking["start_time"] = {
+        "route": "full-device preparation, result moved to host before the head",
+        "reason": f"the whole build needs {_gib(need)} and the card has {_gib(free)} free"}
+    return full
+
+
+def move_start_result_to_host(*objects) -> int:
+    """Copy every CuPy array these objects hold to the host, in place.
+
+    The full-device start time (:func:`start_time_backend`) leaves its met
+    fields, state and base on the card; the bounded start leaves the same
+    values in NumPy.  This turns the first into the second, attribute by
+    attribute, so everything after the start (soil, head, boundary frames,
+    the producer's reservation) runs on what the bounded start hands it.
+    A device-to-host copy is exact.  Returns the bytes moved.
+    """
+
+    import dataclasses
+    try:
+        import cupy as cp
+    except ImportError:          # no CUDA, nothing on a card
+        return 0
+    seen: set[int] = set()
+    copies: dict[int, tuple[object, np.ndarray]] = {}
+    moved = 0
+
+    def host(value):
+        nonlocal moved
+        if isinstance(value, cp.ndarray):
+            # One host copy per device array, so two names for one array
+            # stay one array.
+            if id(value) not in copies:
+                moved += int(value.nbytes)
+                copies[id(value)] = (value, value.get())
+            return copies[id(value)][1]
+        if isinstance(value, tuple) and not hasattr(value, "_fields"):
+            converted = tuple(host(item) for item in value)
+            return value if all(a is b for a, b in zip(converted, value)) else converted
+        visit(value)
+        return value
+
+    def visit(value):
+        if id(value) in seen or isinstance(value, (str, bytes, int, float, np.ndarray)):
+            return
+        seen.add(id(value))
+        if isinstance(value, dict):
+            for key in list(value):
+                converted = host(value[key])
+                if converted is not value[key]:
+                    value[key] = converted
+        elif isinstance(value, list):
+            for position, item in enumerate(value):
+                converted = host(item)
+                if converted is not item:
+                    value[position] = converted
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            for item in dataclasses.fields(value):
+                current = getattr(value, item.name)
+                converted = host(current)
+                if converted is not current:
+                    object.__setattr__(value, item.name, converted)
+        elif hasattr(value, "__dict__") and type(value).__module__.startswith("gpuwm."):
+            for key, item in list(vars(value).items()):
+                converted = host(item)
+                if converted is not item:
+                    object.__setattr__(value, key, converted)
+            if hasattr(value, "_host_setup_state"):
+                object.__setattr__(value, "_host_setup_state", True)
+
+    # Gather every device array first and copy them on several threads,
+    # each on its own stream: one thread's pageable copies moved 22 GB in
+    # 5.8 s at HRRR CONUS.  A device-to-host copy is exact either way.
+    gather: dict[int, object] = {}
+
+    def collect(value):
+        if isinstance(value, cp.ndarray):
+            gather.setdefault(id(value), value)
+            return value
+        if isinstance(value, tuple) and not hasattr(value, "_fields"):
+            for item in value:
+                collect(item)
+            return value
+        walk(value, collect)
+        return value
+
+    walked: set[int] = set()
+
+    def walk(value, each):
+        if id(value) in walked or isinstance(value, (str, bytes, int, float, np.ndarray)):
+            return
+        walked.add(id(value))
+        if isinstance(value, dict):
+            for key in list(value):
+                each(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                each(item)
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            for item in dataclasses.fields(value):
+                each(getattr(value, item.name))
+        elif hasattr(value, "__dict__") and type(value).__module__.startswith("gpuwm."):
+            for item in list(vars(value).values()):
+                each(item)
+
+    for value in objects:
+        collect(value)
+    if gather:
+        from concurrent.futures import ThreadPoolExecutor
+        device = cp.cuda.runtime.getDevice()
+
+        def fetch(array):
+            cp.cuda.Device(device).use()
+            stream = cp.cuda.Stream(non_blocking=True)
+            with stream:
+                host = array.get(stream=stream)
+            stream.synchronize()
+            return host
+
+        cp.cuda.runtime.deviceSynchronize()
+        items = sorted(gather.items(), key=lambda item: -int(item[1].nbytes))
+        with ThreadPoolExecutor(max_workers=min(8, len(items))) as pool:
+            for (key, array), copied in zip(items, pool.map(lambda item: fetch(item[1]), items)):
+                moved += int(array.nbytes)
+                copies[key] = (array, copied)
+    for value in objects:
+        visit(value)
+    return moved
 
 
 def release_backend_memory(backend) -> None:

@@ -1,14 +1,13 @@
 """Morrison against the byte-unmodified WRF v4.6.1 module.
 
-The older Morrison GPU tests compare with ``np_morrison_column``, a float64
-transcription mirror.  This file is the first test in this repository whose
-Morrison expected values were written by WRF itself.  The fixture comes from
-the public ``MP_MORR_TWO_MOMENT`` wrapper and includes its radar diagnostic.
-
-The historical residual signatures below predate the finite-transfer
-corrections. They remain diagnostic records and are not repinned to accept
-changed physics. The complete comparison, a latent-heat negative control,
-and the strict unresolved bitwise comparison remain active.
+The fixture comes from the public ``MP_MORR_TWO_MOMENT`` wrapper and
+includes its radar diagnostic: every expected value was written by WRF.
+``kernels/morrison.cu`` is the literal transcription graded here.  Built
+with ``MORR_ROW37_OFF`` (WRF's arithmetic alone) it is bitwise on every
+returned word; the production build differs only where the owner-ruled
+row-37 corrections fire (PARITY-GAPS row 37: the deposition-nucleation
+vapour cap and the wide re-evaluation of a non-finite freezing rate), and
+those differences are pinned below as named exceptions.
 """
 
 from __future__ import annotations
@@ -44,137 +43,13 @@ WRF_SOURCE_SHA256 = {
         "2dcd1c70127ea57c8a2437baf2b8a2388b1722e4d4ead9411834946439b8c273",
 }
 
-# Historical per-field max_ulp, retained unchanged for comparison with the
-# corrected algorithm. These aggregate vectors are not an accuracy gate.
-# The Windows driver and Linux/CUDA
-# 12.9 NVRTC produce slightly different transcendental results on the same
-# sm_120 card; sm_89 and Linux sm_86 add distinct measured vectors.  Pin each complete
-# signature. fp32_ulp_distance in gpuwm.core.fp32_ulp is the sole ULP
-# owner. Across the measured platforms graupelnc stays exactly 0, theta
-# stays 154 and sr is the worst field. These signatures describe an
-# unresolved scientific residual; they do not establish WRF agreement.
-# RTX 5090 (sm_120), Windows driver.
-MEASURED_WINDOWS_MAX_ULP = {
-    "graupelnc": 0,
-    "graupelncv": 1643044151,
-    "ng": 1108899129,
-    "ni": 1219365430,
-    "nr": 1013995714,
-    "ns": 1112428311,
-    "qc": 163796,
-    "qg": 908160525,
-    "qi": 851838551,
-    "qr": 718204424,
-    "qs": 895249780,
-    "qv": 8388606,
-    "rainnc": 4645,
-    "rainncv": 817215992,
-    "refl_10cm": 11072910,
-    "snownc": 5,
-    "snowncv": 1580788530,
-    "sr": 1709094255,
-    "theta": 154,
-}
-# RTX 5090 (sm_120), Linux / CUDA 12.9 NVRTC.
-MEASURED_LINUX_MAX_ULP = {
-    "graupelnc": 0,
-    "graupelncv": 1642221535,
-    "ng": 1108899127,
-    "ni": 1219365430,
-    "nr": 1013995714,
-    "ns": 1112428308,
-    "qc": 163796,
-    "qg": 908160527,
-    "qi": 851838551,
-    "qr": 718204424,
-    "qs": 895249780,
-    "qv": 8388606,
-    "rainnc": 4645,
-    "rainncv": 817215992,
-    "refl_10cm": 11072910,
-    "snownc": 5,
-    "snowncv": 1563689139,
-    "sr": 1706351510,
-    "theta": 154,
-}
-# First sm_89 measurement: RTX 4090 (Ada), Linux, driver 590.48.01,
-# CUDA driver/NVRTC 13.1, CUDA runtime 12.9 (cupy-cuda12x 14.1.1),
-# Python 3.12.3, 2026-08-03 -- the first user-zero cross-architecture
-# stress run of the published wheel (arwen-stress-4090 part2-parity,
-# MORRISON-ULP-sm89-vs-sm120.tsv).  Differs from BOTH sm_120 tuples on
-# qi, ns, refl_10cm, snowncv and graupelncv; matches the Windows sm_120
-# tuple (and not the Linux one) on qg, ng and sr; identical to both on
-# the remaining 11 fields.
-MEASURED_SM89_LINUX_MAX_ULP = {
-    "graupelnc": 0,
-    "graupelncv": 1632923731,
-    "ng": 1108899129,
-    "ni": 1219365430,
-    "nr": 1013995714,
-    "ns": 1112428312,
-    "qc": 163796,
-    "qg": 908160525,
-    "qi": 851838674,
-    "qr": 718204424,
-    "qs": 895249780,
-    "qv": 8388606,
-    "rainnc": 4645,
-    "rainncv": 817215992,
-    "refl_10cm": 11477310,
-    "snownc": 5,
-    "snowncv": 815499543,
-    "sr": 1709094255,
-    "theta": 154,
-}
-# RTX 3080 (sm_86), WSL Ubuntu 24.04, Python 3.12.3, CuPy 14.2.0,
-# CUDA runtime 12.9, NVRTC 12.8, CUDA driver API 13.3; measured 2026-09-04.
-# The same card under Windows/CuPy 14.0.1/NVRTC 13.0 exactly reproduces
-# MEASURED_SM89_LINUX_MAX_ULP. A fresh build of the byte-pinned WRF source
-# reproduces both committed CSVs exactly; disabling FMAD changes but does
-# not close the residual. See tools/morrison_wrf461_oracle/README.md.
-MEASURED_SM86_LINUX_MAX_ULP = {
-    "graupelnc": 0,
-    "graupelncv": 1607604645,
-    "ng": 1108899128,
-    "ni": 1219365430,
-    "nr": 1013995714,
-    "ns": 1112428308,
-    "qc": 163796,
-    "qg": 908160530,
-    "qi": 851838674,
-    "qr": 718204424,
-    "qs": 895249780,
-    "qv": 8388606,
-    "rainnc": 4645,
-    "rainncv": 817215992,
-    "refl_10cm": 11477310,
-    "snownc": 5,
-    "snowncv": 1563689139,
-    "sr": 1706351512,
-    "theta": 154,
-}
-MEASURED_PLATFORM_MAX_ULP = (
-    MEASURED_WINDOWS_MAX_ULP,
-    MEASURED_LINUX_MAX_ULP,
-    MEASURED_SM89_LINUX_MAX_ULP,
-    MEASURED_SM86_LINUX_MAX_ULP,
-)
-
-# The default-REAL constants and the compiler target still need independent
-# adjudication. Neither library dispatch nor contraction explains every
-# residual: the port also carries deliberate corrections to inherited
-# donor and range failures. A historical aggregate maximum cannot test the
-# accuracy of those corrections and must not be silently redefined for them.
-BITWISE_XFAIL_REASON = (
-    "Unmodified WRF comparison remains nonzero. Deliberate nucleation and "
-    "finite-freezing corrections change the algorithm. Remaining causes "
-    "include default-REAL constants, CUDA powf/tgammaf/cbrtf/log10f versus "
-    "the reference REAL FUNCTION GAMMA (module_mp_morr_two_moment.F:4153-4384), "
-    "and NVRTC --fmad=true versus the -O0 fixture. The _EXTRA_HEADERS "
-    "glibc_flt32.cuh route supplies neither that GAMMA nor cbrtf/log10f. "
-    "A zero residual is not established by a historical signature or "
-    "agreement with the float64 transcription."
-)
+#: The production build's named row-37 exceptions on the fixture: the only
+#: fixture column where the nucleation cap fires is case 13 (205 K, ice
+#: supersaturated above the 1.08 Cooper threshold), under both modes.  The
+#: cap shrinks the nucleated number with the vapour it may consume; mass,
+#: vapour and temperature move by the FUDGEF rounding of the capped rate.
+ROW37_FIXTURE_CASES = [[13, 0], [13, 1]]
+ROW37_FIXTURE_FIELDS = {"ni", "qi", "qv"}
 
 
 def _csv_rows(name: str) -> list[dict[str, str]]:
@@ -304,31 +179,26 @@ def test_graupel_and_hail_are_distinct_and_plumbed_through_both_diagnostics():
     assert differing_reflectivity == 150
 
 
-def test_the_bitwise_xfail_states_its_cause_and_the_cause_is_still_true():
-    """The unresolved comparison must name live causes and corrections."""
-    from gpuwm.core.kernels import EXTRA_HEADERS
+def test_the_unit_is_routed_through_wrfs_libm_and_no_contraction():
+    """The causes the former xfail named are gone, and stay gone."""
+    import re
+    from gpuwm.core.kernels import EXTRA_HEADERS, module_options
 
-    marks = [mark for mark in test_morrison_wrf_acceptance_is_bitwise.pytestmark
-             if mark.name == "xfail"]
-    assert len(marks) == 1
-    reason = marks[0].kwargs["reason"]
-    assert reason == BITWISE_XFAIL_REASON
-    for cause in ("powf", "tgammaf", "cbrtf", "log10f", "--fmad=true",
-                  "_EXTRA_HEADERS", "module_mp_morr_two_moment.F:4153-4384",
-                  "glibc_flt32.cuh"):
-        assert cause in reason, cause
-
-    source = (Path(__file__).resolve().parents[1] / "gpuwm" / "core"
-              / "kernels" / "morrison.cu").read_text(encoding="utf-8")
-    for name in ("powf", "tgammaf", "cbrtf", "log10f"):
-        assert f"{name}(" in source
-    assert "finite-freezing corrections" in reason
-    # The allow-list decision the reason string explains: morrison is NOT
-    # routed through the glibc transcriptions, and the two kernels that are
-    # named there so a silent addition cannot leave the reason stale.
-    assert "morrison" not in EXTRA_HEADERS
-    assert EXTRA_HEADERS["gf"] == ("glibc_flt32.cuh",)
-    assert EXTRA_HEADERS["ntiedtke"] == ("glibc_flt32.cuh",)
+    assert EXTRA_HEADERS["morrison"] == (
+        "glibc_flt32.cuh", "glibc_flt32_extra.cuh", "glibc_flt64.cuh",
+        "glibc_trig_flt32.cuh", "morrison_constants.cuh")
+    assert module_options("morrison") == ("-std=c++17", "--fmad=false")
+    source = re.sub(r"//[^\n]*", "", (
+        Path(__file__).resolve().parents[1] / "gpuwm" / "core" / "kernels"
+        / "morrison.cu").read_text(encoding="utf-8"))
+    # No CUDA libm entry point: WOOF's own libm (gfk_*, glibc_*) and the
+    # module's own GAMMA (mo_gamma).
+    bare = re.findall(r"(?<![A-Za-z0-9_])(powf|expf|logf|log10f|cbrtf|"
+                      r"tgammaf|sinf|sqrtf|pow|exp|log|log10)\(", source)
+    assert bare == []
+    assert "__device__ float mo_gamma(float x)" in source
+    # Every literal constant division is the IEEE quotient.
+    assert not re.search(r"[A-Za-z0-9_)\]] / [0-9]", source)
 
 
 # ---------------------------------------------------------------------------
@@ -336,62 +206,77 @@ def test_the_bitwise_xfail_states_its_cause_and_the_cause_is_still_true():
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=1)
+def _measurement_row37_off() -> dict[str, object]:
+    return measure_oracle(row37=False)
+
+
 @pytest.mark.gpu
 @requires_gpu
 def test_wrf_measurement_retains_complete_comparison_and_finite_outputs():
     report = _measurement()
-    observed_max_ulp = {
-        name: int(entry["max_ulp"])
-        for name, entry in report["fields"].items()
-    }
-    assert set(observed_max_ulp) == set(MEASURED_WINDOWS_MAX_ULP)
+    assert set(report["fields"]) == {
+        "graupelnc", "graupelncv", "ng", "ni", "nr", "ns", "qc", "qg", "qi",
+        "qr", "qs", "qv", "rainnc", "rainncv", "refl_10cm", "snownc",
+        "snowncv", "sr", "theta"}
     for name, entry in report["fields"].items():
         assert entry["nonfinite_count"] == 0, name
-        if name != "refl_10cm":
-            assert entry["minimum"] >= 0.0, name
     expected_counts = {
         name: (28 if name in {
             "graupelnc", "graupelncv", "rainnc", "rainncv",
             "snownc", "snowncv", "sr",
         } else 896)
-        for name in observed_max_ulp
+        for name in report["fields"]
     }
     assert {
         name: int(entry["value_count"])
         for name, entry in report["fields"].items()
     } == expected_counts
-    assert report["overall"]["max_ulp"] == max(observed_max_ulp.values())
-    assert report["overall"]["worst_field"] == "sr"
     assert report["overall"]["value_count"] == 10948
-    assert report["overall"]["bitwise"] is False
 
 
 @pytest.mark.gpu
 @requires_gpu
-@pytest.mark.xfail(
-    strict=True,
-    reason=BITWISE_XFAIL_REASON,
-)
 def test_morrison_wrf_acceptance_is_bitwise():
-    report = _measurement()
+    """WRF's arithmetic alone (MORR_ROW37_OFF): every returned word."""
+    report = _measurement_row37_off()
+    assert report["row37"] is False
+    assert report["overall"]["value_count"] == 10948
+    assert report["overall"]["mismatch_count"] == 0
     assert report["overall"]["max_ulp"] == 0
     assert report["overall"]["bitwise"] is True
 
 
 @pytest.mark.gpu
 @requires_gpu
+def test_row37_corrections_are_the_only_production_differences():
+    """The production build differs from WRF only in the named exception."""
+    report = _measurement()
+    assert report["row37"] is True
+    differing = {name for name, entry in report["fields"].items()
+                 if entry["mismatch_count"]}
+    assert differing == ROW37_FIXTURE_FIELDS
+    for name in differing:
+        assert sorted(report["fields"][name]["mismatch_cases"]) == (
+            ROW37_FIXTURE_CASES), name
+
+
+@pytest.mark.gpu
+@requires_gpu
 def test_wrf_comparison_detects_a_latent_heat_perturbation(monkeypatch):
-    """A known wrong latent heat must worsen the actual WRF theta comparison."""
+    """A known wrong latent heat must break the actual WRF theta comparison."""
     import cupy as cp
     from gpuwm.core import kernels, morrison
 
-    baseline = _measurement()
+    baseline = _measurement_row37_off()
+    assert baseline["fields"]["theta"]["mismatch_count"] == 0
     source = kernels.module_source("morrison")
-    coefficient = "real xlv = 3.1484e6f - 2370.0f * temp;"
+    coefficient = "const float xxlv = 3.1484E6f - t3d * 2370.0f;"
     assert source.count(coefficient) == 1
     changed = source.replace(coefficient,
-                             "real xlv = 3.1494e6f - 2370.0f * temp;")
-    module = cp.RawModule(code=changed, options=("-std=c++17",))
+                             "const float xxlv = 3.1494E6f - t3d * 2370.0f;")
+    module = cp.RawModule(code="#define MORR_ROW37_OFF 1" + chr(10) + changed,
+                          options=kernels.module_options("morrison"))
     original_get_kernel = morrison.get_kernel
 
     def perturbed_kernel(name, entry_point):
@@ -401,5 +286,24 @@ def test_wrf_comparison_detects_a_latent_heat_perturbation(monkeypatch):
 
     monkeypatch.setattr(morrison, "get_kernel", perturbed_kernel)
     report = measure_oracle()
-    assert (report["fields"]["theta"]["max_ulp"]
-            > baseline["fields"]["theta"]["max_ulp"])
+    assert report["fields"]["theta"]["mismatch_count"] > 0
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _strict_source_contract():
+    from gpuwm.core import kernels
+    import gpuwm.wrf_exact as exact
+
+    # A preceding default test may already have compiled Morrison. The source
+    # selector is process-wide, while these caches are keyed by module name.
+    kernels.get_kernel.cache_clear()
+    kernels.load_module.cache_clear()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(exact, "ENABLED", True)
+        try:
+            yield
+        finally:
+            kernels.get_kernel.cache_clear()
+            kernels.load_module.cache_clear()
+            _measurement.cache_clear()
+            _measurement_row37_off.cache_clear()

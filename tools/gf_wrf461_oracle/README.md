@@ -76,9 +76,9 @@ cannot tell whether it lost the parcel in `cup_kbcon`, in the closure, or in
 intermediate.  It proves its own fidelity rather than asserting it: after the
 direct calls it applies GFDRV's output algebra (:724-840) to what it captured
 and compares that against a real `GFDRV` call on the same column, bitwise.
-**208 of 216 rows are exact.**  The 8 that are not are explained under "Mixed
-precision in the driver" below and are marked in `gf-stage-consistency.csv`;
-on those rows the GFDRV fixture is authoritative and the stage fixture is not.
+**All 216 rows are exact**, and `build.sh` refuses any other count.  (Until
+2026-10-07 8 rows were not; see "Mixed precision in the driver" below for
+what that was and why it is gone.)
 
 The `ierrc` column is useful, and it lies about a third of the time.  WRF
 passes the *same* `ierrc` array into the two end-of-routine cap probes
@@ -150,13 +150,13 @@ against 0.9.  And no scale awareness at all.
 
 Two traps the fixture found and a reading did not.
 
-**`k22` is off by one, as shipped.**  `k22(i) = maxloc(HEO_CUP(i,
+**WRF's `k22` is off by one.**  `k22(i) = maxloc(HEO_CUP(i,
 2:kbmax(i)), 1)` (:373) is a MAXLOC over an array SECTION, so it returns the
 position *within* `2:kbmax`, and WRF uses that position as an absolute level
 index without adding the section's offset.  WRF's `k22` is one level below the
 argmax of `heo_cup`.  Case 13 of the fixture is the witness: the argmax is at
 level 9 and `k22` comes out 8.  A port that "corrects" this disagrees with WRF
-on every column where the two differ.
+on every column where the two differ. The shipped kernel corrects this index. Its gate grades every word against independently compiled corrected WRF, including changed-k22 columns. `build_corrected.sh` also caps the shallow pressure-difference loop at `min(kpbl,ktf-1)`.
 
 **`po_cup` and `gamma_cup` come back zeroed on rejected columns.**  The
 perturbed-state `cup_env_clev` (:760) is handed `po_cup` and `gamma_cup`
@@ -210,8 +210,10 @@ against the deep arm's five to six; the shallow arm is milder only because
 real(8), and `module_gfs_physcons.F` declares every constant
 `real(kind=kind_phys)` -- but initialises them from **default-real literals**
 (`con_g = 9.80665e+0`, not `9.80665d+0`).  So GFDRV's `g`, `cp`, `xlv` and
-`r_v` are double-precision parameters, and the three expressions they appear
-in --
+`r_v` are double-precision parameters whose VALUES are the float32 literals
+widened: `con_g` is `0x40239D0140000000` = `float64(float32(9.80665))`, not
+the accurate `0x40239D013A92A305`, and `con_cp` is `0x408F64CCC0000000`.
+The three expressions they appear in --
 
 ```
 omeg(I,K) = -g*rho(i,k,j)*w(i,k,j)                        (:471)
@@ -219,55 +221,36 @@ mconv(i)  = mconv(i) + omeg(i,k)*dq/g                     (:487)
 DHDT(I,K) = cp*RTHBLTEN*pi + XLV*RQVBLTEN                 (:416)
 ```
 
--- evaluate in double and round once on the store into a real(4) local.  That
-is not the same as either a pure-float32 or a pure-float64 spelling, and it is
-measurable.  Rebuilding the decomposition with each combination:
+-- evaluate in double with those words and round once on the store into a
+real(4) local.
 
-| `omeg` / `mconv` | `dhdt` | rows differing from GFDRV |
-| --- | --- | ---: |
-| real(8) | real(8) | 8 |
-| real(4) | real(8) | 4 |
-| real(8) | real(4) | 14 |
-| real(4) | real(4) | 10 |
+### The 8-row residual this section used to describe was ours
 
-`mconv`'s own spelling makes no difference; `omeg`'s and `dhdt`'s both do.  No
-spelling reaches zero, so the source-faithful real(8) version is what ships
-and the residual is recorded.  Choosing the 4-row variant would be fitting the
-fixture rather than matching WRF.
+Until 2026-10-07 the three decompositions (`run_cup_gf.F90`,
+`run_gf_stages.F90`, `run_gf_shallow.F90`) did not USE
+`module_gfs_physcons`; they respelled its constants as
+`9.80665e+0_kind_phys` etc., i.e. the ACCURATE doubles.  The decomposition
+then disagreed with GFDRV on 8 of 216 rows, and that was recorded as
+"GFDRV's own mixed precision" after four real(4)/real(8) spellings all
+failed to reach zero -- none of them tried WRF's actual words.  A
+"which double" table measured the accurate doubles as correct, but it
+measured against the decomposition's own `omeg`/`dhdt`, which carried the
+same respelling: a circular measurement.  The CPU reference and the CUDA
+kernel inherited the accurate doubles from it, and so missed GFDRV by 1-34
+ULP of every tendency on the same 8 columns.
 
-Where the difference lands: a uniform 1-2 ULP shift in the deep mass flux
-`xmb`, which then scales the whole tendency profile.  It is not a branch flip
--- `ktop`, `kbcon` and `ierr` agree on every one of the 216 rows.  The affected
-columns all sit near the `frh_thresh` clamp, where `sig` equals `sig_thresh`
-exactly.
-
-The port consequence is concrete: a float32 GF reference must carry `omeg`,
-`mconv` and `dhdt` in float64, and must not simplify them to float32
-arithmetic.  `gpuwm/verify/gf_ref.py::gf_driver_prep` does, and reproduces
-the whole prepared column bitwise on all 216 columns.
-
-### Which double
-
-The stored word and the arithmetic disagree, and the fixture settles it.
-Assigned to a real(8) and written out, `con_g` reads `0x40239D0140000000` =
-`float64(float32(9.80665))`, not the accurate `0x40239D013A92A305`.  But
-reproducing GFDRV needs the accurate double:
-
-| constants used | `omeg` lanes wrong | `dhdt` lanes wrong |
-| --- | ---: | ---: |
-| `float64(9.80665)` etc | **0** | **0** |
-| `float64(float32(9.80665))` etc | 1488 | 204 |
-| float32 throughout | 2700 | 360 |
-
-out of 8640 lanes each.  Every miss is exactly 1 ULP.  `gf-pow-probe.txt`
-records the stored word so the trap is visible, and
-`tests/test_gf_wrf461_parity.py::test_gfs_constants_are_the_accurate_doubles`
-exists so nobody "corrects" the reference back to it.
+Giving the decomposition `use module_gfs_physcons` instead of the
+respelled literals settles it: **0 of 216 rows differ from GFDRV**.  The decompositions, `gf_ref.py` and
+`gf.cu` now all carry WRF's own words, `build.sh` fails on any nonzero row,
+and the 8-row tolerance, `gf_oracle.stage_rows_to_distrust` and the 34-ULP
+driver-residual gate are retired with the defect.
+`tests/test_gf_wrf461_parity.py::test_gfs_constants_are_wrfs_own_words`
+pins the words.
 
 There is deliberately no micro-probe of the expression in `pow_probe.F90`: a
 two-line `-con_g*rho*w` on local operands gets constant-folded by gfortran's
-front end at MPFR precision and disagrees with the oracle by 1 ULP on exactly
-the discriminating lane.  The 8640-lane fixture is the instrument.
+front end at MPFR precision, which is not what the compiled driver does.
+The 8640-lane fixture is the instrument.
 
 
 ## What the pow/gamma probe measured
@@ -482,20 +465,13 @@ compared.
 | shallow: the three-closure average | sh:817-874 | `gf_shallow_ref` | 18 | bitwise with `fzu` pinned; modelled `fzu` costs up to 8.4e-3 of `xmb` |
 | `neg_check` (both arms) | deep:3038-3102 | `gf_deep_ref.neg_check` | 216 | bitwise |
 | driver output algebra | wrfdrv:713-840 | `gf_driver.gf_driver_output` | 216 | bitwise |
-| **GFDRV end to end** | wrfdrv:1-844 | `gf_driver.gfdrv_column` | 216 | **bitwise on 208**; the other 8 are the driver's own mixed precision, see below |
+| **GFDRV end to end** | wrfdrv:1-844 | `gf_driver.gfdrv_column` | 216 | **bitwise on all 216** (since 2026-10-07; see "Mixed precision in the driver") |
 
 The end-to-end row is the one that matters and it needs its exact wording.
 With `fzu` pinned, the reference reproduces GFDRV word for word -- all eight
-level fields and five surface fields -- on the 208 columns where the driver's
-own decomposition is exact: 67600 words, zero differing.  The other 8 columns
-are exactly `gf_oracle.stage_rows_to_distrust`, i.e. the same rows where
-`run_cup_gf.F90`'s reconstruction of this algebra also disagrees with GFDRV.
-The port adds nothing there: on **all 216** columns it reproduces the stage
-path -- preparation, both schemes, both `neg_check` calls, all ten
-post-`neg_check` tendency fields and both precipitation rates -- bitwise, so
-the residual is entirely the driver's.  `GDC`, `GDC2`, `HTOP`, `HBOT`,
-`ktop_deep` and the shallow diagnostics are bitwise on all 216 because none of
-them carries `xmb`.
+level fields and five surface fields -- on all 216 columns: 70200 words,
+zero differing.  The CUDA kernel holds the same boundary on the device
+(`tests/test_gf_gfdrv_cuda.py`).
 
 One thing the end-to-end gate found that neither stage gate could: with
 `tgammaf` modelled rather than pinned, `RTHCUTEN` moves by **more than 100 per

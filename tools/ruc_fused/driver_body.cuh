@@ -341,7 +341,17 @@ extern "C" __global__ void ruc_driver_epilogue(
         }
         D_F(z0)=D_F(znt); D_F(sfcexc)=D_F(tkms);
         D_F(qsfc)=Q(D_F(qvg),A(1.0f,D_F(qvg)));
+        // CHKLOWQ by lineage (gpuwm.core.ruc_tier RUC_SNOW_FORMS).  wrf_45,
+        // the operational RAP/HRRR branch's LSMRUC:1083-1087 and WRF v4.0-4.5
+        // (v4.5.2 :1066): zero only under the MYJ PBL, whose surface layer is
+        // its one reader.  This port's RUC is fail-closed on MYJ, so the
+        // branch writes 1 on every land point.  GPUWM_SNOW_WRF461: WRF
+        // v4.6.1 :1069-1073 drops the MYJ test.
+#ifdef GPUWM_SNOW_WRF461
         D_F(chklowq)=D_F(qv3d)>=M(qsat,0.95f) && D_F(qv3d)<D_F(qvg) ? 0.0f:1.0f;
+#else
+        D_F(chklowq)=1.0f;
+#endif
         D_F(emiss)=D_F(snow)==0.0f ? lemitbl[integer[i]-1]:D_F(emissl);
         D_F(snow)=M(D_F(snwe),1000.0f); D_F(snowh)=D_F(snhei);
         D_F(canwat)=M(D_F(canwatr),1000.0f); D_F(mavail)=D_F(lmavail);

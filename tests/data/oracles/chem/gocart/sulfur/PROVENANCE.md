@@ -61,13 +61,15 @@ The third clock family crosses midnight over the consecutive steps.
 2 warm cloudy H2O2-limited, 3 warm cloudy H2O2 sufficient. They use incoming SO2,
 not an instrumented internal SO2 value. Limiting and sufficient inputs are widely separated.
 
-The solar-geometry residual (cos(SZA) and its daily sum, tcosz) was
-attributed word for word during the port: link-time sinf/cosf/acosf wrappers
-on the same -O0 WRF object recorded every trig input and glibc output word
-(the instrumented fixtures equal these by their checksum list), and replaying
-those glibc words through the CUDA arithmetic reproduced the Fortran. The
-residual is the kernel's CUDA sinf/cosf/acosf stubs, which retire when the
-engine's glibc float32 trig header lands. That instrumentation is not shipped.
+The solar geometry (cos(SZA) and its daily sum, tcosz) once carried a
+residual: the kernel called CUDA's built-in sinf/cosf, which put cos(SZA) up
+to 36 ULP and tcosz up to 25 ULP off this oracle and SO2/SO4 1 ULP off
+downstream in native mode.  The kernel now takes WOOF's own float32 trig
+(gpuwm/core/kernels/glibc_trig_flt32.cuh, prepended to chem_sulfur), and every
+output of every case grades 0 ULP in native and oracle-solar modes, under
+default arithmetic and under GPUWM_WRF_EXACT=1 (measured on an RTX PRO 6000,
+sm_120, NVRTC 12.9.86, 2026-10-07; tools/chem_wrf461_verify/
+regen_sulfur_baseline.py).
 
 GPU comparison, on a CUDA card:
 

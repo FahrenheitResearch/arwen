@@ -35,7 +35,7 @@ the shape of the path will not.
 |---|---|
 | `git clone` (local) | 3.0 s |
 | `python -m venv` + `pip install -e gpuwm-data` + `pip install -e '.[gpu-cu12,render]'` | ~25 s cached; a fresh machine downloads ~150 MB (numpy, matplotlib, netCDF4, CuPy) |
-| `gpuwm fetch-tables` (externalized Thompson tables, a one-time ~243 MiB release-asset download from a checkout, SHA-256 verified; a no-op once staged) | connection-speed bound; instant when already present |
+| Optional `gpuwm fetch-tables` (stage Thompson tables ahead of first use, a one-time ~243 MiB release-asset download from a checkout, SHA-256 verified; a no-op once staged) | connection-speed bound; instant when already present |
 | `cargo build --release --locked --offline` in `tools/grib1_bridge` | ~8 s (vendored workspace, no network) |
 | `cargo build --release --locked --offline` in `tools/rustwx` (the production render engine; `--no-render` skips it) | 67 s from clean (measured 2026-07-29, same box; vendored workspace, no network) |
 | `cargo build --release --locked --offline` in `tools/arwen-tui`, `tools/zarr_bridge`, `tools/rw_wps` and `tools/region_global_dealias` (terminal, Zarr reader, mapped decode engine, dealiasing library) | 114 s together from clean, 78 s of it the Zarr reader (measured 2026-09-27 on a Linux node; vendored, no network) |
@@ -64,7 +64,7 @@ git clone https://github.com/FahrenheitResearch/arwen gpuwm && cd gpuwm
 python -m venv .venv && source .venv/bin/activate
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
-gpuwm fetch-tables
+gpuwm fetch-tables     # optional: the first Thompson run stages missing tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
 for workspace in tools/grib1_bridge tools/rustwx tools/arwen-tui tools/zarr_bridge tools/rw_wps tools/region_global_dealias; do
   (cd "$workspace" && cargo build --release --locked --offline)
@@ -79,7 +79,7 @@ git clone https://github.com/FahrenheitResearch/arwen gpuwm; cd gpuwm
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 python -m pip install -e gpuwm-data
 python -m pip install -e '.[gpu-cu12,render]'   # or gpu-cu13
-gpuwm fetch-tables
+gpuwm fetch-tables     # optional: the first Thompson run stages missing tables
 gpuwm fetch-geog       # WPS_GEOG static tree: ~1.3 GB down, ~16 GB unpacked
 foreach ($workspace in 'tools\grib1_bridge', 'tools\rustwx', 'tools\arwen-tui', 'tools\zarr_bridge', 'tools\rw_wps', 'tools\region_global_dealias') {
   Push-Location $workspace; cargo build --release --locked --offline; Pop-Location

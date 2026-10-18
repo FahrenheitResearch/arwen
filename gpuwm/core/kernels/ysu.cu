@@ -22,7 +22,7 @@
 // the occupancy the kernel achieves, and never returns it while the
 // context lives.
 //
-// MEASURED on node-1 (weather-node-1, RTX 5070 Ti, 70 SMs x 1,536,
+// MEASURED on a test host (RTX 5070 Ti, 70 SMs x 1,536,
 // sm_120, NVRTC 13.0.48, CuPy 14.0.1) through the real launcher at nz=49:
 // the 9,232 B frame reserved 844.0 MiB.  `bl_pbl_physics = 1` is the
 // shipped default (gpuwm/domain_wizard.py:714), so every default run paid
@@ -246,9 +246,21 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     YsuCol rhs     = YSUWS_AT(wsb, 16, wskp);
     YsuCol gamma   = YSUWS_AT(wsb, 17, wskp);
 
-    // bl_ysu_run has no zero-flux exit: a calm column (ust = hfx = qfx = 0)
-    // runs the whole scheme in WRF (703 m PBL on the oracle's case 12).
     real us = ust[col], hf = hfx[col], qf = qfx[col];
+    // No zero-coupling short circuit.  Until lane/verify-ysu this kernel
+    // returned zero tendencies, PBLH = dz(1) and KPBL = 1 whenever UST, HFX
+    // and QFX were all zero, and -ftz fired the same branch on a subnormal
+    // UST.  bl_ysu_run has no such branch: on a stable column it computes a
+    // PBL (900 m and ten levels on the wide oracle's probe), and the kernel
+    // now runs that column as WRF does.  Where WRF itself divides 0 by 0
+    // (sfcflg true, ust**3 == 0: prfac2 below) the kernel keeps its defined
+    // value; every other quantity on such a column is finite here because
+    // wspd is guarded only where WRF would divide by zero (ysu_pos).
+    // Graded by tests/test_ysu_wrf461_wide_parity.py (zero-coupling
+    // probes) against tools/ysu_wrf461_oracle/run_bl_ysu_wide.F90.
+    //
+    //
+
     const real xkzminm = 0.1f, xkzminh = 0.01f, xkzmax = 1000.0f;
     const real rimin = -100.0f, rlam = 30.0f, prmin = 0.25f, prmax = 4.0f;
     const real brcr_ub = 0.0f, brcr_sb = 0.25f, cori = 1.0e-4f;
@@ -326,8 +338,8 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
                    * ysu_min(za[0] / (sfcfrac * hpbl), 1.0f);
         hgamt = ysu_max(hgamt, 0.0f);
         hgamq = ysu_max(hgamq, 0.0f);
-        real cg = -15.9f * us * us / ysu_max(wspd[col], 1.0e-9f) * wstar3
-                / ysu_max(gfk_pow(wscale, 4.0f), 1.0e-20f);
+        real cg = -15.9f * us * us / ysu_pos(wspd[col], 1.0e-9f) * wstar3
+                / ysu_pos(gfk_pow(wscale, 4.0f), 1.0e-20f);
         hgamu = cg * u0;
         hgamv = cg * v0;
         // bl_ysu.F90:703-728 guards all three thermal-enhanced statements
@@ -450,9 +462,9 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
             for (int kk = 0; kk <= kt; ++kk) {
                 real radflux = rthraten[kk * st + col]
                              * exner[kk * st + col];
-                radflux *= CP / G
-                         * (p_interface[kk * st + col]
-                            - p_interface[(kk + 1) * st + col]);
+                // :859 radflux*cp/g*(dp) is ((radflux*cp)/g)*dp, not radflux*(cp/g*dp)
+                radflux = __fmul_rn(__fdiv_rn(__fmul_rn(radflux, CP), G),
+                    p_interface[kk * st + col] - p_interface[(kk + 1) * st + col]);
                 if (radflux < 0.0f) topdown_radsum += fabsf(radflux);
             }
             topdown_radsum = ysu_max(topdown_radsum, 0.0f);
@@ -487,9 +499,9 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
             gamfac = bfac / rho2 / wscale;
             real hgamt2 = ysu_min(__fdiv_rn(gamfac * topdown_radsum, CP), gamcrt);
             hgamt = ysu_max(hgamt, 0.0f) + ysu_max(hgamt2, 0.0f);
-            real cg = -15.9f * us * us / ysu_max(wspd[col], 1.0e-9f)
+            real cg = -15.9f * us * us / ysu_pos(wspd[col], 1.0e-9f)
                     * (wstar3 + wstar3_2)
-                    / ysu_max(gfk_pow(wscale, 4.0f), 1.0e-20f);
+                    / ysu_pos(gfk_pow(wscale, 4.0f), 1.0e-20f);
             hgamu = cg * u0;
             hgamv = cg * v0;
         }
@@ -510,7 +522,7 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         entfac[k] = 1.0e30f;
         if (pblflg && delta > 0.0f && k + 1 >= kpbl) {
             real e = (zq[k + 1] - hpbl) / delta;
-            entfac[k] = gfk_pow(e, 2.0f);
+            entfac[k] = e * e;        // :930 **2. is x*x in WRF's -O2 build
         }
         xkzm[k] = xkzh[k] = xkzq[k] = 0.0f;
         if (k < nz - 1) {
@@ -569,16 +581,16 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
                                : 0.0f;
                 }
                 real zz = ysu_max(zq[k + 1] - sfcfrac * hpbl, 0.0f);
-                prnumfac = -(3.0f * gfk_pow(zz, 2.0f)) / gfk_pow(hpbl, 2.0f);
+                prnumfac = -(3.0f * (zz * zz)) / (hpbl * hpbl);   // :949, x*x
             } else {
                 prfac = prfac2 = prnumfac = 0.0f;
                 wsk = ysu_max(us / (1.0f + aphi5 * zol1 * zq[k + 1] / za[0]),
                               0.001f);
             }
             real prnum0 = ysu_clip(phih / phim + prfac, prmin, prmax);
-            real km = wsk * karman * zq[k + 1] * gfk_pow(zfac, 2.0f)
-                    + wsk2 * karman * (hpbl - zq[k + 1])
-                    * gfk_pow(1.0f - zfac, 2.0f);
+            real km = wsk * karman * zq[k + 1] * (zfac * zfac)   // :960-961
+                    + wsk2 * karman * (hpbl - zq[k + 1])          // **pfac (2.)
+                    * ((1.0f - zfac) * (1.0f - zfac));            // is x*x at -O2
             if (k == kpbl - 2 && cloudflg && we < 0.0f) km = 0.0f;
             real prnum = 1.0f + (prnum0 - 1.0f) * gfk_exp(prnumfac);
             real kqq = km / prnum;
@@ -769,9 +781,9 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
 
     // Momentum matrix and implicit surface stress.
     for (int k = 0; k < nz; ++k) lower[k] = diag[k] = upper[k] = rhs[k] = 0.0f;
-    real fric = us * us / wspd1 * rho * G / delp[0] * dt2
-              * (wspd1 / ysu_max(wspd[col], 1.0e-9f))
-              * (wspd1 / ysu_max(wspd[col], 1.0e-9f));
+    real fric = us * us / wspd1 * rho * G / delp[0] * dt2      // :1306-1307
+              * ((wspd1 / ysu_pos(wspd[col], 1.0e-9f))      // (wspd1/wspd)**2
+                 * (wspd1 / ysu_pos(wspd[col], 1.0e-9f)));  // is formed first
     if constexpr (TOPO) {
         // bl_ysu.F90:1254-1314, the ctopo-present arm.  The paj TKE profile
         // (:1257-1279) reads the diffusivities as the heat and moisture

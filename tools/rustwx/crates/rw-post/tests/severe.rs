@@ -201,7 +201,7 @@ fn gpu_matches_cpu_reference_and_is_deterministic() {
     // Skip only when no card is visible; with a card granted, any failure
     // to load or run the kernels fails the test.
     let granted = std::env::var("CUDA_VISIBLE_DEVICES").map(|v| !v.trim().is_empty()).unwrap_or(false);
-    let gp = match rw_post::gpu::GpuPost::open(0) {
+    let gp = match rw_post::gpu::GpuPost::open_with(0, rw_post::gpu::test_image()) {
         Ok(g) => g,
         Err(e) if !granted => {
             eprintln!("skipping GPU test, no CUDA device visible: {e}");

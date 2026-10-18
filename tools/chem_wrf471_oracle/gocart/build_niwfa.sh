@@ -12,7 +12,9 @@
 # kind_phys = 8: the CCPP `machine` module's double-precision physics build,
 # which is the RRFS/HRRR configuration the coupling comes from.
 set -euo pipefail
-if [[ $# -ne 3 ]]; then
+# gocart/build.sh calls every standalone builder with a 4th argument (a
+# tables folder only the optics builder uses); accept and ignore it.
+if [[ $# -lt 3 || $# -gt 4 ]]; then
     echo "usage: build_niwfa.sh GSL_SRC BUILD_DIR FIXTURE_DIR" >&2
     exit 2
 fi
@@ -20,6 +22,9 @@ src=$(realpath "$1")
 build=$(realpath -m "$2")
 fixtures=$(realpath -m "$3")
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# gocart/build.sh passes the pinned reference root, which holds GSL's tree
+# under gsl-ccpp-physics/; a bare ccpp-physics checkout is used as given.
+if [[ -d "${src}/gsl-ccpp-physics/physics" ]]; then src="${src}/gsl-ccpp-physics"; fi
 file="${src}/physics/MP/Thompson/mp_thompson.F90"
 pinned=35b531fac3fa84bd26e5f0d9c436278954123f79f5c30a22944737a09db9d06d
 got=$(sha256sum "${file}" | cut -d' ' -f1)

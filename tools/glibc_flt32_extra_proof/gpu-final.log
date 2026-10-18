@@ -1,0 +1,6 @@
+CuPy 14.2.0 NVRTC (12, 9) GPU NVIDIA RTX PRO 6000 Blackwell Server Edition
+header_sha256 aaec88d638b359b6f0a06418bc907efb70863f11d6304342fce083a176880595
+('-std=c++17', '--fmad=false') log10 inputs 4294967296 mismatches 0 flushed_subnormal_results 0 examples []
+('-std=c++17', '--fmad=false') cbrt inputs 4294967296 mismatches 0 flushed_subnormal_results 0 examples []
+('-std=c++17', '--fmad=true') log10 inputs 4294967296 mismatches 0 flushed_subnormal_results 0 examples []
+('-std=c++17', '--fmad=true') cbrt inputs 4294967296 mismatches 0 flushed_subnormal_results 0 examples []

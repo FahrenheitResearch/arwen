@@ -39,7 +39,7 @@ DTYPE = np.float32
 # One thread owns one whole column, and CUDA prices a per-thread local frame
 # at the card's RESIDENT-THREAD CAPACITY -- one per-context backing store of
 # ``(frame - 1024) * SMs * maxThreadsPerSM``, taken at first launch and never
-# returned.  MEASURED on node-1 (RTX 5070 Ti, 70 SMs x 1,536, sm_120, NVRTC
+# returned.  MEASURED on test host A (RTX 5070 Ti, 70 SMs x 1,536, sm_120, NVRTC
 # 13.0.48) for the pre-workspace kernel: a 9,216 B frame at nz = 49 took
 # 840.0 MiB.  So every column array of the WRF port -- 66 of them -- lives in
 # a global workspace this module allocates, sized to the threads ACTUALLY in

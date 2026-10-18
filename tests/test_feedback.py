@@ -586,12 +586,15 @@ def test_feedback_restart_continuation_is_sha_identical(monkeypatch, tmp_path):
     resumed = _feedback_model(full_exp)
     restore_tree_restart(restart_path, resumed)
     assert resumed.node(2).coupler.valid is False
+    # Restore starts a new execution-leg observation (5c54e47921d).
+    # These counters are not checkpointed meteorological state.
+    assert resumed.node(2).coupler.feedback_count == 0
     execute_experiment(
         resumed, validate_state=False, pool_trim_per_period=False)
     resumed_sha = _feedback_state_sha256(resumed)
 
-    assert resumed.node(2).coupler.feedback_count == 2
     assert resumed_sha == unbroken_sha
+    assert resumed.node(2).coupler.feedback_count == 1
 
 
 #: The ``feedback = 0`` whole-tree state digest, over the tiny

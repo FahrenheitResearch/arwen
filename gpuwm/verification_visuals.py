@@ -269,6 +269,40 @@ def discover_histories(root: Path, *, label="WOOF", paths=None,
     return frames
 
 
+def histories_before_restart(paths, cycle):
+    """This run's histories from before a checkpoint restart, beside its frames.
+
+    A run resumed from a checkpoint reports only the frames it wrote after the
+    restart. Its earlier hours are already on disk beside them; without them
+    those hours got no verification input and the first resumed hour no hourly
+    precipitation (2.9.1 audit: a killed ensemble member resumed from 13Z
+    lacked its 12Z and 13Z inputs and its 14Z precipitation_1h).
+    """
+    if cycle is None:
+        return []
+    start, first, reported = _time(cycle), {}, set()
+    for path in map(Path, paths):
+        matched = HISTORY_NAME.fullmatch(path.name)
+        if matched:
+            domain, date, hour, minute, second = matched.groups()
+            when = _time(f"{date}T{hour}:{minute}:{second}Z")
+            key = (path.parent, domain)
+            first[key] = min(first.get(key, when), when)
+            reported.add(path.resolve())
+    earlier = []
+    for (directory, domain), resumed in first.items():
+        if resumed <= start or not directory.is_dir():
+            continue
+        for path in sorted(directory.glob(f"wrfout_{domain}_*")):
+            matched = HISTORY_NAME.fullmatch(path.name)
+            if not matched or not path.is_file() or path.resolve() in reported:
+                continue
+            _, date, hour, minute, second = matched.groups()
+            if start <= _time(f"{date}T{hour}:{minute}:{second}Z") < resumed:
+                earlier.append(path)
+    return earlier
+
+
 def _assignments(values):
     result = {}
     for text in values or ():
@@ -964,6 +998,7 @@ def _finish_worker(root, token, *, coverage_attempt=0):
             metadata = tomllib.loads(Path(config).read_text(encoding="utf-8"))
             cycle = metadata.get("experiment", {}).get("start_time")
         paths = [Path(path) for path in job.get("history_paths", [])]
+        paths = [*histories_before_restart(paths, cycle), *paths]
         requests = discover_histories(root, paths=paths or None, cycle=cycle, include_missing=bool(paths))
         if not job.get("expected_inputs"):
             job["expected_inputs"] = _expected_inputs([{"path": request["arms"][0]["path"]} for request in requests])

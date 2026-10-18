@@ -80,11 +80,68 @@ def check_main(args):
     return run(args)
 
 
+#: ``gpuwm check`` exit code when the configuration reads geography the
+#: WPS_GEOG tree has not staged (the memory legs are still reported).
+EXIT_GEOGRAPHY_MISSING = 6
+
+
+def _check_geography(args) -> str | None:
+    """The refusal ``gpuwm go`` gives for geography this config reads.
+
+    Breakage: ``gpuwm check conus.toml --devices 2`` on the HRRR region
+    recipe passed (ADMITTED on both cards) and the ``gpuwm go`` of the same
+    file then refused before its fetch: the recipe's terrain-drag fields
+    read ``orogwd3_10m``, which plain ``gpuwm fetch-geog`` does not stage
+    (2.9.2 box door test).  The one function go refuses by,
+    :func:`gpuwm.go_cli.geography_refusal`, answers here too, with the same
+    ``gpuwm fetch-geog --config`` remedy, so check and go cannot disagree.
+    A prepared bundle (``--prepared-root``) carries its statics and is not
+    asked, as go does not ask it.
+    """
+
+    if getattr(args, "prepared_root", None) is not None:
+        return None
+    try:
+        if not is_experiment_toml(args.config):
+            return None
+    except Exception:
+        return None  # check_main names a config it cannot read
+    from gpuwm.geog_assets import config_geog_root
+    from gpuwm.go_cli import geography_refusal
+
+    try:
+        return geography_refusal(config_geog_root(Path(args.config)), config=Path(args.config))
+    except FileNotFoundError:
+        # The datasets a run reads come from its WPS namelist.  A
+        # configuration that names a namelist (or forcing) not on disk has
+        # no geography verdict yet: the input leg below names that file,
+        # with its remedy, instead of a traceback from here.  Measured:
+        # tests/test_check_display.py's host-refusal case names a namelist
+        # it never writes and expects the host verdict (exit 5).
+        return None
+
+
 def combined_check_main(args):
+    # Keep the verdict's origin for in-process configuration creators:
+    # the memory check also uses exit 6 for a refused execution plan.
+    args._geography_missing_only = False
     if args.config is None:
         print('gpuwm check: CONFIG is required for preflight; bare inventory uses gpuwm check --json', file=sys.stderr)
         return 2
-    return args.ingest_preflight_handler(args) or check_main(args)
+    ingest = args.ingest_preflight_handler(args)
+    if ingest:
+        return ingest
+    geography = _check_geography(args)
+    if geography is not None:
+        # Before the memory legs, the way go refuses before its fetch; on
+        # stderr so `--json` stdout stays one document.
+        print(f"gpuwm check: geography BLOCKER (exit {EXIT_GEOGRAPHY_MISSING} "
+              "unless a memory leg fails harder): " + geography, file=sys.stderr)
+    code = check_main(args)
+    if geography is not None and code == 0:
+        args._geography_missing_only = True
+        return EXIT_GEOGRAPHY_MISSING
+    return code
 
 
 def is_experiment_toml(path):
@@ -602,6 +659,8 @@ def build_parser(*, render_only: bool = False, preset_only: bool = False) -> arg
              "which prepares on the CPU when the card reads busy or cannot "
              "hold it); pin it so two runs you compare start from the same "
              "preparation. Nests prepare on the card either way")
+    from gpuwm.da.analysis_door import add_analysis_arguments
+    add_analysis_arguments(run)
     run.add_argument("--restart", type=Path, default=None, metavar="RST",
                      help="resume from a gpuwmrst restart file written by "
                           "an earlier run of the SAME config (only the "
@@ -850,6 +909,15 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
             parser.error("--vertical-levels is for --met-em inputs")
         if args.vertical_grid is not None and args.met_em is None:
             parser.error("--vertical-grid is for --met-em inputs")
+        if args.wrfinput is None:
+            # Breakage it prevents: the CONFIG and met_em routes have no
+            # analysis hook, so the bundle would be read by nothing and an
+            # unanalysed forecast would run under an analysed name.
+            from gpuwm.da.analysis_door import AnalysisDoorRefusal, refuse_unrouted
+            try:
+                refuse_unrouted(args, "CONFIG" if args.config is not None else "--met-em")
+            except AnalysisDoorRefusal as error:
+                parser.error(str(error))
         if args.preprocess_backend is not None and args.config is None:
             parser.error("--preprocess-backend pins CONFIG's preparation; the "
                          "--wrfinput and --met-em routes do not read it, so it "
@@ -1464,6 +1532,8 @@ def _dispatch(args) -> int:
         from gpuwm.ensemble.door import request_for_inputs
         ensemble_request = request_for_inputs(members=getattr(args, "members", None),
             keep_member_files=getattr(args, "keep_member_files", None))
+        from gpuwm.da.analysis_door import request_from_args
+        analysis_request = request_from_args(args)
         return launch(directory, args.outdir,
                                run_seconds=args.run_seconds, restart=args.restart,
                                health_debug=args.health_debug, gpu_uuid=args.gpu_uuid,
@@ -1480,6 +1550,8 @@ def _dispatch(args) -> int:
                                   ({} if args.soil_source is None else {"soil_source": args.soil_source})),
                                **({"restart_from": args.restart_from}
                                   if args.met_em is None and args.restart_from is not None else {}),
+                               **({"analysis": analysis_request}
+                                  if args.met_em is None and analysis_request is not None else {}),
                                **({"benchmark": True} if args.benchmark else {}))
 
     # [[domain]]/[experiment] tables route to the experiment path; the

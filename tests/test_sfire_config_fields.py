@@ -21,7 +21,11 @@ def test_fire_fields_follow_every_existing_field_in_order():
     # 259 since the 2.8.8 line declared six more ahead of the chem block:
     # cycling (01402fcb1) and the five RRFS aer3/MYNN/TEMPO switches
     # (809cdc87b).
-    assert len(names) - len(fire) == 259
+    # 305 at 2.9.0 (the solar, YSU, lightning and correct-mode lines added
+    # positional fields without moving this count; the test failed there),
+    # 309 since WRF's ocean mixed layer (sf_ocean_physics and its three
+    # oml_* settings, beside the CLM lake).
+    assert len(names) - len(fire) == 309
     assert names[:-len(fire)][-1] == "aerosol_mp_coupling"
 
 

@@ -1603,13 +1603,34 @@ pub fn cull_file_with_provenance(
                 return Err(MpasError::Refusal(format!("parent {field} has an invalid row width")));
             }
             let width = before.len() / before_count;
+            // PADDING IS NOT TOPOLOGY.  THE BREAKAGE THIS PREVENTS (gpuwm-hex unified-image check,
+            // 2026-10-16): `mesh-plan --point ... --generate` cuts the halo's static with the cut grid
+            // as its provenance grid.  The native static (rw-mpas-static/v4-native) zeroes the slots
+            // past nEdgesOnCell exactly as MPAS's streams do, while a grid file repeats the last
+            // neighbour there (the published fill rule), so every slot-for-slot comparison refused
+            // ("cellsOnCell differs ... another topology") on a cut that was the same mesh.  The
+            // active slots of each ring are compared exactly; slots past a row's count are not.
+            let active: Option<Vec<i32>> = match field {
+                "cellsOnCell" | "edgesOnCell" | "verticesOnCell" => Some(n_edges_on_cell.clone()),
+                "edgesOnEdge" => Some(parent.read_i32("nEdgesOnEdge")?),
+                _ => None,
+            };
             let mut expected = Vec::with_capacity(ids.len() * width);
             for &id in ids {
                 for &value in &before[id * width..(id + 1) * width] {
                     expected.push(if let Some(map) = map { remap(value, map, field)? } else { value });
                 }
             }
-            if target.read_i32(field)? != expected {
+            let actual = target.read_i32(field)?;
+            let same = match &active {
+                None => actual == expected,
+                Some(counts) => actual.len() == expected.len()
+                    && ids.iter().enumerate().all(|(k, &id)| {
+                        let used = (counts[id].max(0) as usize).min(width);
+                        actual[k * width..k * width + used] == expected[k * width..k * width + used]
+                    }),
+            };
+            if !same {
                 return Err(MpasError::Refusal(format!("provenance grid {field} differs from the regional cut; its hash would identify another topology")));
             }
         }

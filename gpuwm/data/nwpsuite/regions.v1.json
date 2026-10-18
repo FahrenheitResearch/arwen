@@ -46,7 +46,7 @@
         "agency-2box": "agency-2box",
         "agency-generic": "agency-generic"
       },
-      "coverage_note": "Grid coverage envelope; station lists are seeds, not national qualification."
+      "coverage_note": "Coverage is the HRRR CONUS grid outline inset 330 km (references.v1.json continental-grid), so a 3 km recipe root fits inside HRRR, the row's regional source; station lists are seeds, not national qualification."
     },
     "PH": {
       "polygon": "archipelago-grid",

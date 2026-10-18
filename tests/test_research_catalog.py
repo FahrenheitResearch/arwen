@@ -269,7 +269,9 @@ def test_research_capability_manifest_is_bound_to_the_actual_import_and_window_c
     assert CAPABILITIES["schema"] == "arwen.research.diagnostics.v1"
     assert CAPABILITIES["authority_normalization"] == "UTF-8 with LF line endings"
     for path, expected in CAPABILITIES["authority"].items():
-        assert hashlib.sha256((ROOT / path).read_text(encoding="utf-8").encode("utf-8")).hexdigest() == expected, path
+        assert hashlib.sha256((ROOT / path).read_text(encoding="utf-8").encode("utf-8")).hexdigest() == expected, (
+            f"{path}: review the import/window contracts, then run "
+            "python -m tools.battery.record_research_authority")
     assert {name for name in RESEARCH_PRODUCTS if not name.startswith("var:")} <= NATIVE_PRODUCTS
     assert {name for name in RESEARCH_PRODUCTS if name.startswith("var:")} == {
         "var:wrf_lapse_rate_0_3km", "var:wrf_lapse_rate_700_500"}

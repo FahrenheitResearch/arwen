@@ -114,8 +114,14 @@ def _is_packaged_destination(destination: Path) -> bool:
 
 
 def staged_artifacts(destination: Path) -> tuple[bridge_assets.BundledArtifact, ...]:
-    """Every staging destination receives the full declared roster."""
-    return bridge_assets.wheel_artifacts()
+    """What ``destination`` takes: the in-package directory gets what the
+    wheel carries (:func:`gpuwm.bridge_assets.wheel_artifacts`, which leaves
+    out the on-demand artifacts so the wheel stays under PyPI's per-file
+    limit); any other destination, a user's bridge directory included, gets
+    the whole declared roster, on-demand artifacts and all."""
+    if _is_packaged_destination(destination):
+        return bridge_assets.wheel_artifacts()
+    return bridge_assets.BUNDLED_ARTIFACTS
 
 def stage(platform: str, *, destination: Path | None = None) -> Path:
     """Copy every artifact ``destination`` takes into it, or refuse.

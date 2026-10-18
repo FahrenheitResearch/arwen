@@ -36,9 +36,11 @@ program run_noah_lsm_oracle
   ! of that READ sequence as well as of the physics.
 
   use module_sf_noahdrv, only: lsm, soil_veg_gen_parm
+  use module_sf_sfcdiags, only: sfcdiags
+  use module_model_constants, only: cp, r_d, rcp
   implicit none
 
-  integer, parameter :: ncase = 42
+  integer, parameter :: ncase = 80
   integer, parameter :: nsoil = 4
   real, parameter :: dt = 60.0
   real, parameter :: r_d_over_cp = 287.0 / (7.0 * 287.0 / 2.0)   ! WRF ROVCP
@@ -69,6 +71,9 @@ program run_noah_lsm_oracle
   real, dimension(ncase, 1) :: chs0, chs20, cqs20
   real, dimension(ncase, nsoil, 1) :: smois0, tslb0, sh2o0
   real, dimension(ncase, 1) :: sfcprs, zlvl
+  ! SFCDIAGS (phys/module_sf_sfcdiags.F), called after lsm exactly as
+  ! module_surface_driver.F:2994 calls it for sf_surface_physics=2.
+  real, dimension(ncase, 1) :: psfc2d, t2, th2, q2
 
   character(len=1024) :: out_path
   character(len=32) :: arg
@@ -148,6 +153,21 @@ program run_noah_lsm_oracle
            sda_hfx = sda_hfx, sda_qfx = sda_qfx,                     &
            hfx_both = hfx_both, qfx_both = qfx_both, qnorm = qnorm,  &
            fasdas = 0)
+
+  ! --- SFCDIAGS on lsm's outputs, as the surface driver runs it --------------
+  ! module_surface_driver.F:2994 hands SFCDIAGS the grid's PSFC, the
+  ! module_model_constants CP, R_d and RCP, CHS, t_phy and qv_curr, with
+  ! ua_phys false.  The port takes one surface pressure for both the LSM and
+  ! the diagnostics (the fixture's psfc column, p8w3d(:,1)), so that is the
+  ! PSFC passed here too.  T2/TH2/Q2 start at zero: SFCDIAGS writes all three
+  ! on every column, so a stale input cannot leak into the fixture.
+  psfc2d(:, 1) = p8w3d(:, 1, 1)
+  t2 = 0.0; th2 = 0.0; q2 = 0.0
+  call sfcdiags(hfx, qfx, tsk, qsfc, chs2, cqs2, t2, th2, q2,         &
+                psfc2d, cp, r_d, rcp, chs, t3d, qv3d, .false.,       &
+                1, ncase, 1, 1, 1, 2,                                &
+                1, ncase, 1, 1, 1, 2,                                &
+                1, ncase, 1, 1, 1, 1)
 
   call write_csv()
 
@@ -390,9 +410,8 @@ contains
     snowh(27, 1) = 0.06
     snowc(27, 1) = 0.8
 
-    ! 28 land ice: ICE = -1, SFLX_GLACIAL.  gpuwm SKIPS this column by
-    !    documented restriction, so the row measures the size of that
-    !    divergence rather than a port error.
+    ! 28 land ice: ICE = -1, SFLX_GLACIAL, melting (T12 > TFREEZ).  Until
+    !    2.8.6 gpuwm skipped this column; it now runs noah_glacial_column.
     ivgtyp(28, 1) = 15
     t3d(28, 1, 1) = 258.0
     tsk(28, 1) = 255.0
@@ -508,6 +527,482 @@ contains
     snowc(42, 1) = 0.8
     swdown(42, 1) = 150.0
     glw(42, 1) = 230.0
+
+    ! 43-55  LAND ICE, one row per SFLX_GLACIAL branch (case 28 is the melting
+    !    glacier).  Every row is ivgtyp = 15 = ISICE, so the driver takes its
+    !    ICE = -1 arm (module_sf_noahdrv.F:1140) and calls SFLX_GLACIAL
+    !    (module_sf_noahlsm_glacial_only.F).  Rows 1-42 are column-local and
+    !    unchanged by these additions.
+    do i = 43, 55
+      ivgtyp(i, 1) = 15
+      snowc(i, 1) = 1.0
+    end do
+
+    ! 43 cold glacier, no precipitation: SNOPAC's T12 <= TFREEZ arm
+    t3d(43, 1, 1) = 245.0
+    tsk(43, 1) = 240.0
+    tslb(43, :, 1) = 250.0
+    snow(43, 1) = 500.0
+    snowh(43, 1) = 1.5
+    swdown(43, 1) = 50.0
+    glw(43, 1) = 180.0
+
+    ! 44 snowfall on a cold glacier, STC(1) < TFREEZ-5: SNOW_NEW, then the
+    !    SNCOVR > 0.99 density reset; SR = 1 keeps it snow under frpcpn
+    rainbl(44, 1) = 3.0
+    sr(44, 1) = 1.0
+    t3d(44, 1, 1) = 262.0
+    tsk(44, 1) = 260.0
+    tslb(44, :, 1) = 263.0
+    snow(44, 1) = 300.0
+    snowh(44, 1) = 1.0
+
+    ! 45 freezing rain (FFROZP = 0, T1 <= TFREEZ) on partial cover: FLX2,
+    !    and SNCOVR <= 0.99 skips the density reset
+    rainbl(45, 1) = 2.0
+    t3d(45, 1, 1) = 275.0
+    tsk(45, 1) = 270.0
+    tslb(45, :, 1) = 271.0
+    snow(45, 1) = 200.0
+    snowh(45, 1) = 0.8
+    snowc(45, 1) = 0.5
+
+    ! 46 rain on a melting glacier: CPH2O in RR and FLX1, T1 > 273.15 in
+    !    PENMAN's ELCP1/LVS choice
+    rainbl(46, 1) = 2.0
+    t3d(46, 1, 1) = 280.0
+    tsk(46, 1) = 273.5
+    tslb(46, :, 1) = 272.0
+    snow(46, 1) = 400.0
+    snowh(46, 1) = 1.2
+
+    ! 47 thin snow on ice, SNEQV < 0.10 on entry: the 0.10 m / 0.50 m floor,
+    !    under strong melting forcing
+    t3d(47, 1, 1) = 285.0
+    tsk(47, 1) = 272.0
+    tslb(47, :, 1) = 271.0
+    snow(47, 1) = 20.0
+    snowh(47, 1) = 0.08
+    swdown(47, 1) = 900.0
+    glw(47, 1) = 350.0
+
+    ! 48 dry air over a sunlit cold glacier: ETP > 0, the sublimation arm
+    qv3d(48, 1, 1) = 0.0005
+    qgh(48, 1) = 0.004
+    t3d(48, 1, 1) = 265.0
+    tsk(48, 1) = 263.0
+    tslb(48, :, 1) = 262.0
+    snow(48, 1) = 250.0
+    snowh(48, 1) = 0.9
+    swdown(48, 1) = 600.0
+
+    ! 49 moist stable air, RIBB >= 0.1 and FDOWN > 150 with ETP <= 0: the
+    !    stability reduction of ETP in SNOPAC
+    qv3d(49, 1, 1) = 0.004
+    qgh(49, 1) = 0.002
+    t3d(49, 1, 1) = 268.0
+    tsk(49, 1) = 262.0
+    tslb(49, :, 1) = 264.0
+    rib(49, 1) = 0.3
+    snow(49, 1) = 250.0
+    snowh(49, 1) = 0.9
+    swdown(49, 1) = 200.0
+    glw(49, 1) = 300.0
+
+    ! 50 SNOW is the smallest positive subnormal on cold ice: the driver's
+    !    SNOW > 0 test is TRUE and selects ice saturation, then the glacial
+    !    floor resets SNEQV and SNOWH
+    snow(50, 1) = subn
+    snowh(50, 1) = 0.0
+    snowc(50, 1) = 0.0
+    t3d(50, 1, 1) = 266.0
+    tsk(50, 1) = 265.0
+    tslb(50, :, 1) = 266.0
+
+    ! 51 warm ground, partial cover: the SNOWC-weighted saturation blend and
+    !    the T1 > 273, SNOWC > 0, SWDOWN > 10 DQSDT2 damping
+    t3d(51, 1, 1) = 274.0
+    tsk(51, 1) = 273.3
+    tslb(51, :, 1) = 272.5
+    snow(51, 1) = 150.0
+    snowh(51, 1) = 0.5
+    snowc(51, 1) = 0.6
+
+    ! 52 as 51 at SWDOWN <= 10: the damping does not apply; aged snow
+    t3d(52, 1, 1) = 274.0
+    tsk(52, 1) = 273.3
+    tslb(52, :, 1) = 272.5
+    snow(52, 1) = 150.0
+    snowh(52, 1) = 0.5
+    snowc(52, 1) = 0.6
+    swdown(52, 1) = 5.0
+    gsw(52, 1) = 4.0
+    snotime(52, 1) = 432000.0
+
+    ! 53 bare ice: SNOW = SNOWH = SNOWC = 0 on entry
+    snow(53, 1) = 0.0
+    snowh(53, 1) = 0.0
+    snowc(53, 1) = 0.0
+    t3d(53, 1, 1) = 270.0
+    tsk(53, 1) = 268.0
+    tslb(53, :, 1) = 268.0
+
+    ! 54 snowfall with STC(1) >= TFREEZ-5 but T1 and SFCTMP below 273: the
+    !    second density reset
+    rainbl(54, 1) = 1.5
+    sr(54, 1) = 1.0
+    t3d(54, 1, 1) = 270.0
+    tsk(54, 1) = 271.0
+    tslb(54, :, 1) = 270.0
+    snow(54, 1) = 300.0
+    snowh(54, 1) = 1.0
+
+    ! 55 snowfall at SFCTMP just under 273.15 onto ground at 274: neither
+    !    reset, SNOW_NEW's (TEMPC+15)**1.5 density stands
+    rainbl(55, 1) = 1.0
+    sr(55, 1) = 1.0
+    t3d(55, 1, 1) = 273.0
+    tsk(55, 1) = 274.0
+    tslb(55, :, 1) = 272.0
+    snow(55, 1) = 300.0
+    snowh(55, 1) = 1.0
+
+    ! 56-75  REGIME COLUMNS, added for the 0 ULP verification (2026-10-07):
+    !    weather a forecast actually hands Noah, where 1-55 were chosen to
+    !    reach branches.  Rows 1-55 are column-local and unchanged by them.
+
+    ! 56 convective afternoon: hot, humid, unstable, a 4 mm/min downpour
+    !    onto warm moist cropland
+    ivgtyp(56, 1) = 12
+    isltyp(56, 1) = 6
+    t3d(56, 1, 1) = 301.0
+    tsk(56, 1) = 304.0
+    qv3d(56, 1, 1) = 0.017
+    qgh(56, 1) = 0.024
+    rainbl(56, 1) = 4.0
+    swdown(56, 1) = 300.0
+    gsw(56, 1) = 250.0
+    glw(56, 1) = 420.0
+    rib(56, 1) = -2.0
+    chs(56, 1) = 0.035
+    chs2(56, 1) = 0.04
+    cqs2(56, 1) = 0.04
+    smois(56, :, 1) = 0.36
+    sh2o(56, :, 1) = 0.36
+    tslb(56, 1, 1) = 300.0
+    tslb(56, 2, 1) = 297.0
+    tslb(56, 3, 1) = 294.0
+    tslb(56, 4, 1) = 291.0
+
+    ! 57 behind the gust front: cool outflow, the canopy full, light rain
+    ivgtyp(57, 1) = 4
+    t3d(57, 1, 1) = 293.0
+    tsk(57, 1) = 296.0
+    qv3d(57, 1, 1) = 0.015
+    qgh(57, 1) = 0.016
+    rainbl(57, 1) = 0.5
+    swdown(57, 1) = 80.0
+    canwat(57, 1) = 0.5
+    vegfra(57, 1) = 90.0
+    lai(57, 1) = 5.0
+    smois(57, :, 1) = 0.40
+    sh2o(57, :, 1) = 0.40
+
+    ! 58 high terrain, summer noon: 650 hPa, thin dry air, strong sun, rocky
+    !    open shrubland
+    ivgtyp(58, 1) = 7
+    isltyp(58, 1) = 3
+    p8w3d(58, 1, 1) = 65000.0
+    p8w3d(58, 2, 1) = 64400.0
+    t3d(58, 1, 1) = 284.0
+    t3d(58, 2, 1) = 283.5
+    tsk(58, 1) = 300.0
+    qv3d(58, 1, 1) = 0.004
+    qgh(58, 1) = 0.012
+    swdown(58, 1) = 1050.0
+    gsw(58, 1) = 820.0
+    glw(58, 1) = 260.0
+    vegfra(58, 1) = 15.0
+    smois(58, :, 1) = 0.12
+    sh2o(58, :, 1) = 0.12
+    tslb(58, :, 1) = 284.0
+    tmn(58, 1) = 278.0
+
+    ! 59 high terrain, winter night: 700 hPa, snowpack, clear sky, stable
+    ivgtyp(59, 1) = 1
+    p8w3d(59, 1, 1) = 70000.0
+    p8w3d(59, 2, 1) = 69300.0
+    t3d(59, 1, 1) = 262.0
+    tsk(59, 1) = 258.0
+    qv3d(59, 1, 1) = 0.0012
+    qgh(59, 1) = 0.0015
+    swdown(59, 1) = 0.0
+    gsw(59, 1) = 0.0
+    glw(59, 1) = 170.0
+    rib(59, 1) = 0.5
+    chs(59, 1) = 0.004
+    chs2(59, 1) = 0.005
+    cqs2(59, 1) = 0.005
+    snow(59, 1) = 80.0
+    snowh(59, 1) = 0.30
+    snowc(59, 1) = 1.0
+    tslb(59, :, 1) = 268.0
+    sh2o(59, :, 1) = 0.10
+    tmn(59, 1) = 274.0
+
+    ! 60 stable night with dewfall: the skin is saturated below the air's
+    !    vapour, so ETP < 0 and NOPAC takes the dew arm
+    swdown(60, 1) = 0.0
+    gsw(60, 1) = 0.0
+    glw(60, 1) = 300.0
+    t3d(60, 1, 1) = 286.0
+    tsk(60, 1) = 283.0
+    qv3d(60, 1, 1) = 0.0095
+    qgh(60, 1) = 0.0085
+    rib(60, 1) = 0.2
+    chs(60, 1) = 0.006
+    chs2(60, 1) = 0.008
+    cqs2(60, 1) = 0.008
+
+    ! 61 hoar frost on bare frozen ground: sub-freezing skin, moist air
+    vegfra(61, 1) = 5.0
+    swdown(61, 1) = 0.0
+    gsw(61, 1) = 0.0
+    glw(61, 1) = 240.0
+    t3d(61, 1, 1) = 270.0
+    tsk(61, 1) = 267.0
+    qv3d(61, 1, 1) = 0.0028
+    qgh(61, 1) = 0.0024
+    rib(61, 1) = 0.25
+    smois(61, :, 1) = 0.30
+    sh2o(61, :, 1) = 0.18
+    tslb(61, :, 1) = 270.5
+
+    ! 62 desert noon: barren sand, near-dry soil, a 330 K skin
+    ivgtyp(62, 1) = 16
+    isltyp(62, 1) = 1
+    vegfra(62, 1) = 0.0
+    shdmin(62, 1) = 0.0
+    shdmax(62, 1) = 2.0
+    lai(62, 1) = 0.0
+    canwat(62, 1) = 0.0
+    t3d(62, 1, 1) = 315.0
+    tsk(62, 1) = 330.0
+    qv3d(62, 1, 1) = 0.004
+    qgh(62, 1) = 0.045
+    swdown(62, 1) = 1000.0
+    gsw(62, 1) = 700.0
+    glw(62, 1) = 400.0
+    rib(62, 1) = -3.0
+    smois(62, :, 1) = 0.03
+    sh2o(62, :, 1) = 0.03
+    tslb(62, 1, 1) = 325.0
+    tslb(62, 2, 1) = 315.0
+    tslb(62, 3, 1) = 305.0
+    tslb(62, 4, 1) = 298.0
+    tmn(62, 1) = 296.0
+
+    ! 63 tropical rainforest: wet clay, saturated air, light rain
+    ivgtyp(63, 1) = 2
+    isltyp(63, 1) = 12
+    vegfra(63, 1) = 98.0
+    shdmax(63, 1) = 99.0
+    shdmin(63, 1) = 95.0
+    lai(63, 1) = 6.0
+    t3d(63, 1, 1) = 299.0
+    tsk(63, 1) = 300.0
+    qv3d(63, 1, 1) = 0.019
+    qgh(63, 1) = 0.022
+    rainbl(63, 1) = 1.0
+    smois(63, :, 1) = 0.44
+    sh2o(63, :, 1) = 0.44
+    tslb(63, :, 1) = 299.0
+    tmn(63, 1) = 298.0
+
+    ! 64 warm tropical ocean: the driver's XLAND >= 1.5 skip
+    xland(64, 1) = 2.0
+    t3d(64, 1, 1) = 300.0
+    tsk(64, 1) = 302.0
+    qv3d(64, 1, 1) = 0.020
+
+    ! 65 cold ocean with a little ice, below the XICE threshold: still open
+    !    water to the driver
+    xland(65, 1) = 2.0
+    xice(65, 1) = 0.3
+    t3d(65, 1, 1) = 272.0
+    tsk(65, 1) = 271.5
+
+    ! 66 permanent wetland, saturated, under rain
+    ivgtyp(66, 1) = 11
+    isltyp(66, 1) = 9
+    smois(66, :, 1) = 0.46
+    sh2o(66, :, 1) = 0.46
+    rainbl(66, 1) = 2.0
+    t3d(66, 1, 1) = 292.0
+    tsk(66, 1) = 293.0
+
+    ! 67 rain onto a 273 K skin over frozen bare ground, no snow on entry:
+    !    T1 <= TFREEZ with FFROZP = 0 is FRZGRA, so the rain becomes a thin
+    !    new pack and SNOPAC runs, with SRT's frozen-ground limiter
+    !    (DICE > 0.01) live on the melt water.  WRF's own answer for this
+    !    one-step shock is a 331 K skin; it is graded as WRF wrote it.
+    vegfra(67, 1) = 0.0
+    shdmin(67, 1) = 0.0
+    lai(67, 1) = 0.0
+    canwat(67, 1) = 0.0
+    rainbl(67, 1) = 3.0
+    t3d(67, 1, 1) = 275.0
+    tsk(67, 1) = 273.0
+    smois(67, :, 1) = 0.38
+    sh2o(67, :, 1) = 0.08
+    tslb(67, 1, 1) = 271.5
+    tslb(67, 2, 1) = 270.0
+    tslb(67, 3, 1) = 271.0
+    tslb(67, 4, 1) = 272.0
+
+    ! 68 rain on a ripe snowpack over frozen soil: SNOPAC melt, then the
+    !    frozen-ground infiltration on the melt water
+    rainbl(68, 1) = 2.5
+    t3d(68, 1, 1) = 278.0
+    tsk(68, 1) = 273.15
+    snow(68, 1) = 25.0
+    snowh(68, 1) = 0.08
+    snowc(68, 1) = 0.9
+    smois(68, :, 1) = 0.40
+    sh2o(68, :, 1) = 0.10
+    tslb(68, :, 1) = 271.0
+    glw(68, 1) = 330.0
+
+    ! 69 spring sun on a thin snowpack over frozen loam: strong melt into
+    !    frozen ground
+    isltyp(69, 1) = 5
+    t3d(69, 1, 1) = 280.0
+    tsk(69, 1) = 273.0
+    snow(69, 1) = 15.0
+    snowh(69, 1) = 0.05
+    snowc(69, 1) = 0.8
+    swdown(69, 1) = 800.0
+    gsw(69, 1) = 400.0
+    smois(69, :, 1) = 0.42
+    sh2o(69, :, 1) = 0.12
+    tslb(69, :, 1) = 271.5
+
+    ! 70 autumn mixed forest with a frozen top layer over unfrozen soil:
+    !    FRH2O in layer 1 only
+    ivgtyp(70, 1) = 5
+    t3d(70, 1, 1) = 271.0
+    tsk(70, 1) = 270.0
+    swdown(70, 1) = 150.0
+    glw(70, 1) = 260.0
+    smois(70, :, 1) = 0.33
+    sh2o(70, 1, 1) = 0.15
+    tslb(70, 1, 1) = 271.0
+    tslb(70, 2, 1) = 274.0
+    tslb(70, 3, 1) = 277.0
+    tslb(70, 4, 1) = 280.0
+
+    ! 71 wooded tundra over permafrost, thin snow, low sun
+    ivgtyp(71, 1) = 18
+    isltyp(71, 1) = 8
+    t3d(71, 1, 1) = 266.0
+    tsk(71, 1) = 264.0
+    snow(71, 1) = 6.0
+    snowh(71, 1) = 0.03
+    snowc(71, 1) = 0.5
+    swdown(71, 1) = 120.0
+    gsw(71, 1) = 60.0
+    glw(71, 1) = 230.0
+    smois(71, :, 1) = 0.36
+    sh2o(71, :, 1) = 0.05
+    tslb(71, :, 1) = 262.0
+    tmn(71, 1) = 263.0
+
+    ! 72 irrigated cropland under strong demand: transpiration from a
+    !    moist root zone
+    ivgtyp(72, 1) = 12
+    vegfra(72, 1) = 85.0
+    lai(72, 1) = 4.5
+    t3d(72, 1, 1) = 306.0
+    tsk(72, 1) = 308.0
+    qv3d(72, 1, 1) = 0.008
+    qgh(72, 1) = 0.036
+    swdown(72, 1) = 950.0
+    gsw(72, 1) = 760.0
+    smois(72, :, 1) = 0.38
+    sh2o(72, :, 1) = 0.38
+
+    ! 73 deep cold (-40 C) over a deep snowpack, almost no longwave
+    t3d(73, 1, 1) = 233.0
+    tsk(73, 1) = 230.0
+    tslb(73, :, 1) = 245.0
+    sh2o(73, :, 1) = 0.02
+    snow(73, 1) = 300.0
+    snowh(73, 1) = 1.2
+    snowc(73, 1) = 1.0
+    swdown(73, 1) = 0.0
+    gsw(73, 1) = 0.0
+    glw(73, 1) = 120.0
+    qv3d(73, 1, 1) = 0.0001
+    qgh(73, 1) = 0.0001
+    rib(73, 1) = 0.8
+    tmn(73, 1) = 260.0
+
+    ! 74 a cloudburst on saturated clay: 20 mm in one step, most of it
+    !    runoff the soil cannot take
+    isltyp(74, 1) = 12
+    smois(74, :, 1) = 0.468
+    sh2o(74, :, 1) = 0.468
+    rainbl(74, 1) = 20.0
+    t3d(74, 1, 1) = 295.0
+    tsk(74, 1) = 296.0
+
+    ! 75 VEGFRA at both table bounds: SHDMIN = SHDMAX = VEGFRA = 50, so
+    !    SHDFAC >= SHDMAX picks the maximum-vegetation parameters exactly at
+    !    the boundary
+    vegfra(75, 1) = 50.0
+    shdmin(75, 1) = 50.0
+    shdmax(75, 1) = 50.0
+
+    ! 76-80: the hand-over to SFCDIAGS (T2, TH2, Q2).  Every earlier column
+    !    enters with CHS2 = CQS2, so lsm's CHS2 = CQS2 (module_sf_noahdrv.F:
+    !    1275) moved no word; and none sits on SFCDIAGS's 1.E-5 thresholds.
+    ! 76 daytime land with CHS2 /= CQS2 on entry
+    chs2(76, 1) = 0.02
+    cqs2(76, 1) = 0.035
+    ! 77 CQS2 just below SFCDIAGS's 1.E-5: Q2 = QSFC and, through CHS2 =
+    !    CQS2, T2 = TSK
+    chs2(77, 1) = 0.03
+    cqs2(77, 1) = 9.9e-6
+    ! 78 CQS2 exactly 1.E-5 (the .LT. test is false): the flux inversion runs
+    !    with the smallest coefficient it accepts, under daytime evaporation
+    chs2(78, 1) = 0.03
+    cqs2(78, 1) = 1.0e-5
+    ! 79 a high plateau at night (PSFC 70 kPa): radiative cooling and dewfall,
+    !    TH2 far from T2
+    p8w3d(79, 1, 1) = 70000.0
+    p8w3d(79, 2, 1) = 69000.0
+    t3d(79, 1, 1) = 275.0
+    tsk(79, 1) = 273.5
+    qv3d(79, 1, 1) = 0.0048
+    qgh(79, 1) = 0.0046
+    swdown(79, 1) = 0.0
+    gsw(79, 1) = 0.0
+    glw(79, 1) = 250.0
+    rib(79, 1) = 0.3
+    chs(79, 1) = 0.004
+    chs2(79, 1) = 0.006
+    cqs2(79, 1) = 0.005
+    ! 80 open water with CHS2 /= CQS2: lsm leaves the column alone and
+    !    SFCDIAGS still diagnoses it
+    xland(80, 1) = 2.0
+    ivgtyp(80, 1) = 17
+    isltyp(80, 1) = 14
+    tsk(80, 1) = 293.0
+    hfx(80, 1) = 15.0
+    qfx(80, 1) = 4.0e-5
+    qsfc(80, 1) = 0.0145
+    chs2(80, 1) = 0.006
+    cqs2(80, 1) = 0.004
   end subroutine build_fixture
 
   subroutine save_state()
@@ -539,7 +1034,8 @@ contains
       'emiss,znt,z0,snotime,lai,smstav,smstot,sfcrunoff,udrunoff,' //          &
       'acsnom,acsnow,snopcx,potevp,noahres,chklowq,rib_out,' //                &
       'smois1,smois2,smois3,smois4,tslb1,tslb2,tslb3,tslb4,' //                &
-      'sh2o1,sh2o2,sh2o3,sh2o4,smcrel1,smcrel2,smcrel3,smcrel4'
+      'sh2o1,sh2o2,sh2o3,sh2o4,smcrel1,smcrel2,smcrel3,smcrel4,' //            &
+      'chs_out,chs2_out,cqs2_out,t2,th2,q2'
     do i = 1, ncase
       write(u, '(I0,",",I0,",",I0)', advance='no') i, ivgtyp(i, 1), isltyp(i, 1)
       write(u, '(25(",",ES24.16E3))', advance='no')                            &
@@ -567,11 +1063,13 @@ contains
         lai(i, 1), smstav(i, 1), smstot(i, 1), sfcrunoff(i, 1),                &
         udrunoff(i, 1), acsnom(i, 1), acsnow(i, 1), snopcx(i, 1),              &
         potevp(i, 1), noahres(i, 1), chklowq(i, 1), rib(i, 1)
-      write(u, '(16(",",ES24.16E3))')                                          &
+      write(u, '(16(",",ES24.16E3))', advance='no')                            &
         smois(i, 1, 1), smois(i, 2, 1), smois(i, 3, 1), smois(i, 4, 1),        &
         tslb(i, 1, 1), tslb(i, 2, 1), tslb(i, 3, 1), tslb(i, 4, 1),            &
         sh2o(i, 1, 1), sh2o(i, 2, 1), sh2o(i, 3, 1), sh2o(i, 4, 1),            &
         smcrel(i, 1, 1), smcrel(i, 2, 1), smcrel(i, 3, 1), smcrel(i, 4, 1)
+      write(u, '(6(",",ES24.16E3))')                                           &
+        chs(i, 1), chs2(i, 1), cqs2(i, 1), t2(i, 1), th2(i, 1), q2(i, 1)
     end do
     close(u)
   end subroutine write_csv

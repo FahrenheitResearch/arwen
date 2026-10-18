@@ -1,0 +1,89 @@
+{
+  "schema": "gpuwm-obs.geo-imager-sources.v1",
+  "sources": [
+    {
+      "satellite": "H09", "instrument": "ahi", "sector": "F", "bucket": "noaa-himawari9",
+      "cadence_minutes": 10, "offset_minutes": 0,
+      "prefix": "AHI-L1b-FLDK/{Y}/{m}/{d}/{H}{M}/",
+      "file": "HS_H09_{Y}{m}{d}_{H}{M}_{band}_FLDK_R20_S*10.DAT.bz2",
+      "files_per_band": 10,
+      "bands": {"7": "B07", "8": "B08", "9": "B09", "10": "B10", "11": "B11", "12": "B12", "13": "B13", "14": "B14", "15": "B15", "16": "B16"},
+      "first_scan": "2022-12-13",
+      "note": "JMA Himawari Standard Data, full disk, 2 km infrared bands in 10 bzip2 segments per band; live latency measured 2026-10-16: last segment of the 08:00Z scan listed at 08:13:32Z"
+    },
+    {
+      "satellite": "H08", "instrument": "ahi", "sector": "F", "bucket": "noaa-himawari8",
+      "cadence_minutes": 10, "offset_minutes": 0,
+      "prefix": "AHI-L1b-FLDK/{Y}/{m}/{d}/{H}{M}/",
+      "file": "HS_H08_{Y}{m}{d}_{H}{M}_{band}_FLDK_R20_S*10.DAT.bz2",
+      "files_per_band": 10,
+      "bands": {"7": "B07", "8": "B08", "9": "B09", "10": "B10", "11": "B11", "12": "B12", "13": "B13", "14": "B14", "15": "B15", "16": "B16"},
+      "last_scan": "2022-12-13",
+      "note": "archive only: Himawari-8 was replaced by Himawari-9 on 2022-12-13"
+    },
+    {
+      "satellite": "GK2A", "instrument": "ami", "sector": "F", "bucket": "noaa-gk2a-pds",
+      "cadence_minutes": 10, "offset_minutes": 0,
+      "prefix": "AMI/L1B/FD/{Y}{m}/{d}/{H}/",
+      "file": "gk2a_ami_le1b_{band}_fd020ge_{Y}{m}{d}{H}{M}.nc",
+      "bands": {"7": "sw038", "8": "wv063", "9": "wv069", "10": "wv073", "11": "ir087", "12": "ir096", "13": "ir105", "14": "ir112", "15": "ir123", "16": "ir133"},
+      "first_scan": "2023-02",
+      "band_centroid_wavenumber_cm1": {"7": 2612.6774, "8": 1617.6094, "9": 1441.5755, "10": 1365.25, "11": 1164.9493, "12": 1039.9602, "13": 966.15338, "14": 891.71281, "15": 810.60903, "16": 752.79049},
+      "note": "KMA NMSC GK-2A AMI Level 1B NetCDF, full disk, 2 km infrared; live latency measured 2026-10-16: the 07:40Z scan listed at 08:02:43Z. Centroids: the Wavenumber row of CRTM's ami_gk2.SpcCoeff.bin (fix_REL-3.1.2.0, from the instrument spectral responses); the L1B file states the central wavelength rounded to 0.1 um, which is not the wavenumber KMA's Teff_to_Tbb coefficients belong to"
+    },
+    {
+      "satellite": "G18", "instrument": "abi", "sector": "F", "bucket": "noaa-goes18",
+      "cadence_minutes": 10, "offset_minutes": 0,
+      "prefix": "ABI-L1b-RadF/{Y}/{j}/{H}/",
+      "file": "OR_ABI-L1b-RadF-M*{band}_G18_s{Y}{j}{H}{M}*.nc",
+      "bands": {"7": "C07", "8": "C08", "9": "C09", "10": "C10", "11": "C11", "12": "C12", "13": "C13", "14": "C14", "15": "C15", "16": "C16"},
+      "companions": {"acm": {"prefix": "ABI-L2-ACMF/{Y}/{j}/{H}/", "file": "OR_ABI-L2-ACMF-M*_G18_s{Y}{j}{H}{M}*.nc"}},
+      "note": "GOES-West full disk (mode 6: every 10 min)"
+    },
+    {
+      "satellite": "G18", "instrument": "abi", "sector": "C", "bucket": "noaa-goes18",
+      "cadence_minutes": 5, "offset_minutes": 1,
+      "prefix": "ABI-L1b-RadC/{Y}/{j}/{H}/",
+      "file": "OR_ABI-L1b-RadC-M*{band}_G18_s{Y}{j}{H}{M}*.nc",
+      "bands": {"7": "C07", "8": "C08", "9": "C09", "10": "C10", "11": "C11", "12": "C12", "13": "C13", "14": "C14", "15": "C15", "16": "C16"},
+      "companions": {"acm": {"prefix": "ABI-L2-ACMC/{Y}/{j}/{H}/", "file": "OR_ABI-L2-ACMC-M*_G18_s{Y}{j}{H}{M}*.nc"}},
+      "note": "GOES-West CONUS sector (the PACUS view: west US and the east Pacific), every 5 min starting at minute 1"
+    },
+    {
+      "satellite": "G19", "instrument": "abi", "sector": "F", "bucket": "noaa-goes19",
+      "cadence_minutes": 10, "offset_minutes": 0,
+      "prefix": "ABI-L1b-RadF/{Y}/{j}/{H}/",
+      "file": "OR_ABI-L1b-RadF-M*{band}_G19_s{Y}{j}{H}{M}*.nc",
+      "bands": {"7": "C07", "8": "C08", "9": "C09", "10": "C10", "11": "C11", "12": "C12", "13": "C13", "14": "C14", "15": "C15", "16": "C16"},
+      "companions": {"acm": {"prefix": "ABI-L2-ACMF/{Y}/{j}/{H}/", "file": "OR_ABI-L2-ACMF-M*_G19_s{Y}{j}{H}{M}*.nc"}},
+      "note": "GOES-East full disk"
+    },
+    {
+      "satellite": "G19", "instrument": "abi", "sector": "C", "bucket": "noaa-goes19",
+      "cadence_minutes": 5, "offset_minutes": 1,
+      "prefix": "ABI-L1b-RadC/{Y}/{j}/{H}/",
+      "file": "OR_ABI-L1b-RadC-M*{band}_G19_s{Y}{j}{H}{M}*.nc",
+      "bands": {"7": "C07", "8": "C08", "9": "C09", "10": "C10", "11": "C11", "12": "C12", "13": "C13", "14": "C14", "15": "C15", "16": "C16"},
+      "companions": {"acm": {"prefix": "ABI-L2-ACMC/{Y}/{j}/{H}/", "file": "OR_ABI-L2-ACMC-M*_G19_s{Y}{j}{H}{M}*.nc"}},
+      "note": "GOES-East CONUS"
+    },
+    {
+      "satellite": "G16", "instrument": "abi", "sector": "C", "bucket": "noaa-goes16",
+      "cadence_minutes": 5, "offset_minutes": 1,
+      "prefix": "ABI-L1b-RadC/{Y}/{j}/{H}/",
+      "file": "OR_ABI-L1b-RadC-M*{band}_G16_s{Y}{j}{H}{M}*.nc",
+      "bands": {"7": "C07", "8": "C08", "9": "C09", "10": "C10", "11": "C11", "12": "C12", "13": "C13", "14": "C14", "15": "C15", "16": "C16"},
+      "companions": {"acm": {"prefix": "ABI-L2-ACMC/{Y}/{j}/{H}/", "file": "OR_ABI-L2-ACMC-M*_G16_s{Y}{j}{H}{M}*.nc"}},
+      "note": "archive: GOES-16 was GOES-East until GOES-19 took over in 2025; the bucket keeps the archive"
+    },
+    {
+      "satellite": "G16", "instrument": "abi", "sector": "F", "bucket": "noaa-goes16",
+      "cadence_minutes": 10, "offset_minutes": 0,
+      "prefix": "ABI-L1b-RadF/{Y}/{j}/{H}/",
+      "file": "OR_ABI-L1b-RadF-M*{band}_G16_s{Y}{j}{H}{M}*.nc",
+      "bands": {"7": "C07", "8": "C08", "9": "C09", "10": "C10", "11": "C11", "12": "C12", "13": "C13", "14": "C14", "15": "C15", "16": "C16"},
+      "companions": {"acm": {"prefix": "ABI-L2-ACMF/{Y}/{j}/{H}/", "file": "OR_ABI-L2-ACMF-M*_G16_s{Y}{j}{H}{M}*.nc"}},
+      "note": "archive: GOES-East full disk until April 2025"
+    }
+  ]
+}

@@ -153,7 +153,11 @@ def test_every_kernel_source_has_a_row_or_is_declared_unmeasurable():
     with no row in either table, so the gate that is supposed to notice a
     frame moving could not even enumerate it.
     """
+    from gpuwm.core.kernels import _DEFAULT_SOURCE_MODULES
+    # <module>_default.cu is the default process's text of <module>,
+    # compiled and priced under <module>'s own name.
     sources = {path.stem for path in KERNEL_DIR.glob("*.cu")}
+    sources -= {f"{module}_default" for module in _DEFAULT_SOURCE_MODULES}
     priced = (set(pf.KERNEL_MAX_LOCAL_SIZE_BYTES)
               | set(pf.UNMEASURED_KERNEL_MODULES))
     assert sources - priced == set(), sorted(sources - priced)

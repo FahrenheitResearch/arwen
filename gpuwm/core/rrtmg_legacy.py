@@ -150,7 +150,7 @@ __all__ = [
     "MAX_LONGWAVE_LAYERS", "MAX_SHORTWAVE_LAYERS",
     "ParentOzoneProvider", "RRTMGLegacyRadiation",
     "legacy_radiation_layer_counts", "legacy_radiation_vram_bytes",
-    "radconst", "calc_coszen",
+    "radconst", "calc_coszen", "solar_geometry_device",
 ]
 
 F = np.float32
@@ -188,8 +188,12 @@ _ADMITTED_AER_OPT = (0, 1, 2, 3)
 # ---------------------------------------------------------------------------
 # Solar geometry: FP32 statement transcription of radconst / calc_coszen
 # (module_radiation_driver.F:3469-3541).  numpy transcendentals stand in
-# for the preserved wrf_461 host calculations. The corrected wrf_480
-# consumers use the shared device sun and its word-for-word source oracle.
+# for the preserved wrf_461 host calculations (NumPy's float32 sin/cos/arcsin
+# round differently from the libm gfortran calls: COSZEN up to 64 ULP off on
+# the column oracle). The corrected wrf_480 consumers use the shared device
+# sun and its word-for-word source oracle, and a strict (GPUWM_WRF_EXACT=1)
+# wrf_461 run takes solar_geometry_device below (WOOF's own float32 trig,
+# kernels/rrtmg_legacy_solar.cu), which matches WRF bit for bit.
 # ---------------------------------------------------------------------------
 
 def radconst(julian):
@@ -260,6 +264,55 @@ def calc_coszen_hrang(julian, xtime, gmt, xlat, xlon, declin, *, generation="wrf
               + (np.cos(xxlat) * np.cos(d)) * np.cos(hrang))
     return (np.minimum(np.maximum(coszen, F(-1.0)), F(1.0)).astype(np.float32),
             np.asarray(hrang, dtype=np.float32))
+
+
+def solar_geometry_device(julian, xtime, gmt, xlat, xlon):
+    """WRF v4.6.1 ``radconst`` + ``calc_coszen`` on the device.
+
+    ``kernels/rrtmg_legacy_solar.cu`` holds the two routines statement for
+    statement with WOOF's own float32 sinf, cosf and asinf and explicit
+    single-rounded arithmetic, so the result is WRF's Fortran bit for bit
+    (tests/test_rrtmg_legacy_column_oracle.py).  ``xtime`` is the minutes
+    value WRF passes (``xtime + radt*0.5`` on a radiation call).  ``xlat``
+    and ``xlon`` are float32 device or host arrays of one shape.
+
+    Returns ``(coszen, hrang, declin, solcon)``: two flat float32 device
+    arrays and two float32 scalars.  :func:`radconst` and
+    :func:`calc_coszen_hrang` remain the NumPy statement twins.
+    """
+    import cupy as cp
+    from gpuwm.core.kernels import load_module
+
+    mod = load_module("rrtmg_legacy_solar")
+    lat = cp.ascontiguousarray(cp.asarray(xlat, dtype=cp.float32).reshape(-1))
+    lon = cp.ascontiguousarray(cp.asarray(xlon, dtype=cp.float32).reshape(-1))
+    if lat.shape != lon.shape:
+        raise ValueError("solar geometry latitude/longitude shapes must match")
+    pair = cp.empty(2, dtype=cp.float32)
+    from gpuwm.wrf_exact import ENABLED as exact
+    if exact:
+        # WRF's scalar intrinsic has its own binary32 rounding contract.
+        # Share the already-qualified terrain boundary, using the computed
+        # device argument. Default device math and its routines are unchanged.
+        from gpuwm.static.rust_bridge import scalar_reference_asin_f32
+        argument = cp.empty(1, dtype=cp.float32)
+        mod.get_function("rls_radconst_with_argument")(
+            (1,), (1,), (F(julian), _DEGRAD, _DPD, pair, argument))
+        native = scalar_reference_asin_f32(cp.asnumpy(argument))
+        pair[0] = native[0]
+    else:
+        mod.get_function("rls_radconst")(
+            (1,), (1,), (F(julian), _DEGRAD, _DPD, pair))
+    n = int(lat.size)
+    coszen = cp.empty(n, dtype=cp.float32)
+    hrang = cp.empty(n, dtype=cp.float32)
+    if n:
+        mod.get_function("rls_calc_coszen")(
+            ((n + 127) // 128,), (128,),
+            (np.int64(n), lat, lon, F(julian), F(xtime), F(gmt), _DEGRAD,
+             np.int32(0), pair, coszen, hrang))   # solar_480 = 0: WRF 4.6.1
+    declin, solcon = (F(v) for v in cp.asnumpy(pair))
+    return coszen, hrang, declin, solcon
 
 
 # ---------------------------------------------------------------------------
@@ -1805,7 +1858,7 @@ class RRTMGLegacyRadiation:
                 g_aer.append(_device_grid(value, nz))
             aer_gather = _ColumnGather(g_aer, ncol)
 
-        # ---- radii: MICRON state contract -> meters for the wrapper ---
+        # ---- radii: retain the MICRON state contract through prep -----
         # has_req* follows WRF v4.6.1's SCHEME TABLE, not field presence
         # (module_physics_init.F:987-1033, gated on use_mp_re=1, the
         # Registry default and the campaign setting): Thompson, NSSL
@@ -1906,11 +1959,20 @@ class RRTMGLegacyRadiation:
         xtime = F(float(state.elapsed_seconds) / 60.0)
         radt_minutes = F(cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes)
         # WRF: hour angle at the interval midpoint, declination/solcon at
-        # call time (module_radiation_driver.F:1206-1208).
+        # call time (module_radiation_driver.F:1206-1208).  Evaluated on the
+        # device with WOOF's own float32 sinf/cosf/asinf: the NumPy twins
+        # (radconst, calc_coszen) differ from WRF's Fortran by up to 64 ULP
+        # in COSZEN (tools/rrtmg_legacy_column_oracle).
         xt_mid = xtime + radt_minutes * F(0.5)
-        if getattr(cfg, "solar_generation", "wrf_480") == "wrf_480":
-            from gpuwm.core.solar import solar_geometry_device
-            ds, coszen_d, _hrang = solar_geometry_device(julian, xt_mid, gmt, lat_flat, lon_flat)
+        generation = getattr(cfg, "solar_generation", "wrf_480")
+        from gpuwm.wrf_exact import ENABLED
+        if ENABLED and generation == "wrf_461":
+            coszen_d, _hrang_d, declin, solcon = solar_geometry_device(
+                julian, xt_mid, gmt, lat_d, cp.asarray(lon_flat))
+            coszen = cp.asnumpy(coszen_d)
+        elif generation == "wrf_480":
+            from gpuwm.core.solar import solar_geometry_device as _solar_device
+            ds, coszen_d, _hrang = _solar_device(julian, xt_mid, gmt, lat_flat, lon_flat)
             declin, solcon = map(F, cp.asnumpy(ds))
             coszen = cp.asnumpy(coszen_d)
         else:
@@ -2023,7 +2085,7 @@ class RRTMGLegacyRadiation:
             """The prep keyword set for columns ``sel`` (a slice or a device
             index array), built
             on the device in the host adapter's order:
-            columns, t8w, cal_cldfra1 on the raw moisture, radii in meters,
+            columns, t8w, cal_cldfra1 on the raw moisture, radii in microns,
             then the MYNN merge (supplied masks first, then fraction, mass
             and radii).  Every step is per column, so a chunk equals the
             same columns of a whole-grid evaluation bitwise."""
@@ -2051,9 +2113,18 @@ class RRTMGLegacyRadiation:
                 cldfra = _rrtmgp.cal_cldfra1(
                     moist["qv"], moist["qc"], moist["qi"], moist["qs"], t3d,
                     p3d, f_qc=True, f_qi=f_qi, f_qs=f_qs, mp_physics=mp_physics)
-            radii = _radius_meters_blocks({
+            # Microphysics already applied the stock wrapper's metre to
+            # micron multiply. Undoing and redoing it loses one ULP in
+            # some radii on the next radiation call, so a strict run's prep
+            # accepts these canonical microns directly. MYNN only resets
+            # supplied cloud radii to zero, so its operation is unit
+            # independent.
+            radii = {
                 key: None if g is None else blocks[key]
-                for key, g in g_radii.items()})
+                for key, g in g_radii.items()}
+            # Default retains its original metre conversion and rounding.
+            if not ENABLED:
+                radii = _radius_meters_blocks(radii)
             if active_bl:
                 bl = {k: blocks[k] for k in g_bl}
                 n = moist["qc"].size
@@ -2061,7 +2132,10 @@ class RRTMGLegacyRadiation:
                 # The source cloud driver merges mass without rewriting
                 # microphysics radii (v4.1.21 radiation_driver.F:1256-1304).
                 source_bl = getattr(cfg, "bl_mynn_version", "wrf_461") == "gsd_41"
-                keep_source_radii = source_bl or getattr(
+                # Strict mode follows the native wrapper's sizing policy:
+                # adding MYNN water does not rewrite the supplied radii.
+                # The ordinary arm retains its unsized-cloud policy.
+                keep_source_radii = ENABLED or source_bl or getattr(
                     cfg, "rrtmg_cloud_optics_form", "wrf_461") == "noaa_wrf39"
                 if source_bl:
                     # GSD MYNN v4.1 hands radiation in-cloud QC_BL; its
@@ -2096,6 +2170,7 @@ class RRTMGLegacyRadiation:
             o33d = (blocks["o33d"] if grid_o3 is not None else
                     cp.zeros((nc, nz), dtype=cp.float32))
             sel_kw = dict(
+                radii_units="microns" if ENABLED else "meters",
                 p3d=p3d, p8w=blocks["p8w"], t3d=t3d, t8w=t8w,
                 dz8w=blocks["dz8w"], qv3d=moist["qv"],
                 qc3d=moist["qc"], qr3d=moist["qr"], qi3d=moist["qi"],
@@ -2120,6 +2195,14 @@ class RRTMGLegacyRadiation:
         rthratenlw = cp.zeros((nz, ncol), dtype=cp.float32)
         glw = cp.zeros(ncol, dtype=cp.float32)
         olr = cp.zeros(ncol, dtype=cp.float32)
+        from gpuwm.core.physics_inventory import RADIATION_BOUNDARY_FLUXES
+        boundary_fluxes = {
+            name: (fields[name].reshape(-1) if name in fields else cp.zeros(ncol,dtype=cp.float32))
+            for name in RADIATION_BOUNDARY_FLUXES
+            if (self.longwave if name.startswith("lw") else self.shortwave)}
+        for name,value in boundary_fluxes.items():
+            if name.startswith("sw"):
+                value.fill(0)
         rthratensw = cp.zeros((nz, ncol), dtype=cp.float32)
         gsw = cp.zeros(ncol, dtype=cp.float32)
         # SWDDIR/SWDDIF, rrtmg_swrad's swdkdir/swdkdif at the surface
@@ -2189,6 +2272,12 @@ class RRTMGLegacyRadiation:
                 (np.int32(nc), np.int32(nz), np.int32(nl), res["hr"],
                  res["uflx"], res["dflx"], g_pi3d, day_seconds,
                  np.int64(ncol), np.int64(c0), rthratenlw, glw, olr))
+            for suffix, key, level in (
+                    ("upt","uflx",-1),("uptc","uflxc",-1),
+                    ("dnt","dflx",-1),("dntc","dflxc",-1),
+                    ("upb","uflx",0),("upbc","uflxc",0),
+                    ("dnb","dflx",0),("dnbc","dflxc",0)):
+                boundary_fluxes["lw"+suffix][sel] = res[key][:,level]
             del res
 
         # ---- SW: driver-level zeroing (dossier section 3) + day gather
@@ -2320,6 +2409,12 @@ class RRTMGLegacyRadiation:
             if swddir is not None:
                 # SWDDIR at the surface for BEP+BEM: rrtmg_swrad's swdkdir.
                 swddir[sel] = res["swdkdir"][:, 0]
+            for suffix, key, level in (
+                    ("upt","swuflx",-1),("uptc","swuflxc",-1),
+                    ("dnt","swdflx",-1),("dntc","swdflxc",-1),
+                    ("upb","swuflx",0),("upbc","swuflxc",0),
+                    ("dnb","swdflx",0),("dnbc","swdflxc",0)):
+                boundary_fluxes["sw"+suffix][sel] = res[key][:,level]
             del res
         if self.shortwave:
             # The engine's per-chunk workspace served every chunk of this
@@ -2344,6 +2439,7 @@ class RRTMGLegacyRadiation:
 
         self.update_count += 1
         return RadiationResult(
+            boundary_fluxes={name:value.reshape(ny,nx) for name,value in boundary_fluxes.items()},
             rthratenlw=rthratenlw.reshape(nz, ny, nx),
             rthratensw=rthratensw.reshape(nz, ny, nx),
             swdown=swdown.reshape(ny, nx),

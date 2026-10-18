@@ -399,7 +399,16 @@ class IauForcing:
     loop.
     """
 
-    def __init__(self, state, nodes, *, provenance=None):
+    def __init__(self, state, nodes, *, provenance=None, boundary_rows: int = 1):
+        if int(boundary_rows) < 1:
+            raise IauError(f"boundary_rows {boundary_rows!r} must be at least 1")
+        #: Rows from the edge of a specified or nested domain the forcing leaves to the
+        #: lateral boundary.  One (the default) is the specified ring, as the physics
+        #: couplers exclude it (WRF add_a2a).  The analysis door sets the whole boundary
+        #: zone (spec_bdy_width) when the boundary itself carries the analysis (rebased onto
+        #: it, WRFDA da_update_bc): the relaxation zone then relaxes toward the analysis, and
+        #: forcing it too would add the increment twice there.
+        self.boundary_rows = int(boundary_rows)
         if not nodes:
             raise IauError("an IAU forcing needs at least one node")
         from gpuwm.core.moist import moist_species
@@ -487,7 +496,7 @@ class IauForcing:
                 term = delta * delta.dtype.type(weight / dt)
                 rates[name] = term if name not in rates else rates[name] + term
             node.applied += weight
-        slow, scalars = _couple(xp, state, cfg, rates)
+        slow, scalars = _couple(xp, state, cfg, rates, boundary_rows=self.boundary_rows)
         self.steps_forced += 1
         if self.first_forced is None:
             self.first_forced = t0
@@ -505,6 +514,7 @@ class IauForcing:
             "applied_fraction": self.applied_fraction,
             "steps_forced": int(self.steps_forced),
             "forced_seconds": [self.first_forced, self.last_forced],
+            "boundary_rows_left_to_the_boundary": int(self.boundary_rows),
             "rule": ("per RK step, sum_j increment_j * integral(density_j "
                      "over the step) / dt, coupled like the physics "
                      "tendencies and held over the three RK stages"),
@@ -512,11 +522,17 @@ class IauForcing:
         }
 
 
-def _ring_mask(array) -> None:
-    array[..., 0, :] = 0.0
-    array[..., -1, :] = 0.0
-    array[..., :, 0] = 0.0
-    array[..., :, -1] = 0.0
+def _ring_mask(array, rows: int = 1) -> None:
+    if rows == 1:
+        array[..., 0, :] = 0.0
+        array[..., -1, :] = 0.0
+        array[..., :, 0] = 0.0
+        array[..., :, -1] = 0.0
+        return
+    array[..., :rows, :] = 0.0
+    array[..., -rows:, :] = 0.0
+    array[..., :, :rows] = 0.0
+    array[..., :, -rows:] = 0.0
 
 
 def _face_mass(xp, mu, axis: int):
@@ -529,8 +545,12 @@ def _face_mass(xp, mu, axis: int):
     return xp.concatenate([mu[:1, :], inner, mu[-1:, :]], axis=0)
 
 
-def _couple(xp, state, cfg, rates: dict):
-    """Coupled slow-slot and scalar tendencies from uncoupled rates."""
+def _couple(xp, state, cfg, rates: dict, *, boundary_rows: int = 1):
+    """Coupled slow-slot and scalar tendencies from uncoupled rates.
+
+    ``boundary_rows`` > 1 leaves that many edge rows of a specified or nested domain, every
+    field ``php`` and ``w`` included, to the lateral boundary (see
+    :attr:`IauForcing.boundary_rows`); 1 is the ring rule the physics couplers use."""
     boundary = bool(getattr(cfg, "specified", False)
                     or getattr(cfg, "nested", False))
     open_x = bool(getattr(cfg, "open_x", False))
@@ -547,7 +567,7 @@ def _couple(xp, state, cfg, rates: dict):
             face_mu = _face_mass(xp, mu, 1 if name == "u" else 0)
             coupled = (c1h * face_mu[None] + c2h) * rate
             if boundary:
-                _ring_mask(coupled)
+                _ring_mask(coupled, boundary_rows)
             elif name == "u" and open_x:
                 coupled[:, :, 0] = 0.0
                 coupled[:, :, -1] = 0.0
@@ -561,6 +581,8 @@ def _couple(xp, state, cfg, rates: dict):
         elif name in ("php", "w"):
             coupled = (state.c1f[:, None, None] * mu[None]
                        + state.c2f[:, None, None]) * rate
+            if boundary and boundary_rows > 1:
+                _ring_mask(coupled, boundary_rows)
             if has_msf:
                 coupled = coupled / state.msft[None]
             slow["rph_t" if name == "php" else "rw_t"] = coupled.astype(
@@ -570,7 +592,7 @@ def _couple(xp, state, cfg, rates: dict):
                 chm = c1h * mu[None] + c2h
             coupled = chm * rate
             if boundary:
-                _ring_mask(coupled)
+                _ring_mask(coupled, boundary_rows)
             if name == "thp":
                 if has_msf:
                     coupled = coupled / state.msft[None]

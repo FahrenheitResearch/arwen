@@ -60,7 +60,7 @@ def _tool(name: str):
     # import read_input").  Four oracle tools each have an oracle_io.py, and
     # in one GPU-shard process the Thompson column oracle's had already been
     # cached under that name, so this import resolved to it and failed (2.9.0
-    # round 2, node-4).  Bare sibling names are cleared while this tool loads
+    # round 2, test host D).  Bare sibling names are cleared while this tool loads
     # and the caller's entries are put back afterwards.
     siblings = {path.stem for path in TOOLS.glob("*.py")}
     saved = {key: sys.modules.pop(key) for key in list(sys.modules)

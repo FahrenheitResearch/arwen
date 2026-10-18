@@ -661,7 +661,6 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
                 getattr(state, name)[...] = cp.float32(0.0)
 
         shape3 = (nz, 1, ncol)
-        iface3 = (nz + 1, 1, ncol)
         self._gf_rthdynten = cp.zeros(shape3, dtype=cp.float32)
         self._gf_rqvdynten = cp.zeros(shape3, dtype=cp.float32)
         self._driver.gf_rthdynten = self._gf_rthdynten
@@ -669,11 +668,12 @@ class MpasColumnSuitePhysics(MpasColumnBatchPhysics):
         if dx_column is not None:
             self._driver.gf_dx_column = cp.asarray(
                 dx_column.reshape(1, ncol))
+        # The buffer set the frozen run_phase1 (inherited) fills: u, v,
+        # the interface fields and a caller exner are read in place for
+        # the call, not mirrored (mpas_column_batch, census item 10).
         self._in = {name: cp.zeros(shape3, dtype=cp.float32)
-                    for name in ("u", "v", "theta", "temperature",
-                                 "pressure", "exner", "dz", "rho")}
-        self._in.update({name: cp.zeros(iface3, dtype=cp.float32)
-                         for name in ("p_interface", "z_interface")})
+                    for name in ("theta", "temperature", "pressure",
+                                 "dz", "rho")}
         self._atmosphere = None
         state.prepared_physics_atmosphere = self._supplied_atmosphere
         self._out = {name: cp.zeros((nz, ncol), dtype=cp.float32)

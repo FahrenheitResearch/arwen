@@ -74,7 +74,7 @@ VARIANCE_FLOOR_RELATIVE_POWER = 1e-22
 #: The tolerance under which two boxes scoring the same input bytes with the
 #: same code agree.  MEASURED 2026-08-20 on sha256-identical input and module
 #: bytes: the Windows desktop (Python 3.13.7, numpy 2.2.6, UCRT) against
-#: weather-node-1 (Python 3.14.4, numpy 2.3.5, glibc 2.43), over two
+#: test host A (Python 3.14.4, numpy 2.3.5, glibc 2.43), over two
 #: independent pairs -- a 192x192 scalar+vector probe with displaced and
 #: rescaled fields, and a 128x128 pair scored through the real
 #: ``gpuwm spectral run`` door with the candidate a PURE rescaling of the
@@ -186,7 +186,7 @@ CROSS_BOX_RULE: dict[str, object] = {
         "module bytes -- a 192x192 scalar+vector probe and a 128x128 pair "
         "scored through the real `gpuwm spectral run` door with the "
         "candidate a pure rescaling of the reference: Windows desktop "
-        "(Python 3.13.7, numpy 2.2.6, UCRT) against weather-node-1 "
+        "(Python 3.13.7, numpy 2.2.6, UCRT) against a Linux test host "
         "(Python 3.14.4, numpy 2.3.5, glibc 2.43)"),
     "measured_bit_identical_values": 169,
     "measured_values_compared": 489,

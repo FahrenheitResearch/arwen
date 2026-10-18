@@ -91,10 +91,12 @@ IMPLEMENTED: dict[str, dict] = {
         "component_id": "pbl", "read_when": {"bl_pbl_physics": 1},
         "warnings": ["wrf_480 is the corrected default: WRF 4.8 pinned MMM "
                      "550b5b4 removes the 0.2 offset and caps top-down entrainment "
-                     "efficiency at 0.4. wrf_461 reproduces 2.8.9's WRF 4.6.1 "
-                     "kernel (kernels/ysu.cu), in both arithmetic modes, under "
-                     "its restart identity. Changing generation changes "
-                     "tendencies and is refused on restart."]},
+                     "efficiency at 0.4. wrf_461 under default arithmetic "
+                     "reproduces 2.8.9's YSU kernel (kernels/ysu.cu) under its "
+                     "restart identity; under GPUWM_WRF_EXACT=1 it is unmodified "
+                     "WRF 4.6.1 bl_ysu_run word for word, under its own restart "
+                     "identity. Changing generation changes tendencies and is "
+                     "refused on restart."]},
     "noahmp_snow_age": {
         "type": "string", "enum": ["wrf_470", "wrf_461"],
         "default": "wrf_470", "component_id": "land_surface",
@@ -421,6 +423,36 @@ IMPLEMENTED: dict[str, dict] = {
         "read_when": {"sf_lake_physics": 1},
         "warnings": ["Minimum water-cell elevation in metres used by WRF "
                      "when the input does not provide a lake mask."]},
+    # WRF &physics sf_ocean_physics = 1: the 1-D ocean mixed layer
+    # (phys/module_sf_oml.F, called by module_sf_ocean_driver.F after the
+    # land surface and before the lake).  2 (3-D PWP) is not ported.
+    "sf_ocean_physics": {
+        "type": "integer", "enum": [0, 1], "default": 0,
+        "component_id": "land_surface", "consuming_read": "gpuwm/core/physics.py",
+        "warnings": ["Option 1 runs WRF's ocean mixed layer (OML1D) on "
+                     "water cells (XLAND > 1.5) every surface step: the "
+                     "mixed layer deepens under the wind stress and its "
+                     "temperature becomes TSK. Default 0 retains the "
+                     "prescribed sea-surface temperature. Option 2 (3-D "
+                     "PWP) is not ported and is refused by name."]},
+    "oml_hml0": {
+        "type": "number", "default": 50.0,
+        "component_id": "land_surface", "consuming_read": "gpuwm/core/surface_ocean.py",
+        "read_when": {"sf_ocean_physics": 1},
+        "warnings": ["Initial mixed-layer depth in metres (WRF default 50). "
+                     "0 or less reads a 2-D H0ML from the input file."]},
+    "oml_gamma": {
+        "type": "number", "default": 0.14,
+        "component_id": "land_surface", "consuming_read": "gpuwm/core/physics.py",
+        "read_when": {"sf_ocean_physics": 1},
+        "warnings": ["Deep-water lapse rate below the mixed layer in K/m "
+                     "(WRF default 0.14); must be positive."]},
+    "oml_relaxation_time": {
+        "type": "number", "default": 0.0,
+        "component_id": "land_surface", "consuming_read": "gpuwm/core/physics.py",
+        "read_when": {"sf_ocean_physics": 1},
+        "warnings": ["Relaxation time in seconds back to the initial "
+                     "mixed-layer state; 0 (WRF default) means none."]},
     "mosaic_lu": {
         "type": "integer", "enum": [0, 1], "default": 0,
         "component_id": "land_surface", "read_when": {"sf_surface_physics": 3},
@@ -4482,6 +4514,7 @@ _VERTICAL_BOUND_SOURCES: dict[str, dict[str, tuple[str, str]]] = {
         "ysu": ("YSU PBL", "YSU_VERTICAL_LEVEL_BOUNDS"),
         "myj": ("MYJ PBL", "MYJ_VERTICAL_LEVEL_BOUNDS"),
         "uw": ("UW moist-turbulence PBL", "UWPBL_VERTICAL_LEVEL_BOUNDS"),
+        "ccpp-tke-edmf": ("CCPP TKE-EDMF PBL", "SATMEDMF_VERTICAL_LEVEL_BOUNDS"),
         "shinhong": ("Shin-Hong PBL", "SHINHONG_VERTICAL_LEVEL_BOUNDS"),
         "sase": ("SASE PBL", "SASE_VERTICAL_LEVEL_BOUNDS"),
     },
@@ -5864,6 +5897,7 @@ def build(registry: dict) -> dict:
         "selector": "ysu_version", "default": YSU_DEFAULT_GENERATION,
         "options": YSU_GENERATIONS,
     }
+    pbl_options["ccpp-tke-edmf"] = {'label': 'CCPP scale-aware TKE moist EDMF', 'implemented': True, 'maturity': 'implemented-unverified', 'scientific_evidence': 'none', 'selectors': {'bl_pbl_physics': 901}, 'parameters': {}, 'asset_requirements': [], 'wrf_counterpart': {'exists': False, 'implementation_origin': 'upstream-port', 'reason': 'CCPP satmedmfvdifq is a GFS and RRFS scheme with no WRF selector counterpart. WRF selector 3 is the older hybrid EDMF.'}, 'constraints': {'required_settings': {'moist': True, 'bldt': 0.0}, 'required_settings_reasons': {'moist': 'moist buoyancy needs vapor and condensate', 'bldt': 'positive cadence would retain a TKE tendency absent from the extra-scalar restart stream'}, 'requires_components': {'surface_layer': ['revised-mm5', 'classic-mm5']}, 'requires_components_reasons': {'surface_layer': 'the CCPP stability closure divides by fm/fh, supplied by these similarity layers'}}, 'reachability': {'state': 'component-override'}, 'warnings': ['New non-WRF selector 901. The pinned CCPP column has 0 ULP GPU agreement on 64 columns over three steps. No observation-based forecast score is claimed.'], 'extensions': {'upstream_commit': '1d9b076503c27cd4cfa8b22a977a71e889cbb149', 'fpvs_manifest': 'gpuwm/data/satmedmf/manifest.json', 'prognostic_scalars': {'tke_edmf': {'units': 'm2 s-2', 'initial_value': 0.2, 'transport': 'existing positive-definite scalar path', 'lateral_boundary': 'existing flow-dependent scalar boundary', 'restart': 'serialized'}}, 'vertical_order': 'bottom-to-top', 'humidity_binding': 'specific humidity from dry-air mixing ratio; finite increments converted back', 'outputs': ['temperature and water tendencies', 'momentum tendencies', 'TKE tendency', 'PBLH', 'KPBL', 'heat and momentum diffusivities'], 'surface_inputs': ['UST', 'HFX', 'QFX', 'FM', 'FH', 'BR', 'ZNT', 'vegetation fraction', '10 m winds'], 'bldt': {'supported_values': [0], 'meaning': 'run on every model step'}}}
     surface_options = registry["components"]["surface_layer"]["options"]
     pbl_options["ysu"]["constraints"]["requires_components"][
         "surface_layer"
@@ -6364,7 +6398,7 @@ def build(registry: dict) -> dict:
             # registry and validate_run_config into disagreement over 816
             # combinations.
             "requires_components": {
-                "pbl": ["ysu", "mynn", "shinhong", "sase", "myj", "uw"]},
+                "pbl": ["ysu", "mynn", "shinhong", "sase", "myj", "uw", "ccpp-tke-edmf"]},
             "requires_components_reasons": {
                 "pbl": (
                     "ArWen's Grell-Freitas adapter reads KPBL and the "
@@ -6388,6 +6422,24 @@ def build(registry: dict) -> dict:
                     "ArWen structural constraint; WRF v4.6.1 does not "
                     "prohibit cu_physics=3 with bl_pbl_physics=0"),
             },
+            "shallow_closure_top_bound": {
+                "default": "min(kpbl,ktf-1)",
+                "classification": "declared divergence from WRF v4.6.1",
+                "reason": "The pressure difference reads po_cup(k+1). A top-level PBL must not read above the column.",
+            },
+            "vertical_velocity_convention": {
+                "default": "lower-face",
+                "strict": "lower-face",
+                "classification": "declared change from the previous adapter convention",
+                "reason": "GFDRV expects lower-face W in its closure. Averaging adjacent faces changes the forcing and rain.",
+            },
+            "strict_arithmetic": {
+                "selector": "GPUWM_WRF_EXACT=1",
+                "normalization": "stock-scalar-operation-sequence",
+                "publication": "four-cell-nonperiodic-interior",
+                "cold_condensate_without_ice": "retain-stock-split-and-ignore-ice-slot",
+                "default_unchanged": True,
+            },
         },
         "implemented": True,
         "label": "Grell-Freitas",
@@ -6402,23 +6454,25 @@ def build(registry: dict) -> dict:
             "halves of the port and on the whole driver, not a scheme "
             "fragment. tools/gf_wrf461_oracle drives the byte-frozen "
             "module_cu_gf_wrfdrv.F/module_cu_gf_deep.F/module_cu_gf_sh.F "
-            "at gfortran -O0 over 18 cases x 6 grid spacings x 2 ishallow "
-            "arms (216 columns); the float32 CPU authority "
-            "(gpuwm/verify/gf_driver.py) reproduces GFDRV word for word "
-            "on the 208 columns where GFDRV's own decomposition is exact, "
-            "and the CUDA translation unit (gpuwm/core/kernels/gf.cu) "
-            "holds the same boundary with the fzu normalisation PINNED "
-            "from the capture, exactly as the CPU suite pins it: its "
-            "transcribed glibc-2.39 logf/expf/powf are bitwise against "
-            "the live-glibc sweeps, and gamma is graded instead against "
-            "a 113-bit oracle because it is a deliberate divergence "
-            "since 2.6.6 -- see the next warning "
-            "(tests/test_gf_deep_cuda.py, "
+            "at gfortran -O0 over two column sets: 18 branch-targeted "
+            "cases x 6 grid spacings x 2 ishallow arms (216 columns), and "
+            "280 realistic regime soundings (tropical, continental severe, "
+            "nocturnal, winter snow, lake effect, arctic, high terrain, "
+            "shallow cumulus, desert; climatological and active states, a "
+            "clos_choice 1..16 sweep and 15 edge cases). The float32 CPU "
+            "authority (gpuwm/verify/gf_driver.py) reproduces GFDRV word "
+            "for word on all 216 columns, and the CUDA translation unit "
+            "(gpuwm/core/kernels/gf.cu) does so on all 216 with the fzu "
+            "normalisation PINNED from the capture and on all 280 with "
+            "nothing pinned, against WRF linked with the correctly rounded "
+            "gamma WOOF ships; strict and default arithmetic both give 0 "
+            "differing words. WOOF's own float32 logf/expf/powf give WRF's "
+            "words throughout, and gamma is graded against a 113-bit "
+            "oracle because it is a deliberate divergence since 2.6.6 -- "
+            "see the next warning (tests/test_gf_deep_cuda.py, "
             "tests/test_gf_shallow_cuda.py, tests/test_gf_gfdrv_cuda.py, "
-            "tests/test_gf_gamma_correctly_rounded.py). "
-            "The 8 remaining columns are the driver's own "
-            "module_gfs_physcons mixed precision, inherited and bounded "
-            "(max 34 ULP, 3.8e-6 relative, no branch flips). That is "
+            "tests/test_gf_regime_column_oracle_gpu.py, "
+            "tests/test_gf_gamma_correctly_rounded.py). That is "
             "conformance evidence, not scientific validation: no "
             "gpuwm/WRF forecast trajectory comparison exists for this "
             "scheme, which is why it is 'implemented-unverified' and not "
@@ -6463,6 +6517,15 @@ def build(registry: dict) -> dict:
             "output words differ at the scheme or driver boundary "
             "(tests/test_gf_shallow_cuda.py, the ledger test).",
             "DELIBERATE DIVERGENCE, WRF is undefined: "
+            "the shallow closure pressure-difference loop is capped at "
+            "min(kpbl,ktf-1) in strict and default arithmetic. WRF's "
+            "kpbl=kte loop reads po_cup(k+1) above the column. The "
+            "corrected WRF referee applies this cap and the MAXLOC "
+            "section offset; every shipped output word is graded, "
+            "including columns whose k22 changes. "
+            "tests/test_gf_defects_gpu.py and "
+            "tests/test_gf_regime_column_oracle_gpu.py own these checks.",
+            "DELIBERATE DIVERGENCE, WRF is undefined: "
             "get_inversion_layers' first-derivative loop reads "
             "t_cup(kend+8) past the array end whenever kend > ktf-8 "
             "(module_cu_gf_deep.F, both live call sites pass "
@@ -6488,8 +6551,10 @@ def build(registry: dict) -> dict:
             "into RTHFTEN for G3/NTiedtke and NOT for GFSCHEME, which "
             "sums the lanes itself; (2) GF's convective momentum "
             "tendencies are computed but not yet coupled (CumulusResult "
-            "carries no momentum slots); (3) mass-level w is the "
-            "KF-precedent average of the staggered field.",
+            "carries no momentum slots); (3) lower-face w is passed in "
+            "strict and default arithmetic, matching GFDRV's physical "
+            "interface. This deliberately changes the former adjacent-face "
+            "average, which changed closure forcing and rain.",
             "MEASURED regime behaviour (2026-08-17, 12 km single-domain "
             "real-case twins on the tree route, 150x120x49, 6 h, KF "
             "control differing only in cu_physics/cudt): under strong "
@@ -6859,7 +6924,7 @@ def build(registry: dict) -> dict:
         # gpuwm.config.validate_myj_pairing.
         # "uw" is listed so the UW moist-turbulence PBL is selectable per
         # domain here; no template selects it (component-override).
-        "pbl": ["off", "ysu", "mynn", "sase", "shinhong", "myj", "uw"],
+        "pbl": ["off", "ysu", "mynn", "sase", "shinhong", "myj", "uw", "ccpp-tke-edmf"],
         "surface_layer": [
             "revised-mm5", "classic-mm5", "mynn", "eta-similarity"],
         # "wrf-rrtm-dudhia" is WRF's classic 1/1 pair.  No template
@@ -6998,9 +7063,11 @@ def build(registry: dict) -> dict:
     # test_authority_agreement.py measured both as "registry says
     # LAUNCHABLE, validate_run_config REFUSES".  Each closure's list is
     # assigned whole, after its own rules, so a rebuild is a fixpoint.
-    non_ysu_pbl = sorted(
+    from gpuwm.config import TOPO_WIND_PBL_SCHEMES
+    non_topo_pbl = sorted(
         option_id for option_id, option in pbl_options.items()
-        if option.get("selectors", {}).get("bl_pbl_physics") != 1)
+        if option.get("selectors", {}).get("bl_pbl_physics")
+        not in TOPO_WIND_PBL_SCHEMES)
     no_pbl = sorted(
         option_id for option_id, option in pbl_options.items()
         if option.get("selectors", {}).get("bl_pbl_physics") == 0)
@@ -7037,12 +7104,13 @@ def build(registry: dict) -> dict:
         # preflight re-checks this configuration-only admission rule.
         rules.append({
             "settings": {"topo_wind": [1, 2]},
-            "components": {"pbl": non_ysu_pbl},
+            "components": {"pbl": non_topo_pbl},
             "reason": (
-                "topo_wind acts only through YSU's surface drag "
-                "(bl_pbl_physics=1); a non-YSU PBL does not consume its "
-                "ctopo coefficients, so the run would name a terrain-wind "
-                "correction without applying one"),
+                "topo_wind acts only through the surface drag of the PBL "
+                "schemes that read CTOPO/CTOPO2, YSU (bl_pbl_physics=1) and "
+                "Shin-Hong (bl_pbl_physics=11); any other PBL does not "
+                "consume the coefficients, so the run would name a "
+                "terrain-wind correction without applying one"),
             "remedy_label": "Set topo_wind=0.",
             "remedy_settings": {"topo_wind": 0},
         })
@@ -7746,6 +7814,12 @@ def build(registry: dict) -> dict:
     # LAST of all: every template and every route declaration above is
     # final, so the easiest path to each option is the one this computes.
     _phase2c_recompute_reachability(registry)
+    for option_id, old_line, new_line in (("tke-1.5-order", 1424, 1423),
+                                          ("smagorinsky-3d", 1518, 1517)):
+        row = registry["components"]["turbulence"]["options"][option_id]
+        row["warnings"] = [text.replace(f"gpuwm/core/dycore.py:{old_line}",
+                                       f"gpuwm/core/dycore.py:{new_line}")
+                           for text in row.get("warnings", [])]
     registry["template_aliases"] = dict(TEMPLATE_ID_ALIASES)
     for option in registry["components"]["cumulus"]["options"].values():
         constraints = option.get("constraints", {})
@@ -7772,6 +7846,34 @@ def build(registry: dict) -> dict:
     registry["parameters"]["nsas_dx_factor"]["nondefault_requires_components"] = {"cumulus": ["new-sas"]}
     registry["parameters"]["sas_pgcon"]["component_id"] = "cumulus"
     registry["parameters"]["sas_pgcon"]["nondefault_requires_components"] = {"cumulus": ["new-sas"]}
+    # Bounded evidence carried by verification lanes that updated registry
+    # metadata without changing a knob table. Keep it reproducible too.
+    warning_rows = json.loads((MODEL / "tools/verified_scheme_warning_rows.json")
+                              .read_text(encoding="utf-8"))
+    if isinstance(warning_rows, dict):
+        warning_rows = [warning_rows]
+    for row in warning_rows:
+        registry["components"][row["component"]]["options"][row["option"]][
+            "warnings"] = row["warnings"]
+    # Preserve the base warning about the top-down out-of-bounds guard.
+    guard_warning = 'DELIBERATE DIVERGENCE, WRF is undefined: with ust**3 underflowed to zero, wstar3 zero and sfcflg true, bl_ysu.F90:963 computes prfac2 = 15.9*(wstar3+wstar3_2)/ust3/(1.+4.*karman*(...)/ust3) = 0/0 and fills the column with NaN -- pinned in the oracle fixture. gpuwm returns finite numbers. Separately, at kpbl == kte with cloud at kpbl-1, bl_ysu.F90:846 reads thlix(i,k+2) one element past an array declared kts:kte; kernels/ysu.cu:437 guards that access with kpbl < nz and skips the top-down block instead.'
+    warnings = registry["components"]["pbl"]["options"]["ysu"]["warnings"]
+    if not any("kernels/ysu.cu:437" in w for w in warnings):
+        warnings.append(guard_warning)
+    # Verification warning snapshots retain their claim; resolve the live
+    # declaration rather than publishing its historical source offset.
+    for option_id, filename, anchor in (
+            ("shinhong", "shinhong.cu", "if (pblflg && kpbl < kte)"),
+            ("ysu", "ysu.cu", "No zero-coupling short circuit")):
+        lines = (MODEL / "gpuwm/core/kernels" / filename).read_text().splitlines()
+        matches = [i for i, line in enumerate(lines, 1) if anchor in line]
+        if len(matches) != 1:
+            raise ValueError(f"warning anchor {anchor!r} resolves to {matches}")
+        option = registry["components"]["pbl"]["options"][option_id]
+        option["warnings"] = [re.sub(
+            r"kernels/" + re.escape(filename) + r":\d+",
+            f"kernels/{filename}:{matches[0]}", warning)
+            for warning in option["warnings"] if "kernels/ysu.cu:437" not in warning] + [warning for warning in option["warnings"] if "kernels/ysu.cu:437" in warning]
     return registry
 
 
@@ -8943,6 +9045,17 @@ _SUITELESS_TEMPLATES = (
             "Composition candidate: NSAS deep, shallow and driver calls have WRF column conformance. This suite has no observation-based forecast score.",
         ),
     ),
+    (
+        "ccpp-tke-edmf-thompson-mm5-noah-gf-rte-v1",
+        "thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        {"pbl": "ccpp-tke-edmf", "cumulus": "grell-freitas"},
+        {"moist": True},
+        "CCPP TKE-EDMF + Thompson + classic MM5 + Noah + Grell-Freitas + RTE+RRTMGP",
+        (
+            "Composition candidate. CCPP column parity is measured against its pinned upstream oracle; this is not a WRF PBL counterpart.",
+            "No long integration or observation-based skill receipt covers this composed suite. Positive PBL cadence is refused because extra-scalar tendencies are not serialized.",
+        ),
+    ),
     # (new id, base id, component moves, extra parameters, label, warnings)
     (
         "milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1",
@@ -9141,6 +9254,8 @@ for _composition_suite_id, _off_the_benchmark_because in (
         ("lin-mp2-ysu-mm5-noah-rrtmg-legacy-implemented-unverified-v1",
          "no native run of this composition exists, so there is no "
          "namelist contract to gate its replay against"),
+        ("ccpp-tke-edmf-thompson-mm5-noah-gf-rte-v1",
+         "CCPP is a non-WRF closure, so no native WRF namelist contract can replay this composition"),
         ("milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1",
          "no native run of this composition exists, so there is no "
          "namelist contract to gate its replay against"),
@@ -9577,6 +9692,8 @@ def main(argv: list[str] | None = None) -> int:
              "defaults to gpuwm/physics_consumer_export_v1.json beside the "
              "tracked registry, or beside --out when that names another "
              "directory")
+    parser.add_argument("--check", action="store_true",
+                        help="compare both generated documents without writing them")
     args = parser.parse_args(argv)
 
     import os
@@ -9587,6 +9704,19 @@ def main(argv: list[str] | None = None) -> int:
     os.environ[REGISTRY_REBUILD_ENV] = "1"
 
     registry = build(json.loads(args.registry.read_text(encoding="utf-8")))
+    if args.check:
+        export_path = args.export_out or (
+            CONSUMER_EXPORT_PATH if args.out == REGISTRY_PATH
+            else args.out.parent / CONSUMER_EXPORT_PATH.name)
+        documents = ((args.out, render(registry)),
+                     (export_path, render_consumer_export(registry)))
+        stale = [str(path) for path, expected in documents
+                 if not path.is_file() or path.read_bytes() != expected]
+        for path in stale:
+            print(f"DRIFT: {path}; regenerate with tools/build_registry.py")
+        if not stale:
+            print("registry and consumer export reproduce")
+        return 1 if stale else 0
     params = registry["parameters"]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_bytes(render(registry))

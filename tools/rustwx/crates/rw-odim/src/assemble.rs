@@ -171,7 +171,8 @@ fn read_identity(path: &Path) -> Result<MemberFile> {
     })
 }
 
-/// Every `.h5`/`.hdf`/`.hdf5` file in `dir`, sorted by name.
+/// Every `.h5`/`.hdf`/`.hdf5` file in `dir`, plus DWD's open-data spelling
+/// `...-hd5` (its sweep files carry no dot extension), sorted by name.
 ///
 /// Not recursive: a directory of volumes is flat, and descending would sweep
 /// an unrelated tree into a volume.
@@ -197,7 +198,11 @@ pub fn odim_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
                 let ext = ext.to_ascii_lowercase();
                 ext == "h5" || ext == "hdf" || ext == "hdf5"
             })
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().ends_with("-hd5"));
         if matches {
             paths.push(path);
         }
@@ -395,6 +400,12 @@ pub fn assemble_decoded(
             match target.sweeps.iter_mut().find(|held| same_cut(held, &sweep)) {
                 None => target.sweeps.push(sweep),
                 Some(held) => {
+                    // DWD writes the per-ray PRF list on the velocity file
+                    // of a cut; the reflectivity file of the same cut may be
+                    // the one held. The cut identity already matched.
+                    if held.ray_prf_hz.is_none() {
+                        held.ray_prf_hz = sweep.ray_prf_hz;
+                    }
                     for moment in sweep.moments {
                         if held.moments.iter().any(|m| m.quantity == moment.quantity) {
                             return Err(refuse(format!(
@@ -476,6 +487,7 @@ mod tests {
             azimuth_deg: azimuths,
             azimuth_source: AzimuthSource::NominalFromRayCount { astart_deg: 0.0 },
             ray_elevation_deg: None,
+            ray_prf_hz: None,
             moments: Vec::new(),
         }
     }

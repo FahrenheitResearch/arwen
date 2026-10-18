@@ -169,5 +169,4 @@ def test_the_adapter_routes_rain_by_generation():
     assert "export_surface=True" in block
     assert "launch_aa_surface_precipitation(" in block
     assert "launch_rain_sedimentation(" not in text.replace(
-        "launch_wrf39_rain_sedimentation(", "").replace(
         "launch_aa_rain_sedimentation_accumulate(", "")

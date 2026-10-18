@@ -1814,10 +1814,17 @@ pub(crate) fn capture_source_set_identity(
     if paths.is_empty() {
         return Err("cannot identify an empty source set".to_string());
     }
+    // Every file streams through its own SHA-256 at once; the first
+    // failure in path order is the one reported.
+    use rayon::prelude::*;
+    let hashed = paths
+        .par_iter()
+        .map(|path| source_file_fingerprint(path))
+        .collect::<Vec<_>>();
     let mut fingerprints = Vec::with_capacity(paths.len());
     let mut files = Vec::with_capacity(paths.len());
-    for path in paths {
-        let (fingerprint, revision) = source_file_fingerprint(path)?;
+    for (path, hashed) in paths.iter().zip(hashed) {
+        let (fingerprint, revision) = hashed?;
         fingerprints.push(fingerprint);
         files.push((path.clone(), revision));
     }

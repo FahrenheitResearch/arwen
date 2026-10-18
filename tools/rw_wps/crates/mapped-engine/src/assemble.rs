@@ -1115,28 +1115,53 @@ pub fn rotate_grid_relative_winds(
             let cells = sina.len();
             let u_values = array::contiguous(&u.values);
             let v_values = array::contiguous(&v.values);
-            let mut earth_u = u.values.as_standard_layout().to_owned();
-            let mut earth_v = v.values.as_standard_layout().to_owned();
-            for (position, cell) in earth_u.iter_mut().enumerate() {
-                let plane = position % cells;
-                *cell = u_values[position] * cosa[plane] - v_values[position] * sina[plane];
-            }
-            for (position, cell) in earth_v.iter_mut().enumerate() {
-                let plane = position % cells;
-                *cell = v_values[position] * cosa[plane] + u_values[position] * sina[plane];
-            }
+            // Cell by cell, each from its own two inputs and its plane's
+            // rotation, so the cells are computed on every core and
+            // collected in position order: the same arithmetic in the
+            // same order per cell, the same bytes.  Named breakage: the
+            // two loops ran on one core, about 1.3 s of every 3 km CONUS
+            // native-level valid time, and `..u.clone()` copied each wind
+            // component whole only to replace its values.
+            let (earth_u, earth_v): (Vec<f64>, Vec<f64>) = crate::threads::install(|| {
+                use rayon::prelude::*;
+                let earth_u = (0..u_values.len()).into_par_iter().map(|position| {
+                    let plane = position % cells;
+                    u_values[position] * cosa[plane] - v_values[position] * sina[plane]
+                }).collect();
+                let earth_v = (0..v_values.len()).into_par_iter().map(|position| {
+                    let plane = position % cells;
+                    v_values[position] * cosa[plane] + u_values[position] * sina[plane]
+                }).collect();
+                (earth_u, earth_v)
+            });
+            let earth_u = ArrayD::from_shape_vec(ndarray::IxDyn(u.values.shape()), earth_u)
+                .map_err(|error| frame_invalid(format!("rotated {u_name}: {error}")))?;
+            let earth_v = ArrayD::from_shape_vec(ndarray::IxDyn(v.values.shape()), earth_v)
+                .map_err(|error| frame_invalid(format!("rotated {v_name}: {error}")))?;
             rotated.push((
                 u_key,
                 DirectValue {
+                    name: u.name.clone(),
+                    valid_time: u.valid_time,
+                    member: u.member.clone(),
+                    source_cycle: u.source_cycle,
+                    axes: u.axes.clone(),
                     values: earth_u,
-                    ..u.clone()
+                    missing_count: u.missing_count,
+                    references: u.references.clone(),
                 },
             ));
             rotated.push((
                 v_key,
                 DirectValue {
+                    name: v.name.clone(),
+                    valid_time: v.valid_time,
+                    member: v.member.clone(),
+                    source_cycle: v.source_cycle,
+                    axes: v.axes.clone(),
                     values: earth_v,
-                    ..v.clone()
+                    missing_count: v.missing_count,
+                    references: v.references.clone(),
                 },
             ));
         }

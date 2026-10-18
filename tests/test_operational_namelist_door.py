@@ -120,7 +120,10 @@ def test_operational_namelist_imports_with_its_smoke_mapped(tmp_path):
                          ("physics", "co2tf"),
                          ("dynamics", "tke_mix6_off")):
         assert (section, key) in dropped, (section, key)
-    assert ("physics", "maxens") not in dropped
+    # 2.9.1: the Grell ensemble dimensions size only Grell 3D /
+    # Grell-Devenyi closure arrays, so with no Grell-family cumulus they
+    # drop as inert, as wrf.exe ignores them (NCAR's CONUS benchmark door).
+    assert ("physics", "maxens") in dropped
     assert "dfi_opt = 0" in dropped[("dfi_control", "dfi_opt")]
     assert ("physics", "grav_settling") in fixed
     assert ("domains", "zap_close_levels") in fixed

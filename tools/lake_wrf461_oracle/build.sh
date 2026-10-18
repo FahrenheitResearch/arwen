@@ -17,3 +17,11 @@ g++ -std=c++17 -O0 "$here/abs_control.cpp" \
 ./abs_fortran > abs-fortran.txt
 ./abs_cpp > abs-cpp.txt
 diff -u abs-fortran.txt abs-cpp.txt
+gcc -O0 -fno-builtin -fPIC -shared "$here/libm_host.c" -o libm_host.so -lm
+g++ -std=c++17 -O0 -fPIC -fno-fast-math -ffp-contract=off -shared \
+  "$here/crlibm_host.cpp" -I "$here/../../gpuwm/core/kernels" -o lake_crlibm_host.so
+g++ -std=c++17 -O0 -fPIC -fno-fast-math -ffp-contract=off -fno-builtin -c \
+  "$here/crlibm_shim.cpp" -I "$here/../../gpuwm/core/kernels" -o crlibm_shim.o
+gfortran -shared -Wl,-Bsymbolic -o lake_fortran_cr.so module_model_constants.o stub_wrf.o \
+  module_sf_lake.o column_wrapper.o crlibm_shim.o
+nm -D --defined-only lake_fortran_cr.so | grep -qw pow

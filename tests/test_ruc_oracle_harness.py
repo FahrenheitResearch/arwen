@@ -83,7 +83,7 @@ def test_shell_comparison_failure_exits_nonzero(tmp_path, arm):
     # launching shell's PATH holds: a Stage 1 started as venv/bin/python on
     # a box whose only system interpreter is python3 failed here with
     # "python: command not found" before any comparison ran (2.9.0 lane A1,
-    # node-1).  A shell shim, not a symlink, so a venv interpreter keeps its
+    # test host A).  A shell shim, not a symlink, so a venv interpreter keeps its
     # own site-packages.
     shim = tmp_path / "interpreter"
     shim.mkdir()

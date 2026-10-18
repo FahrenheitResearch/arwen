@@ -1,0 +1,6 @@
+99f44dbeb5e586b96be14424b8ab27c9986ffbd81f007f41fb8528d8ea466d56  <wrf-4.6.1-checkout>/phys/module_bl_shinhong.F
+e51a0fb2db16c7ffb0e286ab12842113ac79d2b11c8473b04c741bbe81c0540f  <oracle-dir>/run_shinhong_columns.F90
+fc6a733deb290ebeeb86ca525428bff23c4c6c34cad60585c907fd0488594a50  <oracle-dir>/refute_columns.py
+f4ed4c698f49b133627886c35f9211776123e33b107f149eb99c63e672874925  columns-in.bin
+6e588af997374d0316326df00d7dae4da9d7e1d8a19052994770752384bdd4cf  wrf-out.bin
+039f2317bb4a990768c5acd609d11988579ce745a8fd3a1baab6b5cc182b279a  wrf-out-O2vec.bin

@@ -1806,7 +1806,8 @@ def apply_reference(state, cfg, dt: float, *, refl_10cm_due: bool = False):
     from gpuwm.core import constants as c
     from gpuwm.core.microphysics import (MicrophysicsDiagnostics,
                                          moist_physics_finish,
-                                         save_pre_mp_theta)
+                                         save_pre_mp_theta,
+                                         prepare_microphysics_exner)
     from gpuwm.core.state import DTYPE
 
     required = ("qi", "nr", "ni", "qir", "qib", "th_old", "qv_old")
@@ -1826,7 +1827,7 @@ def apply_reference(state, cfg, dt: float, *, refl_10cm_due: bool = False):
     dz_dev = state.scratch((nz, ny, nx), "mp_dz8w")
     z8w = state.scratch((nz + 1, ny, nx), "mp_z8w")
     th_dev[...] = thb + state.thp
-    pii[...] = (state.p / DTYPE(c.P0)) ** DTYPE(c.RCP)
+    prepare_microphysics_exner(state.p, pii)
     z8w[...] = (phb + state.php) / DTYPE(c.G)
     dz_dev[...] = z8w[1:] - z8w[:-1]
 

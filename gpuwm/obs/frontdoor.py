@@ -40,6 +40,7 @@ from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            legacy_bridge_candidates, lazy_build_hints,
                            rustwx_build_hint,
                            accept_resolved, executable_name,
+                           fetch_on_demand, on_demand_failure,
                            packaged_bridge_dir)
 
 _PROBE_TIMEOUT_S = 20
@@ -116,9 +117,15 @@ class FrontDoor:
         """The binary, or a RuntimeError carrying this install's remedy."""
 
         found = self.find()
+        if found is None and fetch_on_demand(self.name):
+            # An on-demand door (not in the platform wheel, pinned in the
+            # bundle) is staged on its first use, so a bare install runs it.
+            found = self.find()
         if found is None:
+            failure = on_demand_failure(self.name)
             raise RuntimeError(
-                f"{self.subject} ({self.name}) is not built or not found.\n"
+                f"{self.subject} ({self.name}) is not built or not found"
+                + (f"; {failure}" if failure else "") + ".\n"
                 f"{self.remedy()}")
         return found
 
@@ -265,7 +272,9 @@ GOES = FrontDoor(
                 "gpuwm-obs.goes-cloudtop.v2\t"
                 # The Level 1b radiance family and the clear-sky forward
                 # operator (bt, colocate, superobs, quicklook, forward).
-                "gpuwm-obs.goes-bt.v1\tgpuwm-da.abi-forward.v1\tgpuwm-obs.goes-aod.v1"),
+                "gpuwm-obs.goes-bt.v1\tgpuwm-da.abi-forward.v1\tgpuwm-obs.goes-aod.v1\t"
+                # GLM flash extent density (`rw_goes glm`, `gpuwm obs glm`).
+                "gpuwm-obs.glm-fed.v2"),
 )
 
 #: The European radar composite front door.
@@ -322,6 +331,17 @@ OPERA = FrontDoor(
 #: ``assembled``/``manifest_sha256`` -- some national feeds publish one file
 #: per elevation and quantity, and a pack built from many files cannot quote a
 #: file digest. A build without the assembly leg cannot serve Germany at all.
+#:
+#: ``dual_prf`` -- since 2.9.2 the pack's velocities have dual-PRF outliers
+#: removed (``rw_odim::dualprf``) and the record says how many. An older build
+#: writes uncorrected velocities under the same field names, so it is refused
+#: here rather than accepted as a plausible pack.
+#:
+#: The format tokens -- a build without them reads ODIM only, and refuses the
+#: JMA, IRIS, UF, CfRadial and DORADE volumes the open archives in
+#: ``radar_archives_world.json`` serve. ``DerivedDualPrf`` and
+#: ``jma-no-echo-undetect`` are in it because an older build decodes JMA with
+#: no Nyquist interval and every clear-air gate as 0 dBZ.
 ODIM = FrontDoor(
     name="rw_odim",
     env_var="GPUWM_RW_ODIM",
@@ -331,7 +351,30 @@ ODIM = FrontDoor(
         "gpuwm-obs.odim-volumes.v1\tgpuwm-obs.radar-sweeps.v3\t"
         "site\telangle\tnbins\tnrays\trscale\trstart\tazimuth\tnyquist_ms\t"
         "nyquist_source\tnyquist_granularity\tcensor\tmeasured\tundetect\t"
-        "nodata\tsentinel_ambiguous\tassembled\tmanifest_sha256\tstamp"),
+        "nodata\tsentinel_ambiguous\tassembled\tmanifest_sha256\tstamp\tdual_prf\t"
+        "gpuwm-obs.odim-stations.v1\tformat\todim-h5\tjma-grib2-tar\t"
+        "iris-raw\tuniversal-format\tcfradial1\tdorade\tDerivedDualPrf\t"
+        "jma-no-echo-undetect"),
+)
+
+#: National radar-volume feeds as dated URL rows (``rw_radar_feeds``).
+#:
+#: BowEcho's catalog adapters (DWD, DMI, FMI, SMHI, GeoSphere, SHMU, CHMI,
+#: ANM, two Italian regions, KAIA, NCI, JMA, and EUMETNET ORD for every other
+#: OPERA country), plus dated archive lookup for FMI (bucket from 2007) and
+#: DMI (STAC datetime ranges). ``window`` answers "every frame of this site
+#: in [start, end]", live or archived, which is what a cycle's acquisition
+#: needs and what the decoder (``rw_odim``) then reads. ``stamp`` and
+#: ``route`` are in the marker because a build without them would still print
+#: frames a window could not be cut on.
+RADAR_FEEDS = FrontDoor(
+    name="rw_radar_feeds",
+    env_var="GPUWM_RW_RADAR_FEEDS",
+    subject="the national radar-volume feed listings",
+    abi_marker=(
+        "gpuwm-obs.radar-feeds.v1\tproviders\tsites\tlatest\trecent\twindow\t"
+        "provider\tsite\tformat\tidentity\tstamp\tmerge\tparts\turl\tfilename\t"
+        "route"),
 )
 
 #: NCEP's prepbufr, the conventional-observation front door.
@@ -346,8 +389,9 @@ ODIM = FrontDoor(
 #: ``error-table`` (each row's error is GSI's, from the conventional error
 #: table) are in it because a build without them writes rows GSI does not
 #: use and errors GSI does not assign.  It is not in
-#: :data:`FRONT_DOORS` yet: joining it needs a ``gpuwm obs prepbufr``
-#: subcommand, its line in the doctor's door names and a bundle entry.
+#: :data:`FRONT_DOORS` (that needs a ``gpuwm obs prepbufr`` subcommand); it
+#: is in the bundle as an on-demand artifact since 2.9.1 and doctor reports
+#: it with the stream doors.
 PREPBUFR = FrontDoor(
     name="rw_prepbufr",
     env_var="GPUWM_RW_PREPBUFR",
@@ -379,12 +423,14 @@ AIRNOW = FrontDoor(
 )
 
 FRONT_DOORS = {"mrms": MRMS, "stage4": STAGE4, "asos": ASOS, "goes": GOES,
-               "opera": OPERA, "odim": ODIM, "airnow": AIRNOW}
+               "opera": OPERA, "odim": ODIM, "airnow": AIRNOW,
+               "radar-feeds": RADAR_FEEDS}
 
 #: The observation-stream doors of the data assimilation (gpuwm.obs.streams):
-#: radiosondes, motion vectors, ocean platforms, radio occultation and the
-#: WIS2 feed.  The crates are the engine's (``tools/rustwx/crates/rw-obs``,
-#: bins igra2, amv, ndbc, gnssro, wis2); until 2.9.0 their rows lived in
+#: radiosondes, motion vectors, ocean platforms, radio occultation, the
+#: WIS2 feed and MADIS (aircraft, radiosondes, mesonets).  The crates are the
+#: engine's (``tools/rustwx/crates/rw-obs``, bins igra2, amv, ndbc, gnssro,
+#: wis2, madis); until 2.9.0 their rows lived in
 #: gpuwm-global (``arwen_global.obs_doors``), which is why the engine's local
 #: data assimilation imported that package to reach them.  The markers are the
 #: binaries' own ``--abi`` lines on this line.  Kept apart from FRONT_DOORS so
@@ -410,13 +456,20 @@ GNSSRO = FrontDoor(
     abi_marker=("gpuwm-obs.gnssro-fetch.v1	gpuwm-obs.gnssro-cdaac-fetch.v1	gpuwm-obs.gnssro-table.v1	"
                 "gpuwm-obs.table.v2	refractivity_n	height_anchored	dry_pressure	cdaac_tarballs"),
 )
+MADIS = FrontDoor(
+    name="rw_madis", env_var="GPUWM_RW_MADIS",
+    subject="the MADIS aircraft, radiosonde and mesonet front door",
+    abi_marker=("gpuwm-obs.madis-fetch.v1\tgpuwm-obs.madis-table.v1\tgpuwm-obs.table.v2\t"
+                "acars\traob\tmesonet\tqc-summary\terrtable\trealtime"),
+)
 WIS2 = FrontDoor(
     name="rw_wis2", env_var="GPUWM_RW_WIS2", subject="the WIS2 subscriber",
     abi_marker=("gpuwm-obs.wis2-subscribe.v1	gpuwm-obs.wis2-probe.v1	gpuwm-obs.wis2-table.v1	"
                 "gpuwm-obs.table.v2	mqtt-3.1.1	messages	payloads	coverage	latency	bufr	synop	ship	temp"),
 )
 
-STREAM_DOORS = {"igra2": IGRA2, "amv": AMV, "ndbc": NDBC, "gnssro": GNSSRO, "wis2": WIS2}
+STREAM_DOORS = {"igra2": IGRA2, "amv": AMV, "ndbc": NDBC, "gnssro": GNSSRO, "wis2": WIS2,
+                "madis": MADIS}
 
 
 def door_by_binary(name: str) -> FrontDoor:
@@ -434,5 +487,6 @@ def door_by_binary(name: str) -> FrontDoor:
 
 
 __all__ = ["AIRNOW", "AMV", "ASOS", "CARGO_BUILD_HINT", "FRONT_DOORS", "GNSSRO", "GOES", "IGRA2",  # noqa: F822 -- module __getattr__
-           "MRMS", "NDBC", "ODIM", "OPERA", "PREPBUFR", "STAGE4", "STREAM_DOORS", "WIS2",
+           "MADIS", "MRMS", "NDBC", "ODIM", "OPERA", "PREPBUFR", "RADAR_FEEDS", "STAGE4",
+           "STREAM_DOORS", "WIS2",
            "FrontDoor", "crate_dir", "door_by_binary"]

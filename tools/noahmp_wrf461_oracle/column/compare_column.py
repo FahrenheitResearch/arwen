@@ -30,8 +30,8 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gen_columns import read_records  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from tools.noahmp_wrf461_oracle.column.gen_columns import read_records  # noqa: E402
 
 GLACIER_UNDEFINED = ("eflxbxy", "soilenergy", "snowenergy")
 ISICE = 15

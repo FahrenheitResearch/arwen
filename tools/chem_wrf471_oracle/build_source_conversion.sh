@@ -36,6 +36,6 @@ gfortran oracle_io.o poison.o -o poison_source_conversion
 ./poison_source_conversion poison
 diff -r fixtures poison
 gfortran --version | head -1 > compiler.txt
-ldd --version | head -1 > glibc.txt
+ldd --version | sed -n 1p > glibc.txt
 sha256sum "$script_dir/run_source_conversion.F90" "$script_dir/oracle_io.F90" > driver-sha256sums.txt
 (cd fixtures; find . -type f -print0 | sort -z | xargs -0 sha256sum) > oracle-sha256sums.txt

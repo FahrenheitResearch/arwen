@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 if __package__:
     from .taxonomy import VERSION, validate
+    from .parallelism import tree_cpu_seconds
 else:  # tools/timeline/ledger.sh works before gpuwm is installed
     import importlib.util as _importlib_util
     _spec = _importlib_util.spec_from_file_location(
@@ -30,6 +31,24 @@ else:  # tools/timeline/ledger.sh works before gpuwm is installed
     _taxonomy = _importlib_util.module_from_spec(_spec)
     _spec.loader.exec_module(_taxonomy)
     VERSION, validate = _taxonomy.VERSION, _taxonomy.validate
+    _spec = _importlib_util.spec_from_file_location(
+        "gpuwm_timeline_parallelism", Path(__file__).with_name("parallelism.py"))
+    _parallelism = _importlib_util.module_from_spec(_spec)
+    _spec.loader.exec_module(_parallelism)
+    tree_cpu_seconds = _parallelism.tree_cpu_seconds
+
+
+def _cpu_attrs(attrs, phase, t_mono, cpu_pid=None):
+    """Live begin/end events carry the process tree's CPU seconds (attrs.cpu_s), so every stage's cores are
+    CPU / wall (gpuwm/timeline/parallelism.py; 2026-10-16: no single-CPU stage on the critical path).
+    Relayed boundaries (an explicit t_mono) were measured by someone else and carry none."""
+    if phase not in ("begin", "end") or t_mono is not None or (attrs and "cpu_s" in attrs):
+        return attrs
+    try:
+        cpu = tree_cpu_seconds(cpu_pid)
+    except Exception:
+        return attrs
+    return attrs if cpu is None else {**(attrs or {}), "cpu_s": cpu}
 
 _warned = set()
 _warning_lock = threading.Lock()
@@ -112,12 +131,13 @@ class Ledger:
         self.product = product or os.environ.get("GPUWM_PRODUCT", "regional")
         self.card = card
 
-    def emit(self, stage, phase="mark", *, attrs=None, t_mono=None, t_unix=None):
+    def emit(self, stage, phase="mark", *, attrs=None, t_mono=None, t_unix=None, cpu_pid=None):
         """Return success, never throw. Optional clocks relay measured boundaries."""
         if self.path is None:
             return False
         fd = None
         try:
+            attrs = _cpu_attrs(attrs, phase, t_mono, cpu_pid)
             mono = time.monotonic() if t_mono is None else float(t_mono)
             wall = time.time() if t_unix is None else float(t_unix)
             record = validate({
@@ -187,10 +207,12 @@ def main(argv=None):
         parser.add_argument("--run-id")
         parser.add_argument("--rental-id")
         parser.add_argument("--card", type=int)
+        parser.add_argument("--cpu-pid", type=int,
+                            help="whose process tree's CPU seconds a begin/end carries (ledger.sh: the script)")
         args = parser.parse_args(argv)
         Ledger(args.path, product=args.product, run_id=args.run_id,
                rental_id=args.rental_id, card=args.card).emit(
-                   args.stage, args.phase, attrs=json.loads(args.attrs))
+                   args.stage, args.phase, attrs=json.loads(args.attrs), cpu_pid=args.cpu_pid)
     except SystemExit as error:
         if error.code:
             _warn(os.environ.get("GPUWM_TIME_LEDGER"), error)

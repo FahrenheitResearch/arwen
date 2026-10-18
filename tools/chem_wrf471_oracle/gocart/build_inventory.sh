@@ -9,7 +9,9 @@
 # The lines are checked against the file's pinned sha256 and their first and
 # last statements before extraction.
 set -euo pipefail
-if [[ $# -ne 3 ]]; then
+# gocart/build.sh calls every standalone builder with a 4th argument (a
+# tables folder only the optics builder uses); accept and ignore it.
+if [[ $# -lt 3 || $# -gt 4 ]]; then
     echo "usage: build_inventory.sh WRF_SRC BUILD_DIR FIXTURE_DIR" >&2
     exit 2
 fi

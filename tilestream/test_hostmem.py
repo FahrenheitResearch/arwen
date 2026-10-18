@@ -89,11 +89,19 @@ def test_linux_parser_still_reads_meminfo_text() -> None:
     assert parsed["MemFree"] == 61906944 * 1024
 
 
-def test_check_allocatable_runs_on_this_platform() -> None:
+def test_check_allocatable_runs_on_this_platform(monkeypatch) -> None:
     """The consumer that actually died on Windows, exercised end to end:
     a tiny request must pass all three gates, an absurd one must be
     refused by the fraction cap -- both without touching procfs and
-    without allocating anything."""
+    without allocating anything.
+
+    The machine figures are a stand-in, not the live box: on the 2.9.2
+    rehearsal host (123 GB) this read 7.49 GiB available under the
+    concurrent legs, below the 8 GiB reserve, and refused the 1 MiB
+    request.  The gates are what is measured here, not the box's load.
+    """
+    monkeypatch.setattr(HS, "host_memory",
+                        lambda: {"total": 64 << 30, "available": 32 << 30})
     HS.check_allocatable(1 << 20)                     # 1 MiB: always fine
     with pytest.raises(HS.HostMemoryExhausted):
         HS.check_allocatable(1 << 50)                 # 1 PiB: never fine

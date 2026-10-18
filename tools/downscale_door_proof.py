@@ -348,7 +348,7 @@ def main() -> int:
 
         # 6. Refusals through the same queue, verbatim.
         refusals = {}
-        remote = dict(request, mode="plan", target={"kind": "ssh", "node_id": "node-1", "connection_sha256": "a" * 64})
+        remote = dict(request, mode="plan", target={"kind": "ssh", "node_id": "remote-a", "connection_sha256": "a" * 64})
         refusals["ssh_target"] = controller.send("launch_downscale", remote)
         taken = dict(request, mode="plan", out_dir=str(out_dir))
         refusals["existing_out_dir"] = controller.send("launch_downscale", taken)

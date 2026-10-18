@@ -16,8 +16,8 @@ def compare(name, got, want, case):
  want=np.asarray(want,dtype='f4')
  assert got.shape==want.shape,(name,got.shape,want.shape)
  gu=got.view('u4'); wu=want.view('u4')
- ordered=lambda u: np.where((u & np.uint32(0x80000000))!=0,~u,u ^ np.uint32(0x80000000)).astype('i8')
- ulp=np.abs(ordered(gu)-ordered(wu))
+ from gpuwm.core.fp32_ulp import monotone_fp32_key
+ ulp=np.abs(monotone_fp32_key(got)-monotone_fp32_key(want))
  r=fields.setdefault(name,dict(max_ulp=0,max_abs=0.0,mismatched_words=0,words=0))
  r['max_ulp']=max(r['max_ulp'],int(np.max(ulp,initial=0)))
  r['max_abs']=max(r['max_abs'],float(np.max(np.abs(got-want),initial=0)))

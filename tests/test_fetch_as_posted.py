@@ -286,6 +286,14 @@ def test_lead_ready_says_the_fetched_bytes_of_a_route_that_composes(
 
     replay(on_schedule)
     out = tmp_path / "gefs"
+    run = tmp_path / "run"
+    run.mkdir()
+    # The stream opens before the fetch, as `go` opens it: the relay carries only markers written since it
+    # opened (POSTING_FRESH_SLACK_MS), and with the fetch first a loaded host dropped the earliest leads
+    # (2.9.2 public-CI rehearsal routes B and C: leads 0 and 3, then 0 to 9, missing).
+    chain = GoChainEvents()
+    chain.open(tmp_path / CHAIN_EVENTS_FILENAME,
+               plan={"data": out, "run": run, "render": None})
     assert fetch.fetch_main(fetch_args(out)) == 0
     fetched = {}
     for marker in markers(out):
@@ -294,11 +302,6 @@ def test_lead_ready_says_the_fetched_bytes_of_a_route_that_composes(
         fetched[marker["lead"]] = sum(path.stat().st_size for path in files)
         composed = sum(item["bytes"] for item in marker["composed"])
         assert composed == fetched[marker["lead"]]
-    run = tmp_path / "run"
-    run.mkdir()
-    chain = GoChainEvents()
-    chain.open(tmp_path / CHAIN_EVENTS_FILENAME,
-               plan={"data": out, "run": run, "render": None})
     chain.finish(status="SUCCESS")
     ready = {record["lead"]: record["bytes"]
              for record in read_chain_events(tmp_path / CHAIN_EVENTS_FILENAME)

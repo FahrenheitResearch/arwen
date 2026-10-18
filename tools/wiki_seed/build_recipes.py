@@ -397,7 +397,7 @@ def legacy_recipe(src, plan, rung, doms, card):
     return row
 
 
-def build(event_id, ev, rec, cite_track):
+def build(event_id, ev, rec, cite_track, *, selected_cards=None):
     plan = rec["plan"]
     tc = ev["type"] == "tropical-cyclone"
     rule = RULE_TC if tc else RULE_TORNADO
@@ -411,7 +411,7 @@ def build(event_id, ev, rec, cite_track):
             top_cite.append(plan["landfall"]["cite"])
             sources[plan["landfall"]["cite"]] = design.LANDFALL[event_id]["landfall"]["source"]
     cards = []
-    for card in map(str, design.CARDS):
+    for card in map(str, design.CARDS if selected_cards is None else selected_cards):
         entry = rec["cards"][card]
         if entry.get("rung_index") is None:
             cards.append({"card_gb": int(card), "fits": False,

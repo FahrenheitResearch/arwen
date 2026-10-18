@@ -1,0 +1,7 @@
+{
+  "wrf_version": "4.6.1",
+  "source": "phys/module_sf_oml.F",
+  "source_sha256": "a4a41a1593ef1d9bb4bc9cf4863fefea6dc67c3815bafbb897cb2a948e76a39f",
+  "constants_source": "share/module_model_constants.F",
+  "constants_source_sha256": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062"
+}

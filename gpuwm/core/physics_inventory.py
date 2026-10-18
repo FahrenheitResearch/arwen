@@ -22,6 +22,38 @@ from __future__ import annotations
 from gpuwm.config import (RunConfig, SASE_PBL_SCHEME, UW_PBL_SCHEME,
                           radiation_enabled)
 
+
+RADIATION_BOUNDARY_FLUXES = tuple(
+    side+suffix for side in ("sw","lw")
+    for suffix in ("upt","uptc","dnt","dntc","upb","upbc","dnb","dnbc"))
+
+# Registry.EM_COMMON:1565-1572, allocated by any_cu_used.
+CUMULUS_HISTORY_RATES = (
+    "rucuten", "rvcuten", "rthcuten", "rqvcuten", "rqrcuten",
+    "rqccuten", "rqscuten", "rqicuten")
+CUMULUS_HISTORY_SPECIES = {
+    "rqvcuten": "qv", "rqrcuten": "qr", "rqccuten": "qc",
+    "rqscuten": "qs", "rqicuten": "qi"}
+
+
+def radiation_boundary_flux_names(cfg):
+    """Boundary fluxes produced by the selected RRTMG-family radiation.
+
+    Selector 4 computes WRF's all-sky and clear-sky top/bottom fluxes on
+    both engines: the legacy RRTMG transcription as RRTMG_LWRAD/
+    RRTMG_SWRAD do, RTE+RRTMGP from its all-sky solve and a clear-sky solve
+    on the same gas optics.  Every other scheme computes none.
+    """
+    from gpuwm.config import (RRTMG_VARIANT_LEGACY, RRTMG_VARIANT_RTE_RRTMGP,
+                              radiation_scheme_ids)
+    if cfg.ra_rrtmg_variant not in (RRTMG_VARIANT_LEGACY,
+                                    RRTMG_VARIANT_RTE_RRTMGP):
+        return ()
+    lw,sw=radiation_scheme_ids(cfg)
+    sides = {side for side,selector in (("lw",lw),("sw",sw))
+             if int(selector)==4}
+    return tuple(name for name in RADIATION_BOUNDARY_FLUXES if name[:2] in sides)
+
 #: HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (cfg.hmix_k_diag): the (momentum,
 #: scalar) history names each horizontal mixing producer publishes under.
 #:
@@ -61,7 +93,8 @@ def hmix_k_diag_names(cfg: RunConfig) -> tuple[str, ...]:
 def physics_enabled(cfg: RunConfig) -> bool:
     """Whether any non-timesplit physics scheme is configured."""
     return bool(radiation_enabled(cfg) or cfg.sf_sfclay_physics
-                or cfg.sf_surface_physics or cfg.bl_pbl_physics
+                or cfg.sf_surface_physics or getattr(cfg, "sf_ocean_physics", 0)
+                or cfg.bl_pbl_physics
                 or cfg.cu_physics or getattr(cfg, "ifire", 0) == 2)
 
 
@@ -174,11 +207,75 @@ PBL_RQI_MICROPHYSICS = (2, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 30, 50, 106) + tup
 #: Microphysics producers with an output-due radar reflectivity carrier.
 REFL_10CM_MICROPHYSICS = (1, 2, 3, 4, 5, 6, 8, 9, 10, 16, 18, 24, 28, 50, 106) + tuple(
     _s.mp_id for _s in _NAMED_MP_SCHEMES.values())
+# Kessler has no stock microphysics reflectivity writer. The default
+# diagnostic remains available; strict forecast history retains the
+# initialized stock slot (module_mp_kessler.F, no REFL_10CM argument).
+WRF_INACTIVE_REFL_MICROPHYSICS = frozenset({1})
 
 
 #: The raw PBL fields needed to repeat mass coupling after a grid move.
 PBL_RAW_RATE_NAMES = ("du", "dv", "dtheta", "dqv", "dqc", "dqi")
 PBL_SHARED_FORCING = {"dtheta": "gf_rthblten", "dqv": "gf_rqvblten"}
+
+# surface_driver integrates the final land-surface flux once per due call,
+# with atmospheric DT rather than the longer land-surface integration DTBL.
+SURFACE_ENERGY_ACCUMULATORS = {"achfx": "hfx", "aclhf": "lh", "acgrdflx": "grdflx"}
+PBL_HISTORY_RATES = {"rublten": "du", "rvblten": "dv", "rthblten": "dtheta",
+                     "rqvblten": "dqv", "rqcblten": "dqc"}
+
+
+def history_tendency_rows() -> bool:
+    """Whether this process carries WRF's 3-D PBL and cumulus tendency rows.
+
+    RUBLTEN..RQCBLTEN (RQIBLTEN under MYNN) and the RxxCUTEN rates are WRF
+    Registry restart state, not default history; the exact chain carries them
+    so a strict (GPUWM_WRF_EXACT=1) wrfout can be compared word for word with a
+    recording that wrote them.  A default process allocates none of them.
+
+    THE BREAKAGE THIS PREVENTS (2.9.1 integration): carried in every process,
+    they added up to a dozen 3-D float32 planes per domain to the resident
+    envelope (+1.0 GB, 6.6 %, on the streamed-admission check case), and the
+    16 GB headline domain that fits resident in 2.9.0 no longer did.
+    """
+    from gpuwm.wrf_exact import ENABLED
+    return bool(ENABLED)
+
+
+def pbl_history_rates(cfg) -> dict[str, str]:
+    """The selected PBL producer's raw history rates (strict processes only,
+    see :func:`history_tendency_rows`; a default process gets ``{}``).
+
+    MYNN's wrapper assigns RQIBLTEN independently of whether a prognostic
+    ice scalar consumes it (module_pbl_driver.F:1682). Keep its actual
+    producer record on the same mass-coupling clock as the other rates.
+    """
+    if not history_tendency_rows():
+        return {}
+    rates = dict(PBL_HISTORY_RATES)
+    if int(getattr(cfg, "bl_pbl_physics", 0)) == 5:
+        rates["rqiblten"] = "dqi"
+    return rates
+SCM_SURFACE_FORCING_FIELDS = (
+    "hfx_force", "lh_force", "tsk_force", "hfx_force_tend",
+    "lh_force_tend", "tsk_force_tend")
+
+
+def scm_forcing_fields() -> tuple[str, ...]:
+    """The SCM surface forcing scalars this process carries.
+
+    HFX_FORCE and its siblings are WRF single-column-model controls with no
+    admitted producer; the exact chain carries them, held at their initial
+    or restored words, so a strict (GPUWM_WRF_EXACT=1) wrfout lists every
+    record a recording wrote.  A default process carries none of them.
+
+    THE BREAKAGE THIS PREVENTS (2.9.1 GPU shard leg at e3e6b7dae): carried
+    in every process, the six 0-d scalars reached consumers that admit only
+    gridded arrays, so default ensembles refused at launch ("driver/fields/
+    hfx_force has no admitted member-column shape"), prepared-store scatter
+    and nest relocation raised on shape (), and wrfout gained six records
+    2.9.0 never wrote.
+    """
+    return SCM_SURFACE_FORCING_FIELDS if history_tendency_rows() else ()
 
 
 def pbl_raw_rate_names(cfg: RunConfig) -> tuple[str, ...]:
@@ -678,6 +775,10 @@ __all__ = [
 #: through to whichever scheme happens to be wired.  ``_run_sfclay``
 #: additionally re-dispatches on the exact value internally, so the two
 #: MM5 spellings and MYNN cannot be confused with each other either.
+PBL_OPTIONAL_TENDENCIES = {901: ("rqr",)}
+PBL_ADVECTED_SCALARS = {901: (("tke_edmf", 0.2),)}
+PBL_SCALAR_NAMES = tuple(name for rows in PBL_ADVECTED_SCALARS.values() for name, _ in rows)
+
 PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
     "sf_sfclay_physics": {
         0: None,
@@ -692,6 +793,7 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
         5: "_run_sfclay",     # MYNN surface layer
         91: "_run_sfclay",    # classic MM5
     },
+    "sf_ocean_physics": {0: None, 1: "_run_surface_ocean"},
     "sf_surface_physics": {
         0: None,
         2: "_run_noah",       # Noah LSM
@@ -729,6 +831,7 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
         # SASE: not a WRF scheme and deliberately outside WRF's selector
         # namespace, so it can never collide with one WRF adds later.
         SASE_PBL_SCHEME: "_run_sase",
+        901: "_run_satmedmf",
     },
 }
 

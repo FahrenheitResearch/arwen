@@ -1,0 +1,85 @@
+{
+  "schema": "gpuwm-obs.radar-archives.v1",
+  "about": "Open (or key-gated) national radar volume archives outside the US and the OPERA feed. Each entry says where one site's volume for one time is and how it is wrapped; rw_odim chooses the decoder from the file's own bytes. Read by gpuwm/obs/radar_archives.py. Probed 2026-10-16.",
+  "archives": {
+    "jma-nict": {
+      "network": "JMA operational radars (Japan), NICT public mirror",
+      "format": "jma-grib2-tar",
+      "container": "file",
+      "urls": [
+        "https://pawr.nict.go.jp/jmadata/JMA-PolarCoordsRadar/{t:%Y}/{t:%m}/{t:%d}/Z__C_RJTD_{t:%Y%m%d%H%M%S}_RDR_JMAGPV_N5_grib2.tar",
+        "https://pawr.nict.go.jp/jmadata/JMA-PolarCoordsRadar/{t:%Y}/{t:%m}/{t:%d}/Z__C_RJTD_{t:%Y%m%d%H%M%S}_RDR_JMAGPV_N6_grib2.tar"
+      ],
+      "site_in_file": true,
+      "site_ids": "JMA station id (AKIT, MURO, ...) or number (47582 / RS47582); `rw_odim stations --file <tar>` lists them",
+      "cadence_s": 600,
+      "latency_s": 600,
+      "archive_start": "2017-02-01",
+      "access": "open",
+      "licence": "provenance open question (JMA data mirrored by NICT); fetched on demand, never redistributed in fixtures",
+      "notes": "One tar per 10 minutes holds all 20 stations: N5 reflectivity, N6 radial velocity. The archive has whole-day gaps (e.g. 2024-08-27..31 are empty); a missing time is a 404 and is reported as such."
+    },
+    "bom-nci": {
+      "network": "Bureau of Meteorology radars (Australia), NCI rq0 level_1 archive",
+      "format": "odim-h5",
+      "container": "zip-member",
+      "urls": [
+        "https://thredds.nci.org.au/thredds/fileServer/rq0/{site}/{t:%Y}/vol/{site}_{t:%Y%m%d}.pvol.zip"
+      ],
+      "member_time": [
+        {"regex": "_(\\d{8}_\\d{6})\\.pvol\\.h5$", "format": "%Y%m%d_%H%M%S"}
+      ],
+      "site_in_file": false,
+      "site_ids": "NCI rq0 numeric site id (2 = Melbourne, 54 = Sydney Kurnell, ...); https://thredds.nci.org.au/thredds/fileServer/rq0/radar_site_list.csv",
+      "cadence_s": 300,
+      "latency_s": 259200,
+      "latency_note": "NCI ingests one to three days behind real time; the newest day zip on 2026-10-16 was 2026-10-15",
+      "archive_start": "1993-01-01",
+      "access": "open",
+      "licence": "CC BY 4.0 (NCI rq0, doi:10.25914/508X-9A12)",
+      "notes": "A site-day zip is about 1 GB; only its central directory and the one member are read, by HTTP range requests."
+    },
+    "ideam-s3": {
+      "network": "IDEAM radars (Colombia), AWS open data",
+      "format": "iris-raw, cfradial1",
+      "container": "s3-listing",
+      "bucket": "https://s3-radaresideam.s3.amazonaws.com/",
+      "prefix": "l2_data/{t:%Y}/{t:%m}/{t:%d}/{site}/",
+      "key_time": [
+        {"regex": "^[A-Z]{3}(\\d{12})\\.RAW", "format": "%y%m%d%H%M%S"},
+        {"regex": "-(\\d{8}-\\d{6})-", "format": "%Y%m%d-%H%M%S"}
+      ],
+      "site_in_file": false,
+      "site_ids": "IDEAM site folder: Barrancabermeja, Bogota, Carimagua, Corozal, Munchique, Tablazo, santa_elena",
+      "cadence_s": 300,
+      "tolerance_s": 240,
+      "latency_s": 28800,
+      "archive_start": "2018-06-01",
+      "access": "open",
+      "licence": "CC BY 4.0 (AWS Open Data registry)",
+      "notes": "IRIS RAW for most sites (one file per task: e.g. Tablazo's RAWYSAT surveillance and RAWYSBR Doppler volume start together and are fetched together); CfRadial 1 (.nc / .nc.gz) for Bogota and santa_elena. Batches land 4-12 h late."
+    },
+    "kma-apihub": {
+      "network": "KMA radars (South Korea), API Hub raw volumes",
+      "format": "universal-format",
+      "container": "file",
+      "urls": [
+        "https://apihub.kma.go.kr/api/typ01/url/rdr_file_down.php?rdr=UF&stn={site}&qcd=0&tm={t:%Y%m%d%H%M}&authKey={auth}"
+      ],
+      "file_name": "KMA_{site}_{t:%Y%m%d%H%M}.uf",
+      "auth": {
+        "env": "GPUWM_KMA_AUTHKEY",
+        "param": "authKey",
+        "how": "create a free account at https://apihub.kma.go.kr, apply for the radar raw-data API (rdr_file_down.php, rdr=UF) on the radar data page, and put the issued authKey in this variable. Without it the API answers HTTP 401 ('not a valid auth key'), measured 2026-10-16."
+      },
+      "site_in_file": false,
+      "site_ids": "KMA three-letter radar code (KWK, BRI, GDK, ...)",
+      "cadence_s": 300,
+      "latency_s": null,
+      "archive_start": null,
+      "access": "key",
+      "licence": "KMA API Hub terms (account holder)",
+      "notes": "UF raw volumes; qcd=0 raw, qcd=1 quality-controlled."
+    }
+  }
+}

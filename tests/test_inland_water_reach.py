@@ -274,3 +274,34 @@ def test_a_whole_source_search_mask_off_the_mass_grid_is_refused():
         interpolate_era5_to_lambert(
             snapshot, grid, target_landmask=land, backend=_NumpyBackend(),
             inland_water_search=lakes[:-1])
+
+
+def test_wrf_compat_never_reads_the_lake_model_ice(monkeypatch):
+    """water_temperature_policy = "wrf_compat" reproduces stock WRF byte for
+    byte, and stock WRF's ungrib never reads ERA5's lake model; the 2.9.1
+    lake-ice cover must not reach it (the exclusion had no test).  Every
+    other policy maps it."""
+    from gpuwm.ingest import horiz
+
+    grid, land, lakes, statics, landsea = _case()
+    snapshot = _snapshot(landsea, START, 291.5)
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return None
+
+    monkeypatch.setattr(horiz, "map_lake_ice", spy)
+    compat = WaterTemperatureStatics.for_route(
+        route="the inland reach test", policy="wrf_compat",
+        landmask=land.astype(np.float64),
+        lu_index=np.where(land, 10, LAKE),
+        landuse_attrs={"ISLAKE": LAKE})
+    interpolate_era5_to_lambert(
+        snapshot, grid, target_landmask=land,
+        water_temperature_statics=compat, backend=_NumpyBackend())
+    assert calls == []
+    interpolate_era5_to_lambert(
+        snapshot, grid, target_landmask=land,
+        water_temperature_statics=statics, backend=_NumpyBackend())
+    assert calls == [1]

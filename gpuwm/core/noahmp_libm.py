@@ -143,6 +143,7 @@ __all__ = [
     "logf_array",
     "log10f",
     "expf",
+    "expf_array",
     "powf",
     "powf_array",
     "atanf",
@@ -537,6 +538,56 @@ def expf(x) -> np.float32:
     xd = float(value)
     z = _EXP2F_INVLN2_SCALED * xd
     return F(_exp2_core(z, _EXP2F_SHIFT, _EXP2F_POLY_SCALED, 0))
+
+
+def expf_array(x) -> np.ndarray:
+    """:func:`expf` over a NumPy array, the same bits element for element.
+
+    The main path of :func:`expf` evaluated in binary64 and integer array
+    arithmetic, operation for operation as :func:`expf` and
+    :func:`_exp2_core` evaluate it: each product and sum rounded once, and
+    NumPy's elementwise loops
+    never contract a multiply and an add into one rounding.  The two
+    saturating branches (overflow to +inf above 0x1.62e42ep6, underflow to
+    +0 below -0x1.9fe368p6) are applied as masks, exactly the C's tests;
+    infinities and NaN go through :func:`expf` itself.
+
+    Written for P3's rain-table generation (gpuwm/core/p3_tables.py), which
+    takes ``exp(-lamr*dia)`` three million times at start-up; NumPy's own
+    float32 ``exp`` is a different function there and moved the tables
+    (module_mp_p3.F:652-656).
+    """
+    value = np.ascontiguousarray(np.asarray(x, dtype=np.float32))
+    flat = value.reshape(-1)
+    out = np.empty(flat.shape, dtype=np.float32)
+    if flat.size == 0:
+        return out.reshape(value.shape)
+    finite = np.isfinite(flat)
+    over = finite & (flat > _asfloat(0x42B17218))
+    under = finite & (flat < -_asfloat(0x42CFF1B4))
+    core = finite & ~over & ~under
+    xd = flat[core].astype(np.float64)
+    z = _EXP2F_INVLN2_SCALED * xd
+    kd = z + _EXP2F_SHIFT                       # kd = xd + shift
+    ki = kd.view(np.uint64).copy()
+    kd = kd - _EXP2F_SHIFT                      # kd -= shift
+    r = z - kd
+    t = _EXP2F_TAB_U64[(ki & np.uint64(_EXP2F_N - 1)).astype(np.intp)]
+    t = t + (ki << np.uint64(52 - 5))           # sign_bias 0
+    sd = t.view(np.float64)
+    zz = _EXP2F_POLY_SCALED[0] * r
+    zz = zz + _EXP2F_POLY_SCALED[1]
+    r2 = r * r
+    y = _EXP2F_POLY_SCALED[2] * r
+    y = y + 1.0
+    zz = zz * r2
+    y = zz + y
+    out[core] = (y * sd).astype(np.float32)
+    out[over] = np.float32(np.inf)
+    out[under] = np.float32(0.0)
+    for position in np.flatnonzero(~finite):
+        out[position] = expf(flat[position])
+    return out.reshape(value.shape)
 
 
 def _powf_log2(ix: int) -> float:

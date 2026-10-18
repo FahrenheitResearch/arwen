@@ -66,17 +66,66 @@ def test_config_loader_names_ishmael_too():
 
 # ---- mp_tend_radar (operational fork radar latent heating) -----------------
 
-def test_radar_latent_heating_request_is_refused_not_run_unheated(tmp_path):
+# Replaces test_radar_latent_heating_request_is_refused_not_run_unheated
+# (e46cdd44a): mp_tend_radar = 1 is now applied on the WRF-input door, so the
+# refusal holds only where the input carries no tendency (GRIB, met_em); the
+# application and the 0-or-1 rule are the two tests after this one.
+def test_radar_latent_heating_without_a_tendency_is_refused(tmp_path):
+    # Over GRIB or met_em input there is no cloud analysis, so no tendency:
+    # wrf.exe would read zero-filled slots and remove all microphysics
+    # heating.  Refused, naming the breakage and both ways through.
     inp = INPUT_TEXT.replace("&physics\n", "&physics\n mp_tend_radar = 1,\n")
     with pytest.raises(NamelistRefusal) as caught:
         _import(tmp_path, inp)
     message = str(caught.value)
     assert message.startswith("&physics mp_tend_radar = [1]")
+    assert "radar latent heating requested on d01" in message
     assert "RAD_TTEN_DFI" in message
-    # The breakage and the way through are both named.
-    assert "observed convection would grow from the analysis alone" in message
+    assert "storms would get no latent heating anywhere" in message
+    assert "gpuwm run --wrfinput" in message
     assert "[radar_heating]" in message
     assert caught.value.keys == (("physics", "mp_tend_radar"),)
+
+
+def test_radar_latent_heating_applies_where_the_wrf_input_carries_it(tmp_path):
+    # The WRF-input door passes the domains whose input carries
+    # RAD_TTEN_DFI_1..4 and TTEN_TIMES; there the request is applied.
+    inp = INPUT_TEXT.replace("&physics\n", "&physics\n mp_tend_radar = 1,\n")
+    _, report = import_namelists(*_pair(tmp_path, wps=WPS_TEXT, inp=inp),
+                                 wrfinput_radar_tendency_domains=(1, 2))
+    fixed = {(f.section, f.key): f for f in report.fixed}
+    row = fixed[("physics", "mp_tend_radar")]
+    assert row.fixed_value == 1
+    assert "radar latent heating on d01, d02" in row.reason
+    assert "mp_tend_lim is the namelist's" in row.reason
+    assert ("physics", "mp_tend_radar") not in {
+        (d.section, d.key) for d in report.dropped}
+
+
+def test_radar_latent_heating_must_be_zero_or_one(tmp_path):
+    inp = INPUT_TEXT.replace("&physics\n", "&physics\n mp_tend_radar = 2,\n")
+    with pytest.raises(NamelistRefusal) as caught:
+        import_namelists(*_pair(tmp_path, wps=WPS_TEXT, inp=inp),
+                         wrfinput_radar_tendency_domains=(1, 2))
+    assert "must be 0 or 1" in str(caught.value)
+
+
+def test_a_per_domain_off_list_is_inert_as_in_2_9_0(tmp_path):
+    # Breakage (2.9.1 verify): "mp_tend_radar = 0, 0", the usual nested
+    # spelling of "off", was refused as "must be one value"; 2.9.0 read it
+    # as inert.  A uniform list says what the single entry says.
+    inp = INPUT_TEXT.replace("&physics\n", "&physics\n mp_tend_radar = 0, 0,\n")
+    _, report = _import(tmp_path, inp)
+    dropped = {(d.section, d.key): d.reason for d in report.dropped}
+    assert "inert" in dropped[("physics", "mp_tend_radar")]
+
+
+def test_a_list_that_differs_by_domain_is_refused_with_its_reason(tmp_path):
+    inp = INPUT_TEXT.replace("&physics\n", "&physics\n mp_tend_radar = 1, 0,\n")
+    with pytest.raises(NamelistRefusal) as caught:
+        import_namelists(*_pair(tmp_path, wps=WPS_TEXT, inp=inp),
+                         wrfinput_radar_tendency_domains=(1, 2))
+    assert "differs by domain" in str(caught.value)
 
 
 def test_radar_latent_heating_off_is_inert(tmp_path):
@@ -347,4 +396,8 @@ def test_unconsumed_stochastic_selector_names_the_lost_operation(
     assert operation in message
     assert "no runtime consumer" in message
     assert "calibrated" not in message
-    assert "would remain unperturbed" in message
+    # rand_perturb feeds no forecast field: its refusal names the missing
+    # history field instead (gpuwm/ensemble_admission.py).
+    assert ("only the RAND_PERT history and restart field would be missing"
+            if line.startswith("rand_perturb") else
+            "would remain unperturbed") in message

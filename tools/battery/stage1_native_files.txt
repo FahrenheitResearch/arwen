@@ -141,3 +141,6 @@ tests/test_render_olr_engine.py # rw_wrfbatch draws --products olr from a histor
 
 tests/test_k_distribution_receipt_native.py # rw_netcdf decodes the RRTMGP tables to check the packaged size receipt.
 tests/test_go_dry_run_geography.py # the gfs --dry-run plans through the native preparation chain before its geography check.
+tests/test_analysis_bundle.py # rw_netcdf and netcdf-writer read, patch and write the bundle's classic files.
+tests/test_analysis_boundary.py # rw_netcdf and netcdf-writer read and patch the boundary file.
+tests/test_analysis_door.py # rw_netcdf and netcdf-writer read the bundle and write the door's derived files.

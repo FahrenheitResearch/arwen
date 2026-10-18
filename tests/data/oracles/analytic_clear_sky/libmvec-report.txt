@@ -1,0 +1,13 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# C library: ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# -O0 (THE REFERENCE) math symbols of the extracted routines:
+U asinf
+U cosf
+U sinf
+# -O2 -ftree-vectorize -funroll-loops (WRF's GNU phys/ flags):
+U _ZGVbN4v_cosf
+U _ZGVbN4v_sinf
+U asinf
+U cosf
+U sincosf
+U sinf

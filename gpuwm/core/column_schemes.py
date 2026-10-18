@@ -38,6 +38,11 @@ class ColumnSchemeRow:
     background_radii: tuple[float, float, float] = (2.49, 4.99, 9.99)
     #: Fixed-template routes with measured whole-composition replay evidence.
     qualified_fixed_routes: tuple[str, ...] = ()
+    #: Correct-mode finding WB5 (gpuwm/correct_mode.py): the RunConfig key
+    #: that turns on the unit's conservative surface booking and the macro
+    #: that compiles it.  Empty when the unit has no such arm.
+    conservative_surface_key: str = ""
+    conservative_surface_define: str = ""
 
 
 def _wsm5_row() -> ColumnSchemeRow:
@@ -55,7 +60,9 @@ def _wsm5_row() -> ColumnSchemeRow:
         level_tier=wsm5_level_tier, init_words=wsm5_init_words,
         radar_words=wsm5_radar_words, qualified_fixed_routes=(
             "tools.prepared_single_domain_forecast",
-            "tools.prepared_domain_tree_forecast"))
+            "tools.prepared_domain_tree_forecast"),
+        conservative_surface_key="wsm5_conservative_surface",
+        conservative_surface_define="WSM5_PLM_SURFACE")
 
 
 #: ``mp_physics -> row`` for every scheme admitted this way.  WSM5

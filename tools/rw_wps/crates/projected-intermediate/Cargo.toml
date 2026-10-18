@@ -1,0 +1,17 @@
+[package]
+name = "projected-intermediate"
+build = "../mapped-engine/build.rs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "rw_projected_intermediate"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2.workspace = true

@@ -101,3 +101,50 @@ def update_solar_albedo_cuda(fields: Mapping, coszen, *, initialize=False):
     kernel(((n + 255) // 256,), (256,),
            (np.int64(n), np.int32(bool(initialize)),
             *(a.reshape(-1) for a in arrays)))
+
+
+def solar_albedo_radiation_call(fields: Mapping, latitude_deg, longitude_deg,
+                                julian, xtime, gmt, radt_minutes, *,
+                                initialize=False):
+    """The fork's whole ALBSOL step at one radiation call, on the device.
+
+    NOAA-EMC/HRRR v4.1.21 ``module_radiation_driver.F`` runs radconst
+    (:1013-1014), then calc_coszen at the interval midpoint ``xtime +
+    radt*0.5`` (:1032-1034), then the ALBSOL block (:1038-1063).  The cosine
+    is the swint unit's ``swint_coszen_loc``, which holds that radconst and
+    calc_coszen statement for statement with WOOF's own float32 sinf, cosf
+    and asinf and no [-1, 1] clamp (this generation stores the value as it
+    comes), so the albedo reads the fork's COSZEN word for word.  Before
+    this function the step took the cosine from NumPy's float32 sin, cos and
+    arcsin on the host, and ALBSOL missed the fork's Fortran on sunlit land
+    (tools/fork_forms_oracle/albsol_oracle.py).
+
+    ``julian``, ``xtime`` (minutes) and ``gmt`` are the calendar scalars
+    (gpuwm.core.swint.calendar_scalars); ``latitude_deg``/``longitude_deg``
+    are float32 device arrays of the albedo fields' shape.  Returns the
+    device COSZEN (the albedo fields' shape).
+    """
+    import cupy as cp
+    from gpuwm.core.kernels import load_module
+    from gpuwm.core.rrtmg_legacy import _DEGRAD, _DPD
+
+    shape = fields["albsol"].shape
+    lat = cp.ascontiguousarray(cp.asarray(latitude_deg, dtype=cp.float32))
+    lon = cp.ascontiguousarray(cp.asarray(longitude_deg, dtype=cp.float32))
+    if lat.size != fields["albsol"].size or lon.size != lat.size:
+        raise ValueError(
+            f"solar albedo latitude/longitude must have {fields['albsol'].size} "
+            f"points, got {lat.size} and {lon.size}")
+    n = int(lat.size)
+    cosine = cp.empty(shape, dtype=cp.float32)
+    if n:
+        # xtime + radt*0.5, one float32 multiply and one add, as the Fortran.
+        middle = F(F(xtime) + F(F(radt_minutes) * F(0.5)))
+        load_module("swint").get_function("swint_coszen_loc")(
+            ((n + 255) // 256,), (256,),
+            (np.int64(n), lat.reshape(-1), lon.reshape(-1), F(julian), middle,
+             F(gmt), F(_DEGRAD), F(_DPD),
+             np.int32(0),  # solar_480 = 0: WRF 4.6.1's radconst
+             cosine.reshape(-1)))
+    update_solar_albedo_cuda(fields, cosine, initialize=initialize)
+    return cosine

@@ -86,6 +86,57 @@ class MasptRecorder:
         the one-shot shock happens before any step) is measured too."""
         self._before_insertion = self._surface(state)
 
+    def prime(self, state) -> None:
+        """Take the surface the first step starts from (and, after
+        :meth:`before_insertion`, the insertion's jump), once."""
+        if self._prev_p is not None:
+            return
+        self._prev_p, self._prev_mu, self._prev_t = self._surface(state)
+        if self._before_insertion is not None:
+            p0, mu0, t0 = self._before_insertion
+            xp0 = np
+            if hasattr(p0, "__cuda_array_interface__"):
+                import cupy as xp0  # noqa: N813
+            self._insertion = xp0.stack([
+                xp0.abs(self._prev_p - p0).mean(),
+                xp0.abs(self._prev_mu - mu0).mean(),
+                xp0.abs(self._prev_t - t0).mean(),
+                xp0.abs(self._prev_t - t0).max()])
+            self._before_insertion = None
+
+    def record(self, state, before: float, after: float) -> None:
+        """This step's tendency, from the surface :meth:`prime` (or the
+        previous record) left to ``state``'s, over ``[before, after]``."""
+        p_now, mu_now, t_now = self._surface(state)
+        dt = after - before
+        xp = np
+        if hasattr(p_now, "__cuda_array_interface__"):
+            import cupy as xp  # noqa: N813
+        self._device.append(xp.stack([
+            xp.abs(p_now - self._prev_p).mean() / dt,
+            xp.abs(mu_now - self._prev_mu).mean() / dt,
+            xp.abs(t_now - self._prev_t).mean() / dt]))
+        self._times.append(after)
+        self._prev_p, self._prev_mu, self._prev_t = p_now, mu_now, t_now
+
+    def observer(self, state, *, start_seconds: float | None = None):
+        """A post-step observer of ``state`` for an executor that reports
+        each step's end time but hands no step function to wrap (the
+        domain-tree runner's ``step_observer`` seam): ``observe(after)``.
+        :meth:`prime` must have been called on the state the first step
+        starts from."""
+        last = [float(self.start if start_seconds is None
+                      else start_seconds)]
+
+        def observe(after: float) -> None:
+            before = last[0]
+            last[0] = float(after)
+            if before >= self.start + self.horizon or self._prev_p is None:
+                return
+            self.record(state, before, float(after))
+
+        return observe
+
     def stepper(self, step):
         """``step`` wrapped: the step, then this step's tendency."""
 
@@ -93,34 +144,12 @@ class MasptRecorder:
             before = float(state.elapsed_seconds)
             if before >= self.start + self.horizon:
                 return step(state, run, **kwargs)
-            if self._prev_p is None:
-                self._prev_p, self._prev_mu, self._prev_t =                     self._surface(state)
-                if self._before_insertion is not None:
-                    p0, mu0, t0 = self._before_insertion
-                    xp0 = np
-                    if hasattr(p0, "__cuda_array_interface__"):
-                        import cupy as xp0  # noqa: N813
-                    self._insertion = xp0.stack([
-                        xp0.abs(self._prev_p - p0).mean(),
-                        xp0.abs(self._prev_mu - mu0).mean(),
-                        xp0.abs(self._prev_t - t0).mean(),
-                        xp0.abs(self._prev_t - t0).max()])
-                    self._before_insertion = None
+            self.prime(state)
             result = step(state, run, **kwargs)
             after = float(state.elapsed_seconds)
             if after <= before:
                 after = before + float(getattr(run, "dt"))
-            p_now, mu_now, t_now = self._surface(state)
-            dt = after - before
-            xp = np
-            if hasattr(p_now, "__cuda_array_interface__"):
-                import cupy as xp  # noqa: N813
-            self._device.append(xp.stack([
-                xp.abs(p_now - self._prev_p).mean() / dt,
-                xp.abs(mu_now - self._prev_mu).mean() / dt,
-                xp.abs(t_now - self._prev_t).mean() / dt]))
-            self._times.append(after)
-            self._prev_p, self._prev_mu, self._prev_t = p_now, mu_now, t_now
+            self.record(state, before, after)
             return result
 
         return maspt_step

@@ -113,14 +113,121 @@ def test_materialized_config_and_runplan_pass_existing_loaders(tmp_path):
     assert "cycle" not in generated["run_options"]
 
 
-def test_unbound_prepared_route_cannot_hold_cards_during_preparation(tmp_path):
+def test_unbound_prepared_route_prepares_on_a_zero_card_stage_first(tmp_path):
+    """No prepared_root: a CPU prepare stage runs ahead, never the forecast's cards."""
     bound, _, _ = prepared(tmp_path)
-    job = deepcopy(bound["jobs"][0])
+    job = deepcopy(bound["rows"][0]["materialization"])
+    job["recipe_reference"] = "configs/recipes/hrrr_v4_gsd41.toml"
     planned = reservations((12,))
     planned["jobs"] = [job]
-    with pytest.raises(ValueError, match="suite_prepared_root_missing.*holding queued forecast cards"):
-        bind_plan(planned, deployment(base_config="base.toml", source_receipt="prepared.json",
-            source_bindings={"public": {"selected.fetch.source": "rap-native"}}))
+    planned["boxes"][0]["launcher_prefix"] = ["test-queue"]
+    bound = bind_plan(planned)
+    rows = {r["id"]: r for r in bound["rows"]}
+    assert set(rows) == {"forecast", "forecast.prepare"}
+    stage, forecast = row_at(rows["forecast.prepare"], CYCLE), row_at(rows["forecast"], CYCLE)
+    assert stage["cards"] == 0 and stage["card_ids"] == [] and stage["env"] == {}
+    assert stage["argv"][1:3] == ["-m", "gpuwm.nwpsuite.prepare"]
+    assert forecast["dependencies"] == ["forecast.prepare"] and forecast["auto_prepared"]
+    assert forecast["source_receipt"].endswith("forecast/{cycle_compact}/suite-prepared.json")
+    assert bound["execution_ready"]
+
+
+def test_prepare_stage_derives_cycle_config_and_forecast_binds_its_publication(tmp_path):
+    from gpuwm.nwpsuite.prepare import publish
+    bound, base, _ = prepared(tmp_path)
+    job = deepcopy(bound["rows"][0]["materialization"])
+    job["recipe_reference"] = "configs/recipes/hrrr_v4_gsd41.toml"
+    planned = reservations((12,))
+    planned["jobs"] = [job]
+    bound = bind_plan(planned, deployment(base_config=str(base),
+                                          source_bindings={"public": {"selected.fetch.source": "hrrr"}}))
+    bound["suite_hash"] = "suite"
+    rows = {r["id"]: r for r in bound["rows"]}
+    runner = SuiteRunner(bound, tmp_path / "state")
+    stage = row_at(rows["forecast.prepare"], CYCLE)
+    context = materialize(stage, runner.context(stage, CYCLE, 0), bound)
+    config = tomllib.loads(Path(context["derived_config"]).read_text())
+    assert config["fetch"]["cycle"] == "2026-10-03T12" and config["fetch"]["source"] == "hrrr"
+    assert config["experiment"]["run_seconds"] == 10800
+    from gpuwm.nwpsuite.run import expand
+    argv = expand(stage["argv"], context)
+    receipt = Path(argv[argv.index("--receipt") + 1])
+    forecast = row_at(rows["forecast"], CYCLE)
+    with pytest.raises(SourcePending):
+        materialize(forecast, runner.context(forecast, CYCLE, 0), bound)
+    bundle = tmp_path / "bundle"; bundle.mkdir()
+    published = bundle / "experiment.toml"; published.write_bytes(Path(context["derived_config"]).read_bytes())
+    namelist = bundle / "namelist.wps"; namelist.write_text("&share\n/\n")
+    publish(dict(status="PREPARED", prepared_root=str(bundle), experiment_config=str(published),
+                 wps_namelist=str(namelist)), receipt=receipt, suite_sha256="resolved", row="forecast",
+            cycle=CYCLE, source="public", config=context["derived_config"])
+    bound_context = materialize(forecast, runner.context(forecast, CYCLE, 0), bound)
+    generated = json.loads(Path(bound_context["artifacts.forecast.12.0.run_plan"]).read_text())
+    assert generated["config"]["path"] == str(published)
+    assert generated["run_options"]["prepared_root"] == str(bundle.resolve())
+    assert generated["run_options"]["wps_namelist"] == str(namelist.resolve())
+    assert "cycle" not in generated["run_options"]
+    namelist.write_text("&share\n changed\n/\n")
+    with pytest.raises(ValueError, match="changed after preparation"):
+        materialize(forecast, runner.context(forecast, CYCLE, 0), bound)
+
+
+def test_go_door_forecast_binds_the_prepared_bundle_not_a_cycle(tmp_path):
+    bound, base, _ = prepared(tmp_path)
+    job = deepcopy(bound["rows"][0]["materialization"])
+    job.update(recipe_reference="configs/recipes/hrrr_v4_gsd41.toml",
+               argv=["gpuwm", "go", "{derived_config}", "--cycle", "{cycle}", "--devices", "1"],
+               bindings=["selected.fetch.source"])
+    planned = reservations((12,))
+    planned["jobs"] = [job]
+    bound = bind_plan(planned)
+    forecast = row_at(next(r for r in bound["rows"] if r["id"] == "forecast"), CYCLE)
+    assert forecast["argv"] == ["gpuwm", "go", "{derived_config}", "--prepared-root", "{prepared.root}",
+                                "--wps-namelist", "{prepared.wps_namelist}", "--devices", "1",
+                                "--outdir", "{out}"]
+    stage = row_at(next(r for r in bound["rows"] if r["id"] == "forecast.prepare"), CYCLE)
+    assert stage["argv"][-1] == "--go-forecast"
+
+
+def test_boundary_ladder_the_go_door_cannot_honour_is_named_before_preparing(tmp_path):
+    bound, _, _ = prepared(tmp_path)
+    job = deepcopy(bound["rows"][0]["materialization"])
+    job["recipe_reference"] = "configs/recipes/hrrr_v4_gsd41.toml"
+    job["source_selection"] = dict(job["source_selection"], lbc=["rap"])
+    planned = reservations((12,))
+    planned["jobs"] = [job]
+    with pytest.raises(ValueError, match=r"suite_prepared_lbc: forecast: .*\(public\).*\['rap'\]"):
+        bind_plan(planned)
+
+
+def test_unbound_suite_names_every_row_once(tmp_path):
+    planned = reservations((0, 6))
+    other = deepcopy(planned["jobs"][0]); other.update(id="hex:00:forecast:0", row="hex", argv=["door", "{prepared.mesh}"])
+    planned["jobs"].append(other)
+    planned["rows"].append(dict(id="hex", box="local", settings=other["settings"]))
+    planned["jobs"][0]["argv"] = ["door", "{prepared.init}"]
+    planned["jobs"][1]["argv"] = ["door", "{prepared.init}"]
+    with pytest.raises(ValueError) as refused:
+        bind_plan(planned)
+    said = str(refused.value).split(" | ")
+    assert said == ["suite_execution_unbound: forecast: ['prepared.init']",
+                    "suite_execution_unbound: hex: ['prepared.mesh']"]
+
+
+def test_prepare_door_publishes_only_a_prepared_report(tmp_path):
+    from gpuwm.nwpsuite.prepare import prepared_line, publish
+    assert prepared_line("go: fetch\n{\"status\": \"FAILED\"}\n") is None
+    line = prepared_line('go: prepare\n{"status": "PREPARED", "prepared_root": "/b"}\n')
+    assert line["prepared_root"] == "/b"
+    config = tmp_path / "c.toml"; config.write_text('[fetch]\nsource = "hrrr"\n')
+    with pytest.raises(ValueError, match="no WPS namelist"):
+        publish(dict(status="PREPARED", prepared_root=str(tmp_path), experiment_config=str(config)),
+                receipt=tmp_path / "r.json", suite_sha256="s", row="r", cycle=CYCLE, source="hrrr",
+                config=config, go_forecast=True)
+    publish(dict(status="PREPARED", prepared_root=str(tmp_path), experiment_config=str(config)),
+            receipt=tmp_path / "r.json", suite_sha256="s", row="r", cycle=CYCLE, source="hrrr", config=config)
+    receipt = json.loads((tmp_path / "r.json").read_text())
+    assert receipt["lbc_source"] == "hrrr" and receipt["files"][0]["path"] == str(config.resolve())
 
 
 @pytest.mark.parametrize("change,error", [("hash", "changed after preparation"), ("cycle", "receipt differs")])
@@ -264,3 +371,13 @@ def test_actual_toml_planner_connects_to_runtime_without_gpu_launch(tmp_path):
     assert result.returncode in (1, 75), result.stderr
     from gpuwm.nwpsuite.ledger import SuiteLedger
     assert not any(e.get("phase") == "launch_intent" for e in SuiteLedger(state).settle())
+
+
+def test_hyphenated_row_artifacts_expand_in_the_launched_command():
+    # Every shipped row id has a hyphen; the run-plan argv token stayed literal.
+    from gpuwm.nwpsuite.run import expand
+    context = {"artifacts.cam-det.12.0.run_plan": "/state/run-plan.json"}
+    assert expand(["gpuwm", "run-plan", "{artifacts.cam-det.12.0.run_plan}"], context)[2] == "/state/run-plan.json"
+    with pytest.raises(ValueError, match="suite_binding_missing: artifacts.cam-det.12.0.run_plan"):
+        expand(["{artifacts.cam-det.12.0.run_plan}"], {})
+    assert expand(['{"a": 1}', "f{hour:02d}"], {}) == ['{"a": 1}', "f{hour:02d}"]

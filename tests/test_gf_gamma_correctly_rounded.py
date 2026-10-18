@@ -288,10 +288,27 @@ def test_the_earlier_gamma_symbols_are_absent_from_the_shipped_kernels(symbol):
         if not fn.endswith((".cu", ".cuh")):
             continue
         text = open(os.path.join(kdir, fn), encoding="utf-8").read()
+        if fn in _STRICT_ONLY_UNITS:
+            # The strict reproduction arm carries the legacy sequence on
+            # purpose, and only there: the whole unit must sit under the
+            # strict guard, or the allowance would hide a default-path return.
+            body = [line for line in text.splitlines()
+                    if line.strip() and not line.lstrip().startswith("//")]
+            assert body[0].strip() == "#ifdef GPUWM_WRF_EXACT", (fn, body[0])
+            assert body[-1].strip() == "#endif", (fn, body[-1])
+            continue
         for i, line in enumerate(text.splitlines(), 1):
             if symbol in line and not line.lstrip().startswith("//"):
                 hits.append(f"{fn}:{i}")
     assert not hits, f"{symbol} still present as code at {hits}"
+
+
+#: Units compiled only under GPUWM_WRF_EXACT (strict mode, the proof-of-port
+#: arm): gf_wrf_normalization.cuh (da3c7379e86) restores WOOF's own legacy
+#: float32 GF normalization sequence so strict GF matches its captured
+#: words.  The default build never compiles it; the loop above proves the
+#: unit is guarded end to end before excusing it.
+_STRICT_ONLY_UNITS = frozenset({"gf_wrf_normalization.cuh"})
 
 
 def test_the_known_delta_note_exists_and_the_kernel_cites_it():

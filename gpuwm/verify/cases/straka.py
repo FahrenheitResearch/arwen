@@ -42,9 +42,21 @@ GATES = {
 def default_config() -> RunConfig:
     """Published Straka setup: 51.2 km x 6.4 km at dx = dz ~ 100 m,
     x in [-25.6, 25.6] km via domain-centered cell coordinates."""
-    return RunConfig(nx=512, ny=1, nz=64, dx=100.0, dy=100.0, ztop=6400.0,
+    return _PublishedConfig(nx=512, ny=1, nz=64, dx=100.0, dy=100.0, ztop=6400.0,
                      dt=0.5, run_seconds=900.0, khdif=75.0, kvdif=75.0,
                      case="straka")
+
+
+class _PublishedConfig(RunConfig):
+    """The benchmark prescribes the same diffusivity for every field.
+
+    WRF's production constant-K closure uses Pr = 1/3, which would turn
+    the prescribed heat diffusivity of 75 into 225 m^2/s.  This benchmark
+    uses Pr = 1 while ordinary RunConfig keeps WRF's fixed constant and
+    has no configurable Prandtl key.
+    """
+
+    constant_k_prandtl = 1.0
 
 
 def sounding(z) -> np.ndarray:

@@ -240,7 +240,7 @@ _NATIVE_CONFIG_TABLES = ("experiment", "shared", "projection", "domain")
 def _refuse_incompatible_config(path: Path, error: Exception) -> str:
     """One sentence: what is incompatible, and which config route works.
 
-    A node-8 pilot pointed this front door at the wizard's default TOML
+    A test host H pilot pointed this front door at the wizard's default TOML
     and got a raw traceback out of `experiment.build_experiment`
     ("unknown table(s)/top-level key(s) ['case_data']").  The gate is
     right -- `[case_data]` declares the ERA5 config-driven run path, and
@@ -306,7 +306,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(json.dumps(proof, indent=2, sort_keys=True, allow_nan=False))
     # Parity with the GFS front door: a complete, hash-bound run command,
     # on stderr so the proof document on stdout stays machine-readable.
-    # The 20CRv3 route ran end to end for a node-8 pilot and then said
+    # The 20CRv3 route ran end to end for a test host H pilot and then said
     # nothing at all about how to run the forecast.
     from gpuwm.gfs_direct import prepared_forecast_next_command
 

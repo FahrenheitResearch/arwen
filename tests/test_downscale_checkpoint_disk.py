@@ -141,6 +141,17 @@ def test_the_retention_is_the_flag_then_the_run_plan_knob_then_one(monkeypatch):
         child_checkpoint_retention(-1)
 
 
+#: Bytes per history frame of the measured long child under the inventory
+#: it was measured with (2.9.1: 1,278,768,100) and under today's default
+#: inventory, both from gpuwm.io.history_layout.produced_history_shapes for
+#: that child.  The 2.9.1 intake pinned the chain's first inventory
+#: (1,807,748,376); b6ea150a040 then made the chain's 3-D tendency rows and
+#: strict-only history strict-only, and 2.9.2's default RTE+RRTMGP
+#: radiation rows (COSZEN, the 16 top/bottom fluxes and their AC* twins,
+#: 33 planes) joined: 1,549,359,360 today.
+CHAIN_HISTORY_GROWTH = 1_549_359_360 / 1_278_768_100
+
+
 def _the_long_child():
     """The measured child: 250 m, 552x552x49, 11 h, hourly history and checkpoints.
 
@@ -168,7 +179,8 @@ def test_the_projection_prices_the_long_child_on_its_own_clock(tmp_path):
     # 2.59 GB and 12 frames of 1.2 GB.  History is the writer's inventory for
     # the child's own physics (A190), held within 10% above the measurement.
     assert every["checkpoint_bytes"] >= 11 * 2.59e9
-    assert 12 * 1.2e9 <= every["history_bytes"] <= 12 * 1.2e9 * 1.10
+    measured = 12 * 1.2e9 * CHAIN_HISTORY_GROWTH
+    assert measured <= every["history_bytes"] <= measured * 1.10
 
     one = child_disk_projection(cfg, cadence, keep_checkpoints=1,
                                 render_products="all", outdir=tmp_path)
@@ -268,6 +280,17 @@ def _runs_record(name: str) -> dict:
                        / name / "sizes.json").read_text(encoding="utf-8"))
 
 
+def _pictures_per_frame_now(run: dict) -> int:
+    """Pictures a frame the projection prices for this run's product list
+    today: the renderer's catalog where it is installed, else the measured
+    table's groups (the same choice disk_budget._picture_projection makes)."""
+    selected = disk_budget._picture_products(run["render_products"], run_hours=run["run_hours"])
+    if selected is None:
+        selected = disk_budget._picture_products(
+            run["render_products"], run_hours=run["run_hours"], measured=True)
+    return sum(row[2] for row in selected.values())
+
+
 def test_the_picture_price_covers_every_frame_it_was_read_from():
     """Every measured frame is inside its projection, and the price is the measurement's, not a guess."""
     record = _runs_record("bytes-per-picture")
@@ -277,7 +300,14 @@ def test_the_picture_price_covers_every_frame_it_was_read_from():
             *run["columns"], run["run_hours"] * 3600,
             run["history_interval_s"], run["render_products"])
         ceiling = 1.6 if run["mean_bytes_per_picture"] == largest_mean else 2.5
-        assert run["picture_bytes"] <= projected <= ceiling * run["picture_bytes"], name
+        # The price is per picture: a product group that has grown since the
+        # measurement (8688072afe5 added the nine winter products to the
+        # table, so "all" prices 83 pictures a frame where the measured run
+        # rendered 74) is priced at today's count against the measured bytes
+        # per picture, not at the old frame total.
+        counted = _pictures_per_frame_now(run)
+        growth = max(1.0, counted / run["projected_pictures_per_frame"])
+        assert run["picture_bytes"] <= projected <= ceiling * growth * run["picture_bytes"], name
         count = run["projected_pictures_per_frame"]
         assert run["frames"] == len(run["per_frame"]) > 1, name
         previous = 0
@@ -317,7 +347,10 @@ def test_fewer_products_shrink_the_figure_and_a_child_that_fits_is_admitted(
     # `none`, so this three-product child was priced at 33.7 GiB of
     # pictures beside 14.8 GiB of history and refused on a 20 GiB disk it
     # fits on, and trimming the list gave the same figure back.
-    monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 20 * GIB)
+    # 24 GiB since the exact-chain history rows (CHAIN_HISTORY_GROWTH): the
+    # child writes about 16.5 GiB of history, and the flat price would still
+    # be refused (33.7 GiB of pictures alone).
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 24 * GIB)
     cfg = _a_short_child_at_minute_history()
     cadence = child_cadence(cfg)
     assert child_history_frames(cadence) == 241
@@ -335,7 +368,7 @@ def test_fewer_products_shrink_the_figure_and_a_child_that_fits_is_admitted(
     # Bounded below by the measured long child's bytes per cell (1.2 GB a
     # frame over 552x552x49): a smaller grid carries relatively more face,
     # surface and header bytes, never fewer per cell.
-    measured_per_cell = 1.2e9 / (552 * 552 * 49)
+    measured_per_cell = 1.2e9 * CHAIN_HISTORY_GROWTH / (552 * 552 * 49)
     floor = 241 * 120 * 120 * 49 * measured_per_cell
     assert floor <= three["history_bytes"] <= 1.15 * floor
     assert three["picture_bytes"] < 1 * GIB

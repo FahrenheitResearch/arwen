@@ -1913,7 +1913,14 @@ def test_a_config_load_refusal_capsule_carries_the_refusal_sentence(
     assert headline.startswith("ValueError: ")
     # The sentence the user can act on, verbatim from the loader.
     assert "must carry at least one [[domain]] table" in headline
-    assert str(refused.value).splitlines()[0].rstrip(".") in headline
+    # Verbatim around the config path: a deep temporary root may shorten
+    # the path itself (to its last components), never the sentence.
+    line = str(refused.value).splitlines()[0].rstrip(".")
+    before, found, after = line.partition(str(config))
+    assert found, line
+    assert headline.startswith(f"ValueError: {before}")
+    assert headline.endswith(after)
+    assert f"{config.parent.name}{os.sep}{config.name}" in headline
 
     from gpuwm.explain import EXPLAIN_MARK
     assert EXPLAIN_MARK not in headline
@@ -2016,6 +2023,29 @@ def test_the_headline_drops_the_explain_half_and_caps_the_length():
     long = supervisor._capsule_headline(
         {"exception": {"type": "RuntimeError", "message": "x" * 4000}})
     assert len(long) < 300 and long.endswith("...")
+
+
+@pytest.mark.parametrize("root", [
+    "/srv/ci/" + "/".join(["deep-temporary-root"] * 12),
+    "D:\\ci\\" + "\\".join(["deep-temporary-root"] * 12),
+])
+def test_a_deep_config_path_never_cuts_the_refusal_sentence(root):
+    """The sentence after the path is what the user acts on.
+
+    A CI runner's 120-character temporary root pushed the loader's
+    "[[domain]] table (array of tables)" past the cap, which cut it
+    (public CI rehearsal routes B and C, 2026-10-15).
+    """
+    sep = "\\" if "\\" in root else "/"
+    path = f"{root}{sep}case-a{sep}experiment.toml"
+    sentence = ("must carry at least one [[domain]] table (array of "
+                "tables)")
+    headline = supervisor._capsule_headline({"exception": {
+        "type": "ValueError",
+        "message": f"experiment config {path} {sentence}."}})
+    assert len(path) > supervisor._CAPSULE_HEADLINE_CAP
+    assert headline == (f"ValueError: experiment config "
+                        f"...{sep}case-a{sep}experiment.toml {sentence}")
 
 
 def test_worker_failure_capsule_embeds_the_exact_config_and_small_text_inputs(

@@ -135,6 +135,9 @@ def main() -> None:
     action.add_argument("--rebuild", action="store_true")
     parser.add_argument("--record", type=Path, default=RECORD)
     parser.add_argument("--table", type=Path, default=TABLE)
+    parser.add_argument("--add-product", nargs=3, action="append", default=[],
+                        metavar=("SLUG", "KIND", "MINIMUM_HOUR"),
+                        help="register a new catalog row without inventing size measurements")
     args = parser.parse_args()
     if args.audits is not None:
         catalog = json.loads(args.table.read_text(encoding="utf-8"))["products"]
@@ -142,6 +145,11 @@ def main() -> None:
         write_document(args.record, record, "pictures")
     else:
         record = json.loads(args.record.read_text(encoding="utf-8"))
+    for name, kind, first in args.add_product:
+        record["catalog"][name] = [kind, float(first)]
+    if args.add_product:
+        record["catalog"] = dict(sorted(record["catalog"].items()))
+        write_document(args.record, record, "pictures")
     write_document(args.table, build_table(record), "products")
     print(f"Recorded {len(record['pictures'])} pictures from {len(record['runs'])} audits.")
 

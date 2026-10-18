@@ -1,0 +1,7 @@
+kte_mode 0 vs 1, stock (expected: HBOT's REAL(KTE) initial value only): DIFFERENT
+kte_mode 0 vs 1, crgamma (expected: HBOT's REAL(KTE) initial value only): DIFFERENT
+uninitialised-read probe (snan init vs default), kte_mode 0: same
+uninitialised-read probe (snan init vs default), kte_mode 1: same
+stock vs crgamma (the gamma divergence must show): DIFFERENT
+stock: kte_mode 1 differs from 0 only in HBOT's initial value on 134 untouched columns: True
+crgamma: kte_mode 1 differs from 0 only in HBOT's initial value on 134 untouched columns: True

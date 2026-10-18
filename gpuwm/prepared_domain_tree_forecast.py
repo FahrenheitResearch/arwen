@@ -132,6 +132,7 @@ from gpuwm.progress_log import (  # noqa: E402
 from gpuwm.receipt_paths import receipt_basename  # noqa: E402
 from gpuwm.native_wrf_contract import (  # noqa: E402
     NATIVE_LANDUSE_IDENTITY,
+    native_landuse_identity,
     load_native_static_cache,
     verify_native_static_receipt,
 )
@@ -3024,6 +3025,17 @@ def _devices_tree_receipt(exp, split_ids, steppers, decisions, admission):
             "grids": grids}
 
 
+def _both_observers(first, second):
+    """One ``step_observer`` calling ``first`` (may be None) then ``second``."""
+
+    def observe(**event):
+        if first is not None:
+            first(**event)
+        second(**event)
+
+    return observe
+
+
 def _warm_start_resume(initialization, start_time):
     """The step log's restart instant for a WRF warm start, else ``None``.
 
@@ -3092,6 +3104,13 @@ def run_prepared_tree(
         raise ValueError("io_mode must be 'history' or 'none'")
     if io_mode == "none" and inputs.experiment.simulated_radar.enabled:
         raise ValueError("simulated radar requires io_mode='history': virtual beams read durable atmospheric columns")
+    # Every regional route reaches this runner: compile the configuration's
+    # whole recorded kernel set on every core now, while the domains are
+    # restored, instead of one module at a time inside step 1 with the card
+    # idle (gpuwm.kernel_plan).  A door that started it earlier gets the
+    # same record back.
+    from gpuwm import kernel_prewarm as _kernel_prewarm
+    _kernel_prewarm.start_plan(inputs.experiment)
     from gpuwm.output_disk import require_output_space, renderer_products
 
     require_output_space(
@@ -3248,6 +3267,13 @@ def run_prepared_tree(
     urban_line = urban_columns_line(urban_columns)
     if urban_line is not None:
         print(f"prepared tree: {urban_line}", flush=True)
+    # Correct mode: a domain whose schemes carry a finding no correction
+    # covers says so here, once, as well as in the receipt.
+    from gpuwm.correct_mode import uncorrected_notice
+    correct_mode_line = uncorrected_notice(
+        {domain.grid_id: domain.run for domain in exp.domains})
+    if correct_mode_line is not None:
+        print(f"prepared tree: {correct_mode_line}", flush=True)
     estimate = estimate_experiment(
         exp, forcing_interval_seconds=inputs.boundary_interval_seconds,
         forcing_intervals=retained_intervals, lateral_boundaries=external_boundaries,
@@ -3387,7 +3413,8 @@ def run_prepared_tree(
         cam = cam_ozone_setup(exp=exp, dc=domain, grid=grid)
         driver = initialize_prepared_physics(
             restored.initial_result, domain.run, restored.met,
-            restored.surface, bundle.static_fields, NATIVE_LANDUSE_IDENTITY,
+            restored.surface, bundle.static_fields,
+            native_landuse_identity(bundle.static_fields),
             grid, exp.domain_start_time(domain.grid_id),
             simulation_start_time=exp.start_time,
             constant_glw_wm2=declared_constant_glw(exp),
@@ -3533,7 +3560,8 @@ def run_prepared_tree(
         with reservation.activate() if reservation is not None else nullcontext():
             bundle = store_from_prepared_cache(source.cache,
                 expected_identity=dict(source.cache_identity), cfg=domain.run,
-                static=source.static_fields, landuse_attrs=NATIVE_LANDUSE_IDENTITY,
+                static=source.static_fields,
+                landuse_attrs=native_landuse_identity(source.static_fields),
                 grid=grid, valid_time=exp.domain_start_time(domain.grid_id),
                 rows_per_slab=rows, budget_bytes=decision.detail.get('host_claim_bytes'),
                 constant_glw_wm2=declared_constant_glw(exp), physics_initializer=physics,
@@ -3800,7 +3828,7 @@ def run_prepared_tree(
             streamed_store=store_bundle,
             # The WRF-file door's own grid words, which history writes
             # (gpuwm.io.history_layout.WRF_FILE_GRID_HISTORY_FIELDS).
-            wrf_file_grid=MappingProxyType(wrf_file_grid_history_fields(bundle)),
+            wrf_file_grid=MappingProxyType(wrf_file_grid_history_fields(bundle, domain.run)),
         )
         drivers[domain.grid_id] = driver
     # The loop's names for its LAST domain would otherwise live as long as
@@ -4042,6 +4070,15 @@ def run_prepared_tree(
         from gpuwm.ingest.wrfrst import apply_warm_start_clock
         restart_info = apply_warm_start_clock(
             model, nodes, initialization.warm_start_clocks)
+    # An initialization that acts once the tree is restored and its clocks
+    # are open (the analysis door, gpuwm.da.analysis_door: an increment added
+    # at the analysis instant or forced over its window).  Here, after a
+    # resume or a warm start has put the clocks where the run continues, and
+    # before the initial health gate reads the state it will integrate.
+    after_restore = getattr(initialization, "after_restore", None)
+    if callable(after_restore):
+        after_restore(model=model, nodes=nodes, start_time=exp.start_time,
+                      run_seconds=float(exp.run_seconds), restart=restart)
     # Same ruling as the case-data route: a restore point that IS the
     # stop tick is a finished run, and the schedule executor refuses a
     # start period at the end of the schedule, so this route decides it
@@ -4276,6 +4313,12 @@ def run_prepared_tree(
     # whole point: `progress_callback` fires once per ROOT step, so a
     # d04 taking 36 substeps inside one of them reported nothing.
     step_observer = step_log.step_observer if step_log.enabled else None
+    # An initialization's own per-step observer (the analysis door's balance
+    # series: the mean surface-pressure tendency of the analysed start),
+    # beside the step log's.  Absent for every other initialization.
+    initialization_observer = getattr(initialization, "step_observer", None)
+    if callable(initialization_observer):
+        step_observer = _both_observers(step_observer, initialization_observer)
     from gpuwm.stability_recovery import NestedHealthRecovery, RecoveryRefused
 
     def rearm_products(checkpoint):
@@ -4304,6 +4347,13 @@ def run_prepared_tree(
             delayed_child_initializer=initialize_delayed_child,
             **({} if schedule_dispatch is None else {"schedule_dispatch": schedule_dispatch}))
 
+    # An initialization that forces a step (the WRF-input door's
+    # mp_tend_radar = 1) attaches once the steppers are known, so a
+    # resident, a ranked and a tile-streamed domain each get the attach
+    # that is read on their road, or a refusal before the first step.
+    attach_step_forcings = getattr(initialization, "attach_step_forcings", None)
+    step_forcings = (None if attach_step_forcings is None
+                     else attach_step_forcings(nodes, steppers))
     try:
         memory_watch.start()
         if already_complete:
@@ -4363,6 +4413,10 @@ def run_prepared_tree(
         step_log.close(status="SUCCESS")
     finally:
         memory_watch.stop()
+        if step_forcings is not None:
+            step_forcings.detach()
+    if step_forcings is not None and not already_complete:
+        step_forcings.require_applied()
     runtime._finalizing_progress(observer, "synchronize-device")
     cp.cuda.Stream.null.synchronize()
     timing["forecast_execution"] = time.perf_counter() - forecast_started
@@ -4668,6 +4722,8 @@ def run_prepared_tree(
     # prepared_single_domain_forecast.
     if streaming_report:
         report["tiles"] = streaming_report
+    if step_forcings is not None:
+        report["radar_tendency"] = step_forcings.receipt()
     if split_ids:
         report["devices"] = _devices_tree_receipt(
             exp, split_ids, early_steppers, cold_decisions, devices_admission)
@@ -4695,6 +4751,12 @@ def run_prepared_tree(
             "aerosol-initialization receipt, so it was written by a "
             "preparation predating the receipt being stored; re-prepare "
             "the hierarchy to record which source filled its nwfa/nifa")))
+    # The initialization's own receipt block (the analysis door's: the
+    # bundle, its checks, what went in at once and the IAU forcing's
+    # receipt), absent for every initialization that has none.
+    initialization_blocks = getattr(initialization, "run_report_blocks", None)
+    if callable(initialization_blocks):
+        report.update(initialization_blocks(model))
     _atomic_json(evidence / "run-receipt.json", report)
     emit_run_capsule(
         outdir, emission_site="prepared_domain_tree_forecast",
@@ -5068,7 +5130,7 @@ def main(argv=None, *, observer=None) -> int:
         print(split_explanation(str(refused))[0], file=sys.stderr)
         return 2
     # A rejected --outdir is a usage mistake, not a crash: it must read as
-    # one sentence naming the problem and a directory that works.  A node-8
+    # one sentence naming the problem and a directory that works.  A test host H
     # pilot met this guard as a raw traceback, on a command the front door
     # itself had suggested.
     try:

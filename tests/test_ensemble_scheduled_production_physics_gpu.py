@@ -39,6 +39,11 @@ def test_real_original_dycore_steps_with_packed_physics_match_standalone_members
     contexts = [_cfl_context() for _ in range(members)]
     ordinary_contexts = [_cfl_context() for _ in range(members)]
     streams = [cp.cuda.Stream(non_blocking=True) for _ in range(members)]
+    # A production session already has resident coefficient tables. Cold
+    # upload reservations would hide missing packed return allocations.
+    adapter = drivers[0].radiation_callable
+    for name in ("lw_tables", "sw_tables", "lw_cloud_tables", "sw_cloud_tables"):
+        getattr(adapter, name).to_device()
     bound = ScheduledProductionPhysics(drivers, cfgs, available_bytes=2 << 30)
     assert bound.owner._priced == 0
     try:

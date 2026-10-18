@@ -866,9 +866,13 @@ def _shinhong_gpu_outputs(cp, fixture, cache: bool = True):
     the engine while the fixture varies them per column, so the kernel is
     launched once per (dt, dx, dy, tke_diag) group and the columns stitched
     back by group membership, exactly like ``ysu_port_outputs`` does for
-    ``ysu_topdown_pblmix``.  ``theta`` is reconstructed as ``t/pi2d`` with
-    the same float32 divide WRF performs at :557, so the kernel's ``thx`` is
-    bitwise WRF's by construction.
+    ``ysu_topdown_pblmix``.  This fixture stores WRF's ``t`` and not the
+    model theta it came from, so ``theta`` is reconstructed as ``t/pi2d``.
+    The kernel forms ``tx = theta*exner`` and ``thx = tx/exner`` as WRF does
+    (phy_prep, :559); on all 7,200 levels of this fixture
+    ``(t/pi2d)*pi2d == t``, so both words are WRF's.  The model-side
+    contract (the model owns theta, WRF hands the scheme ``t = th*pi``) is
+    graded on 903 columns by tests/test_shinhong_column_oracle.py.
     """
     if cache and "A" in _GPU_PORT_CACHE:
         return _GPU_PORT_CACHE["A"]
@@ -999,6 +1003,16 @@ def test_shinhong_cuda_column_holds_its_measured_distance_from_wrf():
         measured[name], _ = _measure_field(
             np.ascontiguousarray(port[name], np.float32),
             fixture.surface_reference[column])
+    from gpuwm import wrf_exact
+
+    if wrf_exact.ENABLED:
+        # The strict build (GPUWM_WRF_EXACT=1: no FMA, no FTZ, IEEE division
+        # and square root) carries no flush lanes, so every field of every
+        # column is 0 ULP.  Measured 2026-10-07 on W1's RTX PRO 6000 under
+        # NVRTC 12.9.86 (lane/verify-shinhong).  The default build keeps its
+        # per-compiler rows below.
+        assert measured == {name: 0 for name in measured}, measured
+        return
     recorded = _recorded_gpu_baseline()
     assert measured == recorded, (
         "the CUDA kernel's distance from the unmodified WRF module changed.\n"
@@ -1121,6 +1135,9 @@ def test_shinhong_cuda_ftz_flushes_every_subnormal_tendency_wrf_wrote():
     """
     import cupy  # noqa: F401
 
+    from gpuwm import wrf_exact
+
+    strict = wrf_exact.ENABLED
     fixture = _fixture()
     port = _shinhong_gpu_outputs(cupy, fixture)
     smallest_normal = np.float32(np.finfo(np.float32).smallest_normal)
@@ -1132,6 +1149,12 @@ def test_shinhong_cuda_ftz_flushes_every_subnormal_tendency_wrf_wrote():
             continue
         found[name] = int(subnormal.sum())
         got = np.ascontiguousarray(port[name], np.float32)
+        if strict:
+            # GPUWM_WRF_EXACT=1 compiles with --ftz=false: every subnormal
+            # WRF wrote comes back as WRF's own word.
+            assert np.array_equal(got[subnormal].view(np.uint32),
+                                  want[subnormal].view(np.uint32)), name
+            continue
         assert np.all(got[subnormal] == 0), (
             f"{name}: a subnormal lane survived the flush, which would be"
             " news")

@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 # Compile each unmodified release separately, with checked and ordinary flags.
+#
+#   build.sh SOURCES BUILD [TAG ...]     (default: all four tags)
+#
+# SOURCES holds one checkout per tag with its MMM physics in place, as
+# fetch_sources.sh writes them (v4.7.x take theirs from arch/Externals.cfg,
+# not from a submodule).  gate.py needs v4.8.0 and v4.6.1 only.
 set -euo pipefail
 T=$(cd "$(dirname "$0")/../.." && pwd)
 P=$(realpath "$1")
 B=$(realpath -m "$2")
+shift 2
+wanted=" $* "
 mkdir -p "$B"
 for spec in 'v4.6.1:d66e442fccc04111067e29274c9f9eaccc3cef28:a695daa712591b30fa72b8f24eac003e8e7016531283d29443bcc04ce3ea77d8' \
             'v4.7.0:eeacb821626feb34c62c3c1e169594d886d13adb:b2c9f11f92f967b053948b42a7c5dbaf1b7f72ddb9d35948e96c32a5d91092d2' \
             'v4.7.1:f52c197ed39d12e087d02c50f412d90d418f6186:b2c9f11f92f967b053948b42a7c5dbaf1b7f72ddb9d35948e96c32a5d91092d2' \
             'v4.8.0:06d4240ae989cc3e50af412bb472df3d9048783c:15d76892fc6ffa5c9f8f7ebecfeb6eaa5c23d71b44e8c53a8832f49ff711ea7e'; do
  IFS=: read -r tag pin digest <<< "$spec"
+ [[ "$wanted" == "  " || "$wanted" == *" $tag "* ]] || continue
  root=$P/$tag
  test "$(git -C "$root" rev-parse HEAD)" = "$pin"
  source=$root/phys/physics_mmm/bl_ysu.F90
@@ -28,7 +37,7 @@ for spec in 'v4.6.1:d66e442fccc04111067e29274c9f9eaccc3cef28:a695daa712591b30fa7
    gfortran "${flags[@]}" -DRWORDSIZE=4 -c "$root/phys/ccpp_kind_types.F"
    if [[ "$mode" == bounded || "$mode" == bep_corrected ]]; then
      # Only the explicitly declared undefined shallow-domain path uses this.
-     python - "$source" "$mode" <<'PY'
+     "${PYTHON:-python3}" - "$source" "$mode" <<'PY'
 from pathlib import Path
 import sys
 s = Path(sys.argv[1]).read_text()
@@ -51,7 +60,7 @@ PY
    elif [[ "$mode" == diagnostics ]]; then
      # A separate traced copy, never the numerical referee. Verify its output
      # bytes equal the unmodified referee before accepting any private local.
-     python - "$source" <<'PY'
+     "${PYTHON:-python3}" - "$source" <<'PY'
 from pathlib import Path
 import sys
 s = Path(sys.argv[1]).read_text()

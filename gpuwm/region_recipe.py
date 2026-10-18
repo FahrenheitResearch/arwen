@@ -113,7 +113,9 @@ def emit_recipe(*, recipe, region, spacing_km, source, cycle, hours,
     for refusal in (wizard.source_coverage_refusal, wizard.fetch_crop_refusal):
         reason = refusal(projected, nx, ny, source=source, root_dx_m=dx, target_option="--polygon")
         if reason:
-            raise ValueError(reason)
+            # Named so a table row that does not fit its source reads as the
+            # row and the source, not as a bare grid.
+            raise ValueError(f"region {region!r} with source {source}: {reason}")
     start = wizard._resolve_cycle(cycle, source=source, hours=hours)
     # A recipe's [static] source binds published native-grid fields to the
     # recipe's OWN grid (hrrr_v4_gsd41: the HRRR CONUS v4 statics).  This door

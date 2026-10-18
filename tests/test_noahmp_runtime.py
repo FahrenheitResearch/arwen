@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 
 import numpy as np
@@ -236,19 +236,14 @@ def test_device_leaves_preserve_the_six_step_carried_state(
 
 
 #: The smallest perturbation of one output word of each batched leaf that the
-#: six-step carried-state digest can see, **measured** on this domain rather
-#: than assumed.  VEGE_FLUX's TV and WATER's RUNSRF are carried into TVXY and
-#: SFCRUNOFF unweighted, so one ULP survives.  BARE_FLUX's TGB is not: this
-#: domain is grassland at SHDMAX 60%, so :2289's tile average forms
-#: ``FVEG*TGV + (1-FVEG)*TGB`` and one ULP of TGB, scaled by 0.4, falls below
-#: half an ULP of a ~300 K sum and rounds away.  Two ULP does not.
-#:
-#: This is a property of the tile average, not a weakness of the leaf gate:
-#: ``tests/test_noahmp_bareflux_cuda.py`` holds BARE_FLUX itself to max_ulp 0
-#: on every fixture row, where nothing is weighted.
+#: six-step carried-state digest can see, measured on the current default
+#: physics. One ULP of BARE_FLUX TGB is visible with the WRF 4.8 solar
+#: generation and current surface layer. The former two-ULP threshold and
+#: its one-ULP absorption guard described the older integration arithmetic.
+#: The leaf itself is still held to max_ulp 0 by test_noahmp_bareflux_cuda.py.
 _SMALLEST_VISIBLE_NUDGE = (
     ("vege_flux", "TV", 1),
-    ("bare_flux", "tgb", 2),
+    ("bare_flux", "tgb", 1),
     ("water", "runsrf", 1),
 )
 
@@ -292,50 +287,6 @@ def test_the_six_step_state_comparison_can_fail(leaf, attribute, ulps,
     assert _carried_digest(nudged_driver) != accurate, (
         f"a {ulps}-ULP nudge of one {leaf} {attribute} left the six-step "
         "carried state digest unchanged; the gate cannot see a leaf defect")
-
-
-@requires_gpu
-def test_one_ulp_of_bare_flux_tgb_really_is_absorbed_by_the_tile_average():
-    """Record the measurement behind the ``2`` in the table above.
-
-    Asserting the smaller nudge is invisible is what stops somebody "tidying"
-    the 2 back to a 1 and getting a test that fails for a reason nobody
-    understands -- and it is the evidence that the 2 was measured rather than
-    picked until the test went green.
-    """
-    import struct
-
-    from gpuwm.core.dycore import step
-    import gpuwm.core.noahmp_runtime as runtime_module
-
-    build_kwargs = {"nx": 4, "ny": 3, "water_columns": 1}
-    state, cfg, driver = _build(**build_kwargs)
-    for _ in range(6):
-        step(state, cfg)
-    accurate = _carried_digest(driver)
-
-    previous = runtime_module.LEAF_BATCH_EVALUATOR
-
-    def one_ulp(requested, calls):
-        out = previous(requested, calls)
-        if requested == "bare_flux" and out:
-            bits = struct.unpack("<I", struct.pack("<f", float(out[0].tgb)))[0]
-            out[0].tgb = np.float32(
-                struct.unpack("<f", struct.pack("<I", bits + 1))[0])
-        return out
-
-    runtime_module.LEAF_BATCH_EVALUATOR = one_ulp
-    try:
-        nudged_state, nudged_cfg, nudged_driver = _build(**build_kwargs)
-        for _ in range(6):
-            step(nudged_state, nudged_cfg)
-        absorbed = _carried_digest(nudged_driver) == accurate
-    finally:
-        runtime_module.LEAF_BATCH_EVALUATOR = previous
-
-    assert absorbed, (
-        "one ULP of BARE_FLUX TGB is now visible in the six-step digest; the "
-        "2-ULP entry in _SMALLEST_VISIBLE_NUDGE can be tightened to 1")
 
 
 @requires_gpu
@@ -597,13 +548,40 @@ def test_radiation_free_noahmp_seeds_coszen_at_wrfs_half_interval():
 
     _state, cfg, driver = _build(nx=4, ny=2, water_columns=1)
     expected, _ = wrf_solar_geometry(
-        _START,
-        np.full((2, 4), _LATITUDE, np.float64),
+        _START, np.full((2, 4), _LATITUDE, np.float64),
         np.full((2, 4), _LONGITUDE, np.float64),
-        hour_offset_seconds=0.5 * cfg.radt_minutes * 60.0)
+        hour_offset_seconds=0.5 * cfg.radt_minutes * 60.0,
+        generation=cfg.solar_generation)
     np.testing.assert_array_equal(
-        cp.asnumpy(driver.fields["coszen"]),
-        np.asarray(expected, np.float32))
+        cp.asnumpy(driver.fields["coszen"]), np.asarray(expected, np.float32))
+
+
+@requires_gpu
+def test_radiation_free_coszen_provider_follows_the_current_day():
+    """Declination and equation of time follow the current day; only the
+    hour angle receives the half-interval offset. Use the selected solar
+    generation, whose default is WRF 4.8, rather than WRF 4.6.1's words."""
+    from gpuwm.core.dudhia import wrf_solar_geometry
+
+    state, cfg, driver = _build(nx=4, ny=2, water_columns=1)
+    lat = np.full((2, 4), _LATITUDE, np.float64)
+    lon = np.full((2, 4), _LONGITUDE, np.float64)
+    elapsed = 10 * 86400.0 + 3 * 3600.0
+    state.elapsed_seconds = elapsed
+    driver._update_analytic_coszen(state, cfg)
+    got = cp.asnumpy(driver.fields["coszen"])
+    want, _ = wrf_solar_geometry(
+        _START + timedelta(seconds=elapsed), lat, lon,
+        hour_offset_seconds=0.5 * cfg.radt_minutes * 60.0,
+        generation=cfg.solar_generation, start_time=_START,
+        elapsed_seconds=elapsed)
+    np.testing.assert_array_equal(got, np.asarray(want, np.float32))
+    frozen, _ = wrf_solar_geometry(
+        _START, lat, lon,
+        hour_offset_seconds=0.5 * cfg.radt_minutes * 60.0,
+        generation=cfg.solar_generation, start_time=_START,
+        elapsed_seconds=elapsed)
+    assert np.max(np.abs(got - np.asarray(frozen, np.float32))) > 1.0e-3
 
 
 # ---------------------------------------------------------------------------

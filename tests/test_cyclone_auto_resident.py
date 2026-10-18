@@ -945,8 +945,20 @@ def test_the_tiles_on_door_prices_the_mode_it_recommends():
 
     # IN THE BAND: `--tiles off` admits this tree and `--tiles auto` does
     # not, so there is no recommendation to make and the door makes none.
-    inside = int(5.4 * GIB)
+    # The card is DERIVED from the priced `off` envelope, not pinned: it
+    # was `int(5.4 * GIB)`, and the 2.9.2 RRTMGP flux rows and memory cuts
+    # moved the envelope 1.6 MB past that card's budget, so the pin fell
+    # out of the band and the first assertion below went red while the
+    # door it checks was right.  A sliver above the floor that just admits
+    # `off` is well under the withheld rebuild that keeps `auto` out (the
+    # band is some 0.3 GiB wide), whatever the estimate prices next.
     _text, off_exp = tc.configuration_text(**{**intent, "tiles": "off"})
+    probe = int(5.4 * GIB)
+    floor = dw._sizing_phases(
+        off_exp, source="gfs", machine=_machine(probe), free_bytes=probe,
+        vram_gib=probe / GIB, profile=None,
+        forcing_interval_seconds=10800.).peak_envelope_bytes
+    inside = floor + pf.EXTERNAL_MARGIN_BYTES + 32 * 1024 ** 2
     off_operands = dict(free_bytes=inside, vram_gib=inside / GIB, profile=None,
                         forcing_interval_seconds=10800.)
     off = dw._sizing_phases(off_exp, source="gfs", machine=_machine(inside),

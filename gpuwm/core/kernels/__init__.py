@@ -47,7 +47,10 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "goddard": ("glibc_flt32.cuh", "portable_libm64.cuh", "goddard_bands.cuh", "goddard_sounding.cuh"),
     # WOOF float32 math for the WRF aerosol column arithmetic.
     "aer_opt2": ("glibc_flt32.cuh",),
+    "satmedmf": ("glibc_flt32.cuh", "glibc_flt64.cuh", "gfs_physcons.cuh", "satmedmf_common.cuh", "satmedmf_column.cuh"),
     "upper_wind_limiter": ("glibc_flt32.cuh",),
+    # WRF's ocean mixed layer (module_sf_oml.F) takes FSQRT from here.
+    "oml": ("glibc_flt32.cuh",),
     # Reuse the scalar high-order helpers without moving the order-3 unit.
     "pd_vertical_sl": ("pd_advection.cu",),
     "sfire_coupling": ("glibc_trig_flt32.cuh",),
@@ -68,7 +71,7 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "chem_dust": ("glibc_flt32.cuh",),
     "chem_seasalt": ("glibc_flt32.cuh",),
     "chem_rrtmgp_aerosol": ("glibc_flt32.cuh",),
-    "chem_sulfur": ("glibc_flt32.cuh",),
+    "chem_sulfur": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     "chem_ageing": ("glibc_flt32.cuh",),
     "chem_settling": ("glibc_flt32.cuh",),
     "chem_drydep_gocart": ("glibc_flt32.cuh",),
@@ -101,7 +104,10 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # header whose every FP op is pinned (HOWTO 13.6j).  rrtmgp_gas is
     # deliberately NOT listed -- it keeps its own helpers verbatim so its
     # assembled source and PTX stay byte-identical.
-    "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
+    # The strict process adds the exact chain's float32 libm header; a default
+    # process composes rrtmgp_rte from rrtmgp_planck_common_default.cuh
+    # (_extra_header_text), byte-identical to 2.9.1's helpers.
+    "rrtmgp_rte": ("rrtmgp_libm.cuh", "rrtmgp_planck_common.cuh"),
     # glibc 2.39's own float32 expf/logf/powf words, which every kernel
     # graded bitwise against a gfortran oracle must call instead of CUDA's
     # builtins.  gf.cu owned the only copy until New Tiedtke (cu_physics=16)
@@ -119,8 +125,10 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # ruc.cu) and the soil-resistance COS takes glibc_cosf, graded bitwise
     # against WRF v4.6.1 by tools/ruc_lsm_gpu_oracle.
     "ruc": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
-    "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
-    "gf": ("glibc_flt32.cuh",),
+    "lake": ("glibc_flt32.cuh", "f64cr.cuh", "lake_support.cuh", "lake_wrf.cuh"),
+    # Strict GF adds the WRF normalization header; a default process keeps
+    # glibc_flt32.cuh alone (_extra_header_text).
+    "gf": ("glibc_flt32.cuh", "gf_wrf_normalization.cuh"),
     # Ferrier-Aligo (mp_physics=5): EXP, ALOG and REAL**REAL in
     # module_mp_fer_hires.F are the float32 libm calls its WRF v4.6.1 column
     # oracle makes, graded at 0 ULP in the strict build.
@@ -270,6 +278,25 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # ** are WOOF's own binary64 words (glibc_flt64.cuh).  A new module, so
     # no existing unit moves; it compiles through gpuwm/core/wsm_family.py.
     "wsm7": ("glibc_flt32.cuh", "glibc_flt64.cuh"),
+    # The exact chain's units (intake 2.9.1).  physics_exner is the strict
+    # moist_physics_prep_em Exner; thompson_classic and thompson_fork are the
+    # strict mp=8 and mp=28 wrf_39_noaa transcriptions; rrtmgp_gas and the
+    # nssl2 units take these headers only in a strict process.
+    "physics_exner": ("glibc_flt32.cuh",),
+    "topo_radiation": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh",
+                       "atan_scalar_flt32.cuh"),
+    "thompson_classic": ("glibc_flt32.cuh", "glibc_flt32_extra.cuh",
+                         "glibc_flt64.cuh", "thompson_classic_constants.cuh"),
+    "morrison": ("glibc_flt32.cuh", "glibc_flt32_extra.cuh", "glibc_flt64.cuh",
+                 "glibc_trig_flt32.cuh", "morrison_constants.cuh"),
+    "thompson_fork": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                      "thompson_fork_constants.cuh"),
+    "nssl2_nucond": ("glibc_flt32.cuh", "nssl2_wrf_math.cuh"),
+    "nssl2": ("glibc_flt32.cuh", "nssl2_wrf_math.cuh"),
+    "nssl2_fused_gs": ("glibc_flt32.cuh", "nssl2_wrf_math.cuh"),
+    "nssl2_driver_support": ("glibc_flt32.cuh", "nssl2_wrf_math.cuh"),
+    "nssl2_diagnostics": ("glibc_flt32.cuh", "nssl2_wrf_math.cuh"),
+    "rrtmgp_gas": ("rrtmgp_libm.cuh", "rrtmgp_planck_common.cuh"),
 }
 
 #: Read-only view for tests and freeze receipts.
@@ -290,17 +317,87 @@ def _extra_header_text(name: str, kernel_dir: Path = _KDIR) -> str:
     """
     headers = _EXTRA_HEADERS.get(name, ())
     from gpuwm.wrf_exact import ENABLED, DIAGNOSTICS_ENABLED, DIFFUSION_ENABLED
+    # A default process composes these units from their *_default sources
+    # (see _DEFAULT_SOURCE_MODULES), the 2.9.1 default arithmetic; the exact
+    # chain's strict sources and headers are a GPUWM_WRF_EXACT=1 process's.
+    if not ENABLED and name in ("rrtmgp_gas", "rrtmgp_rte", "rrtmgp_cloud"):
+        headers = {'rrtmgp_gas': (), 'rrtmgp_rte': ('rrtmgp_planck_common_default.cuh',), 'rrtmgp_cloud': ()}[name]
+    if not ENABLED and name == "gf":
+        headers = ('glibc_flt32.cuh',)
+    if not ENABLED and name == "ysu":
+        headers = ("glibc_flt32.cuh", "ysu_topo_default.cuh")
+    if not ENABLED and name in ('nssl2_nucond', 'nssl2', 'nssl2_fused_gs', 'nssl2_driver_support', 'nssl2_diagnostics'):
+        headers = ()
     if DIAGNOSTICS_ENABLED and name == "diagnostics":
         headers += ("glibc_flt32.cuh",)
-    return "".join((Path(kernel_dir) / header).read_text(encoding=_ENCODING)
+    text = "".join((Path(kernel_dir) / header).read_text(encoding=_ENCODING)
                    for header in headers)
+    if not ENABLED and name == "smag2d":
+        text = _smag2d_default_gfk_exp(text)
+    return text
+
+
+#: The exact chain FMA-fused glibc_flt32.cuh's gfk_exp (its comment block
+#: starts with the first line below and the fused body ends with the second).
+_GFK_EXP_FMA_FIRST = "    // The reference expf on an x86-64 host with FMA is the FMA build of this\n"
+_GFK_EXP_FMA_LAST = "    return gfk_d2f_rn(DMUL(y, s));\n"
+#: 2.9.1's separately rounded gfk_exp body, which smag2d's default
+#: composition keeps.
+_GFK_EXP_291 = (
+    "    double xd = (double)x;\n"
+    "    double z = DMUL(0x1.71547652b82fep+0 * 32.0, xd);\n"
+    "    return gfk_d2f_rn(gfk_exp2_core(\n"
+    "        z, GFK_EXP2F_SHIFT,\n"
+    "        GFK_EXP2F_P0 / 32.0 / 32.0 / 32.0,\n"
+    "        GFK_EXP2F_P1 / 32.0 / 32.0,\n"
+    "        GFK_EXP2F_P2 / 32.0, 0ULL));\n")
+
+
+def _smag2d_default_gfk_exp(text: str) -> str:
+    """smag2d's default headers with 2.9.1's gfk_exp body, byte for byte.
+
+    THE BREAKAGE THIS PREVENTS (2.9.1 integration): the exact chain
+    FMA-fused gfk_exp in glibc_flt32.cuh, which moved smag2d's composed
+    source; the GPU-measured assembled coordinate and driver proofs
+    (tests/assembled_legacy_proofs.py) seal that source by hash on a card
+    class the fleet no longer has.  A default process composes smag2d with
+    the 2.9.1 body (the proofs' bytes); a strict process takes the chain's.
+    The rewrite refuses rather than guess if the header no longer carries
+    exactly one FMA block.
+    """
+    if text.count(_GFK_EXP_FMA_FIRST) != 1 or text.count(_GFK_EXP_FMA_LAST) != 1:
+        raise RuntimeError("glibc_flt32.cuh no longer carries exactly one fused gfk_exp "
+                           "block; smag2d's default composition cannot keep its sealed bytes")
+    start = text.index(_GFK_EXP_FMA_FIRST)
+    end = text.index(_GFK_EXP_FMA_LAST, start) + len(_GFK_EXP_FMA_LAST)
+    return text[:start] + _GFK_EXP_291 + text[end:]
+
+
+#: Units whose strict (GPUWM_WRF_EXACT=1) source is ``<name>.cu`` and whose
+#: default source is ``<name>_default.cu``: the exact chain rewrote these for
+#: WRF's scalar arithmetic, and a default process keeps the 2.9.1 unit (for
+#: ysu, 2.9.1's ysu.cu, the default wrf_461 generation's kernel).
+_DEFAULT_SOURCE_MODULES = frozenset({
+    "rrtmgp_gas", "rrtmgp_rte", "rrtmgp_cloud", "ysu", "nssl2_nucond",
+    "nssl2", "nssl2_fused_gs", "nssl2_driver_support", "nssl2_diagnostics"})
 
 
 def _unit_text(name: str, kernel_dir: Path = _KDIR) -> str:
     """Read a CUDA unit and apply only the active set's registered literals."""
     from gpuwm.physics_params import edit_kernel_source
-    return edit_kernel_source(
-        name, (Path(kernel_dir) / f"{name}.cu").read_text(encoding=_ENCODING))
+    from gpuwm.wrf_exact import ENABLED
+    unit_path = Path(kernel_dir) / f"{name}.cu"
+    if not ENABLED and name in _DEFAULT_SOURCE_MODULES:
+        default_path = Path(kernel_dir) / f"{name}_default.cu"
+        if default_path.is_file():
+            unit_path = default_path
+    source = edit_kernel_source(
+        name, unit_path.read_text(encoding=_ENCODING))
+    if name == "noah":
+        from gpuwm.wrf_exact import ENABLED
+        if ENABLED:
+            source = "#define NOAH_WRF_SCALAR_RCT 1\n" + source
+    return source
 
 
 def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
@@ -342,11 +439,15 @@ def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
 #: wdm6 and wdm6_refl: the WRF
 #: 4.6.1 WDM6 column oracle (tests/test_wdm6_wrf461_oracle.py), through both
 #: loaders (nz above 64 compiles the WDM6_KMAX=80 tier, and reflectivity
-#: compiles its REFL_KMAX tier).
+#: compiles its REFL_KMAX tier).  noah: the exact chain's Noah words (glibc
+#: transcendentals, integer powers, float32 NOAHRES) are WRF's only without
+#: contraction; with it a default column read hfx 802 and noahres 606208 ULP
+#: from WRF 4.6.1 and failed the WRF 4.7.1 urban hand-over oracle
+#: (tests/test_noah_wrf461_parity.py, tests/test_urban_noah_hook_wrf471_parity.py).
 _NO_FMAD_MODULES = frozenset({"lake", "g3", "ysu", "shinhong", "mynn_pbl",
                               "mynn_dmp_sibling", "wsm6", "kessler", "myjpbl",
                               "milbrandt2", "milbrandt2_zet", "wdm6",
-                              "wdm6_refl", "wsm3", "wsm6r"})
+                              "wdm6_refl", "wsm3", "wsm6r", "noah"})
 
 
 #: The solar geometry units (WRF 4.6.1 / 4.8.0 radconst + calc_coszen and the
@@ -367,9 +468,23 @@ _SOLAR_NO_FTZ_MODULES = frozenset({"rrtmg_legacy_solar", "swint"})
 _URBAN_NO_FTZ_MODULES = frozenset({"urban_ucm", "urban_ucm480", "urban_bep",
                                    "urban_bep_couple"})
 # aer_opt2: WRF keeps the aerosol optics' subnormal operands (port289-final 550349628).
+# oml: graded word for word against WRF 4.6.1 OML1D (tools/oml_wrf461_oracle).
 _NO_FTZ_MODULES = frozenset({"g3", "nsas", "sfclay", "myjsfc", "mynn_surface", "mynn_pbl",
                              "thompson_column", "ysu_480", "wsm6r",
-                             "aer_opt2"}) | _SOLAR_NO_FTZ_MODULES
+                             "aer_opt2", "oml"}) | _SOLAR_NO_FTZ_MODULES
+
+# The exact chain's strict intake contracts (GPUWM_WRF_EXACT=1): these units
+# also compile without contraction in a strict process.  A default process
+# keeps the grants above, so its options are 2.9.1's.
+_STRICT_NO_FMAD_MODULES = frozenset({"morrison", "rrtmgp_rte", "noah_init",
+    "wdm6", "milbrandt2_zet", "wdm6_refl", "rrtmgp_gas", "milbrandt2",
+    "rrtmgp_cloud", "noah", "myjsfc", "kessler", "thompson_classic",
+    "myjpbl", "wsm6"})
+
+
+def _needs_no_fmad(name):
+    from gpuwm.wrf_exact import ENABLED
+    return name in _NO_FMAD_MODULES or (ENABLED and name in _STRICT_NO_FMAD_MODULES)
 
 
 def module_options(name: str) -> tuple[str, ...]:
@@ -388,7 +503,7 @@ def module_options(name: str) -> tuple[str, ...]:
         return ("-std=c++17", "--fmad=false", "--ftz=false")
     if name in _DIFFUSION_MODULES:
         return DIFFUSION_OPTIONS
-    return (("-std=c++17", "--fmad=false") if name in _NO_FMAD_MODULES
+    return (("-std=c++17", "--fmad=false") if _needs_no_fmad(name)
             else ("-std=c++17",))
 
 
@@ -444,7 +559,7 @@ def compile_diffusion_source(source: str, key: str, options):
     kind = "cubin" if image.startswith(b"\x7fELF") else "ptx"
     record_module(key, source=source, options=options,
                   module=SimpleNamespace(**{kind: image}))
-    return module
+    return _DriverModule(module)
 
 
 @cuda_cache(maxsize=None)
@@ -470,6 +585,41 @@ def _load_diffusion_module(name: str, defines=()):
     return module
 
 
+class _DriverKernel:
+    """A direct CUDA function with the loader's common kernel interface."""
+
+    def __init__(self, function):
+        self._function = function
+
+    def __call__(self, *args, **kwargs):
+        return self._function(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._function, name)
+
+    @property
+    def attributes(self):
+        from cupy.cuda import driver
+        names = ("max_threads_per_block", "shared_size_bytes", "const_size_bytes",
+                 "local_size_bytes", "num_regs", "ptx_version", "binary_version",
+                 "cache_mode_ca", "max_dynamic_shared_size_bytes",
+                 "preferred_shared_memory_carveout")
+        return {name: driver.funcGetAttribute(
+            getattr(driver, "CU_FUNC_ATTRIBUTE_" + name.upper()), self._function.ptr)
+            for name in names}
+
+
+class _DriverModule:
+    def __init__(self, module):
+        self._module = module
+
+    def get_function(self, name):
+        return _DriverKernel(self._module.get_function(name))
+
+    def __getattr__(self, name):
+        return getattr(self._module, name)
+
+
 def compile_noftz_module(name: str, src: str, key: str):
     """Compile the requested image without CuPy's appended FTZ option."""
     import cupy as cp
@@ -489,7 +639,7 @@ def compile_noftz_module(name: str, src: str, key: str):
         module.load(image.encode() if isinstance(image, str) else image)
     note_compiled(name)
     record_module(key, source=src, options=options, module=None)
-    return module
+    return _DriverModule(module)
 
 
 def _load_urban_module_without_ftz(name: str, src: str):
@@ -697,7 +847,7 @@ def load_module_int_defines(
         return compile_noftz_module(name, src, f"{MODULE_KEY_ROOT}:{name}[{tier}]")
     if name in _DIFFUSION_MODULES:
         return _load_diffusion_module(name, normalized)
-    if name in _NO_FMAD_MODULES:
+    if _needs_no_fmad(name):
         return _load_module_int_defines_without_fmad(name, src, normalized)
     mod = cp.RawModule(code=src, options=("-std=c++17",),
                        name_expressions=None)

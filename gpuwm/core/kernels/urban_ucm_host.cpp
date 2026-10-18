@@ -26,6 +26,7 @@ static inline double __dadd_rn(double a, double b) { volatile double r = a + b; 
 static inline double __dsub_rn(double a, double b) { volatile double r = a - b; return r; }
 static inline double __dmul_rn(double a, double b) { volatile double r = a * b; return r; }
 static inline double __ddiv_rn(double a, double b) { volatile double r = a / b; return r; }
+static inline double __fma_rn(double a, double b, double c) { return std::fma(a, b, c); }
 static inline float __double2float_rn(double a) { volatile float r = static_cast<float>(a); return r; }
 
 template <typename To, typename From> static inline To ucm_host_bits(From from)

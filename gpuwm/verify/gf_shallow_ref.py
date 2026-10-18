@@ -632,7 +632,9 @@ def cup_gf_sh_column(
             xkshal = F(1.0e-2)
         xff[0] = max(_Z0, F(F(-F(aa1 - aa0)) / F(xkshal * dtime)))
         xff[1] = F(F(0.03) * zws)
-        for k in range(1, kpbl + 1):
+        # Match the declared top-bound correction in the shipped kernel.
+        # po_cup[k+1] must remain inside the physical column.
+        for k in range(1, min(kpbl, ktf - 1) + 1):
             blqe = F(
                 blqe
                 + F(F(F(F(100.0) * dhdt[k]) * F(po_cup[k] - po_cup[k + 1])) / SH_G)

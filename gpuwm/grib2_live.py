@@ -54,8 +54,9 @@ def request_for(inputs, out: Path, *, mode: str = "run", archive: bool = False) 
 
 
 class _Progress:
-    def __init__(self, report: Callable[[dict], None]):
+    def __init__(self, report: Callable[[dict], None], warn=None):
         self.report = report
+        self.warn = warn
 
     def write(self, text: str) -> int:
         for line in text.splitlines():
@@ -65,6 +66,8 @@ class _Progress:
                 continue
             if isinstance(event, dict):
                 self.report(event)
+                if event.get("event") == "warning" and self.warn is not None:
+                    self.warn(event)
         return len(text)
 
     def flush(self) -> None:
@@ -96,6 +99,7 @@ class LiveGrib2Export:
         self._initial_inputs = [str(Path(path).resolve()) for path in initial_inputs]
         self._scanned_parents: set[Path] = set()
         self._errors: list[str] = []
+        self._warned: set[str] = set()
         self._completed = 0
         self._finalized = False
         self._worker = threading.Thread(target=self._work, name="grib2-export", daemon=True)
@@ -122,13 +126,24 @@ class LiveGrib2Export:
         if self._halt.is_set():
             return False
         code = self._invoke(self._exe, request, as_json=True,
-                            stream=_Progress(self._report),
+                            stream=_Progress(self._report, self._exporter_warning),
                             on_process=self._set_process, cancel_event=self._halt)
         if self._halt.is_set():
             return False
         if code:
             raise RuntimeError(f"native GRIB2 exporter exited {code}")
         return True
+
+    def _exporter_warning(self, event: dict) -> None:
+        """An exporter warning (the CPU fallback of ``post_device auto``)
+        reaches the run's warnings once per run, not once per frame: each
+        live append is its own exporter process and repeats it."""
+        code = str(event.get("code") or "grib2_export_warning")
+        if code in self._warned:
+            return
+        self._warned.add(code)
+        self._warn(f"grib2_{code}" if not code.startswith("grib2_") else code,
+                   str(event.get("message") or code))
 
     def _work(self) -> None:
         while True:

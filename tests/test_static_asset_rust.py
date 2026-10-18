@@ -85,7 +85,8 @@ def test_ranges_pin_and_atomic_publication(tmp_path, origin, monkeypatch):
     events = [json.loads(line) for line in ledger.read_text().splitlines()]
     assert [(e["stage"], e["phase"]) for e in events] == [
         ("prep.geog.fetch", "begin"), ("prep.geog.fetch", "end")]
-    assert events[-1]["attrs"] == {"bytes": len(payload), "datasets": ["pinned-source"]}
+    assert {k: v for k, v in events[-1]["attrs"].items() if k != "cpu_s"} == {
+        "bytes": len(payload), "datasets": ["pinned-source"]}
     assert not list(tmp_path.glob("*.part-*"))
 
 

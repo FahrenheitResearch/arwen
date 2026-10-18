@@ -1,0 +1,122 @@
+{
+    "oracle_flags":  "-O2 -fno-tree-vectorize -ffp-contract=off",
+    "columns":  64,
+    "nz":  40,
+    "rows":  [
+                 {
+                     "arm":  0,
+                     "field":  "rthcuten",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  0,
+                     "field":  "rqvcuten",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  0,
+                     "field":  "rqccuten",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  0,
+                     "field":  "rqicuten",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  0,
+                     "field":  "dudt",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  0,
+                     "field":  "dvdt",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  0,
+                     "field":  "gdc",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  0,
+                     "field":  "gdc2",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  1,
+                     "field":  "rthcuten",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  1,
+                     "field":  "rqvcuten",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  1,
+                     "field":  "rqccuten",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  1,
+                     "field":  "rqicuten",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  1,
+                     "field":  "dudt",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  1,
+                     "field":  "dvdt",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  1,
+                     "field":  "gdc",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 },
+                 {
+                     "arm":  1,
+                     "field":  "gdc2",
+                     "words":  2560,
+                     "unequal":  0,
+                     "max_abs":  0.0
+                 }
+             ],
+    "reference_theta_delta":  0.0012626887764781713,
+    "provenance":  "Captured production GF arguments for fed and withheld controls; byte-unmodified WRF 4.6.1 GFDRV via run_gf_columns.F90, KTE_MODE=0, on S3. No forecast uses the capture.",
+    "command":  "/work/pool-exact-step1-tendency-fold/pbl-control-oracle/run_gf_columns input-{0,1}.bin output-{0,1}.bin 0"
+}

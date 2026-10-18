@@ -11,13 +11,19 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 pub const ABI_MARKER: &str = "rw_mpas_geometry --protocol hex-geometry-v1";
 
-trait Real: Copy + Send + Sync + PartialOrd + Add<Output=Self> + Sub<Output=Self>
+pub(crate) trait Real: Copy + Send + Sync + PartialOrd + Add<Output=Self> + Sub<Output=Self>
     + Mul<Output=Self> + Div<Output=Self> + Neg<Output=Self> {
     const WIDTH: usize;
     fn zero() -> Self;
     fn one() -> Self;
     fn half() -> Self;
     fn count(n: usize) -> Self;
+    fn number(n: f64) -> Self;
+    fn cos(self) -> Self;
+    fn sin(self) -> Self;
+    fn asin(self) -> Self;
+    fn atan2(self, x: Self) -> Self;
+    fn pow(self, exponent: Self) -> Self;
     fn sqrt(self) -> Self;
     fn abs(self) -> Self;
     fn finite(self) -> bool;
@@ -32,6 +38,12 @@ macro_rules! real {
             fn one() -> Self { 1.0 }
             fn half() -> Self { 0.5 }
             fn count(n: usize) -> Self { n as Self }
+            fn number(n: f64) -> Self { n as Self }
+            fn cos(self) -> Self { self.cos() }
+            fn sin(self) -> Self { self.sin() }
+            fn asin(self) -> Self { self.asin() }
+            fn atan2(self, x: Self) -> Self { self.atan2(x) }
+            fn pow(self, exponent: Self) -> Self { self.powf(exponent) }
             fn sqrt(self) -> Self { self.sqrt() }
             fn abs(self) -> Self { self.abs() }
             fn finite(self) -> bool { self.is_finite() }

@@ -176,7 +176,7 @@ def portable_frame_header(
       drive letter;
     * a field produced through a TRANSCENDENTAL takes its last bits from
       the box's libm.  Measured 2026-08-20, same bytes on the Windows
-      desktop (UCRT) and weather-node-1 (glibc): the two ``exp``-based
+      desktop (UCRT) and test host A (glibc): the two ``exp``-based
       humidity derivations differ by at most 3 ULP (4.1e-16 relative) on
       the netCDF case, and the ``sin``/``cos`` grid-relative wind
       rotation moves all four wind components on the Lambert case.

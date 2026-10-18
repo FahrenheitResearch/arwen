@@ -55,7 +55,7 @@ and the pre-existing ``gpuwm_wrf_vert_interp_f32``, reached through
 The NumPy implementations in this module are RETAINED, and they are not
 a shipped fallback: they are the ORACLE-OF-RECORD for the equivalence
 gate.  These are the exact expressions that were measured against
-WRF-4.7.1 real.exe on node-4 (commit 94260bf44: QNWFA maxabs
+WRF-4.7.1 real.exe on test host D (commit 94260bf44: QNWFA maxabs
 1.484800e+04 on a field maxing 4.003303e+09, QNIFA maxabs 1.781250e+00
 on 5.978444e+05, QNWFA2D bit-exact from metgrid's own horizontal
 output), so they are the only thing that can say the Rust engine still

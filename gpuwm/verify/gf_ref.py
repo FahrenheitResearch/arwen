@@ -24,25 +24,26 @@ on the store into a real(4) local:
 
 Everything else in the preparation is float32 end to end.
 
-Which double, though, is a question the source does not settle and the
-fixture does.  Assigned to a real(8) and written out, ``con_g`` reads
-``0x40239D0140000000`` = ``float64(float32(9.80665))``, not the accurate
-``0x40239D013A92A305``.  But the arithmetic does not behave that way.
-Measured over the whole fixture -- 8640 lanes each of ``omeg`` and ``dhdt``
-from ``gf-stage-levels.csv``:
+Which double, though?  The stored word: ``con_g`` is
+``float64(float32(9.80665))`` = ``0x40239D0140000000``, not the accurate
+``0x40239D013A92A305``, because gfortran rounds the default-real literal to
+float32 before widening it.  The arithmetic uses that stored word.  Measured
+against GFDRV itself (``gf-levels.csv``) through the stage decomposition,
+which now USEs ``module_gfs_physcons`` rather than respelling it:
 
-    ================================  ==========  ==========
-    constants used                    omeg wrong  dhdt wrong
-    ================================  ==========  ==========
-    float64(9.80665) etc                       0           0
-    float64(float32(9.80665)) etc           1488         204
-    float32 throughout                      2700         360
-    ================================  ==========  ==========
+    ================================  =========================
+    constants used                    GFDRV rows not reproduced
+    ================================  =========================
+    float64(float32(9.80665)) etc     0 of 216
+    float64(9.80665) etc (accurate)   8 of 216
+    ================================  =========================
 
-so the constants below are the accurate doubles, and the stored-word reading is
-recorded in ``gf-pow-probe.txt`` as the trap it is.  Every miss in the middle
-row is exactly 1 ULP, which is precisely the size of error that survives a
-careless port and then gets amplified by a branch.
+An earlier revision of this module used the accurate doubles, on the
+strength of a table measured against the decomposition's OWN ``omeg`` and
+``dhdt`` -- which had made the same respelling, so the measurement was
+circular.  That is where the old "8 inexact rows" came from; they are gone.
+``tests/test_gf_wrf461_parity.py::test_gfs_constants_are_wrfs_own_words``
+pins the words so nobody "corrects" them back.
 
 The deep and shallow modules do NOT share these constants.  They declare
 their own (``g = 9.81``, ``cp = 1004.``, ``r_v = 461.``, ``xlv = 2.5e6``) as
@@ -67,12 +68,12 @@ __all__ = [
 ]
 
 # --- the driver's constants, at the width its expressions evaluate in ------
-# Accurate float64, per the fixture measurement in this module's docstring --
-# NOT float64(float32(v)), which is what the stored parameter word reads as.
-GFS_G = np.float64(9.80665e0)
-GFS_CP = np.float64(1.0046e3)
-GFS_XLV = np.float64(2.5000e6)
-GFS_RV = np.float64(4.6150e2)
+# WRF's own words: real(8) parameters initialised from default-real literals,
+# i.e. float64(float32(v)).  See this module's docstring.
+GFS_G = np.float64(np.float32(9.80665e0))
+GFS_CP = np.float64(np.float32(1.0046e3))
+GFS_XLV = np.float64(np.float32(2.5000e6))
+GFS_RV = np.float64(np.float32(4.6150e2))
 
 # --- the cloud model's own constants: plain real(4) -------------------------
 DEEP_G = np.float32(9.81)

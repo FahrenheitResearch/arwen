@@ -1260,9 +1260,10 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
         # owned scratch so previously published first pictures retain bytes
         # and timestamps; only requested history frames are delivered.
         engine_out = store / "png" if context else outdir
+        imported = store / "catalog-import.json"
         available, unavailable = _available_window_request(
             renderer, subject, products, store, heavy=heavy, paths=series,
-            section=section)
+            section=section, save_import=imported)
         if not available:
             return [], [], unavailable
         batches = (["all"] if timeidx is None else [str(timeidx)])
@@ -1281,7 +1282,8 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
                 section=section, isotherms=isotherms,
                 section_across_km=section_across_km,
                 section_size=section_size,
-                section_top_km=section_top_km, fills=fills)
+                section_top_km=section_top_km, fills=fills,
+                from_import=imported if imported.is_file() else None)
             written.extend(batch[0])
             failures.extend(batch[1])
             skipped.extend(batch[2])
@@ -1337,7 +1339,7 @@ def _wanted_slots(series, wanted_times, *, each: bool = False) -> list[str] | No
     series joined across a moving nest's moves.  Its baselines are the
     nest's frames at other places, usually many more than the frames the
     series delivers, and a launch into the same store reuses the first
-    one's import.  Measured on node-4 over a 3 km 48 x 48 storm nest's
+    one's import.  Measured on test host D over a 3 km 48 x 48 storm nest's
     series of 20 frames (17 baselines, 3 wanted, every product): 17.7 s
     drawing every frame, 6.2 s for three single-frame launches, and the
     206 pictures both drew byte-identical.  Drawing every frame also put a
@@ -1607,7 +1609,7 @@ def history_series_groups(paths, *, context_paths=()
 
 def _available_window_request(renderer: Path, path: Path, products: str,
                               store: Path, *, heavy: bool, paths=None,
-                              section=None
+                              section=None, save_import: Path | None = None,
                               ) -> tuple[str, list[tuple[str, str]]]:
     """The request this invocation can actually draw; ``(spec, skipped)``.
 
@@ -1681,7 +1683,8 @@ def _available_window_request(renderer: Path, path: Path, products: str,
     try:
         rows, _summary = rustwx.catalog_rows(
             renderer, (path,) if paths is None else paths,
-            store_root=store, heavy=heavy, products=products)
+            store_root=store, heavy=heavy, products=products,
+            save_import=save_import)
     except (OSError, RuntimeError) as error:
         # No trustworthy availability verdict: run the unchanged native
         # request so its import/metadata/launch failure remains visible.
@@ -1823,9 +1826,13 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
         prior_georef = render_georef.read(
             outdir / render_georef.GEOREF_FILENAME)
         with scratch_store(outdir) as store:
+            # Availability can drop a product and therefore change the scoped
+            # run name. Draw from the listing's import, which already contains
+            # every surviving product's inputs, instead of importing again.
+            imported = store / "catalog-import.json"
             available, unavailable = _available_window_request(
                 renderer, path, products, store, heavy=heavy,
-                section=section)
+                section=section, save_import=imported)
             skipped.extend(unavailable)
             if not available:
                 # Main still returns nonzero when the entire request
@@ -1839,7 +1846,7 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                 streamlines=streamlines, theme=theme, section=section,
                 isotherms=isotherms, section_across_km=section_across_km,
                 section_size=section_size, section_top_km=section_top_km,
-                fills=fills)
+                fills=fills, from_import=imported if imported.is_file() else None)
         # Filed and recorded in one hold of the manifest's lock: the
         # engine keyed this launch's pictures by the flat names they are
         # about to leave, and the next launch drops any entry whose file
@@ -3141,6 +3148,15 @@ def _diff_main(args: argparse.Namespace) -> int:
     source_label = args.source_label or default_source_label()
     if getattr(args, "radar_colors", None):
         os.environ[rustwx.RADAR_COLORS_ENV] = args.radar_colors
+    diff_table = getattr(args, "diff_table", None)
+    if diff_table:
+        if diff_table not in rustwx.DIFFERENCE_TABLE_CHOICES:
+            if not Path(diff_table).is_file():
+                print(f"render: --diff-table {diff_table}: no such file; give "
+                      f"{' or '.join(rustwx.DIFFERENCE_TABLE_CHOICES)}, or the "
+                      "path of a JSON difference table", file=sys.stderr)
+                return 2
+            diff_table = str(Path(diff_table).resolve())
     _claim_run_dir(args, [pair[2] for pair in pairing.pairs])
     written: list[Path] = []
     failures: list[str] = []
@@ -3158,6 +3174,7 @@ def _diff_main(args: argparse.Namespace) -> int:
                         renderer, a_paths, b_paths, timeidx=a_index, store_root=store,
                         out_dir=args.out, products=products, labels=labels,
                         sheet=args.diff_sheet, source_label=source_label,
+                        difference_table=diff_table,
                         theme=args.theme,
                         overlays=args.overlays, annotate=args.annotate,
                         streamlines=args.streamlines,
@@ -3175,6 +3192,7 @@ def _diff_main(args: argparse.Namespace) -> int:
                 print(f"render: difference {row['key']} {valid:%Y-%m-%d %H:%MZ}"
                       f" bar +/-{row.get('half_range')} {row.get('units', '')}"
                       f" ({row.get('rule')}) cells={row.get('defined_cells')}"
+                      f" differing={row.get('differing_cells')}"
                       f" max_abs={row.get('max_abs')}")
             for slug, reason in skipped:
                 print(f"render: skipped {slug}: {reason}", file=sys.stderr)
@@ -3955,6 +3973,17 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "--diff-sheet", action="store_true",
         help="also draw an A | B | A minus B sheet per product")
+    parser.add_argument(
+        "--diff-table", metavar="{table,auto,FILE}", default=None,
+        help="the difference colour bars: table (default: the fixed "
+             "per-product bars, so the frames of a loop share one), auto "
+             "(every bar fitted to its own difference) or a JSON file whose "
+             "keys replace the built-in table's (schema in tools/rustwx/"
+             "crates/rustwx-render/data/difference.json; "
+             "RUSTWX_DIFFERENCE_TABLE is the environment spelling).  Under "
+             "every choice a fixed bar that would draw a nonzero difference "
+             "as blank is fitted to it, and every panel prints the largest "
+             "|A-B| and how many cells differ"),
     parser.set_defaults(func=render_main)
     return parser
 

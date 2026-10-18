@@ -729,9 +729,10 @@ def _agent_install(workspace: Path, wheels: list[Path], extra: str, env: dict) -
     import time
 
     done = subprocess.run([sys.executable, str(M.AGENT_SOURCE), "install", "--workspace", str(workspace)],
-                          input=json.dumps({"wheels": [str(w) for w in wheels], "extra": extra}),
-                          capture_output=True, text=True, timeout=120, env=env)
-    assert done.returncode == 0 and json.loads(done.stdout)["ok"], done.stdout + done.stderr
+                          input=json.dumps({"wheels": [str(w) for w in wheels], "extra": extra}).encode("utf-8"),
+                          capture_output=True, timeout=120, env=env)
+    out, err = done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
+    assert done.returncode == 0 and json.loads(out)["ok"], out + err
     record = workspace / "install" / "install.json"
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:

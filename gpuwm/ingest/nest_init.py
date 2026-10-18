@@ -209,6 +209,12 @@ class NestedInputCatalog:
     #: are every other regular-grid route's, unchanged.
     relative_humidity_convention: str = "era5_mixed"
     lake_whole_source_search: bool = False
+    #: The root's observed lake-ice provider
+    #: (:class:`gpuwm.ingest.lake_ice.LakeIceProvider`), sampled on each
+    #: child's own grid so a nest's lakes are frozen from the same analysis
+    #: as its parent's.  ``None``: the forcing's ice only (every route that
+    #: declares none).
+    lake_ice_provider: object | None = None
     #: Each corridor child's birth footprint (grid id ->
     #: :class:`gpuwm.static.corridor.CorridorBirth`), cropped from the
     #: statics corridor the preparation sealed BEFORE it initialized its
@@ -1129,6 +1135,20 @@ def _prepare_child_input_on_grid_uncached(
                 else None),
             backend=preprocess)
         mapping_receipt["source_adapter"] = "regular-grid-native-state-v1"
+        provider = getattr(catalog, "lake_ice_provider", None)
+        if provider is not None and getattr(provider, "observation", None) is not None:
+            # Observed lake ice on the child's own grid: SEAICE (and XICE)
+            # set and SKINTEMP capped on the lake cells the analysis sees
+            # frozen; the soil router builds their ice column from these.
+            from dataclasses import replace as _replace
+            child_lat, child_lon = grid.latlon_mass()
+            fields, _, lake_ice_receipt = provider.freeze(
+                horizontal.fields, horizontal.fields["SKINTEMP"],
+                lat=child_lat, lon=child_lon, lake_mask=lake_mask,
+                dx_m=float(cfg.dx), where=f"domain {child_dc.grid_id}",
+                skin_name="SKINTEMP")
+            horizontal = _replace(horizontal, fields=fields)
+            mapping_receipt["lake_ice"] = lake_ice_receipt
     return PreparedChildInput(
         domain=child_dc, grid=grid, static_fields=static_fields,
         horizontal=horizontal, declared_orography=declared_orography,

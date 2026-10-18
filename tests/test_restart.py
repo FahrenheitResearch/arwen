@@ -984,7 +984,7 @@ def test_wsm6_sr_exact_upper_roundtrips_restart_bits(monkeypatch, tmp_path):
     _fill_setup(fresh)
     restart.restore_restart(path, fresh, cfg)
 
-    assert fresh_driver._sr_roundoff_max_ulps == 3
+    assert fresh_driver._sr_roundoff_max_ulps == 7
     assert fresh_driver._wsm6_minor_loops == 1
     assert fresh_driver.microphysics.sr is fresh._scratch["mp_sr"]
     np.testing.assert_array_equal(
@@ -3059,9 +3059,9 @@ def _member_names(path) -> list[str]:
 #: every older reconstruction unwinds the same name
 #: (_PRE_REAL_CLAMP_ALGORITHMS).
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "8b2e93ccad34802fb47061530dd962af456cda2c8035eec7da4cbd52ed53fddb"
+    "b2ce004e590de75a7d37596fd6437f8aa33de0ffd40b86a8e459bb626217089e"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
-    "7b8abced0192f5bd55370d208e16c76d667bf2baa2292ef59d3af0d482d698a6"
+    "e03f5ad776fb76735fa796e555813e379e2d874d9641fe3f4f11574bbde690e0"
 
 #: The pair above before the Kessler identity moved, and the identity every
 #: digest older than 2.8.8's clamp fix was harvested under.
@@ -3069,7 +3069,13 @@ _PRE_REAL_CLAMP_ROOT_DIGEST = \
     "efca0135a058d4aedb3a120ee729b769ed13d08352446eaa350f7cf5276fc76a"
 _PRE_REAL_CLAMP_CHILD_DIGEST = \
     "e35a7d91043c4096d8b7087e66eea09a7ca87bea63f3ad4cb8f47b3d5cce48c7"
-_PRE_REAL_CLAMP_ALGORITHMS = {"microphysics": "kessler-warm-rain-v1"}
+_PRE_EXACT_CHAIN_ALGORITHMS = {
+    "physics_driver": "gpuwm-physics-driver-v3-kf-phase-energy-pre-mp-expiry",
+}
+_PRE_REAL_CLAMP_ALGORITHMS = {
+    "microphysics": "kessler-warm-rain-v1",
+    **_PRE_EXACT_CHAIN_ALGORITHMS,
+}
 
 _PRE_CQ_DEFAULT_ROOT_DIGEST = \
     "9ead8250634097dc3d514611b5b2aed7aefec327008f36c8b2897683a7325b93"
@@ -3348,6 +3354,19 @@ def test_the_wrf480_solar_default_moves_only_the_solar_binding(
                 | set(old["physics_setup"]["algorithms"])
                 if live["physics_setup"]["algorithms"].get(key)
                 != old["physics_setup"]["algorithms"].get(key)} == {"solar"}
+
+
+def test_exact_chain_checkpoint_pin_moves_only_the_driver_identity(monkeypatch, tmp_path):
+    """Reconstruct the base digest without changing an array or config word."""
+    from tools.release.refresh_checkpoint_identity_pins import BASE_DIGESTS
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600., payload_seed=31,
+        run_overrides=_PINNED_UNDER_MEASURED_CLOCK)
+    write = restart.write_tree_restart(tmp_path, source, start + timedelta(seconds=3600))
+    child = next(tmp_path.glob("gpuwmrst_d02_*.npz"))
+    for grid, path in (("d01", write), ("d02", child)):
+        assert _digest_without_config_keys(
+            path, (), algorithm_overrides=_PRE_EXACT_CHAIN_ALGORITHMS) == BASE_DIGESTS[grid]
 
 
 def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(

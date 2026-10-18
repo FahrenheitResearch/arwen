@@ -123,8 +123,16 @@ pub static FIELD_MAP: &[FieldMapping] = &[
     // --- land surface --------------------------------------------------------
     f("TSLB", Some("tslb"), Rank::Soil, "K", "SOIL TEMPERATURE", FieldSource::History, ""),
     f("SMOIS", Some("smois"), Rank::Soil, "m3 m-3", "SOIL MOISTURE", FieldSource::History, ""),
-    f("LANDMASK", Some("landmask"), Rank::Surface, "", "LAND MASK (1 FOR LAND, 0 FOR WATER)", FieldSource::Init, ""),
+    f("LANDMASK", Some("landmask"), Rank::Surface, "1", "LAND MASK (1 FOR LAND, 0 FOR WATER)", FieldSource::Init,
+      "units 1, not WRF's empty string: a CF reader (the engine's mapped NetCDF route) pins units, and an empty unit is no unit"),
     f("LU_INDEX", Some("ivgtyp"), Rank::Surface, "", "LAND USE CATEGORY", FieldSource::Init, ""),
+    // Sea ice and snow ride the history (hex's ArWen backend publishes the
+    // land surface's own xice, snow and snowh) so a hex frame can be a
+    // regional model's initial and boundary surface, not only a picture.
+    f("SEAICE", Some("xice"), Rank::Surface, "1", "SEA ICE FLAG", FieldSource::History,
+      "fractional sea-ice cover, MPAS xice"),
+    f("SNOW", Some("snow"), Rank::Surface, "kg m-2", "SNOW WATER EQUIVALENT", FieldSource::History, ""),
+    f("SNOWH", Some("snowh"), Rank::Surface, "m", "PHYSICAL SNOW DEPTH", FieldSource::History, ""),
     // --- grid geometry the renderer reads ------------------------------------
     f("SINALPHA", None, Rank::Surface, "", "Local sine of map rotation", FieldSource::Constant,
       "0: the emitted U/V/U10/V10 are already earth-relative, so the renderer's grid-to-earth rotation must be the identity"),
@@ -143,7 +151,7 @@ pub static ABSENT_WRF_FIELDS: &[(&str, &str, &str)] = &[
     ("OLR", "top-of-atmosphere outgoing longwave",
      "not in the port history stream; blocks the OLR raw-extra plane"),
     ("SST", "sea surface temperature",
-     "not in the port history stream (it is in the pinned init file, but a static init value is not a forecast field)"),
+     "not in the port history stream: hex carries no ocean model, so the water skin temperature TSK is the SST the run was initialised with, and a consumer takes SST from TSK over water by a named policy (the engine's hex-global profile does)"),
     ("RAINSH", "shallow-cumulus precipitation accumulation",
      "the pinned suite runs Grell-Freitas with no separate shallow bucket; total precipitation is RAINC + RAINNC and is complete"),
 ];

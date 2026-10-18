@@ -1,4 +1,5 @@
 """GPU gates for independently admitted WRF NSSL option-18 slices."""
+# Replaced in 2.9.1 (the WRF exact chain): test_fused_gs_enforces_nonnegative_hydromass_writeback -> tests/test_nssl2_column_oracle.py::test_gs_hands_wrf_negative_mass_residues_to_nucond.
 
 from __future__ import annotations
 
@@ -3071,29 +3072,41 @@ def test_mp18_synthetic_gpu_step_executes_real_selector():
         assert bool(cp.isfinite(getattr(state, name)).all()), name
 
 
-def test_fused_gs_enforces_nonnegative_hydromass_writeback():
-    """Reproduce real d01 residues and preserve positive trace mass."""
+def test_fused_gs_hands_mass_residues_to_the_nucond_tail():
+    """Real d01 residues: GS scatters them as WRF does, NUCOND's tail
+    vaporizes them.
+
+    WRF's GS scatter is ``an = qx + min(an, 0)`` (module_mp_nssl_2mom.F:
+    23664): a negative mass residue survives GS, rides through NUCOND
+    (:11658-11667) and is returned to vapour by NUCOND's moment tail
+    (:11799-12199), as is any positive trace below the category minimum.
+    This gate used to require GS itself to clamp the residue to zero, which
+    dropped it from vapour; the 2026-10-07 column oracle
+    (tools/nssl2_wrf461_column_oracle) moved the cleanup to where WRF
+    does it.  The step as a whole still leaves no negative mass.
+    """
     import cupy as cp
 
     from gpuwm.core.nssl2_driver_support import NSSL2DriverWorkspace
     from gpuwm.core.nssl2_fused_gs import launch_fused_gs
+    from gpuwm.core.nssl2_nucond import launch_nucond
 
-    shape = (2, 1, 2)
+    shape = (3, 1, 2)            # NUCOND needs nz >= 3
     state = cp.zeros((16, *shape), dtype=cp.float32)
     workspace = NSSL2DriverWorkspace(
         state,
         cp.zeros((5, *shape[1:]), dtype=cp.float32),
         shape,
     )
+    snow = np.asarray(
+        [-1.0842021724855044e-19, 5.0e-17, -1.0e-10, 0.0, 0.0, 0.0],
+        dtype=np.float32)
+    graupel = np.asarray(
+        [-1.2815462124664279e-13, 5.0e-13, -1.0e-9, 0.0, 0.0, 0.0],
+        dtype=np.float32)
     workspace.field("qv").fill(cp.float32(1.0e-3))
-    workspace.field("qs").ravel()[:3] = cp.asarray(
-        [-1.0842021724855044e-19, 5.0e-17, -1.0e-10],
-        dtype=cp.float32,
-    )
-    workspace.field("qg").ravel()[:3] = cp.asarray(
-        [-1.2815462124664279e-13, 5.0e-13, -1.0e-9],
-        dtype=cp.float32,
-    )
+    workspace.field("qs").ravel()[:] = cp.asarray(snow)
+    workspace.field("qg").ravel()[:] = cp.asarray(graupel)
 
     full_theta = cp.full(shape, 300.0, dtype=cp.float32)
     air_density = cp.ones(shape, dtype=cp.float32)
@@ -3118,16 +3131,40 @@ def test_fused_gs_enforces_nonnegative_hydromass_writeback():
         1.0,
     )
     cp.cuda.Stream.null.synchronize()
+    from gpuwm.wrf_exact import ENABLED
+    if not ENABLED:
+        # A default process compiles nssl2_fused_gs_default.cu, 2.9.0's GS
+        # byte for byte (kernels/__init__.py _DEFAULT_SOURCE_MODULES): it
+        # clamps the negative residues at the GS writeback and keeps the
+        # positive trace mass (2.9.0's test_fused_gs_enforces_nonnegative_
+        # hydromass_writeback).  WRF's hand-off to NUCOND below is the
+        # strict (GPUWM_WRF_EXACT=1) unit's.
+        np.testing.assert_array_equal(
+            cp.asnumpy(workspace.field("qs")).ravel(), np.maximum(snow, 0))
+        np.testing.assert_array_equal(
+            cp.asnumpy(workspace.field("qg")).ravel(), np.maximum(graupel, 0))
+        return
+    np.testing.assert_array_equal(
+        cp.asnumpy(workspace.field("qs")).ravel(), snow)
+    np.testing.assert_array_equal(
+        cp.asnumpy(workspace.field("qg")).ravel(), graupel)
+    vapor_after_gs = cp.asnumpy(workspace.field("qv")).ravel().copy()
 
-    actual_snow = cp.asnumpy(workspace.field("qs")).ravel()
-    assert actual_snow[0] == np.float32(0.0)
-    assert actual_snow[1] == np.float32(5.0e-17)
-    assert actual_snow[2] == np.float32(0.0)
-
-    actual_graupel = cp.asnumpy(workspace.field("qg")).ravel()
-    assert actual_graupel[0] == np.float32(0.0)
-    assert actual_graupel[1] == np.float32(5.0e-13)
-    assert actual_graupel[2] == np.float32(0.0)
+    launch_nucond(
+        full_theta, air_density, pressure_pa, exner, vertical_velocity,
+        *(workspace.field(name) for name in (
+            "qv", "qc", "qr", "qi", "qs", "qndrop", "qnr", "qni", "qns",
+            "qnn")),
+        1.0, concentration_space=True, validate_values=False,
+        frozen=tuple(workspace.field(name) for name in (
+            "qg", "qh", "qng", "qnh", "qvolg", "qvolh")))
+    cp.cuda.Stream.null.synchronize()
+    assert not np.any(cp.asnumpy(workspace.field("qs")))
+    assert not np.any(cp.asnumpy(workspace.field("qg")))
+    # The tail's FP32 vapour sums, in WRF's order: graupel before snow.
+    expected = (vapor_after_gs + graupel) + snow
+    np.testing.assert_array_equal(
+        cp.asnumpy(workspace.field("qv")).ravel(), expected)
 
 
 def test_bigg_nearly_frozen_minimum_drops_keep_the_wrf_mass_remainder():

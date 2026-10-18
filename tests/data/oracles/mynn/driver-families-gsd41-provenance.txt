@@ -1,0 +1,27 @@
+Multi-step oracle of the operational fork's MYNN driver (GSD MYNN v4.1).
+Source: NOAA-EMC/HRRR tag v4.1.21, sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_bl_mynn.F.
+driver-families-gsd41-asis.csv.gz: the file unmodified.
+driver-families-gsd41.csv.gz: the one line :995 squared by build.sh, the
+bl_mynn_gsd41_unsquared_qtke = false (default) form.
+GNU Fortran 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1), glibc 2.39 (Ubuntu
+GLIBC 2.39-0ubuntu8.9), -O0; the harness also -ffp-contract=off.  Built by
+tools/mynn_pbl_gsd41_oracle/build.sh on rental box A, 2026-10-06; the same
+run reproduced every other fork CSV in this folder byte for byte (four of
+them rebuilt on glibc 2.39 in the same lane, see
+mixlength2-gsd41-provenance.txt).
+Harness: run_driver_families_gsd41 OUT.csv 12, then gzip -n -9.
+HRRR's namelist identity (hrrr_wrf.nl): mixing length 2, cloudpdf 2, EDMF 1,
+EDMF momentum 1, EDMF TKE 0, mixscalars 0, cloudmix 1, mixqt 0, icloud_bl 1,
+grav_settling 0, no SPP, no restart, no cycling; FLAG_QC and FLAG_QI true.
+Six families (as the WRF v4.6.1 families oracle, mixing-ratio inputs, the
+surface layer's 1/L held per family), one column per call (the fork's dx is a
+scalar), twelve 20 s steps.  tests/_mynn_families_gsd41.py repeats the
+between-step update.
+
+42178a22693ad14b1a3adcf3e44be3047f051abf80f3a64c0ce9ed9ac2ec6d8a  module_bl_mynn.F
+f928e36476e700fe8d467cdd0dbd6b191a17eda4b1dd80c49e7a5ecc263039a6  stub_wrf39.F90
+0ab69d0bf631a832aa302fbd7aee063efe733e4df186420b81cc0f8c97295803  run_driver_families_gsd41.F90
+4dd8b9e959dff32830aada312df6f52dafe68a52e85182da445a796cc57d784b  driver-families-gsd41.csv
+481b984fe16c6bb6c63a666272b4b06411ebaeef16bb2f8aa0c90cb44c0e4647  driver-families-gsd41-asis.csv
+a242e72f1107e5f7f6a0272b6885e7adb7f1c407d50f79a07fc3c0fc1002872a  driver-families-gsd41.csv.gz
+e4fdd90c1b95c376a54d4a8e7cf4fcc2f26ab501e1ce89fb446cddbe0e460950  driver-families-gsd41-asis.csv.gz

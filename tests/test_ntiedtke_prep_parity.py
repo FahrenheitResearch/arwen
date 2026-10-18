@@ -521,7 +521,15 @@ def _cutypen_args(key, exp, cv, ci, sa):
         pqen=v["zqp1"], ptenh=u["ptenh"], pqenh=u["pqenh"],
         pqsenh=u["pqsenh"],
         pgeoh=np.append(v["pgeoh"], np.float32(0.0)),
-        paph=np.append(exp[key]["prsi"], np.float32(0.0)),
+        # paph(klev+1) is the SURFACE pressure, and cutypen reads it in
+        # both of its surface-relative tests (the 350 hPa parcel ceiling
+        # and the 60 hPa mixed departure layer).  prep_expected() holds
+        # nz rows of prsi, so this used to append 0.0 here: every parcel
+        # then passed both tests, and the analytic fixture happened to
+        # agree anyway.  Real columns from tools/ntiedtke_column_oracle do
+        # not.  pgeoh(klev+1) = 0 is right: the interface heights start at
+        # the surface.
+        paph=np.append(exp[key]["prsi"], np.float32(a["psfc"])),
         hfx=a["hfx"], qfx=a["qfx"], pgeo=v["pgeo"], pqsen=v["zqsat"],
         pap=exp[key]["prsl"], pten=v["ztp1"],
         lndj=int(abs(float(a["xland"]) - 2.0)),
@@ -590,7 +598,9 @@ def cuda_cutypen(fixture, slice3):
         "ptenh": pack1(lambda k: ci[k]["ptenh"]),
         "pqenh": pack1(lambda k: ci[k]["pqenh"]),
         "pgeoh": pack1(lambda k: cv[k]["pgeoh"]),
-        "paph": pack1(lambda k: exp[k]["prsi"]),
+        # With the surface level: see _cutypen_args.
+        "paph": pack1(lambda k: np.append(exp[k]["prsi"],
+                                          np.float32(sa[k]["psfc"]))),
         "pgeo": pack1(lambda k: cv[k]["pgeo"]),
         "pqsen": pack1(lambda k: cv[k]["zqsat"]),
         "pap": pack1(lambda k: exp[k]["prsl"]),

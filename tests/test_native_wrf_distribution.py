@@ -688,9 +688,12 @@ assert variants[1]["surface"]["sst_offset_k"] == 1.0
     assert "gpuwm/core/adaptive_clock.py" in files
     assert "gpuwm/core/adaptive_timestep.py" in files
     assert "gpuwm/core/physics.py" not in files
-    assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
-        ("gpuwm/core/adaptive_clock.py", "gpuwm.core.physics"),
-        ("gpuwm/ingest/lateral_bc.py", "gpuwm.core.dycore")}
+    # lateral_bc.py no longer reaches gpuwm.core.dycore: the exact chain moved
+    # WRF_MUTS_SLOT into gpuwm.state_serialization_contract (2.9.1), which the
+    # standalone project already ships.
+    optional = {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]}
+    assert ("gpuwm/core/adaptive_clock.py", "gpuwm.core.physics") in optional
+    assert ("gpuwm/ingest/lateral_bc.py", "gpuwm.core.dycore") not in optional
     # The chained writer ships with the era5, gfs and mapped routes; the
     # forecast admission it reaches only when it chains does not, and a
     # preparation-only install never chains, so that import is optional.
@@ -2316,3 +2319,25 @@ def test_runtime_check_usage_errors_reach_the_user(argv, message, monkeypatch,
         runtime_check.main(argv)
     assert caught.value.code == 2
     assert message in capsys.readouterr().err
+
+
+def test_preparation_package_carries_ocean_configuration_without_gpu(tmp_path):
+    project = tmp_path / "ocean-preparation"
+    _stage_rw_wps_python_project(project)
+    asset = project / "gpuwm/data/surface_ocean.json"
+    assert asset.read_bytes() == (ROOT / "gpuwm/data/surface_ocean.json").read_bytes()
+    code = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from gpuwm.config import RunConfig
+from gpuwm.surface_ocean import ocean_namelist_defaults
+cfg = RunConfig(nx=8, ny=8, nz=8, dx=9000, dy=9000,
+                ztop=12000, dt=10, run_seconds=20, sf_ocean_physics=1)
+for key, value in ocean_namelist_defaults().items():
+    assert getattr(cfg, key) == value, key
+assert 'cupy' not in sys.modules
+"""
+    env = dict(os.environ, GPUWM_NO_LOCAL_GPU="1", PYTHONPATH="")
+    result = subprocess.run([sys.executable, "-P", "-c", code, str(project)],
+                            cwd=tmp_path, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr

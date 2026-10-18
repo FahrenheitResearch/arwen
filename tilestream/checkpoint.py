@@ -625,6 +625,12 @@ def read_store_restart(path, store, setup: DomainSetup, cfg, *,
     # Compared against the CHECKPOINTED subset for the same reason the
     # writer emits only that subset; the rest is zeroed below.
     arrays = _physinv.checkpointed_carriers(whole_store)
+    # The checkpoint-only driver carriers are tolerant both ways, as the
+    # resident reader is (physics_inventory.is_absent_tolerant).
+    stored = {key: value for key, value in stored.items()
+              if key in arrays or not _physinv.is_absent_tolerant(key)}
+    arrays = {key: value for key, value in arrays.items()
+              if key in stored or not _physinv.is_absent_tolerant(key)}
     if set(stored) != set(arrays):
         missing = sorted(set(arrays) - set(stored))
         extra = sorted(set(stored) - set(arrays))

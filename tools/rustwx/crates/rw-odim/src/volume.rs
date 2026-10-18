@@ -24,9 +24,10 @@ use crate::quantity::QuantityKind;
 
 /// Where the antenna is. Every field is required by ODIM `/where`.
 ///
-/// `height_m` is the one the frozen MeteoGate site table cannot supply -- the
-/// locations feed publishes `null` for all 136 radars -- and it is the reason
-/// a polar volume has to be read before a European site is assimilable at all.
+/// `height_m` is the one the MeteoGate locations feed does not publish (it
+/// gives a 2D point), so the frozen site table's heights were themselves read
+/// from volumes (`tools/harvest_radar_heights.py`), and a pack takes it from
+/// the volume it was built from, never from the table.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Site {
     pub latitude_deg: f64,
@@ -90,6 +91,7 @@ impl Source {
             .clone()
             .or_else(|| self.wigos.clone())
             .or_else(|| self.wmo.clone())
+            .or_else(|| self.rad.clone())
             .unwrap_or_else(|| self.raw.clone())
     }
 }
@@ -118,6 +120,9 @@ pub enum AzimuthSource {
     /// the sweep proceeds clockwise, so ray `i` is centred on
     /// `astart + (i + 1/2) * 360/nrays`.
     NominalFromRayCount { astart_deg: f64 },
+    /// The file's own per-ray azimuth (CfRadial, DORADE, UF, the JMA grid),
+    /// taken as written.
+    Recorded,
 }
 
 impl fmt::Display for AzimuthSource {
@@ -127,6 +132,7 @@ impl fmt::Display for AzimuthSource {
             AzimuthSource::NominalFromRayCount { astart_deg } => {
                 write!(f, "nominal (astart={astart_deg}, clockwise from north)")
             }
+            AzimuthSource::Recorded => write!(f, "recorded per ray by the file"),
         }
     }
 }
@@ -141,6 +147,12 @@ pub enum NyquistSource {
     Declared,
     /// Derived as `wavelength * PRF / 4` from a single-PRF sweep.
     DerivedSinglePrf,
+    /// Derived as `wavelength * PRF_high * PRF_low / (4 (PRF_high - PRF_low))`:
+    /// the extended interval of a dual-PRF sweep whose writer recorded both
+    /// PRFs and the wavelength (or transmit frequency) but no interval. Only
+    /// minted by a reader whose format is known to store velocities unfolded
+    /// to that interval (JMA, IRIS); ODIM's `establish` never derives it.
+    DerivedDualPrf,
     /// Not available. The velocity moments of this sweep cannot be unfolded.
     Unavailable,
 }
@@ -216,6 +228,41 @@ impl Nyquist {
             high_prf_hz,
             low_prf_hz,
             dual_prf,
+        }
+    }
+
+    /// The extended interval of a dual-PRF sweep from its two PRFs and the
+    /// wavelength, `lambda * f_high * f_low / (4 (f_high - f_low))`.
+    ///
+    /// For an N:N+1 pair this is N times the high PRF's single-PRF interval.
+    /// Only for formats known to store velocities unfolded to it; anything
+    /// else (equal PRFs, a missing wavelength) is `Unavailable`.
+    pub fn dual_prf_extended(
+        high_prf_hz: f64,
+        low_prf_hz: f64,
+        wavelength_cm: Option<f64>,
+    ) -> Self {
+        let unavailable = Nyquist {
+            interval_ms: None,
+            source: NyquistSource::Unavailable,
+            high_prf_hz: Some(high_prf_hz),
+            low_prf_hz: Some(low_prf_hz),
+            dual_prf: true,
+        };
+        let Some(wavelength_cm) = wavelength_cm else {
+            return unavailable;
+        };
+        let spread = high_prf_hz - low_prf_hz;
+        if !(wavelength_cm > 0.0 && low_prf_hz > 0.0 && spread > 1e-6) {
+            return unavailable;
+        }
+        let interval = (wavelength_cm / 100.0) * high_prf_hz * low_prf_hz / (4.0 * spread);
+        Nyquist {
+            interval_ms: interval.is_finite().then_some(interval),
+            source: NyquistSource::DerivedDualPrf,
+            high_prf_hz: Some(high_prf_hz),
+            low_prf_hz: Some(low_prf_hz),
+            dual_prf: true,
         }
     }
 
@@ -337,6 +384,12 @@ pub struct Sweep {
     /// elevation per ray rather than only the nominal cut.
     #[serde(skip)]
     pub ray_elevation_deg: Option<Vec<f64>>,
+    /// Per-ray pulse repetition frequency, Hz, when the writer records it
+    /// (`/datasetN/how/prf` as an array of `nrays`, as DWD writes it). On a
+    /// dual-PRF sweep it says which of the two intervals each ray was
+    /// measured with, which is what [`crate::dualprf`] corrects against.
+    #[serde(skip)]
+    pub ray_prf_hz: Option<Vec<f64>>,
     pub moments: Vec<Moment>,
 }
 
@@ -571,6 +624,7 @@ mod tests {
             azimuth_deg: Vec::new(),
             azimuth_source: AzimuthSource::MeasuredStartStopMean,
             ray_elevation_deg: None,
+            ray_prf_hz: None,
             moments: Vec::new(),
         }
     }

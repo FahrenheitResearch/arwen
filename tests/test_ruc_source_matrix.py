@@ -63,6 +63,9 @@ EXPECTED_POLICY = {
     "era5-l137": "layer_midpoint_samples",
     "gdas": "layer_midpoint_samples",
     "gefs": "layer_midpoint_samples",
+    # 2.9.2: a gpuwm-hex run as an ArWen parent. Its history carries MPAS
+    # Noah's four layers (0-10, 10-40, 40-100, 100-200 cm), the GFS ladder.
+    "hex-global": "layer_midpoint_samples",
     "hrrr-native": "node_point_samples",
     "hrrr-prs": "node_point_samples",
     "icon-d2": "node_point_samples",

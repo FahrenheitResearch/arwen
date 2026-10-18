@@ -119,3 +119,37 @@ def test_wrong_pin_and_unknown_selection_refuse(bundle_server, tmp_path):
     with pytest.raises(assets.BridgeAssetError):
         fetch_partial(pins, bad, tmp_path, ["rw_fetch"])
     assert not (tmp_path / "rw_fetch").exists()
+
+
+# Named breakage (2.9.1 verify of the on-demand observation doors): with the
+# bundle host unreachable or answering 404, the refusal read "partial fetch
+# failed: File is not a zip file", because zipfile turns the reader's OSError
+# into BadZipFile; an operator then looks for a damaged bundle instead of a
+# network or mirror problem.
+from urllib.error import URLError as _URLError  # noqa: E402
+
+
+class _NetPin:
+    def __init__(self, artifact, filename):
+        self.artifact, self.filename, self.bytes = artifact, filename, 10
+
+
+class _NetBundle:
+    def __init__(self):
+        self.binaries = [_NetPin("rw_ndbc", "rw_ndbc")]
+        self.bytes = 1000
+
+
+def test_an_unreachable_bundle_is_named_not_called_a_bad_zip(tmp_path, monkeypatch):
+    monkeypatch.setattr(assets, "matches_pin", lambda path, pin: False)
+    monkeypatch.setattr(assets, "bundle_url", lambda pins, bundle: "https://example.invalid/b.zip")
+
+    def refuse(request):
+        raise _URLError("connection refused")
+
+    with pytest.raises(assets.BridgeAssetError) as info:
+        fetch_partial(object(), _NetBundle(), Path(tmp_path), ["rw_ndbc"],
+                      progress=lambda *_: None, urlopen_fn=refuse)
+    text = str(info.value)
+    assert "could not be read" in text and "connection refused" in text
+    assert "not a zip file" not in text

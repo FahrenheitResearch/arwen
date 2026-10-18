@@ -5,9 +5,9 @@ import json
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "noahmp_wrf461_oracle/column"))
-import gen_columns as g
-from run_woof_column import run
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.noahmp_wrf461_oracle.column import gen_columns as g
+from tools.noahmp_wrf461_oracle.column.run_woof_column import run
 
 g.CONFIGS["night_dawn"] = dict(start=datetime(2026, 1, 1, 6), dt=300.0,
                                nstep=6, dx=12000.0, seed=4610)

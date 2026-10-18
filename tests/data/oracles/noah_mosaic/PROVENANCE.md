@@ -94,3 +94,26 @@ dominant-urban rule, zero fraction in the urban-secondary cells. Same build,
 same pins; the rebuild reproduced all 13,808 recorded raw arrays and 48
 manifests of the earlier families word for word
 (tools/noah_mosaic_wrf471_oracle/receipts/ucm-wrfinit-rebuild.txt).
+
+The `ucm_table` and `ucm_lcz_table` families (2026-10-07) are `ucm` and
+`ucm_lcz` with every urban switch left as `urban_param_init` reads it from
+URBPARM.TBL / URBPARM_LCZ.TBL: CH_SCHEME 2, TS_SCHEME 1, AHOPTION 0,
+ALHOPTION 0, IMP_SCHEME 1, IRI_SCHEME 0, GROPTION 0, the switches a
+default run uses. They were written on a different host: GNU Fortran
+(Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, glibc 2.39, from the same v4.7.1
+pins, with `NOAH_MOSAIC_CR_LIBM=1` (build.sh). That build links correctly
+rounded atanf/log10f ahead of glibc 2.39's, which are not correctly rounded;
+with it, the 13.3/2.39 build reproduced all 18,656 recorded raw arrays of
+the earlier families word for word, so the compiler change moves nothing.
+WRF v4.6.1 writes the same words for both families
+(tools/noah_mosaic_wrf461_oracle/receipts/raw-461crb2-vs-471crb2.json).
+
+The `terrain` family (2026-10-07, run_mosaic.F90 switch 12) is the `base`
+switch-1 family moved to high terrain: interface pressures 710 and 700 hPa
+(SFCPRS 70500 Pa, about 3 km), air, skin, soil and deep-soil temperatures
+12 K lower, vapour and saturation humidity 40% lower, longwave 40 W m-2
+lower; 48 columns, three tiles, four carried steps. Same host, pins and
+NOAH_MOSAIC_CR_LIBM=1 build as the table families; the rebuild that added
+it reproduced all 23,504 recorded arrays of the other families word for
+word (tools/noah_mosaic_wrf461_oracle/receipts/raw-471crb2-vs-471crb.json),
+and WRF v4.6.1 writes the same terrain words.

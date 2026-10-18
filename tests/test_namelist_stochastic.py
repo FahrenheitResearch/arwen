@@ -84,7 +84,8 @@ def test_the_unsupported_selectors_give_the_same_reason_and_name_their_key(tmp_p
         imported(tmp_path, f" {selector} = {value},")
     message = str(caught.value)
     assert "no runtime consumer" in message
-    assert "unperturbed" in message
+    assert ("RAND_PERT history and restart field would be missing" if selector == "rand_perturb"
+            else "unperturbed") in message
     assert message.startswith(f"&stoch {selector} = ")
     assert f"Next: turn {selector} off" in message
 

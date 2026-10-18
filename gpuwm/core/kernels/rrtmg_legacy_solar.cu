@@ -14,9 +14,13 @@
 // loops.  tests/test_rrtmg_legacy_column_oracle.py holds the result to
 // WRF v4.6.1's Fortran word for word (tools/rrtmg_legacy_column_oracle).
 //
-// radconst: DECLIN and SOLCON (one thread).  out[0] = DECLIN, out[1] = SOLCON.
-extern "C" __global__ void rls_radconst(float julian, float degrad, float dpd,
-                                        float* __restrict__ out)
+// Shared radconst body: DECLIN and SOLCON (one thread).  out[0] = DECLIN,
+// out[1] = SOLCON.  The strict caller (gpuwm/core/rrtmg_legacy.py
+// solar_geometry_device under GPUWM_WRF_EXACT=1) also reads the ASIN
+// argument, through rls_radconst_with_argument; the two-word rls_radconst
+// entry point is unchanged.
+__device__ __forceinline__ void rls_radconst_values(
+    float julian, float degrad, float dpd, float* out, float* asin_argument)
 {
     if (blockIdx.x != 0 || threadIdx.x != 0) return;
     float obecl = FMUL(23.5f, degrad);
@@ -39,6 +43,20 @@ extern "C" __global__ void rls_radconst(float julian, float degrad, float dpd,
     eccfac = FADD(eccfac, FMUL(0.000077f, glibc_sinf(two)));
     out[0] = declin;
     out[1] = FMUL(1370.0f, eccfac);
+    if (asin_argument) asin_argument[0] = arg;
+}
+
+extern "C" __global__ void rls_radconst(float julian, float degrad, float dpd,
+                                        float* __restrict__ out)
+{
+    rls_radconst_values(julian, degrad, dpd, out, nullptr);
+}
+
+extern "C" __global__ void rls_radconst_with_argument(
+    float julian, float degrad, float dpd, float* __restrict__ out,
+    float* __restrict__ asin_argument)
+{
+    rls_radconst_values(julian, degrad, dpd, out, asin_argument);
 }
 
 // calc_coszen per point: COSZEN (clamped to [-1, 1] as 4.6.1 does) and

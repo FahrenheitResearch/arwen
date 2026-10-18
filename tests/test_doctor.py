@@ -322,8 +322,9 @@ def _stage_wrf_geog(root):
     return root
 
 
+@pytest.mark.parametrize("bundled_builder", [False, True])
 def test_the_wrf_verdict_ignores_the_soil_archive_the_wrf_builder_never_opens(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, bundled_builder):
     """A WRF-only install stays green without the mesh-scoped archive.
 
     The row for it exists -- doctor may not call a tree complete that
@@ -335,31 +336,51 @@ def test_the_wrf_verdict_ignores_the_soil_archive_the_wrf_builder_never_opens(
     from gpuwm import rustwx_static
 
     geog = _stage_wrf_geog(tmp_path / "WPS_GEOG")
-    monkeypatch.setattr(rustwx_static, "find_static_bin", lambda: None)
+    monkeypatch.delenv("GPUWM_RW_MPAS_STATIC", raising=False)
+    monkeypatch.setattr(doctor, "find_spec", lambda name: None)
+    monkeypatch.setattr(rustwx_static, "find_static_bin",
+                        lambda: tmp_path / "rw_mpas_static" if bundled_builder
+                        else None)
     checks = doctor._geog_tree_checks(geog)
     by_name = {check.name: check for check in checks}
     assert by_name["WPS_GEOG"].status == "verified"
     # the WRF-scoped consumer, asked on its own, sees no gap at all
     assert doctor.geography_gaps(geog) == []
     mesh_row = by_name["WPS_GEOG (MPAS static)"]
+    assert mesh_row.status == "missing"
     assert not mesh_row.blocking
+    assert mesh_row.severity == doctor.SEVERITY_OPT_IN
     assert doctor.blocking_gaps(checks) == []
     assert "soilgrids" in mesh_row.remedy
+    assert mesh_row.action == "gpuwm fetch-geog"
+    monkeypatch.setattr(doctor, "collect_checks", lambda *a, **kw: checks)
+    assert cli.main(["doctor", "--json"]) == 0
 
 
-def test_the_mesh_verdict_blocks_when_that_door_is_installed(
-        tmp_path, monkeypatch):
-    """With the mesh builder ON the box, its geography gap fails doctor.
+@pytest.mark.parametrize("mpas_request", ["hexcore", "override"])
+def test_the_mesh_verdict_blocks_when_that_door_is_requested(
+        tmp_path, monkeypatch, mpas_request):
+    """An explicit MPAS install or builder override needs its geography.
+
+    Replaces test_the_mesh_verdict_blocks_when_that_door_is_installed
+    (2.9.2, b3fe11f572): a bundled rw_mpas_static is every install, so
+    "installed" no longer means the MPAS door was asked for.
 
     The concrete breakage: `gpuwm mesh` writes the grid and refuses the
     static half, and the mesh registry admits neither on its own -- so a
-    box that has the builder and not its geography cannot open a door it
-    advertises.  Reported `info`/non-blocking, that box read green.
+    box that requested MPAS and lacks its geography cannot open that door.
+    The bundled builder alone is not a request for MPAS support.
     """
 
     from gpuwm import rustwx_static
 
     geog = _stage_wrf_geog(tmp_path / "WPS_GEOG")
+    monkeypatch.delenv("GPUWM_RW_MPAS_STATIC", raising=False)
+    monkeypatch.setattr(doctor, "find_spec",
+                        lambda name: object() if name == mpas_request else None)
+    if mpas_request == "override":
+        monkeypatch.setenv("GPUWM_RW_MPAS_STATIC",
+                           str(tmp_path / "rw_mpas_static"))
     monkeypatch.setattr(rustwx_static, "find_static_bin",
                         lambda: tmp_path / "rw_mpas_static")
     checks = doctor._geog_tree_checks(geog)
@@ -371,6 +392,8 @@ def test_the_mesh_verdict_blocks_when_that_door_is_installed(
     assert doctor.blocking_gaps(checks) == [mesh_row]
     # and the WRF path is still not dragged into it
     assert doctor.geography_gaps(geog) == []
+    monkeypatch.setattr(doctor, "collect_checks", lambda *a, **kw: checks)
+    assert cli.main(["doctor", "--json"]) == 1
 
 
 def test_the_mesh_row_goes_quiet_once_the_soil_archive_is_staged(
@@ -460,8 +483,9 @@ def test_the_mesh_row_goes_quiet_on_the_tree_fetch_geog_actually_stages(
     assert doctor.blocking_gaps(checks) == []
 
 
+@pytest.mark.parametrize("mpas_requested", [False, True])
 def test_one_child_missing_from_the_staged_container_is_named_alone(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, mpas_requested):
     """An interrupted extraction is still reported, by the child it lost."""
 
     from gpuwm import geog_assets, rustwx_static
@@ -472,11 +496,18 @@ def test_one_child_missing_from_the_staged_container_is_named_alone(
     lost = [name for name in rustwx_static.REQUIRED_GEOG_DATASETS
             if rustwx_static.geog_dataset_candidates(geog, name)[1:]][-1]
     (rustwx_static.geog_dataset_dir(geog, lost) / "index").unlink()
+    monkeypatch.delenv("GPUWM_RW_MPAS_STATIC", raising=False)
+    monkeypatch.setattr(doctor, "find_spec",
+                        lambda name: object() if mpas_requested
+                        and name == "hexcore" else None)
     monkeypatch.setattr(rustwx_static, "find_static_bin",
                         lambda: tmp_path / "rw_mpas_static")
     row = {check.name: check for check in doctor._geog_tree_checks(geog)}[
         "WPS_GEOG (MPAS static)"]
-    assert row.status == "missing" and row.blocking
+    assert row.status == "missing"
+    assert row.blocking is mpas_requested
+    assert row.severity == (doctor.SEVERITY_UNREACHABLE if mpas_requested
+                            else doctor.SEVERITY_OPT_IN)
     assert lost in row.detail
     assert row.brief == "1 dataset(s) short of an MPAS static"
 
@@ -797,6 +828,10 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
                      # ladder and reason) and the TEMPO init library (its
                      # own ladder, gpuwm.core.tempo_rust).
                      "rw_hex_points", "rw_tempo",
+                     # 2.9.1: the projected MET library builds in
+                     # tools/rw_wps and gpuwm-hex resolves it through its
+                     # own ladder, the mapped engine's reason.
+                     "rw_projected_intermediate",
                      "rw_mlexport", "rw_simradar", "rw_grib2export",
                      "rw_compare", "rw_verify", "rw_nowcast_frames",
                      # The ensemble reducer builds in tools/rustwx and
@@ -1889,9 +1924,13 @@ def test_the_whole_printed_report_pastes_as_one_sequence(
                 # the download would send a reader to a command that
                 # does not fix what they are missing.
                 continue
-            assert commands[0] == "gpuwm fetch-bridges", (
+            # An on-demand artifact's block names the same command scoped
+            # to itself (`gpuwm fetch-bridges --partial --artifact NAME`),
+            # one pinned member instead of the whole bundle.
+            fetch = re.compile(r"gpuwm fetch-bridges( --partial --artifact [\w-]+)?")
+            assert fetch.fullmatch(commands[0]), (
                 f"the prebuilt bundle must be offered first: {commands[:2]}")
-            assert all(command == "gpuwm fetch-bridges"
+            assert all(fetch.fullmatch(command)
                        for command in commands), (
                 "the source build must be commented out when the bundle "
                 f"is offered: {commands}")
@@ -2451,6 +2490,44 @@ def test_the_probe_of_a_non_image_returns_in_bounded_time(tmp_path):
     elapsed = time.perf_counter() - started
     assert not ok
     assert elapsed < 5.0, f"the probe took {elapsed:.1f} s"
+
+
+def test_the_probe_does_not_wait_on_a_bridge_that_reads_stdin(tmp_path, monkeypatch):
+    """A bridge that reads its request from stdin (rw_globe_pack) exits at EOF.
+
+    Breakage (2.9.2 cut, 2026-10-17): the probe inherited an open stdin
+    (the Linux container build's pipe; a user's terminal under `gpuwm
+    doctor`), rw_globe_pack waited for its JSON request, and after 30 s
+    the probe called the binary broken.  The probe now hands every
+    launch a closed stdin; at EOF rw_globe_pack prints its diagnostic and
+    exits 1, an orderly launch.  Proven on the real binary with an open
+    pipe on stdin: 30 s and "did not exit" before, at once after.
+    """
+
+    import shutil
+    import subprocess
+    import time
+
+    cat = shutil.which("cat")
+    if os.name == "nt" or not cat:
+        pytest.skip("the stdin-reading stand-in is POSIX cat (a real ELF that reads stdin to EOF)")
+    fake = tmp_path / doctor.bridges.executable_name("rw_globe_pack")
+    shutil.copy2(cat, fake)
+    fake.chmod(0o755)
+    launches = []
+    real_run = subprocess.run
+
+    def recording_run(*args, **kwargs):
+        launches.append(kwargs)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(doctor.subprocess, "run", recording_run)
+    started = time.perf_counter()
+    ok, evidence = doctor._exec_probe(fake)
+    elapsed = time.perf_counter() - started
+    assert ok, evidence
+    assert elapsed < 5.0, f"the probe took {elapsed:.1f} s"
+    assert launches and all(call.get("stdin") == subprocess.DEVNULL for call in launches), launches
 
 
 def test_the_release_probe_accepts_the_real_mapped_engine():

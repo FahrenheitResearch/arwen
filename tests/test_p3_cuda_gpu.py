@@ -14,6 +14,17 @@ from __future__ import annotations
 import numpy as np
 
 
+def _skip_control_under_strict_build(what):
+    """GPUWM_WRF_EXACT=1 rewrites every compile's arithmetic options to the
+    strict set, so a control built with the opposite flag cannot exist in
+    that process; the positive half of the gate has already run."""
+    from gpuwm import wrf_exact
+    if wrf_exact.ENABLED:
+        import pytest
+        pytest.skip(f"{what}: the control build is rewritten to the strict "
+                    "options under GPUWM_WRF_EXACT=1")
+
+
 def _module(options):
     import cupy as cp                                    # noqa: F401
     from gpuwm.core import p3_device as PD
@@ -55,6 +66,7 @@ def test_contraction_is_off_and_the_probe_can_tell():
     off_infix, off_rn = run(PD.DEFAULT_OPTIONS)
     assert "-fmad=false" in PD.DEFAULT_OPTIONS
     assert off_infix.tobytes() == off_rn.tobytes()
+    _skip_control_under_strict_build("the -fmad=true control")
     on_infix, on_rn = run(("-std=c++17", "-fmad=true"))
     assert on_infix.tobytes() != on_rn.tobytes(), (
         "the contraction probe cannot distinguish the two builds, so the "
@@ -128,6 +140,42 @@ def _run_arm(arm, steps=3, options=None):
     out.update({("d", k): cp.asnumpy(v) for k, v in diag.items()})
     out.update({("s", k): cp.asnumpy(v) for k, v in surf.items()})
     return out
+
+
+def test_subnormal_results_survive_and_the_probe_can_tell():
+    """``--ftz=false`` is a correctness flag too.  gfortran on x86 keeps a
+    float32 result that is subnormal; through ``cupy.RawModule`` the unit
+    was compiled with CuPy's appended ``-ftz=true`` and flushed every such
+    result to zero, which the column oracle against WRF 4.6.1 measured as
+    up to 19 ULP in a snow column's ice fields after 28 steps
+    (tools/p3_wrf461_oracle/README.md).  Under the shipped options a product
+    of two normal floats with a subnormal result must come back subnormal,
+    and under an explicit ``--ftz=true`` it must not, so the probe is shown
+    to bite."""
+    import cupy as cp
+
+    from gpuwm.core import p3_device as PD
+
+    a = cp.asarray(np.full(256, 1.5e-20, dtype=np.float32))
+    b = cp.asarray(np.full(256, 3.0e-20, dtype=np.float32))
+    c = cp.zeros(256, dtype=cp.float32)
+    want = np.float32(np.float32(1.5e-20) * np.float32(3.0e-20))
+    assert want != 0 and abs(want) < np.finfo(np.float32).tiny
+
+    def run(options):
+        o = cp.zeros(256, dtype=cp.float32)
+        PD.p3_module(options).get_function("p3k_probe_rn")(
+            (1,), (256,), (a, b, c, o, np.int32(256)))
+        return cp.asnumpy(o)
+
+    assert "--ftz=false" in PD.DEFAULT_OPTIONS
+    kept = run(PD.DEFAULT_OPTIONS)
+    assert kept.view(np.uint32).tolist() == [want.view(np.uint32)] * 256
+    _skip_control_under_strict_build("the --ftz=true control")
+    flushed = run(("-std=c++17", "-fmad=false", "--ftz=true"))
+    assert not flushed.any(), (
+        "the subnormal probe cannot distinguish the two builds, so the "
+        "survival assertion above proves nothing")
 
 
 def test_the_fused_arm_reproduces_the_unfused_one_byte_for_byte():
@@ -339,8 +387,9 @@ def test_the_composed_unit_compiles_to_the_frame_it_is_priced_at():
     assert len(names) >= 12, names
 
     module = PD.p3_module(PD.DEFAULT_OPTIONS)
-    frames = {name: int(module.get_function(name)
-                        .attributes["local_size_bytes"])
+    frames = {name: int(cp.cuda.driver.funcGetAttribute(
+                  cp.cuda.driver.CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES,
+                  module.get_function(name).ptr))
               for name in names}
     widest = max(frames.values())
     profile = pf.local_memory_profile_from_device(cp)

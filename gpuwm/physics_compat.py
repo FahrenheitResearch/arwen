@@ -186,7 +186,7 @@ def require_rrtmg_legacy_ready() -> None:
 #: lanes were still landing.  It now performs the readiness check.
 require_rrtmg_legacy_executable = require_rrtmg_legacy_ready
 
-# Thompson 8 completed the audited Node-3 CUDA/WRF-oracle forecast lane and
+# Thompson 8 completed the audited test host C CUDA/WRF-oracle forecast lane and
 # the matched four-domain verification rerun of 2026-07-28
 # (docs/thompson-rematch-20260728.md), and the canonical WRF v4.6.1 classic
 # tables now ship as package data (gpuwm_data/data/thompson/tables, in the
@@ -681,9 +681,11 @@ CONSTANT_K_PROFILE_ID = (
 #: single-domain runner builds its initialization like any other suite's,
 #: with nwfa/nifa from the WIF monthly climatology.
 NSAS_PROFILE_ID = "wsm6-ysu-mm5-noah-nsas-rrtmg-legacy-v1"
+CCPP_TKE_EDMF_PROFILE_ID = "ccpp-tke-edmf-thompson-mm5-noah-gf-rte-v1"
 
 COMPOSITION_SUITE_PROFILE_IDS = (
     NSAS_PROFILE_ID,
+    CCPP_TKE_EDMF_PROFILE_ID,
     MILBRANDT2MOM_NTIEDTKE_PROFILE_ID,
     WDM6_GRELL_FREITAS_PROFILE_ID,
     THOMPSON_AEROSOL_MYJ_PROFILE_ID,
@@ -2514,6 +2516,8 @@ def _experimental_reason(option) -> str | None:
     """
     counterpart = option.get(_NO_WRF_COUNTERPART)
     if isinstance(counterpart, Mapping) and counterpart.get("exists") is False:
+        if counterpart.get("implementation_origin") == "upstream-port":
+            return "experimental, upstream port with no WRF counterpart"
         return "experimental, ArWen-original with no WRF counterpart"
     if option.get("maturity") == _EXPERIMENTAL_MATURITY:
         return "experimental, not WRF-verified"

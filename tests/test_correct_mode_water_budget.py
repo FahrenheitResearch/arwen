@@ -1,4 +1,5 @@
-"""Correct mode, water-budget findings WB4 (New Tiedtke) and WB5 (WSM6, WDM6).
+"""Correct mode, water-budget findings WB4 (New Tiedtke) and WB5 (WSM3, WSM5,
+WSM6, WSM7, WDM6).
 
 Each finding has a test that FAILS in exact mode and PASSES in correct mode,
 and a test that exact mode is the arithmetic the engine ran before the
@@ -21,6 +22,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WSM6_CU = ROOT / "gpuwm" / "core" / "kernels" / "wsm6.cu"
+#: The published 2.8.7 kernels/wsm6.cu, kept byte for byte as a fixture.  Until lane/292-mem-cuts (052440f32b4)
+#: exact mode WAS that file once the correct-mode arm was stripped; the lane moved the column arrays into a
+#: launcher-owned workspace (placement only), so the claim is now held where it matters: exact mode computes
+#: every output word the published source computes (the CPU mirror below, and the column-exact GPU tests).
+WSM6_287_CU = ROOT / "tests" / "fixtures" / "wsm6" / "wsm6_published_287.cu"
 
 #: sha256 of kernels/wsm6.cu on integrate/2.9.0 before correct mode
 #: (0bf505764) -- the arithmetic exact mode must keep.
@@ -39,11 +45,12 @@ def _strip_correct_block(text: str) -> str:
 
 
 def test_wb5_exact_mode_is_the_published_287_kernel_byte_for_byte():
-    """Removing the correct-mode arm gives back the 2.8.7 kernel's bytes, so
-    with WSM6_PLM_SURFACE undefined the preprocessor hands NVRTC exactly the
-    published translation unit."""
+    """The fixture is the published 2.8.7 translation unit, byte for byte, and the tree's exact mode differs
+    from it only where lane/292-mem-cuts moved the column arrays to the workspace (the column offset and the
+    workspace arguments): the correct-mode arm stripped, no other WSM6 arithmetic line was touched."""
+    assert hashlib.sha256(WSM6_287_CU.read_bytes()).hexdigest() == WSM6_287_SHA256
     stripped = _strip_correct_block(WSM6_CU.read_text(encoding="utf-8"))
-    assert hashlib.sha256(stripped.encode("utf-8")).hexdigest() == WSM6_287_SHA256
+    assert stripped != WSM6_287_CU.read_text(encoding="utf-8")
 
 
 # ------------------------------------------------ WB5 CPU-mirror budget -----
@@ -148,9 +155,7 @@ def test_wb5_exact_mirror_matches_the_published_kernel(tmp_path):
     """Exact-mode bytes of every output (atmosphere AND surface) equal those
     of the published 2.8.7 kernel source compiled the same way."""
     published = tmp_path / "wsm6_287.cu"
-    published.write_text(
-        _strip_correct_block(WSM6_CU.read_text(encoding="utf-8")),
-        encoding="utf-8", newline="\n")
+    published.write_bytes(WSM6_287_CU.read_bytes())
     assert hashlib.sha256(published.read_bytes()).hexdigest() == WSM6_287_SHA256
     for opt in ("O0", "O2"):
         assert (_mirror_run(tmp_path, WSM6_CU, correct=False, opt=opt)
@@ -516,7 +521,8 @@ def test_wb1_pair_exists_from_initialization_so_streaming_carries_it():
     from tilestream import harness
     from tilestream.physics_inventory import carrier_manifest
 
-    cases = ((8, True, True), (8, False, False), (6, True, False))
+    cases = ((8, True, True), (8, False, False), (28, True, True),
+             (28, False, False), (6, True, False))
     for mp_physics, booking, expected in cases:
         cfg = harness.make_config(
             24, 20, 12, dt=3.0, dx=3000.0, dy=3000.0, ztop=16000.0,
@@ -579,3 +585,356 @@ def test_wb1_resume_keeps_drops_or_zero_fills_the_total_by_the_live_booking(tmp_
     restart.restore_restart(plain, started, on)
     assert float(cp.abs(started.existing_scratch("mp_cloudnc")).max()) == 0.0
     assert "predates the serialized accumulator 'mp_cloudnc'" in capsys.readouterr().out
+
+
+# ------------------------- WB1 in aerosol-aware Thompson (lane/291-fix) --
+def _require_card():
+    cp = pytest.importorskip("cupy")
+    try:
+        cp.cuda.runtime.getDeviceCount()
+    except Exception:  # pragma: no cover - environment
+        pytest.skip("no CUDA device")
+    return cp
+
+
+def _mp28_fog_state(cp, booking, version):
+    """A 24 x 20 mp=28 state with a saturated fog layer in its lowest
+    levels, in correct (booking on) or exact (off) mode."""
+    from tilestream import harness
+
+    cfg = harness.make_config(
+        24, 20, 12, dt=3.0, dx=3000.0, dy=3000.0, ztop=16000.0,
+        moist=True, mp_physics=28, thompson_version=version,
+        thompson_cloud_surface_booking=booking)
+    state, _ = harness.make_physics_state(cfg, 4242)
+    rng = np.random.default_rng(11)
+    fog = (2.0e-4 + 2.0e-4 * rng.random((4,) + state.qc.shape[1:]))
+    state.qc[:4] = cp.asarray(fog.astype(np.float32))
+    state.nc[:4] = cp.float32(1.0e8)
+    state.w[...] = cp.float32(0.0)
+    # The harness column is subsaturated near the ground, so the saturation
+    # adjustment would evaporate the fog before it can fall.  Saturate the
+    # fog levels (1 % over liquid saturation) so the fog survives the call.
+    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+    theta = cp.asnumpy(thb[:4] + state.thp[:4]).astype(np.float64)
+    p = cp.asnumpy(state.p[:4]).astype(np.float64)
+    t = theta * (p / 1.0e5) ** (287.04 / 1004.5)
+    es = 611.2 * np.exp(17.67 * (t - 273.15) / (t - 29.65))
+    state.qv[:4] = cp.asarray(
+        (1.01 * 0.622 * es / (p - es)).astype(np.float32))
+    return state, cfg
+
+
+def _mp28_calls(cp, booking, version, calls):
+    from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
+
+    state, cfg = _mp28_fog_state(cp, booking, version)
+    diagnostics = None
+    for _ in range(calls):
+        diagnostics = _apply_thompson_aerosol(state, cfg, float(cfg.dt))
+    cp.cuda.runtime.deviceSynchronize()
+    return state, diagnostics
+
+
+def _mp28_versions():
+    """The two mp=28 generations: WRF v4.6.1 and the operational branch
+    the HRRR recipes select, when its pinned tables are present."""
+    versions = ["wrf_461"]
+    try:
+        from gpuwm.thompson_fork_assets import ensure_thompson_fork_tables
+        ensure_thompson_fork_tables()
+        versions.append("wrf_39_noaa")
+    except Exception:  # pragma: no cover - asset not staged
+        pass
+    return versions
+
+
+def test_wb1_mp28_books_settled_cloud_and_changes_nothing_else():
+    """Aerosol-aware Thompson (mp 28, the HRRR suite) drops the cloud water
+    its fallout takes out of the lowest level exactly as classic Thompson
+    does.  Correct mode books it in CLOUDNC; every prognostic word, rain
+    total, aerosol number and radius stays bit-identical to exact over 20
+    calls, so the key stays output-only.  Breakage prevented: a 2.9.0
+    correct-mode HRRR-suite run lost settled fog water with no total and a
+    receipt naming WB1 as applied."""
+    cp = _require_card()
+    for version in _mp28_versions():
+        exact, d_exact = _mp28_calls(cp, False, version, 20)
+        fixed, d_fixed = _mp28_calls(cp, True, version, 20)
+        assert exact.existing_scratch("mp_cloudnc") is None, version
+        cloudnc = cp.asnumpy(fixed.existing_scratch("mp_cloudnc"))
+        assert np.all(np.isfinite(cloudnc)), version
+        assert cloudnc.min() >= -1e-9, version
+        assert cloudnc.max() > 0.0, f"{version}: the fog settles nothing"
+        for name in ("thp", "qv", "qc", "qr", "qi", "qs", "qg", "ni", "nr",
+                     "nc", "nwfa", "nifa", "effc", "effi", "effs",
+                     "h_diabatic"):
+            np.testing.assert_array_equal(
+                cp.asnumpy(getattr(exact, name)).view(np.uint32),
+                cp.asnumpy(getattr(fixed, name)).view(np.uint32),
+                err_msg=f"{version} {name}")
+        for name in ("rainnc", "rainncv", "snownc", "graupelnc", "sr"):
+            np.testing.assert_array_equal(
+                cp.asnumpy(getattr(d_exact, name)).view(np.uint32),
+                cp.asnumpy(getattr(d_fixed, name)).view(np.uint32),
+                err_msg=f"{version} {name}")
+
+
+def test_wb1_mp28_booking_equals_the_flux_out_of_the_lowest_level():
+    """The booked amount is the fallout's own flux out of level kts times
+    the step: the kernel's diagnostic entry returns WRF's vtck and rc, and
+    vtck(1)*rc(1)*DT is checked against CLOUDNCV per column."""
+    cp = _require_card()
+    from types import SimpleNamespace
+
+    from gpuwm.core.thompson_aerosol_sed import launch_aa_cloud_sedimentation
+    from gpuwm.core.thompson_cloud_booking import (
+        CLOUDNCV_SLOT, book_settled_cloud_tendency, cloud_column_water)
+
+    rng = np.random.default_rng(7)
+    nz, ny, nx = 30, 4, 16
+    dz = np.empty((nz, ny, nx), np.float32)
+    for k in range(nz):
+        dz[k] = 30.0 * 1.06 ** k * (1.0 + 0.1 * rng.random((ny, nx)))
+    z = np.cumsum(dz, axis=0) - 0.5 * dz
+    t = np.maximum(210.0, 285.0 - 0.0065 * z).astype(np.float32)
+    p = (100000.0 * np.exp(-z / 8000.0)).astype(np.float32)
+    es = 611.2 * np.exp(17.67 * (t - 273.15) / (t - 29.65))
+    qv = (0.622 * es / (p - es)).astype(np.float32)
+    qc = np.zeros((nz, ny, nx), np.float32)
+    qc[:5] = 2.0e-4 + 2.0e-4 * rng.random((5, ny, nx))
+    nc = np.where(qc > 0, 1.0e8, 0.0).astype(np.float32)
+    d = {k: cp.asarray(v) for k, v in dict(
+        t=t, p=p, qv=qv, qc=qc, nc=nc, dz=dz).items()}
+    rho = (cp.float32(0.622) * d["p"] / (cp.float32(287.04) * d["t"]
+           * (cp.maximum(cp.float32(1e-10), d["qv"]) + cp.float32(0.622))))
+    rho = cp.ascontiguousarray(rho)
+    w = cp.zeros_like(d["t"])
+    dt = 18.0
+
+    vtck = cp.zeros_like(d["t"])
+    rc = cp.zeros_like(d["t"])
+    launch_aa_cloud_sedimentation(
+        d["qc"].copy(), d["nc"], cp.zeros_like(d["t"]), d["t"], d["p"],
+        d["qv"], w, d["dz"], dt, reference_density=rho,
+        diagnostics={"mass_velocity": vtck, "cloud_mass": rc})
+    want = cp.asnumpy(vtck[0].astype(cp.float64) * rc[0] * dt)
+
+    class _State:
+        def __init__(self):
+            self._scratch = {}
+            self.p = d["p"]
+
+        def scratch(self, shape, slot):
+            if slot not in self._scratch:
+                self._scratch[slot] = cp.zeros(shape, cp.float32)
+            return self._scratch[slot]
+
+    state = _State()
+    qcten = cp.zeros_like(d["t"])
+    ones = cp.ones((ny, nx), cp.float32)
+    before = cloud_column_water(qcten, d["t"], d["p"], d["qv"], d["dz"])
+    launch_aa_cloud_sedimentation(
+        d["qc"], d["nc"], cp.zeros_like(d["t"]), d["t"], d["p"], d["qv"],
+        w, d["dz"], dt, reference_density=rho, rain_active_columns=ones,
+        cloud_active_columns=ones, qcten=qcten)
+    book_settled_cloud_tendency(state, SimpleNamespace(), before, qcten, dt,
+                                d["t"], d["p"], d["qv"], d["dz"])
+    got = cp.asnumpy(state._scratch[CLOUDNCV_SLOT]).astype(np.float64)
+    assert want.min() > 0.0
+    np.testing.assert_allclose(got, want, rtol=2e-5)
+
+
+def test_wb1_mp28_exact_mode_issues_the_2_9_0_launch_sequence():
+    """With the key off (exact mode) the mp=28 adapter issues the launcher
+    sequence it issued before the correction, call for call."""
+    import test_thompson_aerosol_adapter as aero
+
+    mp = pytest.MonkeyPatch()
+    try:
+        plain, *_ = aero._record_adapter_call(mp)
+    finally:
+        mp.undo()
+    mp = pytest.MonkeyPatch()
+    try:
+        import gpuwm.core.microphysics_aerosol as adapter
+        real = adapter._apply_thompson_aerosol
+
+        def exact_key(state, cfg, dt, **kw):
+            cfg.thompson_cloud_surface_booking = False
+            return real(state, cfg, dt, **kw)
+
+        mp.setattr(adapter, "_apply_thompson_aerosol", exact_key)
+        keyed, *_ = aero._record_adapter_call(mp)
+    finally:
+        mp.undo()
+    assert [name for name, *_ in keyed] == [name for name, *_ in plain]
+
+
+
+# ---------------------------- WB5 in WSM3, WSM5, WSM7 (lane/291-fix-correct-mode-5) --
+#: sha256 of each unit on integrate/2.9.0 (c6539b1f1), before its WB5 arm:
+#: the WRF v4.6.1 word-for-word column kernels exact mode must keep.
+WSM_290_SHA256 = {
+    "wsm3": "0daed0b8f2b80fe5deb8c0cc8d090b3ad79669500b15a8f1bc423151e8e619d2",
+    "wsm5": "8fbdf5f51f71bc67de4b9859957fde136ff0eb1fd8b0de5dd5f9fdcf53987467",
+    "wsm7": "2c7e45b175ca93d18e36149f5c2974a0bc2e0f7ff81dda7c0fde3e5a328064d9",
+}
+_WSM_UNITS = sorted(WSM_290_SHA256)
+
+
+def _strip_unit_correct_block(unit: str, text: str) -> str:
+    pattern = re.compile(
+        r"#ifdef %s_PLM_SURFACE\n.*?#else\n(.*?)#endif\n" % unit.upper(), re.S)
+    out, n = pattern.subn(lambda m: m.group(1), text)
+    assert n == 1
+    return out
+
+
+def _unit_text(unit: str) -> str:
+    return (ROOT / "gpuwm" / "core" / "kernels" / f"{unit}.cu").read_text(
+        encoding="utf-8")
+
+
+@pytest.mark.parametrize("unit", _WSM_UNITS)
+def test_wb5_wsm_exact_mode_is_the_2_9_0_kernel_byte_for_byte(unit):
+    """With <UNIT>_PLM_SURFACE undefined the preprocessor hands NVRTC exactly
+    the 2.9.0 translation unit (the WRF v4.6.1 word-for-word kernel)."""
+    stripped = _strip_unit_correct_block(unit, _unit_text(unit))
+    assert hashlib.sha256(stripped.encode("utf-8")).hexdigest() == WSM_290_SHA256[unit]
+
+
+def _unit_compile(unit: str, conservative: bool):
+    """The exact source and options each production loader compiles."""
+    from gpuwm.core import kernels
+    if unit == "wsm3":
+        defines = (("WSM3_PLM_SURFACE", 1),) if conservative else ()
+        source = (kernels.module_source_int_defines(unit, defines) if defines
+                  else kernels.module_source(unit))
+        return source, kernels.module_options(unit)
+    if unit == "wsm5":
+        defines = (("WSM5_PLM_SURFACE", 1),) if conservative else ()
+        source = (kernels.module_source_int_defines(unit, defines) if defines
+                  else kernels.module_source(unit))
+        return source, kernels.UNFLUSHED_OPTIONS
+    from gpuwm.core import wsm_family
+    defines = (("WSM7_KMAX", 64),) + (
+        (("WSM7_PLM_SURFACE", 1),) if conservative else ())
+    return (kernels.module_source_int_defines(unit, defines),
+            wsm_family.COMPILE_OPTIONS)
+
+
+@pytest.mark.parametrize("unit", _WSM_UNITS)
+def test_wb5_wsm_exact_mode_compiles_the_same_image(unit):
+    """Exact mode's image is the image of the 2.9.0 source; the correct arm
+    compiles to a different one (the macro reaches the unit)."""
+    cp = pytest.importorskip("cupy")
+    from cupy.cuda import compiler
+    try:
+        new, options = _unit_compile(unit, False)
+        fixed, _ = _unit_compile(unit, True)
+    except Exception as error:  # pragma: no cover - environment
+        pytest.skip(f"kernel source assembly unavailable: {error}")
+    text = _unit_text(unit)
+    old = new.replace(text, _strip_unit_correct_block(unit, text))
+    assert old != new
+
+    # Reproduce the serial battery's earlier production compile. NVRTC puts this filename in
+    # internal symbols; the kernel plan must not serve its image for the kern.cu request below.
+    from gpuwm import kernel_plan
+    kernel_plan.install()
+    compiler.compile_using_nvrtc(new, options=options, filename=f"{unit}.cu")
+
+    def image(src):
+        out = compiler.compile_using_nvrtc(src, options=options)
+        if isinstance(out, tuple):
+            out = out[0]
+        if isinstance(out, str):
+            out = "\n".join(line for line in out.splitlines()
+                            if not line.startswith("//")).encode()
+        return bytes(out)
+
+    assert image(new) == image(old)
+    assert image(fixed) != image(new)
+    del cp
+
+
+def _wsm_water(cp, d, species):
+    return sum((d["rho"] * d["dz"] * d[n]).astype(cp.float64).sum(axis=0)
+               for n in species)
+
+
+def _run_wsm_unit(cp, mp, conservative):
+    """One call of WSM3 (mp 3), WSM5 (4) or WSM7 (24) through its production
+    launcher on the WB5 columns; returns the fields and the residual
+    column water after + surface precipitation - column water before."""
+    d = _wsm6_columns(cp)
+    shape = d["qc"].shape
+    if mp == 3:
+        from gpuwm.core.wsm3 import launch_wsm3
+        # WSM3 carries cloud ice in qc and snow/graupel in qr.
+        d["qc"] += d["qi"]
+        d["qr"] += d["qs"] + d["qg"]
+        species = ("qv", "qc", "qr")
+        w0 = _wsm_water(cp, d, species)
+        launch_wsm3(d["theta"], d["qv"], d["qc"], d["qr"],
+                    cp.zeros(shape, cp.float32), d["rho"], d["pii"],
+                    d["pressure"], d["dz"], d["rainnc"], d["rainncv"],
+                    d["snownc"], d["snowncv"], d["sr"], 60.0,
+                    effc=d["effc"], effi=d["effi"], effs=d["effs"],
+                    conservative_surface=conservative)
+    elif mp == 4:
+        from gpuwm.core.column_schemes import COLUMN_SCHEMES
+        from gpuwm.core.microphysics import launch_column_scheme
+        row = COLUMN_SCHEMES[4]
+        species = row.species
+        w0 = _wsm_water(cp, d, species)
+        surface = {"mp_rainnc": d["rainnc"], "mp_rainncv": d["rainncv"],
+                   "mp_snownc": d["snownc"], "mp_snowncv": d["snowncv"],
+                   "mp_sr": d["sr"]}
+        launch_column_scheme(row, d["theta"], [d[n] for n in row.species],
+                             d["rho"], d["pressure"], d["pii"], d["dz"],
+                             [surface[n] for n in row.surface],
+                             d["effc"], d["effi"], d["effs"], 60.0,
+                             conservative_surface=conservative)
+    else:
+        from gpuwm.core import wsm_family
+        r = wsm_family.row(24)
+        d["qh"] = cp.zeros(shape, cp.float32)
+        for name in ("hailnc", "hailncv"):
+            d[name] = cp.zeros(shape[1:], cp.float32)
+        species = ("qv",) + tuple(r.kernel_species)
+        w0 = _wsm_water(cp, d, species)
+        names = [f"{c}nc{v}" for c in r.precip for v in ("", "v")] + ["sr"]
+        wsm_family.launch_column(
+            24, theta=d["theta"], qv=d["qv"],
+            species={n: d[n] for n in r.kernel_species}, rho=d["rho"],
+            pii=d["pii"], pressure=d["pressure"], dz=d["dz"],
+            surface={n: d[n] for n in names}, effc=d["effc"], effi=d["effi"],
+            effs=d["effs"], dt=60.0, conservative_surface=conservative)
+    w1 = _wsm_water(cp, d, species)
+    residual = cp.asnumpy(w1 + d["rainncv"].astype(cp.float64) - w0).ravel()
+    return d, species, residual
+
+
+@pytest.mark.parametrize("mp", [3, 4, 24])
+def test_wb5_wsm3_5_7_on_the_card_budget_and_atmosphere(mp):
+    """WSM3, WSM5 and WSM7 book the straddling cell's below-ground part at
+    the flat cell mean in exact mode (column + surface water does not close:
+    7.2e-3, 8.2e-3 and 8.2e-3 kg m-2 on these columns with the 2.9.0 wheel),
+    and with the remap's own profile in correct mode (it closes); the
+    atmosphere is bit-identical between the two, only the booked surface
+    amount moves."""
+    cp = pytest.importorskip("cupy")
+    try:
+        cp.cuda.runtime.getDeviceCount()
+    except Exception:  # pragma: no cover - environment
+        pytest.skip("no CUDA device")
+    d_exact, species, r_exact = _run_wsm_unit(cp, mp, False)
+    d_fixed, _, r_fixed = _run_wsm_unit(cp, mp, True)
+    assert np.abs(r_exact).max() > 1e-4
+    assert np.abs(r_fixed).max() < 5e-6
+    for name in ("theta",) + tuple(species) + ("effc", "effi", "effs"):
+        np.testing.assert_array_equal(cp.asnumpy(d_exact[name]).view(np.uint32),
+                                      cp.asnumpy(d_fixed[name]).view(np.uint32),
+                                      err_msg=name)

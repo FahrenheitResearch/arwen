@@ -12,12 +12,21 @@ import hashlib
 
 import numpy as np
 
+# WRF's carried dry mass after an acoustic loop. Boundary preprocessing
+# needs this inventory key without importing the forecast executor.
+WRF_MUTS_SLOT = "wrf_exact_muts"
+
 
 from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
 
 STATE_SERIALIZED_ATTRS = (
     "u", "v", "w", "thp", "php", "mup",
     "p", "al", "alt",
+    # The strict diagnostic retains WRF's perturbation-pressure words.
+    # Pressure force and history read them across stage boundaries; a
+    # reconstruction from rounded full pressure loses their low bits.
+    # Absent outside that arm, so ordinary inventories are unchanged.
+    "p_perturbation",
     "qv", "qc", "qr", "h_diabatic",
     # WRF RTHFTEN/RQVFTEN: the dycore's pure advective theta/qv forcing
     # pair, exported at RK stage 1 of step N and read by the cumulus call
@@ -42,7 +51,7 @@ STATE_SERIALIZED_ATTRS = (
     # carrier would cold-start the closure on a fully developed field.
     # Absent (None) under every other km_opt, so non-LES inventories are
     # unchanged.
-    "tke",
+    "tke", "tke_edmf",
     "qi", "qs", "qg", "nc", "nr", "ni", "ns", "ng",
     "qh", "qndrop", "qnr", "qni", "qns", "qng", "qnh", "qnn",
     "qvolg", "qvolh",
@@ -171,7 +180,15 @@ def _update_setup_core(digest, state, *, error_type: type[Exception]) -> bool:
     """
 
     for name in STATE_SETUP_ARRAYS:
-        _digest_array(digest, name, getattr(state, name))
+        value = getattr(state, name)
+        if name == "thb":
+            # Strict mode's theta carrier (gpuwm.core.state.
+            # adopt_wrf_theta_carrier) re-expresses a prepared base as
+            # thb = 300; the setup is still the base the preparation built.
+            setup_thb = getattr(state, "_setup_thb", None)
+            if setup_thb is not None:
+                value = setup_thb
+        _digest_array(digest, name, value)
     for name in STATE_SETUP_SCALARS:
         value = getattr(state, name)
         if value is not None and not isinstance(value, bool):

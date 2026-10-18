@@ -17,7 +17,7 @@ use rw_grib2export::{export, ABI};
 
 const USAGE: &str = "\
 usage: rw_grib2export --request REQUEST.json
-       rw_grib2export --list | --abi | --help | --version
+       rw_grib2export --list | --abi | --probe-post-device | --help | --version
 
 Reads WRF-format WOOF history files and writes wrfsfc_dNN_<valid>.grib2 and
 wrfprs_dNN_<valid>.grib2 (WMO FM 92 GRIB2) plus manifest.json, computing
@@ -45,6 +45,10 @@ fn main() -> ExitCode {
         match args[i].as_str() {
             "--abi" => {
                 println!("{ABI}");
+                return ExitCode::SUCCESS;
+            }
+            "--probe-post-device" => {
+                println!("{}", export::probe_post_device());
                 return ExitCode::SUCCESS;
             }
             "--list" => {

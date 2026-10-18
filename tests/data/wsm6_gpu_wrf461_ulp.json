@@ -1,0 +1,312 @@
+{
+ "authority": "WRF v4.6.1 phys/physics_mmm/mp_wsm6.F90 and mp_wsm6_effectRad.F90",
+ "meaning": "Per scenario and field: the maximum float32 ULP distance and the maximum absolute difference of the CUDA WSM6 kernel (one 30 s call) from WRF v4.6.1 mp_wsm6 on the same column. tests/test_wsm6_wrf461_gpu_parity.py fails if either grows.",
+ "measured_on": {
+  "compute_capability": "12.0",
+  "cuda_runtime": 13020,
+  "cupy": "14.2.0",
+  "date": "2026-10-05",
+  "device": "NVIDIA GeForce RTX 5090",
+  "engine_commit": "534c6dea36d596291336f612255ab43c7816c1fa",
+  "nvrtc": "13.4"
+ },
+ "oracle": "tests/data/wsm6_wrf461_oracle.json",
+ "scenarios": {
+  "0": {
+   "effc_micron": {
+    "cells": 8,
+    "cells_differing": 5,
+    "max_abs": 0.019999980926513672,
+    "max_ulp": 83886
+   },
+   "effi_micron": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "effs_micron": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qc": {
+    "cells": 8,
+    "cells_differing": 4,
+    "max_abs": 2.546585164964199e-11,
+    "max_ulp": 769654784
+   },
+   "qg": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qi": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qr": {
+    "cells": 8,
+    "cells_differing": 8,
+    "max_abs": 1.8189894035458565e-12,
+    "max_ulp": 2
+   },
+   "qs": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qv": {
+    "cells": 8,
+    "cells_differing": 1,
+    "max_abs": 9.313225746154785e-10,
+    "max_ulp": 1
+   },
+   "reflectivity_before": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "surface": {
+    "cells": 7,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "temperature": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   }
+  },
+  "1": {
+   "effc_micron": {
+    "cells": 8,
+    "cells_differing": 5,
+    "max_abs": 5.7220458984375e-06,
+    "max_ulp": 3
+   },
+   "effi_micron": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "effs_micron": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qc": {
+    "cells": 8,
+    "cells_differing": 3,
+    "max_abs": 5.820766091346741e-11,
+    "max_ulp": 1
+   },
+   "qg": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qi": {
+    "cells": 8,
+    "cells_differing": 1,
+    "max_abs": 4.547473508864641e-13,
+    "max_ulp": 1
+   },
+   "qr": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qs": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qv": {
+    "cells": 8,
+    "cells_differing": 1,
+    "max_abs": 2.3283064365386963e-10,
+    "max_ulp": 1
+   },
+   "reflectivity_before": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "surface": {
+    "cells": 7,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "temperature": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   }
+  },
+  "2": {
+   "effc_micron": {
+    "cells": 8,
+    "cells_differing": 1,
+    "max_abs": 0.019999980926513672,
+    "max_ulp": 83886
+   },
+   "effi_micron": {
+    "cells": 8,
+    "cells_differing": 2,
+    "max_abs": 2.6702880859375e-05,
+    "max_ulp": 7
+   },
+   "effs_micron": {
+    "cells": 8,
+    "cells_differing": 4,
+    "max_abs": 15.010000228881836,
+    "max_ulp": 11020534
+   },
+   "qc": {
+    "cells": 8,
+    "cells_differing": 2,
+    "max_abs": 1.8189894035458565e-12,
+    "max_ulp": 738197504
+   },
+   "qg": {
+    "cells": 8,
+    "cells_differing": 5,
+    "max_abs": 8.731149137020111e-11,
+    "max_ulp": 596
+   },
+   "qi": {
+    "cells": 8,
+    "cells_differing": 2,
+    "max_abs": 1.9099388737231493e-11,
+    "max_ulp": 76
+   },
+   "qr": {
+    "cells": 8,
+    "cells_differing": 5,
+    "max_abs": 4.3655745685100555e-10,
+    "max_ulp": 15
+   },
+   "qs": {
+    "cells": 8,
+    "cells_differing": 4,
+    "max_abs": 3.728928277269006e-10,
+    "max_ulp": 763363328
+   },
+   "qv": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "reflectivity_before": {
+    "cells": 8,
+    "cells_differing": 1,
+    "max_abs": 1.9073486328125e-06,
+    "max_ulp": 1
+   },
+   "surface": {
+    "cells": 7,
+    "cells_differing": 7,
+    "max_abs": 5.066394805908203e-07,
+    "max_ulp": 57
+   },
+   "temperature": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   }
+  },
+  "3": {
+   "effc_micron": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "effi_micron": {
+    "cells": 8,
+    "cells_differing": 2,
+    "max_abs": 2.6702880859375e-05,
+    "max_ulp": 7
+   },
+   "effs_micron": {
+    "cells": 8,
+    "cells_differing": 2,
+    "max_abs": 0.0018768310546875,
+    "max_ulp": 123
+   },
+   "qc": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "qg": {
+    "cells": 8,
+    "cells_differing": 6,
+    "max_abs": 8.731149137020111e-11,
+    "max_ulp": 7
+   },
+   "qi": {
+    "cells": 8,
+    "cells_differing": 2,
+    "max_abs": 1.9554136088117957e-11,
+    "max_ulp": 86
+   },
+   "qr": {
+    "cells": 8,
+    "cells_differing": 5,
+    "max_abs": 3.7834979593753815e-10,
+    "max_ulp": 13
+   },
+   "qs": {
+    "cells": 8,
+    "cells_differing": 2,
+    "max_abs": 3.9835867937654257e-10,
+    "max_ulp": 438
+   },
+   "qv": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   },
+   "reflectivity_before": {
+    "cells": 8,
+    "cells_differing": 1,
+    "max_abs": 3.814697265625e-06,
+    "max_ulp": 1
+   },
+   "surface": {
+    "cells": 7,
+    "cells_differing": 7,
+    "max_abs": 4.172325134277344e-07,
+    "max_ulp": 64
+   },
+   "temperature": {
+    "cells": 8,
+    "cells_differing": 0,
+    "max_abs": 0.0,
+    "max_ulp": 0
+   }
+  }
+ }
+}

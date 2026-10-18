@@ -65,7 +65,7 @@ fn small_box_native_defect_word_set() {
         }
     }
     let receipt = serde_json::json!({"schema": "native-gwd-undefined-witness/v1",
-        "declaration": if halo { "Native defects reproduced" } else { "Exclusions proposed for the owner's sign-off" },
+        "declaration": if halo { "Native defects reproduced" } else { "Exclusions proposed for owner sign-off" },
         "owner_case_sign_off": false, "port_process_count": 1,
         "whole_field_bitwise": undefined.is_empty() && differences == 0,
         "field": if halo { "var2d" } else { "ol1" }, "indices": undefined,
@@ -125,7 +125,7 @@ fn sealed_native_defect_witness_process_counts() {
             }
             receipt["schema"] = serde_json::json!("native-gwd-proposed-exclusions/v2");
             receipt["declaration"] = serde_json::json!(if indices.is_empty() {
-                "Native defects reproduced" } else { "Exclusions proposed for the owner's sign-off" });
+                "Native defects reproduced" } else { "Exclusions proposed for owner sign-off" });
             receipt["owner_case_sign_off"] = serde_json::json!(false);
             receipt["whole_field_bitwise"] = serde_json::json!(indices.is_empty());
             receipt["port_process_count"] = serde_json::json!(1);

@@ -335,6 +335,10 @@
       "direct",
       0
     ],
+    "cloud_fraction_column_max": [
+      "direct",
+      0.0
+    ],
     "cloud_ice_column_max": [
       "direct",
       0

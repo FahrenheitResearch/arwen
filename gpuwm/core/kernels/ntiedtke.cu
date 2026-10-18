@@ -64,7 +64,7 @@
  * frame is zero -- nothing here is a function-scope column array -- which
  * the compile-only probe confirms.  When cumastrn lands it brings 79 column
  * arrays that DO need somewhere to live, and that somewhere is a global
- * workspace in the kf.cu shape, not the stack: MEASURED on node-1 (RTX 5070
+ * workspace in the kf.cu shape, not the stack: MEASURED on a test host (RTX 5070
  * Ti, 70 SMs x 1,536, sm_120), those 79 as function-scope locals compile to
  * a 15,496 B frame at nz = 49 and reserve 1,483.9 MiB, against 0 B and
  * 0.0 MiB in the workspace shape.
@@ -1312,7 +1312,7 @@ extern "C" __global__ void ntiedtke_mfub(
         float *__restrict__ upbl,
         float *__restrict__ zmfub,
         int tiedtke_closure,
-        int ncol, int nz, float dt,
+        int ncol, int nz, float ztmst,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
         const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
@@ -1326,9 +1326,12 @@ extern "C" __global__ void ntiedtke_mfub(
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
     const int klev = nz;
 
-    /* :468-469.  zcons2 = 3/(g*dt); the 3 is not a typo -- zcons at :468 is
-     * the same quantity with 1. */
-    const float zcons2 = __fdiv_rn(3.0f, __fmul_rn(c.g, dt));
+    /* :468-469.  zcons2 = 3/(g*ztmst); the 3 is not a typo -- zcons at :468 is
+     * the same quantity with 1.  ZTMST, cumastrn's step, which is
+     * dt*stepcu: this parameter was named dt and so bound the MODEL step,
+     * identical at stepcu = 1 and half the reference's at stepcu = 2 (found
+     * by tools/ntiedtke_column_oracle; the closure below had the same). */
+    const float zcons2 = __fdiv_rn(3.0f, __fmul_rn(c.g, ztmst));
 
     float dhpbl = 0.0f;
     float zdqpbl = 0.0f;   /* cu6 :832-839 */
@@ -1497,7 +1500,7 @@ extern "C" __global__ void ntiedtke_closure(
         float *__restrict__ upbl,           // in AND out, deep+water only
         float *__restrict__ zmfub1,
         int tiedtke_closure,
-        int ncol, int nz, float dt,
+        int ncol, int nz, float ztmst,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
         const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
@@ -1510,7 +1513,7 @@ extern "C" __global__ void ntiedtke_closure(
     nt_stage_ticket(NT_STAGE_CLOSURE, order_report, ticket);
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
     const int klev = nz;
-    const float zcons2 = __fdiv_rn(3.0f, __fmul_rn(c.g, dt));
+    const float zcons2 = __fdiv_rn(3.0f, __fmul_rn(c.g, ztmst));
     const bool ld = ldcum[i] != 0;
     const int kt = ktype[i];
     const bool deep = ld && kt == 1;
@@ -1550,14 +1553,20 @@ extern "C" __global__ void ntiedtke_closure(
                     __fmul_rn(c.vtmpc1, __fadd_rn(NTK(pqen, jk - 1),
                                                   -NTK(pqen, jk)))),
                 __fmul_rn(c.g, __fadd_rn(NTK(pmfu, jk), NTK(pmfd, jk)))));
+            /* :655-656 sums LEFT TO RIGHT:
+             *     (ptu-ztenh)/ztenh + vtmpc1*(pqu-zqenh) - plu
+             * is ((buoyancy + moisture) - plu).  It was transcribed as
+             * buoyancy + (moisture - plu), which rounds differently; the
+             * analytic fixture happened to agree, real columns from the
+             * column oracle (tools/ntiedtke_column_oracle) do not. */
             zcape1[i] = __fadd_rn(zcape1[i], __fmul_rn(
                 __fadd_rn(
-                    __fdiv_rn(__fadd_rn(NTK(ptu, jk), -NTK(ptenh, jk)),
-                              NTK(ptenh, jk)),
-                    __fadd_rn(__fmul_rn(c.vtmpc1,
-                                        __fadd_rn(NTK(pqu, jk),
-                                                  -NTK(pqenh, jk))),
-                              -NTK(plu, jk))),
+                    __fadd_rn(
+                        __fdiv_rn(__fadd_rn(NTK(ptu, jk), -NTK(ptenh, jk)),
+                                  NTK(ptenh, jk)),
+                        __fmul_rn(c.vtmpc1,
+                                  __fadd_rn(NTK(pqu, jk), -NTK(pqenh, jk)))),
+                    -NTK(plu, jk)),
                 zdp));
         }
         if (deep && jk >= kcbot[i]) {
@@ -1582,7 +1591,7 @@ extern "C" __global__ void ntiedtke_closure(
     if (deep) {
         const int ikb = kcbot[i];
         float tc = ztauc[i];
-        tc = fmaxf(dt, tc);
+        tc = fmaxf(ztmst, tc);
         tc = fmaxf(360.0f, tc);
         tc = fminf(10800.0f, tc);
         ztauc[i] = tc;
@@ -2956,11 +2965,20 @@ extern "C" __global__ void ntiedtke_cuflxn(
         const float zrfl = __fadd_rn(NTC(pmflxr, jk), NTC(pmflxs, jk));
         if (zrfl > 1.0e-20f) {
             const float zdp = __fadd_rn(NTC(paph, jk + 1), -NTC(paph, jk));
-            const float zbase = __fmul_rn(
-                __fdiv_rn(__fsqrt_rn(__fdiv_rn(NTC(paph, jk),
-                                               NTC(paph, klev + 1))),
-                          5.09e-3f),
-                __fdiv_rn(zrfl, NT_ZCUCOV));
+            /* LEFT TO RIGHT, as written at :3017-3018:
+             *     sqrt(paph/paph_sfc)/5.09e-3*zrfl/zcucov
+             * is ((sqrt(...)/5.09e-3)*zrfl)/zcucov.  This was transcribed as
+             * (sqrt(...)/5.09e-3)*(zrfl/zcucov), a different rounding, and
+             * the analytic fixture never moved pdmfup here so nothing saw it
+             * (the named coverage gap below); real columns from the column
+             * oracle (tools/ntiedtke_column_oracle) do. */
+            const float zbase = __fdiv_rn(
+                __fmul_rn(
+                    __fdiv_rn(__fsqrt_rn(__fdiv_rn(NTC(paph, jk),
+                                                   NTC(paph, klev + 1))),
+                              5.09e-3f),
+                    zrfl),
+                NT_ZCUCOV);
             const float zdrfl1 = __fmul_rn(
                 __fmul_rn(__fmul_rn(__fmul_rn(zcpecons,
                     fmaxf(0.0f, __fadd_rn(NTC(pqsen, jk), -NTC(pqen, jk)))),
@@ -2968,11 +2986,14 @@ extern "C" __global__ void ntiedtke_cuflxn(
                     gfk_pow(zbase, 0.5777f)),
                 zdp);
             float zrnew = __fadd_rn(zrfl, -zdrfl1);
+            /* :3021-3022, left to right as well:
+             *     zcucov*max(...)*zcons2*(paph(jk+1)-paph(jk))
+             * is ((zcucov*max(...))*zcons2)*dp, not (zcucov*max)*(zcons2*dp). */
             const float zrmin = __fadd_rn(zrfl,
-                -__fmul_rn(__fmul_rn(NT_ZCUCOV,
+                -__fmul_rn(__fmul_rn(__fmul_rn(NT_ZCUCOV,
                     fmaxf(0.0f, __fadd_rn(
                         __fmul_rn(rhevap, NTC(pqsen, jk)), -NTC(pqen, jk)))),
-                    __fmul_rn(zcons2, zdp)));
+                    zcons2), zdp));
             zrnew = fmaxf(zrnew, zrmin);
             const float zrfln = fmaxf(zrnew, 0.0f);
             const float zdrfl = fminf(0.0f, __fadd_rn(zrfln, -zrfl));

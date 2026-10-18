@@ -642,7 +642,13 @@ def test_imported_diffusion_requires_a_supported_selector(tmp_path, value):
     assert any("diff_opt" in issue for issue in preview["import_issues"])
 
 
-def test_imported_native_creation_honors_hourly_cadence_and_unique_vtables(tmp_path):
+@pytest.mark.parametrize("provider,artifact", [("cds", "era5-combined.grib"),
+                                               ("arco", "era5-combined.nc")])
+def test_imported_native_creation_honors_hourly_cadence_and_unique_vtables(
+        tmp_path, monkeypatch, provider, artifact):
+    # The keyless default publishes NetCDF; a present CDS key selects GRIB.
+    from gpuwm import fetch
+    monkeypatch.setattr(fetch, "cds_credentials_present", lambda: provider == "cds")
     path = proposal_zip(tmp_path)
     for name in ("one", "two"):
         out = tmp_path / (name + ".toml")
@@ -651,7 +657,8 @@ def test_imported_native_creation_honors_hourly_cadence_and_unique_vtables(tmp_p
         assert raw["fetch"]["cycle"] == "2013-05-31T14"
         assert raw["fetch"]["cadence"] == 1 and raw["fetch"]["hours"] == 11
         assert raw["case_data"]["forcing_interval_s"] == 3600
-        assert [Path(value).resolve() for value in raw["case_data"]["forcing"]] == [(tmp_path / "data" / name / "era5-combined.grib").resolve()]
+        assert raw["fetch"].get("era5_provider", "cds") == provider
+        assert [Path(value).resolve() for value in raw["case_data"]["forcing"]] == [(tmp_path / "data" / name / artifact).resolve()]
         assert raw["case_data"]["geog_root"] == "${GPUWM_CASE_DATA_ROOT}/WPS_GEOG"
         assert raw["case_data"]["vtable"].startswith(name + ".")
         assert (tmp_path / raw["case_data"]["vtable"]).is_file()

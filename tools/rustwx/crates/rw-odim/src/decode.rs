@@ -336,6 +336,14 @@ fn read_sweep(
     );
     let (azimuth_deg, azimuth_source) = resolve_azimuths(nrays, &how_attrs)?;
     let ray_elevation_deg = resolve_ray_elevations(nrays, &how_attrs)?;
+    // A per-ray PRF list is used only when it has one entry per ray; a
+    // scalar `prf` (single-PRF writers) or a list of another length says
+    // nothing about which ray used which PRF.
+    let ray_prf_hz = how_attrs
+        .f64_vec_opt("prf")
+        .ok()
+        .flatten()
+        .filter(|prf| prf.len() == nrays && nrays > 1);
 
     // --- /datasetN/dataM -------------------------------------------------
     let mut data_indices: Vec<usize> = sweep_group
@@ -390,6 +398,7 @@ fn read_sweep(
         azimuth_deg,
         azimuth_source,
         ray_elevation_deg,
+        ray_prf_hz,
         moments,
     })
 }

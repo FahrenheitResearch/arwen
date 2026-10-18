@@ -147,8 +147,12 @@ def _validate_static_identity(identity):
 def _semantic_source_identity(source):
     if not isinstance(source,dict) or not source:
         raise ValueError("physical input needs its ordinary prepared source authority")
+    # lake_ice (2.9.1) is the observed lake-ice analysis the GFS route laid
+    # over its start-time surface after the store's frames were bound; it is
+    # a surface overlay of that one preparation, not the forcing source the
+    # store carries, and is recorded in the preparation's own receipt.
     excluded = _IMPLEMENTATION_SOURCE_KEYS | {"input_manifest_sha256", "static_identity", "ensemble_physical_input",
-                                             "ensemble_posted_physical_input"}
+                                             "ensemble_posted_physical_input", "lake_ice"}
     return {key:value for key,value in source.items() if key not in excluded}
 
 

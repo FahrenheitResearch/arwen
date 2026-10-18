@@ -460,15 +460,18 @@ def parse_static_table(raw, *, source: str, base_dir
     if not isinstance(raw, dict):
         raise ValueError(
             f"[static] of {source} must be a table, got {raw!r}.")
-    known_keys = ("highres", "source", "source_fields")
+    known_keys = ("highres", "source", "source_fields", "geog_root")
     unknown = sorted(set(raw) - set(known_keys))
     if unknown:
         named = ", ".join(
             f"{key!r}{did_you_mean(key, known_keys)}" for key in unknown)
         raise ValueError(
             f"[static] of {source} does not have a key or table {named}; "
-            "known: the sub-table [static.highres] and the keys source and "
-            "source_fields.")
+            "known: the sub-table [static.highres] and the keys source, "
+            "source_fields and geog_root.")
+    if "geog_root" in raw:
+        from gpuwm.geog_assets import geog_root_from_tables
+        geog_root_from_tables({"static": raw}, base_dir=Path(base_dir))
     from .external_source import parse_static_source
     static_source = parse_static_source(raw, source=source)
     table = raw.get("highres")
@@ -479,6 +482,8 @@ def parse_static_table(raw, *, source: str, base_dir
             enabled=False, cache_root=default_highres_cache_root(),
             static_source=static_source)
     if table is None:
+        if "geog_root" in raw:
+            return None
         raise ValueError(
             f"[static] of {source} declares nothing; declare "
             "[static.highres] or [static] source, or remove the table.")

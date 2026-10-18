@@ -31,6 +31,15 @@ rather than resolved by recency, because a volume glued out of two scans has
 a wind field from the wrong minute in some of its columns and nothing
 downstream can see it.
 
+**Not only ODIM.** The same binary reads, chosen by each file's own magic
+bytes, the polar formats the rest of the open world publishes: JMA's GRIB2
+tars (Japan), IRIS/Sigmet RAW (Vaisala sites such as IDEAM's), Universal
+Format (KMA), CfRadial 1 and DORADE, gzipped or not. :func:`run_pack` takes
+several files for a station that arrives split (JMA's reflectivity and
+velocity tars) and a ``site`` for a file that holds a whole network.
+:mod:`gpuwm.obs.radar_archives` fetches those files from the open national
+archives by table.
+
 **Antenna altitude comes from the file.** ``/where/height`` is in every ODIM
 volume, so the pack answers site altitude without consulting
 ``radar_sites_odim.json`` and :func:`gpuwm.obs.radar_sites.require_assimilable`
@@ -47,6 +56,7 @@ from gpuwm.obs.frontdoor import ODIM
 PACK_SCHEMA = "gpuwm-obs.odim-pack.v1"
 NYQUIST_SCHEMA = "gpuwm-obs.odim-nyquist.v1"
 VOLUMES_SCHEMA = "gpuwm-obs.odim-volumes.v1"
+STATIONS_SCHEMA = "gpuwm-obs.odim-stations.v1"
 
 #: The sweep-pack schema ``pack`` writes. Held here as well as in
 #: :mod:`gpuwm.obs.sweeps` so a caller can check what it is about to get
@@ -78,20 +88,32 @@ def _pack_options(*, quantities: list[str] | None,
     return command
 
 
-def run_pack(*, file: Path, out: Path,
+def run_pack(*, file: Path | list[Path], out: Path,
+             site: str | None = None,
              quantities: list[str] | None = None,
              max_elevation_deg: float | None = None,
              max_range_km: float | None = None) -> dict:
-    """Decode one whole-volume ODIM file into a sweep pack.
+    """Decode one whole volume into a sweep pack.
+
+    ``file`` is one file, or the files one station's volume arrived in (JMA
+    publishes reflectivity and velocity as two tars). ``site`` picks one
+    station out of a file holding several (a JMA tar holds the whole
+    network); without it such a file is refused with the list.
 
     ``quantities`` are ODIM spellings (``DBZH``, ``VRADH``); omitting it
     carries every quantity the volume holds, which is a lot of payload for a
     volume that has nine of them.
     """
 
+    files = [file] if isinstance(file, (str, Path)) else list(file)
+    command: list[str] = []
+    for item in files:
+        command += ["--file", str(item)]
+    if site is not None:
+        command += ["--site", str(site)]
     return ODIM.run(
         "pack",
-        ["--file", str(file), "--out", str(out),
+        [*command, "--out", str(out),
          *_pack_options(quantities=quantities,
                         max_elevation_deg=max_elevation_deg,
                         max_range_km=max_range_km)],
@@ -136,7 +158,13 @@ def run_volumes(*, directory: Path) -> dict:
                     schema=VOLUMES_SCHEMA)
 
 
-def run_nyquist(*, file: Path) -> dict:
+def run_stations(*, file: Path) -> dict:
+    """The stations a multi-station file (a JMA tar) holds, from headers."""
+
+    return ODIM.run("stations", ["--file", str(file)], schema=STATIONS_SCHEMA)
+
+
+def run_nyquist(*, file: Path, site: str | None = None) -> dict:
     """The dealias handoff: per-sweep Nyquist interval and its provenance.
 
     A folded velocity is not an observation until it is paired with the
@@ -148,9 +176,13 @@ def run_nyquist(*, file: Path) -> dict:
     against a guess.
     """
 
-    return ODIM.run("nyquist", ["--file", str(file)], schema=NYQUIST_SCHEMA)
+    command = ["--file", str(file)]
+    if site is not None:
+        command += ["--site", str(site)]
+    return ODIM.run("nyquist", command, schema=NYQUIST_SCHEMA)
 
 
 __all__ = ["NYQUIST_GRANULARITY", "NYQUIST_SCHEMA", "ODIM", "PACK_SCHEMA",
-           "SOURCE_LABEL", "SWEEP_PACK_SCHEMA", "VOLUMES_SCHEMA",
-           "run_nyquist", "run_pack", "run_pack_dir", "run_volumes"]
+           "SOURCE_LABEL", "STATIONS_SCHEMA", "SWEEP_PACK_SCHEMA",
+           "VOLUMES_SCHEMA", "run_nyquist", "run_pack", "run_pack_dir",
+           "run_stations", "run_volumes"]

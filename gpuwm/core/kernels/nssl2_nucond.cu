@@ -1,102 +1,194 @@
-// Default WRF v4.6.1 NSSL option-18 NUCOND production stage.
+// WRF v4.6.1 NSSL option-18 NUCOND (and QVEXCESS), transliterated.
 //
-// Numerical authority: phys/module_mp_nssl_2mom.F:6052-6199 (QVEXCESS)
-// and :9611-12215 (NUCOND), initialized with ipconc=5, rcond=2,
-// irenuc=2, iqcinit=2, imaxsupopt=4, predicted CCN, and no WRF-Chem
-// droplet override. Registry number/CCN inputs are #/kg dry air; the source
-// routine's internal concentration form is reconstructed with dry density.
+// Numerical authority: phys/module_mp_nssl_2mom.F:6052-6199 (QVEXCESS) and
+// :9611-12215 (NUCOND), commit d66e442f, for the resolved option-18 call:
+// ipconc=5, rcond=2, irenuc=2, iqcinit=2, imaxsupopt=4, imurain=1 with
+// alphar=0, iferwisventr=2, eqtset=1, lss=lccna=lccnuf=lzr=0, no WRF-Chem
+// droplet override, every other module switch at its WRF default (values
+// read back from WRF's own initialised module by
+// tools/nssl2_wrf461_column_oracle/probes).  lccn > 1 with ipconc = 5 whether
+// or not CCN is predicted (module_mp_nssl_2mom.F:1657): with nssl_ccn_on=0
+// the driver fills the slot with the diagnosed CCN (:2734) and raises
+// renucfrac to 1 (:2555-2557), which is all the predicted_ccn = 0 variant
+// changes here (the driver skips the Registry store).  Branches the
+// switches disable are not carried.
+//
+// Arithmetic contract, the same as nssl2_fused_gs.cu (the column oracle
+// grades it bit for bit against gfortran):
+//   * REAL operations are float operations in WRF's evaluation order;
+//     every quotient is __fdiv_rn so NVRTC cannot turn a constant divisor
+//     into a reciprocal multiply (A146).
+//   * REAL**REAL and EXP are WOOF's own float32 words gfk_pow / gfk_exp
+//     (glibc_flt32.cuh, prepended by the kernel loader); Sqrt is sqrtf.
+//   * MAX/MIN are gfortran's: MAX(a,b) = (b > a) ? b : a, with a constant
+//     operand canonicalised to the second place (nssl2_max / nssl2_min).
+//   * Folded REAL parameters carry WRF's bits (cwmas20, the 4-micron
+//     droplet volume, nssl2_wrf_math.cuh).
+//
+// One thread per grid point.  NUCOND's gather/scatter is pointwise: the only
+// cross-point read is the vertical neighbours of the immutable SSFILT field,
+// which nssl2_nucond_supersaturation builds for the whole slab first, as
+// WRF does at :9872-9887.  The moment tail (:11732-12206) visits every
+// point, gathered or not.
 
-__device__ __forceinline__ int nssl2_sat_index(float temperature)
+namespace {
+
+constexpr float PI = 3.141592653589793f;          // 0x40490FDB
+constexpr float PIINV = 1.0f / 3.141592653589793f; // 0x3EA2F983
+constexpr float TFR = 273.15f;
+constexpr float TFRH = 233.15f;
+constexpr float NCP = 1004.0f;
+constexpr float RW = 461.5f;
+constexpr float RHO00 = 1.225f;
+constexpr float ADVISC0 = 1.832e-05f;
+constexpr float ADVISC1 = 1.718e-05f;
+constexpr float TKA0 = 2.43e-2f;
+constexpr float CAW = 17.2693882f;
+constexpr float CBW = 35.86f;
+constexpr float FQSAT = 0.002f;
+constexpr int NQSAT = 1000001;
+constexpr float CXMIN = 1.e-8f;
+constexpr float AR = 841.99666f;
+constexpr float BR = 0.8f;
+constexpr float CWCCN = 5.0e8f;
+constexpr float QCCN = 408163264.0f;               // 0x4DC2A09E
+constexpr float CCK = 0.6f;
+constexpr float MAXLOWTEMPSS = 1.08f;
+constexpr float MAXSUPERSAT = 1.9f;
+constexpr float SSMXINIT = 0.4f;
+constexpr float RESTORECCNFRAC = 1.0f;
+constexpr float CCNTIMECONST = 3600.0f;
+constexpr float SUPCB = 0.5f;
+constexpr float SUPMX = 238.0f;
+constexpr float QXMIN_C = 1.0e-13f;
+constexpr float QXMIN_R = 1.0e-12f;
+constexpr float QXMIN_I = 1.0e-13f;
+constexpr float QXMIN_S = 1.0e-13f;
+constexpr float QXMIN_H = 1.0e-12f;
+constexpr float QXMIN_HL = 1.0e-12f;
+constexpr float XDN_C = 1000.0f;
+constexpr float XDN_R = 1000.0f;
+constexpr float CNOHMN = 1.e-2f;
+
+__device__ __forceinline__ float ventc() { return __int_as_float(0x3F649A4E); }
+__device__ __forceinline__ float ventrn() { return __int_as_float(0x3FE9E6C7); }
+__device__ __forceinline__ float cpi() { return __int_as_float(0x3A828CC0); }
+__device__ __forceinline__ float cwc1() { return __int_as_float(0x3AFA543E); }
+__device__ __forceinline__ float c1f3() { return __int_as_float(0x3EAAAAAB); }
+__device__ __forceinline__ float ccne0() { return __int_as_float(0x41BFE0CE); }
+__device__ __forceinline__ float cnexp() { return __int_as_float(0x3EB13B15); }
+__device__ __forceinline__ float cwmasn5() { return __int_as_float(0x2B136148); }
+__device__ __forceinline__ float cwmas20() { return __int_as_float(0x2E136148); }
+// (4.*pi/3.) and (4.e-6)**3, folded REAL parameters.
+__device__ __forceinline__ float four_pi_third() { return __int_as_float(0x40860A92); }
+__device__ __forceinline__ float four_micron_cube() { return __int_as_float(0x249392EE); }
+__device__ __forceinline__ float xvmn_c() { return __int_as_float(0x241A8A06); }
+__device__ __forceinline__ float xvmx_c() { return __int_as_float(0x2B7EAC34); }
+
+__device__ __forceinline__ float nssl2_max(float a, float b) { return (b > a) ? b : a; }
+__device__ __forceinline__ float nssl2_min(float a, float b) { return (b < a) ? b : a; }
+
+__device__ __forceinline__ float fqsati() { return __fdiv_rn(1.0f, FQSAT); }
+
+// ltemq = (temg-163.15)/fqsat+1.5, clamped (:9927).
+__device__ __forceinline__ int ltemq_of(float temperature)
 {
-    int index = (int)(__fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
-    if (index < 1) index = 1;
-    if (index > 1000001) index = 1000001;
-    return index;
+    int l = (int)(__fdiv_rn(temperature - 163.15f, FQSAT) + 1.5f);
+    return min(NQSAT, max(1, l));
 }
 
-__device__ __forceinline__ float nssl2_sat_table(float temperature)
+// ltemq1 = (temp1+dtemp-163.15)*fqsati+1.5, clamped (:10772).
+__device__ __forceinline__ int ltemq_fqsati(float temperature)
 {
-    const int index = nssl2_sat_index(temperature);
-    // WRF builds TABQVS with two separately rounded REAL operations.
-    // Prevent NVRTC from contracting the multiply-add: at large table
-    // indices the fused result differs by one temperature ULP, which is
-    // amplified in near-saturated cloud evaporation and predicted CCN.
-    const float table_temperature = __fadd_rn(
-        163.15f, __fmul_rn((float)(index - 1), 0.002f));
-    return expf(
-        17.2693882f * (table_temperature - 273.15f)
-        / (table_temperature - 35.86f));
+    int l = (int)((temperature - 163.15f) * fqsati() + 1.5f);
+    return min(NQSAT, max(1, l));
 }
 
-__device__ __forceinline__ float nssl2_qvs(
-    float temperature, float pressure)
+// tabqvs / dtabqvs (module_mp_nssl_2mom.F:1466-1471), evaluated on demand.
+__device__ __forceinline__ float temq_of(int l)
 {
-    return (380.0f / pressure) * nssl2_sat_table(temperature);
+    return __fadd_rn(163.15f, __fmul_rn((float)(l - 1), FQSAT));
 }
 
-__device__ __forceinline__ float nssl2_dtabqvs(float temperature)
+__device__ __forceinline__ float tabqvs(int l)
 {
-    const int index = nssl2_sat_index(temperature);
-    const float table_temperature = __fadd_rn(
-        163.15f, __fmul_rn((float)(index - 1), 0.002f));
-    const float table = expf(
-        17.2693882f * (table_temperature - 273.15f)
-        / (table_temperature - 35.86f));
-    const float offset = table_temperature - 35.86f;
-    return (
-        -17.2693882f * (-273.15f + table_temperature)
-            / (offset * offset)
-        + 17.2693882f / offset) * table;
+    const float temq = temq_of(l);
+    return gfk_exp(__fdiv_rn(__fmul_rn(CAW, temq - 273.15f), temq - CBW));
 }
 
-__device__ __forceinline__ float nssl2_supersaturation_percent(
-    float theta, float pressure, float exner, float vapor)
+__device__ __forceinline__ float dtabqvs(int l)
 {
-    const float saturation = nssl2_qvs(theta * exner, pressure);
-    return 100.0f * (vapor / saturation - 1.0f);
+    const float temq = temq_of(l);
+    const float t = temq - CBW;
+    const float a = __fdiv_rn(__fmul_rn(-CAW, __fadd_rn(-273.15f, temq)), __fmul_rn(t, t));
+    const float b = __fdiv_rn(CAW, t);
+    return __fmul_rn(__fadd_rn(a, b), tabqvs(l));
 }
 
-// Two-iteration modified-Straka adjustment. QVEXCESS returns only the
-// positive cloud increment; its private trial state is not scattered.
-__device__ __forceinline__ float nssl2_qvexcess(
-    float theta, float pressure, float exner, float vapor, float cloud,
-    float latent_over_cp, float target_supersaturation_percent)
+// QVEXCESS (:6052-6199) for one gathered point.  qcw1 is the caller's
+// qx(mgs,lc); only qvex leaves the routine.
+__device__ float qvexcess(float qwvp0, float qv0, float qcw1, float pres,
+                          float thetap0, float theta0, float pi0, float fcqv1,
+                          float felvcp, float ss1, float pk)
 {
-    float trial_theta_increment = 0.0f;
-    float trial_vapor = fmaxf(vapor, 0.0f);
-    float trial_cloud = fmaxf(cloud, 0.0f);
-    const float condensation_factor =
-        4098.0258f * latent_over_cp;
-
-    for (int iteration = 0; iteration < 2; ++iteration) {
-        const float temperature =
-            (theta + trial_theta_increment) * exner;
-        const float target_vapor =
-            (1.0f + 0.01f * target_supersaturation_percent)
-            * nssl2_qvs(temperature, pressure);
-        float vapor_delta = trial_vapor - target_vapor;
-        float cloud_delta = 0.0f;
-        if (vapor_delta < 0.0f) {
-            cloud_delta = fmaxf(vapor_delta, -trial_cloud);
-        } else {
-            const float temperature_offset = temperature - 35.86f;
-            cloud_delta = vapor_delta /
-                (1.0f + condensation_factor * target_vapor
-                 / (temperature_offset * temperature_offset));
+    const float pqs = __fdiv_rn(380.0f, pres);
+    float thetap = thetap0;
+    float theta = thetap + theta0;
+    float qwvp = qwvp0;
+    float qvap = nssl2_max(qwvp0 + qv0, 0.0f);
+    float temg = theta * pk;
+    float qwv = nssl2_max(qvap, 0.0f);
+    float qcw = nssl2_max(qcw1, 0.0f);
+    int ltemq = ltemq_of(temg);
+    float qvs = pqs * tabqvs(ltemq);
+    float qss = (0.01f * ss1 + 1.0f) * qvs;
+    for (int itertd = 1; itertd <= 2; ++itertd) {
+        float dqcw = 0.0f;
+        float dqwv = qwv - qss;
+        if (dqwv < 0.0f) {
+            if (qcw > -dqwv) {
+                dqcw = dqwv;
+                dqwv = 0.0f;
+            } else {
+                dqcw = -qcw;
+                dqwv = dqwv + qcw;
+            }
+            qwvp = qwvp - dqcw;
+            qcw = qcw + dqcw;
+            thetap = thetap + __fdiv_rn(1.0f, pi0) * (felvcp * dqcw);
         }
-        trial_theta_increment +=
-            latent_over_cp * cloud_delta / exner;
-        trial_vapor -= cloud_delta;
-        trial_cloud += cloud_delta;
-        trial_vapor = fmaxf(trial_vapor, 0.0f);
-        trial_cloud = fmaxf(trial_cloud, 0.0f);
+        if (dqwv >= 0.0f) {
+            const float t = temg - CBW;
+            const float dqvcnd = __fdiv_rn(
+                dqwv, 1.0f + __fdiv_rn(fcqv1 * qss, t * t));
+            dqcw = dqvcnd;
+            thetap = thetap + __fdiv_rn(felvcp * dqcw, pi0);
+            qwvp = qwvp - dqvcnd;
+            qcw = qcw + dqcw;
+        }
+        theta = thetap + theta0;
+        temg = theta * pk;
+        qvap = nssl2_max(qwvp + qv0, 0.0f);
+        ltemq = ltemq_of(temg);
+        qvs = pqs * tabqvs(ltemq);
+        qcw = nssl2_max(qcw, 0.0f);
+        qwv = nssl2_max(qvap, 0.0f);
+        qss = (0.01f * ss1 + 1.0f) * qvs;
     }
-    return fmaxf(0.0f, trial_cloud - cloud);
+    return nssl2_max(qcw - qcw1, 0.0f);
 }
 
-// WRF computes SSFILT for the complete column before NUCOND mutates any
-// thermodynamic field.  Keep that ordering explicit so vertical neighbor
-// checks are deterministic regardless of CUDA block scheduling.
+// Restoration of evaporated droplets to CCN (:10536-10546, irenuc <= 2,
+// lccna = 0, invertccn false).
+__device__ __forceinline__ float restore_ccn(float ccnc, float rho0, float add)
+{
+    return nssl2_max(ccnc, nssl2_min(QCCN * rho0, ccnc + RESTORECCNFRAC * add));
+}
+
+}  // namespace
+
+// SSFILT (:9872-9887): t0 = an(lt)*t77 and the percent supersaturation of
+// the raw vapour, for every point before NUCOND changes any of them.
 extern "C" __global__ void nssl2_nucond_supersaturation(
     const float* __restrict__ full_theta,
     const float* __restrict__ pressure_pa,
@@ -107,8 +199,13 @@ extern "C" __global__ void nssl2_nucond_supersaturation(
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
-    supersaturation_percent[idx] = nssl2_supersaturation_percent(
-        full_theta[idx], pressure_pa[idx], exner[idx], fmaxf(qv[idx], 0.0f));
+    const float temp1 = full_theta[idx] * exner[idx];
+    const int ltemq = ltemq_of(temp1);
+    const float t00 = __fdiv_rn(380.0f, pressure_pa[idx]);
+    const float c1 = t00 * tabqvs(ltemq);
+    float ss = 0.0f;
+    if (c1 > 0.0f) ss = 100.0f * (__fdiv_rn(qv[idx], c1) - 1.0f);
+    supersaturation_percent[idx] = ss;
 }
 
 extern "C" __global__ void nssl2_nucond_default(
@@ -117,18 +214,25 @@ extern "C" __global__ void nssl2_nucond_default(
     const float* __restrict__ pressure_pa,
     const float* __restrict__ exner,
     const float* __restrict__ w_interface,
-    const float* __restrict__ initial_supersaturation_percent,
-    float* __restrict__ qv,
-    float* __restrict__ qc,
-    float* __restrict__ qr,
-    const float* __restrict__ qi,
-    const float* __restrict__ qs,
+    const float* __restrict__ ssfilt,
+    float* __restrict__ qv_field,
+    float* __restrict__ qc_field,
+    float* __restrict__ qr_field,
+    float* __restrict__ qi_field,
+    float* __restrict__ qs_field,
     float* __restrict__ qndrop,
     float* __restrict__ qnr,
-    const float* __restrict__ qni,
-    const float* __restrict__ qns,
+    float* __restrict__ qni,
+    float* __restrict__ qns,
     float* __restrict__ qnn,
-    float dt,
+    float* __restrict__ qg,
+    float* __restrict__ qh,
+    float* __restrict__ qng,
+    float* __restrict__ qnh,
+    float* __restrict__ qvolg,
+    float* __restrict__ qvolh,
+    int has_frozen,
+    float dtp,
     int concentration_space,
     int n,
     int nz,
@@ -137,483 +241,545 @@ extern "C" __global__ void nssl2_nucond_default(
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
+    const int k0 = idx / horizontal_size;
+    const int col = idx - k0 * horizontal_size;
+    const int kgs = k0 + 1;                       // WRF's 1-based level
 
-    const float rho = air_density[idx];
-    const float pressure = pressure_pa[idx];
-    const float exner_local = exner[idx];
-    float theta = full_theta[idx];
-    float vapor = qv[idx];
-    float cloud = qc[idx];
-    float rain = qr[idx];
-    const float input_cloud_number = qndrop[idx];
-    const float input_rain_number = qnr[idx];
-    const float input_ccn = qnn[idx];
-    const float input_number_scale = concentration_space ? 1.0f : rho;
-    const float output_number_scale = concentration_space ? 1.0f : 1.0f / rho;
-    float cloud_number = input_cloud_number * input_number_scale;
-    float rain_number = input_rain_number * input_number_scale;
-    float ccn_number = input_ccn * input_number_scale;
+    const float dn = air_density[idx];
+    const float pn = pressure_pa[idx];
+    const float t77 = exner[idx];
+    const float in_scale = concentration_space ? 1.0f : dn;
 
-    const float qxmin_cloud = 1.0e-13f;
-    const float qxmin_rain = 1.0e-12f;
-    const float cxmin = 1.0e-8f;
-    const float pi = 3.14159265358979323846f;
-    const float cloud_min_mass =
-        1000.0f * 0.523599f * (4.0e-6f * 4.0e-6f * 4.0e-6f);
-    const float cloud_max_mass =
-        1000.0f * 0.523599f * (120.0e-6f * 120.0e-6f * 120.0e-6f);
-    const float cloud_five_micron_mass =
-        1000.0f * 0.523599f * (10.0e-6f * 10.0e-6f * 10.0e-6f);
-    const float cloud_twenty_micron_mass =
-        1000.0f * 0.523599f * (40.0e-6f * 40.0e-6f * 40.0e-6f);
-    const float rain_min_volume =
-        0.523599f * (80.0e-6f * 80.0e-6f * 80.0e-6f);
-    const float rain_max_volume =
-        0.523599f * (6.0e-3f * 6.0e-3f * 6.0e-3f);
-    const float background_ccn = rho * 408163264.0f;
-    const float input_background_ccn =
-        concentration_space ? background_ccn : 408163264.0f;
+    // an(...) for this point, NSSL internal units (#/m3 for numbers).
+    float an_lt = full_theta[idx];
+    float an_lv = qv_field[idx];
+    float an_lc = qc_field[idx];
+    float an_lr = qr_field[idx];
+    float an_li = qi_field[idx];
+    float an_ls = qs_field[idx];
+    float an_lnc = qndrop[idx] * in_scale;
+    float an_lnr = qnr[idx] * in_scale;
+    // Ice and snow numbers enter only the tail's sign tests; they are not
+    // rescaled, so a Registry-unit caller gets them back untouched.
+    float an_lni = qni[idx];
+    float an_lns = qns[idx];
+    float an_lccn = qnn[idx] * in_scale;
 
-    float temperature = theta * exner_local;
-    float saturation = nssl2_qvs(temperature, pressure);
-    float saturation_ratio = vapor / saturation;
-    float supersaturation_percent =
-        100.0f * (saturation_ratio - 1.0f);
-    const bool gathered =
-        (temperature > 233.15f || saturation_ratio > 1.08f)
-        && (vapor > saturation || cloud > qxmin_cloud
-            || rain > qxmin_rain);
+    // ---- gather test (:9922-9947) ----
+    const float t0 = an_lt * t77;
+    {
+        const float pqs1 = __fdiv_rn(380.0f, pn + 0.0f);
+        const float temg1 = t0;
+        const int ltemq = ltemq_of(temg1);
+        const float qvs1 = pqs1 * tabqvs(ltemq);
+        const float qss1 = qvs1;
+        const bool gathered =
+            (temg1 > TFRH || __fdiv_rn(an_lv, qvs1) > MAXLOWTEMPSS)
+            && (an_lv > qss1 || an_lc > QXMIN_C || an_lr > QXMIN_R);
+        if (gathered) {
+            // ---- gather (:9963-10058) ----
+            const float qx_lv = an_lv;
+            float qc = nssl2_max(an_lc, 0.0f);
+            float qr = nssl2_max(an_lr, 0.0f);
+            const float theta0 = an_lt;
+            float thetap = 0.0f;
+            float theta;
+            const float qv0 = qx_lv;
+            float qwvp = qx_lv - qv0;
+            const float pres = pn + 0.0f;
+            const float rho0 = dn;
+            const float rhoinv = __fdiv_rn(1.0f, rho0);
+            const float rhovt = sqrtf(__fdiv_rn(RHO00, rho0));
+            const float pi0 = t77 + 0.0f;
+            float temg = t0;
+            const float pk = t77 + 0.0f;
+            const float pqs = __fdiv_rn(380.0f, pres);
+            int ltemq = ltemq_of(temg);
+            float qvs = pqs * tabqvs(ltemq);
+            const float qvap = nssl2_max(qwvp + qv0, 0.0f);
+            const float es = 6.1078e2f * tabqvs(ltemq);
+            const float qss = qvs;
+            float temgx = nssl2_min(temg, 313.15f);
+            temgx = nssl2_max(temgx, 233.15f);
+            const float felv = 2500837.367f * gfk_pow(
+                __fdiv_rn(273.15f, temgx), 0.167f + 3.67e-4f * temgx);
+            const float felvcp = felv * cpi();
+            const float fcqv1 = (4098.0258f * felv) * cpi();
+            const float wvdf = (2.11e-05f * gfk_pow(__fdiv_rn(temg, TFR), 1.94f))
+                * __fdiv_rn(101325.0f, 0.0f + pn);
+            const float advisc = (ADVISC0 * __fdiv_rn(416.16f, temg + 120.0f))
+                * gfk_pow(__fdiv_rn(temg, 296.0f), 1.5f);
+            const float tka = __fdiv_rn(TKA0 * advisc, ADVISC1);
 
-    // Preserve a true inactive dry-cell no-op at this Registry-unit API.
-    // WRF's surrounding mixconv round-trip is outside NUCOND itself.
-    if (!gathered && cloud == 0.0f && rain == 0.0f
-            && input_cloud_number == 0.0f
-            && input_rain_number == 0.0f
-            && input_ccn == input_background_ccn) {
-        return;
-    }
+            // numbers (:10065-10110); lccn > 1, lccna = lccnuf = 0.
+            float cx_lc = nssl2_max(an_lnc, 0.0f);
+            const float cwnccn = __fdiv_rn(CWCCN * rho0, RHO00);
+            float ccnc = an_lccn;
+            float ccna = cwnccn - ccnc;
+            float cx_lr = nssl2_max(an_lnr, 0.0f);
+            float cn = 0.0f;
 
-    if (gathered) {
-        vapor = fmaxf(vapor, 0.0f);
-        cloud = fmaxf(cloud, 0.0f);
-        rain = fmaxf(rain, 0.0f);
-        cloud_number = fmaxf(cloud_number, 0.0f);
-        rain_number = fmaxf(rain_number, 0.0f);
-        ccn_number = fmaxf(ccn_number, 0.0f);
-
-        // WRF's nucleation pool `cnuc`, module_mp_nssl_2mom.F:10112-10131.
-        // It is formed ONCE per grid point from the gather-time CCN and is
-        // never refreshed as CCN deplete within the step.
-        //
-        // With predicted CCN the driver leaves renucfrac at its 0.0 default
-        // (:346) and cnuc = Max(ccnc, cwnccn); that is the shipped default
-        // lane, and its existing in-line spelling below is left untouched
-        // so the mp18 trajectory does not move.
-        //
-        // With nssl_ccn_on=0 the driver sets renucfrac = 1.0 at :2555-2557,
-        // which collapses :10116 to cnuc = ccnc -- the actual available
-        // (diagnosed) CCN rather than the background floor -- and arms the
-        // low-temperature limiter at :10120-10127 that WRF describes as a
-        // "hack to reduce nucleation at low temp in updraft when ccn are
-        // not predicted".  Both are transcribed here.
-        float diagnostic_cnuc = 0.0f;
-        if (!predicted_ccn) {
-            diagnostic_cnuc = ccn_number;
-            if (temperature < 265.0f) {
-                // :10122 reads the RAW staggered element
-                // w(igs(mgs),jgs,kgs(mgs)) -- the cell's own bottom face --
-                // not a mass-level average.  That is not an oversight to
-                // correct: wvel is not assigned until :10381, well after
-                // this block, so the routine has no averaged w to read yet.
-                const float cnuc_w = w_interface[idx];
-                if (cloud > 10.0f * qxmin_cloud && cnuc_w > 2.0f) {
-                    diagnostic_cnuc = 0.0f;
-                } else {
-                    diagnostic_cnuc = 0.1f * diagnostic_cnuc;
+            // cnuc (:10113-10129); renucfrac = 0, or 1 with nssl_ccn_on=0.
+            const float renucfrac = predicted_ccn ? 0.0f : 1.0f;
+            float cnuc = nssl2_max(ccnc, cwnccn) * (1.0f - renucfrac)
+                + ccnc * renucfrac;
+            if (renucfrac >= 0.999f) {
+                if (temg < 265.0f) {
+                    if (qc > 10.0f * QXMIN_C && w_interface[idx] > 2.0f) {
+                        cnuc = 0.0f;
+                    } else {
+                        cnuc = 0.1f * cnuc;
+                    }
                 }
             }
-        }
 
-        float cloud_mean_mass = cloud_min_mass;
-        if (cloud_number > 1.0e6f) {
-            cloud_mean_mass = fminf(
-                cloud_max_mass,
-                fmaxf(cloud_min_mass, rho * cloud / cloud_number));
-        } else if (cloud > qxmin_cloud && cloud_number > cxmin) {
-            cloud_mean_mass = fminf(
-                cloud_max_mass,
-                fmaxf(cloud_min_mass, rho * cloud / cloud_number));
-            cloud_number = rho * cloud / cloud_mean_mass;
-        } else if (cloud > qxmin_cloud) {
-            cloud_number = fmaxf(
-                cxmin, __fdiv_rn(rho * cloud, cloud_max_mass));
-            cloud_mean_mass = fminf(
-                cloud_max_mass,
-                fmaxf(cloud_min_mass, rho * cloud / cloud_number));
-        }
-        const float cloud_diameter = powf(
-            cloud_mean_mass * (6.0f / (pi * 1000.0f)), 1.0f / 3.0f);
+            // w and ssfilt neighbours (:10378-10397).
+            const int kp1 = min(nz, kgs + 1);
+            const float wvel = 0.5f * (w_interface[(kp1 - 1) * horizontal_size + col]
+                                       + w_interface[idx]);
+            const float ssat0 = ssfilt[idx];
+            const float ssf = ssfilt[idx];
+            const float ssfkp1 = ssfilt[(min(nz - 1, kgs + 1) - 1) * horizontal_size + col];
+            const float ssfkm1 = ssfilt[(max(1, kgs - 1) - 1) * horizontal_size + col];
 
-        float rain_mean_volume = rain_min_volume;
-        float rain_diameter = 1.0e-9f;
-        if (rain > qxmin_rain) {
-            rain_mean_volume =
-                rho * rain / (1000.0f * fmaxf(1.0e-9f, rain_number));
-            if (rain_mean_volume > rain_max_volume) {
-                rain_mean_volume = rain_max_volume;
-                rain_number = __fdiv_rn(rho * rain, (rain_max_volume * 1000.0f));
-            } else if (rain_mean_volume < rain_min_volume) {
-                rain_mean_volume = rain_min_volume;
-                rain_number = __fdiv_rn(rho * rain, (rain_min_volume * 1000.0f));
-            }
-            // imurain=1, alphar=0: 6*xv/[pi*(3*2*1)] = xv/pi.
-            rain_diameter = powf(__fdiv_rn(rain_mean_volume, pi), 1.0f / 3.0f);
-        }
-
-        const float bounded_temperature =
-            fminf(313.15f, fmaxf(233.15f, temperature));
-        const float latent_heat = 2500837.367f * powf(
-            273.15f / bounded_temperature,
-            0.167f + 3.67e-4f * bounded_temperature);
-        const float latent_over_cp = latent_heat * (1.0f / 1004.0f);
-        const float latent_over_cp_exner = latent_over_cp / exner_local;
-        float cloud_increment = 0.0f;
-        float rain_increment = 0.0f;
-
-        if (supersaturation_percent <= 0.0f && cloud > 0.0f) {
-            const float temperature_offset = temperature - 35.86f;
-            const float evaporation_factor = 1.0f / (
-                1.0f
-                + 17.2693882f * (273.15f - 35.86f) * saturation
-                    * latent_heat
-                    / (1004.0f * temperature_offset * temperature_offset));
-            const float evaporated = fminf(
-                cloud, evaporation_factor * (saturation - vapor));
-            if (cloud <= evaporated) {
-                vapor += cloud;
-                theta -= latent_over_cp_exner * cloud;
-                ccn_number = fmaxf(
-                    ccn_number,
-                    fminf(background_ccn, ccn_number + cloud_number));
-                cloud = 0.0f;
-                cloud_number = 0.0f;
+            // cloud water (:10407-10436).
+            float xmas_lc;
+            if (cx_lc > 1.0e6f) {
+                xmas_lc = nssl2_min(nssl2_max(__fdiv_rn(qc * rho0, cx_lc),
+                                              NSSL2_WRF_CWMASN), NSSL2_WRF_CWMASX);
+            } else if (qc > QXMIN_C && cx_lc > CXMIN) {
+                xmas_lc = nssl2_min(nssl2_max(__fdiv_rn(qc * rho0, cx_lc),
+                                              XDN_C * xvmn_c()), XDN_C * xvmx_c());
+                cx_lc = __fdiv_rn(qc * rho0, xmas_lc);
+            } else if (qc > QXMIN_C && cx_lc <= CXMIN) {
+                cx_lc = nssl2_max(CXMIN, __fdiv_rn(rho0 * qc, NSSL2_WRF_CWMASX));
+                xmas_lc = nssl2_min(nssl2_max(__fdiv_rn(qc * rho0, cx_lc),
+                                              NSSL2_WRF_CWMASN), NSSL2_WRF_CWMASX);
             } else {
-                const float old_cloud = cloud;
-                vapor += evaporated;
-                cloud -= evaporated;
-                const float removed_number =
-                    0.9f * evaporated * cloud_number / old_cloud;
-                ccn_number = fmaxf(
-                    ccn_number,
-                    fminf(background_ccn, ccn_number + removed_number));
-                cloud_number -= removed_number;
-                theta -= latent_over_cp_exner * evaporated;
+                xmas_lc = NSSL2_WRF_CWMASN;
             }
-        } else if (supersaturation_percent > 0.0f
-                   && cloud > qxmin_cloud && cloud_number >= 1.0f) {
-            const float dynamic_viscosity =
-                1.832e-5f * (416.16f / (temperature + 120.0f))
-                * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
-            const float thermal_conductivity =
-                __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
-            const float vapor_diffusivity =
-                2.11e-5f * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
-                * (101325.0f / pressure);
-            const float vapor_pressure =
-                610.78f * nssl2_sat_table(temperature);
-            const float ac1 = latent_heat * latent_heat /
-                (thermal_conductivity * 461.5f
-                 * temperature * temperature);
-            const float bc = 461.5f * temperature /
-                (vapor_diffusivity * vapor_pressure);
-            const float resistance_inverse = 1.0f / (ac1 + bc);
-            const float cloud_transfer = resistance_inverse
-                * 4.0f * pi * 0.8929795026779175f
-                * 0.5f * cloud_diameter * cloud_number / rho;
+            float xdia_lc = gfk_pow(xmas_lc * cwc1(), c1f3());
 
-            float rain_transfer = 0.0f;
-            if (rain > qxmin_rain && rain_number > 1.0e-9f) {
-                const float kinematic_viscosity = dynamic_viscosity / rho;
-                const float vapor_schmidt =
-                    kinematic_viscosity / vapor_diffusivity;
-                const float ventilation_scale =
-                    powf(vapor_schmidt, 1.0f / 3.0f)
-                    * powf(kinematic_viscosity, -0.5f);
-                const float density_velocity = sqrtf(1.225f / rho);
-                const float rain_ventilation =
-                    0.78f
-                    + 0.308f * 1.8273550271987915f
-                        * ventilation_scale
-                        * sqrtf(841.99666f * density_velocity)
-                        * powf(rain_diameter, 0.9f);
-                rain_transfer = resistance_inverse
-                    * 4.0f * pi * rain_ventilation
-                    * 0.5f * rain_diameter * rain_number / rho;
-            }
-
-            if (cloud_transfer > 0.0f && isfinite(cloud_transfer)) {
-                float trial_vapor = vapor;
-                float trial_saturation = saturation;
-                float trial_temperature = temperature;
-                float trial_ratio = trial_vapor / trial_saturation;
-                float previous_ratio = trial_ratio;
-                float previous_temperature = trial_temperature;
-                float delta;
-                if (fabsf(trial_ratio - 1.0f) > 1.0e-5f) {
-                    delta = 0.5f * (trial_vapor - trial_saturation)
-                        / (cloud_transfer * (trial_ratio - 1.0f));
-                } else {
-                    delta = 0.1f * dt;
+            // rain (:10440-10477); imurain = 1, alpha(lr) = alphar = 0.
+            const float alpha_lr = 0.0f;
+            float xdia_lr = 1.e-9f;
+            if (qr > QXMIN_R) {
+                float xv = __fdiv_rn(rho0 * qr, XDN_R * nssl2_max(cx_lr, 1.0e-9f));
+                if (xv > NSSL2_WRF_XVRMX0) {
+                    xv = NSSL2_WRF_XVRMX0;
+                    cx_lr = __fdiv_rn(rho0 * qr, NSSL2_WRF_XVRMX0 * XDN_R);
+                } else if (xv < NSSL2_WRF_XVRMN) {
+                    xv = NSSL2_WRF_XVRMN;
+                    cx_lr = __fdiv_rn(rho0 * qr, NSSL2_WRF_XVRMN * XDN_R);
                 }
-                const float dt_small = fminf(0.05f, 0.2f * delta);
-                int native_steps = 2 * (int)floorf(
-                    (dt - 4.0f * dt_small) / delta + 0.5f);
-                if (native_steps < 5) native_steps = 5;
-                const float dt_large =
-                    (dt - 4.0f * dt_small) / (float)native_steps;
+                xdia_lr = gfk_pow(__fdiv_rn((6.0f * PIINV) * xv,
+                                            ((alpha_lr + 3.0f) * (alpha_lr + 2.0f))
+                                                * (alpha_lr + 1.0f)),
+                                  c1f3());
+            }
 
-                int step_index = 1;
-                int guard = 0;
-                float elapsed = 0.0f;
-                bool stop_adjustment = false;
-                while (elapsed < dt && guard < 100000) {
-                    ++guard;
-                    float dt_condense =
-                        step_index <= 4 ? dt_small : dt_large;
-                    float midpoint_cloud;
-                    float midpoint_rain;
-                    float midpoint_temperature_change;
-                    float midpoint_vapor;
-                    float midpoint_saturation;
-                    float midpoint_ratio;
-                    while (true) {
-                        midpoint_cloud =
-                            -(trial_ratio - 1.0f)
-                            * cloud_transfer * dt_condense;
-                        midpoint_rain =
-                            -(trial_ratio - 1.0f)
-                            * rain_transfer * dt_condense;
-                        midpoint_temperature_change =
-                            -0.5f * latent_over_cp
-                            * (midpoint_cloud + midpoint_rain);
-                        const float midpoint_temperature =
-                            trial_temperature
-                            + midpoint_temperature_change;
-                        const float midpoint_saturation_change =
-                            midpoint_temperature_change
-                            * (380.0f / pressure)
-                            * nssl2_dtabqvs(midpoint_temperature);
-                        midpoint_vapor = trial_vapor
-                            + midpoint_cloud + midpoint_rain;
-                        midpoint_saturation = trial_saturation
-                            + midpoint_saturation_change;
-                        midpoint_ratio =
-                            midpoint_vapor / midpoint_saturation;
-                        if (midpoint_ratio < 1.0f) {
-                            dt_condense *= 0.5f;
-                            if (dt_condense >= dt_small) continue;
-                            stop_adjustment = true;
+            // (:10483-10498)
+            const float fadvisc = (ADVISC0 * __fdiv_rn(416.16f, temg + 120.0f))
+                * gfk_pow(__fdiv_rn(temg, 296.0f), 1.5f);
+            const float fakvisc = fadvisc * rhoinv;
+            const float fwvdf = (2.11e-05f * gfk_pow(__fdiv_rn(temg, TFR), 1.94f))
+                * __fdiv_rn(101325.0f, pres);
+            const float fschm = __fdiv_rn(fakvisc, fwvdf);
+            const float fvent = gfk_pow(fschm, 1.0f / 3.0f) * gfk_pow(fakvisc, -0.5f);
+
+            // ---- condensation / nucleation (:10507-11637) ----
+            float dcloud = 0.0f;
+            float dqc = 0.0f;
+            bool cycle = (temg <= TFRH && __fdiv_rn(qx_lv, qvs) < MAXLOWTEMPSS);
+            if (!cycle) {
+                // label selector: 0 = fall to 631, 1 = renucleation block.
+                bool renuc_block = false;
+                if (ssat0 > 0.0f || ssf > 0.0f) {
+                    // 620
+                    if (qc > QXMIN_C && cx_lc >= 1.0f) {
+                        const float ac1 = __fdiv_rn(felv * felv,
+                                                    (tka * RW) * (temg * temg));
+                        const float bc = __fdiv_rn(RW * temg, wvdf * es);
+                        float d1 = 0.0f, d1r = 0.0f;
+                        if (ssf > 0.0f || ssat0 > 0.0f) {
+                            if (qc > QXMIN_C) {
+                                if (xdia_lc <= 0.0f) {
+                                    xmas_lc = NSSL2_WRF_CWMASN;
+                                    xdia_lc = gfk_pow(xmas_lc * cwc1(), c1f3());
+                                }
+                                d1 = __fdiv_rn(1.0f, ac1 + bc) * 4.0f * PI * ventc()
+                                    * 0.5f * xdia_lc * cx_lc * rhoinv;
+                            } else {
+                                d1 = 0.0f;
+                            }
+                            if (qr > QXMIN_R && cx_lr > 1.e-9f) {
+                                const float x = 1.0f + alpha_lr;
+                                const float rwvent = 0.78f * x
+                                    + 0.308f * ventrn() * fvent * sqrtf(AR * rhovt)
+                                        * gfk_pow(xdia_lr, __fdiv_rn(1.0f + BR, 2.0f));
+                                d1r = __fdiv_rn(1.0f, ac1 + bc) * 4.0f * PI * rwvent
+                                    * 0.5f * xdia_lr * cx_lr * rhoinv;
+                            } else {
+                                d1r = 0.0f;
+                            }
+                            const float e1 = __fdiv_rn(felvcp, pi0);
+                            const float f1 = pk;
+                            float temp1 = temg;
+                            const float p380 = __fdiv_rn(380.0f, pres);
+                            float ss1 = __fdiv_rn(qx_lv, qvs);
+                            float ss2 = ss1;
+                            float temp2 = temp1;
+                            float qv1 = qx_lv;
+                            float qvs1 = qvs;
+                            float delta;
+                            if (fabsf(ss1 - 1.0f) > 1.e-5f) {
+                                delta = __fdiv_rn(0.5f * (qv1 - qvs1), d1 * (ss1 - 1.0f));
+                            } else {
+                                delta = 0.1f * dtp;
+                            }
+                            const float dtcon1 = nssl2_min(0.2f * delta, 0.05f);
+                            int nc = 2 * (int)lroundf(__fdiv_rn(dtp - 4.0f * dtcon1, delta));
+                            nc = max(nc, 5);
+                            const float dtcon2 = __fdiv_rn(dtp - 4.0f * dtcon1, (float)nc);
+                            int nstep = 1;
+                            float dt1 = 0.0f;
+                            float dqr = 0.0f;
+                            while (dt1 < dtp) {
+                                float dtcon = (nstep <= 4) ? dtcon1 : dtcon2;
+                                float ss1m;
+                                bool exit_loop = false;
+                                while (true) {
+                                    // 609
+                                    const float dqv = -(ss1 - 1.0f) * d1 * dtcon;
+                                    const float dqvr = -(ss1 - 1.0f) * d1r * dtcon;
+                                    const float dtemp = -0.5f * e1 * f1 * (dqv + dqvr);
+                                    const int ltemq1m = ltemq_fqsati(temp1 + dtemp);
+                                    const float dqvs = dtemp * p380 * dtabqvs(ltemq1m);
+                                    const float qv1m = qv1 + dqv + dqvr;
+                                    const float qvs1m = qvs1 + dqvs;
+                                    ss1m = __fdiv_rn(qv1m, qvs1m);
+                                    // (dqvii + dqvis) == 0 always: no ice here.
+                                    if (ss1m < 1.0f) {
+                                        dtcon = 0.5f * dtcon;
+                                        if (dtcon >= dtcon1) continue;
+                                        exit_loop = true;
+                                    }
+                                    break;
+                                }
+                                if (exit_loop) break;
+                                const float dqv = -(ss1m - 1.0f) * d1 * dtcon;
+                                const float dqvr = -(ss1m - 1.0f) * d1r * dtcon;
+                                const float dtemp = -e1 * f1 * (dqv + dqvr);
+                                const int ltemq1 = ltemq_fqsati(temp1 + dtemp);
+                                const float dqvs = dtemp * p380 * dtabqvs(ltemq1);
+                                qv1 = qv1 + dqv + dqvr;
+                                dqc = dqc - dqv;
+                                dqr = dqr - dqvr;
+                                qvs1 = qvs1 + dqvs;
+                                ss1 = __fdiv_rn(qv1, qvs1);
+                                temp1 = temp1 + dtemp;
+                                if (temp2 == temp1 || ss2 == ss1 || ss1 == 1.0f
+                                        || (nstep > 10 && ss1 < 1.0005f)) {
+                                    break;
+                                }
+                                ss2 = ss1;
+                                temp2 = temp1;
+                                dt1 = dt1 + dtcon;
+                                nstep = nstep + 1;
+                            }
+                            dcloud = dqc;
+                            thetap = thetap + e1 * (dcloud + dqr);
+                            qwvp = qwvp - (dcloud + dqr);
+                            qc = qc + dcloud;
+                            qr = qr + dqr;
+                            theta = thetap + theta0;
+                            temg = theta * f1;
+                            ltemq = ltemq_of(temg);
+                            qvs = pqs * tabqvs(ltemq);
                         }
-                        break;
+                        // :11023-11033
+                        bool go631 = false, go613 = false, at616 = false;
+                        if (wvel <= 0.0f) {
+                            at616 = true;
+                        } else if (cx_lc <= 0.0f) {
+                            go613 = true;
+                        } else if (kgs > 1 && qc <= QXMIN_C) {
+                            go613 = true;
+                        } else if (kgs == 1 && wvel > 0.0f) {
+                            go613 = true;
+                        } else {
+                            at616 = true;
+                        }
+                        if (at616 && !go613) {
+                            if (ssf <= SUPCB && wvel > 0.0f) {
+                                go631 = true;
+                            } else if (kgs > 1 && kgs < nz - 1
+                                       && (ssfkp1 >= SUPMX || ssf >= SUPMX
+                                           || ssfkm1 >= SUPMX)) {
+                                go631 = true;
+                            } else if (ssf < 1.e-10f || ssf >= SUPMX) {
+                                go631 = true;
+                            } else {
+                                renuc_block = true;
+                            }
+                        }
+                        (void)go631;
+                    } else {
+                        // qc .le. qxmin(lc) (:10891-11012)
+                        if (ssf > 0.0f) {
+                            const float ssmx = SSMXINIT;
+                            if (ssf > ssmx && ssf < 20.0f && ccnc > 0.05f * cwnccn) {
+                                dcloud = qvexcess(qwvp, qv0, qc, pres, thetap, theta0,
+                                                  pi0, fcqv1, felvcp, ssmx, pk);
+                            } else {
+                                dcloud = 0.0f;
+                            }
+                        } else {
+                            dcloud = 0.0f;
+                        }
+                        thetap = thetap + __fdiv_rn(felvcp * dcloud, pi0);
+                        qwvp = qwvp - dcloud;
+                        qc = qc + dcloud;
+                        theta = thetap + theta0;
+                        temg = theta * pk;
+                        ltemq = ltemq_of(temg);
+                        qvs = pqs * tabqvs(ltemq);
+                        cn = 0.0f;
+                        const float cnuctmp = cnuc;
+                        if (dcloud > QXMIN_C && wvel > 0.0f) {
+                            cn = ccne0() * gfk_pow(cnuctmp, __fdiv_rn(2.0f, 2.0f + CCK))
+                                * gfk_pow(wvel, cnexp());
+                            // iccwflg = 1
+                            cn = nssl2_min(__fdiv_rn(CWCCN * rho0, RHO00),
+                                           nssl2_max(cn, __fdiv_rn(rho0 * qc,
+                                               XDN_C * four_pi_third() * four_micron_cube())));
+                        } else {
+                            cn = 0.0f;
+                            dcloud = 0.0f;
+                        }
+                        if (cn > 0.0f) {
+                            if (cn > ccnc) cn = ccnc;
+                            ccnc = nssl2_max(ccnc - cn, 0.0f);
+                            ccna = ccna + cn;
+                        }
+                        if (cn > cx_lc) cx_lc = cn;
+                        if (cx_lc > 0.0f && qc <= QXMIN_C) {
+                            cx_lc = 0.0f;
+                        } else {
+                            cx_lc = nssl2_min(cx_lc, __fdiv_rn(rho0 * nssl2_max(qc, 0.0f),
+                                                               NSSL2_WRF_CWMASN));
+                        }
                     }
-                    if (stop_adjustment) break;
-
-                    const float vapor_to_cloud =
-                        -(midpoint_ratio - 1.0f)
-                        * cloud_transfer * dt_condense;
-                    const float vapor_to_rain =
-                        -(midpoint_ratio - 1.0f)
-                        * rain_transfer * dt_condense;
-                    const float temperature_change =
-                        -latent_over_cp
-                        * (vapor_to_cloud + vapor_to_rain);
-                    const float final_temperature =
-                        trial_temperature + temperature_change;
-                    const float saturation_change = temperature_change
-                        * (380.0f / pressure)
-                        * nssl2_dtabqvs(final_temperature);
-
-                    trial_vapor += vapor_to_cloud + vapor_to_rain;
-                    cloud_increment -= vapor_to_cloud;
-                    rain_increment -= vapor_to_rain;
-                    trial_saturation += saturation_change;
-                    trial_ratio = trial_vapor / trial_saturation;
-                    trial_temperature += temperature_change;
-                    if (previous_temperature == trial_temperature
-                            || previous_ratio == trial_ratio
-                            || trial_ratio == 1.0f
-                            || (step_index > 10
-                                && trial_ratio < 1.0005f)) {
-                        break;
+                } else if (qc > 0.0f) {
+                    // cloud evaporation (:10524-10591)
+                    const float tc = temg - CBW;
+                    const float r1 = __fdiv_rn(1.0f, 1.0f + __fdiv_rn(
+                        CAW * (273.15f - CBW) * qss * felv, NCP * (tc * tc)));
+                    const float qevap = nssl2_min(qc, r1 * (qss - qvap));
+                    if (qc <= qevap) {
+                        qwvp = qwvp + qc;
+                        thetap = thetap - __fdiv_rn(felvcp * qc, pi0);
+                        qc = 0.0f;
+                        ccnc = restore_ccn(ccnc, rho0, cx_lc);
+                        cx_lc = 0.0f;
+                    } else {
+                        const float qctmp = qc;
+                        qwvp = qwvp + qevap;
+                        qc = qc - qevap;
+                        if (qc <= 0.0f) {
+                            ccnc = restore_ccn(ccnc, rho0, cx_lc);
+                            cx_lc = 0.0f;
+                        } else {
+                            const float tmp = __fdiv_rn(0.9f * qevap * cx_lc, qctmp);
+                            ccnc = restore_ccn(ccnc, rho0, tmp);
+                            cx_lc = cx_lc - tmp;
+                        }
+                        thetap = thetap - __fdiv_rn(felvcp * qevap, pi0);
                     }
-                    previous_ratio = trial_ratio;
-                    previous_temperature = trial_temperature;
-                    elapsed += dt_condense;
-                    ++step_index;
                 }
 
-                theta += latent_over_cp_exner
-                    * (cloud_increment + rain_increment);
-                vapor -= cloud_increment + rain_increment;
-                cloud += cloud_increment;
-                rain += rain_increment;
-                temperature = theta * exner_local;
-                saturation = nssl2_qvs(temperature, pressure);
-            }
+                if (renuc_block) {
+                    // irenuc = 2 (:11111-11149), then :11508-11513.
+                    cn = ccne0() * gfk_pow(cnuc, __fdiv_rn(2.0f, 2.0f + CCK))
+                        * gfk_pow(nssl2_max(wvel, 0.0f), cnexp());
+                    cn = nssl2_min(cn, ccnc);
+                    cn = nssl2_min(cn, __fdiv_rn(0.5f * dqc, NSSL2_WRF_CWMASN));
+                    cn = nssl2_min(cn, nssl2_max(cnuc - ccna, 0.0f));
+                    cx_lc = cx_lc + cn;
+                    ccnc = nssl2_max(ccnc - cn, 0.0f);
+                    ccna = ccna + cn;
+                    if (cx_lc > 0.0f && qc <= QXMIN_C) cx_lc = 0.0f;
+                }
 
-            // Default irenuc=2 continuation for an existing cloud.
-            const int k = idx / horizontal_size;
-            const float mass_level_w = 0.5f * (
-                w_interface[idx] + w_interface[idx + horizontal_size]);
-            bool admit_renucleation = cloud_increment > 0.0f
-                && supersaturation_percent > 0.5f
-                && supersaturation_percent < 238.0f
-                && !(k == 0 && mass_level_w > 0.0f);
-            if (admit_renucleation && k > 0 && k < nz - 2) {
-                const float below_ss = initial_supersaturation_percent[
-                    idx - horizontal_size];
-                const float above_ss = initial_supersaturation_percent[
-                    idx + horizontal_size];
-                if (below_ss >= 238.0f || above_ss >= 238.0f) {
-                    admit_renucleation = false;
+                // 613 / 631: maximum supersaturation (:11523-11577).
+                {
+                    float ssmx = MAXSUPERSAT;
+                    const float qv1 = qv0 + qwvp;
+                    const float qvs1 = qvs;
+                    if (qv1 > ssmx * qvs1) {
+                        ssmx = 100.0f * (ssmx - 1.0f);
+                        const float qvex = qvexcess(qwvp, qv0, qc, pres, thetap, theta0,
+                                                    pi0, fcqv1, felvcp, ssmx, pk);
+                        if (qvex > 0.0f) {
+                            thetap = thetap + __fdiv_rn(felvcp * qvex, pi0);
+                            qwvp = qwvp - qvex;
+                            qc = qc + qvex;
+                            cn = nssl2_min(nssl2_max(ccnc, cwnccn),
+                                           __fdiv_rn(rho0 * qvex,
+                                                     nssl2_max(nssl2_max(xmas_lc, cwmas20()),
+                                                               cwmasn5())));
+                            ccnc = nssl2_max(ccnc - cn, 0.0f);
+                            cx_lc = cx_lc + cn;
+                        }
+                    }
+                }
+                // :11587-11600
+                if (cx_lc > CXMIN && qc > QXMIN_C) {
+                    xmas_lc = __fdiv_rn(rho0 * qc, cx_lc);
+                    if (xmas_lc < NSSL2_WRF_CWMASN || xmas_lc > NSSL2_WRF_CWMASX) {
+                        xmas_lc = nssl2_min(xmas_lc, NSSL2_WRF_CWMASX);
+                        xmas_lc = nssl2_max(xmas_lc, NSSL2_WRF_CWMASN);
+                        cx_lc = __fdiv_rn(rho0 * qc, xmas_lc);
+                    }
                 }
             }
-            if (admit_renucleation) {
-                const float nucleation_pool = predicted_ccn
-                    ? fmaxf(ccn_number, background_ccn)
-                    : diagnostic_cnuc;
-                const float diagnosed_activated =
-                    background_ccn - ccn_number;
-                float activated = 23.984773635864258f
-                    * powf(nucleation_pool, 0.7692307829856873f)
-                    * powf(fmaxf(mass_level_w, 0.0f),
-                           0.3461538553237915f);
-                activated = fminf(activated, ccn_number);
-                activated = fminf(
-                    activated, __fdiv_rn(0.5f * cloud_increment, cloud_min_mass));
-                activated = fminf(
-                    activated,
-                    fmaxf(0.0f, nucleation_pool - diagnosed_activated));
-                activated = fmaxf(activated, 0.0f);
-                cloud_number += activated;
-                ccn_number = fmaxf(0.0f, ccn_number - activated);
-            }
-        } else if (supersaturation_percent > 0.0f) {
-            // No pre-existing cloud: iqcinit=2 ordinary QVEXCESS path.
-            float initial_cloud_increment = 0.0f;
-            if (supersaturation_percent > 0.4f
-                    && supersaturation_percent < 20.0f
-                    && ccn_number > 0.05f * background_ccn) {
-                initial_cloud_increment = nssl2_qvexcess(
-                    theta, pressure, exner_local, vapor, cloud,
-                    latent_over_cp, 0.4f);
-            }
-            theta += latent_over_cp_exner * initial_cloud_increment;
-            vapor -= initial_cloud_increment;
-            cloud += initial_cloud_increment;
-            cloud_increment = initial_cloud_increment;
-            temperature = theta * exner_local;
-            saturation = nssl2_qvs(temperature, pressure);
 
-            const float mass_level_w = 0.5f * (
-                w_interface[idx] + w_interface[idx + horizontal_size]);
-            if (initial_cloud_increment > qxmin_cloud
-                    && mass_level_w > 0.0f) {
-                const float activation_pool = predicted_ccn
-                    ? fmaxf(ccn_number, background_ccn)
-                    : diagnostic_cnuc;
-                float activated = 23.984773635864258f
-                    * powf(activation_pool, 0.7692307829856873f)
-                    * powf(mass_level_w, 0.3461538553237915f);
-                const float four_micron_mass =
-                    1000.0f * (4.0f * pi / 3.0f)
-                    * (4.0e-6f * 4.0e-6f * 4.0e-6f);
-                activated = fminf(
-                    background_ccn,
-                    fmaxf(activated, __fdiv_rn(rho * cloud, four_micron_mass)));
-                activated = fminf(activated, ccn_number);
-                ccn_number = fmaxf(0.0f, ccn_number - activated);
-                cloud_number = fmaxf(cloud_number, activated);
-                cloud_number = fminf(
-                    cloud_number, __fdiv_rn(rho * fmaxf(cloud, 0.0f),
-                        cloud_min_mass));
-            }
-        }
-
-        // Active default maxsupersat=1.9 / imaxsupopt=4 adjustment.
-        temperature = theta * exner_local;
-        saturation = nssl2_qvs(temperature, pressure);
-        if (vapor > 1.9f * saturation) {
-            const float vapor_excess = nssl2_qvexcess(
-                theta, pressure, exner_local, vapor, cloud,
-                latent_over_cp, 90.0f);
-            if (vapor_excess > 0.0f) {
-                theta += latent_over_cp_exner * vapor_excess;
-                vapor -= vapor_excess;
-                cloud += vapor_excess;
-                const float activation_mass = fmaxf(
-                    cloud_five_micron_mass,
-                    fmaxf(cloud_twenty_micron_mass, cloud_mean_mass));
-                float activated = fminf(
-                    fmaxf(ccn_number, background_ccn),
-                    rho * vapor_excess / activation_mass);
-                ccn_number = fmaxf(0.0f, ccn_number - activated);
-                cloud_number += activated;
-            }
-        }
-
-        // Native final droplet mean-mass bound.
-        if (cloud_number > cxmin && cloud > qxmin_cloud) {
-            cloud_mean_mass = rho * cloud / cloud_number;
-            if (cloud_mean_mass < cloud_min_mass
-                    || cloud_mean_mass > cloud_max_mass) {
-                cloud_mean_mass = fminf(
-                    cloud_max_mass,
-                    fmaxf(cloud_min_mass, cloud_mean_mass));
-                cloud_number = rho * cloud / cloud_mean_mass;
-            }
-        }
-        // NUCOND diagnoses/clamps the final rain mean volume but, in the
-        // official rcond=2 source, does not scatter a reconstructed number.
-        if (rain_number > 0.0f && rain > qxmin_rain) {
-            rain_mean_volume = rho * rain / (1000.0f * rain_number);
-            rain_mean_volume = fminf(
-                rain_max_volume,
-                fmaxf(rain_min_volume, rain_mean_volume));
+            // ---- scatter (:11649-11695) ----
+            an_lt = theta0 + thetap;
+            an_lv = qv0 + qwvp;
+            an_lc = qc + nssl2_min(an_lc, 0.0f);
+            an_lr = qr + nssl2_min(an_lr, 0.0f);
+            an_lnc = nssl2_max(cx_lc, 0.0f);
+            an_lccn = nssl2_max(ccnc, 0.0f);
+            an_lnr = nssl2_max(cx_lr, 0.0f);
         }
     }
 
-    // All-domain warm-category cleanup from the tail of NUCOND.
-    if (rain < qxmin_rain || rain_number <= 0.0f) {
-        vapor += fmaxf(rain, 0.0f);
-        rain = 0.0f;
-        rain_number = 0.0f;
+    // ---- moment tail (:11732-12206), every point; frac = 1 ----
+    const bool zero_lc = an_lnc <= 0.0f;
+    const bool zero_lr = an_lnr <= 0.0f;
+    const bool zero_li = an_lni <= 0.0f;
+    const bool zero_ls = an_lns <= 0.0f;
+    if (has_frozen) {
+        float an_lh = qg[idx];
+        float an_lhl = qh[idx];
+        // The frozen arm requires concentration space (launcher-enforced).
+        float an_lnh = qng[idx];
+        float an_lnhl = qnh[idx];
+        float an_lvh = qvolg[idx];
+        float an_lvhl = qvolh[idx];
+        const bool zero_lh = an_lnh <= 0.0f;
+        const bool zero_lhl = an_lnhl <= 0.0f;
+        // hail (:11799-11892): lhlw = 0, alphahl = 1 > 0.1.
+        if (an_lhl < QXMIN_HL || zero_lhl) {
+            an_lv = an_lv + an_lhl;
+            an_lhl = 0.0f;
+            an_lnhl = 0.0f;
+            an_lvhl = 0.0f;
+        } else {
+            float tmp;
+            if (an_lvhl > 0.0f) {
+                tmp = __fdiv_rn(dn * an_lhl, an_lvhl);
+            } else {
+                tmp = 900.0f;                     // rho_qhl
+                an_lvhl = __fdiv_rn(dn * an_lhl, tmp);
+            }
+            if (tmp < 500.0f) {                   // xdnmn(lhl)
+                tmp = nssl2_max(500.0f, tmp);
+                an_lvhl = __fdiv_rn(dn * an_lhl, tmp);
+            }
+            if (tmp > 900.0f) {                   // xdnmx(lhl)
+                tmp = nssl2_min(900.0f, tmp);
+                an_lvhl = __fdiv_rn(dn * an_lhl, tmp);
+            }
+        }
+        // graupel (:11935-12033): lhw = 0; alphah = 0 arms the intercept.
+        if (an_lh < QXMIN_H || zero_lh) {
+            an_lv = an_lv + an_lh;
+            an_lh = 0.0f;
+            an_lnh = 0.0f;
+            an_lvh = 0.0f;
+        } else {
+            float tmp;
+            if (an_lvh > 0.0f) {
+                tmp = __fdiv_rn(dn * an_lh, an_lvh);
+            } else {
+                tmp = 500.0f;                     // rho_qh
+                an_lvh = __fdiv_rn(dn * an_lh, tmp);
+            }
+            if (tmp < 170.0f) {                   // xdnmn(lh)
+                tmp = nssl2_max(170.0f, tmp);
+                an_lvh = __fdiv_rn(dn * an_lh, tmp);
+            }
+            if (tmp > 900.0f) {                   // xdnmx(lh)
+                tmp = nssl2_min(900.0f, tmp);
+                an_lvh = __fdiv_rn(dn * an_lh, tmp);
+            }
+            if (an_lh > QXMIN_H) {
+                float hwdn;
+                if (an_lvh > 0.0f) {
+                    hwdn = __fdiv_rn(dn * an_lh, an_lvh);
+                } else {
+                    hwdn = 500.0f;                // xdn0(lh)
+                }
+                hwdn = nssl2_max(170.0f, hwdn);
+                tmp = __fdiv_rn(hwdn * an_lnh, dn * an_lh);
+                const float tmpg = an_lnh * gfk_pow(tmp * 3.14159f, 1.0f / 3.0f);
+                if (tmpg < CNOHMN) {
+                    tmp = gfk_pow(__fdiv_rn(hwdn, dn * an_lh) * 3.14159f, 1.0f / 3.0f);
+                    an_lnh = gfk_pow(__fdiv_rn(CNOHMN, tmp), 0.75f);
+                }
+            }
+        }
+        qg[idx] = an_lh;
+        qh[idx] = an_lhl;
+        qng[idx] = an_lnh;
+        qnh[idx] = an_lnhl;
+        qvolg[idx] = an_lvh;
+        qvolh[idx] = an_lvhl;
     }
-    if (cloud <= qxmin_cloud || cloud_number <= 0.0f) {
-        vapor += fmaxf(cloud, 0.0f);
-        cloud = 0.0f;
-        ccn_number += fmaxf(cloud_number, 0.0f);
-        cloud_number = 0.0f;
-        // WRF restores predicted CCN only when the cell is also free of
-        // primary ice plus snow.  Omitting this frozen-water gate nudges CCN
-        // in mixed-phase/anvil levels where official NUCOND leaves it alone.
-        const float retained_ice =
-            (qi[idx] > 1.0e-13f && qni[idx] > 0.0f) ? qi[idx] : 0.0f;
-        const float retained_snow =
-            (qs[idx] >= 1.0e-13f && qns[idx] > 0.0f) ? qs[idx] : 0.0f;
-        if (ccn_number > 1.0f
-                && retained_ice + retained_snow < 1.0e-13f) {
-            ccn_number = background_ccn
-                - fmaxf(0.0f, background_ccn - ccn_number)
-                    * expf(__fdiv_rn(-dt, 3600.0f));
+    // snow (:12036-12092): lvs = lsw = 0, both temperature arms alike.
+    if (an_ls < QXMIN_S || zero_ls) {
+        an_lv = an_lv + an_ls;
+        an_ls = 0.0f;
+        an_lns = 0.0f;
+    }
+    // rain (:12098-12111)
+    if (an_lr < QXMIN_R || zero_lr) {
+        an_lv = an_lv + an_lr;
+        an_lr = 0.0f;
+        an_lnr = 0.0f;
+    }
+    // cloud ice (:12116-12123)
+    if (an_li <= QXMIN_I || zero_li) {
+        an_lv = an_lv + an_li;
+        an_li = 0.0f;
+        an_lni = 0.0f;
+    }
+    // cloud water (:12158-12200)
+    if (an_lc <= QXMIN_C || zero_lc) {
+        an_lv = an_lv + an_lc;
+        an_lc = 0.0f;
+        an_lccn = an_lccn + nssl2_max(an_lnc, 0.0f);
+        an_lnc = 0.0f;
+        an_lccn = nssl2_max(an_lccn, 0.0f);
+        const float tmp = an_li + an_ls;
+        if (an_lccn > 1.0f && tmp < QXMIN_I) {
+            an_lccn = dn * QCCN - nssl2_max(dn * QCCN - an_lccn, 0.0f)
+                * gfk_exp(-__fdiv_rn(dtp, CCNTIMECONST));
         }
     }
 
-    full_theta[idx] = theta;
-    qv[idx] = fmaxf(vapor, 0.0f);
-    qc[idx] = fmaxf(cloud, 0.0f);
-    qr[idx] = fmaxf(rain, 0.0f);
-    qndrop[idx] = fmaxf(cloud_number, 0.0f) * output_number_scale;
-    qnr[idx] = fmaxf(rain_number, 0.0f) * output_number_scale;
-    qnn[idx] = fmaxf(ccn_number, 0.0f) * output_number_scale;
+    const float out_scale = concentration_space ? 1.0f : __fdiv_rn(1.0f, dn);
+    full_theta[idx] = an_lt;
+    qv_field[idx] = an_lv;
+    qc_field[idx] = an_lc;
+    qr_field[idx] = an_lr;
+    qi_field[idx] = an_li;
+    qs_field[idx] = an_ls;
+    qndrop[idx] = an_lnc * out_scale;
+    qnr[idx] = an_lnr * out_scale;
+    qni[idx] = an_lni;
+    qns[idx] = an_lns;
+    qnn[idx] = an_lccn * out_scale;
 }

@@ -159,3 +159,81 @@ graded by feeding their own cell centres back in and requiring the published
 neighbour ring exactly; and `tests/mesh_pipeline.rs` runs the whole generator
 and reads its output back through `netcrust`, a reader that shares no code with
 the writer.
+
+## Surface update file (MPAS-A v8.4.2 case 8)
+
+The existing init binary also writes the immutable surface stream directly:
+
+```sh
+rw_mpas_init --mode surface-update \
+  --sfc-prefix /case/SFC --static /case/static.nc --out /case/surface.nc \
+  --start-time YYYY-MM-DD_HH:MM:SS --stop-time YYYY-MM-DD_HH:MM:SS \
+  --fg-interval 21600 --surface-interval 21600 --receipt /case/surface.json
+```
+
+The two intervals are explicit seconds and must match. The Gregorian time loop
+includes the stop time when it is on the interval, reading `PREFIX:YYYY-MM-DD_HH`
+and writing `xtime`, `Time`, `sst`, and `xice` at each time. Formats 3, 4 and 5
+are decoded in Rust; case 8 supports lat/lon, Gaussian (format 5), and polar
+stereographic grids. A missing LANDSEA slab follows the native unmasked path.
+SST/SKINTEMP and SEAICE are consumed in file order, then cold oceans freeze and
+sea ice is limited to [0, 1]. Atmospheric, soil and vertical-capsule arguments
+are unnecessary for this mode. `--mode surface-update --abi` reports its ABI;
+the original case-7 ABI and invocation remain valid.
+
+The output is staged beside its final path and renamed after every record is
+written. Invalid intervals, a missing landmask, corrupt intermediate framing,
+and missing later inputs preserve an existing output. A static with maximum
+landmask zero refuses, matching native's grid-versus-static check.
+
+The standalone oracle reuses the full pristine MPAS surface module with its
+native WPS reader, llxy, interpolation, queue and bitarray modules. Framework
+stubs replace only pools, the clock, logging and stream output. Build it through
+the lane's build-slot wrapper, then set `MPAS_SURFACE_ORACLE` to its executable
+and `MPAS_SURFACE_TEST_OUT` to an owned scratch directory before running:
+
+```sh
+cargo +1.94.0 test --release --offline --locked -j4 -p rw-mpas \
+  --test surface_update -- --include-ignored --skip strict_native_projection_refusals
+```
+
+These binary and module tests are implementation evidence. Real native decks,
+whole-model surface substitution, and G0-G2 are separately required for landing.
+
+The ignored native error-path test also reaches the surface module's zero-mask
+and both file-open refusals. To reach the second-open failure, its framework
+I/O adapter deletes the specified fixture after the first scan when
+`MPAS_SURFACE_ORACLE_DROP_AFTER_SCAN` is set. The test sets this only for that
+case; numerical replays leave it unset, and the pinned MPAS sources are unedited.
+`MPAS_SURFACE_ENGINE` can select a copied optimized binary for an artifact replay
+on a host that did not build the tests.
+
+Native case 8 initializes only lat/lon, Gaussian and polar mappings. Active
+Mercator/Lambert fields therefore reach its explicit `LATLON_TO_IJ` fatal error
+before interpolation (`mpas_init_atm_llxy.F:601-604`); Rust refuses those same
+fields. Unrelated slabs with those projections remain readable and ignored.
+The ignored `strict_native_projection_refusals` test witnesses this behavior
+with f0's complete strict executable at one and two ranks. Set
+`MPAS_SURFACE_NATIVE`, `MPAS_SURFACE_NATIVE_STATIC` and
+`MPAS_SURFACE_NATIVE_GRAPH_PREFIX` to that executable, a published full init
+file and its decomposition prefix, using the pinned MPICH runtime from f0's
+`toolchain.txt`.
+
+The ignored `surface_published` test runs the Rust binary and strict native
+executable on real inputs, compares every `Time`/`sst`/`xice` binary32 word and
+all 64 bytes per `xtime`, and removes outputs after writing `real-replay.json`.
+Set `MPAS_SURFACE_DECKS_JSON` to a JSON array of explicit deck objects with
+`label`, `static_path`, `sfc_prefix`, `graph_prefix`, `start`, `stop`, `interval`
+and optional `published_native` paths. It requires `MPAS_SURFACE_NATIVE` and
+`MPAS_SURFACE_TEST_OUT`; `MPAS_SURFACE_ENGINE` can select the copied engine.
+Set `MPAS_SURFACE_ORACLE` as well to compare every real destination cell and
+record against the strict standalone complete-module build. Its clock adapter
+allocates the requested record sequence, including complete five-day updates.
+Its receipt records that the hex front door and whole forecast remain separate
+proofs.
+
+`tests/surface_oracle/prepare_ungrib.py` prepares control files and input links
+for f0's pinned native WPS decoder. The reference decoder performs all field
+processing; Python only selects the existing surface Vtable definitions and
+writes its namelist. This bounds scratch output when replaying complete update
+sequences from published GRIB inputs.

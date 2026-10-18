@@ -28,8 +28,11 @@ adjustment, so ``topo_shading = 1`` without ``slope_rad = 1`` computes
 nothing WRF would use.
 
 One patch covers the domain, as a serial wrf.exe runs it.  The kernels are
-held bit for bit to WRF's own Fortran by the oracle in
-``tools/wrf_topo_radiation_v471_oracle`` (``tests/test_topo_radiation.py``).
+held bit for bit to WRF's own Fortran, linked to glibc 2.43's libm, by the
+oracles in ``tools/wrf_topo_radiation_v471_oracle`` (each stage, WRF
+v4.7.1) and ``tools/wrf_topo_radiation_v461_oracle`` (the whole chain over
+realistic regimes, WRF v4.6.1), both graded in
+``tests/test_topo_radiation.py``.
 """
 from __future__ import annotations
 
@@ -56,7 +59,8 @@ def _f32(xp, array, shape, name):
     return out
 
 
-def slope_geometry(ht, msftx, msfty, sina, cosa, *, dx: float, dy: float):
+def slope_geometry(ht, msftx, msfty, sina, cosa, *, dx: float, dy: float,
+                   initialization="column_oracle"):
     """``(slope, slp_azi)`` in radians from terrain height (start_em.F).
 
     ``rdx``/``rdy`` are WRF's ``1./dx`` and ``1./dy`` in single precision
@@ -74,8 +78,18 @@ def slope_geometry(ht, msftx, msfty, sina, cosa, *, dx: float, dy: float):
     slp_azi = cp.empty(shape, dtype=cp.float32)
     rdx = np.float32(1.0) / np.float32(dx)
     rdy = np.float32(1.0) / np.float32(dy)
-    _kernel("topo_slope_geometry")(
-        *_grid(nx * ny), (*args, rdx, rdy, np.int32(nx), np.int32(ny),
+    if initialization == "scalar_build":
+        from gpuwm.core.kernels import get_kernel_int_defines
+        from gpuwm.static.rust_bridge import scalar_rotation_asin_f32
+        rotation = cp.asarray(scalar_rotation_asin_f32(cp.asnumpy(args[3])))
+        kernel = get_kernel_int_defines("topo_radiation","topo_slope_geometry",(("TR_SLOPE_SCALAR",1),))
+    elif initialization == "column_oracle":
+        rotation = args[3]
+        kernel = _kernel("topo_slope_geometry")
+    else:
+        raise ValueError("slope initialization must be column_oracle or scalar_build")
+    kernel(
+        *_grid(nx * ny), (*args, rotation, rdx, rdy, np.int32(nx), np.int32(ny),
                           slope, slp_azi))
     return slope, slp_azi
 
@@ -263,6 +277,7 @@ class TopoShortwave:
         import cupy as cp
 
         from gpuwm.config import radiation_scheme_ids
+        from gpuwm.wrf_exact import ENABLED as strict_arithmetic
 
         ny, nx = tuple(state.ht.shape)
         self.shape = (ny, nx)
@@ -278,7 +293,8 @@ class TopoShortwave:
         self._xlong_host = cp.asnumpy(self.xlong).reshape(-1)
         slope, slp_azi = slope_geometry(
             state.ht, state.msft, state.msft, state.sina, state.cosa,
-            dx=self.dx, dy=self.dy)
+            dx=self.dx, dy=self.dy,
+            initialization="scalar_build" if strict_arithmetic else "column_oracle")
         fields["slope"] = slope
         fields["slp_azi"] = slp_azi
         for name in ("diffuse_frac", "topo_coszen", "hrang", "swnorm"):
@@ -297,7 +313,6 @@ class TopoShortwave:
         import cupy as cp
 
         from gpuwm.config import effective_radt_minutes
-        from gpuwm.core.rrtmg_legacy import calc_coszen_hrang, radconst
 
         F = np.float32
         f = self.fields
@@ -315,17 +330,32 @@ class TopoShortwave:
                 + self.start_time.microsecond / 3.6e9)
         xtime = F(float(state.elapsed_seconds) / 60.0)
         radt = F(effective_radt_minutes(cfg))
-        if getattr(cfg, "solar_generation", "wrf_480") == "wrf_480":
+        generation = getattr(cfg, "solar_generation", "wrf_480")
+        from gpuwm.wrf_exact import ENABLED as _strict
+        if _strict and generation == "wrf_461":
+            # The same rounded solar words consumed by strict legacy
+            # radiation (rrtmg_legacy.solar_geometry_device); NumPy trig moved
+            # the terrain cosine before the land-surface call.
+            from gpuwm.core.rrtmg_legacy import (
+                solar_geometry_device as legacy_solar_geometry_device)
+            coszen, hrang, declin, solcon = legacy_solar_geometry_device(
+                julian, xtime + radt * F(0.5), gmt, self.xlat, self.xlong)
+            f["topo_coszen"][...] = coszen.reshape(self.shape)
+            f["hrang"][...] = hrang.reshape(self.shape)
+        elif generation == "wrf_480":
             from gpuwm.core.solar import solar_geometry_device
             ds, coszen, hrang = solar_geometry_device(julian, xtime + radt * F(0.5), gmt, self._xlat_host, self._xlong_host)
             declin, solcon = map(F, cp.asnumpy(ds))
+            f["topo_coszen"][...] = cp.asarray(coszen.reshape(self.shape))
+            f["hrang"][...] = cp.asarray(hrang.reshape(self.shape))
         else:
+            from gpuwm.core.rrtmg_legacy import calc_coszen_hrang, radconst
             declin, solcon = radconst(julian)
             coszen, hrang = calc_coszen_hrang(
                 julian, xtime + radt * F(0.5), gmt, self._xlat_host,
                 self._xlong_host, declin, generation='wrf_461')
-        f["topo_coszen"][...] = cp.asarray(coszen.reshape(self.shape))
-        f["hrang"][...] = cp.asarray(hrang.reshape(self.shape))
+            f["topo_coszen"][...] = cp.asarray(coszen.reshape(self.shape))
+            f["hrang"][...] = cp.asarray(hrang.reshape(self.shape))
         f["topo_declin"][...] = F(declin)
         if self.scheme_splits_direct_beam:
             if result.swddif is None:

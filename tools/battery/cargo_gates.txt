@@ -279,6 +279,12 @@ cpu  tools/rustwx  rw-atms  5
 # is exactly the class of defect only its own tests catch.
 cpu  tools/rustwx  rw-odim  52
 
+# National radar-volume feed listings (rw_radar_feeds, `gpuwm obs radar-feeds`):
+# the dated URL rows and the FMI/DMI archive lookup that feed rw-odim. A listing
+# that cut a window wrongly still prints plausible rows, so only its own tests
+# catch it. Floor is its first green run, 8 (Linux, cargo 1.94.0, 2.9.2 compose).
+cpu  tools/rustwx  rw-radar-feeds  8
+
 # Satellite: the GOES ABI ingest and the L2 cloud products.  --lib is
 # the whole crate EXCEPT tests/cloud_products.rs, which is the entry
 # below; the split is by target, not by subject, so nothing is dropped
@@ -563,6 +569,16 @@ cpu  tools/rw_wps  mapped-engine  121
 # Floor is the 65 the vendoring recorded green at donor tip (60 lib + 5
 # integration), which is also what it reports here.
 cpu  tools/rw_wps  rw-wps  65
+
+# projected-intermediate: THIS project's crate, the projected MET library
+# gpuwm-hex loads for HRRR and every other projected source.  It joined
+# this list the day it joined the release bundle (2.9.1).  Its suite needs
+# no engine library: the exact-donor entry is a recording stub, and the
+# crop and geometry tests use the HRRR grid's own projection constants,
+# checked against the engine's latlon_to_ij at one point.  Whole-MET byte
+# identity against the engine's operator is gpuwm-hex's native test.
+# Floor is its first green run, 8 (Windows, cargo 1.94.0).
+cpu  tools/rw_wps  projected-intermediate  8
 
 # Local interfaces: exact TOML editing, request origins, saved-file ownership,
 # and actual worker process groups/Windows Job Objects. @python is the battery

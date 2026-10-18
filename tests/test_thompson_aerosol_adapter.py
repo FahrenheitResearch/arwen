@@ -141,6 +141,7 @@ That behaviour is documented here and pinned by
 absorbed into a loose global tolerance, and no bound in
 :data:`_END_TO_END_BOUNDS` exists to accommodate it.
 """
+# Replaced in 2.9.1 (the WRF exact chain): test_reused_classic_launchers_receive_the_mp8_argument_shape -> test_reused_classic_launchers_receive_the_mp8_argument_shape_strict and _default.
 
 from __future__ import annotations
 
@@ -935,7 +936,199 @@ def test_entry_hydrometeors_at_or_below_r1_are_zeroed_mass_and_number(
         "launch_aa_graupel_number_init")
 
 
-def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
+#: The argument shape mp=8's adapter gave the four thompson.cu launchers
+#: mp=28 reuses, as it stood at lane/verify-base 91de806e2, the last tree
+#: in which mp=8 called them: there this test compared the two adapters
+#: call for call and passed, so the shape below is mp=8's own, recorded by
+#: this file's ``label`` (position by position, and which state array or
+#: scratch slot each position holds).  lane/parity-mp-libm moved mp=8 onto
+#: its own unit (kernels/thompson_classic.cu, the column transcription of
+#: WRF v4.6.1 mp_thompson), so mp=8 no longer makes these calls and a live
+#: comparison would compare mp=28 with nothing.  The shape is pinned
+#: instead: mp=28's reuse of the thompson.cu launchers must keep receiving
+#: it.  ``launch_snow_sedimentation`` is pinned without its two working-rain
+#: slots (mp=28 hands the blend WRF's qr1d + qrten*DT there; asserted
+#: separately below), and ``launch_hydrometeor_column_mask`` as its one
+#: cloud-column call with the carrier slot written ``L_qc``.
+_MP8_REUSED_LAUNCHER_SHAPE = {
+    "launch_classic_graupel_number_finalize": [
+        (("state.qg", "scratch.mp_thompson_temperature", "state.p",
+          "state.qv", "scratch.mp_thompson_graupel_number_shadow"), {}),
+    ],
+    "launch_hydrometeor_column_mask": [
+        (("L_qc", "scratch.mp_snowncv"), {}),
+    ],
+    "launch_snow_sedimentation": [
+        (("state.qs", "scratch.mp_thompson_temperature", "state.p",
+          "state.qv", "scratch.mp_dz8w", "scratch.mp_rainnc",
+          "scratch.mp_rainncv", "scratch.mp_snownc", "scratch.mp_snowncv",
+          "10.0"),
+         {"reference_density": "scratch.mp_thompson_frozen_reference_density",
+          "reference_temperature":
+              "scratch.mp_thompson_frozen_reference_temperature",
+          "snow_melt_marker": "scratch.mp_thompson_snow_melt_marker",
+          "velocity_boost": "scratch.mp_thompson_snow_velocity_boost",
+          "melt_rain_density": "scratch.mp_thompson_rain_reference_density",
+          "melt_rain_density_carries_presence": "True",
+          "accumulate_surface": "True"}),
+    ],
+    "launch_graupel_sedimentation": [
+        (("state.qg", "scratch.mp_thompson_temperature", "state.p",
+          "state.qv", "scratch.mp_dz8w", "scratch.mp_rainnc",
+          "scratch.mp_rainncv", "scratch.mp_graupelnc",
+          "scratch.mp_graupelncv", "10.0"),
+         {"reference_density": "scratch.mp_thompson_frozen_reference_density",
+          "active_columns": "scratch.mp_sr",
+          "graupel_number_shadow":
+              "scratch.mp_thompson_graupel_number_shadow",
+          "accumulate_surface": "True"}),
+    ],
+}
+
+
+@pytest.mark.skipif(not __import__("gpuwm.wrf_exact", fromlist=["ENABLED"]).ENABLED,
+                    reason="a default process runs 2.9.1's mp=8 adapter, which still calls these launchers (the _default test compares live)")
+def test_reused_classic_launchers_receive_the_mp8_argument_shape_strict(monkeypatch):
+    """The frozen launchers mp=28 reuses get the arguments mp=8 gave them.
+
+    module_mp_thompson.F:3790-3936 has no ``is_aerosol_aware`` branch and no
+    nc/nwfa/nifa reference, so "reused unchanged" has to mean the argument
+    tuples too.  This compares the mp=28 adapter's calls, launcher by
+    launcher, by POSITION and by which state array or scratch slot each
+    position holds, with ``_MP8_REUSED_LAUNCHER_SHAPE``: the shape mp=8's
+    adapter gave the same launchers in the last tree that called them
+    (that constant's comment says why it is pinned rather than recorded).
+
+    It also proves the premise of the pin: mp=8's adapter no longer calls
+    any thompson.cu launcher.  If it ever does again, this test must go back
+    to the live comparison.
+    """
+    import gpuwm.core.microphysics as microphysics
+    import gpuwm.core.thompson as thompson
+    import gpuwm.core.thompson_classic as classic_unit
+    import gpuwm.core.thompson_runtime as classic_runtime
+
+    # mp=8 makes its post-source rain and graupel fallout column masks in
+    # its fused launch_adapter_masks, which writes exactly what
+    # launch_hydrometeor_column_mask and launch_graupel_fallout_column_mask
+    # write (tests/test_thompson_speed_glue.py); mp=28 still calls those, and
+    # the comparison below covers the launcher both adapters call.  The
+    # v4.6.1 generation's rain, ice, snow and graupel fallout and its
+    # graupel-number entry and exit are mp=28's own kernels
+    # (tests/test_thompson_aerosol_sedim_refl.py), so they are no longer
+    # compared here.
+    reused = (
+        "launch_hydrometeor_column_mask",
+    )
+
+    def label(state, value):
+        for name in ("qv", "qc", "qr", "qi", "ni", "qs", "qg", "nr", "nc",
+                     "nwfa", "nifa", "p", "effc", "effi", "effs"):
+            if getattr(state, name, None) is value:
+                return f"state.{name}"
+        for slot, buf in state._scratch.items():
+            if buf is value:
+                return f"scratch.{slot}"
+        if isinstance(value, np.ndarray):
+            return f"array{value.shape}"
+        return repr(value)
+
+    aerosol_calls, aerosol_state, _, _, _ = _record_adapter_call(monkeypatch)
+
+    def profile(name):
+        return [(tuple(label(aerosol_state, a) for a in args),
+                 {k: label(aerosol_state, v) for k, v in kwargs.items()})
+                for call_name, args, kwargs in aerosol_calls
+                if call_name == name]
+
+    for name in reused:
+        got = profile(name)
+        if name == "launch_snow_sedimentation":
+            # mp=28 hands the blend WRF's working rain, qr1d + qrten*DT, in
+            # the two slots spent by then; mp=8 handed its in-place state.
+            for _args, kwargs in got:
+                assert kwargs["melt_rain_qr"] == (
+                    "scratch.mp_thompson_aero_condensation_rate"), kwargs
+                assert kwargs["melt_rain_nr"] == (
+                    "scratch.mp_thompson_aero_tau1_density"), kwargs
+            got = [(args, {k: v for k, v in kwargs.items()
+                           if k not in ("melt_rain_qr", "melt_rain_nr")})
+                   for args, kwargs in got]
+        if name == "launch_hydrometeor_column_mask":
+            # WRF's cloud fallout gate reads ANY(L_qc) as the adjustment
+            # left it (:3485, :3645); mp=28 takes the cloud column's mask
+            # from the L_qc(k) its adjustment exports into the TAU+1
+            # density's spent slot.  mp=28's post-source rain mask is left
+            # out, as it was when mp=8 fused that twin into its own launch.
+            carrier = "scratch.mp_thompson_aero_tau1_density"
+            assert [a[0] for a, _k in got].count(carrier) == 1, got
+            got = [(("L_qc",) + args[1:], kwargs)
+                   for args, kwargs in got if args[0] == carrier]
+        assert got == _MP8_REUSED_LAUNCHER_SHAPE[name], name
+
+    # The pin's premise: mp=8 runs its own unit and calls no thompson.cu
+    # launcher.  Every thompson.cu launcher and the classic unit's entry
+    # are recorders here, so nothing compiles or launches.
+    classic_calls: list = []
+
+    class _Stop(Exception):
+        pass
+
+    def spy(name):
+        def launch(*args, **kwargs):
+            classic_calls.append(name)
+            if name == "apply_classic":
+                raise _Stop
+        return launch
+
+    for name in thompson.__all__:
+        if callable(getattr(thompson, name, None)):
+            monkeypatch.setattr(thompson, name, spy(name))
+    monkeypatch.setattr(classic_unit, "apply_classic", spy("apply_classic"))
+    monkeypatch.setattr(
+        classic_runtime, "load_classic_device_tables", lambda _root: object())
+    monkeypatch.setattr(microphysics, "cp", np)
+    monkeypatch.setattr(microphysics, "save_pre_mp_theta",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(microphysics, "moist_physics_finish",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(
+        microphysics, "_thompson_table_root", lambda: "host-fixture")
+    classic_state = _HostState()
+    microphysics._apply_thompson(
+        classic_state, SimpleNamespace(no_mp_heating=0, mp_tend_lim=10.0),
+        10.0)
+
+    def profile(calls, state, name):
+        return [(tuple(label(state, a) for a in args),
+                 {k: label(state, v) for k, v in kwargs.items()})
+                for call_name, args, kwargs in calls if call_name == name]
+
+    for name in reused:
+        got = profile(aerosol_calls, aerosol_state, name)
+        want = profile(classic_calls, classic_state, name)
+        if name == "launch_hydrometeor_column_mask":
+            # WRF's cloud fallout gate reads ANY(L_qc) as the adjustment
+            # left it (:3485, :3645), so both adapters take the cloud
+            # column's mask from the L_qc(k) their adjustment exports, each
+            # into a buffer it has spent or not yet filled: the TAU+1
+            # density's slot for mp=28, the rain evaporation's density output for
+            # mp=8.  Same launcher, same mask buffer, same order.
+            # The cloud call is compared; mp=28's post-source rain mask
+            # (the mp=8 twin of which is fused into launch_adapter_masks) is
+            # left out.
+            def carried(calls, carrier):
+                assert [a[0] for a, _k in calls].count(carrier) == 1, calls
+                return [(("L_qc",) + args[1:], kwargs)
+                        for args, kwargs in calls if args[0] == carrier]
+            got = carried(got, "scratch.mp_thompson_aero_tau1_density")
+            want = carried(want, "scratch.mp_thompson_rain_reference_density")
+        assert got == want, name
+
+
+@pytest.mark.skipif(__import__("gpuwm.wrf_exact", fromlist=["ENABLED"]).ENABLED,
+                    reason="a strict process runs mp=8 on the classic unit")
+def test_reused_classic_launchers_receive_the_mp8_argument_shape_default(monkeypatch):
     """The frozen launchers mp=28 reuses get the arguments mp=8 gives them.
 
     module_mp_thompson.F:3790-3936 has no ``is_aerosol_aware`` branch and no

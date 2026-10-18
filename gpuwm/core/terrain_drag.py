@@ -282,13 +282,16 @@ GSL_DIAGNOSTIC_NAMES = ("ls", "bl", "ss", "fd")
 
 def launch_gwdo_gsl(atmosphere: Mapping[str, object], du, dv, *, ls, ss,
                     sina, cosa, xland, br, pblh, kpbl, kpblmax: int,
-                    dx: float, dt: float, diagnostics=None):
+                    dx: float, dt: float, diagnostics=None, rstoch=None):
     """gwd_opt = 3: add the GSL drag suite to ``du``/``dv`` in place.
 
     ``ls`` and ``ss`` are mappings with ``var``, ``con``, ``oa`` (4 planes)
     and ``ol`` (4 planes): the large-scale (2.5') and small-scale (30")
     statistics.  ``kpbl`` is the PBL scheme's one-based top level, ``pblh``
     its height, ``br`` the surface-layer bulk Richardson number.
+    ``rstoch`` is the (ny, nx) lowest level of the SPP PBL pattern under
+    spp_pbl = 1 (WRF's ``rstoch1D = pattern_spp_pbl(i,kts,j)``), which
+    perturbs VAR, VARSS and the two variance caps; ``None`` is spp_pbl = 0.
     ``diagnostics``, when a dict, receives the eight DTAUX3D_*/DTAUY3D_*
     components and eight column stresses DUSFCG_*/DVSFCG_* (gwd_diags = 1).
     """
@@ -303,6 +306,8 @@ def launch_gwdo_gsl(atmosphere: Mapping[str, object], du, dv, *, ls, ss,
     kpbl = cp.ascontiguousarray(cp.asarray(kpbl, dtype=cp.int32))
     if kpbl.shape != shape2:
         raise ValueError(f"kpbl has shape {kpbl.shape}, expected {shape2}")
+    if rstoch is not None:
+        rstoch = _f32(cp, rstoch, shape2, "rstoch")
     dtau = dsfc = None
     if diagnostics is not None:
         dtau = cp.zeros((8, nz, ny, nx), dtype=cp.float32)
@@ -322,7 +327,8 @@ def launch_gwdo_gsl(atmosphere: Mapping[str, object], du, dv, *, ls, ss,
          _stack4(cp, ss["ol"], shape2, "OLSS"),
          _f32(cp, sina, shape2, "sina"), _f32(cp, cosa, shape2, "cosa"),
          _f32(cp, xland, shape2, "xland"), _f32(cp, br, shape2, "br"),
-         _f32(cp, pblh, shape2, "pblh"), kpbl, du, dv,
+         _f32(cp, pblh, shape2, "pblh"), kpbl,
+         rstoch if rstoch is not None else _NULL, du, dv,
          dtau if dtau is not None else _NULL,
          dsfc if dsfc is not None else _NULL,
          np.float32(dx), np.float32(dt), _G, _CP, _R_D, _EP_1, _PI,
@@ -369,8 +375,12 @@ class TerrainDrag:
         return arrays
 
     def apply_gwd(self, atmosphere, du, dv, *, sina, cosa, xland, br, pblh,
-                  kpbl, dx: float, dt: float) -> None:
-        """Add gwd_opt's drag to the PBL momentum tendencies, in place."""
+                  kpbl, dx: float, dt: float, rstoch=None) -> None:
+        """Add gwd_opt's drag to the PBL momentum tendencies, in place.
+
+        ``rstoch`` is the SPP PBL pattern's lowest level under spp_pbl = 1;
+        WRF hands it to gwd_opt = 3 only (``gwdo`` takes no pattern).
+        """
         if self.gwd_opt == 1:
             g = self.gwd
             launch_gwdo(atmosphere, du, dv, var=g["VAR"], con=g["CON"],
@@ -388,7 +398,7 @@ class TerrainDrag:
             launch_gwdo_gsl(atmosphere, du, dv, ls=ls, ss=ss, sina=sina,
                             cosa=cosa, xland=xland, br=br, pblh=pblh,
                             kpbl=kpbl, kpblmax=int(self.kpblmax), dx=dx,
-                            dt=dt)
+                            dt=dt, rstoch=rstoch)
 
 
 def build_terrain_drag(*, topo_wind: int, gwd_opt: int, static, ht, xland,

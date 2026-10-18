@@ -40,7 +40,7 @@ fn kernel_images_match_manifest() {
 }
 
 fn gpu() -> GpuPost {
-    GpuPost::open(0).expect("an NVIDIA GPU")
+    GpuPost::open_with(0, rw_post::gpu::test_image()).expect("an NVIDIA GPU")
 }
 
 #[test]
@@ -153,6 +153,68 @@ fn rotation_is_bit_identical() {
     let (cu, cv) = rw_post::wind::rotate_cpu(&u, &v, &sa, &ca);
     assert_eq!(differing(&gu, &cu), 0);
     assert_eq!(differing(&gv, &cv), 0);
+}
+
+/// The embedded PTX loads on the documented driver floor.  Breakage this
+/// prevents: 2.8.7 to 2.9.0 embedded NVRTC 13.4's PTX (`.version 9.4`); a
+/// CUDA 13.2 driver (595.91) refused it with
+/// `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`, so `--post-device auto` computed
+/// the GRIB2 products of every card without a CUBIN (A100, H100, L40S, RTX
+/// 30/40, T4, ...) on the CPU, and it said so nowhere but manifest.json.
+/// The same PTX with an 8.0 header loaded.  ISA 8.0 is CUDA 12.0's, which
+/// every driver from R525 on JIT-compiles.
+#[test]
+fn embedded_ptx_isa_is_within_the_driver_floor() {
+    let ptx = std::str::from_utf8(rw_post::gpu::checked_in_artifact("woof_post.ptx").unwrap()).unwrap();
+    let header = |key: &str| {
+        ptx.lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("the PTX has no {key} line"))
+            .trim()
+            .to_owned()
+    };
+    let version = header(".version ");
+    let (major, minor) = version.split_once('.').expect("a major.minor PTX ISA version");
+    let isa: (u32, u32) = (major.parse().unwrap(), minor.parse().unwrap());
+    assert!(
+        isa <= rw_post::gpu::PTX_ISA_CEILING,
+        "the embedded PTX declares ISA {version}, newer than {:?}, which drivers older than its toolkit refuse \
+         (a CUDA 13.2 driver refused 9.4); rebuild it with `rebuild_kernels ptx` under NVRTC 12.0",
+        rw_post::gpu::PTX_ISA_CEILING
+    );
+    let target = rw_post::gpu::PTX_VIRTUAL_ARCHITECTURE.replace("compute_", "sm_");
+    assert_eq!(header(".target "), target, "the PTX targets another virtual architecture");
+    let m: serde_json::Value = serde_json::from_str(MANIFEST).unwrap();
+    let entry = m["artifacts"].as_array().unwrap().iter().find(|a| a["file"] == "woof_post.ptx").unwrap();
+    assert_eq!(entry["generator"], "NVIDIA NVRTC 12.0", "the PTX's generator is not the NVRTC whose ISA the floor names");
+    assert_eq!(m["ptx_virtual_architecture"], rw_post::gpu::PTX_VIRTUAL_ARCHITECTURE);
+}
+
+/// Each embedded CUBIN serves its whole architecture family (CUDA runs an
+/// sm_XY CUBIN on sm_XZ, Z >= Y); every other card takes the PTX.
+#[test]
+fn cubins_serve_their_architecture_family() {
+    use rw_post::gpu::cubin_file_for;
+    for (major, minor) in [(10, 0), (10, 3)] {
+        assert_eq!(cubin_file_for(major, minor), Some("woof_post_sm100.cubin"), "sm_{major}{minor}");
+    }
+    for (major, minor) in [(12, 0), (12, 1)] {
+        assert_eq!(cubin_file_for(major, minor), Some("woof_post_sm120.cubin"), "sm_{major}{minor}");
+    }
+    for (major, minor) in [(6, 0), (7, 0), (7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (11, 0)] {
+        assert_eq!(cubin_file_for(major, minor), None, "sm_{major}{minor}");
+    }
+}
+
+/// The forced-PTX switch really loads the PTX, so the device tests run
+/// with `RW_POST_TEST_KERNEL_IMAGE=ptx` prove the PTX path.
+#[test]
+#[ignore = "needs an NVIDIA GPU"]
+fn forced_ptx_opens_the_ptx() {
+    let g = GpuPost::open_with(0, rw_post::gpu::KernelImage::Ptx).expect("an NVIDIA GPU");
+    assert_eq!(g.device.kernel_artifact, format!("{} PTX", rw_post::gpu::PTX_VIRTUAL_ARCHITECTURE));
+    eprintln!("{}", g.device.describe());
 }
 
 #[test]

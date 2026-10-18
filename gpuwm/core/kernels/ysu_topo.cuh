@@ -44,6 +44,20 @@ __device__ __forceinline__ real ysu_thx(const real *theta, const real *exner,
     return __fdiv_rn(__fmul_rn(theta[q], exner[q]), exner[q]);
 }
 
+// A divisor WRF uses as it stands: bl_ysu.F90 divides by wspd (:693, :895,
+// :1306-1307) and by wscale**4 (:693, :895) with no floor.  The kernel used
+// to floor them at 1e-9 and 1e-20, which changed the answer on every finite
+// input below the floor (the wide oracle's wspd = 1e-10 probe: du/dv 10x
+// WRF's).  Now the value passes through untouched whenever it is positive,
+// and the floor applies only where WRF would divide by zero (or by a
+// negative wspd, which no surface layer writes), so the kernel keeps a
+// defined value exactly where WRF's own result is Inf/NaN.  A NaN passes
+// through, as ysu_max lets it, so a poisoned input still reaches
+// validate_ysu_outputs.
+__device__ __forceinline__ real ysu_pos(real x, real fallback) {
+    return (x > 0.0f || x != x) ? x : fallback;
+}
+
 // Subnormal-preserving float -> double (shinhong.cu sh_f2d, rrtmg_sw.cu
 // rsw_f2d).  bl_ysu.F90:613 `if(br(i).gt.0.0) sfcflg(i) = .false.` must see a
 // positive subnormal br as positive; sm_120 DAZes FP32 subnormals in every
@@ -58,6 +72,139 @@ __device__ __forceinline__ double ysu_f2d(real x) {
         return (ix >> 31) ? -v : v;
     }
     return (double)x;                     // normal / inf / nan
+}
+
+// tanhf for get_pblh's weight, :1684 `wt=.5*TANH((zi - sbl_lim)/sbl_damp) + .5`.
+//
+// WHY NOT tanh() IN DOUBLE.  Until lane/verify-ysu this read
+// __double2float_rn(tanh((double)x)), the correctly rounded tanh, which is
+// what glibc 2.43 returns (the topo_wind oracle's platform,
+// tests/test_terrain_drag_wrf471_parity.py).  The reference platform of this
+// verification (Ubuntu 24.04, glibc 2.39; the MYNN oracles' platform too)
+// returns the classic expm1f-based tanhf instead, and the two disagree on
+// 113,763,220 of the 2,149,580,801 floats in [-0.5, 10] (5.3%), measured on
+// box W1.  get_pblh's weight sets pblh_ysu, which sets vconvlim
+// and so the surface-drag diagonal on every column where vconvlim < 1: the
+// wide oracle's 20,000-column sweep showed six columns off WRF in du/dv (up
+// to 819 ULP) and nowhere else until this function replaced the double tanh.
+// ysu_tanhf and ysu_expm1f are WOOF's own float32 code: the same algorithm
+// and the same words as the MYNN unit's mynn_tanhf/mynn_expm1f
+// (kernels/mynn_pbl.cu), held to the reference platform's tanhf over every
+// float in [-0.5, 22] by tools/ysu_wrf461_oracle/tanhf_sweep.py and to a
+// stored sample of it by tests/test_ysu_wrf461_wide_parity.py.
+__device__ __forceinline__ real ysu_scale_exponent(real y, int k)
+{
+    return __uint_as_float(__float_as_uint(y) + ((unsigned)k << 23));
+}
+
+__device__ real ysu_expm1f(real x)
+{
+    const real ln2_hi = __uint_as_float(0x3F317180u);
+    const real ln2_lo = __uint_as_float(0x3717F7D1u);
+    const real invln2 = __uint_as_float(0x3FB8AA3Bu);
+    const real q1 = __uint_as_float(0xBD088889u);
+    const real q2 = __uint_as_float(0x3AD00D01u);
+    const real q3 = __uint_as_float(0xB8A670CDu);
+    const real q4 = __uint_as_float(0x36867E54u);
+    const real q5 = __uint_as_float(0xB457EDBBu);
+    const real tiny = 1.0e-30f;
+
+    unsigned word = __float_as_uint(x);
+    unsigned sign = word & 0x80000000u;
+    unsigned magnitude = word & 0x7FFFFFFFu;
+    if (magnitude >= 0x4195B844u) {              // |x| >= 27*ln2
+        if (magnitude >= 0x42B17218u) {          // |x| >= 88.72
+            if (magnitude > 0x7F800000u) return __fadd_rn(x, x);
+            if (magnitude == 0x7F800000u) return sign == 0u ? x : -1.0f;
+            if (x > 8.8721679688e01f) return __int_as_float(0x7F800000);
+        }
+        if (sign != 0u) return __fsub_rn(tiny, 1.0f);
+    }
+    int k;
+    real correction;
+    if (magnitude > 0x3EB17218u) {               // |x| > 0.5*ln2
+        real hi, lo;
+        if (magnitude < 0x3F851592u) {           // |x| < 1.5*ln2
+            if (sign == 0u) {
+                hi = __fsub_rn(x, ln2_hi); lo = ln2_lo; k = 1;
+            } else {
+                hi = __fadd_rn(x, ln2_hi); lo = -ln2_lo; k = -1;
+            }
+        } else {
+            k = (int)__fadd_rn(__fmul_rn(invln2, x), sign == 0u ? 0.5f : -0.5f);
+            real scale = (real)k;
+            hi = __fsub_rn(x, __fmul_rn(scale, ln2_hi));
+            lo = __fmul_rn(scale, ln2_lo);
+        }
+        x = __fsub_rn(hi, lo);
+        correction = __fsub_rn(__fsub_rn(hi, x), lo);
+    } else if (magnitude < 0x33000000u) {        // |x| < 2**-25
+        return x;
+    } else {
+        k = 0;
+        correction = 0.0f;
+    }
+
+    real hfx = __fmul_rn(0.5f, x);
+    real hxs = __fmul_rn(x, hfx);
+    real r1 = __fadd_rn(1.0f, __fmul_rn(hxs, __fadd_rn(q1, __fmul_rn(hxs,
+        __fadd_rn(q2, __fmul_rn(hxs, __fadd_rn(q3, __fmul_rn(hxs,
+            __fadd_rn(q4, __fmul_rn(hxs, q5))))))))));
+    real t = __fsub_rn(3.0f, __fmul_rn(r1, hfx));
+    real e = __fmul_rn(hxs, __fdiv_rn(__fsub_rn(r1, t),
+                                      __fsub_rn(6.0f, __fmul_rn(x, t))));
+    if (k == 0) return __fsub_rn(x, __fsub_rn(__fmul_rn(x, e), hxs));
+    e = __fsub_rn(__fmul_rn(x, __fsub_rn(e, correction)), correction);
+    e = __fsub_rn(e, hxs);
+    if (k == -1) return __fsub_rn(__fmul_rn(0.5f, __fsub_rn(x, e)), 0.5f);
+    if (k == 1) {
+        if (x < -0.25f)
+            return __fmul_rn(-2.0f, __fsub_rn(e, __fadd_rn(x, 0.5f)));
+        return __fadd_rn(1.0f, __fmul_rn(2.0f, __fsub_rn(x, e)));
+    }
+    real y;
+    if (k <= -2 || k > 56) {
+        y = __fsub_rn(1.0f, __fsub_rn(e, x));
+        y = ysu_scale_exponent(y, k);
+        return __fsub_rn(y, 1.0f);
+    }
+    if (k < 23) {
+        t = __uint_as_float(0x3F800000u - (0x1000000u >> k));
+        y = __fsub_rn(t, __fsub_rn(e, x));
+    } else {
+        t = __uint_as_float((unsigned)(0x7F - k) << 23);
+        y = __fsub_rn(x, __fadd_rn(e, t));
+        y = __fadd_rn(y, 1.0f);
+    }
+    return ysu_scale_exponent(y, k);
+}
+
+// 1 - 2/(expm1f(2|x|)+2) at |x| >= 1, -t/(t+2) below, saturated at 22.
+__device__ real ysu_tanhf(real x)
+{
+    const real tiny = 1.0e-30f;
+    unsigned word = __float_as_uint(x);
+    unsigned magnitude = word & 0x7FFFFFFFu;
+    real z;
+    if (magnitude >= 0x7F800000u)                // inf or NaN: one/x +- one
+        return (word & 0x80000000u) == 0u
+            ? __fadd_rn(__fdiv_rn(1.0f, x), 1.0f)
+            : __fsub_rn(__fdiv_rn(1.0f, x), 1.0f);
+    if (magnitude < 0x41B00000u) {               // |x| < 22
+        if (magnitude < 0x24000000u)             // |x| < 2**-55
+            return __fmul_rn(x, __fadd_rn(1.0f, x));
+        real ax = __uint_as_float(magnitude);
+        if (magnitude >= 0x3F800000u) {          // |x| >= 1
+            real t = ysu_expm1f(__fmul_rn(2.0f, ax));
+            z = __fsub_rn(1.0f, __fdiv_rn(2.0f, __fadd_rn(t, 2.0f)));
+        } else {
+            real t = ysu_expm1f(__fmul_rn(-2.0f, ax));
+            z = __fdiv_rn(-t, __fadd_rn(t, 2.0f));
+        }
+    } else {
+        z = __fsub_rn(1.0f, tiny);
+    }
+    return (word & 0x80000000u) == 0u ? z : -z;
 }
 
 // bl_ysu.F90 get_pblh (:1586-1693, "Copied from MYNN PBL"), one column, on
@@ -114,8 +261,7 @@ __device__ real ysu_get_pblh(Col thv, Col tke, Col zq, int nz, real landsea) {
         k = k + 1;
         if (k == kte - 1) pblh_tke = YT_ZW(kts + 1);
     }
-    real th = __double2float_rn(tanh((double)__fdiv_rn(__fsub_rn(zi, sbl_lim),
-                                                        sbl_damp)));
+    real th = ysu_tanhf(__fdiv_rn(__fsub_rn(zi, sbl_lim), sbl_damp));
     real wt = __fadd_rn(__fmul_rn(0.5f, th), 0.5f);
     #undef YT_THV
     #undef YT_QKE

@@ -1,8 +1,12 @@
 // module_gocart_chem.F: GOCART_SIMPLE only. One thread per column.
-// STUB until the engine's glibc float32 trig header lands
-__device__ float chem_sinf(float x) { return sinf(x); }
-__device__ float chem_cosf(float x) { return cosf(x); }
-__device__ float chem_acosf(float x) { return acosf(x); }
+// Float trig: WOOF's own float32 sinf/cosf/acosf (glibc_trig_flt32.cuh,
+// prepended to this module by kernels/__init__.py), the words gfortran's
+// SIN/COS give szangle in the WRF column oracle.  CUDA's built-in sinf/cosf
+// put cos(SZA) up to 36 ULP and its daily sum tcosz up to 25 ULP off the
+// oracle, and SO2/SO4 1 ULP off downstream (tests/test_chem_sulfur_wrf471_parity.py).
+__device__ float chem_sinf(float x) { return glibc_sinf(x); }
+__device__ float chem_cosf(float x) { return glibc_cosf(x); }
+__device__ float chem_acosf(float x) { return glibc_acosf(x); }
 
 // szangle:753-823. sza is unused, so its acos and conversion are omitted.
 __device__ float chem_cossza(int doy, float hour, float lon, float lat) {

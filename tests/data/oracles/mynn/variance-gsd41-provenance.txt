@@ -1,0 +1,17 @@
+Closure level 2.5 variance oracle fixture (audit P23).
+Source: NOAA-EMC/HRRR tag v4.1.21, sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_bl_mynn.F.
+Source SHA256: 42178a22693ad14b1a3adcf3e44be3047f051abf80f3a64c0ce9ed9ac2ec6d8a.
+Built with GNU Fortran 13.3.0 (Ubuntu 24.04) at -O0 from the unmodified module
+and tools/mynn_pbl_gsd41_oracle/stub_wrf39.F90, by the commands of build.sh.
+The same build reproduces the committed predict-gsd41.csv byte for byte.
+
+run_variance_gsd41.F90 calls mym_predict at source levflag 2 for the eight
+12-layer columns of run_predict_gsd41.F90, with nonzero temperature, moisture
+and covariance production and nonzero incoming variances.  At level 2.5 the
+fork predicts only TKE; tsq, qsq and cov are diagnosed from their production
+(module_bl_mynn.F:2232-2253), so the incoming variances do not reach the
+output.  Inputs pdk..pdc are recorded before the call (mym_predict rewrites
+their lowest level).
+SHA256:
+aa30755ab9e8472f4b675df9aec887d8d454e692ad49509ccc041d272b232d9e  variance-gsd41.csv
+6ec097d7c756c3cf30c7cde916c1ba7593dfb46752a7be8f6cf4e051b869db55  run_variance_gsd41.F90

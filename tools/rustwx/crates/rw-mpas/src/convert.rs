@@ -12,8 +12,16 @@
 use std::path::{Path, PathBuf};
 
 use rw_store::netcdf_classic::{
-    NcAttr, NcClassicWriter, NcData, NcDim, NcFormat, NcType, NcVarDef,
+    NcAttr, NcData, NcDim, NcFormat, NcType, NcVarDef,
 };
+
+#[cfg(not(feature = "render-netcdf4"))]
+use rw_store::netcdf_classic::NcClassicWriter;
+#[cfg(feature = "render-netcdf4")]
+#[path = "render_netcdf4.rs"]
+mod render_netcdf4;
+#[cfg(feature = "render-netcdf4")]
+use render_netcdf4::RenderFrameWriter as NcClassicWriter;
 
 use crate::composite::{COMPOSITE_SCHEMA, CompositePlan, SeamStat};
 use crate::error::{MpasError, MpasResult};
@@ -215,6 +223,90 @@ fn restagger_y(values: &[f32], levels: usize, ny: usize, nx: usize) -> Vec<f32> 
 }
 
 /// The per-variable attributes every emitted field carries.
+/// The time unit of the CF `Time` coordinate a lat-lon frame carries.
+/// Fixed, so every frame of every run states its valid time on one epoch
+/// and a reader's mapping can pin the unit text.
+pub const CF_TIME_UNITS: &str = "seconds since 1970-01-01 00:00:00";
+
+/// CF 1-D coordinates of a regular lat-lon frame.
+///
+/// THE BREAKAGE THIS PREVENTS: a frame carried only WRF's 2-D `XLAT`/`XLONG`
+/// and dimension names with no coordinate variables, so the engine's mapped
+/// NetCDF route ("coordinate must be finite non-empty 1-D") could not read a
+/// hex frame at all, and no ArWen domain could take hex as its parent.  A
+/// Lambert frame has no 1-D axes and gets none.
+struct CfCoordinates {
+    latitude: Vec<f64>,
+    longitude: Vec<f64>,
+    /// Soil layer TOP depths in cm, from the init's `dzs`; `None` when the
+    /// init is absent or its layer thicknesses differ between columns.
+    soil_tops_cm: Option<Vec<f64>>,
+}
+
+fn cf_coordinates(
+    weights: &NearestCellWeights,
+    frame: &MpasFrame,
+    ny: usize,
+    nx: usize,
+) -> MpasResult<Option<CfCoordinates>> {
+    if !matches!(weights.window, crate::window::Window::LatLon(_)) {
+        return Ok(None);
+    }
+    if weights.target_latitude.len() != ny * nx || weights.target_longitude.len() != ny * nx {
+        return Err(MpasError::Refusal(
+            "lat-lon window coordinates do not cover its grid".to_string(),
+        ));
+    }
+    let latitude: Vec<f64> = (0..ny).map(|j| weights.target_latitude[j * nx]).collect();
+    let longitude: Vec<f64> = weights.target_longitude[..nx].to_vec();
+    // A regular grid or nothing: a 1-D axis that does not describe every row
+    // and column would georeference the frame wrong without a word.
+    for j in 0..ny {
+        for i in 0..nx {
+            if weights.target_latitude[j * nx + i] != latitude[j]
+                || weights.target_longitude[j * nx + i] != longitude[i]
+            {
+                return Err(MpasError::Refusal(format!(
+                    "lat-lon window point ({j}, {i}) is off its row and column axes"
+                )));
+            }
+        }
+    }
+    let soil_tops_cm = match (&frame.init_path, frame.n_soil_levels) {
+        (Some(path), n) if n > 0 => soil_layer_tops_cm(path, n)?,
+        _ => None,
+    };
+    Ok(Some(CfCoordinates { latitude, longitude, soil_tops_cm }))
+}
+
+/// Soil layer top depths (cm) from the init's `dzs(Time, nCells, nSoilLevels)`,
+/// rounded to 1e-4 cm so FP32 thickness sums (0.1 + 0.3 = 0.4000000059 m)
+/// land on the depths they state.  `None` unless every column carries the
+/// same thicknesses: one coordinate cannot describe two soil columns.
+fn soil_layer_tops_cm(init: &Path, n_soil: usize) -> MpasResult<Option<Vec<f64>>> {
+    let file = netcrust::File::open(init)?;
+    if file.variable("dzs").is_none() {
+        return Ok(None);
+    }
+    let values = file.read_array_f64("dzs")?.into_values();
+    if values.len() < n_soil || values.len() % n_soil != 0 {
+        return Ok(None);
+    }
+    let first = values[..n_soil].to_vec();
+    if values.chunks(n_soil).any(|column| column != first.as_slice())
+        || first.iter().any(|v| !v.is_finite() || *v <= 0.0)
+    {
+        return Ok(None);
+    }
+    let mut top_m = 0.0f64;
+    let mut tops = Vec::with_capacity(n_soil);
+    for thickness in first {
+        tops.push((top_m * 100.0 * 1.0e4).round() / 1.0e4);
+        top_m += thickness;
+    }
+    Ok(Some(tops))
+}
+
 fn field_attrs(rank_is_3d: bool, description: &str, units: &str, stagger: &str) -> Vec<NcAttr> {
     vec![
         NcAttr::int("FieldType", 104),
@@ -520,6 +612,29 @@ fn convert_frame_inner(
             concat!("rw-mpas ", env!("CARGO_PKG_VERSION"), " (rust)"),
         ),
     ]);
+    // A split-stream history (RRFS-MPAS) names where its centres and its
+    // diag fields came from.  Written only for such a frame, so a history
+    // that carries its own centres converts to the same bytes as before.
+    if let Some(split) = &frame.split {
+        gattrs.push(NcAttr::text(
+            "MPAS_CELL_CENTRES_FILE",
+            file_name(Some(&split.coordinates_path)),
+        ));
+        gattrs.push(NcAttr::text(
+            "MPAS_CELL_CENTRES_SHA256",
+            split.coordinates_sha256.clone(),
+        ));
+        gattrs.push(NcAttr::text(
+            "MPAS_CELL_CENTRES_AGREED_FIELDS",
+            split.agreed_static_fields.join(","),
+        ));
+        gattrs.push(NcAttr::text("MPAS_DIAG_FILE", file_name(split.diag_path.as_ref())));
+        gattrs.push(NcAttr::text(
+            "MPAS_DIAG_SHA256",
+            split.diag_sha256.clone().unwrap_or_default(),
+        ));
+        gattrs.push(NcAttr::text("MPAS_DIAG_FIELDS", split.diag_fields.join(",")));
+    }
     if let Some(r) = remap {
         gattrs.push(NcAttr::text("MPAS_PRODUCT_REMAP", r.identity_json()));
         gattrs.push(NcAttr::text("MPAS_PRODUCT_REMAP_SHA256", r.sha256.clone()));
@@ -634,6 +749,44 @@ fn convert_frame_inner(
             "",
         )),
     ];
+    let cf = cf_coordinates(weights, frame, ny, nx)?;
+    if let Some(cf) = &cf {
+        let axis = |name: &str, dim: &str, attrs: Vec<NcAttr>| {
+            NcVarDef::new(name, NcType::Double, vec![dimid(dim)]).with_attrs(attrs)
+        };
+        vars.push(axis("lat", "south_north", vec![
+            NcAttr::text("units", "degrees_north"),
+            NcAttr::text("standard_name", "latitude"),
+            NcAttr::text("axis", "Y"),
+        ]));
+        vars.push(axis("lon", "west_east", vec![
+            NcAttr::text("units", "degrees_east"),
+            NcAttr::text("standard_name", "longitude"),
+            NcAttr::text("axis", "X"),
+        ]));
+        vars.push(axis("Time", "Time", vec![
+            NcAttr::text("units", CF_TIME_UNITS),
+            NcAttr::text("calendar", "standard"),
+            NcAttr::text("standard_name", "time"),
+        ]));
+        vars.push(axis("bottom_top", "bottom_top", vec![
+            NcAttr::text("units", "1"),
+            NcAttr::text("long_name", "model mass level, 1 the lowest"),
+            NcAttr::text("positive", "up"),
+        ]));
+        vars.push(axis("bottom_top_stag", "bottom_top_stag", vec![
+            NcAttr::text("units", "1"),
+            NcAttr::text("long_name", "model level interface, 1 the surface"),
+            NcAttr::text("positive", "up"),
+        ]));
+        if cf.soil_tops_cm.is_some() {
+            vars.push(axis("soil_layers_stag", "soil_layers_stag", vec![
+                NcAttr::text("units", "cm"),
+                NcAttr::text("long_name", "soil layer top depth"),
+                NcAttr::text("positive", "down"),
+            ]));
+        }
+    }
     for planned in &plan {
         let mut attrs = field_attrs(
             planned.rank_is_3d,
@@ -751,6 +904,25 @@ fn convert_frame_inner(
         writer.put_record("XLONG", 0, NcData::Floats(&lon32))?;
         written.push("XLAT".into());
         written.push("XLONG".into());
+        if let Some(cf) = &cf {
+            let levels: Vec<f64> = (1..=nz).map(|k| k as f64).collect();
+            let interfaces: Vec<f64> = (1..=nz + 1).map(|k| k as f64).collect();
+            let epoch = Timestamp { year: 1970, month: 1, day: 1, hour: 0, minute: 0, second: 0 };
+            writer.put("lat", NcData::Doubles(&cf.latitude))?;
+            writer.put("lon", NcData::Doubles(&cf.longitude))?;
+            writer.put_record(
+                "Time",
+                0,
+                NcData::Doubles(&[frame.valid_time.seconds_since(&epoch) as f64]),
+            )?;
+            writer.put("bottom_top", NcData::Doubles(&levels))?;
+            writer.put("bottom_top_stag", NcData::Doubles(&interfaces))?;
+            written.extend(["lat", "lon", "Time", "bottom_top", "bottom_top_stag"].map(String::from));
+            if let Some(tops) = &cf.soil_tops_cm {
+                writer.put("soil_layers_stag", NcData::Doubles(tops))?;
+                written.push("soil_layers_stag".into());
+            }
+        }
 
         for planned in &plan {
             let mapping = &FIELD_MAP[planned.mapping.expect("every planned entry maps")];

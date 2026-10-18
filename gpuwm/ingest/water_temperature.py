@@ -451,7 +451,7 @@ def assemble_water_temperature(
         target_lat=None, target_lon=None,
         policy=DEFAULT_WATER_TEMPERATURE_POLICY,
         diagnostic_context=None, diagnostic_latlon=None,
-        mapped_lake_water=None, workers=None):
+        mapped_lake_water=None, lake_ice=None, workers=None):
     """Return ``(water_temperature, water_temperature_source, receipt)``.
 
     ``water_temperature`` is finished: every water cell carries a physical
@@ -462,6 +462,13 @@ def assemble_water_temperature(
     cell its provider left without an admissible temperature is filled by
     :func:`_fill_missing_water_temperature` and counted in the receipt's
     ``water_fill``.
+
+    ``lake_ice`` is the mask of lake cells the source lake model covers
+    with ice (:func:`gpuwm.ingest.lake_temperature.map_lake_ice`).  It
+    changes no value here: an ice cell's skin is the ice's, set by the
+    caller, and the soil route never reads an ice cell's water
+    temperature.  It only keeps those cells out of the receipt's fallback
+    count, because they did not fall back to anything.
 
     The optional diagnostic context and geographic latitude/longitude pair
     are used only to explain a refusal; they never enter interpolation.
@@ -583,6 +590,29 @@ def assemble_water_temperature(
             "donors": donor_count, "coverage": float(coverages[label]),
             "provider": provider_names[provider]})
     lake_fallback_cells.extend([int(j), int(i)] for j, i in listed)
+    ice_cells = None
+    if lake_ice is not None and lake_water is not None:
+        ice = np.asarray(lake_ice, dtype=bool)
+        if ice.shape != shape:
+            raise ValueError("lake_ice and target_land shapes differ")
+        # The cells the assembly counted as declined: every cell of a lake
+        # body that did not take the analysis and that the lake-water
+        # provider left without a value (water_blend_oracle's rule).
+        counted = [row["label"] for row in component_rows
+                   if row["class"] == "lake"
+                   and row["provider"] != SOURCE_NAMES[SOURCE_ANALYSIS]]
+        declined = np.isin(labels, counted) & ~np.isfinite(lake_water)
+        if int(declined.sum()) != lake_fallback:
+            raise ValueError(
+                "the lake fallback count disagrees with the declined lake "
+                f"cells ({lake_fallback} against {int(declined.sum())})")
+        ice &= lake
+        ice_cells = int(ice.sum())
+        still_open = declined & ~ice
+        lake_fallback = int(still_open.sum())
+        lake_fallback_cells = [
+            [int(j), int(i)] for j, i in
+            np.argwhere(still_open)[:MAX_LISTED_DECLINED_CELLS]]
 
     values, source, fill_counts, filled = _fill_missing_water_temperature(
         values, source, water, labels, workers=workers)
@@ -617,6 +647,8 @@ def assemble_water_temperature(
         receipt["components_on_lake_water"] = on_lake_water
         receipt["lake_fallback_cells"] = lake_fallback
         receipt["lake_fallback_cell_indices"] = lake_fallback_cells
+    if ice_cells is not None:
+        receipt["lake_ice_cells"] = ice_cells
     if np.any(filled):
         receipt["water_fill"] = {
             "cells": int(filled.sum()),
@@ -752,7 +784,7 @@ def assemble_for_route(statics, *, mapped_sst, mapped_skin, source_sst=None,
                        source_lat=None, source_lon=None,
                        target_lat=None, target_lon=None,
                        diagnostic_context=None, diagnostic_latlon=None,
-                       mapped_lake_water=None, workers=None):
+                       mapped_lake_water=None, lake_ice=None, workers=None):
     """THE assembly entry point.  Every forcing route reaches it here.
 
     Closing this route by route is what produced the quilt in the first
@@ -771,7 +803,8 @@ def assemble_for_route(statics, *, mapped_sst, mapped_skin, source_sst=None,
         diagnostic_context=(statics.route if diagnostic_context is None
                             else f"{statics.route}; {diagnostic_context}"),
         diagnostic_latlon=diagnostic_latlon,
-        mapped_lake_water=mapped_lake_water, workers=workers)
+        mapped_lake_water=mapped_lake_water, lake_ice=lake_ice,
+        workers=workers)
     receipt = dict(receipt)
     receipt["route"] = statics.route
     receipt["lake_class"] = (
@@ -837,9 +870,18 @@ def water_temperature_advisory(receipt):
                   "inland water is classed with the ocean here and a lake "
                   "joined to the sea by a coarse coastline can share its "
                   "provider.")
+    # NAMED: the lake cells that start as ice from the source lake model.
+    ice_cells = int(receipt.get("lake_ice_cells") or 0)
+    if ice_cells:
+        caveat += (
+            f" {ice_cells} lake cell(s) start as lake ice from the source "
+            "lake model (ice depth above zero over at least half the cell's "
+            "interpolation weight), at its ice-surface temperature (see "
+            "lake_ice_mapping in the receipt).")
     # NAMED, never silent: every lake cell the lake-model provider declined
-    # (frozen or unknown ice depth, inadmissible temperature) and that kept
-    # the component skin temperature the pre-lake-model route used (ENG-008).
+    # (frozen or unknown ice depth, inadmissible temperature), that the lake
+    # model does not cover with ice, and that kept the component skin
+    # temperature the pre-lake-model route used (ENG-008).
     fallback = int(receipt.get("lake_fallback_cells") or 0)
     if fallback:
         listed = receipt.get("lake_fallback_cell_indices") or []
@@ -848,8 +890,9 @@ def water_temperature_advisory(receipt):
                 else f" and {fallback - len(listed)} more")
         caveat += (
             f" {fallback} lake cell(s) had no ice-free lake-model water "
-            "(frozen or unknown ice depth, or an out-of-range temperature; "
-            "see lake_water_mapping in the receipt) and kept the component "
+            "(partly frozen or unknown ice depth, or an out-of-range "
+            "temperature; see lake_water_mapping in the receipt) and kept "
+            "the component "
             f"skin temperature the pre-lake-model route used: cells (j, i) "
             f"{cells}{more}.")
     # NAMED, never silent: every water cell no provider could give an

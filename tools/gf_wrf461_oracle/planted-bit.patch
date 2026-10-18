@@ -1,0 +1,11 @@
+--- a/gpuwm/core/kernels/gf.cu
++++ b/gpuwm/core/kernels/gf.cu
+@@ -4068,7 +4068,7 @@
+                          FMUL(cutenm, zl));
+         float du = FADD(FMUL(zl, cutenm), FMUL(outu[k], cuten));
+         float dv = FADD(FMUL(zl, cutenm), FMUL(outv[k], cuten));
+-        LEVB[(size_t)DL_rthcuten * nz + (k - 1)] = rth;
++        LEVB[(size_t)DL_rthcuten * nz + (k - 1)] = (rth != 0.0f) ? __uint_as_float(__float_as_uint(rth) ^ 1u) : rth;
+         LEVB[(size_t)DL_rqvcuten * nz + (k - 1)] = rqv;
+         LEVB[(size_t)DL_dudt * nz + (k - 1)] = du;
+         LEVB[(size_t)DL_dvdt * nz + (k - 1)] = dv;

@@ -3,8 +3,8 @@
  "generated_by": "tools/register_message_allowance.py",
  "reason": "internal history only; public releases are snapshots",
  "clean_base": "f27fc897ab88a6f7e5cfc59d3573f3285aeda9fd",
- "cutoff": "0bf5057645f571d737e723fda3ab6c1de9b3c69d",
- "scanned_commits": 9714,
+ "cutoff": "63063559075cc6fce5ecd9b7ee51619f0fa7bdbb",
+ "scanned_commits": 10959,
  "commits": [
   "004abcf2f144ca43fdd52904295de42bf024ffba",
   "009512329159457576f3ed1592a9be5a8d4bccd4",
@@ -67,6 +67,7 @@
   "1f4344959651c7ac7657c5de75319186c3b3204b",
   "1f4f66d46a3d388b01744228a546d373c4fc00ef",
   "1f6bad9c96ffda35e02360f53981f4b5ce7ecff0",
+  "1f77ba5b3ee294c7252385eb07bcb59c80b0c5e7",
   "1f83457d4cae2cfc5f586a29c591273bd79c12b8",
   "2012c2ec0bd102a306e0356a377d8ef4d2c92808",
   "201ff2cc29a98988a658bca5bedb3864acfd025e",
@@ -81,6 +82,7 @@
   "263bf30327f41b583b35c8853f6a11e88c39de24",
   "26430bced59866a3fab938fa6854b3ff53961b98",
   "2666e3f432096973a74e72b2b454c982dac219a8",
+  "2752acf12bf95dbc3086ea015c90b10dc5daf17f",
   "2794555f79831ed3d11e3ba06385a1020c31356f",
   "27ec84e6997c02e2ef38917191f62b3149dc76ee",
   "29ab5adb2ecba820880aca01b45f2b83918c240a",
@@ -184,6 +186,7 @@
   "641ce968240043dcbd8ae6a857f632d048ea02c4",
   "66ffbc4b841c7905d89dfb8659658f2a55a3c61a",
   "67013667b6ac5b7b84140b70636455b85285f951",
+  "67308019de8ec701cd4a4c99890f6b0187f59945",
   "67642cb6925dc085dd0e16868635087f413cae05",
   "67826bedb135f9314a410ac546419ba2f8d3423c",
   "687427477f196d03a2ad599ade193d64b4688f5d",
@@ -272,6 +275,7 @@
   "9c9195bf5b64059389c0d6664d986b1308b09550",
   "9d8be412dc550ad892a97ce33ffd13a709ff1958",
   "9dd83d065db2bde30e16fbd4044a73bf47657b5b",
+  "9deedbc506668d188ab78ffea2a3b6670601f929",
   "9e6a12ede9682cd43fa8757f2cdd134f5bdafacf",
   "9f6e344979e424b76124ce487f37132a979d302a",
   "9fd2e3a81ee5d89bd2e2067013275abd032c5d38",
@@ -409,11 +413,5 @@
   "fcbd29eef21b3d07278a2cece03b8c945261e997",
   "fd68bf35248cd3a62f7afd9b0c8dbbdbf04d85d8",
   "ff62907e08e7fcec8e9db470a03866da360be9d6"
- ],
- "identity": {
-  "reason": "identity mis-set in agent environments, content WOOF/WRF-derived (lead ruling 2026-10-07)",
-  "cutoff": "0bf5057645f571d737e723fda3ab6c1de9b3c69d",
-  "scanned_commits": 9714,
-  "commits": []
- }
+ ]
 }

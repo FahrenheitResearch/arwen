@@ -18,6 +18,16 @@ def case(tmp_path, *, domains=1, source=None):
     text = path.read_text()
     if domains == 2:
         text = text.replace("nx = 24", "nx = 60").replace("ny = 20", "ny = 54")
+        # The WPS twin describes the same two grids (staggered counts).
+        twin = path.with_name("namelist.wps")
+        twin.write_text(twin.read_text(encoding="utf-8")
+                        .replace(" max_dom = 1,", " max_dom = 2,")
+                        .replace(" parent_id = 1,", " parent_id = 1, 1,")
+                        .replace(" parent_grid_ratio = 1,", " parent_grid_ratio = 1, 3,")
+                        .replace(" i_parent_start = 1,", " i_parent_start = 1, 12,")
+                        .replace(" j_parent_start = 1,", " j_parent_start = 1, 12,")
+                        .replace(" e_we = 25,", " e_we = 61, 31,")
+                        .replace(" e_sn = 21,", " e_sn = 55, 28,"), encoding="utf-8")
         text += """
 [[domain]]
 grid_id = 2

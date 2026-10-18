@@ -140,8 +140,22 @@ def _raise_on_errors(errors: np.ndarray) -> None:
         f"{counts}")
 
 
+def _current_device() -> int:
+    """The card a compiled module must be loaded on: the current one.
+
+    ``compile_runtime_unit`` loads its image with ``cupy.cuda.function.Module``
+    into the CURRENT context only, so a module cached per process and reused
+    on a second card hands that card the first card's function handles
+    (CUDA_ERROR_INVALID_HANDLE at the first launch; the two-card HRRR start,
+    2026-10-16).  The device is therefore part of every module cache key.
+    """
+    import cupy as cp
+
+    return cp.cuda.runtime.getDevice()
+
+
 @lru_cache(maxsize=None)
-def _module(options: tuple[str, ...]):
+def _module(device: int, options: tuple[str, ...]):
     """Compile (once per option set) the COMPOSED glacier translation
     unit -- noahmp_leaves.cu (the single glibc device transcription)
     followed by noahmp_glacier.cu, exactly as
@@ -162,8 +176,8 @@ def glacier_module(options: tuple[str, ...] = DEFAULT_OPTIONS, *,
     # identity the frame recordings and the kernel manifest are keyed on --
     # and only the explicit wrf_461 reproduction adds a define.
     if generation == "wrf_470":
-        return _module(tuple(options))
-    return _module(tuple(options) + ("-DGPUWM_NOAHMP_NIGHT_AGE=0",))
+        return _module(_current_device(), tuple(options))
+    return _module(_current_device(), tuple(options) + ("-DGPUWM_NOAHMP_NIGHT_AGE=0",))
 
 
 def evaluate_glacier_columns(inputs: dict, count: int,

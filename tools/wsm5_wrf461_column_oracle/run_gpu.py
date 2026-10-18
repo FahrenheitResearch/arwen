@@ -79,7 +79,7 @@ def run_gpu(columns: Path, dt: float, nsteps: int):
         launch_column_scheme(
             row, dev["th"], [dev[n] for n in row.species], dev["den"], dev["p"],
             dev["pii"], dev["dz"], [s[n] for n in row.surface], effc, effi, effs,
-            dt)
+            dt, conservative_surface=False)  # WRF oracle: exact (WB5 off)
         cp.multiply(dev["th"], dev["pii"], out=t)
         launch_column_refl(row, [dev[n] for n in row.refl_species], t, dev["p"], refl)
         cp.cuda.runtime.deviceSynchronize()

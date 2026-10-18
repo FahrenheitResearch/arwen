@@ -494,3 +494,33 @@ fn a_double_coordinate_array_is_carried_at_its_own_width() {
         assert_eq!(got, want, "a coordinate lost bits on the way through");
     }
 }
+
+/// MPAS core_init_atmosphere/mpas_init_atm_core_interface.F:229-231:
+/// climatology presence activates output slots, independently of input slots.
+#[test]
+fn thompson_package_adds_a_computed_pair_to_a_capsule_without_aerosols() {
+    let capsule = scratch("thompson-package.capsule.nc");
+    let out = scratch("thompson-package.init.nc");
+    write_capsule(&capsule, &CapsuleSpec {
+        with_theta_slot: true, with_double_scalar: false, with_double_coordinate: false,
+        with_unsupplied_char: false, carried_model_name: None,
+    });
+    let mut computed = computed_with_theta();
+    let nifa = vec![f32::from_bits(1); N_CELLS * N_LEV];
+    let nwfa = vec![-0.0_f32; N_CELLS * N_LEV];
+    computed.insert("nifa".into(), Computed::Floats(nifa.clone()));
+    computed.insert("nwfa".into(), Computed::Floats(nwfa.clone()));
+    let ledger = write_init(&out, &capsule, computed, "mintedfile", &[],
+        "native Thompson package", &rw_mpas::init::Lineage::default()).unwrap();
+    let file = netcrust::File::open(&out).unwrap();
+    for (name, expected) in [("nifa", nifa), ("nwfa", nwfa)] {
+        assert!(ledger.computed.contains(&name.to_string()));
+        assert!(!ledger.carried.contains(&name.to_string()));
+        let actual = file.read_array::<f32>(name).unwrap();
+        assert_eq!(actual.shape(), [1, N_CELLS, N_LEV]);
+        assert_eq!(actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                   expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+    }
+    std::fs::remove_file(capsule).unwrap();
+    std::fs::remove_file(out).unwrap();
+}

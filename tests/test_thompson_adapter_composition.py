@@ -51,10 +51,11 @@ class _HostAdapterState:
         self.h_diabatic = np.zeros(shape, dtype=np.float32)
         self._scratch: dict[str, np.ndarray] = {}
 
-    def scratch(self, shape, name):
+    def scratch(self, shape, name, dtype=None):
         value = self._scratch.get(name)
         if value is None:
-            value = np.zeros(shape, dtype=np.float32)
+            value = np.zeros(shape, dtype=np.float32 if dtype is None
+                             else dtype)
             self._scratch[name] = value
         else:
             assert value.shape == tuple(shape)
@@ -62,21 +63,21 @@ class _HostAdapterState:
 
 
 def _record_adapter_call(monkeypatch, *, refl_due: bool):
-    """Run the real adapter while replacing every GPU launcher with a spy.
+    """Run the real mp=8 adapter while replacing every GPU launcher with a spy.
 
+    mp=8 runs classic Thompson (gpuwm/core/thompson_classic.py); every
+    launcher in its ``LAUNCHERS`` and its reflectivity launcher are spied.
     No real kernel may be reached from this call: every gpuwm binding of the
     kernel loader is replaced by one that fails the gate by name.  The
-    breakage that prevents: the per-column microphysics flag launch
-    (``launch_microphysics_columns``, the no-microphysics column exit) joined
-    the adapter without joining the spy list, so on the host backend, which
-    accepts NumPy arrays, the real kernel ran and the gate stayed green
-    without recording the launch it exists to see, and on a card the same
-    call raised cupy's TypeError (THOMPSON-CARD 4.1, RTX 4090, b2e0bc80).
+    breakage that prevents: a launch joining the adapter without joining
+    the spy list, so on the host backend the real kernel ran and the gate
+    stayed green without recording the launch it exists to see (THOMPSON-
+    CARD 4.1, RTX 4090, b2e0bc80).
     """
     import gpuwm.core.kernels as kernel_loader
     import gpuwm.core.microphysics as microphysics
     import gpuwm.core.refl as refl
-    import gpuwm.core.thompson as thompson
+    import gpuwm.core.thompson_classic as classic
     import gpuwm.core.thompson_runtime as runtime
 
     calls: list[tuple[str, tuple, dict]] = []
@@ -86,35 +87,16 @@ def _record_adapter_call(monkeypatch, *, refl_due: bool):
             calls.append((name, args, kwargs))
         return launch
 
-    launcher_names = (
-        "launch_adapter_entry",
-        "launch_adapter_finish",
-        "launch_adapter_masks",
-        "launch_adapter_prepare",
-        "launch_cloud_sedimentation",
-        "launch_cloud_saturation_adjust",
-        "launch_classic_graupel_number_finalize",
-        "launch_effective_radius",
-        "launch_final_phase_cleanup",
-        "launch_frozen_vapor_network_from_owner",
-        "launch_graupel_sedimentation",
-        "launch_hydrometeor_column_mask",
-        "launch_ice_sedimentation",
-        "launch_rain_evaporation",
-        "launch_rain_sedimentation",
-        "launch_snow_sedimentation",
-        "launch_warm_frozen_source_network_from_owner",
-    )
-    for name in launcher_names:
-        monkeypatch.setattr(thompson, name, spy(name))
+    for name in classic.LAUNCHERS:
+        monkeypatch.setattr(classic, name, spy(name))
 
     def unspied(loader_name):
         def refuse(module_name, func, *args, **kwargs):
             raise AssertionError(
                 f"_apply_thompson reached the real kernel {module_name}:"
                 f"{func} through {loader_name}, from a launcher this gate "
-                "does not spy; add the launcher to launcher_names and pin "
-                "its place in the call graph")
+                "does not spy; add the launcher to thompson_classic.LAUNCHERS "
+                "and pin its place in the call graph")
         return refuse
 
     for loader_name in ("get_kernel", "get_kernel_int_defines"):
@@ -127,17 +109,11 @@ def _record_adapter_call(monkeypatch, *, refl_due: bool):
     table_owner = object()
     monkeypatch.setattr(
         runtime, "load_classic_device_tables", lambda _root: table_owner)
-    monkeypatch.setattr(microphysics, "cp", np)
-    monkeypatch.setattr(
-        microphysics, "save_pre_mp_theta", spy("save_pre_mp_theta"))
-    monkeypatch.setattr(
-        microphysics, "moist_physics_finish", spy("moist_physics_finish"))
-    monkeypatch.setattr(
-        refl, "compute_and_stash_refl_10cm", spy("reflectivity"))
+    monkeypatch.setattr(refl, "stash_refl_10cm", spy("stash"))
     monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", "host-call-graph-fixture")
 
     state = _HostAdapterState()
-    diagnostics = microphysics._apply_thompson(
+    diagnostics = microphysics._apply_thompson_strict(
         state, SimpleNamespace(), 10.0, refl_10cm_due=refl_due)
     assert diagnostics.rainnc is state._scratch["mp_rainnc"]
     return calls, state, table_owner
@@ -165,6 +141,12 @@ def test_rain_evaporation_rejects_density_marker_identity_alias():
 
 def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
         monkeypatch):
+    """mp=8's classic call graph: one launch per phase, in WRF's order.
+
+    Asking for an output may add only the diagnostic itself, and the one
+    private graupel number (WRF's ng1d) flows from the entry through the
+    sources and the column stage into the reflectivity.
+    """
     calls_off, state_off, owner_off = _record_adapter_call(
         monkeypatch, refl_due=False)
     calls_on, state_on, owner_on = _record_adapter_call(
@@ -172,151 +154,33 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
     names_off = [name for name, _args, _kwargs in calls_off]
     names_on = [name for name, _args, _kwargs in calls_on]
 
-    # Asking for an output may add only the diagnostic itself.  In particular,
-    # it cannot decide whether classic ng exists or which source/fallout path
-    # drives the forecast trajectory.
-    assert names_off == [name for name in names_on if name != "reflectivity"]
-    assert "reflectivity" not in names_off
+    reflectivity = ("launch_refl10cm_classic", "stash")
+    assert names_off == [name for name in names_on
+                         if name not in reflectivity]
+    assert names_off == ["launch_classic_entry", "launch_classic_sources",
+                         "launch_classic_column",
+                         "launch_classic_effective_radius",
+                         "launch_classic_finish"]
+    assert names_on == ["launch_classic_entry", "launch_classic_sources",
+                        "launch_classic_column", "launch_refl10cm_classic",
+                        "stash", "launch_classic_effective_radius",
+                        "launch_classic_finish"]
 
-    ordered_phases = (
-        "launch_adapter_prepare",
-        "launch_adapter_entry",
-        "launch_warm_frozen_source_network_from_owner",
-        "launch_frozen_vapor_network_from_owner",
-        "launch_adapter_masks",
-        "launch_cloud_saturation_adjust",
-        "launch_rain_evaporation",
-        "launch_cloud_sedimentation",
-        "launch_ice_sedimentation",
-        "launch_snow_sedimentation",
-        "launch_graupel_sedimentation",
-        "launch_rain_sedimentation",
-        "launch_final_phase_cleanup",
-        "launch_classic_graupel_number_finalize",
-        "launch_effective_radius",
-        "launch_adapter_finish",
-    )
-    for name in ordered_phases:
-        assert names_off.count(name) == 1, (name, names_off)
-
-    position = {name: names_off.index(name) for name in ordered_phases}
-    # The entry rewrite, then WRF's column exit (:1646, :1827-1990, :2020)
-    # and the private graupel number on the rewritten entry state, all before
-    # any source process runs.
-    assert position["launch_adapter_prepare"] < position[
-        "launch_adapter_entry"]
-    assert position["launch_adapter_entry"] < min(
-        position["launch_warm_frozen_source_network_from_owner"],
-        position["launch_frozen_vapor_network_from_owner"],
-    )
-    # The post-source rain and graupel fallout masks read the sources' state.
-    assert max(
-        position["launch_warm_frozen_source_network_from_owner"],
-        position["launch_frozen_vapor_network_from_owner"],
-    ) < position["launch_adapter_masks"]
-    assert position["launch_adapter_masks"] < position[
-        "launch_cloud_saturation_adjust"]
-    assert position["launch_cloud_saturation_adjust"] < position[
-        "launch_rain_evaporation"]
-    assert position["launch_rain_evaporation"] < min(
-        position["launch_cloud_sedimentation"],
-        position["launch_ice_sedimentation"],
-        position["launch_snow_sedimentation"],
-        position["launch_graupel_sedimentation"],
-        position["launch_rain_sedimentation"],
-    )
-    assert max(
-        position["launch_cloud_sedimentation"],
-        position["launch_ice_sedimentation"],
-        position["launch_snow_sedimentation"],
-        position["launch_graupel_sedimentation"],
-        position["launch_rain_sedimentation"],
-    ) < position["launch_final_phase_cleanup"]
-    assert position["launch_final_phase_cleanup"] < position[
-        "launch_classic_graupel_number_finalize"]
-    assert position["launch_classic_graupel_number_finalize"] < position[
-        "launch_effective_radius"]
-    assert position["launch_effective_radius"] < position[
-        "launch_adapter_finish"]
-
-    # One caller-owned classic ng scratch must flow through every phase.  The
-    # cold and fallout kernels intentionally receive it as a tracked shadow,
-    # not as the explicit mass-velocity number branch.
-    for calls, state, owner in (
-            (calls_off, state_off, owner_off),
-            (calls_on, state_on, owner_on)):
+    for calls, state, owner in ((calls_off, state_off, owner_off),
+                                (calls_on, state_on, owner_on)):
         shadow = state._scratch["mp_thompson_graupel_number_shadow"]
-        _, prepare_args, prepare_kwargs = _named_call(
-            calls, "launch_adapter_prepare")
-        _, entry_args, entry_kwargs = _named_call(
-            calls, "launch_adapter_entry")
-        _, masks_args, _ = _named_call(calls, "launch_adapter_masks")
-        _, warm_args, _ = _named_call(
-            calls, "launch_warm_frozen_source_network_from_owner")
-        _, cold_args, cold_kwargs = _named_call(
-            calls, "launch_frozen_vapor_network_from_owner")
-        _, _evap_args, evap_kwargs = _named_call(
-            calls, "launch_rain_evaporation")
-        _, _snow_args, snow_kwargs = _named_call(
-            calls, "launch_snow_sedimentation")
-        _, fallout_args, fallout_kwargs = _named_call(
-            calls, "launch_graupel_sedimentation")
-        _, final_args, _ = _named_call(
-            calls, "launch_classic_graupel_number_finalize")
-        # The flag is written into the one (ny, nx) scratch slot the phase
-        # cleanup reads, which carries WRF's terminal vapour floor only in
-        # the columns that had microphysics (:3974); the entry launch clears
-        # it and the next launch sets it on the rewritten entry state.
-        _, _cleanup_args, cleanup_kwargs = _named_call(
-            calls, "launch_final_phase_cleanup")
-        micro_columns = state._scratch["mp_thompson_micro_columns"]
-        assert micro_columns.shape == state.p.shape[1:]
-        assert not prepare_kwargs and not entry_kwargs
-        assert len(prepare_args) == 20, len(prepare_args)
-        assert prepare_args[5] is state._scratch["mp_pii"]
-        assert prepare_args[8] is state.h_diabatic
-        assert prepare_args[16] is state._scratch[
-            "mp_thompson_frozen_reference_temperature"]
-        assert prepare_args[17] is state._scratch[
-            "mp_thompson_graupel_melt_marker"]
-        assert prepare_args[19] is micro_columns
-        assert len(entry_args) == 10, len(entry_args)
-        assert entry_args[0] is state.qc
-        assert entry_args[4] is state.qg
-        assert entry_args[7] is state.qv
-        assert entry_args[8] is shadow
-        assert entry_args[9] is micro_columns
-        assert cleanup_kwargs["micro_columns"] is micro_columns
-        # The graupel fallout guard is the entry graupel marker's column
-        # mask, carried in SR until the graupel fallout reads it.
-        assert masks_args[2] is prepare_args[16]
-        assert masks_args[3] is state._scratch["mp_rainncv"]
-        assert masks_args[4] is state._scratch["mp_sr"]
-        assert fallout_kwargs["active_columns"] is masks_args[4]
-        assert warm_args[5] is shadow
-        assert warm_args[6] is state._scratch[
-            "mp_thompson_graupel_melt_marker"]
-        assert warm_args[7] is state._scratch[
-            "mp_thompson_snow_melt_marker"]
-        assert warm_args[11] is owner
-        assert evap_kwargs["graupel_melt_marker"] is warm_args[6]
-        assert snow_kwargs["snow_melt_marker"] is warm_args[7]
-        assert evap_kwargs["reference_density"] is state._scratch[
-            "mp_thompson_rain_reference_density"]
-        assert evap_kwargs["source_density"] is state._scratch[
-            "mp_thompson_frozen_reference_density"]
-        _, _, adjust_kwargs = _named_call(calls, "launch_cloud_saturation_adjust")
-        assert adjust_kwargs["condensation_marker"] is state._scratch["mp_th"]
-        assert evap_kwargs["condensation_marker"] is adjust_kwargs["condensation_marker"]
-        assert evap_kwargs["reference_density"] is not warm_args[6]
-        assert cold_args[9] is owner
-        assert cold_kwargs["graupel_number_shadow"] is shadow
-        assert fallout_kwargs["graupel_number_shadow"] is shadow
-        assert fallout_kwargs.get("graupel_number") is None
-        assert final_args[4] is shadow
-        if "reflectivity" in [call[0] for call in calls]:
-            _, _refl_args, refl_kwargs = _named_call(calls, "reflectivity")
-            assert refl_kwargs["thompson_graupel_number"] is shadow
+        _, entry_args, _ = _named_call(calls, "launch_classic_entry")
+        _, sources_args, _ = _named_call(calls, "launch_classic_sources")
+        _, column_args, _ = _named_call(calls, "launch_classic_column")
+        assert entry_args[5] is shadow
+        assert sources_args[2] is shadow
+        assert sources_args[5] is owner
+        assert column_args[4] is shadow
+        if "launch_refl10cm_classic" in [call[0] for call in calls]:
+            _, refl_args, _ = _named_call(calls, "launch_refl10cm_classic")
+            assert refl_args[5] is shadow
+            _, stash_args, _ = _named_call(calls, "stash")
+            assert stash_args[1] is state._scratch["refl_10cm"]
 
 
 def _device_adapter_state():
@@ -440,7 +304,7 @@ def test_apply_thompson_publishes_kernel_micron_radii_exactly_once(
     monkeypatch.setattr(
         thompson, "launch_effective_radius", capture_effective_radius)
 
-    microphysics._apply_thompson(state, cfg, float(cfg.dt))
+    microphysics._apply_thompson_strict(state, cfg, float(cfg.dt))
     cp.cuda.Stream.null.synchronize()
     assert set(kernel_output) == {"effc", "effi", "effs"}
 

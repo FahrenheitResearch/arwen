@@ -2,7 +2,7 @@
 """Read the Noah-MP runtime units' per-thread local frames on THIS card.
 
   python tools/measure_noahmp_frames.py measure --output receipt.json \\
-      [--box "weather-node-1"] [--platform-family linux]
+      [--box "<host label>"] [--platform-family linux]
   python tools/measure_noahmp_frames.py verify
   python tools/measure_noahmp_frames.py resolve [--extra gpu-cu13]
 

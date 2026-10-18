@@ -401,6 +401,10 @@ pub struct DatasetReceipt {
     pub elapsed_seconds: f64,
     /// Legacy receipt slot; native static means use zero propagation rings.
     pub spread_rounds: usize,
+    /// Cells no source pixel reached, which took the pixel under their own
+    /// centre instead of native's 0/0 (terrain) or all-zero vote (category).
+    /// See `centre_pixels`.
+    pub centre_seeded_cells: usize,
 }
 
 /// What goes INTO the static: identity, never duration and never a PATH.
@@ -664,7 +668,40 @@ fn zero_based(raw: Vec<i32>, upper: usize, name: &str, allow_zero_padding: bool)
 }
 
 impl Mesh {
+    /// Read `path` at the representation the grid asks its static to carry
+    /// ([`crate::staticfile::coordframe::for_static_from_grid`]): the probe and
+    /// the tests read a grid the way a build of it would.
     fn read(path: &Path) -> MpasResult<Self> {
+        let coordinates = crate::staticfile::coordframe::for_static_from_grid(path)?;
+        Self::read_as(path, coordinates)
+    }
+
+    /// Read `path` for a static that will DECLARE `coordinates`.
+    ///
+    /// THE PRECISION A GRID IS READ AT FOLLOWS THE REPRESENTATION ITS STATIC
+    /// DECLARES, because the writer stores the coordinates exactly as read
+    /// (`put_coord!`) and the declaration is a promise about those bytes.
+    ///
+    /// * binary32 -- every published mesh and every cull of one -- is the
+    ///   native RKIND=4 mesh pool (mpas_init_atm_static.F:292-310): each value
+    ///   rounded to binary32 on read and carried to the sphere in binary32.
+    ///   This is the arithmetic the i2 replay proves word for word against
+    ///   native init_atmosphere, and it is unchanged here.
+    /// * binary64 -- a mesh this crate GENERATED, which has no native
+    ///   counterpart -- is read and carried to the sphere in binary64, so the
+    ///   coordinates reach the file as the binary64 values the declaration
+    ///   names, and every metric is rounded to binary32 once, at the write.
+    ///
+    /// THE BREAKAGE THIS PREVENTS (2.9.0, "a defect
+    /// found on the way"): bad5408e05a put EVERY grid on the RKIND read, so the
+    /// static of a generated grid declared `binary64_earth_centred` while
+    /// holding binary32 positions up to 0.44 m off its own grid. gpuwm-hex's
+    /// point door then refused its vertical check ("dcEdge disagrees with
+    /// spherical cell-center arc length", 2.6e-4 against a 9.5e-7 bound) and
+    /// `rw_mpas_mesh --cull-parent` refused the static's cut ("provenance grid
+    /// latCell differs", then "dcEdge differs"), so no 3 km regional mesh could
+    /// be built through the door.
+    fn read_as(path: &Path, coordinates: CoordinateRepresentation) -> MpasResult<Self> {
         let f = netcrust::File::open(path)?;
         let n_cells = dim(&f, "nCells")?;
         let n_edges = dim(&f, "nEdges")?;
@@ -673,21 +710,29 @@ impl Mesh {
         let max_edges2 = dim(&f, "maxEdges2")?;
         let vertex_degree = dim(&f, "vertexDegree")?;
 
-        let mut x_cell = rkindv(&f, "xCell")?;
-        let mut y_cell = rkindv(&f, "yCell")?;
-        let mut z_cell = rkindv(&f, "zCell")?;
-        let mut x_edge = rkindv(&f, "xEdge")?;
-        let mut y_edge = rkindv(&f, "yEdge")?;
-        let mut z_edge = rkindv(&f, "zEdge")?;
-        let mut x_vertex = rkindv(&f, "xVertex")?;
-        let mut y_vertex = rkindv(&f, "yVertex")?;
-        let mut z_vertex = rkindv(&f, "zVertex")?;
-        let mut dc_edge = rkindv(&f, "dcEdge")?;
-        let mut dv_edge = rkindv(&f, "dvEdge")?;
-        let mut area_cell = rkindv(&f, "areaCell")?;
-        let mut area_triangle = rkindv(&f, "areaTriangle")?;
-        let mut kite_areas_on_vertex = rkindv(&f, "kiteAreasOnVertex")?;
-        let mut nominal = rkindv(&f, "nominalMinDc")?
+        let wide = coordinates.is_binary64();
+        let readv = |name: &str| -> MpasResult<Vec<f64>> {
+            if wide {
+                f64v(&f, name)
+            } else {
+                rkindv(&f, name)
+            }
+        };
+        let mut x_cell = readv("xCell")?;
+        let mut y_cell = readv("yCell")?;
+        let mut z_cell = readv("zCell")?;
+        let mut x_edge = readv("xEdge")?;
+        let mut y_edge = readv("yEdge")?;
+        let mut z_edge = readv("zEdge")?;
+        let mut x_vertex = readv("xVertex")?;
+        let mut y_vertex = readv("yVertex")?;
+        let mut z_vertex = readv("zVertex")?;
+        let mut dc_edge = readv("dcEdge")?;
+        let mut dv_edge = readv("dvEdge")?;
+        let mut area_cell = readv("areaCell")?;
+        let mut area_triangle = readv("areaTriangle")?;
+        let mut kite_areas_on_vertex = readv("kiteAreasOnVertex")?;
+        let mut nominal = readv("nominalMinDc")?
             .first()
             .copied()
             .ok_or_else(|| MpasError::Refusal("grid nominalMinDc is empty".to_string()))?;
@@ -703,23 +748,40 @@ impl Mesh {
         let scaled = sample < 10.0;
         let r = MPAS_EARTH_RADIUS_M;
         if scaled {
+            // binary64: the product rw_mpas_mesh --cull-parent re-derives when
+            // it binds a static's cut to its grid (`after * radius_scale`, then
+            // binary32 for a stored metric), so the pair binds bit for bit.
+            let length = |v: f64| -> f64 {
+                if wide {
+                    v * r
+                } else {
+                    ((v as f32) * (r as f32)) as f64
+                }
+            };
+            let area = |v: f64| -> f64 {
+                if wide {
+                    v * (r * r)
+                } else {
+                    ((v as f32) * ((r as f32) * (r as f32))) as f64
+                }
+            };
             for v in x_cell.iter_mut().chain(y_cell.iter_mut()).chain(z_cell.iter_mut())
                 .chain(x_edge.iter_mut()).chain(y_edge.iter_mut()).chain(z_edge.iter_mut())
                 .chain(x_vertex.iter_mut()).chain(y_vertex.iter_mut()).chain(z_vertex.iter_mut())
             {
-                *v = ((*v as f32) * (r as f32)) as f64;
+                *v = length(*v);
             }
             for v in dc_edge.iter_mut().chain(dv_edge.iter_mut()) {
-                *v = ((*v as f32) * (r as f32)) as f64;
+                *v = length(*v);
             }
             for v in area_cell
                 .iter_mut()
                 .chain(area_triangle.iter_mut())
                 .chain(kite_areas_on_vertex.iter_mut())
             {
-                *v = ((*v as f32) * ((r as f32) * (r as f32))) as f64;
+                *v = area(*v);
             }
-            nominal = ((nominal as f32) * (r as f32)) as f64;
+            nominal = length(nominal);
         }
 
         let neoc_i32 = i32v(&f, "nEdgesOnCell")?;
@@ -880,12 +942,12 @@ impl Mesh {
             // otherwise the native test is a case-sensitive YES substring.
             on_a_sphere: f.attribute("on_a_sphere").map(|a| a.as_string().unwrap_or("").contains("YES")).unwrap_or(true),
             sphere_radius: r,
-            lat_cell: rkindv(&f, "latCell")?,
-            lon_cell: rkindv(&f, "lonCell")?,
-            lat_edge: rkindv(&f, "latEdge")?,
-            lon_edge: rkindv(&f, "lonEdge")?,
-            lat_vertex: rkindv(&f, "latVertex")?,
-            lon_vertex: rkindv(&f, "lonVertex")?,
+            lat_cell: readv("latCell")?,
+            lon_cell: readv("lonCell")?,
+            lat_edge: readv("latEdge")?,
+            lon_edge: readv("lonEdge")?,
+            lat_vertex: readv("latVertex")?,
+            lon_vertex: readv("lonVertex")?,
             x_cell,
             y_cell,
             z_cell,
@@ -899,8 +961,8 @@ impl Mesh {
             dv_edge,
             area_cell,
             area_triangle,
-            angle_edge: rkindv(&f, "angleEdge")?,
-            mesh_density: rkindv(&f, "meshDensity")?,
+            angle_edge: readv("angleEdge")?,
+            mesh_density: readv("meshDensity")?,
             nominal_min_dc: nominal,
             n_edges_on_cell,
             cells_on_cell,
@@ -1636,6 +1698,29 @@ fn categorical(
     path: &Path,
     factor: usize,
 ) -> MpasResult<(Vec<i32>, i64, i64, GeogDataset)> {
+    categorical_with(ctx, path, factor, false)
+}
+
+/// [`categorical`], optionally voting a dataset's lake category as its water
+/// category, pixel by pixel, before the dominant-category vote.
+///
+/// Native MPAS-A v8.4.2 (`config_landuse_data = 'MODIFIED_IGBP_MODIS_NOAH'`,
+/// mpas_init_atm_static.F:401-403) reads `modis_landuse_20class_30s`, whose 20
+/// categories hold inland water as water (17). The archive `gpuwm fetch-geog`
+/// stages is `modis_landuse_20class_30s_with_lakes`: the same pixels with inland
+/// water relabelled 21 (`islake=21`, `category_max=21`). A native static voted
+/// from it carried category 21, which MPAS Noah's 20-row VEGPARM.TBL rejects at
+/// its first call ("too many input landuse types", module_sf_noahlsm.F:2440).
+/// Folding per pixel, before the vote, gives the 20-category histogram native
+/// counts; folding the voted cell afterwards would not (lake plus water pixels
+/// can together outvote land that neither outvotes alone). A dataset whose
+/// index declares no `islake` is read unchanged.
+fn categorical_with(
+    ctx: &GeogContext<'_>,
+    path: &Path,
+    factor: usize,
+    lake_as_water: bool,
+) -> MpasResult<(Vec<i32>, i64, i64, GeogDataset)> {
     let mesh = ctx.mesh;
     let ds = GeogDataset::open(path)?;
     if ds.index.kind != SourceKind::Categorical || ds.index.nz() != 1 {
@@ -1647,9 +1732,24 @@ fn categorical(
     let cmin = ds.index.category_min.ok_or_else(|| {
         MpasError::Refusal(format!("{} lacks category_min", path.display()))
     })?;
-    let cmax = ds.index.category_max.ok_or_else(|| {
+    let mut cmax = ds.index.category_max.ok_or_else(|| {
         MpasError::Refusal(format!("{} lacks category_max", path.display()))
     })?;
+    let lake_fold = match (lake_as_water, ds.index.islake, ds.index.iswater) {
+        (true, Some(lake), Some(water))
+            if lake != water && (cmin..=cmax).contains(&lake) && (cmin..=cmax).contains(&water) =>
+        {
+            Some((lake, water))
+        }
+        _ => None,
+    };
+    if let Some((lake, _)) = lake_fold {
+        if lake == cmax {
+            // The lake row is the archive's extra top category; native's
+            // histogram has no such row.
+            cmax = lake - 1;
+        }
+    }
     // MPAS: mpas_init_atm_static.F:1835-1845. A descending bound
     // allocates a zero-size histogram; MAXLOC then returns zero.
     let ncat = (cmax - cmin + 1).max(0) as usize;
@@ -1672,7 +1772,12 @@ fn categorical(
         let mut run_len = 0i32;
         for j in 0..ds.index.tile_y as usize {
             for i in 0..ds.index.tile_x as usize {
-                let raw = plane_raw_at(&ds, &plane, i, j);
+                let mut raw = plane_raw_at(&ds, &plane, i, j);
+                if let Some((lake, water)) = lake_fold {
+                    if raw == lake {
+                        raw = water;
+                    }
+                }
                 if raw < cmin || raw > cmax {
                     continue;
                 }
@@ -1701,6 +1806,29 @@ fn categorical(
         Ok(())
     })?;
 
+    // A cell no pixel reached votes with the pixel under its centre (see
+    // `centre_pixels`), folded and range-checked like any pixel.
+    let empty: Vec<usize> = (0..mesh.n_cells)
+        .filter(|&c| counts[c * ncat..(c + 1) * ncat].iter().all(|v| v.load(Ordering::Relaxed) == 0))
+        .collect();
+    let mut seeded = 0usize;
+    for (k, hits) in centre_pixels(&ds, mesh, &empty) {
+        let plane = ds.read_plane(&ds.tiles[k], 0)?;
+        for &(c, i, j) in &hits {
+            let mut raw = plane_raw_at(&ds, &plane, i, j);
+            if let Some((lake, water)) = lake_fold {
+                if raw == lake {
+                    raw = water;
+                }
+            }
+            if raw < cmin || raw > cmax {
+                continue;
+            }
+            counts[c * ncat + (raw - cmin) as usize].store(1, Ordering::Relaxed);
+            seeded += 1;
+        }
+    }
+    CENTRE_SEEDED.with(|c| c.set(seeded));
     let mut out =
         checked_vec_filled::<i32>(mesh.n_cells, cmin as i32, "categorical", "category field")?;
     for c in 0..mesh.n_cells {
@@ -1717,6 +1845,79 @@ fn categorical(
 // Kept in the receipt ABI. MPAS uses field-specific fixed fills and never
 // propagates a cell mean across neighboring cells.
 fn take_spread_rounds() -> usize { 0 }
+
+thread_local! {
+    /// How many cells the last continuous or categorical pass seeded from the
+    /// pixel under their centre because no tile pixel reached them.  Read and
+    /// cleared by the receipt on the building thread, like `take_spread_rounds`.
+    static CENTRE_SEEDED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn take_centre_seeded() -> usize {
+    CENTRE_SEEDED.with(|c| c.replace(0))
+}
+
+/// The source pixel under each listed cell's centre, grouped by the tile that
+/// holds it: `tile index -> [(cell, i, j)]`, `(i, j)` interior to the tile.
+///
+/// THE DEFECT THIS CLOSES. A destination cell gathers the source pixels whose
+/// centres land nearest to it.  A cell finer than the source -- a 1 km cell
+/// under 30-arc-second pixels, about 0.9 km -- can be reached by no pixel
+/// centre at all; native's own assignment (mpas_init_atm_static.F:1610,
+/// `ter = ter_integer / nhs`) is then 0/0, and its category vote (1842,
+/// MAXLOC over all-zero counts) is category 1.  rw_mpas_static built from
+/// integrate/2.9.2 wrote NaN terrain for 4,869 of 353,100 cells of a 1 km
+/// moving case, every one in the 1 km core over open ocean, and the land-use
+/// vote called those same ocean cells category 1 land.  Such a cell takes the
+/// one sample a point lookup gives: the pixel under its own centre.  A cell
+/// any pixel reached is not touched, so a static whose cells all had samples
+/// keeps every byte.  A tile that is absent or shorter than it declares gives
+/// nothing, which leaves native's incomplete-archive result as it was.
+fn centre_pixels(ds: &GeogDataset, mesh: &Mesh, cells: &[usize]) -> BTreeMap<usize, Vec<(usize, usize, usize)>> {
+    let mut by_tile: BTreeMap<usize, Vec<(usize, usize, usize)>> = BTreeMap::new();
+    if cells.is_empty() || ds.tiles.is_empty() { return by_tile; }
+    let (tx, ty) = (ds.index.tile_x, ds.index.tile_y);
+    let tiles: HashMap<(i64, i64), usize> = ds.tiles.iter().enumerate()
+        .map(|(k, t)| (((t.xs - 1).div_euclid(tx), (t.ys - 1).div_euclid(ty)), k)).collect();
+    let declared = ds.plane_bytes() * ds.index.nz() as u64;
+    let mut complete: HashMap<usize, bool> = HashMap::new();
+    for &c in cells {
+        // Source pixel k is centred at source coordinate k (known_x names pixel 1).
+        let (x, y) = ds.latlon_rad_to_source_xy(mesh.lat_cell[c], mesh.lon_cell[c]);
+        if !(x.is_finite() && y.is_finite()) { continue; }
+        let mut ix = x.round() as i64;
+        if ds.wraps_x && ds.nx_global > 0 { ix = (ix - 1).rem_euclid(ds.nx_global) + 1; }
+        let ix = ix.clamp(1, ds.nx_global.max(1));
+        let iy = (y.round() as i64).clamp(1, ds.ny_global.max(1));
+        let Some(&k) = tiles.get(&((ix - 1).div_euclid(tx), (iy - 1).div_euclid(ty))) else { continue };
+        let t = &ds.tiles[k];
+        if ix < t.xs || ix > t.xe || iy < t.ys || iy > t.ye { continue; }
+        let whole = *complete.entry(k).or_insert_with(|| {
+            std::fs::metadata(&t.path).map_or(false, |m| m.len() >= declared)
+        });
+        if !whole { continue; }
+        by_tile.entry(k).or_default().push((c, (ix - t.xs) as usize, (iy - t.ys) as usize));
+    }
+    by_tile
+}
+
+/// One source pixel under a mean policy's missing-value rule: the word to
+/// accumulate, or nothing when the policy skips the pixel.
+/// MPAS: mpas_init_atm_static.F:564,585 converts snow's missing value to
+/// I8KIND; monthly fields compare RKIND directly at 809,828,1043,1061.
+fn mean_sample(ds: &GeogDataset, policy: MeanPolicy, raw: i64) -> Option<i64> {
+    let missing = match policy {
+        MeanPolicy::Green | MeanPolicy::Albedo => ds.index.missing_value_rkind == Some(raw as f32),
+        _ => ds.index.missing_value == Some(raw),
+    };
+    if !missing { return Some(raw); }
+    match policy {
+        MeanPolicy::Snow => None,
+        MeanPolicy::Green => Some(0),
+        MeanPolicy::Albedo => Some(8),
+        MeanPolicy::Terrain => Some(raw),
+    }
+}
 
 /// MPAS: mpas_init_atm_static.F:1506-1514,736-879,972-1113,488-640.
 #[derive(Clone, Copy)]
@@ -1755,22 +1956,7 @@ fn continuous_mean(
             let mut n = 0i32;
             for j in 0..ds.index.tile_y as usize {
                 for i in 0..ds.index.tile_x as usize {
-                    let mut raw = plane_raw_at(&ds, &plane, i, j);
-                    // MPAS: mpas_init_atm_static.F:564,585 converts snow's
-                    // missing value to I8KIND; monthly fields compare RKIND
-                    // directly at 809,828,1043,1061.
-                    let missing = match policy {
-                        MeanPolicy::Green | MeanPolicy::Albedo => ds.index.missing_value_rkind == Some(raw as f32),
-                        _ => ds.index.missing_value == Some(raw),
-                    };
-                    if missing {
-                        match policy {
-                            MeanPolicy::Snow => continue,
-                            MeanPolicy::Green => raw = 0,
-                            MeanPolicy::Albedo => raw = 8,
-                            MeanPolicy::Terrain => {},
-                        }
-                    }
+                    let Some(raw) = mean_sample(&ds, policy, plane_raw_at(&ds, &plane, i, j)) else { continue };
                     let pixel = j * ds.index.tile_x as usize + i;
                     for q in 0..sub {
                         let c = map[pixel * sub + q];
@@ -1804,6 +1990,27 @@ fn continuous_mean(
         ctx.for_each_mapped_tile_policy(&ds, factor, true, neighbor_landmask,
             |c| count[c*nz].load(Ordering::Relaxed)==0, body)?;
     }
+    // A cell no pixel reached takes the pixel under its centre (see
+    // `centre_pixels`), under the policy's missing-value rule like any pixel.
+    let empty: Vec<usize> = (0..mesh.n_cells)
+        .filter(|&c| !landmask.map_or(false, |m| m[c] == 0)
+            && (0..nz).all(|z| count[c * nz + z].load(Ordering::Relaxed) == 0))
+        .collect();
+    let mut seeded = 0usize;
+    for (k, hits) in centre_pixels(&ds, mesh, &empty) {
+        let tile = &ds.tiles[k];
+        for z in 0..nz {
+            let plane = ds.read_plane(tile, z)?;
+            for &(c, i, j) in &hits {
+                let Some(raw) = mean_sample(&ds, policy, plane_raw_at(&ds, &plane, i, j)) else { continue };
+                let slot = c * nz + z;
+                sums[slot].store(raw, Ordering::Relaxed);
+                count[slot].store(1, Ordering::Relaxed);
+                if z == 0 { seeded += 1; }
+            }
+        }
+    }
+    CENTRE_SEEDED.with(|c| c.set(seeded));
     let mut out = checked_vec::<f32>(slots, "continuous", "destination field")?;
     for c in 0..mesh.n_cells {
         if landmask.map_or(false, |m| m[c] == 0) {
@@ -2814,6 +3021,55 @@ fn mean_edge_length_m(mesh: &Mesh) -> Vec<f64> {
     out
 }
 
+/// Fold a land-use archive's declared lake class into its water class.
+///
+/// WPS indexes name the lake class as `islake` (21 in the with-lakes MODIS
+/// set). MPAS's Noah has no lake category, and WRF real.exe folds the
+/// declared lake class into water the same way. Without it a lake cell whose STATSGO soil is
+/// not water stayed category 21 and land. An index with no lake class (the
+/// parser's -1) changes nothing. Returns the number of cells folded.
+pub fn fold_declared_lake(landuse: &mut [i32], islake: Option<i64>, water: i32) -> usize {
+    let Some(lake) = islake.filter(|&c| c > 0).map(|c| c as i32) else { return 0 };
+    let mut folded = 0;
+    for lu in landuse.iter_mut().filter(|lu| **lu == lake) {
+        *lu = water;
+        folded += 1;
+    }
+    folded
+}
+
+/// Every geography directory this build will open that has no WPS `index`,
+/// in the order the build opens them, each named once.
+///
+/// Defect (hex global run 2026-10-16, two refusals in a row on a WRF-only
+/// archive): the check looked at [`StaticGeogPaths::slots`] alone, but the
+/// native GWD stage opens its own terrain and the USGS `landuse_30s` mask
+/// ([`crate::native_gwd::NativeGwdConfig`]). A box missing that mask passed
+/// the check, ran 26 s, and was refused at the tile read, after the first
+/// refusal had already been "fixed". The set here is everything the build
+/// opens, so one refusal names it all.
+pub fn missing_geog_datasets(cfg: &StaticBuildConfig) -> Vec<String> {
+    let mut opened: Vec<&Path> = cfg.geog.slots().iter()
+        .filter(|(name,_)| (cfg.stages.noahmp || !name.starts_with("soilcl") && *name != "soilcomp")
+            && !(*name=="greenfrac" && cfg.stages.vegetation_ncep)
+            && !(*name=="albedo" && cfg.stages.albedo_ncep)
+            && !(*name=="snow_albedo" && cfg.stages.snow_ncep)
+            && !(*name=="soil_temperature" && cfg.stages.native_init))
+        .map(|(_,path)| *path).collect();
+    if let Some(gwd) = cfg.native_gwd.as_ref().filter(|_| cfg.stages.gwd) {
+        opened.push(&gwd.topo);
+        opened.push(&gwd.landuse);
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for path in opened {
+        let shown = path.display().to_string();
+        if !path.join("index").is_file() && !missing.contains(&shown) {
+            missing.push(shown);
+        }
+    }
+    missing
+}
+
 /// Build a static, silently. See [`build_static_reporting`].
 /// MPAS: mpas_init_atm_static.F:110-1260 (init_atm_static).
 pub fn build_static(cfg: &StaticBuildConfig) -> MpasResult<StaticBuildReceipt> {
@@ -2838,29 +3094,25 @@ pub fn build_static_reporting(
             cfg.out_path.display()
         )));
     }
-    let missing: Vec<_> = cfg.geog.slots().iter()
-        .filter(|(name,path)| (cfg.stages.noahmp || !name.starts_with("soilcl") && *name != "soilcomp")
-            && !(*name=="greenfrac" && cfg.stages.vegetation_ncep)
-            && !(*name=="albedo" && cfg.stages.albedo_ncep)
-            && !(*name=="snow_albedo" && cfg.stages.snow_ncep)
-            && !(*name=="soil_temperature" && cfg.stages.native_init)
-            && !path.join("index").is_file())
-        .map(|(_,path)| path.display().to_string()).collect();
+    let missing = missing_geog_datasets(cfg);
     if !missing.is_empty() {
         return Err(MpasError::Refusal(format!(
             "the geography archive is missing {} dataset(s) a static needs: {}. \
              Terrain, land use, soil class and composition, deep-soil \
-             temperature, green-ness and albedo all come from these \
-             directories, and a static written without one would hand the model \
-             a field of zeros that the run would carry as real geography.\n\
+             temperature, green-ness, albedo and the gravity-wave-drag \
+             land-use mask all come from these directories, and a static \
+             written without one would hand the model a field of zeros that \
+             the run would carry as real geography.\n\
              what does work:\n  \
-             gpuwm fetch-geog --datasets all, which stages every one of them\n  \
+             gpuwm fetch-geog --datasets mesh, which stages every dataset this \
+             builder opens\n  \
              --geog DIR pointing at a complete archive",
             missing.len(),
             missing.join(", ")
         )));
     }
-    let mesh = Mesh::read(&cfg.grid_path)?;
+    // Read at the precision this static will DECLARE; see `Mesh::read_as`.
+    let mesh = Mesh::read_as(&cfg.grid_path, cfg.coordinates)?;
     progress(&format!(
         "GRID\t{}\t{}\t{}\t{}",
         mesh.n_cells, mesh.n_edges, mesh.n_vertices, mesh.sphere_radius
@@ -3053,8 +3305,10 @@ pub fn build_static_reporting(
         let started = Instant::now();
         memory.event(field, Some(path), "before dataset", None, None, None, vec![]);
         take_spread_rounds();
+        take_centre_seeded();
         let (plane_bytes, dest_bytes) = f()?;
         let spread_rounds = take_spread_rounds();
+        let centre_seeded_cells = take_centre_seeded();
         memory.event(
             field,
             Some(path),
@@ -3083,6 +3337,7 @@ pub fn build_static_reporting(
             destination_bytes: dest_bytes,
             elapsed_seconds: elapsed,
             spread_rounds,
+            centre_seeded_cells,
         });
         Ok(())
     };
@@ -3100,7 +3355,8 @@ pub fn build_static_reporting(
     let mut ivgtyp = Vec::new();
     let mut landuse_ds_opt = None;
     time_field("landuse", &cfg.geog.landuse, cat_factors.landuse, &mut || {
-        let (v, _, _, ds) = categorical(&ctx, &cfg.geog.landuse, cat_factors.landuse)?;
+        let (v, _, _, ds) =
+            categorical_with(&ctx, &cfg.geog.landuse, cat_factors.landuse, cfg.stages.native_init)?;
         ivgtyp = v;
         let pb = ds.plane_bytes();
         landuse_ds_opt = Some(ds);
@@ -3118,6 +3374,12 @@ pub fn build_static_reporting(
         Ok((ds.plane_bytes(), (isltyp.len() * 4) as u64))
     })?;
 
+    // A land-use archive that declares a lake class (the with-lakes MODIS set
+    // read by `--legacy-static`: islake=21) has its lakes folded into its water
+    // class before the native reconciliation, so they leave as water (land use
+    // and soil) with landmask 0. The native data sets declare no lake class, so
+    // the native default is unchanged.
+    fold_declared_lake(&mut ivgtyp, landuse_ds.index.islake, iswater_lu);
     let landmask = crate::static_native::reconcile_surface(
         &mut ivgtyp, &mut isltyp, isice_lu, iswater_lu, iswater_soil);
 
@@ -3544,7 +3806,8 @@ pub fn build_terrain_reporting(
             cfg.geog.terrain.display()
         )));
     }
-    let mesh = Mesh::read(&cfg.grid_path)?;
+    // Read at the precision this static will DECLARE; see `Mesh::read_as`.
+    let mesh = Mesh::read_as(&cfg.grid_path, cfg.coordinates)?;
     progress(&format!("GRID\t{}\t{}\t{}\t{}", mesh.n_cells, mesh.n_edges, mesh.n_vertices, mesh.sphere_radius));
     let footprint = dataset_footprint(&cfg.geog.terrain, cfg.supersample, 1)?;
     // The same conservative mesh/operator resident term used by a full static.
@@ -3571,8 +3834,10 @@ pub fn build_terrain_reporting(
     };
     let started = Instant::now();
     take_spread_rounds();
+    take_centre_seeded();
     let (terrain, dataset) = continuous_mean(&ctx, &cfg.geog.terrain, cfg.supersample_30s, None, MeanPolicy::Terrain)?;
     let spread_rounds = take_spread_rounds();
+    let centre_seeded_cells = take_centre_seeded();
     if dataset.index.nz() != 1 {
         return Err(MpasError::Refusal("terrain source must have one plane".to_string()));
     }
@@ -3595,7 +3860,7 @@ pub fn build_terrain_reporting(
             field: "ter".to_string(), path: cfg.geog.terrain.display().to_string(),
             tiles: dataset.tiles.len(), source_plane_bytes: dataset.plane_bytes(),
             supersample: cfg.supersample, destination_bytes: (terrain.len() * 4) as u64,
-            elapsed_seconds: elapsed, spread_rounds,
+            elapsed_seconds: elapsed, spread_rounds, centre_seeded_cells,
         }],
         parallel: plan,
         variables: ["ter", "areaCell", "dvEdge", "dcEdge", "deriv_two", "areaTriangle", "kiteAreasOnVertex", "weightsOnEdge", "nominalMinDc", "latCell", "lonCell", "xCell", "yCell", "zCell", "latEdge", "lonEdge", "xEdge", "yEdge", "zEdge", "latVertex", "lonVertex", "xVertex", "yVertex", "zVertex"].iter().map(|s| s.to_string()).collect(),
@@ -3609,9 +3874,68 @@ pub fn build_terrain_reporting(
 
 #[cfg(test)]
 mod tests {
+    /// The exact defect: a WRF-only archive (with-lakes MODIS land use, the
+    /// soil container, no native land use and no USGS mask) gets ONE refusal
+    /// that names both missing land-use datasets and the mesh fetch.
+    #[test]
+    fn one_refusal_names_every_missing_native_dataset() {
+        let root = std::env::temp_dir().join(format!("rw-mpas-wrf-only-geog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["topo_gmted2010_30s","modis_landuse_20class_30s_with_lakes","soiltype_top_30s",
+                    "greenfrac_fpar_modis","albedo_modis","maxsnowalb_modis","soiltemp_1deg",
+                    "soilgrids/soilcomp","soilgrids/texture_layer1","soilgrids/texture_layer2",
+                    "soilgrids/texture_layer3","soilgrids/texture_layer4"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("index"), "type = categorical\n").unwrap();
+        }
+        let mut cfg = StaticBuildConfig {
+            grid_path: root.join("no-grid.nc"), out_path: root.join("out.nc"),
+            geog: StaticGeogPaths::under(&root), stages: StaticStageOptions::default(),
+            native_gwd: None, supersample: 1, supersample_landuse: 1, supersample_30s: 1,
+            host_memory_limit_bytes: None, tile_workers: None, receipt_path: None,
+            provenance: String::new(), valid_time: DEFAULT_VALID_TIME.into(), nominal_dx_m: None,
+            clobber: false,
+            coordinates: crate::staticfile::coordframe::CoordinateRepresentation::Binary32EarthCentred,
+        };
+        // What `rw_mpas_static --native-init --native-gwd-static` runs: the
+        // native registry defaults, then the native GWD stage.
+        crate::static_namelist::StaticNamelist::parse("").unwrap().apply(&mut cfg, &root).unwrap();
+        let error = build_static(&cfg).unwrap_err().to_string();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(error.contains("missing 2 dataset(s)"), "{error}");
+        assert!(error.contains("modis_landuse_20class_30s,") || error.contains("modis_landuse_20class_30s "), "{error}");
+        assert!(error.contains("landuse_30s"), "{error}");
+        assert!(error.contains("gpuwm fetch-geog --datasets mesh"), "{error}");
+    }
+
     use super::*;
     use crate::static_geog::fixture::{dataset, plane_1234_be, MINIMAL_INDEX, TILE_NAME};
     use crate::sha256_file;
+
+    #[test]
+    fn declared_lake_class_leaves_as_water_whatever_its_soil() {
+        // With-lakes MODIS: water 17, lake 21, ice 15; STATSGO water soil 14.
+        // The third cell is the defect's shape: a lake whose soil is loam (6).
+        let mut landuse = [13, 17, 21, 15, 4, 21];
+        let mut soil = [6, 2, 6, 14, 14, 14];
+        assert_eq!(fold_declared_lake(&mut landuse, Some(21), 17), 2);
+        let mask = crate::static_native::reconcile_surface(&mut landuse, &mut soil, 15, 17, 14);
+        assert_eq!(landuse, [13, 17, 17, 15, 17, 17]);
+        assert_eq!(soil, [6, 14, 14, 16, 14, 14]);
+        assert_eq!(mask, [1, 0, 0, 1, 0, 0]);
+        assert!(!landuse.contains(&21));
+    }
+
+    #[test]
+    fn an_index_without_a_lake_class_folds_nothing() {
+        // The native MODIS and USGS indexes declare no islake; the parser
+        // stores -1. Category 21 is then not a lake and must not move.
+        for islake in [None, Some(-1), Some(0)] {
+            let mut landuse = [21, 4, 17];
+            assert_eq!(fold_declared_lake(&mut landuse, islake, 17), 0);
+            assert_eq!(landuse, [21, 4, 17]);
+        }
+    }
 
     // -- where a dataset directory is, in both layouts fetch-geog stages ----
 
@@ -5017,6 +5341,48 @@ mod tests {
     //   RW_MPAS_REAL_WORKERS=1 RW_MPAS_REAL_OUT=ter-serial.bin \
     //   cargo test -p rw-mpas --release -- --ignored --nocapture real_inputs
 
+    #[test]
+    fn a_cell_no_pixel_reaches_takes_the_pixel_under_its_centre() {
+        // Two-degree fixture pixels under a 20,000-cell band mesh: most cells
+        // are finer than a pixel, so no pixel centre lands nearest to them.
+        // Before the fix those cells were 0/0 terrain (NaN) and a category-1
+        // vote; the 1 km ocean core of a moving case showed exactly that.
+        let case = SyntheticCase::build("centre-seed");
+        let mesh = synthetic_mesh(20_000);
+        let tree = KdTree::new(&mesh);
+        let cache = TileMapCache::new(0);
+        let ctx = GeogContext {
+            mesh: &mesh,
+            tree: &tree,
+            max_d2: mesh.max_search_distance2(),
+            workers: 1,
+            pool: None,
+            cache: &cache,
+        };
+        let (ter, ds) =
+            continuous_mean(&ctx, &case.cont1, 1, None, MeanPolicy::Terrain).expect("terrain");
+        let seeded = take_centre_seeded();
+        assert!(seeded > 0, "the fixture must leave some cells without a pixel");
+        let non_finite = ter.iter().filter(|v| !v.is_finite()).count();
+        assert_eq!(non_finite, 0, "terrain holds non-finite values");
+        // A seeded cell carries the pixel under its centre, scaled as native would.
+        let every: Vec<usize> = (0..mesh.n_cells).collect();
+        let mut carried = 0usize;
+        for (k, hits) in centre_pixels(&ds, &mesh, &every) {
+            let plane = ds.read_plane(&ds.tiles[k], 0).expect("plane");
+            for &(c, i, j) in &hits {
+                let raw = plane_raw_at(&ds, &plane, i, j);
+                if ter[c] == crate::static_native::scaled_mean(raw, 1, ds.index.scale_factor as f32) {
+                    carried += 1;
+                }
+            }
+        }
+        assert!(carried >= seeded, "{carried} cells carry their centre pixel, {seeded} were seeded");
+        let (cat, cmin, cmax, _) = categorical(&ctx, &case.cat, 1).expect("categorical");
+        assert!(take_centre_seeded() > 0, "the category vote must seed the same cells");
+        assert!(cat.iter().all(|&v| (cmin as i32..=cmax as i32).contains(&v)));
+    }
+
     fn real_path(key: &str) -> PathBuf {
         PathBuf::from(std::env::var(key).unwrap_or_else(|_| {
             panic!(
@@ -5187,5 +5553,125 @@ mod tests {
     fn native_sampling_accepts_configured_empty_and_positive_factors() {
         for factor in [0,1,4,16,17,1024] { validate_supersample(factor).unwrap(); }
         assert!(validate_supersample(usize::MAX).is_err());
+    }
+
+    // -- the coordinate representation a static DECLARES is what it HOLDS ---
+    //
+    // THE BREAKAGE (2.9.0): bad5408e05a put every grid
+    // on the native RKIND read, so a GENERATED grid's static declared
+    // binary64_earth_centred and held binary32 positions up to 0.44 m off its
+    // grid. gpuwm-hex's point door refused its vertical check and
+    // `rw_mpas_mesh --cull-parent` refused the cut ("provenance grid latCell
+    // differs"), so no 3 km regional mesh could be built. These two tests hold
+    // both halves: the generated route binds bit for bit, the native route is
+    // still the RKIND read the i2 replay proves.
+
+    /// Generate a grid, build its static through the shipping entry point, and
+    /// cut both the way the point door does: the static's cut must bind to the
+    /// grid's cut under `--cull-provenance-grid`.
+    #[test]
+    fn a_generated_grid_gets_a_static_that_holds_its_binary64_declaration() {
+        use crate::mesh::cull::{cull_file, cull_file_with_provenance};
+        use crate::mesh::density::{MeshSpec, Shape};
+        use crate::mesh::emit::{write_grid, Provenance};
+        use crate::mesh::{generate, GenerateRequest, LloydOptions};
+        use crate::staticfile::coordframe::for_static_from_grid;
+
+        let dir = std::env::temp_dir().join(format!("rw-mpas-static-binary64-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let request = GenerateRequest {
+            spec: MeshSpec::uniform(480.0),
+            target_cells: Some(2562),
+            lloyd: LloydOptions { tolerance: 3e-3, max_sweeps: 200, ..Default::default() },
+            sizing_samples: 20_000,
+            ..Default::default()
+        };
+        let generated = generate(&request, |_| {}).expect("generate");
+        let grid = dir.join("generated.grid.nc");
+        write_grid(
+            &generated.mesh,
+            &grid,
+            &Provenance {
+                static_coordinates: Some(CoordinateRepresentation::for_generated_mesh()),
+                ..Default::default()
+            },
+            true,
+        )
+        .expect("write the generated grid");
+        let representation = for_static_from_grid(&grid).unwrap();
+        assert!(representation.is_binary64(), "a generated grid asks for binary64 statics");
+
+        let case = SyntheticCase::build("binary64-static");
+        let static_path = dir.join("generated.static.nc");
+        let mut cfg = case.config(static_path.clone(), 2);
+        cfg.grid_path = grid.clone();
+        cfg.coordinates = representation;
+        build_static_reporting(&cfg, &|_| {}).expect("static builds on the generated grid");
+
+        let g = netcrust::File::open(&grid).unwrap();
+        let s = netcrust::File::open(&static_path).unwrap();
+        let r = MPAS_EARTH_RADIUS_M;
+        let bits = |v: &[f64]| -> Vec<u64> { v.iter().map(|x| x.to_bits()).collect() };
+        for entity in ["Cell", "Edge", "Vertex"] {
+            for axis in ["x", "y", "z"] {
+                let name = format!("{axis}{entity}");
+                let want: Vec<f64> = f64v(&g, &name).unwrap().iter().map(|v| v * r).collect();
+                assert_eq!(bits(&f64v(&s, &name).unwrap()), bits(&want),
+                    "{name}: a binary64 static holds the grid's own position scaled in binary64");
+            }
+            for axis in ["lat", "lon"] {
+                let name = format!("{axis}{entity}");
+                assert_eq!(bits(&f64v(&s, &name).unwrap()), bits(&f64v(&g, &name).unwrap()),
+                    "{name}: a binary64 static holds the grid's own angle");
+            }
+        }
+        for (name, power) in [("dcEdge", 1), ("dvEdge", 1), ("areaCell", 2), ("kiteAreasOnVertex", 2)] {
+            let scale = if power == 1 { r } else { r * r };
+            let want: Vec<u32> = f64v(&g, name).unwrap().iter().map(|v| ((v * scale) as f32).to_bits()).collect();
+            let got: Vec<u32> = f64v(&s, name).unwrap().iter().map(|&v| (v as f32).to_bits()).collect();
+            assert_eq!(got, want, "{name}: one binary32 rounding of the binary64 metric");
+        }
+        drop((g, s));
+
+        let region = Shape::Cap { center_deg: [34.0, -118.3], radius_km: 1500.0 };
+        let cut_grid = dir.join("cut.grid.nc");
+        let receipt = cull_file(&grid, &region, &cut_grid, None).expect("cut the grid");
+        assert!(receipt.region_cells > 20, "the cut holds too few cells to test anything");
+        cull_file_with_provenance(&static_path, &region, &dir.join("cut.static.nc"), None, Some(&cut_grid))
+            .expect("the static's cut binds to the grid's cut, as rw_mpas_mesh --cull-parent demands");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A grid that declares nothing -- every published mesh -- is still read as
+    /// the native RKIND=4 mesh pool, value for value.
+    #[test]
+    fn a_grid_with_no_declaration_keeps_the_native_rkind_read() {
+        // Its own file: `clean_regional` is removed by another test running
+        // in parallel.
+        let path = tiny_grid_nc(
+            "rkind-read",
+            Some([5, 6, 7, 7]),
+            [5, 6, 7, 7],
+            [0, 0, 7, 7],
+            [[2, 3, 4], [1, 3, 4], [1, 2, 0], [1, 2, 0]],
+            [[1, 2], [2, 3], [3, 0], [4, 0]],
+            [[1, 2, 3], [2, 3, 4], [3, 4, 1], [4, 1, 2]],
+            [[1, 2, 0, 0, 0, 0], [2, 3, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0], [0, 2, 0, 0, 0, 0]],
+        );
+        let f = netcrust::File::open(&path).unwrap();
+        let mesh = Mesh::read(&path).expect("the grid reads");
+        let r = MPAS_EARTH_RADIUS_M as f32;
+        let native = |name: &str| -> Vec<u64> {
+            f64v(&f, name).unwrap().iter().map(|&v| (((v as f32) * r) as f64).to_bits()).collect()
+        };
+        let bits = |v: &[f64]| -> Vec<u64> { v.iter().map(|x| x.to_bits()).collect() };
+        assert_eq!(bits(&mesh.x_cell), native("xCell"));
+        assert_eq!(bits(&mesh.y_vertex), native("yVertex"));
+        assert_eq!(bits(&mesh.dc_edge), native("dcEdge"));
+        let rounded: Vec<u64> = f64v(&f, "lonCell").unwrap().iter().map(|&v| ((v as f32) as f64).to_bits()).collect();
+        assert_eq!(bits(&mesh.lon_cell), rounded);
+        drop(f);
+        let _ = std::fs::remove_file(&path);
     }
 }

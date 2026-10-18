@@ -314,7 +314,7 @@ def source_units(root: Path, *, captures: Path | None = None) -> tuple[list[Unit
     # These files are components, not the sources their runtime compiles.
     # Their real factories are included by composed_units. Compiling a
     # fragment without its defines/libm creates false coverage and errors.
-    fragments = {"p3", "rrtmg_lw", "rrtmg_sw", "terrain_drag", "urban_bep_bem",
+    fragments = {"p3", "p3_zdiag", "fast_sbm", "rrtmg_lw", "rrtmg_sw", "terrain_drag", "urban_bep_bem",
                  "rrtmg_lw_chain", "rrtmg_lw_chain_coalesced", "rrtmg_lw_zbatched",
                  "rrtmg_lw_taugb02_10_11_12", "rrtmg_lw_taugb03_05",
                  "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16"}
@@ -379,7 +379,20 @@ def composed_units(root: Path) -> list[Unit]:
     bem = module("urban_bem")
     mosaic = module("noah_mosaic")
     nt = module("ntiedtke_fused")
+    sfc = module("noah_sfcdiags")
+    p3 = module("p3_device")
+    fsbm = module("fast_sbm_cuda")
+    # The direct FAST_SBM compiler resolves these quoted headers through -I.
+    # Expand them here so the receipt binds their bytes without a host path.
+    fsbm_source = (kdir / "fast_sbm.cu").read_text(encoding="utf-8")
+    fsbm_source = re.sub(r'^#include "([^"]+)"$',
+                         lambda match: (kdir / match[1]).read_text(encoding="utf-8"),
+                         fsbm_source, flags=re.MULTILINE)
     units = [
+        Unit("composed:noah_sfcdiags", sfc._source(), ()),
+        Unit("composed:fast_sbm", fsbm_source, tuple(fsbm.CUDA_OPTIONS)),
+        Unit("composed:p3_reflectivity", p3.p3_reflectivity_source(kernel_dir=kdir),
+             tuple(p3.DEFAULT_OPTIONS)),
         Unit("composed:rrtmg_lw", lw._gpu_source(), ("-std=c++17", "--ftz=false")),
         Unit("composed:rrtmg_sw", sw_defines + (kdir / "rrtmg_sw.cu").read_text(encoding="utf-8"),
              ("-std=c++17", "--ftz=false")),

@@ -1,4 +1,5 @@
 """Explicit lake water is a source state, never mixed land skin or sea ice."""
+from conftest import requires_wps_masked_chain_bridge
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -122,6 +123,7 @@ def test_absent_provider_is_identity_but_partial_contract_refuses():
         source_lake_fields(fields)
 
 
+@requires_wps_masked_chain_bridge
 def test_lake_provider_is_component_wide_and_does_not_change_land_or_ocean():
     land = np.array([[False, False, True], [True, True, False]])
     lake = np.array([[True, True, False], [False, False, False]])
@@ -163,6 +165,7 @@ def test_lake_provider_is_component_wide_and_does_not_change_land_or_ocean():
     assert receipt["water_fill"]["own_body"] == 1
 
 
+@requires_wps_masked_chain_bridge
 def test_existing_same_component_sst_keeps_precedence_over_optional_lake_state():
     land = np.zeros((3, 3), bool)
     y, x = np.mgrid[:3, :3]
@@ -176,6 +179,7 @@ def test_existing_same_component_sst_keeps_precedence_over_optional_lake_state()
     assert (provider == SOURCE_ANALYSIS).all()
 
 
+@requires_wps_masked_chain_bridge
 def test_a_wholly_frozen_lake_prepares_and_announces_every_fallback_cell():
     lat, lon = np.mgrid[:3, :3]
     land = np.zeros((3, 3), bool)
@@ -204,6 +208,7 @@ def test_a_wholly_frozen_lake_prepares_and_announces_every_fallback_cell():
     assert receipt["water_fill"]["cells"] == 1
 
 
+@requires_wps_masked_chain_bridge
 @pytest.mark.parametrize("partial", [False, True])
 def test_declined_lake_cell_list_is_bounded_across_components(partial):
     # Seventy separate two-cell lakes exercise the cap across components,
@@ -225,3 +230,73 @@ def test_declined_lake_cell_list_is_bounded_across_components(partial):
     advisory = water_temperature_advisory(receipt)
     assert f"{expected} lake cell(s) had no ice-free lake-model water" in advisory
     assert f"and {expected - 64} more" in advisory
+
+
+def test_lake_model_ice_is_the_cells_ice_cover_and_skin():
+    """A frozen lake starts as ice from the lake model, not open water.
+
+    Before this the lake model's ice was only a reason to decline its
+    water, so on ERA5 a frozen small lake (and most of a frozen Great Lake,
+    which ERA5's sea-ice analysis misses) started as open water near 273 K.
+    """
+    from gpuwm.ingest.lake_temperature import map_lake_ice
+
+    source = lake_source(0.3)
+    source.fields["LAKE_ICE_TEMP"] = 250.0 + np.arange(9.0).reshape(3, 3)
+    whole = map_lake_ice(source, np.array([[0.25]]), np.array([[0.75]]),
+                         np.ones((1, 1), bool))
+    assert whole.fraction[0, 0] == 1.0
+    # The frozen donors' bilinear ice temperature: 250 + 3*0.25 + 0.75.
+    assert whole.temperature[0, 0] == pytest.approx(251.5)
+    assert whole.receipt["cells_at_or_above_cover_threshold"] == 1
+
+    # Half the weight frozen: cover 0.5 at the ice of the frozen pair.
+    source.fields["LAKE_ICE_DEPTH"][:, 1] = 0.0
+    half = map_lake_ice(source, np.array([[0.0]]), np.array([[0.5]]),
+                        np.ones((1, 1), bool))
+    assert half.fraction[0, 0] == 0.5
+    assert half.temperature[0, 0] == 250.0
+
+    # Ice free everywhere: cover 0, no ice skin.
+    free = map_lake_ice(lake_source(0.0), np.array([[0.25]]),
+                        np.array([[0.75]]), np.ones((1, 1), bool))
+    assert free.fraction[0, 0] == 0.0 and np.isnan(free.temperature[0, 0])
+    assert free.receipt["cells_with_lake_ice"] == 0
+
+
+@pytest.mark.parametrize("depth, ice_temperature", [
+    (np.nan, 260.0), (-1e-12, 260.0), (0.3, np.nan), (0.3, 274.0)])
+def test_an_unusable_lake_ice_donor_leaves_the_cell_to_the_sea_ice_analysis(
+        depth, ice_temperature):
+    from gpuwm.ingest.lake_temperature import map_lake_ice
+
+    source = lake_source(0.3)
+    source.fields["LAKE_ICE_DEPTH"][0, 0] = depth
+    source.fields["LAKE_ICE_TEMP"][0, 0] = ice_temperature
+    result = map_lake_ice(source, np.array([[0.25]]), np.array([[0.75]]),
+                          np.ones((1, 1), bool))
+    assert np.isnan(result.fraction[0, 0])
+    assert result.receipt["unknown_cells"] == 1
+    assert result.receipt["unknown_cell_indices"] == [[0, 0]]
+
+
+@requires_wps_masked_chain_bridge
+def test_lake_ice_cells_leave_the_fallback_count_and_are_announced():
+    lat, lon = np.mgrid[:3, :3]
+    land = np.zeros((3, 3), bool)
+    mapped = map_ice_free_lake_water(lake_source(0.05), lat, lon, ~land)
+    ice = np.ones((3, 3), bool)
+    ice[2, 2] = False
+    values, provider, receipt = assemble_water_temperature(
+        mapped_sst=None, mapped_skin=np.full((3, 3), 265.0),
+        target_land=land, target_lake=~land,
+        mapped_lake_water=mapped.values, lake_ice=ice)
+    # No value changes: the ice skin is the caller's, on the ice cells.
+    np.testing.assert_array_equal(values, 265.0)
+    assert receipt["lake_ice_cells"] == 8
+    assert receipt["lake_fallback_cells"] == 1
+    assert receipt["lake_fallback_cell_indices"] == [[2, 2]]
+    advisory = water_temperature_advisory(
+        {**receipt, "policy": "era5_class_coherent"})
+    assert "8 lake cell(s) start as lake ice from the source lake model" in advisory
+    assert "1 lake cell(s) had no ice-free lake-model water" in advisory

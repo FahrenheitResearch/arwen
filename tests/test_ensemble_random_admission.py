@@ -35,7 +35,8 @@ def test_native_missing_consumers_name_the_lost_output(selector):
     with pytest.raises(ValueError, match=selector) as caught:
         refuse_configured_random({"stoch": {selector: [1]}})
     assert "no runtime consumer" in str(caught.value)
-    assert "unperturbed" in str(caught.value)
+    assert ("RAND_PERT history and restart field would be missing" if selector == "rand_perturb"
+            else "unperturbed") in str(caught.value)
     assert "Next:" in str(caught.value)
 
 

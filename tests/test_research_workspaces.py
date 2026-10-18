@@ -337,8 +337,15 @@ def test_registry_exposes_exact_gui_flags_and_explicit_overrides(tmp_path):
     assert parsed.func is research.research_main
 
 
-@pytest.mark.parametrize("source", ["gfs", "gdas", "hrrr", "era5", "20crv3"])
-def test_native_sources_preserve_companions_and_labels_are_not_data_paths(tmp_path, known_products, source):
+@pytest.mark.parametrize("source,provider", [("gfs", None), ("gdas", None),
+                                            ("hrrr", None), ("era5", "cds"),
+                                            ("era5", "arco"), ("20crv3", None)])
+def test_native_sources_preserve_companions_and_labels_are_not_data_paths(
+        tmp_path, known_products, monkeypatch, source, provider):
+    # Both provider containers must retain the same workspace companions.
+    if source == "era5":
+        from gpuwm import fetch
+        monkeypatch.setattr(fetch, "cds_credentials_present", lambda: provider == "cds")
     cycle = "2015-09-05T18" if source == "20crv3" else "2020-09-05T18"
     # This checks source companions, using enough capacity for HRRR's default suite.
     args = _args(tmp_path, "regional-evolution.reference", f"--source={source}", "--hours=3",
@@ -362,8 +369,10 @@ def test_native_sources_preserve_companions_and_labels_are_not_data_paths(tmp_pa
         assert case["wps_namelist"] == "new.namelist.wps"
         assert case["vtable"] == "new.Vtable.ERA5_CDO"
         assert (tmp_path / case["vtable"]).read_bytes() == wizard._PACKAGED_VTABLE.read_bytes()
+        assert raw["fetch"].get("era5_provider", "cds") == provider
+        artifact = "era5-combined.grib" if provider == "cds" else "era5-combined.nc"
         assert [Path(value) for value in case["forcing"]] == [
-            tmp_path / "data" / "new" / "era5-combined.grib"]
+            tmp_path / "data" / "new" / artifact]
     if source == "hrrr":
         assert {"new.namelist.input", "new.stock.namelist.input", "new.d01-target.json"} <= {
             path.name for path in tmp_path.iterdir()}

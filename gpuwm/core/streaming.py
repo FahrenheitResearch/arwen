@@ -621,6 +621,14 @@ def admit_resident_road(exp, decision=None, *, machine=None, estimate=None,
     (:func:`gpuwm.core.resident_admission.memory_gate_overridden`), and a
     forecast the envelope over-prices still runs.  The loaders' constructor
     floors below it are exact and are never skipped.
+
+    THE MYNN WIDTH IS A SPEED CHOICE (A3c, as the ranked road prices it).
+    When this function prices the forecast and the width the run would
+    walk does not fit, the forecast is priced at the narrowest width a run
+    may walk; admitted there, the widest width that fits the card is
+    pinned for this process before the build allocates a workspace
+    (:func:`fit_resident_mynn_width`), so the run never holds a wider
+    workspace than the card was priced to hold.
     """
     if decision is not None and (decision.stream
                                  or decision.budget_bytes is not None):
@@ -630,22 +638,76 @@ def admit_resident_road(exp, decision=None, *, machine=None, estimate=None,
     from gpuwm.core import preflight
     from gpuwm.core.resident_admission import admit, resident_forecast_terms
 
-    if estimate is None:
+    def price(width=None):
+        if forcing_intervals is None:
+            return preflight.admission_estimate(
+                exp, machine=machine, source=source,
+                urban_columns=urban_columns, mynn_column_chunk=width)
         from gpuwm.boundary_fields import source_boundary_species
-        estimate = (preflight.admission_estimate(exp, machine=machine,
-                                                 source=source,
-                                                 urban_columns=urban_columns)
-                    if forcing_intervals is None else
-                    preflight.estimate_experiment(
-                        exp, column_chunk=exp.column_chunk,
-                        forcing_intervals=max(1, int(forcing_intervals)),
-                        profile=getattr(machine, "device_profile", None),
-                        boundary_species=source_boundary_species(source),
-                        urban_columns=urban_columns))
-    return admit(what, resident_forecast_terms(estimate),
-                 free_bytes=int(machine.vram_bytes),
-                 stage="while building the domain state or attaching its "
-                       "physics", envelope=True)
+        with preflight.required_mynn_pricing(exp, width, only_given=True):
+            return preflight.estimate_experiment(
+                exp, column_chunk=exp.column_chunk,
+                forcing_intervals=max(1, int(forcing_intervals)),
+                profile=getattr(machine, "device_profile", None),
+                boundary_species=source_boundary_species(source),
+                urban_columns=urban_columns,
+                **preflight.single_card_residue_terms(exp))
+
+    free = int(machine.vram_bytes)
+    narrowed = False
+    if estimate is None:
+        estimate = price()
+        if (estimate.peak_envelope_bytes > free
+                and preflight.mynn_width_adjustable(exp)):
+            from gpuwm.core.mynn_pbl_scratch import (
+                MYNN_PBL_COLUMN_CHUNK_MINIMUM)
+            narrow = price(MYNN_PBL_COLUMN_CHUNK_MINIMUM)
+            if narrow.peak_envelope_bytes <= free:
+                estimate, narrowed = narrow, True
+    record = admit(what, resident_forecast_terms(estimate),
+                   free_bytes=free,
+                   stage="while building the domain state or attaching its "
+                         "physics", envelope=True)
+    if narrowed:
+        record = dict(record, mynn_column_chunk=fit_resident_mynn_width(
+            exp, price, free_bytes=free, what=what))
+    return record
+
+
+def fit_resident_mynn_width(exp, price, *, free_bytes: int, what: str) -> int:
+    """Pin the widest MYNN column width whose envelope fits the card.
+
+    Called once the forecast was admitted at the narrowest width because
+    the width the run would walk did not fit (:func:`admit_resident_road`).
+    ``price(width)`` is the admission's own estimate at one width; the
+    envelope grows with the width, so the widest fitting width is bisected
+    from the narrowest (admitted) to the run's own (refused), and pinned for
+    this process (:func:`gpuwm.core.mynn_pbl_scratch.pin_mynn_column_chunk`)
+    before the build sizes a workspace.  The width changes speed, never a
+    byte of output.
+    """
+    from gpuwm.core.mynn_pbl_scratch import (
+        mynn_rank_chunk_candidates, pin_mynn_column_chunk,
+        resolve_mynn_column_chunk)
+    nz = next(int(dc.run.nz) for dc in exp.domains
+              if int(getattr(dc.run, "bl_pbl_physics", 0) or 0) == 5)
+    own = int(resolve_mynn_column_chunk(nz))
+    ladder = [width for width in mynn_rank_chunk_candidates(nz)
+              if width < own] or [min(mynn_rank_chunk_candidates(nz))]
+    lo, hi = 0, len(ladder) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if price(ladder[mid]).peak_envelope_bytes <= int(free_bytes):
+            lo = mid
+        else:
+            hi = mid - 1
+    width = int(ladder[lo])
+    pin_mynn_column_chunk(width)
+    print(f"{what}: MYNN column width {width} columns, the widest that fits "
+          f"the card's {int(free_bytes) / 2**30:.2f} GiB free (the run's own "
+          f"{own} does not); the width changes speed, never bytes",
+          flush=True)
+    return width
 
 
 def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None,

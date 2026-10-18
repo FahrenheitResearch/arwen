@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 from conftest import requires_gpu
-from gpuwm.core.noahmp_runtime import NSNOW, _WRITE_BACK_DIRECT
+from gpuwm.core.noahmp_runtime import (NSNOW, _WRITE_BACK_DIRECT,
+                                       acsnom_accumulate)
 
 def _reference_write_back(fields, j, i, r, *, nsoil, dt) -> None:
     """``module_sf_noahmpdrv.F:1223-1400`` on the device, for one slab chunk.
@@ -41,7 +42,12 @@ def _reference_write_back(fields, j, i, r, *, nsoil, dt) -> None:
     fields["acsnow"][at] = (fields["acsnow"][at]
                             + fields["rainbl"][at] * r["fpice"])
     ponding = (r["ponding"] + r["ponding1"]) + r["ponding2"]
-    fields["acsnom"][at] = fields["acsnom"][at] + (r["qmelt"] * dt + ponding)
+    # :1243, left to right: ((((ACSNOM + QMELT*DT) + PONDING) + PONDING1)
+    # + PONDING2).  Not ACSNOM + (QMELT*DT + PONDINGXY): the WRF column
+    # oracle measured that grouping 1 ULP off on snowmelt columns.
+    fields["acsnom"][at] = acsnom_accumulate(
+        fields["acsnom"][at], r["qmelt"], dt, r["ponding"], r["ponding1"],
+        r["ponding2"])
     fields["pondingxy"][at] = ponding
 
     # :1285-1286, specific humidity back to mixing ratio.
@@ -120,4 +126,4 @@ def test_pinned_writeback_matches_previous_ufunc_order(snow_mm, depth, monkeypat
     assert write_slab_arithmetic(second, j, i, values, nsoil=nsoil, dt=dt)
     for name in first:
         a, b = cp.asnumpy(first[name]), cp.asnumpy(second[name])
-        np.testing.assert_array_equal(a.view(np.uint8), b.view(np.uint8), err_msg=name)
+        np.testing.assert_array_equal(a.reshape(-1).view(np.uint8), b.reshape(-1).view(np.uint8), err_msg=name)

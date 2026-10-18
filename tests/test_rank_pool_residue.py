@@ -368,3 +368,123 @@ def test_the_bound_applies_only_to_suites_with_a_rank_receipt():
     assert "no byte bound" in verdict
     assert "RANK_POOL_RESIDUE_SUITES" in verdict
     assert "min(" not in verdict
+
+
+#: The card full HRRR ran resident on, one card, 1.70 s/step (rented box,
+#: 2026-10-16), and the free memory that box's own `gpuwm go` read on it.
+RTX_PRO_6000 = DeviceLocalMemoryProfile(
+    name="NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    multiprocessor_count=188, max_threads_per_multiprocessor=1536,
+    default_stack_limit_bytes=1024, compile_platform=("120", "12.9.86"))
+FREE_96GB = int(94.47 * GIB)
+
+
+def test_full_hrrr_is_admitted_resident_on_one_96gb_card(monkeypatch):
+    """One card, the ranked road's two corrections: the A13 residue bound
+    and the A3c need (MYNN at the narrowest width, the walked width fitted
+    into what is left).  THE BREAKAGE: full HRRR on one 96 GB RTX PRO 6000
+    was priced 108.05 GiB against 94.47 GiB free (12.1 GiB of it the
+    ratio's margin, 4.9 GiB the widest MYNN workspace priced as a need)
+    and refused resident; it runs resident at 1.70 s/step and was streamed
+    at 4.5 s/step instead.  A card it does not fit is still refused."""
+    from types import SimpleNamespace
+
+    from gpuwm.core import mynn_pbl_scratch
+    from gpuwm.core.streaming import admit_resident_road
+    from gpuwm.ingest.memory_refusal import ResidentMemoryRefused
+
+    # The 3 h run the card measured (case h1), not the door file's 24 h:
+    # the root's forcing tables follow the run length.
+    exp = replace(_full_hrrr(), run_seconds=3 * 3600.0)
+    # The width the run walks on its own on that card is the cap (no card
+    # read here, so the memo is the cap; a host with a smaller card would
+    # derive less, which is not this question).  The resolver itself stays
+    # real: the narrow price is a pricing context it honours.
+    monkeypatch.setattr(mynn_pbl_scratch, "probe_mynn_card",
+                        lambda device=None: None)
+    monkeypatch.setattr(mynn_pbl_scratch, "_RESOLVED", {})
+    monkeypatch.delenv(mynn_pbl_scratch.MYNN_PBL_COLUMN_CHUNK_ENV,
+                       raising=False)
+    assert mynn_pbl_scratch.resolve_mynn_column_chunk(
+        int(exp.root.run.nz)) == mynn_pbl_scratch.MYNN_PBL_COLUMN_CHUNK_DEFAULT
+    card = SimpleNamespace(vram_bytes=FREE_96GB, device_profile=RTX_PRO_6000)
+    # At the width the run would walk: the bound, not the ratio (12.1 GiB
+    # of margin before), and still over the card by the wide workspace.
+    walked = pf.admission_estimate(exp, machine=card, source="rap-native")
+    assert walked.pool_residue_cap_active
+    assert walked.alloc_estimate_bytes == (
+        walked.subtotal_bytes + pf.RANK_POOL_RESIDUE_BOUND_BYTES)
+    assert walked.peak_envelope_bytes > FREE_96GB
+    # At the narrowest width, the need: it fits.
+    need = pf.admission_estimate(
+        exp, machine=card, source="rap-native",
+        mynn_column_chunk=mynn_pbl_scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM)
+    assert need.peak_envelope_bytes <= FREE_96GB
+    assert walked.peak_envelope_bytes - need.peak_envelope_bytes > 4 * GIB
+    try:
+        record = admit_resident_road(exp, None, machine=card,
+                                     source="rap-native")
+        width = record["mynn_column_chunk"]
+        assert mynn_pbl_scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM < width < (
+            mynn_pbl_scratch.MYNN_PBL_COLUMN_CHUNK_DEFAULT)
+        assert pf.admission_estimate(
+            exp, machine=card, source="rap-native",
+            mynn_column_chunk=width).peak_envelope_bytes <= FREE_96GB
+        assert pf.admission_estimate(
+            exp, machine=card, source="rap-native",
+            mynn_column_chunk=width + mynn_pbl_scratch.MYNN_PBL_CHUNK_VRAM_QUANTUM
+        ).peak_envelope_bytes > FREE_96GB
+    finally:
+        mynn_pbl_scratch.pin_mynn_column_chunk(None)
+    # An 80 GB card does not hold even the need: still refused resident.
+    small = SimpleNamespace(vram_bytes=int(79 * GIB),
+                            device_profile=RTX_PRO_6000)
+    with pytest.raises(ResidentMemoryRefused):
+        admit_resident_road(exp, None, machine=small, source="rap-native")
+    # The one single-card row that kept the ratio, priced as it is
+    # itemized today, sits under its bounded envelope.
+    row = next(r for r in pf.FORECAST_PEAK_BATTERY
+               if r[0].startswith("CONUS HRRR physics 1620x953x50"))
+    crop = replace(exp, domains=(replace(exp.root, run=replace(
+        exp.root.run, nx=1620, ny=953)),))
+    today = pf.estimate_experiment(crop, forcing_intervals=1,
+                                   profile=RTX_PRO_6000)
+    assert today.subtotal_bytes + pf.RANK_POOL_RESIDUE_BOUND_BYTES + (
+        today.non_pool_device_bytes + pf.ENVELOPE_UNMODELLED_BYTES) >= row[6]
+
+
+def test_the_go_gate_prices_one_forcing_slot_for_a_chained_18h_hrrr(
+        monkeypatch):
+    """`gpuwm go` runs its preparation chained, and the forecast it starts
+    on the head streams the root's intervals through one device slot (its
+    door prices forcing_intervals=1 on a stream head).  THE BREAKAGE: the
+    gate priced all 18 hourly RAP intervals of an 18 h one-card HRRR on the
+    card (102.90 GiB against 94.47 GiB free) and refused a run its door
+    admits.  Chaining off keeps the whole schedule, as a sealed restore
+    holds it."""
+    from gpuwm import go_cli
+    from gpuwm.core import mynn_pbl_scratch
+
+    monkeypatch.setattr(mynn_pbl_scratch, "probe_mynn_card",
+                        lambda device=None: None)
+    monkeypatch.setattr(mynn_pbl_scratch, "_RESOLVED", {})
+    monkeypatch.delenv(mynn_pbl_scratch.MYNN_PBL_COLUMN_CHUNK_ENV,
+                       raising=False)
+    exp = replace(_full_hrrr(), run_seconds=18 * 3600.0)
+    path = FULL_HRRR_TOML
+    probe = {"free_bytes": FREE_96GB, "total_bytes": 97887 * 2**20,
+             "profile": {"name": RTX_PRO_6000.name,
+                         "multiprocessor_count": 188,
+                         "max_threads_per_multiprocessor": 1536,
+                         "default_stack_limit_bytes": 1024}}
+    monkeypatch.setattr(pf, "device_memory_probe_subprocess",
+                        lambda *a, **k: dict(probe))
+    plan = {"config": path, "source": "rap-native", "cadence": 1}
+    monkeypatch.delenv("GPUWM_CHAINED_PREP", raising=False)
+    chained = go_cli.memory_gate(plan, experiment=exp)
+    assert not chained["refuse"], chained["verdict"]
+    assert chained["phases"].forecast.retained_forcing_intervals == 1
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "0")
+    sealed = go_cli.memory_gate(plan, experiment=exp)
+    assert sealed["refuse"], sealed["verdict"]
+    assert sealed["phases"].forecast.retained_forcing_intervals == 18

@@ -1,0 +1,1 @@
+powf(x,2.0f) != x*x on 769747 positive float32 x with a normal finite square, and 4656 more in the subnormal/overflow range

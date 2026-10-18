@@ -1,7 +1,7 @@
 //! The case-9 lateral-boundary-condition stream builder.
 //!
 //! A transcription of `init_atm_case_lbc` (`mpas_init_atm_cases.F`, MPAS
-//! v8.4.1): per boundary time, read one WPS intermediate file, horizontally
+//! v8.4.2 mpas_init_atm_cases.F:5434-6218): per boundary time, read one WPS intermediate file, horizontally
 //! and vertically interpolate to the regional mesh, run the same base-state +
 //! hydrostatic chain the init case runs, and write the `lbc` stream — one
 //! CDF-5 file per boundary time carrying FULL-MESH fields (`lbc_u` over every
@@ -57,6 +57,7 @@
 pub mod compare;
 pub mod emit;
 pub mod parent;
+pub mod projection;
 pub mod source;
 pub mod sphere;
 
@@ -68,8 +69,10 @@ use crate::error::{MpasError, MpasResult};
 use crate::init::capsule::{self, MeshGeometry, VerticalMetrics};
 use crate::init::dynamics::constants::{CP, CV, GRAVITY, P0, RGAS, T0B};
 use crate::init::dynamics::rslf;
-use crate::init::hinterp::{interp_sequence, InterpContext, LatLonProjection, Method, Slab, Underflow};
-use crate::init::metfile::{read_met_file, MetSlab};
+use crate::init::hinterp::{
+    interp_sequence, InterpContext, LatLonProjection, Method, Slab, Underflow,
+};
+use crate::init::metfile::{read_lbc_met_file, MetSlab, IPROJ_GAUSS, IPROJ_LATLON};
 use crate::init::vinterp::{
     sorted_column, vertical_interp, Extrap, SURFACE_LEVEL_TAG, SURFACE_SENTINEL,
 };
@@ -138,7 +141,7 @@ impl PhysicsMode {
 
 /// IN5: refuse a boundary file whose records are not valid at the requested time.  A record's
 /// `hdate` is `YYYY-MM-DD_HH:MM:SS`, possibly shortened to the hour or minute by its writer.
-pub fn check_valid_time(slabs: &[MetSlab], valid_time: &str, path: &std::path::Path) -> MpasResult<()> {
+pub fn check_valid_time<'a>(slabs: impl IntoIterator<Item = &'a MetSlab>, valid_time: &str, path: &std::path::Path) -> MpasResult<()> {
     let want = valid_time.get(..19).unwrap_or(valid_time);
     for slab in slabs {
         let mut have = slab.hdate.trim_end().to_string();
@@ -212,7 +215,7 @@ pub struct LbcConfig {
     pub physics_mode: PhysicsMode,
     /// Overrides for header config attributes that are namelist metadata
     /// rather than producer switches (met prefix, geography table names, ...).
-    /// Names must exist in the v8.4.1 table and must not shadow a producer
+    /// Names must exist in the v8.4.2 table and must not shadow a producer
     /// switch.  See [`emit::config_attributes`].
     pub attr_overrides: std::collections::BTreeMap<String, serde_json::Value>,
     pub provenance: String,
@@ -283,11 +286,7 @@ pub fn seconds_between(start: &str, end: &str) -> MpasResult<i64> {
 }
 
 fn epoch_seconds(stamp: &str) -> MpasResult<i64> {
-    let bad = || {
-        MpasError::Refusal(format!(
-            "time stamp '{stamp}' is not YYYY-MM-DD_HH:MM:SS"
-        ))
-    };
+    let bad = || MpasError::Refusal(format!("time stamp '{stamp}' is not YYYY-MM-DD_HH:MM:SS"));
     let b: Vec<char> = stamp.chars().collect();
     if b.len() < 19 {
         return Err(bad());
@@ -316,6 +315,8 @@ fn epoch_seconds(stamp: &str) -> MpasResult<i64> {
 }
 
 /// Build the whole boundary series.
+/// MPAS v8.4.2 mpas_init_atm_cases.F:320-369 (clock loop) and
+/// :5637-5660 (vertical grid validation).
 pub fn build_lbc(cfg: &LbcConfig) -> MpasResult<LbcReceipt> {
     let started = std::time::Instant::now();
 
@@ -371,6 +372,8 @@ pub fn build_lbc(cfg: &LbcConfig) -> MpasResult<LbcReceipt> {
     Ok(receipt)
 }
 
+/// MPAS v8.4.2 mpas_init_atm_cases.F:5869-6218: pressure dispatch,
+/// vertical interpolation, humidity, hydrostatic balance and all LBC fields.
 fn build_one_time(
     cfg: &LbcConfig,
     mesh: &MeshGeometry,
@@ -389,9 +392,9 @@ fn build_one_time(
         ..Default::default()
     };
 
-    let slabs = read_met_file(&interval.met_path)?;
+    let slabs = read_lbc_met_file(&interval.met_path)?;
     if cfg.physics_mode == PhysicsMode::Correct {
-        check_valid_time(&slabs, &interval.valid_time, &interval.met_path)?;
+        check_valid_time(slabs.iter().map(|(slab, _)| slab), &interval.valid_time, &interval.met_path)?;
     }
     let mut fg = horizontal_pass(&slabs, mesh, cfg, &mut receipt)?;
     let nfg = fg.vert_level.len();
@@ -405,10 +408,7 @@ fn build_one_time(
 
     // Isobaric vs model-level, decided the way the Fortran decides it: on
     // whether ANY pressure content arrived.
-    let isobaric = fg
-        .p
-        .iter()
-        .all(|col| col[..nfg].iter().all(|&v| v == 0.0));
+    let isobaric = fg.p.iter().all(|col| col[..nfg].iter().all(|&v| v == 0.0));
     if isobaric {
         receipt.pressure_branch = "isobaric".to_string();
         for c in 0..n_cells {
@@ -481,17 +481,25 @@ fn build_one_time(
             prep(&mut coord, &mut value, &|k| fg.rh[c][k]);
             for k in (0..nz).rev() {
                 let target = 0.5 * (zgrid[c][k] + zgrid[c][k + 1]);
-                relhum[k] =
-                    vertical_interp(target, &coord[..nfg - 1], &value[..nfg - 1], Extrap::Constant)
-                        .unwrap_or(value[0]);
+                relhum[k] = vertical_interp(
+                    target,
+                    &coord[..nfg - 1],
+                    &value[..nfg - 1],
+                    Extrap::Constant,
+                )
+                .unwrap_or(value[0]);
             }
 
             prep(&mut coord, &mut value, &|k| fg.sh[c][k].max(0.0));
             for k in (0..nz).rev() {
                 let target = 0.5 * (zgrid[c][k] + zgrid[c][k + 1]);
-                spechum[k] =
-                    vertical_interp(target, &coord[..nfg - 1], &value[..nfg - 1], Extrap::Constant)
-                        .unwrap_or(value[0]);
+                spechum[k] = vertical_interp(
+                    target,
+                    &coord[..nfg - 1],
+                    &value[..nfg - 1],
+                    Extrap::Constant,
+                )
+                .unwrap_or(value[0]);
             }
 
             // The surface pressure slot is given `1.0` (a value whose log is
@@ -585,9 +593,7 @@ fn build_one_time(
         .collect();
 
     // Water vapour: the spechum path only when it was asked for AND delivered.
-    let sh_all_zero = sh_col
-        .iter()
-        .all(|col| col.iter().all(|&v| v == 0.0));
+    let sh_all_zero = sh_col.iter().all(|col| col.iter().all(|&v| v == 0.0));
     let use_sh = cfg.use_spechumd && !sh_all_zero;
     let qv: Vec<Vec<f32>> = (0..n_cells)
         .into_par_iter()
@@ -760,7 +766,9 @@ fn build_one_time(
                     rw[c][k] += metric * metrics.zb[e][1][k] * flux;
                 }
                 if cfg.theta_adv_order == 3 {
-                    let sign = if ru[e][k] >= 0.0 { 1.0f32 } else { -1.0f32 };
+                    // MPAS v8.4.2 mpas_init_atm_cases.F:6181-6188:
+                    // SIGN copies the sign bit, including that of -0.0.
+                    let sign = 1.0f32.copysign(ru[e][k]);
                     if side_one {
                         rw[c][k] +=
                             sign * cfg.coef_3rd_order * metric * metrics.zb3[e][0][k] * flux;
@@ -833,8 +841,10 @@ fn build_one_time(
     Ok(receipt)
 }
 
+/// MPAS v8.4.2 mpas_init_atm_cases.F:5666-5898: complete case-9
+/// first-guess field dispatch, level accounting and horizontal interpolation.
 fn horizontal_pass(
-    slabs: &[MetSlab],
+    slabs: &[(MetSlab, i32)],
     mesh: &MeshGeometry,
     cfg: &LbcConfig,
     receipt: &mut IntervalReceipt,
@@ -869,7 +879,7 @@ fn horizontal_pass(
     let underflow_hits = std::sync::atomic::AtomicU64::new(0);
     let methods: [Method; 2] = [Method::SixteenPoint, Method::Search];
 
-    for s in slabs {
+    for (s, iproj) in slabs {
         receipt.met_records_read += 1;
         if !LBC_MET_FIELDS.contains(&s.field.as_str()) {
             if !receipt.met_records_ignored.contains(&s.field) {
@@ -898,6 +908,15 @@ fn horizontal_pass(
             0
         };
 
+        // MPAS v8.4.2 mpas_init_atm_cases.F:5731-5752 initializes only
+        // these projections. Sampling a consumed Lambert/Mercator/polar field
+        // through an uninitialized or lat/lon map would use the wrong points.
+        if *iproj != IPROJ_LATLON && *iproj != IPROJ_GAUSS {
+            return Err(MpasError::Refusal(format!(
+                "case-9 field {} uses projection code {iproj}; native case 9 initializes only lat/lon (0) and Gaussian (4) maps",
+                s.field
+            )));
+        }
         let proj = LatLonProjection {
             lat1: s.start_lat,
             lon1: s.start_lon,
@@ -907,6 +926,17 @@ fn horizontal_pass(
             knownj: 1.0,
             nx: s.nx,
             ny: s.ny,
+        };
+        let gaussian = if *iproj == IPROJ_GAUSS {
+            Some(projection::Gaussian::new(
+                s.delta_lat,
+                s.start_lat,
+                s.start_lon,
+                s.nx,
+                s.ny,
+            )?)
+        } else {
+            None
         };
         let array = Slab::from_met(&s.values, s.nx, s.ny);
         let ctx = InterpContext {
@@ -918,7 +948,10 @@ fn horizontal_pass(
             underflow_hits: Some(&underflow_hits),
         };
         let sample = |i: usize, lat: &[f32], lon: &[f32]| -> f32 {
-            let (x, y) = proj.locate(lat[i], lon[i]);
+            let (x, y) = match &gaussian {
+                Some(g) => g.locate(lat[i], lon[i]),
+                None => proj.locate(lat[i], lon[i]),
+            };
             interp_sequence(x, y, &ctx, &methods, 0)
         };
 
@@ -928,7 +961,11 @@ fn horizontal_pass(
                 .into_par_iter()
                 .map(|e| sample(e, &edge_lat, &edge_lon))
                 .collect();
-            let dest = if s.field == "UU" { &mut fg.u } else { &mut fg.v };
+            let dest = if s.field == "UU" {
+                &mut fg.u
+            } else {
+                &mut fg.v
+            };
             for (e, v) in values.into_iter().enumerate() {
                 dest[e][level_index] = v;
             }
@@ -1020,16 +1057,32 @@ mod tests {
     fn the_lbc_case_consumes_exactly_nine_met_fields() {
         // The dispatch difference from case 7 in one place: no PSFC, no PMSL,
         // no SKINTEMP, no SNOW, no SEAICE, no soil fields.
-        for f in ["PSFC", "PMSL", "SKINTEMP", "SNOW", "SEAICE", "ST000010", "SM000010"] {
+        for f in [
+            "PSFC", "PMSL", "SKINTEMP", "SNOW", "SEAICE", "ST000010", "SM000010",
+        ] {
             assert!(!LBC_MET_FIELDS.contains(&f), "{f} must not be consumed");
         }
-        for f in ["UU", "VV", "TT", "RH", "SPECHUMD", "GHT", "SOILHGT", "PRES", "PRESSURE"] {
+        for f in [
+            "UU", "VV", "TT", "RH", "SPECHUMD", "GHT", "SOILHGT", "PRES", "PRESSURE",
+        ] {
             assert!(LBC_MET_FIELDS.contains(&f), "{f} must be consumed");
         }
     }
 
     fn slab(hdate: &str) -> MetSlab {
         MetSlab {
+            format_version: 5,
+            xfcst: 0.0,
+            start_i: 1.0,
+            start_j: 1.0,
+            wind_grid_rel: false,
+            dx: 0.0,
+            dy: 0.0,
+            stdlon: 0.0,
+            truelat1: 0.0,
+            truelat2: 0.0,
+            iproj: 0,
+            polar: None,
             hdate: hdate.to_string(),
             map_source: String::new(),
             field: "TT".to_string(),
@@ -1106,6 +1159,10 @@ mod tests {
     fn the_virtual_factor_here_is_the_literal_not_rvord() {
         use crate::init::dynamics::constants::RVORD;
         assert_eq!(VIRTUAL_161, 1.61f32);
-        assert_ne!(VIRTUAL_161, RVORD - 1.0, "1.61 is not rvord - 1, and the difference is the point");
+        assert_ne!(
+            VIRTUAL_161,
+            RVORD - 1.0,
+            "1.61 is not rvord - 1, and the difference is the point"
+        );
     }
 }

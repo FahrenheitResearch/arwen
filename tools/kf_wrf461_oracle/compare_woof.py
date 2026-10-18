@@ -40,17 +40,11 @@ FIELDS_3D = ("rthcuten", "rqvcuten", "rqccuten", "rqrcuten", "rqicuten",
 FIELDS_2D = ("raincv", "pratec", "nca", "cutop", "cubot", "shall")
 
 
-def ordered(bits):
-    bits = bits.astype(np.int64)
-    return np.where(bits < 0x80000000, bits, 0x80000000 - bits)
-
-
 def ulp_distance(a, b):
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
     a = np.asarray(a, dtype=np.float32).reshape(-1)
     b = np.asarray(b, dtype=np.float32).reshape(-1)
-    ia = ordered(a.view(np.uint32))
-    ib = ordered(b.view(np.uint32))
-    return np.abs(ia - ib)
+    return np.abs(monotone_fp32_key(a) - monotone_fp32_key(b))
 
 
 def run(columns_path, oracle_path, label=None, meta_path=None):

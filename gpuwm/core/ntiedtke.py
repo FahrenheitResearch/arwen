@@ -624,7 +624,8 @@ def nt_resolve(name: str, universe=NT_SLOT_NAMES) -> str:
         seen.append(nxt)
 
 
-def nt_tile_columns(ncol: int, multiprocessor_count: int) -> int:
+def nt_tile_columns(ncol: int, multiprocessor_count: int,
+                    columns_per_sm: int = NT_TILE_COLUMNS_PER_SM) -> int:
     """The chunk width: the fewest chunks under the cap, split evenly.
 
     512 columns per SM keeps the cap proportional to the card.  A domain
@@ -636,7 +637,7 @@ def nt_tile_columns(ncol: int, multiprocessor_count: int) -> int:
     launch.  The per-column layout does not depend on the width.
     """
     ncol = int(ncol)
-    cap = int(multiprocessor_count) * NT_TILE_COLUMNS_PER_SM
+    cap = int(multiprocessor_count) * int(columns_per_sm)
     if ncol <= cap:
         return ncol
     chunks = -(-ncol // cap)
@@ -903,7 +904,7 @@ NT_STAGE_SIGNATURE = {
         "pmfdq", "pdmfdp", "pmfdde_rate", "zheat", "zcape", "zcape1",
         "zcape2", "ztauc", "ztaubl", "ztau_o", "upbl", "zmfub1",
         "tiedtke_closure", "ncol",
-        "nz", "dt", "cp", "rd", "rv", "xlv", "xlf", "grav", "llo3_mask", "expect_tpb",
+        "nz", "ztmst", "cp", "rd", "rv", "xlv", "xlf", "grav", "llo3_mask", "expect_tpb",
         "expect_nblocks", "geom_report", "order_report", "ticket"
     ),
     "ntiedtke_cloud_depth": (
@@ -991,7 +992,7 @@ NT_STAGE_SIGNATURE = {
         "ptte", "pqte", "paph", "puen", "pven", "ptu", "pqu", "plu",
         "ztenh", "zqenh", "ktype", "kcbot", "lndj", "ldcum", "zdhpbl",
         "upbl", "zmfub", "tiedtke_closure",
-        "ncol", "nz", "dt", "cp", "rd", "rv", "xlv", "xlf",
+        "ncol", "nz", "ztmst", "cp", "rd", "rv", "xlv", "xlf",
         "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
@@ -1455,6 +1456,14 @@ def _nt_fused_walk(pipeline) -> None:
 class NewTiedtke:
     """Stateless ``cu_physics = 16`` callable for :class:`PhysicsDriver`.
 
+    ``tile_columns_per_sm`` is the chunk cap per multiprocessor this adapter
+    walks the domain with (:func:`nt_tile_columns`).  The workspace is held at
+    the chunk width for the adapter's life, so the cap is its memory price.
+    A caller that needs the memory more than the widest single wave (the
+    gpuwm-hex New Tiedtke seam, which holds the workspace on every global
+    mesh) narrows it on its own instance; every other caller keeps
+    :data:`NT_TILE_COLUMNS_PER_SM`.
+
     No ``nca_seconds``: New Tiedtke carries no NCA hold, so the Task-1
     attachment contract applies -- the rates replace the held cumulus
     tendencies wholesale and ``rainc`` is a per-due-call increment consumed
@@ -1618,6 +1627,7 @@ class NewTiedtke:
 
     def __call__(self, *, atmosphere, fields, state, cfg):
         import cupy as cp
+        import numpy as np
 
         from gpuwm.core.physics import CumulusResult
 
@@ -1688,10 +1698,21 @@ class NewTiedtke:
         # a question about arithmetic on degenerate input rather than a
         # property of the reduction.  Both measure bitwise identical here;
         # only one of them is an argument.
-        width = nt_tile_columns(ncol, _nt_multiprocessor_count())
+        width = nt_tile_columns(ncol, _nt_multiprocessor_count(),
+                                getattr(self, "tile_columns_per_sm",
+                                        NT_TILE_COLUMNS_PER_SM))
         p = self._for(width, nz, cfg)
         p.dry_mass_coupling = bool(
             getattr(cfg, "ntiedtke_dry_mass_coupling", False))
+        # WRF's ITIMESTEP for this call.  cu_ntiedtke_pre_run zeroes the
+        # forcing pair on the domain's first step (module_cu_ntiedtke.F:
+        # 451-457, `if(itimestep == 1)`), and the prep kernel carries that
+        # branch, but the pipeline used to be built with itimestep = 2 and
+        # never told otherwise -- so the first cumulus call of every run fed
+        # the folded radiation and boundary-layer lanes into a closure WRF
+        # runs without them.  Found by the column oracle
+        # (tools/ntiedtke_column_oracle), graded there at itimestep = 1.
+        p.scalars["itimestep"] = np.int32(_nt_itimestep(state, cfg))
         # One spacing per column where the driver carries it (a column
         # seam on an MPAS mesh); otherwise cfg.dx, constant across chunks
         # including the padded tail.
@@ -1731,14 +1752,37 @@ class NewTiedtke:
                 dest[lo:hi] = p.w.bind(name, 1)[:n]
         p.end_llo3_batch()
 
+        from gpuwm.wrf_exact import ENABLED as wrf_exact
+        if not wrf_exact:
+            bound_donor_depletion(
+                out_lev, out_sfc,
+                {"rqvcuten": flat_lev["qv3d"], "rqccuten": flat_lev["qc3d"],
+                 "rqicuten": flat_lev["qi3d"]},
+                float(_nt_model_dt(cfg)))
+
         def grid(a):
             return cp.ascontiguousarray(a.reshape(nz, ny, nx))
+
+        # WRF's F_QC / F_QI gate, cu_ntiedtke_driver
+        # (module_cu_ntiedtke.F:253-271): RQCCUTEN and RQICUTEN are stored
+        # only where the run carries that species, and phy_cu_ten adds them
+        # only where P_QC / P_QI is allocated.  With a microphysics that
+        # carries no ice (Kessler, mp_physics = 1) the scheme's detrained
+        # ice is therefore dropped, as WRF drops it; the scheme itself read
+        # qi = 0 (the zero ice the atmosphere seam hands it, WRF's unused
+        # moist slot).  Handing the ice tendency up crashed every such run
+        # in the driver's frozen-category check (combo A028, Kessler with
+        # New Tiedtke, 2026-10-07 combo sweep round 2).  Declared: the
+        # dropped tendency is condensate WRF's driver discards, so those
+        # runs do not conserve the detrained ice's water.
+        carries_qc = getattr(state, "qc", None) is not None
+        carries_qi = getattr(state, "qi", None) is not None
 
         return CumulusResult(
             rthcuten=grid(out_lev["rthcuten"]),
             rqvcuten=grid(out_lev["rqvcuten"]),
-            rqccuten=grid(out_lev["rqccuten"]),
-            rqicuten=grid(out_lev["rqicuten"]),
+            rqccuten=grid(out_lev["rqccuten"]) if carries_qc else None,
+            rqicuten=grid(out_lev["rqicuten"]) if carries_qi else None,
             rucuten=grid(out_lev["rucuten"]),
             rvcuten=grid(out_lev["rvcuten"]),
             # RAINCV is rn/stepcu, mm per call, consumed once.
@@ -1776,6 +1820,48 @@ class NewTiedtke:
             rainc=out_sfc["raincv"].reshape(ny, nx))
 
 
+def bound_donor_depletion(out_lev, out_sfc, donors, dt: float) -> None:
+    """Scale a column's cumulus rates so no layer loses more water than it holds over the step.
+
+    The scheme's tendencies are explicit and are applied over the whole model step.  At a long
+    step (600 s on the 120 km globe) a thin layer under a shallow cloud can be asked to give up
+    more vapour than it has.  Measured on x1.40962, GFS 2026-10-11 12Z, +18 h, cell 398 (31.4 N,
+    86.6 E, terrain 4982 m): rqvcuten * dt = -4.44 g/kg on a layer holding 2.18 g/kg, with
+    +3.82 g/kg and +2.6 K put into the layer above.  The donor goes negative (and is clipped to
+    zero), the receiving layer overshoots its donors, condenses the surplus and becomes a single
+    hot layer (+7.9 K over both neighbours): the same class of defect as YSU's explicit PBL-top
+    entrainment, and the one hot layer left on that run once YSU's was bounded.
+
+    The bound: per column, alpha = min(1, min over layers losing water of held / (dt * loss)) for
+    vapour, cloud water and ice, and every rate of that column (theta, the species, momentum and
+    the rain) is multiplied by alpha.  One factor per column keeps the scheme's own heat, water
+    and momentum budgets in proportion, so its rain shrinks with its drying.  alpha is exactly 1
+    in every column the scheme already leaves non-negative, and those words do not move.  Strict
+    reproduction (GPUWM_WRF_EXACT=1) keeps WRF's upstream behaviour.
+    """
+    try:  # the array module of the inputs: CuPy in a forecast, NumPy in a CPU control
+        import cupy
+        cp = cupy.get_array_module(out_sfc["raincv"])
+    except ImportError:
+        import numpy as cp
+    alpha = cp.ones(out_sfc["raincv"].shape, dtype=DTYPE)
+    step = DTYPE(dt)
+    for rate, held in donors.items():
+        loss = -out_lev[rate] * step
+        have = cp.maximum(held, DTYPE(0.0))
+        over = loss > have
+        ratio = cp.where(over, have / cp.where(over, loss, DTYPE(1.0)), DTYPE(1.0))
+        alpha = cp.minimum(alpha, ratio.min(axis=0))
+    bound = alpha < DTYPE(1.0)
+    if not bool(bound.any()):
+        return
+    for name in out_lev:
+        out_lev[name][...] = cp.where(bound[None, :], out_lev[name] * alpha[None, :],
+                                      out_lev[name])
+    for name in out_sfc:
+        out_sfc[name][...] = cp.where(bound, out_sfc[name] * alpha, out_sfc[name])
+
+
 def _nt_multiprocessor_count() -> int:
     """SMs on the live device, or the profile's count when there is none."""
     try:
@@ -1786,6 +1872,21 @@ def _nt_multiprocessor_count() -> int:
         from gpuwm.core.preflight import MEASURED_LOCAL_MEMORY_PROFILE
 
         return int(MEASURED_LOCAL_MEMORY_PROFILE.multiprocessor_count)
+
+
+def _nt_itimestep(state, cfg) -> int:
+    """WRF's one-based ITIMESTEP at this call, counted the way the physics
+    driver counts it (gpuwm.core.physics, the radiation and surface calls):
+    from this domain's own start, so a nest that activates late also sees
+    1 on its first step, as a WRF nest does.  On a restart the elapsed time
+    continues, so the first step after it is not 1 -- again as in WRF,
+    which restores ITIMESTEP from the restart file.
+    """
+    import math
+
+    epoch = float(getattr(state, "domain_start_offset", 0.0) or 0.0)
+    elapsed = float(state.elapsed_seconds) - epoch
+    return int(math.floor(elapsed / float(cfg.dt) + 0.5)) + 1
 
 
 def _nt_model_dt(cfg) -> float:

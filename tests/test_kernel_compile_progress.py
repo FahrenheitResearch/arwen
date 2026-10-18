@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from gpuwm import kernel_compile_notice as notice
 from gpuwm import progress
 
@@ -279,3 +281,84 @@ def test_a_profile_reading_an_unstaged_table_is_named_and_the_pass_goes_on(
         "remedy": warm_kernels.MISSING_ASSET_REMEDY}]
     assert "gpuwm fetch-tables" in warm_kernels.MISSING_ASSET_REMEDY
     assert len(report["profiles"]) == len(profiles) - 1
+
+
+# ---------------------------------------------------------------------------
+# Side by side: `warm-kernels` held ONE core for 186 s+ warming an image on
+# an RTX PRO 6000 box (2026-10-16) because every profile compiled after the
+# last.  The profiles now warm in parallel worker processes; the report keeps
+# the requested order and the same failure handling.  Threads stand in for
+# the spawned processes here (a stand-in cannot reach a spawned child).
+
+
+def _side_by_side(monkeypatch, tmp_path, worker):
+    import concurrent.futures
+    from types import SimpleNamespace
+
+    from gpuwm import kernel_compile_notice as notice
+    from gpuwm import warm_kernels
+
+    _stand_in_cupy(monkeypatch)
+    monkeypatch.setattr(notice, "current_compute_capability", lambda: "120")
+    monkeypatch.setattr(notice, "cupy_kernel_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr(notice, "scan_kernel_cache", lambda cache: (0, 0))
+    monkeypatch.setattr(notice, "kernel_cache_state",
+                        lambda cache, **k: SimpleNamespace(entries_for_capability=0))
+    monkeypatch.setattr(warm_kernels, "profile_workers", lambda count: 3)
+    monkeypatch.setattr(warm_kernels, "_profile_worker", worker)
+
+    class Threads(concurrent.futures.ThreadPoolExecutor):
+        def __init__(self, workers, mp_context=None):
+            assert mp_context.get_start_method() == "spawn"  # CUDA cannot fork
+            super().__init__(workers)
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", Threads)
+    return warm_kernels
+
+
+def test_profiles_warm_side_by_side_and_report_in_order(monkeypatch, tmp_path):
+    import threading
+
+    names = ("a", "b", "c", "d")
+    inside, peak, lock = [0], [0], threading.Lock()
+    gate = threading.Barrier(3, timeout=5)
+
+    def worker(profile, levels):
+        with lock:
+            inside[0] += 1
+            peak[0] = max(peak[0], inside[0])
+        if profile != "d":
+            gate.wait()  # three profiles are inside at once
+        with lock:
+            inside[0] -= 1
+        if profile == "b":
+            return {"profile": profile, "refused": "stand-in refusal", "seconds": 0.1, "direct_events": []}
+        return {"profile": profile, "longwave": "computed by ra_lw_physics=4", "seconds": 0.1,
+                "direct_events": [], "nvrtc_compiles": 7}
+
+    warm_kernels = _side_by_side(monkeypatch, tmp_path, worker)
+    report = warm_kernels.warm_kernels(names)
+    assert peak[0] == 3 and report["workers"] == 3
+    assert [row["profile"] for row in report["profiles"]] == ["a", "c", "d"]
+    assert all(row["kernels_compiled"] == 7 for row in report["profiles"])
+    assert report["failed"] == [{"profile": "b", "error": "stand-in refusal"}]
+
+
+def test_a_device_fault_in_one_worker_stops_the_pass(monkeypatch, tmp_path):
+    def worker(profile, levels):
+        if profile == "b":
+            return {"profile": profile, "fatal": "b: CUDARuntimeError: stand-in", "seconds": 0.1,
+                    "direct_events": []}
+        return {"profile": profile, "longwave": "x", "seconds": 0.1, "direct_events": []}
+
+    warm_kernels = _side_by_side(monkeypatch, tmp_path, worker)
+    with pytest.raises(RuntimeError, match="CUDARuntimeError: stand-in"):
+        warm_kernels.warm_kernels(("a", "b", "c"))
+
+
+def test_one_profile_or_no_card_answer_keeps_the_single_pass(monkeypatch):
+    from gpuwm import warm_kernels
+
+    _stand_in_cupy(monkeypatch)  # the stand-in card answers no memory query
+    assert warm_kernels.profile_workers(1) == 1
+    assert warm_kernels.profile_workers(28) == 1

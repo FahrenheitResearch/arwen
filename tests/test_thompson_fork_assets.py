@@ -428,8 +428,10 @@ def test_plain_fetch_tables_acquires_no_fork_tables(monkeypatch):
 
 def test_only_the_fork_generation_reaches_the_fork_tables():
     """The runtime acquires the fork set from one place, and only under the
-    fork generation: `_wrf39_table_root()` is called inside `if wrf39:` and
-    nowhere else, and `ensure_thompson_fork_tables` has no other caller."""
+    fork generation: `_wrf39_table_root()` is called only by the two mode-specific
+    adapter (`_apply_thompson_fork_call`, which the mp=28 call reaches only
+    for thompson_version = "wrf_39_noaa"), and `ensure_thompson_fork_tables`
+    has no other caller."""
     import ast
     repo = Path(__file__).resolve().parents[1]
     callers = {}
@@ -444,11 +446,38 @@ def test_only_the_fork_generation_reaches_the_fork_tables():
                 callers.setdefault(node.func.id, []).append(path.relative_to(repo).as_posix())
     assert sorted(callers["ensure_thompson_fork_tables"]) == [
         "gpuwm/core/microphysics_aerosol.py", "gpuwm/thompson_fork_assets.py"]
-    assert callers["_wrf39_table_root"] == ["gpuwm/core/microphysics_aerosol.py"]
+    assert callers["_wrf39_table_root"] == ["gpuwm/core/microphysics_aerosol.py"] * 2
     tree = ast.parse((repo / "gpuwm/core/microphysics_aerosol.py").read_text(encoding="utf-8"))
-    guarded = [node for node in ast.walk(tree)
-               if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "wrf39"
-               and any(isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
-                       and inner.func.id == "_wrf39_table_root"
-                       for statement in node.body for inner in ast.walk(statement))]
-    assert len(guarded) == 1
+    owners = [node.name for node in ast.walk(tree)
+              if isinstance(node, ast.FunctionDef)
+              and any(isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+                      and inner.func.id == "_wrf39_table_root"
+                      for inner in ast.walk(node))]
+    assert owners == ["_apply_thompson_fork_call", "_apply_thompson_aerosol_call"]
+    owner = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                 and n.name == "_apply_thompson_aerosol_call")
+    branch = next(n for n in ast.walk(owner) if isinstance(n, ast.If)
+                  and isinstance(n.test, ast.Name) and n.test.id == "wrf39")
+    assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+               and n.func.id == "_wrf39_table_root"
+               for stmt in branch.body for n in ast.walk(stmt))
+    assert not any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                   and n.func.id == "_wrf39_table_root"
+                   for stmt in branch.orelse for n in ast.walk(stmt))
+    assert any(isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == "wrf39" for t in n.targets)
+               and ast.unparse(n.value) == "version == 'wrf_39_noaa'"
+               for n in owner.body)
+    # Each mode has one acquisition. The strict route returns before the
+    # retained default adapter reaches its guarded acquisition.
+    acquisitions = [n for n in ast.walk(tree)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id == "_wrf39_table_root"]
+    assert len(acquisitions) == 2
+    strict_branch = next(n for n in owner.body if isinstance(n, ast.If)
+                         and ast.unparse(n.test) == "ENABLED and version == 'wrf_39_noaa'")
+    assert len(strict_branch.body) == 1
+    ret = strict_branch.body[0]
+    assert isinstance(ret, ast.Return)
+    assert isinstance(ret.value, ast.Call)
+    assert ret.value.func.id == "_apply_thompson_fork_call"

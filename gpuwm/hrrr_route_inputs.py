@@ -652,12 +652,37 @@ def _drag_and_implicit_advection_rows(runs) -> list[str]:
     return rows
 
 
-def render_namelist_input(exp, *, stock: bool = False) -> str:
+def wps_land_categories(wps_text: str, count: int) -> int:
+    """NUM_LAND_CAT the land use ``wps_text``'s geog_data_res selects.
+
+    WRF reads one num_land_cat for the run and real.exe stops when it
+    differs from the geography's (share/input_wrf.F); geogrid stamps 21
+    for the MODIS land use with its lake class and 20 for the 15
+    arc-second set (``modis_15s``).  Domains that disagree keep 21, which
+    the round trip's importer then refuses by name.
+    """
+    from gpuwm.fortran_namelist import parse_namelist_text
+    from gpuwm.static.build import geog_landuse_category_count
+
+    values = (parse_namelist_text(wps_text).get("geogrid", {})
+              .get("geog_data_res") or [])
+    column = [str(value) for value in values][:count]
+    column += ["default"] * (count - len(column))
+    counts = {geog_landuse_category_count(value) for value in column}
+    return counts.pop() if len(counts) == 1 else 21
+
+
+def render_namelist_input(exp, *, stock: bool = False,
+                          num_land_cat: int = 21) -> str:
     """One WRF ``namelist.input`` for this experiment.
 
     ``stock`` renders the unchanged-WRF twin.  It differs from the
     native file in exactly three ways -- the route parses both and
     refuses a fourth -- so both come out of this one function.
+    ``num_land_cat`` is the geography's category count
+    (:func:`wps_land_categories`); it was a literal 21, so the route
+    refused NOAA's own namelist.wps (modis_15s, 20 categories) at its
+    round trip.
     """
     from gpuwm.config import RunConfig
     from gpuwm.physics_source_defaults import recipe_physics_defaults
@@ -951,7 +976,7 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         *([f" fractional_seaice                   = "
            f"{int(root.run.fractional_seaice)},"]
           if int(root.run.fractional_seaice) != 0 else []),
-        " num_land_cat                        = 21,",
+        f" num_land_cat                        = {int(num_land_cat)},",
         f" sf_urban_physics                    = {_repeated(0, count)}",
         " sst_update                          = 0,",
     ])
@@ -1694,9 +1719,11 @@ def write_hrrr_route_inputs(config_path: Path, exp, *, wps_text: str,
     paths = route_input_paths(Path(config_path))
     writer(paths["wps_namelist"], wps_text)
     writer(paths["target_domain"], render_target_domain(exp))
-    writer(paths["namelist_input"], render_namelist_input(exp))
+    land = wps_land_categories(wps_text, len(exp.domains))
+    writer(paths["namelist_input"],
+           render_namelist_input(exp, num_land_cat=land))
     writer(paths["stock_namelist_input"],
-           render_namelist_input(exp, stock=True))
+           render_namelist_input(exp, stock=True, num_land_cat=land))
     verify_round_trip(exp, paths["wps_namelist"], paths["namelist_input"])
     return [paths["wps_namelist"], paths["target_domain"],
             paths["namelist_input"], paths["stock_namelist_input"]]

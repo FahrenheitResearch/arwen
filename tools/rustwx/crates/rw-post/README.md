@@ -45,13 +45,23 @@ every architecture.
 `kernels/woof_post.cu` is one translation unit holding every group's
 kernels (C, E and B each in their own namespace). It is compiled into
 CUBINs for the two certified Blackwell architectures
-(`woof_post_sm100.cubin`, `woof_post_sm120.cubin`) plus a compute_75
-`woof_post.ptx` that every other card JIT-compiles, described by
-`woof_post.manifest.json` (source and artifact hashes), and loaded through
+(`woof_post_sm100.cubin` for every sm_10x card, `woof_post_sm120.cubin` for
+every sm_12x card) plus a compute_60 `woof_post.ptx` that every other card
+(Pascal and newer) JIT-compiles, described by `woof_post.manifest.json`
+(source and artifact hashes and each image's NVRTC), and loaded through
 the driver API only (`cudarc =0.19.8`, dynamic loading). User machines need
 no CUDA toolkit and no NVRTC. Only those three images are embedded: each
 is compiled into every binary that links this crate, and the twelve-CUBIN
 set put the 2.8.7 manylinux wheel over PyPI's 100,000,000-byte limit.
+
+The PTX is built by NVRTC 12.0 (`rebuild_kernels ptx`), so it declares PTX
+ISA 8.0, which every NVIDIA driver from R525 (CUDA 12.0) on JIT-compiles.
+Through 2.9.0 it came from NVRTC 13.4 (ISA 9.4); a CUDA 13.2 driver refused
+it, and the exporter computed GRIB2 products on the CPU on every card
+without a CUBIN. `tests/gpu.rs` fails a PTX above ISA 8.0. A CUBIN the
+driver refuses falls back to the PTX. The device tests and the
+`groups_frame` / `group_d_frame` examples run the GPU side from the PTX on
+any card with `RW_POST_TEST_KERNEL_IMAGE=ptx`.
 
 ## Method switches
 

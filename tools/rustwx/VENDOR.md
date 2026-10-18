@@ -1420,3 +1420,34 @@ case.
 
         crates/rustwx-render/src/projected_map.rs     ece8ccac8bd1af1a -> 0c294f9bcec74369
         crates/rustwx-render/src/projection.rs        bc71b76c59b0e10f -> 06967ef494453ae0
+
+## rw-sat: Himawari AHI and GK-2A AMI (2026-10-16, lane/292-geo-sat)
+
+`crates/rw-sat/src/himawari.rs` vendors the HSD segment-name and header
+parsers (blocks #1, #2, #3, #5, #7) of the project's rusty-weather
+`crates/rw-sat/src/himawari.rs` @ 369d65c (MIT).  Divergences, each measured:
+
+- Counts are the raw 16-bit word.  Upstream shifts it right by
+  `bits_per_pixel - valid_bits_per_pixel` before calibrating; on the
+  2026-10-15 00Z full disk, band 13 segment 5 counts span 1381..4052 with 12
+  valid bits and calibrate to a median 290 K unshifted, 326-329 K everywhere
+  shifted (band 8: 237 K vs 320 K).
+- Navigation sweeps about y (JMA HSD / CGMS).  Upstream labels the scene
+  `SweepAngleAxis::X`, which is the GOES gimbal order.  The `Y` arm of
+  `geostationary::scan_angles_to_lat_lon` (and both inverses) used to swap x
+  and y into the x-sweep formula, which is a different projection; it is now
+  the CGMS formula, tested against JMA's HSD navigation as the user guide
+  writes it.  The `X` arm is byte-for-byte unchanged.
+- Segments decode straight from the bucket's `.DAT.bz2` (bzip2 0.5, already
+  in the vendor closure), in parallel, into a `geo_imager::GeoImagerScan`;
+  the S3 discovery/manifest/staging code is replaced by the source table
+  `crates/rw-sat/src/geo_imagers.json`.
+
+`crates/rw-sat/src/ami.rs` (GK-2A AMI L1B NetCDF) and
+`crates/rw-sat/src/geo_imager.rs` (the shared scan type, the source table and
+its fetch helpers) are new; rusty-weather and BowEcho carry no AMI decoder.
+The AMI brightness temperature uses each channel's spectral-response centroid
+from the source table (CRTM `ami_gk2.SpcCoeff.bin` wavenumbers) because the
+L1B file states the central wavelength rounded to 0.1 um, which put the
+brightness temperature off by +3.13 / -0.85 / -0.53 / +1.57 K (WV063 / WV069 /
+WV073 / IR105) on the same full disk.

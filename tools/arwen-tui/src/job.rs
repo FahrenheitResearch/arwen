@@ -13,6 +13,9 @@ pub struct Job {
     pub outcome: Option<i32>,
     /// Set only after a matching worker receipt and a specific memory refusal.
     pub memory_refused: bool,
+    /// Set when the command wrote its configuration and only the geography datasets it
+    /// reads are not staged (`gpuwm check` exit 6 with its BLOCKER line).
+    pub geography_gap: bool,
     child: Child,
     stopping: bool,
     stop_started: Option<Instant>,
@@ -130,6 +133,7 @@ impl Job {
             started: Instant::now(),
             outcome: None,
             memory_refused: false,
+            geography_gap: false,
             child,
             stopping: false,
             stop_started: None,
@@ -219,6 +223,9 @@ impl Job {
         self.memory_refused = problem.is_none()
             && !self.interrupted()
             && memory_refusal(&self.action, outcome, &self.log_tail(1000));
+        self.geography_gap = problem.is_none()
+            && !self.interrupted()
+            && geography_gap(outcome, &self.log_tail(1000));
         if let Some(problem) = problem {
             let mut message = if self.stopping {
                 format!("Stopped owned process tree (OS exit {code}). {problem}. Partial outputs remain; only an already durable checkpoint can be resumed.")
@@ -351,6 +358,13 @@ fn configuration_recovery_path(directory: &Path) -> Option<PathBuf> {
     let path = path.canonicalize().ok()?;
     let owned = directory.canonicalize().ok()?.join("configuration-recovery");
     path.starts_with(owned).then_some(path)
+}
+
+/// Recognize the geography boundary `gpuwm check` draws after an emission (2.9.2): exit 6
+/// with its BLOCKER line means the configuration was written and only the datasets it reads
+/// are not staged in WPS_GEOG.  Any other failure, or a harder memory verdict, is not this.
+pub fn geography_gap(code: i32, log: &str) -> bool {
+    code == 6 && log.lines().any(|line| line.contains("geography BLOCKER (exit 6"))
 }
 
 /// Recognize the existing CLI admission boundary, not an arbitrary occurrence

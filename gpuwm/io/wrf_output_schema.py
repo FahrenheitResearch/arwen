@@ -120,6 +120,9 @@ MYNN_PBL_OUTPUT_FIELDS: dict[str, WrfOutputField] = {
         'Length scale from PBL',
         'm',
         "Registry.EM_COMMON:1232", wrf_history=True),
+    "tke_pbl": WrfOutputField(
+        "TKE_PBL", "f4", "Z", "TKE from PBL", "m2 s-2",
+        "Registry.EM_COMMON:1231", wrf_history=True),
     "sh3d": WrfOutputField(
         "SH3D", "f4", "",
         'Stability function for heat',
@@ -808,7 +811,7 @@ PHYSICS_SELECTOR_GLOBALS: tuple[WrfSelectorGlobal, ...] = (
     WrfSelectorGlobal("SF_SURFACE_MOSAIC", "Registry.EM_COMMON:2532",
                       "config", "sf_surface_mosaic"),
     WrfSelectorGlobal("SF_OCEAN_PHYSICS", "Registry.EM_COMMON:2614",
-                      "unimplemented"),
+                      "config", "sf_ocean_physics"),
     WrfSelectorGlobal("BL_PBL_PHYSICS", "Registry.EM_COMMON:2469",
                       "config", "bl_pbl_physics"),
     WrfSelectorGlobal("CU_PHYSICS", "Registry.EM_COMMON:2488",
@@ -822,7 +825,138 @@ PHYSICS_SELECTOR_GLOBALS: tuple[WrfSelectorGlobal, ...] = (
 #: The three inventories belong to three different selectors, so a key in two
 #: of them would mean two schemes disagreeing about one array's identity; the
 #: merge refuses that rather than letting dict order decide.
+OCEAN_OUTPUT_FIELDS = {
+    'tml': WrfOutputField('TML', "f4", "", 'OCEAN MIXED-LAYER TEMPERATURE', 'K', "Registry.EM_COMMON:2107", wrf_history=True),
+    't0ml': WrfOutputField('T0ML', "f4", "", 'INITIAL OCEAN MIXED-LAYER TEMPERATURE', 'K', "Registry.EM_COMMON:2108", wrf_history=True),
+    'hml': WrfOutputField('HML', "f4", "", 'OCEAN MIXED-LAYER DEPTH', 'm', "Registry.EM_COMMON:2109", wrf_history=True),
+    'h0ml': WrfOutputField('H0ML', "f4", "", 'INITIAL OCEAN MIXED-LAYER DEPTH', 'm', "Registry.EM_COMMON:2110", wrf_history=True),
+    'huml': WrfOutputField('HUML', "f4", "", 'OCEAN MIXED-LAYER DEPTH * U-CURRENT', ' m2s-1 ', "Registry.EM_COMMON:2111", wrf_history=True),
+    'hvml': WrfOutputField('HVML', "f4", "", 'OCEAN MIXED-LAYER DEPTH * V-CURRENT', ' m2s-1 ', "Registry.EM_COMMON:2112", wrf_history=True),
+    'tmoml': WrfOutputField('TMOML', "f4", "", 'OCEAN LAYER MEAN TEMPERATURE   ', 'K', "Registry.EM_COMMON:2113", wrf_history=True),
+}
 SCHEME_OUTPUT_FIELDS: dict[str, WrfOutputField] = {}
+from gpuwm.io.wrf_input_history_schema import (WRF_INPUT_HISTORY_ROWS,
+                                              WRF_INITIALIZED_HISTORY_ROWS)
+WRF_INPUT_ECHO_OUTPUT_FIELDS = {
+    name: WrfOutputField(name, row["dtype"], row["stagger"], row["description"],
+                         row["units"], row["registry"], wrf_history=True)
+    for name, row in (WRF_INPUT_HISTORY_ROWS | WRF_INITIALIZED_HISTORY_ROWS).items()
+}
+CUMULUS_RATE_OUTPUT_FIELDS = {}
+for _offset, (_key, _description, _units) in enumerate((
+        ("rucuten", "X WIND", "m s-2"), ("rvcuten", "Y WIND", "m s-2"),
+        ("rthcuten", "THETA", "K s-1"), ("rqvcuten", "Q_V", "kg kg-1 s-1"),
+        ("rqrcuten", "Q_R", "kg kg-1 s-1"), ("rqccuten", "Q_C", "kg kg-1 s-1"),
+        ("rqscuten", "Q_S", "kg kg-1 s-1"), ("rqicuten", "Q_I", "kg kg-1 s-1"))):
+    CUMULUS_RATE_OUTPUT_FIELDS[_key] = WrfOutputField(
+        _key.upper(), "f4", "", _description + " TENDENCY DUE TO CUMULUS PARAMETERIZATION",
+        _units, f"Registry.EM_COMMON:{1565 + _offset}", wrf_history=False)
+RADIATION_BOUNDARY_OUTPUT_FIELDS = {}
+for _side,_wave,_first in (("sw","SHORTWAVE",1813),("lw","LONGWAVE",1825)):
+    for _offset,(_suffix,_direction,_edge) in enumerate((
+            ("upt","UPWELLING","TOP"),("uptc","UPWELLING CLEAR SKY","TOP"),
+            ("dnt","DOWNWELLING","TOP"),("dntc","DOWNWELLING CLEAR SKY","TOP"),
+            ("upb","UPWELLING","BOTTOM"),("upbc","UPWELLING CLEAR SKY","BOTTOM"),
+            ("dnb","DOWNWELLING","BOTTOM"),("dnbc","DOWNWELLING CLEAR SKY","BOTTOM"))):
+        _key=_side+_suffix
+        _line=_first+_offset+_offset//2
+        RADIATION_BOUNDARY_OUTPUT_FIELDS[_key]=WrfOutputField(
+            _key.upper(),"f4","",f"INSTANTANEOUS {_direction} {_wave} FLUX AT {_edge}",
+            "W m-2",f"Registry.EM_COMMON:{_line}",wrf_history=True)
+        _acline=(1781 if _side=="sw" else 1789)+_offset
+        RADIATION_BOUNDARY_OUTPUT_FIELDS["ac"+_key]=WrfOutputField(
+            "AC"+_key.upper(),"f4","",f"ACCUMULATED {_direction} {_wave} FLUX AT {_edge}",
+            "J m-2",f"Registry.EM_COMMON:{_acline}",wrf_history=True)
+
+PHYSICS_PRESSURE_OUTPUT_FIELDS = {
+    "p_hyd": WrfOutputField(
+        "P_HYD", "f4", "", "hydrostatic pressure", "Pa",
+        "Registry.EM_COMMON:376", wrf_history=True),
+}
+SURFACE_ENERGY_OUTPUT_FIELDS = {
+    "achfx": WrfOutputField("ACHFX", "f4", "",
+        "ACCUMULATED UPWARD HEAT FLUX AT THE SURFACE", "J m-2",
+        "Registry.EM_COMMON:1964", wrf_history=True),
+    "aclhf": WrfOutputField("ACLHF", "f4", "",
+        "ACCUMULATED UPWARD LATENT HEAT FLUX AT THE SURFACE", "J m-2",
+        "Registry.EM_COMMON:1967", wrf_history=True),
+    "acgrdflx": WrfOutputField("ACGRDFLX", "f4", "",
+        "ACCUMULATED GROUND HEAT FLUX", "J m-2",
+        "Registry.EM_COMMON:862", wrf_history=True),
+}
+PBL_RATE_OUTPUT_FIELDS = {
+    "rublten": WrfOutputField("RUBLTEN","f4","",
+        "X WIND TENDENCY DUE TO PBL PARAMETERIZATION","m s-2","Registry.EM_COMMON:1855",False),
+    "rvblten": WrfOutputField("RVBLTEN","f4","",
+        "Y WIND TENDENCY DUE TO PBL PARAMETERIZATION","m s-2","Registry.EM_COMMON:1856",False),
+    "rthblten": WrfOutputField("RTHBLTEN","f4","",
+        "THETA TENDENCY DUE TO PBL PARAMETERIZATION","K s-1","Registry.EM_COMMON:1857",False),
+    "rqvblten": WrfOutputField("RQVBLTEN","f4","",
+        "Q_V TENDENCY DUE TO PBL PARAMETERIZATION","kg kg-1 s-1","Registry.EM_COMMON:1858",False),
+    "rqcblten": WrfOutputField("RQCBLTEN","f4","",
+        "Q_C TENDENCY DUE TO PBL PARAMETERIZATION","kg kg-1 s-1","Registry.EM_COMMON:1859",False),
+    "rqiblten": WrfOutputField("RQIBLTEN","f4","",
+        "Q_I TENDENCY DUE TO PBL PARAMETERIZATION","kg kg-1 s-1","Registry.EM_COMMON:1860",False),
+}
+SCM_FORCING_OUTPUT_FIELDS = {}
+for _offset, _stem in enumerate(("hfx","lh","tsk")):
+    _label={"hfx":"sensible heat flux","lh":"latent heat flux",
+            "tsk":"skin temperature"}[_stem]
+    for _tendency in (False,True):
+        _key=_stem+"_force"+("_tend" if _tendency else "")
+        SCM_FORCING_OUTPUT_FIELDS[_key]=WrfOutputField(
+            _key.upper(),"f4","","SCM ideal surface "+_label+(" tendency" if _tendency else ""),
+            "W m-2 s-1" if _tendency else "W m-2",
+            f"Registry.EM_COMMON:{278+_offset+(3 if _tendency else 0)}",True)
+INACTIVE_DIAGNOSTIC_OUTPUT_FIELDS = {
+    "sstsk": WrfOutputField("SSTSK","f4","","SKIN SEA SURFACE TEMPERATURE","K",
+                             "Registry.EM_COMMON:880",True),
+    "refd_max": WrfOutputField("REFD_MAX","f4","","MAX DERIVED RADAR REFL","dbZ",
+                                "Registry.EM_COMMON:2082",True),
+}
+NOAH_OUTPUT_FIELDS = {
+    "smcrel": WrfOutputField(
+        "SMCREL", "f4", "Z", "RELATIVE SOIL MOISTURE", "",
+        "Registry.EM_COMMON:841", wrf_history=True),
+    "sfcrunoff": WrfOutputField(
+        "SFROFF", "f4", "", "SURFACE RUNOFF", "mm",
+        "Registry.EM_COMMON:855", wrf_history=True),
+    "udrunoff": WrfOutputField(
+        "UDROFF", "f4", "", "UNDERGROUND RUNOFF", "mm",
+        "Registry.EM_COMMON:856", wrf_history=True),
+    "acsnom": WrfOutputField(
+        "ACSNOM", "f4", "", "ACCUMULATED MELTED SNOW", "kg m-2",
+        "Registry.EM_COMMON:867", wrf_history=True),
+    "noahres": WrfOutputField(
+        "NOAHRES", "f4", "", "RESIDUAL OF THE NOAH SURFACE ENERGY BUDGET", "W m{-2}",
+        "Registry.EM_COMMON:1851", wrf_history=True),
+}
+CARRIED_SURFACE_OUTPUT_FIELDS = {
+    "sst": WrfOutputField(
+        "SST", "f4", "", "SEA SURFACE TEMPERATURE", "K",
+        "Registry.EM:15", wrf_history=True),
+    "xicem": WrfOutputField(
+        "XICEM", "f4", "", "SEA ICE FLAG (PREVIOUS STEP)", "",
+        "Registry.EM_COMMON:844", wrf_history=True),
+    "coszen": WrfOutputField(
+        "COSZEN", "f4", "", "COS of SOLAR ZENITH ANGLE", "dimensionless",
+        "Registry.EM_COMMON:997", wrf_history=True),
+    "lai": WrfOutputField(
+        "LAI", "f4", "", "LEAF AREA INDEX", "m-2/m-2",
+        "Registry.EM_COMMON:1022", wrf_history=True),
+    "albedo": WrfOutputField(
+        "ALBEDO", "f4", "", "ALBEDO", "",
+        "Registry.EM_COMMON:1845", wrf_history=True),
+    "albbck": WrfOutputField(
+        "ALBBCK", "f4", "", "BACKGROUND ALBEDO", "",
+        "Registry.EM_COMMON:1847", wrf_history=True),
+    "emiss": WrfOutputField(
+        "EMISS", "f4", "", "SURFACE EMISSIVITY", "",
+        "Registry.EM_COMMON:1849", wrf_history=True),
+    "xland": WrfOutputField(
+        "XLAND", "f4", "", "LAND MASK (1 FOR LAND, 2 FOR WATER)", "",
+        "Registry.EM_COMMON:1946", wrf_history=True),
+}
 SOLAR_ALBEDO_OUTPUT_FIELDS = {
     "albsol": WrfOutputField(
         "ALBSOL", "f4", "", "albedo corrected for solar angle", "",
@@ -831,8 +965,16 @@ SOLAR_ALBEDO_OUTPUT_FIELDS = {
         "ALBBCKSOL", "f4", "", "BACKGROUND ALBEDO corrected for solar angle", "",
         "Registry.EM_COMMON:1587 (HRRR v4.1.21)", wrf_history=True),
 }
-for _group in (MYNN_PBL_OUTPUT_FIELDS, NOAHMP_OUTPUT_FIELDS,
-               RUC_OUTPUT_FIELDS, SOLAR_ALBEDO_OUTPUT_FIELDS):
+for _group in (CARRIED_SURFACE_OUTPUT_FIELDS, NOAH_OUTPUT_FIELDS, RADIATION_BOUNDARY_OUTPUT_FIELDS,
+               CUMULUS_RATE_OUTPUT_FIELDS,
+               PHYSICS_PRESSURE_OUTPUT_FIELDS,
+               SURFACE_ENERGY_OUTPUT_FIELDS,
+               PBL_RATE_OUTPUT_FIELDS,
+               SCM_FORCING_OUTPUT_FIELDS,
+               INACTIVE_DIAGNOSTIC_OUTPUT_FIELDS,
+               MYNN_PBL_OUTPUT_FIELDS, NOAHMP_OUTPUT_FIELDS,
+               RUC_OUTPUT_FIELDS, SOLAR_ALBEDO_OUTPUT_FIELDS,
+               OCEAN_OUTPUT_FIELDS):
     for _key, _field in _group.items():
         _clash = SCHEME_OUTPUT_FIELDS.get(_key)
         if _clash is not None and _clash != _field:
@@ -904,6 +1046,7 @@ SFIRE_OUTPUT_FIELDS = {
     for name, row in SFIRE_REGISTRY_FIELDS.items()
 }
 for _group in (OUTPUT_FIELDS_BY_NETCDF_NAME, THOMPSON_AEROSOL_OUTPUT_FIELDS,
+               WRF_INPUT_ECHO_OUTPUT_FIELDS,
                SURFACE_IDENTITY_OUTPUT_FIELDS, SFIRE_OUTPUT_FIELDS):
     for _key, _field in _group.items():
         _clash = HISTORY_FIELDS_BY_NETCDF_NAME.get(_field.netcdf_name)
@@ -1049,6 +1192,11 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     'TSWUP': ('TOA SW upwelling flux', 'W m-2'),
     'SSWDN': ('Surface SW downwelling flux', 'W m-2'),
     'SSWUP': ('Surface SW upwelling flux', 'W m-2'),
+    "RTHRATEN": ("THETA TENDENCY DUE TO RADIATION", "K s-1"),
+    "SR": ("fraction of frozen precipitation", ""),
+    "THM": ("perturbation dry potential temperature", "K"),
+    "PC": ("perturbation dry air mass in column", "Pa"),
+    "O3_GFS_DU": ("Total ozone from GFS", "Dobson Units"),
     # Registry.EM_COMMON:1699 (``ikj``, ``irh``), verbatim: mass grid, no
     # stagger, real, unitless.  Written where a radiation scheme that
     # computes a cloud fraction runs; see RADIATION_CLDFRA_ATTRIBUTES.
@@ -1159,6 +1307,57 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     "P_TOP": ("PRESSURE TOP OF THE MODEL", "Pa"),
     "ZNU": ("eta values on half (mass) levels", ""),
     "ZNW": ("eta values on full (w) levels", ""),
+    # Static grid, coordinate and surface words wrf.exe writes to every
+    # history frame (WRF v4.6.1 wrfout attributes, verbatim).  The WRF-file
+    # doors write the input file's own words for the static rows
+    # (gpuwm.io.history_layout.WRF_FILE_STATIC_HISTORY_FIELDS); XLAND and
+    # LAKEMASK are the live surface masks.
+    "ZS": ('DEPTHS OF CENTERS OF SOIL LAYERS', 'm'),
+    "DZS": ('THICKNESSES OF SOIL LAYERS', 'm'),
+    "FNM": ('upper weight for vertical stretching', ''),
+    "FNP": ('lower weight for vertical stretching', ''),
+    "RDNW": ('inverse d(eta) values between full (w) levels', ''),
+    "RDN": ('inverse d(eta) values between half (mass) levels', ''),
+    "DNW": ('d(eta) values between full (w) levels', ''),
+    "DN": ('d(eta) values between half (mass) levels', ''),
+    "CFN": ('extrapolation constant', ''),
+    "CFN1": ('extrapolation constant', ''),
+    "CF1": ('2nd order extrapolation constant', ''),
+    "CF2": ('2nd order extrapolation constant', ''),
+    "CF3": ('2nd order extrapolation constant', ''),
+    "C1H": ('half levels, c1h = d bf / d eta, using znw', 'Dimensionless'),
+    "C2H": ('half levels, c2h = (1-c1h)*(p0-pt)', 'Pa'),
+    "C1F": ('full levels, c1f = d bf / d eta, using znu', 'Dimensionless'),
+    "C2F": ('full levels, c2f = (1-c1f)*(p0-pt)', 'Pa'),
+    "C3H": ('half levels, c3h = bh', 'Dimensionless'),
+    "C4H": ('half levels, c4h = (eta-bh)*(p0-pt), using znu', 'Pa'),
+    "C3F": ('full levels, c3f = bf', 'Dimensionless'),
+    "C4F": ('full levels, c4f = (eta-bf)*(p0-pt), using znw', 'Pa'),
+    "RDX": ('INVERSE X GRID LENGTH', 'm-1'),
+    "RDY": ('INVERSE Y GRID LENGTH', 'm-1'),
+    "RESM": ('TIME WEIGHT CONSTANT FOR SMALL STEPS', ''),
+    "ZETATOP": ('ZETA AT MODEL TOP', ''),
+    "T00": ('BASE STATE TEMPERATURE', 'K'),
+    "P00": ('BASE STATE PRESSURE', 'Pa'),
+    "TLP": ('BASE STATE LAPSE RATE', ''),
+    "TISO": ('TEMP AT WHICH THE BASE T TURNS CONST', 'K'),
+    "TLP_STRAT": ('BASE STATE LAPSE RATE (DT/D(LN(P)) IN STRATOSPHERE', 'K'),
+    "P_STRAT": ('BASE STATE PRESSURE AT BOTTOM OF STRATOSPHERE', 'Pa'),
+    "MAPFAC_MX": ('Map scale factor on mass grid, x direction', ''),
+    "MAPFAC_MY": ('Map scale factor on mass grid, y direction', ''),
+    "MAPFAC_UX": ('Map scale factor on u-grid, x direction', ''),
+    "MAPFAC_UY": ('Map scale factor on u-grid, y direction', ''),
+    "MAPFAC_VX": ('Map scale factor on v-grid, x direction', ''),
+    "MAPFAC_VY": ('Map scale factor on v-grid, y direction', ''),
+    "MF_VX_INV": ('Inverse map scale factor on v-grid, x direction', ''),
+    "CLAT": ('COMPUTATIONAL GRID LATITUDE, SOUTH IS NEGATIVE', 'degree_north'),
+    "VAR": ('STANDARD DEVIATION OF SUBGRID-SCALE OROGRAPHY', 'm'),
+    "VAR_SSO": ('variance of subgrid-scale orography', 'm2'),
+    "SHDMAX": ('ANNUAL MAX VEG FRACTION', ''),
+    "SHDMIN": ('ANNUAL MIN VEG FRACTION', ''),
+    "PCB": ('base state dry air mass in column', 'Pa'),
+    "XLAND": ('LAND MASK (1 FOR LAND, 2 FOR WATER)', ''),
+    "LAKEMASK": ('LAKE MASK (1 FOR LAKE, 0 FOR NON-LAKE)', ''),
 }
 
 

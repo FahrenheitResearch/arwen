@@ -7,28 +7,19 @@ gpuwm, and its initial conditions, product maps, soundings and scores are
 drawn by gpuwm's Rust tools. So a gpuwm-hex release is always paired with a
 gpuwm release.
 
-| gpuwm-hex | needs gpuwm | why |
-|---|---|---|
-| 0.4.0 | 2.9.0 | the generic column-physics entry and the renderer pieces below exist from 2.9.0 |
-| 0.3.3 | 2.8.7 | its sixteen seam files are pinned to 2.8.7's bytes |
+The gpuwm-hex release on PyPI is 0.3.3. Its wheel declares `gpuwm>=2.8.0,<2.8.1`, so
+`pip install gpuwm-hex` in this environment replaces this gpuwm with 2.8.0 and it ships no
+runner for `gpuwm preset`. Keep gpuwm-hex 0.3.3 in its own environment.
 
-## Install
+`gpuwm preset list` and `gpuwm preset check` count the installed gpuwm-hex: a runner that will
+not import, or a release outside the preset's declared range, is a blocker with the install
+command beside it, and `gpuwm preset prepare` and `gpuwm preset run` refuse with the same words
+before any card is touched.
 
-```sh
-pip install "gpuwm-hex==0.4.0"     # pip installs the gpuwm it declares
-gpuwm fetch-bridges                  # the Rust tools both packages drive
-gpuwm-hex doctor                     # what this install can reach, and the command for each gap
-```
-
-Then follow the gpuwm-hex user manual (`docs/manual/index.md` in the
-[gpuwm-hex repository](https://github.com/FahrenheitResearch/gpuwm-hex) and
-its source distribution). Its chapter 10 lists what 0.4.0 adds.
-
-## What gpuwm 2.9.0 provides to gpuwm-hex
+## What gpuwm provides to gpuwm-hex
 
 - **Physics seam.** `gpuwm.core.mpas_column_suite.run_mpas_column_physics`
-  runs any registered scheme selection on MPAS columns; hex's suites and its
-  generic arbitrary-physics path call it.
+  runs any registered scheme selection on MPAS columns.
 - **Variable-resolution convection.** New Tiedtke uses each cell's own grid
   spacing, so it can run across a mesh whose cells range from 60 to 3 km.
 - **Physics fixes hex relied on.** Kain-Fritsch accumulated convective rain no
@@ -40,27 +31,18 @@ its source distribution). Its chapter 10 lists what 0.4.0 adds.
   bytes.
 - **Products.** `rw_mpas_convert --remap product` (interpolated state,
   area-conservative accumulated precipitation, nearest categories, with a
-  precipitation budget line per frame) and `--jobs N`, used by
-  `gpuwm-hex products`, and the `global-mesh` and `region:NAME` render
+  precipitation budget line per frame) and `--jobs N`, and the `global-mesh` and `region:NAME` render
   windows with the `GPUWM_GRID_LABEL` source label that hex's product views
   ask for.
 - **Soundings and meteograms.** `rw_hex_points` draws them at named points.
   It ships in the platform wheels and the bridge bundle (`gpuwm fetch-bridges`
   installs it), and `gpuwm doctor` checks it. To use another build, point the
   hex door at it with `$GPUWM_HEX_RW_HEX_POINTS`.
-- **RRFS v2 on the hex dycore.** `gpuwm preset run rrfs-v2-hex-tempo` finds
-  its runner and preparation in the installed gpuwm-hex, with no source
-  checkout, and `rw_mpas_init` writes the nine-level RUC soil and the aerosol
-  species the preset's physics reads, from public GFS (`gpuwm preset prepare`,
-  then `gpuwm preset run rrfs-v2-hex-tempo`). A one-card 12 km 6 h forecast
-  prepared this way ran and was scored against observations.
 
 ## What does not work together yet
 
 - **WOOF point runs on hex** (a regional point forecast handing off to a hex
   fine core) are refused by name: the projected-intermediate producer they need
   is not qualified.
-- **gpuwm-hex 0.4.0 on gpuwm 2.8.9**: not supported. 2.8.9 lacks the column
-  physics entry and the fixes above.
 - A suite (`gpuwm suite`) row that runs hex plans and validates; running it
   unattended needs the same `--bindings` document as any other row.

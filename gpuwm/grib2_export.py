@@ -56,6 +56,25 @@ class Binary(ml_export.Binary):
 BINARY = Binary()
 
 
+def probe_post_device(path: Path, *, timeout: float = 120) -> dict | None:
+    """``rw_grib2export --probe-post-device``: does the first card open
+    with the GPU post kernels?  ``None`` when this build has no probe (an
+    exporter from before it) or the probe could not run.  It opens a CUDA
+    context, so callers honour ``GPUWM_NO_LOCAL_GPU`` first."""
+    try:
+        result = subprocess.run([str(path), "--probe-post-device"], capture_output=True,
+                                text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def register_cli(sub) -> None:
     parser = sub.add_parser("export-grib2", help="write native surface and pressure-level GRIB2 files",
                             description="Export every domain and time in history files, a run folder, gzip files or a history ZIP. Array processing and packing run in Rust.")
@@ -170,6 +189,8 @@ def invoke(exe: Path, request: dict, *, as_json=False, stream=None,
                     elif event.get("event") == "frame":
                         devices = ", ".join(f"{k} {v}" for k, v in sorted((event.get("devices") or {}).items()))
                         print(f"{event['domain']} {event['valid']}: {event['seconds']:.2f} s ({devices})", file=stream, flush=True)
+                    elif event.get("event") == "warning":
+                        print(f"export-grib2: {event.get('message')}", file=sys.stderr, flush=True)
                     elif event.get("event") == "error":
                         print(f"export-grib2 failed: {event['message']}", file=sys.stderr)
                 status = process.wait()

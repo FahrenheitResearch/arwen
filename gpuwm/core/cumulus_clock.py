@@ -98,26 +98,34 @@ _ADVANCE = None
 _CLEAR = None
 
 
+def _advance_kernel():
+    import cupy as cp
+    from gpuwm.certify.kernel_manifest import record_module
+    from gpuwm.core.kernels import _compile_observed
+
+    advance = cp.RawModule(code=_ADVANCE_SOURCE, options=())
+    _compile_observed(advance, "gpuwm.core.cumulus_clock:advance")
+    record_module("gpuwm.core.cumulus_clock:advance",
+                  source=_ADVANCE_SOURCE, options=(), module=advance)
+    return advance.get_function("cumulus_clock_advance")
+
+
+def _clear_kernel():
+    import cupy as cp
+    from gpuwm.certify.kernel_manifest import record_module
+    from gpuwm.core.kernels import _compile_observed
+
+    clear = cp.RawModule(code=_CLEAR_SOURCE, options=())
+    _compile_observed(clear, "gpuwm.core.cumulus_clock:clear")
+    record_module("gpuwm.core.cumulus_clock:clear",
+                  source=_CLEAR_SOURCE, options=(), module=clear)
+    return clear.get_function("cumulus_clock_clear")
+
+
 def _kernels():
     global _ADVANCE, _CLEAR
     if _ADVANCE is None:
-        import cupy as cp
-        from gpuwm.certify.kernel_manifest import record_module
-        from gpuwm.core.kernels import _compile_observed
-
-        # Forecast translation units, so the kernel manifest records them
-        # (tests/test_kernel_manifest.py SITE_FILES): RawModules, the
-        # compile a RawKernel of the same source and options makes.
-        advance = cp.RawModule(code=_ADVANCE_SOURCE, options=())
-        _compile_observed(advance, "gpuwm.core.cumulus_clock:advance")
-        record_module("gpuwm.core.cumulus_clock:advance",
-                      source=_ADVANCE_SOURCE, options=(), module=advance)
-        clear = cp.RawModule(code=_CLEAR_SOURCE, options=())
-        _compile_observed(clear, "gpuwm.core.cumulus_clock:clear")
-        record_module("gpuwm.core.cumulus_clock:clear",
-                      source=_CLEAR_SOURCE, options=(), module=clear)
-        _ADVANCE = advance.get_function("cumulus_clock_advance")
-        _CLEAR = clear.get_function("cumulus_clock_clear")
+        _ADVANCE, _CLEAR = _advance_kernel(), _clear_kernel()
     return _ADVANCE, _CLEAR
 
 

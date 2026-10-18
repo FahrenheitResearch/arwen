@@ -245,8 +245,8 @@ engine that does all three existed and was reachable only from
 **Disposition (2026-08-31).** This leg was written and proven against the
 MPAS port as a *frozen checkout* (`lane/mesh-binding@12fe6a3`), reached
 through `--port-root`. The port has since shipped standalone as the
-`gpuwm-hex` package on PyPI, which does not pin gpuwm and does not need
-the import-guard dance below. The leg lands as proven: it still runs
+`gpuwm-hex` package on PyPI, which declares the gpuwm release range it pairs
+with and does not need the import-guard dance below. The leg lands as proven: it still runs
 against a frozen port checkout, and every refusal on this path names that
 checkout. Teaching the worker to drive an installed `gpuwm-hex` instead
 of a checkout is a named follow-up (the process boundary, the anchor

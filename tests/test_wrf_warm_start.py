@@ -463,6 +463,55 @@ def test_kain_fritsch_keeps_its_held_rain():
         assert wrfrst.scratch_restore_plan(name, 1) == ("fill", source)
 
 
+def test_correct_mode_settled_cloud_total_starts_at_the_restart():
+    """2.9.0 refused every default (correct-mode) Thompson warm start from a
+    wrf.exe restart, NCAR's benchmark restart leg among them, because WRF
+    keeps no settled-cloud total to fill CLOUDNC from."""
+    for name in ("mp_cloudnc", "mp_cloudncv"):
+        plan = wrfrst.scratch_restore_plan(name, 6)
+        assert plan[0] == "cold" and plan[1] == 0.0, plan
+
+
+#: The carriers NCAR's documented benchmark warm start named when it exited 2
+#: in apply_warm_start_physics (RULING-8, 2026-10-17).
+_EXACT_CHAIN_ROWS = (
+    "acgrdflx", "achfx", "aclhf", "coszen", "p_hyd", "refd_max", "sstsk",
+    "swnorm", "xicem",
+    *(f"{side}{flux}{level}{clear}" for side in ("sw", "lw")
+      for flux in ("up", "dn") for level in ("t", "b") for clear in ("", "c")),
+    *(f"ac{side}{flux}{level}{clear}" for side in ("sw", "lw")
+      for flux in ("up", "dn") for level in ("t", "b") for clear in ("", "c")),
+)
+
+
+def test_exact_chain_history_rows_are_read_from_ncars_restart():
+    """Every such row NCAR's restart carries is read, as wrf.exe reads it."""
+    path = Path(__file__).parent / "data" / "wrfrst" / "ncar-v44-conus12km-variables.txt"
+    names = {line.strip() for line in path.read_text().splitlines()
+             if line.strip() and not line.startswith("#")}
+    for name in _EXACT_CHAIN_ROWS:
+        wrf_name = name.upper()
+        if wrf_name == "REFD_MAX":
+            assert wrf_name not in names  # WRF never restart-writes it
+            continue
+        assert wrf_name in names, wrf_name
+        assert wrfrst.WRFRST_DISPOSITIONS[wrf_name].kind == "read", wrf_name
+        assert wrfrst.fields_restore_plan(name, names) == ("fill", wrf_name)
+
+
+def test_exact_chain_history_rows_take_wrfs_rule_when_the_restart_lacks_them():
+    for name in _EXACT_CHAIN_ROWS:
+        plan = wrfrst.fields_restore_plan(name, ())
+        assert plan is not None, name
+        if name == "p_hyd":
+            assert plan[:2] == ("copy", "state/p")
+        elif name == "xicem":
+            assert plan[:2] == ("copy", "fields/xice")
+        else:
+            assert plan[:2] == ("cold", 0.0), (name, plan)
+    assert wrfrst.fields_restore_plan("not_a_carrier", ()) is None
+
+
 def test_stateful_physics_must_match_the_restart():
     files = {"MP_PHYSICS": 10, "BL_PBL_PHYSICS": 2, "SF_SFCLAY_PHYSICS": 2,
              "SF_SURFACE_PHYSICS": 2, "CU_PHYSICS": 16}

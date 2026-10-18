@@ -146,7 +146,7 @@ def _check_hour(dataset, row, hour):
 #: Remap plans by (row, source grid, window, destination grid, split, bound).
 #: A run ingests one file per hour on one fixed source grid and one model
 #: grid, so the plan is built once and every later hour only applies it;
-#: rebuilding it cost 5 s (3 km) to 13 s (750 m) per hour on node-1.
+#: rebuilding it cost 5 s (3 km) to 13 s (750 m) per hour on test host A.
 _PLAN_CACHE: dict = {}
 _PLAN_CACHE_LIMIT = 4
 

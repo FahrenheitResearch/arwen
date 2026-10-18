@@ -331,7 +331,10 @@ def test_mp28_dispatch_does_not_disturb_the_frozen_mp8_route(monkeypatch):
 # 3b.  The one-time scheme init hook (WRF's microphysics_init).
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("mp", [0, 1, 6, 8, 10, 18])
+# NSSL (18) and WDM6 (16) are not here: the WRF exact chain (2.9.1) gave them
+# WRF's start-of-domain CCN fill (gpuwm.core.microphysics.ccn_start_fill),
+# which reads state.qnn / the CCN carrier and returns its own receipt.
+@pytest.mark.parametrize("mp", [0, 1, 6, 8, 10])
 def test_microphysics_init_is_an_empty_receipt_for_every_other_scheme(mp):
     """Unconditionally callable, so the init path needs no scheme branch.
 
@@ -809,7 +812,7 @@ def test_the_two_netcdf_name_maps_stand_in_the_declared_relation():
         HISTORY_FIELDS_BY_NETCDF_NAME, OUTPUT_FIELDS_BY_NETCDF_NAME,
         PRECIPITATION_OUTPUT_FIELDS, SCHEME_OUTPUT_FIELDS,
         SFIRE_OUTPUT_FIELDS, SURFACE_IDENTITY_OUTPUT_FIELDS,
-        THOMPSON_AEROSOL_OUTPUT_FIELDS)
+        THOMPSON_AEROSOL_OUTPUT_FIELDS, WRF_INPUT_ECHO_OUTPUT_FIELDS)
 
     model_state_groups = {
         "THOMPSON_AEROSOL_OUTPUT_FIELDS": THOMPSON_AEROSOL_OUTPUT_FIELDS,
@@ -817,6 +820,10 @@ def test_the_two_netcdf_name_maps_stand_in_the_declared_relation():
         # The SFIRE Registry rows (gpuwm.io.sfire_schema), a model-state
         # group the schema module declares by name.
         "SFIRE_OUTPUT_FIELDS": SFIRE_OUTPUT_FIELDS,
+        # The WRF input rows wrf.exe repeats in every history frame (static
+        # words, coordinates, the SPP seed arrays), declared by name as
+        # WRF_INPUT_ECHO_OUTPUT_FIELDS (the exact chain, 2.9.1).
+        "WRF_INPUT_ECHO_OUTPUT_FIELDS": WRF_INPUT_ECHO_OUTPUT_FIELDS,
     }
     declared = set().union(*(set(group)
                              for group in model_state_groups.values()))

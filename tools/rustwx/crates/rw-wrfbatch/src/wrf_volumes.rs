@@ -32,7 +32,11 @@ use rustwx_core::checked_volume_elements;
 // (crates/rw-isobaric), so a chart and a training sample read off one
 // history file agree about where a pressure level is.
 use rw_isobaric::{InterfaceStencil, STANDARD_GRAVITY, bracket, isobaric_heights_into, lerp};
+use rayon::prelude::*;
 use rw_store::PressureVolumeInput;
+
+/// Cells per block of the parallel isobaric interpolation.
+const INTERPOLATION_BLOCK_CELLS: usize = 16_384;
 use wrf_core::file::SharedField;
 use wrf_core::{ComputeOpts, VarOutput, WrfFile, getvar};
 
@@ -591,21 +595,34 @@ pub(crate) fn interpolate_field_at_levels(
         ));
     }
     let mut planes = try_init_planes("chart_levels", levels.len(), cells)?;
-    let mut col_p = vec![0.0f64; nz];
-    for c in 0..cells {
-        for k in 0..nz {
-            col_p[k] = pressure_hpa[k * cells + c];
-        }
-        for (li, &lev) in levels.iter().enumerate() {
-            let Some((k, t)) = bracket(&col_p, f64::from(lev)) else {
-                continue;
-            };
-            let (i0, i1) = (k * cells + c, (k + 1) * cells + c);
-            if let Some(value) = lerp(data[i0], data[i1], t) {
-                planes[li][c] = value as f32;
-            }
+    let mut blocks: Vec<Vec<&mut [f32]>> = (0..cells.div_ceil(INTERPOLATION_BLOCK_CELLS))
+        .map(|_| Vec::with_capacity(levels.len()))
+        .collect();
+    for plane in planes.iter_mut() {
+        for (block, slice) in blocks.iter_mut().zip(plane.chunks_mut(INTERPOLATION_BLOCK_CELLS)) {
+            block.push(slice);
         }
     }
+    blocks.into_par_iter().enumerate().for_each(|(block_index, mut block)| {
+        let mut col_p = vec![0.0f64; nz];
+        let first = block_index * INTERPOLATION_BLOCK_CELLS;
+        let count = block.first().map_or(0, |plane| plane.len());
+        for local in 0..count {
+            let c = first + local;
+            for k in 0..nz {
+                col_p[k] = pressure_hpa[k * cells + c];
+            }
+            for (li, &lev) in levels.iter().enumerate() {
+                let Some((k, t)) = bracket(&col_p, f64::from(lev)) else {
+                    continue;
+                };
+                let (i0, i1) = (k * cells + c, (k + 1) * cells + c);
+                if let Some(value) = lerp(data[i0], data[i1], t) {
+                    block[li][local] = value as f32;
+                }
+            }
+        }
+    });
     Ok(pack(levels, planes))
 }
 
@@ -706,49 +723,77 @@ fn interpolate_iso_volumes_with_allocations(
     levels: &[u16],
     mut planes: IsoPlanes,
     surface: SurfaceFallback,
-    mut col_p: Vec<f64>,
+    col_p: Vec<f64>,
     progress: &mut dyn FnMut(String),
 ) -> Result<(Vec<IsoVolume>, SurfaceFallback), String> {
     let mass_heights = match heights {
         ColumnHeights::MassLevels(data) => Some(*data),
         ColumnHeights::Interfaces { .. } => None,
     };
-    let progress_step = (cells / 10).max(1);
-    for c in 0..cells {
-        if c % progress_step == 0 {
-            progress(format!(
-                "interpolating 5 sounding fields to {} isobaric levels — {}%",
-                levels.len(),
-                c * 100 / cells
-            ));
-        }
-        for k in 0..nz {
-            col_p[k] = pressure_hpa[k * cells + c];
-        }
-        for (li, &lev) in levels.iter().enumerate() {
-            let Some((k, t)) = bracket(&col_p, f64::from(lev)) else {
-                continue;
-            };
-            let (i0, i1) = (k * cells + c, (k + 1) * cells + c);
-            if let Some(value) = lerp(temp_k[i0], temp_k[i1], t) {
-                planes.temperature[li][c] = value as f32;
-            }
-            if let Some(value) = lerp(dewpoint_k[i0], dewpoint_k[i1], t) {
-                planes.dewpoint[li][c] = value as f32;
-            }
-            if let Some(value) = lerp(u_ms[i0], u_ms[i1], t) {
-                planes.u_wind[li][c] = value as f32;
-            }
-            if let Some(value) = lerp(v_ms[i0], v_ms[i1], t) {
-                planes.v_wind[li][c] = value as f32;
-            }
-            if let Some(height_m) = mass_heights
-                && let Some(value) = lerp(height_m[i0], height_m[i1], t)
-            {
-                planes.height[li][c] = value as f32;
-            }
+    // Columns are independent: blocks of cells interpolate at once, each
+    // writing only its own slice of every level plane.
+    progress(format!(
+        "interpolating 5 sounding fields to {} isobaric levels — 0%",
+        levels.len()
+    ));
+    let mut blocks: Vec<Vec<[&mut [f32]; 5]>> = (0..cells.div_ceil(INTERPOLATION_BLOCK_CELLS))
+        .map(|_| Vec::with_capacity(levels.len()))
+        .collect();
+    for ((((temperature, dewpoint), u_wind), v_wind), height) in planes
+        .temperature
+        .iter_mut()
+        .zip(planes.dewpoint.iter_mut())
+        .zip(planes.u_wind.iter_mut())
+        .zip(planes.v_wind.iter_mut())
+        .zip(planes.height.iter_mut())
+    {
+        for (block, ((((t, d), u), v), h)) in blocks.iter_mut().zip(
+            temperature
+                .chunks_mut(INTERPOLATION_BLOCK_CELLS)
+                .zip(dewpoint.chunks_mut(INTERPOLATION_BLOCK_CELLS))
+                .zip(u_wind.chunks_mut(INTERPOLATION_BLOCK_CELLS))
+                .zip(v_wind.chunks_mut(INTERPOLATION_BLOCK_CELLS))
+                .zip(height.chunks_mut(INTERPOLATION_BLOCK_CELLS)),
+        ) {
+            block.push([t, d, u, v, h]);
         }
     }
+    let nz_column = col_p.len();
+    blocks.into_par_iter().enumerate().for_each(|(block_index, mut block)| {
+        let mut col_p = vec![0.0f64; nz_column];
+        let first = block_index * INTERPOLATION_BLOCK_CELLS;
+        let count = block.first().map_or(0, |planes| planes[0].len());
+        for local in 0..count {
+            let c = first + local;
+            for k in 0..nz {
+                col_p[k] = pressure_hpa[k * cells + c];
+            }
+            for (li, &lev) in levels.iter().enumerate() {
+                let Some((k, t)) = bracket(&col_p, f64::from(lev)) else {
+                    continue;
+                };
+                let (i0, i1) = (k * cells + c, (k + 1) * cells + c);
+                let [temperature, dewpoint, u_wind, v_wind, height] = &mut block[li];
+                if let Some(value) = lerp(temp_k[i0], temp_k[i1], t) {
+                    temperature[local] = value as f32;
+                }
+                if let Some(value) = lerp(dewpoint_k[i0], dewpoint_k[i1], t) {
+                    dewpoint[local] = value as f32;
+                }
+                if let Some(value) = lerp(u_ms[i0], u_ms[i1], t) {
+                    u_wind[local] = value as f32;
+                }
+                if let Some(value) = lerp(v_ms[i0], v_ms[i1], t) {
+                    v_wind[local] = value as f32;
+                }
+                if let Some(height_m) = mass_heights
+                    && let Some(value) = lerp(height_m[i0], height_m[i1], t)
+                {
+                    height[local] = value as f32;
+                }
+            }
+        }
+    });
     if mass_heights.is_none() {
         fill_interface_heights(pressure_hpa, heights, nz, cells, levels, &mut planes.height)?;
     }

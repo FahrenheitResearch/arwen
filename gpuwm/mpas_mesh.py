@@ -143,9 +143,14 @@ INIT_ABI_MARKER = (
     "rw_mpas_init --met MET --static STATIC.nc --capsule CAPSULE.nc")
 
 #: ``rw_mpas_convert``'s contract: the output schema and the progress
-#: tokens, which is the literal that changes when the tape contract does.
+#: tokens, which is the literal that changes when the tape contract does,
+#: plus the flags callers pass that an older build refuses (``--remap`` and
+#: its REMAP/BUDGET lines, ``--jobs``).  Without them a pre-2.9.0 converter
+#: matched, passed ``gpuwm doctor``, and the gpuwm-hex product stage died
+#: on ``unknown flag --remap``.
 CONVERT_ABI_MARKER = (
-    "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED")
+    "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED"
+    "\tREMAP\tBUDGET\t--remap nearest|product\t--jobs N")
 
 #: ``rw_mpas_lbc``'s contract, its first usage line through the
 #: physics-mode switch.  The crate's literal is four usage lines with
@@ -1029,17 +1034,16 @@ def plan(*, spec: dict, cells: int, workdir: Path) -> dict:
                       "--cells", str(int(cells)), "--dry-run"])
 
 
-#: The two arms of the generator, and what choosing one costs.
+#: The two arms of the generator.
 #:
-#: ``rebuild`` is the DEFAULT and the arm every registered mesh digest was
-#: minted on: the spherical Delaunay is rebuilt from scratch after every
-#: relaxation sweep.  ``incremental`` keeps the facet list and repairs it by
-#: Lawson flips -- the same triangulation, but each cell keeps the neighbour
-#: ring ROTATION it had where a rebuild re-rolls it for about 27 % of cells,
-#: and the grid file records the rotation.  So the fast arm produces a
-#: DIFFERENT FILE from the same request and cannot reproduce a pinned
-#: SHA-256.  It is asked for by name for exactly that reason, and the arm
-#: that ran is stamped into the receipt whenever it is not the default.
+#: ``incremental`` is the binary's DEFAULT (2026-10-16: no
+#: single-threaded stages): the facet list is kept and repaired by Lawson
+#: flips.  ``rebuild`` rebuilds the spherical Delaunay from scratch after
+#: every relaxation sweep, which is slower.  Neighbour rings start at their
+#: smallest neighbour index, so both arms write the same bytes; meshes
+#: registered before 2026-10-16 used the old ring rotation and are not
+#: reproduced byte for byte by either.  The door passes an arm only when one
+#: is asked for.
 TRIANGULATION_ARMS = ("rebuild", "incremental")
 
 
@@ -1064,11 +1068,11 @@ def generate(*, spec: dict, cells: int, out: Path, workdir: Path,
         if triangulation not in TRIANGULATION_ARMS:
             raise MeshRequestError(
                 f"--triangulation {triangulation} is not an arm; it is "
-                "`rebuild` (the default, and the arm every registered mesh "
-                "digest was minted on -- the only one that reproduces one "
-                "byte for byte) or `incremental` (the same triangulation "
-                "kept and repaired by Lawson flips, which is faster and "
-                "writes a different file)")
+                "`incremental` (the default: the triangulation kept and "
+                "repaired by Lawson flips) or `rebuild` (rebuilt every sweep, "
+                "slower); both write the same bytes, and meshes registered "
+                "before 2026-10-16 used the old ring rotation and are not "
+                "reproduced by either")
         arguments += ["--triangulation", triangulation]
     return _run_mesh(arguments, progress=progress)
 
@@ -1281,8 +1285,8 @@ def build_static(*, grid: Path, out: Path, geog: Path | None = None,
 
     The static is MPAS-A v8.4.2's native one by default (2.9.0).
     ``legacy_static`` asks for the pre-2.9.0 stream (82 variables, the
-    with-lakes land use, where a lake cell whose soil is not water stays
-    land), for a consumer that still needs that schema.  It is not the bytes
+    with-lakes land use with its lake class stored as water), for a
+    consumer that still needs that schema.  It is not the bytes
     of a pre-2.9.0 build: 2.9.0's shared static arithmetic applies to it.
     """
 
@@ -1421,13 +1425,9 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--triangulation", choices=TRIANGULATION_ARMS, default=None,
         help="how the Delaunay is kept between relaxation sweeps.  "
-             "rebuild (the default) rebuilds it every sweep and is the arm "
-             "every registered mesh was generated with -- the only one that "
-             "reproduces a pinned SHA-256.  incremental keeps the facets "
-             "and repairs them by Lawson flips: the same triangulation, "
-             "much faster, and a DIFFERENT FILE, because each cell keeps "
-             "the ring rotation a rebuild re-rolls.  For a mesh that has "
-             "never existed")
+             "incremental (the default) keeps the facets and repairs them "
+             "by Lawson flips; rebuild rebuilds it every sweep (slower).  "
+             "Both write the same bytes")
     parser.add_argument(
         "--clobber", action="store_true",
         help="replace an existing --out")

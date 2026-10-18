@@ -54,6 +54,7 @@ from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 import csv
 from dataclasses import dataclass
+import functools
 import importlib.util
 from pathlib import Path
 import struct
@@ -73,6 +74,7 @@ _VALIDATOR = (
 )
 
 
+@functools.cache
 def _load_declarations():
     """Read the inert-argument declarations that live beside the fixture.
 
@@ -80,7 +82,18 @@ def _load_declarations():
     harness, the validator and this module share one source of truth; the
     validator deliberately depends on nothing but the standard library so it
     can run inside ``build_leaves.sh`` under a bare WSL python3.
+
+    Read on first use, not at import: the validator and the fixture live in
+    a source checkout (``tools/``, ``tests/``) that an installed wheel does
+    not carry, and reading them at import made ``import gpuwm.core.
+    noahmp_leaf_mutation`` fail on every pip install (the Windows wheel
+    smoke's import sweep, 2026-10-15).
     """
+    if not _VALIDATOR.is_file():
+        raise FileNotFoundError(
+            f"the Noah-MP leaf mutation study reads its declarations from "
+            f"{_VALIDATOR}, which only a source checkout of gpuwm carries; "
+            f"run it from a clone (python -m gpuwm.core.noahmp_leaf_mutation)")
     spec = importlib.util.spec_from_file_location(
         "_noahmp_leaf_declarations", _VALIDATOR)
     module = importlib.util.module_from_spec(spec)
@@ -92,7 +105,14 @@ def _load_declarations():
     return inert, partial
 
 
-INERT_ARGUMENTS, PARTIAL_ARGUMENTS = _load_declarations()
+def __getattr__(name: str):
+    # INERT_ARGUMENTS and PARTIAL_ARGUMENTS stay module attributes, read on
+    # first access (see _load_declarations).
+    if name == "INERT_ARGUMENTS":
+        return _load_declarations()[0]
+    if name == "PARTIAL_ARGUMENTS":
+        return _load_declarations()[1]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -304,8 +324,10 @@ def summarise(mutants: Sequence[Mutant],
     if not mutants:
         return ()
     leaf = mutants[0].leaf
-    inert = INERT_ARGUMENTS.get(leaf, {}) if inert is None else inert
-    partial = PARTIAL_ARGUMENTS.get(leaf, {}) if partial is None else partial
+    if inert is None:
+        inert = _load_declarations()[0].get(leaf, {})
+    if partial is None:
+        partial = _load_declarations()[1].get(leaf, {})
     grouped: dict[tuple[str, int], list[Mutant]] = defaultdict(list)
     for mutant in mutants:
         grouped[(mutant.role, mutant.slot)].append(mutant)

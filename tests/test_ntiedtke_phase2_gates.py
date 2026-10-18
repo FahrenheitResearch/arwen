@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import re
 import pytest
 
 from gpuwm.core.preflight import (
@@ -448,7 +449,10 @@ def test_the_prepared_cache_identity_needs_no_scheme_entry():
                "urban_water_balance": "wrf_480",
                "urban_ucm_generation": "wrf_471", "urban_treeoption": -1,
                "urban_ttscheme": -1, "urban_fvg": -1.0,
-               "urban_table_dir": ""}
+               "urban_table_dir": "",
+               # 2.9.1: the ocean mixed layer off leaves the identity.
+               "sf_ocean_physics": 0, "oml_hml0": 50.0, "oml_gamma": 0.14,
+               "oml_relaxation_time": 0.0}
     for name, default in neutral.items():
         assert expected_run.pop(name) == default
     # 2.9.0 correct mode (gpuwm/correct_mode.py): a key leaves the document
@@ -667,7 +671,7 @@ def test_the_new_tiedtke_restart_identity_names_this_port():
     assert "wrf461" in identity, (
         "the identity does not name the reference version it was ported "
         "from")
-    assert identity.endswith("-v1"), (
+    assert re.search(r"-v[0-9]+$", identity), (
         "the identity carries no revision suffix, so a change to the "
         "driver seam has no way to invalidate old checkpoints")
 

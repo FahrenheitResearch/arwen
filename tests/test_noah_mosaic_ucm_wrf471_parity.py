@@ -150,3 +150,20 @@ def test_wrfs_dominant_urban_rule_every_output_word():
     assert not result["differences"], result["differences"]
     assert all(v["max_ulp"] == 0 and v["n_nonzero"] == 0 for v in result["table"].values())
     assert {key.split("/")[0] for key in result["table"]} == {"ucm_wrfinit", "ucm_lcz_wrfinit"}
+
+
+#: Families 5 and 6 of run_mosaic_ucm.F90: every urban switch as
+#: urban_param_init reads it from URBPARM(_LCZ).TBL, the set a default run
+#: uses.  The families above force CH_SCHEME 1, AHOPTION 1, ALHOPTION 1 and
+#: IMP_SCHEME 2, so without these the default switch arms (CH_SCHEME 2,
+#: IMP_SCHEME 1, no anthropogenic heat profiles) had no WRF oracle.
+TABLE_FAMILIES = ("ucm_table", "ucm_lcz_table")
+
+
+@requires_gpu
+def test_production_default_switches_every_output_word():
+    result = replay(families=TABLE_FAMILIES)
+    print(json.dumps(result, indent=2))
+    assert not result["differences"], result["differences"]
+    assert all(v["max_ulp"] == 0 and v["n_nonzero"] == 0 for v in result["table"].values())
+    assert {key.split("/")[0] for key in result["table"]} == set(TABLE_FAMILIES)

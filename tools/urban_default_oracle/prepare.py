@@ -23,10 +23,10 @@ def main():
         shutil.copytree(ROOT / "tools" / name, tools / name, dirs_exist_ok=True)
     # The SLUCM scenario patch is relative to the original driver. Only the
     # six added switch rows from stress.patch are needed alongside it.
-    stress = (PATCHES / "slucm-stress.patch").read_text()
-    switches = stress[stress.index("--- a/tools/urban_slucm_regime_oracle/build.sh"):]
+    stress = (PATCHES / "slucm-stress.patch").read_bytes()
+    switches = stress[stress.index(b"--- a/tools/urban_slucm_regime_oracle/build.sh"):]
     subprocess.run(["patch", "-p2", "--batch", "--forward"], input=switches,
-                   text=True, cwd=tools, check=True)
+                   cwd=tools, check=True)
     # Apply the already delivered second-check drivers and build repair.
     for name in ("slucm-subnormal.patch", "bep-extra.patch", "bem-subnormal.patch",
                  "bep-build-pipeline.patch"):

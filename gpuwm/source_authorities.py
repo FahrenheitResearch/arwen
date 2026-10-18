@@ -222,6 +222,18 @@ _PACKAGED_PROFILES = MappingProxyType({
         data_role="twentycrv3_netcdf_recovered_invariant",
         provenance_role="twentycrv3_netcdf_recovered_invariant_provenance",
     ),
+    # A gpuwm-hex run as an ArWen parent: the export door's frames on a
+    # regular lat-lon window (region-latlon: or global-mesh), decoded on
+    # the 55 MPAS model levels.  Terrain is in band (HGT in every frame).
+    "hex-history-netcdf-v1": _profile(
+        "rw-wps-hex-history-netcdf",
+        source_format="netcdf",
+        mapping="8ba9f4cdcaffa6b7119b12e56d1978d34ea6d9ac1849af801e4a2333ef295945",
+        composition="bbd2c5b52f13ee8f1ebfac8a138fd109ae883877d5d6fee3a5684172bec8d875",
+        provenance="d26ec1258b0e874c557b82020bdd0145a83f54a112f36f30d327b073b84d348c",
+        data_role="hex_in_band_surface",
+        provenance_role="hex_in_band_surface_provenance",
+    ),
     # HRRR's public pressure-level product (wrfprs), decoded through the
     # generic mapped route: the Lambert CONUS grid, grid-relative wind
     # rotation and nine-node RUC soil are all TABLE DATA in these three

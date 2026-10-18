@@ -9,5 +9,9 @@ test "$(sha256sum "${src}/chem/chemics_init.F" | cut -d' ' -f1)" = "$pin"
 mkdir -p "$build"
 # Exact range, including its enclosing ENDIF and the inner ENDDO.
 sed -n '1765,1791p' "${src}/chem/chemics_init.F" > "${build}/chemics_init_solar.inc"
-cmp "${build}/chemics_init_solar.inc" "${here}/chemics_init_solar.inc"
+# The pin above is the CRLF form of chemics_init.F (the pinned tree is a CRLF
+# checkout), while the committed include is stored with LF line ends; a byte
+# cmp of the two could never pass.  Compare the text with CRs stripped: the
+# statements must match exactly, line endings do not reach gfortran.
+diff --strip-trailing-cr -q "${build}/chemics_init_solar.inc" "${here}/chemics_init_solar.inc"
 exec bash "${here}/build.sh" "$@"

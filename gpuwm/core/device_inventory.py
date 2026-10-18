@@ -173,7 +173,7 @@ class DeviceLocalMemoryProfile:
 #: ``cudaDeviceGetLimit(cudaLimitStackSize)`` on the run host.
 #:
 #: ``bare_context_bytes`` is deliberately left unset even though this
-#: card's bare context WAS measured (530,579,456 B, weather-node-2,
+#: card's bare context WAS measured (530,579,456 B, test host B,
 #: 2026-08-20).  This profile is what an ABSENT card is priced against,
 #: and the absent-card path may never be more optimistic than the
 #: present-card one -- the 2026-08-03 lesson that retired
@@ -229,6 +229,9 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         "dnw": (nz,), "rdnw": (nz,), "dn": (nz,), "rdn": (nz,),
         "fnp": (nz,), "fnm": (nz,), "znu": (nz,), "znw": (nz + 1,),
     }
+    from gpuwm.wrf_exact import DIAGNOSTICS_ENABLED
+    if DIAGNOSTICS_ENABLED:
+        shapes["p_perturbation"] = m
     if cfg.terrain_opt == 0:
         shapes.update(thb=(nz,), pb=(nz,), alb=(nz,), phb=(nz + 1,),
                       dphb_resid=(nz,))
@@ -391,6 +394,10 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     if cfg.bl_pbl_physics == 5 and cfg.bl_mynn_tkeadvect:
         shapes["qke_adv"] = m
         shapes["qke_adv0"] = m
+    from gpuwm.core.physics_inventory import PBL_ADVECTED_SCALARS
+    for name, _ in PBL_ADVECTED_SCALARS.get(cfg.bl_pbl_physics, ()):
+        shapes[name] = m
+        shapes[name + "0"] = m
     if cfg.km_opt == 2:
         # WRF's two-time-level prognostic TKE (Registry.EM_COMMON:312):
         # the SERIALIZED carrier plus its REBUILT time-t copy.

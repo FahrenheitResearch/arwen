@@ -45,8 +45,29 @@ impl OwnedCarriers {
         }
         let mut tke_source = None;
         if f.variable("TKE_PBL").is_some() {
-            vars.insert("TKE", read("TKE_PBL")?);
-            tke_source = Some("TKE_PBL");
+            let mut tke = read("TKE_PBL")?;
+            let ncell = nx * ny;
+            if tke.len() == ncell * (nz + 1) {
+                // WRF writes TKE_PBL on the full (w) levels, bottom_top_stag,
+                // for MYNN (bl_pbl_physics 5 and 6); group E prices the mass
+                // levels, so each layer takes the mean of its two bounding
+                // interfaces.  Breakage (2.9.2 box door test): `gpuwm
+                // export-grib2` of a 3 km HRRR-recipe run refused "TKE has
+                // 119637840 values, the grid needs 117292000" (1988 x 1180
+                // x 51 against x 50) and wrote nothing.
+                let layers: Vec<f32> = (0..nz)
+                    .flat_map(|k| {
+                        let lower = &tke[k * ncell..(k + 1) * ncell];
+                        let upper = &tke[(k + 1) * ncell..(k + 2) * ncell];
+                        lower.iter().zip(upper).map(|(a, b)| 0.5 * (a + b)).collect::<Vec<f32>>()
+                    })
+                    .collect();
+                tke = layers;
+                tke_source = Some("TKE_PBL (layer mean of the full levels)");
+            } else {
+                tke_source = Some("TKE_PBL");
+            }
+            vars.insert("TKE", tke);
         } else if f.variable("QKE").is_some() {
             let q = read("QKE")?;
             vars.insert("TKE", q.into_iter().map(|x| x * 0.5).collect());

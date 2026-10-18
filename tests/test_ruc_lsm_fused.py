@@ -45,8 +45,8 @@ def _equal(left, right):
     import cupy as cp
     for name in left:
         if isinstance(left[name], cp.ndarray):
-            np.testing.assert_array_equal(cp.asnumpy(left[name]).view(np.uint8),
-                                          cp.asnumpy(right[name]).view(np.uint8),
+            np.testing.assert_array_equal(cp.asnumpy(left[name]).reshape(-1).view(np.uint8),
+                                          cp.asnumpy(right[name]).reshape(-1).view(np.uint8),
                                           err_msg=name)
 
 

@@ -2,6 +2,10 @@
 
 The reference is the unmodified release. Mixed BEP momentum retains the
 previously declared rural drag correction; every other word must match.
+
+The release legs replay the committed references (tests/data/oracles/
+ysu_generations, written by `--fixture record` from the pinned public
+sources); `--fixture verify` rebuilds them and requires the same words.
 """
 from dataclasses import asdict
 from pathlib import Path
@@ -9,6 +13,7 @@ import argparse
 import re
 import hashlib
 import json
+import lzma
 import subprocess
 
 import numpy as np
@@ -76,15 +81,69 @@ def records_after(cols):
     return records
 
 
-def main():
+#: The committed references: every word the unmodified releases wrote on the
+#: corpus, three steps per generation.  `--fixture record` writes them from a
+#: live build, `--fixture verify` rebuilds and compares them, and the default
+#: `--fixture replay` grades the port against them with no Fortran toolchain,
+#: so every GPU leg runs this gate.
+FIXTURE = Path(__file__).resolve().parents[2] / "tests/data/oracles/ysu_generations"
+TAGS = {"wrf_480": "v4.8.0", "wrf_461": "v4.6.1"}
+#: The words each step's grade reads: the primary reference (bounded-patched
+#: on four-level records), the BEP declared-correction reference, and the
+#: traced top-down diagnostics.
+STEP_FILES = ("ysu-wide-wrf.bin", "declared-reference.bin", "trace.txt")
+
+
+def xz_read(path):
+    return lzma.decompress(Path(path).read_bytes())
+
+
+def xz_write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(lzma.compress(data, preset=9 | lzma.PRESET_EXTREME))
+
+
+def live_references(root, tag, work):
+    """Run the pinned unmodified-release oracles on work's inputs."""
+    inputs = work / "ysu-wide-inputs.bin"
+    subprocess.run([str(root / tag / "scalar/oracle"), str(inputs), str(work / "ysu-wide-wrf.bin")], check=True, stdout=subprocess.DEVNULL)
+    trace = subprocess.check_output([str(root / tag / "diagnostics/oracle"), str(inputs), str(work / "trace.bin")], text=True)
+    cols = load_wide_oracle(work)
+    # get_pblh can read the unwritten final TKE word on four-level grids.
+    # Grade those records against the separately declared bounded source.
+    # Every defined record must remain unchanged by diagnostic tracing.
+    ordinary = (work / "ysu-wide-wrf.bin").read_bytes()
+    traced = (work / "trace.bin").read_bytes()
+    subprocess.run([str(root / tag / "bounded/oracle"), str(inputs), str(work / "bounded.bin")], check=True, stdout=subprocess.DEVNULL)
+    bounded = (work / "bounded.bin").read_bytes()
+    patched = bytearray(ordinary)
+    position = 0
+    for c in cols:
+        end = position + 24 + 40 * c.nz
+        if c.nz == 4:
+            patched[position:end] = bounded[position:end]
+        else:
+            assert ordinary[position:end] == traced[position:end], f"tracing changed defined outputs in column {c.index}"
+        position = end
+    (work / "ysu-wide-wrf.bin").write_bytes(patched)
+    subprocess.run([str(root / tag / "bep_corrected/oracle"), str(inputs), str(work / "declared-reference.bin")], check=True, stdout=subprocess.DEVNULL)
+    (work / "trace.txt").write_text(trace)
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(__doc__)
-    parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--version", default="wrf_480", choices=("wrf_480", "wrf_461"))
+    parser.add_argument("--root", type=Path, required=True,
+                        help="work root; for record and verify it also holds columns.bin and the build.sh oracles")
+    parser.add_argument("--version", default="wrf_480", choices=tuple(TAGS))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--plant", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--fixture", choices=("replay", "record", "verify"), default="replay",
+                        help="replay: grade against the committed references; record: write them "
+                             "from the live oracles; verify: rebuild them and require the committed words")
+    parser.add_argument("--fixture-dir", type=Path, default=FIXTURE)
+    args = parser.parse_args(argv)
     root = args.root
-    tag = "v4.8.0" if args.version == "wrf_480" else "v4.6.1"
+    tag = TAGS[args.version]
     if args.plant:
         import gpuwm.core.ysu as launcher
         from gpuwm.core.kernels import module_source, compile_noftz_module
@@ -98,43 +157,53 @@ def main():
         module = compile_noftz_module("ysu_480", source, "ysu-480-planted-cap")
         original = launcher.get_kernel
         launcher.get_kernel = lambda name, function: module.get_function(function) if name == "ysu_480" else original(name, function)
-    summary = {"version": args.version, "plant": args.plant, "steps": [], "pass": True}
+    from gpuwm.wrf_exact import ENABLED
+    summary = {"version": args.version, "plant": args.plant, "fixture": args.fixture,
+               "strict_arithmetic": bool(ENABLED), "steps": [], "pass": True}
     args.out.mkdir(parents=True, exist_ok=True)
-    cols = None  # the previous step's WRF columns; step 0 reads the committed inputs
+    root.mkdir(parents=True, exist_ok=True)
+    fixture = args.fixture_dir
+    columns = (xz_read(fixture / "columns.bin.xz") if args.fixture == "replay"
+               else (root / "columns.bin").read_bytes())
+    if args.fixture == "record":
+        xz_write(fixture / "columns.bin.xz", columns)
+    elif args.fixture == "verify":
+        assert columns == xz_read(fixture / "columns.bin.xz"), "make_columns.py no longer writes the committed corpus"
+    cols = None  # the previous step's WRF columns; step 0 reads the corpus
     for step in range(3):
         work = root / f"{args.version}-step{step}"
         work.mkdir(parents=True, exist_ok=True)
         inputs = work / "ysu-wide-inputs.bin"
         if step == 0:
-            inputs.write_bytes((root / "columns.bin").read_bytes())
+            inputs.write_bytes(columns)
         else:
             write_records(records_after(cols), inputs)
-        subprocess.run([str(root / tag / "scalar/oracle"), str(inputs), str(work / "ysu-wide-wrf.bin")], check=True, stdout=subprocess.DEVNULL)
-        trace = subprocess.check_output([str(root / tag / "diagnostics/oracle"), str(inputs), str(work / "trace.bin")], text=True)
-        cols = load_wide_oracle(work)
-        # get_pblh can read the unwritten final TKE word on four-level grids.
-        # Grade those records against the separately declared bounded source.
-        # Every defined record must remain unchanged by diagnostic tracing.
-        ordinary = (work / "ysu-wide-wrf.bin").read_bytes()
-        traced = (work / "trace.bin").read_bytes()
-        subprocess.run([str(root / tag / "bounded/oracle"), str(inputs), str(work / "bounded.bin")], check=True, stdout=subprocess.DEVNULL)
-        bounded = (work / "bounded.bin").read_bytes()
-        patched = bytearray(ordinary)
-        position = 0
-        declared_columns = []
-        for c in cols:
-            end = position + 24 + 40 * c.nz
-            if c.nz == 4:
-                patched[position:end] = bounded[position:end]
-                declared_columns.append(c.index)
+        committed = fixture / args.version / f"step{step}"
+        input_digest = hashlib.sha256(inputs.read_bytes()).hexdigest()
+        if args.fixture == "replay":
+            want = (committed / "inputs.sha256").read_text().split()[0]
+            assert input_digest == want, \
+                f"step {step} inputs differ from the ones the committed references were written on"
+            for name in STEP_FILES:
+                (work / name).write_bytes(xz_read(committed / f"{name}.xz"))
+        else:
+            live_references(root, tag, work)
+            if args.fixture == "record":
+                committed.mkdir(parents=True, exist_ok=True)
+                (committed / "inputs.sha256").write_text(input_digest + "\n")
+                for name in STEP_FILES:
+                    xz_write(committed / f"{name}.xz", (work / name).read_bytes())
             else:
-                assert ordinary[position:end] == traced[position:end], f"tracing changed defined outputs in column {c.index}"
-            position = end
-        (work / "ysu-wide-wrf.bin").write_bytes(patched)
+                assert input_digest == (committed / "inputs.sha256").read_text().split()[0], \
+                    f"step {step} inputs differ from the committed ones"
+                for name in STEP_FILES:
+                    assert (work / name).read_bytes() == xz_read(committed / f"{name}.xz"), \
+                        f"rebuilt {name} at step {step} differs from the committed reference"
+        trace = (work / "trace.txt").read_text()
         cols = load_wide_oracle(work)
+        declared_columns = [c.index for c in cols if c.nz == 4]
         port = run_port_wide(cols, ysu_version=args.version)
         stats, states, cells = grade(cols, port, step=step)
-        subprocess.run([str(root / tag / "bep_corrected/oracle"), str(inputs), str(work / "declared-reference.bin")], check=True, stdout=subprocess.DEVNULL)
         primary = (work / "ysu-wide-wrf.bin").read_bytes()
         (work / "ysu-wide-wrf.bin").write_bytes((work / "declared-reference.bin").read_bytes())
         audit_cols = load_wide_oracle(work)
@@ -182,7 +251,8 @@ def main():
         summary["steps"].append(result)
         (args.out / f"cells-step{step}.json").write_text(json.dumps(cells, separators=(",", ":")) + "\n")
     (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(json.dumps({"pass": summary["pass"], "version": args.version,
+    print(json.dumps({"pass": summary["pass"], "version": args.version, "fixture": args.fixture,
+                      "strict_arithmetic": bool(ENABLED),
                       "unexplained_words": [s["unexplained_words"] for s in summary["steps"]]}))
     return 0 if summary["pass"] else 1
 

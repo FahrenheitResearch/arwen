@@ -342,7 +342,7 @@ def test_the_frozen_record_exemption_is_real_and_is_narrow():
 
 
 def test_an_unpinned_file_under_configs_frozen_is_still_governed(
-        monkeypatch):
+        monkeypatch, tmp_path):
     """A directory name exempts nothing; a matching byte pin does.
 
     Written against the real predicate with a real file, because the
@@ -353,6 +353,18 @@ def test_an_unpinned_file_under_configs_frozen_is_still_governed(
 
     pinned = ROOT / "configs" / "frozen" / \
         "les_tornado_100m_mayfield_20211210.toml"
+    # Keep the real byte pin and predicate, without exposing a transient
+    # file to simultaneous scans of the shipped tree on other workers.
+    original_bytes = pinned.read_bytes()
+    original_pins = _frozen_record_pins()
+    relative = pinned.relative_to(ROOT)
+    isolated_root = tmp_path / "repo"
+    pinned = isolated_root / relative
+    pinned.parent.mkdir(parents=True)
+    pinned.write_bytes(original_bytes)
+    monkeypatch.setattr(__name__ + ".ROOT", isolated_root)
+    monkeypatch.setattr(__name__ + "._frozen_record_pins", lambda: original_pins)
+    assert _is_frozen_record(pinned)
     intruder = pinned.parent / "not_a_record_probe.toml"
     assert not intruder.exists(), "leftover probe file from a failed run"
     intruder.write_bytes(pinned.read_bytes())

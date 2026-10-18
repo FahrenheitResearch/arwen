@@ -568,7 +568,8 @@ def _hierarchy_catalog(exp, snapshots, *, wps_namelist, geog_root,
                        soil_texture_downscale, water_temperature_policy,
                        static_highres,
                        relative_humidity_convention="era5_mixed",
-                       lake_whole_source_search=False):
+                       lake_whole_source_search=False,
+                       lake_ice_provider=None):
     """The verified static catalog and the children's input catalog.
 
     Returns ``(static_catalog, static_receipt, catalog)``.
@@ -602,6 +603,7 @@ def _hierarchy_catalog(exp, snapshots, *, wps_namelist, geog_root,
             static_highres=static_highres,
             relative_humidity_convention=relative_humidity_convention,
             lake_whole_source_search=bool(lake_whole_source_search),
+            lake_ice_provider=lake_ice_provider,
         )
     return static_catalog, static_receipt, catalog
 
@@ -693,6 +695,7 @@ def initialize_and_export_regular_source_hierarchy(
         soil_texture_downscale: bool = True, static_highres=None,
         relative_humidity_convention: str = "era5_mixed",
         lake_whole_source_search: bool = False,
+        lake_ice_provider=None,
 ) -> RegularSourceHierarchyResult:
     """Feed a prepared GFS/ERA5 root and verified child inputs to the join.
 
@@ -748,7 +751,8 @@ def initialize_and_export_regular_source_hierarchy(
         water_temperature_policy=water_temperature_policy,
         static_highres=static_highres,
         relative_humidity_convention=relative_humidity_convention,
-        lake_whole_source_search=lake_whole_source_search)
+        lake_whole_source_search=lake_whole_source_search,
+        lake_ice_provider=lake_ice_provider)
     root = ParentInitView(
         cfg=exp.root, grid=grids[0], state=state)
     implementation_sha256 = _implementation_sha256()
@@ -899,6 +903,7 @@ def prepare_regular_source_hierarchy_head(
         head_artifacts: Path | None = None,
         relative_humidity_convention: str = "era5_mixed",
         lake_whole_source_search: bool = False,
+        lake_ice_provider=None,
 ) -> RegularSourceHierarchyHead:
     """Bind the tree and prepare every child from the start time.
 
@@ -951,7 +956,8 @@ def prepare_regular_source_hierarchy_head(
         water_temperature_policy=water_temperature_policy,
         static_highres=static_highres,
         relative_humidity_convention=relative_humidity_convention,
-        lake_whole_source_search=lake_whole_source_search)
+        lake_whole_source_search=lake_whole_source_search,
+        lake_ice_provider=lake_ice_provider)
     root = ParentInitView(
         cfg=exp.root, grid=grids[0], state=root_initial_result.state)
     implementation_sha256 = _implementation_sha256()

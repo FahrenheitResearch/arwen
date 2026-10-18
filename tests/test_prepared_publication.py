@@ -538,14 +538,14 @@ def _pin_bundle_only(pins, platform="linux-x86_64"):
 
 
 def test_an_on_demand_artifact_is_pinned_in_the_bundle_and_absent_from_the_wheel(publication, tmp_path):
-    """2.8.9 r1: both platform wheels were over the 100,000,000-byte per-file
-    limit, so three artifacts stay in the bundle and its pins and leave the wheel."""
+    """2.9.1: the 2.9.0 Linux wheel was 96,049,884 bytes of PyPI's 100,000,000
+    per file, so the observation-stream doors stay in the bundle and its pins
+    and leave the wheel; the first door that needs one stages it."""
     wheel, pins = native_wheel_fixture(tmp_path)
     result = publication.check_embedded_natives(wheel, pins, "linux-x86_64", set())
     pins = _pin_bundle_only(pins)
-    with pytest.raises(publication.PublicationError, match="exclusions are retired"):
-        publication.check_embedded_natives(wheel, pins, "linux-x86_64", {"rw_simradar"})
-    assert result == {"platform": "linux-x86_64", "artifacts": 2}
+    excused = publication.check_embedded_natives(wheel, pins, "linux-x86_64", {"rw_simradar"})
+    assert result == excused == {"platform": "linux-x86_64", "artifacts": 2}
 
 
 def test_a_wheel_missing_a_pinned_artifact_is_not_excused_unless_the_source_declares_it(publication, tmp_path):
@@ -557,21 +557,28 @@ def test_a_wheel_missing_a_pinned_artifact_is_not_excused_unless_the_source_decl
 
 def test_an_on_demand_artifact_must_be_pinned_or_fetch_cannot_install_it(publication, tmp_path):
     wheel, pins = native_wheel_fixture(tmp_path)
-    with pytest.raises(publication.PublicationError, match="exclusions are retired"):
+    with pytest.raises(publication.PublicationError, match="not pinned in the bundle"):
         publication.check_embedded_natives(wheel, pins, "linux-x86_64", {"rw_simradar"})
 
 
-def test_a_wheel_exclusion_is_refused(publication, tmp_path):
-    """Every declared artifact now belongs in the wheel."""
+# Replaces test_a_wheel_exclusion_is_refused (45256c630): the six observation-
+# stream doors are on-demand bundle artifacts again, so a wheel exclusion is no
+# longer refused outright; what stays refused is a declaration that disagrees
+# with the wheel, here a wheel-carried artifact declared on demand.
+def test_a_wheel_carrying_an_on_demand_artifact_is_refused(publication, tmp_path):
+    """The declaration and the wheel must agree both ways."""
     wheel, pins = native_wheel_fixture(tmp_path)
-    with pytest.raises(publication.PublicationError, match="exclusions are retired"):
-        publication.check_embedded_natives(wheel, pins, "linux-x86_64", {"netcdf_writer"})
+    carried = pins["platforms"]["linux-x86_64"]["binaries"][0]["artifact"]
+    with pytest.raises(publication.PublicationError, match="wheel-carried part of the proven bundle"):
+        publication.check_embedded_natives(wheel, pins, "linux-x86_64", {carried})
 
 
 def test_the_on_demand_set_is_read_from_the_tagged_declaration(publication):
     from gpuwm import bridge_assets
     repo = Path(__file__).resolve().parents[1]
-    assert publication.on_demand_artifacts(repo) == set()
+    assert publication.on_demand_artifacts(repo) == {"rw_igra2", "rw_amv", "rw_ndbc", "rw_gnssro", "rw_wis2", "rw_prepbufr", "rw_madis",
+                                                    "rw_radar_feeds"} == {
+        a.name for a in bridge_assets.on_demand_artifacts()}
     assert {"rw_simradar", "rw_mlexport", "rw_globe_pack"} <= {a.name for a in bridge_assets.wheel_artifacts()}
 
 
@@ -622,5 +629,42 @@ def test_python_inventory_respects_declared_module_exclusions_without_running_se
 @pytest.mark.parametrize("mutation", ["omitted-runtime-module", "included-development-module"])
 def test_python_inventory_refuses_an_omission_or_excluded_probe(publication, tmp_path, mutation):
     repo, wheel = python_inventory_fixture(tmp_path, mutation)
+    with pytest.raises(publication.PublicationError):
+        publication.check_python_inventory(wheel, repo, "gpuwm")
+
+
+def declaration_only_fixture(tmp_path, declared=True):
+    """A `docs` namespace package whose wheel payload is its package-data, beside a manifest that ships its examples."""
+    repo, wheel = metadata_fixture(tmp_path)
+    with (repo / "pyproject.toml").open("a", encoding="utf-8") as stream:
+        stream.write('\n[tool.setuptools.packages.find]\ninclude = ["gpuwm", "gpuwm.*", "docs"]\nnamespaces = true\n'
+                     '[tool.setuptools.package-data]\ndocs = ["seam.md"]\n')
+    (repo / "setup.py").write_text(
+        'DEVELOPMENT_MODULE_GLOBS: dict[str, tuple[str, ...]] = {}\n'
+        + ('DECLARATION_ONLY_DATA_PACKAGES: tuple[str, ...] = ("docs",)\n' if declared else '')
+        + 'raise AssertionError("inventory must inspect setup.py without executing it")\n',
+        encoding="utf-8",
+    )
+    (repo / "MANIFEST.in").write_text("recursive-include docs *.md *.py\n", encoding="utf-8")
+    (repo / "docs" / "examples").mkdir(parents=True)
+    (repo / "docs" / "seam.md").write_text("contract\n", encoding="utf-8")
+    (repo / "docs" / "examples" / "client.py").write_bytes(b'"""An example, shipped by the sdist."""\n')
+    source = b'"""Required runtime module."""\n'
+    (repo / "gpuwm/core.py").write_bytes(source)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("gpuwm/core.py", source)
+        archive.writestr("docs/seam.md", "contract\n")
+    return repo, wheel
+
+
+def test_python_inventory_follows_a_declaration_only_data_package(publication, tmp_path):
+    """2.9.2 cut: the verifier expected docs/integration-kit/examples/*.py from MANIFEST.in
+    while setup.py's build_py ships the docs package's declaration only."""
+    repo, wheel = declaration_only_fixture(tmp_path)
+    publication.check_python_inventory(wheel, repo, "gpuwm")
+
+
+def test_python_inventory_still_expects_manifest_examples_without_the_declaration(publication, tmp_path):
+    repo, wheel = declaration_only_fixture(tmp_path, declared=False)
     with pytest.raises(publication.PublicationError):
         publication.check_python_inventory(wheel, repo, "gpuwm")

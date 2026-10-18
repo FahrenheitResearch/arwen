@@ -206,7 +206,7 @@ def _radiation_columns():
     chosen ones and the two bands and two streams all differ.
     """
     forcing = _radiation_rows("surrad")
-    options = SimpleNamespace(opt_alb=2)
+    options = SimpleNamespace(opt_alb=2, noahmp_snow_age="wrf_470")
     base = []
     for index, row in enumerate(_radiation_rows("albedo")):
         p = SimpleNamespace()

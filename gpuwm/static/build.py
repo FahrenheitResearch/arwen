@@ -120,8 +120,53 @@ _GEOG_TOKEN_DIRECTORIES = {
     },
     "5m": _FIVE_MINUTE_GEOG_DIRS,
     "modis_lai": {"lai": "lai_modis_30s"},
+    # WPS 4.6 GEOGRID.TBL.ARW LANDUSEF: rel_path modis_15s ->
+    # modis_landuse_20class_15s/ (the 15 arc-second MODIS land use without
+    # the lake class), interp nearest_neighbor, landmask_water 17.  The
+    # builder reads the water class from the dataset's own index
+    # (iswater=17, no islake), so the landmask follows WPS's entry.
+    "modis_15s": {"landuse": "modis_landuse_20class_15s"},
+    # WPS 4.6 GEOGRID.TBL.ARW GREENFRAC: rel_path modis_fpar ->
+    # greenfrac_fpar_modis/ with the same interp_option as default, so the
+    # token selects exactly the default greenness fraction.
+    "modis_fpar": {"greenfrac": "greenfrac_fpar_modis"},
 }
 _SUPPORTED_GEOG_TOKENS = frozenset(_GEOG_TOKEN_DIRECTORIES)
+#: NUM_LAND_CAT geogrid stamps for each GEOG land-use dataset a token can
+#: select: its index's category_max - category_min + 1.  The two lake
+#: inventories carry MODIS's lake class 21; the 15 arc-second set has no
+#: lake class, so stock WPS 4.6.0 geogrid writes NUM_LAND_CAT = 20 and
+#: ISLAKE = -1 for it (measured with geogrid.exe, 2026-10-15), and WRF's
+#: real.exe stops when the namelist's num_land_cat differs
+#: (share/input_wrf.F, "Mismatch between namelist and wrf input files for
+#: dimension NUM_LAND_CAT").
+_LANDUSE_CATEGORY_COUNTS = {
+    "modis_landuse_20class_30s_with_lakes": 21,
+    "modis_landuse_20class_5m_with_lakes": 21,
+    "modis_landuse_20class_15s": 20,
+}
+
+
+def geog_landuse_dataset(tokens) -> str:
+    """The GEOG land-use directory one ``geog_data_res`` value selects.
+
+    WPS resolves each field by the first token that has an entry for it,
+    else ``default`` (:meth:`GeogSelection.from_tokens`); a land-cover
+    token of ``[static.highres]`` names no GEOG directory and is skipped.
+    """
+    if isinstance(tokens, str):
+        tokens = tokens.split("+")
+    names = [str(token).strip().lower() for token in tokens
+             if str(token).strip()]
+    return next((_GEOG_TOKEN_DIRECTORIES[token]["landuse"]
+                 for token in names
+                 if "landuse" in _GEOG_TOKEN_DIRECTORIES.get(token, {})),
+                _DEFAULT_GEOG_DIRS["landuse"])
+
+
+def geog_landuse_category_count(tokens) -> int:
+    """NUM_LAND_CAT the static build stamps for ``tokens``' GEOG land use."""
+    return _LANDUSE_CATEGORY_COUNTS[geog_landuse_dataset(tokens)]
 
 
 @dataclass(frozen=True)
@@ -132,7 +177,9 @@ class GeogSelection:
     declared by the WPS namelist path in :class:`CaseDataConfig`.  Dataset
     paths are always relative directories beneath that config's GEOG root.
     The recognized set is ``default``, ``30s``, ``bnu_soil_30s``, ``5m``,
-    and ``modis_lai``.
+    ``modis_lai``, ``modis_15s`` and ``modis_fpar``.  ``modis_15s`` selects
+    the 15 arc-second MODIS land use (no lake class) and ``modis_fpar``
+    the MODIS FPAR greenness fraction, as WPS 4.6 GEOGRID.TBL.ARW does.
     ``30s`` selects the 30 arc-second soil datasets and falls through to
     WPS's default dataset for fields with no ``30s`` table entry.
     ``bnu_soil_30s`` selects WPS's alternative top and bottom 30
@@ -334,7 +381,11 @@ class GeogSelection:
         required = {
             "MMINLU": index.mminlu,
             "ISWATER": index.iswater,
-            "ISLAKE": index.islake,
+            # A land use with no lake class (the 15 arc-second MODIS set
+            # geog_data_res = 'modis_15s' selects) has no islake key; WPS
+            # 4.6 geogrid then writes ISLAKE = -1 (measured 2026-10-15),
+            # which every lake consumer reads as "no lake category".
+            "ISLAKE": -1 if index.islake is None else index.islake,
             "ISICE": index.isice,
             "ISURBAN": index.isurban,
             "NUM_LAND_CAT": (None if cmin is None or cmax is None

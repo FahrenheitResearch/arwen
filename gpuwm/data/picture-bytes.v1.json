@@ -99,6 +99,7 @@
     "categorical_rain": ["direct", 0.0, 222669, 222856],
     "categorical_snow": ["direct", 0.0, 226351, 226726],
     "cloud_cover_levels": ["direct", 0, 247025, 247025],
+    "cloud_fraction_column_max": ["direct", 0.0, 650000, 750000],
     "cloud_ice_column_max": ["direct", 0, 364539, 364539],
     "cloud_water_column_max": ["direct", 0, 379355, 446296],
     "composite_reflectivity": ["direct", 0, 560153, 741850],

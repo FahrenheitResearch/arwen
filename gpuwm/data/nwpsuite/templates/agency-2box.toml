@@ -36,7 +36,9 @@ shape = "regional-cam"
 recipe = "hrrr_v4_gsd41"
 domain = { from = "recipe", grid = "1797x1057x50" }
 ic = ["hrrr"]
-lbc = ["rap-native", "rap"]
+# gpuwm go forces a CAM forecast's boundaries from its one [fetch] source; HRRR
+# posts 18 h hourly and 48 h at 00/06/12/18, the leads this row asks for.
+lbc = ["hrrr"]
 cycle = { every = "1h", lead = "18h", deadline = "ready+45m" }
 at = { "00,06,12,18" = { lead = "48h", deadline = "ready+110m" } }
 cards = 4

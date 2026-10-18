@@ -37,6 +37,18 @@ replaces lake skin temperature, surface fluxes, albedo and 2 m diagnostics
 before the PBL consumes them. RUC bypasses a lake column only while the
 lake model is selected. With the lake model off, RUC uses its water arm.
 
+The lake's double precision `exp`, `log`, `log10`, `sin`, `atan` and `pow`
+are correctly rounded, the same on the CPU and the GPU
+(`gpuwm/core/kernels/f64cr.cuh`). CUDA's own double precision functions
+are accurate to 1 or 2 units in the last place but not correctly rounded,
+and with them the lake's sensible and ground heat fluxes drifted from WRF
+in about 1 word in 2,000. With correctly rounded functions the GPU lake
+matches native WRF linked to correctly rounded functions in every word.
+Against WRF linked to the host C library (glibc 2.39), whose `exp`, `log`,
+`atan` and `pow` are not correctly rounded for roughly 1 argument in 1,300,
+the persisted lake state still matches in every word and 14 of 2.5 million
+flux output words differ by 1 or 2 units in the last place.
+
 The source-pinned Fortran harnesses and CUDA comparisons are in
 `tools/ruc_mosaic_wrf461_oracle`, `tools/lake_wrf461_oracle`,
 `tests/test_ruc_mosaic.py`, `tests/test_ruc_mosaic_gpu.py` and the lake

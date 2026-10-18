@@ -38,7 +38,7 @@ def main(argv: list[str]) -> int:
         parity = measure_noah_parity(fixture, port)
         glacial = int(fixture.glacial.sum())
         print(f"=== {name}  {fixture.switches}  "
-              f"{fixture.ncase} columns ({glacial} glacial, SFLX_GLACIAL) ===")
+              f"{fixture.ncase} columns ({glacial} land ice) ===")
         for field in sorted(parity, key=lambda f: -parity[f].max_ulp):
             print("   ", parity[field])
         worst = max(p.max_ulp for p in parity.values())

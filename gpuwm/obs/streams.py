@@ -112,10 +112,17 @@ MQTT, every original message archived on receipt, the coverage and
 latency measured; the BUFR payloads are archived and counted and are not
 yet decoded into the table (a named open item).  ``awc-metar`` the
 Aviation Weather Center METAR cache as the complementary surface source,
-``rw_asos awc``.
+``rw_asos awc``.  ``madis-acars``, ``madis-raob`` and ``madis-mesonet`` the
+NOAA MADIS public files (commercial aircraft, radiosondes worldwide, the
+public part of the mesonet collection), ``rw_madis fetch/table``: anonymous,
+from the real-time directory (about five and a half days, each hour file
+rewritten while its reports arrive) and the dated archive behind it, MADIS's
+own QC summary applied and GSI's regional error table per row.  An earlier
+version of this table called MADIS account-gated; the public files never
+were (the account covers the restricted providers, which are absent from the
+public files by MADIS policy).
 
-Account-gated, reported and never fetched: MADIS aircraft (AMDAR) reports
-need a NOAA MADIS account.  Reachable but not decoded here: the NWS
+No stream here needs an account.  Reachable but not decoded here: the NWS
 upper-air text feed (FM-35 TEMP parts, US sites, about three minutes
 behind the nominal hour); IGRA2 covers the same soundings a day later and
 is the sounding stream of record until a TEMP decoder exists.
@@ -382,15 +389,60 @@ STREAMS: dict[str, StreamSpec] = {
         notes="one gzip CSV of the last hour, worldwide, rewritten every minute; "
               "`rw_asos awc` fetches and converts it",
     ),
-    "madis-aircraft": StreamSpec(
-        name="madis-aircraft", door=None,
-        subject="aircraft (AMDAR) reports through NOAA MADIS",
-        sources=("https://madis-data.ncep.noaa.gov/",),
-        variables=("temperature_k", "wind_u_m_s", "wind_v_m_s"),
-        errors={}, cadence_s=3600, public=False,
-        latency_class="gated", latency_basis="not measured: the feed needs an account",
-        account_gated=True, decoder_built=False,
-        notes="needs a MADIS account; reported, not fetched",
+    "madis-acars": StreamSpec(
+        name="madis-acars", door="rw_madis",
+        subject="MADIS commercial aircraft reports (AMDAR, ACARS, TAMDAR), public files",
+        sources=("https://madis-data.ncep.noaa.gov/madisPublic1/data/point/acars/netcdf/",
+                 "https://madis-data.ncep.noaa.gov/madisPublic1/data/archive/"),
+        variables=("temperature_k", "dewpoint_k", "wind_u_m_s", "wind_v_m_s"),
+        errors={"gsi_report_type_temperature_humidity": 133.0, "gsi_report_type_wind": 233.0},
+        cadence_s=3600, public=True,
+        latency_class="fast",
+        latency_basis="minutes from report to its appearance in the public hour file: median 14 "
+                      "over the 11-12 UTC hour of 2026-10-14 (live watch 10:44-15:05 UTC); the "
+                      "07 UTC file was still being rewritten at 08:13:30 UTC on 2026-10-16",
+        measurements=("aircraft_level",),
+        notes="anonymous; real-time directory first (about 5.5 days), dated archive behind it "
+              "(about two days late); level at the ISA pressure of the pressure altitude; MADIS QC "
+              "summary V S C G K kept; errors per row from GSI's regional table (133/233); a later "
+              "fetch of a growing hour file stamps its rows with the later arrival, so an "
+              "information cutoff keeps them out of an analysis that ran before",
+    ),
+    "madis-raob": StreamSpec(
+        name="madis-raob", door="rw_madis",
+        subject="MADIS radiosondes (worldwide), public files",
+        sources=("https://madis-data.ncep.noaa.gov/madisPublic1/data/point/raob/netcdf/",
+                 "https://madis-data.ncep.noaa.gov/madisPublic1/data/archive/"),
+        variables=("temperature_k", "dewpoint_k", "wind_u_m_s", "wind_v_m_s"),
+        errors={"gsi_report_type_temperature_humidity": 120.0, "gsi_report_type_wind": 220.0},
+        cadence_s=3600, public=True,
+        latency_class="fast",
+        latency_basis="minutes after the nominal hour: from 13, still arriving 128 after 12 UTC "
+                      "(2026-10-14 live watch); IGRA2 carries the same soundings a day later",
+        measurements=("sonde_level",),
+        notes="anonymous; mandatory, significant, tropopause and maximum-wind levels with a "
+              "pressure; every level dated to the release time (the MADIS file has no "
+              "per-level elapsed time); an hour nobody launched is absent and counted",
+    ),
+    "madis-mesonet": StreamSpec(
+        name="madis-mesonet", door="rw_madis",
+        subject="MADIS mesonets (the public part of the LDAD collection), public files",
+        sources=("https://madis-data.ncep.noaa.gov/madisPublic1/data/LDAD/mesonet/netCDF/",
+                 "https://madis-data.ncep.noaa.gov/madisPublic1/data/archive/"),
+        variables=("surface_pressure_pa", "temperature_k", "dewpoint_k",
+                   "wind_u_m_s", "wind_v_m_s"),
+        errors={"gsi_report_type_temperature_humidity": 188.0, "gsi_report_type_wind": 288.0},
+        cadence_s=3600, public=True,
+        latency_class="fast",
+        latency_basis="minutes from report to its appearance in the public hour file: median 23 "
+                      "over the 11-12 UTC hour of 2026-10-14; a 15-min window holds about 95 % of "
+                      "its reports 45 min after it ends",
+        measurements=("screen_temperature_2m", "screen_dewpoint_2m", "station_pressure",
+                      "platform_wind"),
+        notes="anonymous; five-minute reports from tens of thousands of stations (18,141 in a "
+              "30-minute window on 2026-10-16); restricted providers are absent by MADIS policy; "
+              "wind is platform_wind (anemometer heights vary and are not stated); "
+              "--bbox S,N,W,E keeps a region",
     ),
     "nws-upper-air-text": StreamSpec(
         name="nws-upper-air-text", door=None,
@@ -773,6 +825,11 @@ def stream_manifest(
             if f.get("latency_behind_real_time_s") is not None:
                 latency = f["latency_behind_real_time_s"]
                 basis = f.get("latency_basis")
+    # Most doors state the table's path, digest, rows and bytes at the top of
+    # their record; rw_madis nests them under "table" and calls its counters
+    # "counts".  Read either, so a manifest never reports a written table as
+    # rows=None (the first MADIS manifests did).
+    inner = table.get("table") if isinstance(table.get("table"), dict) else {}
     manifest = {
         "schema": STREAM_MANIFEST_SCHEMA,
         "stream": stream,
@@ -780,13 +837,15 @@ def stream_manifest(
         "subject": spec.subject,
         "table_schema": TABLE_SCHEMA,
         "table": {
-            "path": table.get("path"), "sha256": table.get("sha256"),
-            "rows": table.get("rows"), "bytes": table.get("bytes"),
+            "path": table.get("path", inner.get("path")),
+            "sha256": table.get("sha256", inner.get("sha256")),
+            "rows": table.get("rows", inner.get("rows")),
+            "bytes": table.get("bytes", inner.get("bytes")),
             "status": table.get("status"),
         },
         "errors": spec.errors,
         "measurements": list(spec.measurements),
-        "counters": table.get("counters"),
+        "counters": table.get("counters", table.get("counts")),
         "files": table.get("files"),
         "fetch_records": fetches,
         "latency_behind_real_time_s": latency,
@@ -800,17 +859,49 @@ def stream_manifest(
     return manifest
 
 
+def door_state(spec: StreamSpec) -> dict[str, object]:
+    """What THIS install can do with ``spec``'s door, read from the install.
+
+    ``decoder_built`` is true only when the door's binary resolves here now.
+    It used to be the hard-coded declaration that the tree holds a decoder,
+    so ``gpuwm obs streams`` called buoys, radiosondes, motion vectors,
+    occultations and WIS2 built on installs that carried none of their
+    binaries.  ``door_route`` says how the next fetch reaches the door:
+    ``installed``, ``on-demand`` (the first fetch stages the pinned binary
+    from this release's bundle), ``build-from-source`` (nothing this install
+    can download supplies it) or ``none`` (no decoding door exists).
+    Resolution here never downloads (:func:`gpuwm.bridges.inspection_only`).
+    """
+
+    from gpuwm import bridges
+
+    if spec.door is None or not spec.decoder_built:
+        return {"decoder_built": False, "door_path": None, "door_route": "none"}
+    door = _door(spec.door)
+    with bridges.inspection_only():
+        try:
+            found = door.find()
+        except FileNotFoundError:
+            found = None
+    if found is not None:
+        return {"decoder_built": True, "door_path": str(found), "door_route": "installed"}
+    route = "on-demand" if bridges.on_demand_fetch_offered(spec.door) else "build-from-source"
+    return {"decoder_built": False, "door_path": None, "door_route": route}
+
+
 def streams_table() -> list[dict[str, object]]:
     """Every stream with its door, class, latency basis and state: the
-    ``streams`` command and the receipt's stream roster."""
+    ``streams`` command and the receipt's stream roster.  The door state
+    (:func:`door_state`) is read from this install, not declared."""
     rows = []
     for spec in STREAMS.values():
+        state = door_state(spec)
         rows.append({
             "stream": spec.name,
             "door": spec.door,
             "public": spec.public,
             "account_gated": spec.account_gated,
-            "decoder_built": spec.decoder_built,
+            **state,
             "latency_class": spec.latency_class,
             "latency_basis": spec.latency_basis,
             "cadence_s": spec.cadence_s,
@@ -899,6 +990,10 @@ def _hours_between(start: str, end: str) -> list[dt.datetime]:
     return hours
 
 
+#: The MADIS streams and the ``rw_madis --kind`` each one reads.
+MADIS_KINDS = {"madis-acars": "acars", "madis-raob": "raob", "madis-mesonet": "mesonet"}
+
+
 class StreamEmpty(RuntimeError):
     """A stream that holds nothing for the window, with the reason (the
     archive's latest day, the empty granule set); a caller states it and
@@ -940,6 +1035,7 @@ def fetch_stream(
     stream: str, start: str, end: str, out_root: Path, *, networks: str | None = None,
     stations: str | None = None, satellites: str | None = None, seconds: int | None = None,
     missions: str | None = None, archive: str | Path | None = None,
+    bbox: str | None = None,
 ) -> StreamFetch:
     """Fetch and decode one stream for the window ``[start, end]`` (ISO-8601
     UTC) through its Rust door into ``<out_root>/<stream>/<stream>.csv``,
@@ -1055,6 +1151,24 @@ def fetch_stream(
         _run_door("rw_gnssro", ["table", "--tarballs", ",".join(f["path"] for f in fetched["files"]),
                                 "--start", start, "--end", end,
                                 "--fetch-record", str(out / "fetch.json"), "--out", str(table)])
+    elif spec.name in MADIS_KINDS:
+        kind = MADIS_KINDS[spec.name]
+        raw = out / "raw"
+        fetched = _run_door("rw_madis", ["fetch", "--kind", kind, "--start", start, "--end", end,
+                                         "--out", str(raw)])
+        record = raw / f"fetch-{kind}.json"
+        fetch_records.append(record)
+        if fetched.get("status") == "EMPTY" or not fetched.get("files"):
+            raise StreamEmpty(
+                f"MADIS has no {kind} hour file for {start} to {end} in real time or in the archive "
+                f"({len(fetched.get('hours_not_in_archive') or [])} hours answered 404)",
+                {"hours_not_found": len(fetched.get("hours_not_in_archive") or [])})
+        arguments = ["table", "--kind", kind, "--files",
+                     *[str(raw / f["name"]) for f in fetched["files"]],
+                     "--fetch-record", str(record), "--start", start, "--end", end, "--out", str(table)]
+        if bbox:
+            arguments += ["--bbox", bbox]
+        _run_door("rw_madis", arguments)
     elif spec.name == "wis2":
         # A subscriber already running beside the cycle (`rw_wis2 subscribe
         # --seconds 86400 --out DIR`) is the live route: its archive is
@@ -1117,7 +1231,7 @@ def _cmd_fetch(args) -> int:
         fetched = fetch_stream(
             args.stream, args.start, args.end, Path(args.out), networks=args.networks,
             stations=args.stations, satellites=args.satellites, seconds=args.seconds,
-            missions=args.missions, archive=args.archive,
+            missions=args.missions, archive=args.archive, bbox=args.bbox,
         )
     except StreamEmpty as empty:
         record = {"stream": spec.name, "status": "EMPTY",
@@ -1256,6 +1370,7 @@ def add_stream_commands(sub) -> None:
     fetch.add_argument("--missions", help="cdaac-ro: comma-separated missions (default cosmic2,paz,kompsat5)")
     fetch.add_argument("--archive", help="wis2: a subscriber's archive directory to decode for the window "
                                          "instead of subscribing now")
+    fetch.add_argument("--bbox", help="madis-*: keep reports inside S,N,W,E (degrees); default worldwide")
     fetch.set_defaults(func=_cmd_fetch)
     subscribe = sub.add_parser(
         "subscribe",
@@ -1321,6 +1436,7 @@ __all__ = [
     "DEFAULT_LAYER_LN_P",
     "HOURS_MANIFEST_SCHEMA",
     "LATENCY_CLASSES",
+    "MADIS_KINDS",
     "REFRACTIVITY_ERRORS",
     "STREAMS",
     "STREAM_MANIFEST_SCHEMA",

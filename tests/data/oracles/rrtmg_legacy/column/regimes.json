@@ -1,0 +1,188 @@
+{
+  "start": "2026-07-15T12:00:00",
+  "elapsed_seconds": 21600.0,
+  "radt_minutes": 15.0,
+  "ncol": 128,
+  "nz": 50,
+  "calendar": {
+    "yr": 2026.0,
+    "julday": 196.0,
+    "julian": 195.75,
+    "gmt": 12.0,
+    "xtime": 360.0,
+    "radt": 15.0
+  },
+  "regimes": {
+    "thompson8": {
+      "mp": 8,
+      "grid": "ptop5000",
+      "o3input": 2,
+      "aer_opt": 0,
+      "species": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "has_req": [
+        1,
+        1,
+        1
+      ]
+    },
+    "thompson8_o3wrap": {
+      "mp": 8,
+      "grid": "ptop5000",
+      "o3input": 0,
+      "aer_opt": 0,
+      "species": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "has_req": [
+        1,
+        1,
+        1
+      ]
+    },
+    "thompson8_ptop2k": {
+      "mp": 8,
+      "grid": "ptop2000",
+      "o3input": 2,
+      "aer_opt": 0,
+      "species": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "has_req": [
+        1,
+        1,
+        1
+      ]
+    },
+    "wsm6": {
+      "mp": 6,
+      "grid": "ptop5000",
+      "o3input": 2,
+      "aer_opt": 0,
+      "species": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "has_req": [
+        1,
+        1,
+        1
+      ]
+    },
+    "morrison10": {
+      "mp": 10,
+      "grid": "ptop5000",
+      "o3input": 2,
+      "aer_opt": 0,
+      "species": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "has_req": [
+        0,
+        0,
+        0
+      ]
+    },
+    "p3_50": {
+      "mp": 50,
+      "grid": "ptop5000",
+      "o3input": 2,
+      "aer_opt": 0,
+      "species": [
+        1,
+        1,
+        1,
+        1,
+        0,
+        0
+      ],
+      "has_req": [
+        1,
+        1,
+        0
+      ]
+    },
+    "kessler1": {
+      "mp": 1,
+      "grid": "ptop5000",
+      "o3input": 2,
+      "aer_opt": 0,
+      "species": [
+        1,
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      "has_req": [
+        0,
+        0,
+        0
+      ]
+    },
+    "thompson28_aer0": {
+      "mp": 28,
+      "grid": "ptop5000",
+      "o3input": 2,
+      "aer_opt": 0,
+      "species": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "has_req": [
+        1,
+        1,
+        1
+      ]
+    },
+    "thompson28_aer3": {
+      "mp": 28,
+      "grid": "ptop5000",
+      "o3input": 2,
+      "aer_opt": 3,
+      "species": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "has_req": [
+        1,
+        1,
+        1
+      ]
+    }
+  }
+}

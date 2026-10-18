@@ -21,6 +21,7 @@
 //! column without a file.
 
 use rustwx_core::{CanonicalField, FieldSelector, GridProjection, LatLonGrid};
+use rayon::prelude::*;
 use wrf_core::WrfFile;
 
 use crate::wrf_process::{WrfHourFields, WrfProcessOptions, WrfProductGroup, push_canonical_values};
@@ -391,11 +392,11 @@ pub(crate) fn isotherm_height(
     if nz == 0 {
         return out;
     }
-    for (cell, slot) in out.iter_mut().enumerate() {
+    out.par_iter_mut().enumerate().for_each(|(cell, slot)| {
         let excess = |k: usize| temperature_k[k * cells + cell] - isotherm_k;
         if excess(0) == 0.0 {
             *slot = height[cell] as f32;
-            continue;
+            return;
         }
         for k in 0..nz.saturating_sub(1) {
             let below = excess(k);
@@ -415,14 +416,14 @@ pub(crate) fn isotherm_height(
                 break;
             }
         }
-    }
+    });
     out
 }
 
 /// The largest value in each column, NaN where no level is finite.
 pub(crate) fn column_maximum(field: &[f64], nz: usize, cells: usize) -> Vec<f32> {
     let mut out = vec![f32::NAN; cells];
-    for (cell, slot) in out.iter_mut().enumerate() {
+    out.par_iter_mut().enumerate().for_each(|(cell, slot)| {
         let mut best = f64::NEG_INFINITY;
         for k in 0..nz {
             let value = field[k * cells + cell];
@@ -433,7 +434,7 @@ pub(crate) fn column_maximum(field: &[f64], nz: usize, cells: usize) -> Vec<f32>
         if best.is_finite() {
             *slot = best as f32;
         }
-    }
+    });
     out
 }
 
@@ -453,7 +454,7 @@ pub(crate) fn supercooled_water_path(
     bounds_m: Option<(f64, f64)>,
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; cells];
-    for (cell, slot) in out.iter_mut().enumerate() {
+    out.par_iter_mut().enumerate().for_each(|(cell, slot)| {
         let mut path = 0.0f64;
         for k in 0..nz {
             let index = k * cells + cell;
@@ -472,7 +473,7 @@ pub(crate) fn supercooled_water_path(
             }
         }
         *slot = (path * 1000.0) as f32;
-    }
+    });
     out
 }
 
@@ -534,7 +535,7 @@ pub(crate) fn simulated_infrared_brightness_temperature(
     if nz < 2 {
         return out;
     }
-    for (cell, slot) in out.iter_mut().enumerate() {
+    out.par_iter_mut().enumerate().for_each(|(cell, slot)| {
         let at = |field: &[f64], k: usize| field[k * cells + cell];
         let pressure = |k: usize| at(pressure_pa, k);
         let temperature = |k: usize| at(temperature_k, k);
@@ -584,7 +585,7 @@ pub(crate) fn simulated_infrared_brightness_temperature(
                 break;
             }
         }
-    }
+    });
     out
 }
 

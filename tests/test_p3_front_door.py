@@ -1047,16 +1047,20 @@ def test_the_cuda_arm_is_finite_where_the_forecast_died():
     (NaN in ``th`` and ``qv`` at k = 45 and 46 and nowhere else), which is
     what makes the ON result evidence rather than a coincidence.
 
-    WHAT THIS GATE DELIBERATELY DOES NOT ASSERT.  On this column the CUDA
-    and CPU arms agree on theta to 3.03e-5 relative but disagree in the ICE
-    family: at k = 37..47 the device arm carries ``qir`` = 0 where the CPU
-    arm carries 5e-10..2.3e-6, and ``qi`` differs by up to 2.5 %.  That
-    disagreement is PRE-EXISTING -- forcing the rescue branch off reproduces
-    it unchanged in both arms -- and it is a measured widening of
-    ``evidence/p3-ship-20260829/ICE-ULP-OPEN-ITEM.md``, which records the
-    residual as ``qib`` alone in a handful of cells.  It is open, it is not
-    this lane's, and pinning a tolerance on it here would turn an open
-    defect into an accepted one.
+    WHAT THIS GATE DELIBERATELY DOES NOT ASSERT.  Through 2.8.7 the CUDA
+    and CPU arms agreed on theta here to 3.03e-5 relative but disagreed in
+    the ICE family (device ``qir`` = 0 where the CPU arm carried
+    5e-10..2.3e-6, ``qi`` up to 2.5 %).  That was the device's subnormal
+    flush (cupy.RawModule's appended ``-ftz=true``), fixed 2026-10-07 on
+    lane/verify-p3-mp50: re-measured on box W1, theta is now bit-identical
+    between the arms and the ice family differs by at most 9e-11 kg/kg
+    (``ni`` by 292 /kg) in a few cells.  That remainder is the CPU arm's
+    own distance from WRF (its NumPy float32 libm calls); the device arm
+    equals WRF 4.6.1's Fortran word for word on this column (driven from
+    it = 1) except levels 44-46, where WRF's float32 overflow strikes and
+    WRF returns NaN (tools/p3_wrf461_oracle, X02).  Pinning a
+    tolerance on the CPU arm here would accept that open gap, so the gate
+    stays on finiteness and theta.
     """
     import cupy as cp
     import numpy as np

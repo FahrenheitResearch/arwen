@@ -512,8 +512,8 @@ _INTENT_DELIVERY = {
     # the [fetch].out hint the wizard wrote, so this has to travel as a
     # flag or it does not travel.
     "data_dir": "go:--data-dir",
-    # The static geography tree: [case_data].geog_root on the ERA5
-    # route, and a `gpuwm go` flag on the prepared one.
+    # The wizard saves the geography root for every source. The plan
+    # also forwards its explicit root as a launch override.
     "geog_root": "go:--geog-root",
     # Read by the HRRR preparer as a flag; on the gfs chain the wizard
     # bakes the resulting physics into the config and `go` needs no
@@ -4923,9 +4923,9 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
                     or intent.get("data_dir") or managed_download_dir(run_dir, hints))
     geog_root = plan.run_options.get("geog_root") or intent.get("geog_root")
     if geog_root is None:
-        from gpuwm.geog_assets import default_geog_root
+        from gpuwm.geog_assets import geog_root_from_tables
 
-        geog_root = default_geog_root()
+        geog_root = geog_root_from_tables(raw, base_dir=config_path.parent)
     _stage_static_sources(raw, geog_root, base_dir=config_path.parent)
     # Not created here, and deliberately so: the preparer refuses an
     # --output-root that already exists ("refusing existing output
@@ -6324,9 +6324,9 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
                     or intent.get("data_dir") or managed_download_dir(run_dir, hints))
     geog_root = plan.run_options.get("geog_root") or intent.get("geog_root")
     if geog_root is None:
-        from gpuwm.geog_assets import default_geog_root
+        from gpuwm.geog_assets import geog_root_from_tables
 
-        geog_root = default_geog_root()
+        geog_root = geog_root_from_tables(raw, base_dir=config_path.parent)
     _stage_static_sources(raw, geog_root, base_dir=config_path.parent)
     # The WPS namelist the mapped preparation binds by digest: the one a
     # door wrote beside the config under its own stem, or, where there is

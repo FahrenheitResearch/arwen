@@ -63,3 +63,13 @@ sums, and subtract-then-cast state assignments over independent cells.
 nonzero masks with bounded scratch. Independent fields may run in parallel;
 each SHA-256 stream retains its original byte order. NaN and signed-zero
 extrema keep NumPy's original reduction semantics in the Python wrapper.
+
+## Observed lake ice: `miniz_oxide` and `adler2`
+
+`src/ims_snow_ice.rs` reads the IMS daily snow and ice analysis (NSIDC
+G02156), which is published gzip-compressed, and streams it through
+`miniz_oxide`'s raw-deflate inflater after parsing the gzip header itself.
+`miniz_oxide 0.8.9` (MIT OR Zlib OR Apache-2.0) and its one dependency
+`adler2 2.0.1` (0BSD OR MIT OR Apache-2.0) are copied unchanged, with their
+Cargo checksums and licences, from the same versions already vendored in
+`rw_wps`. Its optional SIMD checksum is not enabled.

@@ -155,6 +155,7 @@ AXIS_EXCLUSIONS = MappingProxyType({
         "cell is refused by gpuwm.config.validate_myj_pairing for its own "
         "reason (the TKE_MYJ scan). A row here would be a second "
         "authority over questions that already have one."),
+    ("bl_pbl_physics", 901): ("CCPP TKE-EDMF has no WRF selector counterpart; its admission follows its own registry metadata."),
     ("bl_pbl_physics", 900): (
         "SASE is an ArWen closure with no WRF counterpart: WRF v4.6.1 "
         "registers no package at bl_pbl_physics=900, so there is no "

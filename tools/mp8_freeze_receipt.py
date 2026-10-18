@@ -43,8 +43,10 @@ Plus two fixture receipts:
 
 F1  the 92 committed mp=8 oracle CSVs under
     ``gpuwm/data/thompson/oracle/`` (aggregate + per-file digests).
-F2  the *documented* four-file exception to a clean oracle rebuild
-    (see :data:`ORACLE_REBUILD_EXCEPTIONS`).
+F2  what a clean oracle rebuild may differ in: nothing on the receipt's
+    libc, one measured cell on another (see
+    :data:`ORACLE_LIBC_SENSITIVE_FIXTURES`); the old four-file exception
+    set is retired (:data:`ORACLE_REBUILD_EXCEPTIONS` is empty).
 
 Usage
 -----
@@ -412,17 +414,20 @@ class _HostAdapterState:
         self.h_diabatic = np.zeros(shape, dtype=np.float32)
         self._scratch: dict[str, np.ndarray] = {}
 
-    def scratch(self, shape, name):
+    def scratch(self, shape, name, dtype=None):
         value = self._scratch.get(name)
         if value is None:
-            value = np.zeros(shape, dtype=np.float32)
+            value = np.zeros(shape, dtype=np.float32 if dtype is None
+                             else dtype)
             self._scratch[name] = value
         else:
             assert value.shape == tuple(shape)
         return value
 
 
-#: Every launcher ``_apply_thompson`` imports from ``gpuwm.core.thompson``.
+#: Every launcher ``_apply_thompson`` reaches: the classic unit's own
+#: (gpuwm/core/thompson_classic.py LAUNCHERS), which the adapter calls
+#: through ``apply_classic``.
 ADAPTER_LAUNCHER_NAMES = (
     "launch_adapter_entry",
     "launch_adapter_finish",
@@ -442,6 +447,12 @@ ADAPTER_LAUNCHER_NAMES = (
     "launch_snow_sedimentation",
     "launch_warm_frozen_source_network_from_owner",
 )
+
+
+def _adapter_launcher_names() -> tuple[str, ...]:
+    from gpuwm.core import thompson_classic
+    return tuple(thompson_classic.LAUNCHERS)
+
 
 _TABLE_OWNER_SENTINEL = "<classic-table-owner>"
 
@@ -474,7 +485,10 @@ def _label(value, labels: dict[int, str]) -> str:
 
 
 def record_adapter_calls(*, refl_10cm_due: bool) -> list[dict]:
-    """Drive the real ``_apply_thompson`` with every launcher spied on.
+    """Drive the default adapter with every launcher spied on.
+
+    Strict composition is checked separately in test_thompson_adapter_composition.
+    The default adapter remains the byte-qualified 2.8.9 implementation.
 
     Returns one entry per call: the launcher name plus its positional and
     keyword arguments rendered as stable *identity labels* (which state
@@ -517,7 +531,7 @@ def record_adapter_calls(*, refl_10cm_due: bool) -> list[dict]:
             # this launcher-only probe; the VALUES are not under test here,
             # only the call order and argument identity.
             with np.errstate(invalid="ignore", divide="ignore"):
-                microphysics._apply_thompson(
+                microphysics._apply_thompson_default(
                     state, SimpleNamespace(), 10.0,
                     refl_10cm_due=refl_10cm_due)
     finally:
@@ -593,102 +607,71 @@ def receipt_f1_oracle_fixtures() -> dict:
 
 
 # --------------------------------------------------------------------------
-# F2 -- the documented clean-rebuild exception (port-spec blocking unknown #2)
+# F2 -- what a clean rebuild of the oracle may differ in
 # --------------------------------------------------------------------------
 
-#: The FOUR committed mp=8 oracle CSVs that a clean rebuild of the tracked
-#: harness (``tools/thompson_wrf461_oracle/build.sh`` against
-#: ``wrf461-pristine``) does NOT reproduce byte-for-byte.
-#: Everything else is exact: 4/4 ``.dat`` SHA-256 pins and 88/92 CSVs are
-#: reproduced byte-for-byte.  MEASURED, on gfortran 13.3.0 / glibc 2.39.
-#:
-#: CAUSE -- and this CORRECTS the port spec's blocking unknown #2, which
-#: described the drift as a float32-vs-float64 evaluation of the vapour seed
-#: with "p_pa, pii and theta byte-identical".  That is not what the bytes
-#: say.  Measured facts, each independently reproducible:
-#:
-#:   (a) ``p_pa`` and ``pii`` in the committed warm/mixed/ice columns differ
-#:       from a fresh build at 13 of the 24 levels, by exactly one float32
-#:       ulp (max 1.50e-07 relative).  ``theta_k``/``temp_k`` follow.
-#:   (b) ``p_pa`` is a pure function of the harness's own z profile
-#:       (``p = p0*exp(-z/8000)``, run_column.F90:219) and does not depend
-#:       on the scenario at all.  Grouping the 46 committed column CSVs by
-#:       their ``before``-phase p_pa profile yields exactly TWO groups: 43
-#:       files in one, and {warm, mixed, ice} in the other.  This check is
-#:       hermetic -- it compares committed repository bytes only -- and it is
-#:       what :func:`fixture_provenance_witness` asserts.
-#:   (c) Neither the committed nor a rebuilt ``qv`` seed column is the clean
-#:       float64 or float32 evaluation of ``max(1.0e-5, 0.014*exp(-z/2500))``
-#:       at more than roughly half the levels.  The k=1 coincidence the port
-#:       spec relied on (committed 1.2667723931372166E-002 == REAL(4) of the
-#:       float64 expression) does not generalise to k=2..24.
-#:   (d) No compiler-flag variation reproduces the committed bytes: -O0, -O1,
-#:       -O2, -O3, -ffast-math, -march=native and -ffloat-store all give the
-#:       same 26 differing p_pa rows.  Editing the seed to double precision
-#:       reproduces ``mixed-surface.csv`` exactly but none of the columns.
-#:
-#: So this is a BUILD-PROVENANCE difference (a different libm ``expf``,
-#: i.e. a different machine or glibc), affecting exactly the three ORIGINAL
-#: fixtures -- ``gpuwm/data/thompson/PROVENANCE.md`` records warm, mixed and
-#: ice as the first three columns generated -- and propagating through the
-#: nonlinear scheme into their ``after`` rows and into mixed-surface rainnc.
-#: It is NOT a physics difference and NOT an ArWen-side defect.
-#:
-#: It is recorded rather than repaired, because regenerating the four files
-#: would move a model-validated baseline: the GPU tests consume the committed
-#: ``before`` rows, so the mp=8 comparison is self-consistent as it stands.
-#: Every OTHER fixture is required to be byte-exact.  No tolerance anywhere
-#: in this gate is loosened to accommodate this.
-#:
-#: CONSEQUENCE FOR THE mp=28 PORT: the aerosol fixtures (WP-03) must be
-#: generated in one pass on one recorded toolchain and their build
-#: environment written down, so this class of drift cannot recur.
-ORACLE_REBUILD_EXCEPTIONS = {
-    "warm-column.csv": {
-        "scenario": "warm (id 1)",
-        "phases_affected": ["before", "after"],
-        "max_relative_overall": 4.058782771046963e-06,
-        "worst_field": "qc",
-        "note": "1-ulp p_pa/pii/qv seed drift, amplified by the scheme",
-    },
-    "ice-column.csv": {
-        "scenario": "ice (id 3)",
-        "phases_affected": ["before", "after"],
-        "max_relative_overall": 7.263e-06,
-        "worst_field": "qs",
-        "note": "worst field is a 1.2e-10 kg/kg trace snow mass",
-    },
-    "mixed-column.csv": {
-        "scenario": "mixed (id 2)",
-        "phases_affected": ["before", "after"],
-        "max_relative_overall": 1.304e-02,
-        "worst_field": "qs",
-        "note": ("worst field is a 6.5e-12 kg/kg trace snow mass; the "
-                 "largest non-trace deviation is qc at 4.6e-04"),
-    },
-    "mixed-surface.csv": {
-        "scenario": "mixed (id 2)",
-        "phases_affected": [],
-        "max_relative_overall": 1.128e-07,
-        "worst_field": "rainnc_mm",
-        "note": "surface accumulation propagated from the column drift",
+#: RETIRED, AND EMPTY ON PURPOSE.  Until the column fixtures were regenerated
+#: in one devectorised pass (tools/thompson_wrf461_oracle/build.sh,
+#: ``-fno-tree-vectorize``), four of them -- warm, ice and mixed column and
+#: mixed-surface -- came from an older build of the harness whose libmvec
+#: ``expf`` moved ``p_pa`` by one float32 ulp at 13 of 24 levels, and a clean
+#: rebuild did not reproduce them.  They were pinned here as an "expected
+#: exception set".  The fixtures were regenerated (the witness below now finds
+#: one pressure profile, not two), and the set outlived its defect.
+#: MEASURED 2026-10-05 on box F: a clean ``build.sh`` against the pinned WRF
+#: v4.6.1 sources (both phys/*.F SHA-256s equal to the receipt's), gfortran
+#: 13.3.0, glibc 2.39, reproduced all four byte for byte -- 91 of 92 CSVs,
+#: the 92nd being the one libc-sensitive file below.  An entry may be added
+#: here only with a measured rebuild that names its cause.
+ORACLE_REBUILD_EXCEPTIONS: dict = {}
+
+#: The one measured libc sensitivity of the harness (the README's "one
+#: residual sensitivity" paragraph): a rebuild under a libc other than the
+#: receipt's reproduces every fixture except this one, in one ``qg`` cell.
+#: Allowed ONLY when the rebuild's libc differs from the receipt's; on the
+#: receipt's own libc every fixture must be byte-exact.
+ORACLE_LIBC_SENSITIVE_FIXTURES = {
+    "cold-cloud-overlap-column.csv": {
+        "fields": ("qg",),
+        "max_relative_overall": 8.106534783073588e-08,
+        "measured": ("2026-10-05, box F, gfortran 13.3.0 / glibc 2.39 "
+                     "against the receipt's glibc 2.43: one cell, qg at "
+                     "k2 of the 'after' phase, 1.5e-11 kg/kg"),
     },
 }
 
-#: Cross-fixture witness: the two distinct ``before``-phase p_pa profiles
-#: present in the committed oracle directory, and the file group carrying the
-#: minority one.  Purely a statement about committed bytes.
+#: Table caches whose bytes follow libm.  Measured on the same rebuild:
+#: qr_acr_qg_V4.dat, qr_acr_qsV2.dat and thompson_aux_tables.dat reproduce
+#: the receipt's [table_cache] hashes exactly; freezeH2O.dat does not
+#: (4,035,547 of 63,736,212 words differ under glibc 2.39).
+ORACLE_LIBC_SENSITIVE_TABLES = frozenset({"freezeH2O.dat"})
+
+#: Cross-fixture witness, as the committed bytes stand now: ONE
+#: ``before``-phase p_pa profile across all 46 column fixtures.
 ORACLE_PROVENANCE_WITNESS = {
-    "distinct_p_pa_profiles": 2,
-    "majority_group_size": 43,
-    "minority_group": ("ice-column.csv", "mixed-column.csv",
-                       "warm-column.csv"),
+    "distinct_p_pa_profiles": 1,
+    "majority_group_size": 46,
+    "minority_group": (),
     "p_pa_expression": "p0 * exp(-z(k) / 8000.0)   (run_column.F90:219)",
-    "p_pa_levels_differing": 13,
-    "p_pa_levels": (2, 3, 5, 6, 7, 8, 10, 14, 16, 17, 18, 19, 22),
-    "p_pa_max_relative": 1.49741856270429e-07,
     "rebuild_toolchain": "gfortran 13.3.0, glibc 2.39, Ubuntu 24.04",
 }
+
+ORACLE_RECEIPT = ORACLE_DIR / "PROVENANCE.txt"
+
+
+def _receipt_section(path: Path, section: str) -> dict[str, str]:
+    """``key = value`` rows of one ``[section]`` of a build.sh receipt."""
+    rows: dict[str, str] = {}
+    current = None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1]
+            continue
+        if current == section and " = " in line:
+            key, value = line.split(" = ", 1)
+            rows[key.strip()] = value.strip()
+    return rows
 
 
 def _before_column(path: Path, field: str) -> tuple[str, ...]:
@@ -710,8 +693,8 @@ def fixture_provenance_witness() -> dict:
     HERMETIC: reads only committed repository bytes -- no gfortran, no WRF
     tree, no rebuild.  ``p_pa`` is a pure function of the harness's z grid,
     so every scenario must print the same 24 values.  Any file that does not
-    was produced by a different build of the harness, which is precisely the
-    claim :data:`ORACLE_REBUILD_EXCEPTIONS` makes.
+    was produced by a different build of the harness, which is what the
+    retired :data:`ORACLE_REBUILD_EXCEPTIONS` set used to record.
     """
     groups: dict[tuple[str, ...], list[str]] = {}
     for path in sorted(ORACLE_DIR.glob("*-column.csv")):
@@ -745,8 +728,8 @@ def _seed_k1_note() -> dict:
     """Record the k=1 vapour-seed coincidence the port spec generalised from.
 
     Kept because it is true AT k=1 and a reader will look for it, and
-    labelled because it is NOT the cause: see (c) in the
-    :data:`ORACLE_REBUILD_EXCEPTIONS` docstring.
+    labelled because it is NOT the cause: the old four-file drift was a
+    libmvec ``expf`` build difference, not a float64 vapour seed.
     """
     z = 250.0
     f64_then_real4 = float(np.float32(
@@ -793,6 +776,22 @@ def compare_rebuilt_oracle(build_dir: Path) -> dict:
                         and path.stat().st_size == asset.bytes),
         }
 
+    # The tables the fixtures were generated WITH are the receipt's
+    # [table_cache]; the packaged CLASSIC_TABLE_ASSETS above are a separate
+    # build and are reported, not required, against a rebuild.
+    committed_tables = _receipt_section(ORACLE_RECEIPT, "table_cache")
+    committed_libc = _receipt_section(ORACLE_RECEIPT, "toolchain").get("libc")
+    rebuilt_receipt = build_dir / "PROVENANCE.txt"
+    rebuilt_libc = (_receipt_section(rebuilt_receipt, "toolchain").get("libc")
+                    if rebuilt_receipt.exists() else None)
+    receipt_tables = {}
+    for name, expected in sorted(committed_tables.items()):
+        path = build_dir / name
+        rebuilt = _sha256_file(path) if path.exists() else None
+        receipt_tables[name] = {"receipt_sha256": expected,
+                                "rebuilt_sha256": rebuilt,
+                                "matches": rebuilt == expected}
+
     fresh_dir = build_dir / "column-oracle"
     identical, differing, missing = [], {}, []
     for name in sorted(p.name for p in ORACLE_DIR.glob("*.csv")):
@@ -816,6 +815,11 @@ def compare_rebuilt_oracle(build_dir: Path) -> dict:
         "csv_differences": differing,
         "differing_set_equals_documented_exceptions":
             sorted(differing) == sorted(ORACLE_REBUILD_EXCEPTIONS),
+        "receipt_libc": committed_libc,
+        "rebuilt_libc": rebuilt_libc,
+        "same_libc": committed_libc is not None
+                     and committed_libc == rebuilt_libc,
+        "receipt_tables": receipt_tables,
     }
 
 
@@ -882,6 +886,9 @@ def build_receipt(*, rebuild_dir: Path | None = None) -> dict:
         "f2_rebuild_exceptions": {
             "files": {k: dict(v)
                       for k, v in ORACLE_REBUILD_EXCEPTIONS.items()},
+            "libc_sensitive_fixtures": {
+                k: dict(v) for k, v in ORACLE_LIBC_SENSITIVE_FIXTURES.items()},
+            "libc_sensitive_tables": sorted(ORACLE_LIBC_SENSITIVE_TABLES),
             "pinned_witness": dict(ORACLE_PROVENANCE_WITNESS),
             "measured_witness": fixture_provenance_witness(),
         },

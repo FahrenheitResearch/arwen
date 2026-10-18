@@ -233,24 +233,39 @@ def scan_kernel_cache(cache_dir: Path | None = None
     """
 
     directory = cupy_kernel_cache_dir() if cache_dir is None else cache_dir
-    entries = 0
-    undecodable = 0
-    architectures: dict[str, int] = {}
     try:
         with os.scandir(directory) as scan:
-            for entry in scan:
-                if not entry.is_file():
-                    continue
-                entries += 1
-                architecture = _entry_architecture(entry.path)
-                if architecture is None:
-                    undecodable += 1
-                else:
-                    architectures[architecture] = (
-                        architectures.get(architecture, 0) + 1)
+            paths = [entry.path for entry in scan if entry.is_file()]
     except OSError:
         return 0, 0, {}
-    return entries, undecodable, architectures
+    # Every entry's header is one open and one small read.  On one thread that was 3.1 s for 31,266 entries before
+    # every forecast's restore, with the card waiting (measured 2026-10-16 on a DA forecast leg).  The probes run
+    # on a thread pool in fixed chunks and are tallied in scandir order, so the counts and the dictionary's key
+    # order are the serial loop's.
+    found = _probe_entries(paths)
+    undecodable = 0
+    architectures: dict[str, int] = {}
+    for architecture in found:
+        if architecture is None:
+            undecodable += 1
+        else:
+            architectures[architecture] = architectures.get(architecture, 0) + 1
+    return len(paths), undecodable, architectures
+
+
+def _probe_entries(paths: list[str]) -> list[str | None]:
+    """``_entry_architecture`` of every path, in order, probed on a thread pool when there are many."""
+
+    workers = min(32, os.cpu_count() or 1)
+    if len(paths) < 512 or workers < 2:
+        return [_entry_architecture(path) for path in paths]
+    from concurrent.futures import ThreadPoolExecutor
+
+    size = -(-len(paths) // (workers * 4))
+    chunks = [paths[start:start + size] for start in range(0, len(paths), size)]
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="kernel-cache-census") as pool:
+        parts = list(pool.map(lambda chunk: [_entry_architecture(path) for path in chunk], chunks))
+    return [architecture for part in parts for architecture in part]
 
 
 def kernel_cache_state(cache_dir: Path | None = None, *,
@@ -354,6 +369,10 @@ _compile_tally_lock = threading.Lock()
 _compile_tally = {"modules": 0, "seconds": 0.0}
 
 
+#: The subdirectory gpuwm.nvrtc_ptx_cache keeps its images in.
+DIRECT_NVRTC_SUBDIR = "gpuwm-direct-nvrtc"
+
+
 def _cache_file_count(directory: Path) -> int:
     """Files in the kernel cache, without opening any of them."""
 
@@ -381,11 +400,18 @@ def observe_module_compile(module_key: str):
         yield
         return
     directory = cupy_kernel_cache_dir()
-    before = _cache_file_count(directory)
+    # The engine's direct NVRTC route (gpuwm.nvrtc_ptx_cache: the no-FTZ
+    # units such as sfclay, noah and the diffusion modules) stores its images
+    # in a subdirectory, not beside CuPy's .cubin files.  Counting only the
+    # top level published none of those compiles: on a cold cache the MM5
+    # surface layer compiled for 110 s inside step 1 with no progress event.
+    direct = directory / DIRECT_NVRTC_SUBDIR
+    before = _cache_file_count(directory) + _cache_file_count(direct)
     started = time.perf_counter()
     yield
     seconds = time.perf_counter() - started
-    written = _cache_file_count(directory) - before
+    written = (_cache_file_count(directory) + _cache_file_count(direct)
+               - before)
     if written <= 0:
         return
     with _compile_tally_lock:

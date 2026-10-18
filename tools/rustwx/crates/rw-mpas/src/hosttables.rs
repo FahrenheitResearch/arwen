@@ -7,7 +7,8 @@
 //! operation is one IEEE operation in the storage dtype, in the authority's
 //! order; Rust never contracts to FMA.  Transcendentals follow the hexcore
 //! ``rkind_libm`` convention: evaluate in binary64 through the platform libm,
-//! round once to the storage dtype.  Scalar ``x ** 2`` in the advection
+//! round once to the storage dtype. Mode 15 alone uses GNU binary32 libm
+//! and emits all five native deformation arrays. Scalar ``x ** 2`` in the advection
 //! source order is the platform ``powf``/``pow`` call numpy's scalar power
 //! makes; the exponent is passed through ``black_box`` so the compiler cannot
 //! rewrite it as a multiply.
@@ -21,6 +22,12 @@ use rayon::prelude::*;
 use std::io::{Read, Write};
 use std::ops::{Div, Neg};
 
+// A statically linked musl bridge must not advertise GNU libm identity.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub const DEFORMATION_MARKER: &str = "hex-hostprep-gnu-deformation-v1";
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub const DEFORMATION_MARKER: &str = "";
+
 pub const TABLES_MARKER: &str = "rw_mpas_hostprep --tables hex-hostprep-tables-v1";
 
 pub(crate) trait Tab: Real + Div<Output = Self> + Neg<Output = Self> {
@@ -30,6 +37,10 @@ pub(crate) trait Tab: Real + Div<Output = Self> + Neg<Output = Self> {
     fn is_finite_value(self) -> bool;
     fn is_nan_value(self) -> bool;
     fn pow_libm(self, exponent: Self) -> Self;
+    fn sin_geo(self, native: bool) -> Self { let _ = native; self.sin_rk() }
+    fn cos_geo(self, native: bool) -> Self { let _ = native; self.cos_rk() }
+    fn asin_geo(self, native: bool) -> Self { let _ = native; self.asin_rk() }
+    fn atan2_geo(self, x: Self, native: bool) -> Self { let _ = native; self.atan2_rk(x) }
     fn sin_rk(self) -> Self {
         Self::narrow(self.wide().sin())
     }
@@ -43,7 +54,20 @@ pub(crate) trait Tab: Real + Div<Output = Self> + Neg<Output = Self> {
         Self::narrow(self.wide().atan2(x.wide()))
     }
 }
+// GNU native geometry uses binary32 libm, unlike the historical RKIND tables.
+#[cfg_attr(unix, link(name = "m"))]
+unsafe extern "C" {
+    fn sinf(x: f32) -> f32;
+    fn cosf(x: f32) -> f32;
+    fn asinf(x: f32) -> f32;
+    fn atan2f(y: f32, x: f32) -> f32;
+}
 impl Tab for f32 {
+    fn sin_geo(self, native: bool) -> Self { if native { unsafe { sinf(self) } } else { self.sin_rk() } }
+    fn cos_geo(self, native: bool) -> Self { if native { unsafe { cosf(self) } } else { self.cos_rk() } }
+    fn asin_geo(self, native: bool) -> Self { if native { unsafe { asinf(self) } } else { self.asin_rk() } }
+    fn atan2_geo(self, x: Self, native: bool) -> Self { if native { unsafe { atan2f(self, x) } } else { self.atan2_rk(x) } }
+
     fn wide(self) -> f64 {
         self as f64
     }
@@ -102,31 +126,31 @@ fn np_min<T: Tab>(a: T, b: T) -> T {
 }
 
 /// ``mixing_v841._sphere_arc_length``.
-fn arc_length<T: Tab>(a: [T; 3], b: [T; 3], one: T) -> T {
+fn arc_length<T: Tab>(a: [T; 3], b: [T; 3], one: T, native: bool) -> T {
     let c = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let r = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt_ieee();
     let chord = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt_ieee();
     let two = one + one;
-    r * two * (chord / (two * r)).asin_rk()
+    r * two * (chord / (two * r)).asin_geo(native)
 }
 
 /// ``mixing_v841._sphere_angle``.
-fn sphere_angle<T: Tab>(a: [T; 3], b: [T; 3], c: [T; 3], one: T) -> T {
+fn sphere_angle<T: Tab>(a: [T; 3], b: [T; 3], c: [T; 3], one: T, native: bool) -> T {
     let zero = one - one;
     let half = one / (one + one);
     let two = one + one;
-    let side_a = arc_length(b, c, one);
-    let side_b = arc_length(a, c, one);
-    let side_c = arc_length(a, b, one);
+    let side_a = arc_length(b, c, one, native);
+    let side_b = arc_length(a, c, one, native);
+    let side_c = arc_length(a, b, one, native);
     let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let d_x = (ab[1] * ac[2]) - (ab[2] * ac[1]);
     let d_y = -((ab[0] * ac[2]) - (ab[2] * ac[0]));
     let d_z = (ab[0] * ac[1]) - (ab[1] * ac[0]);
     let s = half * (side_a + side_b + side_c);
-    let ratio = ((s - side_b).sin_rk() * (s - side_c).sin_rk()) / (side_b.sin_rk() * side_c.sin_rk());
+    let ratio = ((s - side_b).sin_geo(native) * (s - side_c).sin_geo(native)) / (side_b.sin_geo(native) * side_c.sin_geo(native));
     let sin_angle = np_min(one, np_max(zero, ratio)).sqrt_ieee();
-    let magnitude = two * np_max(np_min(sin_angle, one), -one).asin_rk();
+    let magnitude = two * np_max(np_min(sin_angle, one), -one).asin_geo(native);
     if (d_x * a[0] + d_y * a[1] + d_z * a[2]) >= zero {
         magnitude
     } else {
@@ -144,6 +168,7 @@ pub(crate) fn deformation_weights<T: Tab>(
     me: usize,
     counts: &[i64],
     eoc: &[i64],
+    native: bool,
 ) -> Result<(), String> {
     let nv = read_indices(input, 1)?[0];
     let nv = usize::try_from(nv).map_err(|_| "invalid vertex count")?;
@@ -165,12 +190,16 @@ pub(crate) fn deformation_weights<T: Tab>(
     let mut c2 = filled(size, T::zero())?;
     let mut s2 = filled(size, T::zero())?;
     let mut cs = filled(size, T::zero())?;
+    let mut c = filled(size, T::zero())?;
+    let mut s = filled(size, T::zero())?;
     let results: Vec<Result<(), String>> = c2
         .par_chunks_mut(me)
         .zip(s2.par_chunks_mut(me))
         .zip(cs.par_chunks_mut(me))
+        .zip(c.par_chunks_mut(me))
+        .zip(s.par_chunks_mut(me))
         .enumerate()
-        .map(|(cell, ((c2r, s2r), csr))| {
+        .map(|(cell, ((((c2r, s2r), csr), cr), sr))| {
             let count = counts[cell];
             if count < 3 || count as usize > me {
                 return Err(format!("cell {cell} has invalid nEdgesOnCell {count}"));
@@ -199,22 +228,22 @@ pub(crate) fn deformation_weights<T: Tab>(
             let theta_abs = if c[2] == one {
                 pii / (one + one)
             } else {
-                pii / (one + one) - sphere_angle(c, v[0], [zero, zero, one], one)
+                pii / (one + one) - sphere_angle(c, v[0], [zero, zero, one], one, native)
             };
             let mut thetav = vec![zero; count];
             let mut dl_sphere = vec![zero; count];
             for j in 0..count {
                 let jp1 = (j + 1) % count;
-                thetav[j] = sphere_angle(c, v[j], v[jp1], one);
-                dl_sphere[j] = radius * arc_length(c, v[j], one);
+                thetav[j] = sphere_angle(c, v[j], v[jp1], one, native);
+                dl_sphere[j] = radius * arc_length(c, v[j], one, native);
             }
             let mut thetat = vec![zero; count];
             thetat[0] = theta_abs;
             for j in 1..count {
                 thetat[j] = thetat[j - 1] + thetav[j - 1];
             }
-            let xp: Vec<T> = (0..count).map(|j| thetat[j].cos_rk() * dl_sphere[j]).collect();
-            let yp: Vec<T> = (0..count).map(|j| thetat[j].sin_rk() * dl_sphere[j]).collect();
+            let xp: Vec<T> = (0..count).map(|j| thetat[j].cos_geo(native) * dl_sphere[j]).collect();
+            let yp: Vec<T> = (0..count).map(|j| thetat[j].sin_geo(native) * dl_sphere[j]).collect();
             let mut area_cell = zero;
             let mut theta_edge = vec![zero; count];
             for j in 0..count {
@@ -223,21 +252,23 @@ pub(crate) fn deformation_weights<T: Tab>(
                 let dy = yp[jp1] - yp[j];
                 area_cell = area_cell + quarter * (xp[j] + xp[jp1]) * (yp[jp1] - yp[j])
                     - quarter * (yp[j] + yp[jp1]) * (xp[jp1] - xp[j]);
-                theta_edge[j] = dy.atan2_rk(dx) - pii / (one + one);
+                theta_edge[j] = dy.atan2_geo(dx, native) - pii / (one + one);
             }
             for j in 0..count {
                 let jp1 = (j + 1) % count;
                 let dx = xp[jp1] - xp[j];
                 let dy = yp[jp1] - yp[j];
                 let dl = (dx * dx + dy * dy).sqrt_ieee();
-                let sin_t = theta_edge[j].sin_rk();
-                let cos_t = theta_edge[j].cos_rk();
+                let sin_t = theta_edge[j].sin_geo(native);
+                let cos_t = theta_edge[j].cos_geo(native);
                 let sint2 = sin_t * sin_t;
                 let cost2 = cos_t * cos_t;
                 let sint_cost = sin_t * cos_t;
                 let mut a = dl * cost2 / area_cell;
                 let mut b = dl * sint2 / area_cell;
                 let mut d = dl * sint_cost / area_cell;
+                cr[j] = dl * cos_t / area_cell;
+                sr[j] = dl * sin_t / area_cell;
                 if coe[slot_edges[j] as usize * 2] != cell as i64 {
                     a = -a;
                     b = -b;
@@ -259,6 +290,10 @@ pub(crate) fn deformation_weights<T: Tab>(
     write_values(output, &c2)?;
     write_values(output, &s2)?;
     write_values(output, &cs)?;
+    if native {
+        write_values(output, &c)?;
+        write_values(output, &s)?;
+    }
     Ok(())
 }
 

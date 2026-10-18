@@ -2022,7 +2022,32 @@ def test_gfs_only_policy_stays_out_of_the_shared_preparation_identity():
     from gpuwm.case_data import gfs_preparation_policy, preparation_case_policy
     shared = preparation_case_policy(None)
     assert not any(key.startswith("gfs_") for key in shared)
-    assert set(gfs_preparation_policy(None)) == {"gfs_snow_convention", "gfs_lake_skin"}
+    assert set(gfs_preparation_policy(None)) == {
+        "gfs_snow_convention", "gfs_lake_skin", "gfs_lake_ice"}
+
+
+def test_lake_ice_defaults_to_observed_and_wps_is_a_declared_knob(tmp_path):
+    from gpuwm.case_data import optional_case_data_from_config, gfs_preparation_policy
+    assert gfs_preparation_policy(None)["gfs_lake_ice"] == "observed"
+    from test_case_data import make_case_toml, _CASE_DATA_TOML
+    p = make_case_toml(tmp_path, case_data=_CASE_DATA_TOML + 'gfs_lake_ice = "wps"\n')
+    assert gfs_preparation_policy(optional_case_data_from_config(p))["gfs_lake_ice"] == "wps"
+    p.write_text(p.read_text().replace('gfs_lake_ice = "wps"', 'gfs_lake_ice = "ims"'))
+    with pytest.raises(ValueError, match="gfs_lake_ice"):
+        optional_case_data_from_config(p)
+
+
+def test_the_gfs_route_freezes_observed_lakes_on_the_root_and_every_child():
+    """The root's soil call reads the provider's fields, and both child
+    catalogs (one-shot and chained tree) carry the root's provider."""
+    import inspect
+    from gpuwm import gfs_direct
+    source = inspect.getsource(gfs_direct.prepare_gfs_wrf)
+    assert 'case_policy["gfs_lake_ice"], times[0]' in source
+    assert "soil = preprocess_land_surface_soil(\n            soil_fields," in source
+    assert source.count("lake_ice_provider=lake_ice_provider,") == 2
+    chained = inspect.getsource(gfs_direct._prepare_chained_gfs_tree)
+    assert "lake_ice_provider=c.lake_ice_provider," in chained
 
 
 def test_the_gfs_route_keeps_its_lakes_on_the_wps_search_by_default():

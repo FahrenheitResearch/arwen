@@ -8,6 +8,7 @@ falls back to the original compiler call.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -94,6 +95,9 @@ def _compile_environment(compiler, arch: str, options: tuple[str, ...]):
 
 
 def _cache_identity(cupy, compiler, source, options, arch, filename):
+    # No driver version: NVRTC's output does not depend on the driver, and keying on it made every box
+    # whose driver reported another CUDA version (13030 on the R610 hosts) miss every baked entry,
+    # sfclay's 115 s compile among them.  The NVRTC build, target and CuPy identity stay in the key.
     selected_arch = str(compiler._get_arch() if arch is None else arch)
     environment = _compile_environment(compiler, selected_arch, options)
     return {
@@ -103,9 +107,47 @@ def _cache_identity(cupy, compiler, source, options, arch, filename):
         "arch": selected_arch,
         "filename": filename,
         "cupy_version": str(cupy.__version__),
-        "driver_version": int(cupy.cuda.runtime.driverGetVersion()),
         **environment,
     }
+
+
+def plan_probe(arguments, arch):
+    """The entry a recorded kernel-plan request is stored under for ``arch`` (gpuwm.kernel_plan replay).
+
+    ``arguments`` are the ones this module handed CuPy's compiler, so the
+    identity is the one :func:`compile_using_nvrtc` forms on a card of ``arch``.
+    """
+    cupy, compiler = _compiler_runtime()
+    identity = _cache_identity(cupy, compiler, arguments["source"], tuple(arguments["options"]),
+                               str(arch), arguments["filename"])
+    return str(_cache_directory(compiler) / "gpuwm-direct-nvrtc" / (_entry_key(identity) + ".image"))
+
+
+@contextlib.contextmanager
+def _entry_lock(path: Path):
+    """One process compiles a missing entry; the others wait and read it.
+
+    The breakage this prevents: ``gpuwm warm-kernels`` workers side by side
+    compiled the same shared units at once (408 direct compiles for 60 images
+    on a 4090).  No lock (no fcntl, unwritable cache) keeps the old behaviour.
+    """
+    handle = None
+    try:
+        import fcntl
+        # Beside the entry directory, not in it: the directory holds entries only.
+        locks = path.parent.with_name(path.parent.name + ".locks")
+        locks.mkdir(parents=True, exist_ok=True)
+        handle = open(locks / (path.name + ".lock"), "a")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except (ImportError, OSError):
+        if handle is not None:
+            handle.close()
+        handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.close()
 
 
 def _entry_key(identity):
@@ -180,6 +222,37 @@ def _write_entry(path: Path, identity, image, mapping):
                 pass
 
 
+def _compile_and_store(compiler, source, options, arch, filename, path, identity, event,
+                       name_expressions, log_stream, jitify, method, cache_in_memory):
+    started = time.perf_counter()
+    # Preserve the source, options and four positional arguments exactly.
+    # RawModule would inject -ftz=true, which changes subnormal results.
+    kwargs = {}
+    for name, value in (("name_expressions", name_expressions),
+                        ("log_stream", log_stream), ("jitify", jitify),
+                        ("method", method)):
+        if value is not None:
+            kwargs[name] = value
+    if cache_in_memory:
+        kwargs["cache_in_memory"] = cache_in_memory
+    if path is not None:
+        # The kernel plan records this entry beside the request, so a later
+        # start skips compiling it ahead when the entry is on disk.
+        from gpuwm import kernel_plan
+        named = kernel_plan.cache_entry("gpuwm.nvrtc_ptx_cache:plan_probe", path)
+    else:
+        named = contextlib.nullcontext()
+    with named:
+        result = compiler.compile_using_nvrtc(
+            source, options, arch, filename, **kwargs)
+    event["compile_seconds"] = time.perf_counter() - started
+    if path is not None:
+        started = time.perf_counter()
+        event["cache_written"] = _write_entry(path, identity, *result)
+        event["write_seconds"] = time.perf_counter() - started
+    return result
+
+
 def compile_using_nvrtc(source, options=(), arch=None, filename="kern.cu",
                         name_expressions=None, log_stream=None,
                         cache_in_memory=False, jitify=None, method=None):
@@ -194,7 +267,10 @@ def compile_using_nvrtc(source, options=(), arch=None, filename="kern.cu",
         raise RuntimeError(
             f"{NO_LOCAL_GPU_ENV} forbids local NVRTC compilation")
     cupy, compiler = _compiler_runtime()
-    options = tuple(options)
+    # fast numerics drops the no-contraction request before the key is formed (gpuwm/numerics.py), so a
+    # fast and a strict image never share an entry
+    from gpuwm.numerics import effective_options
+    options = effective_options(options)
     began = time.perf_counter()
     event = {"filename": filename, "status": "bypass", "key": None,
              "identity_seconds": 0.0, "lookup_seconds": 0.0,
@@ -232,26 +308,22 @@ def compile_using_nvrtc(source, options=(), arch=None, filename="kern.cu",
     else:
         result = None
     if result is None:
-        started = time.perf_counter()
-        # Preserve the source, options and four positional arguments exactly.
-        # RawModule would inject -ftz=true, which changes subnormal results.
-        kwargs = {}
-        for name, value in (("name_expressions", name_expressions),
-                            ("log_stream", log_stream), ("jitify", jitify),
-                            ("method", method)):
-            if value is not None:
-                kwargs[name] = value
-        if cache_in_memory:
-            kwargs["cache_in_memory"] = cache_in_memory
-        result = compiler.compile_using_nvrtc(
-            source, options, arch, filename, **kwargs)
-        event["compile_seconds"] = time.perf_counter() - started
-        if path is not None:
-            started = time.perf_counter()
-            event["cache_written"] = _write_entry(path, identity, *result)
-            event["write_seconds"] = time.perf_counter() - started
+        with (_entry_lock(path) if path is not None else contextlib.nullcontext()):
+            if path is not None:
+                # Another process may have written the entry while this one waited.
+                result = _read_entry(path, identity)
+                if result is not None:
+                    event["status"] = "hit"
+            if result is None:
+                result = _compile_and_store(compiler, source, options, arch, filename, path,
+                                            identity, event, name_expressions, log_stream,
+                                            jitify, method, cache_in_memory)
     event["image_bytes"] = len(result[0])
     event["total_seconds"] = time.perf_counter() - began
+    # A static-plan capture that found its image on disk stops here: it adds
+    # no event to the run's startup receipt (gpuwm.kernel_plan.ahead).
+    from gpuwm.kernel_plan import refuse_while_capturing
+    refuse_while_capturing()
     with _EVENT_LOCK:
         _EVENTS.append(event)
     return result

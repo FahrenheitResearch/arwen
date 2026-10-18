@@ -1,8 +1,7 @@
 //! Horizontal interpolation from a first-guess grid to mesh points.
 //!
-//! A port of `mpas_init_atm_hinterp.F` restricted to the five methods case 7
-//! actually names (`sixteen_pt`, `four_pt`, `wt_four_pt_average`,
-//! `nearest_neighbor`, `search_extrap`) plus the cylindrical-equidistant
+//! The eight numerical methods in `mpas_init_atm_hinterp.F`, including the
+//! three averaging methods outside case 7's default method lists, plus the cylindrical-equidistant
 //! `latlon_to_ij` out of `mpas_init_atm_llxy.F`.
 //!
 //! ## Why it is a sequence and not a method
@@ -27,13 +26,16 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The nine parabolic/bilinear/search methods, in the Fortran's own numbering.
+/// The eight parabolic/bilinear/averaging/search methods in native order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     SixteenPoint,
     FourPoint,
     NearestNeighbor,
+    Average4,
+    Average16,
     WtAverage4,
+    WtAverage16,
     Search,
 }
 
@@ -241,6 +243,9 @@ pub fn interp_sequence(
         Method::FourPoint => four_pt(xx, yy, ctx, list, idx + 1),
         Method::SixteenPoint => sixteen_pt(xx, yy, ctx, list, idx + 1),
         Method::WtAverage4 => wt_four_pt_average(xx, yy, ctx, list, idx + 1),
+        Method::Average4 => four_pt_average(xx, yy, ctx, list, idx + 1),
+        Method::Average16 => sixteen_pt_average(xx, yy, ctx, list, idx + 1),
+        Method::WtAverage16 => wt_sixteen_pt_average(xx, yy, ctx, list, idx + 1),
         Method::NearestNeighbor => nearest_neighbor(xx, yy, ctx, list, idx + 1),
         Method::Search => search_extrap(xx, yy, ctx, list, idx + 1),
     }
@@ -299,7 +304,8 @@ fn four_pt(xx: f32, yy: f32, ctx: &InterpContext<'_>, list: &[Method], idx: usiz
 /// at whatever the leading `x == 0` / `x == 1` branch set — which is 0.0 when
 /// `x` is strictly interior.  That is why the caller substitutes `1.E-20` for
 /// exact zeros before calling and maps it back afterwards.
-fn oned(x: f32, a: f32, b: f32, c: f32, d: f32, ctx: &InterpContext<'_>) -> f32 {
+/// MPAS v8.4.2 mpas_init_atm_hinterp.F:1025-1057.
+pub fn oned(x: f32, a: f32, b: f32, c: f32, d: f32, ctx: &InterpContext<'_>) -> f32 {
     let mut out = 0.0f32;
     if x == 0.0 {
         out = b;
@@ -422,6 +428,140 @@ fn sixteen_pt(xx: f32, yy: f32, ctx: &InterpContext<'_>, list: &[Method], idx: u
             interp_sequence(xx, yy, ctx, list, idx)
         }
     }
+}
+
+/// MPAS v8.4.2 mpas_init_atm_hinterp.F:428-521.
+fn four_pt_average(
+    xx: f32,
+    yy: f32,
+    ctx: &InterpContext<'_>,
+    list: &[Method],
+    idx: usize,
+) -> f32 {
+    let a = ctx.array;
+    let mut ifx = xx.floor() as i32;
+    let mut icx = xx.ceil() as i32;
+    let mut ify = yy.floor() as i32;
+    let mut icy = yy.ceil() as i32;
+    if ifx < a.start_x || icx > a.end_x || ify < a.start_y || icy > a.end_y {
+        if xx > a.start_x as f32 - 0.5 && ifx < a.start_x {
+            ifx = a.start_x;
+            icx = a.start_x;
+        } else if xx < a.end_x as f32 + 0.5 && icx > a.end_x {
+            ifx = a.end_x;
+            icx = a.end_x;
+        }
+        if yy > a.start_y as f32 - 0.5 && ify < a.start_y {
+            ify = a.start_y;
+            icy = a.start_y;
+        } else if yy < a.end_y as f32 + 0.5 && icy > a.end_y {
+            ify = a.end_y;
+            icy = a.end_y;
+        }
+        if ifx < a.start_x || icx > a.end_x || ify < a.start_y || icy > a.end_y {
+            return ctx.msgval;
+        }
+    }
+    let weight = |i, j| {
+        if a.get(i, j) == ctx.msgval || ctx.masked_at(i, j) { 0.0f32 } else { 1.0f32 }
+    };
+    let fxfy = weight(ifx, ify);
+    let fxcy = weight(ifx, icy);
+    let cxfy = weight(icx, ify);
+    let cxcy = weight(icx, icy);
+    if fxfy == 0.0 && fxcy == 0.0 && cxfy == 0.0 && cxcy == 0.0 {
+        interp_sequence(xx, yy, ctx, list, idx)
+    } else {
+        (fxfy * a.get(ifx, ify) + fxcy * a.get(ifx, icy)
+            + cxfy * a.get(icx, ify) + cxcy * a.get(icx, icy))
+            / (fxfy + fxcy + cxfy + cxcy)
+    }
+}
+
+/// MPAS v8.4.2 mpas_init_atm_hinterp.F:622-701.
+fn sixteen_pt_average(
+    xx: f32,
+    yy: f32,
+    ctx: &InterpContext<'_>,
+    list: &[Method],
+    idx: usize,
+) -> f32 {
+    let a = ctx.array;
+    let ifx = xx.floor() as i32;
+    let ify = yy.floor() as i32;
+    if ifx < a.start_x + 1 || ifx > a.end_x - 2
+        || ify < a.start_y + 1 || ify > a.end_y - 2 {
+        return interp_sequence(xx, yy, ctx, list, idx);
+    }
+    let mut weights = [[0.0f32; 4]; 4];
+    let mut sum_weight = 0.0f32;
+    for i in 1..=4 {
+        for j in 1..=4 {
+            let (x, y) = (ifx + 3 - i as i32, ify + 3 - j as i32);
+            let weight = if a.get(x, y) == ctx.msgval || ctx.masked_at(x, y) {
+                0.0f32
+            } else {
+                1.0f32
+            };
+            weights[i - 1][j - 1] = weight;
+            sum_weight += weight;
+        }
+    }
+    if sum_weight == 0.0 {
+        return interp_sequence(xx, yy, ctx, list, idx);
+    }
+    let mut sum = 0.0f32;
+    for i in 1..=4 {
+        for j in 1..=4 {
+            sum += weights[i - 1][j - 1]
+                * a.get(ifx + 3 - i as i32, ify + 3 - j as i32);
+        }
+    }
+    sum / sum_weight
+}
+
+/// MPAS v8.4.2 mpas_init_atm_hinterp.F:708-787.
+fn wt_sixteen_pt_average(
+    xx: f32,
+    yy: f32,
+    ctx: &InterpContext<'_>,
+    list: &[Method],
+    idx: usize,
+) -> f32 {
+    let a = ctx.array;
+    let ifx = xx.floor() as i32;
+    let ify = yy.floor() as i32;
+    if ifx < a.start_x + 1 || ifx > a.end_x - 2
+        || ify < a.start_y + 1 || ify > a.end_y - 2 {
+        return interp_sequence(xx, yy, ctx, list, idx);
+    }
+    let mut weights = [[0.0f32; 4]; 4];
+    let mut sum_weight = 0.0f32;
+    for i in 1..=4 {
+        for j in 1..=4 {
+            let (x, y) = (ifx + 3 - i as i32, ify + 3 - j as i32);
+            let weight = if a.get(x, y) == ctx.msgval || ctx.masked_at(x, y) {
+                0.0f32
+            } else {
+                let dx = xx - x as f32;
+                let dy = yy - y as f32;
+                (2.0f32 - (dx * dx + dy * dy).sqrt()).max(0.0)
+            };
+            weights[i - 1][j - 1] = weight;
+            sum_weight += weight;
+        }
+    }
+    if sum_weight == 0.0 {
+        return interp_sequence(xx, yy, ctx, list, idx);
+    }
+    let mut sum = 0.0f32;
+    for i in 1..=4 {
+        for j in 1..=4 {
+            sum += weights[i - 1][j - 1]
+                * a.get(ifx + 3 - i as i32, ify + 3 - j as i32);
+        }
+    }
+    sum / sum_weight
 }
 
 fn wt_four_pt_average(

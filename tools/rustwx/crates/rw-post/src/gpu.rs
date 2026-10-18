@@ -4,7 +4,7 @@
 //! (it includes `post_group_a.cu`, `group_b.cu`, `severe_c.cu` and
 //! `group_e.cu` with the shared maths library `woof_math.cuh`), built into
 //! ONE kernel set: CUBINs for the two certified Blackwell architectures
-//! (sm_100 and sm_120) plus a compute_75 PTX every other card JIT-compiles,
+//! (sm_100 and sm_120) plus a compute_60 PTX every other card JIT-compiles,
 //! all described by ONE manifest, `kernels/woof_post.manifest.json`.
 //!
 //! Why only two CUBINs: every image here is embedded in each binary that
@@ -12,11 +12,25 @@
 //! put the 2.8.7 manylinux wheel at about 105 MB, over PyPI's
 //! 100,000,000-byte per-file limit, so the release could not be uploaded.
 //! Byte identity is certified on Blackwell (sm_100, sm_120); Ada, Ampere,
-//! Hopper and the other Blackwell variants run the same kernels from the
-//! PTX, which encodes the same `--fmad=false` exact-division arithmetic.
+//! Hopper, Volta, Pascal and the other Blackwell variants run the same
+//! kernels from the PTX, which encodes the same `--fmad=false`
+//! exact-division arithmetic.
+//!
+//! Why the PTX is built by NVRTC 12.0 (PTX ISA 8.0) while the CUBINs come
+//! from a current NVRTC: a driver JIT-compiles only PTX whose ISA version
+//! it knows.  The 2.8.7 to 2.9.0 PTX came from NVRTC 13.4 (`.version 9.4`),
+//! and a CUDA 13.2 driver (595.91) refused it with
+//! `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`, so on every card but sm_100 and
+//! sm_120 the GRIB2 products of `--post-device auto` ran on the CPU.  PTX
+//! ISA 8.0 is JIT-compiled by every driver from R525 (CUDA 12.0) on, the
+//! floor of the `cu12` extra.  [`PTX_ISA_CEILING`] is that floor and
+//! `tests/gpu.rs` fails a PTX that exceeds it.
+//!
 //! [`EMBEDDED_ARTIFACTS`] is the set, and `tests/gpu.rs` pins it.
-//! [`GpuPost::open`] loads that image once and resolves every kernel; the
-//! groups launch through [`GpuPost::function`] on [`GpuPost::stream`].
+//! [`GpuPost::open`] loads the CUBIN of the card's architecture family when
+//! there is one, else (or when the driver refuses the CUBIN) the PTX, once,
+//! and resolves every kernel; the groups launch through
+//! [`GpuPost::function`] on [`GpuPost::stream`].
 //!
 //! Driver-only, dynamically loaded CUDA (vendored cudarc 0.19.8): no
 //! toolkit and no NVRTC at run time.
@@ -101,26 +115,86 @@ impl DeviceInfo {
 }
 
 /// Every image compiled into this crate, by file name: the sm_100 and
-/// sm_120 CUBINs and the compute_75 PTX, nothing else (see the module
+/// sm_120 CUBINs and the compute_60 PTX, nothing else (see the module
 /// documentation for why the other architectures are not embedded).
 pub const EMBEDDED_ARTIFACTS: [&str; 3] = ["woof_post_sm100.cubin", "woof_post_sm120.cubin", "woof_post.ptx"];
 
-/// The checked-in image for an architecture: its CUBIN, else the PTX.
-fn artifact_for(major: i32, minor: i32) -> (String, Ptx) {
-    macro_rules! cubin {
-        ($arch:literal) => {
-            (
-                concat!("sm_", stringify!($arch), " CUBIN").to_owned(),
-                Ptx::from_binary(
-                    include_bytes!(concat!("../kernels/woof_post_sm", stringify!($arch), ".cubin")).to_vec(),
-                ),
-            )
-        };
+/// The virtual architecture of the embedded PTX: Pascal (sm_60) and newer.
+pub const PTX_VIRTUAL_ARCHITECTURE: &str = "compute_60";
+
+/// The newest PTX ISA version the embedded PTX may declare (`.version`),
+/// and the driver that version needs.  ISA 8.0 is CUDA 12.0's: drivers
+/// 525.60.13 (Linux) and 527.41 (Windows) and newer JIT-compile it, the
+/// same floor as the `cu12` extra.  Breakage this prevents: NVRTC 13.4's
+/// `.version 9.4` PTX was refused by a CUDA 13.2 driver (595.91,
+/// `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`), and GRIB2 post on every card but
+/// sm_100/sm_120 fell back to the CPU.
+pub const PTX_ISA_CEILING: (u32, u32) = (8, 0);
+pub const PTX_DRIVER_FLOOR: &str = "525.60.13 (Linux) / 527.41 (Windows), CUDA 12.0";
+
+/// Which embedded image [`GpuPost::open_with`] loads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelImage {
+    /// The card family's CUBIN when one is embedded (the PTX when the
+    /// driver refuses it), else the PTX: what [`GpuPost::open`] does.
+    Auto,
+    /// The PTX on every card (the path every non-Blackwell card takes),
+    /// so a Blackwell card can prove it.
+    Ptx,
+}
+
+/// The embedded CUBIN that runs on an architecture, by CUDA's binary
+/// compatibility rule: an sm_XY CUBIN runs on sm_XZ for Z >= Y within the
+/// same major.  So sm_100 serves every 10.x card (B200 sm_100, B300
+/// sm_103) and sm_120 every 12.x card (RTX 50, RTX PRO 6000 sm_120, GB10
+/// sm_121); every other card takes the PTX.  Through 2.9.0 only exact 10.0
+/// and 12.0 got a CUBIN and sm_103/sm_121 took the PTX path.
+pub fn cubin_file_for(major: i32, _minor: i32) -> Option<&'static str> {
+    match major {
+        10 => Some("woof_post_sm100.cubin"),
+        12 => Some("woof_post_sm120.cubin"),
+        _ => None,
     }
-    match major * 10 + minor {
-        100 => cubin!(100),
-        120 => cubin!(120),
-        _ => ("compute_75 PTX".to_owned(), Ptx::from_src(PTX)),
+}
+
+fn cubin_for(major: i32, minor: i32) -> Option<(String, Ptx)> {
+    let file = cubin_file_for(major, minor)?;
+    let arch = file.trim_start_matches("woof_post_sm").trim_end_matches(".cubin");
+    Some((format!("sm_{arch} CUBIN"), Ptx::from_binary(checked_in_artifact(file)?.to_vec())))
+}
+
+fn ptx_image() -> (String, Ptx) {
+    (format!("{PTX_VIRTUAL_ARCHITECTURE} PTX"), Ptx::from_src(PTX))
+}
+
+/// The image the device tests open with: [`KernelImage::Ptx`] when
+/// `RW_POST_TEST_KERNEL_IMAGE=ptx`, else [`KernelImage::Auto`].  The switch
+/// lets a Blackwell card prove the PTX path every other card takes.  Read
+/// by the tests only; the exporter calls [`GpuPost::open`].
+#[doc(hidden)]
+pub fn test_image() -> KernelImage {
+    match std::env::var("RW_POST_TEST_KERNEL_IMAGE").as_deref() {
+        Ok("ptx") => KernelImage::Ptx,
+        _ => KernelImage::Auto,
+    }
+}
+
+/// Whether an NVIDIA driver library loads on this machine.
+pub fn driver_present() -> bool {
+    // SAFETY: loads (and drops) the driver library by name; no symbol is
+    // called.
+    unsafe { cudarc::driver::sys::is_culib_present() }
+}
+
+/// The installed driver's CUDA version as `13.2`, for error messages.
+fn driver_version() -> String {
+    let mut v = 0i32;
+    // SAFETY: plain query of an initialised driver into a local.
+    let r = unsafe { cudarc::driver::sys::cuDriverGetVersion(&mut v) };
+    if r == cudarc::driver::sys::cudaError_enum::CUDA_SUCCESS {
+        format!("{}.{}", v / 1000, (v % 1000) / 10)
+    } else {
+        "unknown".into()
     }
 }
 
@@ -170,7 +244,7 @@ fn grid(n: usize) -> LaunchConfig {
 }
 
 impl GpuPost {
-    /// Open device `ordinal` and load the kernels.
+    /// Open device `ordinal` and load the kernels ([`KernelImage::Auto`]).
     ///
     /// A machine with no NVIDIA driver library is an `Err`, not a panic:
     /// cudarc's dynamic loader panics on its first driver call when neither
@@ -180,6 +254,15 @@ impl GpuPost {
     /// cudarc's, over the same library names its loader tries; with the
     /// library present nothing changes.
     pub fn open(ordinal: usize) -> Result<Self, GpuError> {
+        Self::open_with(ordinal, KernelImage::Auto)
+    }
+
+    /// Open device `ordinal` with a chosen image.  A refused CUBIN falls
+    /// back to the PTX (a driver older than the CUBIN's toolkit refuses it
+    /// and still JIT-compiles the PTX); the label then says so.  When no
+    /// image loads, the error names each image, the driver's refusal and
+    /// the driver's CUDA version.
+    pub fn open_with(ordinal: usize, image: KernelImage) -> Result<Self, GpuError> {
         // SAFETY: loads (and drops) the driver library by name; no symbol
         // is called.
         if !unsafe { cudarc::driver::sys::is_culib_present() } {
@@ -192,8 +275,37 @@ impl GpuPost {
         let name = ctx.name().map_err(drv("device name"))?;
         let (major, minor) = ctx.compute_capability().map_err(drv("compute capability"))?;
         let total = ctx.total_mem().map_err(drv("device memory"))?;
-        let (label, image) = artifact_for(major, minor);
-        let module = ctx.load_module(image).map_err(drv("load post kernels"))?;
+        let mut refused: Vec<String> = Vec::new();
+        let mut loaded = None;
+        if image == KernelImage::Auto {
+            if let Some((label, cubin)) = cubin_for(major, minor) {
+                match ctx.load_module(cubin) {
+                    Ok(module) => loaded = Some((label, module)),
+                    Err(e) => refused.push(format!("{label}: {e}")),
+                }
+            }
+        }
+        let (label, module) = match loaded {
+            Some(found) => found,
+            None => {
+                let (label, ptx) = ptx_image();
+                match ctx.load_module(ptx) {
+                    Ok(module) if refused.is_empty() => (label, module),
+                    Ok(module) => (format!("{label}; the driver refused the {}", refused.join("; ")), module),
+                    Err(e) => {
+                        refused.push(format!("{label}: {e}"));
+                        return Err(GpuError::Driver {
+                            operation: "load post kernels",
+                            message: format!(
+                                "{name} (sm_{major}{minor}), driver CUDA {}: {}",
+                                driver_version(),
+                                refused.join("; ")
+                            ),
+                        });
+                    }
+                }
+            }
+        };
         let mut functions = BTreeMap::new();
         for name in KERNELS {
             functions.insert(name, module.load_function(name).map_err(drv("resolve post kernel"))?);

@@ -1,0 +1,39 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# WRF:      v4.6.1 d66e442fccc04111067e29274c9f9eaccc3cef28 (SOURCES.sha256)
+# wrfflags bl_ysu.o undefined libm symbols:
+#   U expf
+#   U powf
+#   U tanhf
+# wrfflags wrf_topo_wind_inline.o undefined libm symbols:
+#   U asinf
+#   U atan2f
+#   U atanf
+#   U logf
+#   U powf
+# O0 bl_ysu.o undefined libm symbols:
+#   U expf
+#   U powf
+#   U tanhf
+# O0 wrf_topo_wind_inline.o undefined libm symbols:
+#   U asinf
+#   U atan2f
+#   U atanf
+#   U logf
+#   U powf
+# Shin-Hong O2s module_bl_shinhong.o undefined libm symbols:
+#   U expf
+#   U powf
+#   U tanhf
+# Shin-Hong wrfflags module_bl_shinhong.o undefined libm symbols:
+#   U _ZGVbN4vv_powf
+#   U expf
+#   U powf
+#   U tanhf
+# Shin-Hong O0 module_bl_shinhong.o undefined libm symbols:
+#   U expf
+#   U powf
+#   U tanhf
+# FMA instructions in any object: 0
+# bytes differing wrfflags vs O0: static 0, ysu 468
+# Shin-Hong bytes differing from O2s: wrfflags 4, O0 4922

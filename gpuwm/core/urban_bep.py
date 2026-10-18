@@ -307,7 +307,7 @@ def launch_bep_columns(*, params, frc_urb2d, utype_urb2d, dz8w,
     # One tile = as many city columns as the scratch budget holds, in whole
     # 32-lane blocks.  Each column is a long serial thread (view factors,
     # two radiation solves, four conduction solves), so throughput is
-    # columns in flight: MEASURED on node-1's RTX 4090 at nz=30,
+    # columns in flight: MEASURED on test host A's RTX 4090 at nz=30,
     # 38,889 city columns: 64 MiB (1,856 per tile) 428 ms per call.
     cap = max(_TPB, (budget // (4*slots*_TPB))*_TPB)
     tile = min(nrun, cap)

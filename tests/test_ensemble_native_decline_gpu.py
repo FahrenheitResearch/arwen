@@ -30,7 +30,14 @@ from conftest import requires_gpu
 pytestmark = [pytest.mark.gpu, requires_gpu]
 
 _MEMBERS = 4
-_AUDIT_SENTENCE = "Thompson base-load indexing changed; shared terrain adapter needs a new source audit"
+#: The member-coupling source audit (gpuwm.ensemble.batch_physics.
+#: physics_coupling_source).  This gate drifted the Thompson base-load audit
+#: until classic Thompson stopped rewriting kernel text for a pack (its unit
+#: reads a shared base-state slab at each member's column itself); the
+#: coupling audit is the one every mp=8 pack still runs.
+_AUDIT_LINE = "const long long i = cell - j * nx;"
+_AUDIT_SENTENCE = (f"physics coupling indexing changed at {_AUDIT_LINE!r}; "
+                   "member-stripe adapter needs a new audit")
 
 
 @pytest.fixture(scope="module")
@@ -48,7 +55,7 @@ def decline_real(tmp_path_factory):
     inputs = prepare_wrf_run(replace(run, toml_text=text),
                              tmp_path_factory.mktemp("decline-ensemble-source"), run_seconds=24)
     inputs = _with_terrain_acoustics(inputs)
-    assert inputs.experiment.root.run.mp_physics == 8, "the audit this gate drifts is Thompson's"
+    assert inputs.experiment.root.run.mp_physics == 8, "the pack this gate drives is classic Thompson's"
     return inputs
 
 
@@ -115,12 +122,12 @@ def test_a_native_source_audit_drift_declines_to_the_ordinary_runner(decline_rea
     assert "SUCCESS COMPLETE SIMULATION, 0 steps" not in log
     assert "the native member pack declined" not in said.err
 
-    # Arm 2: the kernel text the Thompson audit reads has one audited
-    # base-state load spelled differently, as an edit to that kernel would.
-    audit, refused = batch_physics._thompson_base_source, []
+    # Arm 2: the kernel text the coupling audit reads has one audited line
+    # spelled differently, as an edit to that kernel would.
+    audit, refused = batch_physics.physics_coupling_source, []
 
     def drifted(source, **options):
-        changed = source.replace("thb[thb_full ? idx : k]", "thb[(thb_full ? idx : k)]")
+        changed = source.replace(_AUDIT_LINE, "const long long i = (cell - j * nx);")
         assert changed != source, "the stock kernel no longer has the line this gate drifts"
         try:
             return audit(changed, **options)
@@ -128,7 +135,7 @@ def test_a_native_source_audit_drift_declines_to_the_ordinary_runner(decline_rea
             refused.append(str(refusal))
             raise
 
-    monkeypatch.setattr(batch_physics, "_thompson_base_source", drifted)
+    monkeypatch.setattr(batch_physics, "physics_coupling_source", drifted)
     declined = _run(decline_real, tmp_path / "declined")
     said = capfd.readouterr()
     assert refused == [_AUDIT_SENTENCE], "the real audit is what refused, once, in the first pack"

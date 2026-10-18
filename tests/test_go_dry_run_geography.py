@@ -78,9 +78,11 @@ def test_the_dry_run_passes_a_staged_geog_root(tmp_path, capsys, source):
 def test_the_dry_run_refuses_an_absent_default_root(
         tmp_path, capsys, monkeypatch):
     """The default root is asked too; the suite's pin is put back here."""
+    config = _emit(tmp_path, "gfs")
+    # Domain creation now checks geography too. Restore the real check
+    # after creating the input so this test reaches the dry-run refusal.
     monkeypatch.setattr(go_cli, "geography_refusal", REAL_GEOGRAPHY_REFUSAL)
     monkeypatch.setenv("GPUWM_CASE_DATA_ROOT", str(tmp_path / "case-data"))
-    config = _emit(tmp_path, "gfs")
     capsys.readouterr()
     rc = main(["go", str(config), "--dry-run",
                "--outdir", str(tmp_path / "out")])

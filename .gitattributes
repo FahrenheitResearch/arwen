@@ -148,6 +148,9 @@ tools/albsol_score/receipts/tests.log -whitespace
 # The chem oracle fixtures (tests/data/oracles/chem, graded by tests/test_chem_*_wrf471_parity.py):
 # raw little-endian float32 dumps of the pinned Fortran, never diffed or merged as text.
 tests/data/oracles/chem/**/*.bin binary
+# The wide YSU oracle (tests/test_ysu_wrf461_wide_parity.py) hashes every file
+# in its folder, the JSON summary and the text receipt included.
+tests/data/oracles/ysu_wide/** -text
 # The smoke plume fixtures' manifests and digest lists are compared byte for
 # byte by tests/test_chem_plumerise_*_parity.py, so no checkout rewrites them.
 tests/data/oracles/chem/smoke/**/MANIFEST.txt -text
@@ -190,3 +193,20 @@ tools/thompson_generation_oracle/upstream/module_mp_thompson.F -whitespace
 # The Milbrandt-Yau WRF v4.6.1 oracle fixtures (tests/data/oracles/milbrandt2,
 # graded by tests/test_milbrandt2_wrf461_exact_gpu.py): xz streams, never text.
 tests/data/oracles/milbrandt2/*.xz binary
+# The rw-mpas surface oracle patch applies to the hex CLI source: its blank context
+# lines are a single space, which a patch needs; the 2.9.1 battery export check refused them.
+tools/rustwx/crates/rw-mpas/tests/surface_oracle/*.patch -whitespace
+# 2.9.1 (the exact chain): byte-pinned sources and verbatim fixtures whose final blank
+# line or trailing blanks are their recorded bytes; the 2.9.1 rehearsal battery's export
+# check refused them.  ysu_topo_default.cuh and mynn_surface_libm.cuh are pinned in
+# tests/test_kernel_source_freeze_per_module.py, noah_oracle.py by the SFIRE qualified-
+# sources receipt; NCAR's v4.4 CONUS 12 km namelists are NCAR's shipped bytes; the oracle
+# receipts and patches are recorded tool output and upstream patch context.
+gpuwm/core/kernels/ysu_topo_default.cuh -whitespace
+gpuwm/core/kernels/mynn_surface_libm.cuh -whitespace
+gpuwm/verify/noah_oracle.py -whitespace
+tests/data/ncar_v44_conus12km/namelist.input -whitespace
+tests/data/ncar_v44_conus12km/namelist.wps -whitespace
+tools/noah_mosaic_wrf461_oracle/receipts/wrf461-chs-probe-trace.txt -whitespace
+tools/noah_mosaic_wrf461_oracle/receipts/unit-fix-control.diff -whitespace
+tools/rrtmgp_rte_upstream_oracle/upstream-boundary-fixes.patch -whitespace

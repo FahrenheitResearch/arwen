@@ -879,6 +879,8 @@ def restart_identity_payload(exp) -> dict:
         # ... and w_damp measured from Courant 1, WRF's default (A165).
         if float(run.get("w_crit_cfl", 1.0)) == 1.0:
             run.pop("w_crit_cfl", None)
+        from gpuwm.surface_ocean import drop_inert_ocean
+        drop_inert_ocean(run)
         if not run.get("sf_lake_physics", 0):
             run.pop("sf_lake_physics", None)
             run.pop("use_lakedepth", None)

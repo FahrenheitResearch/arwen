@@ -55,6 +55,12 @@ def fixture(cfg, *, wind=0.0):
     take = streaming.streamed_store_inventory()
     initial = {k: cp.asnumpy(a) for k, a in take(state).items()}
     store = {k: gather.pinned_empty(a.shape, a.dtype) for k, a in initial.items()}
+    # Domain-owned carriers (tilestream.global_inventory) are copied whole,
+    # never swept.
+    from tilestream.global_inventory import global_keys
+    owned = global_keys(initial)
+    for key in owned:
+        store[key][...] = initial[key]
     geography = driver.geography_store(state, host=True)
     # Assemble the pinned host store by scattering slab interiors, retaining
     # only the last slab as metadata. No full-device store copy is allocated.
@@ -73,8 +79,9 @@ def fixture(cfg, *, wind=0.0):
         # The independent resident reference supplies the synthetic prepared
         # carriers. Production preparation reads these from its host cache.
         gather.gather_tile(initial, slab, window, allow_pageable=True,
-                           inventory_fn=take, nz=cfg.nz)
-        gather.scatter_tile(slab, store, window, inventory_fn=take, nz=cfg.nz)
+                           inventory_fn=take, nz=cfg.nz, global_keys=owned)
+        gather.scatter_tile(slab, store, window, inventory_fn=take, nz=cfg.nz,
+                            global_keys=owned)
         cp.cuda.runtime.deviceSynchronize()
         template = slab
     del initial

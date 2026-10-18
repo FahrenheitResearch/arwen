@@ -13,7 +13,7 @@ plume-edge terms the admitted DMP_mf transcription already computes
 Source of record for every line: WRF v4.6.1 ``phys/module_bl_mynn.F``,
 SHA-256 ``b36c8b935cd9c8265359e78dbe8db285d99e992c7cab29917b5fca9d57d49452``
 (the sha the anchored ``w4-oracle-fixtures`` family
-pins; verified on node-1 this lane).  FP32 op order is WRF's, in the same
+pins; verified on test host A this lane).  FP32 op order is WRF's, in the same
 ``F(...)``-per-operation discipline as :mod:`gpuwm.core.mynn_pbl`.
 """
 

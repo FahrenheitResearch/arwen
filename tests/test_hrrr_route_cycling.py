@@ -95,15 +95,17 @@ def test_the_imported_operational_hrrr_namelist_prepares_on_this_route(
     """The acceptance row's reproduction, without the site.
 
     C1a and N1.1 imported the vendored operational HRRR v4.1.21 pair
-    (times set, the static datasets the door admits) and handed the TOML
-    to the route's preparation, which writes this pair and round-trips it.
+    (times set) and handed the TOML to the route's preparation, which
+    writes this pair and round-trips it.  Its own geog_data_res
+    (modis_15s+modis_fpar+modis_lai+30s) builds since 2.9.1; the 15
+    arc-second land use has 20 categories, so num_land_cat is 20, as WRF's
+    real.exe requires of geogrid's output.
     """
 
     wps = (OPERATIONAL / "hrrr_namelist.wps").read_text(encoding="utf-8")
     wps = wps.replace("2009-08-21_00:00:00", "2018-08-26_12:00:00")
     wps = wps.replace("2009-08-21_12:00:00", "2018-08-26_18:00:00")
-    wps = wps.replace("'modis_15s+modis_fpar+modis_lai+30s'",
-                      "'modis_lai+30s'")
+    assert "'modis_15s+modis_fpar+modis_lai+30s'" in wps
     (tmp_path / "namelist.wps").write_text(wps, encoding="utf-8")
     # Since 2026-10-12 the namelist's HRRR-Smoke chemistry is no longer
     # imported to run with none (tests/operational_namelist_edits.py).  With
@@ -113,6 +115,10 @@ def test_the_imported_operational_hrrr_namelist_prepares_on_this_route(
     # tree its own namelists would read without the smoke.
     from operational_namelist_edits import importable, without_smoke
     source = (OPERATIONAL / "hrrr_wrf.nl").read_text(encoding="utf-8")
+    land = "num_land_cat                        = 21,"
+    assert land in source
+    source = source.replace(
+        land, "num_land_cat                        = 20,")
     smoke = tmp_path / "smoke"
     smoke.mkdir()
     (smoke / "hrrr_wrf.nl").write_text(importable(source), encoding="utf-8")

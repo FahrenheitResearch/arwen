@@ -87,6 +87,20 @@ default. It does not override a published static source that supplies soil
 on its own grid. The archive rows use the upstream NCAR source automatically
 because the mirror does not carry these archives.
 
+The operational HRRR tokens build too: `modis_15s` selects the 15
+arc-second MODIS land use (`modis_landuse_20class_15s`, 20 categories, no
+lake class), `modis_fpar` the MODIS FPAR greenness fraction
+(`greenfrac_fpar_modis`, identical to `default`), and `modis_lai` the 30
+arc-second MODIS LAI (`lai_modis_30s`), each as WPS 4.6 `GEOGRID.TBL.ARW`
+names them. The first and last are not in the default fetch:
+
+```console
+gpuwm fetch-geog --datasets modis_landuse_20class_15s,lai_modis_30s --root GEOG_ROOT
+```
+
+A domain built from `modis_15s` has 20 land-use categories, so its
+namelist sets `num_land_cat = 20`, as WRF requires.
+
 When high-resolution terrain and land cover are enabled, retain the selected
 WPS soil maps with `soil_source = "wps-geog"` in `[static.highres]`.
 The overlay skips SoilGrids downloads and reconciles soil water categories

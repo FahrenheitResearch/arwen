@@ -1,0 +1,2 @@
+kte_mode 0: no out-of-bounds access on any of 280 columns
+kte_mode 1: no out-of-bounds access on any of 280 columns

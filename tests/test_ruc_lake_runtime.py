@@ -80,13 +80,20 @@ def test_coupled_lake_and_mosaic_restart_next_step(tmp_path):
     checkpoint = tmp_path / "surface.npz"
     write_restart(checkpoint, state, cfg)
     restore_restart(checkpoint, other, cfg)
+    from gpuwm.io.restart import CHECKPOINTED_CARRIED_SCRATCH_SLOTS
+    for slot in CHECKPOINTED_CARRIED_SCRATCH_SLOTS:
+        expected_slot = state.existing_scratch(slot)
+        actual_slot = other.existing_scratch(slot)
+        if expected_slot is None:
+            assert actual_slot is None
+        else:
+            assert cp.asnumpy(actual_slot).tobytes() == cp.asnumpy(expected_slot).tobytes(), slot
     step(state, cfg)
     step(other, cfg)
     expected, actual = carrier_manifest(state), carrier_manifest(other)
     assert expected.keys() == actual.keys()
     for name in expected:
-        np.testing.assert_array_equal(cp.asnumpy(actual[name]), cp.asnumpy(expected[name]),
-                                      err_msg=name)
+        assert cp.asnumpy(actual[name]).tobytes() == cp.asnumpy(expected[name]).tobytes(), name
 
 
 @requires_gpu

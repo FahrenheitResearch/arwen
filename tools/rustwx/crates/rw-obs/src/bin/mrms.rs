@@ -1258,6 +1258,14 @@ fn cmd_fetch(options: &Options) -> Result<String, Box<dyn Error>> {
             day_prefix(options.region()?, options.product()?, start.date_naive())
         )));
     }
+    // `--out` is the fetch directory (the help: "fetch: a directory", cache
+    // default "<out>/.cache").  cache_dir() takes <out>/.cache only when the
+    // directory exists, so a new --out was ignored and the objects went to
+    // ./.rw-obs-cache with nothing under --out.  Make it first, as `frames`
+    // does.
+    if let Some(out) = &options.out {
+        std::fs::create_dir_all(out)?;
+    }
     let cache_dir = options.cache_dir();
 
     #[derive(Serialize)]

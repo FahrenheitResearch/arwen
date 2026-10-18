@@ -38,6 +38,7 @@ use rw_nexrad::pack::{
 use crate::assemble::AssembleReport;
 
 use crate::censor;
+use crate::dualprf::{self, DualPrfReport};
 use crate::volume::{NyquistSource, PolarVolume, Sweep};
 
 /// What the pack's `nyquist_granularity` says for every ODIM sweep.
@@ -53,6 +54,8 @@ pub struct PackCensus {
     pub dropped_sweeps: usize,
     pub dropped_moments: usize,
     pub sweeps_without_nyquist: usize,
+    /// What the dual-PRF correction did (see [`crate::dualprf`]).
+    pub dual_prf: DualPrfReport,
 }
 
 /// Options for [`build_pack`].
@@ -93,6 +96,10 @@ fn boxed(message: String) -> Box<dyn Error> {
 /// came out of [`crate::assemble`] it carries the member manifest, and then
 /// `file_sha256` must be the manifest digest rather than any file's, because
 /// there is no single file to digest.
+///
+/// Dual-PRF velocity outliers are corrected here, on by default, before any
+/// consumer (dealiaser, superob) sees a velocity: [`build_pack_reported`]
+/// says how many gates that changed.
 pub fn build_pack(
     volume: &PolarVolume,
     options: &PackOptions,
@@ -101,6 +108,31 @@ pub fn build_pack(
     file_sha256: &str,
     assembled: Option<&AssembleReport>,
 ) -> Result<(PackMeta, Vec<u8>), Box<dyn Error>> {
+    build_pack_reported(
+        volume,
+        options,
+        true,
+        file_name,
+        file_bytes,
+        file_sha256,
+        assembled,
+    )
+    .map(|(meta, payload, _)| (meta, payload))
+}
+
+/// [`build_pack`], also returning the census: sweeps and moments dropped,
+/// and what the dual-PRF correction did. `dual_prf_correction` is the knob
+/// (`rw_odim pack --dual-prf off`); [`build_pack`] always passes `true`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_pack_reported(
+    volume: &PolarVolume,
+    options: &PackOptions,
+    dual_prf_correction: bool,
+    file_name: &str,
+    file_bytes: usize,
+    file_sha256: &str,
+    assembled: Option<&AssembleReport>,
+) -> Result<(PackMeta, Vec<u8>, PackCensus), Box<dyn Error>> {
     let mut builder = PayloadBuilder::new();
     let mut entries: Vec<SweepEntry> = Vec::new();
     let mut census = PackCensus::default();
@@ -114,6 +146,7 @@ pub fn build_pack(
         match build_sweep(
             sweep,
             options,
+            dual_prf_correction,
             &mut builder,
             &mut census,
             &mut trimmed_gates,
@@ -144,7 +177,20 @@ pub fn build_pack(
         volume: volume_entry(volume, file_name, file_bytes, file_sha256, assembled)?,
         params: DecodeParams {
             moments: options.quantities.clone(),
-            max_range_km: options.max_range_km,
+            // JSON has no infinity: an unlimited range written as-is became
+            // null and the pack reader refused the writer's own file
+            // ("invalid type: null, expected f64"), so every pack made
+            // without --max-range-km failed. Unlimited is recorded as the
+            // farthest gate the volume holds, which is the range in effect.
+            max_range_km: if options.max_range_km.is_finite() {
+                options.max_range_km
+            } else {
+                volume
+                    .sweeps
+                    .iter()
+                    .map(|sweep| sweep.max_range_m() / 1000.0)
+                    .fold(0.0, f64::max)
+            },
             max_elevation_deg: options.max_elevation_deg,
             // Always true: an ODIM pack without its censor planes would have
             // thrown away every correct negative in the file, which is the
@@ -159,12 +205,13 @@ pub fn build_pack(
         dropped_moments: census.dropped_moments,
         trimmed_gates,
     };
-    Ok((meta, payload))
+    Ok((meta, payload, census))
 }
 
 fn build_sweep(
     sweep: &Sweep,
     options: &PackOptions,
+    dual_prf_correction: bool,
     builder: &mut PayloadBuilder,
     census: &mut PackCensus,
     trimmed_gates: &mut usize,
@@ -252,12 +299,23 @@ fn build_sweep(
             continue;
         }
 
+        // Dual-PRF outliers are removed from a velocity plane before it is
+        // narrowed and written, on the whole plane (the reference window
+        // reaches past the trim), so no reader ever sees one.
+        let (corrected, report) = if dual_prf_correction {
+            dualprf::corrected_values(sweep, moment)
+        } else {
+            (None, DualPrfReport::default())
+        };
+        census.dual_prf.add(&report);
+        let source_values: &[f64] = corrected.as_deref().unwrap_or(&moment.values);
+
         let mut values = Vec::with_capacity(radial_count * gates);
         let mut codes = Vec::with_capacity(radial_count * gates);
         for ray in 0..radial_count {
             let row = ray * moment.nbins;
             for bin in 0..gates {
-                let value = moment.values[row + bin];
+                let value = source_values[row + bin];
                 let code = moment.censor[row + bin];
                 let narrowed = value as f32;
                 // The Python reader refuses a pack whose censor plane and
@@ -395,6 +453,9 @@ fn site_entry(volume: &PolarVolume) -> SiteEntry {
         .clone()
         .or_else(|| volume.source.wigos.clone())
         .or_else(|| volume.source.wmo.clone())
+        // BoM writes RAD: and PLC: only ("RAD:AU02,PLC:Melb,..."); without
+        // this every Australian radar packed as site "unknown".
+        .or_else(|| volume.source.rad.clone())
         .unwrap_or_else(|| "unknown".to_string());
     let name = volume
         .source
@@ -406,9 +467,10 @@ fn site_entry(volume: &PolarVolume) -> SiteEntry {
         name,
         lat_deg: volume.site.latitude_deg,
         lon_deg: volume.site.longitude_deg,
-        // The antenna height the frozen ODIM site table has as null for all
-        // 136 radars.  It is in every volume, so a pack never needs the table
-        // to answer it and a superob never has to guess.
+        // The antenna height, from this volume's own /where/height. The
+        // MeteoGate locations feed has none; it is in every volume, so a pack
+        // never needs the site table to answer it and a superob never has to
+        // guess.
         alt_m: volume.site.height_m,
         source: format!("odim:/where + /what/source {:?}", volume.source.raw),
     }
@@ -433,6 +495,8 @@ fn volume_entry(
         .nod
         .clone()
         .or_else(|| volume.source.wigos.clone())
+        .or_else(|| volume.source.wmo.clone())
+        .or_else(|| volume.source.rad.clone())
         .unwrap_or_else(|| "unknown".to_string());
     let epoch_day = nominal.timestamp().div_euclid(86_400);
     let second_of_day = nominal.timestamp().rem_euclid(86_400);
@@ -514,10 +578,68 @@ mod tests {
             azimuth_deg: vec![0.0],
             azimuth_source: crate::volume::AzimuthSource::NominalFromRayCount { astart_deg: 0.0 },
             ray_elevation_deg: None,
+            ray_prf_hz: None,
             moments: Vec::new(),
         };
         assert_eq!(gate_centre_m(&sweep, 0), 125.0);
         assert_eq!(gate_centre_m(&sweep, 1), 375.0);
+    }
+
+    fn one_gate_volume(source: &str) -> PolarVolume {
+        let moment =
+            crate::world::tests_support::moment("DBZH", vec![12.5], vec![censor::MEASURED]);
+        PolarVolume {
+            object: "PVOL".to_string(),
+            conventions: None,
+            version: None,
+            source: crate::volume::Source::parse(source),
+            nominal_time: chrono::DateTime::from_timestamp(1_760_356_800, 0),
+            site: crate::volume::Site {
+                latitude_deg: -37.8553,
+                longitude_deg: 144.7554,
+                height_m: 44.0,
+            },
+            system: crate::volume::SystemNotes::default(),
+            sweeps: vec![Sweep {
+                index: 1,
+                path: "/dataset1".to_string(),
+                elevation_deg: 0.5,
+                nrays: 1,
+                nbins: 1,
+                range_scale_m: 250.0,
+                range_start_m: 0.0,
+                a1gate: None,
+                start_time: None,
+                end_time: None,
+                nyquist: crate::volume::Nyquist::establish(None, None, None, None),
+                azimuth_deg: vec![0.0],
+                azimuth_source: crate::volume::AzimuthSource::Recorded,
+                ray_elevation_deg: None,
+                ray_prf_hz: None,
+                moments: vec![moment],
+            }],
+        }
+    }
+
+    #[test]
+    fn a_pack_without_a_range_limit_reads_back() {
+        // `rw_odim pack` with no --max-range-km wrote max_range_km as null
+        // (f64::INFINITY in JSON) and then refused its own file.
+        let volume = one_gate_volume("NOD:xxtst");
+        let (meta, _) = build_pack(&volume, &PackOptions::default(), "f", 1, "0", None).unwrap();
+        assert_eq!(meta.params.max_range_km, 0.25);
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: PackMeta = serde_json::from_str(&json).expect("reads back");
+        assert_eq!(back.params.max_range_km, 0.25);
+    }
+
+    #[test]
+    fn a_source_with_only_a_radar_id_packs_under_it() {
+        // BoM (NCI rq0) writes RAD: and PLC: only.
+        let volume = one_gate_volume("RAD:AU02,PLC:Melb,CTY:500,STN:87031");
+        let (meta, _) = build_pack(&volume, &PackOptions::default(), "f", 1, "0", None).unwrap();
+        assert_eq!(meta.site.id, "AU02");
+        assert_eq!(meta.volume.station_id, "AU02");
     }
 
     #[test]

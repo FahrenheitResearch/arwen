@@ -1,0 +1,20 @@
+{
+  "base_sha256": "d0fd4ad130b67e74b9b6f8877c9ca3efd8c2cf15500128d53f89e271abb25128",
+  "output_sha256": "d0fd4ad130b67e74b9b6f8877c9ca3efd8c2cf15500128d53f89e271abb25128",
+  "ncol": 280,
+  "nz": 50,
+  "words": {
+    "lev": [],
+    "sca": [],
+    "isc": []
+  },
+  "provenance": {
+    "original_sha256": "0dd1ed7c620b39e13f7ef77dc4ff1a269fa1f8d746492d360e203df0215b529a",
+    "safe_sha256": "aa128d8699367a2f3989384132a8cf9a47a2072046adbf5c9d9aaa0d8a9b6e21",
+    "corrected_sha256": "95e893767d73a30e1588a27f510e9892ee0b5a94ebedd6fc539cb26ef7ae1638",
+    "changes": [
+      "closure k <= min(kpbl,ktf-1) in both arms",
+      "MAXLOC section lower bound offset +1 in corrected arm"
+    ]
+  }
+}

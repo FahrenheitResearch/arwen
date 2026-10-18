@@ -436,6 +436,7 @@ PBL_ALGORITHM_IDENTITIES = {
     # of constants cannot be resumed under another -- which is the whole
     # job of this table.
     900: "sase-experimental-v1",
+    901: "ccpp-satmedmf-tke-edmf-1d9b0765-v1",
 }
 #: sf_surface_physics -> the ``PhysicsDriver`` attribute holding that
 #: scheme's packed parameter bundle, and the packaged-asset roles whose
@@ -521,6 +522,8 @@ def urban_algorithm_identity(cfg):
     return (URBAN_UCM_GENERATION_IDENTITIES[getattr(cfg, "urban_ucm_generation", "wrf_471")]
             if option == 1 else URBAN_ALGORITHM_IDENTITIES[option])
 
+from gpuwm.wrf_exact import ENABLED as _WRF_EXACT  # noqa: E402
+
 CUMULUS_ALGORITHM_IDENTITIES = {
     0: "disabled",
     # The WRF v4.6.1 KF_eta_PARA port (2026-10-07), graded at 0 ULP on
@@ -533,7 +536,9 @@ CUMULUS_ALGORITHM_IDENTITIES = {
     # The corrected-k22 identity IS the shipped algorithm (owner ruling);
     # a restart written under it must never resume under a WRF-faithful
     # build, which would be a different identity string.
-    3: "grell-freitas-wrf461-gfdrv-corrected-k22-v1",
+    # v2 also binds the bounded shallow closure and lower-face W seam.
+    # A v1 checkpoint must not silently resume with these changed defaults.
+    3: "grell-freitas-wrf461-gfdrv-corrected-k22-v2",
     # New Tiedtke, cu_ntiedtke/cumastrn as shipped in WRF v4.6.1.
     #
     # BUMP THE -v1 IF THE DRIVER SEAM MOVES, not only if the kernels do.
@@ -544,7 +549,10 @@ CUMULUS_ALGORITHM_IDENTITIES = {
     # same slot a different meaning, and that is exactly the kind of
     # cross-resume this string exists to refuse.
     6: "tiedtke-wrf461-tiecnv-v1",
-    16: "new-tiedtke-wrf461-cumastrn-v1",
+    # v2: default arithmetic bounds the explicit rates so no layer loses more water than it
+    # holds over the step (gpuwm.core.ntiedtke.bound_donor_depletion); strict keeps v1.
+    16: ("new-tiedtke-wrf461-cumastrn-v1" if _WRF_EXACT
+         else "new-tiedtke-wrf461-cumastrn-donor-bound-v2"),
     # Grell 3D, G3DRV/CUP_enss_3d/conv_grell_spread3d as shipped in WRF
     # v4.6.1. Shallow diagnostics are zero when ishallow=0.
     # Closure member 16 keeps WRF's original copy order; diagnostics

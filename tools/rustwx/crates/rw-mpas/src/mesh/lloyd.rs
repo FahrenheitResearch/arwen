@@ -157,8 +157,7 @@ pub struct LloydOptions {
     /// near-converged the floor is legitimately in flux.
     pub monitor_arm_mean: f64,
     /// Which arm keeps the triangulation between sweeps. Defaults to
-    /// [`TriangulationMode::Rebuild`], the class-A arm; see that type for why
-    /// the fast arm cannot be the default.
+    /// [`TriangulationMode::Maintained`]; both arms write the same bytes.
     pub triangulation: TriangulationMode,
 }
 
@@ -177,7 +176,7 @@ impl Default for LloydOptions {
             monitor_floor: 0.03,
             monitor_consecutive: 5,
             monitor_arm_mean: 3e-3,
-            triangulation: TriangulationMode::Rebuild,
+            triangulation: TriangulationMode::Maintained,
         }
     }
 }
@@ -327,15 +326,20 @@ pub fn relax<F: DensityField + Sync>(
         history.push(mean);
         worst_history.push(worst);
 
-        for (i, (c, _)) in step.iter().enumerate() {
-            let moved = if opts.omega == 1.0 {
-                *c
-            } else {
-                let d = crate::mesh::geom::sub(*c, points[i]);
-                unit(add(points[i], scale(d, opts.omega))).unwrap_or(*c)
-            };
-            points[i] = moved;
-        }
+        // Every generator moves independently: a parallel update, same
+        // arithmetic per point, so the same bits on any thread count.
+        points
+            .par_iter_mut()
+            .zip(step.par_iter())
+            .for_each(|(p, (c, _))| {
+                let moved = if opts.omega == 1.0 {
+                    *c
+                } else {
+                    let d = crate::mesh::geom::sub(*c, *p);
+                    unit(add(*p, scale(d, opts.omega))).unwrap_or(*c)
+                };
+                *p = moved;
+            });
         if crate::mesh::profile::on() {
             lawson_pass_probe(points, &rings);
         }

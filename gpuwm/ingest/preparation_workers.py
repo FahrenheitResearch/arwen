@@ -170,6 +170,73 @@ def host_available_bytes(root=Path("/sys/fs/cgroup"), membership=None,
     return available
 
 
+FORCING_TIME_WORKERS_ENV = "GPUWM_PREP_FORCING_WORKERS"
+# Each forcing time built side by side is charged the process's peak resident
+# bytes so far (the decode and the start time's own build are already in it)
+# against this share of the host headroom.
+FORCING_TIME_MEMORY_SHARE = 0.5
+
+
+def _process_peak_rss_bytes():
+    try:
+        import resource
+    except ImportError:
+        return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return int(peak) * (1 if sys.platform == "darwin" else 1024) or None
+
+
+def _device_need_bytes(selection):
+    fit = (selection or {}).get("device_fit") if isinstance(selection, dict) else None
+    need = fit.get("need_bytes") if isinstance(fit, dict) else None
+    return int(need) if isinstance(need, (int, float)) and need > 0 else None
+
+
+def _device_free_bytes():
+    try:
+        import cupy
+        return int(cupy.cuda.runtime.memGetInfo()[0])
+    except Exception:                                   # noqa: BLE001 - no card, no reading
+        return None
+
+
+def forcing_time_workers(times, *, cpu_workers, backend=None, selection=None,
+                         environment=None):
+    """How many of a preparation's later forcing times are built side by side.
+
+    One build keeps about one core busy (Python, host copies and kernel
+    launches), so the CPU bound is the preparation's own worker budget
+    (``--preprocess-workers``, else affinity and the cgroup quota).  The host
+    bound charges each build the process's peak resident bytes so far; the
+    card bound charges each build the preparation's own priced device need
+    against the free bytes now.  An unknown reading leaves that bound at one.
+    ``GPUWM_PREP_FORCING_WORKERS`` names the count outright.  The count never
+    changes a written byte: every time is built by the same call and written
+    in order (:meth:`BoundaryStreamWriter.stream_forcing_times`).
+    """
+    times = max(1, int(times))
+    env = os.environ if environment is None else environment
+    explicit = str(env.get(FORCING_TIME_WORKERS_ENV, "")).strip()
+    if explicit:
+        try:
+            named = int(explicit)
+        except ValueError:
+            named = 0
+        if named < 1:
+            raise ValueError(f"{FORCING_TIME_WORKERS_ENV} must be a positive integer, not {explicit!r}")
+        return {"workers": min(named, times), "basis": f"{FORCING_TIME_WORKERS_ENV}={named}"}
+    caps = {"times": times, "cpu": max(1, int(cpu_workers or 1))}
+    peak = _process_peak_rss_bytes()
+    headroom = host_available_bytes()
+    caps["host"] = (max(1, int(headroom * FORCING_TIME_MEMORY_SHARE) // peak)
+                    if peak and headroom is not None else 1)
+    if str(backend) == "cuda":
+        need, free = _device_need_bytes(selection), _device_free_bytes()
+        caps["device"] = max(1, free // need) if need and free is not None else 1
+    return {"workers": min(caps.values()), "caps": caps,
+            "basis": "min of forcing times, CPU budget, host and card headroom"}
+
+
 def worker_receipt(requested=None, *, native_effective=None):
     budget = cpu_budget()
     effective = effective_workers(requested)

@@ -30,6 +30,7 @@ import numpy as np
 
 from gpuwm.verify_exact.compare import FieldMeta, field_digest
 from gpuwm.verify_exact.recording import ReplayRun
+from gpuwm.config import ConfigurationRefused
 
 _RADIATION_KEYS = ("ra_lw_physics", "ra_sw_physics")
 _STORED_DTYPE = {"F32": "<f4", "F64": "<f8", "I32": "<i4", "I16": "<i2", "I8": "|i1",
@@ -114,6 +115,17 @@ def stage_run_directory(run: ReplayRun, directory: Path) -> Path:
     return directory
 
 
+#: The generation selectors a stock WRF v4.6.1 recording ran: each key's
+#: oldest generation (gpuwm.core.solar, gpuwm.ysu_generations,
+#: gpuwm.noahmp_generation, config.URBAN_WATER_BALANCE_GENERATIONS).
+WRF_461_REFERENCE_GENERATIONS = {
+    "solar_generation": "wrf_461",
+    "ysu_version": "wrf_461",
+    "noahmp_snow_age": "wrf_461",
+    "urban_water_balance": "wrf_471",
+}
+
+
 def resolve_replay(run: ReplayRun, directory: Path):
     """The door's resolved run with the combo's WOOF-only settings applied."""
 
@@ -141,6 +153,14 @@ def resolve_replay(run: ReplayRun, directory: Path):
     from gpuwm.correct_mode import CORRECTION_KEYS
     for key in CORRECTION_KEYS:
         settings.setdefault(key, False)
+    # The recordings are stock WRF v4.6.1 runs, and from 2.9.0 four
+    # selectors default to a later WRF generation (the WRF 4.8 sun and YSU,
+    # the WRF 4.7 Noah-MP snow aging and the WRF 4.8 urban water balance).
+    # A replay names the generation its reference ran, unless the combo's
+    # own WOOF settings name one: otherwise the first radiation call (or
+    # the first YSU column) already leaves the reference.
+    for key, generation in WRF_461_REFERENCE_GENERATIONS.items():
+        settings.setdefault(key, generation)
     for key, value in settings.items():
         if key == "ra_rrtmg_variant" and "ra_rrtmg_variant" not in text:
             continue
@@ -182,6 +202,13 @@ def redirected_output(log_path: Path):
             os.close(saved[1])
 
 
+#: What the door and the run preparation raise to refuse a combo by name.
+#: Only explicit validator refusals qualify. Generic exceptions can be code
+#: bugs and must remain crashes. UnsupportedConfiguration keeps the old
+#: NotImplementedError catch compatibility for scalar_pblmix callers.
+REFUSAL_ERRORS = (ConfigurationRefused,)
+
+
 def integrate(resolved, workdir: Path, *, run_seconds: float) -> None:
     """Prepare and integrate in this process; history every frame into ``workdir/wrfout``."""
 
@@ -191,12 +218,16 @@ def integrate(resolved, workdir: Path, *, run_seconds: float) -> None:
 
     try:
         inputs = prepare_wrf_run(resolved, workdir / "input", run_seconds=run_seconds)
-    except (ValueError, OSError) as error:
+    except REFUSAL_ERRORS as error:
         raise WoofRefused(f"{type(error).__name__}: {error}") from error
+    except Exception as error:  # noqa: BLE001 - reported as this run's crash
+        raise WoofCrashed(f"{type(error).__name__}: {error}") from error
     try:
         run_prepared_tree(inputs, output_directory=workdir, io_mode="history",
                           initialization=WrfInitialization(inputs),
                           progress_options=ProgressOptions(frame_markers=False))
+    except ConfigurationRefused as error:
+        raise WoofRefused(f"{type(error).__name__}: {error}") from error
     except Exception as error:  # noqa: BLE001 - reported as this run's crash
         raise WoofCrashed(f"{type(error).__name__}: {error}") from error
 
@@ -275,8 +306,10 @@ def replay(run: ReplayRun, workdir: Path, *, reference_meta: Mapping[str, FieldM
             stage_run_directory(run, stage)
             try:
                 resolved = resolve_replay(run, stage)
-            except (ValueError, OSError) as refusal:
+            except REFUSAL_ERRORS as refusal:
                 raise WoofRefused(f"{type(refusal).__name__}: {refusal}") from refusal
+            except Exception as error:  # noqa: BLE001 - reported as this run's crash
+                raise WoofCrashed(f"{type(error).__name__}: {error}") from error
             finally:
                 phases["stage"] = round(time.perf_counter() - started, 2)
             integrate(resolved, workdir / "out", run_seconds=run_seconds)
@@ -284,13 +317,21 @@ def replay(run: ReplayRun, workdir: Path, *, reference_meta: Mapping[str, FieldM
         status, error = "REFUSED", str(refusal)
     except WoofCrashed as crash:
         status, error = "CRASH", str(crash)
+    except Exception as crash:  # staging bugs are crashes too, never process exits
+        status, error = "CRASH", f"{type(crash).__name__}: {crash}"
     fields: dict[str, FieldMeta] = {}
     digests: dict[int, dict[str, str | None]] = {}
     kept: dict[int, dict[str, np.ndarray]] = {}
     nonfinite = None
-    frames = frame_files(workdir / "out" / "wrfout", start=start, step_seconds=step_seconds) \
-        if (workdir / "out" / "wrfout").is_dir() else {}
+    try:
+        frames = frame_files(workdir / "out" / "wrfout", start=start, step_seconds=step_seconds) \
+            if (workdir / "out" / "wrfout").is_dir() else {}
+    except Exception as crash:
+        status, error = "CRASH", f"{type(crash).__name__}: {crash}"
+        frames = {}
     phases["integrate"] = round(time.perf_counter() - started - phases.get("stage", 0.0), 2)
+    if status == "REFUSED" and frames:
+        status = "CRASH"
     read_started = time.perf_counter()
     per_frame = 1
     if len(frames) > 1:

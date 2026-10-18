@@ -1,0 +1,19 @@
+{
+  "upstream": "https://github.com/ufs-community/ccpp-physics",
+  "commit": "1d9b076503c27cd4cfa8b22a977a71e889cbb149",
+  "tag": "GFSv17.HR4",
+  "license": "Apache-2.0",
+  "notice_file": null,
+  "kind_phys": 8,
+  "source_sha256": {
+    "LICENSE": "9b5dc915a61e4dd5d5723c989c22a6c6be37cb8d94f1c6b1919693730f2f9d5c",
+    "physics/hooks/machine.F": "ff38288d8a98e80be1f054c3e29bd0c24372b065577aa5184f59ed5c2ec4c899",
+    "physics/hooks/physcons.F90": "95e83f531c8da986ce40aee8537b05b5f39d137c2d3011951ef90299db331e79",
+    "physics/tools/funcphys.f90": "165cb68039dc38dfa6669a585db28cb9f64a2f4a76925f946a7c78d962d8ae7c",
+    "physics/PBL/mfpbltq.f": "a91bcc4ab4591b86b3c6b53b27f5cd5149293747bdfc4ee0147222e9592ae342",
+    "physics/PBL/SATMEDMF/mfscuq.f": "68b3d2acf5d0c4411e515f17542afbc5d79fe53dea34d23653da5ad0a885b62b",
+    "physics/PBL/tridi.f": "e10c7a0260e955c4930a1823b60485c9dcc40797a328cd244df03c6d0f90665f",
+    "physics/PBL/SATMEDMF/satmedmfvdifq.F": "ed41892110d3d3275be4ed142133e173088ebc3504013f885c12fdf6a872227f",
+    "physics/PBL/SATMEDMF/satmedmfvdifq.meta": "79c089ea7ea9739a97ab6c38412fab88cdca02eaef560acccad7f478e9917c1d"
+  }
+}

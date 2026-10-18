@@ -137,6 +137,12 @@ pub static LAWSON_FLIPS: Counter = Counter::new("hull.lawson_flips");
 pub static LAWSON_FALLBACK: Counter = Counter::new("hull.lawson_fallback_to_rebuild");
 /// Rings re-derived from a maintained facet list, rather than from a build.
 pub static TRI_RINGS: Counter = Counter::new("hull.rings_from_maintained_facets");
+/// Point-set edits (surgery's deletions and insertions) applied to a
+/// maintained triangulation instead of a rebuild.
+pub static EDITS: Counter = Counter::new("hull.apply_edits");
+/// Parallel region builds that could not prove their result and fell back to
+/// the serial hull, by name.
+pub static HULL_PAR_FALLBACK: Counter = Counter::new("hull.parallel_fallback_to_serial");
 
 static ALL: &[&Counter] = &[
     &SEED,
@@ -162,6 +168,8 @@ static ALL: &[&Counter] = &[
     &LAWSON_FLIPS,
     &LAWSON_FALLBACK,
     &TRI_RINGS,
+    &EDITS,
+    &HULL_PAR_FALLBACK,
     &NEAREST,
     &QUAD_SCAN,
     &DERIVE,

@@ -238,6 +238,16 @@ only one run are reported. The difference keeps the native grid and uses
 a symmetric color bar; it does not regrid one run onto the other.
 `--diff-labels A_NAME B_NAME` sets the run labels, and `--diff-sheet`
 also draws an A, B and A minus B sheet for each product.
+Every difference panel prints the largest |A - B| and how many cells
+differ, or says the runs are identical on every cell. The colour bar of
+temperature, dewpoint, wind, pressure, CAPE and reflectivity has a fixed
+range so the frames of a loop share one bar; when a difference is too
+small to leave that bar's neutral middle bands anywhere, the bar is
+fitted to the difference instead and the receipt line names the rule
+(`adaptive(table=10,...)`). `--diff-table auto` fits every bar to its
+own difference, and `--diff-table FILE` replaces the fixed ranges with
+a JSON table in the schema of
+`tools/rustwx/crates/rustwx-render/data/difference.json`.
 The valid times come from the history records. `--timeidx N` selects
 run A's record and matches run B at that time, even when it is a
 different record number in run B. Files use the per-file record number;

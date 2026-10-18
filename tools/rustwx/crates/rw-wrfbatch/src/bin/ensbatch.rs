@@ -742,6 +742,9 @@ fn run(args: Args) -> Result<(), String> {
     let mut style: Option<rustwx_products::viewer::StoreVariableStyle> = None;
     let mut member_stores: Vec<(u32, PathBuf, String, String, u16)> = Vec::new();
 
+    // Every member imports at once (each on its own worker; their frames
+    // share the importer's memory budget) and is collected in member order.
+    let mut tasks = Vec::with_capacity(args.members.len());
     for (number, wrfouts) in &args.members {
         let store_root = args.store_root.join(format!("member_{number:03}"));
         std::fs::create_dir_all(&store_root)
@@ -758,6 +761,10 @@ fn run(args: Args) -> Result<(), String> {
                 ..Default::default()
             },
         );
+        tasks.push((number, store_root, task));
+    }
+    let mut last_context = None;
+    for (number, store_root, task) in tasks {
         let import = loop {
             match task
                 .rx
@@ -792,6 +799,7 @@ fn run(args: Args) -> Result<(), String> {
                 slots.len()
             )
         })?;
+        last_context = Some(import.run_context.clone());
         member_stores.push((
             *number,
             store_root,
@@ -799,6 +807,11 @@ fn run(args: Args) -> Result<(), String> {
             import.run.clone(),
             slot,
         ));
+    }
+    // The render context the last member's import set, as when the members
+    // imported one after another.
+    if let Some(context) = last_context {
+        context.apply();
     }
 
     for (number, store_root, model, run_slug, slot) in &member_stores {

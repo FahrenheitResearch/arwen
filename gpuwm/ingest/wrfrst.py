@@ -145,9 +145,12 @@ WRFRST_DISPOSITIONS: Mapping[str, Disposition] = MappingProxyType({
     **_rows(_READ, "grid coordinates", (
         "XLAT", "XLONG", "XLAT_U", "XLONG_U", "XLAT_V", "XLONG_V")),
     **_rows("rebuilt", "diagnosed from the prognostics at every RK stage "
-            "before any read (omega, its acoustic average, density, "
-            "hydrostatic pressure, the geopotential diagnostic)",
-            ("WW", "WW_M", "RHO", "P_HYD", "P_HYD_W", "PHP")),
+            "before any read (omega, its acoustic average, density, the "
+            "staggered hydrostatic pressure, the geopotential diagnostic)",
+            ("WW", "WW_M", "RHO", "P_HYD_W", "PHP")),
+    **_rows(_READ, "hydrostatic pressure of the last phy_prep, held for "
+            "history until the next step rewrites it (Registry irh)",
+            ("P_HYD",)),
     **_rows("rebuilt", "physics-grid copies phy_prep refills each step",
             ("T_PHY", "U_PHY", "V_PHY")),
     **_rows("rebuilt", "diffusion diagnostics (deformation, eddy "
@@ -233,12 +236,16 @@ WRFRST_DISPOSITIONS: Mapping[str, Disposition] = MappingProxyType({
             "published between radiation calls", ("CLDFRA", "OLR")),
     **_rows("rebuilt", "clear-sky heating and flux diagnostics of the last "
             "radiation call, rewritten by the next one",
-            ("RTHRATLWC", "RTHRATSWC", "SWUPT", "SWUPTC", "SWDNT", "SWDNTC",
-             "SWUPB", "SWUPBC", "SWDNB", "SWDNBC", "LWUPT", "LWUPTC",
-             "LWDNT", "LWDNTC", "LWUPB", "LWUPBC", "LWDNB", "LWDNBC",
-             "SWCF", "LWCF", "COSZEN", "HRANG", "DECLIN", "SOLCON",
+            ("RTHRATLWC", "RTHRATSWC",
+             "SWCF", "LWCF", "HRANG", "DECLIN", "SOLCON",
              "DIFFUSE_FRAC", "SWDDIR", "SWDDIRC", "SWDDNI", "SWDDNIC",
-             "SWDDIF", "SWNORM", "O3RAD")),
+             "SWDDIF", "O3RAD")),
+    **_rows(_READ, "top and bottom radiative fluxes, the zenith cosine and "
+            "the slope-normal shortwave of the last radiation call, held "
+            "for history (and COSZEN for its consumers) until the next one",
+            ("SWUPT", "SWUPTC", "SWDNT", "SWDNTC", "SWUPB", "SWUPBC",
+             "SWDNB", "SWDNBC", "LWUPT", "LWUPTC", "LWDNT", "LWDNTC",
+             "LWUPB", "LWUPBC", "LWDNB", "LWDNBC", "COSZEN", "SWNORM")),
     **_rows("inactive", "shortwave interpolation fit (swint_opt = 1), not "
             "selected", ("GX", "BX", "GG", "BB", "COSZEN_REF", "SWDOWN_REF",
                          "SWDDIR_REF"), _cfg("swint_opt")),
@@ -250,9 +257,8 @@ WRFRST_DISPOSITIONS: Mapping[str, Disposition] = MappingProxyType({
     **_rows("inactive", "aerosol optical properties (aer_opt), not selected",
             ("AODTOT", "AOD5502D", "ANGEXP2D", "AERSSA2D", "AERASY2D"),
             _cfg("aer_opt")),
-    **_rows("bookkeeping", "radiation flux accumulations: gpuwm keeps no "
-            "ACSW*/ACLW* totals, so a continued run's history publishes "
-            "none of them",
+    **_rows(_READ, "radiation flux accumulations, continued from the "
+            "restart as wrf.exe continues them",
             ("ACSWUPT", "ACSWUPTC", "ACSWDNT", "ACSWDNTC", "ACSWUPB",
              "ACSWUPBC", "ACSWDNB", "ACSWDNBC", "ACLWUPT", "ACLWUPTC",
              "ACLWDNT", "ACLWDNTC", "ACLWUPB", "ACLWUPBC", "ACLWDNB",
@@ -292,19 +298,21 @@ WRFRST_DISPOSITIONS: Mapping[str, Disposition] = MappingProxyType({
         "GRDFLX", "TMN", "SST", "SEAICE", "XLAND", "LANDMASK", "LAKEMASK",
         "LU_INDEX", "IVGTYP", "ISLTYP", "VEGFRA", "SHDMAX", "SHDMIN",
         "SNOALB", "LAI", "FRC_URB2D")),
-    **_rows("bookkeeping", "surface accumulations gpuwm does not carry "
-            "(sensible/latent/ground heat and evaporation totals), so a "
-            "continued run's history publishes none of them",
-            ("ACHFX", "ACLHF", "ACGRDFLX", "SFCEVP")),
+    **_rows(_READ, "surface energy accumulations (sensible, latent and "
+            "ground heat), continued from the restart as wrf.exe continues "
+            "them", ("ACHFX", "ACLHF", "ACGRDFLX")),
+    **_rows("bookkeeping", "evaporation total gpuwm does not carry, so a "
+            "continued run's history publishes none of it", ("SFCEVP",)),
     **_rows("rebuilt", "Noah's exchange coefficient output, rewritten by "
             "every call", ("SFCEXC",)),
-    **_rows("inactive", "previous-step sea-ice flag read only by the "
-            "sst_update sea-ice refresh, not selected", ("XICEM",),
-            _cfg("sst_update")),
+    **_rows(_READ, "previous-step sea-ice flag, held for the sea-ice "
+            "refresh and history", ("XICEM",)),
     **_rows("inactive", "fractional sea-ice skin temperature save, not "
             "selected", ("TSK_SAVE",), _cfg("fractional_seaice")),
-    **_rows("inactive", "SST skin and warm-layer state (sst_skin = 1), not "
-            "selected", ("SSTSK", "DTW"), _cfg("sst_skin")),
+    **_rows(_READ, "skin SST, held at the restart's value while no SST "
+            "skin producer runs (WRF holds it the same way)", ("SSTSK",)),
+    **_rows("inactive", "SST warm-layer state (sst_skin = 1), not selected",
+            ("DTW",), _cfg("sst_skin")),
     **_rows("inactive", "deep soil temperature update (tmn_update = 1), not "
             "selected", ("TYR", "TYRA", "TDLY", "TLAG", "NYEAR", "NDAY"),
             _cfg("tmn_update")),
@@ -950,7 +958,75 @@ def scratch_restore_plan(name: str, cu_physics: int):
 SCRATCH_REBUILT = MappingProxyType({
     "up_heli_max": "the UP_HELI_MAX running maximum restarts its window, as "
                    "it does after every history write",
+    # Correct mode's settled-cloud booking (gpuwm/core/thompson_cloud_booking.py,
+    # the 2.9.0 default for Thompson).  Stock WRF keeps no such total, so a
+    # wrf.exe restart cannot carry it; without this row every default-mode
+    # Thompson warm start from a WRF restart was refused, NCAR's v4.4
+    # benchmark restart leg among them.
+    "mp_cloudnc": "the settled-cloud total CLOUDNC that correct mode books; "
+                  "wrf.exe keeps none, so it counts from the restart instant",
+    "mp_cloudncv": "the per-call settled-cloud amount CLOUDNCV; rewritten at "
+                   "the first microphysics call after the restart",
 })
+
+
+def _fields_absent_rules() -> dict[str, tuple]:
+    from gpuwm.core.physics_inventory import (RADIATION_BOUNDARY_FLUXES,
+                                              SURFACE_ENERGY_ACCUMULATORS)
+
+    rules: dict[str, tuple] = {}
+    for name in (*(f"ac{flux}" for flux in RADIATION_BOUNDARY_FLUXES),
+                 *SURFACE_ENERGY_ACCUMULATORS):
+        rules[name] = ("cold", 0.0, (
+            f"{name.upper()} is an accumulation: wrf.exe continues it from a "
+            "restart that carries it and starts it at zero from one that "
+            "does not, so it counts from the restart instant"))
+    for name in RADIATION_BOUNDARY_FLUXES:
+        rules[name] = ("cold", 0.0, (
+            f"{name.upper()} is written by the first radiation call after "
+            "the restart; zero until then, as in a wrf.exe restart without it"))
+    rules["coszen"] = ("cold", 0.0, (
+        "COSZEN is recomputed at the first radiation call after the restart"))
+    rules["swnorm"] = ("cold", 0.0, (
+        "SWNORM is rewritten by the slope-radiation producer at the first "
+        "radiation call; without slope_rad it holds zero, as in WRF"))
+    rules["refd_max"] = ("cold", 0.0, (
+        "REFD_MAX is never restart-written by WRF (Registry rh02); its "
+        "running maximum restarts at zero, as after every history write"))
+    rules["sstsk"] = ("cold", 0.0, (
+        "SSTSK has no initializer in WRF (phy_init, start_em) and no "
+        "producer without sst_skin, so a restart without it holds zero, as "
+        "gpuwm's own cold start does"))
+    rules["p_hyd"] = ("copy", "state/p", (
+        "P_HYD diagnosed from the restored state (total pressure, as start_em "
+        "and the driver initialize it); the first step's phy_prep rewrites it"))
+    rules["xicem"] = ("copy", "fields/xice", (
+        "XICEM = XICE, as WRF's phy_init sets the previous-step sea-ice flag"))
+    return rules
+
+
+def fields_restore_plan(name: str, restart_names) -> tuple | None:
+    """How the warm start fills one ``fields/`` carrier.
+
+    ``("fill", WRF_NAME)`` copies the restart variable; ``("cold", value,
+    reason)`` starts it as wrf.exe starts a field its restart lacks;
+    ``("copy", key, reason)`` takes another restored carrier (``state/p``
+    or ``fields/<name>``); ``None`` names no rule.
+
+    Named breakage: the exact chain made WRF's history rows (the radiation
+    flux rows and their AC* totals, ACHFX/ACLHF/ACGRDFLX, COSZEN, P_HYD,
+    REFD_MAX, SSTSK, SWNORM, XICEM) cross-step carriers, and NCAR's
+    documented benchmark warm start exited 2 here naming every one.
+    """
+    if name == "rainbl":
+        return ("fill", "RAINBL")
+    wrf_name = FIELD_ALIASES.get(name, name.upper())
+    if wrf_name in restart_names:
+        return ("fill", wrf_name)
+    if name in FIELDS_REBUILT:
+        return ("rebuilt", FIELDS_REBUILT[name])
+    return _fields_absent_rules().get(name)
+
 
 STATE_SOURCES = MappingProxyType({
     "rthften": "RTHFTEN", "rqvften": "RQVFTEN", "tke": "TKE_2",
@@ -1051,6 +1127,7 @@ def apply_warm_start_physics(state, driver, restored, cfg) -> OverlayReport:
                        else restart_io._driver_manifest(driver))
     manifest.update(driver_manifest)
     unmapped: list[str] = []
+    copies: list[tuple] = []
 
     def fill(key, target, wrf_name, *, transform=None):
         if wrf_name not in raw:
@@ -1099,15 +1176,20 @@ def apply_warm_start_physics(state, driver, restored, cfg) -> OverlayReport:
                 target[...] = plan[1]
                 report.rebuilt[key] = plan[2]
         elif namespace == "fields":
-            wrf_name = FIELD_ALIASES.get(name, name.upper())
-            if name == "rainbl":
-                fill(key, target, "RAINBL")
-            elif wrf_name in raw:
-                fill(key, target, wrf_name)
-            elif name in FIELDS_REBUILT:
-                report.rebuilt[key] = FIELDS_REBUILT[name]
-            else:
+            plan = fields_restore_plan(name, raw)
+            if plan is None:
+                wrf_name = FIELD_ALIASES.get(name, name.upper())
                 unmapped.append(f"{key} <- {wrf_name} (absent from the restart)")
+            elif plan[0] == "fill":
+                fill(key, target, plan[1])
+            elif plan[0] == "rebuilt":
+                report.rebuilt[key] = plan[1]
+            elif plan[0] == "cold":
+                target[...] = plan[1]
+                report.rebuilt[key] = plan[2]
+            else:
+                # After the walk: the source carrier is filled by then.
+                copies.append((key, target, plan[1], plan[2]))
         elif key == "driver/rthratenlw":
             fill(key, target, "RTHRATLW")
         elif key == "driver/rthratensw":
@@ -1142,6 +1224,21 @@ def apply_warm_start_physics(state, driver, restored, cfg) -> OverlayReport:
                 unmapped.append(key)
             else:
                 fill(key, target, source)
+        elif key == "diag/rthraten":
+            # The output-only radiative heating total, which the radiation
+            # call writes as longwave + shortwave and history publishes
+            # until the next call (the next call recomputes it).
+            if not {"RTHRATLW", "RTHRATSW"} <= set(raw):
+                unmapped.append(f"{key} <- RTHRATLW + RTHRATSW")
+                continue
+            total = np.asarray(
+                np.asarray(_host_field(raw, "RTHRATLW", target.shape,
+                                       label=key), np.float32)
+                + np.asarray(_host_field(raw, "RTHRATSW", target.shape,
+                                         label=key), np.float32),
+                np.float32)
+            _copy_into(target, total)
+            report.filled[key] = "RTHRATLW + RTHRATSW"
         elif key == "diag/olr":
             fill(key, target, "OLR")
         elif key == "diag/cldfra":
@@ -1162,6 +1259,16 @@ def apply_warm_start_physics(state, driver, restored, cfg) -> OverlayReport:
             continue
         else:
             unmapped.append(key)
+    for key, target, source, reason in copies:
+        if source == "state/p":
+            value = state.p
+        elif source in manifest:
+            value = manifest[source]
+        else:
+            unmapped.append(f"{key} <- {source} (not a carrier of this model)")
+            continue
+        target[...] = value.astype(target.dtype, copy=False)
+        report.rebuilt[key] = reason
     if unmapped:
         raise ValueError(
             "the WRF restart cannot fill these cross-step carriers of the "

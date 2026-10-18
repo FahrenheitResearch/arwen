@@ -5,7 +5,10 @@ coordinator.  It exposes the complete default ``ipconc=5`` warm ``NUCOND``
 stage at a narrow array boundary: joint cloud/rain condensation (``rcond=2``),
 cloud evaporation, predicted-CCN/droplet coupling, default ``irenuc=2``
 renucleation, the ordinary and 1.9-ratio maximum-supersaturation ``QVEXCESS``
-paths, and native moment cleanup/bounds.
+paths, and WRF's moment tail (``module_mp_nssl_2mom.F:11726-12205``): every
+category below its threshold or without number is vaporized in WRF's order,
+graupel/hail volumes are held inside their density bounds and graupel number
+above its minimum intercept, and predicted CCN relaxes toward background.
 """
 
 from __future__ import annotations
@@ -59,15 +62,21 @@ def launch_nucond(
         supersaturation_scratch=None,
         concentration_space: bool = False,
         predicted_ccn: bool = True,
-        validate_values: bool = True) -> None:
+        validate_values: bool = True,
+        frozen=None) -> None:
     """Advance the exact default MP18 warm ``NUCOND`` stage in place.
 
     Cell fields use contiguous FP32 ``(nz, ny, nx)`` storage.  ``w_interface``
     is FP32 ``(nz + 1, ny, nx)`` so the kernel can reproduce WRF's
     ``0.5 * (w(k) + w(k+1))`` mass-level velocity.  Water fields are kg/kg
-    dry air.  ``qi``, ``qs``, ``qni``, and ``qns`` are read-only but required
-    because WRF gates clear-cloud CCN restoration on the primary-ice-plus-snow
-    state remaining after its native mass/number cleanup.  By default
+    dry air.  ``qi``, ``qs``, ``qni`` and ``qns`` take part in WRF's moment
+    tail: sub-threshold or numberless ice and snow are vaporized, and the
+    clear-cloud CCN restoration is gated on the ice-plus-snow mass the tail
+    leaves.  ``frozen`` is the graupel/hail sextet ``(qg, qh, qng, qnh,
+    qvolg, qvolh)`` the tail also cleans and density-bounds; the production
+    hook always passes it.  It requires ``concentration_space=True``: the
+    graupel minimum-intercept check reads number concentration (#/m3).
+    Omitting it skips only the graupel and hail arms.  By default
     number/CCN fields use Registry #/kg dry air.  Set
     ``concentration_space=True`` for production slab views already held in
     NSSL's internal #/m3 convention; that path performs no density round-trip.
@@ -106,6 +115,18 @@ def launch_nucond(
         "qns": qns,
         "qnn": qnn,
     }
+    frozen_names = ("qg", "qh", "qng", "qnh", "qvolg", "qvolh")
+    if frozen is not None:
+        frozen = tuple(frozen)
+        if len(frozen) != len(frozen_names):
+            raise ValueError(
+                "frozen must be the six arrays (qg, qh, qng, qnh, qvolg, "
+                "qvolh)")
+        if not concentration_space:
+            raise ValueError(
+                "frozen requires concentration_space=True: the graupel "
+                "minimum-intercept check reads number concentration in #/m3")
+        fields.update(zip(frozen_names, frozen))
     shape, size = _validate_cell_fields(fields)
     w_shape = (shape[0] + 1, shape[1], shape[2])
     if w_interface.shape != w_shape:
@@ -153,8 +174,16 @@ def launch_nucond(
             {**fields, "w_interface": w_interface},
             ("full_theta", "air_density", "pressure_pa", "exner"),
             ("qv", "qc", "qr", "qi", "qs", "qndrop", "qnr", "qni",
-             "qns", "qnn"))
+             "qns", "qnn", *frozen_names))
 
+    if frozen is None:
+        # The kernel reads these only when has_frozen is set; any valid
+        # pointer will do, and qv is one.
+        frozen_args = (qv,) * len(frozen_names)
+    else:
+        frozen_args = frozen
+    from gpuwm.wrf_exact import ENABLED
+    frozen_kernel_args = (*frozen_args, np.int32(0 if frozen is None else 1)) if ENABLED else ()
     blocks = (size + _TPB - 1) // _TPB
     get_kernel("nssl2_nucond", "nssl2_nucond_supersaturation")(
         (blocks,), (_TPB,),
@@ -164,7 +193,8 @@ def launch_nucond(
         (blocks,), (_TPB,),
         (full_theta, air_density, pressure_pa, exner, w_interface,
          supersaturation_scratch,
-         qv, qc, qr, qi, qs, qndrop, qnr, qni, qns, qnn, step32,
+         qv, qc, qr, qi, qs, qndrop, qnr, qni, qns, qnn,
+         *frozen_kernel_args, step32,
          np.int32(concentration_space),
          np.int32(size), np.int32(shape[0]),
          np.int32(shape[1] * shape[2]),

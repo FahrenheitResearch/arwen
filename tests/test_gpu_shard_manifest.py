@@ -200,6 +200,12 @@ def test_the_file_is_lf_only() -> None:
 
 
 _TRANSITIVE_DEVICE_HELPERS = {
+    # The NSSL sedimentation route-equivalence files (the exact chain, 2.9.1) open
+    # the card through their shared helper, which imports cupy inside it.
+    "tests/test_nssl2_speed_fused_sediment.py": ("nssl2_sediment_paths", "device_or_skip"),
+    "tests/test_nssl2_speed_gamma.py": ("nssl2_sediment_paths", "device_or_skip"),
+    "tests/test_nssl2_speed_rain.py": ("nssl2_sediment_paths", "device_or_skip"),
+    "tests/test_nssl2_speed_small.py": ("nssl2_sediment_paths", "device_or_skip"),
     "tests/test_mynn_sfclay_wrf461_column_oracle_gpu.py": (
         "tools.mynn_sfclay_wrf461_column_oracle.compare", "run"),
     # BEP+BEM regimes against WRF 4.6.1: measure() replays every call on the
@@ -588,6 +594,38 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
         runner_whole, runner_functions = _cupy_scope(str(REPOSITORY_ROOT / runner))
         assert runner_whole or runner_functions, (
             f"{entry}: device runner {runner} no longer opens CUDA")
+        return
+    if entry == "tests/test_ncar_benchmark_door_gpu.py":
+        # The WRF-INPUTS.md benchmark leg runs the page's `gpuwm run
+        # --benchmark --restart-from ...` command in a `python -m gpuwm`
+        # subprocess.  Pin the route: the leg runs the package entry point
+        # on the page's `gpuwm run` command, the WRF-input door hands its
+        # worker to the prepared forecast runner, and that runner is
+        # device-bound by conftest's own detector.
+        import ast
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        assert any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run" and node.args
+            and isinstance(node.args[0], ast.List)
+            and [item.value for item in node.args[0].elts
+                 if isinstance(item, ast.Constant)] == ["-m", "gpuwm"]
+            for node in ast.walk(tree)), (
+            f"{entry} no longer runs the `python -m gpuwm` entry point")
+        page = (REPOSITORY_ROOT / "docs/public/WRF-INPUTS.md").read_text(encoding="utf-8")
+        assert "gpuwm run --benchmark --restart-from " in page, (
+            "docs/public/WRF-INPUTS.md no longer prints the benchmark run command")
+        door = ast.parse((REPOSITORY_ROOT / "gpuwm/wrfinput_forecast.py")
+                         .read_text(encoding="utf-8"))
+        assert any(
+            isinstance(node, ast.ImportFrom) and node.module == "gpuwm"
+            and any(alias.name == "prepared_single_domain_forecast"
+                    for alias in node.names) for node in ast.walk(door)), (
+            "the WRF-input door no longer runs the prepared forecast runner")
+        runner_whole, runner_functions = _cupy_scope(
+            str(REPOSITORY_ROOT / "gpuwm/prepared_single_domain_forecast.py"))
+        assert runner_whole or runner_functions, (
+            "the prepared forecast runner no longer opens CUDA")
         return
     assert whole or functions, (
         f"{entry} opens no CUDA device by conftest's own detector, so it is "

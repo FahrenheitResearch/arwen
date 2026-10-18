@@ -15,7 +15,7 @@ made to fail by restoring WRF's defective NS*mosaic_i grid SMOIS index, and
 again by reintroducing lsm's SWDOWN>10 condition into mosaic snow damping.
 All non-held-out output words match the committed -O0 gfortran fixtures.
 CuPy FTZ divergences are pinned by exact column/field set and GPU word hashes.
-The CPU oracle gate was mutation-tested on node-1: replacing WRF's reciprocal
+The CPU oracle gate was mutation-tested on test host A: replacing WRF's reciprocal
 then multiply with per-entry division failed all 16 initialisation fixtures.
 """
 from __future__ import annotations

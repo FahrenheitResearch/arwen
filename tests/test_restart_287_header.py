@@ -36,6 +36,25 @@ def _header(name):
     return json.loads((DATA / name).read_text(encoding="utf-8"))
 
 
+def _header_of_this_driver(name):
+    """The recorded header as this build's physics driver would have
+    written it: only the driver identity (and the fingerprint over it)
+    moves.  2.9.1's intake of the WRF exact chain advanced the driver from
+    the recorded v3 to v8 (held and checkpointed rows: PBL and cumulus
+    history rates, RTHRATEN, surface accumulators), so the real recorded
+    header is refused on that identity
+    (test_a_287_checkpoint_is_refused_on_the_physics_driver) and the
+    terrain-clock contract is exercised on top of it."""
+    header = _header(name)
+    setup = dict(header["physics_setup"])
+    setup["algorithms"] = dict(
+        setup["algorithms"],
+        physics_driver=restart.PHYSICS_DRIVER_ALGORITHM_IDENTITY)
+    header["physics_setup"] = setup
+    header["physics_setup_fingerprint"] = restart._json_sha256(setup)
+    return header
+
+
 def _run_config(config, **changes):
     names = {field.name for field in dataclasses.fields(RunConfig)}
     values = {key: value for key, value in config.items() if key in names}
@@ -64,9 +83,18 @@ def test_the_stored_digest_rebuilds_under_the_clock_the_header_ran():
     assert restart._configuration_fingerprint(defaulted) != stored
 
 
+def test_a_287_checkpoint_is_refused_on_the_physics_driver():
+    header = _header("sfire-ideal-4s.json")
+    live = _run_config(header["config"], terrain_clock="measured",
+                       solar_generation="wrf_461")
+    with pytest.raises(restart.RestartMismatchError,
+                       match="physics driver: gpuwm-physics-driver-v3"):
+        restart._require_current_algorithm_identities(header, live, "recorded")
+
+
 def test_a_287_checkpoint_of_unchanged_schemes_resumes_under_measured(
         monkeypatch):
-    header = _header("sfire-ideal-4s.json")
+    header = _header_of_this_driver("sfire-ideal-4s.json")
     live = _run_config(header["config"], terrain_clock="measured",
                        solar_generation="wrf_461")
     restart._require_current_algorithm_identities(header, live, "recorded")
@@ -87,7 +115,7 @@ def test_a_287_checkpoint_of_unchanged_schemes_resumes_under_measured(
 
 
 def test_the_default_clock_is_refused_with_the_note_that_resumes_it():
-    header = _header("sfire-ideal-4s.json")
+    header = _header_of_this_driver("sfire-ideal-4s.json")
     live = _run_config(header["config"])
     restart._require_current_algorithm_identities(header, live, "recorded")
     with pytest.raises(restart.RestartMismatchError,

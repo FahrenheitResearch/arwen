@@ -79,18 +79,21 @@ def test_host_impossible_streaming_can_keep_that_domain_resident(tmp_path):
     # prices each domain's held radiation cloud-fraction buffer, which
     # moves the resident tree to 21.81 GiB: the card here is 22 GiB, whose
     # 21.5 GiB admission budget the tree still exceeds while fitting the
-    # card, the same inside-the-margin case as before.
+    # card, the same inside-the-margin case as before.  The WRF exact chain's
+    # history rows (2.9.1: P_HYD and RTHRATEN planes, eight surface planes)
+    # move it to 22.15 GiB: the card is 22.5 GiB, whose 22 GiB admission
+    # budget the tree exceeds while fitting the card.
     assert st._inbound_stream_tiling(st._config_tree_nodes(exp.domains)[1],
                                      exp.tiles) is None
-    result, rows = _walk(exp, free_gib=22.0)
+    result, rows = _walk(exp, free_gib=22.5)
     assert not rows[1].stream and not rows[2].stream
     assert "inside the" in rows[2].reason and "redundancy limit" in rows[2].reason
     # The road this test is about -- the host-blocked root resident beside
     # a streamed child -- is the one the explicit knob asks for by name.
     exp = replace(exp, tiles=replace(exp.tiles, max_redundancy=False))
-    result, rows = _walk(exp, free_gib=22.0)
+    result, rows = _walk(exp, free_gib=22.5)
     assert not rows[1].stream and rows[2].stream
-    assert result.configured_mixed_envelope_bytes <= int(21.5 * GIB)
+    assert result.configured_mixed_envelope_bytes <= int(22.0 * GIB)
     assert result.host_spent_bytes <= exp.tiles.host_budget_bytes
 
 

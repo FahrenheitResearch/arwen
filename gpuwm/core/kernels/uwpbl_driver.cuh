@@ -75,6 +75,14 @@ __device__ void uw_camuwpbl_column(int nk, const UwColumnIn& in,
     R8 sgh=R8(0.0),landfrac=R8(0.0);
     R8 uMean=uw_widen(__fsqrt_rn(__fadd_rn(__fmul_rn(in.u(1),in.u(1)),__fmul_rn(in.v(1),in.v(1)))));
     R8 tauFac=uw_widen(__fmul_rn(__fmul_rn(in.rho(1),in.ust),in.ust))/uMean;
+    // WRF divides by the level-1 speed (module_bl_camuwpbl_driver.F:458-462).
+    // A calm level-1 wind (uMean == 0 in float32: u = v = 0, or u*u + v*v
+    // underflowing) gives tauFac = Inf (NaN when ust = 0) and a NaN stress;
+    // WRF then writes NaN TAURESX2D/TAURESY2D and NaN tendencies the next
+    // step, and on the card the NaN reaches every tendency at once, which
+    // PhysicsDriver._run_uwpbl refuses.  A calm wind has no stress
+    // direction: its stress is zero.  Only uMean == 0 columns are touched.
+    if (uMean==R8(0.0)) tauFac=R8(0.0);
     R8 taux=-(tauFac*uw_widen(in.u(1))),tauy=-(tauFac*uw_widen(in.v(1)));
     if (first) { *out.tauresx2d=uw_narrow(R8(0.0)); *out.tauresy2d=uw_narrow(R8(0.0)); }
     R8 tauresx=uw_widen(*out.tauresx2d),tauresy=uw_widen(*out.tauresy2d);

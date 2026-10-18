@@ -1,0 +1,576 @@
+{
+ "what": "UW PBL (bl_pbl_physics=9) port vs WRF v4.6.1 Fortran, column oracle, box W1, 2026-10-07",
+ "oracle": "gfortran 13.3.0 -O0, glibc 2.39, WRF v4.6.1 d66e442f; tools/uwpbl_wrf461_verify/run_oracle.sh",
+ "fixture_sha256": [
+  "0f4344b4bc15f7d6383235e719a7b002c81569c2dc9ff83e4328bbeb6891dcbf  ./cases-extra35.bin",
+  "a2fd0445d95661e6e2ed43f149a50e8e9d3cfb5281f5e4e69b4d03a56801e855  ./cases-g35.bin",
+  "7b72f35396e601ef1fde89b2d76769b5201285e159998c07151227513c1cbb31  ./cases-g44.bin",
+  "0ecd84e170386790bad0b2381bb06b8081a276035338ed8bfca150210b77a45f  ./cases-g61.bin",
+  "430240f1cbe71e4ecd63b8404b91e7b3a6f69e708c4a11ba3072185bfe510602  ./cases-sub35.bin",
+  "d9f3ab27dd238deb8931c2302d9e436ada16eaed82264b522cca5004f5a9125e  ./cases-v461-g35.bin",
+  "d1c9b6fe101b27c26a685197794c3a552bb87159113158ac9f238a3d968f2623  ./cases-v461-g44.bin",
+  "e485d1c864394d25210498cdd258c9b0a64f0308eb8971528b46b8b387a71ba7  ./cases-v461-g61.bin",
+  "05d284bc8d83668bf02f83bac9d87a4150c11df32b0c92c7767ed39978bb72c9  ./cases-v461edge.bin",
+  "5bfab18fd2c0623e66c0401f4b8c4c4760a0604cbcfce2f8a657862f31f5632c  ./cases-extra35.manifest",
+  "b9c9bb83c191bcb2fef9c52a848af211b0366f555d7aea894361a8542eeb9628  ./cases-g35.manifest",
+  "aae29107ca05f46dea06714da2efd83cd74ca47209a81b08c3a33390cf5742e2  ./cases-g44.manifest",
+  "6afc3d6464dba847800c121cc59d1d87dc595604cc029befc9f78221279d8e92  ./cases-g61.manifest",
+  "5f0dfc246f66159f63829c7f299c4279e1219b6e83da15d5642e5ad45d30a729  ./cases-sub35.manifest",
+  "337d83c4a4ea65b5d400a44621241bf04767112c3016a94041fa179ed56e8ef4  ./cases-v461-g35.manifest",
+  "95620267ae6648601dca088be62e48eccfb4ccf6fc5ae9f733c0e347f284fb2a  ./cases-v461-g44.manifest",
+  "4e82e26d0815031fff4af8bd608c230426261cedd03b1fec69d60b9de925371a  ./cases-v461-g61.manifest",
+  "80fd28bf079d3ce5c84347165f8c4d58b8724fcb808f0db9dbd445275b731479  ./cases-v461edge.manifest",
+  ""
+ ],
+ "gpu-strict": {
+  "summary": {
+   "stems": 9,
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control": {
+    "stem": "cases-extra35",
+    "poked": "s1 t column 1 level 1, last bit",
+    "mismatched_words": 1,
+    "detected": true
+   },
+   "seconds": 77.0
+  },
+  "GPUWM_WRF_EXACT": "1",
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "nvrtc": "12.9",
+  "per_stem": {
+   "cases-extra35": {
+    "columns": 48,
+    "steps": 2,
+    "words": 41472,
+    "mismatched": 0
+   },
+   "cases-g35": {
+    "columns": 18,
+    "steps": 4,
+    "words": 31104,
+    "mismatched": 0
+   },
+   "cases-g44": {
+    "columns": 18,
+    "steps": 4,
+    "words": 38880,
+    "mismatched": 0
+   },
+   "cases-g61": {
+    "columns": 18,
+    "steps": 4,
+    "words": 53568,
+    "mismatched": 0
+   },
+   "cases-sub35": {
+    "columns": 28,
+    "steps": 2,
+    "words": 24192,
+    "mismatched": 0
+   },
+   "cases-v461-g35": {
+    "columns": 72,
+    "steps": 4,
+    "words": 124416,
+    "mismatched": 0
+   },
+   "cases-v461-g44": {
+    "columns": 72,
+    "steps": 4,
+    "words": 155520,
+    "mismatched": 0
+   },
+   "cases-v461-g61": {
+    "columns": 72,
+    "steps": 4,
+    "words": 214272,
+    "mismatched": 0
+   },
+   "cases-v461edge": {
+    "columns": 24,
+    "steps": 4,
+    "words": 51840,
+    "mismatched": 0
+   }
+  }
+ },
+ "gpu-default": {
+  "summary": {
+   "stems": 9,
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 860,
+   "max_ulp": 1718508282,
+   "max_abs": 10.840034484863281,
+   "exact": false,
+   "negative_control": {
+    "stem": "cases-extra35",
+    "poked": "s1 t column 1 level 1, last bit",
+    "mismatched_words": 1,
+    "detected": true
+   },
+   "seconds": 32.5
+  },
+  "GPUWM_WRF_EXACT": "",
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "nvrtc": "12.9",
+  "per_stem": {
+   "cases-extra35": {
+    "columns": 48,
+    "steps": 2,
+    "words": 41472,
+    "mismatched": 0
+   },
+   "cases-g35": {
+    "columns": 18,
+    "steps": 4,
+    "words": 31104,
+    "mismatched": 0
+   },
+   "cases-g44": {
+    "columns": 18,
+    "steps": 4,
+    "words": 38880,
+    "mismatched": 0
+   },
+   "cases-g61": {
+    "columns": 18,
+    "steps": 4,
+    "words": 53568,
+    "mismatched": 0
+   },
+   "cases-sub35": {
+    "columns": 28,
+    "steps": 2,
+    "words": 24192,
+    "mismatched": 860
+   },
+   "cases-v461-g35": {
+    "columns": 72,
+    "steps": 4,
+    "words": 124416,
+    "mismatched": 0
+   },
+   "cases-v461-g44": {
+    "columns": 72,
+    "steps": 4,
+    "words": 155520,
+    "mismatched": 0
+   },
+   "cases-v461-g61": {
+    "columns": 72,
+    "steps": 4,
+    "words": 214272,
+    "mismatched": 0
+   },
+   "cases-v461edge": {
+    "columns": 24,
+    "steps": 4,
+    "words": 51840,
+    "mismatched": 0
+   }
+  }
+ },
+ "gpu-strict-crlibm": {
+  "summary": {
+   "stems": 9,
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control": {
+    "stem": "cases-extra35",
+    "poked": "s1 t column 1 level 1, last bit",
+    "mismatched_words": 1,
+    "detected": true
+   },
+   "seconds": 1.3
+  },
+  "GPUWM_WRF_EXACT": "1",
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "nvrtc": "12.9",
+  "per_stem": {
+   "cases-extra35": {
+    "columns": 48,
+    "steps": 2,
+    "words": 41472,
+    "mismatched": 0
+   },
+   "cases-g35": {
+    "columns": 18,
+    "steps": 4,
+    "words": 31104,
+    "mismatched": 0
+   },
+   "cases-g44": {
+    "columns": 18,
+    "steps": 4,
+    "words": 38880,
+    "mismatched": 0
+   },
+   "cases-g61": {
+    "columns": 18,
+    "steps": 4,
+    "words": 53568,
+    "mismatched": 0
+   },
+   "cases-sub35": {
+    "columns": 28,
+    "steps": 2,
+    "words": 24192,
+    "mismatched": 0
+   },
+   "cases-v461-g35": {
+    "columns": 72,
+    "steps": 4,
+    "words": 124416,
+    "mismatched": 0
+   },
+   "cases-v461-g44": {
+    "columns": 72,
+    "steps": 4,
+    "words": 155520,
+    "mismatched": 0
+   },
+   "cases-v461-g61": {
+    "columns": 72,
+    "steps": 4,
+    "words": 214272,
+    "mismatched": 0
+   },
+   "cases-v461edge": {
+    "columns": 24,
+    "steps": 4,
+    "words": 51840,
+    "mismatched": 0
+   }
+  }
+ },
+ "gpu-default-crlibm": {
+  "summary": {
+   "stems": 9,
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 860,
+   "max_ulp": 1718508282,
+   "max_abs": 10.840034484863281,
+   "exact": false,
+   "negative_control": {
+    "stem": "cases-extra35",
+    "poked": "s1 t column 1 level 1, last bit",
+    "mismatched_words": 1,
+    "detected": true
+   },
+   "seconds": 1.2
+  },
+  "GPUWM_WRF_EXACT": "",
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "nvrtc": "12.9",
+  "per_stem": {
+   "cases-extra35": {
+    "columns": 48,
+    "steps": 2,
+    "words": 41472,
+    "mismatched": 0
+   },
+   "cases-g35": {
+    "columns": 18,
+    "steps": 4,
+    "words": 31104,
+    "mismatched": 0
+   },
+   "cases-g44": {
+    "columns": 18,
+    "steps": 4,
+    "words": 38880,
+    "mismatched": 0
+   },
+   "cases-g61": {
+    "columns": 18,
+    "steps": 4,
+    "words": 53568,
+    "mismatched": 0
+   },
+   "cases-sub35": {
+    "columns": 28,
+    "steps": 2,
+    "words": 24192,
+    "mismatched": 860
+   },
+   "cases-v461-g35": {
+    "columns": 72,
+    "steps": 4,
+    "words": 124416,
+    "mismatched": 0
+   },
+   "cases-v461-g44": {
+    "columns": 72,
+    "steps": 4,
+    "words": 155520,
+    "mismatched": 0
+   },
+   "cases-v461-g61": {
+    "columns": 72,
+    "steps": 4,
+    "words": 214272,
+    "mismatched": 0
+   },
+   "cases-v461edge": {
+    "columns": 24,
+    "steps": 4,
+    "words": 51840,
+    "mismatched": 0
+   }
+  }
+ },
+ "cpu-reference": {
+  "summary": {
+   "stems": 9,
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control": {
+    "stem": "cases-extra35",
+    "poked": "s1 t column 1 level 1, last bit",
+    "mismatched_words": 1,
+    "detected": true
+   },
+   "seconds": 1.4
+  },
+  "GPUWM_WRF_EXACT": "",
+  "device": null,
+  "nvrtc": null,
+  "per_stem": {
+   "cases-extra35": {
+    "columns": 48,
+    "steps": 2,
+    "words": 41472,
+    "mismatched": 0
+   },
+   "cases-g35": {
+    "columns": 18,
+    "steps": 4,
+    "words": 31104,
+    "mismatched": 0
+   },
+   "cases-g44": {
+    "columns": 18,
+    "steps": 4,
+    "words": 38880,
+    "mismatched": 0
+   },
+   "cases-g61": {
+    "columns": 18,
+    "steps": 4,
+    "words": 53568,
+    "mismatched": 0
+   },
+   "cases-sub35": {
+    "columns": 28,
+    "steps": 2,
+    "words": 24192,
+    "mismatched": 0
+   },
+   "cases-v461-g35": {
+    "columns": 72,
+    "steps": 4,
+    "words": 124416,
+    "mismatched": 0
+   },
+   "cases-v461-g44": {
+    "columns": 72,
+    "steps": 4,
+    "words": 155520,
+    "mismatched": 0
+   },
+   "cases-v461-g61": {
+    "columns": 72,
+    "steps": 4,
+    "words": 214272,
+    "mismatched": 0
+   },
+   "cases-v461edge": {
+    "columns": 24,
+    "steps": 4,
+    "words": 51840,
+    "mismatched": 0
+   }
+  }
+ },
+ "cpu-reference-crlibm": {
+  "summary": {
+   "stems": 9,
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control": {
+    "stem": "cases-extra35",
+    "poked": "s1 t column 1 level 1, last bit",
+    "mismatched_words": 1,
+    "detected": true
+   },
+   "seconds": 1.4
+  },
+  "GPUWM_WRF_EXACT": "",
+  "device": null,
+  "nvrtc": null,
+  "per_stem": {
+   "cases-extra35": {
+    "columns": 48,
+    "steps": 2,
+    "words": 41472,
+    "mismatched": 0
+   },
+   "cases-g35": {
+    "columns": 18,
+    "steps": 4,
+    "words": 31104,
+    "mismatched": 0
+   },
+   "cases-g44": {
+    "columns": 18,
+    "steps": 4,
+    "words": 38880,
+    "mismatched": 0
+   },
+   "cases-g61": {
+    "columns": 18,
+    "steps": 4,
+    "words": 53568,
+    "mismatched": 0
+   },
+   "cases-sub35": {
+    "columns": 28,
+    "steps": 2,
+    "words": 24192,
+    "mismatched": 0
+   },
+   "cases-v461-g35": {
+    "columns": 72,
+    "steps": 4,
+    "words": 124416,
+    "mismatched": 0
+   },
+   "cases-v461-g44": {
+    "columns": 72,
+    "steps": 4,
+    "words": 155520,
+    "mismatched": 0
+   },
+   "cases-v461-g61": {
+    "columns": 72,
+    "steps": 4,
+    "words": 214272,
+    "mismatched": 0
+   },
+   "cases-v461edge": {
+    "columns": 24,
+    "steps": 4,
+    "words": 51840,
+    "mismatched": 0
+   }
+  }
+ },
+ "o2_vs_o0_step1": {
+  "cases-extra35": {
+   "words": 20736,
+   "mismatched": 22,
+   "max_abs": 3.552713678800501e-15,
+   "nan_words": 0,
+   "max_ulp": 1159305626,
+   "columns_differing": 7,
+   "columns": 48
+  },
+  "cases-g35": {
+   "words": 7776,
+   "mismatched": 0,
+   "max_abs": 0.0,
+   "nan_words": 0,
+   "max_ulp": 0,
+   "columns_differing": 0,
+   "columns": 18
+  },
+  "cases-g44": {
+   "words": 9720,
+   "mismatched": 1,
+   "max_abs": 4.547473508864641e-13,
+   "nan_words": 0,
+   "max_ulp": 1,
+   "columns_differing": 1,
+   "columns": 18
+  },
+  "cases-g61": {
+   "words": 13392,
+   "mismatched": 0,
+   "max_abs": 0.0,
+   "nan_words": 0,
+   "max_ulp": 0,
+   "columns_differing": 0,
+   "columns": 18
+  },
+  "cases-sub35": {
+   "words": 12096,
+   "mismatched": 0,
+   "max_abs": 0.0,
+   "nan_words": 0,
+   "max_ulp": 0,
+   "columns_differing": 0,
+   "columns": 28
+  },
+  "cases-v461-g35": {
+   "words": 31104,
+   "mismatched": 0,
+   "max_abs": 0.0,
+   "nan_words": 0,
+   "max_ulp": 0,
+   "columns_differing": 0,
+   "columns": 72
+  },
+  "cases-v461-g44": {
+   "words": 38880,
+   "mismatched": 1,
+   "max_abs": 1.9073486328125e-06,
+   "nan_words": 0,
+   "max_ulp": 1,
+   "columns_differing": 1,
+   "columns": 72
+  },
+  "cases-v461-g61": {
+   "words": 53568,
+   "mismatched": 6,
+   "max_abs": 2.9103830456733704e-11,
+   "nan_words": 0,
+   "max_ulp": 4,
+   "columns_differing": 6,
+   "columns": 72
+  },
+  "cases-v461edge": {
+   "words": 12960,
+   "mismatched": 15,
+   "max_abs": 1.102907664184661e-24,
+   "nan_words": 0,
+   "max_ulp": 777344345,
+   "columns_differing": 1,
+   "columns": 24
+  }
+ }
+}

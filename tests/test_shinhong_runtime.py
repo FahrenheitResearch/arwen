@@ -319,36 +319,17 @@ def test_driver_compute_dispatches_11_to_run_shinhong(monkeypatch):
     with object.__new__, so this covers the compute() dispatch seam --
     the place a truthiness branch would silently run YSU for a
     Shin-Hong request, which is the file-founding failure mode.
+
+    The driver comes from that file's ``_cpu_driver`` itself.  This test
+    used to assemble its own copy, which fell behind every slot compute()
+    gained since (swint, the land Q2 cap's fields, the carrier contract)
+    and died on AttributeError before reaching the dispatch it tests.
     """
-    from types import SimpleNamespace
+    from test_physics_dispatch import _cpu_driver
 
-    import gpuwm.core.physics as physics
-
-    monkeypatch.setattr(physics, "cp", np)
-    atmosphere = {
-        "p_interface": np.array(
-            [[[100000.0, 90000.0]], [[95000.0, 85000.0]]], np.float32),
-    }
-    monkeypatch.setattr(
-        physics, "_prepare_atmosphere", lambda state: atmosphere)
-    state = SimpleNamespace(elapsed_seconds=0.0)
-    cfg = SimpleNamespace(
-        dt=60.0, bldt=0.0, ra_physics=0,
-        sf_sfclay_physics=91, sf_surface_physics=0,
-        bl_pbl_physics=11, cu_physics=0)
-    driver = object.__new__(physics.PhysicsDriver)
-    driver.state = state
-    driver.fields = {"psfc": np.full((1, 2), -123.0, np.float32)}
-    driver.surface_enabled = True
-    driver.stepbl = 1
-    driver.radt_minutes = 12.0
-    driver.cudt_minutes = 5.0
-    driver.call_counts = {
-        "radiation": 0, "sfclay": 0, "noah": 0, "ysu": 0,
-        "cumulus": 0, "cumulus_history": 0,
-    }
-    driver.tendencies = object()
-    driver._compose_tendencies = lambda cfg_arg: None
+    physics, state, cfg, driver = _cpu_driver(
+        monkeypatch, sf_sfclay_physics=91, sf_surface_physics=0,
+        bl_pbl_physics=11)
     seen = {}
     driver._run_sfclay = lambda *_: None
     driver._run_noah = lambda *_: pytest.fail("no LSM is selected")

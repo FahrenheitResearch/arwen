@@ -990,7 +990,7 @@ def _cuda_headers_remedy(box_major: int | None) -> tuple[str, str]:
     no headers, because no CuPy wheel has ever carried a header tree.  A
     buyer following it watches pip succeed and the fault survive.
 
-    WHAT LEADS NOW, and why it changed.  MEASURED on weather-node-1
+    WHAT LEADS NOW, and why it changed.  MEASURED on test host A
     (Ubuntu, CUDA 13 driver, no ``nvcc``, no ``/usr/local/cuda``, no
     conda), 2026-08-17: a bare ``pip install cupy-cuda13x`` gives a 274
     MiB environment in which cuBLAS, a self-contained ``RawModule`` and a
@@ -2466,9 +2466,15 @@ def _exec_probe(path: Path) -> tuple[bool, str]:
                       "another platform"
     try:
         with bridges.quiet_loader_errors():
+            # stdin closed: rw_globe_pack reads a JSON request from stdin, so
+            # with an inherited open stdin (a terminal, the container build's
+            # pipe) it waited for input until the timeout and the probe called
+            # it broken (2.9.2 cut, 2026-10-17).  At EOF it prints its
+            # diagnostic and exits 1, which the verdict below accepts.
             probe = subprocess.run(
                 [str(path), "--version"], capture_output=True, text=True,
-                errors="replace", timeout=_PROBE_TIMEOUT_S)
+                errors="replace", timeout=_PROBE_TIMEOUT_S,
+                stdin=subprocess.DEVNULL)
     except OSError as error:
         return False, f"exists but failed to execute: {error}"
     except subprocess.TimeoutExpired:
@@ -2808,12 +2814,20 @@ _CHECKED_ARTIFACTS = {
     "rw_nexrad": "the `radar front door` line",
     "region_global_dealias": "the `region-global dealiasing engine` line",
     "rw_odim": "the `obs front door` lines",
+    "rw_radar_feeds": "the `obs front door` lines",
     "rw_mrms": "the `obs front door` lines",
     "rw_stage4": "the `obs front door` lines",
     "rw_asos": "the `obs front door` lines",
     "rw_airnow": "the `obs front door` lines",
     "rw_goes": "the `obs front door` lines",
     "rw_opera": "the `obs front door` lines",
+    "rw_igra2": "the `obs stream door` lines",
+    "rw_amv": "the `obs stream door` lines",
+    "rw_ndbc": "the `obs stream door` lines",
+    "rw_gnssro": "the `obs stream door` lines",
+    "rw_wis2": "the `obs stream door` lines",
+    "rw_prepbufr": "the `obs stream door` lines",
+    "rw_madis": "the `obs stream door` lines",
     "rw_netcdf": "the `NetCDF decoder` line",
     "rw_zarr": "the `era5 route fetch transport` line",
     "netcdf_writer": "the `NetCDF writer` line",
@@ -2831,6 +2845,7 @@ _CHECKED_ARTIFACTS = {
     "rw_mpas_lbc": "the `MPAS binary` lines",
     "rw_hex_points": "the `MPAS binary` lines",
     "rw_tempo": "the `TEMPO initialization library` line",
+    "rw_projected_intermediate": "the `projected MET intermediate` line",
     "rw_mlexport": "the `ML dataset exporter` line",
     "rw_grib2export": "the `GRIB2 exporter` line",
     "rw_verify": "the `observation verification engine` line",
@@ -2937,7 +2952,7 @@ def _staged_estate_check() -> Check:
 
     Every other artifact line in this report asks a question of one
     binary: is it there, does it launch, does it declare this contract.
-    node-1 answered yes to all three on an estate staged in August by an
+    test host A answered yes to all three on an estate staged in August by an
     earlier release -- the files were present, they launched, and
     :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS` only moves when a contract
     version bumps, which it had not -- so ``gpuwm doctor`` printed no
@@ -2968,7 +2983,7 @@ def _staged_estate_check() -> Check:
     The doors ask the same question now, at the moment they pick a file
     (:func:`gpuwm.bridges.require_release_pin`, over the same pins and
     the same size-and-SHA-256 comparison), which is what this line used
-    to say alone: node-1's report named the skew and every route went on
+    to say alone: test host A's report named the skew and every route went on
     running the August bytes anyway.  This check keeps its own job --
     saying what the estate IS, all of it, before anything opens a door
     -- and stays a reader: it resolves inside
@@ -3225,7 +3240,8 @@ def _obs_front_door_checks() -> list[Check]:
              "airnow": "gpuwm obs airnow",
              "opera": "gpuwm obs opera",
              "odim": "gpuwm obs odim, and every `gpuwm obs radar` "
-                     "subcommand"}
+                     "subcommand",
+             "radar-feeds": "gpuwm obs radar-feeds"}
     # Read from the resolver rather than enumerated here, so a door added
     # to FRONT_DOORS and not to `doors` above is a loud KeyError in the
     # test suite instead of a silently unreported binary -- which is the
@@ -3264,6 +3280,24 @@ def _obs_front_door_checks() -> list[Check]:
             # identical refusal again.  When a release does start
             # bundling these, this line becomes that one command with no
             # edit here.
+            if in_bundle and bridges.on_demand_fetch_offered(front.name):
+                # An on-demand artifact (the platform wheel leaves it to the
+                # bundle; its first use stages it): the same row the stream
+                # doors get.  Breakage (2.9.2 cut, Windows wheel smoke,
+                # 2026-10-17): rw_radar_feeds, on demand since 2.9.2, was
+                # reported "not staged; gpuwm obs radar-feeds cannot run"
+                # on a fresh install, which is false: its first use runs.
+                checks.append(Check(
+                    name, "missing",
+                    "not staged yet -- it is fetched on demand: the platform "
+                    f"wheel does not carry it, and the first `{door}` that "
+                    "needs it stages it from this release's bundle",
+                    f"gpuwm fetch-bridges --partial --artifact {front.name}",
+                    action=f"gpuwm fetch-bridges --partial --artifact {front.name}",
+                    brief="on demand; staged by its first fetch",
+                    group=_GROUP_ENGINES, blocking=False,
+                    severity=SEVERITY_OPT_IN))
+                continue
             if in_bundle:
                 bundle_note = ("it IS in this release's prebuilt bundle, so "
                                "one command stages it")
@@ -3312,6 +3346,67 @@ def _obs_front_door_checks() -> list[Check]:
                 action=f"rebuild {front.name}", brief=_short(evidence),
                 group=_GROUP_ENGINES, blocking=False,
                 severity=SEVERITY_UNREACHABLE))
+            continue
+        checks.append(Check(name, "verified", f"{found} -- {evidence}",
+                            brief=_short(evidence), group=_GROUP_ENGINES))
+    return checks
+
+
+def _obs_stream_door_checks() -> list[Check]:
+    """The observation-stream doors (``gpuwm obs streams``) and prepbufr.
+
+    They are on-demand artifacts: pinned in this release's bundle, not in
+    the platform wheel, staged by the first fetch that needs one.  So an
+    absent one on a pip install whose pins hold it is the expected state and
+    reads ``opt-in``; anywhere a download cannot supply it (a checkout, no
+    bundle for this platform) it reads ``unreachable`` with the build route,
+    the severity an absent obs front door has.  Resolution only: doctor
+    never downloads.
+    """
+
+    try:
+        from gpuwm.obs import frontdoor
+    except ImportError:                          # pragma: no cover - partial
+        return []
+    doors = [*frontdoor.STREAM_DOORS.values(), frontdoor.PREPBUFR]
+    checks: list[Check] = []
+    for front in doors:
+        name = f"obs stream door {front.name} ({front.subject})"
+        try:
+            found = front.find()
+        except FileNotFoundError as error:
+            checks.append(Check(
+                name, "missing", f"{error} -- its observation streams cannot be fetched",
+                f"# unset {front.env_var} or point it at a real build:\n" + front.remedy(),
+                action=f"unset {front.env_var}, or point it at a real build",
+                brief=f"{front.env_var} names a missing file",
+                group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE))
+            continue
+        if found is None:
+            if bridges.on_demand_fetch_offered(front.name):
+                checks.append(Check(
+                    name, "missing",
+                    "not staged yet -- it is fetched on demand: the platform "
+                    "wheel does not carry it, and the first stream fetch that "
+                    "needs it stages it from this release's bundle",
+                    front.remedy(),
+                    action=f"gpuwm fetch-bridges --partial --artifact {front.name}",
+                    brief="on demand; staged by its first fetch",
+                    group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_OPT_IN))
+            else:
+                checks.append(Check(
+                    name, "missing",
+                    "not built and not staged -- its observation streams cannot be fetched",
+                    front.remedy(), action=_OBS_FRONT_DOOR_ACTION,
+                    brief="not staged; its streams cannot be fetched",
+                    group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE))
+            continue
+        ok, evidence = front.probe(found)
+        if not ok:
+            checks.append(Check(
+                name, "missing", f"{found} -- {evidence}; its streams cannot be fetched",
+                front.remedy(), action=f"rebuild {front.name}", brief=_short(evidence),
+                group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE))
             continue
         checks.append(Check(name, "verified", f"{found} -- {evidence}",
                             brief=_short(evidence), group=_GROUP_ENGINES))
@@ -3780,6 +3875,65 @@ def _grib2_export_check() -> Check:
         env_var=binary.env_var, find=binary.find, remedy=binary.remedy(),
         doors=(("gpuwm export-grib2 and a run's live --grib2 output",
                 binary.probe),))
+
+
+def _gpu_post_kernels_check() -> Check:
+    """Do the GPU post kernels load on this card?
+
+    Breakage this names: through 2.9.0 the exporter's PTX (NVRTC 13.4,
+    PTX ISA 9.4) was refused by drivers older than CUDA 13.4 (measured on
+    595.91, CUDA 13.2: ``CUDA_ERROR_UNSUPPORTED_PTX_VERSION``), so on
+    every card without an embedded CUBIN ``--grib2`` and ``export-grib2``
+    computed every product on the CPU and said so only in manifest.json.
+    Judged by the exporter's own ``--probe-post-device``, which opens the
+    card the way a run does.  Degraded, never blocking: the CPU path
+    writes the same bytes, only slower.
+    """
+
+    from gpuwm import grib2_export
+
+    name = "GPU post kernels (GRIB2 products on the GPU)"
+    if no_local_gpu():
+        return Check(name, "untested",
+                     "not tested: GPUWM_NO_LOCAL_GPU is set, so the card is not opened",
+                     brief="not tested (GPUWM_NO_LOCAL_GPU)", group=_GROUP_ENGINES)
+    try:
+        exe = grib2_export.BINARY.find()
+    except (FileNotFoundError, RuntimeError):
+        exe = None
+    if exe is None:
+        return Check(name, "untested",
+                     "not tested: the GRIB2 exporter is not staged (see its own line)",
+                     brief="not tested (no exporter)", group=_GROUP_ENGINES)
+    probe = grib2_export.probe_post_device(exe)
+    if probe is None:
+        return Check(name, "untested",
+                     f"not tested: {exe} has no --probe-post-device (an older build)",
+                     brief="not tested (older exporter)", group=_GROUP_ENGINES)
+    floor = probe.get("ptx_driver_floor") or "CUDA 12.0"
+    if probe.get("ok"):
+        return Check(name, "verified", str(probe.get("device")),
+                     brief=str(probe.get("device")), group=_GROUP_ENGINES)
+    if not probe.get("driver"):
+        return Check(name, "info",
+                     f"no NVIDIA driver: GRIB2 products are computed on the CPU ({probe.get('error')})",
+                     brief="no NVIDIA driver; GRIB2 post on the CPU", group=_GROUP_ENGINES)
+    if probe.get("operation") not in (None, "load post kernels", "resolve post kernel"):
+        # No card to judge (none visible, or it would not open): not a
+        # driver-floor gap, and the forecast's own GPU lines say why.
+        return Check(name, "untested",
+                     f"not tested: no CUDA device opened ({probe.get('error')}); GRIB2 products "
+                     "would be computed on the CPU",
+                     brief="not tested (no CUDA device opened)", group=_GROUP_ENGINES)
+    return Check(
+        name, "missing",
+        f"the card did not load the post kernels, so --grib2 and export-grib2 compute every "
+        f"product on the CPU (the same bytes, slower): {probe.get('error')}",
+        "# GRIB2 output stays correct on the CPU.  To compute it on the GPU, install an\n"
+        f"# NVIDIA driver at or above {floor}, then rerun `gpuwm doctor`.",
+        action=f"update the NVIDIA driver ({floor} or newer)",
+        brief="kernels refused by the driver; GRIB2 post on the CPU",
+        group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_DEGRADED)
 
 
 def _nowcast_frames_check() -> Check:
@@ -4398,8 +4552,21 @@ def _globe_pack_check() -> Check:
         one_liner=bridges.rustwx_build_hint(), artifact="rw_globe_pack")
     degrades = ("global runs build their statics natively and cannot pack "
                 "globe frames")
+    # The packer is built in tools/rustwx (the remedy's own command), so a
+    # checkout's tools/rustwx/target rung comes before the shared resolver,
+    # whose checkout rung is tools/grib1_bridge.  Without it a fresh
+    # `bash install.sh` built rw_globe_pack and doctor still reported it
+    # missing, with a remedy that rebuilt the same file.
     try:
-        path = bridges.find_artifact("GPUWM_RW_GLOBE_PACK", filename)
+        path = None
+        if not os.environ.get("GPUWM_RW_GLOBE_PACK"):
+            for built in (rustwx.crate_dir() / "target" / "release" / filename,
+                          rustwx.crate_dir() / "target" / "debug" / filename):
+                if built.is_file():
+                    path = bridges.accept_resolved(built.resolve())
+                    break
+        if path is None:
+            path = bridges.find_artifact("GPUWM_RW_GLOBE_PACK", filename)
     except FileNotFoundError as error:
         path, reason = None, str(error)
     else:
@@ -4522,6 +4689,82 @@ def _tempo_library_check() -> Check | None:
             group=_GROUP_ENGINES)
     return Check(name, "verified",
                  f"{path} -- ABI {tempo_rust.ABI_VERSION}",
+                 brief="staged", group=_GROUP_ENGINES)
+
+
+#: The four entries gpuwm-hex resolves from the projected MET library.
+_PROJECTED_INTERMEDIATE_ENTRIES = (
+    "gpuwm_projected_intermediate_v1", "gpuwm_projected_geometry_v1",
+    "gpuwm_projected_geometry_release_v1", "gpuwm_projected_window_v1")
+
+
+def _projected_intermediate_check() -> Check:
+    """``rw_projected_intermediate``, the projected MET library (2.9.1).
+
+    ``gpuwm-hex intermediate`` loads it through ctypes for HRRR and every
+    other projected source, and has no Python field route behind it.  On
+    2.9.0 no wheel and no bundle carried it, so a pip install could start
+    hex only from lat-lon sources.  Judged the way gpuwm-hex loads it: the
+    file resolves, its ABI answers, and the four entries it binds exist.
+    Not blocking: an ArWen run never calls it.
+    """
+
+    import ctypes
+
+    from gpuwm import bridge_assets
+
+    name = "projected MET intermediate (rw_projected_intermediate)"
+    artifact = next(a for a in bridge_assets.BUNDLED_ARTIFACTS
+                    if a.name == "rw_projected_intermediate")
+    filename = bridge_assets.artifact_filename(
+        artifact, bridge_assets.host_platform() or "linux-x86_64")
+    degrades = ("gpuwm-hex cannot start a hex point run from HRRR or any "
+                "other projected source (lat-lon sources are unaffected)")
+    remedy = bridges.artifact_remedy(
+        env_var=artifact.env_var, filename=filename,
+        subject="the projected MET intermediate library",
+        crate_relative=artifact.crate, artifact=artifact.name)
+    # gpuwm-hex's own ladder: the bridge ladder, then a checkout build in
+    # the engine workspace (hexcore.hrrr_intermediate._native_projected_entry).
+    workspace = bridges._package_parent() / artifact.crate / "target"
+    try:
+        path = bridges.find_artifact(artifact.env_var, filename) or next(
+            (candidate for candidate in (workspace / "release" / filename,
+                                         workspace / "debug" / filename)
+             if candidate.is_file()), None)
+    except FileNotFoundError as error:
+        path, reason = None, str(error)
+    else:
+        reason = f"{filename} is not staged"
+    if path is None:
+        return Check(name, "missing", f"{reason} -- {degrades}",
+                     remedy, action=_build_action(artifact.crate),
+                     brief="not staged; hex from HRRR refuses",
+                     group=_GROUP_ENGINES, blocking=False,
+                     severity=SEVERITY_DEGRADED)
+    symbol, expected = bridge_assets.library_abi_for(artifact.name)
+    try:
+        library = ctypes.CDLL(str(path))
+        probe = getattr(library, symbol)
+        probe.restype = ctypes.c_uint32
+        version = int(probe())
+        absent = [entry for entry in _PROJECTED_INTERMEDIATE_ENTRIES
+                  if not hasattr(library, entry)]
+    except (OSError, AttributeError) as error:
+        return Check(name, "missing", f"{path} -- not loadable ({error}) -- {degrades}",
+                     remedy, action=_build_action(artifact.crate),
+                     brief="not loadable; hex from HRRR refuses",
+                     group=_GROUP_ENGINES, blocking=False,
+                     severity=SEVERITY_DEGRADED)
+    if version != expected or absent:
+        detail = (f"ABI {version}, this release speaks {expected}" if version != expected
+                  else f"lacks {', '.join(absent)}")
+        return Check(name, "missing", f"{path} -- stale build: {detail} -- {degrades}",
+                     remedy, action=_build_action(artifact.crate),
+                     brief="stale build; hex from HRRR refuses",
+                     group=_GROUP_ENGINES, blocking=False,
+                     severity=SEVERITY_DEGRADED)
+    return Check(name, "verified", f"{path} -- ABI {version}",
                  brief="staged", group=_GROUP_ENGINES)
 
 
@@ -4901,7 +5144,7 @@ def _cpu_library_check() -> Check:
     # It used to read `... --offline  then copy it into <dir> or set
     # GPUWM_CPU_PREPROCESS_BRIDGE`, which a reader pastes whole and the
     # shell hands to cargo as arguments -- the exact failure the remedy
-    # contract exists to stop, and a node-7 field finding.
+    # contract exists to stop, and a test host G field finding.
     remedy = (bridges.install_aware_build_hint(bridges.CARGO_BUILD_HINT)
               + "\n  # then copy the built library into "
               f"{bridges.default_bridge_dir()},\n"
@@ -5124,11 +5367,20 @@ def _thompson_tables_check() -> Check:
         _valid, invalid, absent = classify_assets(Path(root))
         if fetchable and not invalid and len(absent) == len(fetchable):
             total_mib = sum(a.bytes for a in fetchable) / (1024 * 1024)
+            # Without a named root the first mp_physics=8 run stages the
+            # set itself (table_assets.require_thompson_tables), so a
+            # fresh install is not broken: the default works, it just
+            # has not been paid for yet.  A named root is the operator's
+            # mirror, never filled for them, and stays a blocking gap.
+            from gpuwm.table_assets import auto_stage_applies
+            automatic = auto_stage_applies()
             return Check(
                 "thompson tables", "missing",
                 f"{', '.join(a.filename for a in fetchable)} not staged "
                 f"at {root} (externalized: published as a release asset, "
-                "not shipped in the package)",
+                "not shipped in the package)"
+                + ("; the first mp_physics=8 run stages them "
+                   "automatically" if automatic else ""),
                 "gpuwm fetch-tables\n"
                 f"  # one {total_mib:.0f} MiB download, SHA-256 verified "
                 "against the\n"
@@ -5136,7 +5388,9 @@ def _thompson_tables_check() -> Check:
                 "  # local directory instead, offline",
                 action="gpuwm fetch-tables",
                 brief=f"{len(fetchable)} externalized table(s) not staged "
-                      f"({total_mib:.0f} MiB)")
+                      f"({total_mib:.0f} MiB)",
+                blocking=not automatic,
+                severity="degraded" if automatic else None)
         return Check(
             "thompson tables", "missing", str(error),
             REINSTALL_HINT
@@ -5490,16 +5744,11 @@ def _mesh_geog_checks(geog: Path) -> list[Check]:
     called the tree complete and `gpuwm mesh` then refused it, which is
     the report being wrong rather than the tree.
 
-    It BLOCKS when the mesh builder is on this box.  The soil archive was
-    an opt-in while the door's own binary was optional too, and the row
-    was ``info`` to match.  It is a required download for that door now,
-    so an install carrying `rw_mpas_static` and not its geography has a
-    door it advertises and cannot open -- ``unreachable``, exactly the
-    severity `blocking_gaps` defines for it, and green over that box is
-    the thing the exit code exists to prevent.  With no mesh builder
-    resolvable the row stays ``info``: the geography is not what stops
-    that door, `_mpas_bridge_checks` already reports the binary, and a
-    WRF-only install may not be failed over a door it does not have.
+    It blocks only when MPAS support was requested: gpuwm-hex is installed
+    or GPUWM_RW_MPAS_STATIC names a builder by hand.  Every wheel bundles
+    `rw_mpas_static`, so resolving that binary alone does not establish
+    intent.  Without an MPAS request the row stays missing but opt-in:
+    WRF never reads these datasets and its complete geography must pass.
     """
 
     from gpuwm import rustwx_static
@@ -5507,13 +5756,10 @@ def _mesh_geog_checks(geog: Path) -> list[Check]:
     absent = rustwx_static.missing_geog_datasets(geog)
     if not absent:
         return []
-    try:
-        installed = rustwx_static.find_static_bin() is not None
-    except FileNotFoundError:
-        # GPUWM_RW_MPAS_STATIC names a missing file.  The operator asked
-        # for this door by hand, so it is installed as far as intent
-        # goes; the binary check reports the broken override itself.
-        installed = True
+    # An override also requests MPAS when its path is broken; the binary
+    # check separately reports that missing executable.
+    requested = (bool(os.environ.get(rustwx_static.STATIC_ENV))
+                 or find_spec("hexcore") is not None)
     # The bare command, not the dataset flag.  The archive these come
     # from is part of the default fetch set now, so naming the flag would
     # teach a narrower command than the one that works; it is named in
@@ -5525,31 +5771,17 @@ def _mesh_geog_checks(geog: Path) -> list[Check]:
               "  # come from (~13 GB unpacked); `--datasets mesh` narrows\n"
               "  # the download to what gpuwm mesh reads\n"
               "  # or `gpuwm mesh --no-static` to write the grid alone")
-    if installed:
-        return [Check(
-            "WPS_GEOG (MPAS static)", "missing",
-            f"{geog} cannot build an MPAS static: "
-            f"{', '.join(absent)} are absent, and "
-            f"{rustwx_static.STATIC_NAME} is installed on this box. `gpuwm "
-            "mesh` writes the grid and refuses the static half of the pair, "
-            "and the mesh registry admits neither on its own, so the door "
-            "cannot be opened. Nothing on the WRF side reads these, so a "
-            "WRF-only run is unaffected",
-            remedy, action="gpuwm fetch-geog",
-            brief=f"{len(absent)} dataset(s) short of an MPAS static",
-            blocking=True, severity=SEVERITY_UNREACHABLE)]
     return [Check(
-        "WPS_GEOG (MPAS static)", "info",
+        "WPS_GEOG (MPAS static)", "missing",
         f"{geog} cannot build an MPAS static: "
-        f"{', '.join(absent)} are absent. `gpuwm mesh` needs them for the "
-        "static half of the pair, and the mesh registry admits neither the "
-        f"grid nor the static on its own. {rustwx_static.STATIC_NAME} is not "
-        "installed here either, so this is not what stops that door; nothing "
-        "on the WRF side reads these, so a WRF-only install is not broken "
-        "by it",
-        remedy,
+        f"{', '.join(absent)} are absent. `gpuwm mesh` writes the grid and "
+        "refuses the static half of the pair, and the mesh registry admits "
+        "neither on its own, so the door cannot be opened. Nothing on the "
+        "WRF side reads these, so a WRF-only run is unaffected",
+        remedy, action="gpuwm fetch-geog",
         brief=f"{len(absent)} dataset(s) short of an MPAS static",
-        blocking=False)]
+        blocking=requested,
+        severity=SEVERITY_UNREACHABLE if requested else SEVERITY_OPT_IN)]
 
 
 def _case_data_root_check() -> list[Check]:
@@ -6528,10 +6760,12 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     # through 2.3.3, which is how a box with every radar-adjacent
     # observation route dead could print a fully green estate.
     checks.extend(_obs_front_door_checks())
+    checks.extend(_obs_stream_door_checks())
     # The five MPAS binaries no bundle carried and no check reported.
     checks.extend(_mpas_bridge_checks())
     checks.append(_ml_export_check())
     checks.append(_grib2_export_check())
+    checks.append(_gpu_post_kernels_check())
     checks.append(_verification_engine_check())
     checks.append(_comparison_engine_check())
     checks.append(_ensemble_reducer_check())
@@ -6550,6 +6784,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     tempo_check = _tempo_library_check()
     if tempo_check is not None:
         checks.append(tempo_check)
+    checks.append(_projected_intermediate_check())
     checks.append(_globe_pack_check())
     checks.append(_radar_superob_check())
     checks.append(_region_dealias_check())

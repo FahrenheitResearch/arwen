@@ -549,7 +549,7 @@ wrong answer reported as a success. Put them in `[shared]`.
 | `morr_rimed_ice` | `morr_rimed_ice` | 1 (hail) | 0, 1 | Morrison dense ice identity |
 | `wsm6_hail_opt` | `hail_opt` | 0 (graupel) | 0, 1 | WSM6 rimed-ice identity |
 | `ysu_topdown_pblmix` | `ysu_topdown_pblmix` | 1 | 0, 1 | YSU top-down radiation-driven mixing |
-| `ysu_version` | no stock namelist spelling | `"wrf_480"` | `"wrf_480"`, `"wrf_461"` | Corrected YSU default. WRF 4.8 MMM `550b5b4` removes the old efficiency offset and caps `0.2*8*tmp1` at 0.4. `[shared]` selects the generation; namelist import uses the corrected default and preserves an explicit physics-selector comment (`! gpuwm-physics-selectors-v1: {...}`). `wrf_461` reproduces the 2.8.9 WRF 4.6.1 kernel in default and strict arithmetic, under its restart identity. Four-level shallow columns use the declared bounded PBL-height search and zero final TKE word. A generation change is refused on restart; old headers without a selector mean `wrf_461`. The corrected path uses the shared no-FTZ loader and WOOF's own math routines |
+| `ysu_version` | no stock namelist spelling | `"wrf_480"` | `"wrf_480"`, `"wrf_461"` | Corrected YSU default. WRF 4.8 MMM `550b5b4` removes the old efficiency offset and caps `0.2*8*tmp1` at 0.4. `[shared]` selects the generation; namelist import uses the corrected default and preserves an explicit physics-selector comment (`! gpuwm-physics-selectors-v1: {...}`). `wrf_461` under default arithmetic reproduces 2.8.9's YSU kernel, under its restart identity. Under `GPUWM_WRF_EXACT=1` it matches WRF 4.6.1 `bl_ysu_run` word for word on the 1,188-column test set, with the same declared exceptions as `wrf_480` (YSU surface drag removed on mixed BEP urban columns; the bounded PBL-height search on four-level columns), under its own restart identity, so a strict-mode `wrf_461` checkpoint from 2.9.0 or earlier is refused rather than continued with different arithmetic. Four-level shallow columns use the declared bounded PBL-height search and zero final TKE word. A generation change is refused on restart; old headers without a selector mean `wrf_461`. The corrected path uses the shared no-FTZ loader and WOOF's own math routines |
 | `nwp_diagnostics` | `nwp_diagnostics` (&time_control) | 0 | 0, 1 | per-step UP_HELI_MAX running max (2-5 km updraft helicity, WRF cal_helicity), reset each history frame, restart-carried, trajectory-inert; the other WRF nwp_output maxima are not carried; wizard configs set 1 |
 | `isftcflx` | `isftcflx` | 0 | 0, 1, 2 | MM5 sfclay water-point roughness (Garratt/Donelan) |
 | `iz0tlnd` | `iz0tlnd` | 0 | 0, 1, 2 | MM5 sfclay land thermal roughness |
@@ -595,6 +595,30 @@ allowed values are the subject of [PHYSICS.md](PHYSICS.md). Selectable
 in the TOML schema is deliberately wider than runnable: readiness is
 owned by `gpuwm/physics_compat.py`, which fails closed with a complete
 port receipt, and the importer's runnable sets are narrower still.
+
+### Correct mode (`[shared]`)
+
+Correct mode is the default. It fixes water-budget defects that WRF itself
+carries, one key per scheme, each `true` by default and read only by the
+schemes named in its row. Setting a key to `false` in `[shared]` runs that
+scheme's WRF-matched arithmetic. Strict WRF mode (`GPUWM_WRF_EXACT=1`)
+forces the WRF-matched arithmetic for every scheme. The run receipt's `correct_mode` block lists the
+findings each domain's schemes carry: `applied_findings` (corrected in this
+run) and `uncorrected` (carried with no correction). An engine
+configuration has no `[physics]` table; `physics.mode` is not an engine key.
+
+| key | schemes | finding | what `true` changes |
+|---|---|---|---|
+| `wsm6_conservative_surface` | WSM6 (`mp_physics = 6`) | WB5 | the below-ground part of the lowest falling cell is booked as surface rain with the remap's sloped profile, not the flat cell mean, so column water plus surface precipitation closes |
+| `wdm6_conservative_surface` | WDM6 (16) | WB5 | the same, in WDM6 |
+| `wsm3_conservative_surface` | WSM3 (3) | WB5 | the same, in WSM3 |
+| `wsm5_conservative_surface` | WSM5 (4) | WB5 | the same, in WSM5 |
+| `wsm7_conservative_surface` | WSM7 (24) | WB5 | the same, in WSM7 |
+| `ntiedtke_dry_mass_coupling` | New Tiedtke (`cu_physics = 16`) | WB4 | moist-mass tendencies are scaled onto dry-mass mixing ratios |
+| `thompson_cloud_surface_booking` | Thompson (`mp_physics = 8`) and aerosol-aware Thompson (28) | WB1 | cloud water that settles out of the lowest level is kept in `CLOUDNC` (mm, `CLOUDNCV` per call) instead of being lost; no other output changes |
+
+A checkpoint resumes only under the arithmetic it was written with; a
+mismatch is refused, and the refusal names the key to set.
 
 ### `[perturbation]` -- initial-state theta bubbles (ArWen-only)
 
@@ -1167,11 +1191,13 @@ to require the original run-control bytes.
 
 ## Not implemented (refused or dropped with a reason)
 
-Moving nests,
+WRF's namelist moving nests (the vortex-following keys; ArWen's own moving
+nests are configured in its experiment file),
 vertical nest refinement, FDDA nudging
 (active `grid_fdda`/`grid_sfdda`/`obs_nudge_opt` refuse; inert keys
 drop), implemented active `&stoch` selectors (admitted with a spread warning; see the
-`&stoch` row above), unimplemented stochastic field and boundary consumers, urban/lake/seaice physics,
+`&stoch` row above), unimplemented stochastic field and boundary consumers,
+the physics options `docs/public/WRF-OPTIONS.md` lists as refused,
 auxiliary I/O streams (`auxhist*`/`auxinput*`, `iofields_filename`;
 ArWen writes one fixed wrfout frame per file per domain -- fields are
 not namelist-selectable), quilt servers, and WRF process/tile
@@ -1257,7 +1283,7 @@ keeps the count of keys consumed with no record at zero.
 | Namelist asks for | What the importer does |
 |---|---|
 | `mp_physics = 55` (Jensen-ISHMAEL) | refused by name (it ran Morrison until 2026-10-12); ask for 10 to run Morrison |
-| `mp_tend_radar = 1` (operational fork radar latent heating) | refused; ArWen's own is the `[radar_heating]` table |
+| `mp_tend_radar = 1` (operational fork radar latent heating) | applied on `gpuwm run --wrfinput` when the WRF input carries the cloud analysis's `RAD_TTEN_DFI_1..4` and `TTEN_TIMES`, as the operational fork applies them (the tendency replaces the clamped microphysics heating where the radar covers, the last slot holding after its time); refused, with the breakage named, on a door whose input has no tendency (GRIB, met_em). ArWen's radar heating from observed reflectivity is the `[radar_heating]` table |
 | `ra_sw_eclipse = 1` | exact when WRF's eclipse table has no eclipse inside the run; refused, with the eclipse named, when it has one |
 | `&dynamics top_lid` omitted | WRF's open top (`top_lid = false`); write `.true.` to keep the rigid lid |
 | `&chem` with `chem_opt` on | mapped onto ArWen's chemistry (`chem_sets`, `chem_sources`, the carried `&chem` keys) or refused key by key; never run with no chemistry |
@@ -1271,6 +1297,17 @@ The unmodified operational 3 km namelist (NOAA-EMC/HRRR v4.1.21
 settings and its `hailcast_opt = 1` listed in one message (smoke dry
 deposition, `enh_vermix`, `flam_part`, smoke direct radiative feedback,
 HAILCAST); with those changed it imports with `chem_sets = "smoke"`.
+Its WPS partner (`parm/conus/hrrr_namelist.wps`) names
+`geog_data_res = 'modis_15s+modis_fpar+modis_lai+30s'`, which builds: the
+15 arc-second MODIS land use, the MODIS FPAR greenness fraction (the same
+dataset and interpolation as `default`), the 30 arc-second MODIS LAI and
+the 30 arc-second soil types, as WPS 4.6 `GEOGRID.TBL.ARW` selects them.
+The 15 arc-second land use has no lake class, so geogrid writes
+`NUM_LAND_CAT = 20` for it and WRF's real.exe stops on the pair's
+`num_land_cat = 21`; the importer refuses that value by name with the same
+reason (set `num_land_cat = 20`). Stage the two datasets the default fetch
+does not carry with
+`gpuwm fetch-geog --datasets modis_landuse_20class_15s,lai_modis_30s`.
 
 
 ## GFS humidity, snow and model-top preparation
@@ -1289,6 +1326,26 @@ as the inland-water reach does for other routes, add
 inland water (enclosed water that is not a land-use lake) keeps the inland-water
 reach either way, and the preparation log counts the cells it fills.
 
+GFS carries no ice for a lake it does not resolve, so the GFS route starts its
+lakes from an observed snow and ice analysis: the NOAA/NESDIS IMS daily
+Northern Hemisphere analysis (NSIDC data set G02156, 1 km, with 4 km as the
+fallback), valid at 00 UTC on the start day or up to three days earlier. A
+lake cell is frozen where the analysis shows lake ice, or, for a lake too small
+for its water mask, snow-covered ground. The cell then starts with
+`SEAICE = XICE = 1` and a skin temperature of at most 271.4 K, and the soil
+column is built as for sea ice. Open cells keep the rule above, and ice the
+forcing already has is never removed. Every domain of a nested tree is frozen
+from the same analysis on its own grid. This is the default,
+`gfs_lake_ice = "observed"`. The preparation log says which analysis it read
+and how many cells it froze, and the source identity records the file and its
+SHA-256. The analysis is fetched without a key into
+`~/.gpuwm/cache/surface-obs` (`GPUWM_SURFACE_OBS_CACHE` moves it). On a machine
+without network access, put the file there under its own name. When no
+analysis can be read, the run prints a warning that names each file it tried,
+and keeps the forcing's ice for that run only. `gfs_lake_ice = "wps"` in the
+complete `[case_data]` table keeps the forcing's ice outright, which is what
+WPS and real.exe give.
+
 The GFS decoder defaults to the WPS snow convention: `SNOW = 2 * WEASD` and
 `SNOWH = 0.005 * SNOW`. To retain the raw GFS WEASD and separately supplied SNOD,
 add `gfs_snow_convention = "raw"` to the experiment's complete `[case_data]`
@@ -1296,8 +1353,10 @@ table. The table's other required input declarations still apply. The decoder
 records the convention and refuses a cached decoder result using another
 convention. Direct bridge callers can select the same behavior with
 `GPUWM_GFS_SNOW_CONVENTION=raw`; normal preparation uses the experiment policy.
-Whether WPS's historical doubling is physically appropriate for modern GFS
-remains an open scientific question. This default establishes WPS parity.
+This default establishes WPS parity. On one winter start (2025-02-20 12Z,
+71,467 snow-covered US land cells around the Great Lakes) it was also closer
+to the SNODAS snow analysis than the raw value: snow water bias +3.5 mm
+(RMSE 23.2 mm) against -17.8 mm (35.7 mm) for raw WEASD. That is one case.
 
 Fetched and decoded pressure ladders include at least one level strictly above
 `p_top`. A 100 hPa top therefore includes 70 hPa. An old full-file download can

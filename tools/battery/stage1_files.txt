@@ -524,9 +524,12 @@ tests/test_publish_workflow_state_machine.py
 # Prepared-packet identity, native/metadata checks and bounded retry behavior
 # moved from the old inline Bash workflow fixtures into this controller suite.
 tests/test_prepared_publication.py
-# Wheel-size recovery: every declared artifact ships in each platform wheel.
+# Wheel-size recovery: every artifact but the on-demand stream doors ships in each platform wheel.
 # Staging, publication and doctor must agree on the restored full roster.
 tests/test_on_demand_artifacts.py
+# 2.9.1: the observation-stream doors are on-demand bundle artifacts staged on
+# first use, and `gpuwm obs streams` reads the install instead of a declaration.
+tests/test_obs_stream_doors_on_demand.py
 # Refuse a wheel above 100,000,000 bytes before spending the release gate.
 tests/test_wheel_size_pre_gate.py
 
@@ -2299,6 +2302,7 @@ tests/test_ensemble_stochastic_streamed_restart.py
 tests/test_ensemble_stochastic_streaming.py
 tests/test_spp_config.py
 tests/test_spp_consumers.py
+tests/test_spp_wrf461_column_oracle.py
 tests/test_spp_restart.py
 tests/test_ruc_spp.py
 tests/test_preprocess_math_binding.py
@@ -2391,6 +2395,7 @@ tests/test_chem_seasalt_wrf471_parity.py
 tests/test_chem_rrtmgp_aerosol_parity.py
 tests/test_chem_sulfur_wrf471_parity.py
 tests/test_chem_ageing_wrf471_parity.py
+tests/test_chem_oracle_harness_reproducible.py
 tests/test_chem_dust_statics.py
 tests/test_chem_gocart_cadence.py
 tests/test_chem_statics.py
@@ -2964,7 +2969,6 @@ tests/test_wsm7_registry_metadata.py
 tests/test_wsm7_staging.py
 tests/test_wsm7_wrf461_column_exact.py
 tests/test_wsm_family_frame_pricing.py
-tests/test_ysu_generation_batch_gpu.py
 tests/test_ysu_generation_source.py
 tests/test_ysu_generations.py
 tests/test_source_leg_controller.py
@@ -2981,3 +2985,44 @@ tests/test_source_leg_controller.py
 # tests/test_correct_mode_water_budget.py on tools/battery/gpu_shard_files.txt.
 tests/test_correct_mode_default.py
 tests/test_rw_mpas_lbc_physics_mode.py
+# 2.9.1 landing batch: the fixes' own test files, which no list carried (so no
+# battery ran them).  GPU-marked rows of test_oml_gpu.py and the satmedmf files
+# run on tools/battery/gpu_shard_files.txt.
+tests/test_doctor_gpu_post_kernels.py
+tests/test_doctor_projected_intermediate.py
+tests/test_hrrr_geog_tokens.py
+tests/test_lake_ice.py
+tests/test_lower_boundary_restart_echo.py
+tests/test_ocean1_oml_parameter_homes.py
+tests/test_oml_contract.py
+tests/test_satmedmf_admission.py
+tests/test_satmedmf_ccpp_oracle.py
+tests/test_satmedmf_transcription.py
+tests/test_wrf_options_page.py
+tests/test_wrf_unported_scheme_reasons.py
+tests/test_strict_theta_carrier.py
+tests/test_strict_streamed_base_refusal.py
+
+# 2.9.2 compose (integrate/2.9.2): the new suites of the 2.9.2 lanes, which
+# no list named, so no gate ran them: the hex-to-ArWen parent profile
+# (lane/292-hex-parent), the MADIS/GLM doors and the engine stream table
+# (lane/292-conv-obs), and the world radar archive table
+# (lane/292-radar-world).  Census rows recorded with --collect-only under
+# the leg's markexpr and environment.
+tests/test_hex_parent_profile.py
+tests/test_obs_conv_lightning_doors.py
+tests/test_obs_radar_archives.py
+tests/test_obs_streams_in_engine.py
+# Wheel-size recovery: every declared artifact ships in each platform wheel.
+# The WRF analysis bundle and its forecast door: the bundle format
+# and every refusal on real classic files, the producer's helpers (the background rebuilt bit for
+# bit, the engine's own balanced PH), the boundary rebase after an analysis (WRFDA da_update_bc,
+# accepted by the WRF-input door's own pair check), and the door's plan, refusals and worker
+# acts.  Breakage: without them on a leg, a bundle on another grid or with changed bytes could
+# start a forecast, an analysed start could pair with the background's boundary, or a door flag
+# could be accepted and read by nothing.
+tests/test_analysis_bundle.py
+tests/test_analysis_boundary.py
+tests/test_analysis_door.py
+tests/test_single_core_gate.py
+tests/test_numerics_default.py

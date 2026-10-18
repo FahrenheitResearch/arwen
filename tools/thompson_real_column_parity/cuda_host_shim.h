@@ -91,6 +91,17 @@ static inline long long __double_as_longlong(double d)
 static inline double __longlong_as_double(long long l)
 { double d; std::memcpy(&d, &l, 8); return d; }
 
+// The serial host launchers run one thread at a time, so the device
+// atomics thompson_classic.cu uses for its column flags are plain
+// read-modify-writes here.
+static inline int atomicOr(int *a, int v) { int o = *a; *a = o | v; return o; }
+static inline int atomicMax(int *a, int v)
+{ int o = *a; *a = o > v ? o : v; return o; }
+static inline int __clz(int x)
+{ return x == 0 ? 32 : __builtin_clz((unsigned)x); }
+static inline int __clzll(long long x)
+{ return x == 0 ? 64 : __builtin_clzll((unsigned long long)x); }
+
 // Optional host-only rate readback (tools/thompson_real_column_parity/
 // instrument_port_rates.py).  The instrumented copy of a kernel calls
 // HOST_RATE(slot, idx, value); the pristine source never names it.

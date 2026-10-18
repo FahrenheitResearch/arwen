@@ -367,7 +367,34 @@ def _slab_state(cfg_slab, coord, base_slab, static_slab, cache_rows,
         # Made explicit so the cost is visible and the behaviour is not a
         # property of which CuPy is installed.
         target[...] = cp.asarray(np.ascontiguousarray(rows))
+    refuse_strict_streamed_base(state.thb)
     return state
+
+
+def refuse_strict_streamed_base(thb) -> None:
+    """Strict WRF mode refuses a tile-streamed prepared slab whose base theta is not 300 K.
+
+    THE BREAKAGE THIS PREVENTS (2.9.1): every strict kernel reads ``thp`` as
+    WRF's ``t = theta - 300`` (``thb == 300``).  The resident prepared door
+    re-expresses its state that way (gpuwm.core.state.adopt_wrf_theta_carrier);
+    this tile-streamed road keeps the preparation's base profile in ``thb``,
+    so strict mode would read theta up to 164 K low and stop non-finite in its
+    first steps (measured on the resident road before its fix).  The road's
+    setup fingerprint binds that base per slab, so it is refused here by name
+    rather than re-expressed.  Default mode, and a base already at 300 K, pass.
+    """
+    from gpuwm.wrf_exact import ENABLED
+    if not ENABLED:
+        return
+    host = thb.get() if hasattr(thb, "get") else np.asarray(thb)
+    if bool((host == np.float32(300.0)).all()):
+        return
+    raise PreparedStoreError(
+        "strict WRF mode (GPUWM_WRF_EXACT=1) does not run a tile-streamed prepared "
+        "domain: this road holds the preparation's base theta, not WRF's "
+        "T = theta - 300 that every strict kernel reads, so it would stop "
+        "non-finite; run strict mode on a domain that fits on the card resident, "
+        "or through the WRF-input door (gpuwm run --wrfinput)")
 
 
 class _CachePayload:

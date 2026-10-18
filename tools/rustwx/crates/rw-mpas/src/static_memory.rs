@@ -239,7 +239,12 @@ pub fn enforce_admission(
     predicted_peak_bytes: u64,
     explicit_limit: Option<u64>,
 ) -> MpasResult<Option<u64>> {
-    let limit = resolve_host_limit(explicit_limit);
+    admit_under(phase, predicted_peak_bytes, resolve_host_limit(explicit_limit))
+}
+
+/// [`enforce_admission`] against a limit already resolved by
+/// [`resolve_host_limit`] (`None`: no limit was discoverable).
+fn admit_under(phase: &str, predicted_peak_bytes: u64, limit: Option<u64>) -> MpasResult<Option<u64>> {
     if let Some(limit) = limit {
         let reserve = reserve_under_limit(limit);
         let usable = usable_under_limit(limit);
@@ -306,8 +311,35 @@ pub fn plan_tile_parallelism(
     tile_map_cache_request_bytes: u64,
     explicit_limit: Option<u64>,
 ) -> MpasResult<TileParallelPlan> {
+    plan_tile_parallelism_under(
+        phase,
+        resident_bytes,
+        per_worker_tile_bytes,
+        one_shot_bytes,
+        slack_bytes,
+        requested_workers,
+        tile_map_cache_request_bytes,
+        resolve_host_limit(explicit_limit),
+    )
+}
+
+/// [`plan_tile_parallelism`] against a limit already resolved by
+/// [`resolve_host_limit`] (`None`: no limit was discoverable).  The limit is
+/// resolved once, so the worker cut and the admission gate judge the same
+/// limit, and a test of the no-limit plan does not depend on the cgroup of
+/// the host that runs it (a 16 GB container runner found one, 2026-10-15).
+#[allow(clippy::too_many_arguments)]
+fn plan_tile_parallelism_under(
+    phase: &str,
+    resident_bytes: u64,
+    per_worker_tile_bytes: u64,
+    one_shot_bytes: u64,
+    slack_bytes: u64,
+    requested_workers: usize,
+    tile_map_cache_request_bytes: u64,
+    limit: Option<u64>,
+) -> MpasResult<TileParallelPlan> {
     let requested_workers = requested_workers.max(1);
-    let limit = resolve_host_limit(explicit_limit);
     let fixed = resident_bytes
         .saturating_add(one_shot_bytes)
         .saturating_add(slack_bytes);
@@ -347,7 +379,7 @@ pub fn plan_tile_parallelism(
         .saturating_add(cache);
     // Belt and braces: the plan is only worth having if it passes the same
     // gate every other phase is measured against.
-    enforce_admission(phase, predicted_peak_bytes, explicit_limit)?;
+    admit_under(phase, predicted_peak_bytes, limit)?;
 
     Ok(TileParallelPlan {
         requested_workers,
@@ -751,8 +783,11 @@ mod tests {
     fn with_no_discoverable_limit_the_plan_is_what_was_asked_for() {
         // resolve_host_limit consults an explicit limit, then the environment,
         // then the cgroup.  With none of those the builder must still run --
-        // and must still publish a peak that includes every worker.
-        let p = plan_tile_parallelism("preflight", 0, 100, 0, 0, 6, 55, None);
+        // and must still publish a peak that includes every worker.  The
+        // resolved limit is given as None here rather than discovered: a host
+        // whose own cgroup carries a limit (a 16 GB container runner, a batch
+        // job) would otherwise plan under that limit instead.
+        let p = plan_tile_parallelism_under("preflight", 0, 100, 0, 0, 6, 55, None);
         let p = p.expect("no limit admits");
         assert_eq!(p.workers, 6);
         assert_eq!(p.tile_map_cache_bytes, 55);
@@ -762,7 +797,7 @@ mod tests {
 
     #[test]
     fn zero_workers_are_promoted_to_one_rather_than_stalling_the_build() {
-        let p = plan_tile_parallelism("preflight", 0, 8, 0, 0, 0, 0, None).expect("admits");
+        let p = plan_tile_parallelism_under("preflight", 0, 8, 0, 0, 0, 0, None).expect("admits");
         assert_eq!(p.workers, 1);
         assert_eq!(p.requested_workers, 1);
     }

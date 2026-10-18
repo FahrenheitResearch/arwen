@@ -2118,6 +2118,10 @@ def _validate_native_hrrr_physics_profile(
 #: switch this map does not name is now a named refusal here rather than
 #: a silent default three layers down.
 _PROFILE_SWITCH_HOMES = MappingProxyType({
+    'oml_gamma': "shared",
+    'oml_hml0': "shared",
+    'oml_relaxation_time': "shared",
+    'sf_ocean_physics': "shared",
     "aer_init_opt": "shared",
     "alb_sol": "shared",
     "bl_mynn_gsd41_unsquared_qtke": "shared",
@@ -3841,7 +3845,7 @@ def _await_admitted(admitter, producer, lead, *, poll_seconds=1.0,
     fail first (it exits at once on a series it cannot read).  The decoder
     is looked at between waits, so its failure is raised now, not once the
     lead posts: the breakage this prevents is a preparation that sat out a
-    lead's whole budget beside a decoder that had already died (node-4,
+    lead's whole budget beside a decoder that had already died (test host D,
     HRRR 2026-10-01T06, 30 minutes).  ``between`` is called between waits
     too (the build loop writes the intervals already built).
     """
@@ -5431,7 +5435,7 @@ def run(args):
                             # awaited, so each interval is written once its
                             # two hours are built: collected only when its
                             # slot came round again, interval k waited for
-                            # lead k + slots, not k + 1 (node-4, HRRR
+                            # lead k + slots, not k + 1 (test host D, HRRR
                             # 2026-10-01T08, two slots: interval 3 waited for
                             # f005 although f004 was in at 09:02Z).  Collection
                             # order moves no byte (segments are written in

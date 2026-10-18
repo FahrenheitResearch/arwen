@@ -367,12 +367,36 @@ def is_development_module(package: str, module: str) -> bool:
                for pattern in DEVELOPMENT_MODULE_GLOBS.get(package, ()))
 
 
+#: Packages whose wheel payload is exactly their ``package-data``
+#: declaration.  setuptools' ``include-package-data`` (on by default for a
+#: pyproject build) also hands every sdist member that lives under a
+#: declared package to the wheel, and ``docs`` is a declared package for one
+#: file (``docs/mpas-seam.md``, see pyproject.toml).  MEASURED on the 2.9.2
+#: candidate: when MANIFEST.in started shipping the public pages in the
+#: source archive, the manylinux wheel grew from 3,161 to 3,287 members
+#: (+1,850,932 compressed bytes, all ``docs/``) and tripped the cut's
+#: 100,000,000-byte per-file limit.  The sdist keeps its pages; the wheel
+#: keeps its declaration.  tests/test_mpas_seam_doc_is_packaged.py measures
+#: it with a manifest contribution present.
+DECLARATION_ONLY_DATA_PACKAGES: tuple[str, ...] = ("docs",)
+
+
 class _OperationalBuildPy(_BuildPy):
     """Copies every module of a package into the wheel EXCEPT the probes."""
 
     def find_package_modules(self, package, package_dir):  # noqa: D102
         return [row for row in super().find_package_modules(package, package_dir)
                 if not is_development_module(row[0], row[1])]
+
+    def find_data_files(self, package, src_dir):  # noqa: D102
+        if package not in DECLARATION_ONLY_DATA_PACKAGES:
+            return super().find_data_files(package, src_dir)
+        manifest = self.manifest_files
+        self.manifest_files = {}
+        try:
+            return super().find_data_files(package, src_dir)
+        finally:
+            self.manifest_files = manifest
 
 
 setup(distclass=_BinaryDistribution,

@@ -24,8 +24,9 @@ GRIB1 route, i.e. ERA5 today.  GFS/HRRR downloads (``gpuwm fetch``) feed
 the ``rw-wps``/``gpuwm-wrf-init`` native initialization front door, which
 consumes the same ``[experiment]``/``[[domain]]`` tables but not
 ``[case_data]``.  The wizard therefore emits ``[case_data]`` only for
-``--source era5`` and prints the exact accurate next step for every source
-instead of pretending a pipeline exists.
+``--source era5``. An explicit geography root is saved in that table for
+ERA5 and in ``[static].geog_root`` for every other source, so the printed
+next command uses the same tree without another flag.
 
 Sizing conventions (all documented, none silent):
 
@@ -130,6 +131,7 @@ from gpuwm.physics_menu import (WIZARD_PHYSICS_PROFILES,
 from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS, boundary_axis
 from gpuwm.source_adapters import (get_source_adapter, source_adapters,
                                    source_forcing_interval_seconds,
+                                   wizard_cadence_named_source_ids,
                                    wizard_planable_source_ids)
 # config_source_coverage_refusal and its geometry live in source_coverage so
 # the RW-WPS wheel, which excludes this module, can review a config too.
@@ -439,7 +441,7 @@ def vram_reserve_gib(vram_gib: float) -> float:
     plus the widest launched kernel's local-memory backing store plus a
     retention residual, which lands at 3.5-3.6 GiB on exactly those 12
     and 16 GiB cards.  Sizing a layout against a 3.0 GiB reserve and then
-    handing it to a preflight applying 3.55 is how a node-7 pilot got a
+    handing it to a preflight applying 3.55 is how a test host G pilot got a
     wizard-certified config whose own check said the envelope did not
     fit.  4.0 -- the figure the 24 GiB tier already uses -- clears the
     measured reserve on both small tiers with about 0.45 GiB to spare.
@@ -690,7 +692,7 @@ def planable_sources() -> tuple[str, ...]:
     return wizard_planable_source_ids()
 
 
-def resolve_source(raw: str) -> str:
+def resolve_source(raw: str, *, cadence_h: int | None = None) -> str:
     """RAW (an id or a registry alias) as the canonical source id.
 
     Fail-closed in three named ways, because "invalid choice: 'rap'" is a
@@ -702,9 +704,16 @@ def resolve_source(raw: str) -> str:
     * a registered row with no runnable route says what the row says about
       itself, so the reader learns the state of that model rather than the
       state of this parser;
-    * a registered runnable row with no declared forcing cadence names the
-      missing fact, because emitting ``interval_seconds`` for it would be a
-      guess about boundary times the source may never publish.
+    * a registered runnable row with no declared forcing cadence plans
+      only with ``cadence_h`` (the caller's ``--cadence HOURS``): its
+      spacing is whatever the history files it is handed carry, so the
+      caller names it and that number becomes the ``interval_seconds``
+      written.  Without one the refusal names the flag, because emitting
+      a guessed ``interval_seconds`` would ask the preparation for
+      boundary times the inputs may not carry.  Breakage: ``gpuwm domain
+      --source hex-global`` exited 2 even with ``--cadence 3``, so the
+      documented ``gpuwm prep --source hex-global`` line had no config to
+      point at (2.9.2 hex-as-source door test).
     """
 
     try:
@@ -724,15 +733,15 @@ def resolve_source(raw: str) -> str:
                if adapter.composition_requirement else "")
             + f".  A configuration emitted for it could not be prepared by "
               f"anything; plan with one of {', '.join(planable_sources())}")
-    if adapter.forcing_interval_seconds is None:
+    if adapter.forcing_interval_seconds is None and cadence_h is None:
         raise ValueError(
-            f"--source {adapter.source_id}: this route's boundary cadence "
-            "comes from the mapping document a caller supplies, not from "
-            "the registry, so this door has no interval_seconds to write "
-            "and the namelist.wps it emitted would name boundary times the "
-            "inputs may not carry.  Plan with the named source your mapping "
-            f"describes ({', '.join(planable_sources())}), or author the "
-            "namelist beside the mapping")
+            f"--source {adapter.source_id}: this source declares no native "
+            "boundary cadence (its spacing is whatever the history files "
+            "you hand `gpuwm prep` carry), so this door has no "
+            "interval_seconds to write until you name it: pass --cadence "
+            "HOURS, the spacing of those files (a gpuwm-hex export written "
+            "every 3 h is --cadence 3).  The sources that declare their own "
+            f"cadence ({', '.join(planable_sources())}) need no --cadence")
     return adapter.source_id
 
 
@@ -6079,6 +6088,79 @@ def _profile_help_route_note() -> str:
 #: state two sources' defaults as literal text and a route gate moving
 #: would have left it lying.
 DEFAULT_WIZARD_SOURCE = "era5"
+#: What a bare `gpuwm domain` runs on when the default source's keyless
+#: store does not hold the requested window yet (ERA5 trails real time by
+#: about a week): the public forecast source every box can fetch.
+DEFAULT_WIZARD_FALLBACK_SOURCE = "gfs"
+
+
+def _keyless_default_source(args) -> None:
+    """On a computer with no CDS key, the default reads a keyless source.
+
+    The CDS is a keyed job API: a bare `gpuwm domain` wrote a CDS-only
+    [fetch] table and the first `gpuwm go` stopped at acquisition on
+    any computer without ~/.cdsapirc, while `gpuwm doctor` reported the
+    keyless ARCO store available.  With no key:
+
+    * ERA5 is read from Google's keyless ARCO store (the same reanalysis
+      from 1940), unless a provider or the CDS-only ensemble members
+      were named.
+    * A window the store does not hold yet (ERA5 is published about a
+      week behind real time, so yesterday's date failed outright at the
+      fetch, after the plan had been accepted) runs on the fallback
+      source when the source itself was not named, and is refused here,
+      naming the store's newest cycle, when `--source era5` was.
+
+    With a key the table is exactly what it always was.  Each choice is
+    said in one sentence, so the reader knows which source runs and why.
+    """
+
+    from gpuwm.fetch import (cds_credentials_path, cds_credentials_present,
+                             resolve_latest_cycle)
+
+    if (args.source != DEFAULT_WIZARD_SOURCE
+            or getattr(args, "era5_provider", None) is not None
+            or getattr(args, "era5_product", None) == "ensemble_members"
+            or cds_credentials_present()):
+        return
+    keyless = (f"source: ERA5 from Google's keyless ARCO store, because no "
+               f"Copernicus CDS key was found at {cds_credentials_path()} "
+               "(add one, or pass --era5-provider cds, to use the CDS)")
+    args.era5_provider = "arco"
+    raw = str(args.cycle).strip()
+    cycle = None if raw.lower() == "latest" else parse_cycle(raw, args.source)
+    start_hour = getattr(args, "forecast_start_hour", None) or 0
+    hours = int(getattr(args, "hours", 0) or 0)
+    newest = None
+    if cycle is not None:
+        try:
+            newest = resolve_latest_cycle(
+                args.source, start_hour + hours, provider="arco",
+                **({"start_hour": start_hour} if start_hour else {}))
+        except (RuntimeError, OSError, ValueError):
+            # The store's bounds could not be read; the fetch itself
+            # checks the same attribute and says so.
+            newest = None
+    if cycle is None or newest is None or cycle <= newest:
+        print(keyless)
+        return
+    window = (f"{cycle:%Y-%m-%dT%H}Z through "
+              f"{cycle + timedelta(hours=start_hour + hours):%Y-%m-%dT%H}Z")
+    reason = (f"ERA5 for {window} is not in Google's keyless ARCO store yet "
+              f"(its newest cycle covering a {start_hour + hours} h window is "
+              f"{newest:%Y-%m-%dT%H}Z; ERA5 is published about a week behind "
+              f"real time) and no Copernicus CDS key was found at "
+              f"{cds_credentials_path()}")
+    if getattr(args, "source_explicit", False):
+        raise ValueError(
+            f"--source {args.source}: {reason}. The fetch would stop at that "
+            f"store's coverage. Choose a cycle up to {newest:%Y-%m-%dT%H}Z, "
+            f"pass --source {DEFAULT_WIZARD_FALLBACK_SOURCE}, or fetch again "
+            "once the store publishes the window.")
+    args.source = DEFAULT_WIZARD_FALLBACK_SOURCE
+    args.era5_provider = None
+    print(f"source: {args.source.upper()}, because {reason} "
+          f"(--source {DEFAULT_WIZARD_SOURCE} keeps ERA5 and waits for it)")
 
 
 class _DeclaredSourceAction(argparse.Action):
@@ -6383,26 +6465,37 @@ def _supplied_forcing_schedule(args, start_time):
 def _check_emitted_config(out: Path, sizing: SizingBudget, *,
                           target_machine=None, remote_hardware=False) -> int:
     """Check with the same sizing sample, retaining its measured device profile."""
+    from gpuwm.cli import EXIT_GEOGRAPHY_MISSING
     from gpuwm.core.mynn_pbl_scratch import (
         mynn_pricing_memory, mynn_pricing_total_bytes)
 
     with mynn_pricing_memory(total_bytes=mynn_pricing_total_bytes(
             sizing.vram_gib, measured=sizing.measured or remote_hardware),
                              free_bytes=sizing.free_bytes):
-        return _check_emitted_config_for_card(
+        rc, geography_missing_only = _check_emitted_config_for_card(
             out, sizing, target_machine=target_machine,
             remote_hardware=remote_hardware)
+    # Creation must succeed before fetch-geog can read this configuration.
+    # The geography-only verdict means memory passed. A refused tiled plan
+    # also uses 6, so retain the check's origin rather than just its number.
+    # Its dataset list and exact remedy have already been printed once.
+    if rc == EXIT_GEOGRAPHY_MISSING and geography_missing_only:
+        print("gpuwm check: geography staging is the next step; "
+              "the configuration was created. Follow the remedy above "
+              "before running.")
+        return 0
+    if rc == 0:
+        print("gpuwm check: PASS (rc 0)")
+    return rc
 
 
 def _check_emitted_config_for_card(out: Path, sizing: SizingBudget, *,
                                   target_machine=None,
-                                  remote_hardware=False) -> int:
-    from gpuwm.cli import build_parser, main as cli_main
+                                  remote_hardware=False) -> tuple[int, bool]:
+    from gpuwm.cli import build_parser
 
     argv = ["check", str(out), "--free-gib", f"{sizing.free_bytes / GIB:.17g}",
             "--vram-gib", f"{sizing.vram_gib:.17g}"]
-    if not sizing.measured and not remote_hardware:
-        return cli_main(argv)
     # This is an in-process handoff, not a new CLI option. The composed
     # handler still runs input preflight before the memory check.
     args = build_parser().parse_args(argv)
@@ -6411,7 +6504,8 @@ def _check_emitted_config_for_card(out: Path, sizing: SizingBudget, *,
     if remote_hardware:
         args._shared_target_machine = target_machine
         args._target_hardware_supplied = True
-    return args.func(args)
+    rc = args.func(args)
+    return rc, getattr(args, "_geography_missing_only", False)
 
 
 def _domain_target_hardware(args, sizing_budget=None):
@@ -6474,7 +6568,9 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
         return domain_recipe_main(args)
     if getattr(args, "region", None) or getattr(args, "spacing_km", None):
         raise ValueError("--region and --spacing-km require --recipe; otherwise the requested recipe settings would be lost")
-    args.source = resolve_source(args.source)
+    args.source = resolve_source(args.source,
+                                 cadence_h=getattr(args, "cadence", None))
+    _keyless_default_source(args)
     nz = getattr(args, "nz", None)
     tiles = getattr(args, "tiles", None)
     if nz is not None and nz < 4:
@@ -7134,6 +7230,15 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     text = with_surface_flux_option(text, getattr(args, "isftcflx", None))
     from gpuwm.static.source_defaults import with_source_static_defaults_text
     text = with_source_static_defaults_text(text, args.source)
+    if args.geog_root and case_data is None:
+        # D2: the prepared routes have no [case_data], but must retain
+        # the explicit tree for check and the printed go command alike.
+        root_line = ("geog_root = "
+                     + _toml_value(_posix(Path(args.geog_root).resolve())) + "\n")
+        if "\n[static]\n" in text:
+            text = text.replace("\n[static]\n", "\n[static]\n" + root_line, 1)
+        else:
+            text += "\n[static]\n" + root_line
     smoothing_spec = getattr(args, "terrain_smoothing", None)
     smoothing_precision = getattr(args, "terrain_smoothing_precision", None)
     if smoothing_spec or smoothing_precision:
@@ -7351,8 +7456,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
         # geometry, levels, physics and boundary cadence below are
         # complete, so a hand-staged directory of this cycle's files runs
         # the same chain every other mapped source runs.
-        spacing_h = int(
-            source_forcing_interval_seconds(args.source)) // 3600
+        spacing_h = int(interval) // 3600
         fetch_command = "\n".join((
             f"# stage {args.source}'s bytes for cycle "
             f"{fetch_hints['cycle']} yourself into",
@@ -7544,7 +7648,6 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                   "lost: fix the gap that check names, then re-run "
                   "`gpuwm check` on the same file.", flush=True)
             return rc
-        print("gpuwm check: PASS (rc 0)")
     else:
         deferred = _missing_case_inputs(out, case_data)
         if deferred:
@@ -7569,7 +7672,6 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                       "then re-run `gpuwm check` on the same file.",
                       flush=True)
                 return rc
-            print("gpuwm check: PASS (rc 0)")
 
     _print_next_steps(fetch_command, check_command, run_command,
                       source=args.source, deferred=bool(deferred),
@@ -7590,11 +7692,15 @@ def _print_next_steps(fetch_command: str, check_command: str,
     the source registry and appear before the next command when needed.
     """
 
+    # The CDS key is the CDS transport's; a fetch from the keyless ARCO
+    # store needs none, and telling that user to go and get one sends them
+    # to register for an account the command never reads.
+    keyless = "--era5-provider arco" in fetch_command
     if (not explain and run_command.startswith("gpuwm go ")
             and fetch_command.startswith("gpuwm fetch ")):
         print("\nConfiguration created. Review it before launching; "
               "Run checks current GPU memory before downloading.")
-        for note in source_credential_notes(source):
+        for note in ([] if keyless else source_credential_notes(source)):
             print(note)
         print("Preview the plan without downloading or running:")
         print(f"  {run_command} --dry-run")
@@ -7618,10 +7724,6 @@ def _print_next_steps(fetch_command: str, check_command: str,
     print(f"  1. {acquire[0]}")
     for line in acquire[1:]:
         print(f"     {line}")
-    # The CDS key is the CDS transport's; a fetch from the keyless ARCO
-    # store needs none, and telling that user to go and get one sends them
-    # to register for an account the command never reads.
-    keyless = "--era5-provider arco" in fetch_command
     for note in ([] if keyless else source_credential_notes(source)):
         print(f"     {note}")
     print(f"  2. {check_command}"
@@ -7878,8 +7980,11 @@ def register_cli(subparsers) -> None:
         # and a new row reach this door with no edit here.
         help="forcing source: any registered source id or alias -- "
              + ", ".join(wizard_planable_source_ids())
-             + " today (`gpuwm prep --list-sources` lists the whole "
-               "registry).  It "
+             + " today, plus "
+             + ", ".join(wizard_cadence_named_source_ids())
+             + " with --cadence naming the spacing of the history files "
+               "it will be handed (`gpuwm prep --list-sources` lists the "
+               "whole registry).  It "
                "sets the boundary cadence written into the companion "
                "namelist.wps, bounds the domain by the source's own grid "
                "where that grid is regional, and (era5) declares "
@@ -7900,9 +8005,12 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--era5-product", choices=("reanalysis", "ensemble_members"), default=None,
                         help="explicit ERA5 product; default reanalysis has no member axis")
     parser.add_argument("--era5-provider", choices=("cds", "arco"), default=None,
-                        help="ERA5 provider; ensemble_members requires CDS")
+                        help="ERA5 provider (default: cds when a Copernicus CDS key is present, otherwise the keyless arco store); ensemble_members requires CDS")
     parser.add_argument("--cadence", type=positive_int, default=None, metavar="HOURS",
-                        help="boundary spacing in whole hours, validated against the selected product")
+                        help="boundary spacing in whole hours, validated against the selected product; "
+                             "required for a source that declares no cadence of its own "
+                             f"({', '.join(wizard_cadence_named_source_ids())}), where it is "
+                             "the spacing of the history files handed to gpuwm prep")
     parser.add_argument("--member", default=None,
                         help="ensemble trajectory member; defaults to the route's control")
     parser.add_argument("--forecast-start-hour", type=int, default=None,
@@ -7949,7 +8057,7 @@ def register_cli(subparsers) -> None:
                              "WPS's float32")
     parser.add_argument("--geog-root", type=Path, default=None,
                         metavar="DIR",
-                        help="staged WPS_GEOG tree (default "
+                        help="staged WPS_GEOG tree, saved for every source (default "
                              "${GPUWM_CASE_DATA_ROOT}/WPS_GEOG)")
     parser.set_defaults(func=domain_main)
     return parser

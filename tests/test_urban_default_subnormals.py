@@ -65,6 +65,11 @@ def test_final_nvrtc_option_retains_subnormals(name, monkeypatch, tmp_path):
     # an earlier test in this process compiled would never reach NVRTC.
     import cupy._util
     cupy._util.clear_memo()
+    # A warmed kernel plan also holds images in memory, independently of
+    # CuPy's memo and disk cache. This capture must reach NVRTC in a battery
+    # that has already compiled these urban units.
+    from gpuwm import kernel_plan
+    monkeypatch.setattr(kernel_plan, "_flight", {})
     seen = []
     original = cp.cuda.nvrtc.compileProgram
 

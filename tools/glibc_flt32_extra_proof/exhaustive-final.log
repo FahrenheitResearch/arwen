@@ -1,0 +1,4 @@
+log10f resolved=/lib/x86_64-linux-gnu/libm.so.6 threads=64
+log10f inputs=4294967296 mismatches=0 seconds=1.269
+cbrtf resolved=/lib/x86_64-linux-gnu/libm.so.6 threads=64
+cbrtf inputs=4294967296 mismatches=0 seconds=1.699

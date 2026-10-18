@@ -13,6 +13,14 @@ _apply_thompson_aerosol`` for mp=28, ``gpuwm.core.microphysics.
 _apply_thompson`` for mp=8) through the host backend, exactly as
 ``real_column_parity`` does.
 
+mp=8 runs gpuwm/core/kernels/thompson_classic.cu, a transcription of WRF
+itself, so its rule columns are not checked against a restatement of the
+rule here: ``make_rule_fixture_mp8.py`` runs the same kinds of columns
+through WRF's own classic driver and
+tests/test_thompson_real_column_host_parity.py holds the unit word for word
+to those answers.  The ``mp`` arguments below remain for mp=28 and for the
+thompson.cu kernels mp=28 shares.
+
 Bare line numbers are WRF v4.6.1's ``phys/module_mp_thompson.F``.
 
 usage: rule_checks.py [CHECK ...]      prints one JSON object
@@ -378,16 +386,11 @@ def check_warm_ice_number(mp):
 
 CHECKS = {
     "G_no_micro_column_mp28": lambda: check_no_micro_column(28),
-    "G_no_micro_column_mp8": lambda: check_no_micro_column(8),
     "T_terminal_graupel_zero": check_terminal_graupel_zero,
     "Awarm_ice_number_mp28": lambda: check_warm_ice_number(28),
-    "Awarm_ice_number_mp8": lambda: check_warm_ice_number(8),
     "J_melt_before_r1_mp28": lambda: check_condensate_at_or_below_r1_melts(28),
-    "J_melt_before_r1_mp8": lambda: check_condensate_at_or_below_r1_melts(8),
     "I_melting_snow_blend_mp28": lambda: check_melting_snow_blend(28),
-    "I_melting_snow_blend_mp8": lambda: check_melting_snow_blend(8),
     "P_presence_mp28": lambda: check_presence_is_the_mixing_ratio(28),
-    "P_presence_mp8": lambda: check_presence_is_the_mixing_ratio(8),
     "R_classic_rain_presence": check_classic_rain_presence_export,
 }
 

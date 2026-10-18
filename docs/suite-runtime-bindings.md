@@ -63,9 +63,15 @@ The preparing owner writes this atomic receipt only after preparation finishes:
 
 List the base configuration and prepared input authorities with absolute paths
 and SHA256 hashes. The controller checks them on the CPU before queue admission.
-Derived-config jobs require `run_options.prepared_root`: without it the prepared
-route would perform fetch and preparation inside the queued forecast command.
-That configuration refuses with `suite_prepared_root_missing` before admission.
+A derived-config row that binds no `run_options.prepared_root` is prepared
+automatically: the controller adds a zero-card `ROW.prepare` stage per cycle
+(`python -m gpuwm.nwpsuite.prepare`, which runs `gpuwm go CONFIG --prepare-only`
+on the configuration derived from `base_config`, or from the row's recipe when
+none is bound) and writes this receipt itself at
+`STATE/prepared/ROW/CYCLE/suite-prepared.json`, with `prepared_root`,
+`experiment_config` and `wps_namelist` beside the hashes. The forecast depends on
+that stage and runs on the published bundle, so preparation never holds queued
+forecast cards. `selected.fetch.source` defaults to the selected initial source.
 If the row has a boundary-source ladder, lbc_source must belong to that ladder.
 A missing receipt enters the bounded source-late ladder. Wrong identity or a
 changed hash refuses the row. This receipt does not qualify the scientific
@@ -101,8 +107,8 @@ completed receipt hashes, and records reuse. Missing receipts refuse the child
 with `suite_lagged_receipt_missing`; they never start replacement parent runs.
 The configured CPU adapter owns ensemble product assembly from those inputs.
 
-Prepare/calibrate, automatic receipt production, public one-member hex manifest
-production and cross-host transport remain integration work. Remote boxes
+Rate calibration, hex preparation, public one-member hex manifest production
+and cross-host transport remain integration work. Remote boxes
 refuse `suite_transport_unbound` because local launch tokens and PID identities
 cannot safely control another host. An admitted planner result
 without the needed bindings still gives a named refusal, never a partial run.

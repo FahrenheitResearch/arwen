@@ -102,6 +102,34 @@ def test_the_marker_and_the_drivers_abi_line_are_the_same_string():
     assert marker == mpas_mesh.MESH_ABI_MARKER.encode("utf-8")
 
 
+def test_the_converter_marker_names_the_flags_its_callers_pass(tmp_path):
+    """A converter that predates ``--remap``/``--jobs`` is stale, not current.
+
+    THE BREAKAGE: the marker stayed ``...FINISHED`` when 2.9.0 added
+    ``--remap`` (REMAP/BUDGET lines) and ``--jobs``, so a pre-2.9.0
+    ``~/.gpuwm/bridges/rw_mpas_convert`` passed ``gpuwm doctor`` and the
+    gpuwm-hex route-A product jobs died on ``unknown flag --remap``.
+    """
+
+    marker = bridges.BRIDGE_ABI_MARKERS["rw_mpas_convert"]
+    assert marker == mpas_mesh.CONVERT_ABI_MARKER.encode("utf-8")
+    for flag in (b"--remap nearest|product", b"--jobs N", b"\tREMAP\t", b"\tBUDGET\t"):
+        assert flag in marker, flag
+    source = (REPO_ROOT / "tools" / "rustwx" / "crates" / "rw-mpas" / "src"
+              / "bin" / "rw_mpas_convert.rs")
+    if source.is_file():
+        literal = re.search(r'^const ABI: &str = "([^"]*)";$',
+                            source.read_text(encoding="utf-8"), re.M)
+        assert literal is not None
+        assert literal.group(1).replace("\\t", "\t").encode("utf-8") == marker
+    # A pre-2.9.0 build carries only the old literal: it must read as stale.
+    stale = tmp_path / "rw_mpas_convert"
+    stale.write_bytes(b"\0gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS"
+                      b"\tFINISHED--history is required\0")
+    ok, evidence = bridges.bridge_abi_matches("rw_mpas_convert", stale)
+    assert not ok and "predates" in evidence
+
+
 # ---------------------------------------------------------------------------
 # 3. the source-revision stamp
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-//! `rw_mpas_lbc` — produce the MPAS v8.4.1 lateral-boundary-condition stream
+//! `rw_mpas_lbc` — produce the MPAS v8.4.2 lateral-boundary-condition stream
 //! from WPS intermediate files, in Rust, with no Fortran in the chain.
 //!
 //! One invocation produces the whole boundary series: per `--interval`, one

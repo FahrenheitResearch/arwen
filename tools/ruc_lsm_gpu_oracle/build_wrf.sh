@@ -14,6 +14,13 @@
 #   o0      : -O0 -finit-local-zero; the optimiser cross-check.
 #
 # usage: build_wrf.sh WRF_SOURCE_ROOT CASE_DIR [ARMS]
+#
+# WRF_SOURCE_ROOT holds phys/, share/ and run/.  RUC_TABLES, when set, names
+# the directory the three tables are read from instead of WRF_SOURCE_ROOT/run:
+# the operational-branch (fork) arm compiles the branch's phys/ and share/
+# (NOAA-EMC/HRRR v4.1.21 WRFV3.9) against the tables WOOF itself loads, the
+# byte-pinned WRF v4.6.1 ones (gpuwm.core.ruc_contract), so the arm grades
+# code forms and not a table difference.
 set -euo pipefail
 src=$(realpath "$1")
 case_dir=$(realpath "$2")
@@ -23,7 +30,8 @@ stub="$tool/../ruc_hrrr_fork_oracle/column_stubs.F90"
 export CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1
 wrf_flags="-O2 -ftree-vectorize -funroll-loops -w -ffree-form -ffree-line-length-none -fconvert=big-endian -frecord-marker=4 -fallow-argument-mismatch -fallow-invalid-boz"
 cd "$case_dir"
-cp "$src/run/VEGPARM.TBL" "$src/run/SOILPARM.TBL" "$src/run/GENPARM.TBL" .
+tables=$(realpath "${RUC_TABLES:-$src/run}")
+cp "$tables/VEGPARM.TBL" "$tables/SOILPARM.TBL" "$tables/GENPARM.TBL" .
 for arm in $arms; do
     case $arm in
         defined) flags="$wrf_flags -finit-local-zero" ;;

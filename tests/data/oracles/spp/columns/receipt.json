@@ -1,0 +1,227 @@
+{
+  "wrf_version": "4.6.1",
+  "source_pins": {
+    "module_bl_mynn_common.F": "ba3e6909447408210fce490e95bdf2decc1e205d3446ddc5c715277d2b23924c",
+    "module_bl_mynn.F": "b36c8b935cd9c8265359e78dbe8db285d99e992c7cab29917b5fca9d57d49452",
+    "module_sf_mynn.F": "86395534a6c9bfc79dcad50094bce290eff05756777a95794b2673795f9761c3",
+    "module_cu_gf_wrfdrv.F": "0cead99c913b6a74f3a492aea1e1c7ef6d34f95402574336022d1a6c716a4382",
+    "module_cu_gf_deep.F": "798ad7271963757b88be36ce01e24222f7af045dc0692908d6e7c270d6b4ea11",
+    "module_cu_gf_sh.F": "0dd1ed7c620b39e13f7ef77dc4ff1a269fa1f8d746492d360e203df0215b529a",
+    "module_gfs_machine.F": "300ee4f75663e89d34c8a9b8733cc07a5dd48c3d973da019d31cb76524babe25",
+    "module_gfs_physcons.F": "2b8ef99663ba62748b57c7002f5e5b8c9338f2a825c1d32c113bd4e3bff2eb52"
+  },
+  "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "libc": [
+    "glibc",
+    "2.39"
+  ],
+  "flags": [
+    "-O0",
+    "-ffp-contract=off",
+    "-cpp",
+    "-ffree-form",
+    "-ffree-line-length-none"
+  ],
+  "steps": 8,
+  "gf_offsets": [
+    0,
+    9
+  ],
+  "commands": [
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "stub_wrf.F90"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "module_bl_mynn_common.F"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "module_bl_mynn.F"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "module_gfs_machine.F"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "module_gfs_physcons.F"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "module_cu_gf_deep.F"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "module_cu_gf_sh.F"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "module_cu_gf_wrfdrv.F"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "gf_cases.F90"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "run_mynn_spp_columns.F90"
+    ],
+    [
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-cpp",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-c",
+      "run_gf_spp_columns.F90"
+    ],
+    [
+      "gfortran",
+      "-o",
+      "run_mynn_spp_columns",
+      "stub_wrf.o",
+      "module_bl_mynn_common.o",
+      "module_bl_mynn.o",
+      "run_mynn_spp_columns.o"
+    ],
+    [
+      "gfortran",
+      "-o",
+      "run_gf_spp_columns",
+      "module_gfs_machine.o",
+      "module_gfs_physcons.o",
+      "module_cu_gf_deep.o",
+      "module_cu_gf_sh.o",
+      "module_cu_gf_wrfdrv.o",
+      "gf_cases.o",
+      "run_gf_spp_columns.o"
+    ],
+    [
+      "./run_mynn_spp_columns",
+      "mynn-spp-ml1.csv",
+      "1",
+      "8"
+    ],
+    [
+      "./run_mynn_spp_columns",
+      "mynn-spp-ml2.csv",
+      "2",
+      "8"
+    ],
+    [
+      "./run_gf_spp_columns",
+      "gf-spp-o0-levels.csv",
+      "gf-spp-o0-surface.csv",
+      "gf-spp-o0-consistency.csv",
+      "0"
+    ],
+    [
+      "./run_gf_spp_columns",
+      "gf-spp-o9-levels.csv",
+      "gf-spp-o9-surface.csv",
+      "gf-spp-o9-consistency.csv",
+      "9"
+    ]
+  ],
+  "generated_sources": {
+    "run_mynn_spp_columns.F90": "39da2b1b5bfd283c28ba660844f53431643189e9a2db2dda56f0639c83dc90db",
+    "run_gf_spp_columns.F90": "9aad986927a7c67b1973633163c8d0bc99f6b2a45c6be9a028db33997489e2c8"
+  },
+  "files": {
+    "gf-spp-o0-consistency.csv": {
+      "bytes": 14298,
+      "sha256": "47453b6f00678d4c74607b9df585c61d05b112023d645c6f6ee06f82b61d7071"
+    },
+    "gf-spp-o0-levels.csv": {
+      "bytes": 6776322,
+      "sha256": "7da667ecbe0f0a9e984c092f80820aa807e454203c72460c6785444462cb22d3"
+    },
+    "gf-spp-o0-surface.csv": {
+      "bytes": 173178,
+      "sha256": "881e1cb816f21bd6049c828acd25e57bc8c05df4b4dfed2c97e83025f4148553"
+    },
+    "gf-spp-o9-consistency.csv": {
+      "bytes": 14298,
+      "sha256": "4173388163d87abc8cf9bd49ac7c25cb9abbb9ea21d68e52f127c8e089ccbf01"
+    },
+    "gf-spp-o9-levels.csv": {
+      "bytes": 6776322,
+      "sha256": "1f414f58ea886e8a2f8468e3223cb4f50eb08b5f7e4b480e8b8d50cfdfdcfe97"
+    },
+    "gf-spp-o9-surface.csv": {
+      "bytes": 173178,
+      "sha256": "3489a7f6c608ce6688cdc98977db88584c54a618d240ec7c714035b905d7b71f"
+    },
+    "mynn-spp-ml1.csv": {
+      "bytes": 28641585,
+      "sha256": "efca81a38f78037b972719ef0af3e184d7d3b35f228ffd244693ce527cadd63b"
+    },
+    "mynn-spp-ml2.csv": {
+      "bytes": 28641945,
+      "sha256": "ee77960e0aa9483fce58d6ff5168efa9907c00d332a32985029e85468f86d11e"
+    }
+  }
+}

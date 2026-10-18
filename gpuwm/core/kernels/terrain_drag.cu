@@ -23,12 +23,13 @@
 // fuses none.  Fortran's real powers (x**2., x**(-1.2), ...) are glibc's
 // powf (gfk_pow; gfortran calls powf for a real exponent even when it is
 // 2.0), integer powers are products, expf and logf are glibc's (gfk_exp,
-// gfk_log), sinf is glibc's (glibc_sinf).  glibc 2.43's atan2f is CORE-MATH's
-// correctly rounded one: it is evaluated here as the double atan2 rounded
-// once to float, which is the correctly rounded value unless the exact angle
-// lies within two double ulps of a float rounding boundary.  The oracle that
-// holds these kernels to WRF is tools/terrain_drag_wrf471_oracle
-// (tests/test_terrain_drag_wrf471_parity.py).
+// gfk_log), sinf is glibc's (glibc_sinf).  atan2f is td_atan2f below, WOOF's
+// own float32 atan2f, whose words are the reference platform's (Ubuntu 24.04,
+// glibc 2.39, box W1): see its comment.  The oracles that hold these kernels
+// to WRF are tools/terrain_drag_wrf471_oracle
+// (tests/test_terrain_drag_wrf471_parity.py) and, for gwd_opt = 1 on the
+// reference platform, tools/gwdo_kim_wrf461_oracle
+// (tests/test_gwdo_kim_wrf461_parity.py).
 //
 // Layout: 3-D fields are (nz, ny, nx) mass levels (p_interface nz+1), 2-D
 // fields (ny, nx); the four directional statistics OA1-4 and OL1-4 are
@@ -41,9 +42,144 @@ __device__ __forceinline__ float td_max(float a, float b)
 __device__ __forceinline__ float td_min(float a, float b)
 { return fminf(a, b); }
 
-// glibc 2.43 atan2f (CORE-MATH, correctly rounded); see the header.
-__device__ __forceinline__ float td_atan2f(float y, float x)
-{ return __double2float_rn(atan2((double)y, (double)x)); }
+// atan2f for the wind-sector choice, bl_gwdo.F90:338 and
+// module_bl_gwdo_gsl.F's `wdir = atan2(ubar,vbar) + pi`: the angle only picks
+// one of eight sectors (which OA/OL statistic and grid length the drag uses),
+// so its last bit matters only on a sector boundary, and there it decides
+// the whole column.
+//
+// WHY NOT atan2() IN DOUBLE.  Until lane/verify-gwdo-kim this read
+// __double2float_rn(atan2((double)y, (double)x)), the correctly rounded
+// angle, which is what glibc 2.43 returns (the WRF v4.7.1 oracle's
+// platform).  The reference platform of this verification (Ubuntu 24.04,
+// glibc 2.39; the MYNN, YSU and Kessler oracles' platform) returns the
+// classic atanf-based atan2f instead, 1 ULP off the correctly rounded angle
+// on 16% of random wind pairs (measured on box W1), and on a sector
+// boundary that 1 ULP picks the other sector: in the WRF v4.6.1 column
+// oracle (tests/data/oracles/gwdo_kim) one sector-boundary column per grid
+// took idir 1 under WRF and 8 under the double atan2 (50 levels), 5 and 4
+// (90 levels), and every drag word of those columns differed (up to
+// 0.41 m/s2).
+//
+// td_atanf and td_atan2f are WOOF's own float32 code: td_atanf is the same
+// algorithm and the same words as the MYNN unit's mynn_glibc_atanf
+// (kernels/mynn_pbl.cu), and td_atan2f reduces to it through one IEEE
+// division y/x and a quadrant fix-up with float32 pi constants.  They are
+// held to the reference platform's atanf over EVERY float32 and to its
+// atan2f on boundary, special and random pairs by
+// tools/gwdo_kim_wrf461_oracle/sector_sweep.py.  Every operation is one
+// plain float32 operation; the module compiles with -fmad=false.
+__constant__ unsigned int TD_ATANF_TAB[19] = {
+    0x3EED6338u, 0x3F490FDAu, 0x3F7B985Eu, 0x3FC90FDAu,   // atan hi parts
+    0x31AC3769u, 0x33222168u, 0x33140FB4u, 0x33A22168u,   // atan lo parts
+    0x3EAAAAABu, 0xBE4CCCCDu, 0x3E124925u, 0xBDE38E38u,   // odd series
+    0x3DBA2E6Eu, 0xBD9D8795u, 0x3D886B35u, 0xBD6EF16Bu,
+    0x3D4BDA59u, 0xBD15A221u, 0x3C8569D7u,
+};
+
+__device__ float td_atanf(float x)
+{
+    unsigned int hx = __float_as_uint(x);
+    unsigned int ix = hx & 0x7FFFFFFFu;
+    int signed_hx = (int)hx;
+    int id;
+#define TD_ATAN_HI(i) __uint_as_float(TD_ATANF_TAB[(i)])
+#define TD_ATAN_LO(i) __uint_as_float(TD_ATANF_TAB[4 + (i)])
+#define TD_ATAN_T(i)  __uint_as_float(TD_ATANF_TAB[8 + (i)])
+    if (ix >= 0x4C000000u) {                     // |x| >= 2**25
+        if (ix > 0x7F800000u) return x + x;      // NaN
+        if (signed_hx > 0) return TD_ATAN_HI(3) + TD_ATAN_LO(3);
+        return -TD_ATAN_HI(3) - TD_ATAN_LO(3);
+    }
+    if (ix < 0x3EE00000u) {                      // |x| < 0.4375
+        if (ix < 0x31000000u) return x;          // |x| < 2**-29
+        id = -1;
+    } else {
+        x = __uint_as_float(ix);                 // |x|
+        if (ix < 0x3F980000u) {                  // |x| < 1.1875
+            if (ix < 0x3F300000u) {              // 7/16 <= |x| < 11/16
+                id = 0;
+                x = (2.0f * x - 1.0f) / (2.0f + x);
+            } else {                             // 11/16 <= |x| < 19/16
+                id = 1;
+                x = (x - 1.0f) / (x + 1.0f);
+            }
+        } else if (ix < 0x401C0000u) {           // |x| < 2.4375
+            id = 2;
+            x = (x - 1.5f) / (1.0f + 1.5f * x);
+        } else {                                 // 2.4375 <= |x| < 2**25
+            id = 3;
+            x = -1.0f / x;
+        }
+    }
+    float z = x * x;
+    float w = z * z;
+    float s1 = w * TD_ATAN_T(10);
+    s1 = w * (TD_ATAN_T(8) + s1);
+    s1 = w * (TD_ATAN_T(6) + s1);
+    s1 = w * (TD_ATAN_T(4) + s1);
+    s1 = w * (TD_ATAN_T(2) + s1);
+    s1 = z * (TD_ATAN_T(0) + s1);
+    float s2 = w * TD_ATAN_T(9);
+    s2 = w * (TD_ATAN_T(7) + s2);
+    s2 = w * (TD_ATAN_T(5) + s2);
+    s2 = w * (TD_ATAN_T(3) + s2);
+    s2 = w * (TD_ATAN_T(1) + s2);
+    float s = s1 + s2;
+    if (id < 0) return x - x * s;
+    float r = TD_ATAN_HI(id) - ((x * s - TD_ATAN_LO(id)) - x);
+    return (signed_hx < 0) ? -r : r;
+#undef TD_ATAN_HI
+#undef TD_ATAN_LO
+#undef TD_ATAN_T
+}
+
+__device__ float td_atan2f(float y, float x)
+{
+    const float tiny = 1.0e-30f;
+    const float pi_o_4 = __uint_as_float(0x3F490FDBu);
+    const float pi_o_2 = __uint_as_float(0x3FC90FDBu);
+    const float pi = __uint_as_float(0x40490FDBu);
+    const float pi_lo = __uint_as_float(0xB3BBBD2Eu);   // pi - float(pi)
+    int hx = __float_as_int(x), hy = __float_as_int(y);
+    int ix = hx & 0x7FFFFFFF, iy = hy & 0x7FFFFFFF;
+    if (ix > 0x7F800000 || iy > 0x7F800000) return x + y;   // NaN
+    if (hx == 0x3F800000) return td_atanf(y);               // x = 1
+    int m = ((hy >> 31) & 1) | ((hx >> 30) & 2);            // 2*sign(x)+sign(y)
+    if (iy == 0) {                                          // y = +-0
+        if (m <= 1) return y;
+        return (m == 2) ? pi + tiny : -pi - tiny;
+    }
+    if (ix == 0) return (hy < 0) ? -pi_o_2 - tiny : pi_o_2 + tiny;
+    if (ix == 0x7F800000) {                                 // x = +-Inf
+        if (iy == 0x7F800000) {
+            switch (m) {
+            case 0: return pi_o_4 + tiny;
+            case 1: return -pi_o_4 - tiny;
+            case 2: return 3.0f * pi_o_4 + tiny;
+            default: return -3.0f * pi_o_4 - tiny;
+            }
+        }
+        switch (m) {
+        case 0: return 0.0f;
+        case 1: return -0.0f;
+        case 2: return pi + tiny;
+        default: return -pi - tiny;
+        }
+    }
+    if (iy == 0x7F800000) return (hy < 0) ? -pi_o_2 - tiny : pi_o_2 + tiny;
+    int k = (iy - ix) >> 23;
+    float z;
+    if (k > 60) z = pi_o_2 + 0.5f * pi_lo;                  // |y/x| > 2**60
+    else if (hx < 0 && k < -60) z = 0.0f;                   // |y|/x < -2**60
+    else z = td_atanf(fabsf(y / x));
+    switch (m) {
+    case 0: return z;
+    case 1: return -z;
+    case 2: return pi - (z - pi_lo);
+    default: return (z - pi_lo) - pi;
+    }
+}
 
 // Fortran NINT: round half away from zero.
 __device__ __forceinline__ int td_nint(float x) { return (int)roundf(x); }
@@ -429,10 +565,12 @@ void gwdo_column(const real *u, const real *v, const real *t,
 // gsl_gwd_ls = gsl_gwd_bl = gsl_gwd_ss = gsl_gwd_fd = 1 and
 // gsl_diss_ht_opt = 0 are compile-time PARAMETERs in WRF; with the
 // dissipation heating off the scheme never writes RTHBLTEN.  rcl = 1 (the
-// wrapper passes it), so rcs = cs = 1 and csg = g, and spp_pbl = 0 makes
-// every _stoch quantity its plain value (var + var*0.666*0 and so on, kept
-// spelled out because it is what WRF evaluates).  lcap = kte, so the lcap <
-// kte stress extension never runs.
+// wrapper passes it), so rcs = cs = 1 and csg = g.  rstoch is the SPP
+// pattern's lowest level, pattern_spp_pbl(i,kts,j), when spp_pbl = 1 and a
+// null pointer (rstoch = 0, every _stoch quantity its plain value) when
+// spp_pbl = 0, as gwdo_gsl forms rstoch1D (module_bl_gwdo_gsl.F, the "Add
+// SPP" block); the _stoch arithmetic stays spelled out as WRF evaluates it.
+// lcap = kte, so the lcap < kte stress extension never runs.
 //
 // dtau (when non-null) is (8, nz, ny, nx): dtaux3d_ls, dtauy3d_ls,
 // dtaux3d_bl, dtauy3d_bl, dtaux3d_ss, dtauy3d_ss, dtaux3d_fd, dtauy3d_fd;
@@ -446,8 +584,8 @@ void gwdo_gsl_column(const real *u, const real *v, const real *t,
                      const real *oa4ss, const real *ol4ss,
                      const real *sina, const real *cosa,
                      const real *xland, const real *br, const real *hpbl,
-                     const int *kpbl, real *du, real *dv,
-                     real *dtau, real *dsfc,
+                     const int *kpbl, const real *rstoch_pattern,
+                     real *du, real *dv, real *dtau, real *dsfc,
                      real dxmeter, real deltim, real g, real cp, real rd,
                      real fv, real pi_c, int kpblmax, int nz, int ny, int nx)
 {
@@ -519,7 +657,8 @@ void gwdo_gsl_column(const real *u, const real *v, const real *t,
     dxy4p[2] = dxy4[3];
     dxy4p[3] = dxy4[2];
 
-    const real rstoch = 0.0f;
+    const real rstoch = rstoch_pattern != nullptr ? rstoch_pattern[col]
+                                                  : 0.0f;
     real varc = var[col], varssc = varss[col];
     real var_stoch = varc + varc * 0.666f * rstoch;
     real varss_stoch = varssc + varssc * 0.666f * rstoch;

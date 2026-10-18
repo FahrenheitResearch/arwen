@@ -33,6 +33,7 @@ Two things have to hold, and both are checked against the device here:
   change that breaks the linear model fails here instead of silently
   mispricing a rail gate.
 """
+# Replaced in 2.9.1 (the WRF exact chain): test_thompson_wrf39_frames_bound_the_fork_generation_exports -> tests/test_thompson_fork_column_gpu.py::test_the_column_unit_compiles_to_the_frame_it_is_priced_at.
 
 from __future__ import annotations
 
@@ -66,36 +67,15 @@ def test_thompson_selected_shallow_frames_bound_the_production_exports():
             r'extern\s+"C"\s+__global__\s+void\s+(\w+)\s*\(',
             module_source(module))
         # The ``*_wrf39_*`` exports exist only in the THOMPSON_AA_WRF39
-        # build (thompson_version = "wrf_39_noaa"); that generation is
-        # priced by THOMPSON_WRF39_KERNEL_FRAMES and gated below.
+        # build.  No forecast launches them: thompson_version = "wrf_39_noaa"
+        # runs its own column unit (preflight's thompson_fork_unit row),
+        # gated in tests/test_thompson_fork_column_gpu.py.
         shallow = [name for name in symbols
                    if "_256" not in name and "_wrf39_" not in name]
         assert shallow
         measured = {name: int(get_kernel(module, name).attributes["local_size_bytes"])
                     for name in shallow}
         assert max(measured.values()) <= bound, measured
-
-
-def test_thompson_wrf39_frames_bound_the_fork_generation_exports():
-    """The fork generation's frames, read off the driver, are what preflight
-    prices for it: a fork frame above THOMPSON_WRF39_KERNEL_FRAMES is an
-    unpriced local reservation on the HRRR recipes, the same device OOM the
-    shallow gate above prevents."""
-    import re
-    from gpuwm.core.kernels import get_kernel_int_defines, module_source
-    from gpuwm.core.thompson_aerosol_launch import WRF39_DEFINES
-
-    for module, (deep, shallow_bound) in pf.THOMPSON_WRF39_KERNEL_FRAMES.items():
-        symbols = re.findall(
-            r'extern\s+"C"\s+__global__\s+void\s+(\w+)\s*\(',
-            module_source(module))
-        measured = {name: int(get_kernel_int_defines(module, name, WRF39_DEFINES)
-                              .attributes["local_size_bytes"])
-                    for name in symbols}
-        assert max(measured.values()) <= deep, measured
-        assert max(v for n, v in measured.items() if "_256" not in n) <= shallow_bound, measured
-        assert deep >= pf.KERNEL_MAX_LOCAL_SIZE_BYTES[module]
-        assert shallow_bound >= pf.THOMPSON_SHALLOW_KERNEL_FRAMES[module]
 
 
 def test_the_specialized_frames_are_what_preflight_prices():
@@ -361,8 +341,12 @@ def test_the_production_launchers_compile_to_the_field_not_the_ceiling():
         requested.append(("plain", module, func))
         return real_plain(module, func)
 
+    from gpuwm.core import morrison as morrmod
+
+    real_morrison_plain = morrmod.get_kernel
     kernels.get_kernel_int_defines = spy_specialized
     kernels.get_kernel = spy_plain
+    morrmod.get_kernel = spy_plain
     try:
         kfmod.launch_kf(*(cp.asarray(host[name]) for name in _INPUTS),
                         dx=12000.0, dt=60.0, cudt_minutes=5.0)
@@ -376,11 +360,14 @@ def test_the_production_launchers_compile_to_the_field_not_the_ceiling():
     finally:
         kernels.get_kernel_int_defines = real_specialized
         kernels.get_kernel = real_plain
+        morrmod.get_kernel = real_morrison_plain
 
-    assert ("specialized", "refl", "refl10cm_morrison_column",
-            (("REFL_KMAX", nz),)) in requested
-    assert not [row for row in requested
-                if row[0] == "plain" and row[1] == "refl"]
+    # Morrison's reflectivity is WRF's refl10cm_hm in the scheme's own
+    # unit since lane/parity-mp-libm (morrison.cu mo_refl10cm, a 0-byte
+    # frame), so the refl.cu column kernel and its REFL_KMAX-sized frame
+    # are not reached at all.
+    assert ("plain", "morrison", "mo_refl10cm") in requested
+    assert not [row for row in requested if row[1] == "refl"]
     # KF asks the generic loaders for nothing: since the 2026-10-07 WRF
     # port its unit compiles on its own --fmad=false --ftz=false route, and
     # every column array is in the workspace, so there is no bound to

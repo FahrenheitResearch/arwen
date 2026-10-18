@@ -18,13 +18,19 @@ default REAL constants, double-precision lake internals, the FP32 WRF driver
 boundary and operation order. Generated statements name their original
 WRF line. All divisions use a helper that selects `__fdiv_rn` or
 `__ddiv_rn`. The WRF driver's single-precision power uses the engine's
-existing glibc-compatible helper. CUDA compilation disables FMA contraction.
+own float32 power, `gfk_pow`. CUDA compilation disables FMA contraction.
 
-Binary64 `exp`, `log`, `pow`, `sin`, `atan` and `log10` use CUDA device libm;
-the native Fortran oracle uses host libm. This is a declared arithmetic
-distinction: universal bitwise identity of those library functions is not
-established. The stored cold-start values and every persisted state and
-surface output in the supplied 300-step column histories match exactly.
+Binary64 `exp`, `log`, `log10`, `sin`, `atan` and `pow` are WOOF's own
+correctly rounded functions (`gpuwm/core/kernels/f64cr.cuh`), compiled the
+same way into the CUDA kernel and the host C++ build. The native Fortran
+oracle calls the host C library. glibc 2.39 is not correctly rounded for
+about 1 in 1,300 of the lake's arguments to `exp`, `log`, `atan` and `pow`,
+so the oracle is also built as `lake_fortran_cr.so`: the same unmodified
+WRF objects linked `-Bsymbolic` to `crlibm_shim.cpp`, which gives WRF the
+correctly rounded binary64 functions. That control removes the library's
+rounding differences and nothing else. The stored cold-start values and
+every persisted state and surface output in the supplied 300-step column
+histories (written by WRF on the host library) still match exactly.
 
 The C++ column arrays hold one column. WRF's unused, unassociated
 biogeochemistry pointer declarations are omitted. Diagnostic printing is
@@ -69,6 +75,27 @@ PYTHONPATH=. python tools/lake_wrf461_oracle/compare.py "$PWD/lake-build" \
   --multi-reference gpuwm/data/lake/oracle/columns.npz --devices 2
 pytest -q tests/test_lake_contract.py tests/test_lake_gpu.py
 ```
+
+Regime campaign (112 columns in 28 regimes, forcing that changes every
+step, 24 h at 60 s and 6 h at 20 s) and the binary64 library diagnostics:
+
+```sh
+O=$PWD/lake-regimes B=$PWD/lake-build
+python tools/lake_wrf461_oracle/regimes.py forcing $O
+python tools/lake_wrf461_oracle/regimes.py fortran $O $B       # WRF, host libm
+python tools/lake_wrf461_oracle/regimes.py fortran-cr $O $B    # WRF, correctly rounded libm
+python tools/lake_wrf461_oracle/regimes.py cpp $O $B           # WOOF translation on the host
+GPUWM_WRF_EXACT=1 python tools/lake_wrf461_oracle/regimes.py gpu $O   # strict build
+python tools/lake_wrf461_oracle/regimes.py gpu $O                     # default arithmetic
+python tools/lake_wrf461_oracle/regimes.py compare $O          # writes $O/comparison.json
+python tools/lake_wrf461_oracle/libm_trace.py $O $B --dump     # per-call device vs host libm
+python3 tools/lake_wrf461_oracle/cr_check.py $O $B --campaign dt60   # mpmath census
+python3 tools/lake_wrf461_oracle/cr_check.py $O $B --random 400000
+python3 tools/lake_wrf461_oracle/fixtures.py $O $B tests/data/oracles/lake
+```
+
+`cr_check.py` and `fixtures.py` need mpmath. `throughput.py` times the
+kernel at forecast scale.
 
 The multi-device check assigns disjoint columns to the requested devices,
 launches every device before reading results and compares all steps to the

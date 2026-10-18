@@ -192,7 +192,7 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
 #: existed, so after upgrading the wheel EVERY prepared tree in the
 #: field became unrunnable -- refused with "d01 cache domain config
 #: differs from experiment", a sentence that points at the user's
-#: experiment TOML when the cause was a package upgrade.  A node-7
+#: experiment TOML when the cause was a package upgrade.  A test host G
 #: validation run diffed the two documents: exactly one added key, and
 #: zero value differences among the eleven shared keys and ~110 run
 #: fields.
@@ -281,6 +281,8 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # matched arithmetic every prepared tree written before them describes.
     "run.wsm6_conservative_surface", "run.ntiedtke_dry_mass_coupling",
     "run.wdm6_conservative_surface", "run.thompson_cloud_surface_booking",
+    "run.wsm3_conservative_surface", "run.wsm5_conservative_surface",
+    "run.wsm7_conservative_surface",
     # The New SAS knobs (cu_physics = 96 port), on the p3_backend argument
     # below: scheme-scoped (gpuwm.config refuses a non-default value under
     # any other cumulus scheme), so a tree prepared before they existed
@@ -3090,6 +3092,9 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
                 f"prepared cache state/{name} shape or dtype differs from "
                 "the active config")
         target[...] = xp.asarray(host)
+    # Strict mode reads theta as WRF's t = theta - 300; a no-op otherwise.
+    from gpuwm.core.state import adopt_wrf_theta_carrier
+    adopt_wrf_theta_carrier(state)
 
     lbc_meta = metadata["lbc"]
     streamed = boundary_source is not None

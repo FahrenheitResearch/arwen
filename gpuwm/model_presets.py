@@ -23,6 +23,14 @@ SCHEMA = "gpuwm-model-presets-v1"
 #: verb that reports blockers, and never blocks a launch: what keeps it
 #: in view is that it is named, not that it refuses.
 DIVERGENCE_KEYS = ("id", "component", "pinned", "runs", "reason", "follow_up")
+#: A runtime row names the package that carries its runners and the release
+#: range they were written for.  THE BREAKAGE THIS PREVENTS (2.9.0 door
+#: audit): with no gpuwm-hex installed, ``preset list`` and ``preset check``
+#: said the preset was launchable with 0 blockers, then ``preset prepare``
+#: stopped with "runner 'hexcore.preset_prepare' is not installed"; and
+#: gpuwm-hex 0.3.3, the newest release a bare ``pip install gpuwm-hex``
+#: could reach, ships neither runner.
+PAIRED_KEYS = ("distribution", "minimum", "below")
 
 
 def load_registry() -> dict:
@@ -56,6 +64,16 @@ def load_registry() -> dict:
             identifiers.append(divergence["id"])
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("model preset requirement and divergence identifiers collide")
+        runtime = row.get("runtime")
+        if runtime is not None:
+            paired = runtime.get("paired_package")
+            if (not isinstance(paired, dict) or set(paired) != set(PAIRED_KEYS)
+                    or not all(isinstance(paired[key], str) and paired[key]
+                               for key in PAIRED_KEYS)
+                    or not _release(paired["minimum"]) < _release(paired["below"])):
+                raise ValueError(
+                    "a model preset runtime row names the package that carries its runners "
+                    "and the release range they were written for")
     return document
 
 
@@ -66,9 +84,114 @@ def preset(name: str) -> dict:
     raise ValueError(f"unknown model preset {name!r}")
 
 
+def _release(version: str) -> tuple[int, ...]:
+    match = re.match(r"\d+(?:\.\d+)*", version)
+    if match is None:
+        raise ValueError(f"not a release version: {version!r}")
+    numbers = [int(part) for part in match.group(0).split(".")]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    return tuple(numbers)
+
+
+def _in_range(version: str, minimum: str, below: str) -> bool:
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        try:
+            return _release(minimum) <= _release(version) < _release(below)
+        except ValueError:
+            return False
+    try:
+        return Version(minimum) <= Version(version) < Version(below)
+    except InvalidVersion:
+        return False
+
+
+def _distribution_version(distribution: str) -> str | None:
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return None
+
+
+def _module_error(module: str) -> str | None:
+    """Why ``module`` cannot be imported, or ``None`` when it can be found.
+
+    ``find_spec`` imports the parent packages, so a package whose own import
+    fails is reported with its error rather than as merely absent.
+    """
+    from importlib.util import find_spec
+    try:
+        if find_spec(module) is not None:
+            return None
+        return "it is not installed"
+    except ModuleNotFoundError as error:
+        if error.name and (module == error.name or module.startswith(error.name + ".")):
+            return "it is not installed"
+        return f"importing it fails: {type(error).__name__}: {error}"
+    except Exception as error:  # a broken parent package is a finding, not a crash
+        return f"importing it fails: {type(error).__name__}: {error}"
+
+
+def paired_package(row: dict) -> dict | None:
+    """The package a runtime row runs through, and the installed release."""
+    runtime = row.get("runtime")
+    if runtime is None:
+        return None
+    paired = runtime["paired_package"]
+    installed = _distribution_version(paired["distribution"])
+    requires = f">={paired['minimum']},<{paired['below']}"
+    return {"distribution": paired["distribution"], "requires": requires,
+            "installed": installed,
+            "install": f'pip install "{paired["distribution"]}{requires}"'}
+
+
+def install_blockers(row: dict) -> list[dict]:
+    """What on this machine stops the row's runners, before any GPU is touched.
+
+    A runner that will not import, or a paired package outside the range the
+    row's runners were written for, blocks ``prepare`` and ``run`` exactly as
+    an unimplemented requirement does, so ``list`` and ``check`` say so.
+    """
+    paired = paired_package(row)
+    if paired is None:
+        return []
+    runtime = row["runtime"]
+    name, installed = paired["distribution"], paired["installed"]
+    blockers = []
+    if installed is not None and not _in_range(
+            installed, runtime["paired_package"]["minimum"],
+            runtime["paired_package"]["below"]):
+        blockers.append({
+            "id": "paired-package-release",
+            "implemented": False,
+            "site": f"{name} {installed}",
+            "breakage": (f"{name} {installed} is installed; this preset's preparation and "
+                         f"forecast runners are the ones {name}{paired['requires']} ships"),
+            "remedy": paired["install"]})
+    for key, verb in (("prepare_module", "prepare"), ("runner_module", "run")):
+        module = runtime.get(key)
+        if not module:
+            continue
+        error = _module_error(module)
+        if error is None:
+            continue
+        where = (f"{name} is not installed" if installed is None
+                 else f"{name} {installed} is installed")
+        blockers.append({
+            "id": f"{verb}-runner-importable",
+            "implemented": False,
+            "site": module,
+            "breakage": f"`gpuwm preset {verb}` runs {module}, and {error} ({where})",
+            "remedy": paired["install"]})
+    return blockers
+
+
 def launch_blockers(row: dict) -> list[dict]:
-    return [requirement for requirement in row["requirements"]
-            if not requirement["implemented"]]
+    return ([requirement for requirement in row["requirements"]
+             if not requirement["implemented"]] + install_blockers(row))
 
 
 def declared_divergences(row: dict) -> list[dict]:
@@ -160,9 +283,12 @@ def main(args: argparse.Namespace) -> int:
         return subprocess.call(prepare_command(row, args))
     if args.preset_action == "run":
         blockers = launch_blockers(row)
-        if blockers and not args.experimental:
+        # --experimental runs past unmet physics requirements; nothing runs past
+        # a runner that is not there.
+        if blockers and (install_blockers(row) or not args.experimental):
             print(json.dumps({"preset": row["id"], "launchable": False,
                               "blockers": blockers,
+                              "paired_package": paired_package(row),
                               "declared_divergences": declared_divergences(row)},
                              indent=2))
             return 3
@@ -180,6 +306,7 @@ def main(args: argparse.Namespace) -> int:
         blockers = launch_blockers(row)
         print(json.dumps({"preset": row["id"], "status": row["status"],
                           "launchable": not blockers, "blockers": blockers,
+                          "paired_package": paired_package(row),
                           "declared_divergences": declared_divergences(row)}, indent=2))
         return 3 if blockers else 0
     text = namelist(row, start=args.start, seconds=args.seconds)
@@ -235,6 +362,13 @@ def register_cli(subparsers) -> None:
     run.set_defaults(func=main)
 
 
+def _refuse_on_install_blockers(row: dict) -> None:
+    blockers = install_blockers(row)
+    if blockers:
+        raise ValueError("; ".join(item["breakage"] for item in blockers)
+                         + f"; install the paired package: {blockers[0]['remedy']}")
+
+
 def launch_command(row: dict, args: argparse.Namespace) -> list[str]:
     """Translate one metadata arm into the existing measured forecast door.
 
@@ -255,15 +389,7 @@ def launch_command(row: dict, args: argparse.Namespace) -> list[str]:
     datetime.strptime(args.start_time, "%Y-%m-%d_%H:%M:%S")
     root = Path(__file__).resolve().parents[1]
     module = runtime["runner_module"]
-    from importlib.util import find_spec
-    try:
-        available = find_spec(module) is not None
-    except ModuleNotFoundError:
-        available = False
-    if not available:
-        raise ValueError(
-            f"model preset forecast runner {module!r} is not installed; "
-            "install the paired gpuwm-hex package to execute this preset")
+    _refuse_on_install_blockers(row)
     fingerprint = getattr(args, "fingerprint_every", None)
     if fingerprint is None:
         fingerprint = int(round(args.history_every_minutes * 60 / dt))
@@ -290,18 +416,11 @@ def launch_command(row: dict, args: argparse.Namespace) -> list[str]:
 def prepare_command(row: dict, args: argparse.Namespace) -> list[str]:
     """Select only the packaged preparation entry and its metadata row."""
     import sys
-    from importlib.util import find_spec
     runtime = row.get("runtime", {})
     module = runtime.get("prepare_module")
     if not module or args.mesh not in runtime.get("meshes", {}):
         raise ValueError("model preset has no preparation row for this mesh")
-    try:
-        available = find_spec(module) is not None
-    except ModuleNotFoundError:
-        available = False
-    if not available:
-        raise ValueError(f"model preset preparation runner {module!r} is not installed; "
-                         "install the paired gpuwm-hex package to prepare public inputs")
+    _refuse_on_install_blockers(row)
     return [sys.executable, "-m", module, "--source-profile", runtime["source_profile"],
             "--physics-suite", runtime["physics_suite"], "--cycle", args.cycle,
             "--mesh", args.mesh, "--hours", str(args.hours), "--out", str(args.out)]

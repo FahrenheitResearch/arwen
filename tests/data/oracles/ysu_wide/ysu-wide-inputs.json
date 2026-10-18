@@ -1,0 +1,44 @@
+{
+  "seed": 20261007,
+  "ncol": 131,
+  "regimes": {
+    "1": "convective-land",
+    "2": "stable-night-land",
+    "3": "ocean",
+    "4": "high-terrain",
+    "5": "high-terrain-topo-wind",
+    "6": "snow-ice-cold",
+    "7": "stratocumulus-topdown",
+    "8": "tropical-moist",
+    "9": "edge-probe"
+  },
+  "per_regime": {
+    "convective-land": 16,
+    "stable-night-land": 14,
+    "ocean": 14,
+    "high-terrain": 8,
+    "high-terrain-topo-wind": 10,
+    "snow-ice-cold": 12,
+    "stratocumulus-topdown": 10,
+    "tropical-moist": 8,
+    "edge-probe": 39
+  },
+  "nz": [
+    4,
+    30,
+    40,
+    45,
+    50,
+    60,
+    120
+  ],
+  "dt": [
+    1.0,
+    10.0,
+    20.0,
+    30.0,
+    45.0,
+    60.0,
+    300.0
+  ]
+}

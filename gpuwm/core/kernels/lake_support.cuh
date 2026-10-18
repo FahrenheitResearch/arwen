@@ -6,6 +6,7 @@
 #define LAKE_HD __device__
 #else
 #include <cmath>
+#include "f64cr.cuh"
 #define LAKE_HD
 using std::sqrt; using std::exp; using std::log; using std::log10;
 using std::sin; using std::cos; using std::atan; using std::pow;
@@ -150,8 +151,26 @@ LAKE_HD float lake_pow(float a,float b) {
     return pow(a,b);
 #endif
 }
+// WRF's binary64 intrinsics, correctly rounded on host and device
+// (f64cr.cuh): CUDA's own binary64 library is not, and its 1-2 ulp words
+// reached the lake's hfx and grdflx outputs (clm-lake column oracle,
+// 2026-10-07).  The lake calls these only with REAL(8) arguments; a REAL(4)
+// call has no definition here, so a future single-precision use fails to
+// compile instead of silently changing precision.
+LAKE_HD double lake_exp(double x) {return wcr_exp(x);}
+LAKE_HD double lake_log(double x) {return wcr_log(x);}
+LAKE_HD double lake_log10(double x) {return wcr_log10(x);}
+LAKE_HD double lake_sin(double x) {return wcr_sin(x);}
+LAKE_HD double lake_atan(double x) {return wcr_atan(x);}
+LAKE_HD float lake_exp(float) = delete;
+LAKE_HD float lake_log(float) = delete;
+LAKE_HD float lake_log10(float) = delete;
+LAKE_HD float lake_sin(float) = delete;
+LAKE_HD float lake_atan(float) = delete;
+LAKE_HD double lake_pow_real(double a,double b) {return wcr_pow(a,b);}
+LAKE_HD float lake_pow_real(float a,float b) {return pow(a,b);}
 template<class A,class B> LAKE_HD auto lake_pow(A a,B b)->decltype(a+b) {
-    using T=decltype(a+b); return pow(T(a),T(b));
+    using T=decltype(a+b); return lake_pow_real(T(a),T(b));
 }
 template<class T> LAKE_HD T lake_sum(const LakeArray<T>& a) {
     T result=0; for(int i=0;i<a.n1*a.n2*a.n3;++i)result=result+a.data[i]; return result;

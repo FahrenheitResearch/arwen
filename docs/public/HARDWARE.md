@@ -70,6 +70,51 @@ those intervals; supply a narrower input window to reduce them.
 | 24 GiB | 4 GiB | 20 GiB | four domains: 170x136 (12 km), 336x272 (3 km), 360x294 (1 km), 288x236 (500 m) |
 | 32 GiB | 6 GiB | 26 GiB | the reference-class case: 4 domains to 500 m at 400x400+ |
 
+## Drivers, CUDA majors and GPU architectures
+
+The GPU extra comes in two CUDA majors. Install one per environment.
+
+| | `all-cu12` (also `gpu-cu12`, `gpu`, `all` and the desktop runtime) | `all-cu13` |
+|---|---|---|
+| Minimum NVIDIA driver | R525: 525.60.13 on Linux, 527.41 on Windows (CUDA 12.0) | R580 (CUDA 13.0) |
+| NVRTC that compiles the forecast kernels on your machine | 12.9 (12.9.86 on 2026-10-15) | 13.4 (13.4.92 on 2026-10-15) |
+| Architectures that NVRTC compiles for | sm_50 to sm_121 (Maxwell to Blackwell) | sm_75 to sm_121 (Turing to Blackwell); not V100 (sm_70) or P100 (sm_60) |
+| GRIB2 post kernels (`--grib2`, `export-grib2`) | built-in machine code on sm_10x and sm_12x; a PTX ISA 8.0 image, compiled by the driver once, on every other card from sm_60 on | the same |
+
+The driver minimums are NVIDIA's for each CUDA major, not runs of ours:
+the oldest driver this release ran on is 595.91 (CUDA 13.2). On that
+driver, with an RTX PRO 6000 Blackwell (sm_120), both extras ran
+`gpuwm go forecast.toml --grib2` on a 12 km GFS case. The architecture
+rows are each NVRTC's own list of supported targets. The GRIB2 post PTX
+is compiled by NVRTC 12.0, so it declares PTX ISA 8.0, the ISA of CUDA
+12.0, which NVIDIA's drivers accept from R525 on; a test fails the build if
+it declares a newer one. CUDA 12.0's `ptxas` compiles it for sm_60, sm_61,
+sm_70, sm_75, sm_80, sm_86, sm_89 and sm_90. Run from the PTX on sm_89
+(RTX 4090, driver 610.57), its GPU output equals the CPU's bit for bit, on
+the post-processing tests and on a real 12 km frame. On sm_120 (RTX 5070 Ti,
+driver 595.99, CUDA 13.2), forced to the PTX, it also equals the CPU bit for
+bit on the same tests and frame. Driver 595.91 (CUDA 13.2, RTX PRO 6000,
+sm_120) loads it. A card also needs a driver that supports its
+architecture (Blackwell, for example, needs R570 or newer).
+Before 2.9.1 that image declared ISA 9.4, which drivers older than CUDA 13.4
+refuse (595.91 refused it). On every card without built-in machine code the
+GRIB2 products were then computed on the CPU, with the same bytes, and
+nothing was printed. When a card cannot load the post kernels now, the run
+prints one warning line naming the driver's error, and `gpuwm doctor` shows
+the same result on its "GPU post kernels" line.
+
+**The two majors give different forecasts.** Each extra compiles the
+forecast kernels with its own NVRTC, and different compilers produce
+different machine code. On the same card and driver, the same 12 km GFS case
+after 1 h differed in 1,700,303 of 3,438,677 float words between `all-cu12`
+and `all-cu13`: 2 m temperature by up to 0.34 K, accumulated rain by up to
+0.55 mm, and reflectivity by up to 68 dBZ at single points. Neither major is
+the reference. Compare runs, and quote identity results, within one major
+and one NVRTC build; [DETERMINISM.md](DETERMINISM.md) lists the NVRTC build
+among the pins.
+The release identity gates run on the `cu13` extra: for 2.9.0, NVRTC
+13.4.92 on sm_120.
+
 ## Independent runs on multiple GPUs
 
 A prepared single-domain forecast can use several cards through

@@ -58,13 +58,19 @@ def borrow_physics_scratch(view, driver, *, member, members, ny, nx):
     an unwritten batch slot of that name) or not at all (N = 1), while the
     same member run ordinarily wrote its booked total.
     """
+    from gpuwm.core.streaming import domain_scratch
     from gpuwm.ensemble.batch_physics import THOMPSON_CLOUD_BOOKING_SLOTS
-    existing = getattr(getattr(driver, "state", None), "existing_scratch", None)
-    if existing is None:
+    owner = getattr(driver, "state", None)
+    if owner is None:
         return view
+    # Through the sanctioned reader rather than binding ``existing_scratch``
+    # here: this module names the up_heli_max slot, and
+    # tests/test_uh_lifecycle.py forbids an unsanctioned module that does so
+    # from acquiring the scratch API indirectly.  domain_scratch answers
+    # None for a state without the slot, as the direct lookup did.
     booked = {}
     for slot in THOMPSON_CLOUD_BOOKING_SLOTS:
-        value = existing(slot)
+        value = domain_scratch(owner, slot)
         if value is not None:
             booked[slot] = member_column_view(value, member=member, members=members, ny=ny, nx=nx)
     if booked:
@@ -181,10 +187,13 @@ def run_initialized_native_ensemble(inputs, node, *, members, member_ids=None, m
             from gpuwm.runtime import _metadata_frame
             bundle = next(bundle for bundle in inputs.domains if int(bundle.grid_id) == int(node.cfg.grid_id))
             # A WRF-file door domain writes the file's own grid words, as the
-            # ordinary writer does (gpuwm.io.wrfout, wrf_file_grid).
+            # ordinary writer does (gpuwm.io.wrfout, wrf_file_grid), with the
+            # run's configuration so the rows WRF initializes rather than reads
+            # (AREA2D, DX2D, the seed arrays, NEST_POS ...) are written too, as
+            # prepared_domain_tree_forecast passes domain.run (here the batch RunConfig).
             from gpuwm.io.history_layout import wrf_file_grid_history_fields
             output_metadata = {**_metadata_frame(node.grid, bundle.static_fields),
-                               **wrf_file_grid_history_fields(bundle)}
+                               **wrf_file_grid_history_fields(bundle, cfg)}
         # Each allocation receives a current remaining budget. An integer caller
         # budget is decremented by all native plans already constructed above.
         remaining = None if callable(available_bytes) else int(available_bytes)

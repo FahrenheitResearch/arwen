@@ -85,6 +85,9 @@ def test_off_does_not_read_count_or_change_checkpoint_identity():
     # The CLM lake quartet appended later is dropped by the same echo when off.
     for name in ("sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev"):
         before.pop(name)
+    # So is the ocean mixed layer's quartet (2.9.1) when off.
+    for name in ("sf_ocean_physics", "oml_hml0", "oml_gamma", "oml_relaxation_time"):
+        before.pop(name)
     # The Noah-MP snow-aging selector (2.9.0) is read only by
     # sf_surface_physics = 4; this Noah run's comparison drops it.
     before.pop("noahmp_snow_age")

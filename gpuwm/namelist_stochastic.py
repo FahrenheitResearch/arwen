@@ -15,8 +15,8 @@ UNSUPPORTED_SELECTORS = frozenset({"rand_perturb", "multi_perturb", "perturb_bdy
 #: operation would be lost rather than one sentence for all ten.  A row
 #: leaves this table, and UNSUPPORTED_SELECTORS, when its consumer lands.
 UNSUPPORTED_SELECTOR_OPERATION = {
-    "rand_perturb": "WRF fills the RAND_PERT random-pattern array for a "
-                    "scheme to read (registry.stoch:205)",
+    "rand_perturb": "WRF fills the RAND_PERT random-pattern array and "
+                    "writes it to history (registry.stoch:15, :205)",
     "multi_perturb": "WRF's multi-perturbation option drives the pert_* "
                      "scheme perturbations (registry.stoch:98)",
     "perturb_bdy": "WRF perturbs the lateral boundary tendencies of U, V "

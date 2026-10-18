@@ -55,7 +55,7 @@ fn units(file: &netcrust::File, name: &str) -> String {
 fn time(file: &netcrust::File) -> Result<String, String> {
     let variable = file.variable("Times").ok_or("missing WRF Times")?;
     if variable.shape() != [1, 19] { return Err("soil recovery requires exactly one WRF time record".into()); }
-    String::from_utf8(super::character_bytes(file, &variable)?).map_err(|e|e.to_string())
+    String::from_utf8(super::character_bytes(file, &variable, false)?.0).map_err(|e|e.to_string())
 }
 
 fn geometry(array: &Array) -> String {

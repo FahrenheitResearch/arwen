@@ -12,6 +12,8 @@ from math import prod
 
 import pytest
 
+from gpuwm.wrf_exact import ENABLED as _WRF_EXACT
+
 from gpuwm.config import RunConfig
 from gpuwm.core import preflight as pf
 from gpuwm.core.devices import DeviceOptions
@@ -222,32 +224,107 @@ def test_only_reachable_fallout_tiers_reserve_local_memory(microphysics, levels)
     exp = experiment_from_run_config(
         _config(mp_physics=microphysics, nz=levels), datetime(2026, 1, 1))
     frames = pf.kernel_local_frame_bytes(exp)
-    assert frames["thompson"] == (2816 if levels <= 64 else 11264)
+    if microphysics == 28 or not _WRF_EXACT:
+        # A default process launches 2.9.1's Thompson unit for mp=8 and 28
+        # alike; the chain's column-arena classic unit is strict-only.
+        assert frames["thompson"] == (2816 if levels <= 64 else 11264)
     if microphysics == 28:
         assert frames["thompson_aerosol_sed"] == (2304 if levels <= 64 else 9216)
     else:
+        if _WRF_EXACT:
+            # Strict mp=8 launches the column-arena classic unit. It has
+            # no local fallout tiers; charging the replaced unit is incorrect.
+            assert "thompson" not in frames
+            assert frames["thompson_classic"] == 0
         assert "thompson_aerosol_sed" not in frames
 
 
 @pytest.mark.parametrize("levels", [50, 64, 65, 128])
 def test_the_fork_thompson_generation_is_priced_at_its_own_fallout_frames(levels):
-    """thompson_version = "wrf_39_noaa" compiles a wider sedimentation frame.
+    """A default process: thompson_version = "wrf_39_noaa" compiles a wider
+    sedimentation frame (2.9.1's fork generation; the chain's column unit
+    launches only under GPUWM_WRF_EXACT=1).
 
     Breakage prevented: the HRRR configuration recipes select the fork
     generation; priced at the wrf_461 rows, the sedimentation row under-states
-    the fork build by 2,048 B per resident thread, and the reservation inherits
-    that error as soon as the classic unit's equal frame stops covering it (the
-    gpu gate tests/test_kernel_local_bounds.py reads both rows off the
-    driver)."""
+    the fork build by 2,048 B per resident thread."""
+    if _WRF_EXACT:
+        pytest.skip("a strict process launches the fork column unit (next test)")
     exp = experiment_from_run_config(
         _config(mp_physics=28, nz=levels, thompson_version="wrf_39_noaa"),
         datetime(2026, 1, 1))
     frames = pf.kernel_local_frame_bytes(exp)
     assert frames["thompson_aerosol_sed"] == (2816 if levels <= 64 else 11264)
     assert frames["thompson"] == (2816 if levels <= 64 else 11264)
+    assert pf.thompson_fork_column_workspace_bytes(exp) == 0
     default = pf.kernel_local_frame_bytes(experiment_from_run_config(
         _config(mp_physics=28, nz=levels), datetime(2026, 1, 1)))
     assert default["thompson_aerosol_sed"] == (2304 if levels <= 64 else 9216)
+
+
+@pytest.mark.skipif(not _WRF_EXACT, reason=(
+    "the fork column unit and its arena launch only under GPUWM_WRF_EXACT=1 "
+    "(preflight.thompson_fork_column_workspace_bytes returns 0 otherwise)"))
+@pytest.mark.parametrize("levels", [50, 64, 65, 128])
+def test_the_fork_thompson_generation_prices_its_column_unit_and_arena(levels):
+    """thompson_version = "wrf_39_noaa" runs its own column unit.
+
+    Breakage prevented: the unit (gpuwm/core/kernels/thompson_fork.cu) first
+    kept the fork's column arrays in the thread's local frame, 25,136 B at
+    50 levels, a 6.5 GiB launch-time reservation on a 188-SM card that the
+    fit gate priced at the classic units' 2,816 B.  The arrays now live in a
+    column arena sized to the launcher's tile, which is device memory the
+    gate must charge, and the unit's own frame is its 784 B spill.  The
+    wrf_461 generation launches neither.
+    """
+    from gpuwm.core import thompson_fork as tf
+
+    cfg = _config(mp_physics=28, nz=levels, thompson_version="wrf_39_noaa")
+    exp = experiment_from_run_config(cfg, datetime(2026, 1, 1))
+    frames = pf.kernel_local_frame_bytes(exp)
+    assert frames["thompson_fork_unit"] == 784
+    profile = pf.MEASURED_LOCAL_MEMORY_PROFILE
+    threads = min(cfg.nx * cfg.ny,
+                  profile.multiprocessor_count * tf.TILE_BLOCKS_PER_SM
+                  * tf.BLOCK)
+    threads = -(-threads // tf.BLOCK) * tf.BLOCK
+    arena = (levels + 1) * threads * (tf.WS_FLOATS * 4 + tf.WS_DOUBLES * 8
+                                      + tf.WS_BOOLS)
+    assert pf.thompson_fork_column_workspace_bytes(exp) == arena
+    assert pf.column_workspace_bytes(exp) >= arena
+    default = experiment_from_run_config(
+        _config(mp_physics=28, nz=levels), datetime(2026, 1, 1))
+    assert "thompson_fork_unit" not in pf.kernel_local_frame_bytes(default)
+    assert pf.thompson_fork_column_workspace_bytes(default) == 0
+    assert pf.kernel_local_frame_bytes(default)["thompson_aerosol_sed"] == (
+        2304 if levels <= 64 else 9216)
+
+
+@pytest.mark.skipif(not _WRF_EXACT, reason=(
+    "the fork column arena is allocated only under GPUWM_WRF_EXACT=1"))
+def test_the_fork_arena_is_priced_at_the_largest_launching_domain():
+    """A deeper fork child prices its own arena; a deeper domain on another
+    scheme prices none, and a small domain is held to its own columns."""
+    from gpuwm.core import thompson_fork as tf
+
+    exp = experiment_from_run_config(
+        _config(mp_physics=28, nz=50, nx=4, ny=4,
+                thompson_version="wrf_39_noaa"),
+        datetime(2026, 1, 1))
+    assert pf.thompson_fork_column_workspace_bytes(exp) == (
+        tf.workspace_bytes(50, tf.BLOCK))
+    deep_other = replace(exp.root, grid_id=2,
+                         run=replace(exp.root.run, nz=128, nx=320, ny=240,
+                                     mp_physics=10))
+    assert pf.thompson_fork_column_workspace_bytes(
+        replace(exp, domains=(exp.root, deep_other))) == (
+        tf.workspace_bytes(50, tf.BLOCK))
+    deep_fork = replace(exp.root, grid_id=2,
+                        run=replace(exp.root.run, nz=90, nx=320, ny=240))
+    profile = pf.MEASURED_LOCAL_MEMORY_PROFILE
+    assert pf.thompson_fork_column_workspace_bytes(
+        replace(exp, domains=(exp.root, deep_fork))) == tf.workspace_bytes(
+        90, tf.tile_threads(profile.multiprocessor_count, 320 * 240))
 
 
 def test_deep_other_physics_does_not_raise_a_shallow_fallout_tier():

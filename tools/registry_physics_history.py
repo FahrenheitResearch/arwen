@@ -143,11 +143,28 @@ def check() -> list[str]:
     return failures
 
 
+def extend(saved: dict, additions: dict) -> dict:
+    """Keep older preparation identities while adding committed documents."""
+    result = dict(saved)
+    for schema in ("schema", "identity_schema"):
+        if saved[schema] != additions[schema]:
+            raise ValueError(f"Registry history {schema} differs")
+    for key in ("documents", "physics"):
+        result[key] = {**saved[key], **additions[key]}
+        if key == "physics":
+            for digest in saved[key].keys() & additions[key].keys():
+                if saved[key][digest] != additions[key][digest]:
+                    raise ValueError(f"Registry physics parts differ for {digest}")
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--since")
     parser.add_argument("--until")
     parser.add_argument("--write", action="store_true")
+    parser.add_argument("--extend", action="store_true",
+                        help="Preserve existing historical identities when adding this range")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
     if args.check:

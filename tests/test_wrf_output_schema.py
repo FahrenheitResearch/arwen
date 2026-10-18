@@ -88,7 +88,7 @@ def _runtime_inventories():
                  (*MYNN_PBL_STATE_3D, *MYNN_PBL_DIAGNOSTICS_2D,
                   *MYNN_PBL_DIAGNOSTICS_INT_2D,
                   # shared EM_COMMON rows the MYNN block also publishes
-                  "exch_h", "exch_m", "rmol", "kpbl")),
+                  "exch_h", "exch_m", "rmol", "kpbl", "tke_pbl")),
         "Noah-MP": (NOAHMP_OUTPUT_FIELDS,
                     (*NOAHMP_STATE_2D, *NOAHMP_STATE_INT_2D,
                      *NOAHMP_STATE_SNOW_3D, *NOAHMP_STATE_SNOWSOIL_3D,
@@ -141,6 +141,7 @@ def test_schema_rows_cite_the_pinned_registry_or_declare_themselves_gpuwm():
     for name, field in SCHEME_OUTPUT_FIELDS.items():
         if field.registry:
             assert (field.registry.startswith("Registry.EM_COMMON:")
+                    or field.registry.startswith("Registry.EM:")
                     or field.registry.startswith("registry.noahmp:")), name
             assert field.description, name
             cited += 1

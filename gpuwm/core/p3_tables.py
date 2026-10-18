@@ -31,7 +31,7 @@ configuration this port ships:
    packaged: they belong to the unported ``mp_physics=52`` / ``53``
    options, which gpuwm refuses by name (gpuwm/config.py).
 
-MEASURED against running Fortran, 2026-08-28 (node-1, gfortran 15.2.0,
+MEASURED against running Fortran, 2026-08-28 (test host A, gfortran 15.2.0,
 WRF's own ``module_mp_p3.F`` compiled unmodified except for an appended
 dump routine, ``p3_init(nCat=1, trplMomI=.false., model='WRF')``):
 
@@ -41,20 +41,19 @@ dump routine, ``p3_init(nCat=1, trplMomI=.false., model='WRF')``):
   both -O0 and -O2.  The double-rounding risk the paragraph below names
   is therefore not realised on this table; the digests are pinned as
   :data:`FORTRAN_ITAB_SHA256` / :data:`FORTRAN_ITABCOLL_SHA256`.
-* :func:`generate_rain_tables` is NOT byte-identical: ``vn_table`` differs
-  in 1,150 of 3,000 entries (max 5 ULP, max relative 3.3e-07),
-  ``vm_table`` in 940 (max 4 ULP, 4.2e-07) and ``revap_table`` in 110
-  (max 21 ULP, 2.2e-06).  Root cause MEASURED, not inferred: the
-  transcription's structure and accumulation order are right (``lamr`` is
-  byte-identical), and the divergence is host libm.  Over the loop's own
-  10,000 arguments, numpy's float32 ``exp`` differs from glibc ``expf``
-  on 5,824 of them by up to 3 ULP, and ``10.**(3*log10(dia))`` differs on
-  705 by up to 36 ULP -- the latter being a 1-ULP ``log10`` difference
-  amplified by ``ln(10)`` times an exponent of magnitude ~18.  A
-  byte-identical rain table needs a correctly-rounded libm on this path
-  (gpuwm.core.correctly_rounded_libm) or the generated tables shipped as
-  data; neither is decided here, and the divergence is DECLARED rather
-  than tolerated by a loosened comparison.
+* :func:`generate_rain_tables` IS byte-identical (2026-10-07), all
+  9,000 words of ``vn_table``/``vm_table``/``revap_table``, against WRF
+  4.6.1's own table loop compiled ``-O0 -ffp-contract=off``
+  (tests/test_p3_wrf461_rain_tables.py).  Through 2.8.7 it was not:
+  1,150, 940 and 110 words differed (up to 5, 4 and 21 ULP) because the
+  transcription called NumPy's float32 ``exp``, ``log10`` and ``**``,
+  which are not the functions gfortran calls (``expf``, ``log10f``,
+  ``powf``) and are not even the same functions from one host to the next
+  (NumPy's AVX-512 loops on Linux, the MSVC runtime on Windows).  It now
+  calls WOOF's own ``expf``/``powf`` (gpuwm.core.noahmp_libm) and the
+  correctly rounded ``log10f`` (gpuwm.core.correctly_rounded_libm), the
+  ``log10f`` a C library that rounds correctly returns and the one the
+  device kernel's ``p3_log10`` matches.
 
 Precision note (documented, not a divergence by design): the Fortran
 list-directed READ converts the decimal text directly to REAL(4);
@@ -155,7 +154,7 @@ UPSTREAM_WRF_TABLE_1_2MOM_SIZE = 1606038
 #: own ``p3_init`` compiled with gfortran 15.2.0 and dumped from the module
 #: variables.  This is the parser's correctness anchor: it pins the numbers
 #: the Fortran actually loads, not the text this loader happens to read.
-#: Measured 2026-08-28 on node-1, identical at -O0 and -O2 and identical
+#: Measured 2026-08-28 on test host A, identical at -O0 and -O2 and identical
 #: from the upstream LF file and the packaged CRLF file.
 FORTRAN_ITAB_SHA256 = (
     "45390820659a05f80c50482dacb8c886c93c379fe7c10f468fc1d9216ababaa5")
@@ -352,40 +351,61 @@ def generate_rain_tables() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     dm = dm.astype(np.float32)
     lamr = (mu_r + f32(1.0)) / dm
 
-    dum1 = np.zeros(300, dtype=np.float32)
-    dum2 = np.zeros(300, dtype=np.float32)
-    dum3 = np.zeros(300, dtype=np.float32)
-    dum4 = np.zeros(300, dtype=np.float32)
-    dum5 = np.zeros(300, dtype=np.float32)
-    dd = f32(2.0)
+    # The libm calls go through WOOF's own float32 routines, never NumPy's:
+    # gfortran calls the C library's expf/powf/log10f here (``**`` with a
+    # REAL exponent is powf, ALOG10 is log10f), and NumPy's float32 exp,
+    # log10 and power are different functions on every host (AVX-512 loops
+    # on Linux, the MSVC runtime on Windows).  Through 2.8.7 they moved
+    # vn/vm/revap by up to 5/4/21 ULP against WRF, which moved rain by up
+    # to 6e-3 relative in one step (tools/p3_wrf461_oracle/README.md).
+    # log10f is the correctly rounded one, which is what WRF computes on a
+    # C library that rounds it correctly and what the device kernel's
+    # p3_log10 returns.
+    from gpuwm.core.correctly_rounded_libm import log10f_cr
+    from gpuwm.core.noahmp_libm import expf_array, powf_array
 
-    for kk in range(1, 10001):
-        dia = (f32(kk) * dd - dd * f32(0.5)) * f32(1.0e-6)  # size bin [m]
-        # amg = piov6*997.*dia**3 (:636): gfortran expands the integer power
-        # as (dia*dia)*dia, then multiplies by the (piov6*997.) product.
-        amg = (piov6 * f32(997.0)) * ((dia * dia) * dia)
-        amg = amg * f32(1000.0)                             # kg -> g
-        d_um = dia * f32(1.0e6)
-        if d_um <= f32(134.43):
-            vt = f32(4.5795e3) * amg ** (f32(2.0) * thrd)
-        elif d_um < f32(1511.64):
-            vt = f32(4.962e1) * amg ** thrd
-        elif d_um < f32(3477.84):
-            vt = f32(1.732e1) * amg ** sxth
-        else:
-            vt = f32(9.17)
-        log_dia = np.log10(dia)
-        pow0 = f32(10.0) ** (mu_r * log_dia + f32(4.0) * mu_r)
-        pow3 = f32(10.0) ** ((mu_r + f32(3.0)) * log_dia + f32(4.0) * mu_r)
-        pow1 = f32(10.0) ** ((mu_r + f32(1.0)) * log_dia + f32(3.0) * mu_r)
-        decay = np.exp(-lamr * dia)
+    dd = f32(2.0)
+    kk = np.arange(1, 10001, dtype=np.float32)
+    dia = ((kk * dd - dd * f32(0.5)) * f32(1.0e-6)).astype(np.float32)
+    # amg = piov6*997.*dia**3 (:636): gfortran expands the integer power
+    # as (dia*dia)*dia, then multiplies by the (piov6*997.) product.
+    amg = ((piov6 * f32(997.0)) * ((dia * dia) * dia)).astype(np.float32)
+    amg = (amg * f32(1000.0)).astype(np.float32)          # kg -> g
+    d_um = (dia * f32(1.0e6)).astype(np.float32)
+    vt = np.full(dia.shape, f32(9.17), dtype=np.float32)
+    small = d_um <= f32(134.43)
+    mid = ~small & (d_um < f32(1511.64))
+    big = ~small & ~mid & (d_um < f32(3477.84))
+    vt[small] = f32(4.5795e3) * powf_array(amg[small], f32(2.0) * thrd)
+    vt[mid] = f32(4.962e1) * powf_array(amg[mid], thrd)
+    vt[big] = f32(1.732e1) * powf_array(amg[big], sxth)
+    log_dia = log10f_cr(dia)
+    # 10.**(...) with a REAL exponent is powf(10., ...) (:652-656).  With
+    # mu_r = 0 the first form's exponent is 0*log + 0 = +0 and powf
+    # returns exactly 1; it is still evaluated, not assumed.
+    pow0 = powf_array(f32(10.0), (mu_r * log_dia + f32(4.0) * mu_r)
+                      .astype(np.float32))
+    pow3 = powf_array(f32(10.0), ((mu_r + f32(3.0)) * log_dia
+                                  + f32(4.0) * mu_r).astype(np.float32))
+    pow1 = powf_array(f32(10.0), ((mu_r + f32(1.0)) * log_dia
+                                  + f32(3.0) * mu_r).astype(np.float32))
+    root = powf_array((vt * dia).astype(np.float32), f32(0.5))
+    # exp(-lamr*dia) for every (kk, jj): (10000, 300).
+    decay = expf_array((-lamr[None, :]) * dia[:, None])
+
+    def accumulate(term):
         # Association preserved: ...*exp(-lamr*dia)*dd*1.e-6 groups as
-        # ((term*decay)*dd)*1e-6 in the Fortran (:652-656).
-        dum1 += vt * pow0 * decay * dd * f32(1.0e-6)
-        dum2 += pow0 * decay * dd * f32(1.0e-6)
-        dum3 += vt * pow3 * decay * dd * f32(1.0e-6)
-        dum4 += pow3 * decay * dd * f32(1.0e-6)
-        dum5 += (vt * dia) ** f32(0.5) * pow1 * decay * dd * f32(1.0e-6)
+        # ((term*decay)*dd)*1e-6; each bin is added in kk order, the scalar
+        # loop's own roundoff (np.add.accumulate is strictly sequential).
+        terms = ((term[:, None] * decay) * dd) * f32(1.0e-6)
+        return np.add.accumulate(terms.astype(np.float32), axis=0,
+                                 dtype=np.float32)[-1]
+
+    dum1 = accumulate((vt * pow0).astype(np.float32))
+    dum2 = accumulate(pow0)
+    dum3 = accumulate((vt * pow3).astype(np.float32))
+    dum4 = accumulate(pow3)
+    dum5 = accumulate((root * pow1).astype(np.float32))
 
     dum2 = np.maximum(dum2, f32(1.0e-30))
     dum4 = np.maximum(dum4, f32(1.0e-30))
@@ -393,9 +413,10 @@ def generate_rain_tables() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     vn_col = (dum1 / dum2).astype(np.float32)
     vm_col = (dum3 / dum4).astype(np.float32)
-    revap_col = (f32(10.0) ** (np.log10(dum5)
-                               + (mu_r + f32(1.0)) * np.log10(lamr)
-                               - f32(3.0) * mu_r)).astype(np.float32)
+    # :666 10.**(alog10(dum5)+(mu_r+1.)*alog10(lamr)-(3.*mu_r))
+    revap_exp = ((log10f_cr(dum5) + (mu_r + f32(1.0)) * log10f_cr(lamr))
+                 - f32(3.0) * mu_r).astype(np.float32)
+    revap_col = powf_array(f32(10.0), revap_exp).astype(np.float32)
 
     vn = np.repeat(vn_col[:, None], 10, axis=1)
     vm = np.repeat(vm_col[:, None], 10, axis=1)

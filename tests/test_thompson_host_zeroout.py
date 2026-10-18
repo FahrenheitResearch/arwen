@@ -19,5 +19,8 @@ def test_host_zero_out_keeps_threshold_equality_and_mutates_views():
 
 
 def test_host_elementwise_kernel_refuses_an_unimplemented_operation():
+    # Built at import by modules a host measurement never launches
+    # (gpuwm/core/morrison.py), so the refusal comes when it is CALLED.
+    kernel = _fake_cupy().ElementwiseKernel("", "float32 x", "x = 1.0f;", "other")
     with pytest.raises(RuntimeError, match="no implementation"):
-        _fake_cupy().ElementwiseKernel("", "float32 x", "x = 1.0f;", "other")
+        kernel(np.zeros(2, np.float32))

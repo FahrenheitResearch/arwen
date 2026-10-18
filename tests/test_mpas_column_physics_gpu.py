@@ -194,7 +194,14 @@ def test_species_slack_refuses_both_ways():
 #: the sweep recorded.  A row leaves this table when its option runs; the
 #: test below fails if a listed option starts passing, so the table cannot
 #: go stale.
-NOT_YET = {}
+NOT_YET = {
+    # NAMED GAP (2.9.1): the CCPP sa-TKE-EDMF PBL refuses a positive bldt (its
+    # TKE tendency is not in the extra-scalar restart stream), and this seam
+    # runs a positive bldt to hold the raw PBL momentum rates it returns, so the
+    # option cannot run on the MPAS column state yet.  Owner: the satmedmf
+    # port (serialize the held TKE tendency, then remove this row).
+    "pbl.ccpp-tke-edmf": "CCPP TKE-EDMF requires bldt=0",
+}
 
 
 @pytest.mark.parametrize("name", sorted(

@@ -1,0 +1,23 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# WRF:      d66e442fccc04111067e29274c9f9eaccc3cef28 (clean: bl_ysu.F90, ccpp_kind_types.F)
+# -O0 undefined symbols:
+#   U expf
+#   U free
+#   U malloc
+#   U memmove
+#   U memset
+#   U powf
+#   U tanhf
+# WRF flags (-O2 -ftree-vectorize -funroll-loops, THE REFERENCE) undefined symbols:
+#   U expf
+#   U free
+#   U malloc
+#   U memcpy
+#   U memset
+#   U powf
+#   U tanhf
+# FMA instructions in either object: 0
+# pow(x,2.0) calls left by the WRF-flags build (GCC folds them to x*x):
+#   -O0: 24 powf call sites; WRF flags: 26 (after unrolling)
+# bytes differing between the WRF-flags and -O0 outputs: 25

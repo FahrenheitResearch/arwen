@@ -800,7 +800,7 @@ mod tests {
         let f = frame(&s, &st);
         let levels: Vec<f64> = (0..37).map(|i| 10000.0 + 2500.0 * i as f64).collect();
         let cpu = compute_cpu(&f, &levels).unwrap();
-        let g = crate::gpu::GpuPost::open(0).expect("an NVIDIA GPU");
+        let g = crate::gpu::GpuPost::open_with(0, crate::gpu::test_image()).expect("an NVIDIA GPU");
         let gpu = crate::plev::gpu::compute(&f, &levels, &g).expect("GPU path");
         let same = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan()));
         assert!(same(&cpu.plev, &gpu.plev), "pressure levels differ");

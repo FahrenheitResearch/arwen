@@ -108,6 +108,10 @@ def test_the_optional_keys_are_exactly_the_silent_exposure():
         # under the name of the user's choice, so the comparison the knob
         # exists for would compare two identical preparations.
         "gfs_lake_skin",
+        # Lane 291 surface-lakes-6.  Moved deliberately: a dropped
+        # `gfs_lake_ice = "wps"` would run the observed lake ice under the
+        # name of the WPS / real.exe identity arm.
+        "gfs_lake_ice",
     }
 
 

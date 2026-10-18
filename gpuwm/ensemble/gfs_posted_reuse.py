@@ -39,7 +39,7 @@ def prepare_posted_gfs_member(provider, member_index, *, input_plan,
     )
     from gpuwm.moisture_floor_receipt import moisture_floor_proof_entry
     from gpuwm.native_wrf_contract import (
-        NATIVE_LANDUSE_IDENTITY, native_geometry_contract,
+        native_geometry_contract, native_landuse_identity,
     )
     from gpuwm import gfs_direct
 
@@ -67,7 +67,7 @@ def prepare_posted_gfs_member(provider, member_index, *, input_plan,
     if tuple(value.replace(tzinfo=None) for value in context.physical_stream.times) != times:
         raise ValueError("GFS physical knots differ from the original native forcing clock")
     geometry = native_geometry_contract(grid, cfg)
-    static_identity = physical_static_identity(gfs_direct.native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY)
+    static_identity = physical_static_identity(gfs_direct.native_static_export_fields(static, grid), native_landuse_identity(static))
     control_files = {Path(experiment_config): digest_file(experiment_config), Path(wps_namelist): digest_file(wps_namelist)}
 
     class PhysicalTimes:

@@ -183,7 +183,15 @@ BASELINE_PINNED: dict[str, str] = {
     "thompson_column": "340467a1fb2e50b9b6b8341aeb5aac98a19d0a1abf3afb43d16f4746fcd37be8",
     # Full WRF 4.8 canopy entry, with independent corrected-water selectors.
     "urban_ucm480": "20548fb8212e4bd7bde9c06fa99ebde6da2be28390d7260841a7bb55daa5d701",
-    "wsm7": "2c7e45b175ca93d18e36149f5c2974a0bc2e0f7ff81dda7c0fde3e5a328064d9",
+    # RE-PINNED 2026-10-15 (lane/291-fix-correct-mode-5, correct mode WB5
+    # in WSM7): the rain-out integral gains a WSM7_PLM_SURFACE arm that books
+    # the straddling cell's below-ground part with the remap's own PLM
+    # profile (RunConfig.wsm7_conservative_surface).  With the macro
+    # undefined the preprocessed unit is the 2.9.0 bytes (2c7e45b1,
+    # tests/test_correct_mode_water_budget.py strips the arm and compares
+    # the sha and the compiled image).  wsm3 and wsm5 moved the same way in
+    # tests/data/kernel_source_pins.json (2.9.0: 0daed0b8, 8fbdf5f5).
+    "wsm7": "cfa0a7736efc1d755d185bebe1f8f351c469466e844139bc73d7144a44c2d344",
     # Already-staged vertical order kernel (f82847049); lane/ec-pd-upwind-286
     # confined its downstream cell at Courant <= 1 to the strict WRF
     # verification build (it manufactured scalar mass).
@@ -194,6 +202,15 @@ BASELINE_PINNED: dict[str, str] = {
     # Its fork device oracle and generic OFF controls are retained in
     # test_upper_wind_limiter.py; freeze its admitted raw source here.
     "upper_wind_limiter": "7c097a45c226cceda7ecae2424ce8a0fa3cd98a63648a12395be9f29d00ed724",
+    # CCPP sa-TKE-EDMF PBL (bl_pbl_physics = 901), joined with its port merge
+    # for 2.9.1 (b90138f9d): 64 columns x 48 levels x 3 steps match the pinned
+    # upstream CCPP GFSv17.HR4 Fortran (tools/satmedmf_ccpp_oracle) at 0 ULP in
+    # both arithmetic modes, re-run on an RTX 5090 at this tip.
+    "satmedmf": "9d43f30b081ef35dde5b7992f979c09c5db71d8aa15e5c475ed098e3ed4c5f82",
+    # WRF's one-dimensional ocean mixed layer (sf_ocean_physics = 1), joined
+    # for 2.9.1: graded against WRF's own module_sf_oml column (112 columns,
+    # 16 steps) at 0 ULP in both arithmetic modes (tests/test_oml_gpu.py).
+    "oml": "969bc5688f9acdba8532484e1836249a9743b4fcbdc57b2a2e87d3de7dd469bc",
     # e677dccb6: active table edits multiply binary64 values on the GPU,
     # round once to REAL, and reject non-positive crop roughness.
     "physics_params":
@@ -354,7 +371,7 @@ BASELINE_PINNED: dict[str, str] = {
     # first wind difference from step 87 to step 169 against stock WRF
     # 4.6.1 (SOL-POOL-2026-10-09 exact-chain-resume).  Previously ad4148a8.
     "gf":
-        "d9f0eac1c47600fa9289019cab9760e969be5b4a763a3dca206da39d2617553d",
+        "120dc7e606dae18cece64e1d1af899ec8930de339e82943dcab3457c9115532d",
     # 1ee7f0be0 tiles: name the streamed-run config table, and part it from cycle streaming
     "health_tile":
         "2943d5e226a61487aefbe7f191dc120420a4cfe3f96deef19c90c2bb8c15bead",
@@ -383,8 +400,15 @@ BASELINE_PINNED: dict[str, str] = {
     # answer moved: the lane's A/B dumps (sm_120, the fused 350 x 200 path
     # included) and a 1 h real HRRR New Tiedtke forecast (sm_89) are
     # byte-identical to d6929cb8d.  Previously 06daa934a71a0279.
+    # RE-PINNED 2026-10-07 by the New Tiedtke column-oracle lane
+    # (tools/ntiedtke_column_oracle): answers MOVE, toward WRF.  cuflxn's
+    # sub-cloud evaporation and the deep closure's CAPE sum now associate
+    # left to right as the reference does, and mfub/closure read ztmst
+    # instead of the model dt.  Bitwise against WRF v4.6.1 (zcbase declared
+    # real) on 1.1 M real columns; pinned by tests/test_ntiedtke_column_oracle.py.
+    # Previously 17fe4aac03ed6b51.
     "ntiedtke":
-        "17fe4aac03ed6b5191bda49db9eebe6c51c29d0e542bafc8ea33989f363caa42",
+        "5cc5944d841ec39a0869bbe340488fe0d2995e86e56864ba6437d0f0d1b6f20b",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     # RE-PINNED by the speed lane's category-parallel sedimentation (no
     # reading moves): five thread rows per column block run rain, ice, snow,
@@ -441,6 +465,15 @@ BASELINE_PINNED: dict[str, str] = {
     # test_the_surface_kernels_pblh_accumulator_is_column_local.
     # Re-pinned for A146 (a98f2482e): constant-divisor float divisions
     # spelled __fdiv_rn.  Previously 334ae702.
+    # RE-PINNED by lane/verify-eta-similarity-sfclay, MOVES ANSWERS for
+    # sf_sfclay_physics = 2: ZINT(KTE+1)=HT seeds the interface heights as
+    # module_sf_myjsfc.F:165 does (PBLH and ZSL are differences of them),
+    # LOG/EXP/** are WOOF's gfk_log/gfk_exp_fma/gfk_pow, and the unit
+    # compiles without FMA.  Every INOUT and output word of 640 column-calls
+    # is bit-identical to WRF v4.6.1's MYJSFC under the strict build and
+    # default arithmetic (tests/test_myjsfc_wrf461_parity.py).  Previously
+    # 7ce67cdd; then d6a84892 while REAL**REAL was a contracted pow, now
+    # gfk_pow (same oracle result).
     "myjsfc":
         '840d7099b117f3923ddef1137d62f8f2ac5084939efe0993f8855273bfaf3331',
     # 4a0bb3f69 mynn(mixscalars): MYNN-EDMF mixes the qn family, and the DMP unit exports it
@@ -523,8 +556,38 @@ BASELINE_PINNED: dict[str, str] = {
     # Re-pinned for A146 on top of that: constant-divisor float divisions
     # spelled __fdiv_rn, because NVRTC compiles x / C as a multiply by the
     # rounded reciprocal on Blackwell targets. Previously be8bf6ea.
+    # RE-PINNED by lane/parity-pbl-libm (sweep row 20), MOVES ANSWERS for
+    # bl_pbl_physics = 11: glibc powf/expf (gfk_pow/gfk_exp), WRF's **h1
+    # powf at the former cbrtf site, tanh in double, and --fmad=false.
+    # Reading (RTX PRO 6000, NVRTC 13.4.92 and 12.9.86 identical):
+    # tests/test_shinhong_wrf461_parity.py goes bitwise on every lane but the
+    # 72 flushed subnormal tendencies (du 93207, dv 46603, tke 2022, el 13,
+    # exch_h 8, hpbl/wstar/delta 1 -> 0), partition probe 2 -> 0.
+    # Previously 6fd615d0.
+    # RE-PINNED by lane/verify-shinhong (2026-10-07), MOVES ANSWERS for
+    # bl_pbl_physics = 11: thx is formed as WRF forms it, (theta*exner)/exner
+    # (module_bl_shinhong.F:559 on phy_prep's t = th*pi), instead of the
+    # model's theta read directly.  Reading on the wide column oracle
+    # (tests/test_shinhong_column_oracle.py, 903 columns, RTX PRO 6000,
+    # NVRTC 12.9.86): strict build from ~1,100 differing lanes per tendency
+    # and hpbl in 77 columns to every arithmetic lane bitwise.
+    # Previously 26a78c8f.
+    # RE-PINNED by lane/verify-topo-wind (2026-10-07): the column body is
+    # shinhong_column_body<TOPO>; shinhong_column (arm A) is the same
+    # arithmetic, and the new shinhong_column_topo (arm B) is WRF's
+    # topo_wind arm (module_bl_shinhong.F:1387, :1472-1473), which this
+    # engine refused until then.  Reading: tests/test_shinhong_column_oracle.py
+    # and tests/test_shinhong_wrf461_parity.py unchanged (arm A), and
+    # tests/test_topo_wind_wrf461_chain_parity.py's Shin-Hong consumer
+    # bitwise on every defined lane under the strict build (RTX PRO 6000,
+    # NVRTC 12.9.86).  Previously 852f71a6.
+    # And csfac's tanh (module_bl_shinhong.F:847) is sh_tanhf, WOOF's own
+    # float32 tanhf held to the reference platform's (glibc 2.39), where it
+    # was the correctly rounded tanh in double.  MOVES ANSWERS for
+    # bl_pbl_physics = 11 on the columns whose csfac argument lands on a
+    # differing word: the topo_wind chain sweep's 16 cells.
     "shinhong":
-        '26a78c8f8b24a2c783f6780db4b6b4a8fc52eb30a1e51bc71a7919a33ee8f6ed',
+        'cd650676df874db77b0c52303fe6ad3f37a821d3d818d6423b73f3878e46948b',
     # 58dfd599c feat(shinhong): CUDA mirror on the RTX 5090 -- dtheta bitwise, br DAZ counte
     "shinhong_validation":
         "e3714616c403a3f272600499164cf9b0215879d567dadcda31287dd33c600b87",
@@ -849,8 +912,14 @@ BASELINE_PINNED: dict[str, str] = {
     # Re-pinned for the SASE upper-bracket PBL-top helper.  The complete
     # module, its bit oracles, helper and mutation controls pass on
     # sm_89 and sm_120; the WRF scheme arithmetic is unchanged.
+    # Re-pinned by lane/verify-gsl-drag: gwdo_gsl_column takes the SPP PBL
+    # pattern (rstoch = pattern_spp_pbl(i,kts,j) under spp_pbl = 1, null
+    # otherwise), as WRF v4.6.1's gwdo_gsl does.  The WRF v4.6.1 column
+    # oracle (tests/test_gsl_drag_wrf461_column_oracle.py, 20 cases, four
+    # with SPP) is 0 ULP on every lane on sm_120, strict and default.
     "terrain_drag":
-        "eff252477f8d467e16b179023b8857ffd95feeedb94110ee72fe0d7a879e79d3",
+        '5da35b596b0843a087353795adacb5cceb9a6f5f4ce747745405536551182218',
+
     # ebcf4edd2 lane/urban-bep: the BEP column (sf_urban_physics=2)
     # (tests/test_urban_bep_wrf471_parity.py)
     # Re-pinned golden/wrf-fixes: the member-offset static_assert guard asks
@@ -948,7 +1017,7 @@ BASELINE_PINNED: dict[str, str] = {
         # 2.9.0 round 2: golden/ports-mp's Ferrier consumer edit (024c62024)
         # plus golden/ports-rad's appended rp_cldfra2, each pinned on its lane;
         # the combined bytes are both changes and nothing else.
-        "17ff296b104ddaa41de8df2db4e7e5eaced8b3feb5d39e60595a2455d552d684",
+        "756863c073537b8bde4879f0c0b7fa1f06b8d862b3f24353c1118dc05ef08d7b",
     "rrtmg_lw_chain_coalesced":
         "2682d172388d4a31ae11be0168bdd13b33be9c1b8e77e7ca92e86a8f9a822401",
     "rrtmg_lw_zbatched":
@@ -979,8 +1048,15 @@ BASELINE_PINNED: dict[str, str] = {
     # Lane 281-namelist-gaps: WRF v4.7.1 slope_rad / topo_shading
     # (module_radiation_driver.F toposhad/topo_rad_adj), held bit for bit
     # to WRF's Fortran by tests/test_topo_radiation.py on a card.
+    # Re-pinned by lane verify-topo-radiation (2026-10-07): the physics is
+    # unchanged; SIN/COS/TAN/ASIN/ACOS/ATAN/EXP/** became the float32 libm
+    # words (they were the double function rounded to float, which missed
+    # WRF v4.6.1 on glibc 2.43 at 3,660 of 425,468 chain values) and ATAN2
+    # became correctly rounded.  Measured on W1 (RTX PRO 6000, NVRTC
+    # 12.9.86): 0 of 425,468 chain values differ from WRF v4.6.1 on glibc
+    # 2.43, strict and default arithmetic.
     "topo_radiation":
-        "4edf8b687f486cf56b6adccd6f00ea233e15eb438c820b34cb6a0b0c9ae90f15",
+        'eed766ccaa9cd8e856423c407750cffb829a9e8e01c0b28c5ef91b9d16861de8',
     # Noah mosaic (sf_surface_mosaic = 1): WRF v4.7.1 lsm_mosaic and its
     # ordinary and glacial SFLX subtrees, bitwise against the byte-unmodified
     # WRF column oracle at every non-FTZ word
@@ -1050,6 +1126,11 @@ BASELINE_PINNED: dict[str, str] = {
     #   oxidation and gocart_aerosols' carbon aging, 0 ULP except MSA's
     #   1 ULP and the solar geometry's documented trig-stub residual
     #   (test_chem_sulfur_wrf471_parity.py, test_chem_ageing_wrf471_parity.py).
+    #   chem_sulfur re-pinned on lane/verify-chem-aq-smoke: szangle's SIN/COS
+    #   moved from CUDA's sinf/cosf to WOOF's own float32 trig, which retires
+    #   the trig-stub residual (cos(SZA) up to 36 ULP, tcosz up to 25 ULP,
+    #   SO2/SO4 1 ULP); every sulfur output now grades 0 ULP in native and
+    #   oracle-solar modes on all 48 cases (test_chem_sulfur_wrf471_parity.py).
     "chem_mp_coupling":
         "d7f9c5727eec775045c791f0d8922811eafaf2e6dc8540527a7ea3e42c847ed2",
     "chem_inventory":
@@ -1065,7 +1146,7 @@ BASELINE_PINNED: dict[str, str] = {
     "chem_rrtmgp_aerosol":
         "137d81d2d70e2fcd6f5e83c11f1bcab0ee63a1a7dc880c50cca4e7d926647f72",
     "chem_sulfur":
-        "6d0f66093b352ff9befa8e35f9ceaf68d806a4d02d48343683e6d0ac8cacc6b2",
+        "f01a5d1a17dc717b22acd0f06b612d4d2a32f92276ad252b3d63640bbe51a2d5",
     "chem_ageing":
         "895cc8c46773b5354ed05cbcd1a703babdba536fc54f0d2dc2bea5c578f33be0",
     # chem_optics: module_optical_averaging's GOCART volume optics, WRF's own
@@ -1085,11 +1166,14 @@ BASELINE_PINNED: dict[str, str] = {
     "chem_drydep_wesely":
         "33761f22276d75382a03dc2eb67ba1d866e24540eabaedc20daa5ebe31cda63d",
     # Lane 286-aer-swint: WRF swint_opt = 1 (radconst/calc_coszen at the
-    # current xtime, update_swinterp_parameters, interp_sw_radiation of the
-    # NOAA-EMC/HRRR v4.1.21 fork's module_radiation_driver.F), glibc libm
-    # words through glibc_flt32.cuh and glibc_trig_flt32.cuh, held word for
-    # word to the fork's gfortran/glibc Fortran by
-    # tests/test_swint_interpolation.py on a card.
+    # current xtime, update_swinterp_parameters, interp_sw_radiation).
+    # Re-pinned by lane verify-swint-opt (2026-10-07): the kernels follow
+    # WRF v4.6.1 (exponent-zero ratio rule, WRF cc02f989f; [-1, 1] cosine
+    # clamp, WRF 650be0c7d), WOOF's own float32 libm through
+    # glibc_flt32.cuh and glibc_trig_flt32.cuh, held word for word to
+    # v4.6.1's gfortran -O0 Fortran (tools/swint_wrf461_oracle) and to the
+    # HRRR fork's outside those two fixes by tests/test_swint_interpolation.py
+    # on a card.
     # Lane 286-aer-swint: WRF aer_opt = 3 shortwave optics (gt_aod and
     # calc_aerosol_rrtmg_sw of the NOAA-EMC/HRRR v4.1.21 fork, RSLF,
     # Bolton RH, the rural Lagrange tables), glibc expf through
@@ -1112,7 +1196,7 @@ BASELINE_PINNED: dict[str, str] = {
     "rrtmg_smoke_manifest":
         "ac810c4ffc873f084882adb695eccdbf84d8c7d28af1654c3d01755770460ece",
     "swint":
-        "14e195090ac6b1ca25956ce3bda9a84acf03fa508ed3538b08d7364d3cc14435",
+        "9a79b7e43cb92553ae454975a943acedc3d8510b5c7eae59ec2c5bb8c8b47c5b",
     # cu_physics = 6, WRF v4.6.1's original Tiedtke (module_cu_tiedtke.F) as
     # one column kernel; tools/tiedtke_wrf461_oracle/check.py --gpu holds
     # it word for word to the Fortran in default and strict arithmetic
@@ -1121,11 +1205,30 @@ BASELINE_PINNED: dict[str, str] = {
         "6064a2a351da878a0d6292c08bf82eb19af8996e2d0cee9ac16211d8363dca91",
     # WRF 4.6.1 and 4.8.0 solar words are checked independently on a card.
     "rrtmg_legacy_solar":
-        "d85deb8f7d4035d9f605752324fe13a16ede14b66873097f47be479c67b7f5aa",
+        "d0d9fa08a5ff854f9059f0151ddaa2fdb80ca1a13245c774b33432a065bb5d64",
     # WRF 4.8 YSU (ysu_version = "wrf_480"): graded against WRF 4.8 MMM
     # 550b5b4 bl_ysu.F90 by tools/ysu_generations_oracle/gate.py.
     "ysu_480":
-        "74892789f697ae888e608c4d342da0e3c7d15d29d315f12afe37f053ebdf54bc",
+        "44acadb46d994d46614dbfa54b5474f0abe144385a54f245b731d8abe530f3ea",
+    # The 2.9.1 intake of the WRF exact chain (r290/exact-chain 6cb618fce):
+    # source identity here, numerical gates in their own suites.
+    # physics_exner, thompson_classic and thompson_fork are the strict
+    # (GPUWM_WRF_EXACT=1) Exner, classic-Thompson and fork-Thompson units;
+    # the *_default units are what a default process compiles for
+    # nssl2*, rrtmgp_* and ysu (ysu_default.cu is 2.9.1's ysu.cu, byte for
+    # byte), kernels/__init__.py _DEFAULT_SOURCE_MODULES.
+    "nssl2_default": "37173f1bcc9ec0fd6c6f4afe060c0d984bcd14abc5d4841d05aa62e6ac85d3ea",
+    "nssl2_diagnostics_default": "a95ae9e0bc3dd20a13865cfa6d1148d2a78ee5d7c17c9c1bca9a0c8dbdf19868",
+    "nssl2_driver_support_default": "12f193c6918056b995577930304867cd8369a46ab1facfcde589d244cbd6eca8",
+    "nssl2_fused_gs_default": "07dff4bf34509e89b75683a83d356c4691b6eab1aa96140af3e6fa5b00fe429b",
+    "nssl2_nucond_default": "b4819a1e912924fe2e30c33897585e3a46c32e89dcb3ab43eb1ee32b212b6db1",
+    "physics_exner": "14d8847f39847e9637efc83b63dbf323eddfe4d3f21675210b6398ffe85c3636",
+    "rrtmgp_cloud_default": "512157c75edf4637d99a1cad490e8db71e51cd2c3643ff129adebefa81557560",
+    "rrtmgp_gas_default": "d13b914a28ad8b7ef88904977c7e33b9a7d7e800592473c0fb8debebca031edf",
+    "rrtmgp_rte_default": "b9474494d0784a97f66742c3d8ab6788c6be09741a2b74a602b970149f0c579f",
+    "thompson_classic": "e9225efd38ba652b743eb3ff02e3c45794941862a46603db996e4de93d9da985",
+    "thompson_fork": "c7313ce62d863bdeb9478b7a503c8faffae6d17c8a20cbb1b6d458c216e4c947",
+    "ysu_default": "f56e3ec7646a111d07c5447383ae136b2959b5f4545441a598b51be16ccdc768",
 }
 
 _FROZEN = _frozen_module()
@@ -1156,7 +1259,7 @@ PINNED_HEADERS = {
     # for an fp_kind one (a bare __fdiv_rn had narrowed the fp_kind operands
     # to float and made g_pow(float, GReal) ambiguous on NVRTC 13.4);
     # emitted by translate_bands.py, regenerated from WRF v4.6.1 (d66e442)
-    # source on node-1, byte-identical to this file.
+    # source on test host A, byte-identical to this file.
     "goddard_bands.cuh": "ea0a43f2449963f12b97b01638c023825129acf97dd8825d3a4efcb704cd21b0",
     "goddard_sounding.cuh": "1e3b89eb9e87acc98ebba5e55d81facffd5d47d58db82ca2743dca02e4d75fe6",
     "thompson_column_support.cuh": "3c1c267c853d22fe67c327a105145d6e2200000209fe30dbfef353b70ba86b4f",
@@ -1187,8 +1290,20 @@ PINNED_HEADERS = {
     # global arena (strided, coalesced) instead of the 14,400 B local frame
     # CUDA backed for every resident thread of the card; the host build
     # keeps inline storage.  Addressing only; no arithmetic changed.
-    "lake_support.cuh": "0c931e51e4e449b62996a5c241d026c652031b12adac6eabe18194c130b00dc9",
-    "lake_wrf.cuh": "196340026552b827c804eeea5f3ce9a6bd1883e86fdb694ca397882c26d58d94",
+    # RE-PINNED at lane/verify-clm-lake from 0c931e51e4e449b6 and
+    # 196340026552b827 by the correctly rounded lake intrinsics: the
+    # transcription's binary64 exp, log, log10, sin and atan now read
+    # lake_exp, ... (translate.py), lake_support.cuh defines those and the
+    # binary64 power through f64cr.cuh, and REAL(4) calls of them no longer
+    # compile.  Measured: the CUDA lake equals native WRF linked to
+    # correctly rounded functions in every state and output word of the
+    # 112-column regime campaign (tools/lake_wrf461_oracle/regimes.py), where
+    # CUDA's own library left hfx and grdflx in 1,223 words.
+    "lake_support.cuh": "c21f1cf9deb1930e9ad5e24b48247cedf8de8832fdb92e97dfbf938122ccb106",
+    "lake_wrf.cuh": "91ccdd68fc9b87564a28f1554faa2a913171e02d963d86b46be292c65e47fffd",
+    # WOOF's correctly rounded binary64 exp, log, log10, sin, atan, pow for
+    # the lake; tests/test_lake_f64cr.py grades it on the device against
+    # 240-bit mpmath values and the constant block against its generator.
     # gp-libm64: new Rust libm 0.2.16 and glibc 2.39 log1pf twins.
     "portable_libm64.cuh": "bca62ac1366a4602b0c5bd0b11a11c9ee226a1e1a1f690060c924ef94a64655e",
     # NumPy NaN payloads and explicit rounding for the real_init units.
@@ -1203,12 +1318,12 @@ PINNED_HEADERS = {
     # comments at lines 235-237 and 344-353 stop describing the earlier gamma
     # as derived from glibc.  Comments only, measured: with comments removed
     # the header is byte-identical, and it keeps its 552 lines.
-    "glibc_flt32.cuh": "b647335d355aefb5d9ece1726ff23667a01f09c8b263c136bd8a94764e904d4f",
+    "glibc_flt32.cuh": "37d05e97eff78ab684669746f158180e1d61a3eb2102c19402a5f5d685ac94df",
     # lane/verify-milbrandt2mom-mp9: WOOF's own float32 log10 for the
     # Milbrandt-Yau units, swept against the oracle box's LOG10 over every
     # positive finite float (tools/milbrandt2_wrf461_oracle/sweep_log10.py).
     "log10_flt32.cuh": "f0635036ea7a0514279c82a8c34e2998d2b65a4e2d4f4933765ea00b259966a4",
-    "rrtmgp_planck_common.cuh": "4e1a8214ea8e2a3dbd88cc2cda260a21ff678d98acf4f22c971ba0b51b4eba36",
+    "rrtmgp_planck_common.cuh": "54e56d660392c533e1d89145b67bfb11f6891221a4ca8905eec1a644089a84f8",
     # A146 (a98f2482e): __fdiv_rn spellings; previously 07f5c144.
     # RE-PINNED 2026-10-03 (lane/286-fork-thompson): the WRF 3.9 fork's
     # helpers and constants appended (thompson_aa_wrf39_*), referenced only
@@ -1223,6 +1338,13 @@ PINNED_HEADERS = {
     # asinf/acosf/atanf) for the urban BEP column, generated and proven by
     # tools/glibc_trig_flt32_proof/.
     "glibc_trig_flt32.cuh": "bbdb54c85d361d208ea9b1a7cb49a33132026d17694ad0f42c8b0bf5460baaf0",
+    # The CCPP sa-TKE-EDMF unit's prepended headers (_EXTRA_HEADERS["satmedmf"]):
+    # GFS physical constants, the rounding vocabulary and the column transcribed
+    # from satmedmfvdifq.F by tools/satmedmf_ccpp_oracle/transcribe.py, graded
+    # with satmedmf.cu against the pinned upstream column at 0 ULP.
+    "gfs_physcons.cuh": "fcdecf5a266c9f84b364599e6d6025be48f2b95f664f0b915cd1688e9ac3c461",
+    "satmedmf_common.cuh": "e40ec024b95912770d90f929a3304c88834bd28c5d7075171c41ddca6fd9832f",
+    "satmedmf_column.cuh": "67cbf35ff3d5f0f5f5498b98c5f38a81addcccff9afc0c28b2b2dbefd0faffbf",
     # cu6's prepended headers (_EXTRA_HEADERS["tiedtke"]): the rounded
     # arithmetic and column arena, and the routines transcribed from
     # module_cu_tiedtke.F by tools/tiedtke_wrf461_oracle/transcribe.py,
@@ -1232,7 +1354,7 @@ PINNED_HEADERS = {
     # lane/282-terrain-drag: YSU's topo_wind arm (get_pblh, the hill-top 10 m
     # blend), prepended to ysu.cu by _EXTRA_HEADERS["ysu"]; graded with it by
     # tests/test_terrain_drag_wrf471_parity.py.
-    "ysu_topo.cuh": '031efb139b827dd94fa9407455c3392e85cb29f4af6b954ef18d931e735890b0',
+    "ysu_topo.cuh": '422c73f2649327609a4b3fbd083f3747f5a152c477fbeff38296c95210113459',
     # The WRF 4.8 YSU unit's own topo arm (bounded get_pblh searches).
     "ysu_480_topo.cuh": 'c1a4a8539d4d9d8301cc3edaf92115f480f76ae02b626d4248d2f33daf631b7e',
     # The UW PBL's prepended headers, in the loader's order
@@ -1240,13 +1362,20 @@ PINNED_HEADERS = {
     # binary64 libm (tools/uwpbl_wrf471_oracle/libm64 proves it), the
     # rounding-pinned vocabulary and the CAM routines, graded with uwpbl.cu.
     "glibc_flt64.cuh": "a14aff39d4acc74d9c782726d17d0bf7ef726c40235ddeb86d6a1a0bd7c4fcb8",
+    # The fork Thompson column unit's constants, generated from the fork's
+    # own thompson_init/radar_init words (tools/thompson_fork_oracle/
+    # make_constants_header.py; tests/test_thompson_fork_column.py holds it
+    # to the committed dump).
     "uwpbl_common.cuh": "93c768b4b0cf9ddb7dfe6f0259b8bd60c7ccb0ad768aca30c2535514fcb1cdc8",
     "uwpbl_wvsat.cuh": "b78b74eeebdb3db76d5518f1f44b3b034f489cc8ff5bc3e35ae937863d8ecfaa",
     "uwpbl_vdiff.cuh": "cb580058c0213365aebe99f75306ef43ab4b05ab53922775bd66bd5ba99535c7",
     "uwpbl_zisocl.cuh": "d2ff60bed748bb8211412e36fb7ab623cea6b220b7ab5999e5565505c5074275",
     "uwpbl_caleddy.cuh": "5581569d8b48d8d17a86a45fed7930e2505f75b7526f68055e43a84ce2a6de63",
     "uwpbl_eddy.cuh": "5377dc3a6d607441652542c2af6e00e2f69b52699178b395584813b74a5f02c4",
-    "uwpbl_driver.cuh": "824f07e71d4de98808cdb8d67a6613e24c101529148eb2dcaaa592340d86e61c",
+    # RE-PINNED 2026-10-07 (lane/verify-uw-pbl-refute): a calm level-1 wind
+    # (uMean == 0) now carries zero surface stress instead of WRF's NaN
+    # (tests/test_uwpbl_calm_wind.py); no column with wind moves.
+    "uwpbl_driver.cuh": "534ed491edf2320d6223acb85ff26bf5b1728d27e5dd1793f9506d20244fb9a1",
     # The fused RUC translation unit's own sources (gpuwm.core.ruc_tier,
     # RUC_FUSED_SOURCES), appended after ruc.cu rather than prepended.
     # PINNED at 2.8.1 by lane speed-ruc, which added them: the fused RUC call
@@ -1272,7 +1401,7 @@ PINNED_HEADERS = {
     # flux. Named source forms are explicit. The full RUC GPU deck and
     # test_generic_ruc_defaults_match_named_legacy_after_every_gpu_call
     # must verify the merged dispatch before this tip is handed over.
-    "ruc_fused_driver.cuh": '598a63895fa51dd97080b61b25d28e6a930efb0cb424f9fe6ab7acf9db0d7b85',
+    "ruc_fused_driver.cuh": 'c14efde1f4f0b5f43d6fe7b3907f394687d97c6e0b250885d819456f4fdf1d5c',
     # Selected Group A loader header from the delivered 58-sfclay-noftz-mynn-mm5-eta
     # source series; retain its exact original byte identity.
     'flt32_expf_fma.cuh': '755e2529eeead9a3a9099bfe67af703b5c378aad7d3face562a11b6f436e8424',
@@ -1290,6 +1419,21 @@ PINNED_HEADERS = {
     # Selected Group A loader header from the delivered mp28-gate-all-157
     # source series; retain its exact original byte identity.
     'thompson_aerosol_libm.cuh': 'c22ea2f8b096e402685df8acf31c775a6f134af26be0646d9380e93e2df10ac0',
+    # r290 exact-chain intake: source identity, numerical gates separate.
+    'atan_scalar_flt32.cuh': '452366ab8ec8512b57430851ab231d494a057d49d27943cc2db12c62c7d05648',
+    'glibc_flt32_extra.cuh': 'aaec88d638b359b6f0a06418bc907efb70863f11d6304342fce083a176880595',
+    'morrison_constants.cuh': '23c88a2e00f6002187c62550162760c4deebb5a8eabbbda6c2f29c605a91ca37',
+    'sfire_libm.cuh': '22f44144a81d60fbbd767cfcb33d260e4d1f08fdc759d962165bae70bb603ee3',
+    'thompson_classic_constants.cuh': '3d0855fa3de4ca6c6a7c4afe4fcb18a7cd016e43c04de75f03c14d02095cfeea',
+    # r290 exact-chain intake: source identity, numerical gates separate.
+    'thompson_fork_constants.cuh': 'd13693dc55fbb263289b30154bcd6fbdec86b8cb67bd3c393750ee3b968f19c9',
+    # r290 exact-chain intake: source identity, numerical gates separate.
+    'gf_wrf_normalization.cuh': '2f258d559bda0b6c97a7220f2eb4c27473817ad25daf69769e858d63a1731942',
+    'rrtmgp_libm.cuh': '71c883fed0cffeed7ae49cd422a8519de6d1815f1c9abf1ddedd9e5039204c96',
+    # r290 exact-chain intake: source identity, numerical gates separate.
+    'f64cr.cuh': '3adb76fc5f559a21a457572848772debd000f77ab6557428edfa2765f2a458bb',
+    # r290 exact-chain intake: source identity, numerical gates separate.
+    'nssl2_wrf_math.cuh': '15578ff62956b321b6145d1eff2bfff88a22576ff24dc4b9d4200f9ca1b7fcb0',
 }
 
 #: Headers a module composes ITSELF rather than through the loader's
@@ -1317,6 +1461,18 @@ COMPOSED_HEADERS = {
     "fast_sbm_driver.cuh": "492f0a9530bf899b74ae935dd028bffee8f32a7177067dc8b54334fa98cc083e",
     "fast_sbm_init.cuh": "5f3e2136b6afba94edd2fc36145880eb3dc6ebd902a16b3ddc938d715991fa30",
     "fast_sbm_nucl.cuh": "8cd18b15d7deb2087320e935ef767470dabd801f4e61faeeeaa3bea3c67a05ac",
+    # Retained base headers composed by their dedicated runtime loaders.
+    'f64cr.cuh': '3adb76fc5f559a21a457572848772debd000f77ab6557428edfa2765f2a458bb',
+    'nssl2_wrf_math.cuh': '15578ff62956b321b6145d1eff2bfff88a22576ff24dc4b9d4200f9ca1b7fcb0',
+    'rrtmgp_libm.cuh': '71c883fed0cffeed7ae49cd422a8519de6d1815f1c9abf1ddedd9e5039204c96',
+    # Retained intake source assets. These pins assert bytes, not active use.
+    'thompson_fork_constants.cuh': 'd13693dc55fbb263289b30154bcd6fbdec86b8cb67bd3c393750ee3b968f19c9',
+    'gf_wrf_normalization.cuh': '2f258d559bda0b6c97a7220f2eb4c27473817ad25daf69769e858d63a1731942',
+    'mynn_surface_libm.cuh': '05bff414d423ef312057ee6a3a2e6f71b9576e9fae53ec201e220b5273fac40f',
+    # r290 exact-chain intake: source identity, numerical gates separate.
+    'rrtmgp_planck_common_default.cuh': '4e1a8214ea8e2a3dbd88cc2cda260a21ff678d98acf4f22c971ba0b51b4eba36',
+    # r290 exact-chain intake: source identity, numerical gates separate.
+    'ysu_topo_default.cuh': '031efb139b827dd94fa9407455c3392e85cb29f4af6b954ef18d931e735890b0',
 }
 PINNED_HEADERS["sfire_libm.cuh"] = COMPOSED_HEADERS["sfire_libm.cuh"]
 _merge_extension_pins(PINNED_HEADERS, _EXTENSION_PINS["headers"])
@@ -1442,4 +1598,4 @@ def test_mosaic_ucm_composed_source_is_pinned():
     # match the release Fortran oracle. Other WRF 4.8 physics is outside it.
     from gpuwm.core.noah_mosaic import mosaic_ucm_source
     assert hashlib.sha256(mosaic_ucm_source().encode()).hexdigest() == (
-        '69c86baca246be6e4de2f9b7b1e20b33d1893752a4f7b640a80cffca3710f036')
+        '7ca1678c17f876987f4973744e6829c121cabaec2f56d5a47c7168e714b0b3c5')

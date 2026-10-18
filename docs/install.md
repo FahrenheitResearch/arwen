@@ -278,19 +278,19 @@ python -m pytest -q \
   tests/test_native_wrf_distribution.py
 ```
 
-**A pip install needs the tables, and sometimes the native bundle.**  A
+**Tables stage on first use; some installs need the native bundle.** A
 platform wheel (Windows x86-64, Linux x86-64) already contains all of
 the compiled Rust tools and needs no `gpuwm fetch-bridges`. A
 pure-Python wheel or an sdist install contains none, so until
 `gpuwm fetch-bridges` stages them, `gpuwm check`/`run` (ERA5 route) and
 the `rw-wps` GFS/HRRR front doors have nothing to decode GRIB with.
-Every pip install needs `gpuwm fetch-tables`, and `gpuwm doctor` says
-which of the two is still missing:
+The first Thompson forecast stages its missing tables automatically, and
+`gpuwm doctor` says which assets are still missing:
 
 ```bash
 pip install 'gpuwm[all-cu12]'   # or 'gpuwm[all-cu13]' on a CUDA-13-only box
 gpuwm fetch-bridges   # pure-Python wheel or sdist only
-gpuwm fetch-tables
+gpuwm fetch-tables   # optional: stage Thompson tables ahead of the first run
 gpuwm doctor
 ```
 
@@ -332,10 +332,14 @@ two remedies is true for the machine it runs on.
 
 The wheel and sdist also exclude the two externalized Thompson tables
 (freezeH2O.dat, 243 MiB, and qr_acr_qg_V4.dat, 71 MiB -- together they
-would put the artifacts over PyPI's per-file limit); run
-`gpuwm fetch-tables` once after `pip install gpuwm` to stage them,
-SHA-256-verified, into `~/.gpuwm/tables/thompson` -- outside the
-install, beside `~/.gpuwm/bridges`, because staging inside
+would put the artifacts over PyPI's per-file limit). The first
+`gpuwm go` run selecting Thompson downloads and checks the two tables
+(about 315 MiB) from the pinned release assets into
+`~/.gpuwm/tables/thompson`. `gpuwm fetch-tables` stages them ahead of
+time or offline with `--from DIR`. An explicit
+`GPUWM_THOMPSON_TABLE_ROOT` must already contain the tables; automatic
+staging does not fill a named root. The default staging location is
+outside the install, beside `~/.gpuwm/bridges`, because staging inside
 site-packages meant the next `pip install --upgrade` deleted the
 download without saying so. The staged directory holds the whole
 four-asset set (the two the wheel does carry are copied in beside the

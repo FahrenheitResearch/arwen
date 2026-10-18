@@ -60,7 +60,7 @@ SCIENCE_CORE_CEILING = "0.3"
 #: falls back to their sdist, that sdist does not build (its pyo3 caps at
 #: 3.13), and pip fails a WHOLE resolution when one requirement fails --
 #: `pip install 'gpuwm[gpu-cu13,render]'`, the line install.sh itself
-#: runs, installed NO gpuwm at all on weather-node-1's python3.14.4.
+#: runs, installed NO gpuwm at all on test host A's python3.14.4.
 #: That is the concrete breakage this floor prevents, and it is an
 #: install-time fact: a 0.2.38 already sitting on a 3.13 box renders
 #: every product it ever did, which is why SCIENCE_CORE_FLOOR does not
@@ -106,7 +106,7 @@ SCIENCE_CORE_REQUIREMENT = (
 #: is not this project's call, wrf-rust is a separate repository, and the
 #: number here follows what the index actually serves.
 #:
-#: The gap this names is the one that took weather-node-1's install down
+#: The gap this names is the one that took test host A's install down
 #: on python3.14.4: an interpreter over the ceiling gets no wheel, pip
 #: falls back to an sdist whose pyo3 caps below it, and pip fails the
 #: WHOLE resolution when one requirement fails.  Nothing about that

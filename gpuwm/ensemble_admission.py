@@ -50,10 +50,27 @@ TABLE_KEYS = ("members, keep_member_files, thresholds, recipe, trajectories and 
               "with optional max_ordinary_members_per_device concurrency cap")
 
 
+#: rand_perturb is the one selector whose loss changes no forecast field:
+#: WRF v4.6.1 fills RAND_PERT on domain 1 every step
+#: (dyn_em/module_first_rk_step_part2.F:240-260) and writes it to history and
+#: restart (Registry registry.stoch:15, "rhdf"); its only reader is
+#: perturb_chem_bdy (dyn_em/solve_em.F:2583), refused on its own.  Until
+#: 2.9.1 this refusal said the "initial random-field increments" would stay
+#: unperturbed, a breakage WRF does not have.
+RAND_PERTURB_REFUSAL = (
+    "rand_perturb has no runtime consumer here for the RAND_PERT pattern: WRF "
+    "fills it on domain 1 every step and writes it to history and restart, "
+    "and no stock WRF physics reads it (its one reader, perturb_chem_bdy, is "
+    "refused on its own), so every forecast field would be the one requested "
+    "and only the RAND_PERT history and restart field would be missing. "
+    "Next: turn rand_perturb off; no forecast field changes.")
+
+
 def missing_random_consumer(selector):
     """Name the lost operation rather than the amplitude's scientific status."""
+    if selector == "rand_perturb":
+        return RAND_PERTURB_REFUSAL
     target = ("lateral boundary fields" if "bdy" in selector else
-              "initial random-field increments" if selector == "rand_perturb" else
               "selected physics parameter increments")
     return (f"{selector} has no runtime consumer for {target}: the requested "
             "fields would remain unperturbed while the receipt claimed this selector. "

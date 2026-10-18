@@ -163,6 +163,14 @@ def install_numpy_cupy() -> None:
     shim.ndarray = np.ndarray
     shim.asnumpy = lambda value, *args, **kwargs: np.array(value).view(
         np.ndarray)
+    class CensusDevice:
+        id = 0
+        compute_capability = "120"
+        def __init__(self, *args): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+    shim.cuda = types.SimpleNamespace(
+        Device=CensusDevice, runtime=types.SimpleNamespace(getDevice=lambda: 0))
     shim.RawModule = _RawModule
     shim.RawKernel = lambda *args, **kwargs: _Launch()
     sys.modules["cupy"] = shim

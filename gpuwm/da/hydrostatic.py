@@ -180,11 +180,20 @@ def capture_column(state) -> dict:
 
 
 def _column_dphp(state, before: Mapping[str, object],
-                 after: Mapping[str, object], *, hypsometric_opt: int):
+                 after: Mapping[str, object], *, hypsometric_opt: int,
+                 mup_after=None):
     """The core: ``php`` change taking the column from ``before`` to
     ``after`` (both: ``thp`` and the loading masses, float64) at the dry
     mass of ``state``, ``before["p"]`` being the background's diagnosed
-    pressure.  Returns ``(dphp, dp_hyd)``."""
+    pressure.  Returns ``(dphp, dp_hyd)``.
+
+    ``mup_after`` (float64, shaped like ``state.mup``) is the ANALYSED dry
+    column mass when the increment moves it (named gap G9 of the WRF
+    analysis door: a surface-pressure increment).  The recurrence then
+    integrates each column at its own mass, ``P(qtot_a, mu_a) - P(qtot_b,
+    mu_b)``, and the layer thickness is ``op(mu_a) alt_a - op(mu_b)
+    alt_b``.  Without it the arithmetic is the fixed-mass form above,
+    byte for byte, which is what every existing caller gets."""
     xp = _xp(state.p)
     nz = int(state.p.shape[0])
     masses = loading_masses(state)
@@ -204,7 +213,12 @@ def _column_dphp(state, before: Mapping[str, object],
     for name in masses:
         qtot_b += before[name]
         qtot_a += after[name]
-    dp_hyd = (hydrostatic_pressure_perturbation(xp, qtot_a, mup, mub, c1f,
+    mup_a = mup if mup_after is None else _f64(xp, mup_after)
+    if tuple(mup_a.shape) != tuple(mup.shape):
+        raise HydrostaticError(
+            f"the analysed dry mass is {tuple(mup_a.shape)}, the column's "
+            f"{tuple(mup.shape)}")
+    dp_hyd = (hydrostatic_pressure_perturbation(xp, qtot_a, mup_a, mub, c1f,
                                                 c2f, rdnw, rdn)
               - hydrostatic_pressure_perturbation(xp, qtot_b, mup, mub, c1f,
                                                   c2f, rdnw, rdn))
@@ -215,9 +229,16 @@ def _column_dphp(state, before: Mapping[str, object],
     if not bool(xp.isfinite(p_a).all()) or bool((p_a <= 0.0).any()):
         raise HydrostaticError(
             "the analysed hydrostatic pressure is not finite and positive")
-    dalt = (inverse_density(xp, thb + after["thp"], after["qv"], p_a)
-            - inverse_density(xp, thb + before["thp"], before["qv"], p_b))
-    ddphi = _layer_operator(xp, state, mu, int(hypsometric_opt)) * dalt
+    alt_a = inverse_density(xp, thb + after["thp"], after["qv"], p_a)
+    alt_b = inverse_density(xp, thb + before["thp"], before["qv"], p_b)
+    if mup_after is None:
+        ddphi = _layer_operator(xp, state, mu, int(hypsometric_opt)) * (
+            alt_a - alt_b)
+    else:
+        ddphi = (_layer_operator(xp, state, mub + mup_a, int(hypsometric_opt))
+                 * alt_a
+                 - _layer_operator(xp, state, mu, int(hypsometric_opt))
+                 * alt_b)
     dphp = xp.zeros((nz + 1,) + tuple(state.p.shape[1:]), dtype=xp.float64)
     xp.cumsum(ddphi, axis=0, out=dphp[1:])
     if not bool(xp.isfinite(dphp).all()):
@@ -279,6 +300,44 @@ def geopotential_increment(state, increments: Mapping[str, object], *,
                                 hypsometric_opt=hypsometric_opt)
     return dphp, _receipt(names, state, dphp, dp_hyd, hypsometric_opt,
                           "increment-forced")
+
+
+def mass_aware_geopotential_change(state, after: Mapping[str, object], *,
+                                   hypsometric_opt: int):
+    """The ``php`` change taking ``state``'s columns to ``after``, at the
+    ANALYSED dry mass (the WRF analysis door's G9).
+
+    ``state`` is the background (anything carrying the attributes
+    :data:`COLUMN_SETUP_ATTRS` names plus the layer operator's, host or
+    device arrays: a live state, or a column read off a WRF-form file by
+    :func:`gpuwm.io.analysis_bundle.column_from_file`).  ``after`` holds the
+    analysed ``thp`` and loading masses and, when the analysis moved the
+    surface pressure, the analysed ``mup``; a name it lacks is the
+    background's.  Returns ``(dphp, receipt)``; ``dphp`` is exactly zero in
+    every column the analysis did not touch.
+    """
+    xp = _xp(state.p)
+    before = capture_column(state)
+    analysed = {}
+    for name, value in before.items():
+        if name == "p":
+            continue
+        analysed[name] = _f64(xp, after[name]) if name in after else value
+    mup_after = after.get("mup")
+    dphp, dp_hyd = _column_dphp(state, before, analysed,
+                                hypsometric_opt=hypsometric_opt,
+                                mup_after=mup_after)
+    receipt = _receipt(sorted(after), state, dphp, dp_hyd, hypsometric_opt,
+                       "analysis at its own dry mass")
+    receipt["rule"] = (
+        "php += integral(op(mu_a) alt(theta_a, qv_a, p + dp_hyd) - op(mu_b) "
+        "alt(theta_b, qv_b, p)), dp_hyd = P(qtot_a, mu_a) - P(qtot_b, mu_b) "
+        "from the moist w-balance recurrence")
+    receipt["mass_moved"] = mup_after is not None
+    if mup_after is not None:
+        receipt["max_abs_dmu_pa"] = float(xp.abs(
+            _f64(xp, mup_after) - _f64(xp, state.mup)).max())
+    return dphp, receipt
 
 
 #: What a state must carry for a column to be integrated.

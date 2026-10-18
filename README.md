@@ -24,7 +24,7 @@ fire perimeter, rate of spread and ground heat flux.
 | --- | --- |
 | [Windows desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.0/ArWen-Desktop-1.0.10-Windows-x64.zip) | x86-64 Windows; compatible NVIDIA GPU and driver; internet for first setup |
 | [Linux desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.0/ArWen-Desktop-1.0.10-Linux-x64-pip.tar.gz) | x86-64 Linux, glibc 2.39 or newer, such as Ubuntu 24.04; Python 3.11 or newer; X11 or Wayland with working OpenGL |
-| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.0/ArWen-2.9.0-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
+| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.2/ArWen-2.9.2-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
 
 The desktop archives contain the applications, native map library and map assets.
 Windows includes a graphical setup launcher that downloads a private Python and
@@ -33,7 +33,7 @@ compiler is needed for these binary packages.
 
 The Python package is named **`gpuwm`**. Its Windows and Linux platform wheels
 include the engine, native processing tools, and TUI. The desktop GUI is the
-separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.9.0)
+separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.9.2)
 for the exact artifacts and qualification records.
 
 ## Install the desktop for forecasts on your PC
@@ -58,10 +58,10 @@ free disk space, plus space for weather inputs and forecast output.
 ### Linux
 
 ```bash
-python3 -m venv ~/.local/share/arwen/venvs/2.9.0
-. ~/.local/share/arwen/venvs/2.9.0/bin/activate
-python -m pip install 'gpuwm[all-cu12]==2.9.0'
-gpuwm fetch-tables
+python3 -m venv ~/.local/share/arwen/venvs/2.9.2
+. ~/.local/share/arwen/venvs/2.9.2/bin/activate
+python -m pip install 'gpuwm[all-cu12]==2.9.2'
+gpuwm fetch-tables   # optional: stage Thompson tables ahead of the first run
 gpuwm fetch-geog
 gpuwm doctor
 ```
@@ -81,7 +81,7 @@ its start.
 Extract the complete Linux tarball. From its application folder:
 
 ```bash
-./Start\ ArWen.sh --python ~/.local/share/arwen/venvs/2.9.0/bin/python
+./Start\ ArWen.sh --python ~/.local/share/arwen/venvs/2.9.2/bin/python
 ```
 
 If your distribution does not include Python's venv module, install its venv
@@ -94,12 +94,12 @@ thread and run about twice as fast on free-threaded Python 3.14
 with `--prefer-binary`:
 
 ```bash
-uv venv --seed --python 3.14t ~/.local/share/arwen/venvs/2.9.0
-~/.local/share/arwen/venvs/2.9.0/bin/python -m pip install --prefer-binary 'gpuwm[all-cu12]==2.9.0'
+uv venv --seed --python 3.14t ~/.local/share/arwen/venvs/2.9.2
+~/.local/share/arwen/venvs/2.9.2/bin/python -m pip install --prefer-binary 'gpuwm[all-cu12]==2.9.2'
 ```
 
-Then activate it and run the `fetch-tables`, `fetch-geog` and `doctor`
-commands above.
+Then activate it and run the commands above. `fetch-tables` is optional:
+the first Thompson forecast stages its missing tables automatically.
 `--prefer-binary` matters on this interpreter: the newest `cftime` (1.6.6)
 publishes no free-threaded wheel, and without the flag pip builds it from
 source, which needs a C compiler; with it pip installs 1.6.5's wheel. The
@@ -126,6 +126,22 @@ A driver reporting CUDA 13 support can also run CUDA 12 applications; that
 display does not require switching a working CUDA 12 installation. See
 [NVIDIA's compatibility guidance](https://docs.nvidia.com/datacenter/tesla/drivers/cuda-toolkit-driver-and-architecture-matrix.html).
 
+| | `all-cu12` | `all-cu13` |
+| --- | --- | --- |
+| Minimum NVIDIA driver (NVIDIA's, per CUDA major) | R525: 525.60.13 Linux, 527.41 Windows | R580 |
+| GPU architectures the forecast compiles for | sm_50 to sm_121 | sm_75 to sm_121 (not V100 or P100) |
+| GRIB2 products on the GPU | sm_60 and newer | sm_60 and newer |
+
+The driver minimums are NVIDIA's rules for each CUDA major, not runs of ours.
+A card also needs a driver that supports its architecture (Blackwell, for
+example, needs R570 or newer).
+
+The two extras compile the forecast with different NVRTC builds, so the same
+case on the same card gives different output words (on a 12 km case after
+1 h, 2 m temperature differed by up to 0.34 K). Compare runs within one
+extra. Details, and what was measured on which driver, are in
+docs/public/HARDWARE.md under "Drivers, CUDA majors and GPU architectures".
+
 `gpuwm doctor` reports each remedy as a command or a `#` comment explaining
 the manual step.
 
@@ -133,12 +149,15 @@ The GPU extra installs CuPy and the required user-space NVIDIA CUDA components
 through their dependency packages. It does not install Python or the NVIDIA
 device driver. Install one CuPy/CUDA major per environment. See the
 [CuPy installation guide](https://docs.cupy.dev/en/stable/install.html) and
-[ArWen hardware guidance](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/HARDWARE.md).
+[ArWen hardware guidance](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/docs/public/HARDWARE.md).
 
 Most scientific lookup data and the renderer's map assets (coastlines,
 borders, state lines and counties) arrive with the automatically installed
-`gpuwm-data` package. `gpuwm fetch-tables` obtains and hash-checks two additional
-Thompson tables, about 314 MiB combined. Geography and forecast inputs are
+`gpuwm-data` package. The first Thompson forecast downloads and checks two
+additional tables, about 315 MiB combined, from the pinned release assets.
+`gpuwm fetch-tables` stages them ahead of time or offline with `--from DIR`.
+An explicit `GPUWM_THOMPSON_TABLE_ROOT` must already contain the tables;
+automatic staging does not fill a named root. Geography and forecast inputs are
 separate: configure an existing geography installation or use `gpuwm fetch-geog`.
 ERA5 through Copernicus CDS requires the user's CDS configuration and dataset
 access. Deterministic ERA5 reanalysis also has a public, keyless ARCO route:
@@ -151,7 +170,7 @@ terminal, native weather processing, and remote-control workflows can run on a
 computer without a local CUDA installation.
 
 Only an intentionally viewer-only or remote-control installation should use
-`gpuwm[render]==2.9.0` without a GPU extra. It cannot execute local forecasts.
+`gpuwm[render]==2.9.2` without a GPU extra. It cannot execute local forecasts.
 
 ## Work with weather
 
@@ -167,7 +186,7 @@ Only an intentionally viewer-only or remote-control installation should use
 - **New in 2.9.0:** an unattended forecast suite (`gpuwm suite`), a complete
   HRRR-style recipe for any region (`gpuwm domain --recipe hrrr_v4_gsd41
   --region ID --spacing-km N`), ensembles that mix physics, and the engine for
-  the global model gpuwm-hex 0.4.0. See [What's new in 2.9.0](docs/public/WHATS-NEW-2.9.0.md)
+  the global model gpuwm-hex. See [What's new in 2.9.0](docs/public/WHATS-NEW-2.9.0.md)
   and [gpuwm with gpuwm-hex](docs/public/WITH-GPUWM-HEX.md).
 
 Forecast and cyclone setup use the shared preparation source catalog, with
@@ -201,10 +220,10 @@ gpuwm go forecast.toml
 ```
 
 The first command reviews the route; the second executes it. See the
-[CLI manual](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/CLI-USER-MANUAL.md)
-and [TUI manual](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/TUI-USER-MANUAL.md)
+[CLI manual](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/docs/public/CLI-USER-MANUAL.md)
+and [TUI manual](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/docs/public/TUI-USER-MANUAL.md)
 for the complete workflows, and the
-[stage contract](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/PIPELINE-STAGES.md)
+[stage contract](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/docs/public/PIPELINE-STAGES.md)
 for running preprocessing, the simulation and rendering on your own terms.
 
 ## Export saved forecasts
@@ -221,8 +240,8 @@ writes them as each frame lands. See [GRIB2 export](docs/grib2-export.md).
 
 ## Integrate ArWen into another application
 
-The [integration guide](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/integration-kit/integration-guide.md)
-and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.0/ArWen-2.9.0-Integration-Kit.zip)
+The [integration guide](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/docs/integration-kit/integration-guide.md)
+and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.9.2/ArWen-2.9.2-Integration-Kit.zip)
 describe the CLI, run-plan documents, catalogs, and companion bridge boundaries.
 The kit contains an example subprocess client and tests. It is a documented
 integration surface, not a separate simulation engine or a replacement for
@@ -245,7 +264,7 @@ indistinguishable for that configuration. No universal WRF equivalence or
 general forecast-skill claim follows. Read the
 [verification and validation record](docs/public/VERIFICATION.md),
 [physics documentation](docs/public/PHYSICS.md),
-and [2.8 changes](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/CHANGELOG.md).
+and [the changelog](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/CHANGELOG.md).
 
 Wildfire smoke, dust, sea salt, carbon and CAMS air-quality species are an
 opt-in product, off unless a configuration names `chem_sets`: see
@@ -288,7 +307,7 @@ the forecast.
   these are convection-permitting to sub-kilometer case studies,
   not tornado-resolving simulations.
   Sub-kilometer nests also sit in the PBL gray zone described in
-  [FIRST-LIGHT.md](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/FIRST-LIGHT.md).
+  [FIRST-LIGHT.md](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/docs/public/FIRST-LIGHT.md).
 - **Checkpoints:** 2.7 writes format 6. Format-5 checkpoints from older releases
   and previews are not compatible. Finish those runs with the version that
   created them, or start again from the original configuration and inputs.
@@ -315,10 +334,11 @@ the forecast.
 - **Playback:** the first pass may wait while remote frames enter the local
   cache. Startup compilation and input preparation also affect reported overall
   simulation speed.
-- **Known interface issues:** some preview sources remain unavailable, exported
-  dateline-crossing outlines can show a seam, and a background compact-store
-  worker can report an error during the forecast-completion transition. The
-  release qualification documents the retained limits.
+- **Domains across 180 degrees longitude:** the exported domain outline
+  (`gpuwm companion-query`) is one feature in two parts cut at 180 degrees, as
+  GeoJSON (RFC 7946) specifies, so each part covers only the domain's own area.
+  A map that strokes polygon edges draws the shared cut as a line along 180
+  degrees.
 
 ArWen is research and educational software. Use official meteorological services
 for forecasts and safety warnings. The project is not affiliated with or endorsed
@@ -332,7 +352,7 @@ report with recognized sensitive patterns redacted. **Review it before sharing:*
 raw copied logs can contain local paths, usernames, hosts, and configuration
 details, and no redaction tool guarantees anonymity. Never post credential files
 or private keys. See
-[reporting a problem](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/REPORTING-A-PROBLEM.md).
+[reporting a problem](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/docs/public/REPORTING-A-PROBLEM.md).
 
 ## Development and licensing
 
@@ -350,8 +370,8 @@ as fast on it; `--python` (`-Python` on Windows) picks another interpreter. The 
 lost executable permission bits; use it if `./install.sh` reports
 `Permission denied`.
 
-The engine is licensed under the [Apache License 2.0](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/LICENSE).
+The engine is licensed under the [Apache License 2.0](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/LICENSE).
 The desktop application and its dependencies carry their own licenses and
 notices in the desktop archives. Third-party code, tables, and datasets retain
-their respective terms; see [NOTICE](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/NOTICE)
-and [scientific provenance](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/PROVENANCE.md).
+their respective terms; see [NOTICE](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/NOTICE)
+and [scientific provenance](https://github.com/FahrenheitResearch/arwen/blob/v2.9.2/PROVENANCE.md).

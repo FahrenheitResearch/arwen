@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from gpuwm.config import ConfigurationRefused
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -77,7 +79,7 @@ def discover_run_directory(directory: str | Path, *, restart: bool = False
     """
     directory = Path(directory)
     if not directory.is_dir():
-        raise ValueError(
+        raise ConfigurationRefused(
             f"--wrfinput {directory} is not a directory; point it at the "
             "WRF run directory holding wrfinput_d0N, wrfbdy_d01 and "
             "namelist.input")
@@ -102,7 +104,7 @@ def discover_run_directory(directory: str | Path, *, restart: bool = False
             "wrfbdy_d01 (real.exe's lateral boundary values and tendencies; "
             "it is what caps the run length)")
     if absent:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{directory} is not a complete real.exe handoff.  Missing:\n"
             + "\n".join(f"  - {item}" for item in absent))
     if 1 not in inputs and not restart:
@@ -204,7 +206,7 @@ def refuse_latlon_files(metadata: Mapping[int, object]) -> None:
         item = metadata[grid_id]
         value = item.global_attributes.get("MAP_PROJ")
         if value is not None and is_latlon_map_proj(value):
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"{item.path} declares MAP_PROJ={int(float(value))}: "
                 f"{latlon_refusal()}")
 
@@ -228,7 +230,7 @@ def synthesize_wps_namelist(metadata: Mapping[int, WrfinputMetadata]) -> str:
             name for name in _REQUIRED_LAYOUT_ATTRIBUTES
             if name not in item.global_attributes)
         if missing:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"{item.path} is missing the global attribute(s) {missing} "
                 "that carry the domain layout; real.exe stamps every one "
                 "of them, so this file was not written by real.exe or was "
@@ -236,7 +238,7 @@ def synthesize_wps_namelist(metadata: Mapping[int, WrfinputMetadata]) -> str:
     refuse_latlon_files(metadata)
     map_proj = int(float(root.global_attributes["MAP_PROJ"]))
     if map_proj not in _MAP_PROJ_NAMES:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{root.path} declares MAP_PROJ={map_proj}, which is not one "
             f"of WPS's {sorted(_MAP_PROJ_NAMES)} "
             f"({', '.join(_MAP_PROJ_NAMES[k] for k in sorted(_MAP_PROJ_NAMES))})")
@@ -340,7 +342,7 @@ def check_projection_agreement(experiment, metadata: Mapping[
         with netcdf_bridge.open_dataset(item.path) as dataset:
             missing = [name for name in ("XLAT", "XLONG") if name not in dataset.variables]
             if missing:
-                raise ValueError(f"{item.path}: missing coordinate evidence {missing}")
+                raise ConfigurationRefused(f"{item.path}: missing coordinate evidence {missing}")
             xlat = np.asarray(dataset.variables["XLAT"][...],
                               dtype=np.float64)
             xlon = np.asarray(dataset.variables["XLONG"][...],
@@ -364,7 +366,7 @@ def check_projection_agreement(experiment, metadata: Mapping[
                 f"  d{domain.grid_id:02d}: max |dlat| = {dlat:.6g} deg, "
                 f"max |dlon| = {dlon:.6g} deg")
     if problems:
-        raise ValueError(
+        raise ConfigurationRefused(
             "the projection reconstituted from the wrfinput global "
             "attributes does not reproduce the grid real.exe wrote into "
             "the same file:\n" + "\n".join(problems)
@@ -464,7 +466,7 @@ def require_preserved_wrf_selectors(report):
                 and item.reason):
             continue
         if item.wrf_value != item.gpuwm_value:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"the requested {item.wrf_name} ({item.key}={item.wrf_value}) has no native implementation; "
                 f"translation would replace it with {item.gpuwm_name} ({item.gpuwm_key}={item.gpuwm_value}). "
                 "Select a supported physics package explicitly in the producing namelist")
@@ -548,7 +550,7 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
                 for grid_id, path in sorted(state_files.items())}
     for grid_id, item in metadata.items():
         if item.grid_id != grid_id:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"{item.path} declares GRID_ID={item.grid_id} but is named "
                 f"for domain {grid_id}; the file and its name disagree "
                 "about which domain it initializes")
@@ -559,7 +561,7 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
     for item in metadata.values():
         identity = {key: item.global_attributes.get(key) for key in ('MMINLU', 'NUM_LAND_CAT')}
         if landuse_identity is not None and identity != landuse_identity:
-            raise ValueError('WRF input files disagree on the producing run land-use identity')
+            raise ConfigurationRefused('WRF input files disagree on the producing run land-use identity')
         landuse_identity = identity
     wps_text = synthesize_wps_namelist(metadata)
     line, title = producing_wrf_line_and_title(metadata)
@@ -574,6 +576,9 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
         wrfinput_qv_domains=tuple(
             grid_id for grid_id, item in metadata.items()
             if getattr(item, "has_qv", False)),
+        wrfinput_radar_tendency_domains=tuple(
+            grid_id for grid_id, item in metadata.items()
+            if getattr(item, "has_radar_tendency", False)),
         wrf_boundary_use_theta_m=int(metadata[min(metadata)].global_attributes['USE_THETA_M']),
         **({} if line is None else {
             "wrf_version": line,
@@ -599,7 +604,7 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
         tomllib.loads(toml_text), source=f"{directory}:wrfinput")
     kind = "wrfrst" if warm else "wrfinput"
     if len(experiment.domains) != len(metadata):
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{namelist} declares {len(experiment.domains)} domain(s) but "
             f"{directory} carries {kind} files for {sorted(metadata)}; "
             f"WRF writes one {kind} per domain, so one of the two "
@@ -607,7 +612,7 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
     for domain in experiment.domains:
         item = metadata.get(domain.grid_id)
         if item is None:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"{namelist} declares domain {domain.grid_id} but "
                 f"{directory} has no {kind}_d{domain.grid_id:02d}")
         check_grid_agreement(item, domain.run, source=str(namelist))
@@ -771,7 +776,7 @@ def _check_start_time(experiment, metadata, coverage, *, source: str) -> None:
             f"  wrfbdy_d01's first boundary record is {coverage.start}, "
             f"{source} starts at {experiment.start_time}")
     if problems:
-        raise ValueError(
+        raise ConfigurationRefused(
             "the initial instant does not agree across the handoff:\n"
             + "\n".join(problems)
             + "\nreal.exe stamped these files for one instant; running "

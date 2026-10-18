@@ -1349,6 +1349,8 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     let admitted_times = if stream.times_are_independent() { source_keys.len() } else { 1 };
     let lanes = crate::threads::lanes(
         stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), admitted_times)?;
+    let overlap_write = lanes == 1 && source_keys.len() > 1 && crate::threads::overlap_write(
+        stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes())?;
     let document = if lanes > 1 {
         let first = std::sync::Mutex::new(stream.take_first());
         let stream = &stream;
@@ -1371,8 +1373,9 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         )?
     } else {
         let mut position = 0usize;
-        crate::frames::write_frameset_with_decode_window(
-            &output, &union, &series, &digests, invocation.atmospheric_window, decode_window, |key| {
+        crate::frames::write_frameset_one_lane(
+            &output, &union, &series, &digests, invocation.atmospheric_window, decode_window,
+            overlap_write, |key| {
             let source_key = source_keys[position].clone();
             position += 1;
             same_time(key, &source_key)?;

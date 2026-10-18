@@ -1,0 +1,16 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# O2s: libm call sites in the module object
+     11 expf
+     45 powf
+      4 tanhf
+# O0: libm call sites in the module object
+      5 expf
+     38 powf
+      1 tanhf
+# O2vec: libm call sites in the module object
+      7 _ZGVbN4vv_powf
+     11 expf
+     41 powf
+      4 tanhf
+# powf(x,2.0f) != x*x on 769747 positive float32 x with a normal finite square, and 4656 more in the subnormal/overflow range

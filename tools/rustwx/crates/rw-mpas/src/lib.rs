@@ -54,6 +54,7 @@ pub mod mesh;
 pub mod mslp;
 pub mod points;
 pub mod remap;
+pub mod soundings;
 pub mod staticfile;
 pub mod static_builder;
 pub mod static_geog;

@@ -102,9 +102,7 @@ class ComposedRadiation:
 
     def __call__(self, *, atmosphere, fields, state, cfg):
         import cupy as cp
-        from datetime import timedelta
-        from gpuwm.core.physics import (RadiationResult,
-                                        _physics_period_seconds)
+        from gpuwm.core.physics import RadiationResult
         arguments = dict(atmosphere=atmosphere, fields=fields, state=state, cfg=cfg)
         lw = (self.longwave_adapter(**arguments)
               if self.longwave_adapter is not None else None)
@@ -114,20 +112,36 @@ class ComposedRadiation:
         if lw is None or sw is None:
             zero = cp.zeros_like(atmosphere["pressure"])
         if sw is None:
-            from gpuwm.core.dudhia import wrf_solar_geometry
-            valid_time = self.start_time + timedelta(seconds=float(state.elapsed_seconds))
+            # No shortwave spectrum: the driver still writes the radiation
+            # call's COSZEN (radconst + calc_coszen at xtime + radt*0.5):
+            # the solar generation's geometry, or under GPUWM_WRF_EXACT=1
+            # with wrf_461 WRF 4.6.1's word for word (the namelist radt raw).
+            from gpuwm.core.wrf_radiation_clock import wrf_radiation_coszen
             minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
-            interval = _physics_period_seconds(minutes, cfg)
-            from gpuwm.core.solar import solar_period_seconds
-            interval = solar_period_seconds(cfg, interval)
-            coszen, _ = wrf_solar_geometry(valid_time, self.latitude_deg,
-                self.longitude_deg, hour_offset_seconds=0.5 * interval, generation=getattr(cfg, "solar_generation", "wrf_480"),
-                start_time=self.start_time, elapsed_seconds=state.elapsed_seconds)
+            generation = getattr(cfg, "solar_generation", "wrf_480")
+            from gpuwm.wrf_exact import ENABLED as _strict
+            if _strict and generation == "wrf_461":
+                coszen = wrf_radiation_coszen(
+                    self.start_time, float(state.elapsed_seconds), minutes,
+                    self.latitude_deg, self.longitude_deg)
+            else:
+                from datetime import timedelta
+                from gpuwm.core.dudhia import wrf_solar_geometry
+                from gpuwm.core.physics import _physics_period_seconds
+                valid_time = self.start_time + timedelta(seconds=float(state.elapsed_seconds))
+                interval = _physics_period_seconds(minutes, cfg)
+                from gpuwm.core.solar import solar_period_seconds
+                interval = solar_period_seconds(cfg, interval)
+                coszen, _ = wrf_solar_geometry(valid_time, self.latitude_deg,
+                    self.longitude_deg, hour_offset_seconds=0.5 * interval, generation=generation,
+                    start_time=self.start_time, elapsed_seconds=state.elapsed_seconds)
             swdown = cp.zeros_like(fields["glw"])
             gsw = swdown
         else:
             swdown, gsw, coszen = sw.swdown, sw.gsw, sw.coszen
         return RadiationResult(
+            boundary_fluxes={name:value for item in (lw,sw) if item is not None
+                             for name,value in (getattr(item,"boundary_fluxes",None) or {}).items()},
             rthratenlw=lw.rthratenlw if lw is not None else zero,
             rthratensw=sw.rthratensw if sw is not None else zero,
             swdown=swdown, glw=lw.glw if lw is not None else fields["glw"],

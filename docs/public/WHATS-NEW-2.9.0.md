@@ -84,7 +84,7 @@ option off, output is byte-identical. `rand_perturb`, `multi_perturb` and
 - **Not yet:** spread from these options is not calibrated against
   observations. No map set was rendered for this release.
 
-## The engine for gpuwm-hex 0.4.0
+## The engine for gpuwm-hex
 
 gpuwm 2.9.0 carries what the global model needs: the generic MPAS column
 physics entry, New Tiedtke at each cell's own spacing, the ICON global source,
@@ -180,9 +180,9 @@ ratios carried on dry mass. Thompson (`mp_physics = 8`) also books the cloud
 water that settles out of the lowest level in a new total, `CLOUDNC`, instead
 of losing it.
 
-- **Command:** nothing; it is the default. `physics.mode = "exact"` (or the
-  per-scheme keys in `CONFIGURATION.md`) computes what the engine computed
-  before the corrections. Strict WRF mode (`GPUWM_WRF_EXACT=1`) forces exact,
+- **Command:** nothing; it is the default. Setting the per-scheme keys in
+  `[shared]` to `false` (`CONFIGURATION.md`, "Correct mode") computes what
+  the engine computed before the corrections. Strict WRF mode (`GPUWM_WRF_EXACT=1`) forces exact,
   and every run receipt names the mode and the corrections that reached each
   domain.
 - **Proven:** on that 6 h case, exact mode is bit-identical to the engine

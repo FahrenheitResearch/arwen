@@ -5,6 +5,8 @@
 //!
 //!   groups_frame HISTORY OUTDIR [--no-gpu] [--gust similarity|tke]
 //!
+//! `RW_POST_TEST_KERNEL_IMAGE=ptx` runs the GPU side from the PTX.
+//!
 //! Layout (little-endian f32, x fastest, south row first):
 //!   OUTDIR/summary.json
 //!   OUTDIR/b/new/{cpu,gpu}/{plev,pwat,mslp,maps_mslp,membrane_slp,t700}.f32
@@ -104,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rayon_threads": rayon::current_num_threads(),
     });
 
-    let gpu = if use_gpu { Some(rw_post::gpu::GpuPost::open(0)?) } else { None };
+    let gpu = if use_gpu { Some(rw_post::gpu::GpuPost::open_with(0, rw_post::gpu::test_image())?) } else { None };
     if let Some(g) = &gpu {
         summary["gpu_device"] = json!(g.device.describe());
         let mut f2 = history::Frame::read(&hist, 0)?;

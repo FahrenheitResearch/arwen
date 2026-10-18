@@ -30,10 +30,9 @@ def read_columns(path):
 
 
 def max_ulp(a,b):
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
     a=np.asarray(a,np.float32);b=np.asarray(b,np.float32)
-    ua=a.view(np.uint32).astype(np.int64);ub=b.view(np.uint32).astype(np.int64)
-    ua=np.where(ua&0x80000000,0x80000000-(ua&0x7fffffff),ua+0x80000000)
-    ub=np.where(ub&0x80000000,0x80000000-(ub&0x7fffffff),ub+0x80000000)
+    ua=monotone_fp32_key(a);ub=monotone_fp32_key(b)
     nan=np.isnan(a)&np.isnan(b)
     return int(np.max(np.where(nan,0,np.abs(ua-ub))))
 

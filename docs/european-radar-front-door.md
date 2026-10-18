@@ -29,6 +29,36 @@ path is `gpuwm.da.obs_radar` and `assimilate_radar_grid`, which are the same
 functions a NEXRAD volume goes through — there is no European branch below the
 pack, and that is the whole point of the design.
 
+## Finding volumes: live and archive listings
+
+`gpuwm obs radar-feeds` (binary `rw_radar_feeds`) turns a national feed into
+dated URL rows. The catalog adapters are BowEcho's: DWD, DMI, FMI, SMHI,
+GeoSphere, SHMU, CHMI, ANM, ARPA Piemonte and Lombardia, KAIA, and EUMETNET
+ORD for every other OPERA country (the Netherlands' `nlhrw` and `nldhl` among
+them), plus NCI (Australia) and JMA. On top of them it adds the dated archive
+lookup two upstreams keep and the live adapters did not use: FMI's bucket back
+to 2007 and DMI's STAC, which holds about five to six months.
+
+```sh
+gpuwm obs radar-feeds providers
+gpuwm obs radar-feeds sites --provider dwd
+gpuwm obs radar-feeds latest --provider ord --site nlhrw
+gpuwm obs radar-feeds window --provider dwd --site ess \
+      --start 2026-10-16T07:30Z --end 2026-10-16T08:15Z
+gpuwm obs radar-feeds window --provider fmi --site fivan \
+      --start 2010-06-01T00:00Z --end 2010-06-01T00:20Z
+```
+
+`window` answers from the archive when the feed has one and from its rolling
+recent window otherwise, and says which in `route`. Each frame carries a
+`stamp` read from the feed's own file names (every national spelling of a
+volume time is an 8-digit date and an HHMM); a split frame (DWD's per-sweep
+files, `merge: true`) is stamped by its earliest sweep, the time the volume
+began. A frame whose names carry no time is refused by name rather than
+placed in a window by guess. A DWD frame's parts are its per-sweep files;
+`pack --dir` assembles them (DWD names them `...-hd5`, which the directory
+survey reads).
+
 ## Getting the decoder
 
 `gpuwm obs radar doctor` answers two questions at once: is `rw_odim` on this
@@ -117,6 +147,36 @@ is visible rather than merely asserted here. The written `clear_air_source` is
 rule, different instruments making the claim, and a consumer is entitled to
 know which it is holding.
 
+## Dual-PRF velocity errors are removed before anything else
+
+Most European C-band radars extend their velocity interval with two pulse
+repetition frequencies on alternating rays (DWD and KNMI: 800 and 600 Hz).
+When noise makes the combination pick the wrong fold count, a gate is wrong by
+an even multiple of its own ray's single-PRF interval: isolated gates of the
+opposite sign inside a smooth wind, which a dealiaser either spreads or
+unfolds around wrongly. `pack` removes them first, on by default
+(`rw_odim::dualprf`; `gpuwm obs odim pack ... --dual-prf off` is the knob):
+
+- the reference is the circular mean of the gate's measured neighbours (two
+  rays and two bins either side), corrected by the median of their
+  deviations, and it exists only where the neighbours agree with each other
+  (median absolute deviation at most half the low-PRF interval), so noise is
+  never "corrected" into a wind;
+- a gate more than the low-PRF interval from its reference is moved by
+  `k * 2 va` (`k` = +-1, +-2), using the ray's own PRF when the file records
+  per-ray PRFs (DWD's `/datasetN/how/prf`) and both otherwise, only when that
+  lands it within half the low-PRF interval of the reference; the result is
+  folded back into `[-NI, NI)`;
+- the two intervals come from the declared `NI` and the PRF pair alone.
+
+The pack record's `dual_prf` block counts what it did. Measured on FMI's
+Ikaalinen volume of 2010-08-08 15:00Z (the archive route), 1,072 of 104,667
+velocity gates were moved; in the 7 and 11 degree cuts they are the
+opposite-sign speckle inside the outbound and inbound lobes (looked at,
+raw beside corrected). On a live DWD frame
+(per-ray PRFs read) on a dry morning, 0 to 6 gates on the third sweep
+of each of the 17 sites.
+
 ## Dealiasing
 
 `grid --dealias` unfolds radial velocity per sweep before gridding instead of
@@ -169,7 +229,8 @@ Takes no options.
 
 | option | meaning |
 | --- | --- |
-| `--file` | one whole-volume ODIM file (`PVOL`); exclusive with `--dir` |
+| `--file` | one whole-volume file: ODIM `PVOL`, JMA GRIB2 tar, IRIS RAW, Universal Format, CfRadial 1 or DORADE, gzipped or not (read from the file's bytes); repeat it for one station split over files (JMA's N5 and N6 tars); exclusive with `--dir` |
+| `--site` | the station to take from a file holding several (a JMA tar holds the whole network; `stations` lists them) |
 | `--dir` | directory of single-sweep files (`SCAN`) to assemble; exclusive with `--file` |
 | `--stamp` | which volume in `--dir`, in the spelling `volumes` reports; required only when the directory holds more than one |
 | `--out` | sweep pack to write |
@@ -181,7 +242,31 @@ Takes no options.
 
 | option | meaning |
 | --- | --- |
-| `--file` | one ODIM file; geometry is read, no payload |
+| `--file` | one radar file; ODIM geometry is read without payload, other formats are decoded |
+| `--site` | the station, for a multi-station file |
+
+### gpuwm obs radar stations
+
+| option | meaning |
+| --- | --- |
+| `--file` | a multi-station file (a JMA tar); prints each station's id, number and position from headers alone |
+
+### gpuwm obs radar fetch
+
+Fetches one site's volume from an open national archive, a row of
+`gpuwm/obs/data/radar_archives_world.json` (`jma-nict`, `bom-nci`,
+`ideam-s3`, `kma-apihub`), and with `--out` packs it.
+
+| option | meaning |
+| --- | --- |
+| `--archive` | the archive id |
+| `--site` | the site in that archive's naming (the table's `site_ids` says what that is) |
+| `--time` | valid time, UTC, e.g. `2019-10-12T09:00Z`; the nearest volume within tolerance is taken |
+| `--out-dir` | where the fetched files go |
+| `--tolerance-s` | how far from `--time` a volume may be; default about half the archive's cadence |
+| `--out` | also decode the fetched files into this sweep pack |
+| `--quantities` | with `--out`: quantities to carry |
+| `--max-range-km` | with `--out`: trim gates beyond this range |
 
 ### gpuwm obs radar sites
 

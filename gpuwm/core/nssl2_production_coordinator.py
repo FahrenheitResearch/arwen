@@ -336,7 +336,9 @@ def run_nssl2_production_step(
         **gather_kwargs,
     )
 
-    reduce_nssl2_precipitation(workspace, *precipitation.as_tuple())
+    reduce_nssl2_precipitation(
+        workspace, *precipitation.as_tuple(),
+        air_density=air_density, dt_s=dt_s)
 
     fused_gs(workspace)
     for condensation_hook in condensation_hooks:

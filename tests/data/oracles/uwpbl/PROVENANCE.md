@@ -49,3 +49,12 @@ bytes (274,618 bytes total); stage records and the generator sidecar are
 regenerated rather than packaged. `cases-sub35-index.json` names each probe;
 `tests/test_uwpbl_ftz_wrf471_parity.py` pins the fixture hashes and every
 measured FTZ mismatch without a tolerance.
+
+On 2026-10-07 the fixtures of record were reproduced from WRF **v4.6.1**
+(tag v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28; the 15 compiled
+files are byte-identical to the v4.7.1 pins) with gfortran 13.3.0 -O0 on
+glibc 2.39 (Intel Xeon Platinum 8559C): `cases-g35`, `cases-g44`,
+`cases-g61`, `cases-extra35` and `cases-sub35` came out byte-identical to the
+packaged files (same sha256 for every .bin and .manifest).  The words of
+record are therefore WRF v4.6.1's as well as v4.7.1's.  Harness and the
+240-column v4.6.1 sweep: `tools/uwpbl_wrf461_verify`.

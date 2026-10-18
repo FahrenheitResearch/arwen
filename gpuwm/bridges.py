@@ -92,7 +92,7 @@ CRATE_RELATIVE = "tools/grib1_bridge"
 #: diagnostic, and `gpuwm doctor` therefore reported it `ok` -- and then
 #: every preparation died with `series line 1 must be HOUR<TAB>GRIB2`,
 #: a message that blames the series file gpuwm had just written
-#: correctly.  A node-7 validation run found the cause only by diffing
+#: correctly.  A test host G validation run found the cause only by diffing
 #: two git tags.
 #:
 #: Each marker is a literal the CURRENT contract compiles into the
@@ -329,9 +329,13 @@ BRIDGE_ABI_MARKERS = {
         b"[--physics-mode correct|exact]"),
     # The history converter.  Its marker is the OUTPUT SCHEMA name and
     # the progress tokens, like the mapped engine's, because that is the
-    # literal which changes exactly when the tape contract changes.
+    # literal which changes exactly when the tape contract changes, and the
+    # flags a caller passes that an older build refuses (--remap with its
+    # REMAP/BUDGET lines, --jobs): without them a pre-2.9.0 converter
+    # matched and the gpuwm-hex product stage died on "unknown flag --remap".
     "rw_mpas_convert": (
-        b"gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED"),
+        b"gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED"
+        b"\tREMAP\tBUDGET\t--remap nearest|product\t--jobs N"),
     # The ML dataset exporter behind `gpuwm ml-export`.  The marker is the
     # request schema, the modes and the progress grammar, the literal that
     # changes when the contract does: a build predating it would read a
@@ -357,6 +361,13 @@ BRIDGE_ABI_MARKERS = {
         b"grid_geometry=wrf-native-locations/v1 surface_catalog=woof-post/v1 "
         b"post_device=auto,gpu,cpu definitions=woof,renderer extrema_window=seconds "
         b"composite_level=200,10 gust=auto,similarity,tke"),
+    # The projected MET intermediate cdylib (tools/rw_wps/crates/
+    # projected-intermediate) behind `gpuwm-hex intermediate` on HRRR and
+    # every other projected source.  A library, so the literal is an
+    # exported symbol name: the decoder-crop entry is the newest of the
+    # four gpuwm-hex resolves, so a build that predates it is refused here
+    # rather than by gpuwm-hex after the fetch.
+    "rw_projected_intermediate": b"gpuwm_projected_window_v1",
 }
 
 #: True when the shell a remedy will be pasted into is Windows
@@ -954,7 +965,7 @@ def legacy_bridge_dir() -> Path:
 
     It is shared by every gpuwm install under this home, which is the
     defect the versioned layout closes: on 2026-10-05 a PyPI 2.8.0 venv
-    on node-2 found the flat ``rw_netcdf`` stamped by a local build
+    on test host B found the flat ``rw_netcdf`` stamped by a local build
     (``fc5b34e26``), auto-fetched 2.8.0's bundle and overwrote all 31
     files, breaking the other install that relied on them.  A pinned
     install now only READS a file here, and only when its bytes are the
@@ -2218,6 +2229,96 @@ def bridge_abi_matches(name: str, path: Path) -> tuple[bool, str]:
         "correctly; rebuild it from a matching checkout")
 
 
+def fetched_on_demand(artifact: str | None) -> bool:
+    """Is ``artifact`` one the platform wheel leaves to the bundle?
+
+    True for :func:`gpuwm.bridge_assets.on_demand_artifacts`: pinned in the
+    release bundle and not carried in the wheel, so on a fresh pip install
+    its absence is the expected state and its first use stages it.
+    """
+
+    if artifact is None:
+        return False
+    try:
+        from gpuwm import bridge_assets
+        return any(entry.name == artifact
+                   for entry in bridge_assets.on_demand_artifacts())
+    except Exception:                                # noqa: BLE001
+        return False
+
+
+def on_demand_fetch_offered(artifact: str | None,
+                            crate_relative: str = RUSTWX_CRATE_RELATIVE) -> bool:
+    """Can this install stage the absent on-demand ``artifact`` by download?
+
+    True only where it can: the artifact is declared on demand, this install
+    carries no Rust sources for its crate (a checkout builds it instead), and
+    the pins this install carries name a bundle for this platform that holds
+    it.  Anywhere else a fetch would refuse, so nothing offers one.
+    """
+
+    if not fetched_on_demand(artifact):
+        return False
+    try:
+        return (not sources_present(crate_relative)
+                and _offer_for(artifact) is not None)
+    except Exception:                                # noqa: BLE001
+        return False
+
+
+#: On-demand artifacts this process already tried to stage, with the failure
+#: text when it did not work.  One attempt per artifact per run, so a box
+#: with no route to the release assets does not re-dial for every resolve.
+_ON_DEMAND_ATTEMPTS: dict[str, str | None] = {}
+
+
+def on_demand_failure(artifact: str) -> str | None:
+    """Why this process's automatic staging of ``artifact`` failed, if it did."""
+
+    return _ON_DEMAND_ATTEMPTS.get(artifact)
+
+
+def fetch_on_demand(artifact: str) -> bool:
+    """Stage the on-demand ``artifact`` now; True when it was staged.
+
+    Called by a door that is about to run and found nothing on the ladder.
+    It downloads the one pinned ZIP member by HTTP range from this release's
+    bundle (:func:`gpuwm.bridge_partial.fetch_partial`), verifies its size,
+    SHA-256 and contract marker against the pins packaged with this install,
+    and installs it in :func:`default_bridge_dir`, the rung the ladder
+    already reads.  Never inside :func:`inspection_only` (doctor and the
+    receipt writers report the estate; they never download), never for an
+    artifact the wheel carries, and never where the fetch could not deliver
+    it (:func:`on_demand_fetch_offered`).  A failure is remembered and
+    returned by :func:`on_demand_failure` so the door's refusal can say
+    what happened.
+    """
+
+    if _INSPECTION_ONLY or artifact in _ON_DEMAND_ATTEMPTS:
+        return False
+    if not on_demand_fetch_offered(artifact):
+        return False
+    from gpuwm import bridge_assets
+    from gpuwm.bridge_partial import fetch_partial
+    from gpuwm.explain import warn
+
+    destination = default_bridge_dir()
+    warn(f"{artifact} is fetched on demand: the platform wheel does not carry "
+         f"it, so its pinned copy is being staged from this release's bundle "
+         f"into {destination} before this run continues")
+    try:
+        pins = bridge_assets.load_pins()
+        bundle = pins.bundle_for(bridge_assets.host_platform())
+        fetch_partial(pins, bundle, destination, [artifact],
+                      progress=lambda message: print(message, file=sys.stderr))
+    except (bridge_assets.BridgeAssetError, OSError) as error:
+        _ON_DEMAND_ATTEMPTS[artifact] = (
+            f"staging it from this release's bundle failed ({error})")
+        return False
+    _ON_DEMAND_ATTEMPTS[artifact] = None
+    return True
+
+
 def artifact_remedy(*, env_var: str, filename: str, subject: str,
                     crate_relative: str = CRATE_RELATIVE,
                     one_liner: str = "", artifact: str | None = None) -> str:
@@ -2298,6 +2399,19 @@ def artifact_remedy(*, env_var: str, filename: str, subject: str,
             f"# so {subject} must be built from a clone.  About two "
             "minutes, once:\n"
             f"{source_route}")
+    if fetched_on_demand(artifact):
+        # The expected state of a fresh pip install, so it is said as one:
+        # nothing is broken, and the one-file download is the whole remedy.
+        return (
+            f"# {subject} is fetched on demand: the platform wheel does not\n"
+            "# carry it, and this one command stages it from this release's\n"
+            "# prebuilt bundle, verified against the packaged pins:\n"
+            f"  gpuwm fetch-bridges --partial --artifact {artifact}\n"
+            "  # (plain `gpuwm fetch-bridges` stages the whole bundle instead)\n"
+            "  # Or build it from source instead -- the route that works on\n"
+            "  # every platform, including ones with no published bundle.\n"
+            "  # Uncomment these to take it:\n"
+            + _as_comments(source_route))
     return (
         "# this install carries no Rust sources -- the wheel ships none --\n"
         f"# so there are two routes to {subject}: the prebuilt bundle\n"

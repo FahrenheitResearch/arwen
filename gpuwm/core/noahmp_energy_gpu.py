@@ -72,8 +72,22 @@ def energy_source() -> str:
     return runtime_unit("noahmp_energy").source
 
 
+def _current_device() -> int:
+    """The card a compiled module must be loaded on: the current one.
+
+    ``compile_runtime_unit`` loads its image with ``cupy.cuda.function.Module``
+    into the CURRENT context only, so a module cached per process and reused
+    on a second card hands that card the first card's function handles
+    (CUDA_ERROR_INVALID_HANDLE at the first launch; the two-card HRRR start,
+    2026-10-16).  The device is therefore part of every module cache key.
+    """
+    import cupy as cp
+
+    return cp.cuda.runtime.getDevice()
+
+
 @lru_cache(maxsize=None)
-def _module(options: tuple[str, ...]):
+def _module(device: int, options: tuple[str, ...]):
     return compile_runtime_unit(
         "noahmp_energy", module_key="gpuwm.core.noahmp_energy_gpu:energy",
         options=options)
@@ -81,7 +95,7 @@ def _module(options: tuple[str, ...]):
 
 def energy_module(options: tuple[str, ...] = DEFAULT_OPTIONS):
     """Compile (once per option set) the composed ENERGY translation unit."""
-    return _module(tuple(options))
+    return _module(_current_device(), tuple(options))
 
 
 def evaluate_energy(x, ix):

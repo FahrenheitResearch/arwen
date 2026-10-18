@@ -1,0 +1,69 @@
+{
+  "source_tip": "220e02fcad74018604db3bf4ecfe14b7a39f59b1",
+  "scheme": "ccpp-tke-edmf",
+  "module": "satmedmf",
+  "measured": "2026-10-10",
+  "module_max_local_size_bytes": 112,
+  "compile_platform": {
+    "nvrtc_build": "13.4.92",
+    "nvrtc_build_id": "CL-38855100",
+    "nvrtc_library_sha256": "d8f82e7019fe990bcd9efe4c5c444c036ddf2d5df95090d3965ae62be2009a2c",
+    "cuda_driver_version": "13030",
+    "device_compute_capability": "89",
+    "cupy_version": "14.2.0",
+    "numpy_version": "2.5.3"
+  },
+  "kernel_attributes": {
+    "satmedmf_column": {
+      "max_threads_per_block": 256,
+      "shared_size_bytes": 0,
+      "const_size_bytes": 0,
+      "local_size_bytes": 112,
+      "num_regs": 255,
+      "ptx_version": 89,
+      "binary_version": 89,
+      "cache_mode_ca": 0,
+      "max_dynamic_shared_size_bytes": 49152,
+      "preferred_shared_memory_carveout": -1
+    },
+    "satmedmf_fpvs_table": {
+      "max_threads_per_block": 1024,
+      "shared_size_bytes": 0,
+      "const_size_bytes": 0,
+      "local_size_bytes": 0,
+      "num_regs": 40,
+      "ptx_version": 89,
+      "binary_version": 89,
+      "cache_mode_ca": 0,
+      "max_dynamic_shared_size_bytes": 49152,
+      "preferred_shared_memory_carveout": -1
+    },
+    "satmedmf_exner": {
+      "max_threads_per_block": 1024,
+      "shared_size_bytes": 0,
+      "const_size_bytes": 0,
+      "local_size_bytes": 0,
+      "num_regs": 28,
+      "ptx_version": 89,
+      "binary_version": 89,
+      "cache_mode_ca": 0,
+      "max_dynamic_shared_size_bytes": 49152,
+      "preferred_shared_memory_carveout": -1
+    }
+  },
+  "kernel_manifest": {
+    "gpuwm.core.kernels:satmedmf": {
+      "source_sha256": "22c67a1fd1e22b4eff36761e8d80e009316083e4357969f9def5ceb5437e7fd1",
+      "options": [
+        "-std=c++17"
+      ],
+      "compiled_image": {
+        "status": "unavailable",
+        "reason": "the installed CuPy exposes no PTX or cubin on RawModule"
+      }
+    }
+  },
+  "receipt": "home-latest-receipts.zip:logs/gpu-parity-final29.json",
+  "cross_check": "test_preflight.py::test_the_recorded_local_frames_match_the_driver observed module maximum 112 bytes on the same SM89/NVRTC13.4.92 platform",
+  "numerical_parity": "all 54 column field rows and 7501 table entries 0 ULP in both modes"
+}

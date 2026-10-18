@@ -152,6 +152,7 @@ __all__ = [
     "carrier_manifest",
     "carrier_scalars",
     "checkpointed_carriers",
+    "is_absent_tolerant",
     "is_checkpointed",
     "default_builder",
     "field_digests",
@@ -383,7 +384,13 @@ def is_checkpointed(key: str) -> bool:
     """
     head, _, rest = key.partition("/")
     if head == 'diag':
-        return False
+        # The driver's checkpoint-only carriers (restart.
+        # DRIVER_CHECKPOINT_ONLY_ATTRS: OLR, CLDFRA, the history_extension
+        # stack with its AC* accumulations, ...) are in every resident
+        # checkpoint under diag/<attr>; a streamed one writes them too, or a
+        # resumed streamed run restarts the accumulations from zero.  Every
+        # other diag/ member is a scattered output-only row, never saved.
+        return is_absent_tolerant(key)
     if head == 'transport':
         from tilestream.sfire_smoke import OLD_MU_KEY
         from gpuwm.state_serialization_contract import CHEM_TIME_PREFIX
@@ -395,6 +402,22 @@ def is_checkpointed(key: str) -> bool:
     from gpuwm.io import restart
 
     return restart.classify_scratch_slot(rest) == "serialize"
+
+
+def is_absent_tolerant(key: str) -> bool:
+    """A checkpointed member a restart file may lack or carry unasked.
+
+    The streamed mirror of the resident reader's rule for
+    ``restart.DRIVER_CHECKPOINT_ONLY_ATTRS`` (tolerant in both directions):
+    a checkpoint written before the member existed restores the store's own
+    value, and a member the store has no slot for is not restored.
+    """
+    head, _, rest = key.partition("/")
+    if head != "diag":
+        return False
+    from gpuwm.io import restart
+
+    return rest in restart.DRIVER_CHECKPOINT_ONLY_ATTRS
 
 
 def checkpointed_carriers(arrays: Mapping) -> dict:
@@ -454,7 +477,8 @@ def carried_only_carriers(arrays: Mapping) -> dict:
 #: same conclusion by three routes -- so it is derived rather than restated,
 #: for the reason the alias above gives.
 STREAMING_ONLY_SLOTS: tuple[str, ...] = tuple(
-    sorted(_restart_module().CARRIED_SCRATCH_SLOTS))
+    sorted(_restart_module().CARRIED_SCRATCH_SLOTS
+           - _restart_module().CHECKPOINTED_CARRIED_SCRATCH_SLOTS))
 
 
 def streaming_only_members(state=None) -> tuple[str, ...]:
@@ -468,6 +492,10 @@ def streaming_only_members(state=None) -> tuple[str, ...]:
     keys = tuple(f"scratch/{slot}" for slot in STREAMING_ONLY_SLOTS)
     if state is None:
         return keys
+    # 2.9.1 (a9fe8de9f, follower windows through streamed lifecycle transport):
+    # the carried scratch manifest, which names each declared follower's own
+    # window (scratch/uh_follow_window.dNN); the fixed slot list does not.  The
+    # exact-chain merge had taken the chain line's older body here.
     return tuple(sorted(_restart_module().carried_scratch_manifest(state)))
 
 
@@ -658,6 +686,11 @@ def set_carrier_scalars(state, values) -> None:
 #: surprise.
 OUTPUT_ONLY_DRIVER_ATTRS: tuple[str, ...] = (
     "olr", "cldfra", "hmix_k_diag", "sase_flux_diag", "last_sase_ledger",
+    # The exact chain's RTHRATEN rows (restart.DRIVER_CHECKPOINT_ONLY_ATTRS):
+    # the output-only total, and the strict coupled producer that exists
+    # only under GPUWM_WRF_EXACT=1.  Swept so each tile's window reaches
+    # the store and a checkpoint's diag/ member has a slot to restore into.
+    "rthraten", "_wrf_rthraten",
 )
 
 

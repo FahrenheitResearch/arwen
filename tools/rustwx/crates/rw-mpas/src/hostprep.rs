@@ -431,8 +431,8 @@ fn process<T: crate::hosttables::Tab>(
     match mode {
         12 => return crate::hosttables::vertical_velocity_damping::<T>(input, output, nc, nl),
         14 => return crate::hosttables::pow_elementwise::<T>(input, output, nc),
-        10 => {
-            return crate::hosttables::deformation_weights::<T>(input, output, nc, ne, me, &counts, &eoc)
+        10 | 15 => {
+            return crate::hosttables::deformation_weights::<T>(input, output, nc, ne, me, &counts, &eoc, mode == 15)
         }
         11 => return crate::hosttables::advection_coefficients::<T>(input, output, nc, ne, me, &counts),
         13 => return crate::hosttables::host_mesh_laws(input, output, nc, ne, me, &counts, &eoc),
@@ -610,6 +610,12 @@ pub fn run(mut input: impl Read, mut output: impl Write) -> Result<(), String> {
         .map_err(|_| "host preparation dimension does not fit this platform")?;
     }
     let [nc, ne, me, nl] = sizes;
+    if header[41] == 15 && header[40] != 4 {
+        return Err("GNU deformation mode requires float32".into());
+    }
+    if header[41] == 15 && !cfg!(all(target_os = "linux", target_env = "gnu")) {
+        return Err("GNU deformation mode requires a GNU Linux build".into());
+    }
     if nc == 0 || ne == 0 || me == 0 || (nl == 0 && header[41] != 0) {
         return Err("host preparation dimensions must be positive".into());
     }

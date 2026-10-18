@@ -524,9 +524,9 @@ RENDERER_ABI_MARKER = (
     "mesh:\tmeshdiff:\tselectable_slugs\t"
     "gpuwm-rw-wrfbatch-layout-v1\t--layout\tauto\tfixed\t"
     "--size-class\t--scale\t--pair-sheet\t"
-    "gpuwm-rw-wrfbatch-difference-v1\t--diff-against\t--diff-inputs-json\t"
+    "gpuwm-rw-wrfbatch-difference-v2\t--diff-against\t--diff-inputs-json\t"
     "--diff-label-a\t--diff-label-b\t--diff-labels\t"
-    "--diff-sheet\tDIFFERENCE")
+    "--diff-sheet\tDIFFERENCE\tdiffering_cells\tRUSTWX_DIFFERENCE_TABLE")
 
 #: The generic product families, read OUT of the pinned marker rather
 #: than listed again beside it.  The marker is the contract a built
@@ -1041,7 +1041,8 @@ def list_products(renderer: Path, wrfout: Path, *, store_root: Path,
 
 
 def catalog_rows(renderer: Path, wrfouts, *, store_root: Path,
-                 heavy: bool = False, products: str | None = None
+                 heavy: bool = False, products: str | None = None,
+                 save_import: Path | None = None,
                  ) -> tuple[list[tuple[str, str, str, str, str]], str]:
     """The same listing, with each row's machine code: (rows, summary).
 
@@ -1058,7 +1059,7 @@ def catalog_rows(renderer: Path, wrfouts, *, store_root: Path,
     """
 
     return _catalog_listing(renderer, wrfouts, store_root=store_root,
-                            heavy=heavy, products=products)
+                            heavy=heavy, products=products, save_import=save_import)
 
 
 #: The longest command line a renderer is started with.  Windows starts
@@ -1071,9 +1072,21 @@ def catalog_rows(renderer: Path, wrfouts, *, store_root: Path,
 COMMAND_LINE_BUDGET = 32_000
 
 #: Options whose value is a path the renderer opens.
-_PATH_OPTIONS = ("--store-root", "--out-dir", "--overlays", "--annotate")
+_PATH_OPTIONS = ("--store-root", "--out-dir", "--overlays", "--annotate",
+                 "--save-import", "--from-import")
 #: Environment names whose value is a path the renderer opens.
-_PATH_ENV = ("RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR", "RUSTWX_THEME")
+_PATH_ENV = ("RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR", "RUSTWX_THEME",
+             "RUSTWX_DIFFERENCE_TABLE")
+
+#: The difference bars' table, by environment
+#: (``rustwx_render::difference::DIFFERENCE_TABLE_ENV``): ``table`` (the
+#: built-in table, the default), ``auto`` (every bar fitted to its own
+#: difference) or the path of a JSON file whose top-level keys replace the
+#: built-in table's.  ``gpuwm render --diff-table`` sets it for the
+#: differences it draws.  Under every setting a table bar that would draw
+#: every cell in its neutral colour is fitted to the difference instead.
+DIFFERENCE_TABLE_ENV = "RUSTWX_DIFFERENCE_TABLE"
+DIFFERENCE_TABLE_CHOICES = ("table", "auto")
 
 #: The renderer's radar colour set, by environment: ``standard`` (the radar
 #: tables) or ``classic`` (the reflectivity ladder and blue-red velocity
@@ -1189,7 +1202,8 @@ def list_products_series(renderer: Path, wrfouts, *, store_root: Path,
 
 
 def _catalog_listing(renderer: Path, wrfouts, *, store_root: Path,
-                     heavy: bool = False, products: str | None = None
+                     heavy: bool = False, products: str | None = None,
+                     save_import: Path | None = None,
                      ) -> tuple[list[tuple[str, str, str, str, str]], str]:
     """One parse of the renderer's catalog mode, for both accessors."""
     inputs = [Path(path) for path in wrfouts]
@@ -1207,6 +1221,8 @@ def _catalog_listing(renderer: Path, wrfouts, *, store_root: Path,
         command.append("--heavy")
     if products is not None:
         command.extend(["--products", products])
+    if save_import is not None:
+        command.extend(["--save-import", str(save_import)])
     command.extend(str(path) for path in inputs)
     try:
         with _series_command(command, len(inputs), renderer_env()) as fitted:
@@ -1840,6 +1856,7 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  section_size: tuple[int, int] | None = None,
                  section_top_km: float | None = None,
                  fills: list | None = None,
+                 from_import: Path | None = None,
                  ) -> tuple[list[Path], list[str],
                             list[tuple[str, str]]]:
     """Render one wrfout file into ``out_dir``; (written, failures, skipped).
@@ -1873,7 +1890,7 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
         annotate=annotate, streamlines=streamlines, theme=theme,
         section=section, isotherms=isotherms,
         section_across_km=section_across_km, section_size=section_size,
-        section_top_km=section_top_km, fills=fills)
+        section_top_km=section_top_km, fills=fills, from_import=from_import)
 
 
 RESIDENT_ENSEMBLE_ABI = (
@@ -2126,6 +2143,7 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
                         section_size: tuple[int, int] | None = None,
                         section_top_km: float | None = None,
                         fills: list | None = None,
+                        from_import: Path | None = None,
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
     """One invocation over a whole wrfout SERIES, into ONE store.
@@ -2174,6 +2192,8 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
         "--products", products,
         "--frames", frames,
     ]
+    if from_import is not None:
+        command.extend(("--from-import", str(from_import)))
     # The default canvas follows the domain's shape. Pixel dimensions
     # explicitly request a fixed canvas for callers that tile panels.
     if (width is None) != (height is None):
@@ -2352,6 +2372,7 @@ def run_renderer_difference(renderer: Path,
                             streamlines: bool | None = None,
                             width: int | None = None,
                             height: int | None = None,
+                            difference_table: str | None = None,
                             ) -> tuple[list[Path], list[str],
                                        list[tuple[str, str]], list[dict]]:
     """Draw products as run A minus run B for one valid time.
@@ -2361,6 +2382,8 @@ def run_renderer_difference(renderer: Path,
     the native renderer selects run B's matching valid time. Windowed
     products retain earlier frames on both sides. Return pictures,
     failures, skips and native difference range receipts.
+    ``difference_table`` is the :data:`DIFFERENCE_TABLE_ENV` value this
+    render alone draws with (``None`` leaves the caller's environment).
     """
 
     inputs_a = ([Path(wrfout_a)] if isinstance(wrfout_a, (str, os.PathLike))
@@ -2400,9 +2423,12 @@ def run_renderer_difference(renderer: Path,
         command.extend(("--annotate", str(annotate)))
     if streamlines is not None:
         command.append("--streamlines" if streamlines else "--barbs")
+    env = renderer_env()
+    if difference_table:
+        env[DIFFERENCE_TABLE_ENV] = difference_table
     try:
         with _difference_command(command, inputs_a, inputs_b,
-                                 renderer_env()) as fitted:
+                                 env) as fitted:
             command, env = fitted
             result = subprocess.run(
                 command, capture_output=True, text=True, errors="replace", env=env)
@@ -2442,6 +2468,7 @@ def run_renderer_difference(renderer: Path,
 __all__ = [
     "CARGO_BUILD_HINT", "COMMAND_LINE_BUDGET", "RENDERER_ABI_MARKER",  # noqa: F822 -- module __getattr__
     "DIFFERENCE_EVENT", "parse_difference_line", "run_renderer_difference",
+    "DIFFERENCE_TABLE_ENV", "DIFFERENCE_TABLE_CHOICES",
     "RENDERER_ENV", "fit_series_command",
     "NATIVE_WARNING_PREFIXES", "relay_native_warnings",
     "RENDERER_NAME", "basemap_dir",

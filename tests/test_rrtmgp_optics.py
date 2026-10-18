@@ -99,10 +99,10 @@ def test_gas_reference_kernel_retains_base_source():
     from pathlib import Path
     source = (Path(__file__).parents[1] / "gpuwm/core/kernels/rrtmgp_gas.cu").read_text()
     begin = source.index('extern "C" __global__ void rrtmgp_gas_optics_reference(')
-    end = source.index('__device__ __forceinline__ float planck_interp', begin)
+    end = source.index('// END rrtmgp_gas_optics_reference', begin)
     frozen = source[begin:end].replace("rrtmgp_gas_optics_reference(",
                                       "rrtmgp_gas_optics(")
-    assert hashlib.sha256(frozen.encode()).hexdigest() == "2971c4dc38ac19592b469489094f14c7d8f5a9f86059fd7489b50e2272f915d1"
+    assert hashlib.sha256(frozen.encode()).hexdigest() == "aa1a307eb1c730e3bcb8a959285733268897c500c3bcba3c58eff0884fde3830"
 
 
 def test_profile_concatenation_matches_retained_expressions():

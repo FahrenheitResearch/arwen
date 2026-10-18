@@ -49,6 +49,49 @@
 #define WSM6_KMAX 64
 #endif
 
+// COLUMN WORKSPACE (memory census 2026-10-14, item 12).  The column arrays
+// of both kernels live in a global workspace the launcher allocates for the
+// columns in flight, not in the per-thread local frame: CUDA backs a local
+// frame for every thread the card could ever hold (7,216 B x the card's
+// resident-thread capacity, 1,170 MiB on a 5090, for the life of the
+// context; wsm6_column measured), the workspace only for one tile of
+// columns and only for the call.  Each block owns WSM6_WS_ROWS(nz) x
+// blockDim.x floats (the reflectivity kernel: its own typed rows),
+// interleaved by lane the way CUDA lays local memory across a warp, so a
+// level of one array is one coalesced 128 B row per warp (gpuwm/core/
+// wsm6.py wsm6_tile_columns sizes the tile).  Only the memory space moves:
+// every load and store, and every operation between them, is the one the
+// local arrays had.
+#define WSM6_WS_ROWS(nz) (17 * (nz) + 8 * ((nz) + 1))
+#define WSM6_REFL_F_ROWS(nz) (5 * (nz))
+#define WSM6_REFL_D_ROWS(nz) (4 * (nz))
+
+template <typename T>
+struct WColT {
+    T *p;
+    int s;
+    __device__ __forceinline__ T &operator[](int k) const {
+        return p[(long long)k * s];
+    }
+};
+typedef WColT<float> WCol;
+template <typename T>
+__device__ __forceinline__ WColT<T> wsm6_wcolt(T *base, int row, int s) {
+    WColT<T> w;
+    w.p = base + (long long)row * s;
+    w.s = s;
+    return w;
+}
+__device__ __forceinline__ WCol wsm6_wcol(float *base, int row, int s) {
+    return wsm6_wcolt(base, row, s);
+}
+__device__ __forceinline__ WCol wsm6_wnull() {
+    WCol w;
+    w.p = nullptr;
+    w.s = 0;
+    return w;
+}
+
 // gfortran's MAX_EXPR/MIN_EXPR on two operands, argument order kept.
 __device__ __forceinline__ float wmax(float a, float b) { return (b > a) ? b : a; }
 __device__ __forceinline__ float wmin(float a, float b) { return (b < a) ? b : a; }
@@ -216,17 +259,27 @@ __device__ __forceinline__ float wsm6_denfac(float den) {
 // slope_snow/slope_graup mass-weighted; mode 2: cloud ice, iter = 0.
 // rq/rq2 enter as den*q and leave as the remapped den*q.  `wwl` is the
 // departure speed and is not written, as in WRF.
+// `wsb` is this thread's workspace base for the sedimentation arrays and
+// `ws` its lane stride (COLUMN WORKSPACE above).
 __device__ void wsm6_nislfv(int km, const float *c, const float *den,
-                            const float *dz, const float *tk,
-                            const float *wwl, float *rq, float *rq2,
+                            const float *dz, const WCol tk,
+                            const WCol wwl, const WCol rq, const WCol rq2,
                             float *precip1, float *precip2, float dt,
-                            int iter, int mode, int stride)
+                            int iter, int mode, int stride,
+                            float *wsb, int ws)
 {
-    float ww[WSM6_KMAX], qn[WSM6_KMAX];
-    float wi[WSM6_KMAX + 1], zi[WSM6_KMAX + 1], za[WSM6_KMAX + 1];
-    float dza[WSM6_KMAX + 1], qa[WSM6_KMAX + 1], qa2[WSM6_KMAX + 1];
-    float qmi[WSM6_KMAX + 1], qpi[WSM6_KMAX + 1];
-    const bool two = (rq2 != nullptr);
+    const WCol ww = wsm6_wcol(wsb, 0, ws);
+    const WCol qn = wsm6_wcol(wsb, km, ws);
+    const int k1 = km + 1, r0 = 2 * km;
+    const WCol wi = wsm6_wcol(wsb, r0, ws);
+    const WCol zi = wsm6_wcol(wsb, r0 + k1, ws);
+    const WCol za = wsm6_wcol(wsb, r0 + 2 * k1, ws);
+    const WCol dza = wsm6_wcol(wsb, r0 + 3 * k1, ws);
+    const WCol qa = wsm6_wcol(wsb, r0 + 4 * k1, ws);
+    const WCol qa2 = wsm6_wcol(wsb, r0 + 5 * k1, ws);
+    const WCol qmi = wsm6_wcol(wsb, r0 + 6 * k1, ws);
+    const WCol qpi = wsm6_wcol(wsb, r0 + 7 * k1, ws);
+    const bool two = (rq2.p != nullptr);
 
     *precip1 = 0.0f;
     if (two) *precip2 = 0.0f;
@@ -294,7 +347,7 @@ __device__ void wsm6_nislfv(int km, const float *c, const float *den,
     }
 
     for (int ist = 0; ist < (two ? 2 : 1); ++ist) {
-        float *q = (ist == 0) ? qa : qa2;
+        const WCol q = (ist == 0) ? qa : qa2;
         for (int k = 1; k < km; ++k) {
             const float dip = (q[k + 1] - q[k]) / (dza[k + 1] + dza[k]);
             const float dim = (q[k] - q[k - 1]) / (dza[k - 1] + dza[k]);
@@ -382,7 +435,7 @@ __device__ void wsm6_nislfv(int km, const float *c, const float *den,
             }
             break;
         }
-        float *out = (ist == 0) ? rq : rq2;
+        const WCol out = (ist == 0) ? rq : rq2;
         for (int k = 0; k < km; ++k) out[k] = qn[k];
         if (ist == 0) *precip1 = precip; else *precip2 = precip;
     }
@@ -394,18 +447,25 @@ __device__ void wsm6_column_impl(
     const float *pii, const float *dz, float *rainnc, float *rainncv,
     float *snownc, float *snowncv, float *graupelnc, float *graupelncv,
     float *sr, float *effc, float *effi, float *effs,
-    const float *__restrict__ coef, float delt, int nz, int stride, int col)
+    const float *__restrict__ coef, float delt, int nz, int stride, int col,
+    float *wsb, int ws)
 {
     float c[WSM6_NCOEF];
     for (int n = 0; n < WSM6_NCOEF; ++n) c[n] = coef[n];
     const float pi = c[C_PI];
     const Wsm6Fpvs fp = wsm6_fpvs_consts();
 
-    float t[WSM6_KMAX], q[WSM6_KMAX], qcl[WSM6_KMAX], qil[WSM6_KMAX];
-    float qrl[WSM6_KMAX], qsl[WSM6_KMAX], qgl[WSM6_KMAX];
-    float cpm[WSM6_KMAX], xl[WSM6_KMAX], xni[WSM6_KMAX];
-    float v1[WSM6_KMAX], v2[WSM6_KMAX];
-    float rq1[WSM6_KMAX], rq2[WSM6_KMAX], rq3[WSM6_KMAX];
+    // The fifteen column arrays, then the sedimentation arrays at row
+    // 15 * nz (COLUMN WORKSPACE above).
+    const WCol t = wsm6_wcol(wsb, 0 * nz, ws), q = wsm6_wcol(wsb, 1 * nz, ws);
+    const WCol qcl = wsm6_wcol(wsb, 2 * nz, ws), qil = wsm6_wcol(wsb, 3 * nz, ws);
+    const WCol qrl = wsm6_wcol(wsb, 4 * nz, ws), qsl = wsm6_wcol(wsb, 5 * nz, ws);
+    const WCol qgl = wsm6_wcol(wsb, 6 * nz, ws), cpm = wsm6_wcol(wsb, 7 * nz, ws);
+    const WCol xl = wsm6_wcol(wsb, 8 * nz, ws), xni = wsm6_wcol(wsb, 9 * nz, ws);
+    const WCol v1 = wsm6_wcol(wsb, 10 * nz, ws), v2 = wsm6_wcol(wsb, 11 * nz, ws);
+    const WCol rq1 = wsm6_wcol(wsb, 12 * nz, ws), rq2 = wsm6_wcol(wsb, 13 * nz, ws);
+    const WCol rq3 = wsm6_wcol(wsb, 14 * nz, ws);
+    float *const sedb = wsb + (long long)(15 * nz) * ws;
 
     const float *denc = den + col;
     const float *dzc = dz + col;
@@ -457,10 +517,10 @@ __device__ void wsm6_column_impl(
             v1[k] = workr;
         }
         float delqrs1, delqrs2, delqrs3;
-        wsm6_nislfv(nz, c, denc, dzc, t, v1, rq1, nullptr, &delqrs1, nullptr,
-                    dtcld, 1, 0, stride);
+        wsm6_nislfv(nz, c, denc, dzc, t, v1, rq1, wsm6_wnull(), &delqrs1,
+                    nullptr, dtcld, 1, 0, stride, sedb, ws);
         wsm6_nislfv(nz, c, denc, dzc, t, v2, rq2, rq3, &delqrs2, &delqrs3,
-                    dtcld, 1, 1, stride);
+                    dtcld, 1, 1, stride, sedb, ws);
         for (int k = 0; k < nz; ++k) {
             const float denk = denc[k * stride];
             qrl[k] = wmax(rq1[k] / denk, 0.0f);
@@ -486,8 +546,8 @@ __device__ void wsm6_column_impl(
             rq1[k] = denk * qil[k];
         }
         float delqi;
-        wsm6_nislfv(nz, c, denc, dzc, t, v1, rq1, nullptr, &delqi, nullptr,
-                    dtcld, 0, 2, stride);
+        wsm6_nislfv(nz, c, denc, dzc, t, v1, rq1, wsm6_wnull(), &delqi,
+                    nullptr, dtcld, 0, 2, stride, sedb, ws);
         for (int k = 0; k < nz; ++k)
             qil[k] = wmax(rq1[k] / denc[k * stride], 0.0f);
         const float fallc = (delqi / dz0) / dtcld;
@@ -1047,14 +1107,20 @@ extern "C" __global__ void wsm6_column(
     const float *pii, const float *dz, float *rainnc, float *rainncv,
     float *snownc, float *snowncv, float *graupelnc, float *graupelncv,
     float *sr, float *effc, float *effi, float *effs,
-    const float *__restrict__ coef, float delt, int nz, int ny, int nx)
+    const float *__restrict__ coef, float delt, int nz, int ny, int nx,
+    float *ws, int col0)
 {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    // One thread, one column, as always; the launcher walks the mesh in
+    // tiles of columns starting at `col0` and `ws` holds one tile.
+    int col = col0 + blockIdx.x * blockDim.x + threadIdx.x;
     int stride = ny * nx;
     if (col >= stride || nz > WSM6_KMAX) return;
+    float *wsb = ws + (long long)blockIdx.x * WSM6_WS_ROWS(nz) * blockDim.x
+               + threadIdx.x;
     wsm6_column_impl(theta, qv, qc, qi, qr, qs, qg, den, p, pii, dz,
                      rainnc, rainncv, snownc, snowncv, graupelnc, graupelncv,
-                     sr, effc, effi, effs, coef, delt, nz, stride, col);
+                     sr, effc, effi, effs, coef, delt, nz, stride, col,
+                     wsb, (int)blockDim.x);
 }
 
 // ===========================================================================
@@ -1246,15 +1312,29 @@ extern "C" __global__ void wsm6_refl10cm_column(
     const float *qv, const float *qr, const float *qs, const float *qg,
     const float *t, const float *p, const float *__restrict__ rf,
     const double *__restrict__ rd, float *refl, int melting,
-    int nz, int ny, int nx)
+    int nz, int ny, int nx, float *wsf, double *wsd, unsigned char *wsc,
+    int col0)
 {
-    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    // COLUMN WORKSPACE (top of file), in three typed buffers: per block
+    // WSM6_REFL_F_ROWS(nz) float, WSM6_REFL_D_ROWS(nz) double and nz byte
+    // rows of blockDim.x lanes; the launcher walks tiles from `col0`.
+    const int col = col0 + blockIdx.x * blockDim.x + threadIdx.x;
     const int stride = ny * nx;
     if (col >= stride || nz > WSM6_KMAX) return;
-    float temp[WSM6_KMAX], rs[WSM6_KMAX], rg[WSM6_KMAX];
-    double ilamr[WSM6_KMAX], ilams[WSM6_KMAX], ilamg[WSM6_KMAX], n0_s[WSM6_KMAX];
-    float ze_snow[WSM6_KMAX], ze_graupel[WSM6_KMAX];
-    unsigned char lq[WSM6_KMAX];   // bit 0 rain, 1 snow, 2 graupel
+    const int ws = (int)blockDim.x;
+    const long long lane = threadIdx.x;
+    float *bf = wsf + (long long)blockIdx.x * WSM6_REFL_F_ROWS(nz) * ws + lane;
+    double *bd = wsd + (long long)blockIdx.x * WSM6_REFL_D_ROWS(nz) * ws + lane;
+    unsigned char *bc = wsc + (long long)blockIdx.x * nz * ws + lane;
+    const WCol temp = wsm6_wcolt(bf, 0 * nz, ws), rs = wsm6_wcolt(bf, 1 * nz, ws);
+    const WCol rg = wsm6_wcolt(bf, 2 * nz, ws);
+    const WColT<double> ilamr = wsm6_wcolt(bd, 0 * nz, ws);
+    const WColT<double> ilams = wsm6_wcolt(bd, 1 * nz, ws);
+    const WColT<double> ilamg = wsm6_wcolt(bd, 2 * nz, ws);
+    const WColT<double> n0_s = wsm6_wcolt(bd, 3 * nz, ws);
+    const WCol ze_snow = wsm6_wcolt(bf, 3 * nz, ws);
+    const WCol ze_graupel = wsm6_wcolt(bf, 4 * nz, ws);
+    const WColT<unsigned char> lq = wsm6_wcolt(bc, 0, ws);   // bit 0 rain, 1 snow, 2 graupel
     const float pi = rf[RF_PI];
     const double n0_r = (double)W_N0R;
     const double n0_g = (double)rf[RF_N0G];

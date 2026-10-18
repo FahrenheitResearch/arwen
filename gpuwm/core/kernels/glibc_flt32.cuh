@@ -221,13 +221,32 @@ __device__ float gfk_exp(float x)
         if (x > __int_as_float(0x42b17218)) return __int_as_float(0x7f800000);
         if (x < -__int_as_float(0x42cff1b4)) return 0.0f;
     }
+    // The reference expf on an x86-64 host with FMA is the FMA build of this
+    // algorithm, and in that build the product InvLn2N*x, used only by the
+    // add that forms kd and the subtract that forms r, is fused into both:
+    // r keeps the product's rounding error.  Spelled here with __fma_rn, and
+    // the three polynomial multiply-adds likewise.  MEASURED on box W1 (Xeon
+    // Platinum 8559C, glibc 2.39) over all 2^32 inputs
+    // (tools/noah_wrf461_oracle/expf_variant_probe.c): this form equals the
+    // host expf on every input; the separately rounded form it replaces
+    // differed on two (0x4202422f and 0xc27c65d9, 1 ULP each), and fusing
+    // only the polynomial did not move either.  gfk_exp2_core, which powf
+    // also uses, is left as it was: powf's reduction has no product to fuse.
     double xd = (double)x;
-    double z = DMUL(0x1.71547652b82fep+0 * 32.0, xd);
-    return gfk_d2f_rn(gfk_exp2_core(
-        z, GFK_EXP2F_SHIFT,
-        GFK_EXP2F_P0 / 32.0 / 32.0 / 32.0,
-        GFK_EXP2F_P1 / 32.0 / 32.0,
-        GFK_EXP2F_P2 / 32.0, 0ULL));
+    const double invln2n = 0x1.71547652b82fep+0 * 32.0;
+    double kd = __fma_rn(invln2n, xd, GFK_EXP2F_SHIFT);
+    unsigned long long ki = (unsigned long long)__double_as_longlong(kd);
+    kd = DSUB(kd, GFK_EXP2F_SHIFT);
+    double r = __fma_rn(invln2n, xd, -kd);
+    unsigned long long t = GFK_EXP2F_TAB[ki & 31ULL];
+    t += ki << (52 - 5);
+    double s = __longlong_as_double((long long)t);
+    double z = __fma_rn(GFK_EXP2F_P0 / 32.0 / 32.0 / 32.0, r,
+                        GFK_EXP2F_P1 / 32.0 / 32.0);
+    double r2 = DMUL(r, r);
+    double y = __fma_rn(GFK_EXP2F_P2 / 32.0, r, 1.0);
+    y = __fma_rn(z, r2, y);
+    return gfk_d2f_rn(DMUL(y, s));
 }
 
 // e_exp2f.c (exp2f), s_expm1f.c (expm1f) and e_lgammaf_r.c (lgammaf) were

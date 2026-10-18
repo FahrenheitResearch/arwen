@@ -33,11 +33,14 @@ pub const ABI_MARKER: &str = "rw_mpas_init --met MET --static STATIC.nc --capsul
 --nfgsoillevels N --extrap-airtemp MODE --use-spechumd yes|no --theta-adv-order N \
 --coef-3rd-order X --virtual-factor reproduce-fortran|consistent \
 --deep-soil-moisture reproduce-fortran|corrected --landuse-table NAME \
---frac-seaice yes|no --tsk-seaice-threshold K \n--oned-underflow preserve|reproduce-ifx-ftz [--receipt JSON]";
+--frac-seaice yes|no --tsk-seaice-threshold K \n--oned-underflow preserve|reproduce-ifx-ftz [--receipt JSON] [--gocart FILE] [--gocartlevels N]";
 
 fn usage() -> String {
     format!(
-        "usage: {ABI_MARKER}\n\n\
+        "usage: {ABI_MARKER}\n\nSurface updates: {}\n\n\
+         --sfc-met MET         optional SST and sea-ice input (config_input_sst)\n\
+         --seaice-met MET      optional auxiliary SEAICE_FRACTIONAL input\n\
+         --omld-met MET        optional auxiliary OMLD input\n\
          --extrap-airtemp     constant | linear | lapse-rate  (config_extrap_airtemp)\n\
          --use-spechumd       yes | no                        (config_use_spechumd)\n\
          --virtual-factor     reproduce-fortran keeps the (rvord-1)/1.61 mix the Fortran has;\n\
@@ -58,7 +61,8 @@ fn usage() -> String {
         \x20                    [--land-surface noah|noahmp|ruc]\n\
         \x20 --aerosol-status INIT.nc\n\
         \x20 --aerosol-target INIT.nc --target-dir DIR\n\
-        \x20 DIR holds little-endian float32 files, cell-major."
+        \x20 DIR holds little-endian float32 files, cell-major.",
+        rw_mpas::init::surface::SURFACE_ABI
     )
 }
 
@@ -84,10 +88,12 @@ impl Args {
     }
 
     fn need(&self, key: &str) -> Result<&str, String> {
-        self.map
-            .get(key)
-            .map(String::as_str)
-            .ok_or_else(|| format!("--{key} was not given, and it has no default\n\n{}", usage()))
+        self.map.get(key).map(String::as_str).ok_or_else(|| {
+            format!(
+                "--{key} was not given, and it has no default\n\n{}",
+                usage()
+            )
+        })
     }
 
     /// An optional switch, keyed WITHOUT the leading dashes like `need`.
@@ -124,6 +130,12 @@ fn run() -> Result<String, String> {
     }
     // The release resolver probes this contract before supplying inputs.
     if argv.iter().any(|argument| argument == "--abi") {
+        if argv
+            .windows(2)
+            .any(|pair| pair[0] == "--mode" && pair[1] == "surface-update")
+        {
+            return Ok(rw_mpas::init::surface::SURFACE_ABI.to_string());
+        }
         return Ok(ABI_MARKER.to_string());
     }
     let args = Args::parse(argv)?;
@@ -146,10 +158,45 @@ fn run() -> Result<String, String> {
         let receipt = rw_mpas::init::aerosol::enrich(PathBuf::from(path).as_path(), &names, fields.as_deref(), land != "noah").map_err(|e| e.to_string())?;
         return serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string());
     }
+    if let Some(mode) = args.get_optional("mode") {
+        if mode != "surface-update" {
+            return Err(format!(
+                "unknown init mode {mode:?}; expected surface-update"
+            ));
+        }
+        let cfg = rw_mpas::init::surface::SurfaceConfig {
+            sfc_prefix: args.path("sfc-prefix")?,
+            static_path: args.path("static")?,
+            out_path: args.path("out")?,
+            start_time: args.need("start-time")?.to_string(),
+            stop_time: args.need("stop-time")?.to_string(),
+            fg_interval: args.number("fg-interval")?,
+            surface_interval: args.number("surface-interval")?,
+        };
+        let receipt = rw_mpas::init::surface::build_surface(&cfg).map_err(|e| e.to_string())?;
+        let json = serde_json::to_string_pretty(&receipt).map_err(|e| e.to_string())?;
+        if let Some(path) = args.get_optional("receipt") {
+            std::fs::write(&path, &json)
+                .map_err(|e| format!("cannot write receipt {path}: {e}"))?;
+        }
+        return Ok(json);
+    }
+
     let land_surface = args.get_optional("land-surface").unwrap_or_else(|| "noah".into());
     if !["noah", "noahmp", "ruc"].contains(&land_surface.as_str()) { return Err("--land-surface takes noah, noahmp or ruc".into()); }
     let cfg = InitConfig {
         met_path: args.path("met")?,
+        gocart_path: args.get_optional("gocart").map(PathBuf::from),
+        gocart_levels: args
+            .get_optional("gocartlevels")
+            .map(|s| {
+                s.parse::<usize>()
+                    .map_err(|_| "--gocartlevels is not a nonnegative integer".to_string())
+            })
+            .transpose()?,
+        seaice_met_path:args.get_optional("seaice-met").map(PathBuf::from),
+        omld_met_path:args.get_optional("omld-met").map(PathBuf::from),
+        sfc_met_path:args.get_optional("sfc-met").map(PathBuf::from),
         static_path: args.path("static")?,
         capsule_path: args.path("capsule")?,
         reference_path: args.path("reference")?,

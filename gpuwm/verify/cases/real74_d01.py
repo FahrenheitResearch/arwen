@@ -54,7 +54,7 @@ BUNDLE_ENV = "GPUWM_REAL74_REFERENCE_BUNDLE"
 #: separately from BUNDLE so a refusal can offer this location even when
 #: an override is in force: echoing ``BUNDLE.name`` there told a reader
 #: with GPUWM_REAL74_REFERENCE_BUNDLE=/tmp/no-bundle to "place it at
-#: ~/Downloads/no-bundle", which is not a location and not advice.
+#: <default folder>/no-bundle", which is not a location and not advice.
 DEFAULT_BUNDLE = Path.home() / "Downloads" / "WRF_1974_MP55_reference_bundle"
 
 BUNDLE = Path(os.environ.get(BUNDLE_ENV, DEFAULT_BUNDLE))

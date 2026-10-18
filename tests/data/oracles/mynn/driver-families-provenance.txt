@@ -1,0 +1,24 @@
+Multi-step MYNN driver oracle over six column families, WRF v4.6.1.
+Source: phys/module_bl_mynn.F and phys/module_bl_mynn_common.F at tag v4.6.1
+(d66e442fccc04111067e29274c9f9eaccc3cef28), unmodified.
+GNU Fortran 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1), glibc 2.39
+(Ubuntu GLIBC 2.39-0ubuntu8.9), -O0 -cpp -ffree-form; the harness also
+-ffp-contract=off.  Built by tools/mynn_pbl_wrf461_oracle/build.sh, which in
+the same run reproduced all 17 earlier WRF v4.6.1 MYNN CSVs in this folder
+byte for byte (rental box A, 2026-10-06).
+Harness: ./run_driver_families driver-families.csv 1 12
+         ./run_driver_families driver-families2.csv 2 12
+         gzip -n -9 (no name, no time stamp)
+Families: convective_day, stable_night, stratocumulus, shallow_cumulus,
+cold_pool, high_wind; 30 levels; 12 steps of 20 s (cold start, then warm);
+the harness advances u, v, th and the water species with the driver's own
+tendencies between steps (tests/_mynn_families.py repeats that update).
+
+ba3e6909447408210fce490e95bdf2decc1e205d3446ddc5c715277d2b23924c  module_bl_mynn_common.F
+b36c8b935cd9c8265359e78dbe8db285d99e992c7cab29917b5fca9d57d49452  module_bl_mynn.F
+21949886cac293913ef91b741e38407881b61902d3e57354a2b7307f10bf8c17  stub_wrf.F90
+ed849d95bff9ac6587f9f72f5d52a5bc388f1c2b5fae0f4c52e95c78b204c19f  run_driver_families.F90
+5c34a7437ab20bc4259b324fb6364ea39659531c2f109cf9ce47dc47cc482b7c  driver-families.csv
+fcaf093ce64188dcd47697a5996a58621f298e24cb552d6ec5970560db77a5be  driver-families2.csv
+bbc471764b174151205f5603a69b946f893782eff3cc9278a83907aeade223dc  driver-families.csv.gz
+1e89fffec4324d1635f341a2be8db4796829d4f688cc967d9cceba58cdb7e379  driver-families2.csv.gz

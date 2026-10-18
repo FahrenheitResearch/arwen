@@ -5,22 +5,24 @@
       "architecture": "sm_100",
       "bytes": 1961824,
       "file": "woof_post_sm100.cubin",
+      "generator": "NVIDIA NVRTC 13.4",
       "sha256": "974a384936cc7b4fe54e9ded57b8f4bd94c183683ed1c4f3dd0dbab0ad3503db"
     },
     {
       "architecture": "sm_120",
       "bytes": 1916584,
       "file": "woof_post_sm120.cubin",
+      "generator": "NVIDIA NVRTC 13.4",
       "sha256": "f78a573e51d1f3208fd40adb58ed4e69e9e53f0163748d9fa24b6fdd218cdc24"
     },
     {
-      "architecture": "compute_75 PTX fallback",
-      "bytes": 1245489,
+      "architecture": "compute_60 PTX fallback",
+      "bytes": 1241225,
       "file": "woof_post.ptx",
-      "sha256": "02c9f8754271c5f735c12f4c2e9e38ccea7f4837a2f7c1aa91e37abc4b84ab56"
+      "generator": "NVIDIA NVRTC 12.0",
+      "sha256": "e93942d56591982bd1242a52759f725ef6aa8378fee17d852ea15670d47088a9"
     }
   ],
-  "generator": "NVIDIA NVRTC 13.4",
   "kernel_set": "woof_post",
   "kernels": [
     "woof_post_state_v1",
@@ -52,7 +54,7 @@
     "--fmad=false",
     "--std=c++17"
   ],
-  "ptx_virtual_architecture": "compute_75",
+  "ptx_virtual_architecture": "compute_60",
   "sources": [
     {
       "file": "woof_post.cu",

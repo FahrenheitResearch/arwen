@@ -24,7 +24,6 @@ from gpuwm.verify.gf_oracle import (
     GF_NZ,
     load_gf_oracle,
     measure_fields,
-    stage_rows_to_distrust,
 )
 from gpuwm.verify.gf_ref import (
     DEEP_CP,
@@ -33,6 +32,7 @@ from gpuwm.verify.gf_ref import (
     GFS_CP,
     GFS_G,
     GFS_RV,
+    GFS_XLV,
     gf_driver_prep,
 )
 
@@ -117,16 +117,33 @@ def test_the_two_constant_sets_disagree():
     assert np.float32(GFS_RV) != DEEP_RV
 
 
-def test_gfs_constants_are_the_accurate_doubles():
-    """The trap: assigned to a real(8) and written out, ``con_g`` reads
-    ``float64(float32(9.80665))``.  Its arithmetic does not behave that way --
-    the fixture needs the accurate double on all 8640 lanes of ``omeg``, and the
-    float32-widened value misses 1488 of them by 1 ULP.  This test exists so a
-    future reader of ``gf-pow-probe.txt``'s stored-word rows cannot quietly
-    "correct" the constants back."""
-    assert GFS_G.view(np.int64) == np.float64(9.80665).view(np.int64)
-    assert GFS_G.view(np.int64) != np.int64(0x40239D0140000000)
-    assert GFS_CP.view(np.int64) == np.float64(1004.6).view(np.int64)
+def test_gfs_constants_are_wrfs_own_words():
+    """WRF's module_gfs_physcons declares ``con_g`` etc. real(8) and
+    initialises them from DEFAULT-REAL literals, so GFDRV computes with
+    ``float64(float32(9.80665))`` = ``0x40239D0140000000``.  An earlier
+    revision used the accurate doubles, measured against the oracle's own
+    decomposition, which had respelled the constants the same wrong way; that
+    circular measurement left 8 of 216 GFDRV columns 1-34 ULP off.  This test
+    exists so nobody "corrects" the words back to the accurate doubles."""
+    assert GFS_G.view(np.int64) == np.int64(0x40239D0140000000)
+    assert GFS_G.view(np.int64) != np.float64(9.80665).view(np.int64)
+    assert GFS_CP.view(np.int64) == np.int64(0x408F64CCC0000000)
+    assert GFS_CP.view(np.int64) != np.float64(1004.6).view(np.int64)
+    assert GFS_XLV.view(np.int64) == np.float64(2.5e6).view(np.int64)
+
+
+def test_the_kernel_carries_the_same_words():
+    """gf.cu's driver half spells the same three words as bit patterns."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "gpuwm" / "core" / "kernels"
+           / "gf.cu").read_text(encoding="utf-8")
+    words = dict(re.findall(
+        r"#define (GFS_\w+_D)\s+__longlong_as_double\((0x[0-9A-F]+)LL\)", src))
+    assert words == {"GFS_G_D": "0x40239D0140000000",
+                     "GFS_CP_D": "0x408F64CCC0000000",
+                     "GFS_XLV_D": "0x414312D000000000"}, words
 
 
 @pytest.mark.parametrize("field", _LEVEL_FIELDS)
@@ -170,15 +187,13 @@ def test_kpbl_passes_through(fixture, prepared):
     assert np.array_equal(prepared["kpbli"], fixture.stage_surface["kpbli"])
 
 
-def test_stage_fixture_records_its_own_fidelity(fixture):
-    """The stage decomposition is only usable where it reproduces GFDRV.  208
-    of 216 rows do; the 8 that do not are a measured consequence of the
-    driver's mixed-precision constants and are marked, not hidden."""
-    distrust = stage_rows_to_distrust(fixture)
-    assert int(distrust.sum()) == 8
-    assert int((~distrust).sum()) == 208
-    # No branch flipped anywhere: the residual is a magnitude shift only.
+def test_stage_fixture_reproduces_gfdrv_on_every_row(fixture):
+    """The stage decomposition reproduces GFDRV bitwise on all 216 rows.
+    Until 2026-10-07 it missed 8, because it respelled the GFS constants as
+    accurate doubles; it now USEs module_gfs_physcons itself."""
     cons = fixture.consistency
+    assert cons["ndiff_words_vs_gfdrv"].shape[0] == GF_NCASE * GF_NDX * 2
+    assert np.all(cons["ndiff_words_vs_gfdrv"].astype(np.int64) == 0)
     assert np.array_equal(cons["ktop_direct"], cons["ktop_driver"])
 
 

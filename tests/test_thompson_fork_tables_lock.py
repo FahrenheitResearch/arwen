@@ -112,8 +112,10 @@ def test_the_per_step_path_is_the_function_these_tests_drive():
         encoding="utf-8")
     body = source.split("def _wrf39_table_root", 1)[1].split("\ndef ", 1)[0]
     assert "return str(ensure_thompson_fork_tables())" in body
-    step = source.split("def _apply_thompson_aerosol_call", 1)[1]
-    assert "_wrf39_table_root(), version=version)" in step
+    step = source.split("def _apply_thompson_aerosol_call", 1)[1].split(
+        "\ndef ", 1)[0]
+    assert "load_classic_device_tables(" in step
+    assert "_wrf39_table_root(), version=version" in step
 
 
 _CHILD = textwrap.dedent('''

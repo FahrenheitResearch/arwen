@@ -97,6 +97,7 @@ def test_saved_recipe_totals_match_the_current_picture_allowance(design):
         total = p["total_bytes"] + row["download"]["bytes"] + row["download"]["preparation_bytes"]
         # Both the saved total and its picture-only update round to 0.1 GiB.
         assert abs(row["disk_gib"] - total / GIB) <= 0.1, (name, row["card_gb"])
+        assert total <= row["disk_budget_gib"] * GIB, (name, row["card_gb"])
 
 
 @pytest.mark.parametrize("route", ["prepared", "experiment"])
@@ -134,8 +135,10 @@ def test_the_designer_prices_each_grid_s_physics_and_refuses_a_bare_grid(design)
     with pytest.raises(TypeError, match="resolved RunConfig"):
         disk_budget.history_frame_bytes(SimpleNamespace(nx=552, ny=552, nz=49))
     # The measured 250 m child of tests/test_downscale_checkpoint_disk.py wrote 1.2 GB a frame
-    # on this grid; the dry pricing said 0.50 GB.
-    assert 1.15e9 < disk_budget.history_frame_bytes(run) < 1.3e9
+    # on this grid; the dry pricing said 0.50 GB.  Since the writer carries WRF's radiation
+    # accumulations and COSZEN (integrate/2.9.1 07da44ca29a, forward-merged at 5c66532fadc,
+    # 41 more surface words) the same frame prices 1.55 GB; a dry frame is still under half.
+    assert 1.45e9 < disk_budget.history_frame_bytes(run) < 1.65e9
 
 
 def _calls_without_render(path: Path):

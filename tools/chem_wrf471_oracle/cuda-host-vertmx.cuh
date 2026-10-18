@@ -16,6 +16,7 @@ inline double __dadd_rn(double a,double b){ volatile double r=a+b;return r; }
 inline double __dsub_rn(double a,double b){ volatile double r=a-b;return r; }
 inline double __dmul_rn(double a,double b){ volatile double r=a*b;return r; }
 inline double __ddiv_rn(double a,double b){ volatile double r=a/b;return r; }
+inline double __fma_rn(double a,double b,double c){return std::fma(a,b,c);}
 inline float __double2float_rn(double a){volatile float r=a;return r;}
 inline float __fmaf_rn(float a,float b,float c){return std::fma(a,b,c);}
 inline float __fsqrt_rn(float a){return std::sqrt(a);}

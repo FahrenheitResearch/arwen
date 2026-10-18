@@ -12,6 +12,7 @@
    "column_kernel": "wsm7_column",
    "refl_kernel": "wsm7_refl10cm_column",
    "kmax_define": "WSM7_KMAX",
+   "conservative_surface": {"key": "wsm7_conservative_surface", "define": "WSM7_PLM_SURFACE", "finding": "WB5"},
    "level_tiers": [
     64,
     80

@@ -6,11 +6,13 @@ Outcomes (CASE.md's list, in the command's spelling):
                     designated referee (no field skipped: see ``ALLOWED_ABSENT``).
 ``FAIL``            a difference against a sound, designated referee, or a
                     reference field WOOF did not write or wrote in another shape.
-``WOOF-REFUSED``    WOOF's door or loader refused the combo, or the runner raised a
-                    named ValueError before writing its first history frame.
-``WOOF-CRASH``      WOOF stopped before the referee's last good step, every
-                    frame it wrote matching; or, with no referee, WOOF did not
-                    write every planned step.
+``WOOF-REFUSED``    an explicit ConfigurationRefused validator refused the combo
+                    before writing its first history frame.
+``WOOF-CRASH``      WOOF stopped before the referee's last good step, whatever
+                    its frames show (a frame that differs before the stop does
+                    not turn the crash into a FAIL, an UNSOUND-REF or an INFO
+                    row); or, with no referee, WOOF did not write every
+                    planned step.
 ``WOOF-NONFINITE``  no referee, and WOOF's state went NaN or infinite.
 ``REPEAT-MISS``     the combo asks for a WOOF repeat run and the two differ, or
                     the repeat run is missing.
@@ -129,11 +131,14 @@ def _short(comparison: Comparison) -> str:
 def decide(*, woof_status: str, nonfinite_step: int | None, referee: str | None,
            comparisons: dict[str, Comparison], referee_sound: bool, designated: bool,
            repeat: Comparison | None, repeat_required: bool = False,
-           planned_last_step: int | None = None, woof_last_step: int | None = None) -> str:
+           planned_last_step: int | None = None, woof_last_step: int | None = None,
+           referee_last_good_step: int | None = None) -> str:
     """The outcome for one run.  See the module docstring.
 
-    Soundness is checked before any PASS: a match against a referee that is
-    not a sound 0 ULP reference proves nothing, so it is UNSOUND-REF.  A
+    A WOOF stop before the referee's last good step is WOOF-CRASH before
+    anything else is weighed.  Soundness is checked before any PASS: a match
+    against a referee that is not a sound 0 ULP reference proves nothing, so
+    it is UNSOUND-REF.  A
     match needs every reference field compared (``Comparison.matched``).
     With no referee, WOOF must have written every planned step
     (``planned_last_step``, the last history step the plan reaches) to be
@@ -142,14 +147,12 @@ def decide(*, woof_status: str, nonfinite_step: int | None, referee: str | None,
 
     if woof_status == "REFUSED":
         return "WOOF-REFUSED"
-    # A post-forecast failure (for example checkpoint capture) can leave
-    # every history frame intact. Matching those frames must not turn the
-    # reported engine crash into a successful CLI verdict.
-    if woof_status == "CRASH":
-        return "WOOF-CRASH"
     repeat_missed = (repeat is None and repeat_required) or (
         repeat is not None and not repeat.matched)
     if referee is None or referee not in comparisons:
+        # An engine crash is never WOOF-ONLY-OK, however many steps it wrote.
+        if woof_status == "CRASH":
+            return "WOOF-CRASH"
         if nonfinite_step is not None:
             return "WOOF-NONFINITE"
         if planned_last_step is not None and (woof_last_step is None
@@ -159,12 +162,35 @@ def decide(*, woof_status: str, nonfinite_step: int | None, referee: str | None,
             return "REPEAT-MISS"
         return "WOOF-ONLY-OK"
     scored = comparisons[referee]
-    if scored.first_step is None and (scored.missing_steps or not scored.steps_compared):
+    if referee_last_good_step is not None and referee_last_good_step < 0:
+        # A referee non-finite at frame zero supplies no finite window. It
+        # cannot establish that a finite WOOF run stopped earlier than WRF.
+        return "UNSOUND-REF"
+    # A WOOF stop before the referee's last good step is a crash in its own
+    # right.  It used to count only when every earlier frame matched, so a run
+    # whose step 0 already differed (GLW, REFL_10CM) and that then crashed at
+    # step 1 was filed under the referee's soundness: 24 crashes of the second
+    # combo sweep were reported as UNSOUND-REF.
+    if scored.missing_steps or not scored.steps_compared:
+        return "WOOF-CRASH"
+    # A post-forecast failure (for example checkpoint capture) can leave
+    # every history frame intact.  Matching those frames must not turn the
+    # reported engine crash into a successful verdict, designated or not
+    # (2.9.1).  Against an unsound referee the run keeps that referee's
+    # finite-window classification, UNSOUND-REF (exact chain b6bd14ea), and a
+    # crash against a sound designated referee is WOOF-CRASH below.
+    if woof_status == "CRASH" and scored.matched and referee_sound:
         return "WOOF-CRASH"
     if not designated:
         return "INFO-MATCH" if scored.matched else "INFO-MISS"
     if not referee_sound:
         return "UNSOUND-REF"
+    # A post-forecast failure (for example checkpoint capture) can leave
+    # every history frame intact. Matching those frames must not turn the
+    # reported engine crash into a successful CLI verdict. An unsound
+    # referee's finite-window classification remains unchanged above.
+    if woof_status == "CRASH":
+        return "WOOF-CRASH"
     if not scored.matched:
         return "FAIL"
     if repeat_missed:

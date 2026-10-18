@@ -155,7 +155,8 @@ def test_store_frame_downloads_exactly_what_fields_reads():
     read = set(re.findall(r'store\["([^"]+)"\]', source))
     declared = {key for keys in StoreFrame._DERIVED_INPUTS.values() for key in keys}
     assert read == declared, (read, declared)
-    assert set(StoreFrame._DERIVED_INPUTS) == {"T", "P", "PSFC", "FS_GEN_IDMAX"}
+    # THM is the USE_THETA_M=0 record, derived as T is (2.9.1).
+    assert set(StoreFrame._DERIVED_INPUTS) == {"T", "THM", "P", "PSFC", "FS_GEN_IDMAX"}
 
 
 def test_deferred_frame_waits_then_assembles_once():

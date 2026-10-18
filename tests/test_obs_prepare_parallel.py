@@ -103,7 +103,8 @@ def test_stage_events_pair_slot_and_site_across_threads(tmp_path):
     for slot in (0, 1):
         rows = [e for e in events if e['attrs']['slot'] == slot]
         assert [e['phase'] for e in rows] == ['begin', 'end']
-        assert rows[0]['attrs'] == rows[1]['attrs']
+        assert ({k: v for k, v in rows[0]['attrs'].items() if k != 'cpu_s'}
+                == {k: v for k, v in rows[1]['attrs'].items() if k != 'cpu_s'})
         assert all(e['product'] == 'da' for e in rows)
 
 

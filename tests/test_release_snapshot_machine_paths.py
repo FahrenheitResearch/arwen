@@ -430,18 +430,24 @@ def test_nothing_shipped_imports_the_excluded_campaign_harness():
 
 
 # ---------------------------------------------------------------------
-# Private machine names in the data files a wheel carries (A154)
+# Private machine names in the files a wheel carries (A154)
 # ---------------------------------------------------------------------
 # 2.8.1's fetch route table named the lab host that watched the posting
 # times in 20 measured rows: a private machine's name published in a
-# wheel.  Built from fragments, like the paths above.
+# wheel.  2.9.0's wheel carried lab host and internal folder names in 61
+# members, nearly all code, because code was out of scope.  Built from
+# fragments, like the paths above.
 HOST = "no" + "de-4"
 WEATHER_HOST = "weather-" + "no" + "de-1"
 LAN = "192." + "168.68.50"
+FOLDER = "Down" + "loads/"
 
 
+# Replaces test_private_machine_names_are_refused_in_shipped_data_files
+# (122ce03da): the rule reads every shipped file, code included, because the
+# 2.9.0 wheel carried lab host names in code the data-only rule never read.
 @requires_builder
-def test_private_machine_names_are_refused_in_shipped_data_files(tmp_path):
+def test_private_machine_names_are_refused_in_shipped_files(tmp_path):
     snap = _snap()
     files = {
         # Shipped data: refused.
@@ -450,9 +456,14 @@ def test_private_machine_names_are_refused_in_shipped_data_files(tmp_path):
         "configs/demo.toml": "# Linux (" + WEATHER_HOST + ")\n",
         "gpuwm/data/oracle/PROVENANCE.md": "recorded on " + HOST + "\n",
         "tools/release/identities.json": '{"box": "' + LAN + '"}\n',
-        # Code, a document outside every wheel, and words that are not a
-        # host: read for machine paths only.
+        # Shipped code: refused too.
         "gpuwm/core/timing.py": "# measured on " + WEATHER_HOST + "\n",
+        "tools/probe.py": "# see " + FOLDER + "RUN-REPORT/REPORT.md\n",
+        # A document outside every wheel, a tools subpackage the wheel does
+        # not carry, the engine's own lower-case cache folder and words that
+        # are not a host: read for machine paths only.
+        "gpuwm/go_cli.py": "# downloads/<key>/<object>.part\n",
+        "tools/release/cut/drivers/probe.py": "# on " + HOST + "\n",
         "docs/public/receipts/run.json": '{"host": "' + HOST + '"}\n',
         "tools/battery/list.txt": HOST + "\n",
         "gpuwm/data/governor.json": '{"note": "the node-wide governor, node_4"}\n',
@@ -472,8 +483,29 @@ def test_private_machine_names_are_refused_in_shipped_data_files(tmp_path):
         ("configs/demo.toml", "private machine name"),
         ("configs/real/terrain.nc", "private machine name"),
         ("gpuwm/authorities/routes.json", "private machine name"),
+        ("gpuwm/core/timing.py", "private machine name"),
         ("gpuwm/data/oracle/PROVENANCE.md", "private machine name"),
+        ("tools/probe.py", "internal folder name"),
         ("tools/release/identities.json", "private network address")]
+
+
+def test_every_frozen_kernel_allowance_still_matches_its_file():
+    """A kernel-source allowance whose file has moved on is spent.
+
+    The allowance is by digest, so an edited kernel is already refused if it
+    still names a host; this keeps a spent entry from lingering in the table.
+    """
+
+    import hashlib
+
+    from tools.release_exclusions import PINNED_KERNEL_SOURCES
+
+    spent = {rel: digest for rel, digest in PINNED_KERNEL_SOURCES.items()
+             if not (REPO / rel).is_file()
+             or hashlib.sha256((REPO / rel).read_bytes()).hexdigest() != digest}
+    assert spent == {}, (
+        "these kernel sources no longer carry the bytes the host-name "
+        f"allowance names; drop the entry (and any host name left): {spent}")
 
 
 @requires_builder
@@ -564,11 +596,14 @@ OWNER_MAIL = "fahrenheit" + "agi" + "@example.invalid"
 
 
 @requires_builder
-def test_the_owners_name_and_mail_are_refused_in_every_shipped_file(tmp_path):
+def test_the_owners_mail_is_refused_and_the_first_name_is_a_word(tmp_path):
     """Code is read too: a comment is published text (owner ruling 2026-09-10).
 
-    2.9.0's first candidate carried the owner's name in two modules, three
-    tests and a frozen config, and nothing read for it.
+    The e-mail is refused wherever it sits.  The owner's first name is not
+    read in any spelling (owner ruling 2026-10-17: "for future remove the
+    drew rule thats so dumb"); it is an English verb, and the scan that read
+    it blocked cuts over renderer sentences.  Replaces
+    test_the_owners_name_and_mail_are_refused_in_every_shipped_file.
     """
 
     snap = _snap()
@@ -576,13 +611,8 @@ def test_the_owners_name_and_mail_are_refused_in_every_shipped_file(tmp_path):
         "gpuwm/namelist_chem.py": "# " + OWNER_NAME + "'s ruling (2026-10-12)\n",
         "tests/test_door.py": "# ---- &chem (" + OWNER_NAME + ", 2026-10-12) ----\n",
         "docs/public/receipts/run.json": '{"author": "' + OWNER_MAIL + '"}\n',
-        # The all-capitals name in a Rust string literal: 2.9.0 cut r7 sealed
-        # with it in rw_mpas_static while this scan read the capitalised word only.
         "tools/rustwx/crates/x/src/gwd.rs": ('attr("PROPOSED FOR ' + OWNER_NAME.upper()
                                              + ': case-specific sign-off required");\n'),
-        # The past tense of "draw" and a lower-case word inside an identifier
-        # are not the owner; the packet gate reads the lower case with its
-        # named allowance.
         "gpuwm/render.py": ("# the renderer " + OWNER_NAME.lower()
                             + " 43 pictures; with" + OWNER_NAME.lower() + "; An" + OWNER_NAME.lower()
                             + "sville\n"),
@@ -593,7 +623,99 @@ def test_the_owners_name_and_mail_are_refused_in_every_shipped_file(tmp_path):
         target.write_text(text, encoding="utf-8")
     hits = snap.machine_path_hits(str(tmp_path))
     assert sorted((rel, kind) for rel, _where, kind, _ in hits) == [
-        ("docs/public/receipts/run.json", "owner's e-mail"),
-        ("gpuwm/namelist_chem.py", "owner's name"),
-        ("tests/test_door.py", "owner's name"),
-        ("tools/rustwx/crates/x/src/gwd.rs", "owner's name")]
+        ("docs/public/receipts/run.json", "owner's e-mail")]
+
+
+# The private DA system's names, assembled so this file carries none of them
+# (tools/release_exclusions.py, owner rulings 2026-10-14 and 2026-10-16).
+_J = "JE" + "DI"
+_DA_SAMPLES = {
+    # The 2.9.2 compose's GLM door described its table by the private DA
+    # repository's converter; a comment is published text.
+    "gpuwm/obs/cli.py": "# the cycle's GLM converter in woof" + "-da\n",
+    "tools/rustwx/crates/rw-goes/src/glm.rs": "//! MPAS-" + _J + " observations of the cycle\n",
+    "tools/rustwx/crates/rw-radar-feeds/Cargo.toml": "# (`rw_odim`, `hex-" + "radar-superob --odim`) consume.\n",
+    "tools/box/run.sh": "source ~/lane" + "kit/env.sh\n",
+    "docs/da-cycle.md": "the CUDA Column " + "LETKF solves each window\n",
+    "configs/rows/case.json": '{"schema": "hex.enkf' + '-case.v1"}\n',
+}
+_DA_KINDS = {
+    "gpuwm/obs/cli.py": "private DA repository",
+    "tools/rustwx/crates/rw-goes/src/glm.rs": "JCSDA DA framework (the private DA system)",
+    "tools/rustwx/crates/rw-radar-feeds/Cargo.toml": "private DA tooling",
+    "tools/box/run.sh": "private DA tooling",
+    "docs/da-cycle.md": "private LETKF orchestration",
+    "configs/rows/case.json": "private DA case row",
+}
+
+
+@requires_builder
+def test_the_private_da_system_is_refused_in_every_public_file(tmp_path):
+    """The planted sample: every kind of private DA content fails the scan.
+
+    The breakage: 2.9.2's compose merged a GLM door that wrote the DA side's
+    zero-lightning observations and errors and named the private DA
+    repository, and the 2.9.0 export carried a stock JCSDA build recipe and
+    rented-box DA kits, while no scan read for any of it.
+    """
+
+    snap = _snap()
+    for rel, text in _DA_SAMPLES.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    hits = snap.machine_path_hits(str(tmp_path))
+    assert {rel: kind for rel, _where, kind, _ in hits} == _DA_KINDS
+    # One sample per marker, so a marker nobody exercises cannot rot.
+    from tools.release_exclusions import da_tooling_kinds
+    assert set(_DA_KINDS.values()) | {"JCSDA observation-data format (the private DA system's writers)"} \
+        == set(da_tooling_kinds())
+    assert snap.da_violations("x.md", ("an " + "IO" + "DA file\n").encode())[0][1].startswith("JCSDA observation")
+
+
+@requires_builder
+def test_the_public_local_da_and_upstream_names_are_not_the_private_system(tmp_path):
+    """The engine's own local DA vocabulary and upstream names pass.
+
+    gpuwm.da is public (LETKF, EnKF, superobs, RTPS, ``gpuwm local-da``), a
+    "WOOF DA" panel label names a product, and the RRFS v2 application and
+    MPAS's namelist option contain the framework's name without being it.
+    """
+
+    snap = _snap()
+    files = {
+        "gpuwm/da/letkf.py": "# local LETKF with RTPS; EnKF moments; radar superob\n",
+        "docs/local-da.md": "gpuwm local-da run --da-root $DA_ROOT (WOOF DA member 0 panel)\n",
+        "tools/build_registry.py": '"pinned_by": "RRFS v2 (rrfs-workflow rrfs-mpas-' + _J.lower() + ')"\n',
+        "tests/test_namelist.py": '{"' + _J.lower() + '_da": "false", "config_' + _J.lower() + '_da": false}\n',
+    }
+    for rel, text in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    assert snap.machine_path_hits(str(tmp_path)) == []
+    # Masking an upstream name leaves the rest of the line read.
+    line = "rrfs-mpas-" + _J.lower() + " and woof" + "da"
+    assert snap.da_violations("tools/x.py", line.encode())[0][1] == "private DA repository"
+
+
+def test_every_da_file_allowance_still_counts_its_lines():
+    """A file allowance is an exact line count; a spent or grown one fails.
+
+    A new line naming the framework in an allowed file is read like any
+    other file's, because the count no longer matches.
+    """
+
+    from tools.release_exclusions import DA_TOOLING_ALLOWED_FILES, da_tooling_kind
+
+    wrong = {}
+    for rel, (lines, _reason) in DA_TOOLING_ALLOWED_FILES.items():
+        path = REPO / rel
+        if not path.is_file():
+            wrong[rel] = "missing"
+            continue
+        counted = sum(da_tooling_kind(line) is not None
+                      for line in path.read_text(encoding="utf-8").splitlines())
+        if counted != lines:
+            wrong[rel] = counted
+    assert wrong == {}, f"DA allowances whose line count moved: {wrong}"

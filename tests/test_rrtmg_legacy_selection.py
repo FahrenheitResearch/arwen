@@ -169,7 +169,7 @@ def test_selecting_legacy_constructs_the_adapter_at_physics_setup(
     # coefficient/table builds exist on the instance
     identity = adapter.restart_identity()
     assert identity["algorithms"]["lw"] == \
-        "wrf-v4.6.1-rrtmg-legacy-lw-v2-owned-gpoint-stratosphere-corrections"
+        "wrf-v4.6.1-rrtmg-legacy-lw-v3-owned-gpoint-stratosphere-corrections-micron-inputs"
     assert adapter._C is not None and adapter._sw_tables is not None
 
 
@@ -210,9 +210,9 @@ def test_restart_identity_strings_are_distinct_from_rte_rrtmgp():
     # v2: the band 4 and band 7 stratospheric corrections are applied once
     # by their owning g-point thread; a v1 checkpoint ran the racing form.
     assert restart.RRTMG_LEGACY_LW_ALGORITHM_IDENTITY == \
-        "wrf-v4.6.1-rrtmg-legacy-lw-v2-owned-gpoint-stratosphere-corrections"
+        "wrf-v4.6.1-rrtmg-legacy-lw-v3-owned-gpoint-stratosphere-corrections-micron-inputs"
     assert restart.RRTMG_LEGACY_SW_ALGORITHM_IDENTITY == \
-        "wrf-v4.6.1-rrtmg-legacy-sw-v1"
+        "wrf-v4.6.1-rrtmg-legacy-sw-v2-micron-inputs"
     assert restart.RRTMG_LEGACY_LW_ALGORITHM_IDENTITY != \
         restart.LONGWAVE_ALGORITHM_IDENTITIES[4]
     assert restart.RRTMG_LEGACY_SW_ALGORITHM_IDENTITY != \

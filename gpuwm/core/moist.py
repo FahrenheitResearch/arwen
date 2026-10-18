@@ -309,9 +309,15 @@ def _extra_water_species(state: DomainState) -> tuple[str, ...]:
 
 
 def extra_moist_species(state: DomainState) -> tuple[str, ...]:
-    """Extra transported Registry fields, including optional MYNN scalar QKE."""
+    """Extra transported fields: the microphysics species, MYNN's optional
+    scalar QKE, then every PBL-owned advected scalar the state carries
+    (:data:`gpuwm.core.physics_inventory.PBL_SCALAR_NAMES`, one shared
+    inventory keyed by PBL selector)."""
+    from gpuwm.core.physics_inventory import PBL_SCALAR_NAMES
+    carried = tuple(name for name in PBL_SCALAR_NAMES
+                    if getattr(state, name, None) is not None)
     return _extra_water_species(state) + (
-        ("qke_adv",) if getattr(state, "qke_adv", None) is not None else ())
+        ("qke_adv",) if getattr(state, "qke_adv", None) is not None else ()) + carried
 
 
 def moist_species(state: DomainState) -> tuple[str, ...]:
@@ -599,7 +605,7 @@ def _update_scalar_in_place(q, q0, tend, c1h, c2h, mu0, mu, dt_eff: float,
     kern(*args)
 
 
-def _capture_advective_qv_forcing(state: DomainState, tend, mu0) -> None:
+def _capture_advective_qv_forcing(state: DomainState, tend, mu0, *, cfg=None) -> None:
     """EXPORT the stage's pure advective qv rate as WRF ``RQVFTEN``.
 
     ``tend`` is the WRF-coupled advective tendency of qv carrying an extra
@@ -613,6 +619,10 @@ def _capture_advective_qv_forcing(state: DomainState, tend, mu0) -> None:
     A no-op on a state with no advective-forcing consumer.
     """
     if getattr(state, "rqvften", None) is None:
+        return
+    if WRF_EXACT and getattr(cfg, "cu_physics", 0) == 3:
+        state.rqvften[...] = (tend * state.msft[None]
+                             if state.has_msf else tend)
         return
     rate = tend / (state.c1h[:, None, None] * mu0[None]
                    + state.c2h[:, None, None])
@@ -705,6 +715,8 @@ def _advance_species_wrf(state: DomainState, cfg: RunConfig, name: str, q, q0,
                                open_x=boundary_x, open_y=boundary_y)
         if implicit is not None:
             _ieva_scalar(state, tend, q0_eff, implicit, mu0, mu, dt_eff)
+        if name == "qv" and WRF_EXACT and cfg.cu_physics == 3:
+            _capture_advective_qv_forcing(state, tend, mu0, cfg=cfg)
         if boundary_forced:
             _exclude_specified_ring_advection(tend, cfg.spec_zone)
         _update_scalar_in_place(
@@ -720,8 +732,8 @@ def _advance_species_wrf(state: DomainState, cfg: RunConfig, name: str, q, q0,
                            vorder=vertical_orders(cfg)[0])
     if implicit is not None:
         _ieva_scalar(state, tend, q0, implicit, mu0, mu, dt_eff)
-    if export_advective_forcing and name == "qv":
-        _capture_advective_qv_forcing(state, tend, mu0)
+    if name == "qv" and (export_advective_forcing or (WRF_EXACT and cfg.cu_physics == 3)):
+        _capture_advective_qv_forcing(state, tend, mu0, cfg=cfg)
     if boundary_forced:
         # flux_div_scalar fills the specified ring; rk_update_scalar's
         # advection loop starts inside it (i_start = ids+spec_zone).

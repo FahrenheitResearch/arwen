@@ -16,6 +16,7 @@ use bowecho_simradar::{
     WrfFile, WrfRadarFields, build_synthetic_volume_reporting_temporal,
     read_wrf_radar_fields_for_config, try_build_synthetic_volume,
 };
+use rayon::prelude::*;
 use request::{Fields, Request};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,12 @@ fn read_scene(
         read_wrf_radar_fields_for_config(&file, &scene.source_identity, scene.time_index, config)?;
     atmosphere::native_winds(&file, scene.time_index, &mut fields)?;
     Ok(fields)
+}
+
+/// The atmosphere bytes one history's scene holds, from its header alone.
+fn scene_atmosphere_bytes(path: &Path) -> Result<u64, String> {
+    let header = WrfFile::open(path).map_err(|e| e.to_string())?;
+    resources::atmosphere_bytes(header.nx, header.ny, header.nz)
 }
 
 fn field_name(moment: &MomentType) -> &str {
@@ -124,10 +131,13 @@ fn process(request: Request) -> Result<PathBuf, String> {
     for path in &histories {
         input_contract::validate_history(path)?;
     }
+    // Every history is hashed at once: one file per core, not one core for all.
     let source_hashes: BTreeMap<_, _> = histories
-        .iter()
+        .par_iter()
         .map(|path| manifest::file_hash(path).map(|(hash, _)| (path.clone(), hash)))
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .collect();
     let inventory = inventory_wrf_paths(&histories)?;
     if inventory
         .inventory
@@ -180,7 +190,11 @@ fn process(request: Request) -> Result<PathBuf, String> {
     let base = request.config.native();
     base.validate_science_contract()?;
     let mut processed = 0usize;
-    for group in inventory.inventory.groups {
+    let groups = inventory.inventory.groups;
+    // Plan every volume before reading any atmosphere, so the next volume's
+    // history can be read while the current one is scanned and written.
+    let mut work = Vec::new();
+    for (group_index, group) in groups.iter().enumerate() {
         if !group.diagnostics.duplicate_times.is_empty() {
             return Err("history inputs repeat a domain time; ambiguous radar atmospheres cannot share one volume path".into());
         }
@@ -195,9 +209,8 @@ fn process(request: Request) -> Result<PathBuf, String> {
             {
                 continue;
             }
-            let started = Instant::now();
             let plan = plan_for_scene(
-                &group,
+                group,
                 index,
                 chrono::Duration::milliseconds(base.planned_scan_duration_ms()),
                 base.atmosphere_time_mode,
@@ -232,12 +245,59 @@ fn process(request: Request) -> Result<PathBuf, String> {
                 );
                 continue;
             }
-            let header = WrfFile::open(&scene.path).map_err(|e| e.to_string())?;
-            let scene_bytes = resources::atmosphere_bytes(header.nx, header.ny, header.nz)?;
-            drop(header);
+            work.push((group_index, index, domain.clone(), plan, source_times, source_history, generation));
+        }
+    }
+    // The next volume's atmosphere, read on its own thread while the current
+    // volume is scanned and written: a history read is mostly one core.
+    let mut ahead: Option<(PathBuf, usize, std::thread::JoinHandle<Result<WrfRadarFields, String>>)> = None;
+    for (position, (group_index, index, domain, plan, source_times, source_history, generation)) in
+        work.iter().enumerate()
+    {
+        let (domain, generation) = (domain.clone(), generation.clone());
+        let scene = &groups[*group_index].scenes[*index];
+        {
+            let started = Instant::now();
+            let scene_bytes = scene_atmosphere_bytes(&scene.path)?;
             let resident_scenes = if plan.outcome == TemporalSamplingOutcome::LinearAdjacent {2} else {1};
-            request.config.check_memory(scene_bytes.checked_mul(resident_scenes).ok_or("radar memory estimate overflow")?)?;
-            let fields = read_scene(&scene.locator(), &base)?;
+            let resident_bytes = scene_bytes.checked_mul(resident_scenes).ok_or("radar memory estimate overflow")?;
+            request.config.check_memory(resident_bytes)?;
+            let locator = scene.locator();
+            let current = ahead.take();
+            // The next volume's read starts before this one's is awaited, so
+            // the first two histories are read side by side as well.
+            if let Some((next_group, next_index, ..)) = work.get(position + 1) {
+                let next = groups[*next_group].scenes[*next_index].locator();
+                let admitted = scene_atmosphere_bytes(&next.path).and_then(|next_bytes| {
+                    request.config.check_memory(
+                        resident_bytes.checked_add(next_bytes).ok_or("radar memory estimate overflow")?,
+                    )
+                });
+                match admitted {
+                    Ok(()) => {
+                        let config = base.clone();
+                        let (path, time_index) = (next.path.clone(), next.time_index);
+                        let handle = std::thread::spawn(move || read_scene(&next, &config));
+                        ahead = Some((path, time_index, handle));
+                    }
+                    Err(reason) => eprintln!(
+                        "warning: next radar history is read after this volume, not beside it: {reason}"
+                    ),
+                }
+            }
+            let fields = match current {
+                Some((path, time_index, handle))
+                    if path == locator.path && time_index == locator.time_index =>
+                {
+                    handle.join().map_err(|_| "radar history read-ahead panicked".to_string())??
+                }
+                other => {
+                    if let Some((_, _, handle)) = other {
+                        let _ = handle.join();
+                    }
+                    read_scene(&locator, &base)?
+                }
+            };
             let sites = request.config.resolve_sites(&fields)?;
             if sites.is_empty() {
                 manifest.retire_where(|v| {
@@ -314,31 +374,48 @@ fn process(request: Request) -> Result<PathBuf, String> {
                     .join(&domain)
                     .join(&site.id)
                     .join(&generation);
+                // Every format is encoded and every PPI drawn at the same
+                // time; each writes its own file, listed in request order.
+                let (written, images) = rayon::join(
+                    || {
+                        request
+                            .config
+                            .formats
+                            .par_iter()
+                            .map(|format| {
+                                let suffix = match format.as_str() {
+                                    "level2" => "ar2v",
+                                    "cfradial1" => "cfradial1.nc",
+                                    "cfradial2" => "cfradial2.nc",
+                                    "odim" => "odim.h5",
+                                    _ => unreachable!(),
+                                };
+                                let path = directory.join(format!("{stem}.{suffix}"));
+                                let (bytes, report) = adapter::encode(&fm301, format)?;
+                                manifest::atomic_bytes(&path, &bytes)?;
+                                Ok((manifest::artifact(&request.outdir, &path, format)?, report))
+                            })
+                            .collect::<Result<Vec<_>, String>>()
+                    },
+                    || {
+                        ppi::render(
+                            &request.outdir,
+                            &domain,
+                            &generation,
+                            &volume,
+                            PPI_TILTS,
+                            PPI_WIDTH,
+                            PPI_HEIGHT,
+                        )
+                    },
+                );
                 let mut files = Vec::new();
                 let mut writer_reports = BTreeMap::new();
-                for format in &request.config.formats {
-                    let suffix = match format.as_str() {
-                        "level2" => "ar2v",
-                        "cfradial1" => "cfradial1.nc",
-                        "cfradial2" => "cfradial2.nc",
-                        "odim" => "odim.h5",
-                        _ => unreachable!(),
-                    };
-                    let path = directory.join(format!("{stem}.{suffix}"));
-                    let (bytes, report) = adapter::encode(&fm301, format)?;
-                    manifest::atomic_bytes(&path, &bytes)?;
-                    files.push(manifest::artifact(&request.outdir, &path, format)?);
+                for (format, (artifact, report)) in request.config.formats.iter().zip(written?) {
+                    files.push(artifact);
                     writer_reports.insert(format.clone(), report);
                 }
-                let images = ppi::render(
-                    &request.outdir,
-                    &domain,
-                    &generation,
-                    &volume,
-                    PPI_TILTS,
-                    PPI_WIDTH,
-                    PPI_HEIGHT,
-                )?;
+                let images = images?;
                 let offsets = volume
                     .cuts
                     .iter()
@@ -459,16 +536,8 @@ fn run() -> Result<(), String> {
     if args.len() != 2 || (args[0] != "--request" && args[0] != "--estimate") {
         return Err(format!("usage: {}", request::ABI));
     }
-    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
-        let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-            .min(4);
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global()
-            .map_err(|e| e.to_string())?;
-    }
+    // Rayon's global pool spans every core this process may use (or
+    // RAYON_NUM_THREADS); the beam sampling, encoders and PPIs share it.
     let mut document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(Path::new(&args[1])).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;

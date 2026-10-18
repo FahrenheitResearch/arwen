@@ -98,12 +98,23 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # correction): each key defaults on, off in a strict WRF process, which
     # forces exact.
     from gpuwm import correct_mode
+    # WRF's ocean mixed layer (2.9.1), appended after the correct-mode keys,
+    # off by default: every earlier configuration resolves as before.
+    assert names[-4:] == ["sf_ocean_physics", "oml_hml0", "oml_gamma",
+                          "oml_relaxation_time"]
+    assert RunConfig.__dataclass_fields__["sf_ocean_physics"].default == 0
+    names = names[:-4]
+    assert names.pop() == "wsm7_conservative_surface"
+    assert names.pop() == "wsm5_conservative_surface"
+    assert names.pop() == "wsm3_conservative_surface"
     assert names.pop() == "thompson_cloud_surface_booking"
     assert names.pop() == "wdm6_conservative_surface"
     assert names.pop() == "ntiedtke_dry_mass_coupling"
     assert names.pop() == "wsm6_conservative_surface"
     for field in ("ntiedtke_dry_mass_coupling", "wsm6_conservative_surface",
-                  "wdm6_conservative_surface", "thompson_cloud_surface_booking"):
+                  "wdm6_conservative_surface", "thompson_cloud_surface_booking",
+                  "wsm3_conservative_surface", "wsm5_conservative_surface",
+                  "wsm7_conservative_surface"):
         assert (RunConfig.__dataclass_fields__[field].default
                 is correct_mode.CORRECT_KEYS_DEFAULT)
         assert correct_mode.CORRECT_KEYS_DEFAULT is (not correct_mode.STRICT)
@@ -760,15 +771,19 @@ def _declares_a_run_config_table(path: Path) -> bool:
 
 
 def _pop_radiation_port_defaults(actual: dict) -> bool:
-    """The lightning and aer_opt = 2 controls (golden/ports-rad) at the
-    defaults under which nothing reads them."""
+    """The lightning and aer_opt = 2 controls (golden/ports-rad) and the
+    ocean mixed layer's keys at the defaults under which nothing reads them."""
     from gpuwm.config import AER_OPT2_RUN_KEYS
     from gpuwm.lightning_contract import LIGHTNING_DEFAULTS
     fields = RunConfig.__dataclass_fields__
+    # The ocean mixed layer's keys (2.9.1) at the off default nothing reads.
+    ocean = ("sf_ocean_physics", "oml_hml0", "oml_gamma", "oml_relaxation_time")
     return (all(actual.pop(name) == default
                 for name, default in LIGHTNING_DEFAULTS.items())
             and all(actual.pop(name) == fields[name].default
-                    for name in AER_OPT2_RUN_KEYS))
+                    for name in AER_OPT2_RUN_KEYS)
+            and all(actual.pop(name) == fields[name].default
+                    for name in ocean))
 
 
 def _pop_topo_radiation_defaults(actual: dict) -> bool:
@@ -812,6 +827,10 @@ def test_every_existing_legacy_toml_resolves_identically():
         assert actual.pop("ntiedtke_dry_mass_coupling") is CORRECT_KEYS_DEFAULT
         assert actual.pop("wdm6_conservative_surface") is CORRECT_KEYS_DEFAULT
         assert actual.pop("thompson_cloud_surface_booking") is CORRECT_KEYS_DEFAULT
+        # 2.9.1: WB5's keys for WSM3, WSM5 and WSM7, same default.
+        assert actual.pop("wsm3_conservative_surface") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("wsm5_conservative_surface") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("wsm7_conservative_surface") is CORRECT_KEYS_DEFAULT
         # Declared default correction, 2.8.8 (test above).
         assert actual.pop("terrain_clock") == "local_face"
         assert actual.pop("use_rap_aero_icbc") is False
@@ -899,6 +918,10 @@ def test_frozen_case_constructed_configs_resolve_identically():
         assert actual.pop("ntiedtke_dry_mass_coupling") is CORRECT_KEYS_DEFAULT
         assert actual.pop("wdm6_conservative_surface") is CORRECT_KEYS_DEFAULT
         assert actual.pop("thompson_cloud_surface_booking") is CORRECT_KEYS_DEFAULT
+        # 2.9.1: WB5's keys for WSM3, WSM5 and WSM7, same default.
+        assert actual.pop("wsm3_conservative_surface") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("wsm5_conservative_surface") is CORRECT_KEYS_DEFAULT
+        assert actual.pop("wsm7_conservative_surface") is CORRECT_KEYS_DEFAULT
         # Declared default correction, 2.8.8 (test above).
         assert actual.pop("terrain_clock") == "local_face"
         assert actual.pop("use_rap_aero_icbc") is False

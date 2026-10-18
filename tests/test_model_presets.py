@@ -58,13 +58,113 @@ def test_multiday_duration_and_calendar_injection():
         namelist(preset(NAME), start="2026-10-03_12:00:00'\n/\n&physics", seconds=20)
 
 
+def _fake_hex(root: Path, version: str, *, runners: bool = True) -> Path:
+    """An installed-looking gpuwm-hex: its metadata, and its two runners or none
+    (gpuwm-hex 0.3.3 as published ships neither)."""
+    root.mkdir(parents=True, exist_ok=True)
+    info = root / f"gpuwm_hex-{version}.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: gpuwm-hex\nVersion: {version}\n", encoding="utf-8")
+    package = root / "hexcore"
+    (package / "drivers").mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "drivers" / "__init__.py").write_text("", encoding="utf-8")
+    if runners:
+        (package / "preset_prepare.py").write_text("", encoding="utf-8")
+        (package / "drivers" / "forecast_receipt.py").write_text("", encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def hex_040(tmp_path_factory, monkeypatch):
+    """gpuwm-hex 0.4.0 on the import path, for this process and its children."""
+    import importlib
+    site = _fake_hex(tmp_path_factory.mktemp("site") / "site", "0.4.0")
+    monkeypatch.syspath_prepend(str(site))
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(
+        [str(site), str(ROOT), os.environ.get("PYTHONPATH", "")]))
+    for name in [n for n in sys.modules if n == "hexcore" or n.startswith("hexcore.")]:
+        monkeypatch.delitem(sys.modules, name)
+    importlib.invalidate_caches()
+    yield site
+    for name in [n for n in sys.modules if n == "hexcore" or n.startswith("hexcore.")]:
+        sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+
+
 def _cli(*args):
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="", GPUWM_NO_LOCAL_GPU="1")
     return subprocess.run([sys.executable, "-m", "gpuwm.cli", "preset", *args],
                           cwd=ROOT, env=env, capture_output=True, text=True)
 
 
-def test_real_cli_check_reports_no_blocker_and_every_declared_divergence(tmp_path):
+def _absent_hex(monkeypatch):
+    from gpuwm import model_presets
+    monkeypatch.setattr(model_presets, "_distribution_version", lambda name: None)
+    monkeypatch.setattr(model_presets, "_module_error",
+                        lambda module: "it is not installed")
+
+
+def test_check_and_list_count_a_missing_runner_package_as_a_blocker(monkeypatch, capsys):
+    # The 2.9.0 door audit: with no gpuwm-hex installed, list and check said
+    # launchable with 0 blockers and `preset prepare` then stopped with
+    # "runner 'hexcore.preset_prepare' is not installed".
+    from gpuwm import model_presets
+    from gpuwm.cli import build_parser
+    _absent_hex(monkeypatch)
+    parser = build_parser(preset_only=True)
+    assert model_presets.main(parser.parse_args(["preset", "check", NAME])) == 3
+    document = json.loads(capsys.readouterr().out)
+    assert document["launchable"] is False
+    assert {r["id"] for r in document["blockers"]} == {
+        "prepare-runner-importable", "run-runner-importable"}
+    assert all(r["remedy"] == 'pip install "gpuwm-hex>=0.4.0,<0.5"'
+               for r in document["blockers"])
+    assert document["paired_package"]["installed"] is None
+    assert model_presets.main(parser.parse_args(["preset", "list"])) == 0
+    row = next(r for r in json.loads(capsys.readouterr().out)["presets"] if r["id"] == NAME)
+    assert row["launchable"] is False
+
+
+def test_run_refuses_a_missing_runner_even_when_experimental(tmp_path, monkeypatch, capsys):
+    import subprocess as sp
+    from gpuwm import model_presets
+    from gpuwm.cli import build_parser
+    _absent_hex(monkeypatch)
+    monkeypatch.setattr(sp, "call", lambda argv: pytest.fail("launched without a runner"))
+    common = ["preset", "run", NAME, "--mesh", "conus12km", "--grid", "g",
+              "--static", "s", "--init", "i", "--lbc-dir", "l", "--invariant", "v",
+              "--out", str(tmp_path / "output"), "--start-time", "2026-10-03_12:00:00",
+              "--hours", "6", "--init-source", "public source", "--card", "RTX-PRO-6000",
+              "--experimental"]
+    assert model_presets.main(build_parser(preset_only=True).parse_args(common)) == 3
+    assert "run-runner-importable" in capsys.readouterr().out
+
+
+def test_an_installed_hex_outside_the_pair_is_a_blocker(tmp_path_factory):
+    # gpuwm-hex 0.3.3 is the newest release on the index today; it ships neither
+    # runner and declares gpuwm>=2.8.0,<2.8.1.
+    site = _fake_hex(tmp_path_factory.mktemp("site") / "site", "0.3.3", runners=False)
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="", GPUWM_NO_LOCAL_GPU="1",
+               PYTHONPATH=os.pathsep.join([str(site), str(ROOT)]))
+    result = subprocess.run([sys.executable, "-m", "gpuwm.cli", "preset", "check", NAME],
+                            cwd=ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode == 3, result.stdout + result.stderr
+    document = json.loads(result.stdout)
+    assert document["paired_package"]["installed"] == "0.3.3"
+    assert {r["id"] for r in document["blockers"]} == {
+        "paired-package-release", "prepare-runner-importable", "run-runner-importable"}
+    prepare = subprocess.run(
+        [sys.executable, "-m", "gpuwm.cli", "preset", "prepare", NAME, "--cycle",
+         "2026101412", "--mesh", "conus12km", "--out", str(site / "out")],
+        cwd=ROOT, env=env, capture_output=True, text=True)
+    assert prepare.returncode == 2
+    assert "gpuwm-hex 0.3.3 is installed" in prepare.stderr + prepare.stdout
+    assert not (site / "out").exists()
+
+
+def test_real_cli_check_reports_no_blocker_and_every_declared_divergence(tmp_path, hex_040):
     result = _cli("check", NAME)
     assert result.returncode == 0, result.stdout + result.stderr
     document = json.loads(result.stdout)
@@ -92,7 +192,7 @@ def test_real_cli_export_does_not_overwrite_configuration(tmp_path):
     assert path.read_bytes() == content
 
 
-def test_real_cli_lists_the_configuration_with_its_divergence_status():
+def test_real_cli_lists_the_configuration_with_its_divergence_status(hex_040):
     result = _cli("list")
     assert result.returncode == 0, result.stdout + result.stderr
     row = next(r for r in json.loads(result.stdout)["presets"] if r["id"] == NAME)
@@ -105,7 +205,7 @@ def test_unknown_identifier_is_not_a_default_fallback():
         preset("unknown-mesh-suite")
 
 
-def test_run_launches_the_table_command_without_the_experimental_flag(tmp_path, monkeypatch):
+def test_run_launches_the_table_command_without_the_experimental_flag(tmp_path, monkeypatch, hex_040):
     import subprocess as sp
     from gpuwm import model_presets
     from gpuwm.cli import build_parser
@@ -123,7 +223,7 @@ def test_run_launches_the_table_command_without_the_experimental_flag(tmp_path, 
     assert not list(tmp_path.iterdir())
 
 
-def test_candidate_command_uses_table_clock_and_the_existing_forecast_door(tmp_path):
+def test_candidate_command_uses_table_clock_and_the_existing_forecast_door(tmp_path, hex_040):
     from argparse import Namespace
     from gpuwm.model_presets import launch_command
     args = Namespace(mesh="conus12km", card="RTX-PRO-6000", hours=6.,
@@ -162,7 +262,7 @@ def test_minimal_parser_imports_no_data_or_numerical_backend():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_physics_without_a_port_is_a_declared_divergence_not_a_blocker():
+def test_physics_without_a_port_is_a_declared_divergence_not_a_blocker(hex_040):
     # 2026-08-20: physics parity is retired and the hex dycore stays pinned to
     # MPAS-A v8.4.1, so each component that runs its own generation is named
     # with its pin, what runs instead and the follow-up instead of refusing.

@@ -6,10 +6,12 @@ This module adapts state only; the shared forecast runner owns integration.
 
 from __future__ import annotations
 
+from gpuwm.config import ConfigurationRefused
+
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Mapping, Sequence
 
 
@@ -240,6 +242,8 @@ PHYSICS_FIELD_ALIASES = {
 }
 
 RUC_INPUT_FIELDS = frozenset({"ACRUNOFF", "RHOSNF", "SNOWFALLAC", "SOILT1"})
+from gpuwm.static.orographic import OROGRAPHIC_ROWS, required_static_fields
+OROGRAPHIC_WRFINPUT = frozenset(OROGRAPHIC_ROWS)
 MYNN_QKE_INPUT_FIELDS = frozenset(PHYSICS_FIELD_ALIASES["qke"])
 #: The MYNN subgrid cloud a cycled start (RunConfig.cycling) continues;
 #: restored onto the physics fields of the same lower-case names.
@@ -250,6 +254,7 @@ MYNN_CYCLED_WRFINPUT = frozenset({"QC_BL", "CLDFRA_BL"})
 # synthesized when absent.
 OPTIONAL_WRFINPUT = (
     "ICCG_IN_NUM", "ICCG_IN_DEN",
+    "TML", "T0ML", "HML", "H0ML", "HUML", "HVML", "TMOML",
     "H_DIABATIC", "RAINNC", "RAINC", "QNCLOUD", "SST", "CANWAT", "LAKEMASK",
     "QNWFA2D", "QNIFA2D",
     "MAPFAC_MX", "MAPFAC_MY", "MAPFAC_UX", "MAPFAC_UY", "MAPFAC_VX", "MAPFAC_VY",
@@ -285,6 +290,13 @@ _WRFINPUT_GEOMETRY_DIMENSIONS = frozenset({
 # dimension of the same length.
 WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "ICCG_IN_NUM": _MASS_2D_DIMS, "ICCG_IN_DEN": _MASS_2D_DIMS,
+    "RESM": (),
+    "PC": _MASS_2D_DIMS,
+    "O3_GFS_DU": _MASS_2D_DIMS,
+    **{name: () for name in (
+        "HFX_FORCE","LH_FORCE","TSK_FORCE","HFX_FORCE_TEND",
+        "LH_FORCE_TEND","TSK_FORCE_TEND")},
+    **{name: _MASS_2D_DIMS for name in OROGRAPHIC_WRFINPUT},
     **SFIRE_INPUT_DIMENSIONS,
     **{name: _MASS_3D_DIMS for name in (
         "T", "T_INIT", "P", "PB", "AL", "ALB", "QVAPOR", "QCLOUD",
@@ -308,6 +320,7 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "PBLH", "UST", "ZNT", "HFX", "QFX", "LH", "GRDFLX", "RAINNC",
         "RAINC", "XLAT", "XLONG", "SST", "CANWAT", "LAKEMASK",
         "ACRUNOFF", "RHOSNF", "SNOWFALLAC", "SOILT1",
+        "TML", "T0ML", "HML", "H0ML", "HUML", "HVML", "TMOML",
     )},
     "MAPFAC_U": _U_2D_DIMS, "MAPFAC_V": _V_2D_DIMS,
     "MAPFAC_UX": _U_2D_DIMS, "MAPFAC_UY": _U_2D_DIMS,
@@ -327,6 +340,9 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "P00", "T00", "TLP", "TISO", "TLP_STRAT", "P_STRAT",
     )},
 }
+from gpuwm.io.wrf_input_history_schema import WRF_INPUT_HISTORY_ROWS
+WRFINPUT_DIMENSIONS.update({name: tuple(row["input_dimensions"])
+                           for name, row in WRF_INPUT_HISTORY_ROWS.items()})
 
 # Registry urban static records are present in ordinary real.exe files even
 # when their optional gridded morphology and external heat are all zero.
@@ -365,9 +381,15 @@ def urban_static_input_dispositions(dataset, path, cfg, expected_dimensions):
 
 def _mapped_wrfinput_names() -> set[str]:
     names = set(REQUIRED_WRFINPUT) | set(OPTIONAL_WRFINPUT)
+    names.update(WRF_INPUT_HISTORY_ROWS)
     names.update(SFIRE_INPUT_DIMENSIONS)
+    names.add("RESM")
+    names.update(("PC", "O3_GFS_DU"))
+    names.update(("HFX_FORCE","LH_FORCE","TSK_FORCE","HFX_FORCE_TEND",
+                  "LH_FORCE_TEND","TSK_FORCE_TEND"))
     names.update(alias for aliases in ALIASES.values() for alias in aliases)
     names.update(ALL_MOISTURE_WRFINPUT)
+    names.update(OROGRAPHIC_WRFINPUT)
     names.update(
         alias for aliases in PHYSICS_FIELD_ALIASES.values() for alias in aliases)
     return names
@@ -426,7 +448,7 @@ IGNORED_WRFINPUT = frozenset({
     "THM", "TOPOSLPX", "TOPOSLPY", "T_BASE",
     "UOCE", "U_BASE", "U_FRAME", "VAR", "VAR_SSO", "VOCE", "V_BASE",
     "V_FRAME", "WATER_DEPTH", "ZETATOP", "ZS", "Z_BASE",
-})
+}) - OROGRAPHIC_WRFINPUT
 
 #: Variables a WRF input file carries that this model has no state for and
 #: an in-place analysis may read or rewrite, each with the reason it is
@@ -454,8 +476,10 @@ _ANALYSIS_PASSTHROUGH_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("a radar-derived temperature tendency for the forecast's latent-heating "
      "forcing, which the cloud analysis writes "
      "(cplr_wrf_netcdf_interface.f90:1229, :3245) and a WRF input carries "
-     "as four 15-minute slots and their times; this model has no radar "
-     "tendency forcing, so the tendency is carried and not applied",
+     "as four 15-minute slots and their times; it is not initial state.  "
+     "Under mp_tend_radar = 1 the forecast applies it "
+     "(gpuwm/ingest/wrfinput_radar.py reads it from this file); otherwise "
+     "it is carried and not applied, as wrf.exe does",
      ("RAD_TTEN_DFI", "RAD_TTEN_DFI_1", "RAD_TTEN_DFI_2", "RAD_TTEN_DFI_3",
       "RAD_TTEN_DFI_4", "TTEN_TIMES")),
     ("a forecast diagnostic (an accumulation, a maximum or minimum since the "
@@ -489,11 +513,12 @@ _ANALYSIS_PASSTHROUGH_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
       "DZ_LAKE3D", "T_SOISNO3D", "H2OSOI_ICE3D", "H2OSOI_LIQ3D",
       "H2OSOI_VOL3D", "Z3D", "DZ3D", "ZI3D", "WATSAT3D", "CSOL3D", "TKMG3D",
       "TKDRY3D", "TKSATU3D")),
-    ("a static sub-grid orography statistic of the gravity-wave drag "
-     "schemes; no analysis changes it and this reader does not restore it",
-     ("CON", "OA1", "OA2", "OA3", "OA4", "OL1", "OL2", "OL3", "OL4", "VARSS",
-      "CONSS", "OA1SS", "OA2SS", "OA3SS", "OA4SS", "OL1SS", "OL2SS", "OL3SS",
-      "OL4SS")),
+    # The sub-grid orography statistics of the gravity-wave drag schemes
+    # (CON, OA1..OA4, OL1..OL4 and their SS/LS sets) left this table when
+    # the verification lane (901a3fd0927) mapped OROGRAPHIC_WRFINPUT: the
+    # reader restores them for gpuwm.core.terrain_drag, so they are
+    # ALLOWED_WRFINPUT, and a name cannot be both restored and passed
+    # through (tests/test_analysis_exchange.py).
     ("a random-number seed of the stochastic perturbation schemes, which "
      "this model does not run",
      ("ISEEDARR_SPPT", "ISEEDARR_SKEBS", "ISEEDARR_RAND_PERTURB",
@@ -521,6 +546,13 @@ def _analysis_passthrough(rows) -> Mapping[str, str]:
 
 ANALYSIS_PASSTHROUGH_WRFINPUT: Mapping[str, str] = _analysis_passthrough(
     _ANALYSIS_PASSTHROUGH_ROWS)
+
+#: The radar temperature tendency ``mp_tend_radar = 1`` applies: four
+#: 15-minute slots in NOAA's file convention and their end times in
+#: minutes (the operational fork's Registry; RAD_TTEN_DFI, the single
+#: static field of the older RAP arrangement, is not one of them).
+RADAR_TENDENCY_VARIABLES = ("RAD_TTEN_DFI_1", "RAD_TTEN_DFI_2",
+                            "RAD_TTEN_DFI_3", "RAD_TTEN_DFI_4", "TTEN_TIMES")
 
 
 # ==========================================================================
@@ -746,7 +778,7 @@ def check_supported_schemes(attributes: Mapping[str, object], *,
         if value not in accepted:
             problems.append(f"{source}: {refusal(value)}")
     if problems:
-        raise ValueError("\n".join(problems))
+        raise ConfigurationRefused("\n".join(problems))
     return resolved
 @dataclass(frozen=True)
 class RestoredDomain:
@@ -879,7 +911,7 @@ def require_zero_base_state_profiles(dataset, path, cfg) -> None:
                      "either mix_full_fields value)")
             remedy = ("set mix_full_fields = true and kvdif = 0, or run a "
                       "PBL scheme")
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{path} carries a nonzero base-state profile "
             f"({', '.join(nonzero)}) {where}, and the engine's operators "
             "carry only the zero profile real.exe writes, so this run would "
@@ -891,17 +923,17 @@ def require_zero_base_state_profiles(dataset, path, cfg) -> None:
 def _read_numeric(variable, *, decoded=None) -> np.ndarray:
     value = np.ma.asarray(variable[...] if decoded is None else decoded)
     if np.ma.isMaskedArray(value) and np.any(np.ma.getmaskarray(value)):
-        raise ValueError(f"WRF input variable {variable.name} contains masked data")
+        raise ConfigurationRefused(f"WRF input variable {variable.name} contains masked data")
     array = np.asarray(value)
     if variable.dimensions and variable.dimensions[0] == "Time":
         if array.shape[0] != 1:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"WRF input {variable.name} must carry exactly one Time record")
         array = array[0]
     if array.dtype.kind not in "iufb":
         raise TypeError(f"WRF input {variable.name} is not numeric")
     if array.dtype.kind == "f" and not np.all(np.isfinite(array)):
-        raise ValueError(f"WRF input {variable.name} contains non-finite values")
+        raise ConfigurationRefused(f"WRF input {variable.name} contains non-finite values")
     # ``np.ascontiguousarray`` promotes a zero-dimensional value to ``(1,)``.
     # WRF writes Registry scalars as ``(Time,)`` records, so preserve the
     # scalar produced by removing that singleton Time dimension.
@@ -921,7 +953,7 @@ def _explicit_wrfinput_dimensions(
     missing = sorted(_WRFINPUT_GEOMETRY_DIMENSIONS - names)
     extra = sorted(names - _WRFINPUT_GEOMETRY_DIMENSIONS)
     if missing or extra:
-        raise ValueError(
+        raise ConfigurationRefused(
             "explicit WRF geometry dimension inventory mismatch: "
             f"missing={missing}, extra={extra}")
     normalized = {}
@@ -930,7 +962,7 @@ def _explicit_wrfinput_dimensions(
         if (isinstance(value, (bool, np.bool_))
                 or not isinstance(value, (int, np.integer))
                 or int(value) <= 0):
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"explicit WRF geometry {name} must be a positive integer")
         normalized[name] = int(value)
     for mass, staggered in (
@@ -938,7 +970,7 @@ def _explicit_wrfinput_dimensions(
             ("south_north", "south_north_stag"),
             ("west_east", "west_east_stag")):
         if normalized[staggered] != normalized[mass] + 1:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"explicit WRF geometry {staggered} must equal {mass} + 1")
     return MappingProxyType(normalized)
 
@@ -968,10 +1000,10 @@ def active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
         # NAMED, with a remedy.  This used to read "unsupported active
         # wrfinput mp_physics=55", which tells a reader the number they
         # already typed and nothing else.
-        raise ValueError(unsupported_microphysics_refusal(mp_physics))
+        raise ConfigurationRefused(unsupported_microphysics_refusal(mp_physics))
     if not moist:
         if mp_physics != 0:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"mp_physics={mp_physics} requires cfg.moist=True")
         return frozenset(), frozenset()
     if mp_physics == 0:
@@ -1008,7 +1040,7 @@ def active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
     elif mp_physics == 10:
         required += MORRISON_NUMBER_WRFINPUT
     elif mp_physics == 18:
-        required += NSSL_MOISTURE_WRFINPUT
+        required += nssl_moisture_wrfinput(cfg)
     elif mp_physics == 50:
         # P3 one-category.  Its whole inventory beyond the three base
         # masses arrives in one tuple because its ice mass does NOT come
@@ -1026,6 +1058,31 @@ def active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
     if mp_physics == 5:
         allowed |= frozenset(FERRIER_OPTIONAL_MOISTURE_WRFINPUT)
     return frozenset(required), allowed
+
+
+def nssl_moisture_wrfinput(cfg) -> tuple[str, ...]:
+    """The NSSL names beyond the six masses that ``cfg``'s variant carries.
+
+    WRF allocates, and real.exe writes, only the fields of the packages the
+    resolved variant selects (Registry.EM_COMMON:3049-3056 after
+    module_check_a_mundo.F:3377-3465).  The deprecated ``mp_physics = 17``
+    turns predicted CCN off and ``22`` turns hail and CCN off, so their
+    wrfinput carries no QNCCN, and 22's none of QHAIL, QNHAIL or QVHAIL
+    either.  Requiring the full option-18 set refused 26 combo-sweep runs
+    (2026-10-07, round 2) whose variants have a ported path
+    (``PORTED_VARIANT_MODES``); the state pins the absent fields to zero
+    (``pin_absent_nssl2_fields``) as WRF's absent packages are.  A ``cfg``
+    without the selectors resolves WRF's option-18 defaults, the full set.
+    """
+    from gpuwm.core.nssl2_contract import (NSSL2_SELECTOR_FIELDS,
+                                           resolve_nssl2_mode)
+    selectors = {name: getattr(cfg, name) for name in NSSL2_SELECTOR_FIELDS
+                 if getattr(cfg, name, None) is not None}
+    mode = resolve_nssl2_mode(**selectors)
+    by_state = {state: wrf for wrf, state in NSSL_MOISTURE_MAP.items()}
+    carried = {by_state[field] for field in mode.transported_fields
+               if field in by_state}
+    return tuple(name for name in NSSL_MOISTURE_WRFINPUT if name in carried)
 
 
 def active_moisture_map(cfg) -> Mapping[str, str]:
@@ -1047,7 +1104,7 @@ def _validate_wrfinput_geometry(name: str, variable,
                                 value: np.ndarray) -> None:
     expected_dimensions = WRFINPUT_DIMENSIONS.get(name)
     if expected_dimensions is None:
-        raise ValueError(f"WRF input variable {name} has no mapped geometry")
+        raise ConfigurationRefused(f"WRF input variable {name} has no mapped geometry")
     actual_dimensions = tuple(variable.dimensions)
     if actual_dimensions[:1] == ("Time",):
         actual_dimensions = actual_dimensions[1:]
@@ -1065,11 +1122,11 @@ def _validate_wrfinput_geometry(name: str, variable,
         expected_shape = tuple(
             expected_extents[dim] for dim in expected_dimensions)
     except KeyError as exc:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"pinned WRF geometry has no dimension {exc.args[0]} for "
             f"WRF input {name}") from exc
     if actual_dimensions != expected_dimensions or value.shape != expected_shape:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"WRF input {name} shape mismatch: expected pinned {expected_shape} "
             f"on {expected_dimensions}, got {value.shape} on {actual_dimensions}")
 
@@ -1103,7 +1160,10 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         dimensions = {name: len(dim) for name, dim in dataset.dimensions.items()}
         attrs = {name: dataset.getncattr(name) for name in dataset.ncattrs()}
         from gpuwm.ingest.wrfinput_noahmp import input_dispositions
-        surface_dispositions = dict(input_dispositions(cfg))
+        from gpuwm.ingest.wrfinput_surface_statics import (
+            surface_static_dispositions)
+        surface_dispositions = {**input_dispositions(cfg),
+                                **surface_static_dispositions(cfg)}
         surface_dispositions.update(urban_static_input_dispositions(
             dataset, path, cfg, expected_dimensions))
         if surface_dispositions or _integral_attribute(attrs.get("SF_SURFACE_PHYSICS")) == 4:
@@ -1124,7 +1184,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
             - ANALYSIS_PASSTHROUGH_WRFINPUT.keys()
             - surface_dispositions.keys())
         if "fire_smoke" in dataset.variables and not bool(getattr(cfg, "fire_smoke", False)):
-            raise ValueError("native fire_smoke input requires the active endogenous bulk smoke profile; "
+            raise ConfigurationRefused("native fire_smoke input requires the active endogenous bulk smoke profile; "
                              "enable fire_smoke to preserve its g_smoke/kg_air volume")
         if unknown:
             # Reached only when the scheme attributes said the package is
@@ -1136,7 +1196,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
                      f" The file declares {_named_microphysics(claimed)},"
                      " whose inventory this door does map, so these names"
                      " are outside every scheme it knows.")
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"{path} has unmapped WRF variable(s): {unknown}.{claim}")
         raw = {}
         soil_conversions = {}
@@ -1146,7 +1206,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         # other start passes them through unread, as before.
         carried = (MYNN_CYCLED_WRFINPUT
                    if cfg is not None and bool(getattr(cfg, "cycling", False))
-                   else frozenset())
+                   else frozenset()) | OROGRAPHIC_WRFINPUT
         def unread(name):
             return (name == "Times" or name in IGNORED_WRFINPUT
                     or (name in ANALYSIS_PASSTHROUGH_WRFINPUT
@@ -1196,6 +1256,8 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         raw.update(recovered)
         soil_recovery = recovery or {}
     _validate_supplied_physics_fields(raw, cfg, attrs)
+    if require_complete:
+        wrfinput_terrain_drag_inputs(SimpleNamespace(raw=raw), cfg)
     if "QNBCA" in raw and int(getattr(cfg, "wif_input_opt", 0)) == 2:
         # The fact and the way out come from the table that owns this
         # selector, so this door and the namelist importer cannot describe
@@ -1212,13 +1274,13 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
     present_moisture = set(raw) & ALL_MOISTURE_WRFINPUT
     extra_moisture = sorted(present_moisture - allowed_moisture)
     if extra_moisture:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{path} has inactive WRF moisture variable(s) for the active "
             f"physics: {extra_moisture}")
     if require_complete:
         missing = missing_required_wrfinput(raw, cfg)
         if missing:
-            raise ValueError(f"{path} is missing mapped WRF variable(s): {missing}")
+            raise ConfigurationRefused(f"{path} is missing mapped WRF variable(s): {missing}")
     mapped = MAPPED_WRFINPUT & set(raw)
     auxiliary = (set(EXPLICIT_AUXILIARY_WRFINPUT) - {"Times"}) & set(raw)
     return RestoredDomain(
@@ -1268,11 +1330,11 @@ def resolve_map_factors(raw):
             continue
         x, y = raw.get(name + "X"), raw.get(name + "Y")
         if x is None or y is None:
-            raise ValueError(f"{name} is nonpositive and has no supplied directional factors; grid metric divisions would be invalid")
+            raise ConfigurationRefused(f"{name} is nonpositive and has no supplied directional factors; grid metric divisions would be invalid")
         if x.shape != legacy.shape or y.shape != legacy.shape or not bool(np.all(np.isfinite(x) & (x > 0))):
-            raise ValueError(f"{name} directional factor shape or values cannot define positive native grid metrics")
+            raise ConfigurationRefused(f"{name} directional factor shape or values cannot define positive native grid metrics")
         if not np.array_equal(x, y):
-            raise ValueError(f"{name} directional X/Y factors differ; collapsing anisotropic metrics would change flux divergence")
+            raise ConfigurationRefused(f"{name} directional X/Y factors differ; collapsing anisotropic metrics would change flux divergence")
         receipt[name] = dict(source=name + "X", equivalent=name + "Y",
             original_sha256=hashlib.sha256(legacy.tobytes()).hexdigest(),
             selected_sha256=hashlib.sha256(x.tobytes()).hexdigest())
@@ -1288,17 +1350,17 @@ def _validate_supplied_physics_fields(raw, cfg, attributes):
            else _integral_attribute(attributes.get("BL_PBL_PHYSICS")))
     ruc = RUC_INPUT_FIELDS & raw.keys()
     if ruc and surface != 3:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"WRF physics input {sorted(ruc)} requires the RUC "
             "sf_surface_physics=3 consumer")
     mynn = (MYNN_QKE_INPUT_FIELDS | MYNN_SCALAR_WRFINPUT
             | MYNN_CYCLED_WRFINPUT) & raw.keys()
     if mynn and pbl != 5:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"WRF physics input {sorted(mynn)} requires the MYNN "
             "bl_pbl_physics=5 consumer")
     if "qke" in raw and "QKE" in raw and not np.array_equal(raw["qke"], raw["QKE"]):
-        raise ValueError("WRF physics input qke and QKE contain conflicting aliases")
+        raise ConfigurationRefused("WRF physics input qke and QKE contain conflicting aliases")
 
 def _expect_shape(name: str, value: np.ndarray, expected: tuple[int, ...]) -> None:
     if value.shape != expected:
@@ -1373,7 +1435,7 @@ def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
             initial[...] = source
 
 
-def wrf_coordinate_and_base(restored, hypsometric_opt=None):
+def wrf_coordinate_and_base(restored, hypsometric_opt=None, *, cold_start=None):
     """The file's vertical coordinate and WRF's cold-start base state.
 
     The coordinate is the file's.  The base state is the one WRF's
@@ -1399,7 +1461,8 @@ def wrf_coordinate_and_base(restored, hypsometric_opt=None):
         start = {name: np.asarray(raw[name], np.float32)
                  for name in ('MUB', 'PB', 'T_INIT', 'ALB', 'PHB')}
     else:
-        start = wrf_start_base_state(raw, int(hypsometric_opt))
+        start = (wrf_start_base_state(raw, int(hypsometric_opt))
+                 if cold_start is None else cold_start)
     # WRF writes T_INIT minus t0.  DomainState.thb is absolute base
     # potential temperature.
     theta_base = start['T_INIT'] + np.float32(300.0)
@@ -1585,8 +1648,10 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
         "restoring this wrfinput onto the card", cfg,
         shared_symbols=getattr(dycore_state_workspace, "_symbol_shapes", ()))
     state = DomainState(cfg, **state_kwargs)
+    cold_start = wrf_start_base_state(
+        raw, int(getattr(cfg, 'hypsometric_opt', 2)))
     coord, base = wrf_coordinate_and_base(
-        restored, int(getattr(cfg, 'hypsometric_opt', 2)))
+        restored, int(getattr(cfg, 'hypsometric_opt', 2)), cold_start=cold_start)
     state.load_base(coord, base)
 
     for wrf_name, state_name in (("U", "u"), ("V", "v"), ("W", "w"),
@@ -1598,6 +1663,12 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
         # trip through full theta cannot recover its low bits.
         state.thb[...] = cp.float32(300.0)
         state.thp[...] = cp.asarray(raw["T"], dtype=cp.float32)
+        if cfg.diff_opt == 1:
+            # horizontal_diffusion_3dmp uses start_em's base thermal
+            # reference, not the full initial atmospheric theta. Keep the
+            # original T_INIT words before thb becomes the 300 K RK basis.
+            state.scratch(state.thp.shape, "diff1_theta_initial")[...] = (
+                cp.asarray(cold_start["T_INIT"], dtype=cp.float32))
     else:
         state.thp[...] = cp.asarray(
             (raw["T"].astype(np.float32) + np.float32(300.0))
@@ -1659,6 +1730,21 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
     return state
 
 
+def wrfinput_terrain_drag_inputs(restored, cfg):
+    """Use the native file's active orography, without rebuilding its values."""
+    names = required_static_fields(getattr(cfg, "topo_wind", 0),
+                                   getattr(cfg, "gwd_opt", 0))
+    if not names:
+        return {}
+    missing = sorted(set((*names, "HGT")) - restored.raw.keys())
+    if missing:
+        raise ValueError(f"WRF input lacks terrain-drag fields {missing}; "
+                         "the active drag would otherwise read absent statistics. "
+                         "Run geogrid and real.exe with the selected orographic datasets.")
+    return {"terrain_drag_static": {"HGT_M": restored.raw["HGT"],
+                                    **{name: restored.raw[name] for name in names}}}
+
+
 def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
                                radiation_start_time=None, radiation_latitude=None,
                                radiation_longitude=None, landuse=None,
@@ -1681,6 +1767,7 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
     from gpuwm.core.physics import initialize_physics
     from gpuwm.ingest.ruc_mosaic import wrfinput_ruc_mosaic_inputs
     from gpuwm.ingest.lake_physics import wrfinput_lake_physics_inputs
+    from gpuwm.surface_ocean import ocean_input_fields
 
     raw = restored.raw
     xice = _first(raw, ALIASES["XICE"])
@@ -1722,8 +1809,10 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         radiation_start_time=radiation_start_time,
         radiation_latitude=radiation_latitude,
         radiation_longitude=radiation_longitude,
+        **wrfinput_terrain_drag_inputs(restored, cfg),
         **wrfinput_ruc_mosaic_inputs(restored, cfg),
         **wrfinput_lake_physics_inputs(restored, cfg),
+        **ocean_input_fields(cfg, raw),
         **({"fire_static_data": fire_static_fields(restored, cfg)}
            if int(getattr(cfg, "ifire", 0)) == 2 else {}),
         # The file's own urban fraction reaches urban_var_init, which keeps
@@ -1733,6 +1822,12 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
            if int(getattr(cfg, "sf_urban_physics", 0)) > 0
            and raw.get("FRC_URB2D") is not None else {}),
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
+    if (int(getattr(cfg, "sf_urban_physics", 0)) > 0
+            and "utype_urb2d" in driver.fields):
+        from gpuwm.ingest.wrfinput_surface_statics import (
+            require_table_urban_morphology)
+        require_table_urban_morphology(
+            restored, cp.asnumpy(driver.fields["utype_urb2d"]))
     # landuse_init resets Noah's background albedo to the seasonal table
     # when USEMONALB is false (WRF module_physics_init.F:1958). The native
     # file can also contain a distinct monthly ALBBCK. Restoring that over
@@ -1805,10 +1900,10 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
 def _decode_times(variable) -> tuple[datetime, ...]:
     data = np.ma.asarray(variable[...])
     if np.ma.isMaskedArray(data) and np.any(np.ma.getmaskarray(data)):
-        raise ValueError(f"WRF time variable {variable.name} contains masked data")
+        raise ConfigurationRefused(f"WRF time variable {variable.name} contains masked data")
     data = np.asarray(data)
     if data.ndim != 2 or data.shape[1] != 19:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"WRF time variable {variable.name} must have shape (records, 19), "
             f"got {data.shape}")
     values = []
@@ -1817,16 +1912,16 @@ def _decode_times(variable) -> tuple[datetime, ...]:
             text = b"".join(np.asarray(row, dtype="S1").tolist()).decode(
                 "ascii")
         except UnicodeDecodeError as exc:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"WRF time variable {variable.name} is not ASCII") from exc
         try:
             value = datetime.strptime(text, "%Y-%m-%d_%H:%M:%S")
         except ValueError as exc:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"WRF time variable {variable.name} has invalid timestamp "
                 f"{text!r}") from exc
         if value.strftime("%Y-%m-%d_%H:%M:%S") != text:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"WRF time variable {variable.name} timestamp is not canonical: "
                 f"{text!r}")
         values.append(value)
@@ -1847,7 +1942,7 @@ def _wrfbdy_side_table(variable, index: int, side_name: str) -> np.ndarray:
     """Transpose WRF ``(width,z,side)`` into gpuwm's side convention."""
     value = np.ma.asarray(variable[index])
     if np.ma.isMaskedArray(value) and np.any(np.ma.getmaskarray(value)):
-        raise ValueError(f"wrfbdy_d01 {variable.name} contains masked data")
+        raise ConfigurationRefused(f"wrfbdy_d01 {variable.name} contains masked data")
     value = np.asarray(value, dtype=np.float32)
     if value.ndim == 3:
         axes = ((1, 2, 0) if side_name in ("west", "east")
@@ -1857,10 +1952,10 @@ def _wrfbdy_side_table(variable, index: int, side_name: str) -> np.ndarray:
         value = (np.transpose(value, (1, 0))[None]
                  if side_name in ("west", "east") else value[None])
     else:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"wrfbdy_d01 {variable.name} must be a 2-D or 3-D side table")
     if not np.all(np.isfinite(value)):
-        raise ValueError(f"wrfbdy_d01 {variable.name} contains non-finite data")
+        raise ConfigurationRefused(f"wrfbdy_d01 {variable.name} contains non-finite data")
     return np.ascontiguousarray(value)
 
 
@@ -2146,7 +2241,7 @@ def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
             tolerance = _coupled_build_tolerance(expected, field_bound, side, width)
             if actual.shape != expected.shape or np.any(np.abs(actual - expected) > tolerance):
                 other_strip = None if other is None else _boundary_strip(other, side, width)
-                raise ValueError(_initial_boundary_refusal(
+                raise ConfigurationRefused(_initial_boundary_refusal(
                     restored, name, side, actual, expected, tolerance,
                     other_strip, moist_theta,
                     None if other is None else _coupled_build_tolerance(
@@ -2283,20 +2378,21 @@ def _check_boundary_identity(dataset, restored):
     for name in ("GRID_ID", "DX", "DY", "MAP_PROJ", "TRUELAT1", "TRUELAT2",
                  "STAND_LON", "CEN_LAT", "CEN_LON", "HYBRID_OPT", "ETAC", "USE_THETA_M"):
         if name not in dataset.ncattrs() or name not in restored.global_attributes:
-            raise ValueError(f"wrfbdy/wrfinput pair lacks {name} identity")
+            raise ConfigurationRefused(f"wrfbdy/wrfinput pair lacks {name} identity")
         found = dataset.getncattr(name)
         expected = restored.global_attributes[name]
         if not np.isfinite([found, expected]).all() or float(found) != float(expected):
-            raise ValueError(f"wrfbdy {name}={found} differs from wrfinput {expected}")
+            raise ConfigurationRefused(f"wrfbdy {name}={found} differs from wrfinput {expected}")
     if int(dataset.getncattr("USE_THETA_M")) not in (0, 1):
-        raise ValueError("wrfbdy USE_THETA_M must identify dry (0) or moist (1) theta")
+        raise ConfigurationRefused("wrfbdy USE_THETA_M must identify dry (0) or moist (1) theta")
 
 
 def read_wrfbdy(path: str | Path, *, run_seconds: float,
                 restored: RestoredDomain,
                 forcing_interval_seconds: float,
                 spec_bdy_width: int = 5,
-                first_interval_only: bool = False, cfg=None):
+                first_interval_only: bool = False, cfg=None,
+                pair_restored: RestoredDomain | None = None):
     """Build coupled gpuwm d01 boundary intervals from real.exe tables.
 
     ``restored`` normally initializes the run at wrfbdy's first record, and
@@ -2315,6 +2411,13 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
     file's own ``bdy_width`` dimension must equal it.  It was pinned at the
     registered N5S value of 5 while this was a verification importer, which
     would have refused any user who set it otherwise.
+
+    ``pair_restored`` is the state the first record must be the coupling of when that is not
+    the state the run starts from: an incremental analysis update starts from the background
+    and forces the analysis in over its window, and its boundary was rebased onto the
+    ANALYSIS (gpuwm.da.analysis_door, WRFDA's da_update_bc), so the rim and the interior
+    head for one atmosphere.  The check is the same check, against that state; it is
+    ``None`` (the start itself) on every other route.
 
     ``first_interval_only`` keeps a run inside the FIRST forcing interval
     -- the registered N5S contract, which is scored only there.  A front
@@ -2483,7 +2586,9 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
                     dataset.variables[tendency_name], index, side_name)
                 raw_tables[gpu_name][side_name] = (value, tendency)
             if index == 0 and getattr(restored, "warm_start", None) is None:
-                _check_initial_boundary_pair(restored, raw_tables, width, layouts=layouts)
+                _check_initial_boundary_pair(
+                    restored if pair_restored is None else pair_restored,
+                    raw_tables, width, layouts=layouts)
             duration = float(end - start)
             mu_start_sides = {
                 side_name: pair[0]
@@ -2571,6 +2676,10 @@ class WrfinputMetadata:
     start_date: str
     global_attributes: Mapping[str, object]
     has_qv: bool = False
+    #: The file carries the cloud analysis's radar temperature tendency,
+    #: all of :data:`RADAR_TENDENCY_VARIABLES` (the four 15-minute slots
+    #: and their times), which ``mp_tend_radar = 1`` applies.
+    has_radar_tendency: bool = False
 
     @property
     def nx(self) -> int:
@@ -2611,16 +2720,18 @@ def read_wrfinput_metadata(path: str | Path) -> WrfinputMetadata:
         attrs = {name: dataset.getncattr(name)
                  for name in dataset.ncattrs()}
         has_qv = "QVAPOR" in dataset.variables
+        has_radar_tendency = all(name in dataset.variables
+                                 for name in RADAR_TENDENCY_VARIABLES)
     missing = sorted(_WRFINPUT_GEOMETRY_DIMENSIONS - set(dimensions))
     if missing:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{path} is missing WRF grid dimension(s) {missing}; a "
             "real.exe wrfinput declares all seven "
             f"({sorted(_WRFINPUT_GEOMETRY_DIMENSIONS)})")
     resolved = check_supported_schemes(attrs, source=str(path))
     grid_id = _integral_attribute(attrs.get("GRID_ID"))
     if grid_id is None:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{path} has no integer GRID_ID global attribute, so which "
             "domain of the nest hierarchy it initializes cannot be "
             "established")
@@ -2631,7 +2742,8 @@ def read_wrfinput_metadata(path: str | Path) -> WrfinputMetadata:
         mp_physics=resolved["MP_PHYSICS"],
         sf_surface_physics=resolved["SF_SURFACE_PHYSICS"],
         start_date=str(attrs.get("START_DATE", "")),
-        global_attributes=MappingProxyType(attrs), has_qv=has_qv)
+        global_attributes=MappingProxyType(attrs), has_qv=has_qv,
+        has_radar_tendency=has_radar_tendency)
 
 
 def check_grid_agreement(metadata: WrfinputMetadata, cfg, *,
@@ -2662,7 +2774,7 @@ def check_grid_agreement(metadata: WrfinputMetadata, cfg, *,
         f"  {axis}: {metadata.path.name} has {found}, "
         f"{source} resolves to {wanted}"
         for axis, found, wanted in bad)
-    raise ValueError(
+    raise ConfigurationRefused(
         f"{metadata.path} and {source} disagree about the grid:\n{lines}\n"
         "Entering at wrfinput means real.exe already baked the domain "
         "layout and the vertical grid, so the namelist cannot change "
@@ -2702,15 +2814,15 @@ def wrfbdy_coverage(path: str | Path) -> BoundaryCoverage:
     path = Path(path)
     with netcdf_bridge.open_dataset(path) as dataset:
         if "Times" not in dataset.variables:
-            raise ValueError(f"{path} has no Times variable")
+            raise ConfigurationRefused(f"{path} has no Times variable")
         if "bdy_width" not in dataset.dimensions:
-            raise ValueError(f"{path} has no bdy_width dimension")
+            raise ConfigurationRefused(f"{path} has no bdy_width dimension")
         width = len(dataset.dimensions["bdy_width"])
         times = _decode_times(dataset.variables["Times"])
         if not times:
-            raise ValueError(f"{path} has no records")
+            raise ConfigurationRefused(f"{path} has no records")
         if any(later <= earlier for earlier, later in zip(times, times[1:])):
-            raise ValueError(f"{path} records must increase")
+            raise ConfigurationRefused(f"{path} records must increase")
         next_name = "md___nextbdytimee_x_t_d_o_m_a_i_n_m_e_t_a_data_"
         next_times = (_decode_times(dataset.variables[next_name])
                       if next_name in dataset.variables else ())
@@ -2718,7 +2830,7 @@ def wrfbdy_coverage(path: str | Path) -> BoundaryCoverage:
         steps = {int((later - earlier).total_seconds())
                  for earlier, later in zip(times, times[1:])}
         if len(steps) != 1:
-            raise ValueError(
+            raise ConfigurationRefused(
                 f"{path} Times records do not step by one uniform forcing "
                 f"interval: {sorted(steps)} seconds")
         interval = steps.pop()
@@ -2728,12 +2840,12 @@ def wrfbdy_coverage(path: str | Path) -> BoundaryCoverage:
         # a one-record file states it.
         interval = int((next_times[-1] - times[0]).total_seconds())
     else:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{path} carries a single Times record and no nextbdytime "
             "metadata, so the forcing interval it covers cannot be "
             "established; a real.exe wrfbdy always writes one")
     if interval <= 0:
-        raise ValueError(
+        raise ConfigurationRefused(
             f"{path} declares a non-positive forcing interval of "
             f"{interval} seconds")
     return BoundaryCoverage(
@@ -2748,7 +2860,7 @@ def check_boundary_coverage(coverage: BoundaryCoverage,
     """Refuse, BEFORE any integration, a run longer than its forcing."""
     if 0.0 < float(run_seconds) <= coverage.coverage_seconds:
         return
-    raise ValueError(
+    raise ConfigurationRefused(
         f"{source} requests a run of {float(run_seconds):.0f} s but "
         f"{coverage.path} carries only {coverage.coverage_seconds:.0f} s "
         f"of lateral forcing ({len(coverage.times)} record(s) from "

@@ -67,8 +67,13 @@ def _columns(cp, ncol, nz=30):
         "hfx": cp.full((1, ncol), 150.0, dtype=cp.float32),
         "qfx": cp.full((1, ncol), 1.5e-4, dtype=cp.float32),
     }
+    # elapsed_seconds: the exact chain's NTiedtke takes WRF's ITIMESTEP from
+    # the state clock (ntiedtke._nt_itimestep).  The second step (dt = 60 s):
+    # on the first, WRF zeroes the forcing pair (module_cu_ntiedtke.F:
+    # 451-457) and this sounding's closure has nothing to convect on.
     state = SimpleNamespace(
-        p=lev(p), w=cp.zeros((nz + 1, 1, ncol), dtype=cp.float32))
+        p=lev(p), w=cp.zeros((nz + 1, 1, ncol), dtype=cp.float32),
+        elapsed_seconds=60.0)
     return atmosphere, fields, state
 
 

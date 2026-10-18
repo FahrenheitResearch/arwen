@@ -1,6 +1,6 @@
 """Diagnostic NVRTC-target replay of the randomized Smagorinsky kernels.
 
-Each target compiles the production source with its ordinary options. A PTX
+Each target compiles the source with the original word fixture's RawModule options. A PTX
 header copy is retargeted to one physical GPU and linked to a native cubin so
 the target's generated arithmetic can execute there. This tests NVRTC target
 choices. It does not prove the different physical targets' ptxas choices or
@@ -12,11 +12,13 @@ the replay subcommand. All outputs belong in caller-provided scratch.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import ctypes as ct
 import ctypes.util
 from dataclasses import replace
 import hashlib
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import re
@@ -51,10 +53,13 @@ def sources(kernel_dir=None):
 
 
 def compiler_options(target):
-    """Production RawModule options, including the CuPy NVRTC defaults."""
-    from gpuwm.core.kernels import module_options
+    """Original Blackwell fixture options, including CuPy's NVRTC defaults.
 
-    return module_options("smag2d") + (
+    The fixture predates the C-diffusion route. Its cached-W entries and
+    answers belong to the unpinned RawModule arithmetic, so inheriting the
+    current diffusion options both removes entries and changes its question.
+    """
+    return ("-std=c++17",
         "-ftz=true", f"-arch=compute_{target}",
         "--device-as-default-execution-space")
 
@@ -70,6 +75,15 @@ def validate_artifact_variants(variants, target, expected_names):
 
 
 def find_nvjitlink():
+    # CuPy's CUDA wheel resolves NVRTC from this environment. Use its linker
+    # too: a system CUDA_PATH can still point at an older toolkit whose
+    # linker cannot consume the wheel's PTX (12.8 versus NVRTC 13.4).
+    for pattern in ("lib/python*/site-packages/nvidia/*/lib/libnvJitLink.so*",
+                    "Lib/site-packages/nvidia/*/bin/nvJitLink*.dll",
+                    "Library/bin/nvJitLink*.dll"):
+        candidates = sorted(Path(sys.prefix).glob(pattern))
+        if candidates:
+            return str(candidates[-1])
     for key in ("CUDA_PATH", "CUDA_HOME"):
         raw = os.environ.get(key)
         if not raw:
@@ -173,10 +187,41 @@ def retarget_ptx(ptx, host_sm):
     return replay
 
 
-def compile_modules(outdir, host_sm, targets=TARGETS, *, kernel_dir=None,
-                    base_kernel_dir=None):
+def _compile_variant(job):
+    """Build one independent artifact without inheriting a CUDA context."""
     from gpuwm.nvrtc_cache_key import compile_program
 
+    source, target, host_sm, stem, outdir, library = job
+    options = compiler_options(target)
+    row = {"options": options}
+    try:
+        ptx = compile_program(source, options)
+        ptx = ptx.encode() if isinstance(ptx, str) else ptx
+    except Exception as error:
+        message = str(error)
+        unsupported = ("gpu-architecture" in message and
+                       ("invalid value" in message or "not supported" in message))
+        row.update(status="unsupported" if unsupported else "compile_error", error=message)
+        return row
+    replay = retarget_ptx(ptx, host_sm)
+    (outdir / (stem + ".ptx")).write_bytes(ptx)
+    (outdir / (stem + "-retargeted.ptx")).write_bytes(replay)
+    row.update(ptx_sha256=digest(ptx), replay_ptx_sha256=digest(replay),
+               retargeted=ptx != replay, header_rewrites=[".target"],
+               original_ptx=stem + ".ptx", replay_ptx=stem + "-retargeted.ptx")
+    try:
+        cubin = NvJitLink(library).link(replay, host_sm, stem + ".ptx")
+    except Exception as error:
+        row.update(status="link_error", error=str(error))
+        return row
+    filename = stem + ".cubin"
+    (outdir / filename).write_bytes(cubin)
+    row.update(status="linked", cubin=filename, cubin_sha256=digest(cubin))
+    return row
+
+
+def compile_modules(outdir, host_sm, targets=TARGETS, *, kernel_dir=None,
+                    base_kernel_dir=None):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     linker = NvJitLink()
@@ -186,39 +231,18 @@ def compile_modules(outdir, host_sm, targets=TARGETS, *, kernel_dir=None,
         "runtime_ftz": True,
         "source_sha256": {name: digest(source.encode()) for name, source in source_set.items()},
         "nvjitlink_version": linker.version, "nvjitlink_symbols": linker.symbols,
+        "nvjitlink_library": linker.library_path,
         "method": "NVRTC compiler targets replayed through one native linker target",
         "limitations": "PTX target header is diagnostically rewritten; physical ptxas and hardware differences require paired-card proof",
         "targets": {},
     }
+    jobs, destinations = [], []
     for target in targets:
-        target_rows = receipt["targets"][str(target)] = {}
+        variants = receipt["targets"][str(target)] = {}
         for variant, source in source_set.items():
-            options = compiler_options(target)
-            row = target_rows[variant] = {"options": options}
-            try:
-                ptx = compile_program(source, options)
-                ptx = ptx.encode() if isinstance(ptx, str) else ptx
-            except Exception as error:
-                message = str(error)
-                unsupported = ("gpu-architecture" in message and
-                               ("invalid value" in message or "not supported" in message))
-                row.update(status="unsupported" if unsupported else "compile_error", error=message)
-                continue
-            replay = retarget_ptx(ptx, host_sm)
-            stem = f"compute_{target}-{variant}"
-            (outdir / (stem + ".ptx")).write_bytes(ptx)
-            (outdir / (stem + "-retargeted.ptx")).write_bytes(replay)
-            row.update(ptx_sha256=digest(ptx), replay_ptx_sha256=digest(replay),
-                       retargeted=ptx != replay, header_rewrites=[".target"],
-                       original_ptx=stem + ".ptx", replay_ptx=stem + "-retargeted.ptx")
-            try:
-                cubin = linker.link(replay, host_sm, stem + ".ptx")
-            except Exception as error:
-                row.update(status="link_error", error=str(error))
-                continue
-            filename = stem + ".cubin"
-            (outdir / filename).write_bytes(cubin)
-            row.update(status="linked", cubin=filename, cubin_sha256=digest(cubin))
+            jobs.append((source, target, host_sm, f"compute_{target}-{variant}",
+                         outdir, linker.library_path))
+            destinations.append((variants, variant, False))
     if base_kernel_dir is not None:
         originals = sources(base_kernel_dir)
         control = receipt["blackwell_control"] = {
@@ -228,23 +252,20 @@ def compile_modules(outdir, host_sm, targets=TARGETS, *, kernel_dir=None,
             "variants": {},
         }
         for variant, source in originals.items():
-            options = compiler_options(120)
-            row = control["variants"][variant] = {"options": options}
-            try:
-                ptx = compile_program(source, options)
-                ptx = ptx.encode() if isinstance(ptx, str) else ptx
-                replay = retarget_ptx(ptx, host_sm)
-                stem = f"original-compute_120-{variant}"
-                (outdir / (stem + ".ptx")).write_bytes(ptx)
-                (outdir / (stem + "-retargeted.ptx")).write_bytes(replay)
-                cubin = linker.link(replay, host_sm, stem + ".ptx")
-                filename = stem + ".cubin"
-                (outdir / filename).write_bytes(cubin)
-                row.update(status="linked", ptx_sha256=digest(ptx),
-                           replay_ptx_sha256=digest(replay), cubin=filename,
-                           cubin_sha256=digest(cubin))
-            except Exception as error:
-                row.update(status="control_error", error=str(error))
+            jobs.append((source, 120, host_sm, f"original-compute_120-{variant}",
+                         outdir, linker.library_path))
+            destinations.append((control["variants"], variant, True))
+    # Serial NVRTC/link work left the card waiting for over 30 seconds on one
+    # core. These artifacts share no mutable state. Spawn avoids forking the
+    # caller's live CUDA context, and four workers bound host memory/CPU use.
+    workers = min(4, len(jobs), os.cpu_count() or 1)
+    receipt["compile_workers"] = workers
+    with ProcessPoolExecutor(max_workers=workers,
+                             mp_context=multiprocessing.get_context("spawn")) as pool:
+        for (variants, variant, control), row in zip(destinations, pool.map(_compile_variant, jobs)):
+            if control and row["status"] != "linked":
+                row["status"] = "control_error"
+            variants[variant] = row
     (outdir / "compile-receipt.json").write_text(json.dumps(receipt, indent=2))
     return receipt
 

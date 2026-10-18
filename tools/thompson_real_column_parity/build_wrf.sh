@@ -17,6 +17,10 @@
 # PROBE_INPUT.bin, when given, is run through both binaries and the outputs
 #   compared byte for byte (the fidelity proof of the instrumentation).
 #
+# REPAIR=1 in the environment builds both from the repaired copy of the
+#   pinned module instead (tools/thompson_mp8_column_oracle/repair_wrf461.py),
+#   the control the classic unit (mp=8) is graded against.
+#
 # Flags are the oracle's: -O2 -fno-tree-vectorize, and the build refuses a
 # binary that links libmvec (tools/thompson_wrf461_oracle/build_aero.sh
 # explains why that flag is essential).

@@ -203,18 +203,21 @@ variant. numpy>=2 is a hard dependency of the FP32 contract.
 
 ## 9. Documented divergences vs the CPU reference (gfortran WRF)
 
-1. **Transcendental libm class**: `radconst`/`calc_coszen` use
-   FP32-ordered arithmetic with numpy transcendentals; the CPU
-   reference is a gfortran build and therefore uses glibc's libm, and
-   an ifx build would use Intel's — all differ at ~1 ulp. (This
-   heading and sentence said the reference was ifx through 1.4.0; the
-   pinned binary carries one compiler stamp, GCC 15.2.0. See
-   `docs/public/VERIFICATION.md` section 2.) The SW
-   fixtures pin the wrappers from `(xcoszen, declin, solcon)` inward
-   (their `in/xcoszen` is the CPU run's own wrfout COSZEN — data, not a
-   reproducible function), so no oracle defines "bitwise" here. Same
-   class as the handoff's cross-compiler caveat. Terminator-adjacent
-   day/night classification can differ per compiler in WRF itself.
+1. **Transcendental libm class (retired 2026-10-07)**: `radconst`/`calc_coszen`
+   used to run on the host with NumPy's float32 transcendentals, and
+   `cal_cldfra1` with CuPy's `cp.exp`/`cp.power`; this section called the
+   result a seam with no bitwise oracle. The column oracle
+   `tools/rrtmg_legacy_column_oracle` (unmodified WRF v4.6.1 wrappers and
+   driver routines, gfortran 13.3.0 -O0, glibc 2.39) measured it: COSZEN
+   up to 64 ULP off on 16 of 128 columns and CLDFRA up to 2,113 ULP off,
+   with the longwave and shortwave following. Both now use WOOF's own
+   float32 libm (`kernels/rrtmg_legacy_solar.cu`; `noahmp_slab_libm`
+   expf/powf in `rrtmgp.cal_cldfra1`), and the adapter matches WRF bit
+   for bit on every graded output in nine regimes
+   (`tests/test_rrtmg_legacy_column_oracle.py`). The NumPy twins
+   `radconst`/`calc_coszen`/`calc_coszen_hrang` still serve other
+   consumers (topographic shading, urban, `alb_sol`) and keep the old
+   class there.
 2. **o33d routing**: WRF's EM_CORE build guards BOTH halves of the
    `o3input = 2` chain on `id == 1`. `oznini` interpolates the packaged
    climatology to a domain's own XLAT

@@ -90,21 +90,30 @@ def _blocks(n: int) -> int:
 
 
 def _module():
-    """Compile ``noahmp_libm_slab`` as the three-part unit it is."""
-    global _MODULE_CACHE
-    if _MODULE_CACHE is None:
-        _MODULE_CACHE = compile_runtime_unit(
+    """Compile ``noahmp_libm_slab`` as the three-part unit it is, per card.
+
+    ``compile_runtime_unit`` loads the image with ``cupy.cuda.function.Module``
+    into the CURRENT device's context only (it is not a device-aware
+    ``RawModule``).  One module held per process handed card 1 card 0's
+    function handles: CUDA_ERROR_INVALID_HANDLE at the first ``slab_expf``
+    of RRTMG's cloud fraction on the two-card HRRR start (2026-10-16).
+    """
+    import cupy as cp
+
+    device = cp.cuda.runtime.getDevice()
+    module = _MODULE_CACHE.get(device)
+    if module is None:
+        module = compile_runtime_unit(
             _MODULE_NAME,
             module_key=f"gpuwm.core.noahmp_slab_libm:{_MODULE_NAME}")
-    return _MODULE_CACHE
+        _MODULE_CACHE[device] = module
+    return module
 
 
-_MODULE_CACHE = None
-#: Keyed by ``(device, name)``.  ``RawModule`` itself is device-aware -- it
-#: loads its cubin onto whichever device asks -- but the ``Function`` handle
-#: ``get_function`` returns is bound to ONE device's loaded module, and
-#: calling it on another card is undefined.  Held per name alone, a process
-#: with two devices ran the first card's handles on the second.
+#: Keyed by device: the loaded module lives in one card's context.
+_MODULE_CACHE: dict[int, object] = {}
+#: Keyed by ``(device, name)``: a ``Function`` handle is bound to the module
+#: of the card it was taken from, and calling it on another card fails.
 _KERNEL_CACHE: dict[tuple[int, str], object] = {}
 
 
@@ -326,16 +335,20 @@ def scatter_slab_fields(j, i, blocks):
         col = 0 if value.ndim == 1 else value.strides[1] // 4
         plane = 0 if target.ndim == 2 else target.strides[0] // 4
         ys, xs = target.strides[-2] // 4, target.strides[-1] // 4
-        layout.append((width, row, col, plane, ys, xs))
-        arrays.extend((target, value))
+        # The grid strides (plane, ys, xs) are kernel arguments: baked into the
+        # source they made a new module for every mesh and partition size, which
+        # no prebuilt kernel pack can cover (x1.163842 split in two, 2026-10-16).
+        layout.append((width, row, col))
+        arrays.extend((target, value, np.int64(plane), np.int64(ys), np.int64(xs)))
     key = (cp.cuda.runtime.getDevice(), tuple(layout))
     kernel = _SCATTER_SLOT_KERNELS.get(key)
     if kernel is None:
-        args = ", ".join(f"unsigned int* o{k}, const unsigned int* v{k}"
+        args = ", ".join(f"unsigned int* o{k}, const unsigned int* v{k}, "
+                         f"long long p{k}, long long y{k}, long long x{k}"
                          for k in range(len(layout)))
         lines = []
-        for k, (width, row, col, plane, ys, xs) in enumerate(layout):
-            lines.extend(f"o{k}[j[c]*({ys})+i[c]*({xs})+({layer*plane})] = "
+        for k, (width, row, col) in enumerate(layout):
+            lines.extend(f"o{k}[j[c]*y{k}+i[c]*x{k}+{layer}LL*p{k}] = "
                          f"v{k}[(long long)c*({row})+({layer*col})];"
                          for layer in range(width))
         source = (f'extern "C" __global__ void noahmp_scatter_fields('
@@ -366,19 +379,22 @@ def gather_slab_fields(j, i, sources, grid_shape):
         return result
     j = cp.ascontiguousarray(j, dtype=cp.int64)
     i = cp.ascontiguousarray(i, dtype=cp.int64)
-    layout = tuple((1 if value.ndim == 2 else value.shape[0],
-                    0 if value.ndim == 2 else value.strides[0] // 4,
-                    value.strides[-2] // 4, value.strides[-1] // 4)
-                   for value in sources.values())
+    # Grid strides are kernel arguments (see scatter_slab_fields); only the
+    # layer counts shape the source.
+    strides = tuple((0 if value.ndim == 2 else value.strides[0] // 4,
+                     value.strides[-2] // 4, value.strides[-1] // 4)
+                    for value in sources.values())
+    layout = tuple(1 if value.ndim == 2 else value.shape[0] for value in sources.values())
     key = (cp.cuda.runtime.getDevice(), layout)
     kernel = _GATHER_SLOT_KERNELS.get(key)
     if kernel is None:
-        args = ", ".join(f"const unsigned int* v{k}, unsigned int* o{k}"
+        args = ", ".join(f"const unsigned int* v{k}, unsigned int* o{k}, "
+                         f"long long p{k}, long long y{k}, long long x{k}"
                          for k in range(len(layout)))
         lines = []
-        for k, (width, plane, ys, xs) in enumerate(layout):
+        for k, width in enumerate(layout):
             lines.extend(f"o{k}[(long long)c*{width}+{layer}] = "
-                         f"v{k}[j[c]*({ys})+i[c]*({xs})+({layer*plane})];"
+                         f"v{k}[j[c]*y{k}+i[c]*x{k}+{layer}LL*p{k}];"
                          for layer in range(width))
         source = (f'extern "C" __global__ void noahmp_gather_fields('
                   f'const long long* j, const long long* i, int n, {args}) {{ '
@@ -386,8 +402,9 @@ def gather_slab_fields(j, i, sources, grid_shape):
                   + "\n".join(lines) + '}')
         kernel = compile_generated_slab_kernel(source, "noahmp_gather_fields")
         _GATHER_SLOT_KERNELS[key] = kernel
-    arrays = tuple(array for pair in zip(sources.values(), result.values())
-                   for array in pair)
+    arrays = tuple(item for value, out, (plane, ys, xs)
+                   in zip(sources.values(), result.values(), strides)
+                   for item in (value, out, np.int64(plane), np.int64(ys), np.int64(xs)))
     kernel((_blocks(n),), (THREADS,), (j, i, np.int32(n), *arrays))
     return result
 
@@ -461,7 +478,7 @@ def write_slab_arithmetic(fields, j, i, values, *, nsoil, dt):
     i = cp.ascontiguousarray(i, dtype=cp.int64)
     isnow = cp.ascontiguousarray(values["isnow"], dtype=cp.int32)
     nx = fields["qfx"].shape[1]
-    key = (cp.cuda.runtime.getDevice(), nsoil, nx)
+    key = (cp.cuda.runtime.getDevice(), nsoil)  # nx is an argument, not source
     kernel = _WRITE_ARITHMETIC_KERNELS.get(key)
     if kernel is None:
         args = (", ".join(f"float* o_{name}" for name in outputs) + ", "
@@ -472,9 +489,9 @@ __device__ float M(float a,float b){return __fmul_rn(a,b);}
 __device__ float D(float a,float b){return __fdiv_rn(a,b);}
 extern "C" __global__ void noahmp_write_arithmetic(
 const long long* j,const long long* i,const int* isnow,
-const float* rainbl,float dt,int n,ARGS){
+const float* rainbl,float dt,int n,long long nx,ARGS){
 int c=blockDim.x*blockIdx.x+threadIdx.x;if(c>=n)return;
-long long p=j[c]*NX+i[c];
+long long p=j[c]*nx+i[c];
 o_qfx[p]=A(A(v_ecan[c],v_edir[c]),v_etran[c]);
 o_lh[p]=A(A(v_fcev[c],v_fgev[c]),v_fctr[c]);
 o_smstav[p]=0.0f;o_smstot[p]=0.0f;
@@ -506,11 +523,11 @@ for(int k=-2;k<=NSOIL;k++){
 o_soilenergy[p]=soil;o_snowenergy[p]=snow;
 }'''
         source = (source.replace("ARGS", args).replace("NSOIL", str(nsoil))
-                  .replace("NLAY", str(nsoil + 3)).replace("NX", str(nx)))
+                  .replace("NLAY", str(nsoil + 3)))
         kernel = compile_generated_slab_kernel(source, "noahmp_write_arithmetic")
         _WRITE_ARITHMETIC_KERNELS[key] = kernel
     kernel((_blocks(n),), (THREADS,),
-           (j, i, isnow, fields["rainbl"], np.float32(dt), np.int32(n),
+           (j, i, isnow, fields["rainbl"], np.float32(dt), np.int32(n), np.int64(nx),
             *(fields[name] for name in outputs), *arrays))
     return True
 

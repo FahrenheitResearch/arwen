@@ -63,7 +63,7 @@
 //! flushes and `fsync`s.  As with [`crate::netcdf3`] the destination is
 //! written in place; on failure the partial file is the caller's to discard.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
@@ -383,6 +383,113 @@ impl NcData<'_> {
     }
 }
 
+impl NcData<'_> {
+    /// The same big-endian bytes as `encode_into`, written by rayon workers in
+    /// fixed-size chunks into `out`, which the caller sized and zeroed.
+    fn encode_par(&self, out: &mut [u8]) {
+        use rayon::prelude::*;
+        const CHUNK: usize = 1 << 16;
+        macro_rules! be {
+            ($v:expr, $w:expr) => {
+                out[..$v.len() * $w]
+                    .par_chunks_mut(CHUNK * $w)
+                    .zip($v.par_chunks(CHUNK))
+                    .for_each(|(dst, src)| {
+                        for (d, x) in dst.chunks_exact_mut($w).zip(src) {
+                            d.copy_from_slice(&x.to_be_bytes());
+                        }
+                    })
+            };
+        }
+        match self {
+            NcData::Chars(v) => out[..v.len()].copy_from_slice(v),
+            NcData::Shorts(v) => be!(v, 2),
+            NcData::Ints(v) => be!(v, 4),
+            NcData::Floats(v) => be!(v, 4),
+            NcData::Doubles(v) => be!(v, 8),
+        }
+    }
+}
+
+/// An owned slab, for producers that build their values on a worker.
+#[derive(Debug, Clone)]
+pub enum NcOwned {
+    Chars(Vec<u8>),
+    Shorts(Vec<i16>),
+    Ints(Vec<i32>),
+    Floats(Vec<f32>),
+    Doubles(Vec<f64>),
+}
+
+impl NcOwned {
+    pub fn as_data(&self) -> NcData<'_> {
+        match self {
+            NcOwned::Chars(v) => NcData::Chars(v),
+            NcOwned::Shorts(v) => NcData::Shorts(v),
+            NcOwned::Ints(v) => NcData::Ints(v),
+            NcOwned::Floats(v) => NcData::Floats(v),
+            NcOwned::Doubles(v) => NcData::Doubles(v),
+        }
+    }
+}
+
+/// What a [`NcClassicWriter::put_parallel`] producer hands back: data the
+/// caller already holds, or data the worker built.
+pub enum NcSlab<'a> {
+    Borrowed(NcData<'a>),
+    Owned(NcOwned),
+}
+
+impl NcSlab<'_> {
+    fn data(&self) -> NcData<'_> {
+        match self {
+            NcSlab::Borrowed(d) => *d,
+            NcSlab::Owned(o) => o.as_data(),
+        }
+    }
+}
+
+/// Positional write: no shared cursor, so workers can write disjoint slabs at once.
+#[cfg(unix)]
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+}
+
+#[cfg(windows)]
+fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        let n = file.seek_write(buf, offset)?;
+        if n == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        buf = &buf[n..];
+        offset += n as u64;
+    }
+    Ok(())
+}
+
+/// The type and length checks every slab passes before it is written.
+fn check_slab(layout: &VarLayout, data: &NcData<'_>) -> RwResult<()> {
+    if data.nc_type() != layout.ty {
+        return Err(RwStoreError::Format(format!(
+            "netcdf_classic: variable '{}' is {} but was handed {} data",
+            layout.name,
+            layout.ty.name(),
+            data.nc_type().name()
+        )));
+    }
+    if data.len() as u64 != layout.slab_elems {
+        return Err(RwStoreError::Format(format!(
+            "netcdf_classic: variable '{}' expects {} value(s) per slab but got {}",
+            layout.name,
+            layout.slab_elems,
+            data.len()
+        )));
+    }
+    Ok(())
+}
+
 /// Round `n` up to the next multiple of 4.
 #[inline]
 fn pad4(n: u64) -> u64 {
@@ -681,6 +788,72 @@ impl NcClassicWriter {
         self.by_name.get(name).copied().ok_or_else(|| {
             RwStoreError::Format(format!("netcdf_classic: no variable named '{name}'"))
         })
+    }
+
+    /// Write many slabs at once on rayon workers.
+    ///
+    /// `jobs[i]` names a variable and, for a record variable, its record;
+    /// `produce(i)` builds that slab on a worker, which encodes it and writes
+    /// it at the slab's own offset.  Every slab has a fixed offset and the
+    /// file was sized at create, so the file holds the same bytes as calling
+    /// `put`/`put_record` for each job in turn.  Names, records and repeats
+    /// are checked before any worker starts.
+    pub fn put_parallel<'a, F>(&mut self, jobs: &[(&str, Option<u64>)], produce: F) -> RwResult<()>
+    where
+        F: Fn(usize) -> RwResult<NcSlab<'a>> + Sync,
+    {
+        use rayon::prelude::*;
+        let mut targets = Vec::with_capacity(jobs.len());
+        let mut seen = BTreeSet::new();
+        for &(name, record) in jobs {
+            let idx = self.index_of(name)?;
+            let record = match (self.layouts[idx].is_record, record) {
+                (true, Some(r)) if r < self.num_records => r,
+                (true, Some(r)) => {
+                    return Err(RwStoreError::Format(format!(
+                        "netcdf_classic: '{name}' record {r} is past the {} record(s) this file declares",
+                        self.num_records
+                    )))
+                }
+                (true, None) => {
+                    return Err(RwStoreError::Format(format!(
+                        "netcdf_classic: '{name}' is a record variable; use put_record with a record index"
+                    )))
+                }
+                (false, None) => 0,
+                (false, Some(_)) => {
+                    return Err(RwStoreError::Format(format!(
+                        "netcdf_classic: '{name}' is a fixed-size variable; use put"
+                    )))
+                }
+            };
+            if self.written[idx][record as usize] || !seen.insert((idx, record)) {
+                return Err(RwStoreError::Format(format!(
+                    "netcdf_classic: variable '{name}' record {record} was already written"
+                )));
+            }
+            targets.push((idx, record));
+        }
+        let file = &self.file;
+        let layouts = &self.layouts;
+        let record_stride = self.record_stride;
+        targets
+            .par_iter()
+            .enumerate()
+            .try_for_each(|(i, &(idx, record))| -> RwResult<()> {
+                let slab = produce(i)?;
+                let data = slab.data();
+                let layout = &layouts[idx];
+                check_slab(layout, &data)?;
+                let mut buf = vec![0u8; layout.slab_stride as usize];
+                data.encode_par(&mut buf);
+                write_all_at(file, &buf, layout.begin + record * record_stride)?;
+                Ok(())
+            })?;
+        for (idx, record) in targets {
+            self.written[idx][record as usize] = true;
+        }
+        Ok(())
     }
 
     fn write_slab(&mut self, idx: usize, record: u64, data: NcData<'_>) -> RwResult<()> {
@@ -1113,6 +1286,34 @@ mod tests {
         write_golden(&p, NcFormat::Classic);
         let got = std::fs::read(&p).unwrap();
         assert_bytes_eq(&got, GOLDEN_CDF1, "cdf1");
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn put_parallel_writes_the_cdf2_golden_byte_for_byte() {
+        let p = tmp_path("cdf2-par.nc");
+        let (dims, gattrs, vars) = golden_schema();
+        let mut w = NcClassicWriter::create(&p, NcFormat::Offset64, dims, gattrs, vars, 2).unwrap();
+        let hgt: Vec<f32> = (0..6).map(|i| i as f32 * 0.5).collect();
+        let stamps = ["2026-08-10_13:00:00", "2026-08-10_14:00:00"];
+        let jobs: Vec<(&str, Option<u64>)> = vec![
+            ("XLAT", Some(1)), ("HGT_M", None), ("Times", Some(0)), ("ITIMESTEP", Some(1)),
+            ("XLAT", Some(0)), ("Times", Some(1)), ("ITIMESTEP", Some(0)),
+        ];
+        w.put_parallel(&jobs, |i| {
+            let (name, r) = jobs[i];
+            let r = r.unwrap_or(0);
+            Ok(match name {
+                "HGT_M" => NcSlab::Borrowed(NcData::Floats(&hgt)),
+                "Times" => NcSlab::Owned(NcOwned::Chars(stamps[r as usize].as_bytes().to_vec())),
+                "ITIMESTEP" => NcSlab::Owned(NcOwned::Ints(vec![100 + r as i32])),
+                _ => NcSlab::Owned(NcOwned::Floats((0..6).map(|i| i as f32 + r as f32 * 10.0).collect())),
+            })
+        })
+        .unwrap();
+        w.finish().unwrap();
+        let got = std::fs::read(&p).unwrap();
+        assert_bytes_eq(&got, GOLDEN_CDF2, "cdf2 put_parallel");
         let _ = std::fs::remove_file(&p);
     }
 

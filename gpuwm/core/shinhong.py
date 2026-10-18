@@ -1,9 +1,9 @@
 """Shin-Hong scale-aware PBL column kernel (bl_pbl_physics=11).
 
 This module is the device launcher for the WRF v4.6.1 Shin-Hong
-transcription in ``kernels/shinhong.cu`` -- arm A only (``ctopo = ctopo2 =
-1``, the Registry ``topo_wind=0`` default, the only arm this engine can
-reach).  The scheme consumes mass-point wind, potential temperature,
+transcription in ``kernels/shinhong.cu``: arm A (``ctopo = ctopo2 = 1``,
+the Registry ``topo_wind=0`` default) and arm B (WRF's ``topo_wind`` = 1 or
+2, ``topo=``).  The scheme consumes mass-point wind, potential temperature,
 moisture, pressure/Exner, layer depths, the scheme's own prognostic SGS TKE,
 and the surface-layer coupling fields (UST, HFX/QFX, PSIM/PSIH, plus the
 Coriolis parameter for the QNSE mixing length).  It returns tendencies
@@ -96,7 +96,10 @@ def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                     tke, *,
                     psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland,
                     u10, v10, corf,
-                    dt: float, dx: float, dy: float, tke_diag: int = 1):
+                    dt: float, dx: float, dy: float, tke_diag: int = 1,
+                    topo: tuple[cp.ndarray, cp.ndarray] | None = None,
+                    u10_out: cp.ndarray | None = None,
+                    v10_out: cp.ndarray | None = None):
     """Launch Shin-Hong for a batch of device columns; return device outputs.
 
     Three-dimensional inputs have shape ``(nz, ny, nx)`` except
@@ -107,6 +110,14 @@ def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
     is the wrapper's ``rthblten``, already divided by the Exner function),
     2-D ``hpbl/wstar/delta`` float32 arrays, and 2-D one-based ``kpbl``
     int32.
+
+    ``topo`` (WRF ``topo_wind`` = 1 or 2) is ``(ctopo, ctopo2)``, the two
+    (ny, nx) coefficients of
+    :func:`gpuwm.core.terrain_drag.topo_wind_coefficients`: the kernel then
+    takes WRF's arm B (``shinhong_column_topo``): CTOPO scales the surface
+    drag (module_bl_shinhong.F:1387) and the blended 10 m wind of
+    :1472-1473 is written into ``u10_out``/``v10_out``, which the caller
+    supplies; ``u10``/``v10`` are read, never written.
     """
     columns = {"u": u, "v": v, "theta": theta, "qv": qv, "qc": qc,
                "qi": qi, "p": p, "exner": exner, "dz": dz, "tke": tke}
@@ -151,6 +162,18 @@ def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                 f"Shin-Hong requires a positive finite {label}, got {value}")
     if tke_diag not in (0, 1, False, True):
         raise ValueError("tke_diag must be 0 or 1")
+    topo_args = ()
+    if topo is not None:
+        ctopo, ctopo2 = topo
+        for name, arr in (("ctopo", ctopo), ("ctopo2", ctopo2),
+                          ("u10_out", u10_out), ("v10_out", v10_out)):
+            if (not isinstance(arr, cp.ndarray) or arr.shape != (ny, nx)
+                    or arr.dtype != DTYPE or not arr.flags.c_contiguous):
+                raise ValueError(f"topo_wind needs {name}, a C-contiguous "
+                                 f"float32 CuPy array with shape {(ny, nx)}")
+        topo_args = (ctopo, ctopo2, u10_out, v10_out)
+    elif u10_out is not None or v10_out is not None:
+        raise ValueError("u10_out/v10_out are only written with topo")
 
     out = {name: cp.empty_like(theta) for name in _SHINHONG_3D_FLOAT_OUTPUTS}
     out.update(hpbl=cp.empty((ny, nx), dtype=DTYPE),
@@ -158,7 +181,8 @@ def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                wstar=cp.empty((ny, nx), dtype=DTYPE),
                delta=cp.empty((ny, nx), dtype=DTYPE))
     ncol = ny * nx
-    kernel = get_kernel("shinhong", "shinhong_column")
+    kernel = get_kernel("shinhong", "shinhong_column_topo" if topo_args
+                        else "shinhong_column")
     tile = shinhong_tile_columns(kernel, ncol)
     ws = cp.empty(shinhong_workspace_floats(nz, tile), dtype=DTYPE)
     for lo in range(0, ncol, tile):
@@ -172,7 +196,7 @@ def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                 out["hpbl"], out["kpbl"], out["wstar"], out["delta"],
                 DTYPE(dt), DTYPE(dx), DTYPE(dy), np.int32(int(tke_diag)),
                 np.int32(nz), np.int32(ny), np.int32(nx),
-                ws, np.int32(nz + 2), np.int32(lo)))
+                ws, np.int32(nz + 2), np.int32(lo)) + topo_args)
     return out
 
 

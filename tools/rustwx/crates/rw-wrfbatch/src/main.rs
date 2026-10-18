@@ -142,7 +142,7 @@ gpuwm-rw-wrfbatch-sections-v1\tSECTIONFILL\tslug\tlo\thi\tabsence\trule\t\
 gpuwm-rw-wrfbatch-inputs-json-v1\t\
 gpuwm-rw-wrfbatch-vocabulary-v2\tgeneric\tvar:\tvariables\txsec:\tmesh:\tmeshdiff:\tselectable_slugs\t\
 gpuwm-rw-wrfbatch-layout-v1\t--layout\tauto\tfixed\t--size-class\t--scale\t--pair-sheet\t\
-gpuwm-rw-wrfbatch-difference-v1\t--diff-against\t--diff-inputs-json\t--diff-label-a\t--diff-label-b\t--diff-labels\t--diff-sheet\tDIFFERENCE";
+gpuwm-rw-wrfbatch-difference-v2\t--diff-against\t--diff-inputs-json\t--diff-label-a\t--diff-label-b\t--diff-labels\t--diff-sheet\tDIFFERENCE\tdiffering_cells\tRUSTWX_DIFFERENCE_TABLE";
 
 #[derive(Debug)]
 struct Args {
@@ -216,6 +216,12 @@ struct Args {
     /// `--diff-sheet`: draw every requested map product as this run minus
     /// the named run, at the valid time both share (`run_difference.rs`).
     difference: Option<run_difference::DifferenceArgs>,
+    /// `--save-import FILE`: after the import, record what a later draw needs from the frames (the run,
+    /// its stored slots, frame attribution, the run context and the grid identity) in FILE.
+    save_import: Option<PathBuf>,
+    /// `--from-import FILE`: draw from the store run a `--save-import` recorded, without opening the
+    /// converted frames again (they may already be deleted); no wrfout input is needed.
+    from_import: Option<PathBuf>,
     inputs: Vec<PathBuf>,
 }
 
@@ -230,7 +236,7 @@ fn usage() -> &'static str {
 [--footer-title TEXT] [--footer-valid TEXT] [--footer-mesh TEXT] [--footer-leg TEXT] \
 [--footer-note TEXT] [--diff-against WRFOUT]... [--diff-inputs-json FILE] \
 [--diff-labels A,B] [--diff-label-a TEXT] [--diff-label-b TEXT] [--diff-sheet] \
-[--list-products] [--inputs-json FILE] wrfout...\n       \
+[--list-products] [--save-import FILE] [--from-import FILE] [--inputs-json FILE] wrfout...\n       \
 rw_wrfbatch --help | --abi"
 }
 
@@ -681,6 +687,8 @@ fn parse_args() -> Result<Invocation, CliError> {
     let mut layout_scale = 1.0f64;
     let mut heavy = false;
     let mut list_products = false;
+    let mut save_import: Option<PathBuf> = None;
+    let mut from_import: Option<PathBuf> = None;
     let mut streamlines: Option<bool> = None;
     let mut source_label = DEFAULT_SOURCE_LABEL.to_string();
     let mut overlays_path: Option<PathBuf> = None;
@@ -706,6 +714,16 @@ fn parse_args() -> Result<Invocation, CliError> {
 
     while let Some(arg) = raw.next() {
         match arg.as_str() {
+            "--save-import" => {
+                save_import = Some(PathBuf::from(raw.next().ok_or_else(|| {
+                    CliError::Usage("--save-import requires a file".to_string())
+                })?));
+            }
+            "--from-import" => {
+                from_import = Some(PathBuf::from(raw.next().ok_or_else(|| {
+                    CliError::Usage("--from-import requires a file".to_string())
+                })?));
+            }
             "--inputs-json" => {
                 let path = PathBuf::from(raw.next().ok_or_else(|| {
                     CliError::Usage("--inputs-json requires a JSON file".to_string())
@@ -1003,7 +1021,7 @@ fn parse_args() -> Result<Invocation, CliError> {
         return Ok(Invocation::Catalog);
     }
 
-    if inputs.is_empty() {
+    if inputs.is_empty() && from_import.is_none() {
         return Err(CliError::Usage(
             "at least one wrfout input is required".to_string(),
         ));
@@ -1087,6 +1105,8 @@ fn parse_args() -> Result<Invocation, CliError> {
         mesh_bounds,
         footer,
         difference,
+        save_import,
+        from_import,
         inputs,
     })))
 }
@@ -1177,6 +1197,10 @@ fn validate_request(args: &Args) -> Result<(), CliError> {
         return Ok(());
     }
 
+    // A draw from a saved import opens no frame: the store run is the input.
+    if args.from_import.is_some() {
+        return Ok(());
+    }
     // Per-path, in the order given, so the first sentence names the first
     // problem.  The wording matches `gpuwm/render.py`'s matplotlib engine
     // ("{path}: unreadable wrfout ({exc})") so `--engine auto` cannot change
@@ -1414,7 +1438,7 @@ fn run(mut args: Args) -> Result<(), String> {
     if args.footer != rustwx_render::FooterFields::default() {
         let mut footer = args.footer.clone();
         if footer.mesh_or_grid.is_none() {
-            footer.mesh_or_grid = domain_title_label(&grid_identity(&args.inputs));
+            footer.mesh_or_grid = domain_title_label(&run_grid_identity(&args));
         }
         rustwx_render::set_footer_fields(footer);
     }
@@ -1512,7 +1536,7 @@ fn run(mut args: Args) -> Result<(), String> {
     let section_inputs = args.inputs.clone();
     let section_out_dir = args.out_dir.clone();
     let section_source_label = args.source_label.clone();
-    let section_domain_slug = native_domain_slug(&grid_identity(&args.inputs));
+    let section_domain_slug = native_domain_slug(&run_grid_identity(&args));
     let (section_width, section_height) = match (args.layout, args.section_size) {
         (rustwx_render::LayoutMode::Auto { class, scale }, None) => {
             let plan = rustwx_render::LayoutTable::builtin().plan_section(class, scale);
@@ -1571,24 +1595,35 @@ fn run(mut args: Args) -> Result<(), String> {
     // Read before the import consumes the paths: the domain token and the
     // subtitle spacing come from the inputs' own global attributes, never
     // from the store (rw-store v1 retains no grid-spacing metadata).
-    let identity = grid_identity(&args.inputs);
+    let identity = run_grid_identity(&args);
     let domain_slug = native_domain_slug(&identity);
     let spacing = identity.spacing_m.and_then(spacing_subtitle);
     let title_provenance = TitleProvenance::LocalImport {
         grid_label: domain_title_label(&identity),
+    };
+    let imported = match &args.from_import {
+        Some(path) => saved_import(path)?,
+        None => {
+            let imported = import_run(
+                args.inputs,
+                &args.store_root,
+                &store_products,
+                args.heavy,
+                args.list_products,
+            )?;
+            if let Some(path) = &args.save_import {
+                save_import(path, &imported, &identity)?;
+            }
+            imported
+        }
     };
     let ImportedRun {
         model: import_model,
         run: import_run_slug,
         stored_slots,
         frame_sources,
-    } = import_run(
-        args.inputs,
-        &args.store_root,
-        &store_products,
-        args.heavy,
-        args.list_products,
-    )?;
+        run_context: _,
+    } = imported;
     if args.list_products {
         return list_products(
             &args.store_root,
@@ -1750,6 +1785,105 @@ struct ImportedRun {
     /// The stored frame slots, ascending, which is ascending valid time.
     stored_slots: Vec<u16>,
     frame_sources: std::collections::HashMap<u16, PathBuf>,
+    /// The import's initial-condition disclosure and model label (what the pictures are labelled with).
+    run_context: wrf_process::WrfRunContext,
+}
+
+/// The grid identity this draw labels its pictures with: the one a `--save-import` recorded when
+/// drawing from it, else the inputs' own global attributes.
+fn run_grid_identity(args: &Args) -> GridIdentity {
+    if let Some(path) = &args.from_import {
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                let grid = &value["grid"];
+                let text = |key: &str| grid.get(key).and_then(serde_json::Value::as_str).map(str::to_string);
+                return GridIdentity {
+                    domain: text("domain"),
+                    spacing_m: grid.get("spacing_m").and_then(serde_json::Value::as_f64),
+                    label: text("label"),
+                };
+            }
+        }
+        return GridIdentity::default();
+    }
+    grid_identity(&args.inputs)
+}
+
+const SAVED_IMPORT_SCHEMA: &str = "rw-wrfbatch.saved-import.v1";
+
+/// THE BREAKAGE THIS SERVES (4x RTX PRO 6000 box, 2026-10-17): a draw reopened every converted frame
+/// although the listing had already imported it into the store (22 MB per frame against a 4.3 GB
+/// frame), so the products door had to keep every frame of a series on disk until the last map was
+/// drawn, and member batches filled the disk.  The listing records here what the draw takes from the
+/// frames, so the door can delete each frame as soon as it is imported.
+fn save_import(path: &std::path::Path, imported: &ImportedRun, identity: &GridIdentity) -> Result<(), String> {
+    let mut sources: Vec<(u16, String)> = imported
+        .frame_sources
+        .iter()
+        .map(|(slot, file)| (*slot, file.display().to_string()))
+        .collect();
+    sources.sort();
+    let document = serde_json::json!({
+        "schema": SAVED_IMPORT_SCHEMA,
+        "writer": env!("CARGO_PKG_VERSION"),
+        "model": imported.model,
+        "run": imported.run,
+        "stored_slots": imported.stored_slots,
+        "frame_sources": sources,
+        "run_context": imported.run_context.to_json(),
+        "grid": {"domain": identity.domain, "spacing_m": identity.spacing_m, "label": identity.label},
+    });
+    let bytes = serde_json::to_vec_pretty(&document).map_err(|err| format!("encode {}: {err}", path.display()))?;
+    std::fs::write(path, bytes).map_err(|err| format!("write {}: {err}", path.display()))
+}
+
+/// The import a `--save-import` recorded; its run context is installed as the import would have.
+fn saved_import(path: &std::path::Path) -> Result<ImportedRun, String> {
+    let bytes = std::fs::read(path).map_err(|err| format!("read {}: {err}", path.display()))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|err| format!("parse {}: {err}", path.display()))?;
+    if value.get("schema").and_then(serde_json::Value::as_str) != Some(SAVED_IMPORT_SCHEMA) {
+        return Err(format!("{} is not a {SAVED_IMPORT_SCHEMA} record", path.display()));
+    }
+    let text = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("{} carries no {key}", path.display()))
+    };
+    let stored_slots: Vec<u16> = value
+        .get("stored_slots")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("{} carries no stored_slots", path.display()))?
+        .iter()
+        .filter_map(|slot| slot.as_u64().and_then(|n| u16::try_from(n).ok()))
+        .collect();
+    if stored_slots.is_empty() {
+        return Err(format!("{} names no stored slot", path.display()));
+    }
+    let frame_sources = value
+        .get("frame_sources")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let slot = row.get(0)?.as_u64().and_then(|n| u16::try_from(n).ok())?;
+                    Some((slot, PathBuf::from(row.get(1)?.as_str()?)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let run_context = wrf_process::WrfRunContext::from_json(&value["run_context"]);
+    run_context.apply();
+    println!("IMPORTED from {} (no frame reopened)", path.display());
+    Ok(ImportedRun {
+        model: text("model")?,
+        run: text("run")?,
+        stored_slots,
+        frame_sources,
+        run_context,
+    })
 }
 
 /// Import `inputs` into `store_root` for the store products asked for.
@@ -1766,12 +1900,23 @@ fn import_run(
     // (`wrf_process::published_import_record`).  A listing of group keywords
     // alone, the default, still imports in full: it answers what the frames
     // can draw at all.
+    let named = !heavy
+        && named_product_request(store_products)
+        && (!list_products || names_a_product(store_products));
     let mut options = WrfProcessOptions {
         heavy_ecape: heavy,
         snow_since: std::env::var("GPUWM_SNOW_SINCE").ok().filter(|s| !s.trim().is_empty()),
-        named_products_only: !heavy
-            && named_product_request(store_products)
-            && (!list_products || names_a_product(store_products)),
+        named_products_only: named,
+        // A request of named products imports only what those products
+        // read, in ONE import per file for all of them; a listing of the
+        // same names imports the same plan, so the render that follows
+        // reuses it.  A keyword in the request (`all`, `windowed`) keeps
+        // the named import whole.
+        required_fields: if named {
+            wrf_process::required_fields_for_products(store_products)
+        } else {
+            None
+        },
         ..WrfProcessOptions::default()
     };
     if !heavy {
@@ -1836,6 +1981,7 @@ fn import_run(
         run: import.run,
         stored_slots,
         frame_sources,
+        run_context: import.run_context.clone(),
     })
 }
 
@@ -2818,6 +2964,8 @@ mod tests {
             mesh_bounds: None,
             footer: rustwx_render::FooterFields::default(),
             difference: None,
+            save_import: None,
+            from_import: None,
             inputs,
         }
     }

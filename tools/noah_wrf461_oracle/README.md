@@ -81,7 +81,7 @@ does (see `libmvec-report.txt`).
 
 ## Fixture coverage
 
-42 columns, chosen to reach branches rather than to look meteorological:
+80 columns, chosen to reach branches rather than to look meteorological:
 
 * warm unfrozen land (NOPAC); dry soil near wilting; saturated soil under
   heavy rain; bare soil (`shdfac = 0`); a closed canopy at maximum
@@ -103,9 +103,14 @@ does (see `libmvec-report.txt`).
   probes on sign compares and underflow, because CuPy appends `-ftz=true`
   unconditionally and this project has already lost three days to exactly
   that;
-* open water (`xland=2`), sea ice (`xice=0.6`), and land ice (`ivgtyp=isice`),
-  which is the one row gpuwm skips by documented restriction rather than
-  computes;
+* open water (`xland=2`), sea ice (`xice=0.6`), and land ice (`ivgtyp=isice`);
+* thirteen more land-ice columns (43-55), one per `SFLX_GLACIAL` branch: the
+  cold `T12 <= TFREEZ` arm, snowfall with each of the two density resets and
+  with neither, freezing rain on partial cover, rain on a melting glacier, the
+  0.10 m SWE floor, sublimation (`ETP > 0`), the `RIBB >= 0.1` stability
+  reduction, a subnormal `SNOW`, the warm `SNOWC` blend with and without the
+  `SWDOWN > 10` term, and bare ice.  Added for the 2.8.6 port; rows 1-42 are
+  column-local and rebuild byte-identical with them present;
 * soil type 14 at a land point with `xice=0`, which WRF resets to 7; the urban
   category; sand, clay, organic and bedrock; soil moisture above porosity on
   entry;
@@ -116,13 +121,32 @@ does (see `libmvec-report.txt`).
   soil type.  They were added after the fact: without them the `opt_thcnd=2`
   fixture came out **byte-identical** to the `opt_thcnd=1` one, so it could
   not have discriminated a port that ignored the switch.  `build.sh` now fails
-  if any variant fixture is byte-identical to the base one.
+  if any variant fixture is byte-identical to the base one;
+* twenty regime columns (56-75): convective downpour, outflow, high
+  terrain in summer and winter, dewfall, hoar frost, desert, rainforest, two
+  ocean columns, wetland, freezing rain and melt on frozen ground, a frozen
+  top layer, tundra, irrigated crop, -40 C over deep snow, a cloudburst, and
+  VEGFRA at both table bounds;
+* five columns (76-80) for the hand-over to SFCDIAGS, which `run_lsm.F90`
+  calls after `lsm` exactly as `module_surface_driver.F:2994` does: CHS2
+  different from CQS2 on entry (so lsm's `CHS2 = CQS2` moves a word), CQS2
+  just below and exactly at SFCDIAGS's 1.E-5 threshold, a 70 kPa plateau at
+  night, and open water with CHS2 different from CQS2.
 
 ## Measuring the port
 
 ```
 python tools/noah_wrf461_oracle/validate_noah_oracle.py [FIXTURE_DIR]
+python tools/noah_wrf461_oracle/ulp_report.py OUT.json [FIXTURE_DIR]
+python tools/noah_wrf461_oracle/sfcdiags_sweep.py WRF_SOURCE_ROOT WORKDIR OUT.json
+python tools/noah_wrf461_oracle/libm_exhaustive.py OUT.json
 ```
 
-Prints per-field ULP against the CUDA kernel; asserts nothing.
-`tests/test_noah_wrf461_parity.py` is the gate.
+`validate_noah_oracle.py` prints per-field ULP against the CUDA kernel.
+`ulp_report.py` lists every differing word, the land column and SFCDIAGS
+after it, with both words.  `sfcdiags_sweep.py` builds the pinned SFCDIAGS
+alone and grades the driver's `noah_sfcdiags` kernel on every float32 surface
+pressure from 20 to 110 kPa.  `libm_exhaustive.py` grades the device libm
+words the column calls against the host C library.  Run each once with
+`GPUWM_WRF_EXACT=1` and once without.  `tests/test_noah_wrf461_parity.py` is
+the gate; the other four assert nothing about the port's table.

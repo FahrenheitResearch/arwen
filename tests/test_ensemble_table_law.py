@@ -54,6 +54,10 @@ ALLOWED_WORDS = {
     "blend": (
         "an English word (time blend, terrain blend) that is also an alias of "
         "the nbm row."),
+    "hex": (
+        "hexadecimal (a seed or digest spelled in hex: seed_hex, "
+        "parent_dt_fp32_hex) that is also an alias of the hex-global row "
+        "(2.9.2). Here the word names the number base, not the row."),
 }
 
 #: Identifiers defined outside the ensemble line whose historical name

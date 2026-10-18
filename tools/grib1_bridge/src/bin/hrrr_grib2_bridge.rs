@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
+use rayon::prelude::*;
 
 const HYBRID_LEVEL_TYPE: u8 = 105;
 const SOIL_LEVEL_TYPE: u8 = 106;
@@ -1105,6 +1106,39 @@ fn decode_crop_write(
     nonnegative: bool,
     unit_fraction: bool,
 ) -> Result<Stats, Box<dyn Error>> {
+    let (bytes, stats) =
+        decode_crop(message, message_index, window, variable, nonnegative, unit_fraction)?;
+    writer.write_all(&bytes)?;
+    Ok(stats)
+}
+
+/// One record decoded and cropped to the window's FP32 little-endian bytes.
+/// Pure in its inputs, so records decode on all cores at once and are then
+/// written in their fixed order: the bytes are the serial loop's bytes.
+/// The error is its text (`Send`), the same text the serial loop reported.
+fn decode_crop(
+    message: &Grib2Message,
+    message_index: usize,
+    window: Window,
+    variable: &str,
+    nonnegative: bool,
+    unit_fraction: bool,
+) -> Result<(Vec<u8>, Stats), String> {
+    let mut out = Vec::with_capacity(window.nx() * window.ny() * 4);
+    decode_crop_into(message, message_index, &mut out, window, variable, nonnegative, unit_fraction)
+        .map(|stats| (out, stats))
+        .map_err(|error| error.to_string())
+}
+
+fn decode_crop_into(
+    message: &Grib2Message,
+    message_index: usize,
+    writer: &mut Vec<u8>,
+    window: Window,
+    variable: &str,
+    nonnegative: bool,
+    unit_fraction: bool,
+) -> Result<Stats, Box<dyn Error>> {
     validate_window(window, &GridFingerprint::from_grid(&message.grid))?;
     validate_crop_payload(message, message_index, variable, window)?;
     let context = payload_context(message, message_index, variable, window);
@@ -1253,32 +1287,49 @@ fn write_atmosphere(
             Some(BufWriter::new(File::create(output.join(format!("{}.mask", spec.name)))?))
         } else { None };
         let mut any_positive = false;
-        for selected in inventory
+        // Every level of this variable decodes at once (one record per
+        // core); bytes and manifest rows are then written in level order.
+        let fields: Vec<&SelectedField> = inventory
             .selected
             .iter()
             .filter(|field| field.variable == spec.name)
-        {
-            let message = file
-                .messages
-                .get(selected.index)
-                .ok_or("selected atmosphere index disappeared on reopen")?;
-            let stats = decode_crop_write(
-                message,
-                selected.index,
-                &mut writer,
-                window,
-                spec.name,
-                spec.nonnegative,
-                unit_fraction(spec.name),
-            )?;
-            if let Some(mask_writer) = &mut mask_writer {
-                let nx = message.grid.nx as usize;
-                for j in window.j_start..=window.j_end {
-                    for i in window.i_start..=window.i_end {
-                        let present = message.bitmap.as_ref().map(|mask| mask[j * nx + i]).unwrap_or(true);
-                        mask_writer.write_all(&[u8::from(present)])?;
+            .collect();
+        let decoded: Vec<Result<(Vec<u8>, Option<Vec<u8>>, Stats), String>> = fields
+            .par_iter()
+            .map(|selected| {
+                let message = file
+                    .messages
+                    .get(selected.index)
+                    .ok_or("selected atmosphere index disappeared on reopen")?;
+                let (bytes, stats) = decode_crop(
+                    message,
+                    selected.index,
+                    window,
+                    spec.name,
+                    spec.nonnegative,
+                    unit_fraction(spec.name),
+                )?;
+                let mask = needs_mask.then(|| {
+                    let nx = message.grid.nx as usize;
+                    let mut mask_bytes = Vec::with_capacity(window.nx() * window.ny());
+                    for j in window.j_start..=window.j_end {
+                        for i in window.i_start..=window.i_end {
+                            let present = message.bitmap.as_ref().map(|mask| mask[j * nx + i]).unwrap_or(true);
+                            mask_bytes.push(u8::from(present));
+                        }
                     }
-                }
+                    mask_bytes
+                });
+                Ok((bytes, mask, stats))
+            })
+            .collect();
+        for (selected, result) in fields.into_iter().zip(decoded) {
+            let (bytes, mask, stats) = result?;
+            let message = &file.messages[selected.index];
+            writer.write_all(&bytes)?;
+            drop(bytes);
+            if let (Some(mask_writer), Some(mask)) = (&mut mask_writer, mask) {
+                mask_writer.write_all(&mask)?;
             }
             any_positive |= stats.maximum > 0.0;
             writeln!(
@@ -1307,27 +1358,37 @@ fn write_atmosphere(
             .into());
         }
     }
-    for spec in SURFACE_SPECS {
-        let selected = inventory
-            .selected
-            .iter()
-            .find(|field| field.variable == spec.name)
-            .ok_or_else(|| format!("selected surface {} disappeared", spec.name))?;
-        let message = file
-            .messages
-            .get(selected.index)
-            .ok_or("selected surface index disappeared on reopen")?;
+    // The surface records decode together, then are written in spec order.
+    let decoded: Vec<Result<(&SelectedField, Vec<u8>, Stats), String>> = SURFACE_SPECS
+        .par_iter()
+        .map(|spec| {
+            let selected = inventory
+                .selected
+                .iter()
+                .find(|field| field.variable == spec.name)
+                .ok_or_else(|| format!("selected surface {} disappeared", spec.name))?;
+            let message = file
+                .messages
+                .get(selected.index)
+                .ok_or("selected surface index disappeared on reopen")?;
+            let (bytes, stats) = decode_crop(
+                message,
+                selected.index,
+                window,
+                spec.name,
+                atmosphere_nonnegative(spec.name),
+                unit_fraction(spec.name),
+            )?;
+            Ok((selected, bytes, stats))
+        })
+        .collect();
+    for (spec, result) in SURFACE_SPECS.iter().zip(decoded) {
+        let (selected, bytes, stats) = result?;
+        let message = &file.messages[selected.index];
         let path = output.join(format!("{}.f32le", spec.name));
         let mut writer = BufWriter::new(File::create(&path)?);
-        let stats = decode_crop_write(
-            message,
-            selected.index,
-            &mut writer,
-            window,
-            spec.name,
-            atmosphere_nonnegative(spec.name),
-            unit_fraction(spec.name),
-        )?;
+        writer.write_all(&bytes)?;
+        drop(bytes);
         writer.flush()?;
         // Q2 keeps its post-hoc ceiling: one kg/kg of water vapour is a
         // plausibility limit, not a saturating one, so no quantization
@@ -1368,17 +1429,25 @@ fn write_soil(
     for variable in ["SOILT", "SOILW"] {
         let path = output.join(format!("{variable}.f32le"));
         let mut writer = BufWriter::new(File::create(&path)?);
-        for selected in inventory
+        let fields: Vec<&SelectedField> = inventory
             .selected
             .iter()
             .filter(|field| field.variable == variable)
-        {
-            let message = file
-                .messages
-                .get(selected.index)
-                .ok_or("selected soil index disappeared on reopen")?;
-            let stats =
-                decode_crop_write(message, selected.index, &mut writer, window, variable, true, unit_fraction(variable))?;
+            .collect();
+        let decoded: Vec<Result<(Vec<u8>, Stats), String>> = fields
+            .par_iter()
+            .map(|selected| {
+                let message = file
+                    .messages
+                    .get(selected.index)
+                    .ok_or("selected soil index disappeared on reopen")?;
+                decode_crop(message, selected.index, window, variable, true, unit_fraction(variable))
+            })
+            .collect();
+        for (selected, result) in fields.into_iter().zip(decoded) {
+            let (bytes, stats) = result?;
+            let message = &file.messages[selected.index];
+            writer.write_all(&bytes)?;
             writeln!(
                 manifest,
                 "{}",
@@ -1397,13 +1466,21 @@ fn write_soil(
         }
         writer.flush()?;
     }
-    for selected in &inventory.optional_surface {
-        let message = file.messages.get(selected.index)
-            .ok_or("selected optional surface index disappeared on reopen")?;
+    let decoded: Vec<Result<(Vec<u8>, Stats), String>> = inventory
+        .optional_surface
+        .par_iter()
+        .map(|selected| {
+            let message = file.messages.get(selected.index)
+                .ok_or("selected optional surface index disappeared on reopen")?;
+            decode_crop(message, selected.index, window, selected.variable, true, false)
+        })
+        .collect();
+    for (selected, result) in inventory.optional_surface.iter().zip(decoded) {
+        let (bytes, stats) = result?;
+        let message = &file.messages[selected.index];
         let path = output.join(format!("{}.f32le", selected.variable));
         let mut writer = BufWriter::new(File::create(&path)?);
-        let stats = decode_crop_write(message, selected.index, &mut writer, window,
-            selected.variable, true, false)?;
+        writer.write_all(&bytes)?;
         if stats.maximum > 100.0 {
             return Err(format!("{} exceeds 100 percent", selected.variable).into());
         }
@@ -1847,17 +1924,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let mut atmosphere_inventories = Vec::with_capacity(inventoried);
     let mut soil_inventories = Vec::with_capacity(inventoried);
-    for input in &inputs[..inventoried] {
-        atmosphere_inventories.push(inventory_atmosphere(
-            &input.atmosphere,
-            &expected_cycle,
-            input.forecast_hour, &extras, analyzed_aerosol,
-        )?);
-        soil_inventories.push(inventory_soil(
-            &input.soil,
-            &expected_cycle,
-            input.forecast_hour,
-        )?);
+    // Every lead's two files are read and inventoried at once; the results
+    // are taken in lead order, so the first failure reported is the one the
+    // serial loop reported.
+    let inventories: Vec<(Result<AtmosInventory, String>, Result<SoilInventory, String>)> =
+        inputs[..inventoried]
+            .par_iter()
+            .map(|input| {
+                rayon::join(
+                    || {
+                        inventory_atmosphere(
+                            &input.atmosphere,
+                            &expected_cycle,
+                            input.forecast_hour, &extras, analyzed_aerosol,
+                        )
+                        .map_err(|error| error.to_string())
+                    },
+                    || {
+                        inventory_soil(&input.soil, &expected_cycle, input.forecast_hour)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+            })
+            .collect();
+    for (atmosphere, soil) in inventories {
+        atmosphere_inventories.push(atmosphere?);
+        soil_inventories.push(soil?);
     }
     let atmosphere_reference = &atmosphere_inventories[0];
     let soil_reference = &soil_inventories[0];

@@ -1,0 +1,107 @@
+{
+ "a": "/work/pverify/noah-mosaic/oracle471crb2",
+ "b": "/work/pverify/noah-mosaic/oracle471crb",
+ "arrays_a": 24524,
+ "arrays_b": 23504,
+ "identical": 23504,
+ "families": {
+  "base": {
+   "arrays": 4080,
+   "differing_arrays": 0,
+   "words": 502928,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "cats": {
+   "arrays": 2040,
+   "differing_arrays": 0,
+   "words": 251464,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ftz": {
+   "arrays": 255,
+   "differing_arrays": 0,
+   "words": 31433,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "lcz": {
+   "arrays": 1020,
+   "differing_arrays": 0,
+   "words": 171812,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "mosaic_init": {
+   "arrays": 800,
+   "differing_arrays": 0,
+   "words": 197904,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "twins": {
+   "arrays": 765,
+   "differing_arrays": 0,
+   "words": 61467,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 232080,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_lcz": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 302320,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_lcz_table": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 302320,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_lcz_wrfinit": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 302320,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_table": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 232080,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_wrfinit": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 232080,
+   "differing_words": 0,
+   "max_ulp": 0
+  }
+ },
+ "only_in_a_families": [
+  "terrain"
+ ],
+ "only_in_b_families": [],
+ "differing_arrays": 0,
+ "differing_by_family_array": {},
+ "hash_list": {
+  "matching": 23504,
+  "differing": 0,
+  "not_listed": 1020,
+  "not_listed_families": [
+   "terrain"
+  ]
+ }
+}

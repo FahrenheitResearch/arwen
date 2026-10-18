@@ -654,7 +654,7 @@ class MpasColumnBatchPhysics:
                  snow_depth=0.0, soil_temperature=285.0,
                  soil_moisture=0.30, xice_threshold=0.5,
                  wsm6_hail_opt=0, physics_mode=None,
-                 physics_correct_skip=()):
+                 physics_correct_skip=(), pbl_scheme="ysu"):
         # ---- pure validation FIRST: every refusal below fires before a
         # single device allocation, so the CPU-hermetic contract tests
         # can exercise the whole refusal surface without touching a GPU.
@@ -673,6 +673,8 @@ class MpasColumnBatchPhysics:
                 f"{microphysics_scheme!r}: each row names the exact "
                 "transported species set, and a scheme without a row "
                 "would run on substituted state")
+        if pbl_scheme not in ("ysu", None):
+            raise ValueError("pbl_scheme must be 'ysu' or None (external LES)")
         cadences = resolve_column_batch_cadences(
             dt=dt, radiation_seconds=radiation_seconds,
             surface_pbl_seconds=surface_pbl_seconds,
@@ -776,7 +778,7 @@ class MpasColumnBatchPhysics:
             **aerosol_source,
             ra_physics=4, ra_rrtmg_variant=RRTMG_VARIANT_LEGACY,
             sf_sfclay_physics=1, sf_surface_physics=4,
-            bl_pbl_physics=1,
+            bl_pbl_physics=1 if pbl_scheme == "ysu" else 0,
             cu_physics=cadences["cu_physics"],
             ishallow=int(gf_ishallow),
             radt=cadences["radt_minutes"],
@@ -816,6 +818,8 @@ class MpasColumnBatchPhysics:
             "xland_source": ("native" if xland is not None
                              else "derived-from-landmask"),
         }
+        if pbl_scheme is None:
+            self._identity["pbl_scheme"] = None
         if microphysics_scheme != "wsm6":
             # Scheme-asymmetric ON PURPOSE: the wsm6 identity stays
             # byte-identical to schema v2 before the P3 arm existed, so
@@ -897,7 +901,6 @@ class MpasColumnBatchPhysics:
 
         # Persistent input/atmosphere buffers ((nz[+1], 1, ncol)).
         shape3 = (nz, 1, ncol)
-        iface3 = (nz + 1, 1, ncol)
         # GF dynamics forcing lanes: persistent seam-owned buffers the
         # driver's GF adapter reads permanently.  Zero until a caller
         # supplies rates through run_phase1 -- which is also native
@@ -910,11 +913,19 @@ class MpasColumnBatchPhysics:
         if dx_column is not None:
             self._driver.gf_dx_column = cp.asarray(
                 dx_column.reshape(1, ncol))
+        # Seam-owned atmosphere buffers.  theta and pressure stay bound to
+        # state.thp/state.p between calls; temperature, dz and rho are
+        # derived here; exner is derived when the caller supplies none
+        # (allocated on that first call).  u, v, p_interface,
+        # z_interface and a caller exner are NOT mirrored: run_phase1
+        # hands the driver read-only views of the caller's arrays for the
+        # duration of the call (memory census 2026-10-14, item 10: the
+        # mirrors were 4 to 5 whole-mesh fields held all run).  No driver
+        # path writes them (test_phase1_leaves_every_input_byte_identical)
+        # and the atmosphere dict is dropped when the call returns.
         self._in = {name: cp.zeros(shape3, dtype=cp.float32)
-                    for name in ("u", "v", "theta", "temperature",
-                                 "pressure", "exner", "dz", "rho")}
-        self._in.update({name: cp.zeros(iface3, dtype=cp.float32)
-                         for name in ("p_interface", "z_interface")})
+                    for name in ("theta", "temperature", "pressure",
+                                 "dz", "rho")}
         self._atmosphere = None
         state.prepared_physics_atmosphere = self._supplied_atmosphere
 
@@ -1063,13 +1074,14 @@ class MpasColumnBatchPhysics:
         def v3(a):
             return a.reshape(a.shape[0], 1, ncol)
 
-        # One copy per input into seam-owned buffers (stated copies).
-        buf["u"][...] = v3(u)
-        buf["v"][...] = v3(v)
+        # theta and pressure are copied into the seam-owned buffers the
+        # state carries between calls; u, v and the interface fields are
+        # read in place for this call only (constructor, census item 10).
+        u3, v3u = v3(u), v3(v)
+        p_interface3 = v3(pressure_interface)
+        z_interface3 = v3(z_interface)
         buf["theta"][...] = v3(theta)
         buf["pressure"][...] = v3(pressure)
-        buf["p_interface"][...] = v3(pressure_interface)
-        buf["z_interface"][...] = v3(z_interface)
         state.w[...] = v3(w)
         # NEGATIVE-QV LAW: clamp in the seam's scratch copy, exactly as
         # MPAS bulk physics applies max(qv, 0) before its schemes.  The
@@ -1082,13 +1094,16 @@ class MpasColumnBatchPhysics:
         # T = theta*exner, physics density (1+qv)*rho_dry for WRF
         # phy_prep's (1+qv)/alt.
         if exner is None:
+            exner3 = buf.get("exner")
+            if exner3 is None:
+                exner3 = buf["exner"] = cp.zeros((nz, 1, ncol),
+                                                 dtype=cp.float32)
             cp.power(buf["pressure"] / cp.float32(_constants.P0),
-                     cp.float32(_constants.RCP), out=buf["exner"])
+                     cp.float32(_constants.RCP), out=exner3)
         else:
-            buf["exner"][...] = v3(exner)
-        cp.multiply(buf["theta"], buf["exner"], out=buf["temperature"])
-        cp.subtract(buf["z_interface"][1:], buf["z_interface"][:-1],
-                    out=buf["dz"])
+            exner3 = v3(exner)
+        cp.multiply(buf["theta"], exner3, out=buf["temperature"])
+        cp.subtract(z_interface3[1:], z_interface3[:-1], out=buf["dz"])
         cp.multiply(cp.float32(1.0) + state.qv, v3(rho_dry),
                     out=buf["rho"])
         # GF dynamics forcing lanes: refresh the seam-owned persistent
@@ -1115,9 +1130,9 @@ class MpasColumnBatchPhysics:
         self._atmosphere = {
             "theta": buf["theta"], "temperature": buf["temperature"],
             "pressure": buf["pressure"],
-            "p_interface": buf["p_interface"], "exner": buf["exner"],
-            "u": buf["u"], "v": buf["v"],
-            "z_interface": buf["z_interface"], "dz": buf["dz"],
+            "p_interface": p_interface3, "exner": exner3,
+            "u": u3, "v": v3u,
+            "z_interface": z_interface3, "dz": buf["dz"],
             "qv": state.qv, "qc": state.qc, "qi": state.qi,
             "qs": atmosphere_qs, "rho": buf["rho"],
         }
@@ -1163,7 +1178,7 @@ class MpasColumnBatchPhysics:
             step_index=self._step_index,
             elapsed_seconds=state.elapsed_seconds,
             radiation_ran=after["radiation"] > before["radiation"],
-            surface_pbl_ran=after["ysu"] > before["ysu"],
+            surface_pbl_ran=after["sfclay"] > before["sfclay"],
             cumulus_ran=after["cumulus"] > before["cumulus"])
         self._pending_phase = _PHASE2
         return result
@@ -1428,6 +1443,38 @@ class MpasColumnBatchPhysics:
                         if rainc is None else rainc.reshape(ncol).copy())
         return out
 
+    def settled_cloud(self):
+        """Host-visible copies of correct mode's settled-cloud pair, or None.
+
+        Finding WB1 (gpuwm/core/thompson_cloud_booking.py): aerosol-aware
+        Thompson's cloud fallout drops the water it takes out of the lowest
+        level, and correct mode books it in ``CLOUDNC`` (mm, accumulated)
+        with the last call's amount in ``CLOUDNCV``.  The pair exists exactly
+        when this seam books it (a Thompson row in correct mode); exact mode
+        and the other rows return None.  Kept apart from
+        :meth:`accumulated_precipitation` because settled cloud is not
+        precipitation (WRF, UFS and MPAS keep it out of their totals).
+        """
+        existing = self._state.existing_scratch
+        cloudnc = existing("mp_cloudnc")
+        cloudncv = existing("mp_cloudncv")
+        if cloudnc is None or cloudncv is None:
+            return None
+        ncol = self._ncol
+        return {"CLOUDNC": cloudnc.reshape(ncol).copy(),
+                "CLOUDNCV": cloudncv.reshape(ncol).copy()}
+
+    def surface_fluxes_device(self) -> dict:
+        """Resident surface-layer fluxes for an external turbulence closure.
+
+        No host export: ust is m/s, hfx W/m2 and qfx kg/m2/s. Held
+        surface steps expose the same persistent fields as due steps.
+        """
+        if self._pending_phase != _PHASE2:
+            raise RuntimeError("surface fluxes require completed phase one")
+        return {name: self._driver.fields[name].reshape(self._ncol)
+                for name in ("ust", "hfx", "qfx")}
+
     @property
     def call_counts(self) -> dict:
         """Copy of the driver's per-scheme call counters."""
@@ -1557,6 +1604,17 @@ class MpasColumnBatchPhysics:
                     f"restart payload lacks {key!r} but this seam "
                     "already carries live state for it; restore into a "
                     "freshly constructed seam")
+        # Correct mode WB1's settled-cloud pair joined aerosol-aware
+        # Thompson seams after their payloads existed.  It is output only
+        # (no prognostic word reads it), so a payload written before it
+        # restores with the total counting from the resume, as the mainline
+        # restart does (gpuwm/io/restart.py), instead of being refused.
+        for key in ("scratch/mp_cloudnc", "scratch/mp_cloudncv"):
+            if key in live and key not in stored:
+                print(f"note: restart payload predates the settled-cloud "
+                      f"total {key.split('/', 1)[1]!r}; it counts from "
+                      "this resume")
+                stored[key] = np.zeros(live[key].shape, np.float32)
         missing = sorted(set(live) - set(stored))
         extra = sorted(set(stored) - set(live))
         if missing or extra:

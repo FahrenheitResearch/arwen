@@ -132,7 +132,13 @@ def run(input_path: Path, output_csv: Path, receipt_path: Path) -> None:
             dt_s,
             supersaturation_scratch=supersaturation,
             concentration_space=True,
-            validate_values=True,
+            # GS hands NUCOND WRF's negative mass residues (module_mp_nssl_
+            # 2mom.F:23664), which NUCOND's tail vaporizes; the standalone
+            # nonnegativity check would refuse that legitimate state, so
+            # this mirrors the production hook and skips it.
+            validate_values=False,
+            frozen=tuple(active_workspace.field(name) for name in (
+                "qg", "qh", "qng", "qnh", "qvolg", "qvolh")),
         )
         cp.multiply(theta, exner, out=temperature)
         capture("post_nucond_concentration", active_workspace)

@@ -60,12 +60,16 @@ def _init_words_on_device(hail_opt: int):
     return words
 
 
-def wsm6_radar_words_on_device(hail_opt: int):
-    """mp_radar's radar_init words for ``refl10cm_wsm6``: (float32, float64)."""
-    key = ("radar", cp.cuda.runtime.getDevice(), int(hail_opt))
+def wsm6_radar_words_on_device(hail_opt: int, *, initialization="column_oracle"):
+    """mp_radar's radar_init words for ``refl10cm_wsm6``: (float32, float64).
+
+    ``initialization`` selects the column oracle's words or the stock
+    scalar build's (wsm6_constants.wrf_radar_words).
+    """
+    key = ("radar", cp.cuda.runtime.getDevice(), int(hail_opt), initialization)
     words = _INIT_WORDS.get(key)
     if words is None:
-        f32, f64 = wrf_radar_words(hail_opt)
+        f32, f64 = wrf_radar_words(hail_opt, initialization=initialization)
         words = (cp.asarray(f32), cp.asarray(f64))
         _INIT_WORDS[key] = words
     return words
@@ -88,6 +92,46 @@ def wsm6_kernel(func: str, nz: int, conservative_surface: bool = False):
     if capacity == _SHALLOW_KMAX:
         return get_kernel("wsm6", func)
     return get_kernel_int_defines("wsm6", func, (("WSM6_KMAX", capacity),))
+
+
+def wsm6_workspace_rows(nz: int) -> int:
+    """Float rows per column of ``wsm6_column``'s workspace.
+
+    KEEP IN STEP with ``WSM6_WS_ROWS`` in kernels/wsm6.cu: fifteen column
+    arrays and the sedimentation pair at ``nz``, eight interface arrays at
+    ``nz + 1``.  Sized at the run's ``nz``, not the compile tier.
+    """
+    nz = int(nz)
+    return 17 * nz + 8 * (nz + 1)
+
+
+def wsm6_tile_columns(kernel, ncol: int) -> int:
+    """Columns in flight per launch: the card's resident capacity for
+    ``kernel`` (occupancy, not the theoretical thread limit), floored at
+    one block and capped at ``ncol``.
+
+    The workspace is charged per column in flight; the local frame it
+    replaced was charged per thread the card could ever hold, so a tile
+    wider than the resident set would hand that cost back.  Tile width is
+    memory shape only: every column runs the same thread program.
+    """
+    dev = cp.cuda.Device()
+    sms = int(dev.attributes["MultiProcessorCount"])
+    per_sm = int(dev.attributes["MaxThreadsPerMultiProcessor"]) // _COLUMN_TPB
+    try:
+        from cupy_backends.cuda.api import driver
+
+        resident = driver.occupancyMaxActiveBlocksPerMultiprocessor(
+            getattr(kernel, "kernel", kernel).ptr, _COLUMN_TPB, 0)
+        per_sm = min(per_sm, int(resident))
+    except Exception:                              # noqa: BLE001
+        pass                                       # keep the thread limit
+    per_sm = max(1, per_sm)
+    return int(max(_COLUMN_TPB, min(int(ncol), sms * per_sm * _COLUMN_TPB)))
+
+
+def _tile_blocks(tile: int) -> int:
+    return (int(tile) + _COLUMN_TPB - 1) // _COLUMN_TPB
 
 
 def launch_wsm6(theta, qv, qc, qr, qi, qs, qg, rho, pii, pressure, dz,
@@ -133,17 +177,37 @@ def launch_wsm6(theta, qv, qc, qr, qi, qs, qg, rho, pii, pressure, dz,
         if not value.flags.c_contiguous:
             raise ValueError(f"{name} must be C-contiguous")
     ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     if not isinstance(conservative_surface, bool):
         raise TypeError("conservative_surface must be a bool, got "
                         f"{conservative_surface!r}")
     kernel = wsm6_kernel("wsm6_column", nz, conservative_surface)
-    kernel(
-        (blocks,), (_COLUMN_TPB,),
-        (theta, qv, qc, qi, qr, qs, qg, rho, pressure, pii, dz,
-         rainnc, rainncv, snownc, snowncv, graupelnc, graupelncv, sr,
-         effc, effi, effs, _init_words_on_device(hail_opt), DTYPE(dt),
-         np.int32(nz), np.int32(ny), np.int32(nx)))
+    # The column arrays live in a workspace for the columns in flight
+    # (kernels/wsm6.cu, COLUMN WORKSPACE): tiles of `tile` columns, each
+    # launched with the same one-thread-one-column mapping, the tile passed
+    # as a column OFFSET because a column tile of (nz, ny, nx) fields is
+    # not contiguous.  The workspace returns to the pool with the call.
+    tile = wsm6_tile_columns(kernel, ncol)
+    if tile < ncol and tile % _COLUMN_TPB:
+        # The last block of a partial tile would run the next tile's first
+        # columns as well, so they would be stepped twice (measured: 2.4 %
+        # of surface words moved at a 1,000-column tile).
+        raise ValueError(f"WSM6 tile {tile} must be a multiple of "
+                         f"{_COLUMN_TPB} columns when it splits the mesh")
+    ws = cp.empty(_tile_blocks(tile) * _COLUMN_TPB * wsm6_workspace_rows(nz),
+                  dtype=DTYPE)
+    coef = _init_words_on_device(hail_opt)
+    try:
+        for lo in range(0, ncol, tile):
+            count = min(tile, ncol - lo)
+            kernel(
+                (_tile_blocks(count),), (_COLUMN_TPB,),
+                (theta, qv, qc, qi, qr, qs, qg, rho, pressure, pii, dz,
+                 rainnc, rainncv, snownc, snowncv, graupelnc, graupelncv, sr,
+                 effc, effi, effs, coef, DTYPE(dt),
+                 np.int32(nz), np.int32(ny), np.int32(nx),
+                 ws, np.int32(lo)))
+    finally:
+        del ws
 
 
 @cuda_cache(maxsize=None, ready=True)
@@ -268,7 +332,8 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
     z8w = state.scratch((nz + 1, ny, nx), "wsm6_z8w")
     theta[...] = thb + state.thp
     rho[...] = 1.0 / state.alt
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
+    from gpuwm.core.microphysics import prepare_microphysics_exner
+    prepare_microphysics_exner(state.p, pii)
     z8w[...] = (phb + state.php) / DTYPE(c.G)
     dz[...] = z8w[1:] - z8w[:-1]
 

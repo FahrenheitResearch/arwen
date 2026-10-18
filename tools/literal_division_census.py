@@ -170,6 +170,42 @@ def production_units(root) -> list[Unit]:
         return (f"gpuwm/core/kernels/{name}",
                 (kdir / name).read_text(encoding="utf-8"))
 
+    def headers(name):
+        # Resolve the active loader composition, including mode-selected
+        # headers. Keep labels for PTX attribution and require exact bytes.
+        remaining = K._extra_header_text(name, kdir)
+        parts = []
+        from gpuwm.wrf_exact import ENABLED
+        while remaining:
+            matches = [(p.name, p.read_text(encoding="utf-8"))
+                       for p in sorted(p for p in kdir.iterdir() if p.is_file())]
+            if not ENABLED and name == "smag2d":
+                # smag2d's default composition is glibc_flt32.cuh with the
+                # loader's own gfk_exp rewrite (K._smag2d_default_gfk_exp);
+                # attribute it to that file, through that same function.
+                matches = [(n, K._smag2d_default_gfk_exp(text) if n == "glibc_flt32.cuh" else text)
+                           for n, text in matches]
+            matches = [(n, text) for n, text in matches
+                       if text and remaining.startswith(text)]
+            if not matches:
+                raise AssertionError(f"unattributed loader header for {name}")
+            filename, text = max(matches, key=lambda item: len(item[1]))
+            parts.append((f"gpuwm/core/kernels/{filename}", text))
+            remaining = remaining[len(text):]
+        return parts
+
+    def unit_piece(name):
+        from gpuwm.wrf_exact import ENABLED
+        filename = name + ".cu"
+        if not ENABLED and name in K._DEFAULT_SOURCE_MODULES:
+            filename = name + "_default.cu"
+        source = K._unit_text(name, kdir)
+        prefix = "#define NOAH_WRF_SCALAR_RCT 1\n"
+        if name == "noah" and source.startswith(prefix):
+            return [("<NOAH_WRF_SCALAR_RCT>", prefix),
+                    (f"gpuwm/core/kernels/{filename}", source[len(prefix):])]
+        return [(f"gpuwm/core/kernels/{filename}", source)]
+
     noahmp_parts = set()
     # These files compile through their own observed NVRTC composition. A
     # bare generic-loader source omits the shared SFIRE physics and libm.
@@ -195,22 +231,24 @@ def production_units(root) -> list[Unit]:
         noahmp_parts.update(parts)
     for path in sorted(kdir.glob("*.cu")):
         name = path.stem
+        if name.endswith("_default") and name[:-len("_default")] in K._DEFAULT_SOURCE_MODULES:
+            continue  # Selected above under their runtime module names.
         if name in dedicated_units:
             source_fn, options = dedicated_units[name]
             units.append(Unit(f"kernels:{name}", source_fn(kernel_dir=kdir), tuple(options), []))
             continue
         if name in noahmp_parts:
             continue
-        extra = [kfile(h) for h in K.EXTRA_HEADERS.get(name, ())]
+        extra = headers(name)
         from gpuwm.cuda_subnormals import MARKER
         prefix = [("<GPUWM_RETAIN_SUBNORMALS>", MARKER)] if name in K._URBAN_NO_FTZ_MODULES else []
-        unit = _segmented(f"kernels:{name}", prefix + pre + extra + [kfile(path.name)],
+        unit = _segmented(f"kernels:{name}", prefix + pre + extra + unit_piece(name),
                           K.module_options(name))
         if unit.source != K.module_source(name, kernel_dir=kdir):
             raise AssertionError(f"census source for {name} drifted")
         units.append(unit)
     # gf above 40 levels compiles with an integer tier; 60 is one such tier.
-    extra = [kfile(h) for h in K.EXTRA_HEADERS.get("gf", ())]
+    extra = headers("gf")
     gf = _segmented("kernels:gf[GF_KMAX=60]",
                     pre + extra + [("<GF_KMAX>", "#define GF_KMAX 60\n"),
                                    kfile("gf.cu")], ("-std=c++17",))

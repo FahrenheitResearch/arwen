@@ -34,7 +34,7 @@ import numpy as np
 import pytest
 
 from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
-from gpuwm.physics_compat import (RRTMG_VARIANT_RTE_RRTMGP, WSM6_PROFILE_ID,
+from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY, WSM6_PROFILE_ID,
                                   single_domain_runtime_switches)
 
 from conftest import requires_gpu  # noqa: E402
@@ -172,9 +172,11 @@ def test_the_route_default_computes_downward_longwave():
     as a count because that is the form the broken signature took.
     """
     switches = single_domain_runtime_switches(ROUTE_DEFAULT_PHYSICS_PROFILE)
-    # The premise, stated before it is relied on.
+    # The route selects the GSD fork composition (4193eb0daab), whose
+    # in-cloud water uses its legacy radiation merge. It must compute GLW
+    # just as the earlier RTE+RRTMGP route default did.
     assert int(switches["ra_lw_physics"]) == 4
-    assert switches.get("ra_rrtmg_variant") == RRTMG_VARIANT_RTE_RRTMGP
+    assert switches.get("ra_rrtmg_variant") == RRTMG_VARIANT_LEGACY
 
     seeded, series = _glw_series(ROUTE_DEFAULT_PHYSICS_PROFILE)
     assert np.isfinite(series).all()

@@ -143,11 +143,15 @@ def test_the_registry_row_claims_no_more_than_was_measured():
     assert row["selectors"] == {"mp_physics": 50}
     evidence = row["warnings"][0]
     # The whole point of the label: it claims the measurement that was
-    # made and nothing past it.  The oracle campaign ran, so the warning
-    # must carry the measured result, disclose what is still open, and
-    # still refuse the forecast-skill claim that would justify a higher
-    # maturity rung.
+    # made and nothing past it.  The column oracle (tools/p3_wrf461_oracle)
+    # ran, so the warning must carry the measured result and its one
+    # declared divergence, and still refuse the forecast-skill claim that
+    # would justify a higher maturity rung.
     assert "4 of 12 bit-identical" in evidence
+    assert "2-7 ULP" in evidence
+    assert "829 ULP" in evidence
+    assert "mp_p3_wrapper_wrf" in evidence
+    assert "one-ULP nudge" in evidence
     assert "STILL OPEN" in evidence
     assert "no matched WRF forecast run" in evidence
     assert "not evidence of forecast skill" in evidence

@@ -106,7 +106,11 @@ def check(fixture):
     # Rain-evaporation rule inputs.
     ssatw = z["cp2_ssatw"].astype(np.float64)
     adjusted = z["cp2_prw_vcd"] != 0
-    qr_pre = np.maximum(port["stages"]["sources"]["qr"], 1.0e-30)
+    # mp=8 snapshots the post-evaporation state only (real_column_parity
+    # STAGE_LAUNCHERS_MP8); its rain before the evaporation is that state's
+    # rain plus what evaporated, which only rescales the 1e-5 rule below.
+    qr_pre = np.maximum((port["stages"]["sources"] if "sources" in port["stages"]
+         else port["stages"]["rain_evaporation"])["qr"], 1.0e-30)
     # Break-up rule inputs (:2159-2176).
     rho = z["cp1_rho"].astype(np.float64)
     mvd = R.rain_mean_volume_diameter(z["cp1_qr1d"], z["cp1_nr1d"], rho)

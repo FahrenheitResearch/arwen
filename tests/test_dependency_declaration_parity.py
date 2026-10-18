@@ -122,6 +122,15 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     # not ship.  The two decode instruments that import it are
     # checkout-only by construction -- see _OPTIONAL_BY_DESIGN.
     "test_mapped_engine_parity": (),
+    # NO distribution provides these either: tools/wrf_exact_localize's trace
+    # hooks and comparer, reached by the exact chain's localization
+    # instruments after a sys.path insert -- see _OPTIONAL_BY_DESIGN.
+    "cmpphys": (),
+    "woof_hook": (),
+    "woof_hook2": (),
+    "woof_hook3": (),
+    "woof_gf_inputs": (),
+    "woof_wsm6_inputs": (),
     "arwen_global": ("arwen-global",),
     "cdsapi": ("cdsapi",),
     "setuptools": ("setuptools",),
@@ -193,6 +202,24 @@ _GENERATED_SOURCE_CONSUMERS: dict[str, tuple[str, str, str]] = {
 #: try/except and a documented answer for the absent case, so declaring them
 #: would be declaring something the product does not need.
 _OPTIONAL_BY_DESIGN: dict[str, str] = {
+    "cmpphys": (
+        "the WRF exact chain's localization instruments (2.9.1): tools/coupled_exact_trace.py, tools/coupled_gf_receipt.py and tools/coupled_trace_receipt.py put tools/wrf_exact_localize on sys.path and import its trace hooks and comparer by bare name. That directory does not ship (packages.find names `tools`, not `tools*`), so from a wheel the import fails by name; the scripts are maintainer instruments that replay a recorded WRF run from a checkout, and no wheel-user path reaches them."
+    ),
+    "woof_hook": (
+        "the WRF exact chain's localization instruments (2.9.1): tools/coupled_exact_trace.py, tools/coupled_gf_receipt.py and tools/coupled_trace_receipt.py put tools/wrf_exact_localize on sys.path and import its trace hooks and comparer by bare name. That directory does not ship (packages.find names `tools`, not `tools*`), so from a wheel the import fails by name; the scripts are maintainer instruments that replay a recorded WRF run from a checkout, and no wheel-user path reaches them."
+    ),
+    "woof_hook2": (
+        "the WRF exact chain's localization instruments (2.9.1): tools/coupled_exact_trace.py, tools/coupled_gf_receipt.py and tools/coupled_trace_receipt.py put tools/wrf_exact_localize on sys.path and import its trace hooks and comparer by bare name. That directory does not ship (packages.find names `tools`, not `tools*`), so from a wheel the import fails by name; the scripts are maintainer instruments that replay a recorded WRF run from a checkout, and no wheel-user path reaches them."
+    ),
+    "woof_hook3": (
+        "the WRF exact chain's localization instruments (2.9.1): tools/coupled_exact_trace.py, tools/coupled_gf_receipt.py and tools/coupled_trace_receipt.py put tools/wrf_exact_localize on sys.path and import its trace hooks and comparer by bare name. That directory does not ship (packages.find names `tools`, not `tools*`), so from a wheel the import fails by name; the scripts are maintainer instruments that replay a recorded WRF run from a checkout, and no wheel-user path reaches them."
+    ),
+    "woof_gf_inputs": (
+        "the WRF exact chain's localization instruments (2.9.1): tools/coupled_exact_trace.py, tools/coupled_gf_receipt.py and tools/coupled_trace_receipt.py put tools/wrf_exact_localize on sys.path and import its trace hooks and comparer by bare name. That directory does not ship (packages.find names `tools`, not `tools*`), so from a wheel the import fails by name; the scripts are maintainer instruments that replay a recorded WRF run from a checkout, and no wheel-user path reaches them."
+    ),
+    "woof_wsm6_inputs": (
+        "the WRF exact chain's localization instruments (2.9.1): tools/coupled_exact_trace.py, tools/coupled_gf_receipt.py and tools/coupled_trace_receipt.py put tools/wrf_exact_localize on sys.path and import its trace hooks and comparer by bare name. That directory does not ship (packages.find names `tools`, not `tools*`), so from a wheel the import fails by name; the scripts are maintainer instruments that replay a recorded WRF run from a checkout, and no wheel-user path reaches them."
+    ),
     "test_mapped_engine_parity": (
         "tools/extract_mapped_engine_goldens.py and "
         "tools/mapped_engine_parity_sweep.py import the mapped parity "
@@ -356,6 +383,21 @@ _NEUTRALISED_EXTRAS: dict[str, str] = {
 #: invitation to a shadowed import, and the row is what makes adding another
 #: one a decision.
 _SYS_PATH_SIBLING_SITES: dict[str, str] = {
+    "tools/coupled_wsm6_receipt.py": (
+        "the exact chain's WSM6 localization receipt (2.9.1): inserts its own "
+        "directory and imports coupled_dycore_receipt, which ships beside it. "
+        "A checkout instrument."
+    ),
+    "tools/coupled_dycore_receipt.py": (
+        "the exact chain's localization receipt (2.9.1): inserts its own directory and "
+        "imports coupled_trace_receipt, which ships beside it in tools/; it also "
+        "inserts tools/wrf_exact_localize, which does not ship. A checkout instrument."
+    ),
+    "tools/coupled_reflectivity_probe.py": (
+        "the exact chain's reflectivity probe (2.9.1): inserts its own directory and "
+        "imports coupled_dycore_receipt and coupled_trace_receipt, which ship beside it. "
+        "A checkout instrument."
+    ),
     "tools/nssl2_variant_probe.py": (
         "inserts its own directory and imports nssl2_mp18_digest_probe. The "
         "comment above it says the insert is deliberate because "
@@ -999,3 +1041,7 @@ def test_the_shipped_surface_matches_the_packaging_declaration(pyproject):
     assert not any("ftz_receipt" in p.as_posix() for p in shipped), (
         "tools/ subpackages have no __init__ route into the wheel; the "
         "scanner must not pretend they ship")
+    # This generator reads tests/data and imports sealed test helpers. It
+    # belongs with the checkout-only battery, outside the tools top level.
+    assert (REPO_ROOT / "tools/battery/diffusion_cache_source_receipt.py").is_file()
+    assert not any(p.name == "diffusion_cache_source_receipt.py" for p in shipped)

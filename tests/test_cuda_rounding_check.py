@@ -25,6 +25,9 @@ BASELINE = ROOT / "tools/cuda_rounding_baseline.json"
 def test_replay_rejects_different_compiler_options_and_missing_variants():
     from tools.cuda_cross_target_replay import compiler_options, validate_artifact_variants
 
+    assert compiler_options(100) == (
+        "-std=c++17", "-ftz=true", "-arch=compute_100",
+        "--device-as-default-execution-space")
     variants = {name: {"options": compiler_options(100)}
                 for name in ("production", "direct_w")}
     validate_artifact_variants(variants, 100, variants)
@@ -33,6 +36,19 @@ def test_replay_rejects_different_compiler_options_and_missing_variants():
         validate_artifact_variants(variants, 100, variants)
     with pytest.raises(AssertionError, match="variants are incomplete"):
         validate_artifact_variants({}, 120, ("production", "direct_w"))
+
+
+def test_replay_uses_wheel_linker_before_older_cuda_path(tmp_path, monkeypatch):
+    from tools.cuda_cross_target_replay import find_nvjitlink
+
+    wheel = tmp_path / "venv/lib/python3.13/site-packages/nvidia/cu13/lib/libnvJitLink.so.13"
+    system = tmp_path / "cuda/lib64/libnvJitLink.so.12"
+    for library in (wheel, system):
+        library.parent.mkdir(parents=True)
+        library.touch()
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setenv("CUDA_PATH", str(tmp_path / "cuda"))
+    assert find_nvjitlink() == str(wheel)
 
 
 def _ptx(first, second):
@@ -261,7 +277,8 @@ def compiled_rounding_audit(tmp_path_factory):
         pytest.fail("nvdisasm is installed, but the matching NVRTC library was not found")
     result_file = temporary / "audit.json"
     command = [sys.executable, "-m", "tools.cuda_rounding_check", "--root", str(ROOT),
-               "--arch", "120", "--arch", "100", "--operations", "--json", str(result_file),
+               "--arch", "120", "--arch", "100", "--operations", "--workers", "4",
+               "--json", str(result_file),
                "--report-only"]
     if native_tool:
         command += ["--nvrtc-library", library, "--nvdisasm", native_tool]
@@ -273,6 +290,7 @@ def compiled_rounding_audit(tmp_path_factory):
     return baseline, results, bool(native_tool)
 
 
+@pytest.mark.timeout(3700)  # Let the fixture's bounded 3600 s audit finish.
 def test_every_compiled_source_keeps_its_sm100_sm120_rounding_diagnostics(compiled_rounding_audit):
     baseline, results, native = compiled_rounding_audit
     changes = []

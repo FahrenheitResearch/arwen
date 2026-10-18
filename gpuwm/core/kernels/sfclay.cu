@@ -32,9 +32,17 @@
 
 // WOOF's own float32 libm words (glibc_flt32.cuh's gfk_*, prepended by the
 // loader for this unit) in place of CUDA's builtins.
-__device__ __forceinline__ real sf_log(real x) { return gfk_log(x); }
-__device__ __forceinline__ real sf_exp(real x) { return gfk_exp(x); }
-__device__ __forceinline__ real sf_pow(real x, real y) { return gfk_pow(x, y); }
+//
+// __noinline__, not __forceinline__: inlining the glibc routines into every
+// call site of this unit made NVRTC take 114.6 s for this one module on a
+// cold kernel cache (RTX PRO 6000, sm_120, NVRTC 13.4), on one core, with
+// the card idle inside the first step of every fresh box's first forecast
+// (2.9.2 box door test).  As calls they compile in 14.7 s.  The unit is
+// built with --fmad=false, so no multiply-add can be contracted across the
+// call boundary: every float operation and its rounding is unchanged.
+__device__ __noinline__ real sf_log(real x) { return gfk_log(x); }
+__device__ __noinline__ real sf_exp(real x) { return gfk_exp(x); }
+__device__ __noinline__ real sf_pow(real x, real y) { return gfk_pow(x, y); }
 
 // WOOF's own float32 atanf: the same routine and the same 19 words as
 // mynn_pbl.cu's mynn_glibc_atanf / MYNN_ATANF_TAB (the gate in
@@ -680,8 +688,13 @@ void sfclay_column(
     zol_o[idx] = zol; regime_o[idx] = regime; psim_o[idx] = psim;
     psih_o[idx] = psih; fm_o[idx] = psix; fh_o[idx] = psit; lh_o[idx] = lh;
     u10_o[idx] = u10; v10_o[idx] = v10; th2_o[idx] = th2; t2_o[idx] = t2;
-    q2_o[idx] = q2; chs_o[idx] = chs; chs2_o[idx] = chs2;
-    cqs2_o[idx] = cqs2; flhc_o[idx] = flhc; flqc_o[idx] = flqc;
+    q2_o[idx] = q2;
+    // SFCLAYREV leaves the incoming exchange coefficients alone when
+    // ISFFLX is zero. Clearing them erased the previous surface call.
+    if (isfflx) {
+        chs_o[idx] = chs; chs2_o[idx] = chs2; cqs2_o[idx] = cqs2;
+    }
+    flhc_o[idx] = flhc; flqc_o[idx] = flqc;
     qgh_o[idx] = qgh; rmol_o[idx] = rmol; wspd_o[idx] = wspd;
     br_o[idx] = br; gz1_o[idx] = gz1; cpm_o[idx] = cpm;
     ck_o[idx] = ck; cka_o[idx] = cka; cd_o[idx] = cd; cda_o[idx] = cda;

@@ -4,11 +4,12 @@ Reads a recording root, replays every selected run through WOOF in this
 process, scores each against every recorded WRF build, and prints one line
 per run: ``PASS`` or the first diverging step, field and max ULP.  Per-scheme
 column fixtures under ``--fixtures`` are scored the same way.  Exit status:
-0 when at least one run or fixture passed (PASS, WOOF-ONLY-OK, fixture
-PASS) and none failed; 1 when any failed; 2 on a usage error, including a
-selection that matches nothing or a --combos id the recording lacks; 3 when
-nothing failed and nothing passed, which proves nothing (only WRF refusals,
-unsound or unknown referees, informational builds).
+0 when at least one run or fixture matched a sound referee at 0 ULP (PASS,
+fixture PASS) and none failed; 1 when any failed; 2 on a usage error,
+including a selection that matches nothing or a --combos id the recording
+lacks; 3 when nothing failed and nothing matched at 0 ULP, which proves
+nothing (only WOOF-ONLY-OK runs, WRF refusals, unsound or unknown referees,
+informational builds).
 
 ``--score-only`` rescoring needs no card: it reads WOOF's stored replays
 from ``--out`` and scores them again, for example after a raw-array overlay
@@ -18,6 +19,7 @@ arrives (``--raw-overlay``) that lets a digest miss be measured in ULP.
 from __future__ import annotations
 
 import argparse
+import hashlib
 from datetime import datetime
 import json
 import os
@@ -32,9 +34,11 @@ from gpuwm.verify_exact.recording import (Recording, ReplayRun, load_run_record,
                                           write_run_record)
 from gpuwm.verify_exact.scoring import FAIL_OUTCOMES, Verdict, decide
 
-#: Outcomes that count as a run proving something (the exit status is 3 when
-#: nothing failed and none of these occurred).
-PASS_OUTCOMES = frozenset({"PASS", "WOOF-ONLY-OK"})
+#: Outcomes that count as a 0 ULP match (the exit status is 3 when nothing
+#: failed and none of these occurred).  WOOF-ONLY-OK is not one: it has no WRF
+#: reference, so a selection holding only WOOF-ONLY-OK runs used to exit 0 and
+#: read as an exact match that never happened.
+PASS_OUTCOMES = frozenset({"PASS"})
 
 #: Exit status when nothing failed and nothing passed.
 EXIT_NO_PROOF = 3
@@ -126,6 +130,33 @@ def _engine_identity() -> dict[str, str]:
                                            timeout=60).stdout.strip()
         except (OSError, subprocess.SubprocessError):
             identity[key] = "unknown"
+    try:
+        paths = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], check=True,
+                               capture_output=True, timeout=60).stdout.split(b"\0")
+        digest = hashlib.sha256()
+        for name in sorted(set(paths) - {b""}):
+            path = root / os.fsdecode(name)
+            # Never read credential files, even if somebody tracked one.
+            if path.name in {".env", ".env.local", "minio.env", ".cdsapirc", "auth.json",
+                              "andrew_accessKeys.csv"} or ".aws" in path.parts:
+                raise OSError("tracked credential path excluded")
+            content = hashlib.sha256()
+            if path.is_symlink():
+                kind = b"symlink"
+                content.update(os.fsencode(os.readlink(path)))
+            elif not path.exists():
+                kind = b"missing"
+            else:
+                kind = b"file"
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        content.update(chunk)
+            # Length-delimited paths and fixed-size content digests prevent
+            # ambiguous concatenations. Missing files and links are distinct.
+            digest.update(len(name).to_bytes(8, "big") + name + kind + b"\0" + content.digest())
+        identity["tracked_disk_sha256"] = digest.hexdigest()
+    except (OSError, subprocess.SubprocessError):
+        identity["tracked_disk_sha256"] = "unknown"
     return identity
 
 
@@ -223,7 +254,11 @@ class Sweep:
         if referee is None and strict is not None:
             status = strict.status if strict.status.startswith("WRF") else f"WRF {strict.status}"
             verdict.wrf_note = f"{status}: {strict.detail}".strip()
-        if run.inputs is None:
+        # Hash-only rescoring does not need disposable real.exe input data.
+        # A stored WOOF replay proves this run was staged; absent both, retain
+        # the WRF refusal outcome rather than inventing a missing WOOF run.
+        stored_replay = (_woof_record_dir(self.out, run) / "hashes.json").is_file()
+        if run.inputs is None and not (self.args.score_only and stored_replay):
             verdict.outcome = "WRF-REFUSED"
             return verdict
         ref_records = {b: self.recording.reference_record(r) for b, r in refs.items()}
@@ -265,7 +300,7 @@ class Sweep:
             ref = refs[build]
             verdict.comparisons[build] = compare_runs(
                 woof_record, record, exclude=self.exclude,
-                through_step=None if ref.status == "OK" else ref.last_good_step)
+                through_step=ref.last_good_step)
         if repeat_record is not None:
             verdict.repeat = compare_runs(repeat_record, woof_record, exclude=self.exclude)
         verdict.outcome = decide(
@@ -273,6 +308,7 @@ class Sweep:
             referee=verdict.referee, comparisons=verdict.comparisons,
             referee_sound=verdict.referee_sound, designated=verdict.designated,
             repeat=verdict.repeat, repeat_required=run.wants_repeat(),
+            referee_last_good_step=referee.last_good_step if referee else None,
             planned_last_step=_planned_last_step(run),
             woof_last_step=woof_record.last_step if woof_record.digests else None)
         return verdict
@@ -281,14 +317,23 @@ class Sweep:
 def initialisation_refusal(status: str, error: str, record) -> tuple[str, str]:
     """A named refusal raised while the runner initialised is a refusal, not a crash.
 
-    The door's own checks fire before the runner starts; several checks of
-    the same kind (a soil value out of range, a terrain-drag input this
-    route cannot supply) fire inside the runner before its first step.  A
-    ``ValueError`` with no history frame written is that, and is reported
-    as WOOF-REFUSED; anything else, or anything after a frame, is a crash.
+    Only the explicit validator types may be recovered from a stored crash
+    before frame zero. Generic ValueError, OSError and NotImplementedError
+    also describe code defects, so their text is never evidence of refusal.
     """
 
-    if status == "CRASH" and not record.digests and error.startswith("ValueError"):
+    named = error.startswith(("ConfigurationRefused:", "UnsupportedConfiguration:"))
+    if status == "REFUSED":
+        # Old replay receipts used a generic exception type for this one
+        # explicit validator. Preserve the 32 genuine round-3 refusals while
+        # retiring the broad exception catch for other stored errors too.
+        legacy_scalar_refusal = error.startswith(
+            "NotImplementedError: scalar_pblmix=1 requires bl_pbl_physics=1 "
+            "(YSU) or 5 (MYNN) and mp_physics=28")
+        missing_inputs = error.startswith("the recording has no real.exe inputs for this run")
+        if record.digests or not (named or legacy_scalar_refusal or missing_inputs):
+            return "CRASH", error
+    if status == "CRASH" and not record.digests and named:
         return "REFUSED", "at initialisation: " + error
     return status, error
 
@@ -435,8 +480,11 @@ def _main(args) -> int:
     if failed:
         return 1
     if not passed:
-        print("gpuwm verify-exact: no proof: no run or fixture passed, and none failed "
-              f"(exit {EXIT_NO_PROOF})", flush=True)
+        woof_only = counts.get("WOOF-ONLY-OK", 0)
+        note = (f"; {woof_only} WOOF-ONLY-OK run{'s' if woof_only != 1 else ''} had no WRF "
+                "reference to match" if woof_only else "")
+        print("gpuwm verify-exact: no proof: no run or fixture matched a sound referee at "
+              f"0 ULP, and none failed{note} (exit {EXIT_NO_PROOF})", flush=True)
         return EXIT_NO_PROOF
     return 0
 

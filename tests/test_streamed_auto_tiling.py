@@ -388,9 +388,20 @@ def test_the_near_miss_line_quotes_a_step_that_holds_the_measured_one():
     GiB on the plan's 1.15 margin; 3.95 after A163 measured it at 1.13 of
     the subtotal.  Since 06a93aa31 a tile costs less, and read at 0.01 GiB
     steps from 3.60 to 3.99 the declined tiling is 8x9 from 3.88 to 3.90,
-    6x12 above and 6x9 below.)
+    6x12 above and 6x9 below.  The 2.9.2 RRTMGP flux rows moved the
+    resident envelope, and with it that band, to 3.90 through 3.92.)
+
+    Price the card 320 MiB above the resident envelope, leaving a 192 MiB
+    shortfall against the external 512 MiB margin.  This keeps the fixture
+    at the measured near miss as the envelope moves without searching for
+    a card whose answer already matches the assertion below.
     """
-    decision, _ = _decide(_wide(), 3.89, _card_5070ti(3.89))
+    exp = _wide()
+    options = streaming.options_for_domain(exp.root, exp.tiles)
+    estimate = streaming.cold_single_domain_admission(
+        exp, machine=_card_5070ti(16), options=options)
+    free = (estimate.peak_envelope_bytes + 320 * 1024 ** 2) / GIB
+    decision, _ = _decide(exp, free, _card_5070ti(free))
     assert not decision.stream, decision.explain()
     declined = decision.detail["tile_road_declined"]
     assert "8x9 tiles (halo 18, 598 of them)" in decision.reason, (

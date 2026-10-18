@@ -41,6 +41,16 @@ EP = 0.622
 FAMILIES = ("convective", "stable", "stratocu", "coldpool", "icecloud",
             "shallowcu")
 
+#: Regimes the 4.6.1 verification sweep (tools/uwpbl_wrf461_verify) adds.
+#: Not in FAMILIES, so the default command writes the record's bytes.
+#:   highterrain  plateau 2.8-4.3 km above sea level, day convective or
+#:                night stable, low surface pressure
+#:   arctic       snow/ice surface: deep surface inversion, very cold and
+#:                dry, ice fog or diamond dust, some with supercooled cloud
+#:   cao          cold-air outbreak over open water: very large surface
+#:                heat and moisture fluxes, mixed-phase roll cloud
+EXTRA_FAMILIES = ("highterrain", "arctic", "cao")
+
 MASS_FIELDS = ("u", "v", "th", "rho", "qv", "qc", "qi", "qnc", "qni", "p",
                "z", "t", "cldfra", "exner", "rthratenlw", "wsedl3d")
 FULL_FIELDS = ("p8w", "z_at_w")
@@ -63,8 +73,10 @@ def esat_water(t):
     return 611.2 * np.exp(17.67 * (t - 273.15) / (t - 29.65))
 
 
-def build_column(rng, family: str, nk: int, ztop: float):
-    zi = interface_heights(nk, ztop, dz0=rng.uniform(22.0, 45.0))
+def build_column(rng, family: str, nk: int, ztop: float, dz0=None):
+    if dz0 is None:
+        dz0 = rng.uniform(22.0, 45.0)
+    zi = interface_heights(nk, ztop, dz0=dz0)
     zm = 0.5 * (zi[1:] + zi[:-1])
     th = np.empty(nk)
     qv = np.empty(nk)
@@ -227,6 +239,94 @@ def build_column(rng, family: str, nk: int, ztop: float):
         hfx = rng.uniform(8.0, 30.0)
         qfx = rng.uniform(8e-5, 1.6e-4)
         ust = rng.uniform(0.18, 0.4)
+    elif family == "highterrain":
+        ht = rng.uniform(2800.0, 4300.0)
+        psfc = 101325.0 * np.exp(-ht / 8000.0)
+        day = rng.uniform() < 0.5
+        q0 = rng.uniform(1.5e-3, 6e-3)
+        if day:
+            pbl = rng.uniform(1500.0, 3500.0)
+            ths = rng.uniform(305.0, 318.0)
+            jump = rng.uniform(1.0, 4.0)
+            for k, z in enumerate(zm):
+                if z < 40.0:
+                    th[k] = ths + 2.0 * (1.0 - z / 40.0)
+                elif z < pbl:
+                    th[k] = ths
+                else:
+                    th[k] = ths + jump + free_lapse * (z - pbl)
+                qv[k] = q0 if z < pbl else 0.4 * q0 * np.exp(-(z - pbl) / 2000.0)
+            hfx = rng.uniform(200.0, 550.0)
+            qfx = rng.uniform(5e-6, 6e-5)
+            ust = rng.uniform(0.3, 0.85)
+        else:
+            ths = rng.uniform(296.0, 306.0)
+            depth = rng.uniform(80.0, 250.0)
+            inv = rng.uniform(6.0, 14.0)
+            for k, z in enumerate(zm):
+                th[k] = (ths + inv * (z / depth) ** 0.5 if z < depth
+                         else ths + inv + free_lapse * (z - depth))
+                qv[k] = q0 * np.exp(-z / 2500.0)
+            hfx = -rng.uniform(10.0, 70.0)
+            qfx = rng.uniform(0.0, 2e-6)
+            ust = rng.uniform(0.08, 0.45)
+            lw[zm < depth] = -rng.uniform(2.0, 6.0) / 86400.0
+        u[:] = rng.uniform(5.0, 18.0) + 1.5e-3 * zm
+        v[:] = rng.uniform(-8.0, 8.0) + 3e-4 * zm
+    elif family == "arctic":
+        ht = rng.uniform(0.0, 300.0)
+        psfc = rng.uniform(100500.0, 104000.0) * np.exp(-ht / 8400.0)
+        ths = rng.uniform(238.0, 258.0)
+        depth = rng.uniform(100.0, 450.0)
+        inv = rng.uniform(8.0, 22.0)
+        q0 = rng.uniform(1.5e-4, 1.2e-3)
+        for k, z in enumerate(zm):
+            th[k] = (ths + inv * (z / depth) ** 0.8 if z < depth
+                     else ths + inv + free_lapse * (z - depth))
+            qv[k] = q0 * np.exp(-z / 3500.0)
+        nice = int(rng.integers(2, 7))
+        qi[:nice] = rng.uniform(1e-6, 3e-5, size=nice)
+        qni[:nice] = rng.uniform(1e3, 1.5e5, size=nice)
+        cf[:nice] = rng.uniform(0.3, 1.0, size=nice)
+        if rng.uniform() < 0.5:
+            lo = int(rng.integers(nice, nice + 6))
+            hi = lo + int(rng.integers(2, 5))
+            qc[lo:hi] = rng.uniform(2e-5, 2e-4, size=hi - lo)
+            qi[lo:hi] += rng.uniform(1e-6, 1e-5, size=hi - lo)
+            qni[lo:hi] += rng.uniform(1e3, 2e4, size=hi - lo)
+            cf[lo:hi] = 1.0
+            lw[hi - 1] = -rng.uniform(1e-4, 8e-4)
+        u[:] = rng.uniform(1.0, 8.0) * (1.0 + zm / 1500.0)
+        v[:] = rng.uniform(-3.0, 3.0)
+        hfx = -rng.uniform(2.0, 45.0)
+        qfx = rng.uniform(-1e-6, 1e-6)
+        ust = rng.uniform(0.04, 0.32)
+    elif family == "cao":
+        ht = 0.0
+        psfc = rng.uniform(99000.0, 102500.0)
+        pbl = rng.uniform(800.0, 2200.0)
+        ths = rng.uniform(262.0, 276.0)
+        jump = rng.uniform(2.0, 6.0)
+        q0 = rng.uniform(1.5e-3, 3.5e-3)
+        cb = rng.uniform(250.0, 0.6 * pbl)
+        for k, z in enumerate(zm):
+            if z < 50.0:
+                th[k] = ths + 3.0 * (1.0 - z / 50.0)
+            elif z < pbl:
+                th[k] = ths
+            else:
+                th[k] = ths + jump + free_lapse * (z - pbl)
+            qv[k] = q0 * (1.0 - 0.15 * z / pbl) if z < pbl else                 0.4 * q0 * np.exp(-(z - pbl) / 2000.0)
+            if cb < z < pbl:
+                cf[k] = rng.uniform(0.3, 1.0)
+                qc[k] = cf[k] * rng.uniform(5e-5, 3e-4)
+                qi[k] = cf[k] * rng.uniform(2e-6, 4e-5)
+                qni[k] = rng.uniform(5e3, 1e5)
+        u[:] = rng.uniform(8.0, 20.0) + 1e-3 * zm
+        v[:] = rng.uniform(-6.0, 6.0)
+        hfx = rng.uniform(150.0, 550.0)
+        qfx = rng.uniform(6e-5, 2.5e-4)
+        ust = rng.uniform(0.35, 0.9)
     else:
         raise ValueError(family)
 

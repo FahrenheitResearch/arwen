@@ -103,3 +103,44 @@ python tools/ysu_wrf461_oracle/validate_ysu_oracle.py [FIXTURE_DIR]
 
 Prints per-field ULP; asserts nothing. `tests/test_ysu_wrf461_parity.py` is the
 gate, and its module docstring carries the attribution for every number in it.
+
+## The wide oracle (lane/verify-ysu, 2026-10-07)
+
+The 24 columns above reach branches. The wide oracle adds regimes, grids,
+timesteps and more edges, and it is what the strict-build claim stands on.
+
+```
+bash tools/ysu_wrf461_oracle/build_wide.sh <WRF_SOURCE_ROOT> <BUILD_DIR> [OUT_DIR]
+GPUWM_WRF_EXACT=1 python tools/ysu_wrf461_oracle/compare_wide.py   # strict
+python tools/ysu_wrf461_oracle/compare_wide.py                     # default
+GPUWM_WRF_EXACT=1 python -m pytest tests/test_ysu_wrf461_wide_parity.py
+```
+
+* `make_wide_columns.py` writes 131 seeded synthetic columns: convective
+  land (16), stable night land (14), ocean (14), high terrain (8) and high
+  terrain with `topo_wind` coefficients (10), snow and ice (12),
+  stratocumulus under top-down mixing (10), tropical moist (8), and 39 edge
+  probes. Grids are WRF-like stretched columns of 30 to 60 levels plus 4 and
+  120; dt runs from 1 to 300 s. `--sweep N SEED` draws N more columns from
+  the regime builders alone (the 20,000-column sweep is `--sweep 20000 7001`).
+* `run_bl_ysu_wide.F90` calls `bl_ysu_run` once per column with the
+  argument set `module_bl_ysu.F` passes in a WRF run: `uox`/`vox` and
+  `ctopo`/`ctopo2` present, the BEP arrays present with `flag_bep` false,
+  `tx` the float32 product `theta*pi` that `phy_prep` forms.
+* `build_wide.sh` builds that Fortran twice. **WRF's own flags**
+  (`-O2 -ftree-vectorize -funroll-loops`, `arch/configure.defaults`) are the
+  reference, because that is the arithmetic a WRF run performs. `-O0` is
+  kept beside it because the two differ: GCC folds `pow(x,2.0)` to `x*x` at
+  `-O1` and above whatever the math flags, and `powf` is not correctly
+  rounded at exact ties, so the five `**2.` sites (`:930`, `:949` twice,
+  `:960-961`) can round differently (6 words on this fixture). Neither build
+  pulls in a libmvec symbol or an FMA instruction; the script refuses if
+  one does.
+* `tanhf_sweep.py` holds `ysu_tanhf` (get_pblh's weight) to the C library's
+  `tanhf` over every float in [-0.5, 22]. On glibc 2.39 that `tanhf` is not
+  the correctly rounded tanh on 5.3% of those floats, and the kernel
+  returns the library's words.
+
+WRF writes NaN on five columns (sfcflg true and `ust**3` below the smallest
+normal float, so `prfac2` is 0/0 or Inf/Inf). They are outside the claim and
+the kernel returns finite numbers there.

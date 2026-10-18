@@ -1,0 +1,7 @@
+# WRF v4.6.1 (tag v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28),
+# LF checkout; phys/physics_mmm is in the tree at this tag.  Every file the
+# topo_wind chain oracle compiles or cuts from.  build.sh refuses other bytes.
+a76e1e5b52fc7cd40be9ccb506fde28b1ef2486b812d518f7f1c882766d484db  phys/ccpp_kind_types.F
+a695daa712591b30fa72b8f24eac003e8e7016531283d29443bcc04ce3ea77d8  phys/physics_mmm/bl_ysu.F90
+ff3a590a5e5228d3def988b9e50aa60fe1544c0bcf9fabce2c10a3cd9b6d33b0  dyn_em/start_em.F
+99f44dbeb5e586b96be14424b8ab27c9986ffbd81f007f41fb8528d8ea466d56  phys/module_bl_shinhong.F

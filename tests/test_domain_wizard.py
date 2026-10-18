@@ -1045,8 +1045,66 @@ def test_children_are_centered_on_the_point(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# GFS/HRRR accuracy: no [case_data], actionable front-door messages
+# GFS/HRRR prepared routes and their saved geography inputs
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("source", ["gfs", "hrrr"])
+def test_native_source_keeps_explicit_geography_root(
+        tmp_path, monkeypatch, capsys, source):
+    """D2: a root given to domain survives into check and bare go."""
+    import shlex
+    from gpuwm import go_cli
+    from gpuwm.geog_assets import config_geog_root, geog_datasets
+    from gpuwm.static import terrain_autosmooth
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    for key in ("GPUWM_CASE_DATA_ROOT", "XDG_DATA_HOME", "CDSAPI_KEY", "CDSAPI_URL"):
+        monkeypatch.delenv(key, raising=False)
+    geog = tmp_path / "elsewhere" / "WPS_GEOG"
+    for dataset in geog_datasets():
+        index = geog / dataset / "index"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text("")
+    # These fixtures cover index discovery, not terrain sampling.
+    monkeypatch.setattr(terrain_autosmooth, "survey_domain_terrain",
+                        lambda *args, **kwargs: [])
+    checked_roots = []
+    geography_refusal = go_cli.geography_refusal
+
+    def check_geography(root, **kwargs):
+        checked_roots.append(Path(root))
+        return geography_refusal(root, **kwargs)
+
+    monkeypatch.setattr(go_cli, "geography_refusal", check_geography)
+    rc, out = _run_wizard(
+        tmp_path, "--geog-root", str(geog), "--hours", "1",
+        "--point-extent-km", "1500", point="37.5,-90", ladder="12",
+        source=source, cycle="2026-10-17T00")
+    assert rc == 0
+    printed = capsys.readouterr()
+    raw = tomllib.loads(out.read_text())
+    assert raw["static"]["geog_root"] == str(geog.resolve())
+    assert "case_data" not in raw
+    assert config_geog_root(out) == geog.resolve()
+    assert "geography BLOCKER" not in printed.err
+    assert "geography staging is the next step" not in printed.out
+    command = printed.out.split("next:")[-1].strip().splitlines()[0]
+    assert "--geog-root" not in command
+    assert shlex.split(command) == ["gpuwm", "go", str(out)]
+
+    checked_roots.clear()
+    assert cli_main(["check", str(out), "--budget-gib", "20"]) == 0
+    assert checked_roots == [geog.resolve()]
+    assert "geography BLOCKER" not in capsys.readouterr().err
+    checked_roots.clear()
+    assert cli_main([*shlex.split(command)[1:], "--dry-run"]) == 0
+    assert checked_roots == [geog.resolve()]
+    preview = capsys.readouterr()
+    assert "missing geography indexes" not in preview.err
+    assert not (home / ".local/share/gpuwm/WPS_GEOG").exists()
+
 
 @pytest.mark.parametrize("source", ["gfs", "hrrr"])
 def test_native_sources_omit_case_data(tmp_path, capsys, source):
@@ -1981,36 +2039,121 @@ def test_wizard_ends_with_three_numbered_commands_and_nothing_after(
     assert "after the fetch lands" in numbered[1]
 
 
-def test_the_era5_next_block_names_the_missing_cds_key_only_when_missing(
+def test_the_default_era5_provider_is_keyless_without_a_cds_key(
         tmp_path, capsys, monkeypatch):
-    """A first-run pointer that is a pointer, and only when it is true.
+    """No CDS key: the default reads the keyless ARCO store and says why.
 
-    Presence of ``~/.cdsapirc`` is the one prerequisite of the ERA5
-    route that lives entirely outside this project, and without it the
-    failure arrives several commands later as a cdsapi exception.  A
-    line that printed whether or not the key was there would be noise
-    on every subsequent run, so it is gated on the file.
+    Replaces test_the_era5_next_block_names_the_missing_cds_key_only_when_missing
+    (2.9.2, 003fe55ab): the next block no longer names a missing key because the
+    default needs none.
+
+    Breakage it prevents: the default `gpuwm domain` wrote a CDS-only
+    [fetch] table, so the default `gpuwm go` stopped at acquisition on a
+    computer with no ``~/.cdsapirc`` while `gpuwm doctor` reported the
+    keyless ARCO store available.  With a key the CDS stays the default,
+    byte for byte the table it always was.
     """
 
     from gpuwm import fetch
 
+    for name in ("CDSAPI_KEY", "CDSAPI_URL", "CDSAPI_RC"):
+        monkeypatch.delenv(name, raising=False)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(fetch.Path, "home", staticmethod(lambda: home))
 
-    rc, _ = _run_wizard(tmp_path / "no-key", source="era5")
+    rc, out = _run_wizard(tmp_path / "no-key", "--explain", source="era5")
     absent = capsys.readouterr().out
     assert rc == 0
-    assert "Copernicus CDS key" in absent
-    assert str(home / fetch.CDSAPIRC_NAME) in absent
+    config = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert config["fetch"]["era5_provider"] == "arco"
+    assert config["case_data"]["forcing"][0].endswith(
+        fetch.era5_combined_name("arco"))
+    chosen = [line for line in absent.splitlines()
+              if line.startswith("source: ERA5 from Google's keyless ARCO store")]
+    assert len(chosen) == 1 and str(home / fetch.CDSAPIRC_NAME) in chosen[0]
+    step = next(line for line in absent.splitlines() if "1. gpuwm fetch" in line)
+    assert "--era5-provider arco" in step
+    # No pointer telling a keyless user to go and register for a CDS key.
+    assert "Copernicus CDS key needed" not in absent
 
     (home / fetch.CDSAPIRC_NAME).write_text("url: x\nkey: y\n")
-    rc, _ = _run_wizard(tmp_path / "with-key", source="era5")
+    rc, out = _run_wizard(tmp_path / "with-key", "--explain", source="era5")
     present = capsys.readouterr().out
     assert rc == 0
-    assert "Copernicus CDS key" not in present
-    # The fetch step itself is unchanged either way.
+    config = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert "era5_provider" not in config["fetch"]
+    assert config["case_data"]["forcing"][0].endswith(fetch.era5_combined_name("cds"))
+    assert "ARCO" not in present
     assert "1. gpuwm fetch --source era5" in present
+    assert "--era5-provider" not in present
+
+    # A provider named on the command line is kept, key or no key.
+    (home / fetch.CDSAPIRC_NAME).unlink()
+    rc, out = _run_wizard(tmp_path / "named", "--era5-provider", "cds", source="era5")
+    named = capsys.readouterr().out
+    assert rc == 0
+    assert tomllib.loads(out.read_text(encoding="utf-8"))["fetch"]["era5_provider"] == "cds"
+    assert "keyless ARCO store" not in named
+    assert "Copernicus CDS key" in named
+
+
+def test_the_default_source_runs_on_gfs_when_the_keyless_store_lacks_the_window(
+        tmp_path, capsys, monkeypatch):
+    """No CDS key and a recent date: the default runs on GFS and says why.
+
+    Breakage it prevents: ERA5 is published about a week behind real
+    time, so a bare `gpuwm domain` for yesterday's date wrote an ARCO
+    [fetch] table the store could not serve and the default `gpuwm go`
+    failed outright at the fetch, after the plan had been accepted.  A
+    window the store holds stays on ERA5; `--source era5` named for a
+    window it lacks is refused here, naming the newest cycle it holds.
+    """
+
+    from datetime import datetime
+
+    from gpuwm import fetch
+
+    for name in ("CDSAPI_KEY", "CDSAPI_URL", "CDSAPI_RC"):
+        monkeypatch.delenv(name, raising=False)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(fetch.Path, "home", staticmethod(lambda: home))
+    newest = datetime(2026, 10, 11, 12)
+
+    def fake_resolve(source, last_hour, **selection):
+        assert source == "era5" and selection.get("provider") == "arco"
+        return newest
+
+    monkeypatch.setattr(fetch, "resolve_latest_cycle", fake_resolve)
+
+    def bare(folder, cycle, *extra):
+        out = tmp_path / folder / "area.toml"
+        rc = cli_main(["domain", "--point=39.7,-96.6", "--card", "16gb",
+                       "--ladder", "12-3", "--cycle", cycle, "--out", str(out),
+                       "--explain", *extra])
+        captured = capsys.readouterr()
+        return rc, out, captured.out + captured.err
+
+    rc, out, text = bare("recent", "2026-10-16T00")
+    assert rc == 0
+    config = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert config["fetch"]["source"] == "gfs"
+    assert "era5_provider" not in config["fetch"]
+    chosen = [line for line in text.splitlines() if line.startswith("source: GFS, because ERA5 for 2026-10-16T00Z")]
+    assert len(chosen) == 1 and "2026-10-11T12Z" in chosen[0] and "no Copernicus CDS key" in chosen[0]
+    assert "keyless ARCO store, because" not in text
+
+    rc, out, text = bare("held", "2026-10-10T00")
+    assert rc == 0
+    config = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert config["fetch"]["source"] == "era5" and config["fetch"]["era5_provider"] == "arco"
+    assert "source: GFS" not in text and "keyless ARCO store, because" in text
+
+    rc, out, text = bare("named", "2026-10-16T00", "--source", "era5")
+    assert rc != 0 and not out.exists()
+    assert "not in Google's keyless ARCO store yet" in text
+    assert "2026-10-11T12Z" in text and "--source gfs" in text
 
 
 def test_the_next_block_credential_line_is_derived_from_the_registry_row(

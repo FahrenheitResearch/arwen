@@ -1,15 +1,29 @@
 //! `rw_odim` — the gpuwm front door over the ODIM_H5 polar-volume decoder.
 //!
 //! ```text
-//! rw_odim pack (--file F | --dir D [--stamp S]) --out P
-//!                               [--quantities Q,Q] [--max-elevation-deg D]
-//!                               [--max-range-km R]
+//! rw_odim pack (--file F [--file F2 ...] [--site S] | --dir D [--stamp S])
+//!                               --out P [--quantities Q,Q]
+//!                               [--max-elevation-deg D] [--max-range-km R]
+//!                               [--dual-prf on|off]
 //!                                   decode one volume and write a
 //!                                   gpuwm-obs.radar-sweeps.v3 pack
 //! rw_odim volumes --dir D           which volumes a directory of scan files
 //!                                   holds, grouped by nominal time
-//! rw_odim nyquist --file F          the dealias handoff: per-sweep interval
+//! rw_odim nyquist --file F [--site S]
+//!                                   the dealias handoff: per-sweep interval
 //!                                   and its provenance
+//! rw_odim stations --file F         the stations a multi-station file
+//!                                   (a JMA tar) holds
+//! ```
+//!
+//! `--file` reads ODIM_H5 and, chosen by the file's own magic bytes, the
+//! polar formats the rest of the open world publishes: JMA GRIB2 tars,
+//! IRIS/Sigmet RAW, Universal Format, CfRadial 1 and DORADE, gzipped or not
+//! (`rw_odim::world`). Repeat `--file` for one station that arrives in
+//! several files (JMA's reflectivity and velocity tars, an IRIS site's
+//! separate tasks); `--site` picks a station out of a multi-station file.
+//!
+//! ```text
 //! rw_odim --abi                     the record contract this build writes
 //! rw_odim --version                 the build's version
 //! ```
@@ -37,7 +51,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rw_nexrad::pack::write_pack;
-use rw_odim::pack::{PackOptions, build_pack};
+use rw_odim::pack::{PackOptions, build_pack_reported};
 use rw_odim::{
     DecodeOptions, VolumeGroup, assemble, read_volume_with, survey_dir, volume::NyquistSource,
 };
@@ -51,7 +65,9 @@ const ABI_MARKER: &str = "gpuwm-obs.odim-pack.v1\tgpuwm-obs.odim-nyquist.v1\t\
 gpuwm-obs.odim-volumes.v1\tgpuwm-obs.radar-sweeps.v3\t\
 site\telangle\tnbins\tnrays\trscale\trstart\tazimuth\tnyquist_ms\tnyquist_source\t\
 nyquist_granularity\tcensor\tmeasured\tundetect\tnodata\tsentinel_ambiguous\t\
-assembled\tmanifest_sha256\tstamp";
+assembled\tmanifest_sha256\tstamp\tdual_prf\t\
+gpuwm-obs.odim-stations.v1\tformat\todim-h5\tjma-grib2-tar\tiris-raw\t\
+universal-format\tcfradial1\tdorade\tDerivedDualPrf\tjma-no-echo-undetect";
 
 /// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
 /// binary was built from, embedded so the gpuwm release cut can prove a
@@ -68,12 +84,14 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 const PACK_SCHEMA: &str = "gpuwm-obs.odim-pack.v1";
 const NYQUIST_SCHEMA: &str = "gpuwm-obs.odim-nyquist.v1";
 const VOLUMES_SCHEMA: &str = "gpuwm-obs.odim-volumes.v1";
+const STATIONS_SCHEMA: &str = "gpuwm-obs.odim-stations.v1";
 
 const USAGE: &str = "\
-rw_odim pack (--file F | --dir D [--stamp S]) --out P [--quantities Q,Q] \
-[--max-elevation-deg D] [--max-range-km R]
+rw_odim pack (--file F [--file F2 ...] [--site S] | --dir D [--stamp S]) --out P \
+[--quantities Q,Q] [--max-elevation-deg D] [--max-range-km R] [--dual-prf on|off]
 rw_odim volumes --dir D
-rw_odim nyquist --file F
+rw_odim nyquist --file F [--site S]
+rw_odim stations --file F
 rw_odim --abi
 rw_odim --version";
 
@@ -118,6 +136,14 @@ impl Args {
             .map(|(_, value)| value.as_str())
     }
 
+    fn all(&self, name: &str) -> Vec<&str> {
+        self.values
+            .iter()
+            .filter(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
+
     fn require(&self, name: &str) -> Result<&str, Box<dyn Error>> {
         self.get(name)
             .ok_or_else(|| format!("--{name} is required\n\n{USAGE}").into())
@@ -155,6 +181,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some("pack") => pack(&Args::parse(&argv[1..])?),
         Some("volumes") => volumes(&Args::parse(&argv[1..])?),
         Some("nyquist") => nyquist(&Args::parse(&argv[1..])?),
+        Some("stations") => stations(&Args::parse(&argv[1..])?),
         Some(other) => Err(format!("unknown subcommand {other:?}\n\n{USAGE}").into()),
     }
 }
@@ -261,6 +288,14 @@ fn pack(args: &Args) -> Result<(), Box<dyn Error>> {
             .map(str::to_string)
             .collect(),
     };
+    // Dual-PRF outlier correction (rw_odim::dualprf): on unless `--dual-prf off`.
+    let dual_prf = match args.get("dual-prf") {
+        None | Some("on") => true,
+        Some("off") => false,
+        Some(other) => {
+            return Err(format!("--dual-prf takes on or off, not {other:?}\n\n{USAGE}").into());
+        }
+    };
     let options = PackOptions {
         quantities: quantities.clone(),
         max_elevation_deg: args.number("max-elevation-deg", 90.0)?,
@@ -279,22 +314,37 @@ fn pack(args: &Args) -> Result<(), Box<dyn Error>> {
     // Exactly one of --file and --dir. Accepting both and preferring one
     // would let a caller believe they packed the directory when they packed
     // the file.
-    let (volume, name, bytes, digest, report) = match (args.get("file"), args.get("dir")) {
-        (Some(_), Some(_)) => {
+    let files: Vec<PathBuf> = args.all("file").into_iter().map(PathBuf::from).collect();
+    let mut formats: Vec<&'static str> = Vec::new();
+    let (volume, name, bytes, digest, report) = match (files.is_empty(), args.get("dir")) {
+        (false, Some(_)) => {
             return Err(
                 format!("--file and --dir are two different volumes; pass one\n\n{USAGE}").into(),
             );
         }
-        (None, None) => {
+        (true, None) => {
             return Err(format!("pack needs --file or --dir\n\n{USAGE}").into());
         }
-        (Some(file), None) => {
-            let file = PathBuf::from(file);
-            let volume = read_volume_with(&file, &decode)?;
-            let (name, bytes, digest) = read_file_identity(&file)?;
-            (volume, name, bytes, digest, None)
+        (false, None) => {
+            let (volume, used) = read_world(&files, args.get("site"), &decode)?;
+            formats = used;
+            if files.len() == 1 {
+                let (name, bytes, digest) = read_file_identity(&files[0])?;
+                (volume, name, bytes, digest, None)
+            } else {
+                let report = world_report(&files, &volume)?;
+                let name = format!(
+                    "{} @ {} ({} files)",
+                    volume.source.label(),
+                    report.stamp,
+                    report.files
+                );
+                let bytes = report.total_bytes;
+                let digest = report.manifest_sha256.clone();
+                (volume, name, bytes, digest, Some(report))
+            }
         }
-        (None, Some(dir)) => {
+        (true, Some(dir)) => {
             let dir = PathBuf::from(dir);
             let group = group_for(&dir, args.get("stamp"))?;
             let (volume, report) = assemble(&group.files, &decode)?;
@@ -304,7 +354,15 @@ fn pack(args: &Args) -> Result<(), Box<dyn Error>> {
             (volume, name, bytes, digest, Some(report))
         }
     };
-    let (meta, payload) = build_pack(&volume, &options, &name, bytes, &digest, report.as_ref())?;
+    let (meta, payload, census) = build_pack_reported(
+        &volume,
+        &options,
+        dual_prf,
+        &name,
+        bytes,
+        &digest,
+        report.as_ref(),
+    )?;
 
     // The writer's own reader, on the writer's own bytes, before anything
     // downstream is asked to trust the file.
@@ -325,6 +383,7 @@ fn pack(args: &Args) -> Result<(), Box<dyn Error>> {
         "source_file": name,
         "source_bytes": bytes,
         "source_sha256": digest,
+        "format": if formats.is_empty() { vec!["odim-h5"] } else { formats },
         "site": checked.site.id,
         "site_alt_m": checked.site.alt_m,
         "valid_time": checked.volume.valid_time,
@@ -338,6 +397,17 @@ fn pack(args: &Args) -> Result<(), Box<dyn Error>> {
             .filter(|sweep| sweep.nyquist_velocity_ms.is_some())
             .count(),
         "nyquist_granularity": rw_odim::pack::NYQUIST_GRANULARITY,
+        // Dual-PRF outliers removed before the pack was written (on by
+        // default; rw_odim::dualprf). A velocity on a dual-PRF sweep with no
+        // declared NI or PRF pair is counted as skipped, never guessed.
+        "dual_prf": {
+            "correction": if dual_prf { "on" } else { "off" },
+            "moments_examined": census.dual_prf.moments_examined,
+            "moments_with_ray_prf": census.dual_prf.moments_with_ray_prf,
+            "moments_skipped": census.dual_prf.moments_skipped,
+            "gates_measured": census.dual_prf.gates_measured,
+            "gates_corrected": census.dual_prf.gates_corrected,
+        },
         "gates": checked
             .sweeps
             .iter()
@@ -371,7 +441,19 @@ fn pack(args: &Args) -> Result<(), Box<dyn Error>> {
 
 fn nyquist(args: &Args) -> Result<(), Box<dyn Error>> {
     let file = PathBuf::from(args.require("file")?);
-    let volume = read_volume_with(&file, &DecodeOptions::geometry_only())?;
+    let volume = match rw_odim::world::sniff_path(&file)? {
+        Some(rw_odim::world::Format::OdimH5) | None => {
+            read_volume_with(&file, &DecodeOptions::geometry_only())?
+        }
+        Some(_) => {
+            read_world(
+                std::slice::from_ref(&file),
+                args.get("site"),
+                &DecodeOptions::all(),
+            )?
+            .0
+        }
+    };
     let sweeps: Vec<_> = volume
         .sweeps
         .iter()
@@ -382,6 +464,9 @@ fn nyquist(args: &Args) -> Result<(), Box<dyn Error>> {
                 "nyquist_ms": sweep.nyquist.interval_ms,
                 "source": format!("{:?}", sweep.nyquist.source),
                 "dual_prf": sweep.nyquist.dual_prf,
+                "high_prf_hz": sweep.nyquist.high_prf_hz,
+                "low_prf_hz": sweep.nyquist.low_prf_hz,
+                "per_ray_prf": sweep.ray_prf_hz.is_some(),
                 "dealiasable": !matches!(sweep.nyquist.source, NyquistSource::Unavailable),
             })
         })
@@ -391,6 +476,88 @@ fn nyquist(args: &Args) -> Result<(), Box<dyn Error>> {
         "file": file.display().to_string(),
         "granularity": rw_odim::pack::NYQUIST_GRANULARITY,
         "sweeps": sweeps,
+    });
+    println!("{}", serde_json::to_string_pretty(&record)?);
+    Ok(())
+}
+
+/// Read one station from one or more files of any format `rw_odim::world`
+/// recognises, and fold them into one volume.
+fn read_world(
+    files: &[PathBuf],
+    site: Option<&str>,
+    decode: &DecodeOptions,
+) -> Result<(rw_odim::PolarVolume, Vec<&'static str>), Box<dyn Error>> {
+    let mut volumes = Vec::new();
+    let mut formats = Vec::new();
+    for file in files {
+        let read = rw_odim::world::read_path(file, site, decode)?;
+        if !formats.contains(&read.format.token()) {
+            formats.push(read.format.token());
+        }
+        volumes.extend(read.volumes);
+    }
+    let what = files
+        .iter()
+        .map(|file| file.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let chosen = rw_odim::world::select_site(volumes, site, &what)?;
+    Ok((rw_odim::world::merge_station(chosen, &what)?, formats))
+}
+
+/// The member manifest for a volume folded from several files, in the shape
+/// the pack's `assembled` block already carries for split ODIM scans.
+fn world_report(
+    files: &[PathBuf],
+    volume: &rw_odim::PolarVolume,
+) -> Result<rw_odim::AssembleReport, Box<dyn Error>> {
+    let mut members = Vec::new();
+    let mut total = 0usize;
+    for file in files {
+        let (name, bytes, sha256) = read_file_identity(file)?;
+        total += bytes;
+        members.push(rw_odim::MemberFile {
+            name,
+            bytes,
+            sha256,
+        });
+    }
+    let stamp = volume
+        .nominal_time
+        .map(|time| time.format("%Y%m%dT%H%M%SZ").to_string())
+        .unwrap_or_else(|| "unstamped".to_string());
+    Ok(rw_odim::AssembleReport {
+        files: files.len(),
+        sweeps: volume.sweeps.len(),
+        merged: 0,
+        stamp,
+        manifest_sha256: rw_odim::assemble::manifest_sha256(&members),
+        members,
+        total_bytes: total,
+    })
+}
+
+fn stations(args: &Args) -> Result<(), Box<dyn Error>> {
+    let file = PathBuf::from(args.require("file")?);
+    let bytes =
+        std::fs::read(&file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+    let name = file.display().to_string();
+    let list = match rw_odim::world::sniff(&bytes) {
+        Some(rw_odim::world::Format::JmaGrib2Tar) => rw_odim::world::jma::stations(&bytes, &name)?,
+        Some(format) => {
+            return Err(format!(
+                "{name} is {}, which holds one station; `stations` lists multi-station files",
+                format.token()
+            )
+            .into());
+        }
+        None => return Err(format!("{name} is not a format rw_odim reads").into()),
+    };
+    let record = serde_json::json!({
+        "schema": STATIONS_SCHEMA,
+        "file": name,
+        "stations": list,
     });
     println!("{}", serde_json::to_string_pretty(&record)?);
     Ok(())

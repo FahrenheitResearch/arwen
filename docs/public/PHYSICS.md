@@ -44,9 +44,9 @@ substitutions (see the end of this page).
 
 **A rung grades one OPTION, and most of the tree sits on the same
 rung.** `implemented-unverified` is not a mark against any particular
-scheme. It is carried by **39 of the registry's 57 component options**:
+scheme. It is carried by **40 of the registry's 58 component options**:
 YSU, MYJ, MYNN (PBL and surface layer both), Eta similarity, Shin-Hong,
-UW moist turbulence, SASE, Purdue Lin, WSM3, WSM5, Ferrier-Aligo, WSM7, WSM6R, Milbrandt-Yau, Morrison, WDM6, P3 one-category, FAST_SBM spectral bin, Thompson
+UW moist turbulence, SASE, CCPP TKE-EDMF, Purdue Lin, WSM3, WSM5, Ferrier-Aligo, WSM7, WSM6R, Milbrandt-Yau, Morrison, WDM6, P3 one-category, FAST_SBM spectral bin, Thompson
 aerosol-aware, TEMPO, Noah, Noah-MP, RUC, Grell-Freitas, Original cu6 cumulus, New Tiedtke, Grell 3D, New SAS (YSU) with NSCV shallow convection, WRF RRTM
 longwave with Dudhia shortwave, New Goddard longwave and shortwave, the three urban canopy models
 (single-layer UCM, BEP and BEP+BEM), and all five turbulence closures. It says
@@ -96,7 +96,7 @@ So, plainly, and in the order the two routes actually work:
   and the composition they name was reachable before they were added.
 
 The composition space is measured rather than argued.
-`tools/report_physics_composition_walk.py` makes 9831 physics admission
+`tools/report_physics_composition_walk.py` makes 20682 physics admission
 attempts with real experiment TOMLs, pushes every one through
 `gpuwm.experiment.build_experiment` -- the single front door every
 runner reaches a per-domain `RunConfig` through -- and records the
@@ -104,17 +104,17 @@ verdict. `docs/public/receipts/physics-composition-walk.json` is that
 record, and `tests/test_physics_composition_walk.py` regenerates it on
 every release cut and compares it byte for byte. As measured:
 
-- **5839 of 18182 admission attempts are accepted**, covering **5831 distinct
-  accepted suites**, against 34 registered templates. The presets are a
+- **6439 of 20682 admission attempts are accepted**, covering **6431 distinct
+  accepted suites**, against 35 registered templates. The presets are a
   corner of the space, not the space.
 - **Every accepted run keeps every switch the file set**, checked
   against the resolved per-domain `RunConfig`. Zero rewrites. An
   admission is never a silent substitution.
 - **Every admitted value of every axis reaches an accepted run**, with
   no exceptions left. `ra_lw_physics = 1` (WRF RRTM longwave) was the
-  last one; 1.9 ports it, and it now reaches 1045 distinct accepted suites,
-  including 209 paired with Dudhia shortwave.
-- **12343 refusals fall into 19 distinct rules**, every one of which
+  last one; 1.9 ports it, and it now reaches 1165 distinct accepted suites,
+  including 233 paired with Dudhia shortwave.
+- **14243 refusals fall into 20 distinct rules**, every one of which
   names the selector to change, and each of which has a
   demonstrated remedy -- the receipt carries a before/after pair per
   rule showing that doing what the message says reaches an accepted
@@ -320,9 +320,13 @@ other three are refused by name with the physics each one adds:
 
 **It runs on the card by default.** `p3_backend` selects the
 implementation: `cuda` (the default, nine kernel launches), `fused` (the
-same kernels in three), and `reference` (the CPU float32 transcription
-that remains the port's own authority). The two device arms are
-byte-identical to each other on every p3-fortref fixture; the
+same kernels in three), and `reference` (the CPU float32 transcription).
+The device arms are bit-identical to WRF's Fortran on the column oracle;
+the `reference` arm is not: its NumPy float32 libm calls are different
+functions from the C library's and moved 9 % of the words of the 64-column
+one-step regime set, some across process thresholds (measured 2026-10-07,
+`tools/p3_wrf461_oracle/run_reference_arm.py`). The device arms are
+byte-identical to each other on every fixture; the
 decomposition is one thread per column with k sequential inside the
 thread, so the authority's arithmetic order is preserved by construction,
 and the translation unit compiles with `-fmad=false` because contraction
@@ -575,12 +579,17 @@ evaporation (`:3562`/`:3564`), its own tendency-form rain and ice fallout
 (`:3611-3640`, `:3664-3698`, `:3790-3870`) and the cleanup, applies them
 once in a terminal kernel with WRF's `:4023-4053` bounds, and takes the
 cold network's rain-conservation ratio as REAL as `:1615` declares it.
-The fork generation (`wrf_39_noaa`) takes the cloud accumulator, which its
-own Fortran applies once too (HRRR v4.1.21 `module_mp_thompson.F:3691`),
-and keeps its in-place rain and ice; against that Fortran on the 42
-committed real-data columns its cloud moved closer (`qc` 2.9e-7 to 1.2e-7,
-`nc` 3.4e-7 to 2.3e-7 relative, `tools/thompson_fork_oracle/fork_column_parity.py`)
-and nothing else moved. The frozen mp=8 kernel file `thompson.cu` is
+The fork generation (`wrf_39_noaa`, the default on the HRRR and RAP doors)
+does not share these kernels: it runs its own column unit
+(`gpuwm/core/kernels/thompson_fork.cu`), the HRRR v4.1.21 fork's
+`mp_gt_driver`, `mp_thompson`, `calc_refl10cm` and `calc_effectRad` in the
+fork's own tendency form and arithmetic, with the constants the fork's own
+`thompson_init` computes. It matches that Fortran bit for bit on every
+output: 0 ULP on 1,582 column runs (42 real-data columns at dt 5 s; those
+and 266 regime and edge columns at dt 5, 20, 60 and 150 s and on the first
+step), in the default build and the strict one
+(`tools/thompson_fork_oracle/gpu_column_oracle.py`,
+`tests/test_thompson_fork_column_gpu.py`). The frozen mp=8 kernel file `thompson.cu` is
 unchanged, and a 1 h mp=8 real-case forecast is byte-identical before and
 after on an RTX 5090 and an RTX 4090. Measured, stage by
 stage against WRF's own running tendencies with the instrumented oracle
@@ -1132,15 +1141,18 @@ Notes with teeth:
   `freezeH2O.dat`, `thompson_aux_tables.dat`) are byte-validated
   against pinned SHA-256 values at launch.  The two smallest ship in
   the wheel; `freezeH2O.dat` (243 MiB) and `qr_acr_qg_V4.dat` (71 MiB,
-  wheel-only exclusion -- a checkout carries it) are staged by
-  `gpuwm fetch-tables` (the install scripts run it automatically)
-  under the same pins.  `GPUWM_THOMPSON_TABLE_ROOT` can relocate the
-  root but never bypasses the pins.  A plan report says which of them
-  resolved here, in its `install_state` block, naming what is missing
+  wheel-only exclusion -- a checkout carries it) are downloaded and
+  checked on the first Thompson run from the pinned release assets
+  (about 315 MiB together). `gpuwm fetch-tables` stages them ahead of
+  time or offline with `--from DIR`; the install scripts also stage
+  them. `GPUWM_THOMPSON_TABLE_ROOT` can relocate the root but never
+  bypasses the pins; automatic staging does not fill a named root.
+  A plan report says which of them resolved here, in its `install_state`
+  block, naming what is missing
   and where it was looked for; it does not turn the plan unlaunchable,
   because a physics plan is portable and a staged table set is not. The
-  launch is where the refusal lands, by name and with the command that
-  stages the set.
+  launch stages missing tables on first use. Where automatic staging
+  is unavailable, it refuses by name with the command that stages the set.
 - **mp=28 needs a fifth table, and ArWen ships it.**
   `CCN_ACTIVATE.BIN` (35,288 bytes, sha256 `f2b8d391...`) is the CCN
   activation lookup.  It is the one Thompson artifact that is *not* a
@@ -1363,7 +1375,7 @@ Naming a composition is not evidence, and none was claimed for it.
 | MM5 (classic) | 91 | supported | template | the certified-slice surface layer; pairs with YSU and all three LSMs |
 | Eta similarity (MYJ) | 2 | implemented-unverified | component-override | Janjic's viscous sublayer over water and the Zilitinkevich thermal roughness over land, transcribed from the byte-frozen `module_sf_myjsfc.F` including its `MYJSFCINIT` similarity tables; publishes `AKHS`/`AKMS`/`THZ0`/`QZ0`/`UZ0`/`VZ0` and NO `MOL`/`ZOL`/`PSIM`/`PSIH`, which is why it is admitted only as the 2/2 pair with the MYJ PBL. `isftcflx`/`iz0tlnd` are refused: WRF passes them in and never reads them (CZIL is hard-coded to 0.1). No oracle comparison against the WRF Fortran has been run |
 | MYNN | 5 | implemented-unverified | template | column solver oracle-matched over land and water (max rel. err 4.3e-7); `isftcflx` 0-3 ported; needs the PBL slot to be MYNN or off, which is WRF v4.6.1's own restriction ([MYNN scope note](#mynn-scope-note-what-composes-and-what-is-pinned)) |
-| MM5 (revised) | 1 | supported | template | **bitwise WRF v4.6.1 on the card**: a column oracle drives WRF's own `SFCLAYREV` wrapper over the byte-unmodified `sf_sfclayrev.F90` (gfortran -O0) on 110 columns (convective and stable land, calm very stable air, ocean, lakes, hurricane winds, snow and sea ice, high terrain, hot desert, edge cases) in six `isfflx`/`isftcflx`/`iz0tlnd` arms, three chained steps each, and every defined output word in that finite fixture is WRF's, 0 ULP under both the strict and the default build (WOOF's own float32 logf/expf/powf/atanf in the unit, no FMA contraction; tests/test_sfclayrev_wrf461_parity.py). With `isfflx = 0` WRF copies an unassigned local into `LH`; WOOF writes 0 there. A stock-flags WRF build differs from that reference in one word (1 ULP) because gfortran -O2 turns `x**2.` into `x*x`. The SASE preset selects it (every WRF-matched run used the classic scheme, so no matched preset does); the prepared-domain-tree and prepared-single-domain routes also offer it as a surface-layer component override, and a config that writes `sf_sfclay_physics = 1` directly is accepted by the loader and runs it -- measured, 1038 distinct accepted combinations in [receipts/physics-composition-walk.json](receipts/physics-composition-walk.json) |
+| MM5 (revised) | 1 | supported | template | **bitwise WRF v4.6.1 on the card**: a column oracle drives WRF's own `SFCLAYREV` wrapper over the byte-unmodified `sf_sfclayrev.F90` (gfortran -O0) on 110 columns (convective and stable land, calm very stable air, ocean, lakes, hurricane winds, snow and sea ice, high terrain, hot desert, edge cases) in six `isfflx`/`isftcflx`/`iz0tlnd` arms, three chained steps each, and every defined output word in that finite fixture is WRF's, 0 ULP under both the strict and the default build (WOOF's own float32 logf/expf/powf/atanf in the unit, no FMA contraction; tests/test_sfclayrev_wrf461_parity.py). With `isfflx = 0` WRF copies an unassigned local into `LH`; WOOF writes 0 there. A stock-flags WRF build differs from that reference in one word (1 ULP) because gfortran -O2 turns `x**2.` into `x*x`. The SASE preset selects it (every WRF-matched run used the classic scheme, so no matched preset does); the prepared-domain-tree and prepared-single-domain routes also offer it as a surface-layer component override, and a config that writes `sf_sfclay_physics = 1` directly is accepted by the loader and runs it -- measured, 2344 distinct accepted combinations in [receipts/physics-composition-walk.json](receipts/physics-composition-walk.json) |
 
 Revised MM5 declares two finite-output choices where WRF provides no finite
 answer. Flux-off `LH` is zero, because the WRF wrapper copies an unassigned
@@ -1386,7 +1398,7 @@ calls (`tests/test_sfclayrev_nonfinite.py`,
 All four run. In plain words: `template` means **a preset exists**, and
 `component-override` means **a preset exists** on the routes that
 declare it and you **type it in your config** anywhere else -- which is
-how the revised MM5 row's 2044 distinct accepted combinations were measured.
+how the revised MM5 row's 2344 distinct accepted combinations were measured.
 Maturity and reachability are separate registry axes, quoted verbatim
 from the registry: `maturity` is the option's evidence tier and
 `reachability.state` is how a NAMED route can offer it. Neither column
@@ -1399,7 +1411,7 @@ definition and for the measured difference between the two.
 
 | option | WRF id | maturity | evidence, in one line |
 |---|---|---|---|
-| Noah (4-layer) | 2 | implemented-unverified | 42-column oracle vs unmodified `module_sf_noahdrv.F`: 7 of 31 outputs bit-identical incl. the whole TSLB profile; TSK within 2 ULP, HFX worst at 375 ULP; land ice runs WRF's `SFLX_GLACIAL` (24 more oracle columns: TSK, HFX and TSLB bit-identical, worst flux 5 ULP); part of the option set used in the one historical matched run against WRF |
+| Noah (4-layer) | 2 | implemented-unverified | 80-column oracle vs unmodified `module_sf_noahdrv.F` and `module_sf_sfcdiags.F`: under strict arithmetic (`GPUWM_WRF_EXACT=1`) every driver output and T2/TH2/Q2 0 ULP on all graded columns (sm_120); default arithmetic (FMA contraction, flushed subnormals) within the per-field maxima pinned in tests/test_noah_wrf461_parity.py (TSK 1 ULP, HFX 802 ULP); land ice (`SFLX_GLACIAL`, 14 columns of those fixtures plus 48 land-ice fixture columns) and sea ice 0 ULP on their own oracles in both; held out: one subnormal-CHS column where WRF reads an uninitialised variable, and the declared positive-Q2 bound; part of the option set used in the one historical matched run against WRF |
 | RUC (9-level) | 3 | implemented-unverified | column family oracle-matched vs unmodified `module_sf_ruclsm.F`; full device residency measured at production width (0.47 s per call at 360,000 columns, snow-free) |
 | Noah-MP | 4 | implemented-unverified | `NOAHMP_SFLX` bitwise on all four whole-column fixtures; device slab path max ULP 0 vs the scalar authority at 360,000 columns; expert-route option pinned to the exact WRF Registry default option identity |
 
@@ -1413,11 +1425,11 @@ oracles, input requirements and persistence contract.
 Divergences the registry states plainly (read the registry warnings
 before relying on any of these over unusual surfaces):
 
-- **Noah:** frozen-ground infiltration on simultaneously-frozen-and-melting
-  columns differs through CUDA vs glibc `expf`/`powf` (water redistributed,
-  not lost). The glacial land-ice column (`SFLX_GLACIAL`), which earlier
-  releases left untouched, runs as in WRF since 2026-10-12; its oracle
-  numbers are in the registry.
+- **Noah:** land-ice columns run `SFLX_GLACIAL` as in WRF (since 2.9.0;
+  word for word with WRF v4.6.1 on the land-ice oracle columns since 2.9.1).
+  Frozen-ground infiltration on simultaneously-frozen-and-melting columns
+  differs from WRF in default arithmetic (SFCRUNOFF up to 505 ULP; water
+  redistributed, not lost) and is WRF's word under `GPUWM_WRF_EXACT=1`.
 - **Noah near-surface humidity:** after Noah, `SFCDIAGS` diagnoses Q2
   from the surface humidity, moisture flux and exchange coefficient.
   WRF can produce a nonpositive value from this inversion. ArWen
@@ -1498,7 +1510,7 @@ one line:
 
 | option | selection | maturity | evidence, in one line |
 |---|---|---|---|
-| RTE+RRTMGP | 4/4 (default) | supported | the default modern k-distribution path; substitution token recorded in every config it touches |
+| RTE+RRTMGP | 4/4 (default) | supported | the default modern k-distribution path; substitution token recorded in every config it touches. WRF has no RTE+RRTMGP (its option 4 is RRTMG), so the referee is the upstream RTE+RRTMGP Fortran at the commit WOOF transcribes (fa107a1, single precision, gfortran): gas optics, Planck sources, cloud optics, McICA-masked increment, delta scaling and both solvers' broadband fluxes are bit for bit equal on 584 oracle columns, except at three table edges where the upstream code reads the wrong table node (a layer at exactly 355 K, eta exactly 1); WOOF reads the right one (tools/rrtmgp_rte_upstream_oracle) |
 | legacy RRTMG | 4/4 with `ra_rrtmg_variant = "rrtmg_legacy"` | verification tier* | line transcription of WRF v4.6.1 option 4/4: batched LW/SW engines bit-identical (max ULP 0) to the port oracle over the full fixture decks; McICA generators match every stored WRF Fortran mask; used for all matched-run comparisons |
 | Dudhia SW (+ LW off) | 0/1 | supported | certified-slice shortwave |
 | WRF RRTM + Dudhia | 1/1 | implemented-unverified | RRTM longwave: line transcription of WRF v4.6.1 `module_ra_rrtm.F`, **equal to the unmodified Fortran word for word (0 ULP)** on a 79-column oracle (storms, nights, snow and ice, ocean, terrain, edge cases), every output and every intermediate, on GPU and CPU (`tests/test_rrtm_lw_wrf461_parity.py`); no matched forecast run; the Dudhia half is graded on its own |
@@ -1661,19 +1673,28 @@ What is certified for Grell-Freitas, and what is not. The certified
 half: the entire driver -- column preparation with its mixed-precision
 GFS constants, the deep cloud model, the shallow one, both `neg_check`
 calls and the output algebra -- reproduces the byte-frozen WRF v4.6.1
-`module_cu_gf_*.F` word for word at the GFDRV boundary over the
-committed 216-column oracle (18 soundings x 6 grid spacings x 2
-`ishallow` arms) on the 208 columns where GFDRV's own decomposition is
-exact, with the 8 remainder bounded to the driver's own
-`module_gfs_physcons` mixed precision (max 34 ULP, 3.8e-6 relative, no
-branch flips). The CUDA path holds that boundary with the beta-shape
-normalisation `fzu` PINNED from the capture, exactly as the CPU suite
-pins it: its transcribed glibc-2.39 float32 `logf`/`expf`/`powf` are
-bitwise against the live-glibc sweeps, but **gamma is a deliberate
-divergence since 2.7.0** and is graded against a 113-bit oracle
-instead. That matters because one ULP of `fzu` moves the deep mass
-flux by up to 7.3 percent, so it cannot be a tolerance question -- the
-pin puts it back to zero at that one seam. Read
+`module_cu_gf_*.F` word for word at the GFDRV boundary on every column
+of two oracles: the branch-targeted 216-column set (18 soundings x 6 grid
+spacings x 2 `ishallow` arms) and a 280-column set of realistic soundings
+(tropical ocean and cyclone, continental severe, capped, nocturnal, winter
+snow, lake effect, arctic, plateau and mountain terrain, trade cumulus,
+stratocumulus, desert, each climatological and convectively active, three
+grid spacings, both `ishallow` arms, a `clos_choice` 1..16 sweep and 15
+named edge cases). Both hold on the CUDA kernel under strict arithmetic
+and under the default build. The GFS constants are WRF's own words:
+`module_gfs_physcons` initialises its real(8) parameters from
+default-real literals, so `g` is `float64(float32(9.80665))`; earlier
+builds used the accurate doubles and missed 8 of the 216 columns by up to
+34 ULP. On the 216-column set the beta-shape normalisation `fzu` is
+pinned from the capture; on the 280-column set nothing is pinned and the
+WRF build is linked with the correctly rounded gamma WOOF ships, so the
+shipped forecast path itself is graded. WOOF's own float32
+`logf`/`expf`/`powf` give WRF's words on every column of both, but
+**gamma is a deliberate divergence since 2.7.0** and is graded against a
+113-bit oracle instead. That matters because one ULP of `fzu` moves the
+deep mass flux by per cent: against WRF linked as it ships, the 280
+realistic columns move by up to 17 per cent of convective rain (median
+0.26 per cent) with no index and no rain/no-rain decision changing. Read
 `docs/gf_gamma_known_delta.md` before quoting any GF parity number.
 The registry entry records four deviations: gamma (above); the
 shallow `k22` trigger ships with the section-offset indexing corrected (WRF's MAXLOC
@@ -2025,8 +2046,8 @@ with Grell-Freitas, SASE on the revised MM5 surface layer, and the three
 large-eddy closures (1.5-order TKE, 3D Smagorinsky, constant K). None of
 them reads anything source-specific, so none of them is a source's
 choice to make, and every source that names any suite at all names all
-six. On the prepared single-domain route that is twenty-two of its
-twenty-three sources; the other one is the caller-supplied composition row,
+six. On the prepared single-domain route that is twenty-three of its
+twenty-four sources; the other one is the caller-supplied composition row,
 which names no suite because the caller states the physics. A source
 with no measured suite of its own is not emptied: it reports the suites
 that route names for every source it HAS measured, with the limitation
@@ -2089,7 +2110,7 @@ user-facing walkthrough -- the symptom, how to tell which version is
 actually executing, and how to correct the config -- is
 [NOCTURNAL-DEWPOINTS.md](NOCTURNAL-DEWPOINTS.md).
 
-The table below classifies all **33 shipped single-domain profiles**
+The table below classifies all **34 shipped single-domain profiles**
 (`gpuwm.physics_compat.SINGLE_DOMAIN_PHYSICS_PROFILES`, which is the
 `--physics-profile` choice list). The registry carries one further
 template that no fixed-template route declares and so has no row here
@@ -2101,6 +2122,7 @@ load, by the same guard.
 
 | profile | radiation (lw / sw) | nocturnally valid |
 |---|---|---|
+| `ccpp-tke-edmf-thompson-mm5-noah-gf-rte-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (radiation-window admission only; the composed suite remains unverified) |
 | `morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's gfs/era5 default) |
 | `nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1` | legacy RRTMG / legacy RRTMG | **yes** |

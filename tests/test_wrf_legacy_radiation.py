@@ -294,6 +294,8 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
     cfg = _cfg(ra_lw_physics=0, ra_sw_physics=1, radt_minutes=12.0,
                solar_generation="wrf_461")
     driver = object.__new__(physics.PhysicsDriver)
+    driver._wrf_rthraten = None
+    driver.rthraten = np.zeros(shape, np.float32)
     driver.swint = None
     driver.radiation_callable = adapter
     # Dudhia is shortwave-only, so it never declares publishes_olr and a

@@ -76,7 +76,8 @@
       "sase": "ArWen's own scale-adaptive closure, experimental and not a WRF scheme.",
       "shinhong": "Scale-aware YSU for grids between about 0.5 and 4 km.",
       "uw": "Moist-turbulence boundary layer from the University of Washington (CAM5), strong in cloud-topped layers and calm nights.",
-      "ysu": "Nonlocal boundary layer from Yonsei University; the common default."
+      "ysu": "Nonlocal boundary layer from Yonsei University; the common default.",
+      "ccpp-tke-edmf": "Turbulent-energy boundary layer with eddy diffusivity and mass flux from CCPP GFS. Requires moist columns and the revised or classic MM5 surface layer."
     },
     "surface_layer": {
       "classic-mm5": "Monin-Obukhov surface layer in its original MM5 form.",

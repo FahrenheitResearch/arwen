@@ -1024,7 +1024,12 @@ def validate_streamed_restart(path, store, cfg, *, setup, template_state,
     stochastic_arrays = {key: value for key, value in stored.items() if key.startswith("stochastic/")}
     stored = {key: value for key, value in stored.items() if not key.startswith("stochastic/")}
 
-    missing = sorted(set(arrays) - set(stored))
+    # The checkpoint-only driver carriers are tolerant both ways, as the
+    # resident reader is (physics_inventory.is_absent_tolerant).
+    stored = {key: value for key, value in stored.items()
+              if key in arrays or not _physinv.is_absent_tolerant(key)}
+    missing = sorted(key for key in set(arrays) - set(stored)
+                     if not _physinv.is_absent_tolerant(key))
     extra = sorted(set(stored) - set(arrays))
     if extra:
         raise RestartRefused(

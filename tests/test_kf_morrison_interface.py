@@ -170,6 +170,9 @@ def test_custom_warm_rain_attachment_requires_energy_defined_phase_closure(
     cfg = SimpleNamespace(
         specified=False, nested=False, cu_physics=1, mp_physics=1)
 
+    from gpuwm.core.physics import CUMULUS_HISTORY_RATES
+    for history_name in CUMULUS_HISTORY_RATES:
+        driver.fields.setdefault(history_name, np.zeros(shape, dtype=np.float32))
     driver.cumulus_callable = lambda **_kwargs: CumulusResult(**rates)
     with pytest.raises(ValueError, match="latent-energy-consistent"):
         driver._run_cumulus({}, state, cfg)
@@ -181,6 +184,9 @@ def test_custom_warm_rain_attachment_requires_energy_defined_phase_closure(
     folded.pop("rqicuten")
     folded.pop("rqscuten")
     driver.cumulus_callable = lambda **_kwargs: CumulusResult(**folded)
+    from gpuwm.core.physics import CUMULUS_HISTORY_RATES
+    for history_name in CUMULUS_HISTORY_RATES:
+        driver.fields.setdefault(history_name, np.zeros(shape, dtype=np.float32))
     driver._run_cumulus({}, state, cfg)
 
     np.testing.assert_array_equal(driver.cu_rates["rqccuten"], 8.0)
@@ -274,11 +280,15 @@ def test_cuda_sources_keep_four_rates_and_wrf_number_seed_statement_order():
     theta_rate = kf.index("rthcuten[i3] = dtdt / pi3(kk);")
     assert latent < kf.index("dtdt = (tgk - t0(kk)) / timec;") < theta_rate
 
-    rain = morrison.index("if (qrcu >= 1.0e-10f)")
-    snow = morrison.index("if (qscu >= 1.0e-10f)")
-    ice = morrison.index("if (qicu >= 1.0e-10f)")
-    process = morrison.index("morr_process_level(&qvk")
-    assert rain < snow < ice < process
-    assert "MPI * MRHOW * rhoa * rhoa * rhoa" in morrison
-    assert "100.0f * MPI * rhoa * rhoa * rhoa" in morrison
-    assert "MCI * 80.0e-6f * 80.0e-6f * 80.0e-6f" in morrison
+    # WRF :1332-1343, in order, before the small-amount evaporation
+    # (:1348) and every process rate; the transcription spells WRF's own
+    # expressions (RHO**3 through libgcc's __powisf2 chain, (80E-6)**DI
+    # through powf).
+    rain = morrison.index("if (qrcu1d >= 1.E-10f)")
+    snow = morrison.index("if (qscu1d >= 1.E-10f)")
+    ice = morrison.index("if (qicu1d >= 1.E-10f)")
+    evaporate = morrison.index("if (qvqvs < 0.9f)")
+    assert rain < snow < ice < evaporate
+    assert "(MO_RHOW * MO_PI) * mo_powi3(rho)" in morrison
+    assert "mo_powi3(rho) * MO_CONS1" in morrison
+    assert "gfk_pow(80.E-6f, MO_DI) * MO_CI" in morrison

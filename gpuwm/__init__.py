@@ -321,10 +321,31 @@ _cupy_windows_warning.quiet_false_cuda_path_warning()
 # tests/test_provenance.py copy into a stranger checkout.
 import os as _os  # noqa: E402
 
-if any(_name.startswith("GPUWM_WRF_EXACT") for _name in _os.environ):
+# Without CuPy the process compiles no CUDA, so there is no compiler to hook.
+# Breakage (2.9.1 public-CI rehearsal, route B, 2026-10-16): the Thompson
+# host-parity scripts import gpuwm with GPUWM_WRF_EXACT=1 on a CPU-only install,
+# and install() died with "No module named cupy" before the host backend could
+# install its CPU shim.  The guard sits here, not in wrf_exact.py, because that
+# file is sealed by tests/data/assembled_legacy_proofs/source-extension.json.
+# A cupy already in sys.modules counts as installed: find_spec raises
+# ValueError on a module with no __spec__, such as the stand-in compiler
+# tests/test_correct_mode_default.py installs on hosts without CuPy (2.9.1
+# public-CI rehearsal, routes B and C, 2026-10-16).
+import importlib.util as _importlib_util  # noqa: E402
+import sys as _sys  # noqa: E402
+
+if (any(_name.startswith("GPUWM_WRF_EXACT") for _name in _os.environ)
+        and ("cupy" in _sys.modules or _importlib_util.find_spec("cupy") is not None)):
     from gpuwm import wrf_exact as _wrf_exact
 
     _wrf_exact.install()
+
+# Kernel numerics (owner ruling 2026-10-16: fast is the default, strict the opt-in).  gpuwm/numerics.py
+# imports nothing heavy: it arms a hook that applies the fast compile boundary when CuPy's compiler loads,
+# and arms nothing under GPUWM_WRF_EXACT=1 or GPUWM_NUMERICS=strict changes nothing it compiles.
+from gpuwm import numerics as _numerics  # noqa: E402
+
+_numerics.arm()
 
 __all__ = ["DISTRIBUTION_NAME", "DISTRIBUTION_NAMES", "LAUNCH_MONOTONIC",
            "LAUNCH_UNIX_MS", "PACKAGE_INIT", "__version__",

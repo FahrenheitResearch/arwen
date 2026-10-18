@@ -1,0 +1,16 @@
+{
+  "base_sha256": {
+    "gf-levels.csv": "305109136f0b3b41e76b5ce14869103036fb4a6b03e3c10119254fd4ea8092c3",
+    "gf-surface.csv": "96f1f9df5e9ab3a17bd8c43d1c4214e8930be5a49aa82183d671ed0bbeac06f6"
+  },
+  "corrected_sha256": {
+    "gf-levels.csv": "305109136f0b3b41e76b5ce14869103036fb4a6b03e3c10119254fd4ea8092c3",
+    "gf-surface.csv": "96f1f9df5e9ab3a17bd8c43d1c4214e8930be5a49aa82183d671ed0bbeac06f6"
+  },
+  "words": {
+    "lev": [],
+    "sca": [],
+    "isc": []
+  },
+  "source_sha256": "95e893767d73a30e1588a27f510e9892ee0b5a94ebedd6fc539cb26ef7ae1638"
+}

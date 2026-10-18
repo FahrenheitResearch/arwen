@@ -539,7 +539,7 @@ def validate_analysis_fields(fields: Sequence[str], *,
     ``fields`` is what the analysis proposes to update; ``available`` is
     what the background actually carries (the state's own capability).  A
     mass field in ``fields`` whose paired number moment is in
-    ``available`` but NOT in ``fields`` is the node-8 defect exactly, and
+    ``available`` but NOT in ``fields`` is the test host H defect exactly, and
     under ``full-moment`` it is a refusal naming every such species.
 
     Under ``single-moment-with-repair`` the same situation is allowed and

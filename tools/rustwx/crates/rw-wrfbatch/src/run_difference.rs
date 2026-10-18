@@ -248,6 +248,9 @@ pub(super) fn run(mut args: Args) -> Result<(), String> {
         .difference
         .take()
         .ok_or("internal: a difference run without --diff-against")?;
+    // A difference table the caller named but that cannot be read is
+    // refused before either run is imported, not after both are drawn.
+    difference::DifferenceTable::active().map_err(|err| err.to_string())?;
     let a_times = valid_times(&args.inputs)?;
     let b_times = valid_times(&difference.against)?;
     let (a_index, b_index, valid) = pick_frames(&a_times, &b_times, args.frames)?;
@@ -513,14 +516,16 @@ pub(super) fn run(mut args: Args) -> Result<(), String> {
 
 fn print_drawn(item: &DrawnDifference) {
     println!(
-        "DIFFERENCE {} units={} half_range={} step={} rule={} defined_cells={} max_abs={:.4}",
+        "DIFFERENCE {} units={} half_range={} step={} rule={} defined_cells={} \
+         differing_cells={} max_abs={}",
         item.key,
         item.units,
         item.half_range,
         item.step,
         item.rule.describe(),
         item.defined_cells,
-        item.max_abs
+        item.differing_cells,
+        difference::magnitude_label(item.max_abs)
     );
 }
 

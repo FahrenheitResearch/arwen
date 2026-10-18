@@ -220,7 +220,9 @@ def _advance(mode, fields, environment, steps=2):
             workspace.field("qns"), workspace.field("qnn"),
             dt, supersaturation_scratch=ss_scratch,
             concentration_space=True, predicted_ccn=mode.predicted_ccn,
-            validate_values=False)
+            validate_values=False,
+            frozen=tuple(workspace.field(name) for name in (
+                "qg", "qh", "qng", "qnh", "qvolg", "qvolh")))
 
     hooks = NSSL2ProductionHooks(
         fused_gs=fused_gs,

@@ -120,6 +120,54 @@ def test_docs_is_a_declared_package_and_is_anchored() -> None:
         f"development record in the wheel: {strays}")
 
 
+def test_the_sdist_manifest_cannot_widen_the_docs_payload(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pages MANIFEST.in ships in the source archive stay out of the wheel.
+
+    A pyproject build turns ``include-package-data`` on, so every sdist
+    member under a declared package also reaches the wheel.  ``docs`` is a
+    declared package, and when the 2.9.2 source archive started carrying
+    the public pages the manylinux wheel grew by 126 ``docs/`` members and
+    1.85 MB, over the cut's per-file limit.  setup.py's build_py drops the
+    manifest contribution for ``docs``; this runs that class with a manifest
+    contribution present and reads back the selection.
+    """
+
+    _require_source_tree()
+
+    import runpy
+    import setuptools
+
+    captured: dict = {}
+    monkeypatch.setattr(setuptools, "setup",
+                        lambda **kwargs: captured.update(kwargs))
+    namespace = runpy.run_path(str(REPO_ROOT / "setup.py"),
+                               run_name="setup_under_test")
+    assert "docs" in namespace["DECLARATION_ONLY_DATA_PACKAGES"]
+    build_py_class = captured["cmdclass"]["build_py"]
+
+    config = _pyproject()["tool"]["setuptools"]
+    distribution = setuptools.dist.Distribution({
+        "name": "gpuwm",
+        "packages": _declared_packages(),
+        "package_data": config["package-data"],
+        "exclude_package_data": config.get("exclude-package-data", {}),
+    })
+    command = build_py_class(distribution)
+    command.finalize_options()
+    monkeypatch.chdir(REPO_ROOT)
+    pages = sorted(p.relative_to(REPO_ROOT).as_posix()
+                   for p in (REPO_ROOT / "docs" / "public").glob("*.md"))
+    assert pages, "docs/public holds no pages to measure with"
+    command.manifest_files = {"docs": pages + ["docs/install.md"]}
+
+    from_docs = sorted(Path(name).as_posix()
+                       for name in command.find_data_files("docs", "docs"))
+    assert from_docs == [SEAM_DOC], (
+        "the sdist manifest widened the wheel's docs/ payload beyond the "
+        f"seam contract document: {from_docs}")
+
+
 def test_the_seam_document_is_the_only_file_the_docs_key_ships(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """One file, and the enumeration is what keeps it one file.

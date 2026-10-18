@@ -9,6 +9,7 @@ def _gpu_state(cadence=0.1):
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.moist import init_moist_balanced
     from gpuwm.core.physics import RadiationResult, initialize_physics
+    from gpuwm.core.physics_inventory import radiation_boundary_flux_names
     cfg=RunConfig(nx=12,ny=10,nz=16,dx=2000.,dy=2000.,ztop=8000.,
         dt=1.,run_seconds=8.,time_step_sound=4,moist=True,mp_physics=10,
         ra_physics=4,sf_sfclay_physics=1,sf_surface_physics=2,
@@ -27,7 +28,8 @@ def _gpu_state(cadence=0.1):
     def radiation(**kwargs):
         z3=cp.zeros(state.p.shape,cp.float32)
         z2=cp.zeros(state.mup.shape,cp.float32)
-        return RadiationResult(z3,cp.zeros_like(z3),z2,cp.zeros_like(z2))
+        return RadiationResult(z3,cp.zeros_like(z3),z2,cp.zeros_like(z2),coszen=cp.zeros_like(z2),
+            boundary_fluxes={name:cp.zeros_like(z2) for name in radiation_boundary_flux_names(cfg)})
     radiation.restart_identity = {"algorithm": "zero-flux-cadence-control-v1", "above_atmosphere_policy": "no-external-atmosphere"}
     initialize_physics(state,cfg,landmask=1.,tsk=302.,swdown=400.,glw=320.,radiation=radiation)
     return cfg,state

@@ -89,7 +89,12 @@ def test_actual_real_pair_and_wrong_pair_controls(real_pair, poison):
         with pytest.raises(ValueError, match='initial|pair'):
             read()
     else:
-        assert len(read().intervals) == 1
+        # A front door consumes every validated record since da2e1dd8fae
+        # (run_seconds no longer holds the read to the first interval), so
+        # the pair yields the whole wrfbdy coverage.
+        coverage = run.coverage
+        assert len(read().intervals) == round(
+            coverage.coverage_seconds / coverage.forcing_interval_seconds)
 
 
 def test_first_eos_and_cloud_preparation_match_real_file_physical_state(real_pair):
@@ -118,6 +123,24 @@ def test_first_eos_and_cloud_preparation_match_real_file_physical_state(real_pai
                           ('qv', 'qc', 'qi', 'qs', 'temperature', 'pressure')])
     assert bool(cp.isfinite(cloud).all())
     assert bool(((cloud >= 0) & (cloud <= 1)).all())
+
+
+@pytest.mark.gpu
+def test_strict_coordinate_diffusion_retains_the_real_cold_start_reference(real_pair):
+    cp=pytest.importorskip("cupy")
+    from gpuwm.wrf_exact import ENABLED
+    if not ENABLED:
+        pytest.skip("the stock thermal reference is a strict arithmetic arm")
+    from gpuwm.ingest.wrfinput import restore_domain_state,wrf_start_base_state
+    run,restored=real_pair
+    cfg=replace(run.experiment.root.run,diff_opt=1)
+    state=restore_domain_state(restored,cfg)
+    expected=wrf_start_base_state(restored.raw,cfg.hypsometric_opt)["T_INIT"]
+    cp.testing.assert_array_equal(state._scratch["diff1_theta_initial"].view(cp.uint32),
+                                  cp.asarray(expected).view(cp.uint32))
+    # A real atmospheric sounding must distinguish the base reference from
+    # the full initial state that made the first diffusion call zero.
+    assert bool(cp.any(state._scratch["diff1_theta_initial"] != state.thp).item())
 
 
 def test_noah_uses_requested_vegetation_table_with_same_soil_authority():

@@ -56,7 +56,7 @@ def test_the_fields_are_appended_last_at_wrfs_defaults():
     (dict(topo_wind=3, gwd_opt=0, bl_pbl_physics=1), "topo_wind = 3"),
     (dict(topo_wind=0, gwd_opt=2, bl_pbl_physics=1), "gwd_opt = 2"),
     (dict(topo_wind=True, gwd_opt=0, bl_pbl_physics=1), "topo_wind = True"),
-    (dict(topo_wind=1, gwd_opt=0, bl_pbl_physics=5), "not YSU"),
+    (dict(topo_wind=1, gwd_opt=0, bl_pbl_physics=5), "is neither"),
     (dict(topo_wind=2, gwd_opt=0, bl_pbl_physics=1, sf_urban_physics=2),
      "BEP"),
     (dict(topo_wind=0, gwd_opt=3, bl_pbl_physics=0), "PBL driver"),
@@ -72,6 +72,10 @@ def test_each_refusal_names_what_would_break(kwargs, needle):
     dict(topo_wind=2, gwd_opt=3, bl_pbl_physics=1),
     dict(topo_wind=0, gwd_opt=1, bl_pbl_physics=5),
     dict(topo_wind=0, gwd_opt=3, bl_pbl_physics=11),
+    # WRF v4.6.1's Shin-Hong reads CTOPO/CTOPO2 (module_bl_shinhong.F:1387,
+    # :1472-1473); refused here until lane/verify-topo-wind.
+    dict(topo_wind=1, gwd_opt=0, bl_pbl_physics=11),
+    dict(topo_wind=2, gwd_opt=1, bl_pbl_physics=11),
 ])
 def test_the_ported_combinations_pass(kwargs):
     assert terrain_drag_refusal(**kwargs) is None
@@ -79,7 +83,7 @@ def test_the_ported_combinations_pass(kwargs):
 
 def test_validate_run_config_refuses_topo_wind_without_ysu():
     cfg = _cfg(bl_pbl_physics=5, sf_sfclay_physics=5, topo_wind=1)
-    with pytest.raises(ValueError, match="not YSU"):
+    with pytest.raises(ValueError, match="is neither"):
         validate_run_config(cfg)
 
 
@@ -87,7 +91,7 @@ def test_direct_physics_initialization_has_the_same_terrain_refusal():
     from gpuwm.core.physics import initialize_physics
 
     cfg = _cfg(bl_pbl_physics=5, sf_sfclay_physics=5, topo_wind=1)
-    with pytest.raises(ValueError, match="not YSU"):
+    with pytest.raises(ValueError, match="is neither"):
         initialize_physics(SimpleNamespace(), cfg)
 
 
@@ -449,3 +453,42 @@ def test_sase_gsl_prices_its_live_boundary_inputs():
     assert shapes["terrain_drag/sase_boundary"] == (2, cfg.ny, cfg.nx)
     assert "terrain_drag/sase_boundary" not in terrain_drag_transient_shapes(
         dataclasses.replace(cfg, gwd_opt=1))
+
+
+@pytest.mark.parametrize("option, spp_pbl", [(3, 1), (3, 0), (1, 1)])
+def test_gsl_drag_receives_the_spp_pbl_pattern_wrf_hands_it(
+        monkeypatch, option, spp_pbl):
+    """module_pbl_driver.F passes spp_pbl and pattern_spp_pbl to gwdo_gsl,
+    which perturbs VAR, VARSS and both variance caps by the pattern's lowest
+    level (rstoch1D = pattern_spp_pbl(i,kts,j)).  The port launched the GSL
+    drag with rstoch = 0 under spp_pbl = 1 until lane/verify-gsl-drag, which
+    the WRF v4.6.1 oracle's spp cases measured (A/dx3000_spp,
+    A/dx5000_spp, A/dx13000_spp, B/dx9000_spp; tests/
+    test_gsl_drag_wrf461_column_oracle.py).  gwd_opt = 1 takes no pattern.
+    """
+    import gpuwm.core.physics as physics
+
+    monkeypatch.setattr(physics, "cp", np)
+    shape = (4, 2, 3)
+    plane = np.ones(shape[1:], np.float32)
+    pattern = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    driver = physics.PhysicsDriver.__new__(physics.PhysicsDriver)
+    driver.state = SimpleNamespace(sina=plane, cosa=plane)
+    driver.fields = {"pblh": plane, "kpbl": np.ones(shape[1:], np.int32),
+                     "xland": plane, "br": plane}
+    driver.sase_active = False
+    driver.bldt_seconds = 24.0
+    driver.spp_patterns = {"pbl": pattern} if spp_pbl else {}
+    called = {}
+
+    def apply(atmosphere, du, dv, **kwargs):
+        called.update(kwargs)
+
+    drag = SimpleNamespace(gwd_opt=option, apply_gwd=apply)
+    rates = {name: np.zeros(shape, np.float32) for name in ("du", "dv")}
+    driver._apply_gwd(drag, _cfg(spp_pbl=spp_pbl), rates, {"u": rates["du"]})
+    if option == 3 and spp_pbl:
+        assert called["rstoch"] is not None
+        np.testing.assert_array_equal(called["rstoch"], pattern[0])
+    else:
+        assert called["rstoch"] is None

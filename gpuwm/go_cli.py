@@ -53,6 +53,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from gpuwm import capabilities
+from gpuwm.docs_links import tree_url as _docs_tree_url
 from gpuwm import run_stamp as run_stamp_module
 from gpuwm.explain import explain_enabled, layered, render
 # The default product spec, declared where the early render declares it
@@ -131,12 +132,11 @@ ORCHESTRATED_SOURCES = ("gfs",)
 #: A repo-relative path was the whole pointer until 1.4.1, and a pip
 #: install contains no docs tree -- so the one instruction offered to
 #: the reader named a file they provably did not have, with no URL to
-#: reach it by (A-10, and the pointer half of B-03).  The URL is built
-#: from the project's own declared Repository metadata so the two cannot
-#: drift apart, and the local path stays for readers who do have a
-#: checkout.
-DOCS_BASE_URL = (
-    "https://github.com/FahrenheitResearch/arwen/blob/main/")
+#: reach it by (A-10, and the pointer half of B-03).  The URL names the
+#: installed release's tag (gpuwm.docs_links), not ``main``, which moves
+#: on with every later release; the local path stays for readers who do
+#: have a checkout.
+DOCS_BASE_URL = _docs_tree_url("blob")
 MANUAL_CHAIN = (
     f"docs/public/FIRST-LIGHT.md section 3a "
     f"({DOCS_BASE_URL}docs/public/FIRST-LIGHT.md)")
@@ -1589,6 +1589,7 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     from gpuwm.ensemble.runtime_context import current_session
     observer_hosts = observer is not None and getattr(observer, "hosts_forecast", True)
     hosted = current_session() is not None or observer_hosts
+    _join_kernel_prewarm(plan)
     early = None if hosted else _early_render_products(plan)
     command = (tree_forecast_command(
                    plan, early_render=early,
@@ -3272,7 +3273,7 @@ _POSTING_POLL_SECONDS = 0.2
 #: How long a fetch that has said it is failing (its own ``failed.json``,
 #: ``source_behind``) is given to end on its own once the preparation has
 #: failed on that record, before the chain stops it.  It exits right after
-#: writing the record, but on a loaded host (node-4 under a full test
+#: writing the record, but on a loaded host (test host D under a full test
 #: battery, 1.5 GiB of free RAM) it took longer than the 2 s every other
 #: stop allows (:data:`END_STAGE_GRACE_SECONDS`), the chain stopped it, and
 #: the preparation that failed because of it was named the run's failure.
@@ -3990,12 +3991,26 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     # stand a CUDA context up in this process -- the same reason the probe
     # is a subprocess at all (0.486 GiB held for the whole run, MEASURED).
     machine = _planner_machine(probe, profile)
+    # THE FORCING SLOTS THE CHAINED FORECAST HOLDS.  `gpuwm go` runs its
+    # preparation chained (run_chained): the forecast starts on the
+    # preparation's head and streams the root's lateral intervals through
+    # one device slot, which is what its door prices (forcing_intervals=1
+    # on a stream head).  Pricing the whole schedule on the card refused
+    # an 18 h one-card HRRR (18 hourly RAP intervals, 102.90 GiB) whose
+    # door holds one slot.  Chaining off (GPUWM_CHAINED_PREP=0) keeps the
+    # whole schedule, as its sealed restore holds it.
+    from gpuwm.ingest.boundary_stream import chained_enabled
+    resident_slots = (1 if chained_enabled() and len(exp.domains) == 1
+                      and not getattr(getattr(exp, "devices", None),
+                                      "enabled", False)
+                      else None)
     phases = estimate_phases(
         exp, source=source, vram_gib=vram_gib, profile=profile,
         machine=machine, forcing_intervals=forcing_intervals,
         forcing_interval_seconds=(forcing_interval if forcing_interval is not None
                                   else DEFAULT_FORCING_INTERVAL_SECONDS),
-        ingest_forcing_interval_seconds=forcing_interval)
+        ingest_forcing_interval_seconds=forcing_interval,
+        resident_forcing_intervals=resident_slots)
     # A PREPARATION THE CARD CANNOT HOLD PREPARES ON THE CPU.  The door
     # this chain runs (gpuwm prep, backend auto) prices its preparation
     # before its first device allocation and moves it to the CPU when the
@@ -4024,7 +4039,8 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
                 forcing_interval if forcing_interval is not None
                 else DEFAULT_FORCING_INTERVAL_SECONDS),
             ingest_forcing_interval_seconds=forcing_interval,
-            preprocess_backend="cpu")
+            preprocess_backend="cpu",
+            resident_forcing_intervals=resident_slots)
     tree_road = getattr(phases, "tree_road", None)
     planner_refuse, planner_note = planner_gate(tree_road, card_seen=probe is not None)
     # THE PREPARATION'S HOST TERM, the one the wizard sizes against.  A CPU
@@ -4077,6 +4093,35 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
                 "preparation_warning": preparation_warning,
                 "card_refuse": planner_refuse}
     free = int(probe["free_bytes"])
+    # THE MYNN WIDTH IS A SPEED CHOICE.  Where the width the run would walk
+    # does not fit, the resident door prices the narrowest width and pins
+    # the widest that fits (gpuwm.core.streaming.admit_resident_road); this
+    # gate weighs the same need, so it does not refuse what that door runs.
+    mynn_note = None
+    if (phases.peak_envelope_bytes > free and not phases.streamed_forecast
+            and len(exp.domains) == 1
+            and not getattr(getattr(exp, "devices", None), "enabled", False)):
+        from gpuwm.core.preflight import (mynn_width_adjustable,
+                                          required_mynn_pricing)
+        if mynn_width_adjustable(exp):
+            with required_mynn_pricing(exp):
+                narrow = estimate_phases(
+                    exp, source=source, vram_gib=vram_gib, profile=profile,
+                    machine=machine, forcing_intervals=forcing_intervals,
+                    forcing_interval_seconds=(
+                        forcing_interval if forcing_interval is not None
+                        else DEFAULT_FORCING_INTERVAL_SECONDS),
+                    ingest_forcing_interval_seconds=forcing_interval,
+                    preprocess_backend=("cpu" if preparation_on_cpu_note
+                                        is not None else None),
+                    resident_forcing_intervals=resident_slots)
+            if (not narrow.streamed_forecast
+                    and narrow.peak_envelope_bytes <= free):
+                phases = narrow
+                mynn_note = ("priced at the narrowest MYNN column width: the "
+                             "width the run would pick does not fit, so the "
+                             "forecast walks the widest width that does "
+                             "(speed, never bytes)")
     # The budget the ENVELOPE is compared against, from the wizard's own
     # seam so the two doors cannot disagree about one card.  It is free
     # VRAM minus what this process's envelope does not model -- other
@@ -4101,6 +4146,8 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     card_refuse = refuse
     if preparation_on_cpu_note is not None:
         verdict += "; " + preparation_on_cpu_note
+    if mynn_note is not None:
+        verdict += "; " + mynn_note
     if planner_note and planner_note not in verdict:
         verdict += "; " + planner_note
     verdict += "; " + decode["sentence"]
@@ -4704,10 +4751,10 @@ def _registered_launch(args, *, config: Path, payload: dict,
             for warning in resolution["warnings"]:
                 print("warning: " + warning["action"], file=sys.stderr)
         else:
-            from gpuwm.geog_assets import default_geog_root
+            from gpuwm.geog_assets import config_geog_root
             geog_root = (data.geog_root if data is not None
                          else Path(args.geog_root) if args.geog_root is not None
-                         else default_geog_root())
+                         else config_geog_root(config))
             # The launch below refuses an unusable WPS_GEOG tree before the
             # fetch; a dry run that validates the route refuses it too.
             # It exited 0 on a --geog-root naming no directory, and the
@@ -4756,10 +4803,10 @@ def _registered_launch(args, *, config: Path, payload: dict,
             print(f"warning: {gate['preparation_warning']}.", file=sys.stderr)
         if gate.get("decode_warning"):
             print(f"warning: {gate['decode_warning']}.", file=sys.stderr)
-    from gpuwm.geog_assets import default_geog_root
+    from gpuwm.geog_assets import config_geog_root
     geog_root = (data.geog_root if data is not None
                  else Path(args.geog_root) if args.geog_root is not None
-                 else default_geog_root())
+                 else config_geog_root(config))
     if bundle is None:
         geography = geography_refusal(geog_root, config=config)
         if geography is not None:
@@ -4791,10 +4838,19 @@ def _registered_launch(args, *, config: Path, payload: dict,
     from gpuwm.command_output import text_chunks
     prep_progress = PrepProgress()
 
+    prewarm_plan = {"config": plan_config or config, "root": output,
+                    "profile": getattr(args, "physics_profile", None)}
+
     class HumanEvents(runplan.EventStream):
         def emit(self, event, **fields):
             record = super().emit(event, **fields)
+            if event == "plan_accepted":
+                # Registered sources bypass _go_prepared_main. Acceptance has
+                # checked the empty output and bound its ledger; warm before fetch.
+                SpeedHooks.warm_kernels_spawn(args, prewarm_plan)
             if event == "stage_started":
+                if fields["stage"] == "forecast":
+                    _join_kernel_prewarm(prewarm_plan)
                 label = fields.get("phase") or fields["stage"]
                 current.update(stage=label, started=time.monotonic())
                 stage_tail.update(stdout="", stderr="")
@@ -4900,6 +4956,7 @@ def _registered_launch(args, *, config: Path, payload: dict,
                         code = runplan.execute_plan(plan, events=events)
                         return 74 if log.failure is not None else code
                 finally:
+                    _join_kernel_prewarm(prewarm_plan)
                     finished.set()
                     worker.join()
     except (AdapterOutputError, BrokenPipeError) as error:
@@ -5288,6 +5345,59 @@ def _go_readiness(payload: dict, options: dict, pinned: str | None, *,
     return code
 
 
+#: The kernel pre-warm a `gpuwm go` chain spawned, by run root:
+#: (process, its log handle, started).  Joined before the forecast stage.
+_KERNEL_PREWARM: dict = {}
+
+#: How long the forecast stage waits for the pre-warm after the preparation
+#: (it is normally done already); past this the forecast starts and shares
+#: the compiles through the caches' own locks.
+_KERNEL_PREWARM_WAIT_S = 300.0
+
+
+def _kernel_prewarm_status(plan, status, reason=None, **attrs):
+    """A start, skip or child result is always visible in the run's timeline."""
+    from gpuwm.timeline.ledger import Ledger
+
+    if reason is not None:
+        print(f"note: kernel pre-warm {status}: {reason}", flush=True)
+    root = plan.get("root") if isinstance(plan, dict) else None
+    # Dry runs must not allocate an output tree just to describe a skip.
+    path = Path(root) / "timeline.jsonl" if root is not None and Path(root).is_dir() else None
+    Ledger(path).emit("prep.kernel_prewarm", "mark",
+                      attrs={"status": status, "reason": reason, **attrs})
+
+
+def _join_kernel_prewarm(plan: dict) -> None:
+    """Wait (bounded) for the spawned kernel pre-warm of this run, then forget it."""
+
+    entry = _KERNEL_PREWARM.pop(str(plan.get("root")), None)
+    if entry is None:
+        return
+    process, log, started = entry
+    try:
+        import subprocess
+
+        waited = time.monotonic()
+        try:
+            code = process.wait(timeout=_KERNEL_PREWARM_WAIT_S)
+        except subprocess.TimeoutExpired:
+            _kernel_prewarm_status(plan, "still running",
+                                   "wait timed out; forecast shares the compile cache")
+            return
+        _kernel_prewarm_status(plan, "finished" if code in (0, None) else "failed",
+                               None if code in (0, None) else f"child exited {code}; see kernel-prewarm.log",
+                               returncode=code, wall_seconds=time.monotonic() - started)
+        if time.monotonic() - waited > 1.0:
+            print(f"  .. waited {time.monotonic() - waited:.0f} s for the kernel pre-warm "
+                  f"({time.monotonic() - started:.0f} s in all)", flush=True)
+    finally:
+        try:
+            log.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 class SpeedHooks:
     """Wave-1 seams. All five are inert on SPD-BASE, including with flags.
 
@@ -5301,6 +5411,49 @@ class SpeedHooks:
 
     @staticmethod
     def warm_kernels_spawn(args, plan):
+        """Start compiling this run's kernel set beside the fetch and the preparation.
+
+        A spawned ``python -m gpuwm.kernel_prewarm CONFIG`` compiles the
+        configuration's static kernel set on every core and leaves every
+        image in the kernel caches on disk; :func:`_join_kernel_prewarm`
+        waits for it right before the forecast stage, so the forecast finds
+        its modules cached instead of compiling them beside its restore
+        (and the spawn's card context is gone before the forecast opens
+        its own).  The breakage this prevents: a fresh box's first forecast
+        still carried ~58 s of (parallel) compile in step 1 after the static
+        plan landed, with the ~30 s fetch-and-prepare window before it
+        unused (RTX 5090, 2026-10-17).  Default on; off under
+        ``GPUWM_KERNEL_PLAN=off`` or without a local card.  Nothing in the
+        plan or the arguments changes.
+        """
+
+        config = plan.get("config") if isinstance(plan, dict) else None
+        reason = ("no configuration" if config is None else
+                  "dry run" if getattr(args, "dry_run", False) else
+                  "explain mode" if explain_enabled(args) else None)
+        log = None
+        try:
+            from gpuwm.kernel_plan import enabled as plan_enabled
+            from gpuwm.local_gpu import no_local_gpu
+
+            if reason is None:
+                reason = ("GPUWM_KERNEL_PLAN is off" if not plan_enabled() else
+                          "no local GPU" if no_local_gpu() else None)
+            if reason is not None:
+                _kernel_prewarm_status(plan, "not started", reason)
+                return None
+            import subprocess
+
+            log = open(Path(plan["root"]) / "kernel-prewarm.log", "w", encoding="utf-8")
+            process = subprocess.Popen(
+                [sys.executable, "-m", "gpuwm.kernel_prewarm", str(config), *_profile_flags(plan)],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            _KERNEL_PREWARM[str(plan["root"])] = (process, log, time.monotonic())
+            _kernel_prewarm_status(plan, "started", child_pid=getattr(process, "pid", None))
+        except Exception as error:  # noqa: BLE001 - report optional warm-up failures
+            if log is not None:
+                log.close()
+            _kernel_prewarm_status(plan, "not started", f"{type(error).__name__}: {error}")
         return None
 
     @staticmethod
@@ -5840,7 +5993,12 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
             observer.close()
             events.close()
     _record_launch_tiles(Path(result["prepared_root"]), launch_exp, config)
-    print(json.dumps({"status": "PREPARED", "prepared_root": result["prepared_root"]}, sort_keys=True))
+    # The published authority the bundle's source manifest names: a caller
+    # that forecasts later (gpuwm suite's prepare stage) binds these files
+    # by name and digest, so they are reported rather than re-derived.
+    print(json.dumps({"status": "PREPARED", "prepared_root": result["prepared_root"],
+                      "experiment_config": result.get("experiment_config"),
+                      "wps_namelist": result.get("wps_namelist")}, sort_keys=True))
     return 0
 
 
@@ -5924,7 +6082,7 @@ def _go_prepared_main(args, *, observer=None) -> int:
 
     from gpuwm import chain_events
     from gpuwm.fetch import sha256_file
-    from gpuwm.geog_assets import default_geog_root
+    from gpuwm.geog_assets import config_geog_root
     from gpuwm.gfs_direct import prepare_progress_path
 
     explain = explain_enabled(args)
@@ -5979,9 +6137,23 @@ def _go_prepared_main(args, *, observer=None) -> int:
                                        else None),
                             late_after_minutes=getattr(
                                 args, "late_after_minutes", None))
-    bridge = resolve_bridge()
+    try:
+        bridge = resolve_bridge()
+    except GoRefusal as missing:
+        if not getattr(args, "dry_run", False):
+            raise
+        # The rule the capabilities check above already follows: a dry
+        # run spends nothing, so an install with no built decoder prints
+        # the remedy and then the plan, naming the bridge where steps 3
+        # and 4 read it.  Measured (2.9.2 CI rehearsal, a checkout with no
+        # staged bridges): `gpuwm go area.toml --dry-run` on a GFS plan
+        # refused with exit 2 where the same door prints six stages and
+        # a warning for a missing CuPy.
+        print("go: WARNING -- this install cannot run stages 3 and 4 "
+              f"(manifest, prepare): {missing}", file=sys.stderr)
+        bridge = Path("<gfs_grib2_bridge, after gpuwm setup>")
     geog_root = (Path(args.geog_root) if getattr(args, "geog_root", None)
-                 else default_geog_root())
+                 else config_geog_root(Path(plan["config"])))
 
     # The dry run names the predicted folder; the real run reads the
     # path again after the claim below.
@@ -5990,7 +6162,7 @@ def _go_prepared_main(args, *, observer=None) -> int:
 
     if getattr(args, "dry_run", False):
         print(f"go: {plan['config']} -- source {plan['source']}, cycle "
-              f"{plan['cycle']}, {plan['hours']} h, "
+              f"{plan['cycle']}, {plan['hours']} h of forcing, "
               f"{_physics_words(plan)}{_lead_note(plan)}")
         print(_run_folder_note(plan))
         pinned = transport_note(plan.get("transport"), plan.get("transport_from"),
@@ -6100,8 +6272,11 @@ def _go_prepared_main(args, *, observer=None) -> int:
                "directory>\n")
             + f"  # or remove {plan['root']} if that run is finished with")
 
+    # plan['hours'] is the [fetch] window (forcing coverage), not the run
+    # length: a 1 h run on 3-hourly GFS boundaries fetches 3 h and the line
+    # read "3 h" as if the forecast were (2.9.2 box door test).
     print(f"go: {plan['config']} -- source {plan['source']}, cycle "
-          f"{plan['cycle']}, {plan['hours']} h, {_physics_words(plan)}"
+          f"{plan['cycle']}, {plan['hours']} h of forcing, {_physics_words(plan)}"
           f"{_lead_note(plan)}")
     pinned = transport_note(plan.get("transport"), plan.get("transport_from"),
                             plan.get("transport_table"))
@@ -6276,6 +6451,11 @@ def _go_prepared_main(args, *, observer=None) -> int:
                 plan, bridge, manifest=None, manifest_sha256=None,
                 cycle_stamp=cycle_stamp, geog_root=geog_root,
                 as_posted=posting)
+        if getattr(args, "initial_inputs", None) is not None:
+            # The same flag `gpuwm prep` takes; source_cli forwards it to the
+            # mapped route and refuses it on any other.
+            prepare_stage_command = [*prepare_stage_command, "--initial-inputs",
+                                     str(Path(args.initial_inputs).resolve())]
         announce_policy_backend(prepare_stage_command)
 
         # Whether the fetch beside the chain had failed (or said it was
@@ -6445,7 +6625,12 @@ def _go_prepared_main(args, *, observer=None) -> int:
         if getattr(args, "prepare_only", False):
             if chain is not None:
                 chain.finish(status="PREPARED", exit_code=0)
-            print(json.dumps({"status": "PREPARED", "prepared_root": str(plan["prepared"])}, sort_keys=True))
+            authority = Path(plan["authority"])
+            print(json.dumps({"status": "PREPARED", "prepared_root": str(plan["prepared"]),
+                              "experiment_config": str(authority / "experiment.toml")
+                              if (authority / "experiment.toml").is_file() else None,
+                              "wps_namelist": str(authority / "namelist.wps")
+                              if (authority / "namelist.wps").is_file() else None}, sort_keys=True))
             return 0
         rendered = _render_stage(plan, explain=explain,
                                  observer=observer)
@@ -6659,6 +6844,12 @@ def register_cli(subparsers) -> None:
                              "never into its hash-bound config; a fetching "
                              "launch runs a copy of the config with the mode "
                              "re-stated, as --cycle does")
+    parser.add_argument("--initial-inputs", type=Path, default=None, metavar="JSON",
+                        help="a separate packaged analysis for the initial state "
+                             "(gpuwm prep --initial-inputs); the fetched source "
+                             "still supplies every lateral boundary, and the "
+                             "forecast starts at the preparation head while the "
+                             "later boundary times are built")
     parser.add_argument("--prepared-root", type=Path, default=None, metavar="DIR",
                         help="run this existing prepared bundle without fetch or "
                              "preparation; add --restart to continue its checkpoint")
@@ -6670,8 +6861,9 @@ def register_cli(subparsers) -> None:
                         help="download routes only: use this existing download "
                              "instead of the automatically managed request cache")
     parser.add_argument("--geog-root", type=Path, default=None, metavar="DIR",
-                        help="override the geography tree (default: [case_data].geog_root "
-                             "for declared inputs, otherwise the staged WPS_GEOG tree)")
+                        help="override the geography tree (default: the config's "
+                             "[case_data].geog_root or [static].geog_root, "
+                             "otherwise the staged WPS_GEOG tree)")
     from gpuwm.fetch import FETCH_TRANSPORTS
     parser.add_argument("--transport", default=None, choices=FETCH_TRANSPORTS,
                         help="download routes only: pin the fetch stage to one host "

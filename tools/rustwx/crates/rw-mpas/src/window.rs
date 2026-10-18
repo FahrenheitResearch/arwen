@@ -79,6 +79,17 @@ pub const GLOBAL_MESH_WINDOW: &str = "global-mesh";
 /// decides (see [`Window::region_at_mesh_spacing`]).
 pub const REGION_SPEC_PREFIX: &str = "region:";
 
+/// The prefix of the same extent-only regional window held on a regular
+/// latitude/longitude grid at any latitude
+/// (`region-latlon:CLAT,CLON,WIDTH_KM,HEIGHT_KM`; see
+/// [`Window::region_at_mesh_spacing`]).
+///
+/// THE BREAKAGE THIS PREVENTS: `region:` turns Lambert 10 degrees off the
+/// equator, and a Lambert frame carries only 2-D `XLAT`/`XLONG`.  The
+/// engine's mapped NetCDF route reads 1-D latitude and longitude, so a hex
+/// regional window over the US plains could not be an ArWen parent at all.
+pub const REGION_LATLON_SPEC_PREFIX: &str = "region-latlon:";
+
 /// The largest point count a derived global window may carry.
 ///
 /// The breakage this prevents, named: a 3 km uniform global mesh asks for
@@ -259,7 +270,8 @@ impl Window {
                  the fixed 0.25 degree box instead would draw a 15 km mesh on a 28 km grid"
                     .to_string(),
             )),
-            spec if spec.starts_with(REGION_SPEC_PREFIX) => Err(MpasError::Refusal(format!(
+            spec if spec.starts_with(REGION_SPEC_PREFIX)
+                || spec.starts_with(REGION_LATLON_SPEC_PREFIX) => Err(MpasError::Refusal(format!(
                 "render window '{spec}' takes its spacing from the mesh cells inside it, so it \
                  cannot be served before that mesh has been read: build it with \
                  Window::region_at_mesh_spacing. A fixed spacing here is how a 15 km mesh came \
@@ -486,8 +498,17 @@ impl Window {
         longitude_degrees: &[f64],
         cell_spacing_m: &[f64],
     ) -> MpasResult<Window> {
-        let body = spec.strip_prefix(REGION_SPEC_PREFIX).unwrap_or(spec);
+        let (body, force_latlon) = match spec.strip_prefix(REGION_LATLON_SPEC_PREFIX) {
+            Some(body) => (body, true),
+            None => (spec.strip_prefix(REGION_SPEC_PREFIX).unwrap_or(spec), false),
+        };
         let parts: Vec<&str> = body.split(',').map(str::trim).collect();
+        if force_latlon && parts.len() != 4 {
+            return Err(MpasError::Refusal(format!(
+                "a region-latlon window takes CLAT,CLON,WIDTH_KM,HEIGHT_KM (true latitudes                  belong to a Lambert window); '{body}' has {} value(s)",
+                parts.len()
+            )));
+        }
         if parts.len() != 4 && parts.len() != 6 {
             return Err(MpasError::Refusal(format!(
                 "a region window takes CLAT,CLON,WIDTH_KM,HEIGHT_KM and optionally \
@@ -547,8 +568,9 @@ impl Window {
             }
         }
         let centre = unit_vector(centre_lat, centre_lon);
-        let lambert = explicit_truelats.is_some()
-            || centre_lat.abs() >= MESH_FOCUS_MIN_LAMBERT_LATITUDE_DEG;
+        let lambert = !force_latlon
+            && (explicit_truelats.is_some()
+                || centre_lat.abs() >= MESH_FOCUS_MIN_LAMBERT_LATITUDE_DEG);
         let (truelat1, truelat2) = explicit_truelats.unwrap_or_else(|| {
             let hemi = if centre_lat >= 0.0 { 1.0 } else { -1.0 };
             let abs_lat = centre_lat.abs();
@@ -664,12 +686,19 @@ impl Window {
             west,
             east: west + (nx_ll - 1) as f64 * spacing_degrees,
             spacing_degrees,
-            description: format!(
-                "mesh-spacing region window (lat-lon): {selection}; {nx_ll}x{ny} at \
-                 {spacing_degrees:.6} degrees; the centre is within \
-                 {MESH_FOCUS_MIN_LAMBERT_LATITUDE_DEG:.0} degrees of the equator, where a \
-                 Lambert cone degenerates"
-            ),
+            description: if force_latlon {
+                format!(
+                    "mesh-spacing region window (lat-lon, asked for by region-latlon:): \
+                     {selection}; {nx_ll}x{ny} at {spacing_degrees:.6} degrees"
+                )
+            } else {
+                format!(
+                    "mesh-spacing region window (lat-lon): {selection}; {nx_ll}x{ny} at \
+                     {spacing_degrees:.6} degrees; the centre is within \
+                     {MESH_FOCUS_MIN_LAMBERT_LATITUDE_DEG:.0} degrees of the equator, where a \
+                     Lambert cone degenerates"
+                )
+            },
         }))
     }
 
@@ -2359,6 +2388,25 @@ mod mesh_spacing_window_tests {
         let Window::LatLon(band) = &tropics else { panic!("equatorial region is lat-lon") };
         assert!(band.spacing_degrees * RAD * WRF_EARTH_RADIUS_M <= 30_000.0);
         assert!(tropics.coordinates().is_ok());
+    }
+
+    #[test]
+    fn region_latlon_holds_a_mid_latitude_box_on_a_regular_grid() {
+        let (lat, lon, sp) = lattice(60_000.0, 20.0, 60.0);
+        let window = Window::region_at_mesh_spacing(
+            "region-latlon:37,-98,2400,1800", &lat, &lon, &sp,
+        )
+        .unwrap();
+        let Window::LatLon(grid) = &window else { panic!("region-latlon is lat-lon at 37N") };
+        assert!(grid.spacing_degrees * RAD * WRF_EARTH_RADIUS_M <= 60_000.0);
+        assert!(grid.south <= 37.0 - 8.0 && grid.north >= 37.0 + 8.0, "{grid:?}");
+        assert!(window.coordinates().is_ok());
+        assert!(Window::region_at_mesh_spacing(
+            "region-latlon:37,-98,2400,1800,30,45", &lat, &lon, &sp,
+        )
+        .is_err());
+        let named = Window::named("region-latlon:37,-98,2400,1800").unwrap_err().to_string();
+        assert!(named.contains("region_at_mesh_spacing"), "{named}");
     }
 
     #[test]

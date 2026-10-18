@@ -1,0 +1,219 @@
+{
+ "zero_out": {
+  "sources": {
+   "phys/module_microphysics_zero_out.F": "a57268701b424b07a604ce93f733314183a29bfb39e7e6283f92f8668808fa4f",
+   "dyn_em/solve_em.F": "84a246f0fcb4b9521a89c437ecccf2f08b1539b996e0e5151617d88e28b88585",
+   "Registry/Registry.EM_COMMON": "8eed8499de583e7d11a28fe4c5faba0ea2720b9992e8bd750ef7595ad9a1e552"
+  },
+  "gfortran": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "arms": {
+   "o0": [
+    "-O0",
+    "-ffp-contract=off",
+    "-ffree-line-length-none",
+    "-fconvert=little-endian"
+   ],
+   "wrf_o2": [
+    "-O2",
+    "-ftree-vectorize",
+    "-funroll-loops",
+    "-ffree-line-length-none",
+    "-fconvert=little-endian"
+   ]
+  }
+ },
+ "albsol": {
+  "sources": {
+   "phys/module_radiation_driver.F": "7464639e53f6f40b4810943ee9fa21a40b0f53f7525c08cc13b84ae4c7d82801",
+   "share/module_model_constants.F": "0d0ee7d243fe673288efafcdcdc470ee028ad8d083648f12225ce2d168f8e87c"
+  },
+  "gfortran": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "lines": {
+   "declarations": [
+    781,
+    789
+   ],
+   "radconst_call": [
+    1013,
+    1014
+   ],
+   "calc_coszen_call": [
+    1032,
+    1034
+   ],
+   "albsol_block": [
+    1038,
+    1063
+   ]
+  },
+  "routines": [
+   "radconst",
+   "calc_coszen"
+  ],
+  "arms": {
+   "o0": [
+    "-O0",
+    "-ffp-contract=off",
+    "-ffree-form",
+    "-ffree-line-length-none"
+   ],
+   "wrf_o2": [
+    "-O2",
+    "-ftree-vectorize",
+    "-funroll-loops",
+    "-ffree-form",
+    "-ffree-line-length-none"
+   ]
+  }
+ },
+ "upper_wind": {
+  "sources": {
+   "dyn_em/module_small_step_em.F": "15a4c618c4428400cceb3bc7f5734e4df9ed28a1db0421fb37a79ca0cda09b4d"
+  },
+  "source_lines": [
+   1705,
+   1736
+  ],
+  "source_slice_sha256": "5d4c2d13ef3ce77536d160e31a4d076e6088c99e67c9fbe8577030c437f9d003",
+  "flags": [
+   "-O0",
+   "-ffp-contract=off",
+   "-fcheck=bounds",
+   "-ffree-line-length-none"
+  ],
+  "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"
+ },
+ "diff6": {
+  "fork_tag": "v4.1.21",
+  "fork_path": "sorc/hrrr_wrfarw.fd/WRFV3.9/dyn_em/module_big_step_utilities_em.F",
+  "fork_file_sha256": "88b180f1c3cce95ba965d8183a6e51c62df0d58754d941dd17c0db6f22df7239",
+  "routine_slice_sha256": "9a4f9c8ae1f8163db251ef63c29f65f3eb4add99d637a78a33363c5913aa6c52",
+  "routine_source_lines": [
+   6475,
+   6880
+  ],
+  "macro_block_sha256": "88ba48e4432dce763749cc5a4c8b0c3ce21482dcfc11889ee64ba66ab3820f46",
+  "cpp": "cpp -P -DHYBRID_COORD=1",
+  "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "flags": [
+   "-O0",
+   "-ffp-contract=off",
+   "-fno-tree-vectorize",
+   "-fcheck=bounds",
+   "-ffree-form",
+   "-ffree-line-length-none"
+  ],
+  "real_kind_bytes": 4
+ },
+ "rrtmg_fork_cloud": {
+  "build_receipt": [
+   "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+   "flags: -O0 -ffp-contract=off -cpp -ffree-form -ffree-line-length-none -fconvert=big-endian   -fallow-argument-mismatch -DEM_CORE=1 -DWRF_CHEM=0 -DHWRF=0   -DRWORDSIZE=4 -DIWORDSIZE=4 -DDWORDSIZE=8 -DLWORDSIZE=4",
+   "4dd82b3d8c3122a351159b626ee817687f1491f9ebb32b07d4b951cdcbacef2a  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/rad_column_oracle.F90",
+   "93800ea2a74d4c502d0354f4016ed804bc5ea608c5a93d85d38bfc40493d20dc  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/stub_wrf_col.F90",
+   "f4b98ed61f60e30a57e1eccd852464bbf5bdbdb9d667748695a26e9eba91eb64  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/build_units.py",
+   "a9a81427018d57c51e01707b19204f1bd372e0d751ed29084f4f8b6d45d416f0  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/compare.py",
+   "fe4696b5b4e72eda367d584235e9bb715f19be855434bb4aa283576a940eece1  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/make_columns.py",
+   "3f1f78ee708a49283302c1ba411d5447ce491592264e6fea6f9d517381d56d90  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/make_fixture.py",
+   "a11ee9db3e19197c81f8451957588f07b8ac938d3e06ac9f51301e4a2a3b39bc  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/run_woof.py",
+   "bb75757e2d6fa7e6c4c445cccd14f803a96b0b893cc00f3b04d8aecce896ae06  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/pad_malloc.c",
+   "e1841fc1787f1cfd29515d3406e66c74691be890ea5525d758ec78981f9c4bbd  /work/pverify/noaa-wrf39-fork-forms/src/tools/rrtmg_legacy_column_oracle/build.sh",
+   "bcfdee24b63a4c909522a329b8e16c539f0173c7e5aea2caf933ab4fe28c5c97  RRTMG_LW_DATA",
+   "a7d25f5b4d33be8629cbef7ecacc1ff413bf398a021297793e843ba1cc627baf  RRTMG_SW_DATA",
+   "2a13ee25809672e0419e40062c1fc753580adbf604bfc67a9166ef77c815dbc0  ozone.formatted",
+   "761597f3454b99e3dbf15d2621b1ede88269948e96e47f4695b79fabd3cc6348  ozone_lat.formatted",
+   "df26a938273b22d2d04ec52b7297827a316cac0061fab020519241cdc0e61d48  ozone_plev.formatted",
+   "ae010fd10a4f10ac78ebacc6db55e395d36d7ec143ab6ac051ef9241d85000b8  raddrv_extract.F90",
+   "acc0f2646a1bd9359390b873cee2af762e06eb7c3dfab42631d038a776ae5448  aer_unit.F90",
+   "vfmadd/vfmsub in the executable: 0"
+  ],
+  "units_receipt": {
+   "arm": "fork-cloud",
+   "wrf461": {
+    "module_radiation_driver.F": "779875651512709c47d50ef6c1e1216ad94726f1996c5e45a0db8eb800733ffa",
+    "module_ra_cam_support.F": "a7f12628b075ed4c2d45e6f3a933149007a5d1a8a0d628111e48b3b7ff394aa5",
+    "module_ra_rrtmg_lw.F": "97950adb65a67ab8bb460cbd2efade8a225e655ba48fd4cc5227569aa9764088",
+    "module_ra_rrtmg_sw.F": "7f8af1da0ca1d25ce784a917bc68600300a7c569881c57e7de8501cd53496b59",
+    "module_ra_aerosol.F": "57c7e7e50a2be0a6ab169fa376da077b2b4251bf9c20fa6a06446934379c8870",
+    "module_mp_thompson.F": "fabf19e2a9073cff886e882b187080bfdf089d3fd40c0fce1d19bc93b1e5e802"
+   },
+   "fork": {
+    "module_radiation_driver.F": "7464639e53f6f40b4810943ee9fa21a40b0f53f7525c08cc13b84ae4c7d82801",
+    "module_ra_aerosol.F": "9931482abac91768fd00674c23b8c953e69ce49fa026c2c026b123845785dc42",
+    "module_mp_thompson.F": "4d60011188443eb432294f7693beb64bdbc8f812541a15c7800013060c877283"
+   },
+   "fork_commit": "40ee6058c2fc6624cbfbbe8cf1c20c59e6a45827",
+   "raddrv_extract_sha256": "ae010fd10a4f10ac78ebacc6db55e395d36d7ec143ab6ac051ef9241d85000b8",
+   "aer_unit_sha256": "acc0f2646a1bd9359390b873cee2af762e06eb7c3dfab42631d038a776ae5448"
+  },
+  "cloud_form_receipt": {
+   "files": {
+    "module_ra_rrtmg_sw.F": {
+     "wrf461_sha256": "7f8af1da0ca1d25ce784a917bc68600300a7c569881c57e7de8501cd53496b59",
+     "fork_sha256": "04e97b7e3cea6984979fd4b59ea0293d3ed15e2ecd2ba7a7dd81979bd86f3f39",
+     "transplanted_sha256": "c697f6fa35195287029945043df69895d0e198a027fb56ee5d1508e2e912fdb7",
+     "spans_replaced": 3
+    },
+    "module_ra_rrtmg_lw.F": {
+     "wrf461_sha256": "97950adb65a67ab8bb460cbd2efade8a225e655ba48fd4cc5227569aa9764088",
+     "fork_sha256": "688fe4f80cc500a8825529c39dcd3d1ecc245e45e406736f61f252dec04407e6",
+     "transplanted_sha256": "fe158ef9f57b9d4408625c1c5141f46bba2e59b980a97d257a4e5ef813dd58c9",
+     "spans_replaced": 2
+    }
+   }
+  }
+ },
+ "ruc": {
+  "ruc_fork_nzs9.npz": {
+   "case": "fork-nzs9-strict",
+   "compiler": [
+    "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39"
+   ],
+   "sha256": [
+    "cb2b54114afc247e16ea03d547a510b19842e2ee012da1202eba19105bef6aab  /work/pverify/noaa-wrf39-fork-forms/fork-src/phys/module_sf_ruclsm.F",
+    "1d91266f56d48fc6595f4489006d7ee4a1b858b881ac68363d10862f7e9d7812  /work/pverify/noaa-wrf39-fork-forms/fork-src/phys/module_sf_sfcdiags_ruclsm.F",
+    "0d0ee7d243fe673288efafcdcdc470ee028ad8d083648f12225ce2d168f8e87c  /work/pverify/noaa-wrf39-fork-forms/fork-src/share/module_model_constants.F",
+    "ed5478afbe49af51492256c1eb6cf88b3948590308525b32df1ddec28687b40e  VEGPARM.TBL",
+    "1e2275a32d8cd3b48ca693d22c0816df0013f83b6594ac632716361db337d58f  SOILPARM.TBL",
+    "9c02832a0e4a2ecaf47fcee485539aad95cd732c379c5c258161a88eb3d25ea2  GENPARM.TBL",
+    "49153e0ccbec59b311f64931864f844624b2c964c933cbfc727e896694a67c44  /work/pverify/noaa-wrf39-fork-forms/src/tools/ruc_lsm_gpu_oracle/../ruc_hrrr_fork_oracle/column_stubs.F90",
+    "72d81230621b58c6725562f2a551e8b43274562d75ab4312cd3123f19df2c2a2  run_columns.F90",
+    "26ba1ccba2e443a3972b3c98af6fd886e060a1fb00078c68b9c0144b6fb50c21  inputs.bin",
+    "c4fbd85c6c37b56d4ff2b245d1a21da2198c6765b98dc17f5ea0b616d793d056  outputs-defined.bin",
+    "c4fbd85c6c37b56d4ff2b245d1a21da2198c6765b98dc17f5ea0b616d793d056  outputs-o0.bin",
+    "e07d90ee4bc6c3c1821d1f81baf88309e7cfd62c7bb76377a6be54d3fb3c6642  outputs-stock.bin"
+   ]
+  },
+  "ruc_fork_hrrr.npz": {
+   "case": "fork-hrrr-strict",
+   "compiler": [
+    "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39"
+   ],
+   "sha256": [
+    "cb2b54114afc247e16ea03d547a510b19842e2ee012da1202eba19105bef6aab  /work/pverify/noaa-wrf39-fork-forms/fork-src/phys/module_sf_ruclsm.F",
+    "1d91266f56d48fc6595f4489006d7ee4a1b858b881ac68363d10862f7e9d7812  /work/pverify/noaa-wrf39-fork-forms/fork-src/phys/module_sf_sfcdiags_ruclsm.F",
+    "0d0ee7d243fe673288efafcdcdc470ee028ad8d083648f12225ce2d168f8e87c  /work/pverify/noaa-wrf39-fork-forms/fork-src/share/module_model_constants.F",
+    "ed5478afbe49af51492256c1eb6cf88b3948590308525b32df1ddec28687b40e  VEGPARM.TBL",
+    "1e2275a32d8cd3b48ca693d22c0816df0013f83b6594ac632716361db337d58f  SOILPARM.TBL",
+    "9c02832a0e4a2ecaf47fcee485539aad95cd732c379c5c258161a88eb3d25ea2  GENPARM.TBL",
+    "49153e0ccbec59b311f64931864f844624b2c964c933cbfc727e896694a67c44  /work/pverify/noaa-wrf39-fork-forms/src/tools/ruc_lsm_gpu_oracle/../ruc_hrrr_fork_oracle/column_stubs.F90",
+    "72d81230621b58c6725562f2a551e8b43274562d75ab4312cd3123f19df2c2a2  run_columns.F90",
+    "0dc78533520000ece61aa4e61ef7860523f1c0f0b19e8550bff4b2639213b609  inputs.bin",
+    "12b4be51f2de739c2eb724dadcf45618d8022487abb518204c40e330a22ca3e6  outputs-defined.bin",
+    "12b4be51f2de739c2eb724dadcf45618d8022487abb518204c40e330a22ca3e6  outputs-o0.bin",
+    "068888629a2c43966bd2ff3ca3f7698329f9785955df5d165e3952acd89d75ab  outputs-stock.bin"
+   ]
+  }
+ },
+ "fixture_sha256": {
+  "albsol.npz": "9bb91fb70f74d47aa2e5b6185661e461b70b03c24a5caddd0360a550daa318ee",
+  "diff6.npz": "9d827f6b3ce35848cc0adc1f02b8bf595f86b6580ff646caf290dbcada54172b",
+  "rrtmg_fork_cloud.npz": "ff250e466bda7bb0516052d230533b0b3a9a46a5c2958126ff576a0204aa6d74",
+  "ruc_fork_hrrr.npz": "b02bb922882162a93225916e35ac021e971e0972c2828bef88f1017a204f79d3",
+  "ruc_fork_nzs9.npz": "52b2b16e60625a182a0d34cc9b7f43af942885720346b6476618ba2c5e31c10f",
+  "upper_wind.npz": "6562a524612085a0f8769fcfcfb0169155b7065ebd33328fb7f3efa299751c1b",
+  "zero_out.npz": "41828fa8dadaa8019c804eeac8895f926a82853065825fa7565d8962200f5ed3"
+ }
+}

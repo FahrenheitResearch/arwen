@@ -285,3 +285,35 @@ def test_incomplete_prepared_drag_is_named_before_gpu():
         require_prepared_terrain_drag({}, cfg)
     require_prepared_terrain_drag(dict.fromkeys(required_static_fields(0, 3)), cfg)
     require_prepared_terrain_drag({}, SimpleNamespace(topo_wind=0, gwd_opt=0))
+
+
+def test_us_row_root_fits_inside_the_hrrr_grid():
+    """The US row declares HRRR as its regional source, so its root must fit HRRR.
+
+    Breakage (2.9.2 box door test): the row's polygon was the lon/lat box
+    [-125, 24, -66, 50]; laid out as a 3 km Lambert root it reached 17.3N and
+    `gpuwm domain --recipe hrrr_v4_gsd41 --region US --source hrrr` was refused
+    with 505,268 corners outside HRRR's grid.  The polygon is now the HRRR
+    CONUS grid outline inset 110 cells (references.v1.json), the largest inset
+    measured to fit.
+    """
+    from gpuwm.region_recipe import emit_recipe
+    text, receipt = emit_recipe(recipe="hrrr_v4_gsd41", region="US",
+        spacing_km=3, source="hrrr", cycle="2026-10-11T12", hours=1)
+    document = tomllib.loads(text)
+    assert (document["domain"][0]["nx"], document["domain"][0]["ny"]) == (1562, 926)
+    assert receipt["forcing_source"] == "hrrr"
+
+
+def test_a_row_outside_its_source_is_refused_by_row_and_source(tmp_path):
+    from gpuwm.region_recipe import emit_recipe
+    table = tmp_path / "regions.v1.json"
+    table.write_text(json.dumps({"regions": {"far-row": {
+        "polygon": "far-envelope", "sources": {"regional_ic": ["hrrr"]}}}}))
+    (tmp_path / "references.v1.json").write_text(json.dumps({"registries": {
+        "polygons": {"far-envelope": {"bounds": [10, 45, 12, 47]}}}}))
+    with pytest.raises(ValueError) as refusal:
+        emit_recipe(recipe="hrrr_v4_gsd41", region="far-row", region_table=table,
+            spacing_km=3, source="hrrr", cycle="2026-10-11T12", hours=1)
+    assert str(refusal.value).startswith("region 'far-row' with source hrrr: ")
+    assert "hrrr's grid" in str(refusal.value)

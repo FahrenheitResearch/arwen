@@ -155,11 +155,16 @@ def test_streaming_a_tiny_child_does_not_hide_an_oversized_resident_parent():
 
 
 def test_declared_budget_is_not_charged_external_margin_twice():
-    exp = _exp(704, "auto", vram_budget_bytes=24 * GIB)
+    # 24.25 GiB: the configured envelope is 24.08 GiB since the WRF exact
+    # chain's history rows (2.9.1: P_HYD and RTHRATEN planes, eight surface
+    # planes) joined it, so the declared budget still sits just above the
+    # envelope and a second external margin would still flip it to streaming.
+    budget = int(24.25 * GIB)
+    exp = _exp(704, "auto", vram_budget_bytes=budget)
     estimate = _windows_estimate(exp)
     machine = ap.Machine(64 * GIB, 256 * GIB)
     decision = st.decide(exp.root.run, exp.tiles, machine=machine, resident_estimate=estimate)
-    assert decision.detail["resident_admission"]["budget_bytes"] == 24 * GIB
+    assert decision.detail["resident_admission"]["budget_bytes"] == budget
     assert not decision.stream
 
 

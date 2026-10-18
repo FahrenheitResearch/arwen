@@ -1,0 +1,3237 @@
+[
+    {
+        "combo":  "A001",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A001",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A001",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A004",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A004",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A004",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A005",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A005",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A006",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A006",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A006",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A007",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A007",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A007",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A008",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A008",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A008",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A009",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A009",
+        "case":  "iowa-snow-ice",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A010",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A010",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A010",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A011",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A011",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A012",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A012",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A012",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A013",
+        "case":  "gulf-coast-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A013",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A013",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A014",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A014",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A014",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A015",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A016",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A016",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A016",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A017",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A017",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A017",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A018",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A018",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A018",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A020",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A020",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A020",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A021",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A021",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A023",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A023",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A024",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A024",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A024",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A025",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A025",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A025",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A026",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A026",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A026",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A028",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A028",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A028",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A029",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A029",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A029",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A030",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A031",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A031",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A032",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A032",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A032",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A033",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A033",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A033",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A034",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A034",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A035",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A035",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A035",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A036",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A036",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A037",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A037",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A037",
+        "case":  "iowa-snow-ice",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A038",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A038",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A039",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A039",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A039",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A040",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A041",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A041",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A041",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A043",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A043",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A044",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A044",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A045",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A045",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A046",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A046",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A047",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A047",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A048",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A048",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A048",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A050",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A050",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A051",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A051",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A051",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A052",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A053",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A054",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A054",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A054",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A055",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A055",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A055",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A056",
+        "case":  "gulf-coast-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A056",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A056",
+        "case":  "iowa-snow-ice",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A057",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A057",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A058",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A059",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A059",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A060",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A060",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A060",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A061",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A061",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A061",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A063",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A063",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A063",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A064",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A065",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A065",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A065",
+        "case":  "iowa-snow-ice",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A066",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A066",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A066",
+        "case":  "iowa-snow-ice",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A067",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A067",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A068",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A068",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A069",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A070",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A070",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A070",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A071",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A071",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A071",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A072",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A072",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A072",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A073",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A074",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A075",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A075",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A075",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A076",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A076",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A076",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A077",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A077",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A077",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A078",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A078",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A078",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A079",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A080",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A081",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A082",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A083",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A084",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A084",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A085",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A085",
+        "case":  "iowa-snow-ice",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A086",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A086",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A086",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A087",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A088",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A089",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A089",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A090",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A091",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A092",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A093",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A093",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A093",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A094",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A095",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A096",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A096",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A097",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A098",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A099",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A099",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A100",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A101",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A102",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A103",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A104",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A105",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A106",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A107",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A108",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A109",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A109",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A109",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A110",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A110",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A111",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A112",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A113",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A114",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A115",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A115",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A115",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A116",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A116",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A116",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A117",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A118",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A119",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A120",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A121",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A122",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A123",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A124",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A125",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A126",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A126",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A127",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A128",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A129",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A130",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A130",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A131",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A132",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A133",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A134",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A135",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A136",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A137",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A138",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A139",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A140",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A141",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A142",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A143",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A144",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A145",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A146",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A146",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A147",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A148",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A149",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A150",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A151",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A151",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A151",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A152",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A152",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A153",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A154",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A155",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A156",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A157",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A159",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A160",
+        "case":  "gulf-coast-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A160",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A161",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A161",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A162",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A163",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A164",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A165",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A166",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A166",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A167",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A168",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A169",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A170",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A170",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A170",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A171",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A172",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A173",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A174",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A175",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A176",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A177",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A178",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A179",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A180",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A181",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A182",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A183",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A184",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A185",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A186",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A187",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A188",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A189",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A190",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A191",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A192",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A193",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A194",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "A195",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A196",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A196",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A197",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A197",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A198",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A199",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A200",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A201",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A202",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A203",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A204",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A205",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A206",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A206",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A206",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A207",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A208",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A209",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A210",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A211",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A212",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A213",
+        "case":  "iowa-convective",
+        "outcome":  "UNSOUND-REF"
+    },
+    {
+        "combo":  "A214",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-CRASH"
+    },
+    {
+        "combo":  "A215",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A216",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A217",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A218",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A219",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A219",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A219",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A220",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A221",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A221",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A221",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A222",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A222",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A222",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A223",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A223",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A224",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A225",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A226",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A227",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A228",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A229",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A230",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A230",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A231",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A232",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A233",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A234",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A235",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A236",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "A237",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "B001",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B002",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B003",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B004",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B005",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B006",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B007",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B008",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B009",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B010",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B011",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B012",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B013",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B014",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B015",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B016",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B017",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B018",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B019",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B020",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B021",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B022",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B023",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B024",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B025",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B026",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B027",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B028",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B029",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B030",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B031",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B032",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B033",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B034",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B035",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B036",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B037",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B038",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B039",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B040",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B041",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B042",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B043",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B044",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B045",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B046",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B047",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B048",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B049",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "B050",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B051",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B052",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B053",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B054",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B055",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B056",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B057",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "B058",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C001",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C001",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C001",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C002",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C002",
+        "case":  "iowa-convective",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C002",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C003",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C003",
+        "case":  "iowa-convective",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C003",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C004",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C004",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C004",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C005",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C005",
+        "case":  "iowa-convective",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C005",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C006",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C006",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C006",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C007",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C007",
+        "case":  "iowa-convective",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C007",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WRF-REFUSED"
+    },
+    {
+        "combo":  "C008",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C008",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C008",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C009",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C009",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C009",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C010",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C010",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "C010",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "D001",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D002",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D003",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D004",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D005",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D006",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "D007",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D008",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D009",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D010",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D011",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "D012",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "D013",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D014",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D015",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "D016",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D017",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D018",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D019",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D020",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "D021",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D022",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D023",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "D024",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D025",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D026",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "D027",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "D028",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "D029",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "D030",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "D031",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "G-clos01",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos02",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos03",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos04",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos05",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos06",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos07",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos08",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos09",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos10",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos11",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos12",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos13",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos14",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos15",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "G-clos16",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-hrrr-v4-gsd41",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-hrrr-v4-gsd41",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-hrrr-v4-gsd41",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-boston-250m",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-boston-250m",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-boston-250m",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-conus-3km",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-conus-3km",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-conus-3km",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-mexico-city-3km",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-mexico-city-3km",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-mexico-city-3km",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-mexico-city-750m",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-mexico-city-750m",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-mexico-city-750m",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-nyc-500m",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-nyc-500m",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-nyc-500m",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-sf-bay-fog-750m",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-sf-bay-fog-750m",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-site-sf-bay-fog-750m",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-kessler-mp1-ysu-mm5-noah-dudhia-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-kessler-mp1-ysu-mm5-noah-dudhia-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-kessler-mp1-ysu-mm5-noah-dudhia-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "S-tpl-thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "S-tpl-thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "INFO-MISS"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-constant-k-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-constant-k-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-constant-k-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-tke-1-5-order-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-tke-1-5-order-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-pbl-off-mm5-noah-tke-1-5-order-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-sase-revised-mm5-noah-closure-supplied-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-sase-revised-mm5-noah-closure-supplied-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-sase-revised-mm5-noah-closure-supplied-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-noah-no-radiation-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-noah-no-radiation-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-noah-no-radiation-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1",
+        "case":  "gulf-coast-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "S-tpl-wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-snow-ice",
+        "outcome":  "WOOF-ONLY-OK"
+    },
+    {
+        "combo":  "T-site-boston-250m",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-site-conus-3km",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-site-mexico-city-3km",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-site-mexico-city-750m",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-site-nyc-500m",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-site-sf-bay-fog-750m",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-kessler-mp1-ysu-mm5-noah-dudhia-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "WOOF-REFUSED"
+    },
+    {
+        "combo":  "T-tpl-thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-pbl-off-mm5-noah-constant-k-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-pbl-off-mm5-noah-tke-1-5-order-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-ysu-mm5-noah-no-radiation-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    },
+    {
+        "combo":  "T-tpl-wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1",
+        "case":  "iowa-convective",
+        "outcome":  "FAIL"
+    }
+]

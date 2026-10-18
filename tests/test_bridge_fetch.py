@@ -721,7 +721,13 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
                  "obs_score": obsscore_names()[0],
                  "rw_isobaric": isobaric_names()[0],
                  "rw_superob": superob_name(),
-                 "rw_tempo": tempo_name()}
+                 "rw_tempo": tempo_name(),
+                 # Resolved by gpuwm-hex (hexcore.hrrr_intermediate), which
+                 # spells it this way on each platform.
+                 "rw_projected_intermediate": (
+                     "rw_projected_intermediate.dll" if os.name == "nt" else
+                     "librw_projected_intermediate.dylib" if sys.platform == "darwin" else
+                     "librw_projected_intermediate.so")}
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         produced = bridge_assets.artifact_filename(artifact, host)
         if artifact.kind == "library":

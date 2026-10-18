@@ -18,6 +18,7 @@ rust-version.workspace = true
 description = "Continuous GOES ABI ingest: live S3 follow -> NetCDF decode -> rw-store rolling time-window frames"
 
 [dependencies]
+bzip2 = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rayon.workspace = true

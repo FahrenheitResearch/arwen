@@ -26,7 +26,10 @@ def _environment(shape=(4, 2, 3)):
     return (*cells[:4], w, *cells[4:])
 
 
-def test_launcher_passes_one_workspace_and_exact_environment(monkeypatch):
+@pytest.mark.parametrize("strict", [False, True])
+def test_launcher_passes_one_workspace_and_exact_environment(monkeypatch, strict):
+    import gpuwm.wrf_exact as exact
+    monkeypatch.setattr(exact, "ENABLED", strict)
     workspace = _workspace()
     environment = _environment()
     calls = []
@@ -41,6 +44,9 @@ def test_launcher_passes_one_workspace_and_exact_environment(monkeypatch):
         return Kernel()
 
     monkeypatch.setattr(fused, "get_kernel", get_kernel)
+    # The once-per-device init-table build needs a card; this gate is the
+    # launch contract, so it is stubbed here.
+    monkeypatch.setattr(fused, "_ensure_init_tables", lambda: None)
     fused.launch_fused_gs(workspace, *environment, 12.5)
 
     assert len(calls) == 2
@@ -48,14 +54,27 @@ def test_launcher_passes_one_workspace_and_exact_environment(monkeypatch):
     assert grid == (1,)
     assert block == (128,)
     theta, rho, pressure, exner, w, temperature, target, dz = environment
+    # Without an explicit loaded vapour the prepass reads the workspace qv.
     expected_prepass = (
-        temperature, target, workspace.state, theta, rho, pressure, exner
+        temperature, target, workspace.field("qv") if strict else workspace.state, theta, rho, pressure,
+        exner,
     )
     assert all(
-        actual is expected
+        actual is expected or (
+            getattr(actual, "base", None) is not None
+            and np.shares_memory(actual, expected)
+            and actual.shape == expected.shape)
         for actual, expected in zip(args[:7], expected_prepass)
     )
     assert args[7] == np.int32(24)
+
+    # The production adapter hands the loaded (Registry) vapour instead:
+    # WRF's t7 is diagnosed before the first-step calcnfromq moves
+    # sub-threshold condensate into vapour.
+    calls.clear()
+    loaded = np.full_like(theta, 1.0e-3)
+    fused.launch_fused_gs(workspace, *environment, 12.5, loaded_vapor=loaded)
+    assert calls[0][2][2] is (loaded if strict else workspace.state)
 
     grid, block, args = calls[1]
     assert grid == (1,)
@@ -85,22 +104,25 @@ def test_callback_adapter_preserves_the_narrow_hook(monkeypatch):
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
     theta, rho, pressure, exner, w, temperature, target, dz = environment
+    loaded = np.zeros_like(theta)
     fields = SimpleNamespace(
-        theta=theta, rho=rho, pressure=pressure, pii=exner, w=w, dz=dz
+        theta=theta, rho=rho, pressure=pressure, pii=exner, w=w, dz=dz,
+        qv=loaded,
     )
     callback = fused.NSSL2FusedGS(temperature, target, 30.0)
     callback(workspace, fields)
     assert calls == [((
         workspace, theta, rho, pressure, exner, w,
         temperature, target, dz, 30.0,
-    ), {"hail_on": True})]
+    ), {"hail_on": True, "loaded_vapor": loaded})]
 
     # The variant's hail switch is carried by the adapter, not smuggled in
     # from module state: an adapter built hail-off must forward hail-off.
     calls.clear()
     fused.NSSL2FusedGS(temperature, target, 30.0, hail_on=False)(
         workspace, fields)
-    assert calls[0][1] == {"hail_on": False}
+    assert calls[0][1]["hail_on"] is False
+    assert calls[0][1]["loaded_vapor"] is loaded
 
 
 @pytest.mark.parametrize("dt_s", [0.0, -1.0, np.inf, -np.inf, np.nan])
@@ -187,12 +209,11 @@ def test_cuda_centres_interface_w_onto_mass_levels_exactly_once():
     plus 1-2-1 smoothing -- into ``diagnose_primary_ice``.
     """
     source = _fused_gs_cuda_source()
-    assert "const int velocity_kp = min(k + 1, nz - 1);" in source
-    assert (
-        "    const float w_center = __fmul_rn(0.5f, __fadd_rn(\n"
-        "        vertical_velocity[k * ncol + column_index],\n"
-        "        vertical_velocity[velocity_kp * ncol + column_index]));\n"
-    ) in source
+    assert ("    in.wk = vertical_velocity[k0 * ncol + col];\n"
+            "    in.wkp1 = vertical_velocity[min(nz - 1, k0 + 1) * ncol + col];\n"
+            ) in source
+    assert "    const float wvel = 0.5f * (in.wkp1 + in.wk);\n" in source
+    assert source.count("in.wkp1 + in.wk") == 1
     # The second average is gone, along with the false premise that put it
     # there ("WRF's microphysics driver supplies a mass-level W field").
     assert "w_mass_kp" not in source

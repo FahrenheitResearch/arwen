@@ -35,6 +35,8 @@ def diagnostics_specs(cfg, *, strict=None):
         raise TypeError("strict diagnostic inventory selection must be boolean")
     if not strict:
         return ()
+    if "p_perturbation" in state_array_shapes(cfg):
+        return ()  # The strict constructor already owns this member field.
     return (BatchArraySpec("p_perturbation", state_array_shapes(cfg)["p"], "member"),)
 
 

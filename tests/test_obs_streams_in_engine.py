@@ -62,7 +62,7 @@ CRATE_BINS = ROOT / "tools" / "rustwx" / "crates" / "rw-obs" / "src" / "bin"
 
 @pytest.mark.parametrize("key,source", [
     ("igra2", "igra2.rs"), ("amv", "amv.rs"), ("ndbc", "ndbc.rs"),
-    ("gnssro", "gnssro.rs"), ("wis2", "wis2.rs")])
+    ("gnssro", "gnssro.rs"), ("wis2", "wis2.rs"), ("madis", "madis.rs")])
 def test_stream_door_markers_are_the_binaries_own_abi_lines(key, source):
     from gpuwm.obs.frontdoor import STREAM_DOORS
 

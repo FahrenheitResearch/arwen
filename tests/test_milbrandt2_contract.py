@@ -568,3 +568,9 @@ def test_registry_row_is_implemented_unverified_and_says_so():
     for route in registry["runner_routes"].values():
         for declared in (route.get("source_template_ids") or {}).values():
             assert not declared or declared[0] not in suites, declared
+
+
+@pytest.fixture(autouse=True)
+def _strict_source_contract(monkeypatch):
+    import gpuwm.wrf_exact as exact
+    monkeypatch.setattr(exact, "ENABLED", True)

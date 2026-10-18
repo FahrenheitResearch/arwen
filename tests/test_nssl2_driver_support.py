@@ -109,7 +109,8 @@ def test_driver_support_matches_compiled_official_wrf_pipeline():
                 else (1.0 if index < 14 else 4.0e-15),
                 err_msg=f"run={run_id} field={name}")
 
-        reduce_nssl2_precipitation(workspace, *surfaces)
+        reduce_nssl2_precipitation(
+            workspace, *surfaces, air_density=density, dt_s=step)
         scatter_nssl2_driver_workspace(workspace, density, *fields)
         cp.cuda.Stream.null.synchronize()
 

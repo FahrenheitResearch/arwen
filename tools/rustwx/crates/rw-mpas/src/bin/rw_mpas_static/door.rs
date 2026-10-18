@@ -125,8 +125,8 @@ fn usage() -> String {
         \x20  albedo and snow, and the ten GWD statistics by native arithmetic over the\n\
         \x20  USGS landuse_30s water mask. Explicit flags below still override.\n\
          --legacy-static  the pre-2.9.0 stream instead: 82 variables, with-lakes land use\n\
-        \x20                 (a lake cell whose soil is not water stays category 21 and land;\n\
-        \x20                 1,173 of them on a 3 km Great Lakes mesh), legacy GWD statistics.\n\
+        \x20                 (its lake class, 21, is water: category 17, water soil and land\n\
+        \x20                 mask 0, and water in the GWD statistics), legacy GWD statistics.\n\
         \x20                 For a consumer that still needs that schema. It is NOT the bytes\n\
         \x20                 of a pre-2.9.0 build: 2.9.0's shared static arithmetic applies.\n\n\
          STATIC OPTIONS\n\

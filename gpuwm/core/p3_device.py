@@ -61,14 +61,25 @@ rates and final diagnostics. ``sedlevels`` also parallelises sedimentation
 substeps and is selected by ``cuda``. The sequential arms remain available
 as references; ``tests/test_p3_speed_levels.py`` compares their buffers.
 
-CONTRACTION
------------
+CONTRACTION AND SUBNORMALS
+--------------------------
 ``-fmad=false`` on every arm.  The Fortran reference arm was built with
 ``-ffp-contract=off``, so a contracted ``a*b+c`` on the device is a
 different number.  With contraction off, plain infix operators in the .cu
 are the ``__fmul_rn``/``__fadd_rn`` intrinsics; the kernel file carries a
 two-kernel probe and the test compiles the module both ways to show the
 equality holds under ``false`` and breaks under ``true``.
+
+``--ftz=false`` likewise, and it is why the unit compiles through the direct
+NVRTC route (:func:`gpuwm.nvrtc_ptx_cache.compile_using_nvrtc`) and not
+``cupy.RawModule``: CuPy appends ``-ftz=true`` after the caller's options
+and NVRTC honours the last one, so through RawModule every float32 result
+that should be subnormal came back zero.  gfortran on x86 keeps them.
+MEASURED by the column oracle against WRF 4.6.1 (tools/p3_wrf461_oracle):
+with the flush, one snow column of the 30-step regime set left WRF at step
+4 and reached 19 ULP in the ice diagnostics by step 28; without it every
+field of every column is bit-identical to the Fortran in the default build,
+as it is under GPUWM_WRF_EXACT=1.
 """
 
 from __future__ import annotations
@@ -94,7 +105,8 @@ _P3_SOURCE = _KDIR / "p3.cu"
 #: NVRTC options.  ``-fmad=false`` is a correctness flag here, not a tuning
 #: knob: it is what makes the .cu's infix arithmetic equal the Fortran
 #: reference arm's ``-ffp-contract=off`` statement order.
-DEFAULT_OPTIONS: tuple[str, ...] = ("-std=c++17", "-fmad=false")
+DEFAULT_OPTIONS: tuple[str, ...] = ("-std=c++17", "-fmad=false",
+                                     "--ftz=false")
 
 #: Prognostic + input field slots.  MUST match the F_* defines in p3.cu;
 #: tests/test_p3_cuda.py parses the .cu and pins the two lists together.
@@ -171,19 +183,43 @@ def p3_source(*, kernel_dir: Path = _KDIR) -> str:
             + (kdir / _P3_SOURCE.name).read_text(encoding=_ENCODING))
 
 
-@lru_cache(maxsize=None)
+class _Image:
+    """The compiled image, offered to the kernel manifest's recorder."""
+
+    def __init__(self, ptx):
+        self.ptx = ptx
+
+
+def _load_image(ptx):
+    import cupy as cp
+
+    module = cp.cuda.function.Module()
+    module.load(ptx.encode() if isinstance(ptx, str) else ptx)
+    return module
+
+
 def p3_module(options: tuple[str, ...] = DEFAULT_OPTIONS,
               source: str | None = None):
-    """Compile (once per option set) the P3 translation unit.
+    """The P3 translation unit, compiled once per option set and device.
 
     ``source`` exists so a gate can compile a deliberately perturbed copy
-    and show the gate can fail; leave it ``None`` for the real thing.
+    and show the gate can fail; leave it ``None`` for the real thing.  A
+    loaded image belongs to one device's context, so the cache is keyed by
+    the current device as well (RawModule did that internally).
     """
     import cupy as cp
 
+    return _p3_module(int(cp.cuda.Device().id), tuple(options), source)
+
+
+@lru_cache(maxsize=None)
+def _p3_module(device: int, options: tuple[str, ...], source: str | None):
+    # The direct NVRTC route, so --ftz=false survives (see CONTRACTION).
+    from gpuwm import nvrtc_ptx_cache as compiler
+
     code = source if source is not None else p3_source()
-    module = cp.RawModule(code=code, options=options)
-    module.compile()
+    ptx, _mapping = compiler.compile_using_nvrtc(code, options, None, "p3.cu")
+    module = _load_image(ptx)
     try:
         from gpuwm.certify.kernel_manifest import record_module
     except Exception:                                   # pragma: no cover
@@ -191,7 +227,7 @@ def p3_module(options: tuple[str, ...] = DEFAULT_OPTIONS,
     else:
         record_module("gpuwm.core.p3_device:p3"
                       + ("" if source is None else "(substituted-source)"),
-                      source=code, options=options, module=module)
+                      source=code, options=options, module=_Image(ptx))
     return module
 
 
@@ -442,21 +478,28 @@ def p3_reflectivity_source(*, kernel_dir: Path = _KDIR) -> str:
             + (kdir / _ZDIAG_SOURCE.name).read_text(encoding=_ENCODING))
 
 
-@lru_cache(maxsize=None)
 def p3_reflectivity_module(options: tuple[str, ...] = DEFAULT_OPTIONS):
-    """Compile (once per option set) the operator's translation unit."""
+    """The operator's translation unit, once per option set and device."""
     import cupy as cp
 
+    return _p3_reflectivity_module(int(cp.cuda.Device().id), tuple(options))
+
+
+@lru_cache(maxsize=None)
+def _p3_reflectivity_module(device: int, options: tuple[str, ...]):
+    from gpuwm import nvrtc_ptx_cache as compiler
+
     code = p3_reflectivity_source()
-    module = cp.RawModule(code=code, options=options)
-    module.compile()
+    ptx, _mapping = compiler.compile_using_nvrtc(code, options, None,
+                                                 "p3_reflectivity.cu")
+    module = _load_image(ptx)
     try:
         from gpuwm.certify.kernel_manifest import record_module
     except Exception:                                   # pragma: no cover
         pass
     else:
         record_module("gpuwm.core.p3_device:p3_reflectivity",
-                      source=code, options=options, module=module)
+                      source=code, options=options, module=_Image(ptx))
     return module
 
 

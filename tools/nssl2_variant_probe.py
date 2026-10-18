@@ -181,7 +181,9 @@ def _run_one(mode, fields, environment, steps: int):
             dt, supersaturation_scratch=ss_scratch,
             concentration_space=True,
             predicted_ccn=mode.predicted_ccn,
-            validate_values=False)
+            validate_values=False,
+            frozen=tuple(workspace.field(name) for name in (
+                "qg", "qh", "qng", "qnh", "qvolg", "qvolh")))
 
     def finish(_workspace) -> None:
         pass

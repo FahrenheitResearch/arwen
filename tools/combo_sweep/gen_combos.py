@@ -145,6 +145,10 @@ def constraints(space):
         (["cu", "pbl"], lambda c: c["cu"] != 3 or c["pbl"] != 0),
         (["turb", "pbl"], lambda c: c["turb"] not in ("d2k2", "d2k3") or c["pbl"] == 0),
         (["turb", "pbl"], lambda c: (c["turb"] == "k0") == (c["pbl"] == 900)),
+        # Recorded WRF itself runs away to NaN with PBL off, km_opt=4 and
+        # epssm=0.1. Exclude this blow-up, not a WOOF numerical difference.
+        (["pbl", "turb", "epssm"], lambda c: not (
+            c["pbl"] == 0 and c["turb"] in ("d1k4", "d2k4") and c["epssm"] == 0.1)),
         # WOOF refuses a land surface with both radiation streams off
         (["lsm", "rad"], lambda c: c["lsm"] == 0 or c["rad"] != "off"),
         # MYNN scalar transport: the whole number family or nothing
@@ -171,7 +175,7 @@ def constraints(space):
             values, deps, pred = spec
             cons.append(([name] + deps,
                          (lambda pred, name: lambda c: pred(c) == (c[name] != NA))(pred, name)))
-    return cons
+    return [(deps, fn) for deps, fn in cons if all(name in space for name in deps)]
 
 
 class Space:
@@ -1145,8 +1149,16 @@ def main():
         chosen = [cid for cid, _ in rows_ids if case in old_cases.get(cid, ())]
         rows = dict(rows_ids)
         left = {t for t in req if not any(t <= set(rows[cid].items()) for cid in chosen)}
+        # A surviving id must keep its complete recorded row, including cases.
+        # Replace lost variant coverage with new ids, not extra runs on old ids.
+        eligible = [(cid, c) for cid, c in rows_ids
+                    if cid not in old_cases or case in old_cases[cid]]
         while left:
-            best = max(rows_ids, key=lambda rc: sum(1 for t in left if t <= set(rc[1].items())))
+            best = max(eligible, key=lambda rc: sum(1 for t in left if t <= set(rc[1].items())))
+            if not any(t <= set(best[1].items()) for t in left):
+                raise ValueError(f"keeping recorded case assignments leaves {len(left)} "
+                                 f"surface pairs uncovered for {case}; add covering rows "
+                                 "before claiming variant coverage")
             chosen.append(best[0])
             left = {t for t in left if not t <= set(best[1].items())}
         return chosen, len(req)
@@ -1209,6 +1221,9 @@ def main():
             if os.path.exists(os.path.join(SITE, "templates", name, "forecast.toml")))),
     ])
     out["wrf_rules"] = [
+        "PBL off (bl_pbl_physics = 0), km_opt = 4 and epssm = 0.1 are excluded: "
+        "the recorded WRF real-data runs run away to non-finite state, with "
+        "NaN-derived table indices; turb d1k4 and d2k4 both use km_opt = 4",
         "mp_physics 28 is rendered with the climatology triple wif_input_opt = 1, "
         "num_wif_levels = 30, use_aero_icbc = .true. "
         "(stock real.exe: 'wif_input_opt=0 but mp_physics=28')",

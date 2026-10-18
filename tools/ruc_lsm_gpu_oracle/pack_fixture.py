@@ -43,11 +43,15 @@ def main(argv=None):
     options = {key: meta[key] for key in ("ncol", "nzs", "nsteps", "dt",
                                           "fractional_seaice", "mosaic",
                                           "lakemodel", "rdlai2d")}
+    lineage = meta.get("lineage", "wrf_461")
+    source = ("NOAA-EMC/HRRR v4.1.21 WRFV3.9 (the operational RAP/HRRR "
+              "branch) phys/module_sf_ruclsm.F + module_sf_sfcdiags_ruclsm.F "
+              "with WRF v4.6.1's tables" if lineage == "fork" else
+              "WRF v4.6.1 phys/module_sf_ruclsm.F + module_sf_sfcdiags_ruclsm.F")
     receipt = {"inputs_sha256": digest, "options": options, "arm": args.arm,
-               "regime": meta["regime"],
-               "wrf": "WRF v4.6.1 phys/module_sf_ruclsm.F + "
-                      "module_sf_sfcdiags_ruclsm.F, gfortran 13.3.0 / glibc "
-                      "2.39, WRF GNU flags + -finit-local-zero"}
+               "regime": meta["regime"], "lineage": lineage,
+               "wrf": source + ", gfortran 13.3.0 / glibc 2.39, WRF GNU "
+                      "flags + -finit-local-zero"}
     arrays["receipt"] = np.frombuffer(json.dumps(receipt).encode(), np.uint8)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(args.out, **arrays)

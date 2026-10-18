@@ -37,9 +37,8 @@ def read_columns(path):
     return {name:np.concatenate(values) for name,values in result.items()}, kind
 
 def ordered_bits(bits):
-    wide=bits.astype(np.int64)
-    return np.where(wide & 0x80000000, 0x80000000-(wide & 0x7fffffff),
-                    0x80000000+wide)
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+    return monotone_fp32_key(np.asarray(bits).view('<f4'))
 
 def compare_fields(reference, candidate, strict):
     if set(reference) != set(candidate):

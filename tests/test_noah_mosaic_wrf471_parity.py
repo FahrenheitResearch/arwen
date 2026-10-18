@@ -74,6 +74,50 @@ FTZ_PINNED_SHA256 = {
     ('ftz', 'v11_s1', 24, 'tslb_mosaic'): 'ffab7814bcf2dd3549e71a339a47f62ecee7c4e26e40bc6b2f7b344beecf3d96',
 }
 
+#: GPUWM_WRF_EXACT=1 compiles with --ftz=false, so the SNOW probe (column
+#: 17) matches WRF word for word and only the subnormal-CHS column (24)
+#: remains.  There RR = EMISSI*T24*6.48E-8/(SFCPRS*CH)+1 overflows to
+#: infinity on both sides, PC and ETP are NaN, and the remaining words are
+#: not reproducible: x86 NaN payloads (0x7fc00000/0xffc00000) against CUDA's
+#: canonical 0x7fffffff; soil moisture that WRF's SSTEP leaves NaN through
+#: MAX(MIN(STOT,SMCMAX),0.02), whose NaN result gfortran does not define
+#: (tools/noah_mosaic_wrf461_oracle/receipts/gfortran-minmax-nan.txt: the
+#: same MIN written alone returns SMCMAX); and QFX from NOPAC's ETA, which
+#: WRF never assigns when ETP is NaN (an undefined read: 146.85 in one tile,
+#: NaN in the others).  The words are pinned so any change is seen.
+STRICT_PINNED_SHA256 = {
+    ('ftz', 'v11_s1', 24, 'grdflx'): 'a2c70538651a7e9296b097e8c3dfc1b195a945802ffe45aa471868fba6f1042e',
+    ('ftz', 'v11_s1', 24, 'grdflx_mosaic'): 'a9f84d616a0fb6ab1f382591bc3494bd63ce24e552aeef845e74b66efee888f0',
+    ('ftz', 'v11_s1', 24, 'hfx'): 'a2c70538651a7e9296b097e8c3dfc1b195a945802ffe45aa471868fba6f1042e',
+    ('ftz', 'v11_s1', 24, 'hfx_mosaic'): 'a9f84d616a0fb6ab1f382591bc3494bd63ce24e552aeef845e74b66efee888f0',
+    ('ftz', 'v11_s1', 24, 'lh'): 'a2c70538651a7e9296b097e8c3dfc1b195a945802ffe45aa471868fba6f1042e',
+    ('ftz', 'v11_s1', 24, 'lh_mosaic'): 'a9f84d616a0fb6ab1f382591bc3494bd63ce24e552aeef845e74b66efee888f0',
+    ('ftz', 'v11_s1', 24, 'noahres'): 'a2c70538651a7e9296b097e8c3dfc1b195a945802ffe45aa471868fba6f1042e',
+    ('ftz', 'v11_s1', 24, 'potevp'): 'a2c70538651a7e9296b097e8c3dfc1b195a945802ffe45aa471868fba6f1042e',
+    ('ftz', 'v11_s1', 24, 'qfx'): 'df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119',
+    ('ftz', 'v11_s1', 24, 'qfx_mosaic'): '15ec7bf0b50732b49f8228e07d24365338f9e3ab994b00af08e5a3bffe55fd8b',
+    ('ftz', 'v11_s1', 24, 'qsfc'): '41a6e3eadfed887c86aeb4d9dbb14b193416ddbaab5b1766edf43a64f0667383',
+    ('ftz', 'v11_s1', 24, 'qsfc_mosaic'): 'bd553c2ee7f699b0c63df730cd6a20e95982310bafe2606cf64906401ca72f93',
+    ('ftz', 'v11_s1', 24, 'sh2o'): 'a5dfb1bab90059ea04bcaff91a0aff013946ce001e7d0b4bbc0332dc844bd7e9',
+    ('ftz', 'v11_s1', 24, 'sh2o_mosaic'): '6144926af4fa5e048495ac7ae61f48853860aa28e5b4dfb1753c642161ca3873',
+    ('ftz', 'v11_s1', 24, 'smcrel'): 'f6bb1294da2f78cd935b01c7656280df5eaa0439e9d97bc03775825a41a508e4',
+    ('ftz', 'v11_s1', 24, 'smois'): 'a5dfb1bab90059ea04bcaff91a0aff013946ce001e7d0b4bbc0332dc844bd7e9',
+    ('ftz', 'v11_s1', 24, 'smois_mosaic'): '6144926af4fa5e048495ac7ae61f48853860aa28e5b4dfb1753c642161ca3873',
+    ('ftz', 'v11_s1', 24, 'smstav'): 'e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c',
+    ('ftz', 'v11_s1', 24, 'smstot'): '08abb60a845468a5d5c7e80336e40a33b34a46f10fed75c8f37419c81d1ce15f',
+    ('ftz', 'v11_s1', 24, 'tsk'): 'a2c70538651a7e9296b097e8c3dfc1b195a945802ffe45aa471868fba6f1042e',
+    ('ftz', 'v11_s1', 24, 'tsk_mosaic'): 'a9f84d616a0fb6ab1f382591bc3494bd63ce24e552aeef845e74b66efee888f0',
+    ('ftz', 'v11_s1', 24, 'tslb'): 'c66856d3622ef1af1acca8762554ca873b9ea946fc38967d2d42caba297dc8d7',
+    ('ftz', 'v11_s1', 24, 'tslb_mosaic'): 'ffab7814bcf2dd3549e71a339a47f62ecee7c4e26e40bc6b2f7b344beecf3d96',
+}
+
+
+def pinned_pairs():
+    """The held-out pairs for this process's arithmetic."""
+    from gpuwm import wrf_exact
+    return STRICT_PINNED_SHA256 if wrf_exact.ENABLED else FTZ_PINNED_SHA256
+
+
 D2 = ("sfcrunoff", "udrunoff", "potevp", "acsnom", "snopcx", "acsnow")
 
 
@@ -142,8 +186,14 @@ def test_nopac_bitwise():
     assert all(v["max_ulp"] == 0 for v in result["table"].values()), result["first_differences"]
 
 
-def replay_all(families=("base", "cats", "lcz", "twins", "ftz")):
-    """Replay sequential tile state and independently-oracled D2 increments."""
+def replay_all(families=("base", "cats", "lcz", "twins", "ftz", "terrain"), pinned=None):
+    """Replay sequential tile state and independently-oracled D2 increments.
+
+    ``pinned`` is the held-out column/field table (default: the one for this
+    process's arithmetic, :func:`pinned_pairs`); ``{}`` grades every word.
+    """
+    if pinned is None:
+        pinned = pinned_pairs()
     import cupy as cp
     cats = load_mosaic_categories("MODIFIED_IGBP_MODIS_NOAH", isurban=13, iswater=17, isice=15)
     params = pack_params(load_tables())
@@ -197,7 +247,7 @@ def replay_all(families=("base", "cats", "lcz", "twins", "ftz")):
                                 total = total + value*area[:, t, :]
                             expected = before[n] - total if n == "snopcx" else before[n] + total
                     accepted = np.ones(actual.shape[0], dtype=bool)
-                    for held in FTZ_PINNED_SHA256:
+                    for held in pinned:
                         if held[0] == family and held[1] == name and held[3] == n:
                             accepted[held[2]] = False
                     table[n] = ulp_table(actual[accepted], expected[accepted])
@@ -226,9 +276,10 @@ def replay_all(families=("base", "cats", "lcz", "twins", "ftz")):
 
 @requires_gpu
 def test_every_family_bitwise():
-    result = replay_all()
-    assert set(map(tuple, result["difference_pairs"])) == set(FTZ_PINNED_SHA256)
+    pinned = pinned_pairs()
+    result = replay_all(pinned=pinned)
+    assert set(map(tuple, result["difference_pairs"])) == set(pinned)
     for record in result["held_records"]:
         key = (record["family"], record["fixture"], record["column"], record["field"])
-        assert record["gpu_sha256"] == FTZ_PINNED_SHA256[key], key
+        assert record["gpu_sha256"] == pinned[key], key
     assert all(v["max_ulp"] == 0 for v in result["table"].values())

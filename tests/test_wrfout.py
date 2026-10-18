@@ -582,8 +582,9 @@ def test_the_patch_extent_globals_match_the_reference_file():
 @requires_gpu
 def test_state_frame_from_domain_state():
     """state_frame builds the standard wrfout frame from a DomainState:
-    winds / T (theta - 300) / PH / MU plus the terrain-consistent base
-    fields PHB (a flat base state's 1-D column broadcast to 3-D) / MUB /
+    winds / T and dry-theta THM (theta - 300) / PH / MU plus the
+    terrain-consistent base fields PHB (a flat base state's 1-D column
+    broadcast to 3-D) / MUB /
     HGT, P_TOP/ZNU/ZNW vertical identity, and QVAPOR/QCLOUD/QRAIN exactly
     when the state carries moisture."""
     from gpuwm.config import RunConfig
@@ -602,8 +603,10 @@ def test_state_frame_from_domain_state():
     s = init_at_rest(cfg, vc, b)
     s.qv[...] = 0.004
     f = state_frame(s)
-    assert set(f) == {"T", "U", "V", "W", "PH", "MU", "PHB", "MUB", "HGT",
-                      "QVAPOR", "QCLOUD", "QRAIN", "P_TOP", "ZNU", "ZNW"}
+    assert set(f) == {"T", "THM", "U", "V", "W", "PH", "MU", "PHB", "MUB",
+                      "HGT", "QVAPOR", "QCLOUD", "QRAIN", "P_TOP", "ZNU", "ZNW"}
+    # USE_THETA_M=0 publishes the actual dry-theta prognostic as THM.
+    np.testing.assert_array_equal(f["THM"], f["T"])
     assert all(isinstance(a, np.ndarray) and a.dtype == np.float32
                for a in f.values())
     assert f["PHB"].shape == (cfg.nz + 1, cfg.ny, cfg.nx)

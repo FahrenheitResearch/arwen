@@ -821,6 +821,7 @@ _BL_MAP = {
     # because a substitution ledger that printed a WRF scheme name here
     # would claim a transcription that does not exist.
     900: (900, "none (no WRF counterpart)", "SASE"),
+    901: (901, "none (CCPP scheme, no WRF counterpart)", "CCPP TKE-EDMF"),
     # Native since the Shin-Hong port (certified CPU authority, max ULP 0
     # against WRF v4.6.1; see the physics registry's shinhong option).  The
     # row was (1, "Shin-Hong", "YSU") -- a ratified substitution -- until
@@ -1183,28 +1184,39 @@ def _consume_unrun_domain_controls(dm, inp: dict, drop, fix,
 
 
 #: ``mp_tend_radar = 1`` (the operational WRF 3.9 fork's Registry; stock WRF
-#: 4.x has no such key), refused by name.  Until 2026-10-12 it imported as
-#: a declared divergence -- "no radar heating is applied" -- which ran a
-#: forecast the namelist did not describe while ArWen has radar heating of
-#: its own.  The two are not the same input: the fork reads the cloud
-#: analysis's RAD_TTEN_DFI_1..4 / TTEN_TIMES out of the WRF input file, and
-#: ArWen's [radar_heating] builds that same NOAA tendency on the device from
-#: reflectivity windows a namelist cannot name.  Breakage the refusal
-#: prevents: observed convection left to grow from the analysis alone, and
-#: heating in storms the model invented not withheld, for a run whose
-#: namelist says the radar forces it.
+#: 4.x has no such key).  The fork reads the cloud analysis's
+#: RAD_TTEN_DFI_1..4 / TTEN_TIMES out of the WRF input file and, on every
+#: microphysics step for the whole run (the slot loop stops at slot 4, so
+#: the last slot persists), replaces the clamped microphysics heating with
+#: that tendency where the radar covers
+#: (dyn_em/module_big_step_utilities_em.F:5901-6005 of NOAA-EMC/HRRR
+#: v4.1.21).  A WRF input that carries the four slots and their times is
+#: applied exactly so (gpuwm/ingest/wrfinput_radar.py, on the device kernel
+#: of gpuwm/da/radar_tten.py).  Refused by name where no such tendency
+#: exists: a namelist imported over GRIB or met_em input has no cloud
+#: analysis, and wrf.exe given mp_tend_radar = 1 with no tendency reads
+#: zero-filled slots, which it treats as "covered, no heating" and so
+#: removes the microphysics heating everywhere.
 MP_TEND_RADAR_REFUSAL = (
-    "radar latent heating requested.  The operational WRF fork replaces the "
+    "radar latent heating requested on {domains}, and the input has no "
+    "radar tendency to apply.  The operational WRF fork replaces the "
     "microphysics heating with the radar-derived temperature tendency the "
     "cloud analysis writes into the WRF input (RAD_TTEN_DFI_1..4 and "
-    "TTEN_TIMES).  This importer does not apply that tendency (a WRF input "
-    "carrying it passes it through unapplied, gpuwm/ingest/wrfinput.py), so "
-    "observed convection would grow from the analysis alone and heating in "
-    "storms the model invented would not be withheld.  ArWen's radar heating "
-    "is the [radar_heating] table (docs/public/CONFIGURATION.md), which "
-    "builds the same NOAA tendency on the device from reflectivity windows "
-    "a namelist cannot name.  Next: set mp_tend_radar = 0 and add "
-    "[radar_heating] with a window root to the imported configuration.")
+    "TTEN_TIMES); with no such fields wrf.exe reads zero-filled slots, which "
+    "it treats as covered with zero heating, so storms would get no latent "
+    "heating anywhere.  Next: start from the WRF input that carries the "
+    "tendency (gpuwm run --wrfinput <real.exe directory>), where it is "
+    "applied as the fork applies it; or set mp_tend_radar = 0 and add "
+    "[radar_heating] with a reflectivity window root "
+    "(docs/public/CONFIGURATION.md), which builds the same NOAA tendency on "
+    "the device from observed reflectivity.")
+
+#: How an applied ``mp_tend_radar = 1`` is recorded.
+MP_TEND_RADAR_APPLIED = (
+    "radar latent heating on {domains}: the WRF input's RAD_TTEN_DFI_1..4 "
+    "and TTEN_TIMES replace the clamped microphysics heating where the "
+    "radar covers, on every microphysics step, as the operational WRF fork "
+    "does (module_big_step_utilities_em.F); mp_tend_lim is the namelist's")
 
 
 HAILCAST_REFUSAL = (
@@ -1261,7 +1273,9 @@ def _ra_sw_eclipse_decision(values, active, *, run_window, ra_sw, fix):
 
 def _consume_unrun_physics_controls(ph, inp: dict, max_dom: int, cu: list,
                                     drop, fix, substitutions, *,
-                                    run_window, ra_sw) -> None:
+                                    run_window, ra_sw,
+                                    radar_tendency_domains=frozenset(),
+                                    grid_ids=()) -> None:
     """&physics controls of packages WOOF does not run.
 
     Each is inert when its package is off.  A requested package is refused
@@ -1278,42 +1292,43 @@ def _consume_unrun_physics_controls(ph, inp: dict, max_dom: int, cu: list,
     drop("physics", "co2tf", ph.take("co2tf"),
          "GFDL radiation's CO2 flag; read only under ra_*_physics = 99, "
          "which WOOF does not offer")
-    grell = {3, 5, 93}
-    # The Registry defaults G3's closure arrays are written for.  G3DRV
-    # indexes xaa0_ens(:,1:3), edtc(:,2:3), xff_ens3(1:16) and x_ave(:,16)
-    # as literals (module_cu_g3.F:1544-1549, :3170-3471, :4792-4799), so
-    # any other dimension reads or writes past an array end.
-    ensemble_defaults = {"maxiens": 1, "maxens": 3, "maxens2": 3,
-                         "maxens3": 16, "ensdim": 144}
-    for key in ("maxiens", "maxens", "maxens2", "maxens3", "ensdim"):
-        if key not in ph.entries:
-            continue
-        if not grell.intersection(cu[:max_dom]):
-            drop("physics", key, ph.take(key),
-                 "Grell ensemble dimension; inert with no Grell-family "
-                 "cumulus on any domain")
-        elif 5 in cu[:max_dom]:
-            values = ph.take(key)
-            if any(int(v) != ensemble_defaults[key] for v in values):
-                raise _err(
-                    "physics", key, values,
-                    f"G3 (cu_physics = 5) is defined only at the Registry "
-                    f"ensemble dimensions (maxiens=1, maxens=3, maxens2=3, "
-                    f"maxens3=16, ensdim=144): module_cu_g3.F indexes its "
-                    f"closure arrays with literal members (xaa0_ens(:,1:3), "
-                    f"edtc(:,2:3), xff_ens3(1:16), x_ave(:,16)), so "
-                    f"{key}={values[0]} reads or writes past an array end "
-                    f"in WRF itself.")
-            drop("physics", key, values,
-                 "the Registry ensemble dimension G3 is built at")
-    values, active = column("mp_tend_radar")
+    # The Grell ensemble dimensions are read (and, without Grell 3D on any
+    # domain, dropped as inert) by _translate_namelists beside cu_diag.
+    values = ph.take("mp_tend_radar")
     if values is not None:
-        if _is_off(active, 0):
+        # One value for every domain: the fork's Registry declares it with
+        # one entry (Registry.EM_COMMON:2441, "rconfig integer
+        # mp_tend_radar namelist,physics 1 0").
+        # A per-domain list that states the same value everywhere (the
+        # common "0, 0" of a nested namelist) says what the single entry
+        # says and is read as it; 2.9.0 accepted "0, 0" as inert.
+        if (not values or any(type(v) is not int or v not in (0, 1)
+                              for v in values)):
+            raise _err("physics", "mp_tend_radar", values,
+                       "must be 0 or 1 (the operational WRF fork's "
+                       "Registry.EM_COMMON:2441 declares one integer)")
+        if len(set(values)) != 1:
+            raise _err("physics", "mp_tend_radar", values,
+                       "differs by domain, but the operational WRF fork "
+                       "declares one value for every domain "
+                       "(Registry.EM_COMMON:2441), so the per-domain choice "
+                       "this list states is one no build of it can make; "
+                       "write one value")
+        if values[0] == 0:
             drop("physics", "mp_tend_radar", values,
                  "radar-derived latent-heating tendency is off; inert")
         else:
-            raise _err("physics", "mp_tend_radar", values,
-                       MP_TEND_RADAR_REFUSAL)
+            forced = list(grid_ids) or list(range(1, max_dom + 1))
+            missing = [gid for gid in forced
+                       if gid not in radar_tendency_domains]
+            if missing:
+                raise _err("physics", "mp_tend_radar", values,
+                           MP_TEND_RADAR_REFUSAL.format(
+                               domains=", ".join(f"d{gid:02d}"
+                                                 for gid in missing)))
+            fix("physics", "mp_tend_radar", values, 1,
+                MP_TEND_RADAR_APPLIED.format(
+                    domains=", ".join(f"d{gid:02d}" for gid in forced)))
     values, active = column("ra_sw_eclipse")
     if values is not None:
         if _is_off(active, 0):
@@ -1509,7 +1524,10 @@ def ignored_time_control_reason(key: str) -> str | None:
 #: (key, pin, why).  Exported by gpuwm.namelist_contract.
 PHYSICS_PINS: tuple[tuple[str, int, str], ...] = (
     ("shcu_physics", 0,
-     "no shallow-cumulus scheme is implemented"),
+     "no separate shallow-cumulus scheme (1 Grell 3D shallow, 2 UW, 3 "
+     "GRIMS, 4 NSCV, 5 Deng) is ported in this release; the shallow "
+     "convection inside Grell-Freitas and Grell 3D (ishallow = 1) and New "
+     "SAS's built-in NSCV do run"),
     ("kf_edrates", 0,
      "KF entrainment/detrainment rate diagnostics are not "
      "implemented"),
@@ -1524,6 +1542,95 @@ PHYSICS_PINS: tuple[tuple[str, int, str], ...] = (
     ("tmn_update", 0,
      "deep-soil temperature update is not implemented"),
 )
+
+#: WRF package selectors whose schemes are not ported, as key -> (the off
+#: value, {on value: reason}), with the keys WRF reads only when the
+#: selector is on.
+#:
+#: Named breakage (2.9.0): these selectors were not read at all, so even
+#: their OFF value (sf_ocean_physics = 0, windfarm_opt = 0, as hurricane and
+#: operational templates write them) was refused as "unmapped key(s) ...
+#: extend the ratified map", and the ON values got that importer sentence
+#: instead of the physics reason.
+#:
+#: They are consumed LATE (just before &physics is finished), after every
+#: scheme's own reader: a port that admits one of these selectors takes the
+#: key earlier and this table never sees it, so landing the port and this
+#: table in either order cannot refuse the ported value.  The row is then
+#: retired with the port.
+UNPORTED_PACKAGE_SELECTORS: dict[str, tuple[int, dict[int, str]]] = {
+    # sf_ocean_physics left this table when the ocean mixed layer (1) was
+    # ported: its reader takes the key, and refuses the 3-D PWP ocean (2)
+    # by name itself.
+    "windfarm_opt": (0, {
+        1: "the Fitch wind-farm drag scheme (fitchscheme) is not ported in "
+           "this release",
+        2: "the MAV wind-farm drag scheme (mavscheme) is not ported in this "
+           "release",
+    }),
+}
+
+#: Keys WRF reads only when one of those selectors (or tmn_update, pinned
+#: in PHYSICS_PINS) is on, as (section, key) -> (selector, why the key is
+#: inert with it off).
+UNPORTED_SELECTOR_PARAMETERS: dict[tuple[str, str], tuple[str, str]] = {
+    # oml_hml0, oml_gamma and oml_relaxation_time are the ported ocean
+    # mixed layer's own settings, read by its reader.
+    **{("physics", key): ("sf_ocean_physics",
+                          "ocean-model parameter the ocean mixed layer port "
+                          "does not read (WRF's OML runs every physics "
+                          "step); inert")
+       for key in ("omdt", "omlcall")},
+    **{("domains", key): ("sf_ocean_physics",
+                          "3-D ocean profile; WRF reads it only when "
+                          "sf_ocean_physics = 2 (the PWP ocean), which is "
+                          "not ported")
+       for key in ("ocean_levels", "ocean_z", "ocean_t", "ocean_s")},
+    **{("physics", key): ("windfarm_opt",
+                          "wind-farm parameter; WRF reads it only when "
+                          "windfarm_opt is on")
+       for key in ("windfarm_ij", "windfarm_deg", "windfarm_tke_factor",
+                   "windfarm_wake_model", "windfarm_overlap_method")},
+    ("physics", "lagday"): ("tmn_update",
+                            "deep-soil temperature lag; WRF reads it only "
+                            "when tmn_update = 1"),
+}
+
+
+def _consume_unported_package_selectors(section, name: str, max_dom: int,
+                                        drop) -> None:
+    """Read :data:`UNPORTED_PACKAGE_SELECTORS` and drop
+    :data:`UNPORTED_SELECTOR_PARAMETERS` for one namelist group.
+
+    A selector written at its off value drops as inert; any other value is
+    refused with the scheme's name.  Its parameters drop as inert: with
+    the selector off WRF never reads them, and with it on the selector's
+    refusal names the run's problem (the refusal census sets the selector
+    aside and keeps checking the rest)."""
+    if name == "physics":
+        for key, (off, reasons) in UNPORTED_PACKAGE_SELECTORS.items():
+            raw = section.take(key)
+            if raw is None:
+                continue
+            active = list(raw[:max_dom])
+            if all(type(value) is int and value == off for value in active):
+                drop("physics", key, raw,
+                     f"{key} = {off} is WRF's off value; inert")
+                continue
+            named = [reasons[value] for value in dict.fromkeys(active)
+                     if type(value) is int and value in reasons]
+            why = ("; ".join(named) if named else
+                   f"WRF defines {key} = {off} or "
+                   + ", ".join(str(value) for value in reasons))
+            raise _err("physics", key, raw,
+                       f"{why[0].upper()}{why[1:]}. Nothing is substituted "
+                       f"for it; set {key} = {off}.")
+    for (group, key), (selector, why) in UNPORTED_SELECTOR_PARAMETERS.items():
+        if group != name:
+            continue
+        values = section.take(key)
+        if values is not None:
+            drop(group, key, values, why)
 
 #: &dynamics keys pinned to the one value the dycore implements, as
 #: (key, pin, why).  Exported by gpuwm.namelist_contract.
@@ -1626,6 +1733,15 @@ NEST_GUARDS: dict[str, tuple[object, str]] = {
      'high-resolution child terrain input is rejected (children '
      'SINT + blend the parent terrain).'),
 }
+
+
+def _unported_tail(key: str, value) -> str:
+    """The named reason an unported WRF selector value is refused, as a
+    sentence to append to the menu refusal (gpuwm.config
+    WRF_UNPORTED_SCHEME_REASONS), or ``""``."""
+    from gpuwm.config import wrf_unported_refusal_tail
+
+    return wrf_unported_refusal_tail(key, value)
 
 
 def _port_receipt(**selection) -> str:
@@ -1946,6 +2062,70 @@ def _wrf_cadence_minutes(key: str, n: int, minutes: float, step: Fraction,
         f"{minutes:g} min is {exact} steps of {_seconds_text(step)}; wrf.exe "
         f"runs whole steps, NINT = {whole} (phys/module_physics_init.F:2148), "
         f"which is {value:g} min")
+    return value
+
+
+def _wrf_restart_interval_s(seconds: float, run_seconds: float,
+                            step: Fraction, adaptive: bool, fix) -> float:
+    """The d01 restart alarm as the steps wrf.exe writes restart files on.
+
+    WRF's repeating alarm rings at the first step at or after each whole
+    interval and then advances by the interval, not to the step it rang on
+    (external/esmf_time_f90/ESMF_Clock.F90, ESMF_ClockAdvance: PRED3 and
+    ``PrevRingTime = PrevRingTime + RingInterval``).  So an interval longer
+    than the run never rings, and an interval that is not a whole number
+    of steps still writes, on WRF's next step.  gpuwm writes restart files
+    on a fixed whole-step cadence and refused every interval that was not
+    a whole number of steps.  Named breakage: NCAR's v4.4 CONUS 12 km
+    namelist with the common ``restart_interval = 99999`` (no restart
+    file) at its 72 s step was refused at import.
+
+    A whole-step interval is returned unchanged.  An interval past the run
+    end imports as 0 (no restart file, as in wrf.exe).  Otherwise, when
+    WRF's ring steps inside the run are a fixed whole-step cadence, that
+    cadence is returned and recorded as a fix; when they are not (WRF
+    writes on an uneven step pattern gpuwm's fixed cadence cannot
+    reproduce), the interval is refused naming WRF's steps.
+    """
+    if seconds <= 0.0:
+        return seconds
+    interval = Fraction(str(seconds))
+    if (interval / step).denominator == 1:
+        return seconds
+    window = Fraction(str(run_seconds))
+    minutes = float(interval / 60)
+    if interval > window:
+        fix("time_control", "restart_interval", [minutes], 0.0,
+            f"{minutes:g} min is past the {float(window / 60):g} min run, "
+            "so wrf.exe's restart alarm never rings and it writes no "
+            "restart file (ESMF_Clock.F90 rings at PrevRingTime + "
+            "RingInterval); imported as 0, no restart file")
+        return 0.0
+    if adaptive:
+        # Adaptive steps vary, so WRF's ring steps are not known here; the
+        # experiment admission keeps its whole-step check.
+        return seconds
+    cadence = math.ceil(interval / step)
+    rings = [math.ceil(k * interval / step)
+             for k in range(1, int(window // interval) + 1)]
+    effective = cadence * step
+    value = float(effective)
+    if (any(ring != (k + 1) * cadence for k, ring in enumerate(rings))
+            or Fraction(str(value)) != effective):
+        raise _err("time_control", "restart_interval", [minutes],
+                   f"{minutes:g} min is {interval / step} steps of "
+                   f"{_seconds_text(step)}; wrf.exe writes restart files on "
+                   f"steps {', '.join(map(str, rings[:6]))}"
+                   f"{', ...' if len(rings) > 6 else ''} (the first step at "
+                   "or after each interval, ESMF_Clock.F90), which is not a "
+                   "fixed step cadence and gpuwm writes restarts on one; "
+                   "write an interval that is a whole number of steps")
+    fix("time_control", "restart_interval", [minutes], float(effective / 60),
+        f"{minutes:g} min is {interval / step} steps of "
+        f"{_seconds_text(step)}; wrf.exe writes its restart files inside "
+        f"the run on steps {', '.join(map(str, rings))} (the first step at "
+        "or after each interval, ESMF_Clock.F90), every "
+        f"{cadence} steps, which is {float(effective / 60):g} min")
     return value
 
 
@@ -2428,20 +2608,40 @@ def _built_land_categories(static_landcover: StaticLandcover | None, *,
                            ) -> tuple[dict[int, int], str]:
     """``({grid_id: NUM_LAND_CAT the static build stamps}, why)``.
 
-    The GEOG tree's land use is the 21-category MODIS set; a domain whose
+    The GEOG tree's land use is the MODIS set geog_data_res selects: 21
+    categories with the lake class (the default), 20 for the 15
+    arc-second set ``modis_15s`` names, as geogrid stamps; a domain whose
     land cover ``[static.highres]`` builds takes that collection's legend
     under the run's urban canopy (:func:`gpuwm.static.highres.
     landcover_legend`, the one authority the static build itself calls).
     A legend the canopy cannot run is refused here with that function's
     reason, which is WRF's own stop, instead of at preparation.
     """
+    from gpuwm.static.build import (geog_landuse_category_count,
+                                    geog_landuse_dataset)
     from gpuwm.static.highres import MODIS21_CATEGORY_COUNT, landcover_legend
     from gpuwm.static.highres_fetch import LANDCOVER_SOURCES
 
-    counts = {int(gid): MODIS21_CATEGORY_COUNT for gid in grid_ids}
+    # The GEOG land use each domain's geog_data_res selects (WPS reads an
+    # unlisted domain as 'default'): the lake inventories carry 21
+    # categories, the 15 arc-second MODIS set (modis_15s) 20.
+    column = [str(value) for value in (geog_data_res or [])][:len(grid_ids)]
+    column += ["default"] * (len(grid_ids) - len(column))
+    counts = {int(gid): geog_landuse_category_count(value)
+              for gid, value in zip(grid_ids, column)}
+    geog_note = "; ".join(
+        f"{dataset} ({geog_landuse_category_count(value)} categories) on "
+        + ", ".join(f"d{int(gid):02d}" for gid, v in zip(grid_ids, column)
+                    if geog_landuse_dataset(v) == dataset)
+        for dataset, value in {geog_landuse_dataset(v): v
+                               for v in column}.items())
     if static_landcover is None:
-        return counts, ("the GEOG tree's MODIS land use on every domain, "
-                        f"{MODIS21_CATEGORY_COUNT} categories")
+        if set(counts.values()) == {MODIS21_CATEGORY_COUNT} and all(
+                geog_landuse_dataset(v) == geog_landuse_dataset("default")
+                for v in column):
+            return counts, ("the GEOG tree's MODIS land use on every domain, "
+                            f"{MODIS21_CATEGORY_COUNT} categories")
+        return counts, f"the GEOG tree's MODIS land use: {geog_note}"
     row = LANDCOVER_SOURCES[static_landcover.source_id]
     urban = urban or 0
     lcz = use_wudapt_lcz or 0
@@ -2472,8 +2672,20 @@ def _built_land_categories(static_landcover: StaticLandcover | None, *,
                 "collapsed to MODIS urban (13) because no urban canopy runs "
                 "(sf_urban_physics = 0)")
     if len(static_landcover.grid_ids) < len(counts):
-        note += ("; the GEOG tree's MODIS land use, "
-                 f"{MODIS21_CATEGORY_COUNT} categories, elsewhere")
+        outside = [v for gid, v in zip(grid_ids, column)
+                   if gid not in static_landcover.grid_ids]
+        if all(geog_landuse_dataset(v) == geog_landuse_dataset("default")
+               for v in outside):
+            note += ("; the GEOG tree's MODIS land use, "
+                     f"{MODIS21_CATEGORY_COUNT} categories, elsewhere")
+        else:
+            note += ("; the GEOG tree's MODIS land use elsewhere: "
+                     + "; ".join(
+                         f"{geog_landuse_dataset(v)} "
+                         f"({geog_landuse_category_count(v)} categories) "
+                         f"on d{int(gid):02d}"
+                         for gid, v in zip(grid_ids, column)
+                         if gid not in static_landcover.grid_ids))
     return counts, note
 
 
@@ -2588,6 +2800,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                       landuse_identity: Mapping[str, object] | None = None,
                       wrf_boundary_use_theta_m: int | None = None,
                       wrfinput_qv_domains: tuple[int, ...] = (),
+                      wrfinput_radar_tendency_domains: tuple[int, ...] = (),
                      static_cache_root: str | Path | None = None,
                      metgrid_initialization: bool = False,
                      geogrid_tbl: str | Path | None = None,
@@ -2648,6 +2861,13 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     reader could have added the declaration to even exists.  Empty adds
     nothing and keeps every existing import byte-identical.
 
+    ``wrfinput_radar_tendency_domains`` identifies native input domains
+    whose WRF input carries the cloud analysis's radar temperature tendency
+    (``RAD_TTEN_DFI_1..4`` and ``TTEN_TIMES``).  ``mp_tend_radar = 1`` on
+    those domains is applied from that tendency
+    (:mod:`gpuwm.ingest.wrfinput_radar`); on any other domain it is
+    refused by name, because there is no tendency to apply.
+
     ``wrfinput_qv_domains`` identifies native input domains whose variable
     headers contain QVAPOR. Those domains retain a moisture state even
     with microphysics off; an empty tuple preserves the generic dry
@@ -2697,6 +2917,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         landuse_identity=landuse_identity,
         wrf_boundary_use_theta_m=wrf_boundary_use_theta_m,
         wrfinput_qv_domains=wrfinput_qv_domains,
+        wrfinput_radar_tendency_domains=wrfinput_radar_tendency_domains,
         static_cache_root=static_cache_root,
         metgrid_initialization=metgrid_initialization,
         geogrid_tbl=geogrid_tbl,
@@ -3035,6 +3256,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                          landuse_identity: Mapping[str, object] | None = None,
                          wrf_boundary_use_theta_m: int | None = None,
                          wrfinput_qv_domains: tuple[int, ...] = (),
+                         wrfinput_radar_tendency_domains: tuple[int, ...] = (),
                          static_cache_root: str | Path | None = None,
                          metgrid_initialization: bool = False,
                          geogrid_tbl: str | Path | None = None,
@@ -4121,6 +4343,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                     "it silently would interpolate the wrong column")
 
     _consume_unrun_domain_controls(dm, inp, drop, fix, substitutions)
+    _consume_unported_package_selectors(dm, "domains", max_dom, drop)
     dm.finish()
 
     # ---- &geogrid projection ---------------------------------------------
@@ -4301,11 +4524,10 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         out = []
         for value in values:
             if value not in table:
-                from gpuwm.config import radiation_unported_reason
-                why = radiation_unported_reason(key, value)
                 raise _err("physics", key, value,
                            f"no ratified gpuwm mapping (implemented: "
-                           f"{sorted(table)})." + (f" {why}." if why else ""))
+                           f"{sorted(table)})."
+                           + _unported_tail(key, value))
             out.append(table[value])
         return values, out
 
@@ -4615,6 +4837,26 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             raise _err("physics", key, raw,
                        f"gpuwm implements {key} = {pin} only ({why}).")
         fix("physics", key, raw, pin, why)
+    from gpuwm.surface_ocean import ocean_namelist_defaults
+    ocean_settings = {}
+    for key, default in {"sf_ocean_physics": 0, **ocean_namelist_defaults()}.items():
+        raw = ph.take(key)
+        value = default if raw is None else _uniform("physics", key, raw)
+        if key == "sf_ocean_physics":
+            if type(value) is not int or value not in (0, 1):
+                raise _err("physics", key, raw,
+                           "the WRF 3-D PWP ocean (pwp3dscheme, "
+                           "sf_ocean_physics = 2) is not ported in this "
+                           "release; sf_ocean_physics = 1 runs the ocean "
+                           "mixed layer and 0 turns the ocean model off. "
+                           "Nothing is substituted for it")
+        elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise _err("physics", key, raw, "must be finite; nonfinite settings corrupt mixed-layer state")
+        ocean_settings[key] = value
+        if raw is not None:
+            fix("physics", key, raw, value, "WRF scalar ocean setting")
+    if ocean_settings["sf_ocean_physics"] and ocean_settings["oml_gamma"] <= 0:
+        raise _err("physics", "oml_gamma", ocean_settings["oml_gamma"], "must be positive: OML1D divides by the lapse rate and buoyancy frequency")
     lake_raw = ph.take("sf_lake_physics")
     lake_column = [0] * max_dom
     if lake_raw is not None:
@@ -5292,6 +5534,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         raise _err("physics", "sf_sfclay_physics", sfclay,
                    f"no gpuwm mapping (implemented: "
                    f"{sorted(_SFCLAY_ALLOWED)})."
+                   + _unported_tail("sf_sfclay_physics", sfclay)
                    + _port_receipt(sf_sfclay_physics=sfclay))
     sfsfc = int(_uniform("physics", "sf_surface_physics",
                          ph.col("sf_surface_physics", max_dom, 0)))
@@ -5303,6 +5546,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         raise _err("physics", "sf_surface_physics", sfsfc,
                    f"no gpuwm mapping (implemented: "
                    f"{sorted(_SFSFC_ALLOWED)})."
+                   + _unported_tail("sf_surface_physics", sfsfc)
                    + _port_receipt(sf_surface_physics=sfsfc))
     if (seaice_albedo_default is not None
             and seaice_albedo_default != 0.65 and sfsfc not in (2, 3)):
@@ -5368,7 +5612,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         if value not in _CU_ALLOWED:
             raise _err("physics", "cu_physics", value,
                        f"no gpuwm mapping (implemented: "
-                       f"{sorted(_CU_ALLOWED)}).")
+                       f"{sorted(_CU_ALLOWED)})."
+                       + _unported_tail("cu_physics", value))
     cudt = [float(v) for v in ph.col("cudt", max_dom, 0)]
     # The two Grell-family keys, WRF v4.6.1 Registry defaults (both 0,
     # single-instance).  Read whenever present; consumed only where
@@ -5452,11 +5697,16 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # actually selected.
     from gpuwm.config import G3_RUN_DEFAULTS, validate_g3_dimensions
     g3_controls = {}
+    g3_named = {key for key in G3_RUN_DEFAULTS if key in ph.entries}
     for control_key, default in G3_RUN_DEFAULTS.items():
         if control_key == "cugd_avedx": continue
+        if control_key == "cu_diag":
+            # A max_domains Registry array: entries the namelist leaves out
+            # keep WRF's default 0, they are not filled from the last value.
+            g3_controls[control_key] = ph.registry_col(control_key, max_dom, default)[:max_dom]
+            continue
         values = ph.col(control_key, max_dom, default)
-        g3_controls[control_key] = (values[:max_dom] if control_key == "cu_diag" else
-                                    _uniform("physics", control_key, values))
+        g3_controls[control_key] = _uniform("physics", control_key, values)
     cugd_avedx = 1
     cugd_avedx_values = ph.take("cugd_avedx")
     if cugd_avedx_values is not None:
@@ -5513,6 +5763,10 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         bldt = _wrf_cadence_minutes("bldt", 0, bldt, domain_steps[0], fix)
         cudt = [(_wrf_cadence_minutes("cudt", n, value, domain_steps[n], fix)
                  if cu[n] == 1 else value) for n, value in enumerate(cudt)]
+    restart_interval_s = _wrf_restart_interval_s(
+        restart_interval_s, run_seconds,
+        Fraction(time_step) + Fraction(fract_num, fract_den),
+        use_adaptive_time_step, fix)
     for key, reason in (
             ("ifsnow", "Noah snow physics is always active"),
             ("surface_input_source", "surface fields come from the "
@@ -5530,7 +5784,9 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # reads it from the namelist: the count comes from LANDUSE.TBL for the
     # MMINLU the static build stamped (gpuwm/core/landuse.py
     # load_landuse_table + the lucats bound check), and every gpuwm
-    # geography is the MODIS table: its 21 categories, or 61 where a
+    # geography is the MODIS table: its 21 categories (20 for the 15
+    # arc-second set geog_data_res = 'modis_15s' selects, which has no lake
+    # class, as geogrid stamps), or 61 where a
     # [static.highres] land cover keeps its urban classes under the urban
     # canopy (gpuwm.static.highres.landcover_legend).  So it is validated
     # against the count the static build will stamp and recorded -- a
@@ -5538,7 +5794,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # build, and refusing is the only accurate answer.
     if landuse_identity is None:
         # The count the static build will stamp, per domain: the GEOG
-        # tree's MODIS set (21), or for a domain whose land cover the
+        # tree's MODIS set (21, or 20 for modis_15s), or for a domain whose land cover the
         # [static.highres] block builds, that collection's legend under the
         # run's urban canopy (gpuwm.static.highres.landcover_legend): 61
         # with the canopy on, where the LCZ / NLCD intensity classes keep
@@ -5592,6 +5848,12 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        if len(counts) > 1 else
                        f"  Set num_land_cat = {counts[0]} (or leave it "
                        "out).")
+                    + ("  WRF itself stops on this mismatch: WPS 4.6 "
+                       "geogrid writes NUM_LAND_CAT = 20 for the 15 "
+                       "arc-second MODIS land use (modis_15s has no lake "
+                       "class), and real.exe refuses a namelist "
+                       "num_land_cat that differs (share/input_wrf.F)."
+                       if 20 in counts else "")
                     + hint)
         fix("physics", "num_land_cat", num_land_cat,
             counts[0] if len(counts) == 1 else counts,
@@ -5826,14 +6088,55 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                      "inert: lightning_option = 0 reads no lightning control")
         lightning_values = {}
     gwd_physics_raw = ph.take("gwd_opt")
+    # cu_diag per domain.  WRF decides it from cu_physics, not from the
+    # namelist: module_check_a_mundo stops the run when cu_diag = 1 sits on
+    # a domain whose scheme is not Grell-Devenyi, Grell-Freitas, KF-CuP or
+    # G3, and then sets cu_diag = 1 on those four and 0 everywhere else.
+    _cu_diag_schemes = (3, 5, 10, 93)
+    for n in range(max_dom):
+        if g3_controls["cu_diag"][n] != 0 and cu[n] not in _cu_diag_schemes:
+            raise _err("physics", "cu_diag", g3_controls["cu_diag"],
+                       f"cu_diag = 1 on domain {n + 1} needs cu_physics 3, 5, "
+                       f"10 or 93 there; wrf.exe itself stops this namelist "
+                       f"(module_check_a_mundo: 'Using cu_diag=1 requires use "
+                       f"of one of the following CU schemes'), and domain "
+                       f"{n + 1} runs cu_physics = {cu[n]}.")
     if any(value == 5 for value in cu):
         validate_g3_dimensions(*(g3_controls[key] for key in
             ("maxiens", "maxens", "maxens2", "maxens3", "ensdim")), cugd_avedx)
-    elif any((any(v != default for v in g3_controls[key]) if key == "cu_diag"
-              else g3_controls[key] != default) for key, default in G3_RUN_DEFAULTS.items()
-             if key != "cugd_avedx"):
-        raise _err("physics", "cu_diag/ensemble", list(g3_controls.values()),
-                   "cu_physics=5 is required: another scheme would discard the requested ensemble or diagnostic window")
+    else:
+        # No domain runs Grell 3D, so none of these controls changes the
+        # forecast, and wrf.exe accepts and ignores them.  The five ensemble
+        # dimensions only size closure arrays that the cumulus driver hands
+        # to G3DRV and GDDRV (module_cumulus_driver.F ENSDIM=... arguments);
+        # Grell-Freitas carries its own maxens3 parameter
+        # (module_cu_gf_deep.F) and every other scheme never sees them.
+        # NCAR's CONUS benchmark namelist sets all five to 1 under Tiedtke.
+        # convtrans_avglen_m and cu_diag only drive convtrans_prep's
+        # time-averaged cloud and rain diagnostics; outside G3 gpuwm does not
+        # write those, and for the schemes left here WRF overwrites cu_diag
+        # itself.  2.9.0 refused all of this as "cu_physics=5 is required"
+        # and so refused NCAR's benchmark as shipped.
+        for key, default in G3_RUN_DEFAULTS.items():
+            if key == "cugd_avedx":
+                continue
+            if key not in g3_named:
+                continue
+            value = g3_controls[key]
+            if key == "cu_diag":
+                reason = ("WRF sets cu_diag from cu_physics itself "
+                          "(module_check_a_mundo); it only switches on "
+                          "convtrans_prep's time-averaged cloud and rain "
+                          "diagnostics, which gpuwm writes for Grell 3D only")
+            elif key == "convtrans_avglen_m":
+                reason = ("averaging window of convtrans_prep's time-averaged "
+                          "diagnostics; gpuwm writes those for Grell 3D only "
+                          "and no domain selects it")
+            else:
+                reason = ("Grell 3D / Grell-Devenyi ensemble dimension; inert "
+                          "with neither scheme on any domain")
+            drop("physics", key, value if isinstance(value, list) else [value],
+                 reason)
     # The eclipse window: WRF evaluates obscuration at xtime + radt
     # (module_radiation_driver.F), so the last call can see radt minutes
     # past the forecast end.
@@ -5841,7 +6144,11 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                     + timedelta(minutes=max([0.0, *radt])))
     _consume_unrun_physics_controls(
         ph, inp, max_dom, cu, drop, fix, substitutions,
-        run_window=(start_time, _eclipse_end), ra_sw=list(sw_wrf))
+        run_window=(start_time, _eclipse_end), ra_sw=list(sw_wrf),
+        radar_tendency_domains=frozenset(
+            int(gid) for gid in wrfinput_radar_tendency_domains),
+        grid_ids=tuple(grid_ids[:max_dom]))
+    _consume_unported_package_selectors(ph, "physics", max_dom, drop)
     ph.finish()
 
     # ---- switches WRF's namelist cannot state -----------------------------
@@ -6844,6 +7151,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         f"bl_pbl_physics = {bl_pbl_physics}",
         f"ra_physics = {ra_physics}",
     ]
+    if ocean_settings["sf_ocean_physics"]:
+        lines.extend(f"{key} = {_fmt(value)}" for key, value in ocean_settings.items())
     for key, value in urban_settings.items():
         lines.append(f"{key} = {value}")
     if urban_settings["sf_urban_physics"] == 1 or water_values is not None:

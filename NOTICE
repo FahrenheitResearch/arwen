@@ -353,6 +353,30 @@ option's WRF-Chem transcriptions (the Freitas plume solver and the
 large-scale wet removal, from WRF v4.7.1's chem/ directory) are WRF code
 under the WRF notice above.
 
+The scale-aware TKE moist EDMF boundary layer (bl_pbl_physics = 901;
+gpuwm/core/satmedmf.py and the satmedmf.cu kernel with its GFS constant
+headers) transcribes satmedmfvdifq from the same project, ccpp-physics at
+commit 1d9b076503c27cd4cfa8b22a977a71e889cbb149 (tag GFSv17.HR4),
+"Copyright 2017, NOAA, UCAR/NCAR CU/CIRES" under the Apache License,
+Version 2.0. Its pinned source and licence text are reproduced at
+licenses/NOTICE-CCPP-SATMEDMF.txt.
+
+--------------------------------------------------------------------------
+
+TEMPO microphysics (NCAR/TEMPO)
+
+The TEMPO microphysics kernels (gpuwm/core/kernels/tempo/) and the rw-tempo
+crate's tempo_init and table readers (tools/rustwx/crates/rw-tempo)
+transcribe TEMPO, the Thompson-Eidhammer Microphysics Parameterization for
+Operations, https://github.com/NCAR/TEMPO at commit
+9adf9ef2827104640125f0c322e1218fce74e94c (tag tempo_v3.0.3). That project is
+"Copyright 2026, NOAA, UCAR/NCAR CU/CIRES" and licensed under the Apache
+License, Version 2.0, the licence ArWen itself carries. The notice and the
+list of modifications ship beside the kernels at
+gpuwm/core/kernels/tempo/NOTICE-TEMPO.txt. TEMPO's lookup tables are not
+packaged; gpuwm.tempo_assets fetches TEMPO's published tempo_v3.1.0 release
+assets and checks them against pinned SHA-256 digests.
+
 --------------------------------------------------------------------------
 
 NOAA EMC Unified Post Processor (UPP)
@@ -408,17 +432,18 @@ by their own author. ArWen transcribed them from glibc's copy at
 sysdeps/ieee754/flt-32/, which reproduces Arm's text unchanged apart
 from symbol renaming, branch-hint and cast macro spellings, and
 symbol-versioning declarations -- none of which ArWen reproduces. Those
-transcriptions appear in seventeen files under gpuwm/core/kernels/ --
+transcriptions appear in nineteen files under gpuwm/core/kernels/ --
 glibc_flt32.cuh,
 mynn_dmp_sibling.cu, mynn_libm.cuh (the MYNN surface layer's copy of
-mynn_pbl.cu's logf, expf and powf), mynn_pbl.cu, noahmp_bareflux.cu,
+mynn_pbl.cu's logf, expf and powf), mynn_pbl.cu, mynn_surface_libm.cuh (the
+MYNN surface layer's own copy of the same, 2.9.1), noahmp_bareflux.cu,
 noahmp_fluxprep.cu, noahmp_leaves.cu, noahmp_radiation.cu,
 noahmp_snow.cu, noahmp_soilwater.cu, noahmp_vegeflux.cu,
 noahmp_vegprecip.cu, noahmp_water.cu, rrtmg_lw.cu, rrtmg_sw.cu,
-thompson_aerosol_libm.cuh (the mp28 units' expf and powf cores, on
-glibc_flt32.cuh's tables) and
+rrtmgp_libm.cuh, thompson_aerosol_libm.cuh (the mp28 units' expf and
+powf cores, on glibc_flt32.cuh's tables) and
 vert_interp.cu (the logf core of the GPU vertical interpolation) -- and
-once more, in Python, in gpuwm/core/noahmp_libm.py. Eighteen files, and the
+once more, in Python, in gpuwm/core/noahmp_libm.py. Twenty files, and the
 count is machine-derived: those are exactly the files that reproduce Arm's
 coefficient tables.
 
@@ -575,12 +600,14 @@ The expm1f, tanhf, atanf, log10f and log1pf reductions descend from FDLIBM,
 developed at SunPro, a Sun Microsystems, Inc. business, and converted to
 single precision at Cygnus Support by Ian Lance Taylor; glibc carries them
 substantially unmodified and presents them, in its own LICENSES file, as
-Sun's code. They appear in nineteen shipped files: sixteen under
+Sun's code. They appear in twenty-eight shipped files: twenty-five under
 gpuwm/core/kernels/ -- dudhia_sw.cu, log10_flt32.cuh, mynn_dmp_sibling.cu,
 mynn_libm.cuh,
 mynn_pbl.cu, noahmp_bareflux.cu, noahmp_energy.cu, noahmp_fluxprep.cu,
 noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu, ruc.cu, sfclay.cu,
-sfclay_classic.cuh, thompson_aerosol_libm.cuh and ysu_480_topo.cuh -- and
+sfclay_classic.cuh, thompson_aerosol_libm.cuh and ysu_480_topo.cuh, and, with
+the 2.9.1 intake of the WRF exact chain, atan_scalar_flt32.cuh, gf_wrf_normalization.cuh, mynn_surface_libm.cuh, nssl2_diagnostics.cu, shinhong.cu, terrain_drag.cu, thompson_classic.cu, thompson_fork.cu and ysu_topo.cuh (atanf, expm1f, tanhf
+and log10f; thompson_classic.cu also binary64 log10) -- and
 three in Python: gpuwm/core/noahmp_libm.py, gpuwm/core/mynn_pbl.py and
 gpuwm/core/ruc.py. thompson_aerosol_libm.cuh also carries FDLIBM's binary64
 log10, log1p, atan and atan2 (e_log10.c, s_log1p.c, s_atan.c and
@@ -600,7 +627,7 @@ nothing called them any more, and they were removed. That removal took out
 the only transcription of e_lgammaf_r.c anywhere in this repository, which
 is why lgammaf no longer appears in the list of routines above. The notice
 below is unchanged and still required by, and reproduced for, the
-twenty files that carry them now, the nineteen above and
+twenty-nine files that carry them now, the twenty-eight above and
 tempo/tempo_common.cuh (log10_flt32.cuh joined in 2.8.7 as the
 Milbrandt-Yau scheme's log10, the same reduction as mynn_pbl.cu's, and as
 dudhia_sw.cu's). thompson_aerosol_libm.cuh, mynn_libm.cuh, sfclay.cu and
@@ -897,10 +924,11 @@ below; a renderer shipped without it would satisfy clause 2 nowhere.
 
 Compiled artifacts (release bridge bundles and platform wheels)
 
-Forty-eight Rust executables and libraries (gpuwm.bridge_assets
+Fifty-seven Rust executables and libraries (gpuwm.bridge_assets
 .BUNDLED_ARTIFACTS) are distributed in compiled form: as GitHub release
 bridge bundles, and staged into platform wheels at gpuwm/libexec/bridges/.
-A platform wheel carries all of them. Renderer tools share the rw_wrfbatch
+A platform wheel carries all of them except the six observation-stream
+readers, which are fetched from the bundle on first use. Renderer tools share the rw_wrfbatch
 executable through native launchers under their original names.
 They are built from the three bridge dependency trees and the terminal
 dependency tree below, and from

@@ -30,12 +30,31 @@ sys.path.insert(0, str(HERE))
 from columns import ATMOS, PROFILES, STATE_2D, STATIC_2D, STEP_2D, build_case  # noqa: E402
 import layout  # noqa: E402
 
+#: The RUC forms each lineage runs.  ``fork`` is the HRRR door's selection
+#: (gpuwm/data/physics_sources/request-defaults.v1.toml, source
+#: gsl_wrf39_ruc): the operational RAP/HRRR branch's SOILPROP, irrigation and
+#: snow generation, its air cold start of QVG, and its log-profile 2 m block.
+FORMS = {
+    "wrf_461": dict(ruc_irrigation="wrf_461", ruc_soilprop="wrf_461",
+                    ruc_qvg_cold_start="wrf", ruc_2m_diagnostic="flux",
+                    ruc_snow="wrf_461"),
+    "fork": dict(ruc_irrigation="wrf_45", ruc_soilprop="wrf_45",
+                 ruc_qvg_cold_start="air", ruc_2m_diagnostic="log_profile",
+                 ruc_snow="wrf_45"),
+}
+
 #: Fields the case does NOT override after WOOF's cold start: these four are
 #: ruclsminit's outputs, so S0 carries WOOF's own cold-start words for them.
 COLD_START_OWNED = ("mavail", "znt")
 
 
 def case_from_args(args) -> dict:
+    case = _build(args)
+    case["lineage"] = args.lineage
+    return case
+
+
+def _build(args) -> dict:
     return build_case(nzs=args.nzs, nsteps=args.steps, dt=args.dt,
                       fractional_seaice=args.fractional_seaice,
                       mosaic=bool(args.mosaic), lakemodel=args.lakemodel,
@@ -157,9 +176,7 @@ def run(case, outdir: Path, replay: Path | None = None):
             dt=float(case["dt"]), itimestep=k,
             mosaic_lu=case["mosaic"], mosaic_soil=case["mosaic"],
             flag_sm_adj=0, spp_lsm=0, lakemodel=case["lakemodel"],
-            ruc_irrigation="wrf_461", ruc_soilprop="wrf_461",
-            ruc_qvg_cold_start="wrf", ruc_2m_diagnostic="flux",
-            ruc_snow="wrf_461")
+            **FORMS[case.get("lineage", "wrf_461")])
         census.append(result)
         out = snapshot(f, layout.OUT_2D, PROFILES)
         saved.update({f"step{k}__{n}": v for n, v in out.items()})
@@ -169,6 +186,8 @@ def run(case, outdir: Path, replay: Path | None = None):
             "dt": case["dt"], "fractional_seaice": case["fractional_seaice"],
             "mosaic": case["mosaic"], "lakemodel": case["lakemodel"],
             "rdlai2d": case["rdlai2d"], "regime": case["regime"],
+            "lineage": case.get("lineage", "wrf_461"),
+            "forms": FORMS[case.get("lineage", "wrf_461")],
             "xice_threshold": float(params.xice_threshold),
             "census": census,
             "wrf_exact": os.environ.get("GPUWM_WRF_EXACT", "0"),
@@ -191,10 +210,14 @@ def main(argv=None):
                    help="with --fractional-seaice 0, keep 0<xice<1 instead "
                         "of the 0/1 mask real.exe writes (seam probe)")
     p.add_argument("--replay", type=Path)
+    p.add_argument("--lineage", choices=layout.LINEAGES, default="wrf_461",
+                   help="fork: the operational RAP/HRRR branch's RUC forms "
+                        "and its surface-driver arm (NOAA-EMC/HRRR v4.1.21)")
     args = p.parse_args(argv)
     args.outdir.mkdir(parents=True, exist_ok=True)
     if args.replay is None:
-        layout.Path(args.outdir / "run_columns.F90").write_text(layout.fortran_driver())
+        layout.Path(args.outdir / "run_columns.F90").write_text(
+            layout.fortran_driver(args.lineage))
     meta = run(case_from_args(args), args.outdir, args.replay)
     print(json.dumps({k: meta[k] for k in ("ncol", "nzs", "census", "wrf_exact", "device")}))
 

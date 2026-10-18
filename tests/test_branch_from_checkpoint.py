@@ -522,7 +522,17 @@ def test_cli_branch_prepare_only_stops_before_the_run(source_run, tmp_path,
 
 def test_cli_branch_prints_a_pinned_refusal_as_one_sentence(source_run,
                                                             tmp_path,
-                                                            capsys):
+                                                            capsys,
+                                                            monkeypatch):
+    import signal
+
+    # The contract under test is the one-sentence refusal.  A test worker a
+    # shell started in the background inherits SIGINT ignored, and `gpuwm
+    # branch` (a long-running command) rightly names that on stderr first
+    # (tests/test_interrupt_contract.py pins the notice); here the signal
+    # state is the host's, not the test's, so it is answered as live.
+    monkeypatch.setattr(signal, "getsignal",
+                        lambda num: signal.default_int_handler)
     config, run = source_run
     rc = cli.main(["branch", str(config), "--from-run", str(run),
                    "--outdir", str(tmp_path / "branch-run"),

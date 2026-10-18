@@ -60,6 +60,11 @@ class FamilyRow:
     radar_f64_words: tuple[str, ...]
     restart_identity: str
     declared_divergences: tuple[dict, ...]
+    #: Correct-mode finding WB5 (gpuwm/correct_mode.py): the RunConfig key
+    #: that turns on the unit's conservative surface booking and the macro
+    #: that compiles it (row ``conservative_surface``); empty when none.
+    conservative_surface_key: str = ""
+    conservative_surface_define: str = ""
 
     @property
     def vertical_level_bounds(self) -> tuple[int, int]:
@@ -91,7 +96,11 @@ def _table() -> dict[int, FamilyRow]:
             radar_f32_words=tuple(r["radar_f32_words"]),
             radar_f64_words=tuple(r["radar_f64_words"]),
             restart_identity=r["restart_identity"],
-            declared_divergences=tuple(r["declared_divergences"]))
+            declared_divergences=tuple(r["declared_divergences"]),
+            conservative_surface_key=r.get(
+                "conservative_surface", {}).get("key", ""),
+            conservative_surface_define=r.get(
+                "conservative_surface", {}).get("define", ""))
     return rows
 
 
@@ -187,21 +196,28 @@ def preparation_slots(mp_physics: int) -> tuple[str, ...]:
                  for field in ("theta", "rho", "pii", "dz", "z8w"))
 
 
-def module_key(unit: str, kmax_define: str, tier: int) -> str:
+def module_key(unit: str, kmax_define: str, tier: int,
+               extra_define: str = "") -> str:
     from gpuwm.core.kernels import MODULE_KEY_ROOT
-    return f"{MODULE_KEY_ROOT}:{unit}[{kmax_define}={tier}]"
+    extra = f",{extra_define}=1" if extra_define else ""
+    return f"{MODULE_KEY_ROOT}:{unit}[{kmax_define}={tier}{extra}]"
 
 
 @lru_cache(maxsize=None)
-def _module(unit: str, kmax_define: str, tier: int, device: int):
+def _module(unit: str, kmax_define: str, tier: int, device: int,
+            extra_define: str = ""):
     import cupy as cp
     from cupy.cuda import compiler
     from gpuwm.certify.kernel_manifest import record_module
     from gpuwm.core.kernels import module_source_int_defines
     from gpuwm.kernel_compile_notice import observe_module_compile
 
-    key = module_key(unit, kmax_define, tier)
-    source = module_source_int_defines(unit, ((kmax_define, int(tier)),))
+    key = module_key(unit, kmax_define, tier, extra_define)
+    # extra_define: the row's correct-mode macro (finding WB5).  Empty
+    # compiles exactly the source this function compiled before it existed.
+    defines = ((kmax_define, int(tier)),) + (
+        ((extra_define, 1),) if extra_define else ())
+    source = module_source_int_defines(unit, defines)
     with cp.cuda.Device(device), observe_module_compile(key):
         ptx, _ = compiler.compile_using_nvrtc(
             source, ("-std=c++17", "--fmad=false", "--ftz=false"), None,
@@ -214,11 +230,15 @@ def _module(unit: str, kmax_define: str, tier: int, device: int):
     return module
 
 
-def _function(r: FamilyRow, symbol: str, nz: int):
+def _function(r: FamilyRow, symbol: str, nz: int,
+              conservative_surface: bool = False):
     import cupy as cp
     tier = level_tier(r.mp_physics, nz)
+    if conservative_surface and not r.conservative_surface_define:
+        raise ValueError(f"{r.label} has no conservative surface arm")
+    extra = r.conservative_surface_define if conservative_surface else ""
     return _module(r.unit, r.kmax_define, tier,
-                   cp.cuda.runtime.getDevice()).get_function(symbol)
+                   cp.cuda.runtime.getDevice(), extra).get_function(symbol)
 
 
 @lru_cache(maxsize=None)
@@ -244,14 +264,20 @@ def _check(fields: dict, shape, dtype=np.float32) -> None:
 
 def launch_column(mp_physics: int, *, theta, qv, species: dict, rho, pii,
                   pressure, dz, surface: dict, effc, effi, effs,
-                  dt: float) -> None:
+                  dt: float, conservative_surface: bool = False) -> None:
     """One call of the scheme over contiguous float32 ``(nz, ny, nx)`` fields.
 
     ``species`` maps every name in the row's ``kernel_species`` to its
     field; ``surface`` holds ``<class>nc``/``<class>ncv`` for every class in
     the row's ``precip`` plus ``sr``, all float32 ``(ny, nx)``.
+    ``conservative_surface`` is correct-mode finding WB5 (the row's
+    ``conservative_surface`` key): the unit compiled with the row's macro.
+    False is the matched WRF arithmetic.
     """
     import cupy as cp
+    if not isinstance(conservative_surface, bool):
+        raise TypeError("conservative_surface must be a bool, got "
+                        f"{conservative_surface!r}")
     r = row(mp_physics)
     shape = tuple(theta.shape)
     if len(shape) != 3:
@@ -273,7 +299,8 @@ def launch_column(mp_physics: int, *, theta, qv, species: dict, rho, pii,
             + tuple(surface[n] for n in surface_names)
             + (effc, effi, effs, coef, np.float32(dt),
                np.int32(nz), np.int32(ny), np.int32(nx)))
-    _function(r, r.column_kernel, nz)((blocks,), (_COLUMN_TPB,), args)
+    _function(r, r.column_kernel, nz, conservative_surface)(
+        (blocks,), (_COLUMN_TPB,), args)
 
 
 def launch_refl10cm(mp_physics: int, *, qv, species: dict, t, pressure,
@@ -340,7 +367,9 @@ def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
     save_pre_mp_theta(state)
     launch_column(r.mp_physics, theta=theta, qv=state.qv, species=species,
                   rho=rho, pii=pii, pressure=state.p, dz=dz, surface=surface,
-                  effc=state.effc, effi=state.effi, effs=state.effs, dt=dt)
+                  effc=state.effc, effi=state.effi, effs=state.effs, dt=dt,
+                  conservative_surface=bool(r.conservative_surface_key) and bool(
+                      getattr(cfg, r.conservative_surface_key, False)))
     if refl_10cm_due:
         from gpuwm.core.refl import stash_refl_10cm
         refl_t = state.scratch((nz, ny, nx), "refl_t")

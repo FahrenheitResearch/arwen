@@ -1,0 +1,63 @@
+{
+ "a": "/work/pverify/noah-mosaic/unitfix461",
+ "b": "/work/pverify/noah-mosaic/oracle471crb2",
+ "arrays_a": 14544,
+ "arrays_b": 24524,
+ "identical": 14544,
+ "families": {
+  "ucm": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 232080,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_lcz": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 302320,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_lcz_table": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 302320,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_lcz_wrfinit": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 302320,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_table": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 232080,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "ucm_wrfinit": {
+   "arrays": 2424,
+   "differing_arrays": 0,
+   "words": 232080,
+   "differing_words": 0,
+   "max_ulp": 0
+  }
+ },
+ "only_in_a_families": [],
+ "only_in_b_families": [
+  "base",
+  "cats",
+  "ftz",
+  "lcz",
+  "mosaic_init",
+  "terrain",
+  "twins"
+ ],
+ "differing_arrays": 0,
+ "differing_by_family_array": {}
+}

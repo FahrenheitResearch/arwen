@@ -1,5 +1,9 @@
 // gpuwm/core/kernels/gf.cu
 //
+// Strict GF normalization uses WOOF's earlier operation sequence, held in
+// gf_wrf_normalization.cuh. Default arithmetic retains the current routine.
+// The historical divergence notes below describe the default arm.
+//
 // CUDA half of the Grell-Freitas cumulus scheme (cu_physics = 3), WRF
 // v4.6.1 -- ONE translation unit for the whole of GFDRV: the deep cloud
 // model (CUP_gf), the shallow one (CUP_gf_sh), neg_check, and the driver's
@@ -179,7 +183,7 @@
 // LANE INTERLEAVING, and why it is not optional.  CUDA lays local memory out
 // interleaved across the threads of a warp, so a per-thread array access is
 // coalesced by construction.  A workspace that gave each thread a contiguous
-// slab would hand that back: MEASURED on node-1 at 100,000 columns, the
+// slab would hand that back: MEASURED on a test host at 100,000 columns, the
 // contiguous form ran 42.1 ms against the pre-cut kernel's 19.3 ms at the
 // smallest tile and got WORSE as the tile grew (113.3 ms at 12 blocks/SM),
 // which is the signature of 32-way scatter, not of arithmetic.  So the
@@ -226,7 +230,7 @@ struct GfColI {
 //: them a local dummy [GF_NLEV * GF_KMAX] array instead -- 13,280 B at nz=40
 //: that only survived because a compiler chose to dead-store-eliminate it.
 //: MEASURED: NVRTC 13.3 eliminated it and NVRTC 13.0.48 did not, leaving
-//: 13,824 B of frame on the exact same source (node-1, sm_120).  So absence
+//: 13,824 B of frame on the exact same source (a test host, sm_120).  So absence
 //: is spelled as a null sink instead of being left to the optimiser: the
 //: writes are all stores, none of these slabs is ever read back, and the
 //: branch is uniform across the whole launch.
@@ -560,15 +564,21 @@ __constant__ unsigned int GFC[GF_NCONST] = {
 #define K_P03 __uint_as_float(GFC[128])
 #define K_TCRIT __uint_as_float(GFC[129])
 
-// GFDRV's own constants are real(8) initialised from default-real literals;
-// the fixture measured (gf_ref.py's docstring table) that the arithmetic
-// behaves as the HONEST doubles -- float64(9.80665), not
-// float64(float32(9.80665)), whose stored-word reading is the trap
-// gf-pow-probe.txt's gfsconst rows record.  Double literals parse correctly
-// rounded, so these are those words: 0x40239D013A92A305 etc.
-#define GFS_G_D  9.80665e0
-#define GFS_CP_D 1.0046e3
-#define GFS_XLV_D 2.5e6
+// GFDRV's own constants are real(8) parameters initialised from DEFAULT-REAL
+// literals in module_gfs_physcons.F (con_g = 9.80665e+0, not 9.80665d+0), so
+// the words WRF computes with are the float32 values widened to double:
+// float64(float32(9.80665)) = 0x40239D0140000000 and
+// float64(float32(1004.6)) = 0x408F64CCC0000000 (2.5e6 is exact either way).
+// Earlier revisions used the accurate doubles 0x40239D013A92A305 /
+// 0x408F64CCCCCCCCCD, on the strength of a measurement against the oracle's
+// own decomposition, which had respelled the constants the same wrong way;
+// against GFDRV itself that cost 1-34 ULP of every tendency on 8 of the 216
+// committed columns.  With WRF's own words the kernel is bitwise against
+// GFDRV on all 216 (tests/test_gf_gfdrv_cuda.py).  Bit patterns, not
+// spelled arithmetic, per rule 2 above.
+#define GFS_G_D   __longlong_as_double(0x40239D0140000000LL)
+#define GFS_CP_D  __longlong_as_double(0x408F64CCC0000000LL)
+#define GFS_XLV_D __longlong_as_double(0x414312D000000000LL)
 
 // ==========================================================================
 // glibc 2.39 float32 transcendentals -- MOVED
@@ -821,6 +831,19 @@ __device__ void gfd_cup_kbcon(float cap_inc, int iloop, int *k22_io,
 // be attributed to gamma alone if one ever appeared.
 struct GfdPdf { float tunning, alpha, beta, fzu; int kb_adj; };
 
+__device__ float gfd_pdf_normalizer(float alpha, float beta)
+{
+#ifdef GPUWM_WRF_EXACT
+    // The scalar stock build folds the constant beta factor. The other two
+    // factors retain their runtime float32 operation sequence.
+    return FDIV(gf_wrf_tgamma(FADD(alpha, beta)),
+                FMUL(gf_wrf_tgamma(alpha), gfk_tgamma(beta)));
+#else
+    return FDIV(gfk_tgamma(FADD(alpha, beta)),
+                FMUL(gfk_tgamma(alpha), gfk_tgamma(beta)));
+#endif
+}
+
 __device__ void gfd_get_zu_zd_pdf(int draft, GfColC p, int kb, int kt,
     int kpbli, int csum, float zubeg, int nz, int ktf, float fzu_override,
     GfCol zu, GfdPdf *info)
@@ -853,8 +876,7 @@ __device__ void gfd_get_zu_zd_pdf(int draft, GfColC p, int kb, int kt,
     if (fzu_override > K_ZERO) {
         fzu = fzu_override;
     } else {
-        fzu = FDIV(gfk_tgamma(FADD(alpha, beta)),
-                   FMUL(gfk_tgamma(alpha), gfk_tgamma(beta)));
+        fzu = gfd_pdf_normalizer(alpha, beta);
     }
     float ea = FSUB(alpha, K_ONE);
     float eb = FSUB(beta, K_ONE);
@@ -3629,7 +3651,10 @@ __device__ void gfd_shallow_column(
         xff0 = GMAX(K_ZERO,
                     FDIV(-FSUB(aa1, aa0), FMUL(xkshal, dtime)));
         xff1 = FMUL(K_P03, zws);
-        for (int k = 1; k <= kpbl; k++) {
+        // Declared divergence from WRF 4.6.1 module_cu_gf_sh.F:
+        // the closure uses po_cup[k + 1], so ktf is not a valid k.
+        // A top-level PBL must not integrate pressure above the column.
+        for (int k = 1; k <= IMIN(kpbl, ktf - 1); k++) {
             blqe = FADD(blqe,
                 FDIV(FMUL(FMUL(K_HUNDRED, dhdt[k]),
                           FSUB(po_cup[k], po_cup[k + 1])),

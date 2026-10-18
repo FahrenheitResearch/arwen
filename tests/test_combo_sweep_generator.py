@@ -51,7 +51,7 @@ def test_thompson_aerosol_is_rendered_with_the_whole_climatology_triple():
 
 def test_the_committed_list_obeys_both_rules_and_keeps_the_recorded_ids():
     new = json.loads((HERE / "combos.json").read_text(encoding="utf-8"))
-    old_bytes = (HERE / "combos-v1.json").read_bytes()
+    old_bytes = (HERE / new["regeneration"]["keep_rows_from"]["file"]).read_bytes()
     old = json.loads(old_bytes)
     for rec in new["combos"]:
         ph, dom = rec["namelist"]["physics"], rec["namelist"]["domains"]
@@ -70,7 +70,7 @@ def test_the_committed_list_obeys_both_rules_and_keeps_the_recorded_ids():
     assert dropped == set(old_ids) - set(new_ids)
     assert set(regen["added"]) == set(new_ids) - set(old_ids)
     for cid in set(old_ids) & set(new_ids):  # a kept id names the same assignment
-        assert old_ids[cid]["factors"] == new_ids[cid]["factors"], cid
+        assert old_ids[cid] == new_ids[cid], cid
 
 
 _PROBE = r"""

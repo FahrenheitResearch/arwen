@@ -1,11 +1,29 @@
 """Fixed per-rank MYNN widths preserve the resident forecast's exact words."""
 from dataclasses import replace
+import gc
 
 import pytest
 
 from conftest import requires_gpu
 
 pytestmark = [pytest.mark.gpu, requires_gpu]
+
+
+@pytest.fixture(autouse=True)
+def _release_forecast_cycles():
+    import cupy as cp
+
+    # Resident/template physics point back to their DomainState. Uncollected
+    # cases retain 1.3-1.6 GB each, independent of the rank-width policy.
+    def release():
+        cp.cuda.Device().synchronize()
+        gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+
+    release()
+    yield
+    release()
 
 
 @pytest.mark.parametrize("widths", [(8192, 8192), (32768, 32768), (8192, 32768)])

@@ -162,6 +162,14 @@ WRF_CTOPO_GAP_MAX_ULP = {"utnp": 182, "vtnp": 182}
 #: lanes can quietly disappear.
 SUBNORMAL_LANES = {"dqv": 5, "dqc": 5, "dqi": 1}
 
+#: The strict build keeps subnormals, so every field is WRF's word.
+STRICT_MAX_ULP = {name: 0 for name in BASELINE_MAX_ULP}
+
+
+def _strict() -> bool:
+    from gpuwm import wrf_exact
+    return bool(wrf_exact.ENABLED)
+
 
 def _fixture():
     return load_ysu_oracle()
@@ -409,6 +417,11 @@ def test_ftz_flushes_every_subnormal_tendency_wrf_wrote():
             continue
         found[name] = int(subnormal.sum())
         got = np.ascontiguousarray(port[name], np.float32)
+        if _strict():
+            # no FTZ: the subnormal WRF wrote is the kernel's word
+            np.testing.assert_array_equal(got[subnormal].view(np.uint32),
+                                          want[subnormal].view(np.uint32))
+            continue
         assert np.all(got[subnormal] == 0), (
             f"{name}: a subnormal lane survived -ftz, which would be news")
     assert found == SUBNORMAL_LANES, found

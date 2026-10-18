@@ -192,6 +192,6 @@ def test_legacy_restart_continuation_is_bit_identical(tmp_path):
     blob = str(header)
     assert restart.RRTMG_LEGACY_LW_ALGORITHM_IDENTITY in blob
     assert restart.RRTMG_LEGACY_LW_ALGORITHM_IDENTITY.startswith(
-        "wrf-v4.6.1-rrtmg-legacy-lw-v2-")
-    assert "wrf-v4.6.1-rrtmg-legacy-sw-v1" in blob
+        "wrf-v4.6.1-rrtmg-legacy-lw-v3-")
+    assert "wrf-v4.6.1-rrtmg-legacy-sw-v2-micron-inputs" in blob
     assert "rte-rrtmgp-v1" not in blob

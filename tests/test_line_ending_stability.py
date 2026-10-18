@@ -249,7 +249,10 @@ _CRLF_DEBT = frozenset({
     "tests/test_inflow_fetch_meter.py",
     "tests/test_les_tornado_attempt1_config.py",
     "tests/test_obs_battery.py",
-    "tests/test_obs_battery_ingest.py",
+    # tests/test_obs_battery_ingest.py left this list in 2.9.2: the radar
+    # feeds lane (47c97c0c) wrote it back LF with its one-line change, and
+    # the line-ending hook refuses restoring the CR bytes, so the file stays
+    # normalized.
     "tests/test_obs_controls.py",
     "tests/test_obs_model_source.py",
     "tests/test_obs_promotion.py",
@@ -269,7 +272,6 @@ _CRLF_DEBT = frozenset({
     "tools/obs_radar_grid_build.py",
     "tools/obs_radar_grid_from_pack.py",
     "tools/rustwx/crates/rw-fetch/Cargo.toml",
-    "tools/rustwx/crates/rw-fetch/src/main.rs",
     "tools/rustwx/crates/rw-wrfbatch/src/grib_import.rs",
     "tools/rustwx/crates/rw-wrfbatch/src/wrf_volumes.rs",
     # docs/ -- receipts are transcripts and sit outside the surface

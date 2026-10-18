@@ -147,9 +147,9 @@ def _radar_pack(args) -> int:
         if args.stamp is not None:
             raise SystemExit(
                 "--stamp selects which volume to assemble out of a directory "
-                "and means nothing for a single --file, which is already one "
+                "and means nothing for --file, which is already one "
                 "volume")
-        record = run_pack(file=args.file, out=args.out,
+        record = run_pack(file=args.file, out=args.out, site=args.site,
                           quantities=_quantities(args.quantities),
                           max_elevation_deg=args.max_elevation_deg,
                           max_range_km=args.max_range_km)
@@ -165,7 +165,37 @@ def _radar_pack(args) -> int:
 def _radar_nyquist(args) -> int:
     from gpuwm.obs.odim import run_nyquist
 
-    return _print(run_nyquist(file=args.file))
+    return _print(run_nyquist(file=args.file, site=args.site))
+
+
+def _radar_stations(args) -> int:
+    from gpuwm.obs.odim import run_stations
+
+    return _print(run_stations(file=args.file))
+
+
+def _radar_fetch(args) -> int:
+    from datetime import datetime, timezone
+
+    from gpuwm.obs import radar_archives
+
+    when = datetime.fromisoformat(args.time.replace("Z", "+00:00"))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    try:
+        if args.out is None:
+            record = radar_archives.fetch(
+                args.archive, site=args.site, valid_time=when,
+                out_dir=args.out_dir, tolerance_s=args.tolerance_s).to_payload()
+        else:
+            record = radar_archives.pack(
+                args.archive, site=args.site, valid_time=when,
+                out_dir=args.out_dir, out=args.out,
+                quantities=_quantities(args.quantities),
+                max_range_km=args.max_range_km)
+    except radar_archives.RadarArchiveError as error:
+        raise SystemExit(str(error)) from None
+    return _print(record)
 
 
 # --------------------------------------------------------------------------
@@ -331,9 +361,18 @@ def _register_radar(sub) -> None:
         "pack",
         help="decode one ODIM polar volume into a gpuwm-obs.radar-sweeps.v3 "
              "pack")
-    pack.add_argument("--file", type=Path, default=None, metavar="H5",
-                      help="one whole-volume ODIM file (PVOL). Mutually "
-                           "exclusive with --dir")
+    pack.add_argument("--file", type=Path, default=None, metavar="FILE",
+                      action="append",
+                      help="one whole-volume file: ODIM PVOL, JMA GRIB2 tar, "
+                           "IRIS RAW, Universal Format, CfRadial 1 or DORADE "
+                           "(gzipped or not; the format is read from the "
+                           "file). Repeat it for one station split over "
+                           "files (JMA's N5 reflectivity and N6 velocity "
+                           "tars). Mutually exclusive with --dir")
+    pack.add_argument("--site", default=None, metavar="ID",
+                      help="the station to take from a file that holds "
+                           "several (a JMA tar holds the whole network; "
+                           "`stations` lists them)")
     pack.add_argument("--dir", type=Path, default=None, metavar="DIR",
                       help="directory of single-sweep ODIM files (SCAN) to "
                            "assemble into one volume, as Germany publishes "
@@ -365,9 +404,49 @@ def _register_radar(sub) -> None:
         "nyquist",
         help="per-sweep Nyquist interval and its provenance: the dealias "
              "handoff")
-    nyquist.add_argument("--file", type=Path, required=True, metavar="H5",
-                         help="one ODIM file; geometry is read, no payload")
+    nyquist.add_argument("--file", type=Path, required=True, metavar="FILE",
+                         help="one radar file (ODIM geometry is read without "
+                              "payload; other formats are decoded)")
+    nyquist.add_argument("--site", default=None, metavar="ID",
+                         help="the station, for a multi-station file")
     nyquist.set_defaults(func=_radar_nyquist)
+
+    stations = radar_sub.add_parser(
+        "stations",
+        help="the stations a multi-station radar file (a JMA tar) holds")
+    stations.add_argument("--file", type=Path, required=True, metavar="FILE")
+    stations.set_defaults(func=_radar_stations)
+
+    fetch = radar_sub.add_parser(
+        "fetch",
+        help="fetch one site's volume from an open national archive "
+             "(JMA/NICT, BoM/NCI, IDEAM, KMA with a key) and optionally pack "
+             "it")
+    fetch.add_argument("--archive", required=True, metavar="ID",
+                       help="archive id from gpuwm/obs/data/"
+                            "radar_archives_world.json: jma-nict, bom-nci, "
+                            "ideam-s3, kma-apihub")
+    fetch.add_argument("--site", required=True, metavar="ID",
+                       help="the site in that archive's own naming (the "
+                            "table's site_ids says what that is)")
+    fetch.add_argument("--time", required=True, metavar="ISO",
+                       help="valid time, UTC, e.g. 2019-10-12T09:00Z; the "
+                            "nearest volume within the archive's tolerance "
+                            "is taken")
+    fetch.add_argument("--out-dir", type=Path, required=True, metavar="DIR",
+                       help="where the fetched files go")
+    fetch.add_argument("--tolerance-s", type=positive_float, default=None,
+                       metavar="S",
+                       help="how far from --time a volume may be (default: "
+                            "the archive's, about half its cadence)")
+    fetch.add_argument("--out", type=Path, default=None, metavar="PACK",
+                       help="also decode the fetched files into this sweep "
+                            "pack")
+    fetch.add_argument("--quantities", default=None, metavar="Q,Q",
+                       help="with --out: quantities to carry")
+    fetch.add_argument("--max-range-km", type=positive_float, default=None,
+                       metavar="KM", help="with --out: trim gates beyond this")
+    fetch.set_defaults(func=_radar_fetch)
 
     sites = radar_sub.add_parser(
         "sites",
@@ -537,6 +616,8 @@ _INSTRUMENTS = {
     "opera": "the European composite-reflectivity mosaic",
     "odim": "European per-site polar volumes (the raw route "
             "`gpuwm obs radar` drives)",
+    "radar-feeds": "national radar-volume feed listings, live and archive "
+                   "(the URLs `gpuwm obs radar pack` decodes)",
 }
 
 
@@ -585,6 +666,46 @@ def _register_instruments(sub) -> None:
         parser.set_defaults(func=_instrument_main)
 
 
+def _glm_main(args) -> int:
+    """``gpuwm obs glm ARGS``: ``rw_goes glm ARGS``.
+
+    GLM flash extent density for one valid time W in the GLM-pixel
+    definition: granules of ``[W - A/2, W + A/2)`` listed and fetched from
+    the open-data bucket, distinct flashes per local-grid pixel per minute,
+    the lit cells' table and its ``gpuwm-obs.glm-fed.v2`` record written.
+    The GOES door is the binary,
+    so it resolves and verifies exactly as ``gpuwm obs goes`` does.
+    """
+
+    import subprocess
+    import sys
+
+    from gpuwm.obs.frontdoor import GOES
+
+    try:
+        binary = GOES.require()
+    except (FileNotFoundError, RuntimeError) as error:
+        print(f"gpuwm obs glm: {error}", file=sys.stderr)
+        return 2
+    forwarded = list(getattr(args, "argv", None) or [])
+    if not forwarded or forwarded[0] in ("-h", "--help", "help"):
+        completed = subprocess.run([str(binary), "--help"], check=False)
+        return int(completed.returncode)
+    completed = subprocess.run([str(binary), "glm", *forwarded], check=False)
+    return int(completed.returncode)
+
+
+def _register_glm(sub) -> None:
+    parser = sub.add_parser(
+        "glm", forward_argv=True,
+        help="GOES GLM flash extent density on a local grid for one valid time "
+             "(rw_goes glm: --time W --center LAT,LON --radius-km R --out FILE.csv)")
+    parser.add_argument(
+        "argv", nargs=argparse.REMAINDER, metavar="ARGS",
+        help="arguments passed to `rw_goes glm` unchanged")
+    parser.set_defaults(func=_glm_main)
+
+
 def register_cli(subparsers) -> None:
     """Add ``gpuwm obs`` to the product CLI.
 
@@ -612,6 +733,8 @@ def register_cli(subparsers) -> None:
     # vectors, buoys, radio occultation, WIS2), the engine's own since 2.9.0.
     from gpuwm.obs.streams import register_cli as register_streams
     register_streams(obs_sub)
+    # GOES GLM flash extent density (rw_goes glm), as its own door.
+    _register_glm(obs_sub)
 
 
 __all__ = ["register_cli"]

@@ -316,7 +316,8 @@ def test_cam_door_cards_alias_and_source_binding():
     assert job['argv'][:2]==['gpuwm','go'] and '--keep-checkpoints' in job['argv']
     assert job['config_edits']['fetch.source']=='{selected.fetch.source}'
     assert job['source_selection']['ic']==['hrrr']
-    assert job['source_selection']['lbc']==['rap-native','rap']
+    # gpuwm go forces a CAM row's boundaries from its one [fetch] source.
+    assert job['source_selection']['lbc']==['hrrr']
     suite['override']=[{'system':'cam-ens','set':{'door.devices':1}}]
     validate_suite(suite); plan=plan_suite(suite)
     assert not plan['admitted'] and any('rate' in r['reason'] for r in plan['refusals'])

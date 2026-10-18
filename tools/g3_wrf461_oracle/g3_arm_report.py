@@ -26,11 +26,9 @@ import test_g3_cu5_parity as t  # noqa: E402
 
 
 def ulp_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    ia = a.astype(np.float32).view(np.int32).astype(np.int64)
-    ib = b.astype(np.float32).view(np.int32).astype(np.int64)
-    ia = np.where(ia < 0, np.int64(-2**31) - ia, ia)
-    ib = np.where(ib < 0, np.int64(-2**31) - ib, ib)
-    return np.abs(ia - ib)
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+    return np.abs(monotone_fp32_key(a.astype(np.float32))
+                  - monotone_fp32_key(b.astype(np.float32)))
 
 
 def main() -> None:

@@ -34,11 +34,19 @@ needed). A live export (`--grib2`) writes `<run>/grib2/` and finishes with
 
 `--post-device auto` (the default) computes on the first visible GPU when
 the frame fits in its free memory and on the CPU otherwise; `gpu` requires
-a card and `cpu` never opens one. The GPU kernels are prebuilt for every
-supported architecture, so no CUDA toolkit is needed. The CPU and GPU
-paths return the same bits, so the same frame gives byte-identical GRIB2
-files on either. During `go --grib2` the exporter sees the forecast's own
-card and uses it when there is room.
+a card and `cpu` never opens one. No CUDA toolkit is needed: the exporter
+carries machine code for Blackwell sm_10x and sm_12x cards and a PTX image
+(PTX ISA 8.0, compute_60) that the driver compiles once for every other
+card from Pascal on, with any NVIDIA driver from R525 (CUDA 12.0) on. The
+CPU and GPU paths return the same bits, so the same frame gives
+byte-identical GRIB2 files on either. During `go --grib2` the exporter sees
+the forecast's own card and uses it when there is room.
+
+When `auto` cannot open the card's post kernels it says so in one warning
+line naming the driver's error (`warning: post_device auto: the GRIB2
+products are computed on the CPU ...`), then computes on the CPU. `gpuwm
+doctor` checks the same thing before a run on its "GPU post kernels" line,
+and `manifest.json` records the device of every group of every frame.
 
 Measured on a 600 x 353 x 50 CONUS 9 km WOOF frame (279 messages): 6.6 s
 with one RTX 5090 (post-processing about 1 s, the rest reading the history

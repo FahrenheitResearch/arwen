@@ -1,11 +1,59 @@
-// WRF v4.6.1 NSSL option-18 default S-band radar diagnostic.
+// WRF v4.6.1 NSSL option-18 default S-band radar diagnostic, transliterated.
 //
-// Numerical authority: phys/module_mp_nssl_2mom.F:8588-9597, after the
-// default nssl_2mom_init(ipconc=5, density_on, hail_on).  Registry number
-// and volume moments are converted back to the source routine's internal
-// per-volume convention with dry-air density.  This is the dry-category
-// default (mixedphase=0), so temperature is an API/provenance input but does
-// not change any active contribution.
+// Numerical authority: phys/module_mp_nssl_2mom.F:8588-9597 (radardd02) for
+// the resolved option-18 call (microp = 'ZVD', ipconc=5, imurain=1 with
+// alphar=0, lzr=lzh=lzhl=0, lvs=lsw=lhw=lhlw=0, idbzci=1,
+// iusewetsnow=0, iusewetgraupel=1, iusewethail=0; values read back from
+// WRF's initialised module).  With those switches no active branch reads the
+// temperature argument (the wet-snow, wet-graupel and single-moment arms are
+// off), so temperature_k is accepted for the API and not read.
+//
+// Arithmetic is WRF's: g1, zx, ze, x are REAL*8 and dtmp is REAL, so the rain
+// term is a double product rounded once into dtmp, the snow and ice terms
+// are REAL sums, and the graupel and hail terms are dtmp + ze in double,
+// rounded back to REAL.  REAL**REAL is gfk_pow; LOG10 is nssl2_log10f.
+// Registry number and volume moments are converted to the routine's
+// per-volume convention with dry-air density unless concentration_space.
+
+namespace {
+
+// WOOF's own float32 base-10 logarithm on top of its natural-log word:
+// x = 2^k m, log10(x) = k*log10(2) + log10(e)*ln(m) with log10(2) split into
+// a high part exact in a product with k and a low correction, the high
+// product added last.  Separate roundings (no contraction), so the word is
+// the same with or without FMA.  Verified bit for bit against the oracle
+// box's libm on 3e5 arguments (probes/log10_check.py).  x > 0 only.
+__device__ __forceinline__ float nssl2_log10f(float x)
+{
+    const float log10_2hi = __int_as_float(0x3e9a2080);
+    const float log10_2lo = __int_as_float(0x355427db);
+    const float log10_e = __int_as_float(0x3ede5bd9);
+    int hx = __float_as_int(x);
+    int k = 0;
+    if (hx < 0x00800000) {               // below 2^-126: scale by 2^25
+        k = -25;
+        x = __fmul_rn(x, 33554432.0f);
+        hx = __float_as_int(x);
+    }
+    k += (hx >> 23) - 127;
+    const int i = (k < 0) ? 1 : 0;
+    hx = (hx & 0x007fffff) | ((0x7f - i) << 23);
+    const float y = (float)(k + i);
+    const float m = __int_as_float(hx);
+    const float z = __fadd_rn(__fmul_rn(y, log10_2lo), __fmul_rn(log10_e, gfk_log(m)));
+    return __fadd_rn(z, __fmul_rn(y, log10_2hi));
+}
+
+__device__ __forceinline__ float nssl2_max(float a, float b) { return (b > a) ? b : a; }
+__device__ __forceinline__ float nssl2_min(float a, float b) { return (b < a) ? b : a; }
+
+// gsnow1 = gamma_sp(snu+1), gsnow73 = gamma_sp(snu+7/3) with snu = -0.8:
+// WRF's own Lanczos GAMMA_SP values (module_mp_nssl_2mom.F:2190-2192),
+// read back by probes/gamma_consts.py.
+__device__ __forceinline__ float gsnow1() { return __int_as_float(0x4092E832); }
+__device__ __forceinline__ float gsnow73() { return __int_as_float(0x3F63445E); }
+
+}  // namespace
 
 extern "C" __global__ void nssl2_radardd02(
     const float* __restrict__ air_density,
@@ -28,114 +76,122 @@ extern "C" __global__ void nssl2_radardd02(
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
-
-    const float rho = air_density[idx];
-    const float pi = 3.14159265358979323846f;
-    const float water_density = 1000.0f;
-    float total = 0.0f;
     (void)temperature_k;
 
-    // Rain: imurain=1, alphar=0, sixth moment reconstructed from q and N.
-    const float number_scale = concentration_space ? 1.0f : rho;
-    const float volume_scale = concentration_space ? 1.0f : rho;
-    const float rain_number = qnr[idx] * number_scale;
-    if (qr[idx] >= 1.0e-12f && rain_number > 1.0e-3f) {
-        const double g1 = 20.0;
-        const double mass = (double)rho * (double)qr[idx];
-        const double zx = g1 * mass * mass / (double)rain_number;
-        const double scale = 6.0 / ((double)pi * 1000.0);
-        const double ze = 1.0e18 * zx * scale * scale;
-        total = (float)ze;
-    }
+    const float db = air_density[idx];
+    const float scale = concentration_space ? 1.0f : db;
+    const float an_lr = qr[idx], an_li = qi[idx], an_ls = qs[idx];
+    const float an_lh = qg[idx], an_lhl = qh[idx];
+    const float an_lnr = qnr[idx] * scale;
+    const float an_lni = qni[idx] * scale;
+    const float an_lns = qns[idx] * scale;
+    const float an_lnh = qng[idx] * scale;
+    const float an_lnhl = qnh[idx] * scale;
+    const float an_lvh = qvolg[idx] * scale;
+    const float an_lvhl = qvolh[idx] * scale;
 
-    // Snow: the active dry Cox (1988) m=p*V^(2/3) relationship.
-    const float snow_number = qns[idx] * number_scale;
-    if (qs[idx] >= 1.0e-13f && snow_number > 1.0e-7f) {
-        const float snu = -0.8f;
-        const float gsnow1 = 4.590843677520752f;
-        const float gsnow73 = 0.8877619504928589f;
-        const float snow = 1.0e18f * 323.3226f
-            * (0.106214f * 0.106214f)
-            * (0.189f * qs[idx]) * qs[idx] * rho * rho * gsnow73
-            / (snow_number * (917.0f * 917.0f) * gsnow1
-               * powf(1.0f + snu, 4.0f / 3.0f));
-        total += snow;
-    }
+    // pi = 4.0*ATan(1.) (REAL), and (6./(pi*1000.))**2 in REAL.
+    const float pi = 3.141592653589793f;
+    const float sixpi = __fdiv_rn(6.0f, pi * 1000.0f);
+    const double sixpi2 = (double)(sixpi * sixpi);
+    const double e18 = (double)1.e18f;
+    const float alphar = 0.0f, alphah = 0.0f, alphahl = 1.0f;
 
-    // Cloud ice: spherical 900-kg/m3 particles and cinu=0.
-    const float ice_number = qni[idx] * number_scale;
-    if (qi[idx] > 1.0e-13f && ice_number > 1.0f) {
-        const float mean_volume =
-            rho * qi[idx] / (900.0f * ice_number);
-        const float ice = 0.224f * 3.6e18f * 2.0f
-            * ice_number * mean_volume * mean_volume * (0.9f * 0.9f);
-        total += ice;
-    }
-
-    // Variable-density graupel: alphah=0, 0.3--20-mm volume bounds.
-    const float graupel_number = qng[idx] * number_scale;
-    if (qg[idx] >= 1.0e-12f && graupel_number >= 1.0e-8f) {
-        float density = 500.0f;
-        const float volume_mixing_ratio = qvolg[idx] * volume_scale;
-        if (volume_mixing_ratio > 0.0f) {
-            density = rho * qg[idx] / volume_mixing_ratio;
-            density = fminf(900.0f, fmaxf(100.0f, density));
-        }
-        float local_number = graupel_number;
-        float mean_volume = rho * qg[idx]
-            / (density * fmaxf(1.0e-3f, local_number));
-        const float minimum_volume =
-            0.523599f * (0.3e-3f * 0.3e-3f * 0.3e-3f);
-        const float maximum_volume =
-            0.523599f * (20.0e-3f * 20.0e-3f * 20.0e-3f);
-        if (mean_volume < minimum_volume || mean_volume > maximum_volume) {
-            mean_volume = fminf(
-                maximum_volume, fmaxf(minimum_volume, mean_volume));
-            local_number = rho * qg[idx] / (mean_volume * density);
-        }
-        if (local_number > 0.0f) {
-            const double g1 = 20.0;
-            const double zx = g1 * (double)rho * (double)rho
-                * (0.224 * (double)qg[idx]) * (double)qg[idx]
-                / (double)local_number;
-            const double scale = 6.0 / ((double)pi * 1000.0);
-            total += (float)(1.0e18 * zx * scale * scale);
+    float dtmp = 0.0f;
+    // rain (:9030-9048)
+    if (an_lr >= 1.0e-12f) {
+        if (an_lnr > 1.e-3f) {
+            const double g1 = (double)__fdiv_rn((6.0f + alphar) * (5.0f + alphar) * (4.0f + alphar),
+                                                (3.0f + alphar) * (2.0f + alphar) * (1.0f + alphar));
+            const float p = db * an_lr;
+            const double zx = __ddiv_rn(__dmul_rn(g1, (double)(p * p)), (double)an_lnr);
+            const double ze = __dmul_rn(__dmul_rn(e18, zx), sixpi2);
+            dtmp = (float)ze;
         }
     }
-
-    // Variable-density large hail: alphahl=1, 0.3--40-mm bounds.
-    const float hail_number = qnh[idx] * number_scale;
-    if (qh[idx] >= 1.0e-12f && hail_number > 0.0f) {
-        float density = 900.0f;
-        const float volume_mixing_ratio = qvolh[idx] * volume_scale;
-        if (volume_mixing_ratio > 0.0f) {
-            density = rho * qh[idx] / volume_mixing_ratio;
-            density = fminf(900.0f, fmaxf(300.0f, density));
-        }
-        float local_number = hail_number;
-        float mean_volume = rho * qh[idx]
-            / (density * fmaxf(1.0e-9f, local_number));
-        const float minimum_volume =
-            0.523599f * (0.3e-3f * 0.3e-3f * 0.3e-3f);
-        const float maximum_volume =
-            0.523599f * (40.0e-3f * 40.0e-3f * 40.0e-3f);
-        if (mean_volume < minimum_volume || mean_volume > maximum_volume) {
-            mean_volume = fminf(
-                maximum_volume, fmaxf(minimum_volume, mean_volume));
-            local_number = rho * qh[idx] / (mean_volume * density);
-        }
-        if (local_number > 0.0f) {
-            const double g1 = 8.75;
-            const double zx = g1 * (double)rho * (double)rho
-                * (0.224 * (double)qh[idx]) * (double)qh[idx]
-                / (double)local_number;
-            const double scale = 6.0 / ((double)pi * 1000.0);
-            total += (float)(1.0e18 * zx * scale * scale);
+    // snow (:9196-9263): the m = p d^2 form; qxw = qxw1 = 0.
+    if (an_ls >= 1.0e-13f) {
+        if (an_lns > 1.e-7f) {
+            const float ksq = 0.189f;
+            const float qxw = 0.0f;
+            const float c0 = (1.e18f * 323.3226f) * (0.106214f * 0.106214f);
+            const float numer = ((((c0 * (ksq * an_ls + (1.0f - ksq) * qxw)) * an_ls)
+                                  * (db * db)) * gsnow73());
+            const float snu = -0.8f;
+            const float denom = ((an_lns * 840889.0f) * gsnow1())
+                * gfk_pow(1.0f + snu, 4.0f / 3.0f);
+            dtmp = dtmp + __fdiv_rn(numer, denom);
         }
     }
-
-    refl_10cm[idx] = total > 0.0f
-        ? fmaxf(0.0f, 10.0f * log10f(total))
+    // cloud ice (:9269-9291): idbzci = 1, cinu = 0.
+    if (an_li > 1.0e-13f && an_lni > 1.0f) {
+        const float cinu = 0.0f;
+        const float vr = __fdiv_rn(db * an_li, 900.0f * an_lni);
+        const float term = __fdiv_rn((((0.224f * 3.6e18f) * (cinu + 2.0f)) * an_lni) * (vr * vr),
+                                     cinu + 1.0f) * (0.9f * 0.9f);
+        dtmp = dtmp + term;
+    }
+    // graupel (:9296-9400)
+    if (an_lh >= 1.0e-12f && an_lnh >= 1.0e-8f) {
+        float hwdn;
+        if (an_lvh > 0.0f) {
+            hwdn = __fdiv_rn(db * an_lh, an_lvh);
+            hwdn = nssl2_min(nssl2_max(hwdn, 100.0f), 900.0f);
+        } else {
+            hwdn = 500.0f;
+        }
+        float chw = an_lnh;
+        if (chw > 0.0f) {
+            float xvh = __fdiv_rn(db * an_lh, hwdn * nssl2_max(chw, 1.0e-3f));
+            if (xvh < NSSL2_WRF_XVHMN || xvh > NSSL2_WRF_XVHMX0) {
+                xvh = nssl2_min(nssl2_max(xvh, NSSL2_WRF_XVHMN), NSSL2_WRF_XVHMX0);
+                chw = __fdiv_rn(db * an_lh, xvh * hwdn);
+            }
+            const float qhv = an_lh;
+            const float qxw = 0.0f;
+            const double g1 = (double)__fdiv_rn((6.0f + alphah) * (5.0f + alphah) * (4.0f + alphah),
+                                                (3.0f + alphah) * (2.0f + alphah) * (1.0f + alphah));
+            const double zx = __ddiv_rn(__dmul_rn(__dmul_rn(__dmul_rn(g1, (double)(db * db)),
+                                                            (double)(0.224f * qhv + 0.776f * qxw)),
+                                                  (double)qhv),
+                                        (double)chw);
+            const double ze = __dmul_rn(__dmul_rn(e18, zx), sixpi2);
+            dtmp = (float)__dadd_rn((double)dtmp, ze);
+        }
+    }
+    // hail (:9405-9505)
+    {
+        float hldn;
+        if (an_lvhl > 0.0f) {
+            hldn = __fdiv_rn(db * an_lhl, an_lvhl);
+            hldn = nssl2_min(nssl2_max(hldn, 300.0f), 900.0f);
+        } else {
+            hldn = 900.0f;
+        }
+        if (an_lhl >= 1.0e-12f && an_lnhl > 0.0f) {
+            float chl = an_lnhl;
+            if (chl > 0.0f) {
+                float xvhl = __fdiv_rn(db * an_lhl, hldn * nssl2_max(an_lnhl, 1.0e-9f));
+                if (xvhl < NSSL2_WRF_XVHLMN || xvhl > NSSL2_WRF_XVHLMX) {
+                    xvhl = nssl2_min(nssl2_max(xvhl, NSSL2_WRF_XVHLMN), NSSL2_WRF_XVHLMX);
+                    chl = __fdiv_rn(db * an_lhl, xvhl * hldn);
+                }
+                const float qxw = 0.0f;
+                const double g1 = (double)__fdiv_rn(
+                    (6.0f + alphahl) * (5.0f + alphahl) * (4.0f + alphahl),
+                    (3.0f + alphahl) * (2.0f + alphahl) * (1.0f + alphahl));
+                const double zx = __ddiv_rn(__dmul_rn(__dmul_rn(__dmul_rn(g1, (double)(db * db)),
+                                                                (double)(0.224f * an_lhl + 0.776f * qxw)),
+                                                      (double)an_lhl),
+                                            (double)chl);
+                const double ze = __dmul_rn(__dmul_rn(e18, zx), sixpi2);
+                dtmp = (float)__dadd_rn((double)dtmp, ze);
+            }
+        }
+    }
+    // :9509-9528, dbzmin = 0
+    refl_10cm[idx] = dtmp > 0.0f
+        ? nssl2_max(10.0f * nssl2_log10f(dtmp), 0.0f)
         : 0.0f;
 }
 
@@ -172,7 +228,7 @@ extern "C" __global__ void nssl2_effective_radius_concentration(
     const float cloud_mass = fmaxf(qc[idx], 0.0f);
     const float nc = fmaxf(cloud_number[idx], 0.0f);
     if (cloud_mass > qxmin && nc > cxmin) {
-        const float lambda = powf(
+        const float lambda = gfk_pow(
             (nc * pi_over_six * 1000.0f) / (cloud_mass * rho),
             one_third);
         const float raw = 0.5f * 1.1077321767807007f / lambda;
@@ -182,7 +238,7 @@ extern "C" __global__ void nssl2_effective_radius_concentration(
     const float ice_mass = fmaxf(qi[idx], 0.0f);
     const float ni = fmaxf(ice_number[idx], 0.0f);
     if (ice_mass > qxmin && ni > cxmin) {
-        const float lambda = powf(
+        const float lambda = gfk_pow(
             (ni * pi_over_six * 900.0f) / (ice_mass * rho),
             one_third);
         const float raw = 0.5f * 1.1077321767807007f / lambda;
@@ -192,10 +248,14 @@ extern "C" __global__ void nssl2_effective_radius_concentration(
     const float snow_mass = fmaxf(qs[idx], 0.0f);
     const float ns = fmaxf(snow_number[idx], 0.0f);
     if (snow_mass > qxmin && ns > cxmin) {
-        const float gamma_mass = 0.91816872358322144f;
-        const float gamma_number = 4.5908436775207520f;
-        const float radius_factor = 0.83693999052047729f;
-        const float lambda = powf(
+        // gams1 = Gamma_sp(2+snu), gams2 = Gamma_sp(1+snu) and factor_s
+        // (module_mp_nssl_2mom.F:5861-5868) are WRF's own Lanczos GAMMA_SP
+        // values (probes/gamma_consts.py); a correctly rounded gamma(0.2)
+        // is one ulp below WRF's gams2.
+        const float gamma_mass = __int_as_float(0x3F6B0D1B);
+        const float gamma_number = __int_as_float(0x4092E832);
+        const float radius_factor = __int_as_float(0x3F5641B3);
+        const float lambda = gfk_pow(
             (ns * pi_over_six * 100.0f * gamma_mass)
                 / (snow_mass * rho * gamma_number),
             one_third);

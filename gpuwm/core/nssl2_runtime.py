@@ -100,7 +100,9 @@ class NSSL2RuntimeFields:
     ``theta`` is full dry potential temperature (K), ``rho`` is dry-air
     density (kg m-3), ``pressure`` is full pressure (Pa), ``pii`` is Exner,
     ``dz`` is full-geopotential layer depth (m), and ``w`` is the staggered
-    physical vertical velocity with shape ``(nz + 1, ny, nx)``.
+    physical vertical velocity with shape ``(nz + 1, ny, nx)``.  ``qv`` is
+    the Registry vapour as loaded (nothing writes it before the final
+    scatter); the fused GS diagnoses WRF's primary-ice target from it.
     """
 
     theta: object
@@ -109,6 +111,7 @@ class NSSL2RuntimeFields:
     pii: object
     dz: object
     w: object
+    qv: object = None
 
 
 def _require_callback(name: str, value):
@@ -326,7 +329,7 @@ def _prepare_fields(state, shape) -> NSSL2RuntimeFields:
     dz[...] = z8w[1:] - z8w[:-1]
     return NSSL2RuntimeFields(
         theta=theta, rho=rho, pressure=state.p, pii=pii, dz=dz,
-        w=state.w)
+        w=state.w, qv=state.qv)
 
 
 def _validate_prepared_values(fields: NSSL2RuntimeFields) -> None:

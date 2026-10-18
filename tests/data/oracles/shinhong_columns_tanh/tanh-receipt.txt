@@ -1,0 +1,7 @@
+# gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+# reference build: run_shinhong_columns_O2s (-O2 -funroll-loops -fno-tree-vectorize), the lane fixture build
+# source columns: tests/data/oracles/shinhong_columns (903), ust re-chosen per column by refute_columns.py tanh
+# exhaustive, every float32 x in [-10, 14] on this host:
+# tanhf!=rn(tanh) on 118674314 floats in [-10,14]; csfac differs on 4098664
+# wrf-out-O2vec.bin (not committed) equals wrf-out.bin outside the kpbl==kte tke/el lanes

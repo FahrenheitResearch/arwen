@@ -318,7 +318,11 @@ def test_ysu_topo_arm_is_this_far_from_wrfs_ctopo_call():
     for name in ("u10", "v10"):
         d = _ulp(got[name][0, keep], fx[name][keep])
         measured[name] = int(d.max())
-    assert measured == YSU_TOPO_MAX_ULP, measured
+    from gpuwm import wrf_exact
+    # The strict build keeps the subnormal u10 input the default flushes.
+    expected = (dict(YSU_TOPO_MAX_ULP, u10=0) if wrf_exact.ENABLED
+                else YSU_TOPO_MAX_ULP)
+    assert measured == expected, measured
 
 
 @requires_gpu
@@ -512,8 +516,13 @@ def test_oracle_gate_rejects_an_active_scheme_mutation(monkeypatch, mutation):
     kernel_manifest = import_module("gpuwm.certify.kernel_manifest")
 
     _, ysu, old, new, gate, value = mutation
+    from gpuwm import wrf_exact
+    from gpuwm.ysu_generations import ysu_kernel_selection
+    # The YSU module the gates run: "ysu" by default, the strict arm's
+    # module (ysu_480) under GPUWM_WRF_EXACT=1.
+    ysu_name = ysu_kernel_selection("wrf_461", strict=wrf_exact.ENABLED)[0]
     original = kernels.module_source if ysu else terrain_drag.module_source
-    source = original("ysu") if ysu else original()
+    source = original(ysu_name) if ysu else original()
     assert source.count(old) == 1
     changed = source.replace(old, new)
     gates = {
@@ -528,6 +537,13 @@ def test_oracle_gate_rejects_an_active_scheme_mutation(monkeypatch, mutation):
         terrain_drag._module.cache_clear()
         kernels.load_module.cache_clear()
         kernels.get_kernel.cache_clear()
+        # The strict YSU arm compiles through the integer-define tier
+        # (YSU_LEGACY_TOPDOWN), which keeps caches of its own.
+        for loader in ("load_module_int_defines", "get_kernel_int_defines",
+                       "load_module_unflushed"):
+            clear = getattr(getattr(kernels, loader, None), "cache_clear", None)
+            if clear is not None:
+                clear()
 
     clear_modules()
     try:
@@ -538,7 +554,15 @@ def test_oracle_gate_rejects_an_active_scheme_mutation(monkeypatch, mutation):
             patch.setattr(kernel_manifest, "_MANIFEST", {})
             if ysu:
                 patch.setattr(kernels, "module_source", lambda name:
-                              changed if name == "ysu" else original(name))
+                              changed if name == ysu_name else original(name))
+                # The strict arm's integer-define tier assembles its own text.
+                tiered = kernels.module_source_int_defines
+                patch.setattr(
+                    kernels, "module_source_int_defines",
+                    lambda name, *args, **kwargs: (
+                        tiered(name, *args, **kwargs).replace(old, new)
+                        if name == ysu_name
+                        else tiered(name, *args, **kwargs)))
             else:
                 patch.setattr(terrain_drag, "module_source", lambda: changed)
             with pytest.raises(AssertionError):
@@ -548,8 +572,8 @@ def test_oracle_gate_rejects_an_active_scheme_mutation(monkeypatch, mutation):
         # Reload after restoring both source factory and record dictionary:
         # later tests use the production module and its production receipt.
         if ysu:
-            kernels.load_module("ysu")
-            key = f"{kernels.MODULE_KEY_ROOT}:ysu"
+            kernels.load_module(ysu_name)
+            key = f"{kernels.MODULE_KEY_ROOT}:{ysu_name}"
         else:
             import cupy as cp
             terrain_drag._module(cp.cuda.Device().id)

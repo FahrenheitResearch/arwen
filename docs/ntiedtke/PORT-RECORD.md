@@ -8152,3 +8152,70 @@ closure behind `ntiedtke_tiedtke_closure` (53 lines, `cu_physics = 16`
 proven bit-exact with the flag off), and the `RTHRATLW`/`RTHRATSW` output
 (21 lines, bit-exact). Every commit in §54–§61 touches `docs/ntiedtke/PORT-RECORD.md`
 and nothing else.
+
+## 62. The real-column oracle: four defects, one WRF bug, and 0 ULP on 1.14 M columns
+
+Everything above grades the 21 kernels on the 18 analytic soundings, plus
+the live-column instrument of section 46 on 96 storm-core columns.  Section
+46 ended at "a few words in a few columns differ, three or four ULP" and
+nobody chased them to zero.  `tools/ntiedtke_column_oracle` does: it runs
+WRF v4.6.1's own `cu_ntiedtke_driver` (byte-unmodified, `-O0`, one call
+over the whole patch, so each row is WRF's own `llo3` scope) and the
+shipped `NewTiedtke` adapter on the GPU over the same words, for whole
+model domains taken from wrfout files: the WRF CONUS 12 km benchmark state
+(126,776 columns, at five grid spacings), a WOOF night state on the same
+grid, a 1 km and a 2.25 km WOOF state (nz = 59), and stratified subsets
+driven through the unfused, fused and three-chunk-with-pad walks, at
+stepcu = 2, on the first step, with the PBL lanes absent, and as an
+all-quiet group in which nothing convects (cuascn's llo3 stays false).
+
+The first stratified sample (4,099 columns) differed in 858 words in 75
+raining columns, identically under default and strict arithmetic, so not a
+contraction question.  The stage oracle was then rebuilt over 18 of those
+columns (the analytic case table swapped for the real columns, nothing
+else) and every WOOF stage was graded against WRF's own capture.  Found:
+
+1. **cuflxn's sub-cloud evaporation**, `:3017-3018` and `:3021-3022`: two
+   products associated differently from the source (`a/b*c/d` is
+   `((a/b)*c)/d`; `a*b*c*d` is `((a*b)*c)*d`).  This is the block the
+   cuflxn test names as a coverage gap; the analytic fixture never moves
+   `pdmfup` there.
+2. **The deep closure's CAPE**, `:655-656`: `x + y - z` was transcribed as
+   `x + (y - z)`.  The analytic fixture happened to round the same.
+3. **The first step.**  The adapter built the pipeline with
+   `itimestep = 2` and never changed it, so WRF's `itimestep == 1` forcing
+   reset (`module_cu_ntiedtke.F:451-457`) never ran: the first cumulus call
+   of every forecast fed the folded radiation and PBL lanes into a closure
+   WRF runs without them.  The adapter now derives ITIMESTEP the way the
+   physics driver does.
+4. **stepcu > 1**: `ntiedtke_mfub` and `ntiedtke_closure` had a parameter
+   named `dt`, and the assembler binds by name, so they read the model step
+   where cumastrn uses `ztmst = dt*stepcu`.  Latent (cudt is pinned to 0, so
+   stepcu is 1), and exactly 2x on seven columns at stepcu = 2.
+
+And one WRF bug, documented and not copied: **cutypen declares its
+cloud-base pressure `zcbase` INTEGER** (`cu_ntiedtke.F90:1300`, beside the
+genuine level index `itoppacel`), so the cloud-base pressure is truncated
+to whole Pa before the nearest-half-level choice.  The harness builds a
+third WRF with only that declaration moved to real; WOOF matches it, and
+differs from the pinned build only in the columns where the two WRF builds
+differ from each other (4 of 126,776 on the 12 km domain, 15 at night, 5 at
+1 km, 6 at 2.25 km).
+
+Two test-side defects came out with them: the NumPy mirror modelled `exp`,
+`pow` and `log` as a once-rounded double (a different function from the
+float32 libm the kernel runs; a real column hit the difference in
+`zqsat`), and the cutypen stage tests passed `paph(klev+1) = 0`, so every
+parcel passed both of cutypen's surface-relative tests.  Both fixed.
+
+**Where it stands**: strict arithmetic, 0 differing words in every one of
+345,478,643 output words over 1,143,212 column evaluations against WRF
+with the zcbase declaration corrected (before the fixes: 219,271 differing
+words in 18,036 columns against the pinned build).  WRF's own stock `-O2`
+build gives the same words as the `-O0` reference in every run.  Default arithmetic: every tendency word is
+also identical; the only differences are `raincv` in 13 of 126,776 columns
+(and `pratec` with it) where WRF has exactly 0 and WOOF 9.76e-19 mm, which
+is subnormal flushing (strict with only FTZ turned back on reproduces the
+13 words; strict with only contraction turned back on gives 0).
+`tests/test_ntiedtke_column_oracle.py` pins all four fixes on 25 of the
+columns, and fails on the unfixed code.

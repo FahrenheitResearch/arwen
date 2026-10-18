@@ -77,8 +77,8 @@ def load_plan(path, bindings=None):
         raise ValueError("suite_not_admitted: " + json.dumps(plan.get("refusals", [])))
     if plan.get("schema") == "gpuwm.suite.plan.v1":
         deployment = json.loads(Path(bindings).read_text()) if bindings else None
-        if not plan.get("execution_ready") and deployment is None:
-            raise ValueError("suite_execution_unbound: planner reservations lack prepared, DA or CPU-stage door bindings")
+        # Without a deployment document every row binds from the suite alone
+        # (derived-config rows prepare themselves); a row that cannot is named.
         from .bindings import bind_plan
         plan = bind_plan(plan, deployment)
     elif plan.get("schema") != "gpuwm.suite.runtime-fixture.v1":
@@ -119,7 +119,8 @@ def expand(values, context):
         if match[1] not in context:
             raise ValueError(f"suite_binding_missing: {match[1]}")
         return str(context[match[1]])
-    return [re.sub(r"\{([a-z_][a-z0-9_.]*)\}", binding, str(value)) for value in values]
+    from .bindings import TOKEN
+    return [TOKEN.sub(binding, str(value)) for value in values]
 
 
 def bind_reservations(plan):

@@ -174,6 +174,10 @@ program run_mosaic_ucm
   ! leaves it: the table fraction where the DOMINANT category is urban and
   ! zero elsewhere (module_sf_urban.F:2811-2821), WRF's own urban rule.
   logical :: wrf_init_frc
+  ! Families 5 and 6 repeat 1 and 2 with every switch exactly as
+  ! urban_param_init reads it from URBPARM(_LCZ).TBL (CH_SCHEME 2, AHOPTION 0,
+  ! ALHOPTION 0, IMP_SCHEME 1, GROPTION 0): the production default switches.
+  logical :: table_switches
   character(len=16) :: arg
   real :: declin=0.2
   real :: u10(ncase,1),v10(ncase,1),psim(ncase,1),psih(ncase,1),gz1oz0(ncase,1),akhs(ncase,1),akms(ncase,1)
@@ -367,7 +371,7 @@ program run_mosaic_ucm
   if(len_trim(arg)==0)then
     call get_command_argument(0,exe)
     call get_command_argument(1,outdir)
-    do switch=1,4
+    do switch=1,6
       write(arg,'(i0)')switch
       call execute_command_line(trim(exe)//' '//trim(outdir)//' '//trim(arg),exitstat=status)
       if(status/=0)error stop 'UCM child failed'
@@ -375,13 +379,17 @@ program run_mosaic_ucm
     stop
   endif
   read(arg,*)switch
+  table_switches=switch>=5
+  if(table_switches) switch=switch-4
   wrf_init_frc=switch>=3
   if(wrf_init_frc) switch=switch-2
   use_lcz=switch-1
   call urban_param_init(dzr,dzb,dzg,nsoil,1,use_lcz,.false.)
   ! One already-graded switch set per family, with green roof active in LCZ.
+  if(.not.table_switches)then
   ch_scheme_data=1;ts_scheme_data=1;ahoption=1;alhoption=1
   imp_scheme=2;iri_scheme=0;groption=use_lcz
+  endif
   sf_urban_physics=1
   do twin=1,1
   u10=-11.;v10=-12.;psim=-13.;psih=-14.;gz1oz0=-15.;akhs=-16.;akms=-17.
@@ -749,7 +757,11 @@ program run_mosaic_ucm
       rainbl=0.;sr=0.;swdown=500.;gsw=400.
     endif
     write(case_name,'(a,i0,a,i0)') 'v',switch,'_s',step
-    if(wrf_init_frc.and.use_lcz==0)then
+    if(table_switches.and.use_lcz==0)then
+      call oracle_open('ucm_table/'//trim(case_name))
+    elseif(table_switches)then
+      call oracle_open('ucm_lcz_table/'//trim(case_name))
+    elseif(wrf_init_frc.and.use_lcz==0)then
       call oracle_open('ucm_wrfinit/'//trim(case_name))
     elseif(wrf_init_frc)then
       call oracle_open('ucm_lcz_wrfinit/'//trim(case_name))

@@ -42,7 +42,7 @@ _EXTRA_DIMENSIONS = {
     "RAD_TTEN_DFI_1": wi._MASS_3D_DIMS,
     "UP_HELI_MAX": wi._MASS_2D_DIMS,
     "QVG": wi._MASS_2D_DIMS,
-    "OA1": wi._MASS_2D_DIMS,
+    "MEAN_FRP": wi._MASS_2D_DIMS,
     "BF": ("bottom_top",),
     # WRF input variables this model does not consume.
     "THM": wi._MASS_3D_DIMS,
@@ -55,7 +55,7 @@ _EXTRA_DIMENSIONS = {
 }
 _INTEGER_VARIABLES = ("ISLTYP", "IVGTYP", "ITIMESTEP")
 _PASSTHROUGH_IN_FIXTURE = ("REFL_10CM", "RAD_TTEN_DFI", "RAD_TTEN_DFI_1",
-                           "UP_HELI_MAX", "QVG", "OA1", "BF")
+                           "UP_HELI_MAX", "QVG", "MEAN_FRP", "BF")
 
 
 def _cfg() -> RunConfig:
@@ -352,8 +352,12 @@ def test_the_inventory_sorts_every_variable_from_the_header_alone(tmp_path):
     assert classes[exchange.UNNAMED] == []
     assert sorted(classes[exchange.ANALYSIS_CARRIED]) == sorted(
         _PASSTHROUGH_IN_FIXTURE)
-    assert {"THM", "P_HYD", "CLDFRA", "RDX", "RDY", "ZS", "DZS"} == set(
-        classes[exchange.NOT_CONSUMED])
+    assert {"THM", "P_HYD", "CLDFRA"} == set(classes[exchange.NOT_CONSUMED])
+    # The reader restores the soil-layer coordinates and the inverse grid
+    # spacings (ZS, DZS, RDX, RDY are ALLOWED_WRFINPUT: DZS is the layer
+    # thickness read_layer_water converts with), so the header sorts them
+    # as restored, not as not-consumed.
+    assert {"RDX", "RDY", "ZS", "DZS"} <= set(classes[exchange.RESTORED])
     assert {"Times", "XLAT", "XLONG", "XTIME", "ITIMESTEP"} == set(
         classes[exchange.AUXILIARY])
     assert "T" in classes[exchange.RESTORED]

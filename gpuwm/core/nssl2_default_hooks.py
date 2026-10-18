@@ -157,6 +157,14 @@ def make_nssl2_default_runtime_hooks(
             concentration_space=True,
             predicted_ccn=mode.predicted_ccn,
             validate_values=validate_values,
+            frozen=(
+                workspace.field("qg"),
+                workspace.field("qh"),
+                workspace.field("qng"),
+                workspace.field("qnh"),
+                workspace.field("qvolg"),
+                workspace.field("qvolh"),
+            ),
         )
 
     return NSSL2RuntimeHooks(

@@ -282,10 +282,9 @@ __device__ __forceinline__ void nssl2_cloud_sediment_impl(
     float number_flux[KMAX + 1];
 
     const float pi = 3.14159265358979323846f;
-    const float minimum_mass = 1000.0f * 0.523599f
-        * (4.0e-6f * 4.0e-6f * 4.0e-6f);
-    const float maximum_mass = 1000.0f * 0.523599f
-        * (120.0e-6f * 120.0e-6f * 120.0e-6f);
+    // cwmasn/cwmasx: WRF's folded parameters (nssl2_wrf_math.cuh).
+    const float minimum_mass = NSSL2_WRF_CWMASN;
+    const float maximum_mass = NSSL2_WRF_CWMASX;
     const float mass_to_diameter = 6.0f / (pi * 1000.0f);
     float maximum_courant_rate = 0.0f;
 
@@ -307,22 +306,22 @@ __device__ __forceinline__ void nssl2_cloud_sediment_impl(
                 maximum_mass,
                 fmaxf(minimum_mass,
                       positive_cloud * rho[k] / effective_number));
-            const float diameter = powf(
+            const float diameter = gfk_pow(
                 particle_mass * mass_to_diameter, 1.0f / 3.0f);
             const float radius = 0.5f * diameter;
             const float temperature = temperature_k[idx];
             const float viscosity = 1.832e-5f
                 * (416.16f / (temperature + 120.0f))
-                * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
+                * gfk_pow(__fdiv_rn(temperature, 296.0f), 1.5f);
             if (viscosity > 0.0f) {
                 velocity[k] = fminf(
                     70.0f,
-                    2.0f * 9.8f * 1000.0f * radius * radius
+                    (2.0f * 9.8f * 1000.0f * (radius * radius))
                         / (9.0f * viscosity));
             }
         }
         maximum_courant_rate = fmaxf(
-            maximum_courant_rate, velocity[k] / dz[idx]);
+            maximum_courant_rate, velocity[k] * (1.0f / dz[idx]));
     }
 
     if (maximum_courant_rate == 0.0f) {
@@ -356,7 +355,7 @@ __device__ __forceinline__ void nssl2_cloud_sediment_impl(
         for (int k = 0; k < nz; ++k) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            cloud[k] += dt_substep * inverse_dz / rho[k]
+            cloud[k] += dt_substep * (inverse_dz * (1.0f / rho[k]))
                 * (mass_flux[k + 1] - mass_flux[k]);
             number[k] += dt_substep * inverse_dz
                 * (number_flux[k + 1] - number_flux[k]);
@@ -402,10 +401,9 @@ __device__ __forceinline__ void nssl2_cloud_sediment_parallel_impl(
     float* number_flux = shared_sediment + 65;
 
     const float pi = 3.14159265358979323846f;
-    const float minimum_mass = 1000.0f * 0.523599f
-        * (4.0e-6f * 4.0e-6f * 4.0e-6f);
-    const float maximum_mass = 1000.0f * 0.523599f
-        * (120.0e-6f * 120.0e-6f * 120.0e-6f);
+    // cwmasn/cwmasx: WRF's folded parameters (nssl2_wrf_math.cuh).
+    const float minimum_mass = NSSL2_WRF_CWMASN;
+    const float maximum_mass = NSSL2_WRF_CWMASX;
     const float mass_to_diameter = 6.0f / (pi * 1000.0f);
     float maximum_courant_rate = 0.0f;
 
@@ -427,22 +425,22 @@ __device__ __forceinline__ void nssl2_cloud_sediment_parallel_impl(
                 maximum_mass,
                 fmaxf(minimum_mass,
                       positive_cloud * rho / effective_number));
-            const float diameter = powf(
+            const float diameter = gfk_pow(
                 particle_mass * mass_to_diameter, 1.0f / 3.0f);
             const float radius = 0.5f * diameter;
             const float temperature = temperature_k[idx];
             const float viscosity = 1.832e-5f
                 * (416.16f / (temperature + 120.0f))
-                * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
+                * gfk_pow(__fdiv_rn(temperature, 296.0f), 1.5f);
             if (viscosity > 0.0f) {
                 velocity = fminf(
                     70.0f,
-                    2.0f * 9.8f * 1000.0f * radius * radius
+                    (2.0f * 9.8f * 1000.0f * (radius * radius))
                         / (9.0f * viscosity));
             }
         }
         maximum_courant_rate = fmaxf(
-            maximum_courant_rate, velocity / dz[idx]);
+            maximum_courant_rate, velocity * (1.0f / dz[idx]));
     }
 
     float* rates = shared_sediment + 325;
@@ -487,7 +485,7 @@ __device__ __forceinline__ void nssl2_cloud_sediment_parallel_impl(
         if (k < nz) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            cloud += dt_substep * inverse_dz / rho
+            cloud += dt_substep * (inverse_dz * (1.0f / rho))
                 * (mass_flux[k + 1] - mass_flux[k]);
             number += dt_substep * inverse_dz
                 * (number_flux[k + 1] - number_flux[k]);
@@ -527,26 +525,60 @@ extern "C" __global__ void nssl2_cloud_sediment_256(
 }
 
 
+// calczgr1d (module_mp_nssl_2mom.F:4860), REAL arithmetic:
+//   xv = db*q/(xdn*N); clamp xv (N rebuilt from the clamp);
+//   zx = g1*db**2*q*q/N; z = zx*(6./(pi*1000.))**2
+#define NSSL2_SED_ZFAC ((6.0f / (NSSL2_WRF_PI * 1000.0f))                         * (6.0f / (NSSL2_WRF_PI * 1000.0f)))
+
+__device__ __forceinline__ float nssl2_sediment_z(
+    float q, float number, float rho, float xdn, float g1,
+    float xvmn, float xvmx)
+{
+    if (!(q > 1.0e-12f) || !(number > 1.0e-15f)) return 0.0f;
+    float xv = rho * q / (xdn * number);
+    float chw = number;
+    if (xv < xvmn || xv > xvmx) {
+        xv = fminf(xvmx, fmaxf(xvmn, xv));
+        chw = rho * q / (xv * xdn);
+    }
+    const float zx = g1 * (rho * rho) * q * q / chw;
+    return zx * NSSL2_SED_ZFAC;
+}
+
+// calcnfromz1d (module_mp_nssl_2mom.F:4982), infall = 4, for a level whose
+// advected reflectivity t0 is positive.  vr, nrx, g1, zx, chw and z are
+// DOUBLE PRECISION there; xv and xdn are REAL; t0/((6./(pi*1000.))**2) is
+// a REAL quotient.
+__device__ __forceinline__ float nssl2_sediment_number_from_z(
+    float q, float number, float rho, float xdn, float g1,
+    float xvmn, float xvmx, float z_advected, float z_initial,
+    float number_mass_weighted)
+{
+    float xv = rho * q / (xdn * number);
+    double chw = (double)number;
+    if (xv < xvmn || xv > xvmx) {
+        xv = fminf(xvmx, fmaxf(xvmn, xv));
+        chw = (double)(rho * q / (xv * xdn));
+    }
+    const double g1d = (double)g1;
+    const double rho2 = (double)(rho * rho);
+    const double qd = (double)q;
+    double zx = __ddiv_rn(__dmul_rn(__dmul_rn(__dmul_rn(g1d, rho2), qd), qd), chw);
+    const double z = __dmul_rn(zx, (double)NSSL2_SED_ZFAC);
+    if (z > (double)z_advected && z > 0.0 && z_advected > z_initial) {
+        zx = (double)__fdiv_rn(z_advected, NSSL2_SED_ZFAC);
+        const double nrx = __ddiv_rn(
+            __dmul_rn(__dmul_rn(__dmul_rn(g1d, rho2), qd), qd), zx);
+        return fmaxf(fminf((float)nrx, number_mass_weighted), number);
+    }
+    return fmaxf(number_mass_weighted, number);
+}
+
 __device__ __forceinline__ float nssl2_rain_z(
     float q, float number, float rho)
 {
-    if (!(q > 1.0e-12f) || !(number > 1.0e-15f)) return 0.0f;
-
-    const float minimum_volume =
-        0.523599f * (80.0e-6f * 80.0e-6f * 80.0e-6f);
-    const float maximum_volume =
-        0.523599f * (6.0e-3f * 6.0e-3f * 6.0e-3f);
-    float mean_volume = rho * q / (1000.0f * number);
-    float effective_number = number;
-    if (mean_volume < minimum_volume || mean_volume > maximum_volume) {
-        mean_volume = fminf(maximum_volume,
-                            fmaxf(minimum_volume, mean_volume));
-        effective_number = rho * q / (1000.0f * mean_volume);
-    }
-    const float z_factor =
-        (6.0f / (3.14159265358979323846f * 1000.0f))
-        * (6.0f / (3.14159265358979323846f * 1000.0f));
-    return 120.0f * rho * rho * q * q / effective_number * z_factor;
+    return nssl2_sediment_z(q, number, rho, 1000.0f, 20.0f,
+                            NSSL2_WRF_XVRMN, NSSL2_WRF_XVRMX0);
 }
 
 template <int KMAX>
@@ -579,12 +611,10 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
     float number_mass_weighted[KMAX];
 
     const float pi = 3.14159265358979323846f;
-    const float minimum_volume =
-        0.523599f * (80.0e-6f * 80.0e-6f * 80.0e-6f);
-    const float configured_maximum_volume =
-        0.523599f * (6.0e-3f * 6.0e-3f * 6.0e-3f);
+    const float minimum_volume = NSSL2_WRF_XVRMN;
+    const float configured_maximum_volume = NSSL2_WRF_XVRMX0;
     const float maximum_speed_volume =
-        configured_maximum_volume / (64.0f / 6.0f);
+        __fdiv_rn(configured_maximum_volume, 64.0f / 6.0f);
     float maximum_courant_rate = 0.0f;
 
     for (int k = 0; k < nz; ++k) {
@@ -607,18 +637,19 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
                 mean_volume = minimum_volume;
             }
 
-            const float diameter = powf(
-                __fdiv_rn((6.0f / pi) * mean_volume, (3.0f * 2.0f * 1.0f)),
+            const float diameter = gfk_pow(
+                __fdiv_rn((6.0f * NSSL2_WRF_PIINV) * mean_volume,
+                          (3.0f * 2.0f * 1.0f)),
                 1.0f / 3.0f);
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho[k]));
             const float speed_base = 1.0f + 516.575f * diameter;
             float vm = density_factor * 10.0f
-                * (1.0f - powf(speed_base, -4.0f));
+                * (1.0f - gfk_pow(speed_base, -4.0f));
             float vn = density_factor * 10.0f
-                * (1.0f - powf(speed_base, -1.0f));
+                * (1.0f - gfk_pow(speed_base, -1.0f));
             float vz = density_factor * 10.0f
-                * (1.0f - powf(speed_base, -7.0f));
+                * (1.0f - gfk_pow(speed_base, -7.0f));
             if (vn > vm || (vm > vz && vz > 0.0f)) {
                 vm = fmaxf(vm, vn);
                 vz = fmaxf(vz, vm);
@@ -678,7 +709,7 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
         for (int k = 0; k < nz; ++k) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            rain[k] += dt_substep * inverse_dz / rho[k]
+            rain[k] += dt_substep * (inverse_dz * (1.0f / rho[k]))
                 * (mass_flux[k + 1] - mass_flux[k]);
             number[k] += dt_substep * inverse_dz
                 * (number_flux[k + 1] - number_flux[k]);
@@ -692,25 +723,10 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
         // reconstruction, but stores REAL(Nz) before its max/min correction.
         for (int k = 0; k < nz; ++k) {
             if (z_advected[k] > 0.0f) {
-                const float diagnosed =
-                    nssl2_rain_z(rain[k], number[k], rho[k]);
-                if (diagnosed > z_advected[k]
-                        && z_advected[k] > z_initial[k]) {
-                    const double z_factor =
-                        (double)(6.0f / (pi * 1000.0f))
-                        * (double)(6.0f / (pi * 1000.0f));
-                    const double reconstructed =
-                        120.0 * (double)rho[k] * (double)rho[k]
-                        * (double)rain[k] * (double)rain[k]
-                        / ((double)z_advected[k] / z_factor);
-                    const float reconstructed_real = (float)reconstructed;
-                    number[k] = fmaxf(
-                        fminf(reconstructed_real,
-                              number_mass_weighted[k]),
-                        number[k]);
-                } else {
-                    number[k] = fmaxf(number_mass_weighted[k], number[k]);
-                }
+                number[k] = nssl2_sediment_number_from_z(
+                    rain[k], number[k], rho[k], 1000.0f, 20.0f,
+                    NSSL2_WRF_XVRMN, NSSL2_WRF_XVRMX0, z_advected[k],
+                    z_initial[k], number_mass_weighted[k]);
             }
         }
     }
@@ -720,7 +736,11 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
         qr[idx] = rain[k];
         qnr[idx] = number[k];
     }
-    const float exported = dt * rho[0] * surface_mean_flux;
+    // WRF's surface reducer (module_mp_nssl_2mom.F:3008-3061) sums the four
+    // categories' xfall before it multiplies by dtp*dn1, so this row carries
+    // the raw xfall and nssl2_driver_reduce_precipitation applies WRF's
+    // formula; a per-category dt*rho product cannot be summed back exactly.
+    const float exported = surface_mean_flux;
     rainncv[column] = exported;
     rainnc[column] += exported;
 }
@@ -757,12 +777,10 @@ __device__ __forceinline__ void nssl2_rain_sediment_parallel_impl(
     float number_mass_weighted = 0.0f;
 
     const float pi = 3.14159265358979323846f;
-    const float minimum_volume =
-        0.523599f * (80.0e-6f * 80.0e-6f * 80.0e-6f);
-    const float configured_maximum_volume =
-        0.523599f * (6.0e-3f * 6.0e-3f * 6.0e-3f);
+    const float minimum_volume = NSSL2_WRF_XVRMN;
+    const float configured_maximum_volume = NSSL2_WRF_XVRMX0;
     const float maximum_speed_volume =
-        configured_maximum_volume / (64.0f / 6.0f);
+        __fdiv_rn(configured_maximum_volume, 64.0f / 6.0f);
     float maximum_courant_rate = 0.0f;
 
     if (k < nz) {
@@ -785,18 +803,19 @@ __device__ __forceinline__ void nssl2_rain_sediment_parallel_impl(
                 mean_volume = minimum_volume;
             }
 
-            const float diameter = powf(
-                __fdiv_rn((6.0f / pi) * mean_volume, (3.0f * 2.0f * 1.0f)),
+            const float diameter = gfk_pow(
+                __fdiv_rn((6.0f * NSSL2_WRF_PIINV) * mean_volume,
+                          (3.0f * 2.0f * 1.0f)),
                 1.0f / 3.0f);
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho));
             const float speed_base = 1.0f + 516.575f * diameter;
             float vm = density_factor * 10.0f
-                * (1.0f - powf(speed_base, -4.0f));
+                * (1.0f - gfk_pow(speed_base, -4.0f));
             float vn = density_factor * 10.0f
-                * (1.0f - powf(speed_base, -1.0f));
+                * (1.0f - gfk_pow(speed_base, -1.0f));
             float vz = density_factor * 10.0f
-                * (1.0f - powf(speed_base, -7.0f));
+                * (1.0f - gfk_pow(speed_base, -7.0f));
             if (vn > vm || (vm > vz && vz > 0.0f)) {
                 vm = fmaxf(vm, vn);
                 vz = fmaxf(vz, vm);
@@ -867,7 +886,7 @@ __device__ __forceinline__ void nssl2_rain_sediment_parallel_impl(
         if (k < nz) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            rain += dt_substep * inverse_dz / rho
+            rain += dt_substep * (inverse_dz * (1.0f / rho))
                 * (mass_flux[k + 1] - mass_flux[k]);
             number += dt_substep * inverse_dz
                 * (number_flux[k + 1] - number_flux[k]);
@@ -881,25 +900,10 @@ __device__ __forceinline__ void nssl2_rain_sediment_parallel_impl(
         // reconstruction, but stores REAL(Nz) before its max/min correction.
         if (k < nz) {
             if (z_advected > 0.0f) {
-                const float diagnosed =
-                    nssl2_rain_z(rain, number, rho);
-                if (diagnosed > z_advected
-                        && z_advected > z_initial) {
-                    const double z_factor =
-                        (double)(6.0f / (pi * 1000.0f))
-                        * (double)(6.0f / (pi * 1000.0f));
-                    const double reconstructed =
-                        120.0 * (double)rho * (double)rho
-                        * (double)rain * (double)rain
-                        / ((double)z_advected / z_factor);
-                    const float reconstructed_real = (float)reconstructed;
-                    number = fmaxf(
-                        fminf(reconstructed_real,
-                              number_mass_weighted),
-                        number);
-                } else {
-                    number = fmaxf(number_mass_weighted, number);
-                }
+                number = nssl2_sediment_number_from_z(
+                    rain, number, rho, 1000.0f, 20.0f,
+                    NSSL2_WRF_XVRMN, NSSL2_WRF_XVRMX0, z_advected,
+                    z_initial, number_mass_weighted);
             }
         }
         __syncthreads();
@@ -911,7 +915,8 @@ __device__ __forceinline__ void nssl2_rain_sediment_parallel_impl(
         qnr[idx] = number;
     }
     if (k == 0) {
-        const float exported = dt * rho * surface_mean_flux;
+        // Raw xfall: see the reducer (WRF sums xfall before dtp*dn1).
+        const float exported = surface_mean_flux;
         rainncv[column] = exported;
         if constexpr (ACCUMULATE) rainnc[column] += exported;
     }
@@ -969,10 +974,8 @@ __device__ __forceinline__ void nssl2_snow_sediment_impl(
     float mass_number_flux[KMAX + 1];
     float number_mass_weighted[KMAX];
 
-    const float minimum_volume =
-        0.523599f * (0.01e-3f * 0.01e-3f * 0.01e-3f);
-    const float maximum_volume =
-        0.523599f * (10.0e-3f * 10.0e-3f * 10.0e-3f);
+    const float minimum_volume = NSSL2_WRF_XVSMN;
+    const float maximum_volume = NSSL2_WRF_XVSMX;
     float maximum_courant_rate = 0.0f;
 
     for (int k = 0; k < nz; ++k) {
@@ -993,7 +996,7 @@ __device__ __forceinline__ void nssl2_snow_sediment_impl(
                 maximum_volume, fmaxf(minimum_volume, mean_volume));
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho[k]));
-            const float size_factor = powf(mean_volume, 0.14f);
+            const float size_factor = gfk_pow(mean_volume, 0.14f);
             mass_velocity[k] = fminf(
                 70.0f, 11.9495f * density_factor * size_factor);
             number_velocity[k] = fminf(
@@ -1045,7 +1048,7 @@ __device__ __forceinline__ void nssl2_snow_sediment_impl(
         for (int k = 0; k < nz; ++k) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            snow[k] += dt_substep * inverse_dz / rho[k]
+            snow[k] += dt_substep * (inverse_dz * (1.0f / rho[k]))
                 * (mass_flux[k + 1] - mass_flux[k]);
             number[k] += dt_substep * inverse_dz
                 * (number_flux[k + 1] - number_flux[k]);
@@ -1063,7 +1066,11 @@ __device__ __forceinline__ void nssl2_snow_sediment_impl(
         qs[idx] = snow[k];
         qns[idx] = number[k];
     }
-    const float exported = dt * rho[0] * surface_mean_flux;
+    // WRF's surface reducer (module_mp_nssl_2mom.F:3008-3061) sums the four
+    // categories' xfall before it multiplies by dtp*dn1, so this row carries
+    // the raw xfall and nssl2_driver_reduce_precipitation applies WRF's
+    // formula; a per-category dt*rho product cannot be summed back exactly.
+    const float exported = surface_mean_flux;
     snowncv[column] = exported;
     snownc[column] += exported;
 }
@@ -1096,10 +1103,8 @@ __device__ __forceinline__ void nssl2_snow_sediment_parallel_impl(
     float* mass_number_flux = shared_sediment + 130;
     float number_mass_weighted = 0.0f;
 
-    const float minimum_volume =
-        0.523599f * (0.01e-3f * 0.01e-3f * 0.01e-3f);
-    const float maximum_volume =
-        0.523599f * (10.0e-3f * 10.0e-3f * 10.0e-3f);
+    const float minimum_volume = NSSL2_WRF_XVSMN;
+    const float maximum_volume = NSSL2_WRF_XVSMX;
     float maximum_courant_rate = 0.0f;
 
     if (k < nz) {
@@ -1120,7 +1125,7 @@ __device__ __forceinline__ void nssl2_snow_sediment_parallel_impl(
                 maximum_volume, fmaxf(minimum_volume, mean_volume));
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho));
-            const float size_factor = powf(mean_volume, 0.14f);
+            const float size_factor = gfk_pow(mean_volume, 0.14f);
             mass_velocity = fminf(
                 70.0f, 11.9495f * density_factor * size_factor);
             number_velocity = fminf(
@@ -1183,7 +1188,7 @@ __device__ __forceinline__ void nssl2_snow_sediment_parallel_impl(
         if (k < nz) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            snow += dt_substep * inverse_dz / rho
+            snow += dt_substep * (inverse_dz * (1.0f / rho))
                 * (mass_flux[k + 1] - mass_flux[k]);
             number += dt_substep * inverse_dz
                 * (number_flux[k + 1] - number_flux[k]);
@@ -1203,7 +1208,8 @@ __device__ __forceinline__ void nssl2_snow_sediment_parallel_impl(
         qns[idx] = number;
     }
     if (k == 0) {
-        const float exported = dt * rho * surface_mean_flux;
+        // Raw xfall: see the reducer (WRF sums xfall before dtp*dn1).
+        const float exported = surface_mean_flux;
         snowncv[column] = exported;
         if constexpr (ACCUMULATE) snownc[column] += exported;
     }
@@ -1286,7 +1292,7 @@ __device__ __forceinline__ void nssl2_ice_sediment_impl(
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho[k]));
             const float tmp = 47.6273f * density_factor
-                / powf(1.0f / mean_volume, 0.18333f);
+                / gfk_pow(1.0f / mean_volume, 0.18333f);
             number_velocity[k] = fminf(70.0f, tmp * gamma_1p18);
             mass_velocity[k] = fminf(70.0f, tmp * gamma_2p18);
         }
@@ -1331,7 +1337,7 @@ __device__ __forceinline__ void nssl2_ice_sediment_impl(
         for (int k = 0; k < nz; ++k) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            ice[k] += dt_substep * inverse_dz / rho[k]
+            ice[k] += dt_substep * (inverse_dz * (1.0f / rho[k]))
                 * (mass_flux[k + 1] - mass_flux[k]);
             number[k] += dt_substep * inverse_dz
                 * (number_flux[k + 1] - number_flux[k]);
@@ -1408,7 +1414,7 @@ __device__ __forceinline__ void nssl2_ice_sediment_parallel_impl(
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho));
             const float tmp = 47.6273f * density_factor
-                / powf(1.0f / mean_volume, 0.18333f);
+                / gfk_pow(1.0f / mean_volume, 0.18333f);
             number_velocity = fminf(70.0f, tmp * gamma_1p18);
             mass_velocity = fminf(70.0f, tmp * gamma_2p18);
         }
@@ -1464,7 +1470,7 @@ __device__ __forceinline__ void nssl2_ice_sediment_parallel_impl(
         if (k < nz) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            ice += dt_substep * inverse_dz / rho
+            ice += dt_substep * (inverse_dz * (1.0f / rho))
                 * (mass_flux[k + 1] - mass_flux[k]);
             number += dt_substep * inverse_dz
                 * (number_flux[k + 1] - number_flux[k]);
@@ -1520,30 +1526,17 @@ extern "C" __global__ void nssl2_ice_sediment_256(
 // before the result is rounded back to REAL.
 __device__ __forceinline__ float nssl2_gamma_lookup(float argument)
 {
-    const double scaled = 100.0 * (double)argument;
-    const int lower_index = (int)scaled;
-    const double lower = 0.01 * (double)lower_index;
-    const double fraction = (double)argument - lower;
-    const double lower_gamma = tgamma(lower);
-    const double upper_gamma = tgamma(lower + 0.01);
-    return (float)(lower_gamma
-        + (upper_gamma - lower_gamma) * fraction * 100.0);
+    return nssl2_gmoi_lookup(argument);
 }
 
-// Each block reuses the exact device gamma values for the velocity indices.
+// Each block reuses WRF's gmoi values for the velocity indices.
 __device__ __forceinline__ float nssl2_gamma_lookup_shared(
     float argument, const double* table, int shape)
 {
-    const double scaled = 100.0 * (double)argument;
-    const int lower_index = (int)scaled;
-    const double lower = 0.01 * (double)lower_index;
-    const double fraction = (double)argument - lower;
+    const int lower_index = nssl2_gmoi_index(argument);
     const int group = (lower_index - 150 - 100 * shape) / 300;
     const int slot = group * 20 + lower_index - (150 + 100 * shape + group * 300);
-    const double lower_gamma = table[2 * slot];
-    const double upper_gamma = table[2 * slot + 1];
-    return (float)(lower_gamma
-        + (upper_gamma - lower_gamma) * fraction * 100.0);
+    return nssl2_gmoi_blend(argument, table[2 * slot], table[2 * slot + 1]);
 }
 
 template <bool CACHED>
@@ -1557,34 +1550,39 @@ __device__ __forceinline__ float nssl2_velocity_gamma_lookup(
     }
 }
 
+// calczgr1d / calcnfromz1d particle density for graupel and hail: the
+// volume moment when it is positive, clamped to [hdnmn, 900] (hdnmn = 170
+// for both categories there), else xdn0 (rho_qh = 500, rho_qhl = 900).
+__device__ __forceinline__ float nssl2_dense_frozen_z_density(
+    float q, float volume, float rho, bool hail)
+{
+    if (volume > 0.0f) {
+        return fminf(900.0f, fmaxf(170.0f, rho * q / volume));
+    }
+    return hail ? 900.0f : 500.0f;
+}
+
 __device__ __forceinline__ float nssl2_dense_frozen_z(
     float q, float number, float volume, float rho, bool hail)
 {
     if (!(q > 1.0e-12f) || !(number > 1.0e-15f)) return 0.0f;
+    return nssl2_sediment_z(
+        q, number, rho, nssl2_dense_frozen_z_density(q, volume, rho, hail),
+        hail ? 8.75f : 20.0f,
+        hail ? NSSL2_WRF_XVHLMN : NSSL2_WRF_XVHMN,
+        hail ? NSSL2_WRF_XVHLMX : NSSL2_WRF_XVHMX0);
+}
 
-    const float minimum_volume =
-        0.523599f * (0.3e-3f * 0.3e-3f * 0.3e-3f);
-    const float maximum_diameter = hail ? 40.0e-3f : 20.0e-3f;
-    const float maximum_volume = 0.523599f * maximum_diameter
-        * maximum_diameter * maximum_diameter;
-    float particle_density = hail ? 800.0f : 500.0f;
-    if (volume > 0.0f) {
-        particle_density = fminf(
-            900.0f, fmaxf(170.0f, rho * q / volume));
-    }
-    float mean_volume = rho * q / (particle_density * number);
-    float effective_number = number;
-    if (mean_volume < minimum_volume || mean_volume > maximum_volume) {
-        mean_volume = fminf(
-            maximum_volume, fmaxf(minimum_volume, mean_volume));
-        effective_number = rho * q / (particle_density * mean_volume);
-    }
-    const float z_factor =
-        (6.0f / (3.14159265358979323846f * 1000.0f))
-        * (6.0f / (3.14159265358979323846f * 1000.0f));
-    const float moment_ratio = hail ? 8.75f : 20.0f;
-    return moment_ratio * rho * rho * q * q
-        / effective_number * z_factor;
+__device__ __forceinline__ float nssl2_dense_frozen_number_from_z(
+    float q, float number, float volume, float rho, bool hail,
+    float z_advected, float z_initial, float number_mass_weighted)
+{
+    return nssl2_sediment_number_from_z(
+        q, number, rho, nssl2_dense_frozen_z_density(q, volume, rho, hail),
+        hail ? 8.75f : 20.0f,
+        hail ? NSSL2_WRF_XVHLMN : NSSL2_WRF_XVHMN,
+        hail ? NSSL2_WRF_XVHLMX : NSSL2_WRF_XVHMX0,
+        z_advected, z_initial, number_mass_weighted);
 }
 
 __device__ __forceinline__ void nssl2_graupel_mm_coefficients(
@@ -1615,6 +1613,59 @@ __device__ __forceinline__ void nssl2_graupel_mm_coefficients(
         *coefficient = table_coefficient[index];
         *exponent = table_exponent[index];
     }
+}
+
+// ziegfall1d (module_mp_nssl_2mom.F:7595) + setvtz (:6211) for graupel
+// (icdx = 6) and hail (icdxhl = 6), ipconc = 5, infdo = 2.
+template <bool HAIL, bool CACHED>
+__device__ __forceinline__ void nssl2_dense_frozen_velocities(
+    float q_raw, float number, float volume, float rho,
+    const double* cached_gamma, float* vm, float* vn, float* vz)
+{
+    *vm = 0.0f;
+    *vn = 0.0f;
+    *vz = 0.0f;
+    const float q = fmaxf(q_raw, 0.0f);
+    if (!(q > 1.0e-12f)) return;
+    float xdn = HAIL ? 900.0f : 500.0f;
+    const float vx = fmaxf(volume, 0.0f);
+    if (vx > (rho * 1.0e-12f) * 1.0e-3f) {
+        xdn = fminf(900.0f, fmaxf(HAIL ? 500.0f : 170.0f, rho * q / vx));
+    }
+    const float xvmn = HAIL ? NSSL2_WRF_XVHLMN : NSSL2_WRF_XVHMN;
+    const float xvmx = HAIL ? NSSL2_WRF_XVHLMX : NSSL2_WRF_XVHMX0;
+    float xv = rho * q / (xdn * fmaxf(1.0e-9f, number));
+    if (xv < xvmn || xv > xvmx) xv = fminf(xvmx, fmaxf(xvmn, xv));
+    // graupel: (xv*6.*pii)**(1./3.); hail: (xv*6./pi)**(1./3.)
+    const float mass_diameter = HAIL
+        ? gfk_pow(__fdiv_rn(xv * 6.0f, NSSL2_WRF_PI), 1.0f / 3.0f)
+        : gfk_pow((xv * 6.0f) * NSSL2_WRF_PIINV, 1.0f / 3.0f);
+    const float alpha = HAIL ? 1.0f : 0.0f;
+    const float cwch = gfk_pow(
+        (3.0f + alpha) * (2.0f + alpha) * (1.0f + alpha), -1.0f / 3.0f);
+    const float xdia = cwch * mass_diameter;
+    float aax;
+    float bbx;
+    nssl2_graupel_mm_coefficients(xdn, &aax, &bbx);
+    const float rhovt = sqrtf(1.225f * fminf(20.0f, 1.0f / rho));
+    const float power = gfk_pow(xdia, bbx);
+    const int shape = HAIL ? 1 : 0;
+    float v1 = rhovt * aax * power
+        * nssl2_velocity_gamma_lookup<CACHED>(4.0f + alpha + bbx, cached_gamma, shape)
+        / nssl2_gamma_lookup(4.0f + alpha);
+    float v2 = rhovt * aax * power
+        * nssl2_velocity_gamma_lookup<CACHED>(1.0f + alpha + bbx, cached_gamma, shape)
+        / nssl2_gamma_lookup(1.0f + alpha);
+    float v3 = rhovt * (aax * power
+        * nssl2_velocity_gamma_lookup<CACHED>(7.0f + alpha + bbx, cached_gamma, shape))
+        / nssl2_gamma_lookup(7.0f + alpha);
+    if (v2 > v1 || (v1 > v3 && v3 > 0.0f)) {
+        v1 = fmaxf(v1, v2);
+        v3 = fmaxf(v3, v1);
+    }
+    *vm = fminf(70.0f, fminf(150.0f, v1));
+    *vn = fminf(70.0f, fminf(150.0f, v2));
+    *vz = fminf(70.0f, fminf(150.0f, v3));
 }
 
 template <int KMAX, bool HAIL, bool CACHED = false>
@@ -1649,15 +1700,6 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
     float z_advected[KMAX];
     float number_mass_weighted[KMAX];
 
-    const float pi = 3.14159265358979323846f;
-    const float minimum_volume =
-        0.523599f * (0.3e-3f * 0.3e-3f * 0.3e-3f);
-    const float maximum_diameter = HAIL ? 40.0e-3f : 20.0e-3f;
-    const float maximum_volume = 0.523599f * maximum_diameter
-        * maximum_diameter * maximum_diameter;
-    const float shape = HAIL ? 1.0f : 0.0f;
-    const float characteristic_factor = powf(
-        HAIL ? 24.0f : 6.0f, -1.0f / 3.0f);
     float maximum_courant_rate = 0.0f;
 
     for (int k = 0; k < nz; ++k) {
@@ -1670,53 +1712,9 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
         number_velocity[k] = 0.0f;
         z_velocity[k] = 0.0f;
 
-        const float positive_graupel = fmaxf(graupel[k], 0.0f);
-        if (positive_graupel > 1.0e-12f) {
-            const float minimum_density = HAIL ? 500.0f : 170.0f;
-            float particle_density = HAIL ? 800.0f : 500.0f;
-            if (volume[k] > rho[k] * 1.0e-15f) {
-                particle_density = fminf(
-                    900.0f,
-                    fmaxf(minimum_density,
-                          rho[k] * positive_graupel / volume[k]));
-            }
-            float mean_volume = rho[k] * positive_graupel
-                / (particle_density * fmaxf(1.0e-9f, number[k]));
-            mean_volume = fminf(
-                maximum_volume, fmaxf(minimum_volume, mean_volume));
-            const float mass_diameter = powf(__fdiv_rn(6.0f * mean_volume, pi),
-                                             1.0f / 3.0f);
-            const float characteristic_diameter =
-                characteristic_factor * mass_diameter;
-            float coefficient;
-            float exponent;
-            nssl2_graupel_mm_coefficients(
-                particle_density, &coefficient, &exponent);
-            const float density_factor = sqrtf(
-                1.225f * fminf(20.0f, 1.0f / rho[k]));
-            const float base_speed = density_factor * coefficient
-                * powf(characteristic_diameter, exponent);
-            mass_velocity[k] = base_speed
-                * nssl2_velocity_gamma_lookup<CACHED>(4.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
-                / nssl2_gamma_lookup(4.0f + shape);
-            number_velocity[k] = base_speed
-                * nssl2_velocity_gamma_lookup<CACHED>(1.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
-                / nssl2_gamma_lookup(1.0f + shape);
-            z_velocity[k] = base_speed
-                * nssl2_velocity_gamma_lookup<CACHED>(7.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
-                / nssl2_gamma_lookup(7.0f + shape);
-            if (number_velocity[k] > mass_velocity[k]
-                    || (mass_velocity[k] > z_velocity[k]
-                        && z_velocity[k] > 0.0f)) {
-                mass_velocity[k] = fmaxf(
-                    mass_velocity[k], number_velocity[k]);
-                z_velocity[k] = fmaxf(z_velocity[k], mass_velocity[k]);
-            }
-            mass_velocity[k] = fminf(70.0f, fminf(150.0f, mass_velocity[k]));
-            number_velocity[k] = fminf(
-                70.0f, fminf(150.0f, number_velocity[k]));
-            z_velocity[k] = fminf(70.0f, fminf(150.0f, z_velocity[k]));
-        }
+        nssl2_dense_frozen_velocities<HAIL, CACHED>(
+            graupel[k], number[k], volume[k], rho[k], cached_gamma,
+            &mass_velocity[k], &number_velocity[k], &z_velocity[k]);
         const float inverse_dz = 1.0f / dz[idx];
         maximum_courant_rate = fmaxf(
             maximum_courant_rate, mass_velocity[k] * inverse_dz);
@@ -1768,7 +1766,7 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
         for (int k = 0; k < nz; ++k) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            graupel[k] += dt_substep * inverse_dz / rho[k]
+            graupel[k] += dt_substep * (inverse_dz * (1.0f / rho[k]))
                 * (mass_flux[k + 1] - mass_flux[k]);
             volume[k] += dt_substep * inverse_dz
                 * (volume_flux[k + 1] - volume_flux[k]);
@@ -1782,28 +1780,9 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
 
         for (int k = 0; k < nz; ++k) {
             if (z_advected[k] > 0.0f) {
-                const float diagnosed = nssl2_dense_frozen_z(
-                    graupel[k], number[k], volume[k], rho[k], HAIL);
-                if (diagnosed > z_advected[k]
-                        && diagnosed > 0.0f
-                        && z_advected[k] > z_initial[k]) {
-                    const double z_factor =
-                        (double)(6.0f / (pi * 1000.0f))
-                        * (double)(6.0f / (pi * 1000.0f));
-                    const double moment_ratio = HAIL ? 8.75 : 20.0;
-                    const double reconstructed =
-                        moment_ratio * (double)rho[k] * (double)rho[k]
-                        * (double)graupel[k] * (double)graupel[k]
-                        / ((double)z_advected[k] / z_factor);
-                    const float reconstructed_real = (float)reconstructed;
-                    number[k] = fmaxf(
-                        fminf(reconstructed_real,
-                              number_mass_weighted[k]),
-                        number[k]);
-                } else {
-                    number[k] = fmaxf(
-                        number_mass_weighted[k], number[k]);
-                }
+                number[k] = nssl2_dense_frozen_number_from_z(
+                    graupel[k], number[k], volume[k], rho[k], HAIL,
+                    z_advected[k], z_initial[k], number_mass_weighted[k]);
             }
         }
     }
@@ -1814,7 +1793,11 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
         qnx[idx] = number[k];
         qvolx[idx] = volume[k];
     }
-    const float exported = dt * rho[0] * surface_mean_flux;
+    // WRF's surface reducer (module_mp_nssl_2mom.F:3008-3061) sums the four
+    // categories' xfall before it multiplies by dtp*dn1, so this row carries
+    // the raw xfall and nssl2_driver_reduce_precipitation applies WRF's
+    // formula; a per-category dt*rho product cannot be summed back exactly.
+    const float exported = surface_mean_flux;
     frozenncv[column] = exported;
     frozennc[column] += exported;
 }
@@ -1853,15 +1836,6 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_parallel_cached(
     float z_advected = 0.0f;
     float number_mass_weighted = 0.0f;
 
-    const float pi = 3.14159265358979323846f;
-    const float minimum_volume =
-        0.523599f * (0.3e-3f * 0.3e-3f * 0.3e-3f);
-    const float maximum_diameter = HAIL ? 40.0e-3f : 20.0e-3f;
-    const float maximum_volume = 0.523599f * maximum_diameter
-        * maximum_diameter * maximum_diameter;
-    const float shape = HAIL ? 1.0f : 0.0f;
-    const float characteristic_factor = powf(
-        HAIL ? 24.0f : 6.0f, -1.0f / 3.0f);
     float maximum_courant_rate = 0.0f;
 
     if (k < nz) {
@@ -1874,53 +1848,9 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_parallel_cached(
         number_velocity = 0.0f;
         z_velocity = 0.0f;
 
-        const float positive_graupel = fmaxf(graupel, 0.0f);
-        if (positive_graupel > 1.0e-12f) {
-            const float minimum_density = HAIL ? 500.0f : 170.0f;
-            float particle_density = HAIL ? 800.0f : 500.0f;
-            if (volume > rho * 1.0e-15f) {
-                particle_density = fminf(
-                    900.0f,
-                    fmaxf(minimum_density,
-                          rho * positive_graupel / volume));
-            }
-            float mean_volume = rho * positive_graupel
-                / (particle_density * fmaxf(1.0e-9f, number));
-            mean_volume = fminf(
-                maximum_volume, fmaxf(minimum_volume, mean_volume));
-            const float mass_diameter = powf(__fdiv_rn(6.0f * mean_volume, pi),
-                                             1.0f / 3.0f);
-            const float characteristic_diameter =
-                characteristic_factor * mass_diameter;
-            float coefficient;
-            float exponent;
-            nssl2_graupel_mm_coefficients(
-                particle_density, &coefficient, &exponent);
-            const float density_factor = sqrtf(
-                1.225f * fminf(20.0f, 1.0f / rho));
-            const float base_speed = density_factor * coefficient
-                * powf(characteristic_diameter, exponent);
-            mass_velocity = base_speed
-                * nssl2_gamma_lookup_shared(4.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
-                / nssl2_gamma_lookup(4.0f + shape);
-            number_velocity = base_speed
-                * nssl2_gamma_lookup_shared(1.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
-                / nssl2_gamma_lookup(1.0f + shape);
-            z_velocity = base_speed
-                * nssl2_gamma_lookup_shared(7.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
-                / nssl2_gamma_lookup(7.0f + shape);
-            if (number_velocity > mass_velocity
-                    || (mass_velocity > z_velocity
-                        && z_velocity > 0.0f)) {
-                mass_velocity = fmaxf(
-                    mass_velocity, number_velocity);
-                z_velocity = fmaxf(z_velocity, mass_velocity);
-            }
-            mass_velocity = fminf(70.0f, fminf(150.0f, mass_velocity));
-            number_velocity = fminf(
-                70.0f, fminf(150.0f, number_velocity));
-            z_velocity = fminf(70.0f, fminf(150.0f, z_velocity));
-        }
+        nssl2_dense_frozen_velocities<HAIL, true>(
+            graupel, number, volume, rho, cached_gamma,
+            &mass_velocity, &number_velocity, &z_velocity);
         const float inverse_dz = 1.0f / dz[idx];
         maximum_courant_rate = fmaxf(
             maximum_courant_rate, mass_velocity * inverse_dz);
@@ -1983,7 +1913,7 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_parallel_cached(
         if (k < nz) {
             const size_t idx = IDX3(k, j, i);
             const float inverse_dz = 1.0f / dz[idx];
-            graupel += dt_substep * inverse_dz / rho
+            graupel += dt_substep * (inverse_dz * (1.0f / rho))
                 * (mass_flux[k + 1] - mass_flux[k]);
             volume += dt_substep * inverse_dz
                 * (volume_flux[k + 1] - volume_flux[k]);
@@ -1997,28 +1927,9 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_parallel_cached(
 
         if (k < nz) {
             if (z_advected > 0.0f) {
-                const float diagnosed = nssl2_dense_frozen_z(
-                    graupel, number, volume, rho, HAIL);
-                if (diagnosed > z_advected
-                        && diagnosed > 0.0f
-                        && z_advected > z_initial) {
-                    const double z_factor =
-                        (double)(6.0f / (pi * 1000.0f))
-                        * (double)(6.0f / (pi * 1000.0f));
-                    const double moment_ratio = HAIL ? 8.75 : 20.0;
-                    const double reconstructed =
-                        moment_ratio * (double)rho * (double)rho
-                        * (double)graupel * (double)graupel
-                        / ((double)z_advected / z_factor);
-                    const float reconstructed_real = (float)reconstructed;
-                    number = fmaxf(
-                        fminf(reconstructed_real,
-                              number_mass_weighted),
-                        number);
-                } else {
-                    number = fmaxf(
-                        number_mass_weighted, number);
-                }
+                number = nssl2_dense_frozen_number_from_z(
+                    graupel, number, volume, rho, HAIL,
+                    z_advected, z_initial, number_mass_weighted);
             }
         }
         __syncthreads();
@@ -2031,7 +1942,8 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_parallel_cached(
         qvolx[idx] = volume;
     }
     if (k == 0) {
-        const float exported = dt * rho * surface_mean_flux;
+        // Raw xfall: see the reducer (WRF sums xfall before dtp*dn1).
+        const float exported = surface_mean_flux;
         frozenncv[column] = exported;
         if constexpr (ACCUMULATE) frozennc[column] += exported;
     }
@@ -2087,9 +1999,8 @@ extern "C" __global__ void nssl2_fill_velocity_gamma(double* table)
     const int slot = threadIdx.x;
     if (slot >= 60) return;
     const int index = 150 + 100 * shape + (slot / 20) * 300 + slot % 20;
-    const double lower = 0.01 * (double)index;
-    table[shape * 120 + 2 * slot] = tgamma(lower);
-    table[shape * 120 + 2 * slot + 1] = tgamma(lower + 0.01);
+    table[shape * 120 + 2 * slot] = nssl2_gmoi(index);
+    table[shape * 120 + 2 * slot + 1] = nssl2_gmoi(index + 1);
 }
 
 
@@ -2152,6 +2063,7 @@ extern "C" __global__ void nssl2_sediment_all_parallel_64(
 
 extern "C" __global__ void nssl2_driver_reduce_precipitation(
     const float* __restrict__ category_export,
+    const float* __restrict__ air_density,
     float* __restrict__ rainnc,
     float* __restrict__ rainncv,
     float* __restrict__ snownc,
@@ -2161,28 +2073,43 @@ extern "C" __global__ void nssl2_driver_reduce_precipitation(
     float* __restrict__ hailnc,
     float* __restrict__ hailncv,
     float* __restrict__ sr,
+    float dt,
     int ncol)
 {
     const int column = blockDim.x * blockIdx.x + threadIdx.x;
     if (column >= ncol) return;
 
-    // category_export order is rain, cloud ice, snow, graupel, hail.  WRF's
-    // standard surface reducer intentionally does not include cloud-ice xfall.
-    const float rain = category_export[column];
-    const float snow = category_export[2 * ncol + column];
-    const float graupel = category_export[3 * ncol + column];
-    const float hail = category_export[4 * ncol + column];
-    const float total = rain + snow + graupel + hail;
+    // module_mp_nssl_2mom.F:2804-2807 and :3008-3061 (one microphysics loop,
+    // HAILNC present).  category_export rows are rain, cloud ice (kg/m2,
+    // not reduced: WRF's reducer omits cloud-ice fallout), snow, graupel,
+    // hail; the four reduced rows carry WRF's surface xfall.  xdn0(lr) is a
+    // runtime REAL, so x*1000./xdn0(lr) is a multiply and a divide.  With
+    // hail off the hail row is +0 and every hail term vanishes exactly, as
+    // WRF's lhl < 1 branch and its HAILNCV = 0 reset do.
+    const float xr = category_export[column];
+    const float xs = category_export[2 * ncol + column];
+    const float xh = category_export[3 * ncol + column];
+    const float xhl = category_export[4 * ncol + column];
+    const float xdn0r = 1000.0f;
+    const float dtrho = dt * air_density[column];   // dtp*dn1(ix,1,1)
 
-    rainncv[column] = total;
-    snowncv[column] = snow;
-    graupelncv[column] = graupel;
-    hailncv[column] = hail;
-    rainnc[column] += total;
-    snownc[column] += snow;
-    graupelnc[column] += graupel;
-    hailnc[column] += hail;
-    sr[column] = (snow + graupel + hail) / (total + 1.0e-12f);
+    const float sum = ((xr + __fdiv_rn(xs * 1000.0f, xdn0r))
+                       + __fdiv_rn(xh * 1000.0f, xdn0r))
+                      + __fdiv_rn(xhl * 1000.0f, xdn0r);
+    const float rain_v = 0.0f + dtrho * sum;
+    const float snow_v = 0.0f + __fdiv_rn((dtrho * xs) * 1000.0f, xdn0r);
+    const float graupel_v = 0.0f + __fdiv_rn((dtrho * xh) * 1000.0f, xdn0r);
+    const float hail_v = __fdiv_rn((dtrho * xhl) * 1000.0f, xdn0r);
+
+    rainncv[column] = rain_v;
+    snowncv[column] = snow_v;
+    graupelncv[column] = graupel_v;
+    hailncv[column] = hail_v;
+    rainnc[column] = rainnc[column] + rain_v;
+    snownc[column] = snownc[column] + snow_v;
+    hailnc[column] = hailnc[column] + hail_v;
+    graupelnc[column] = graupelnc[column] + graupel_v;
+    sr[column] = __fdiv_rn((snow_v + hail_v) + graupel_v, rain_v + 1.e-12f);
 }
 
 extern "C" __global__ void nssl2_driver_scatter(

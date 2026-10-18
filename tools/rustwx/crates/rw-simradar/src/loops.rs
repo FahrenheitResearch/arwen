@@ -13,6 +13,7 @@ use image::{
     Delay, Frame,
     codecs::gif::{GifEncoder, Repeat},
 };
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -37,8 +38,40 @@ fn relative(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// Encode `frames` as one complete GIF.
+/// Encode `frames` as one complete GIF. Every frame is decoded and encoded
+/// on its own core as a one-frame GIF and the frames are joined behind the
+/// first header, which is byte-identical to one encoder writing them in
+/// turn (each frame carries its own palette; see the module note). A frame
+/// whose header differs from the first (another size) is encoded serially.
 pub(crate) fn encode(root: &Path, frames: &Frames<'_>) -> Result<Vec<u8>, String> {
+    if frames.len() < 2 {
+        return encode_serial(root, frames);
+    }
+    let pieces = frames
+        .par_iter()
+        .map(|frame| encode_serial(root, std::slice::from_ref(frame)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let layouts: Option<Vec<(usize, usize)>> = pieces.iter().map(|p| layout(p)).collect();
+    if let Some(layouts) = layouts {
+        let header = &pieces[0][..layouts[0].0];
+        if pieces
+            .iter()
+            .zip(&layouts)
+            .all(|(piece, (first, _))| &piece[..*first] == header)
+        {
+            let mut bytes = Vec::with_capacity(pieces.iter().map(Vec::len).sum());
+            bytes.extend_from_slice(header);
+            for (piece, (first, trailer)) in pieces.iter().zip(&layouts) {
+                bytes.extend_from_slice(&piece[*first..*trailer]);
+            }
+            bytes.push(0x3B);
+            return Ok(bytes);
+        }
+    }
+    encode_serial(root, frames)
+}
+
+fn encode_serial(root: &Path, frames: &Frames<'_>) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     {
         let mut encoder = GifEncoder::new_with_speed(&mut bytes, 20);
@@ -174,8 +207,12 @@ pub fn update(root: &Path, inventory: &mut Manifest) -> Result<(), String> {
                 .push((volume.valid_time.clone(), image));
         }
     }
-    let mut loops = Vec::new();
-    for ((domain, site, field, tilt), mut frames) in groups {
+    // Every loop (site, field, tilt) is built at once, kept in key order.
+    let previous_loops = &inventory.loops;
+    let groups: Vec<_> = groups.into_iter().collect();
+    let loops = groups
+        .into_par_iter()
+        .map(|((domain, site, field, tilt), mut frames)| -> Result<RadarLoop, String> {
         frames.sort_by(|a, b| a.0.cmp(&b.0));
         let directory = root
             .join("radar")
@@ -185,8 +222,7 @@ pub fn update(root: &Path, inventory: &mut Manifest) -> Result<(), String> {
             .join(&field);
         let path_for = |key: &str| directory.join(format!("tilt-{tilt:02}-{key}.gif"));
         let path = path_for(&loop_key(&frames)?);
-        let valid_existing = inventory
-            .loops
+        let valid_existing = previous_loops
             .iter()
             .find(|old| old.artifact.path == relative(root, &path))
             .is_some_and(|old| {
@@ -195,7 +231,7 @@ pub fn update(root: &Path, inventory: &mut Manifest) -> Result<(), String> {
                 })
             });
         if !valid_existing {
-            let previous = inventory.loops.iter().find(|old| {
+            let previous = previous_loops.iter().find(|old| {
                 old.domain == domain
                     && old.site_id == site
                     && old.field == field
@@ -211,7 +247,7 @@ pub fn update(root: &Path, inventory: &mut Manifest) -> Result<(), String> {
             };
             manifest::atomic_bytes(&path, &bytes)?;
         }
-        loops.push(RadarLoop {
+        Ok(RadarLoop {
             domain,
             site_id: site,
             field,
@@ -220,8 +256,9 @@ pub fn update(root: &Path, inventory: &mut Manifest) -> Result<(), String> {
             valid_times: frames.iter().map(|f| f.0.clone()).collect(),
             frames: frames.iter().map(|f| f.1.artifact.path.clone()).collect(),
             artifact: manifest::artifact(root, &path, "gif")?,
-        });
-    }
+        })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     for old in &inventory.loops {
         if !loops.iter().any(|new| new.artifact.path == old.artifact.path) {
             inventory.retired.push(old.artifact.path.clone());

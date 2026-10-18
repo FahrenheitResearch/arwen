@@ -169,3 +169,45 @@ def test_a_malformed_target_is_refused():
     module = _load()
     with pytest.raises(SystemExit):
         module.bump(REPO_ROOT, "2.7")
+
+
+def test_readme_links_into_the_tagged_tree_name_this_release(tmp_path):
+    """2.8.1 through 2.9.0 shipped a README whose tagged links said v2.8.0.
+
+    The NOTICE link then showed the 2.8.0 notice, without the maths-library
+    notices the 2.9.0 wheel carries, and the stage contract and changelog were
+    three weeks old. ``--check`` names each stale link, and the bump moves
+    every one to the version it opens.
+    """
+    module = _load()
+    root = _copy_tree(tmp_path)
+    for relative in module.TAG_LINK_FILES:
+        source = REPO_ROOT / relative
+        if not source.is_file():
+            pytest.skip(f"the link test needs the source tree ({relative})")
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    lead = module.declared(root)[0][1]
+    readme = root / "README.md"
+    links = [link for link in module.tag_links(root) if link[0] == "README.md"]
+    assert len(links) >= 10  # NOTICE, PROVENANCE, LICENSE, the changelog, the manuals
+    stale = readme.read_text(encoding="utf-8").replace(f"/blob/v{lead}/NOTICE", "/blob/v1.0.0/NOTICE")
+    readme.write_text(stale, encoding="utf-8")
+    assert any("README.md:" in line and "v1.0.0" in line for line in module.disagreements(root))
+    to = "99.0.1"
+    touched = module.bump(root, to)
+    assert set(module.TAG_LINK_FILES) <= set(touched)
+    assert module.disagreements(root) == []
+    assert {version for _, _, version in module.tag_links(root)} == {to}
+    assert f"/blob/v{to}/NOTICE" in readme.read_text(encoding="utf-8")
+
+
+def test_wheel_doc_links_name_the_installed_release():
+    """Refusal and help texts sent a pinned install to ``main``'s documents."""
+    from gpuwm.docs_links import release_ref, tree_url
+
+    assert release_ref("2.9.1") == "v2.9.1"
+    assert tree_url("blob", "2.9.1") == "https://github.com/FahrenheitResearch/arwen/blob/v2.9.1/"
+    for untagged in ("0+unknown", "2.9.1.dev0", "2.9.1rc1"):
+        assert release_ref(untagged) == "main"

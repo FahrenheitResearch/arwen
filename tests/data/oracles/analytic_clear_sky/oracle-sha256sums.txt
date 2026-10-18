@@ -1,0 +1,9 @@
+779875651512709c47d50ef6c1e1216ad94726f1996c5e45a0db8eb800733ffa  /work/pverify/wrf-build/src/WRF-4.6.1/phys/module_radiation_driver.F
+5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062  /work/pverify/wrf-build/src/WRF-4.6.1/share/module_model_constants.F
+5aaf5a4b5424b85d62a9473d4a6294e70d228b4ef03d0c0f3c18c41b0f2ee501  /work/pverify/wrf-build/serial/WRF-4.6.1/external/esmf_time_f90/libesmf_time.a
+edcedad23fa53fe4b3ebe7096d77a10dd7618c4746fcb652c51ff8bf0ace458b  /work/pverify/analytic-clear-sky/harness/run_coszen.F90
+b03955e0df72bc5c43858f2b2dd3cabac676cf10d858c078c88739f78a83e35e  wrf461_coszen.f90
+5d7ede6084ac62ef8cff21ac35a0b9495ae8daa66fb3661da833a06a18148606  wrf461_model_constants.f90
+d52d0a4475f1a3bf2a8c0bc9c754ef2cde6b05d38ae8cb2721b199973c0f586b  /work/pverify/analytic-clear-sky/results/cz_in.bin
+9e070fbaf17b60fc33b3844635147b7f8e42f1e0d1dbd9000f50c1698048a8f6  cz-out-O0.bin
+b1d0547f756bea7c2e1b12cd4eebf7d118036c4731dc52d1620bff90794a6e65  cz-out-O2vec.bin

@@ -5,24 +5,29 @@ Two questions come before a radar-assimilating case can be configured:
     sites_for_bbox(...)      which radars are inside this domain
     require_assimilable(...) and can their volumes actually be assimilated
 
-The first is a lookup. The second is the one that matters, because the accurate
-answer today for the European inventory is *no*, and the reason is a missing
-number rather than a missing feed.
+The first is a lookup. The second is the one that matters.
 
 **Antenna elevation is the gate.** Beam height above ground is a function of
 antenna height above mean sea level. A site assimilated with the wrong
 antenna height places every gate at the wrong altitude, smoothly, with
 nothing anywhere that looks like a failure -- the analysis is simply wrong
-about where the storm is in the vertical. The frozen inventory carries
-``elevation_m: null`` for every European site because the collection's
-locations endpoint publishes a 2D point and the WMO registry its detail link
-names answered ``totalCount: 0`` when probed on 2026-08-12.
+about where the storm is in the vertical. The MeteoGate locations feed the
+inventory is frozen from publishes a 2D point, and the WMO registry its
+detail link names answered ``totalCount: 0`` (probed 2026-08-12), so the
+heights are read from the volumes themselves: ODIM carries the antenna height
+above mean sea level at ``/where/height`` in every polar volume, and
+``tools/harvest_radar_heights.py`` read one whole volume per site
+(2026-08-14: 136 of 136 resolved, each cross-checked against the table's own
+position). A pack never needs the table for this at all: ``rw_odim pack``
+writes the volume's own ``/where/height`` as the site altitude (checked
+2026-10-16 on live volumes: Essen 185.11 m and Herwijnen 25.0 m, equal to the
+table).
 
-So :func:`require_assimilable` refuses, by name, with the count. This is the
-same rule the North-American antenna table is held to and for the same
-reason: a placeholder elevation does not make a site usable, it makes an
-unusable site *look* usable, and the campaign that discovers this is the one
-that already ran.
+:func:`require_assimilable` still refuses, by name, any site whose row has no
+height (a site the harvest could not reach keeps ``null``). This is the same
+rule the North-American antenna table is held to and for the same reason: a
+placeholder elevation does not make a site usable, it makes an unusable site
+*look* usable.
 
 Reflectivity *composites* are unaffected and are the route that works today
 (:mod:`gpuwm.obs.opera`): a composite is a georeferenced 2D grid and needs no

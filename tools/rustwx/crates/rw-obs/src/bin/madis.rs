@@ -13,9 +13,26 @@
 //! analysis draws its aircraft from; NCEP's public `.nr` prepbufr dumps
 //! carry almost none of it, and the dumps leave NOMADS after two days.
 //!
+//! The same files are also published in real time, anonymously, under
+//! `https://madis-data.ncep.noaa.gov/madisPublic1/data/` with the same
+//! sub-paths and names (`point/acars/netcdf/YYYYMMDD_HH00.gz` and so on):
+//! the real-time directory keeps about five and a half days and each hour
+//! file is rewritten every few minutes while its reports arrive (until about
+//! 1.5 h after the hour), while the dated archive fills about two days
+//! behind (measured 2026-10-16: archive day 10-14 held 8 of 24 hours, 10-15
+//! none; the real-time directory held 10-10 20Z to 10-16 08Z).  No account
+//! is needed for either: the account-gated part of MADIS is the restricted
+//! providers, which are absent from the public files by MADIS policy.
+//!
 //! `fetch` downloads the hours of a window with a SHA-256, the server's
-//! `Last-Modified` and the instant the bytes arrived, and counts an hour the
-//! archive does not have rather than failing on it.  `table` decodes the
+//! `Last-Modified` and the instant the bytes arrived, and counts an hour
+//! neither feed has rather than failing on it.  `--feed auto` (the default)
+//! asks the real-time directory first and the dated archive when real time
+//! answers 404 (an hour older than its retention); `--feed realtime` and
+//! `--feed archive` ask one.  Each file's record names the feed it came from.
+//! A real-time hour file fetched again later holds the reports that arrived
+//! since; its rows carry the later arrival instant as `received_time`, so an
+//! information cutoff never admits them into an analysis that ran earlier.  `table` decodes the
 //! files (gzip through flate2, classic NetCDF through the vendored
 //! `netcdf-reader`, nothing else) into the neutral observation table
 //! `gpuwm-obs.table.v2` (`rw_obs::table`), one row per report, level and
@@ -32,7 +49,16 @@
 //!   measurement `sonde_level`; dewpoint from the archive's dewpoint
 //!   depression.  The MADIS file carries no per-level elapsed time, so
 //!   every level is dated to the release time (`relTime`, else the synoptic
-//!   time) and the record says so; significant wind levels stated by height
+//!   time) and the record says so.  MADIS's `relTime` carries the release
+//!   hour and minute on the SYNOPTIC day: the 00 UTC soundings released at
+//!   23:0x the day before read 23:0x on the synoptic day, 23 h after their
+//!   synoptic time (measured: every US 00 UTC sounding of 2026-10-14, e.g.
+//!   72249 relTime 2026-10-14 23:04 for synTime 2026-10-14 00:00), and a
+//!   few stations carry a placeholder (74794: 2012-01-01).  So a release
+//!   time is moved by one day to the one nearest the synoptic time, and one
+//!   further off, or still more than 3 h from it, is not believed: the report is dated
+//!   to the synoptic time.  Both are counted.  Before this, every US 00 UTC
+//!   sounding was dated a day late and fell outside every live window; significant wind levels stated by height
 //!   only have no pressure and are counted, not written;
 //! * mesonet: `temperature_k` (`screen_temperature_2m`), `dewpoint_k`
 //!   (`screen_dewpoint_2m`), `surface_pressure_pa` (`station_pressure`) and
@@ -68,6 +94,7 @@
 //!
 //! ```text
 //! rw_madis fetch --kind acars|raob|mesonet --start TIME --end TIME --out DIR
+//!                [--feed auto|realtime|archive]
 //! rw_madis table --kind K --files F ... --out FILE.csv [--fetch-record R.json]
 //!                [--start T --end T] [--bbox S,N,W,E] [--error-table T]
 //!                [--accept-unchecked] [--thin-minutes M]
@@ -101,10 +128,13 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
 const ARCHIVE: &str = "https://madis-data.ncep.noaa.gov/madisPublic1/data/archive";
+/// The real-time directory: the archive's sub-paths and file names, without
+/// the date directories (module notes).
+const REALTIME: &str = "https://madis-data.ncep.noaa.gov/madisPublic1/data";
 const FETCH_SCHEMA: &str = "gpuwm-obs.madis-fetch.v1";
 const TABLE_RECORD_SCHEMA: &str = "gpuwm-obs.madis-table.v1";
 const ABI_MARKER: &str = "gpuwm-obs.madis-fetch.v1\tgpuwm-obs.madis-table.v1\tgpuwm-obs.table.v2\t\
-acars\traob\tmesonet\tqc-summary\terrtable";
+acars\traob\tmesonet\tqc-summary\terrtable\trealtime";
 
 /// GSI's report types for each platform: (temperature and humidity, wind).
 const TYPES_ACARS: (u16, u16) = (133, 233);
@@ -135,6 +165,9 @@ options
                         from start's hour through end's hour; table keeps
                         reports valid inside [start, end]
   --out DIR|FILE        fetch: directory; table: the CSV (record = .json beside)
+  --feed F              fetch: auto (default: the real-time directory, then the
+                        dated archive for an hour real time no longer holds),
+                        realtime or archive
   --files F ...         table: the files (.gz or decompressed); repeatable
   --fetch-record R      table: the fetch record, for Last-Modified and arrival
   --bbox S,N,W,E        table: keep reports inside this box (degrees)
@@ -205,8 +238,36 @@ impl Kind {
     }
 }
 
+/// Which public directory a fetch reads (module notes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Feed {
+    #[default]
+    Auto,
+    Realtime,
+    Archive,
+}
+
+impl Feed {
+    fn parse(text: &str) -> Result<Self, Box<dyn Error>> {
+        match text {
+            "auto" => Ok(Feed::Auto),
+            "realtime" => Ok(Feed::Realtime),
+            "archive" => Ok(Feed::Archive),
+            other => Err(err(format!("--feed {other:?} is not auto, realtime or archive"))),
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Feed::Auto => "auto",
+            Feed::Realtime => "realtime",
+            Feed::Archive => "archive",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Options {
+    feed: Feed,
     kind: Option<Kind>,
     start: Option<DateTime<Utc>>,
     end: Option<DateTime<Utc>>,
@@ -231,6 +292,10 @@ impl Options {
             match a {
                 "--kind" => {
                     o.kind = Some(Kind::parse(&value(i, a)?)?);
+                    i += 2;
+                }
+                "--feed" => {
+                    o.feed = Feed::parse(&value(i, a)?)?;
                     i += 2;
                 }
                 "--start" => {
@@ -324,6 +389,23 @@ fn hour_url(kind: Kind, hour: DateTime<Utc>) -> (String, String) {
     (url, name)
 }
 
+/// The real-time directory's URL of the same hour file.
+fn realtime_url(kind: Kind, hour: DateTime<Utc>) -> String {
+    format!("{REALTIME}/{}/{}.gz", kind.archive_dir(), hour.format("%Y%m%d_%H00"))
+}
+
+/// The URLs a fetch asks for one hour, in order, with the feed each is.
+fn hour_candidates(kind: Kind, hour: DateTime<Utc>, feed: Feed) -> (Vec<(String, Feed)>, String) {
+    let (archive, name) = hour_url(kind, hour);
+    let realtime = realtime_url(kind, hour);
+    let urls = match feed {
+        Feed::Auto => vec![(realtime, Feed::Realtime), (archive, Feed::Archive)],
+        Feed::Realtime => vec![(realtime, Feed::Realtime)],
+        Feed::Archive => vec![(archive, Feed::Archive)],
+    };
+    (urls, name)
+}
+
 /// GET with the status and Last-Modified kept: `Ok(None)` is a 404, which
 /// for radiosondes is the archive saying nobody launched that hour.
 fn get_with_headers(
@@ -371,14 +453,22 @@ fn fetch(o: &Options) -> Result<String, Box<dyn Error>> {
     let mut missing = Vec::new();
     let mut hour = hour_floor(start);
     while hour <= end {
-        let (url, name) = hour_url(kind, hour);
-        match get_with_headers(&agent, &url)? {
-            Some((bytes, last_modified)) => {
+        let (candidates, name) = hour_candidates(kind, hour, o.feed);
+        let mut hit = None;
+        for (url, feed) in &candidates {
+            if let Some(found) = get_with_headers(&agent, url)? {
+                hit = Some((url.clone(), *feed, found));
+                break;
+            }
+        }
+        match hit {
+            Some((url, feed, (bytes, last_modified))) => {
                 let path = out.join(&name);
                 std::fs::write(&path, &bytes).map_err(|e| err(format!("cannot write {}: {e}", path.display())))?;
                 files.push(json!({
                     "hour": seam_time(hour),
                     "url": url,
+                    "feed": feed.name(),
                     "path": rw_obs::absolute_uri(&path),
                     "name": name,
                     "bytes": bytes.len(),
@@ -387,7 +477,10 @@ fn fetch(o: &Options) -> Result<String, Box<dyn Error>> {
                     "fetched_at": seam_time(Utc::now()),
                 }));
             }
-            None => missing.push(json!({"hour": seam_time(hour), "url": url})),
+            None => missing.push(json!({
+                "hour": seam_time(hour),
+                "urls": candidates.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>(),
+            })),
         }
         hour += Duration::hours(1);
     }
@@ -396,12 +489,15 @@ fn fetch(o: &Options) -> Result<String, Box<dyn Error>> {
         "status": if files.is_empty() { "EMPTY" } else { "READY" },
         "kind": kind.name(),
         "archive": ARCHIVE,
+        "realtime": REALTIME,
+        "feed": o.feed.name(),
         "start": seam_time(start),
         "end": seam_time(end),
         "files": files,
         "hours_not_in_archive": missing,
         "note": "times are UTC without a zone suffix (the seam spelling); a missing hour is \
-the archive's 404, counted rather than failed (radiosonde hours nobody launched)",
+a 404 from every feed asked, counted rather than failed (radiosonde hours nobody launched); \
+a real-time hour file grows until about 1.5 h after its hour, so a later fetch holds more reports",
     });
     let text = serde_json::to_string_pretty(&record)? + "\n";
     let record_path = out.join(format!("fetch-{}.json", kind.name()));
@@ -537,6 +633,29 @@ fn dewpoint_error_k(table_q_tenths: f64, t_k: f64, td_k: f64) -> f64 {
     let sigma_rh = 0.1 * table_q_tenths;
     let dlnes_dtd = LATENT_HEAT / (RV * td_k * td_k);
     ((sigma_rh / rh) / dlnes_dtd).clamp(DEWPOINT_ERROR_FLOOR_K, DEWPOINT_ERROR_CAP_K)
+}
+
+/// The instant a sounding was released, from MADIS's `relTime` and
+/// `synTime` (module notes): the release time moved by a day to the one
+/// nearest the synoptic time, and the synoptic time itself when the release
+/// time is missing, more than a day off, or still more than 3 h away.  The second value
+/// names the correction made, for the counters.
+fn release_instant(rel: f64, syn: f64) -> (Option<DateTime<Utc>>, Option<&'static str>) {
+    match (epoch(rel), epoch(syn)) {
+        (Some(released), Some(synoptic)) => {
+            let days = ((released - synoptic).num_seconds() as f64 / 86_400.0).round() as i64;
+            let moved = released - Duration::days(days);
+            if days.abs() > 1 || (moved - synoptic).num_seconds().abs() > 3 * 3600 {
+                (Some(synoptic), Some("reports_release_time_implausible_dated_to_synoptic_time"))
+            } else if days != 0 {
+                (Some(moved), Some("reports_release_time_moved_to_the_synoptic_day"))
+            } else {
+                (Some(moved), None)
+            }
+        }
+        (Some(released), None) => (Some(released), None),
+        (None, synoptic) => (synoptic, Some("reports_dated_to_synoptic_time")),
+    }
 }
 
 fn epoch(seconds: f64) -> Option<DateTime<Utc>> {
@@ -838,11 +957,13 @@ fn decode_raob(nc: &NcFile, source: &Source, b: &mut Builder) -> Result<(), Box<
         *b.counts.entry("levels_height_only_significant_wind_not_written".into()).or_insert(0) += count;
     }
     let mut reports = vec![true; n];
+    let mut released = vec![None; n];
     for r in 0..n {
         b.count("reports_read");
-        let release = epoch(rel[r]).or_else(|| epoch(syn[r]));
-        if epoch(rel[r]).is_none() {
-            b.count("reports_dated_to_synoptic_time");
+        let (release, correction) = release_instant(rel[r], syn[r]);
+        released[r] = release;
+        if let Some(counter) = correction {
+            b.count(counter);
         }
         reports[r] = b.place(lat[r], lon[r], release);
     }
@@ -872,7 +993,7 @@ fn decode_raob(nc: &NcFile, source: &Source, b: &mut Builder) -> Result<(), Box<
             if !reports[r] {
                 continue;
             }
-            let when = epoch(rel[r]).or_else(|| epoch(syn[r])).expect("placed");
+            let when = released[r].expect("placed");
             let nominal = epoch(syn[r]);
             let station = if wmo[r].is_finite() {
                 format!("{:05}", wmo[r] as i64)
@@ -1206,6 +1327,39 @@ mod tests {
         assert_eq!(url, format!("{ARCHIVE}/2026/10/01/LDAD/mesonet/netCDF/20261001_1800.gz"));
         let (url, _) = hour_url(Kind::Acars, hour_floor(t));
         assert!(url.ends_with("/2026/10/01/point/acars/netcdf/20261001_1800.gz"));
+        // Real time: the same sub-path and name without the date directories,
+        // asked first by auto, alone by realtime, never by archive.
+        assert_eq!(
+            realtime_url(Kind::Raob, hour_floor(t)),
+            format!("{REALTIME}/point/raob/netcdf/20261001_1800.gz")
+        );
+        let (auto, name) = hour_candidates(Kind::Mesonet, hour_floor(t), Feed::Auto);
+        assert_eq!(name, "20261001_1800.gz");
+        assert_eq!(auto[0], (format!("{REALTIME}/LDAD/mesonet/netCDF/20261001_1800.gz"), Feed::Realtime));
+        assert_eq!(auto[1].1, Feed::Archive);
+        assert_eq!(hour_candidates(Kind::Acars, t, Feed::Realtime).0.len(), 1);
+        assert_eq!(hour_candidates(Kind::Acars, t, Feed::Archive).0[0].1, Feed::Archive);
+        let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(Options::parse(&a(&["--feed", "realtime"])).unwrap().feed, Feed::Realtime);
+        assert_eq!(Options::parse(&a(&[])).unwrap().feed, Feed::Auto);
+        assert!(Options::parse(&a(&["--feed", "ldm"])).is_err());
+    }
+
+    #[test]
+    fn a_release_time_on_the_synoptic_day_is_moved_to_the_day_before() {
+        let at = |d, h, m| Utc.with_ymd_and_hms(2026, 10, d, h, m, 0).unwrap().timestamp() as f64;
+        // 72249 in the 2026-10-14 00 UTC file: relTime 10-14 23:04, synTime 10-14 00:00.
+        let (t, why) = release_instant(at(14, 23, 4), at(14, 0, 0));
+        assert_eq!(t, Some(Utc.with_ymd_and_hms(2026, 10, 13, 23, 4, 0).unwrap()));
+        assert_eq!(why, Some("reports_release_time_moved_to_the_synoptic_day"));
+        // A release time already beside its synoptic time is kept as it is.
+        assert_eq!(release_instant(at(14, 11, 2), at(14, 12, 0)), (Some(Utc.with_ymd_and_hms(2026, 10, 14, 11, 2, 0).unwrap()), None));
+        // 74794's placeholder (2012-01-01) is not believed.
+        let (t, why) = release_instant(1_325_376_000.0, at(14, 0, 0));
+        assert_eq!(t, Some(Utc.with_ymd_and_hms(2026, 10, 14, 0, 0, 0).unwrap()));
+        assert_eq!(why, Some("reports_release_time_implausible_dated_to_synoptic_time"));
+        // No release time: the synoptic time, counted.
+        assert_eq!(release_instant(-1e38, at(14, 0, 0)).1, Some("reports_dated_to_synoptic_time"));
     }
 
     #[test]

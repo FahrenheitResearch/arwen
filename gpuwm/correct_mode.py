@@ -37,6 +37,8 @@ WB1  Thompson's cloud-water sedimentation computes the flux out of the
      budget (0.12 kg m-2 over 60 steps of fog on the MPAS test columns).
      Correct mode books it in its own total, CLOUDNC; rain and the
      atmosphere are unchanged (gpuwm/core/thompson_cloud_booking.py).
+     Classic (mp 8) and aerosol-aware (mp 28, the HRRR suite's scheme)
+     Thompson both carry it, and both are corrected.
 
 WB4  New Tiedtke water tendencies are per unit of the scheme's moist-air
      frame mass (dp/g) but are added to mixing ratios on fixed dry mass;
@@ -46,7 +48,17 @@ WB5  WSM6 sedimentation books the below-ground part of the straddling cell
      the sloped piecewise-linear profile; the column + surface water budget
      is off by either sign (0.0024 kg m-2 per call measured).  WDM6 carries
      the same routine (mp_wdm6.F nislfv_rain_plm6/plmr) and the same defect;
-     its key is the second key of WB5.
+     its key is the second key of WB5.  WSM3, WSM5 and WSM7 carry their own
+     copies (module_mp_wsm3.F, module_mp_wsm5.F, module_mp_wsm7.F
+     nislfv_rain_plm) and the same defect (up to 0.0082 kg m-2 per call on
+     the same columns); from 2.9.1 their keys are WB5's third to fifth.
+
+WHICH SCHEMES CARRY EACH FINDING is data too (:attr:`Correction.carriers`),
+separate from which schemes a key corrects (:data:`KEY_SCOPE`).  A domain
+whose schemes carry a finding that no key in scope corrects is listed as
+``uncorrected`` in the run receipt and named in one run-log line
+(:func:`uncorrected`, :func:`uncorrected_notice`), so a receipt can never read
+as a finding applied to a scheme that still runs the defect.
 """
 
 from __future__ import annotations
@@ -87,6 +99,9 @@ class Correction:
     finding: str
     keys: tuple[str, ...]
     summary: str
+    #: ``((selector, values), ...)``: the scheme selections whose arithmetic
+    #: carries the defect, whether or not a key corrects it there.
+    carriers: tuple[tuple[str, tuple[int, ...]], ...] = ()
 
     @property
     def key(self) -> str:
@@ -104,6 +119,9 @@ CORRECTIONS: tuple[Correction, ...] = (
             "Thompson cloud water settled out of the lowest level booked in "
             "its own accumulated total (CLOUDNC) instead of vanishing; rain "
             "and the atmosphere unchanged"),
+        # Classic Thompson (8) and aerosol-aware Thompson (28) both drop the
+        # cloud water their fallout takes out of the lowest level.
+        carriers=(("mp_physics", (8, 28)),),
     ),
     Correction(
         finding="WB4",
@@ -113,13 +131,21 @@ CORRECTIONS: tuple[Correction, ...] = (
             "frame mass dp/g = m_dry*(1+qv) onto dry mass (x(1+qv)); vapour "
             "forcing converted mixing ratio -> specific humidity "
             "(/(1+qv)^2)"),
+        carriers=(("cu_physics", (16,)),),
     ),
     Correction(
         finding="WB5",
-        keys=("wsm6_conservative_surface", "wdm6_conservative_surface"),
+        keys=("wsm6_conservative_surface", "wdm6_conservative_surface",
+              "wsm3_conservative_surface", "wsm5_conservative_surface",
+              "wsm7_conservative_surface"),
         summary=(
-            "WSM6 and WDM6 below-ground partial cell booked with the remap's "
-            "own piecewise-linear profile instead of the flat cell mean"),
+            "WSM3, WSM5, WSM6, WSM7 and WDM6 below-ground partial cell booked "
+            "with the remap's own piecewise-linear profile instead of the "
+            "flat cell mean"),
+        # Every scheme with a port of WRF's nislfv_rain_plm.  WSM6R (106)
+        # falls out by explicit flux, and TEMPO books the straddling cell
+        # with its own profile already: neither carries it.
+        carriers=(("mp_physics", (3, 4, 6, 16, 24)),),
     ),
 )
 
@@ -131,7 +157,12 @@ KEY_SCOPE: Mapping[str, tuple[str, tuple[int, ...]]] = {
     "ntiedtke_dry_mass_coupling": ("cu_physics", (16,)),
     "wsm6_conservative_surface": ("mp_physics", (6,)),
     "wdm6_conservative_surface": ("mp_physics", (16,)),
-    "thompson_cloud_surface_booking": ("mp_physics", (8,)),
+    "wsm3_conservative_surface": ("mp_physics", (3,)),
+    "wsm5_conservative_surface": ("mp_physics", (4,)),
+    "wsm7_conservative_surface": ("mp_physics", (24,)),
+    # Classic (8) and aerosol-aware (28) Thompson run the same cloud fallout
+    # and both drop the flux out of the lowest level.
+    "thompson_cloud_surface_booking": ("mp_physics", (8, 28)),
 }
 
 
@@ -287,12 +318,67 @@ def resolution_of(cfg) -> CorrectModeResolution:
         applied=tuple(applied), keys_on=tuple(keys_on))
 
 
+def _selector_value(cfg, selector: str) -> int | None:
+    value = (cfg.get(selector, 0) if isinstance(cfg, Mapping)
+             else getattr(cfg, selector, 0))
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def uncorrected(cfg) -> list[str]:
+    """Findings this configuration's schemes carry
+    (:attr:`Correction.carriers`) that no key in scope for those schemes
+    corrects, while the run is in correct mode and the finding is not
+    skipped.
+
+    Empty for every shipped scheme once each carrier has a key; a finding
+    listed here ran its defect although the mode is correct.  An exact run,
+    and a finding named in ``physics.correct_skip``, list nothing: there the
+    defect is what the run asked for."""
+
+    resolution = resolution_of(cfg)
+    if resolution.mode != PHYSICS_MODE_CORRECT:
+        return []
+    out: list[str] = []
+    for c in CORRECTIONS:
+        if c.finding in resolution.skipped:
+            continue
+        for selector, schemes in c.carriers:
+            value = _selector_value(cfg, selector)
+            if value not in schemes:
+                continue
+            if not any(KEY_SCOPE[key][0] == selector
+                       and value in KEY_SCOPE[key][1] for key in c.keys):
+                out.append(c.finding)
+                break
+    return out
+
+
+def uncorrected_notice(configs: Mapping[int, object]) -> str | None:
+    """One run-log line naming every correct-mode domain whose schemes carry
+    a finding with no correction (:func:`uncorrected`), or None."""
+
+    parts = []
+    for grid_id, cfg in sorted(configs.items()):
+        findings = uncorrected(cfg)
+        if findings:
+            parts.append(f"d{int(grid_id):02d} {'/'.join(findings)}")
+    if not parts:
+        return None
+    return ("correct mode: no correction yet for " + ", ".join(parts)
+            + " under the selected schemes; those findings run the matched "
+            "WRF/MPAS arithmetic, and the run receipt lists them as "
+            "uncorrected")
+
+
 def in_effect(cfg) -> dict:
     """The corrections that reached this configuration's arithmetic or
     output: keys that are on AND read by its schemes (:data:`KEY_SCOPE`),
     with their findings.  A correct-mode run whose schemes read no key
-    (no WSM6, WDM6, Thompson mp 8 or New Tiedtke) has none in effect and
-    ran the matched arithmetic, though its mode is correct."""
+    (no WSM3/5/6/7, WDM6, Thompson mp 8 or 28 or New Tiedtke) has none in
+    effect and ran the matched arithmetic, though its mode is correct."""
 
     selectors = {selector: getattr(cfg, selector, 0)
                  for selector, _ in KEY_SCOPE.values()}
@@ -312,13 +398,26 @@ def run_receipt(configs: Mapping[int, object]) -> dict:
     that reads it later (and a strict run says exact was forced)."""
 
     return {
-        "schema": "gpuwm-correct-mode-run-v1",
+        "schema": "gpuwm-correct-mode-run-v2",
         "default": PHYSICS_MODE_DEFAULT,
         **({"forced_by": STRICT_FORCED_BY} if STRICT else {}),
-        "domains": {str(int(grid_id)): {**resolution_of(cfg).receipt(),
-                                        "in_effect": in_effect(cfg)}
+        "domains": {str(int(grid_id)): _domain_receipt(cfg)
                     for grid_id, cfg in sorted(configs.items())},
     }
+
+
+def _domain_receipt(cfg) -> dict:
+    """One domain's block.  ``applied_findings`` names only the findings
+    whose correction reached this domain's schemes (v2; v1 listed every
+    finding with a key on, so a WSM5 domain read as WB1/WB4/WB5 applied),
+    and ``uncorrected`` the findings its schemes carry with no correction."""
+
+    effect = in_effect(cfg)
+    block = {**resolution_of(cfg).receipt(), "in_effect": effect,
+             "uncorrected": uncorrected(cfg)}
+    block["applied_findings"] = [f for f in block["applied_findings"]
+                                 if f in effect["findings"]]
+    return block
 
 
 __all__ = [
@@ -329,5 +428,5 @@ __all__ = [
     "PHYSICS_MODE_DEFAULT", "PHYSICS_MODE_EXACT", "STRICT",
     "STRICT_FORCED_BY", "in_effect", "key_in_scope", "resolution_of",
     "resolve",
-    "run_receipt",
+    "run_receipt", "uncorrected", "uncorrected_notice",
 ]

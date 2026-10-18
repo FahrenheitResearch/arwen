@@ -151,3 +151,35 @@ python tools/noah_mosaic_wrf471_oracle/pack_ucm_run.py \
     BUILD_DIR/fixtures/mosaic_ucm tests/data/oracles/noah_mosaic \
     ucm_wrfinit ucm_lcz_wrfinit
 ```
+
+`run_mosaic_ucm.F90` families 5 and 6, `ucm_table` and `ucm_lcz_table`,
+repeat `ucm` and `ucm_lcz` with every urban switch exactly as
+`urban_param_init` reads it from the shipped tables (CH_SCHEME 2,
+AHOPTION 0, ALHOPTION 0, IMP_SCHEME 1, GROPTION 0): the default run's arms,
+which the forced-switch families never take.
+`tests/test_noah_mosaic_ucm_table_switches.py` pins the dumped switches to
+gpuwm's parsed tables; the GPU replay is
+`test_production_default_switches_every_output_word`.
+
+```sh
+python tools/noah_mosaic_wrf471_oracle/pack_ucm_run.py \
+    BUILD_DIR/fixtures/mosaic_ucm tests/data/oracles/noah_mosaic \
+    ucm_table ucm_lcz_table
+```
+
+`NOAH_MOSAIC_CR_LIBM=1 bash build.sh ...` links `cr_libm_control.c`:
+correctly rounded atanf and log10f ahead of the C library's. glibc 2.39's
+two routines are not correctly rounded (2.43's are), so without the control
+a 2.39 host writes different WRF words wherever ATAN or LOG10 rounds
+differently. With it, a gfortran 13.3 / glibc 2.39 build reproduces every
+recorded array hash of the gfortran 15.2 / glibc 2.43 corpus. The WRF
+v4.6.1 build of this same harness is `tools/noah_mosaic_wrf461_oracle/`.
+
+`run_mosaic.F90` switch 12 writes the `terrain` family: switch 1's 48
+columns near 3 km (SFCPRS 70500 Pa), 12 K colder, 40% drier, 40 W m-2 less
+longwave, four carried steps. Every other family keeps its recorded words.
+`tests/test_noah_mosaic_wrf471_parity.py::test_every_family_bitwise`
+replays it with the rest. Under GPUWM_WRF_EXACT=1 the gate holds out only
+the subnormal-CHS column's 23 fields (`STRICT_PINNED_SHA256`; why those
+words cannot match is in `tools/noah_mosaic_wrf461_oracle/README.md`); the
+default build also holds out the SNOW probe column CuPy's FTZ flushes.

@@ -385,7 +385,7 @@ A run is a folder. `gpuwm run-plan` writes, in that folder:
 - `events.jsonl`: every event from the start, one JSON object per line;
 - the pictures, under `<domain>/<product>/<valid-day>/`.
 
-The page adds `plan.json` (the plan it ran), `region.geojson` (the box you drew),
+The page adds `plan.json` (the plan it ran), `region.geojson` (the box you marked),
 `gui-physics.json` (the physics you picked), `commands.log`, `gui-job.json` (the job it launched) and, after a Stop,
 `gui-stop.json` (how it stopped). A downscale is the one exception: `gpuwm downscale`
 claims only an empty folder, so the page keeps its record of that start (the job

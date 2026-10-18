@@ -372,7 +372,7 @@ def build_neighbor_index(stencils, *, shape, zflat, horizontal_distance,
     Breakage it prevents: the card-resident roster route (2ac908c52) sized
     its slabs from a quarter of the free memory with a 32 M pair floor,
     outside the analysis price, and the test's 10-member leg peaked at
-    148.6 MB against a 115.2 MB admission (node-4, 2026-10-06); in a packed
+    148.6 MB against a 115.2 MB admission (test host D, 2026-10-06); in a packed
     cycle that unpriced grab is another member's memory.  Any slab plan
     assembles the same roster (see ``_slab``), so the cap moves no byte.
     """
@@ -614,7 +614,7 @@ def build_neighbor_index(stencils, *, shape, zflat, horizontal_distance,
         # its first key and the next one's.  Not xp.bincount: cupy routes it
         # through CUB's histogram, whose temporary storage was the build's
         # peak, 68.8 MB on a 10-member 64 x 64 x 10 leg whose analysis
-        # admission is 115.2 MB in all (node-4, 2026-10-06).  Same int64
+        # admission is 115.2 MB in all (test host D, 2026-10-06).  Same int64
         # counts, byte for byte.
         bounds = xp.searchsorted(g_local, xp.arange(g1 - g0 + 1,
                                                     dtype=g_local.dtype))

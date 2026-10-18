@@ -34,6 +34,13 @@ DELTA = 500.0
 SEED = 20260720
 
 
+def _zero_radiation_boundary_fluxes(cfg, surface):
+    """Complete the zero-radiation stub's declared history/energy outputs."""
+    import cupy as cp
+    from gpuwm.core.physics import radiation_boundary_flux_names
+    return {name: cp.zeros_like(surface) for name in radiation_boundary_flux_names(cfg)}
+
+
 def _band_limited32(rng, shape=SHAPE):
     """FP32 cast of an authority-box-filtered standard-normal field."""
     from gpuwm.verify.sase_ref import box_filter
@@ -1235,7 +1242,9 @@ def test_sase_driver_d01_column_parameters_stable_50_steps():
         z3 = cp.zeros((cfg.nz, cfg.ny, cfg.nx), cp.float32)
         z2 = cp.zeros((cfg.ny, cfg.nx), cp.float32)
         return RadiationResult(z3, cp.zeros_like(z3), z2,
-                               cp.zeros_like(z2))
+                               cp.zeros_like(z2),
+                               coszen=cp.zeros_like(z2),
+                               boundary_fluxes=_zero_radiation_boundary_fluxes(kw["cfg"], z2))
 
     initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
                        swdown=400.0, glw=320.0, radiation=radiation)
@@ -1464,7 +1473,9 @@ def test_sase_driver_step_smoke():
         z3 = cp.zeros((cfg.nz, cfg.ny, cfg.nx), cp.float32)
         z2 = cp.zeros((cfg.ny, cfg.nx), cp.float32)
         return RadiationResult(z3, cp.zeros_like(z3), z2,
-                               cp.zeros_like(z2))
+                               cp.zeros_like(z2),
+                               coszen=cp.zeros_like(z2),
+                               boundary_fluxes=_zero_radiation_boundary_fluxes(kw["cfg"], z2))
 
     driver = initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
                                 swdown=400.0, glw=320.0,
@@ -3014,7 +3025,9 @@ def test_sase_driver_d02_first_light_moist_50_steps(monkeypatch):
         z3 = cp.zeros((cfg.nz, cfg.ny, cfg.nx), cp.float32)
         z2 = cp.zeros((cfg.ny, cfg.nx), cp.float32)
         return RadiationResult(z3, cp.zeros_like(z3), z2,
-                               cp.zeros_like(z2))
+                               cp.zeros_like(z2),
+                               coszen=cp.zeros_like(z2),
+                               boundary_fluxes=_zero_radiation_boundary_fluxes(kw["cfg"], z2))
 
     initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
                        swdown=400.0, glw=320.0, radiation=radiation)
@@ -4893,7 +4906,9 @@ def test_sase_driver_d02_first_light_vent_50_steps(monkeypatch):
         z3 = cp.zeros((cfg.nz, cfg.ny, cfg.nx), cp.float32)
         z2 = cp.zeros((cfg.ny, cfg.nx), cp.float32)
         return RadiationResult(z3, cp.zeros_like(z3), z2,
-                               cp.zeros_like(z2))
+                               cp.zeros_like(z2),
+                               coszen=cp.zeros_like(z2),
+                               boundary_fluxes=_zero_radiation_boundary_fluxes(kw["cfg"], z2))
 
     initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
                        swdown=400.0, glw=320.0, radiation=radiation)
@@ -5049,7 +5064,9 @@ def test_m2_driver_deposit_end_to_end_separation(monkeypatch):
         z3 = cp.zeros((49, ny, nx), cp.float32)
         z2 = cp.zeros((ny, nx), cp.float32)
         return RadiationResult(z3, cp.zeros_like(z3), z2,
-                               cp.zeros_like(z2))
+                               cp.zeros_like(z2),
+                               coszen=cp.zeros_like(z2),
+                               boundary_fluxes=_zero_radiation_boundary_fluxes(kw["cfg"], z2))
 
     def build():
         """The identical initial condition, built twice from the same
@@ -5503,7 +5520,9 @@ def test_flux_diag_enabled_leaves_every_prognostic_bitwise_identical():
             z3 = cp.zeros((cfg.nz, cfg.ny, cfg.nx), cp.float32)
             z2 = cp.zeros((cfg.ny, cfg.nx), cp.float32)
             return RadiationResult(z3, cp.zeros_like(z3), z2,
-                                   cp.zeros_like(z2))
+                                   cp.zeros_like(z2),
+                                   coszen=cp.zeros_like(z2),
+                                   boundary_fluxes=_zero_radiation_boundary_fluxes(_kw["cfg"], z2))
 
         driver = initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
                                     swdown=400.0, glw=320.0,
@@ -5628,7 +5647,9 @@ def test_hmix_k_diag_enabled_leaves_every_prognostic_bitwise_identical(
             z3 = cp.zeros((cfg.nz, cfg.ny, cfg.nx), cp.float32)
             z2 = cp.zeros((cfg.ny, cfg.nx), cp.float32)
             return RadiationResult(z3, cp.zeros_like(z3), z2,
-                                   cp.zeros_like(z2))
+                                   cp.zeros_like(z2),
+                                   coszen=cp.zeros_like(z2),
+                                   boundary_fluxes=_zero_radiation_boundary_fluxes(_kw["cfg"], z2))
 
         driver = initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
                                     swdown=400.0, glw=320.0,
@@ -6594,7 +6615,9 @@ def test_sase_driver_additive_switch_is_selectable_and_fires():
             z3 = cp.zeros((cfg.nz, cfg.ny, cfg.nx), cp.float32)
             z2 = cp.zeros((cfg.ny, cfg.nx), cp.float32)
             return RadiationResult(z3, cp.zeros_like(z3), z2,
-                                   cp.zeros_like(z2))
+                                   cp.zeros_like(z2),
+                                   coszen=cp.zeros_like(z2),
+                                   boundary_fluxes=_zero_radiation_boundary_fluxes(kw["cfg"], z2))
 
         driver = initialize_physics(state, cfg, landmask=1.0, tsk=302.0,
                                     swdown=400.0, glw=320.0,

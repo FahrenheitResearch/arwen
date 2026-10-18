@@ -228,14 +228,18 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "topo_gmted2010_30s", "topo_gmted2010_30s.tar.bz2", 182721518,
         "20e02ef61b16c8d66753db8f1ede0edc0ac74e6e1b87961cdbdc483040ff22d7",
         1884949355, required_by=_WRF_AND_MESH),
-    # The WRF static builder's land use. The mesh door read it too until
-    # 2.9.0; its native default reads the two rows after the soil archive,
-    # and only `rw_mpas_static --legacy-static` still opens this one.
+    # The WRF static builder's land use. The mesh door's native default
+    # reads the two rows after the soil archive, but `rw_mpas_static
+    # --legacy-static` opens this one, and the static builder gpuwm-hex
+    # 0.4.0 ships refuses an archive without it ("missing 1 dataset(s) a
+    # static needs"). Scoped WRF-only in 2.9.0, `gpuwm fetch-geog
+    # --datasets mesh` -- the line hex's own refusal prints -- staged an
+    # archive every hex point mesh then refused (2.9.1, 32 MB).
     GeogArchive(
         "modis_landuse_20class_30s_with_lakes",
         "modis_landuse_20class_30s_with_lakes.tar.bz2", 32532921,
         "fe052cc1000638c32ac7191c779ad070efae458ff0751bc4aa2a716e38bec578",
-        933120358, required_by=_WRF_ONLY),
+        933120358, required_by=_WRF_AND_MESH),
     GeogArchive(
         "soiltype_top_30s", "soiltype_top_30s.tar.bz2", 1639561,
         "6d45d93cc0d14ac4019f1a2857e56fb1fbc860f135e12d89fc0a569278242315",
@@ -357,6 +361,19 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "49306298749e3ed2a6172dfe7af0023a5be0e9f5f5230a2cfd6421ebce3e81b1",
         933120273, in_mandatory_bundle=False,
         required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
+    # 30 arc-second MODIS LAI selected by geog_data_res = 'modis_lai' (WPS
+    # GEOGRID.TBL.ARW's rel_path for that token; the operational HRRR
+    # namelist names it).  The token was admitted with no pin, so a namelist
+    # naming it imported and then stopped at the missing dataset.  Not on
+    # the mirror or in the mandatory bundle; pinned from the official TLS
+    # download on 2026-10-15 (sha256 of the bytes, extracted size the sum of
+    # member sizes).
+    GeogArchive(
+        "lai_modis_30s", "lai_modis_30s.tar.bz2", 749633975,
+        "b8188f06717767d5ed8898e5afb3a9b8b5ad46b888a530177f161ef3623acf75",
+        11197440254, in_mandatory_bundle=False,
+        required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",),
+        fetch_by_default=False, download_source="ncar", pin_date="2026-10-15"),
     # The native MPAS static path's other selectors (rw_mpas_static,
     # MPAS-A v8.4.2 mpas_init_atm_static.F): --topo-data GTOPO30,
     # --landuse-data MODIFIED_IGBP_MODIS_NOAH_15s, and the NCEP vegetation,
@@ -374,11 +391,14 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         1884949330, in_mandatory_bundle=False,
         required_by=(), optional_for=_MESH_ONLY, available_sources=("ncar",),
         fetch_by_default=False, download_source="ncar", pin_date="2026-10-14"),
+    # Also the WRF static builder's land use where a namelist.wps names
+    # geog_data_res = 'modis_15s' (WPS GEOGRID.TBL.ARW's rel_path for that
+    # token; the operational HRRR namelist names it).
     GeogArchive(
         "modis_landuse_20class_15s", "modis_landuse_20class_15s.tar.bz2", 65224208,
         "9dd85b97221062c9a69ece3fe1dfd964702d516c35ff25cdc06c16aea6411028",
         3732480347, in_mandatory_bundle=False,
-        required_by=(), optional_for=_MESH_ONLY, available_sources=("ncar",),
+        required_by=(), optional_for=_WRF_AND_MESH, available_sources=("ncar",),
         fetch_by_default=False, download_source="ncar", pin_date="2026-10-14"),
     GeogArchive(
         "greenfrac", "greenfrac.tar.bz2", 2377411,
@@ -556,6 +576,30 @@ def default_geog_root() -> Path:
     from gpuwm.case_data import case_data_root
 
     return case_data_root() / "WPS_GEOG"
+
+
+def geog_root_from_tables(raw, *, base_dir: Path) -> Path:
+    """The saved geography root, independent of the forcing source."""
+    from gpuwm.case_data import expand_path_variables
+
+    value = raw.get("case_data", {}).get("geog_root")
+    if value is None:
+        value = raw.get("static", {}).get("geog_root")
+    if value is None:
+        return default_geog_root()
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("geog_root must be a non-empty path string")
+    path = Path(expand_path_variables(value, "geog_root", str(base_dir))).expanduser()
+    return (base_dir / path).resolve() if not path.is_absolute() else path.resolve()
+
+
+def config_geog_root(config: Path) -> Path:
+    """Resolve a configuration's geography root beside its TOML file."""
+    import tomllib
+
+    config = Path(config).resolve()
+    raw = tomllib.loads(config.read_text(encoding="utf-8-sig"))
+    return geog_root_from_tables(raw, base_dir=config.parent)
 
 
 # ---------------------------------------------------------------------------
@@ -1295,7 +1339,7 @@ def publish_archive_entry(root: Path, filename: str, entry: dict) -> Path:
 # ---------------------------------------------------------------------------
 
 def _print_listing(datasets: tuple[str, ...], source: str,
-                   root: Path) -> None:
+                   root: Path, *, explain: bool = False) -> None:
     # The total is what a fetch of this root would DOWNLOAD, so it sums
     # the datasets marked "needed" and nothing else -- the same skip
     # decision fetch_geog takes.  It used to sum every requested dataset
@@ -1316,13 +1360,23 @@ def _print_listing(datasets: tuple[str, ...], source: str,
             total_archive += archive.archive_bytes
             total_extracted += archive.extracted_bytes
         state = "staged" if ok else "needed"
-        actual_source = archive.download_source or source
+        # The host the fetch itself will use (stage_one's choice), so the
+        # plan names the URL the download will actually open.
+        actual_source = archive.download_source or (
+            source if source in archive.available_sources
+            else archive.available_sources[0])
         source_note = (f"; {actual_source} only, absent from mirror"
-                       if archive.download_source else f"; source {source}")
+                       if actual_source != source else f"; source {source}")
         print(f"  {state}  {name}: {archive.filename} "
               f"{archive.archive_bytes / (1024 * 1024):.1f} MiB "
               f"(~{archive.extracted_bytes / (1024 * 1024):.0f} MiB "
               f"unpacked){source_note}")
+        if explain:
+            needed_by = ", ".join(archive.required_by) or "no door by default"
+            optional = (f"; optional for {', '.join(archive.optional_for)}"
+                        if archive.optional_for else "")
+            print(f"           required by: {needed_by}{optional}"
+                  f"; from {archive_url(archive.filename, actual_source)}")
     if not needed:
         print(f"fetch-geog: all {len(datasets)} requested dataset(s) are "
               "staged; nothing to download")
@@ -1553,6 +1607,17 @@ def geography_for_run(config_path: Path) -> dict:
     fetch = raw.get("fetch", {})
     carrier = resolve_static_highres(raw, source=str(fetch.get("source") or "configuration"), base_dir=config_path.parent)
     experiment = load_experiment(config_path)
+    # `gpuwm go` hands its preparation the WPS twin beside the configuration
+    # when one is there (gpuwm.companion_domains.configuration_wps_namelist),
+    # so its geog_data_res is what the run builds.  Defect: this reader
+    # ignored the twin and named the default datasets, so fetch-geog
+    # --config staged the wrong land use and LAI for an imported
+    # operational namelist (modis_15s, modis_lai) and go's preflight passed
+    # a tree its preparation then could not build from.
+    beside = config_path.with_name(f"{config_path.stem}.namelist.wps")
+    if data is None and beside.is_file():
+        data = SimpleNamespace(geog_root=Path("."), wps_namelist=beside,
+                               static_highres=carrier)
     if data is not None:
         data = SimpleNamespace(geog_root=data.geog_root, wps_namelist=data.wps_namelist,
                                static_highres=carrier)
@@ -1603,15 +1668,32 @@ def geography_for_run(config_path: Path) -> dict:
             "static_bytes": sum(static_source_row(name).bytes for name in statics)}
 
 
+def _print_only(args) -> bool:
+    """``--list`` and ``--explain`` print the plan and touch nothing.
+
+    Defect (hex global run, 2026-10-16): ``--explain`` is the CLI-wide
+    "say why" modifier, and fetch-geog ignored it, so ``gpuwm fetch-geog
+    --explain`` started a 13 GB download for a reader who asked what it
+    would do.  On this command both flags mean: print, no network, no
+    writes -- on the --config, --static-source and dataset paths alike.
+    """
+    from gpuwm.explain import explain_enabled
+
+    return bool(getattr(args, "list", False)) or explain_enabled(args)
+
+
 def fetch_geog_main(args) -> int:
+    from gpuwm.explain import explain_enabled
+
+    print_only = _print_only(args)
     config_path = getattr(args, "config", None)
     if config_path is not None:
         plan = geography_for_run(Path(config_path))
-        root = Path(args.root) if args.root is not None else default_geog_root()
-        root.mkdir(parents=True, exist_ok=True)
-        if getattr(args, "list", False):
+        root = Path(args.root) if args.root is not None else config_geog_root(Path(config_path))
+        if print_only:
             print(json.dumps(plan, indent=2))
             return 0
+        root.mkdir(parents=True, exist_ok=True)
         from gpuwm.static.external_source import fetch_static_source
         for source_id in plan["static_sources"]:
             fetch_static_source(source_id, root)
@@ -1627,6 +1709,13 @@ def fetch_geog_main(args) -> int:
         # datasets under <root>/static_sources/<id>/.
         from gpuwm.static.external_source import fetch_static_source
         root = Path(args.root) if args.root is not None else default_geog_root()
+        if print_only:
+            from gpuwm.static.external_source import static_source_row
+            row = static_source_row(static_source)
+            print(f"fetch-geog: would stage static source {row.id} "
+                  f"({row.filename}, {row.bytes:,} B) from {row.url} "
+                  f"into {root / 'static_sources' / row.id}; nothing fetched")
+            return 0
         fetch_static_source(static_source, root)
         return 0
     datasets = parse_datasets(args.datasets)
@@ -1638,8 +1727,12 @@ def fetch_geog_main(args) -> int:
         print(f"fetch-geog: --root not given; staging into {root} "
               "(the $GPUWM_CASE_DATA_ROOT/WPS_GEOG default every other "
               "command reads)")
-    if getattr(args, "list", False):
-        _print_listing(datasets, source, root)
+    if print_only:
+        _print_listing(datasets, source, root, explain=explain_enabled(args))
+        if explain_enabled(args):
+            print("fetch-geog: --explain prints the plan only; nothing was "
+                  "downloaded or written.  Run the same command without "
+                  "--explain to stage it")
         return 0
     fetch_geog(root=root, datasets=datasets, source=source,
                bundle=args.bundle, keep_archives=args.keep_archives,
@@ -1716,7 +1809,9 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "--list", action="store_true",
         help="print the dataset/size/source table and per-dataset "
-             "staged state, then exit without touching the network")
+             "staged state, then exit without touching the network "
+             "(--explain does the same and adds which door needs each "
+             "dataset and its URL)")
     parser.set_defaults(func=fetch_geog_main)
     return parser
 

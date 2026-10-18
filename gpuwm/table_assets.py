@@ -262,21 +262,86 @@ def unstaged_table_assets(
     return gaps
 
 
+def auto_stage_applies(
+        assets: tuple[TableAsset, ...] = CLASSIC_TABLE_ASSETS) -> bool:
+    """Will an incomplete root be staged on first use rather than refused?
+
+    True when no operator named a root (``GPUWM_THOMPSON_TABLE_ROOT``
+    unset) and ``assets`` is the classic set ``gpuwm fetch-tables``
+    stages.  A named root is the operator's mirror and is never filled
+    behind their back (the rule :func:`staging_is_self_chosen` states),
+    and a caller binding its own table set must not be handed this one.
+    """
+
+    from gpuwm.physics_compat import THOMPSON_TABLE_ROOT_ENV
+
+    return (not os.environ.get(THOMPSON_TABLE_ROOT_ENV)
+            and tuple(assets) == tuple(CLASSIC_TABLE_ASSETS))
+
+
+def _stage_on_first_use(gaps: list[TableAsset]) -> str | None:
+    """Run the ``gpuwm fetch-tables`` classic leg; None, or why it failed.
+
+    The defect this closes (2.9.2): a clean ``pip install gpuwm`` could
+    not run ``mp_physics=8``.  The wheel cannot carry freezeH2O.dat and
+    qr_acr_qg_V4.dat (PyPI's 100 MiB per-file cap; the gpuwm-data wheel
+    is already 98.6 MB without them), so every fresh install, image
+    build and new box refused its first Thompson forecast until someone
+    ran ``gpuwm fetch-tables`` by hand (the image build and the 2x MPAS
+    box both hit it on 2026-10-16).  The fork Thompson set has been
+    acquired on first use since 2.8.7; the classic set now is too,
+    through the identical staging leg (same pinned sources, same SHA-256
+    verification before the atomic install, same lock), into
+    ``~/.gpuwm/tables/thompson`` so it is paid for once per machine.
+    Offline machines still stage with ``gpuwm fetch-tables --from DIR``.
+    The leg's progress goes to stderr so a door's stdout stays its own.
+    """
+
+    import argparse
+    import contextlib
+
+    mib = sum(asset.bytes for asset in gaps) / (1024 * 1024)
+    print(f"gpuwm: mp_physics=8 (Thompson) first use on this machine: "
+          f"staging {', '.join(asset.filename for asset in gaps)} "
+          f"({mib:.0f} MiB, SHA-256 verified against the packaged pins) "
+          f"into the user table root, once -- offline machines stage them "
+          f"with `gpuwm fetch-tables --from DIR`", file=sys.stderr,
+          flush=True)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            code = stage_classic_tables(
+                argparse.Namespace(root=None, from_dir=None))
+    except (TableAssetError, GeogFetchError, OSError, ValueError) as error:
+        return str(error)
+    return None if code == 0 else f"the fetch-tables leg exited {code}"
+
+
 def require_thompson_tables(
         root: Path | None = None,
         assets: tuple[TableAsset, ...] = CLASSIC_TABLE_ASSETS,
+        *,
+        stage: bool = True,
 ) -> Path:
-    """The resolved mp8 table root, or a one-sentence refusal.
+    """The resolved mp8 table root, staged on first use, or a refusal.
 
     THE preflight for ``mp_physics=8``.  It exists because the same
     condition used to be discovered by ``validate_table_assets`` at the
     top of the GPU run -- after the fetch, after preprocessing, minutes
     of paid work in -- and reached the reader as a ``FileNotFoundError``
     traceback naming a path inside site-packages.  Called from the
-    stages that select physics, it is one sentence naming the table and
-    the command that stages it, before anything expensive starts.
+    stages that select physics, before anything expensive starts.
+
+    When the root is resolved here (``root=None``) and
+    :func:`auto_stage_applies`, an absent set is staged now by
+    :func:`_stage_on_first_use` and the root re-resolved, so a fresh
+    install runs Thompson with no manual step.  ``stage=False`` only
+    inspects: when that same first-use route applies, its advisory
+    describes the next run's automatic download.  A named root, a
+    caller's own table set, or a staging failure instead names the
+    manual command needed before preparing the forecast.
     """
 
+    resolved_here = root is None
     if root is None:
         from gpuwm.physics_compat import thompson_table_root
 
@@ -289,13 +354,39 @@ def require_thompson_tables(
     gaps = unstaged_table_assets(root, assets)
     if not gaps:
         return root
+    failure = None
+    automatic_staging = resolved_here and auto_stage_applies(assets)
+    if stage and automatic_staging:
+        failure = _stage_on_first_use(gaps)
+        if failure is None:
+            from gpuwm.physics_compat import thompson_table_root
+
+            root = Path(thompson_table_root())
+            gaps = unstaged_table_assets(root, assets)
+            if not gaps:
+                return root
     mib = sum(asset.bytes for asset in gaps) / (1024 * 1024)
+    missing = (f"mp_physics=8 (Thompson) needs "
+               f"{', '.join(asset.filename for asset in gaps)}, which "
+               f"{'are' if len(gaps) > 1 else 'is'} not staged at {root}")
+    if not stage and automatic_staging:
+        tables = ("the two tables" if len(gaps) == 2 else
+                  "the missing table" if len(gaps) == 1 else
+                  f"the {len(gaps)} missing tables")
+        raise MissingTableAssets(
+            f"{missing} -- the first `gpuwm go` run downloads and checks "
+            f"{tables} (about {mib:.0f} MiB) from the pinned release assets; "
+            f"`gpuwm fetch-tables` stages them ahead of time or offline "
+            f"with `--from DIR`")
+    # One sentence, so the failure's own text is folded onto one line.
+    automatic = (" (automatic staging failed: "
+                 + " ".join(failure.split()).replace(". ", "; ") + ")"
+                 if failure else "")
     raise MissingTableAssets(
-        f"mp_physics=8 (Thompson) needs "
-        f"{', '.join(asset.filename for asset in gaps)}, which "
-        f"{'are' if len(gaps) > 1 else 'is'} not staged at {root} -- run "
+        f"{missing}{automatic} -- run "
         f"`gpuwm fetch-tables` ({mib:.0f} MiB, SHA-256 verified against "
-        f"the packaged pins) before preparing this forecast")
+        f"the packaged pins; `--from DIR` offline) before preparing this "
+        f"forecast")
 
 
 def staging_is_self_chosen(root: Path) -> bool:
@@ -845,6 +936,7 @@ __all__ = [
     "RELEASE_ASSET_BASE_URL",
     "TableAssetError",
     "asset_url_base",
+    "auto_stage_applies",
     "classify_assets",
     "fetch_asset_from_dir",
     "fetch_asset_from_url",
@@ -860,3 +952,11 @@ __all__ = [
     "wif_asset_url_base",
     "wif_asset_source",
 ]
+
+def generated_table_root(name: str) -> Path:
+    """Persistent cache for WOOF-built, manifest-pinned coefficient assets."""
+    import re
+    if re.fullmatch(r"[a-z][a-z0-9-]*", name) is None:
+        raise ValueError("generated table family must be a plain identifier")
+    base=os.environ.get("GPUWM_GENERATED_TABLE_ROOT")
+    return (Path(base) if base else Path.home()/".gpuwm"/"tables")/name

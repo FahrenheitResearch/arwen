@@ -493,7 +493,16 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
     if leaf in ("tsk", "tslb"):
         return FieldRule("soil_temperature", 150.0, 400.0)
     if leaf in ("smois", "sh2o"):
-        return FieldRule("soil_moisture", 0.0, 1.0)
+        # No lower bound.  real.exe's vertical interpolation writes small
+        # negative deep-layer soil moisture near coasts (down to -0.032
+        # m3 m-3 in RUC's nine layers on the gulf-coast combo case), WRF
+        # integrates those words, and no land model here writes a negative
+        # value (RUC's soilmoist bounds each layer to [qmin + 1.e-8, maxsmc],
+        # module_sf_ruclsm.F:6033-6076).  The 0 floor therefore fired only on
+        # input words WRF accepts: it named no breakage and refused 24 runs
+        # of the 2026-10-07 combo sweep (round 2) once RUC's own check was
+        # lifted.  Finiteness and the 1.0 ceiling stand.
+        return FieldRule("soil_moisture", None, 1.0)
     if lower_name.startswith("surface."):
         if leaf == "ebal":
             # Noah's energy-balance case (kernels/noah.cu): 0-3 are the land

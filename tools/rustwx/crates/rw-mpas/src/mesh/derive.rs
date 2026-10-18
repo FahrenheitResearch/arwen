@@ -150,6 +150,44 @@ impl MpasMesh {
         let vertex_degree = 3usize;
 
         // ---------------------------------------------------- canonical numbering
+        //
+        // PARALLEL (2026-10-16: no single-threaded stages; this block and
+        // the loops below were 3.6 s on one thread at 2.6 M cells). The ring
+        // table is screened for the defects the serial loop refuses in
+        // parallel; a clean table takes the parallel path, whose keys are the
+        // serial loop's keys (sorted and deduplicated either way), and a
+        // defective one runs the serial loop, which refuses on the first
+        // defect in cell order exactly as before.
+        let defective = (0..n_cells).into_par_iter().any(|i| {
+            rings.ring(i).iter().any(|&cur| {
+                cur as usize >= n_cells
+                    || cur == i as u32
+                    || !rings.ring(cur as usize).contains(&(i as u32))
+            })
+        });
+        let (mut edge_keys, mut vertex_keys) = if !defective {
+            let edge_keys: Vec<[u32; 2]> = (0..n_cells)
+                .into_par_iter()
+                .flat_map_iter(|i| {
+                    rings.ring(i).iter().map(move |&cur| {
+                        [(i as u32).min(cur), (i as u32).max(cur)]
+                    })
+                })
+                .collect();
+            let vertex_keys: Vec<[u32; 3]> = (0..n_cells)
+                .into_par_iter()
+                .flat_map_iter(|i| {
+                    let ring = rings.ring(i);
+                    let deg = ring.len();
+                    (0..deg).map(move |j| {
+                        let mut t = [i as u32, ring[(j + deg - 1) % deg], ring[j]];
+                        t.sort_unstable();
+                        t
+                    })
+                })
+                .collect();
+            (edge_keys, vertex_keys)
+        } else {
         let mut edge_keys: Vec<[u32; 2]> = Vec::with_capacity(rings.values.len());
         let mut vertex_keys: Vec<[u32; 3]> = Vec::with_capacity(rings.values.len());
         for i in 0..n_cells {
@@ -185,9 +223,11 @@ impl MpasMesh {
                 vertex_keys.push(t);
             }
         }
-        edge_keys.sort_unstable();
+        (edge_keys, vertex_keys)
+        };
+        edge_keys.par_sort_unstable();
         edge_keys.dedup();
-        vertex_keys.sort_unstable();
+        vertex_keys.par_sort_unstable();
         vertex_keys.dedup();
         let n_edges = edge_keys.len();
         let n_vertices = vertex_keys.len();
@@ -202,32 +242,43 @@ impl MpasMesh {
         };
 
         // ------------------------------------------------------ cell connectivity
+        // Every loop from here to the areas is one independent row per cell,
+        // edge or vertex, so each runs as a parallel loop over disjoint output
+        // rows: the same arithmetic per row, the same bits on any thread count.
+        // Where the serial loop could refuse, the parallel loop records the
+        // failure and the lowest failing row is refused, with the serial
+        // loop's own message.
         let mut cells_on_cell = vec![0i32; n_cells * max_edges];
         let mut edges_on_cell = vec![0i32; n_cells * max_edges];
         let mut vertices_on_cell = vec![-1i32; n_cells * max_edges];
-        for i in 0..n_cells {
-            let ring = rings.ring(i);
-            let deg = ring.len();
-            let base = i * max_edges;
-            let mut max_edge_here = -1i32;
-            for j in 0..deg {
-                let cur = ring[j];
-                let e = edge_of(i as u32, cur).expect("every ring pair was enumerated");
-                let prev = ring[(j + deg - 1) % deg];
-                let v = vertex_of([i as u32, prev, cur]).expect("every ring triple was enumerated");
-                cells_on_cell[base + j] = cur as i32;
-                edges_on_cell[base + j] = e as i32;
-                vertices_on_cell[base + j] = v as i32;
-                max_edge_here = max_edge_here.max(e as i32);
-            }
-            // Padding, reproducing the published rules exactly.
-            let last_neighbour = cells_on_cell[base + deg - 1];
-            for j in deg..max_edges {
-                cells_on_cell[base + j] = last_neighbour;
-                edges_on_cell[base + j] = max_edge_here;
-                vertices_on_cell[base + j] = -1;
-            }
-        }
+        cells_on_cell
+            .par_chunks_mut(max_edges)
+            .zip(edges_on_cell.par_chunks_mut(max_edges))
+            .zip(vertices_on_cell.par_chunks_mut(max_edges))
+            .enumerate()
+            .for_each(|(i, ((coc, eoc), voc))| {
+                let ring = rings.ring(i);
+                let deg = ring.len();
+                let mut max_edge_here = -1i32;
+                for j in 0..deg {
+                    let cur = ring[j];
+                    let e = edge_of(i as u32, cur).expect("every ring pair was enumerated");
+                    let prev = ring[(j + deg - 1) % deg];
+                    let v = vertex_of([i as u32, prev, cur])
+                        .expect("every ring triple was enumerated");
+                    coc[j] = cur as i32;
+                    eoc[j] = e as i32;
+                    voc[j] = v as i32;
+                    max_edge_here = max_edge_here.max(e as i32);
+                }
+                // Padding, reproducing the published rules exactly.
+                let last_neighbour = coc[deg - 1];
+                for j in deg..max_edges {
+                    coc[j] = last_neighbour;
+                    eoc[j] = max_edge_here;
+                    voc[j] = -1;
+                }
+            });
 
         // ------------------------------------------------------ edge connectivity
         //
@@ -242,93 +293,135 @@ impl MpasMesh {
         // of this crate looks at it.
         let mut cells_on_edge = vec![0i32; n_edges * 2];
         let mut vertices_on_edge = vec![0i32; n_edges * 2];
-        for (e, key) in edge_keys.iter().enumerate() {
-            let c0 = key[0] as usize;
-            let c1 = key[1];
-            let ring = rings.ring(c0);
-            let deg = ring.len();
-            let j = ring
-                .iter()
-                .position(|&x| x == c1)
-                .expect("the canonical edge came from this ring");
-            // Walking counter-clockwise around c0, the vertex formed with the
-            // PREVIOUS neighbour comes before the one formed with the NEXT, and
-            // the tangential direction v0 -> v1 is the normal rotated +90
-            // degrees, which is what the lock demands.
-            let v0 = vertices_on_cell[c0 * max_edges + j];
-            let v1 = vertices_on_cell[c0 * max_edges + (j + 1) % deg];
-            cells_on_edge[e * 2] = c0 as i32;
-            cells_on_edge[e * 2 + 1] = c1 as i32;
-            vertices_on_edge[e * 2] = v0;
-            vertices_on_edge[e * 2 + 1] = v1;
-        }
+        cells_on_edge
+            .par_chunks_mut(2)
+            .zip(vertices_on_edge.par_chunks_mut(2))
+            .zip(edge_keys.par_iter())
+            .for_each(|((coe, voe), key)| {
+                let c0 = key[0] as usize;
+                let c1 = key[1];
+                let ring = rings.ring(c0);
+                let deg = ring.len();
+                let j = ring
+                    .iter()
+                    .position(|&x| x == c1)
+                    .expect("the canonical edge came from this ring");
+                // Walking counter-clockwise around c0, the vertex formed with the
+                // PREVIOUS neighbour comes before the one formed with the NEXT, and
+                // the tangential direction v0 -> v1 is the normal rotated +90
+                // degrees, which is what the lock demands.
+                coe[0] = c0 as i32;
+                coe[1] = c1 as i32;
+                voe[0] = vertices_on_cell[c0 * max_edges + j];
+                voe[1] = vertices_on_cell[c0 * max_edges + (j + 1) % deg];
+            });
 
         // ---------------------------------------------------- vertex connectivity
         let mut cells_on_vertex = vec![0i32; n_vertices * vertex_degree];
         let mut edges_on_vertex = vec![0i32; n_vertices * vertex_degree];
-        for (v, t) in vertex_keys.iter().enumerate() {
-            for s in 0..3 {
-                cells_on_vertex[v * 3 + s] = t[s] as i32;
-            }
-            // The three edges of the triple, in the order (ab, ac, bc). MPAS
-            // derives its sign convention at run time from verticesOnEdge, so
-            // this ordering is free; it is fixed here only so a mesh is
-            // reproducible byte-for-byte between runs.
-            let pairs = [(t[0], t[1]), (t[0], t[2]), (t[1], t[2])];
-            for (s, (a, b)) in pairs.iter().enumerate() {
-                edges_on_vertex[v * 3 + s] = match edge_of(*a, *b) {
-                    Some(e) => e as i32,
-                    None => {
-                        return Err(MpasError::Refusal(format!(
-                            "vertex {v} joins cells {a}, {b} and {} but {a} and {b} share no edge; the dual mesh is not the dual of this primal mesh and every kite area would be taken over an open figure",
-                            t[2]
-                        )));
+        // The three edges of the triple, in the order (ab, ac, bc). MPAS
+        // derives its sign convention at run time from verticesOnEdge, so
+        // this ordering is free; it is fixed here only so a mesh is
+        // reproducible byte-for-byte between runs.
+        let open_vertex = cells_on_vertex
+            .par_chunks_mut(3)
+            .zip(edges_on_vertex.par_chunks_mut(3))
+            .zip(vertex_keys.par_iter())
+            .enumerate()
+            .map(|(v, ((cov, eov), t))| {
+                for s in 0..3 {
+                    cov[s] = t[s] as i32;
+                }
+                let pairs = [(t[0], t[1]), (t[0], t[2]), (t[1], t[2])];
+                for (s, (a, b)) in pairs.iter().enumerate() {
+                    match edge_of(*a, *b) {
+                        Some(e) => eov[s] = e as i32,
+                        None => return Some((v, *a, *b, t[2])),
                     }
-                };
-            }
+                }
+                None
+            })
+            .find_first(|x| x.is_some())
+            .flatten();
+        if let Some((v, a, b, c)) = open_vertex {
+            return Err(MpasError::Refusal(format!(
+                "vertex {v} joins cells {a}, {b} and {c} but {a} and {b} share no edge; the dual mesh is not the dual of this primal mesh and every kite area would be taken over an open figure"
+            )));
         }
 
         // ------------------------------------------------------------- geometry
         let mut vertex_xyz = vec![[0.0f64; 3]; n_vertices];
-        for (v, t) in vertex_keys.iter().enumerate() {
-            let a = cell_xyz[t[0] as usize];
-            let b = cell_xyz[t[1] as usize];
-            let c = cell_xyz[t[2] as usize];
-            vertex_xyz[v] = circumcenter(a, b, c).ok_or_else(|| {
-                MpasError::Refusal(format!(
-                    "cells {}, {} and {} are collinear on a great circle, so their Voronoi vertex is undefined; the dual edge through it would have no position and dvEdge no length",
-                    t[0], t[1], t[2]
-                ))
-            })?;
+        let collinear = vertex_xyz
+            .par_iter_mut()
+            .zip(vertex_keys.par_iter())
+            .map(|(out, t)| {
+                let a = cell_xyz[t[0] as usize];
+                let b = cell_xyz[t[1] as usize];
+                let c = cell_xyz[t[2] as usize];
+                match circumcenter(a, b, c) {
+                    Some(x) => {
+                        *out = x;
+                        None
+                    }
+                    None => Some(*t),
+                }
+            })
+            .find_first(|x| x.is_some())
+            .flatten();
+        if let Some(t) = collinear {
+            return Err(MpasError::Refusal(format!(
+                "cells {}, {} and {} are collinear on a great circle, so their Voronoi vertex is undefined; the dual edge through it would have no position and dvEdge no length",
+                t[0], t[1], t[2]
+            )));
         }
 
         let mut edge_xyz = vec![[0.0f64; 3]; n_edges];
         let mut dc_edge = vec![0.0f64; n_edges];
         let mut dv_edge = vec![0.0f64; n_edges];
         let mut angle_edge = vec![0.0f64; n_edges];
-        for e in 0..n_edges {
-            let c0 = cells_on_edge[e * 2] as usize;
-            let c1 = cells_on_edge[e * 2 + 1] as usize;
-            let p0 = cell_xyz[c0];
-            let p1 = cell_xyz[c1];
-            // MEASURED: xyzEdge is the great-circle midpoint of the two CELL
-            // CENTRES, not of the two vertices -- decided by 10 to 11 orders of
-            // magnitude on both published meshes.
-            let m = unit(add(p0, p1)).ok_or_else(|| {
-                MpasError::Refusal(format!(
+        // 0 = fine, 1 = antipodal cells, 2 = edge on a pole.
+        let bad_edge = edge_xyz
+            .par_iter_mut()
+            .zip(dc_edge.par_iter_mut())
+            .zip(dv_edge.par_iter_mut())
+            .zip(angle_edge.par_iter_mut())
+            .enumerate()
+            .map(|(e, (((exyz, dc), dv), ang))| {
+                let c0 = cells_on_edge[e * 2] as usize;
+                let c1 = cells_on_edge[e * 2 + 1] as usize;
+                let p0 = cell_xyz[c0];
+                let p1 = cell_xyz[c1];
+                // MEASURED: xyzEdge is the great-circle midpoint of the two CELL
+                // CENTRES, not of the two vertices -- decided by 10 to 11 orders of
+                // magnitude on both published meshes.
+                let Some(m) = unit(add(p0, p1)) else {
+                    return Some((e, c0, c1, 1u8));
+                };
+                *exyz = m;
+                *dc = arc(p0, p1);
+                let v0 = vertices_on_edge[e * 2] as usize;
+                let v1 = vertices_on_edge[e * 2 + 1] as usize;
+                *dv = arc(vertex_xyz[v0], vertex_xyz[v1]);
+                let Some(a) = edge_angle(m, p0, p1) else {
+                    return Some((e, c0, c1, 2u8));
+                };
+                *ang = a;
+                None
+            })
+            .find_first(|x| x.is_some())
+            .flatten();
+        match bad_edge {
+            Some((_, c0, c1, 1)) => {
+                return Err(MpasError::Refusal(format!(
                     "cells {c0} and {c1} are antipodal, so the edge between them has no midpoint; latEdge and lonEdge would be arbitrary and the wind rotation angle built on them meaningless"
-                ))
-            })?;
-            edge_xyz[e] = m;
-            dc_edge[e] = arc(p0, p1);
-            let v0 = vertices_on_edge[e * 2] as usize;
-            let v1 = vertices_on_edge[e * 2 + 1] as usize;
-            dv_edge[e] = arc(vertex_xyz[v0], vertex_xyz[v1]);
-            angle_edge[e] = edge_angle(m, p0, p1).ok_or_else(|| {
-                MpasError::Refusal(format!(
+                )));
+            }
+            Some((e, _, _, _)) => {
+                return Err(MpasError::Refusal(format!(
                     "edge {e} sits exactly on a pole, where the local east and north directions are undefined; angleEdge is the init-time wind rotation angle, so a wrong value there rotates the initial wind by an arbitrary amount at that edge"
-                ))
-            })?;
+                )));
+            }
+            None => {}
         }
 
         // ------------------------------------------------ areas and kite partition
@@ -341,47 +434,59 @@ impl MpasMesh {
         // too coarse for a mass budget that has to close over a whole forecast.
         // The independent spherical-polygon area is still computed, and
         // `mesh::validate` refuses if the two decompositions disagree.
-        let mut area_cell = vec![0.0f64; n_cells];
+        // Kite of cell c at vertex v: the quadrilateral (vertex, edge_before,
+        // cell centre, edge_after) at the ring slot j where c meets v, as two
+        // spherical triangles. Computed per VERTEX row in parallel (each row
+        // is written once, by exactly the arithmetic the per-cell loop used),
+        // then each cell sums its own kites in ring order, so areaCell is the
+        // same sum in the same order. Slot s of kiteAreasOnVertex pairs with
+        // cellsOnVertex[v][s], and cellsOnVertex is the ascending triple.
         let mut kite_areas_on_vertex = vec![0.0f64; n_vertices * vertex_degree];
-        let mut kite_buf: Vec<f64> = Vec::with_capacity(max_edges);
-        for i in 0..n_cells {
+        kite_areas_on_vertex
+            .par_chunks_mut(3)
+            .enumerate()
+            .for_each(|(v, kav)| {
+                for s in 0..3 {
+                    let c = cells_on_vertex[v * 3 + s] as usize;
+                    let deg = rings.degree(c);
+                    let base = c * max_edges;
+                    let j = (0..deg)
+                        .find(|&j| vertices_on_cell[base + j] == v as i32)
+                        .expect("the vertex triple contains this cell by construction");
+                    let e_before = edges_on_cell[base + (j + deg - 1) % deg] as usize;
+                    let e_after = edges_on_cell[base + j] as usize;
+                    let pv = vertex_xyz[v];
+                    let centre = cell_xyz[c];
+                    // The two halves share the (vertex, cell centre) diagonal and
+                    // are consistently wound, so the SUM is signed and its
+                    // magnitude is the kite area even when the quad is not convex.
+                    kav[s] = (tri_area(pv, edge_xyz[e_before], centre)
+                        + tri_area(pv, centre, edge_xyz[e_after]))
+                    .abs();
+                }
+            });
+        let mut area_cell = vec![0.0f64; n_cells];
+        area_cell.par_iter_mut().enumerate().for_each(|(i, area)| {
             let deg = rings.degree(i);
             let base = i * max_edges;
-            // Kite of cell i at vertex slot j: the quadrilateral
-            // (vertex, edge_before, cell centre, edge_after), as two spherical
-            // triangles. Slot i of kiteAreasOnVertex pairs with
-            // cellsOnVertex[v][i], and cellsOnVertex is the ascending triple.
-            let centre = cell_xyz[i];
-            kite_buf.clear();
+            let mut kite_buf: Vec<f64> = Vec::with_capacity(deg);
             for j in 0..deg {
                 let v = vertices_on_cell[base + j] as usize;
-                let e_before = edges_on_cell[base + (j + deg - 1) % deg] as usize;
-                let e_after = edges_on_cell[base + j] as usize;
-                let pv = vertex_xyz[v];
-                // The two halves share the (vertex, cell centre) diagonal and
-                // are consistently wound, so the SUM is signed and its
-                // magnitude is the kite area even when the quad is not convex.
-                let kite = (tri_area(pv, edge_xyz[e_before], centre)
-                    + tri_area(pv, centre, edge_xyz[e_after]))
-                .abs();
                 let slot = (0..3)
                     .find(|&s| cells_on_vertex[v * 3 + s] == i as i32)
                     .expect("the vertex triple contains this cell by construction");
-                kite_areas_on_vertex[v * 3 + slot] = kite;
-                kite_buf.push(kite);
+                kite_buf.push(kite_areas_on_vertex[v * 3 + slot]);
             }
-            area_cell[i] = nsum(&kite_buf);
-        }
-        let mut area_triangle = vec![0.0f64; n_vertices];
-        for v in 0..n_vertices {
-            // MEASURED: areaTriangle is the SUM OF ITS OWN THREE KITES, not the
-            // spherical excess of the three cell centres. On the published
-            // variable mesh those two differ by up to 3.53e-03 relative, and it
-            // is not an obtuse-triangle effect.
-            area_triangle[v] = kite_areas_on_vertex[v * 3]
-                + kite_areas_on_vertex[v * 3 + 1]
-                + kite_areas_on_vertex[v * 3 + 2];
-        }
+            *area = nsum(&kite_buf);
+        });
+        // MEASURED: areaTriangle is the SUM OF ITS OWN THREE KITES, not the
+        // spherical excess of the three cell centres. On the published
+        // variable mesh those two differ by up to 3.53e-03 relative, and it
+        // is not an obtuse-triangle effect.
+        let area_triangle: Vec<f64> = kite_areas_on_vertex
+            .par_chunks(3)
+            .map(|k| k[0] + k[1] + k[2])
+            .collect();
 
         // -------------------------------------------- tangential stencil + weights
         let mut n_edges_on_edge = vec![0i32; n_edges];
@@ -477,17 +582,16 @@ impl MpasMesh {
     /// boundary of the region its kites tile, and the mesh is not a Voronoi
     /// tessellation of its own generators.
     pub fn polygon_areas(&self) -> Vec<f64> {
-        let mut out = vec![0.0f64; self.n_cells];
-        let mut ring: Vec<V3> = Vec::with_capacity(self.max_edges);
-        for i in 0..self.n_cells {
-            let deg = self.n_edges_on_cell[i] as usize;
-            ring.clear();
-            for j in 0..deg {
-                ring.push(self.vertex_xyz[self.vertices_on_cell[i * self.max_edges + j] as usize]);
-            }
-            out[i] = polygon_area(&ring);
-        }
-        out
+        (0..self.n_cells)
+            .into_par_iter()
+            .map(|i| {
+                let deg = self.n_edges_on_cell[i] as usize;
+                let ring: Vec<V3> = (0..deg)
+                    .map(|j| self.vertex_xyz[self.vertices_on_cell[i * self.max_edges + j] as usize])
+                    .collect();
+                polygon_area(&ring)
+            })
+            .collect()
     }
 
     /// Hexagon across-flats spacing of every cell, in metres.
@@ -498,7 +602,7 @@ impl MpasMesh {
     /// disagree with every number already on the record.
     pub fn spacing_m(&self) -> Vec<f64> {
         self.area_cell
-            .iter()
+            .par_iter()
             .map(|&a| (2.0 * a / 3f64.sqrt()).sqrt() * geom::EARTH_RADIUS_M)
             .collect()
     }

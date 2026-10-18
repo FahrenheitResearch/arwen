@@ -148,11 +148,17 @@ def _lane_withholding_adapter():
     """
     from gpuwm.core.gf import GrellFreitas
 
-    class _WithheldLanesGF(GrellFreitas):
-        def bind_driver(self, driver):
-            super().bind_driver(_LanesWithheld(driver))
+    adapter = GrellFreitas()
+    bind = adapter.bind_driver
 
-    return _WithheldLanesGF()
+    def withhold(driver):
+        bind(_LanesWithheld(driver))
+
+    # Preserve the production adapter's type and native-output admission.
+    # A subclass changes that admission as well as hiding the lanes, so it
+    # is not a control for the four forcing arguments alone.
+    adapter.bind_driver = withhold
+    return adapter
 
 
 def _stats(array):
@@ -306,6 +312,7 @@ def test_the_forcing_lanes_change_what_grell_freitas_computes():
 
     state_zero, driver_zero = _driver_for(cfg)
     driver_zero.cumulus_callable = _lane_withholding_adapter()
+    assert type(driver_zero.cumulus_callable) is type(driver_fed.cumulus_callable)
     driver_zero.compute(state_zero, cfg)
     # INSTRUMENT VALIDATION, before the delta is read: the control arm
     # really did withhold the lanes for the whole step.  Without this the
@@ -346,7 +353,18 @@ def test_the_forcing_lanes_change_what_grell_freitas_computes():
     # lane silently reverting to zeros (delta collapses to 0) and a lane
     # arriving in the wrong units or the wrong variable (delta explodes).
     recorded_rate_absmax = 2.6395e-03      # K s-1, fed arm
-    recorded_delta_absmax = 2.6741e-06     # K s-1, fed minus withheld
+    recorded_delta_absmax = 2.6741e-06     # default K s-1, fed minus withheld
+    from gpuwm.wrf_exact import ENABLED
+    if ENABLED:
+        import json
+        from pathlib import Path
+        # Independent stock GFDRV, compiled with the scalar WRF flags,
+        # matches all eight outputs of both captured arms (40,960 words).
+        # Its response differs from the original default arithmetic pin.
+        stock = json.loads((Path(__file__).parent / "data/oracles/gf/"
+                            "gf-pbl-forcing-strict.json").read_text())
+        assert all(row["unequal"] == 0 for row in stock["rows"])
+        recorded_delta_absmax = stock["reference_theta_delta"]
     recorded_lane_absmax = 7.9803e-04      # K s-1, retained RTHBLTEN
     for measured, recorded, label in (
             (float(cp.max(cp.abs(rate_fed))), recorded_rate_absmax,

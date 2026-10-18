@@ -13,8 +13,9 @@ python tools/battery/run_source_leg.py \
   --coupled-fixture "$CLOUD_BUILD" --out "$EVIDENCE/source-leg"
 ```
 
-The YSU build and fixture tools are `tools/ysu_generations_oracle/build.sh`
-and `gate.py`; the cloud fixture builder is
+The YSU tools are `tools/ysu_generations_oracle/fetch_sources.sh` (the four
+pinned public releases, each with the MMM physics it names),
+`build.sh`, `make_columns.py` and `gate.py`; the cloud fixture builder is
 `tools/cldfra2_wrf461_oracle/coupled_build.sh`. Their source hashes and
 build receipts remain required evidence. Supply their outputs explicitly;
 this leg never substitutes a Python reference or downloads a different source.
@@ -23,3 +24,10 @@ The runner executes all five named suites in default and strict modes without
 a marker filter, writes per-arm logs and JUnit reports, and refuses any skip
 or empty collection. `source-leg.json` records the source paths, commands and
 results. A help invocation or an absent-input refusal is not a passing leg.
+
+Outside this leg the YSU generation tests do not skip: they replay the
+committed WRF references in `tests/data/oracles/ysu_generations` on every
+GPU leg, in that leg's arithmetic mode. Here, with `YSU_COLUMN_FIXTURE` set,
+`gate.py --fixture verify` rebuilds every reference from the oracles and
+also requires the committed words, so a reference that can no longer be
+rebuilt from the public sources fails the leg.

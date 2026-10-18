@@ -20,7 +20,9 @@
 //! is water -- pointed at MODIS tiles unchanged it calls every desert an ocean.
 //! This reads the water code from the dataset's own index. Where the dataset IS
 //! USGS the two agree exactly; where it is not, this is right and MPAS is
-//! wrong. Recorded in the receipt as `water_category_source`.
+//! wrong. A declared lake class (`islake`, 21 in the with-lakes MODIS set) is
+//! water in the same statistics, as the static's own land use folds it.
+//! Recorded in the receipt as `water_category_source`.
 //!
 //! **The source frame is read, not assumed.** MPAS holds one global array and
 //! knows, by construction, that its column 1 is 180 W. A WPS_GEOG archive
@@ -481,7 +483,7 @@ pub fn compute(
     // named by one absolute path in its two Windows spellings (backslash and
     // forward slash) produced two different statics -- measured, 2,681,384 B
     // against 2,681,380 B, from byte-identical inputs.
-    let water_source = match landuse.index.iswater {
+    let mut water_source = match landuse.index.iswater {
         Some(_) => format!(
             "{} index iswater",
             landuse
@@ -492,6 +494,10 @@ pub fn compute(
         ),
         None => "MPAS default WATER=16 (dataset index declares none)".to_string(),
     };
+    let lake = landuse.index.islake.filter(|&c| c > 0).map(|c| c as i32);
+    if let Some(lake) = lake {
+        water_source.push_str(&format!("; index islake={lake} treated as water"));
+    }
 
     // Box geometry per cell, in the TOPOGRAPHY dataset's own index frame.
     let mut geometry: Vec<(i64, i64, i64, i64)> = Vec::with_capacity(n); // ic, jc, nx, ny
@@ -576,7 +582,7 @@ pub fn compute(
             y_hi + align.dy_offset,
             0,
             -1i32,
-            |raw| raw as i32,
+            |raw| if lake == Some(raw as i32) { water } else { raw as i32 },
         )?;
         // Roll the land-use band into the topography frame's column order so
         // the box gather indexes one array with one index.
@@ -847,6 +853,37 @@ mod tests {
         let (lat, lon, dc, neoc, coc, me) = cells();
         compute(topo, lu, &lat, &lon, &dc, &neoc, &coc, me, band_rows, &|_| {})
             .expect("the drag band computes")
+    }
+
+    /// The with-lakes land use names its lakes `islake`; they are water here
+    /// exactly as the water class is. Relabelling every water pixel to a
+    /// declared lake class must leave all four statistics unchanged.
+    #[test]
+    fn declared_lake_pixels_count_as_water() {
+        let topo = GeogDataset::open(&fixture("lake-topo", "continuous", -179.0, 2)).unwrap();
+        let lu_path = fixture("lake-lu", "categorical", -179.0, 1);
+        let water = run(&topo, &GeogDataset::open(&lu_path).unwrap(), 90);
+        for entry in std::fs::read_dir(&lu_path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap() == "index" { continue; }
+            let mut bytes = std::fs::read(&path).unwrap();
+            for value in &mut bytes { if *value == 3 { *value = 9; } }
+            std::fs::write(path, bytes).unwrap();
+        }
+        let index = std::fs::read_to_string(lu_path.join("index")).unwrap()
+            .replace("category_max=8", "category_max=9");
+        std::fs::write(lu_path.join("index"), &index).unwrap();
+        let undeclared = run(&topo, &GeogDataset::open(&lu_path).unwrap(), 90);
+        assert_ne!(water.con, undeclared.con, "the fixture must exercise the land/water split");
+        std::fs::write(lu_path.join("index"), format!("{index}islake=9\n")).unwrap();
+        let lake = run(&topo, &GeogDataset::open(&lu_path).unwrap(), 90);
+        assert_eq!(water.con, lake.con);
+        assert_eq!(water.var2d, lake.var2d);
+        assert_eq!(water.oa, lake.oa);
+        assert_eq!(water.ol, lake.ol);
+        assert_eq!(water.hlanduse, lake.hlanduse);
+        assert!(lake.water_category_source.ends_with("; index islake=9 treated as water"));
+        assert!(!water.water_category_source.contains("islake"));
     }
 
     /// THE DETERMINISM GATE FOR THIS PASS. The band is a memory budget, and a

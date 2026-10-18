@@ -385,3 +385,115 @@ def test_disabling_the_glacier_path_refuses_instead_of_running_sflx():
     fields = _profile()
     with pytest.raises(NoahmpGlacierColumnError, match="glacier_path"):
         _phase1(seam, fields)
+
+
+def test_glacier_writeback_reuses_indices_and_preserves_unmasked_words(monkeypatch):
+    """Prevent 150 redundant index allocations/uploads per glacier step.
+
+    Instrument only write-back, after the real evaluator returns. CuPy still
+    allocates combined advanced-index arrays; the old host-index path adds
+    two uploads for each of 76 accesses (228 index-sized allocations total).
+    Reusing the two device indices leaves 78 on the measured CuPy backend.
+    The upper bound allows backend scratch changes, but rejects that defect.
+    """
+    from gpuwm.core import noahmp_runtime as runtime
+    original = runtime._glacier_lsm_step
+    observed = []
+
+    def measured(fields, atmosphere, mask, **kwargs):
+        host_mask = cp.asnumpy(mask).astype(bool)
+        count = int(host_mask.sum())
+        before = {k: cp.asnumpy(v)[..., ~host_mask].copy()
+                  for k, v in fields.items()
+                  if hasattr(v, 'shape') and v.shape[-2:] == host_mask.shape}
+        active = False
+        allocations = 0
+        evaluator = kwargs['evaluator']
+
+        def evaluate(*args, **kw):
+            nonlocal active
+            result = evaluator(*args, **kw)
+            active = True
+            return result
+
+        class Hook(cp.cuda.memory_hook.MemoryHook):
+            def malloc_preprocess(self, device_id, size, mem_size):
+                nonlocal allocations
+                if active and size == count * np.dtype(np.int64).itemsize:
+                    allocations += 1
+
+        kwargs['evaluator'] = evaluate
+        with Hook():
+            original(fields, atmosphere, mask, **kwargs)
+        for name, value in before.items():
+            after = cp.asnumpy(fields[name])[..., ~host_mask]
+            np.testing.assert_array_equal(np.ascontiguousarray(after).view(np.uint8),
+                                          np.ascontiguousarray(value).view(np.uint8),
+                                          err_msg=name)
+        observed.append((count, allocations))
+
+    monkeypatch.setattr(runtime, '_glacier_lsm_step', measured)
+    seam = _seam()
+    fields = _profile()
+    _phase1(seam, fields)
+    assert observed and all(count == 3 for count, _ in observed)
+    assert all(2 <= allocations <= 90 for _, allocations in observed), observed
+
+
+@pytest.mark.parametrize('ncells,count,gathered', [
+    (39, 17, False), (86337, 4096, False), (86338, 4096, True),
+])
+def test_glacier_sparse_input_copy_budget(monkeypatch, ncells, count, gathered):
+    """Large sparse domains must not copy every non-glacier input to host.
+
+    Stop at the evaluator boundary to measure marshalling alone. The one-cell
+    cutoff pair also prevents applying the slower gather path to small calls.
+    Full evolution and bitwise outputs are covered by the CUDA battery.
+    """
+    from gpuwm.core import noahmp_runtime as runtime
+    values = np.linspace(1., 2., ncells, dtype=np.float32).reshape(1, -1)
+    device = cp.asarray(values)
+    scalar_names = ('rainbl tmn swdown glw qsnowxy sneqvoxy alboldxy cmxy '
+                    'chxy snow snowh tgxy taussxy qsfc').split()
+    fields = {name: device for name in scalar_names}
+    for name, levels in dict(smois=4, sh2o=4, tslb=4, tsnoxy=3,
+                             snicexy=3, snliqxy=3, zsnsoxy=7).items():
+        fields[name] = cp.broadcast_to(device, (levels, 1, ncells))
+    fields['isnowxy'] = cp.zeros((1, ncells), dtype=cp.int32)
+    atmosphere = {name: device[None] for name in
+                  ('temperature', 'qv', 'u', 'v', 'dz')}
+    atmosphere['p_interface'] = cp.broadcast_to(device, (2, 1, ncells))
+    mask = np.zeros((1, ncells), dtype=bool)
+    mask[0, np.linspace(0, ncells - 1, count, dtype=np.int64)] = True
+    device_mask = cp.asarray(mask)
+    selected = values[mask]
+    sizes = []
+    asnumpy = cp.asnumpy
+
+    def measured(value, *args, **kwargs):
+        sizes.append(value.nbytes)
+        return asnumpy(value, *args, **kwargs)
+
+    class InputsChecked(Exception):
+        pass
+
+    def evaluate(inputs, n, dt):
+        assert n == count and dt == 120.
+        for name in ('cosz', 'sfctmp', 'uu', 'vv', 'soldn', 'lwdn',
+                     'qsnow', 'sneqvo', 'albold', 'cm', 'ch', 'sneqv',
+                     'snowh', 'tg', 'tauss', 'qsfc'):
+            np.testing.assert_array_equal(inputs[name].view(np.uint32),
+                                          selected.view(np.uint32))
+        np.testing.assert_array_equal(inputs['smc'].view(np.uint32),
+                                      np.broadcast_to(selected[:, None],
+                                                      (count, 4)).view(np.uint32))
+        expected = ncells + 51 * 4 * (count if gathered else ncells)
+        assert sum(sizes) == expected, (sum(sizes), expected)
+        raise InputsChecked
+
+    monkeypatch.setattr(cp, 'asnumpy', measured)
+    with pytest.raises(InputsChecked):
+        runtime._glacier_lsm_step(fields, atmosphere, device_mask, params=None,
+                                 coszen=device, dt=120.,
+                                 dzs=np.array([.1, .3, .6, 1.], dtype=np.float32),
+                                 evaluator=evaluate)

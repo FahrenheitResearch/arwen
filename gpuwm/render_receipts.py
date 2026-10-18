@@ -69,13 +69,14 @@ def undrawn_note(summary: dict | None) -> tuple[str, str] | None:
 
     ``None`` when every product that was skipped somewhere was drawn
     somewhere else.  The headline's first line names the products; one
-    line per product follows with the first reason recorded for it,
+    line per product follows with its reasons, most affected frames first,
     because the causes differ by product: a field the frames do not
     store, a window they do not span, a section with no line to cut it
     along.  It used to give one cause for all of them, "the frames do
     not carry their input fields or the time window they need", which
     sent a reader whose section had no line looking at the forecast's
-    history fields.  The detail counts the skips.
+    history fields. A one-frame timing limit must not hide a missing field
+    that prevents every later frame. The detail counts the skips.
     """
 
     if not summary:
@@ -87,7 +88,7 @@ def undrawn_note(summary: dict | None) -> tuple[str, str] | None:
     names = [str(row.get("name")) for row in rows]
     more = count - len(names)
     listed = ", ".join(names) + (f" and {more} more" if more > 0 else "")
-    lines = [f"  {row.get('name')}: {_first_reason(row)}" for row in rows]
+    lines = [f"  {row.get('name')}: {_reason_text(row)}" for row in rows]
     if more > 0:
         lines.append(f"  the other {more} are named in "
                      f"{summary.get('summary_path') or SUMMARY_FILENAME}")
@@ -96,16 +97,17 @@ def undrawn_note(summary: dict | None) -> tuple[str, str] | None:
         f"{listed}; every other product drew at least one picture.  Why:\n"
         + "\n".join(lines))
     detail = (
-        "Each reason is the first the renderer recorded for that product; "
-        "the counts are skipped render attempts across every pass of this "
+        "Reasons are listed by the number of affected frames, most first; "
+        "unattributed reasons count render attempts. The skip totals below "
+        "count render attempts across every pass of this "
         "run:\n"
         + "\n".join(f"  {row.get('name')}: skipped {row.get('count')} time(s)"
                     for row in rows))
     return headline, detail
 
 
-def _first_reason(row) -> str:
-    """The first recorded reason of one undrawn row, as one line."""
+def _reason_text(row) -> str:
+    """One undrawn product's ranked reasons, as one line."""
 
     reasons = row.get("reasons") or []
     if not reasons:
@@ -113,7 +115,37 @@ def _first_reason(row) -> str:
         # room; the invocation receipts keep every one.
         return ("no reason kept in the summary; the receipts under "
                 ".render-receipts hold it")
-    return " ".join(str(reasons[0]).split())
+    text = "; ".join(" ".join(str(reason).split()) for reason in reasons)
+    if row.get("additional_reasons"):
+        text += f"; {row['additional_reasons']} more reason(s) in .render-receipts"
+    return text
+
+
+def _skip_cause(reason: str):
+    """Group the engine's frame-attributed skips without losing exact receipts.
+
+    Paths and stored-hour labels vary per frame even when the cause is the
+    same. Keep that frame identity for counting, and remove it from the
+    explanation used to group the causes. Numeric window limits stay intact.
+    """
+    match = re.fullmatch(r"(?:(.+): )?(F\d{3,}): (.*)", reason, re.DOTALL)
+    if match is None:
+        return reason, None
+    path, hour, cause = match.groups()
+    cause = re.sub(r"\bstored hour F\d{3,}\b", "stored frame", cause)
+    return cause, ("frame", path or "", hour)
+
+
+def _ranked_causes(causes) -> tuple[list[str], int]:
+    shown = []
+    for cause, frames in sorted(causes.items(), key=lambda item: (-len(item[1]), item[0])):
+        unit = "frame(s)" if all(frame[0] == "frame" for frame in frames) else "render attempt(s)"
+        text = f"{len(frames)} {unit}: {cause}"
+        if len(text.encode("utf-8")) <= 2048:
+            shown.append(text)
+        if len(shown) == 3:
+            break
+    return shown, len(causes) - len(shown)
 
 
 def _hash(path: Path) -> str:
@@ -349,6 +381,7 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
     specs = []
     skipped = Counter()
     reasons = defaultdict(set)
+    causes = defaultdict(lambda: defaultdict(set))
     failures = []
     degraded = []
     section_tops = []
@@ -361,9 +394,11 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
             if not isinstance(row.get("sha256"), str) or not _SHA256.fullmatch(row["sha256"]):
                 raise ValueError("Render receipt has no valid image digest")
             current[os.path.normcase(str(path))] = row
-        for row in document["skipped"]:
+        for index, row in enumerate(document["skipped"]):
             skipped[row["family"]] += 1
             reasons[row["family"]].add(row["reason"])
+            cause, frame = _skip_cause(row["reason"])
+            causes[row["family"]][cause].add(frame or ("attempt", str(_path), index))
         failures.extend(document["failures"])
         # ``.get``: receipts written before the layout carried its own
         # degradations are still valid receipts and still summarize.
@@ -407,10 +442,12 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
     # Every product some invocation skipped and NO invocation drew, across
     # every pass this folder has seen: the early frame, the frames drawn
     # while the forecast ran, and the end-of-run and windowed passes.
-    undrawn_rows = [{"name": row["name"], "count": row["count"],
-                     "reasons": row["reasons"][:1]}
-                    for row in skipped_rows
-                    if _drawn_family(row["name"]) not in rendered]
+    undrawn_rows = []
+    for name, count in sorted(skipped.items()):
+        if _drawn_family(name) not in rendered:
+            shown, additional = _ranked_causes(causes[name])
+            undrawn_rows.append({"name": name, "count": count, "reasons": shown,
+                                 "additional_reasons": additional})
     shown_failures = [reason for reason in failures if len(reason.encode("utf-8")) <= 2048][:8]
     summary = {"schema": SUMMARY_SCHEMA, "summary_path": str(root / SUMMARY_FILENAME),
         "requested_specs": specs[:8], "additional_requested_specs": max(0, len(specs)-8),
@@ -446,7 +483,8 @@ def _summarize_documents(root: Path, documents, *, verify_images: bool) -> dict:
 
 def _bounded_summary(summary):
     # Keep terminal/status consumers bounded without changing any quoted
-    # reason. Omitted exact details remain in the invocation receipts.
+    # exact skipped reason. Grouped undrawn reasons are dropped least common
+    # first. Omitted exact details remain in the invocation receipts.
     while len((json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")) > _MAX_STATUS_BYTES:
         rows = [row for row in summary["skipped_families"] if row["reasons"]]
         undrawn = [row for row in summary.get("undrawn_families", ()) if row["reasons"]]
@@ -454,7 +492,8 @@ def _bounded_summary(summary):
             row = max(rows, key=lambda row: sum(len(reason) for reason in row["reasons"]))
             row["reasons"].pop(); row["additional_reasons"] += 1
         elif undrawn:
-            max(undrawn, key=lambda row: len(row["reasons"][0]))["reasons"].pop()
+            row = max(undrawn, key=lambda row: sum(len(reason) for reason in row["reasons"]))
+            row["reasons"].pop(); row["additional_reasons"] += 1
         elif summary["failures"]:
             summary["failures"].pop(); summary["additional_failures"] += 1
         elif summary.get("degraded"):

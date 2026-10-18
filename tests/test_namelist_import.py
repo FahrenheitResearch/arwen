@@ -921,8 +921,9 @@ def test_rejects_unmapped_scheme(tmp_path):
     # first-class now (see test_thompson_maps_without_substitution_or_
     # environment).  The unsupported selector 7 (Goddard 4-ice) has no gpuwm implementation and keeps this
     # rejection path accurate.
+    # Since 2.9.1 it is refused by its scheme name, not as a bare number.
     inp = INPUT_TEXT.replace("mp_physics = 10, 10", "mp_physics = 7, 7")
-    with pytest.raises(ValueError, match="no ratified gpuwm mapping"):
+    with pytest.raises(ValueError, match="NU-WRF Goddard 4-ice"):
         import_namelists(*_pair(tmp_path, inp=inp))
     inp = INPUT_TEXT.replace("bl_pbl_physics = 11, 11",
                              "bl_pbl_physics = 5, 5")
@@ -3568,6 +3569,42 @@ def test_grell_3d_imports_nondefault_ensemble_dimensions(tmp_path):
         import_namelists(*_pair(tmp_path, inp=_g3_input("\n maxens = 4,")), name="g3short")
 
 
+#: NCAR's public WRF v4.4 CONUS 12 km benchmark namelist sets every Grell
+#: ensemble dimension to 1 under the conus suite's Tiedtke cumulus.
+NCAR_BENCHMARK_ENSEMBLE = ("\n maxiens = 1,\n maxens = 1,\n maxens2 = 1,"
+                           "\n maxens3 = 1,\n ensdim = 1,")
+
+
+def test_grell_ensemble_controls_without_grell_3d_are_dropped_as_inert(tmp_path):
+    """2.9.0 refused these with "cu_physics=5 is required", which refused
+    NCAR's CONUS benchmark as shipped; wrf.exe accepts and ignores them."""
+    inp = INPUT_TEXT.replace(" cudt = 5, 0,", " cudt = 5, 0,"
+                             + NCAR_BENCHMARK_ENSEMBLE
+                             + "\n convtrans_avglen_m = 20,")
+    toml_text, report = import_namelists(*_pair(tmp_path, inp=inp), name="ncarens")
+    dropped = {entry.key: entry for entry in report.dropped}
+    for key in ("maxiens", "maxens", "maxens2", "maxens3", "ensdim",
+                "convtrans_avglen_m"):
+        assert key in dropped, key
+        assert key not in toml_text
+    assert "inert" in dropped["ensdim"].reason
+    run = _load(tmp_path, toml_text).root.run
+    assert run.cu_physics == 1 and run.maxens == 3 and run.ensdim == 144
+
+
+def test_cu_diag_on_a_non_grell_scheme_is_refused_as_wrf_refuses_it(tmp_path):
+    inp = INPUT_TEXT.replace(" cudt = 5, 0,", " cudt = 5, 0,\n cu_diag = 1, 0,")
+    with pytest.raises(ValueError, match="module_check_a_mundo"):
+        import_namelists(*_pair(tmp_path, inp=inp), name="kfdiag")
+
+
+def test_cu_diag_under_grell_freitas_is_dropped_as_wrf_sets_it(tmp_path):
+    toml_text, report = import_namelists(
+        *_pair(tmp_path, inp=_gf_input("\n cu_diag = 1,")), name="gfdiag")
+    dropped = {entry.key: entry for entry in report.dropped}
+    assert "cu_diag" in dropped and "cu_diag" not in toml_text
+
+
 def test_user_aerosol_keys_reach_loaded_run_config(tmp_path):
     text,report=_import_radiation_options(tmp_path,["aer_opt = 2","aer_type = 2",
         "aer_aod550_val = 0.2","aer_angexp_opt = 3","aer_ssa_opt = 3","aer_asy_opt = 3"],mp_physics=6)
@@ -3576,3 +3613,54 @@ def test_user_aerosol_keys_reach_loaded_run_config(tmp_path):
         assert dc.run.aer_opt==2 and dc.run.aer_type==2
         assert dc.run.aer_aod550_val==0.2 and dc.run.aer_angexp_opt==3
         assert dc.run.aer_ssa_opt==3 and dc.run.aer_asy_opt==3
+
+
+#: NCAR's public WRF v4.4 CONUS 12 km benchmark namelists, as shipped in
+#: v4.4_bench_conus12km.  Its namelist.wps starts at 00 UTC (the WPS run)
+#: while the forecast starts at 12 UTC; the run doors build the WPS layout
+#: from the wrfinput files, so this file-pair import aligns the start.
+NCAR_CONUS12KM = Path(__file__).resolve().parent / "data" / "ncar_v44_conus12km"
+
+
+def _ncar_conus12km_pair(tmp_path, *, restart_interval=None):
+    wps = (NCAR_CONUS12KM / "namelist.wps").read_text().replace(
+        "2019-11-26_00:00:00", "2019-11-26_12:00:00")
+    inp = (NCAR_CONUS12KM / "namelist.input").read_text()
+    if restart_interval is not None:
+        inp, count = re.subn(r"(?m)^ restart_interval\s*=\s*660,",
+                             f" restart_interval = {restart_interval},", inp)
+        assert count == 1
+    return _pair(tmp_path, wps=wps, inp=inp)
+
+
+def test_ncar_conus12km_benchmark_namelist_imports_as_shipped(tmp_path):
+    """2.9.0 refused it ("cu_physics=5 is required") at both run doors."""
+    toml_text, report = import_namelists(*_ncar_conus12km_pair(tmp_path),
+                                         name="ncar12")
+    dropped = {entry.key for entry in report.dropped}
+    assert {"maxens", "maxens2", "maxens3", "ensdim"} <= dropped
+    exp = _load(tmp_path, toml_text)
+    assert exp.restart_interval_s == 39600.0   # 660 min = 550 steps of 72 s
+
+
+def test_restart_interval_past_the_run_imports_as_no_restart(tmp_path):
+    """restart_interval = 99999 at 72 s steps is not a whole number of
+    steps; wrf.exe's alarm never rings inside a 12 h run, so it writes no
+    restart file.  2.9.0 refused the namelist."""
+    toml_text, report = import_namelists(
+        *_ncar_conus12km_pair(tmp_path, restart_interval=99999), name="ncarri")
+    fixed = {(f.section, f.key): f for f in report.fixed}
+    assert "never rings" in fixed[("time_control", "restart_interval")].reason
+    assert _load(tmp_path, toml_text).restart_interval_s == 0.0
+
+
+def test_restart_interval_off_the_step_grid_rings_on_wrfs_step(tmp_path):
+    # 361 min = 300.83 steps of 72 s: wrf.exe writes once, on step 301.
+    toml_text, report = import_namelists(
+        *_ncar_conus12km_pair(tmp_path, restart_interval=361), name="ncar361")
+    assert _load(tmp_path, toml_text).restart_interval_s == 301 * 72
+    # 15 min = 12.5 steps: wrf.exe writes on steps 13, 25, 38, 50, ...,
+    # an uneven pattern a fixed cadence cannot reproduce.
+    with pytest.raises(ValueError, match="not a fixed step cadence"):
+        import_namelists(*_ncar_conus12km_pair(tmp_path, restart_interval=15),
+                         name="ncar15")

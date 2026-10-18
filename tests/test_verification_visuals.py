@@ -820,3 +820,25 @@ def test_empty_active_job_revisits_newly_declared_coverage(tmp_path, native, mon
     assert not job["declared_empty"] and job["compact_inputs_ready"]
     assert len(state["hours"]) == 1 and (root / "retained.npz").is_file()
     assert not (root / ".keep").exists()
+
+
+def test_resumed_run_verifies_the_hours_written_before_its_restart(tmp_path):
+    # 2.9.1 audit (a killed 2-member ensemble resumed from member 1's 13Z
+    # checkpoint): the resumed member reported only its 14Z and 15Z frames, so
+    # its 12Z and 13Z verification inputs were never made and 14Z had no
+    # hourly precipitation, although every history was on disk and identical.
+    wrfout = tmp_path / "member" / "wrfout"
+    wrfout.mkdir(parents=True)
+    names = [f"wrfout_d01_2026-10-15_{hour}_00_00" for hour in (12, 13, 14, 15)]
+    for name in names:
+        (wrfout / name).write_bytes(b"history")
+    (tmp_path / "member" / "wrfout" / "wrfout_d02_2026-10-15_12_00_00").write_bytes(b"other domain")
+    reported = [wrfout / names[2], wrfout / names[3]]
+    earlier = visuals.histories_before_restart(reported, "2026-10-15T12:00:00")
+    assert [path.name for path in earlier] == names[:2]
+    requests = visuals.discover_histories(tmp_path, paths=[*earlier, *reported], include_missing=True)
+    assert [row["valid_time"] for row in requests] == [f"2026-10-15T{hour}:00:00Z" for hour in (12, 13, 14, 15)]
+    assert Path(requests[2]["arms"][0]["previous_path"]).name == names[1]
+    # A run that was not restarted, or has no known start, is unchanged.
+    assert visuals.histories_before_restart([wrfout / name for name in names], "2026-10-15T12:00:00") == []
+    assert visuals.histories_before_restart(reported, None) == []

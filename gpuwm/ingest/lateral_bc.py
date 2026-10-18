@@ -31,7 +31,7 @@ from gpuwm.core.fast_sbm_contract import BIN_SPECIES as _FSBM_BIN_SPECIES
 
 COUPLED_SCALAR_STATE_FIELDS = frozenset({
     "qke_adv",
-    "qv", "qc", "qr", "qi", "qs", "qg",
+    "qv", "qc", "qr", "qi", "qs", "qg", "tke_edmf",
     "nr", "ni", "ns", "ng", "nc", "nwfa", "nifa",
     # mp=9 (Milbrandt-Yau): hail number; the rest of its moments were
     # already named by the schemes that spelled them first.
@@ -2514,7 +2514,7 @@ def _wrf_final_muts_arg(state) -> tuple:
     """
     if not WRF_EXACT:
         return ()
-    from gpuwm.core.dycore import WRF_MUTS_SLOT
+    from gpuwm.state_serialization_contract import WRF_MUTS_SLOT
     muts = state.existing_scratch(WRF_MUTS_SLOT)
     return (muts if muts is not None else np.uint64(0),)
 

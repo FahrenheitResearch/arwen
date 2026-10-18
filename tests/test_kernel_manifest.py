@@ -129,10 +129,6 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
         "-fmad=false --ftz=false); it records through record_module in the "
         "same function and its frame is priced as urban_bem_composed in "
         "gpuwm/core/preflight.py"),
-    "gpuwm/core/p3_device.py": (
-        "the P3 composed unit's own compile site; it records through "
-        "record_module in the same function and its frame is re-audited on a "
-        "device by tests/test_p3_cuda_gpu.py"),
     "gpuwm/doctor.py": (
         "a one-kernel self-contained probe inside a subprocess source string, "
         "compiled to prove the toolchain works; not a forecast translation unit"),
@@ -150,7 +146,7 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
         "the fused RUC unit's own compile site (ruc.cu read as device "
         "functions plus the fused sfctmp and driver sources), one module per "
         "soil geometry; it records through record_module in the same function "
-        "under its own key, as the P3 composed unit above does"),
+        "under its own key, as the BEP+BEM composed unit above does"),
     "gpuwm/core/storm_tracking.py": (
         "the vortex tracker's one-kernel isobaric height, a transcription of "
         "the rw-isobaric crate's column read graded word for word against it "
@@ -175,10 +171,20 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
         "data-assimilation analysis, not a forecast step, records nothing and "
         "is graded bit for bit against NOAA's own Fortran by "
         "tools/gsd_precip_oracle"),
+    "gpuwm/core/tempo_runtime.py": (
+        "the TEMPO unit's own compile site (mp_physics = 900, "
+        "--fmad=false), its headers composed into the one compiled string; "
+        "it records through record_module in the same function under its "
+        "own key, as the BEP+BEM composed unit above does"),
+    "gpuwm/da/letkf_device.py": (
+        "the LETKF analysis's member-count kernels, one RawModule per "
+        "ensemble size and card compiled on first use; they run in the "
+        "data-assimilation analysis, not a forecast step, record nothing "
+        "and are not a translation unit the manifest freezes"),
     "gpuwm/core/noah_mosaic.py": (
         "the Noah mosaic tile loop's two compile sites (with and without the "
         "urban canopy, --fmad=false); each records through record_module in "
-        "the same function under its own key, as the P3 composed unit above "
+        "the same function under its own key, as the BEP+BEM composed unit above "
         "does"),
     # The compiled WRF v4.7.1 oracle harnesses (2.8.2, lane/282-oracle-*).
     "gpuwm/verify/advect_oracle.py": (

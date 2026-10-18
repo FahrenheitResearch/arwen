@@ -141,11 +141,15 @@ _TENDENCY_OUT = (
 
 
 #: Stage B (W4 full admission): solver qn name -> (state scalar attribute,
-#: returned tendency name).  ``qnbca`` is deliberately absent: WRF's mp=28
-#: Registry package declares no qnbca (F_QNBCA false there), so the runtime
-#: feeds the driver a zero qnbca column -- the solve on an exactly-zero
-#: column with an exactly-zero flux is exactly zero, which is bitwise the
-#: same answer WRF's skipped solve leaves -- and returns no qnbca tendency.
+#: returned tendency name).  ``qnbca`` is absent because WOOF's mp=28 state
+#: carries no black-carbon number.  WRF v4.6.1's mp=28 Registry package DOES
+#: declare it (Registry.EM_COMMON:3036 ``thompsonaero``
+#: ``scalar:...,qnifa,qnbca``), so WRF runs this solve with F_QNBCA true on
+#: its own qnbca field.  The runtime therefore passes FLAG_QNBCA true, as
+#: WRF does, with a zero column: the solve on an exactly-zero column with an
+#: exactly-zero flux is exactly zero, and no qnbca tendency is returned.
+#: tests/test_mynn_wrf461_wrapper_columns_gpu.py grades this option set
+#: (``mixscalars``) against WRF's own wrapper with the same zero column.
 MYNN_MIXSCALARS_QN = (
     ("qnc", "nc", "dnc"),
     ("qni", "ni", "dni"),
@@ -347,8 +351,8 @@ def mynn_pbl_step(
             for solver_name, _, _ in MYNN_MIXSCALARS_QN:
                 values[solver_name] = cp.asfortranarray(
                     qn_source[solver_name][:, lo:hi].T)
-            # F_QNBCA is false in mp=28's Registry package; the zero
-            # column solves to exactly zero (see MYNN_MIXSCALARS_QN).
+            # WOOF's mp=28 carries no qnbca; the zero column solves to
+            # exactly zero (see MYNN_MIXSCALARS_QN).
             values["qnbca"] = cp.zeros((n, nz), dtype=DTYPE, order="F")
 
         out = mynn_bl_driver_cuda(

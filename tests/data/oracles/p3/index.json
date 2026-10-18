@@ -1,0 +1,706 @@
+{
+ "in3d": [
+  "th",
+  "qv",
+  "qc",
+  "qr",
+  "nr",
+  "qi",
+  "ni",
+  "qir",
+  "qib",
+  "th_old",
+  "qv_old",
+  "pii",
+  "p",
+  "dz",
+  "w"
+ ],
+ "in2d": [
+  "rainnc",
+  "rainncv",
+  "sr",
+  "snownc",
+  "snowncv"
+ ],
+ "out3d": [
+  "th",
+  "qv",
+  "qc",
+  "qr",
+  "nr",
+  "qi",
+  "ni",
+  "qir",
+  "qib",
+  "th_old",
+  "qv_old",
+  "zdbz",
+  "effc",
+  "effi",
+  "vmi",
+  "di",
+  "rhopo"
+ ],
+ "out2d": [
+  "rainnc",
+  "rainncv",
+  "sr",
+  "snownc",
+  "snowncv"
+ ],
+ "cases": [
+  {
+   "name": "R01-regimes-1step",
+   "ncol": 64,
+   "nk": 50,
+   "dt": 20.0,
+   "nsteps": 1,
+   "bytes": 193280,
+   "sha256": "25720156291dedce159f99c710d43fa4e8154b2b392ecfaddd8caadd97334a73",
+   "in_claim": true,
+   "columns": [
+    {
+     "label": "conv-00",
+     "regime": "convective",
+     "psfc": 99274.2,
+     "tsfc": 304.61,
+     "tmin": 203.57
+    },
+    {
+     "label": "conv-01",
+     "regime": "convective",
+     "psfc": 101056.1,
+     "tsfc": 296.54,
+     "tmin": 203.35
+    },
+    {
+     "label": "conv-02",
+     "regime": "convective",
+     "psfc": 100589.3,
+     "tsfc": 300.01,
+     "tmin": 212.25
+    },
+    {
+     "label": "conv-03",
+     "regime": "convective",
+     "psfc": 100129.3,
+     "tsfc": 304.15,
+     "tmin": 213.38
+    },
+    {
+     "label": "conv-04",
+     "regime": "convective",
+     "psfc": 100362.9,
+     "tsfc": 303.88,
+     "tmin": 212.45
+    },
+    {
+     "label": "conv-05",
+     "regime": "convective",
+     "psfc": 98873.7,
+     "tsfc": 298.73,
+     "tmin": 206.7
+    },
+    {
+     "label": "conv-06",
+     "regime": "convective",
+     "psfc": 100175.4,
+     "tsfc": 296.7,
+     "tmin": 194.21
+    },
+    {
+     "label": "conv-07",
+     "regime": "convective",
+     "psfc": 98863.3,
+     "tsfc": 299.06,
+     "tmin": 211.83
+    },
+    {
+     "label": "conv-08",
+     "regime": "convective",
+     "psfc": 100444.5,
+     "tsfc": 302.07,
+     "tmin": 209.89
+    },
+    {
+     "label": "conv-09",
+     "regime": "convective",
+     "psfc": 99268.5,
+     "tsfc": 301.38,
+     "tmin": 208.55
+    },
+    {
+     "label": "conv-10",
+     "regime": "convective",
+     "psfc": 100854.5,
+     "tsfc": 302.2,
+     "tmin": 205.45
+    },
+    {
+     "label": "conv-11",
+     "regime": "convective",
+     "psfc": 99462.1,
+     "tsfc": 303.24,
+     "tmin": 212.46
+    },
+    {
+     "label": "strat-00",
+     "regime": "stratiform-melting",
+     "psfc": 98706.5,
+     "tsfc": 282.52,
+     "tmin": 214.6
+    },
+    {
+     "label": "strat-01",
+     "regime": "stratiform-melting",
+     "psfc": 100862.0,
+     "tsfc": 279.27,
+     "tmin": 203.22
+    },
+    {
+     "label": "strat-02",
+     "regime": "stratiform-melting",
+     "psfc": 100218.5,
+     "tsfc": 288.95,
+     "tmin": 212.36
+    },
+    {
+     "label": "strat-03",
+     "regime": "stratiform-melting",
+     "psfc": 98376.0,
+     "tsfc": 287.16,
+     "tmin": 212.8
+    },
+    {
+     "label": "strat-04",
+     "regime": "stratiform-melting",
+     "psfc": 99924.6,
+     "tsfc": 281.25,
+     "tmin": 213.19
+    },
+    {
+     "label": "strat-05",
+     "regime": "stratiform-melting",
+     "psfc": 98698.4,
+     "tsfc": 284.31,
+     "tmin": 207.19
+    },
+    {
+     "label": "strat-06",
+     "regime": "stratiform-melting",
+     "psfc": 100696.8,
+     "tsfc": 287.51,
+     "tmin": 213.04
+    },
+    {
+     "label": "strat-07",
+     "regime": "stratiform-melting",
+     "psfc": 98655.5,
+     "tsfc": 279.44,
+     "tmin": 213.12
+    },
+    {
+     "label": "night-00",
+     "regime": "stable-night",
+     "psfc": 99460.8,
+     "tsfc": 274.47,
+     "tmin": 218.05
+    },
+    {
+     "label": "night-01",
+     "regime": "stable-night",
+     "psfc": 100824.4,
+     "tsfc": 263.69,
+     "tmin": 200.64
+    },
+    {
+     "label": "night-02",
+     "regime": "stable-night",
+     "psfc": 101918.5,
+     "tsfc": 271.27,
+     "tmin": 215.28
+    },
+    {
+     "label": "night-03",
+     "regime": "stable-night",
+     "psfc": 101031.1,
+     "tsfc": 260.65,
+     "tmin": 202.34
+    },
+    {
+     "label": "night-04",
+     "regime": "stable-night",
+     "psfc": 101935.6,
+     "tsfc": 262.16,
+     "tmin": 197.03
+    },
+    {
+     "label": "night-05",
+     "regime": "stable-night",
+     "psfc": 100348.6,
+     "tsfc": 280.6,
+     "tmin": 223.51
+    },
+    {
+     "label": "night-06",
+     "regime": "stable-night",
+     "psfc": 101142.2,
+     "tsfc": 280.46,
+     "tmin": 215.25
+    },
+    {
+     "label": "night-07",
+     "regime": "stable-night",
+     "psfc": 102368.3,
+     "tsfc": 277.86,
+     "tmin": 212.4
+    },
+    {
+     "label": "snow-00",
+     "regime": "snow-ice",
+     "psfc": 97710.3,
+     "tsfc": 250.29,
+     "tmin": 209.06
+    },
+    {
+     "label": "snow-01",
+     "regime": "snow-ice",
+     "psfc": 100296.4,
+     "tsfc": 268.73,
+     "tmin": 226.16
+    },
+    {
+     "label": "snow-02",
+     "regime": "snow-ice",
+     "psfc": 99485.6,
+     "tsfc": 257.36,
+     "tmin": 211.16
+    },
+    {
+     "label": "snow-03",
+     "regime": "snow-ice",
+     "psfc": 97846.2,
+     "tsfc": 261.27,
+     "tmin": 217.85
+    },
+    {
+     "label": "snow-04",
+     "regime": "snow-ice",
+     "psfc": 99442.1,
+     "tsfc": 258.48,
+     "tmin": 207.24
+    },
+    {
+     "label": "snow-05",
+     "regime": "snow-ice",
+     "psfc": 102526.4,
+     "tsfc": 261.83,
+     "tmin": 211.16
+    },
+    {
+     "label": "snow-06",
+     "regime": "snow-ice",
+     "psfc": 101435.8,
+     "tsfc": 251.69,
+     "tmin": 201.63
+    },
+    {
+     "label": "snow-07",
+     "regime": "snow-ice",
+     "psfc": 100924.4,
+     "tsfc": 255.46,
+     "tmin": 209.55
+    },
+    {
+     "label": "snow-08",
+     "regime": "snow-ice",
+     "psfc": 102073.1,
+     "tsfc": 255.46,
+     "tmin": 205.65
+    },
+    {
+     "label": "snow-09",
+     "regime": "snow-ice",
+     "psfc": 100613.5,
+     "tsfc": 253.86,
+     "tmin": 215.97
+    },
+    {
+     "label": "ocean-00",
+     "regime": "ocean",
+     "psfc": 101646.6,
+     "tsfc": 288.3,
+     "tmin": 202.0
+    },
+    {
+     "label": "ocean-01",
+     "regime": "ocean",
+     "psfc": 101171.6,
+     "tsfc": 295.33,
+     "tmin": 202.47
+    },
+    {
+     "label": "ocean-02",
+     "regime": "ocean",
+     "psfc": 101737.5,
+     "tsfc": 287.85,
+     "tmin": 212.17
+    },
+    {
+     "label": "ocean-03",
+     "regime": "ocean",
+     "psfc": 101472.7,
+     "tsfc": 288.08,
+     "tmin": 205.84
+    },
+    {
+     "label": "ocean-04",
+     "regime": "ocean",
+     "psfc": 101560.1,
+     "tsfc": 291.88,
+     "tmin": 209.52
+    },
+    {
+     "label": "ocean-05",
+     "regime": "ocean",
+     "psfc": 100430.0,
+     "tsfc": 291.25,
+     "tmin": 222.27
+    },
+    {
+     "label": "ocean-06",
+     "regime": "ocean",
+     "psfc": 102005.4,
+     "tsfc": 292.83,
+     "tmin": 205.73
+    },
+    {
+     "label": "ocean-07",
+     "regime": "ocean",
+     "psfc": 100834.2,
+     "tsfc": 290.94,
+     "tmin": 204.94
+    },
+    {
+     "label": "terrain-00",
+     "regime": "high-terrain",
+     "psfc": 69667.4,
+     "tsfc": 289.78,
+     "tmin": 210.51
+    },
+    {
+     "label": "terrain-01",
+     "regime": "high-terrain",
+     "psfc": 61172.7,
+     "tsfc": 272.7,
+     "tmin": 197.18
+    },
+    {
+     "label": "terrain-02",
+     "regime": "high-terrain",
+     "psfc": 64131.6,
+     "tsfc": 266.7,
+     "tmin": 191.33
+    },
+    {
+     "label": "terrain-03",
+     "regime": "high-terrain",
+     "psfc": 61862.4,
+     "tsfc": 273.13,
+     "tmin": 195.16
+    },
+    {
+     "label": "terrain-04",
+     "regime": "high-terrain",
+     "psfc": 73929.8,
+     "tsfc": 264.59,
+     "tmin": 191.78
+    },
+    {
+     "label": "terrain-05",
+     "regime": "high-terrain",
+     "psfc": 72636.3,
+     "tsfc": 274.7,
+     "tmin": 212.31
+    },
+    {
+     "label": "terrain-06",
+     "regime": "high-terrain",
+     "psfc": 74367.7,
+     "tsfc": 268.01,
+     "tmin": 214.56
+    },
+    {
+     "label": "terrain-07",
+     "regime": "high-terrain",
+     "psfc": 59520.3,
+     "tsfc": 272.5,
+     "tmin": 206.89
+    },
+    {
+     "label": "anvil-00",
+     "regime": "anvil-homogeneous",
+     "psfc": 100606.2,
+     "tsfc": 302.73,
+     "tmin": 195.09
+    },
+    {
+     "label": "anvil-01",
+     "regime": "anvil-homogeneous",
+     "psfc": 100321.0,
+     "tsfc": 301.12,
+     "tmin": 185.03
+    },
+    {
+     "label": "anvil-02",
+     "regime": "anvil-homogeneous",
+     "psfc": 98940.5,
+     "tsfc": 298.86,
+     "tmin": 188.88
+    },
+    {
+     "label": "anvil-03",
+     "regime": "anvil-homogeneous",
+     "psfc": 99293.0,
+     "tsfc": 300.18,
+     "tmin": 186.74
+    },
+    {
+     "label": "anvil-04",
+     "regime": "anvil-homogeneous",
+     "psfc": 100330.2,
+     "tsfc": 303.13,
+     "tmin": 184.18
+    },
+    {
+     "label": "anvil-05",
+     "regime": "anvil-homogeneous",
+     "psfc": 99976.7,
+     "tsfc": 299.01,
+     "tmin": 186.09
+    },
+    {
+     "label": "hail-00",
+     "regime": "hail-extreme",
+     "psfc": 92665.1,
+     "tsfc": 304.95,
+     "tmin": 182.04
+    },
+    {
+     "label": "hail-01",
+     "regime": "hail-extreme",
+     "psfc": 92601.9,
+     "tsfc": 305.08,
+     "tmin": 190.79
+    },
+    {
+     "label": "hail-02",
+     "regime": "hail-extreme",
+     "psfc": 99037.7,
+     "tsfc": 298.19,
+     "tmin": 184.68
+    },
+    {
+     "label": "hail-03",
+     "regime": "hail-extreme",
+     "psfc": 96145.3,
+     "tsfc": 306.34,
+     "tmin": 195.12
+    }
+   ]
+  },
+  {
+   "name": "E05-edges-5step",
+   "ncol": 14,
+   "nk": 50,
+   "dt": 20.0,
+   "nsteps": 5,
+   "bytes": 42280,
+   "sha256": "ef4a1d55a509a9e19ed2d36c99433de3db36080e5e99136a8a21378259f3a5ed",
+   "in_claim": true,
+   "columns": [
+    {
+     "label": "edge-all-zero",
+     "regime": "edge",
+     "psfc": 99764.4,
+     "tsfc": 289.87,
+     "tmin": 212.24
+    },
+    {
+     "label": "edge-qsmall-straddle",
+     "regime": "edge",
+     "psfc": 99764.4,
+     "tsfc": 289.87,
+     "tmin": 212.24
+    },
+    {
+     "label": "edge-rain-zero-number",
+     "regime": "edge",
+     "psfc": 99764.4,
+     "tsfc": 289.87,
+     "tmin": 212.24
+    },
+    {
+     "label": "edge-ice-zero-number",
+     "regime": "edge",
+     "psfc": 99739.3,
+     "tsfc": 261.87,
+     "tmin": 184.24
+    },
+    {
+     "label": "edge-ni-huge",
+     "regime": "edge",
+     "psfc": 99732.1,
+     "tsfc": 254.87,
+     "tmin": 177.24
+    },
+    {
+     "label": "edge-rime-inconsistent",
+     "regime": "edge",
+     "psfc": 99742.2,
+     "tsfc": 264.87,
+     "tmin": 187.24
+    },
+    {
+     "label": "edge-small-negatives",
+     "regime": "edge",
+     "psfc": 99756.0,
+     "tsfc": 279.87,
+     "tmin": 202.24
+    },
+    {
+     "label": "edge-threshold-temperatures",
+     "regime": "edge",
+     "psfc": 99764.4,
+     "tsfc": 289.87,
+     "tmin": 212.24
+    },
+    {
+     "label": "edge-supersat-150pct",
+     "regime": "edge",
+     "psfc": 99768.4,
+     "tsfc": 294.87,
+     "tmin": 217.24
+    },
+    {
+     "label": "edge-thin-layers",
+     "regime": "edge",
+     "psfc": 99970.3,
+     "tsfc": 287.98,
+     "tmin": 223.59
+    },
+    {
+     "label": "edge-huge-drops",
+     "regime": "edge",
+     "psfc": 99766.8,
+     "tsfc": 292.87,
+     "tmin": 215.24
+    },
+    {
+     "label": "edge-tiny-cloud-cold",
+     "regime": "edge",
+     "psfc": 99739.3,
+     "tsfc": 261.87,
+     "tmin": 184.24
+    },
+    {
+     "label": "edge-cold-top",
+     "regime": "edge",
+     "psfc": 99746.9,
+     "tsfc": 269.82,
+     "tmin": 189.0
+    },
+    {
+     "label": "edge-graupel-melt",
+     "regime": "edge",
+     "psfc": 99772.3,
+     "tsfc": 299.87,
+     "tmin": 222.24
+    }
+   ]
+  },
+  {
+   "name": "S30-subset-30step",
+   "ncol": 10,
+   "nk": 50,
+   "dt": 20.0,
+   "nsteps": 30,
+   "bytes": 30200,
+   "sha256": "33da83664a6aa34ba9c5121041a5599a31e2febc1805657b9370ff2f66875c3e",
+   "in_claim": true,
+   "columns": [
+    {
+     "label": "conv-00",
+     "regime": "convective",
+     "psfc": 99274.2,
+     "tsfc": 304.61,
+     "tmin": 203.57
+    },
+    {
+     "label": "conv-05",
+     "regime": "convective",
+     "psfc": 98873.7,
+     "tsfc": 298.73,
+     "tmin": 206.7
+    },
+    {
+     "label": "conv-09",
+     "regime": "convective",
+     "psfc": 99268.5,
+     "tsfc": 301.38,
+     "tmin": 208.55
+    },
+    {
+     "label": "snow-00",
+     "regime": "snow-ice",
+     "psfc": 97710.3,
+     "tsfc": 250.29,
+     "tmin": 209.06
+    },
+    {
+     "label": "ocean-00",
+     "regime": "ocean",
+     "psfc": 101646.6,
+     "tsfc": 288.3,
+     "tmin": 202.0
+    },
+    {
+     "label": "terrain-00",
+     "regime": "high-terrain",
+     "psfc": 69667.4,
+     "tsfc": 289.78,
+     "tmin": 210.51
+    },
+    {
+     "label": "terrain-02",
+     "regime": "high-terrain",
+     "psfc": 64131.6,
+     "tsfc": 266.7,
+     "tmin": 191.33
+    },
+    {
+     "label": "terrain-05",
+     "regime": "high-terrain",
+     "psfc": 72636.3,
+     "tsfc": 274.7,
+     "tmin": 212.31
+    },
+    {
+     "label": "anvil-00",
+     "regime": "anvil-homogeneous",
+     "psfc": 100606.2,
+     "tsfc": 302.73,
+     "tmin": 195.09
+    },
+    {
+     "label": "hail-00",
+     "regime": "hail-extreme",
+     "psfc": 92665.1,
+     "tsfc": 304.95,
+     "tmin": 182.04
+    }
+   ]
+  }
+ ]
+}

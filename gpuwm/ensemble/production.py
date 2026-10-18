@@ -349,6 +349,16 @@ class PreparedEnsembleSession:
             if self.restart_roster is not None:
                 resumed = restart_roster.verify_roster(self.restart_roster, identities, root=out)
                 resume_rows = {row["member_id"]: row for row in resumed["members"]}
+                # The run kept writing after this roster sealed (the next
+                # frame, the history ledger, checkpoint retirement); put the
+                # sealed files back before the collector reads them.
+                restored = restart_roster.restore_roster(resumed, root=out)
+                if restored["restored"] or restored["removed_after_seal"]:
+                    import sys
+                    print(f"ensemble: resume restored {len(restored['restored'])} of "
+                          f"{len(resumed['files'])} sealed file(s) the run changed after the roster "
+                          f"seal and removed {len(restored['removed_after_seal'])} checkpoint or "
+                          f"diagnostic file(s) written after it", file=sys.stderr, flush=True)
             restart_roster.atomic_json(out / restart_roster.IDENTITIES, identities)
             restart_roster.atomic_json(out / restart_roster.INPUTS, {"schema": restart_roster.CONTRACT,
                 "members": [{"member_id": member, **{name: str(getattr(prepared, name, "") or "")

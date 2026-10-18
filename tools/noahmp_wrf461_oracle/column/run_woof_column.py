@@ -26,8 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gen_columns import CONFIGS, read_records  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from tools.noahmp_wrf461_oracle.column.gen_columns import CONFIGS, read_records  # noqa: E402
 
 #: The compared fields, in run_column.F90's dump order.
 FIELDS_2D = (

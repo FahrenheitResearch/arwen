@@ -269,7 +269,9 @@ fn decoder(input: &Path, codec: &str) -> Result<Box<dyn Read>, String> {
     let label = format!("{codec} refused {name}");
     Ok(match codec {
         "zstd" => Box::new(Decoding { inner: zstd::stream::read::Decoder::with_buffer(file).map_err(|e| format!("{label}: {e}"))?, label }),
-        "bz2" => Box::new(Decoding { inner: bzip2::bufread::MultiBzDecoder::new(file), label }),
+        // Blocks decode on every core (bz2par); the output is byte-identical to
+        // MultiBzDecoder, which took 4-5 minutes on one core for WPS greenfrac.
+        "bz2" => { drop(file); Box::new(Decoding { inner: crate::bz2par::open(input).map_err(|e| format!("{label}: {e}"))?, label }) }
         "gz" => Box::new(Decoding { inner: flate2::bufread::MultiGzDecoder::new(file), label }),
         "none" => Box::new(file),
         other => return Err(format!("unknown codec {other:?}; an undecoded stream would be published as the pinned bytes")),

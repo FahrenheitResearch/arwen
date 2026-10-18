@@ -223,7 +223,8 @@ for their combined covariance.
   elevation mismatch and absent diagnostics are counted rejections.
 * Shared neutral tables: pressure-level temperature, wind and dewpoint,
   assigned-pressure satellite winds, and tangent-point refractivity use the
-  installed `gpuwm-global` table decoder and operators. Each member supplies
+  engine's own table decoder and operators (`gpuwm.obs`); gpuwm-global is not
+  needed. Each member supplies
   its own full pressure column. There is no vertical extrapolation. The
   default supported surface measurement labels are explicit; station
   pressure, sea-level pressure and unsupported platform quantities are not

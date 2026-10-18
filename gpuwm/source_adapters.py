@@ -1902,6 +1902,55 @@ _ADAPTERS = (
         ),
     ),
     _adapter(
+        "hex-global",
+        time_axis="supplied_times",
+        name="gpuwm-hex forecast export (global or regional window, NetCDF)",
+        aliases=("hex", "gpuwm-hex", "hex-regional"),
+        upstream_model_id=None,
+        file_family="NetCDF (gpuwm-hex export frames)",
+        decoder=(
+            "packaged gpuwm-hex history NetCDF profile + rw_netcdf "
+            "(gpuwm.netcdf_bridge)"
+        ),
+        default_product="export --field-set full on a lat-lon window",
+        required_products=(
+            "gpuwm-hex export frames: --field-set full, --window "
+            "region-latlon:CLAT,CLON,W_KM,H_KM or global-mesh",
+            "the same frames as the in-band terrain supplement",
+        ),
+        max_hour=0,
+        upstream_ingest="declarative_mapping_v1_over_packaged_profile",
+        status=AdapterStatus.RUNNABLE_NOT_CERTIFIED,
+        field_mapping="packaged-rw-wps-hex-history-netcdf-v1",
+        level_mapping="55-mpas-model-level-to-explicit-wrf-eta-v1",
+        cadence_mapping="mapping-declared-uniform-series",
+        stock_wrf_gate="live-unchanged-stock-wrf-gate-pending",
+        runnable=True,
+        runner="mapped_composition_v1",
+        packaged_profile="hex-history-netcdf-v1",
+        notes=(
+            "A gpuwm-hex run (any mesh: the 60 km global row, a regional "
+            "mesh, an ensemble member) as the initial and lateral boundary "
+            "source of an ArWen domain anywhere its export window covers. "
+            "Export the run with `gpuwm-hex export RUN --field-set full "
+            "--window region-latlon:CLAT,CLON,W_KM,H_KM` (or global-mesh): "
+            "those frames carry CF 1-D lat/lon/Time/level coordinates and "
+            "the mass-grid earth winds this profile reads.  The mapping "
+            "decodes the 55 MPAS model levels directly (full pressure, "
+            "heights from the init zgrid, T from theta with MPAS's kappa, "
+            "q from the mixing ratio) with no pressure-level step.  SST is "
+            "the water skin temperature, a named policy: hex carries no "
+            "ocean model and holds the SST it was initialised with.  Sea "
+            "ice and snow are the run's own land-surface state.  Boundary "
+            "spacing is whatever the export carries (hourly by default for "
+            "a parent store), so `gpuwm domain --source hex-global` takes "
+            "it from --cadence HOURS; the whole route (domain, fetch-geog, "
+            "prep with --author-input-manifest, sim) is the fenced block "
+            "in docs/native-mapped-source-authoring.md.  Not yet accepted "
+            "by unchanged stock WRF."
+        ),
+    ),
+    _adapter(
         "mapped",
         time_axis="supplied_times",
         name="Generic mapped source (rw-wps mapping v1)",
@@ -2007,6 +2056,23 @@ def wizard_planable_source_ids() -> tuple[str, ...]:
     return tuple(adapter.source_id for adapter in _ADAPTERS
                  if adapter.runnable
                  and adapter.forcing_interval_seconds is not None)
+
+
+def wizard_cadence_named_source_ids() -> tuple[str, ...]:
+    """Every runnable row whose boundary cadence the caller names.
+
+    A row with no ``forcing_interval_seconds`` (a supplied-times source
+    whose spacing is whatever its history files carry, such as a
+    gpuwm-hex export) is still plannable by ``gpuwm domain``: the caller
+    passes ``--cadence HOURS`` naming the spacing of the files it will hand
+    ``gpuwm prep``, and that number is the ``interval_seconds`` written.
+    Nothing here enumerates model names, so the next such row reaches the
+    door, and its ``--help``, with no edit to the wizard.
+    """
+
+    return tuple(adapter.source_id for adapter in _ADAPTERS
+                 if adapter.runnable
+                 and adapter.forcing_interval_seconds is None)
 
 
 def source_forcing_interval_seconds(source: str) -> float:

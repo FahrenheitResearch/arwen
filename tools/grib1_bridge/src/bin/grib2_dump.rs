@@ -1,6 +1,7 @@
 //! Dump selected GRIB2 fields as little-endian f64 for decoder cross-checks.
 
 use grib_core::grib2::{unpack_message, Grib2File};
+use rayon::prelude::*;
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
@@ -42,66 +43,92 @@ fn main() -> Result<(), Box<dyn Error>> {
     let file = Grib2File::open(&input)?;
     let mut metadata = BufWriter::new(File::create(output.join("metadata.tsv"))?);
     writeln!(metadata, "{DUMP_HEADER}")?;
-    for index in indices {
-        let message = file.messages.get(index).ok_or_else(|| {
-            format!(
-                "field index {index} is out of range for {} parsed fields",
-                file.messages.len()
-            )
-        })?;
-        let values = unpack_message(message)
-            .map_err(|error| format!("field {index} failed to decode: {error}"))?;
-        let filename = format!("field-{index:04}.f64le");
-        let mut stream = BufWriter::new(File::create(output.join(&filename))?);
-        let mut finite = 0usize;
-        let mut missing = 0usize;
-        let mut minimum = f64::INFINITY;
-        let mut maximum = f64::NEG_INFINITY;
-        for value in values.iter().copied() {
-            stream.write_all(&value.to_le_bytes())?;
-            if value.is_finite() {
-                finite += 1;
-                minimum = minimum.min(value);
-                maximum = maximum.max(value);
-            } else {
-                missing += 1;
-            }
+    // Fields decode and write on all cores, a bounded batch at a time, and
+    // their metadata rows are written in request order.  A failure stops at
+    // the same field, with the same earlier files written, as the serial
+    // loop did.
+    let batch = rayon::current_num_threads().max(1) * 2;
+    for chunk in indices.chunks(batch) {
+        let decoded: Vec<Result<(String, Vec<u8>, String), String>> = chunk
+            .par_iter()
+            .map(|&index| dump_field(&file, index))
+            .collect();
+        let good = decoded.iter().take_while(|item| item.is_ok()).count();
+        decoded[..good]
+            .par_iter()
+            .map(|item| {
+                let (filename, bytes, _) = item.as_ref().expect("counted ok");
+                let mut stream = BufWriter::new(File::create(output.join(filename))?);
+                stream.write_all(bytes)?;
+                stream.flush()
+            })
+            .collect::<std::io::Result<()>>()?;
+        for item in decoded {
+            let (_, _, row) = item?;
+            writeln!(metadata, "{row}")?;
         }
-        stream.flush()?;
-        writeln!(
-            metadata,
-            "{index}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0x{:02x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            message.discipline,
-            message.product.parameter_category,
-            message.product.parameter_number,
-            message.identification.center_id,
-            message.identification.subcenter_id,
-            message.identification.master_table_version,
-            message.identification.local_table_version,
-            message.product.level_type,
-            gpuwm_preprocess_cpu::grib2_stack::first_surface_level(&message.product),
-            message.product.second_level_type,
-            message.product.second_level_value,
-            message
-                .product
-                .perturbation_number
-                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
-            message.product.template,
-            message.data_rep.template,
-            message.grid.nx,
-            message.grid.ny,
-            message.grid.scan_mode,
-            message.bitmap.is_some(),
-            values.len(),
-            finite,
-            missing,
-            if finite == 0 { f64::NAN } else { minimum },
-            if finite == 0 { f64::NAN } else { maximum },
-            filename,
-        )?;
     }
     metadata.flush()?;
     Ok(())
+}
+
+/// One field: its file name, its f64 little-endian bytes and its metadata row.
+fn dump_field(file: &Grib2File, index: usize) -> Result<(String, Vec<u8>, String), String> {
+    let message = file.messages.get(index).ok_or_else(|| {
+        format!(
+            "field index {index} is out of range for {} parsed fields",
+            file.messages.len()
+        )
+    })?;
+    let values = unpack_message(message)
+        .map_err(|error| format!("field {index} failed to decode: {error}"))?;
+    let filename = format!("field-{index:04}.f64le");
+    let mut bytes = Vec::with_capacity(values.len() * 8);
+    let mut finite = 0usize;
+    let mut missing = 0usize;
+    let mut minimum = f64::INFINITY;
+    let mut maximum = f64::NEG_INFINITY;
+    for value in values.iter().copied() {
+        bytes.extend_from_slice(&value.to_le_bytes());
+        if value.is_finite() {
+            finite += 1;
+            minimum = minimum.min(value);
+            maximum = maximum.max(value);
+        } else {
+            missing += 1;
+        }
+    }
+    let row = format!(
+        "{index}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t0x{:02x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        message.discipline,
+        message.product.parameter_category,
+        message.product.parameter_number,
+        message.identification.center_id,
+        message.identification.subcenter_id,
+        message.identification.master_table_version,
+        message.identification.local_table_version,
+        message.product.level_type,
+        gpuwm_preprocess_cpu::grib2_stack::first_surface_level(&message.product),
+        message.product.second_level_type,
+        message.product.second_level_value,
+        message
+            .product
+            .perturbation_number
+            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        message.product.template,
+        message.data_rep.template,
+        message.grid.nx,
+        message.grid.ny,
+        message.grid.scan_mode,
+        message.bitmap.is_some(),
+        values.len(),
+        finite,
+        missing,
+        if finite == 0 { f64::NAN } else { minimum },
+        if finite == 0 { f64::NAN } else { maximum },
+        filename,
+    );
+    Ok((filename, bytes, row))
 }
 
 #[cfg(test)]

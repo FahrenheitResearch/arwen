@@ -626,7 +626,14 @@ def _clone_thompson_column_adapter(prepare):
     from gpuwm.core import microphysics
     from gpuwm.core import constants as c
     import cupy as cp
-    source = textwrap.dedent(inspect.getsource(microphysics._apply_thompson))
+    from gpuwm.wrf_exact import ENABLED
+    if ENABLED:
+        # Strict Thompson is the scalar port (_apply_thompson_strict), which
+        # has no packed-column call sites; packing members would run the
+        # default adapter under a strict process.
+        raise ValueError("the packed Thompson column adapter runs the default adapter only; "
+                         "GPUWM_WRF_EXACT=1 runs members through the ordinary runner")
+    source = textwrap.dedent(inspect.getsource(microphysics._apply_thompson_default))
     tree = ast.parse(source)
     original_assignment = ast.dump(ast.parse("pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))").body[0], include_attributes=False)
     counts = {"prepare": 0, "pii": 0}
@@ -656,7 +663,7 @@ def _clone_thompson_column_adapter(prepare):
     namespace = dict(microphysics.__dict__)
     namespace.update(__ensemble_prepare_thompson=prepare, __ensemble_pii_into=pii_into)
     exec(compile(tree, "<admitted-thompson-column-adapter>", "exec"), namespace)
-    return namespace["_apply_thompson"], sha256(source.encode()).hexdigest()
+    return namespace["_apply_thompson_default"], sha256(source.encode()).hexdigest()
 
 
 def prepare_thompson_column_batch(state, cfg, *, members, ny, nx, dt,
@@ -1052,8 +1059,8 @@ class PreparedPhysicsAtmosphere:
         xp, state = self._xp, self.batch
         get = self._array
         xp.add(self._volume_input("thb"), state.thp, out=get("theta"))
-        xp.divide(state.p, np.float32(c.P0), out=get("exner"))
-        xp.power(get("exner"), np.float32(c.RCP), out=get("exner"))
+        from gpuwm.core.physics import _physics_exner
+        _physics_exner(state.p, out=get("exner"))
         xp.multiply(get("theta"), get("exner"), out=get("temperature"))
         # Staggered neighbors are selected inside each explicit member.
         xp.add(state.u[:, :, :, :-1], state.u[:, :, :, 1:], out=get("u"))
@@ -1193,8 +1200,8 @@ class PreparedPackedPhysicsAtmosphere:
         from gpuwm.core import constants as c
         xp, state, out = self._xp, self.state, self._out
         xp.add(self._thb, self._volume(state.thp), out=out("theta"))
-        xp.divide(self._volume(state.p), np.float32(c.P0), out=out("exner"))
-        xp.power(out("exner"), np.float32(c.RCP), out=out("exner"))
+        from gpuwm.core.physics import _physics_exner
+        _physics_exner(self._volume(state.p), out=out("exner"))
         xp.multiply(out("theta"), out("exner"), out=out("temperature"))
         u = state.u.reshape(self.nz, self.members, self.ny, self.nx + 1)
         v = state.v.reshape(self.nz, self.members, self.ny + 1, self.nx)
@@ -1384,8 +1391,15 @@ def bind_owned_default_column_driver(driver, cfg, atmosphere, *, members, ny, nx
         function.__kwdefaults__ = original.__kwdefaults__
         setattr(driver, method, MethodType(function, driver))
     original = PhysicsDriver._run_ysu
+    # The 2.9.1 exact chain routes YSU's RTHRATEN through
+    # radiation_theta_forcing(), which is the LW + SW sum whenever the strict
+    # coupled total (_wrf_rthraten) is absent; the packed producer below is
+    # that sum, so a driver carrying the strict total has no packed producer.
+    if getattr(driver, "_wrf_rthraten", None) is not None:
+        raise ValueError("the packed YSU producer sums the LW and SW heating rows; "
+                         "a strict process's coupled RTHRATEN has no packed producer")
     tree = ast.parse(textwrap.dedent(inspect.getsource(original)))
-    target = ast.dump(ast.parse("cp.ascontiguousarray(self.rthratenlw + self.rthratensw)", mode="eval").body, include_attributes=False)
+    target = ast.dump(ast.parse("cp.ascontiguousarray(self.radiation_theta_forcing())", mode="eval").body, include_attributes=False)
     replacements = [0]
 
     class HeatingSum(ast.NodeTransformer):

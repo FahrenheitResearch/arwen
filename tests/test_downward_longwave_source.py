@@ -39,6 +39,7 @@ atmosphere either.
 
 Every test here runs the real ``initialize_physics`` on a real card.
 """
+# Replaced in 2.9.1 (the WRF exact chain): test_a_longwave_scheme_owns_the_buffer_and_gets_the_historical_fill -> test_a_longwave_scheme_owns_the_buffer_and_preserves_its_mode_fill.
 from __future__ import annotations
 
 import numpy as np
@@ -58,12 +59,26 @@ def test_the_constant_is_the_value_1_8_7_allocated():
     assert DECLARED_CONSTANT_GLW_WM2 == 300.0
 
 
-def test_a_longwave_scheme_owns_the_buffer_and_gets_the_historical_fill():
-    """LW-active runs are byte-unchanged: same fill, and the scheme writes it."""
-    value, provenance = _resolve_initial_glw(
-        None, ra_lw_physics=4, radiation_active=True, sf_surface_physics=2)
-    assert value == DECLARED_CONSTANT_GLW_WM2
-    assert provenance == "scheme"
+@pytest.mark.parametrize("exact", [False, True])
+def test_a_longwave_scheme_owns_the_buffer_and_preserves_its_mode_fill(monkeypatch, exact):
+    """The breakage this prevents: the t=0 history frame is written before
+    the first radiation call, so the unwritten buffer's fill IS what wrfout
+    publishes at t=0.  With the old 300 fill every LW-active run published
+    "GLW = 300 W m-2" in every column at t=0 (WRF publishes 0.0), and the
+    matched woof-default-suite run and all 279 integrated combo-sweep runs
+    differed from WRF in that word.  The fill is WRF's Registry 0.0; the
+    carrier contract keeps any surface call from integrating it."""
+    from gpuwm.core import physics
+    from gpuwm.core.physics import SCHEME_GLW_UNWRITTEN_FILL_WM2
+    monkeypatch.setattr(physics, "WRF_EXACT", exact)
+    for lsm in (0, 2, 3, 4):
+        value, provenance = _resolve_initial_glw(
+            None, ra_lw_physics=4, radiation_active=True,
+            sf_surface_physics=lsm)
+        assert provenance == "scheme"
+        expected = SCHEME_GLW_UNWRITTEN_FILL_WM2 if exact else DECLARED_CONSTANT_GLW_WM2
+        assert value == expected
+        assert value == (0.0 if exact else 300.0)
 
 
 def test_a_typed_value_is_a_declaration_and_is_used_verbatim():
@@ -516,12 +531,14 @@ def test_the_health_census_instrument_survives_the_lw0_combinations():
 @pytest.mark.gpu
 @requires_gpu
 def test_the_committed_noop_digest_receipt_reproduces():
-    """Finding of record: the 96-digest byte-identity proof was run by
+    """Finding of record: the full-state byte-identity proof was run by
     hand and gated by nothing.  This test runs the committed probe
     (evidence/glw-source/glw_noop_probe.py -- the artifact itself, as a
     subprocess) against THIS tree and compares every digest line with
     the committed receipt, so any future change that moves a healthy
     full-radiation run goes red here rather than at certification.
+    After an intentional physics or output-inventory change, regenerate
+    the receipt with that same probe on the named card.
 
     The receipt's digests were produced on the RTX 5090 this project
     certifies on; on any other device the byte comparison is void, so it
@@ -574,7 +591,7 @@ def test_the_committed_noop_digest_receipt_reproduces():
         pytest.skip(f"receipt digests are RTX 5090-produced; byte "
                     f"comparison void on {device}")
     # Drop the two tree-path header lines from both sides; every
-    # remaining line -- fill value, step count, all 96 digests -- must
+    # remaining line -- fill value, step count, every digest -- must
     # match byte for byte.
     assert lines[2:] == receipt[2:]
 
@@ -586,8 +603,10 @@ def test_a_full_radiation_run_is_untouched_by_any_of_this():
 
     Both streams on: the GLW buffer is scratch that the longwave scheme
     overwrites at its first radiation call, and its allocated contents
-    are byte-for-byte what 1.8.7 allocated.  Compared as raw bytes, not
-    as floats, so a value that merely prints as 300 cannot pass.
+    are WRF's own unwritten word, 0.0 (they were 300, which the t=0
+    history frame then published as a downward longwave nobody computed;
+    see _resolve_initial_glw).  Compared as raw bytes, not as floats, so
+    a negative zero cannot pass.
     """
     import cupy as cp
 
@@ -603,5 +622,6 @@ def test_a_full_radiation_run_is_untouched_by_any_of_this():
         radiation_longitude=np.full((cfg.ny, cfg.nx), -87.29))
     assert driver.glw_provenance == "scheme"
     allocated = cp.asnumpy(driver.fields["glw"])
-    expected = np.full(allocated.shape, 300.0, allocated.dtype)
+    from gpuwm.wrf_exact import ENABLED
+    expected = np.full(allocated.shape, 0.0 if ENABLED else 300.0, allocated.dtype)
     assert allocated.tobytes() == expected.tobytes()

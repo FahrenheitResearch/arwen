@@ -19,6 +19,7 @@
 //! }
 //! ```
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{MpasError, MpasResult};
@@ -475,10 +476,8 @@ impl PreparedShape {
         out: &mut Vec<V3>,
     ) -> bool {
         let mut probes = ShellProbes {
-            shape: self,
-            keep: half_width_rad + gn,
             budget: *budget,
-            out,
+            candidates: Vec::new(),
             exhausted: false,
         };
         probes.offer(self.interior_point());
@@ -533,6 +532,21 @@ impl PreparedShape {
         }
         let exhausted = probes.exhausted;
         *budget = probes.budget;
+        // THE SHELL FILTER, ON EVERY CORE (2026-10-17: no single-threaded
+        // stages; this filter and the reading over its output were the
+        // generator's first 42 s on one thread for a 2 M-probe country spec).
+        // The walk above spent the budget and ordered the candidates exactly
+        // as the one-pass generator did; the signed distance of each candidate
+        // is independent of every other, and `collect` keeps the order, so
+        // `out` receives the same points in the same order.
+        let keep = half_width_rad + gn;
+        out.par_extend(
+            probes
+                .candidates
+                .par_iter()
+                .filter(|&&p| self.signed_distance(p).abs() <= keep)
+                .copied(),
+        );
         !exhausted
     }
 }
@@ -591,17 +605,21 @@ fn across_offsets(half: f64, align: f64, gn: f64, budget: usize) -> Option<Vec<f
 /// request instead of truncating its answer, and the shell filter that keeps
 /// the set defined against the REAL signed distance rather than against a
 /// model of it.
-struct ShellProbes<'a> {
-    shape: &'a PreparedShape,
-    /// `half_width + gn`: a candidate this close to the boundary is inside the
-    /// shell, or close enough to it that keeping it can only help.
-    keep: f64,
+///
+/// The walk only SPENDS the budget and records every candidate it offered, in
+/// offer order; the shell filter (`|signed_distance| <= half_width + gn`: a
+/// candidate this close to the boundary is inside the shell, or close enough
+/// to it that keeping it can only help) runs afterwards over all of them at
+/// once, in parallel, keeping the order. The budget arithmetic reads nothing
+/// the filter decides, so splitting the two changes neither the candidates
+/// nor the exhaustion verdict.
+struct ShellProbes {
     budget: usize,
-    out: &'a mut Vec<V3>,
+    candidates: Vec<V3>,
     exhausted: bool,
 }
 
-impl ShellProbes<'_> {
+impl ShellProbes {
     fn offer(&mut self, p: V3) {
         if self.exhausted {
             return;
@@ -611,9 +629,7 @@ impl ShellProbes<'_> {
             return;
         }
         self.budget -= 1;
-        if self.shape.signed_distance(p).abs() <= self.keep {
-            self.out.push(p);
-        }
+        self.candidates.push(p);
     }
 
     /// Rings about `centre` from `r_lo` to `r_hi`: radial step `gn`, arc step
@@ -1513,8 +1529,10 @@ impl MeshSpec {
             let shape = r.shape.prepare();
             let mut deep = r.shape.interior_point();
             let mut depth = shape.signed_distance(deep);
-            for &p in &lattice {
-                let s = shape.signed_distance(p);
+            // The distances on every core, the first-strict-minimum scan in
+            // lattice order exactly as before: same point, same depth.
+            let distances: Vec<f64> = lattice.par_iter().map(|&p| shape.signed_distance(p)).collect();
+            for (&p, &s) in lattice.iter().zip(&distances) {
                 if s < depth {
                     depth = s;
                     deep = p;
@@ -1661,11 +1679,19 @@ impl MeshSpec {
 /// [`MeshSpec::predicted_cells`] over any [`DensityField`]: the sizing
 /// integral evaluated on the field a relaxation actually runs under, so a
 /// ladder level can hold its own delivered count to its own field.
-pub fn predicted_cells_of(field: &impl DensityField, samples: usize) -> f64 {
+pub fn predicted_cells_of(field: &(impl DensityField + Sync), samples: usize) -> f64 {
+    // The field on every core; the sum in lattice order, exactly as the
+    // one-thread loop added it, so the count comes out to the bit.
+    let terms: Vec<f64> = (0..samples)
+        .into_par_iter()
+        .map(|k| {
+            let h = field.spacing_m(fibonacci_point(samples, k));
+            1.0 / (h * h)
+        })
+        .collect();
     let mut acc = 0.0f64;
-    for p in fibonacci_lattice(samples) {
-        let h = field.spacing_m(p);
-        acc += 1.0 / (h * h);
+    for t in terms {
+        acc += t;
     }
     let mean_inv_h2 = acc / samples as f64;
     let sphere_area = 4.0 * std::f64::consts::PI * EARTH_RADIUS_M * EARTH_RADIUS_M;
@@ -1701,7 +1727,7 @@ pub fn predicted_cells_of(field: &impl DensityField, samples: usize) -> f64 {
 /// the same receipt: `predicted_cells_of` and `region_attainment` still walk
 /// the global lattice alone.
 pub fn steepest_gradient_reading_of(
-    field: &impl DensityField,
+    field: &(impl DensityField + Sync),
     lattice_samples: usize,
 ) -> GradientReading {
     let mut points: Vec<V3> = Vec::new();
@@ -1710,31 +1736,37 @@ pub fn steepest_gradient_reading_of(
     points.extend(fibonacci_lattice(lattice_samples));
 
     let declared_finest_m = declared_finest_m_of(field, [0.0, 0.0, 1.0]);
-    let mut background_m = 0.0f64;
-    let mut visited_finest_m = f64::INFINITY;
-    let mut worst = 0.0f64;
-    for p in points {
-        let h = field.spacing_m(p);
-        background_m = background_m.max(h);
-        visited_finest_m = visited_finest_m.min(h);
-        let step = h / EARTH_RADIUS_M;
-        let (east, north) = match crate::mesh::geom::east_north(p) {
-            Some(v) => v,
-            None => continue,
-        };
-        for dir in [east, north] {
-            for sign in [1.0f64, -1.0] {
-                let q = unit(crate::mesh::geom::add(
-                    p,
-                    crate::mesh::geom::scale(dir, sign * step),
-                ));
-                if let Some(q) = q {
-                    let hq = field.spacing_m(q);
-                    worst = worst.max((hq / h - 1.0).abs());
+    // EVERY PROBE ON EVERY CORE (2026-10-17: no single-threaded stages). The
+    // three readings are a max, a min and a max of per-probe numbers, and
+    // `f64::max`/`f64::min` are exact and order-free, so the fold below reads
+    // the same three bits whatever the thread count or the split. Each probe's
+    // own arithmetic is the one-thread loop's, unchanged.
+    let (background_m, visited_finest_m, worst) = points
+        .par_iter()
+        .map(|&p| {
+            let h = field.spacing_m(p);
+            let mut worst = 0.0f64;
+            let step = h / EARTH_RADIUS_M;
+            if let Some((east, north)) = crate::mesh::geom::east_north(p) {
+                for dir in [east, north] {
+                    for sign in [1.0f64, -1.0] {
+                        let q = unit(crate::mesh::geom::add(
+                            p,
+                            crate::mesh::geom::scale(dir, sign * step),
+                        ));
+                        if let Some(q) = q {
+                            let hq = field.spacing_m(q);
+                            worst = worst.max((hq / h - 1.0).abs());
+                        }
+                    }
                 }
             }
-        }
-    }
+            (h, h, worst)
+        })
+        .reduce(
+            || (0.0f64, f64::INFINITY, 0.0f64),
+            |a, b| (a.0.max(b.0), a.1.min(b.1), a.2.max(b.2)),
+        );
     GradientReading {
         per_cell: worst,
         coverage,
@@ -1748,13 +1780,18 @@ pub fn steepest_gradient_reading_of(
 /// Golden-ratio lattice on the sphere: near-uniform, no polar clustering, and
 /// no exact symmetry for a degenerate quadruple to hide in.
 pub fn fibonacci_lattice(n: usize) -> impl Iterator<Item = V3> {
+    (0..n).map(move |k| fibonacci_point(n, k))
+}
+
+/// Point `k` of the `n`-point golden-ratio lattice, so a parallel loop can
+/// take the lattice by index with the iterator's own arithmetic.
+#[inline]
+pub fn fibonacci_point(n: usize, k: usize) -> V3 {
     let ga = std::f64::consts::PI * (3.0 - 5f64.sqrt());
-    (0..n).map(move |k| {
-        let z = 1.0 - (2 * k + 1) as f64 / n as f64;
-        let r = (1.0 - z * z).max(0.0).sqrt();
-        let t = ga * k as f64;
-        [r * t.cos(), r * t.sin(), z]
-    })
+    let z = 1.0 - (2 * k + 1) as f64 / n as f64;
+    let r = (1.0 - z * z).max(0.0).sqrt();
+    let t = ga * k as f64;
+    [r * t.cos(), r * t.sin(), z]
 }
 
 #[cfg(test)]

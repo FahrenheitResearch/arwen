@@ -569,7 +569,14 @@ WRF_RADAR_F64 = (
 )
 
 
-def wrf_radar_words(hail_opt: int):
+WRF_SCALAR_RADAR_F64_OVERRIDES = {
+    "k_w": 0x3FEDE4B5A79D9DE5,
+    "m_w_0_im": 0xBFF634D6C0000000,
+    "m_i_0_im": 0xBF21ACB622AE704D,
+}
+
+
+def wrf_radar_words(hail_opt: int, *, initialization="column_oracle"):
     """``refl10cm_wsm6``'s radar words: (float32 array, float64 array)."""
     import numpy as np
 
@@ -577,7 +584,15 @@ def wrf_radar_words(hail_opt: int):
     if hail not in WRF_RADAR_F32:
         raise ValueError(f"WSM6 hail_opt must be 0 or 1, got {hail_opt}")
     f32 = np.asarray([b for _, b in WRF_RADAR_F32[hail]], np.uint32).view(np.float32)
-    f64 = np.asarray([b for _, b in WRF_RADAR_F64], np.uint64).view(np.float64)
+    if initialization not in ("column_oracle", "scalar_build"):
+        raise ValueError("WSM6 radar initialization must be column_oracle or scalar_build")
+    # The existing column oracle was compiled at -O0. Stock scalar WRF
+    # compiles radar_init at -O2 and produces three different words through
+    # its complex initialization. Every other binary64 word is identical.
+    # Keep the column entry point unchanged; the forecast wrapper selects
+    # the scalar build it is replaying. Both hail options share these words.
+    overrides = WRF_SCALAR_RADAR_F64_OVERRIDES if initialization == "scalar_build" else {}
+    f64 = np.asarray([overrides.get(n,b) for n,b in WRF_RADAR_F64], np.uint64).view(np.float64)
     return f32, f64
 
 #: ``kernels/wsm6.cu``'s ``WSM6_KMAX`` ladder.  One CUDA thread owns a whole

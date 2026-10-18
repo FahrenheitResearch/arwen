@@ -1,3 +1,4 @@
+from conftest import requires_netcdf_writer_bridge
 from contextlib import nullcontext
 from datetime import datetime
 import json
@@ -96,7 +97,9 @@ def test_wrong_member_seed_and_tampered_retained_file_refuse_before_any_runner(t
         session(tmp_path, Collector(tmp_path), roster).run_prepared(lambda *args, **kwargs: invoked.append(1), prepared(0))
     assert not invoked
     restart_roster.atomic_json(roster, original)
-    (tmp_path / ".ensemble-resume" / "collector.json").write_text("tampered")
+    # The sealed copy is the resume authority; the live file may move on.
+    sealed = next(item["snapshot"] for item in original["files"] if item["path"] == ".ensemble-resume/collector.json")
+    (tmp_path / sealed).write_text("tampered")
     with pytest.raises(ValueError, match="hash-mismatched"):
         session(tmp_path, Collector(tmp_path), roster).run_prepared(lambda *args, **kwargs: invoked.append(1), prepared(0))
     assert not invoked
@@ -335,6 +338,7 @@ def test_seal_retries_when_another_member_retires_a_checkpoint_mid_pass(tmp_path
     assert all((tmp_path / item["path"]).is_file() for item in document["files"])
 
 
+@requires_netcdf_writer_bridge
 def test_real_rust_collector_snapshot_retains_endpoint_words_and_skips_delivered_output(tmp_path):
     import hashlib
     import numpy as np
@@ -378,3 +382,97 @@ def test_real_rust_collector_snapshot_retains_endpoint_words_and_skips_delivered
         valid_time=start, grid_id=1, episode=0, member_id=0) is None
     assert restored._kernels == {}
     assert pack.read_bytes() == b"retained member diagnostics"
+
+
+class FrameWritingCollector(Collector):
+    """Names the files the real collector rewrites on every frame."""
+
+    def write_frame(self, frame):
+        manifest = self.root / "d01" / "ensemble-manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        restart_roster.atomic_json(manifest, {"frames": frame})
+        restart_roster.atomic_json(self.root / "ensemble-history-ledger.json", {"records": frame})
+
+    def save_resume(self):
+        packs = sorted(path.relative_to(self.root).as_posix()
+                       for path in (self.root / ".ensemble-diagnostics").rglob("*.nc"))
+        restart_roster.atomic_json(self.root / ".ensemble-resume" / "collector.json",
+            {"rows": self.rows, "files": ["d01/ensemble-manifest.json", "ensemble-history-ledger.json", *packs]})
+
+    def restore_resume(self):
+        super().restore_resume()
+        self.restored_frames = json.loads((self.root / "d01" / "ensemble-manifest.json").read_text())["frames"]
+
+
+def test_killed_ensemble_resumes_after_frames_rewrote_the_sealed_files(tmp_path, identity, monkeypatch):
+    # 2.9.1 audit (gpuwm 2.9.0 from PyPI): an ensemble killed after member 1's
+    # checkpoint seal refused every resume with "ensemble resume file is missing or
+    # hash-mismatched: d01/ensemble-manifest.json". Member 1's next frame rewrote
+    # the domain manifest and the history ledger 0.5 s after the seal, and the
+    # roster named only those live files. A SIGKILL leaves no later seal.
+    from gpuwm.io import restart
+    from gpuwm import supervisor
+    first = FrameWritingCollector(tmp_path)
+    first.write_frame(["13:00"])
+    scratch = tmp_path / ".ensemble-diagnostics" / "d01" / "frame-14"
+    scratch.mkdir(parents=True)
+    (scratch / "pack-000000.nc").write_bytes(b"member 0 pack, sealed")
+    member = tmp_path / "members" / "member-0001"
+    sealed = member / "gpuwmrst_d01_2024-01-01_00_00_30.npz"
+    unsealed = member / "gpuwmrst_d01_2024-01-01_00_00_40.npz"
+    monkeypatch.setattr(restart, "read_restart_header",
+        lambda path: {"elapsed_seconds": 40 if "00_40" in Path(path).name else 30})
+    monkeypatch.setattr(supervisor, "validate_manifest_checkpoint", lambda path: path)
+    def killed(inputs, **options):
+        if current_capture().member_id == 1:
+            sealed.write_bytes(b"checkpoint 30")
+            options["progress_callback"](model_elapsed_seconds=30, outer_step=10, last_checkpoint=sealed)
+            # The process dies before any later seal (SIGKILL, node loss).
+            monkeypatch.setattr(restart_roster, "seal", lambda *args, **kwargs: None)
+            first.write_frame(["13:00", "14:00"])
+            # The next frame's pack and render cache; their writers refuse to
+            # replace an unowned file ("diagnostic scratch path already exists").
+            (scratch / "pack-000001.nc").write_bytes(b"member 1 pack, after the seal")
+            (scratch / "aggregate-render-source.nc").write_bytes(b"after the seal")
+            unsealed.write_bytes(b"checkpoint 40, never sealed")
+            sealed.unlink()
+            raise KeyboardInterrupt()
+        first.submit(member_id=0)
+        return {"status": "PASS"}
+    with pytest.raises(KeyboardInterrupt):
+        session(tmp_path, first).run_prepared(killed, prepared(0))
+    monkeypatch.undo()
+    from gpuwm.core import model
+    monkeypatch.setattr(model, "restart_identity_payload", lambda exp: {"dt": 3, "physics": 16})
+    monkeypatch.setattr(restart, "read_restart_header", lambda path: {"elapsed_seconds": 30})
+    monkeypatch.setattr(supervisor, "validate_manifest_checkpoint", lambda path: path)
+    roster = tmp_path / restart_roster.ROSTER
+    assert [row["status"] for row in json.loads(roster.read_text())["members"]] == ["completed", "checkpoint", "pending"]
+    second, paths = FrameWritingCollector(tmp_path), {}
+    def resumed(inputs, **options):
+        member_id = current_capture().member_id
+        paths[member_id] = options.get("restart")
+        second.submit(member_id=member_id)
+        return {"status": "PASS"}
+    report = session(tmp_path, second, roster).run_prepared(resumed, prepared(0))
+    assert report["status"] == "PASS"
+    assert second.restored_frames == ["13:00"]
+    assert paths == {1: sealed, 2: None}
+    assert sealed.read_bytes() == b"checkpoint 30"
+    assert not unsealed.exists()
+    assert sorted(path.name for path in scratch.iterdir()) == ["pack-000000.nc"]
+
+
+def test_tampered_sealed_copy_refuses_and_names_the_remedy(tmp_path, identity):
+    first = FrameWritingCollector(tmp_path)
+    first.write_frame(["13:00"])
+    with pytest.raises(KeyboardInterrupt):
+        session(tmp_path, first).run_prepared(lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()), prepared(0))
+    roster = tmp_path / restart_roster.ROSTER
+    item = next(row for row in json.loads(roster.read_text())["files"] if row["path"] == "d01/ensemble-manifest.json")
+    (tmp_path / item["snapshot"]).write_text("tampered")
+    invoked = []
+    with pytest.raises(ValueError, match="hash-mismatched: d01/ensemble-manifest.json .*new --outdir"):
+        session(tmp_path, FrameWritingCollector(tmp_path), roster).run_prepared(
+            lambda *args, **kwargs: invoked.append(1), prepared(0))
+    assert not invoked

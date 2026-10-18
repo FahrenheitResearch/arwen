@@ -40,8 +40,11 @@ out=$(realpath -m "$2")
 cases=$(realpath "$3")
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-( cd "${src}" && grep -v '^#' "${here}/SOURCES.sha256" | sha256sum -c --quiet - )
-echo "sources: all $(grep -vc '^#' "${here}/SOURCES.sha256") pins verified"
+# UWPBL_SOURCES_PINS names another pin file for the same paths (the WRF
+# v4.6.1 verification passes tools/uwpbl_wrf461_verify/SOURCES-v4.6.1.sha256).
+pins=${UWPBL_SOURCES_PINS:-${here}/SOURCES.sha256}
+( cd "${src}" && grep -v '^#' "${pins}" | sha256sum -c --quiet - )
+echo "sources: all $(grep -vc '^#' "${pins}") pins in $(basename "${pins}") verified"
 
 WRFDEFS="-DEM_CORE=1 -DNMM_CORE=0 -DCOAMPS_CORE=0 -DDA_CORE=0 -DEXP_CORE=0 \
 -DRWORDSIZE=4 -DIWORDSIZE=4 -DDWORDSIZE=8 -DLWORDSIZE=4 -Dwrfmodel -DGRIB1 \

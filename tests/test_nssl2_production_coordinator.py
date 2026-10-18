@@ -122,9 +122,10 @@ def test_production_order_keeps_one_concentration_workspace_until_scatter(monkey
         }
         return workspace
 
-    def reduce_precip(actual_workspace, *outputs):
+    def reduce_precip(actual_workspace, *outputs, air_density, dt_s):
         events.append("precip")
         assert actual_workspace is workspace
+        assert air_density is density
         _assert_identity_sequence(outputs, precipitation.as_tuple())
         assert_pre_scatter()
 
@@ -282,7 +283,7 @@ def test_not_due_is_strict_noop_and_combined_nucond_qvexcess_is_explicit(monkeyp
         lambda *args, **kwargs: events.append("gather") or workspace,
     )
     monkeypatch.setattr(
-        coordinator, "reduce_nssl2_precipitation", lambda *args: events.append("precip")
+        coordinator, "reduce_nssl2_precipitation", lambda *args, **kwargs: events.append("precip")
     )
     monkeypatch.setattr(
         coordinator,
@@ -495,7 +496,7 @@ def test_stage_failure_never_scatter_partial_workspace(monkeypatch):
     monkeypatch.setattr(
         coordinator, "gather_initialize_and_sediment", lambda *args, **kwargs: workspace
     )
-    monkeypatch.setattr(coordinator, "reduce_nssl2_precipitation", lambda *args: None)
+    monkeypatch.setattr(coordinator, "reduce_nssl2_precipitation", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         coordinator,
         "scatter_nssl2_driver_workspace",

@@ -980,6 +980,18 @@ def grids_from_wps_namelist(path) -> list[ProjectedGrid]:
     max_dom = int(v.get("max_dom", [1])[0])
     from gpuwm.wps_domain_ids import domain_ids_from_wps_text
     domain_ids_from_wps_text(Path(path).read_text(encoding="utf-8-sig"), max_dom)
+    # Absent keys are a refusal that names them, not a KeyError traceback:
+    # every door that reads the WPS twin (gpuwm go --dry-run's geography
+    # check, fetch-geog --config) turns ValueError into a sentence and
+    # nothing else.
+    needed = ["e_we", "e_sn", "dx", "dy", "ref_lat", "ref_lon", "truelat1"]
+    if proj == "lambert":
+        needed += ["truelat2", "stand_lon"]
+    absent = [name for name in needed if name not in v]
+    if absent:
+        raise ValueError(
+            f"{path}: &geogrid names no {', '.join(absent)}; a WPS namelist "
+            f"declares {', '.join(needed)} for its grids.")
     e_we, e_sn = v["e_we"], v["e_sn"]
     # &share/max_dom and the &geogrid per-domain arrays are declared
     # independently in a namelist.wps, so nothing but this check stops

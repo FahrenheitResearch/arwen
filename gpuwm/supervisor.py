@@ -2087,6 +2087,32 @@ _SUPERVISOR_AUTHORED_CAPSULE_TYPES = frozenset({
 #: SupervisorError under itself.
 _CAPSULE_HEADLINE_CAP = 240
 
+#: An absolute path inside a refusal sentence (POSIX ``/a/b`` or Windows
+#: ``C:\a\b``), not the ``//`` of a URL and not a relative ``a/b``.
+_HEADLINE_PATH = re.compile(r"(?<![\w.:/\\])(?:[A-Za-z]:)?[\\/][^\s'\"]+")
+
+
+def _shorten_headline_paths(text: str, keep: int = 2) -> str:
+    """Each absolute path cut to ``.../<last keep components>``.
+
+    The loaders name the file they refused at the head of their sentence
+    and say what is wrong after it, so cutting an over-long headline at its
+    end dropped exactly the part the user acts on whenever the path was deep
+    (a CI runner's 120-character temporary root cut "must carry at least
+    one [[domain]] table" short, 2026-10-15).  The full path stays in the
+    capsule the message names.
+    """
+
+    def short(match: re.Match) -> str:
+        token = match.group(0)
+        parts = [part for part in re.split(r"[\\/]", token) if part]
+        if len(parts) <= keep + 1:
+            return token
+        sep = "\\" if "\\" in token else "/"
+        return "..." + sep + sep.join(parts[-keep:])
+
+    return _HEADLINE_PATH.sub(short, text)
+
 
 def _capsule_headline(payload: dict | None) -> str:
     """``"ValueError: the refusal sentence"``, or ``""`` if there is none.
@@ -2122,6 +2148,8 @@ def _capsule_headline(payload: dict | None) -> str:
     # period goes; an ellipsis is not a full stop and stays.
     if first.endswith(".") and not first.endswith(".."):
         first = first[:-1]
+    if len(first) > _CAPSULE_HEADLINE_CAP:
+        first = _shorten_headline_paths(first)
     if len(first) > _CAPSULE_HEADLINE_CAP:
         first = first[:_CAPSULE_HEADLINE_CAP - 3].rstrip() + "..."
     if kind and first:

@@ -277,3 +277,106 @@ extern "C" __global__ void probe_zolri(const real *x, real *y, int n) {
     np.testing.assert_array_equal(got[giveup, 0], want[giveup, 0])
     np.testing.assert_array_equal(got[:, 1:], want[:, 1:])
     assert fp32_ulp_distance(got[:, 0], want[:, 0]).max() <= 16
+
+
+# ---------------------------------------------------------------------------
+# Word-for-word column oracle (lane/verify-mynn-sfclay-gsl-wrf39-generation).
+#
+# tools/mynn_gsl_wrf39_column_oracle: the unmodified fork module compiled by
+# gfortran 13.3 (-O0 and -O2, byte-identical outputs) on an FMA host with
+# glibc 2.39, over 261 columns in five decks (ISFTCFLX 0-3, DX 3 km and
+# 13.5 km), eight carried steps, every output as its binary32 bit pattern.
+# The breakage these tests prevent: the kernel called CUDA's logf/expf/powf/
+# atanf, fused the psi-table interpolation, took a square root where the
+# Fortran calls powf(x, 0.5) and grouped six products differently from the
+# Fortran, which put it up to 218 ULP from the fork on 7,519 of 55,776 words
+# of the main deck under the strict build.
+# ---------------------------------------------------------------------------
+
+COLUMN_FIXTURE = ORACLE_DIR / "gsl-wrf39-columns"
+COLUMN_TOOLS = ROOT / "tools" / "mynn_gsl_wrf39_column_oracle"
+COLUMN_DECKS = ("main", "isftcflx1", "isftcflx2", "isftcflx3", "dx13km")
+
+
+def _column_module(name):
+    import importlib.util
+    if str(COLUMN_TOOLS) not in sys.path:
+        sys.path.insert(0, str(COLUMN_TOOLS))
+    key = f"_gsl_wrf39_column_{name}"
+    if key not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            key, COLUMN_TOOLS / f"{name}.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[key] = module
+        spec.loader.exec_module(module)
+    return sys.modules[key]
+
+
+@pytest.mark.parametrize("deck", COLUMN_DECKS)
+def test_column_decks_are_the_generator_output(deck, tmp_path):
+    decks = _column_module("gsl_wrf39_columns")
+    out = tmp_path / f"{deck}.txt"
+    decks.write_deck(out, deck)
+    assert out.read_bytes() == (COLUMN_FIXTURE / f"{deck}.txt").read_bytes()
+
+
+def test_column_oracle_spans_the_regimes():
+    """Every regime and branch the deck claims is live in the oracle."""
+    decks = _column_module("gsl_wrf39_columns")
+    compare = _column_module("compare")
+    f32 = lambda a: a.view(np.float32)  # noqa: E731
+    seen = {"regime": set(), "snow": 0, "water": 0, "xland15": 0,
+            "za_le7": 0, "za_ge13": 0, "br_clamp50": 0, "zol_cap50": 0,
+            "giveup": 0, "ice_e1": 0, "vsgd": 0}
+    for deck in COLUMN_DECKS:
+        nstep, isftcflx, dx, cols = decks.load_deck(
+            COLUMN_FIXTURE / f"{deck}.txt")
+        oracle = compare.load_oracle(COLUMN_FIXTURE / f"{deck}.csv.gz")
+        assert sorted(oracle) == list(range(1, nstep + 1)) and nstep == 8
+        for out in oracle.values():
+            regime, zol, br = f32(out["regime"]), f32(out["zol"]), f32(out["br"])
+            seen["regime"].update(regime.tolist())
+            seen["br_clamp50"] += int((np.abs(br) == 50).sum())
+            seen["zol_cap50"] += int((np.abs(zol) == 50).sum())
+            stable = regime <= 2
+            seen["giveup"] += int((stable & (zol == np.float32(8) * br)
+                                   & (zol < 50)).sum())
+        seen["snow"] += int((cols["snowh"] >= 0.1).sum())
+        seen["water"] += int((cols["xland"] > 1.5).sum())
+        seen["xland15"] += int((cols["xland"] == 1.5).sum())
+        seen["za_le7"] += int((cols["dz1"] * np.float32(0.5) <= 7).sum())
+        seen["za_ge13"] += int((cols["dz1"] * np.float32(0.5) >= 13).sum())
+        seen["ice_e1"] += int((cols["tsk"] < 273.15).sum())
+        seen["vsgd"] += int(dx > 5000) * cols["u1"].size
+    assert seen["regime"] == {1.0, 2.0, 3.0, 4.0}, seen["regime"]
+    for key in ("snow", "water", "xland15", "za_le7", "za_ge13",
+                "br_clamp50", "zol_cap50", "giveup", "ice_e1", "vsgd"):
+        assert seen[key] > 0, (key, seen)
+    assert sum(decks.load_deck(COLUMN_FIXTURE / f"{d}.txt")[3]["u1"].size
+               for d in COLUMN_DECKS) >= 64
+
+
+def test_surface_unit_calls_no_cuda_libm_and_compiles_unfused():
+    """A CUDA logf/expf/powf/atanf back in the unit is the 218-ULP defect."""
+    import re
+    from gpuwm.core import kernels
+    text = (ROOT / "gpuwm" / "core" / "kernels" / "mynn_surface.cu").read_text()
+    code = "\n".join(line.split("//", 1)[0] for line in text.splitlines())
+    assert not re.findall(r"(?<![\w])(?:logf|expf|powf|atanf|__logf|__expf|"
+                          r"__powf)\s*\(", code)
+    assert "__fmaf_rn" not in code
+    assert kernels.EXTRA_HEADERS["mynn_surface"] == ("mynn_libm.cuh", "surface_subnormal.cuh")
+    assert "--fmad=false" in kernels.module_options("mynn_surface")
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("deck", COLUMN_DECKS)
+def test_kernel_matches_the_fork_column_oracle_word_for_word(deck):
+    _cuda()
+    compare = _column_module("compare")
+    oracle = compare.load_oracle(COLUMN_FIXTURE / f"{deck}.csv.gz")
+    got = compare.run_kernel(COLUMN_FIXTURE / f"{deck}.txt", max(oracle))
+    report = compare.grade(got, oracle)
+    assert report["mismatched_words"] == 0, (
+        report["first_mismatch"],
+        {k: v for k, v in report["fields"].items() if v["max_ulp"]})

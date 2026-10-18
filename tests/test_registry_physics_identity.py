@@ -104,6 +104,9 @@ PHYSICS_CHANGES_SINCE_280 = {
             "aer_type", "aer_aod550_opt", "aer_angexp_opt", "aer_ssa_opt",
             "aer_asy_opt", "aer_aod550_val", "aer_angexp_val", "aer_ssa_val",
             "aer_asy_val", "aer_auxinput15", "aer_auxinput15_interval")},
+    "components.cumulus.options.grell-freitas": (
+        "the intake carries the strict GF normalization and real downdraft origin; "
+        "previous GF restart identities are refused for this declared implementation change"),
     "components.cumulus.options.tiedtke": (
         "a new cumulus option, WRF's original Tiedtke (cu_physics = 6); "
         "no earlier option or receipt changes"),
@@ -140,6 +143,10 @@ PHYSICS_CHANGES_SINCE_280 = {
     "components.microphysics.options.wsm7-mp24": (
         "new WSM7 execution option, with its own restart and consumer declarations"),
     **{f"parameters.{key}": "new passive lightning diagnostic control, off by default" for key in ("cellcount_method", "cldtop_adjustment", "do_radar_ref", "flashrate_factor", "iccg_method", "iccg_prescribed_den", "iccg_prescribed_num", "lightning_dt", "lightning_option", "lightning_start_seconds")},
+    "components.pbl.options.ccpp-tke-edmf": (
+        "the pinned upstream CCPP closure is a new non-WRF selector"),
+    "templates.ccpp-tke-edmf-thompson-mm5-noah-gf-rte-v1": (
+        "a new unverified composition makes the CCPP closure reachable by name"),
     "templates.thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1": (
         "a new named configuration selects the prescribed monthly surface "
         "fields and fractional sea ice; earlier templates keep their settings"),
@@ -351,6 +358,14 @@ PHYSICS_CHANGES_SINCE_280 = {
         "CLM lake default depth, read only with sf_lake_physics = 1"),
     "parameters.lake_min_elev": (
         "CLM lake minimum elevation, read only with sf_lake_physics = 1"),
+    "parameters.sf_ocean_physics": (
+        "WRF's 1-D ocean mixed layer, a knob 2.9.0 did not have, off at 0"),
+    "parameters.oml_hml0": (
+        "OML initial mixed-layer depth, read only with sf_ocean_physics = 1"),
+    "parameters.oml_gamma": (
+        "OML deep-water lapse rate, read only with sf_ocean_physics = 1"),
+    "parameters.oml_relaxation_time": (
+        "OML relaxation time, read only with sf_ocean_physics = 1"),
     "parameters.mix_full_fields": (
         "WRF's full-field mixing logical, a knob 2.8.0 did not have "
         "(679a5f5fe), off at true, the full-field mixing every earlier "
@@ -422,6 +437,19 @@ PHYSICS_CHANGES_SINCE_280 = {
     "parameters.alb_sol": (
         "sun-angle-dependent land albedo, implemented at 1; 0 preserves "
         "the albedo carrier every earlier build used"),
+    "components.cumulus.options.new-tiedtke": (
+        "2.9.1 donor bound (hexeng/hex040-fix-global-ysu): default arithmetic "
+        "scales a column's explicit rates so no layer loses more water than it "
+        "holds over the step; its restart algorithm identity moved to "
+        "new-tiedtke-wrf461-cumastrn-donor-bound-v2 (strict keeps v1), so a "
+        "2.8.0 receipt that selected New Tiedtke is refused for it"),
+    "components.surface_layer.options.eta-similarity": (
+        "the Eta similarity surface layer's restart algorithm identity v2: "
+        "its tables, terrain-height seed, LOG/EXP/** and FMA-free "
+        "arithmetic are now WRF v4.6.1's word for word "
+        "(lane/verify-eta-similarity-sfclay, "
+        "tests/test_myjsfc_wrf461_parity.py), which moves MYJ forecasts in "
+        "their last bits"),
 }
 
 _WDM6_SUITE = "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1"
@@ -450,6 +478,8 @@ EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
           if row["switches"].get("bl_pbl_physics") == 5 else []),
         *(["registry physics of components.cumulus.options.kain-fritsch "
            "(changed)"] if row["switches"].get("cu_physics") == 1 else []),
+        *(["registry physics of components.cumulus.options.new-tiedtke "
+           "(changed)"] if row["switches"].get("cu_physics") == 16 else []),
         *(["registry physics of components.pbl.options.ysu (changed)"]
           if row["switches"].get("bl_pbl_physics") == 1 else []),
         *(["registry physics of components.pbl.options.shinhong (changed)"]
@@ -462,6 +492,10 @@ EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
         *(["registry physics of components.microphysics.options."
            "thompson-aerosol-mp28 (changed)"]
           if row["switches"]["mp_physics"] == 28 else []),
+        *(["registry physics of components.cumulus.options.grell-freitas (changed)"]
+          if row["switches"].get("cu_physics") == 3 else []),
+        *(["registry physics of components.cumulus.options.kain-fritsch "
+           "(changed)"] if row["switches"].get("cu_physics") == 1 else []),
         *(["registry physics of components.land_surface.options.ruc-lsm "
            "(changed)",
            "registry physics of parameters.mosaic_lu (changed)",
@@ -469,6 +503,9 @@ EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
           if row["switches"].get("sf_surface_physics") == 3 else []),
         *(["registry physics of components.land_surface.options.noah-mp (changed)"]
           if row["switches"].get("sf_surface_physics") == 4 else []),
+        *(["registry physics of components.surface_layer.options."
+           "eta-similarity (changed)"]
+          if row["switches"].get("sf_sfclay_physics") == 2 else []),
     ])
     for row in json.loads(RECEIPTS_2492999CD.read_text())["receipts"]
     for spelling in ("named", "unnamed")
@@ -574,6 +611,7 @@ def _move_citation(text: str, old: str, new: str) -> str:
     # The two A153 commits, replayed backwards.
     (("components", "pbl", "options", "shinhong", "warnings", 1),
      "kernels/shinhong.cu:1429", "kernels/shinhong.cu:1371"),
+
     (("components", "turbulence", "options", "tke-1.5-order", "warnings", 0),
      "gpuwm/core/dycore.py:1294", "gpuwm/core/dycore.py:1041"),
     (("components", "turbulence", "options", "smagorinsky-3d", "warnings",
@@ -991,10 +1029,14 @@ def test_preflight_rechecks_terrain_wind_without_source_identity(
         settings.update(km_opt=0, khdif=0.0, kvdif=0.0, moist=True)
     config = _loaded_config(settings)
     assert validate_physics_capabilities(dataclasses.replace(config, topo_wind=0))
-    if pbl == 1:
-        assert validate_physics_capabilities(config)["pbl"] == "ysu"
+    # WRF v4.6.1 hands CTOPO/CTOPO2 to YSU and to Shin-Hong, and both read
+    # them (bl_ysu.F90:1308-1314; module_bl_shinhong.F:1387, :1472-1473).
+    if pbl in (1, 11):
+        assert validate_physics_capabilities(config)["pbl"] == {
+            1: "ysu", 11: "shinhong"}[pbl]
     else:
-        with pytest.raises(PhysicsCapabilityError, match="topo_wind.*YSU"):
+        with pytest.raises(PhysicsCapabilityError,
+                           match="topo_wind.*YSU.*Shin-Hong"):
             validate_physics_capabilities(config)
 
 
@@ -1351,7 +1393,7 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
         "registry physics of parameters.use_rap_aero_icbc (absent from the prepared registry)", *[
         f"registry physics of parameters.{knob} (absent from the prepared "
         "registry)"
-        for knob in ('aer_angexp_opt', 'aer_angexp_val', 'aer_aod550_opt', 'aer_aod550_val', 'aer_asy_opt', 'aer_asy_val', 'aer_auxinput15', 'aer_auxinput15_interval', 'aer_opt', 'aer_ssa_opt', 'aer_ssa_val', 'aer_type', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'cellcount_method', 'cldtop_adjustment', 'cycling', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'do_radar_ref', 'flashrate_factor', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'iccg_method', 'iccg_prescribed_den', 'iccg_prescribed_num', 'lake_min_elev', 'lakedepth_default', 'lightning_dt', 'lightning_option', 'lightning_start_seconds', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'noahmp_snow_age', 'rrtmg_aer3_type_source', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'scalar_adv_opt', 'sf_lake_physics', 'sf_surface_mosaic', 'slope_rad', 'solar_generation', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'urban_table_dir', 'urban_water_balance', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'ysu_version', 'zadvect_implicit', 'zadvect_implicit_variant')])
+        for knob in ('aer_angexp_opt', 'aer_angexp_val', 'aer_aod550_opt', 'aer_aod550_val', 'aer_asy_opt', 'aer_asy_val', 'aer_auxinput15', 'aer_auxinput15_interval', 'aer_opt', 'aer_ssa_opt', 'aer_ssa_val', 'aer_type', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'cellcount_method', 'cldtop_adjustment', 'cycling', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'do_radar_ref', 'flashrate_factor', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'iccg_method', 'iccg_prescribed_den', 'iccg_prescribed_num', 'lake_min_elev', 'lakedepth_default', 'lightning_dt', 'lightning_option', 'lightning_start_seconds', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'noahmp_snow_age', 'oml_gamma', 'oml_hml0', 'oml_relaxation_time', 'rrtmg_aer3_type_source', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'scalar_adv_opt', 'sf_lake_physics', 'sf_ocean_physics', 'sf_surface_mosaic', 'slope_rad', 'solar_generation', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'urban_table_dir', 'urban_water_balance', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'ysu_version', 'zadvect_implicit', 'zadvect_implicit_variant')])
 
 
 def test_a_new_receipt_resolves_to_its_own_parts():

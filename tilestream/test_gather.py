@@ -628,9 +628,22 @@ def test_host_roundtrip_pinned():
 #:                        admitted in 2.9.0), a plain 3-D mass-point field.
 #: All five joined the contract in the 2.9.0 round-2 merge; the gate moved
 #: with them (192 -> 197) once this file reached the GPU shard there.
+#:   ``tke_edmf``         the CCPP sa-TKE-EDMF PBL's advected TKE (2.9.1,
+#:                        bl_pbl_physics = 901), a plain 3-D mass-point field
+#:                        carried so a streamed run does not cold-start it
+#:                        (197 -> 198).
+#:   ``p_perturbation``   the WRF exact chain's strict-diagnostics carrier
+#:                        (2.9.1 intake): WRF's perturbation-pressure words,
+#:                        which pressure force and history read across stage
+#:                        boundaries; rebuilt from rounded full pressure they
+#:                        lose their low bits.  Allocated only under the strict
+#:                        diagnostics build (None otherwise, so ordinary
+#:                        inventories do not carry it).  A plain 3-D
+#:                        mass-point field, p's own stagger (198 -> 199).
 NEW_SINCE_41 = ("qir", "qib", "th_old", "qv_old", "nh", "nn",
                 "rthften", "rqvften", "volg",
-                "qt", "f_ice", "f_rain", "f_rimef", "qke_adv")
+                "qt", "f_ice", "f_rain", "f_rimef", "qke_adv", "tke_edmf",
+                "p_perturbation")
 
 #: FAST_SBM (mp_physics = 30) spectral bins: ff1/ff5/ff6 at 33 bins each and
 #: ff8 at 43, 142 names (``gpuwm.core.fast_sbm_contract.BIN_SPECIES``).  They
@@ -667,9 +680,9 @@ def test_all_49_names_device_and_host():
     set the product no longer serialized.
     """
     names = G.serialized_attrs()
-    assert len(names) == 197, (
-        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 197 "
-        "(55 bulk + 142 FAST_SBM bins). "
+    assert len(names) == 199, (
+        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 199 "
+        "(57 bulk + 142 FAST_SBM bins). "
         "A new field joined (or left) the streamed serialization set: extend "
         "NEW_SINCE_41's justification block and this count TOGETHER, and "
         "check the new name's stagger against _synthetic_shapes")

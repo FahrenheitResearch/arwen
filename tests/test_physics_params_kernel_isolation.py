@@ -116,6 +116,15 @@ def test_default_and_default_valued_sets_preserve_both_loader_source_routes():
     for path in paths:
         module = path.stem
         raw = path.read_text(encoding="utf-8")
+        # A default process compiles the 2.9.1 unit of the exact chain's
+        # default-source modules (kernels._DEFAULT_SOURCE_MODULES).
+        from gpuwm import wrf_exact
+        default_unit = KDIR / f"{module}_default.cu"
+        if (not wrf_exact.ENABLED and module in kernels._DEFAULT_SOURCE_MODULES
+                and default_unit.is_file()):
+            raw = default_unit.read_text(encoding="utf-8")
+        if wrf_exact.ENABLED and module == "noah":
+            raw = "#define NOAH_WRF_SCALAR_RCT 1\n" + raw   # kernels._unit_text
         expected = kernels._preamble() + kernels._extra_header_text(module) + raw
         if module in kernels._URBAN_NO_FTZ_MODULES:
             # The SLUCM/BEP units retain subnormals through a source marker

@@ -20,7 +20,7 @@ def test_roster_callbacks_record_member_name_land_seed_and_unity_control_bytes(t
     session = PreparedEnsembleSession({"base_seed": 73, "member_variants": variants},
         output_directory=tmp_path, input_provider=lambda **unused: None, array_module=cp)
     def model(scheme, layers):
-        cfg = RunConfig(nx=5, ny=4, nz=4, dx=3000, dy=3000, ztop=12000, dt=12,
+        cfg = RunConfig(nx=5, ny=4, nz=4, dx=3000, dy=3000, ztop=12000, dt=12, run_seconds=12,
                         sf_surface_physics=scheme, num_soil_layers=layers)
         fields = {"landmask": cp.ones((4, 5), cp.float32),
                   "lakemask": cp.zeros((4, 5), cp.float32), "xice": cp.zeros((4, 5), cp.float32),

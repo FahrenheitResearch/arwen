@@ -176,22 +176,37 @@ pub fn declared_grid_rotation(parameters: &crate::model::LambertParameters) -> (
     let grid = LambertGrid::from_declaration(parameters);
     let nx = parameters.nx as usize;
     let ny = parameters.ny as usize;
+    // Each cell is its own projection inverse, so the rows run on every
+    // core and are joined in row order: the same arithmetic per cell, the
+    // same values.  Named breakage: one thread inverted all 1.9 million
+    // cells of the 3 km CONUS grid for every decoded object, about 0.3 s
+    // each with the pool idle.
+    let rows: Vec<(Vec<f64>, Vec<f64>)> = crate::threads::install(|| {
+        use rayon::prelude::*;
+        (0..ny).into_par_iter().map(|row| {
+            let mut sina = Vec::with_capacity(nx);
+            let mut cosa = Vec::with_capacity(nx);
+            for column in 0..nx {
+                let (_latitude, longitude) =
+                    grid.ij_to_latlon((column + 1) as f64, (row + 1) as f64);
+                let mut difference = grid.stand_lon - longitude;
+                if difference > 180.0 {
+                    difference -= 360.0;
+                } else if difference < -180.0 {
+                    difference += 360.0;
+                }
+                let alpha = grid.hemi * grid.cone * std::f64::consts::PI / 180.0 * difference;
+                sina.push(alpha.sin());
+                cosa.push(alpha.cos());
+            }
+            (sina, cosa)
+        }).collect()
+    });
     let mut sina = Vec::with_capacity(nx * ny);
     let mut cosa = Vec::with_capacity(nx * ny);
-    for row in 0..ny {
-        for column in 0..nx {
-            let (_latitude, longitude) =
-                grid.ij_to_latlon((column + 1) as f64, (row + 1) as f64);
-            let mut difference = grid.stand_lon - longitude;
-            if difference > 180.0 {
-                difference -= 360.0;
-            } else if difference < -180.0 {
-                difference += 360.0;
-            }
-            let alpha = grid.hemi * grid.cone * std::f64::consts::PI / 180.0 * difference;
-            sina.push(alpha.sin());
-            cosa.push(alpha.cos());
-        }
+    for (row_sina, row_cosa) in rows {
+        sina.extend_from_slice(&row_sina);
+        cosa.extend_from_slice(&row_cosa);
     }
     (sina, cosa)
 }

@@ -1098,11 +1098,18 @@ def test_real_init_cpu_backend_handles_hrrr_hydrometeor_inventory(
         np.testing.assert_allclose(
             actual, expected, rtol=3.0e-5, atol=5.0e-8)
     if mp_physics == 8:
-        for state in (cpu.state, cuda.state):
-            np.testing.assert_array_equal(
-                cp.asnumpy(state.ni), np.zeros(state.ni.shape, np.float32))
-            np.testing.assert_array_equal(
-                cp.asnumpy(state.nr), np.zeros(state.nr.shape, np.float32))
+        # Since 66ca6e205 an mp=8 cold start seeds analysed rain and ice
+        # with real.exe's make_RainNumber / make_IceNumber
+        # (module_initialize_real.F:4840-4852) instead of starting both
+        # numbers at zero.  Every cell here carries qr and qi and no
+        # analysed number, so every cell is seeded, and the two
+        # preparation backends must seed the same numbers.
+        for name in ("ni", "nr"):
+            actual = cp.asnumpy(getattr(cpu.state, name))
+            expected = cp.asnumpy(getattr(cuda.state, name))
+            assert np.isfinite(actual).all() and np.all(actual > 0.0), name
+            np.testing.assert_allclose(
+                actual, expected, rtol=3.0e-5, atol=0.0, err_msg=name)
 
 
 def test_real74_d01_30min_gate_admits_complete_no_pbl_operator():

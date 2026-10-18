@@ -39,15 +39,41 @@ def test_case_coverage():
             assert np.any(case["step1_so2"] != other["step1_so2"])
 
 
+def _nonzero(tables):
+    return {key: t for key, t in tables.items() if t["max_ulp"] or t["n_nonzero"]}
+
+
+def test_recorded_baseline_is_exact():
+    """ULP_BASELINE.json is the measured table; every entry must be 0 ULP.
+
+    It used to carry the solar-geometry residual of CUDA's sinf/cosf (cos(SZA)
+    up to 36 ULP, tcosz up to 25, SO2/SO4 1 ULP in native mode).  Since the
+    kernel takes WOOF's own float32 trig that residual is gone, and a nonzero
+    row here would be a regression recorded as if it were expected.
+    """
+    baseline = json.loads((FIXTURES / "sulfur/ULP_BASELINE.json").read_text())
+    assert len(baseline) == 48
+    bad = {(name, mode): _nonzero(tables)
+           for name, modes in baseline.items() for mode, tables in modes.items()
+           if _nonzero(tables)}
+    assert not bad, bad
+
+
 @requires_gpu
 @pytest.mark.gpu
 def test_wrf471_parity():
-    baseline = json.loads((FIXTURES / "sulfur/ULP_BASELINE.json").read_text())
+    """Every output word, both solar modes, all 48 cases: 0 ULP.
+
+    native: the kernel's own szangle (WOOF float32 trig), as a forecast runs.
+    oracle_solar: WRF's cos(SZA)/tcosz/ttday fed in, isolating the chemistry.
+    """
     for name, case in load(FIXTURES / "sulfur").items():
         for mode, oracle_solar in (("native", False), ("oracle_solar", True)):
-            assert sulfur_case(case, oracle_solar=oracle_solar) == baseline[name][mode], (name,mode)
+            tables = sulfur_case(case, oracle_solar=oracle_solar)
+            assert not _nonzero(tables), (name, mode, _nonzero(tables))
             if case["zero_roles"]:
-                assert sulfur_case(case, oracle_solar=oracle_solar, lite=True) == baseline[name][mode+"_lite"], (name,mode)
+                lite = sulfur_case(case, oracle_solar=oracle_solar, lite=True)
+                assert not _nonzero(lite), (name, mode + "_lite", _nonzero(lite))
 
 
 @requires_gpu

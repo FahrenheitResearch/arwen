@@ -108,6 +108,22 @@ _DERIVATION_ARGUMENTS = {
     "specific_humidity_from_dewpoint": (
         {"dewpoint", "temperature", "pressure"}, set()
     ),
+    # Air temperature from potential temperature and pressure,
+    # T = theta * (p / p0) ** kappa.  A height-coordinate model (MPAS,
+    # hex) publishes theta, not T.  kappa (R_d / c_p) and p0 are the
+    # PRODUCER's constants, declared by the mapping: WRF's are 2/7 and
+    # 1e5 Pa (the defaults), MPAS's are 287/1003 and 1e5 Pa, and the
+    # temperature a model held is recovered only with its own pair.
+    "air_temperature_from_potential_temperature": (
+        {"potential_temperature", "pressure"},
+        {"reference_pressure_pa", "kappa"},
+    ),
+    # Specific humidity from a water vapour mixing ratio against dry
+    # air, q = r / (1 + r).  Its inverse r = q / (1 - q) is what
+    # initialization applies, so the round trip returns r exactly
+    # (to rounding) and condensate stays on the dry-air basis the
+    # producer's own mixing ratios already use.
+    "specific_humidity_from_mixing_ratio": ({"mixing_ratio"}, set()),
     # Column-integrated soil water (kg m-2 per declared layer) to
     # volumetric soil moisture (m3 m-3): arithmetic over the DECLARED
     # layer bounds, in the closed catalog because a contract must never
@@ -1411,7 +1427,7 @@ def load_mapping(
         "mapping.coordinates.vertical",
         allowed={
             "kind", "selector", "units", "positive", "levels", "era_ladders",
-            "hybrid_a", "hybrid_b", "interface_levels",
+            "hybrid_a", "hybrid_b", "interface_levels", "interface_selector",
             "hybrid_a_field", "hybrid_b_field", "surface_pressure_field",
             "model_top_pressure_pa",
         },
@@ -1431,6 +1447,13 @@ def load_mapping(
         _validate_selector(vertical["selector"], source_format, "vertical.selector")
     if source_format == "netcdf" and vertical.get("selector") is None:
         raise ValueError("NetCDF mappings require a vertical coordinate selector")
+    if vertical.get("interface_selector") is not None:
+        if source_format != "netcdf" or vertical.get("interface_levels") is None:
+            raise ValueError(
+                "vertical.interface_selector names a NetCDF interface coordinate and "
+                "requires interface_levels")
+        _validate_selector(
+            vertical["interface_selector"], source_format, "vertical.interface_selector")
     levels = vertical.get("levels", [])
     if not isinstance(levels, list):
         raise ValueError("vertical.levels must be a unique numeric list")
@@ -1449,8 +1472,16 @@ def load_mapping(
             raise ValueError(
                 "era_ladders cannot be combined with interface_levels: an era ladder can shorten "
                 "the mass column while the fixed N+1 interfaces still bound the declared ladder")
-        if source_format not in {"grib1", "grib2"} or vertical["kind"] != "model_level":
-            raise ValueError("interface_levels requires a GRIB model_level coordinate")
+        if vertical["kind"] != "model_level":
+            raise ValueError("interface_levels requires a model_level coordinate")
+        # GRIB carries each interface as its own record's level value.  A
+        # NetCDF file carries them as a coordinate VARIABLE on their own
+        # dimension (WRF's bottom_top_stag), so the mapping names it, the
+        # same way it names the mass-level coordinate.
+        if source_format == "netcdf" and vertical.get("interface_selector") is None:
+            raise ValueError(
+                "interface_levels on a NetCDF model_level coordinate requires "
+                "vertical.interface_selector naming the interface coordinate variable")
         if not isinstance(interfaces, list) or len(interfaces) != len(levels) + 1:
             raise ValueError("interface_levels must bound every mass level with N+1 interfaces")
         values = [_number(value, "vertical.interface_levels") for value in interfaces]
@@ -1672,7 +1703,7 @@ def load_mapping(
             _validate_selector(selector, source_format, f"fields.{name}.selectors[{index}]")
         if "half_level" in field["source_axes"] or "half_level" in field["target_axes"]:
             if interfaces is None or not direct:
-                raise ValueError(f"fields.{name} half_level requires direct GRIB data and interface_levels")
+                raise ValueError(f"fields.{name} half_level requires direct data and interface_levels")
         selector_stack_axis = field.get("selector_stack_axis")
         if selector_stack_axis is not None:
             if source_format != "netcdf" or not direct:
@@ -1845,6 +1876,8 @@ def load_mapping(
                 "layer_mass", "layer_bounds_m", "water_density_kg_m3",
                 "specific_humidity", "surface_geopotential_height", "exclude",
                 "sea_level_pressure", "level_height", "surface_height",
+                "potential_temperature", "reference_pressure_pa", "kappa",
+                "mixing_ratio",
             },
             required={"name", "operation"},
         )
@@ -1910,6 +1943,19 @@ def load_mapping(
                 "half-level ladder, which requires a hybrid_sigma_pressure "
                 "vertical coordinate"
             )
+        if operation == "air_temperature_from_potential_temperature":
+            for key, default, upper in (
+                ("reference_pressure_pa", 100000.0, None),
+                ("kappa", 2.0 / 7.0, 1.0),
+            ):
+                value = _number(
+                    derivation.get(key, default), f"derivations[{index}].{key}"
+                )
+                if value <= 0.0 or (upper is not None and value >= upper):
+                    raise ValueError(
+                        f"derivations[{index}].{key} must be finite and positive"
+                        + ("" if upper is None else f" and below {upper:g}")
+                    )
         if operation == "volumetric_soil_moisture_from_layer_mass":
             bounds = derivation.get("layer_bounds_m")
             if not isinstance(bounds, list) or not bounds:
@@ -3019,6 +3065,36 @@ def _decode_netcdf(mapping: Mapping[str, object], files: Sequence[Path]) -> _Dec
             longitude_dimension = _nc_coordinate_dimension(
                 longitude_variable, "longitude"
             )
+            # Interface (half-level) coordinate, resolved the same lazy way:
+            # only a field with a half_level axis needs it.
+            interface_dimension = None
+            interface_selection: tuple[str, np.ndarray] | None = None
+            interface_error: ValueError | None = None
+            if vertical.get("interface_selector") is not None:
+                try:
+                    interface_variable = _resolve_nc_variable(
+                        dataset, vertical["interface_selector"], "vertical interfaces",
+                        resolution,
+                    )
+                    interface_values = _nc_coordinate_values(
+                        interface_variable,
+                        expected_units=str(vertical["units"]),
+                        label="vertical interfaces",
+                    )
+                    interface_dimension = _nc_coordinate_dimension(
+                        interface_variable, "vertical interfaces"
+                    )
+                    declared_interfaces = np.asarray(
+                        vertical["interface_levels"], dtype=np.float64
+                    )
+                    indices = _declared_level_indices(
+                        declared_interfaces, interface_values, source
+                    )
+                    if indices is not None:
+                        interface_selection = (interface_dimension, indices)
+                except ValueError as error:
+                    interface_dimension = None
+                    interface_error = error
             vertical_dimension = None
             vertical_selection: tuple[str, np.ndarray] | None = None
             if vertical_values is not None:
@@ -3194,8 +3270,15 @@ def _decode_netcdf(mapping: Mapping[str, object], files: Sequence[Path]) -> _Dec
                         f"{field_name} declares a vertical axis, and {source} "
                         f"has no readable vertical coordinate: {vertical_error}"
                     )
+                if "half_level" in variable_axes and interface_dimension is None:
+                    raise ValueError(
+                        f"{field_name} declares a half_level axis, and {source} "
+                        f"has no readable interface coordinate: "
+                        f"{interface_error or 'vertical.interface_selector is not declared'}"
+                    )
                 expected_dimensions = {
                     "vertical": vertical_dimension,
+                    "half_level": interface_dimension,
                     "y": latitude_dimension,
                     "x": longitude_dimension,
                 }
@@ -3221,6 +3304,12 @@ def _decode_netcdf(mapping: Mapping[str, object], files: Sequence[Path]) -> _Dec
                         vertical_take = (
                             dimensions.index(vertical_selection[0]),
                             vertical_selection[1],
+                        )
+                    elif (interface_selection is not None
+                            and interface_selection[0] in dimensions):
+                        vertical_take = (
+                            dimensions.index(interface_selection[0]),
+                            interface_selection[1],
                         )
                     data, _ = _read_nc_values(
                         variable, field["missing"], field_name,
@@ -3728,7 +3817,7 @@ def libm_dependent_fields(mapping: Mapping[str, object]) -> frozenset[str]:
 
     Everything else is integer unpack plus IEEE add/multiply/divide, which
     is bit-reproducible on any conforming machine -- MEASURED 2026-08-20,
-    Windows desktop against weather-node-1: identical to the byte on every
+    Windows desktop against test host A: identical to the byte on every
     array but these.
 
     Read from the mapping's own declarations, so a new model is table
@@ -6015,6 +6104,31 @@ def _evaluate_derivation(
         raw = _specific_humidity_from_rh(
             relative_humidity, temperature.values, pressure.values
         )
+    elif kind == "air_temperature_from_potential_temperature":
+        theta = dependency("potential_temperature")
+        pressure = dependency("pressure")
+        if theta.axes != pressure.axes or theta.values.shape != pressure.values.shape:
+            raise ValueError(f"{name} potential temperature and pressure disagree in axes or shape")
+        if theta.units != "K" or pressure.units != "Pa":
+            raise ValueError(f"{name} requires potential temperature in K and pressure in Pa")
+        valid = np.isfinite(theta.values) & np.isfinite(pressure.values)
+        if np.any(theta.values[valid] <= 0.0) or np.any(pressure.values[valid] <= 0.0):
+            raise ValueError(f"{name} requires positive potential temperature and pressure")
+        reference = float(operation.get("reference_pressure_pa", 100000.0))
+        kappa = float(operation.get("kappa", 2.0 / 7.0))
+        raw = theta.values * np.power(pressure.values / reference, kappa)
+        axes = theta.axes
+        references = (*theta.source_references, *pressure.source_references)
+    elif kind == "specific_humidity_from_mixing_ratio":
+        ratio = dependency("mixing_ratio")
+        if ratio.units != "kg kg-1":
+            raise ValueError(f"{name} requires a mixing ratio in kg kg-1")
+        valid = np.isfinite(ratio.values)
+        if np.any(ratio.values[valid] <= -1.0):
+            raise ValueError(f"{name} mixing ratio at or below -1 has no specific humidity")
+        raw = ratio.values / (1.0 + ratio.values)
+        axes = ratio.axes
+        references = ratio.source_references
     elif kind == "volumetric_soil_moisture_from_layer_mass":
         layer_mass = dependency("layer_mass")
         axes = layer_mass.axes
@@ -7501,50 +7615,54 @@ def warn_regular_join_drops(declared, *, subject: str) -> tuple[str, ...]:
     return dropped
 
 
+#: Canonical mapped field -> the regular-source ABI name it is packed as.
+REGULAR_SNAPSHOT_LEGACY_NAMES = {
+    "air_temperature": "T",
+    "air_pressure": "PRES",
+    "specific_humidity": "SPFH",
+    "eastward_wind": "U",
+    "northward_wind": "V",
+    "geopotential_height": "GHT",
+    "surface_pressure": "PSFC",
+    "terrain_height": "SOURCE_OROGRAPHY",
+    "skin_temperature": "SKINTEMP",
+    "vegetation_fraction": "VEGFRA",
+    "air_temperature_2m": "T2",
+    "specific_humidity_2m": "Q2",
+    "eastward_wind_10m": "U10",
+    "northward_wind_10m": "V10",
+    "land_fraction": "LANDSEA",
+    # SNOW, not SNOW_EC.  ``SNOW_EC`` is bound in exactly one
+    # decode table -- ECMWF GRIB1 (141, 1), metres of water
+    # equivalent (``gpuwm/ingest/grib.py``) -- and the soil
+    # initializer multiplies that name by 1000 to reach kg m-2
+    # (``gpuwm/ingest/soil.py``).  The canonical
+    # ``snow_water_equivalent`` is kg m-2 already, which is what
+    # every other route carrying it calls ``SNOW`` and what
+    # ``preprocess_noah_soil`` consumes unscaled.
+    "snow_water_equivalent": "SNOW",
+    "snow_depth": "SNOWH",
+    "sea_ice_fraction": "SEAICE",
+    # The water state the horizontal mapping assembles the water
+    # temperature from (gpuwm/ingest/water_temperature.py): the
+    # analysis over the sea, and the lake model's own water and ice
+    # (gpuwm/ingest/lake_temperature.py) where the analysis has no
+    # water of a lake's.  Without them a mapped source gave every
+    # lake its coherent skin temperature while a direct route reading
+    # the same file gave it the lake water.
+    "sea_surface_temperature": "SST",
+    "lake_water_temperature": "LAKE_WATER_TEMP",
+    "lake_ice_temperature": "LAKE_ICE_TEMP",
+    "lake_ice_depth": "LAKE_ICE_DEPTH",
+}
+
+
 def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
                                   initialize_absent_hydrometeors):
     """Yield unchanged join arithmetic while retaining only its active inputs."""
     canonical = frame.fields
     pressure_shape = pressure.shape
-    legacy_names = {
-        "air_temperature": "T",
-        "air_pressure": "PRES",
-        "specific_humidity": "SPFH",
-        "eastward_wind": "U",
-        "northward_wind": "V",
-        "geopotential_height": "GHT",
-        "surface_pressure": "PSFC",
-        "terrain_height": "SOURCE_OROGRAPHY",
-        "skin_temperature": "SKINTEMP",
-        "vegetation_fraction": "VEGFRA",
-        "air_temperature_2m": "T2",
-        "specific_humidity_2m": "Q2",
-        "eastward_wind_10m": "U10",
-        "northward_wind_10m": "V10",
-        "land_fraction": "LANDSEA",
-        # SNOW, not SNOW_EC.  ``SNOW_EC`` is bound in exactly one
-        # decode table -- ECMWF GRIB1 (141, 1), metres of water
-        # equivalent (``gpuwm/ingest/grib.py``) -- and the soil
-        # initializer multiplies that name by 1000 to reach kg m-2
-        # (``gpuwm/ingest/soil.py``).  The canonical
-        # ``snow_water_equivalent`` is kg m-2 already, which is what
-        # every other route carrying it calls ``SNOW`` and what
-        # ``preprocess_noah_soil`` consumes unscaled.
-        "snow_water_equivalent": "SNOW",
-        "snow_depth": "SNOWH",
-        "sea_ice_fraction": "SEAICE",
-        # The water state the horizontal mapping assembles the water
-        # temperature from (gpuwm/ingest/water_temperature.py): the
-        # analysis over the sea, and the lake model's own water and ice
-        # (gpuwm/ingest/lake_temperature.py) where the analysis has no
-        # water of a lake's.  Without them a mapped source gave every
-        # lake its coherent skin temperature while a direct route reading
-        # the same file gave it the lake water.
-        "sea_surface_temperature": "SST",
-        "lake_water_temperature": "LAKE_WATER_TEMP",
-        "lake_ice_temperature": "LAKE_ICE_TEMP",
-        "lake_ice_depth": "LAKE_ICE_DEPTH",
-    }
+    legacy_names = REGULAR_SNAPSHOT_LEGACY_NAMES
     for name, legacy in legacy_names.items():
         if name not in canonical:
             continue

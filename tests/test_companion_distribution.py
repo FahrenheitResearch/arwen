@@ -64,8 +64,13 @@ MOVED_MEMBER_SHA256 = {
     # in the gpuwm wheel); the digests are the ones they had at e9d54cc17.
     "case-catalog/historical.zip":
         "97c404da2e858eb9d4e3c5c521d8a1352eeaa93d34fafcd6e00a83676520f2b5",
+    # Re-provisioned after the move by lane/verify-spp-stochastic: the same
+    # captures rebuilt on the oracle platform (gfortran 13.3.0, glibc 2.39);
+    # the moved bytes were 9bc14a88c46b5454... (gfortran 15.2.0, glibc 2.43).
+    # 2.9.1: its GF captures re-run on the corrected GF harness (receipt.json
+    # gf_rebuild); fb969d191daa1ede... was the archive before that.
     "spp/native-wrf461.zip":
-        "9bc14a88c46b54547a6a19000830a3f4028fbce4b755f5bfb2648e853e4d0f4b",
+        "201025994da48275c72fb06d37e38074c924780139a1aed8ed4409682b3a688e",
     # Moved in 2.9.0 as a single file, re-encoded on the way (xz of byte
     # planes of longitude differences; gpuwm/core/rrtmg_sw.py
     # encode_aer1_climatology).  These are the re-encoded bytes; that the

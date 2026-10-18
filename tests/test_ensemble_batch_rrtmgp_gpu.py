@@ -132,9 +132,16 @@ def _prove(members, light, monkeypatch, *, longwave=True, shortwave=True, native
                     if expected is None:
                         assert got is None
                     else:
-                        selected = got[:, stripe] if got.ndim == 3 else got[stripe]
-                        assert selected.get().tobytes() == expected.get().tobytes(), (member, step, light, field.name)
-                        assert bool(cp.all(cp.isfinite(selected)))
+                        if isinstance(expected, dict):
+                            assert got.keys() == expected.keys()
+                            arrays = [(f"{field.name}/{name}", got[name], value)
+                                      for name, value in expected.items()]
+                        else:
+                            arrays = [(field.name, got, expected)]
+                        for name, actual, reference in arrays:
+                            selected = actual[:, stripe] if actual.ndim == 3 else actual[stripe]
+                            assert selected.get().tobytes() == reference.get().tobytes(), (member, step, light, name)
+                            assert bool(cp.all(cp.isfinite(selected)))
                 assert adapters[member].update_count == ordinary_adapters[member].update_count == member * 3 + step
             assert (None if bound.workspace is None else int(bound.workspace.storage.data.ptr)) == workspace_pointer
             assert {name: array.get().tobytes() for name, array in packed_atmosphere.items()} == before_atmosphere

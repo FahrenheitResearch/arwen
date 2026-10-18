@@ -1,0 +1,15 @@
+0cead99c913b6a74f3a492aea1e1c7ef6d34f95402574336022d1a6c716a4382  <wrf-4.6.1-checkout>/phys/module_cu_gf_wrfdrv.F
+798ad7271963757b88be36ce01e24222f7af045dc0692908d6e7c270d6b4ea11  <wrf-4.6.1-checkout>/phys/module_cu_gf_deep.F
+0dd1ed7c620b39e13f7ef77dc4ff1a269fa1f8d746492d360e203df0215b529a  <wrf-4.6.1-checkout>/phys/module_cu_gf_sh.F
+2b8ef99663ba62748b57c7002f5e5b8c9338f2a825c1d32c113bd4e3bff2eb52  <wrf-4.6.1-checkout>/phys/module_gfs_physcons.F
+300ee4f75663e89d34c8a9b8733cc07a5dd48c3d973da019d31cb76524babe25  <wrf-4.6.1-checkout>/phys/module_gfs_machine.F
+1b882c9c6a70263cb0d285b7c9907f4b0826dab4347f8f5c3fa387edf7329721  <oracle-workspace>/tools/gf_wrf461_oracle/gf_regime_columns.py
+4abc5de101f832b10cbd962499d8b08c4bc9c16c7cc474fbaba01e674e02a59e  <oracle-workspace>/tools/gf_wrf461_oracle/run_gf_columns.F90
+ba9a76b1e91d1907b2eb08f35b847c738b2dcb1de51a8a4d41cc4526dd4eec75  <oracle-workspace>/tools/gf_wrf461_oracle/gf_crgamma_tgammaf.c
+5bc1c3b21585d13e170fd91e75498b41d02451616dd4d51b274eec76178ad281  <oracle-workspace>/tools/gf_wrf461_oracle/gf_crgamma_check.c
+702d5a45312165b3f2f66f5b5a35ab10d080acec8a90b66c738ca4db4ac12db5  gf-regime-inputs.bin
+5e5c578f7fcf338557a00907bc4a3222ad96459b7f3c3d22edde7b228110686b  gf-regime-manifest.json
+6fdbf13a88770a0e8d151c9630d9bbad8c03addffbb730982fa034f14e3adeb6  gf-regime-wrf-stock-k0.bin
+512f3fcc7fb8ba630c20cf57e06a8d02958e6e2ba8edaca7bb3b6ade59854a06  gf-regime-wrf-stock-k1.bin
+d0fd4ad130b67e74b9b6f8877c9ca3efd8c2cf15500128d53f89e271abb25128  gf-regime-wrf-crgamma-k0.bin
+f435439f43a168b99ab70c410fd787c190950b76e3f31e7fa8b1c2a6cbb57ee4  gf-regime-wrf-crgamma-k1.bin

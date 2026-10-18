@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
+use rayon::prelude::*;
 
 use crate::error::{MpasError, MpasResult};
 use crate::window::{Window, MPAS_EARTH_RADIUS_M};
@@ -725,19 +726,36 @@ impl NearestCellWeights {
         }
         let points = self.cell_index.len();
         let mut out = vec![0.0f32; levels * points];
-        for level in 0..levels {
-            let target = &mut out[level * points..(level + 1) * points];
-            for (slot, &cell) in self.cell_index.iter().enumerate() {
-                target[slot] = values[cell as usize * levels + level];
-            }
-            if !self.off_mesh.is_empty() {
-                for (slot, &outside) in self.off_mesh.iter().enumerate() {
-                    if outside {
-                        target[slot] = OFF_MESH_FILL;
-                    }
-                }
-            }
+        if points == 0 {
+            return Ok(out);
         }
+        // Each level's plane is filled on its own, so levels (and row bands of
+        // one plane) run in parallel and write disjoint slots: the same bytes
+        // as one thread.
+        use rayon::prelude::*;
+        const BAND: usize = 64 * 1024;
+        out.par_chunks_mut(points)
+            .enumerate()
+            .for_each(|(level, plane)| {
+                plane
+                    .par_chunks_mut(BAND)
+                    .enumerate()
+                    .for_each(|(band, target)| {
+                        let first = band * BAND;
+                        let cells = &self.cell_index[first..first + target.len()];
+                        for (slot, &cell) in target.iter_mut().zip(cells) {
+                            *slot = values[cell as usize * levels + level];
+                        }
+                        if !self.off_mesh.is_empty() {
+                            let outside = &self.off_mesh[first..first + target.len()];
+                            for (slot, &outside) in target.iter_mut().zip(outside) {
+                                if outside {
+                                    *slot = OFF_MESH_FILL;
+                                }
+                            }
+                        }
+                    });
+            });
         Ok(out)
     }
 }
@@ -799,17 +817,23 @@ pub fn build_weights(
         .collect();
     let tree = KdTree::build(cells);
 
-    let mut cell_index = vec![0i32; ny * nx];
-    let mut distance_km = vec![0.0f32; ny * nx];
-    for slot in 0..ny * nx {
-        let target = unit_vector(target_latitude[slot], target_longitude[slot]);
-        let (idx, chord_squared) = tree.nearest(target);
-        cell_index[slot] = idx as i32;
-        // Chord to great-circle, on the mesh's physical radius.
-        let chord = chord_squared.sqrt();
-        let great_circle = 2.0 * (chord / 2.0).clamp(0.0, 1.0).asin() * MPAS_EARTH_RADIUS_M / 1000.0;
-        distance_km[slot] = great_circle as f32;
-    }
+    // THE COST THIS REMOVES (conus12km limited-area mesh, 157,859 cells, global 0.25 degree window,
+    // 2026-10-17): the 1,038,240 nearest-cell queries ran one after another on one core for 495 s. A
+    // target far outside a limited-area mesh is nearly equidistant from every cell, so the k-d tree can
+    // prune almost nothing and each query walks most of the tree. The queries are independent, so they
+    // run on every core; each slot's answer is computed exactly as before and lands in the same slot,
+    // so the weights (and their digest) are the same bytes.
+    let (cell_index, distance_km): (Vec<i32>, Vec<f32>) = (0..ny * nx)
+        .into_par_iter()
+        .map(|slot| {
+            let target = unit_vector(target_latitude[slot], target_longitude[slot]);
+            let (idx, chord_squared) = tree.nearest(target);
+            // Chord to great-circle, on the mesh's physical radius.
+            let chord = chord_squared.sqrt();
+            let great_circle = 2.0 * (chord / 2.0).clamp(0.0, 1.0).asin() * MPAS_EARTH_RADIUS_M / 1000.0;
+            (idx as i32, great_circle as f32)
+        })
+        .unzip();
     if cell_index
         .iter()
         .any(|&i| i < 0 || i as usize >= mesh.n_cells())

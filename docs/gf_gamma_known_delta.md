@@ -389,14 +389,46 @@ float scalars bitwise: 69/69
 int fields exact: 39/39
 libm tgammaf vs correctly rounded: 65638 args, 0 word mismatches
 shallow fields bitwise: 126/126
-driver 8-column residual: max_ulp=34 max_rel=3.799e-06 (bounds: 34, 1e-4)
 driver gate failures: 0
 ```
 
-Nothing in that list moved. The 34-ULP driver residual is GFDRV's own
-`module_gfs_physcons` mixed precision, unchanged and unrelated. The
+Nothing in that list moved. (The run on this change also printed a
+34-ULP "driver 8-column residual" that was then put down to GFDRV's own
+`module_gfs_physcons` mixed precision.  It was not GFDRV's: the reference
+and the kernel spelled the GFS constants as accurate doubles where WRF
+computes with `float64(float32(9.80665))`.  With WRF's words the driver is
+bitwise on all 216 columns and that line and its gate are retired; see
+`tools/gf_wrf461_oracle/README.md`, "Mixed precision in the driver".) The
 scheme's ~4,000 transcribed lines are still graded bitwise against WRF;
 what left the WRF oracle is gamma, and gamma is graded harder than it was.
+
+### The divergence on realistic columns, with nothing pinned
+
+`tools/gf_wrf461_oracle/build_regime.sh` drives WRF's own GFDRV over 280
+realistic soundings (`tests/test_gf_regime_column_oracle.py` describes
+them) twice from the same byte-pinned objects: once as WRF links, with the
+C library's `tgammaf`, and once with `tgammaf` resolved to the correctly
+rounded gamma this document describes (`gf_crgamma_tgammaf.c`, checked
+word for word against `gf-crgamma-tgammaf.csv` through the same link).
+The kernel, running its shipped path with `fzu` COMPUTED, matches the
+second build on every output word of every column, strict and default
+(`tests/test_gf_regime_column_oracle_gpu.py`).  Between the two WRF builds,
+MEASURED:
+
+```
+columns that move                     142 of 280
+integer index fields that move          0
+rain/no-rain decisions that flip        0
+PRATEC over the 146 raining columns   max 17.42 %, median 0.26 %
+largest tendency change               4.4 % of that field's maximum (RTHCUTEN)
+```
+
+The 17.42 per cent column is the first real-data witness of section 3's
+tail: the 216-column capture spans 4 ULP of `fzu` and topped out at 7.3
+per cent, and a wider set of soundings reaches further, as the corner
+bounds there said it could.  The kernel's difference from WRF-as-linked is
+exactly this WRF-versus-WRF difference, column for column and word for
+word, so the whole residual is gamma.
 
 ### The contraction check
 

@@ -22,7 +22,7 @@
 // the occupancy the kernel achieves, and never returns it while the
 // context lives.
 //
-// MEASURED on node-1 (weather-node-1, RTX 5070 Ti, 70 SMs x 1,536,
+// MEASURED on a test host (RTX 5070 Ti, 70 SMs x 1,536,
 // sm_120, NVRTC 13.0.48, CuPy 14.0.1) through the real launcher at nz=49:
 // the 9,232 B frame reserved 844.0 MiB.  `bl_pbl_physics = 1` is the
 // shipped default (gpuwm/domain_wizard.py:714), so every default run paid
@@ -648,6 +648,40 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         }
     }
     for (int k = kpbl - 1; k < nz - 1; ++k) xkzq[k] = xkzh[k];
+
+#ifndef GPUWM_WRF_EXACT
+    // The nonlocal entrainment flux is explicit although local diffusion
+    // is implicit.  Its donor is the jump across kpbl-2 -> kpbl-1, not
+    // the jump at each interface to which zfacent distributes the flux.
+    // Bound its forward-Euler relaxation Courant number by one.  Otherwise
+    // a weak virtual inversion permits we*dt to cross several layers and
+    // vapor overshoots the donor (then condensation makes a hot layer).
+    // Use the actual pressure-mass divergence, including the flux entering
+    // the lower member of the donor pair; a geometric dz/dt cap is not the
+    // discrete operator's stability limit.  Scale paired scalar fluxes,
+    // retaining their conservative interface divergence and the diagnosed
+    // turbulent diffusivity, countergradient heat and momentum closure.
+    if (pblflg && we < 0.0f && kpbl >= 2) {
+        const int kt = kpbl - 2;
+        real atop = (p[kt * st + col] - p[(kt + 1) * st + col])
+                        / dza[kt + 1] * zfacent[kt];
+        real abelow = kt > 0
+            ? (p[(kt - 1) * st + col] - p[kt * st + col])
+                / dza[kt] * zfacent[kt - 1] : 0.0f;
+        if constexpr (BEP) {
+            atop *= bep.sf[kt * st + col];
+            if (kt > 0) abelow *= bep.sf[(kt - 1) * st + col];
+        }
+        const real relax = atop / delp[kt + 1]
+                         + (atop - abelow) / delp[kt];
+        const real courant = dt2 * (-we) * relax;
+        if (courant > 1.0f) {
+            hfxpbl /= courant;
+            qfxpbl /= courant;
+        }
+    }
+
+#endif
 
     // Heat matrix, including the countergradient and entrainment fluxes.
     for (int k = 0; k < nz; ++k) lower[k] = diag[k] = upper[k] = rhs[k] = 0.0f;

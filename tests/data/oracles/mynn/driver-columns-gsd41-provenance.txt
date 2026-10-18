@@ -1,0 +1,27 @@
+Column oracle of the operational fork's MYNN driver (GSD MYNN v4.1), 84 columns.
+Source: NOAA-EMC/HRRR tag v4.1.21, sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_bl_mynn.F
+(fetched from raw.githubusercontent.com on the build box).
+driver-columns-gsd41-asis.bin.gz: the file unmodified.
+driver-columns-gsd41.bin.gz: the one line :995 squared by build_columns.sh, the
+bl_mynn_gsd41_unsquared_qtke = false (default) form.
+GNU Fortran 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1), glibc 2.39 (Ubuntu
+GLIBC 2.39-0ubuntu8.9), -O0; the harness also -ffp-contract=off.  Built by
+tools/mynn_pbl_gsd41_oracle/build_columns.sh on the AWS us-west-2 RTX PRO 6000
+box (W1), 2026-10-07; a second build reproduced every file byte for byte.
+Columns: tools/mynn_pbl_gsd41_oracle/columns_gsd41.py, twenty-one regimes x four
+variants (dx 3 km; 750 m with stronger wind; 13 km on a 20 m first-layer grid
+with half the fluxes; 25 km with a weak-wind surface layer), 40 levels,
+twelve 20 s steps, cold start then warm.  HRRR's namelist identity as the
+families oracle (driver-families-gsd41-provenance.txt).  The snow profile is
+read and never handed to the fork (its driver has no snow argument).
+Layout and reader: tests/_mynn_columns_gsd41.py.
+
+42178a22693ad14b1a3adcf3e44be3047f051abf80f3a64c0ce9ed9ac2ec6d8a  module_bl_mynn.F
+f928e36476e700fe8d467cdd0dbd6b191a17eda4b1dd80c49e7a5ecc263039a6  stub_wrf39.F90
+3336d35e2fff356a397aa65a56fe38874a56c6b76202ca55d8d93f1dd226c3f0  columns_gsd41.py
+be589d074e1a42223791b13b950936b74e0c431867e745c8633742df90ae1c15  run_driver_columns_gsd41.F90
+4ee75c769fd4de789d44dceb6e9354d20fd60b0032c1912f7f0b63c3c4fff9fe  columns-in.bin
+461eac815a4be6ef9e93834402de6e74750836b6b94343f2d02401f83a0a694c  driver-columns-gsd41.bin
+43b4deb58cdfe11bc0402a58a4436b8664e0349545ea42029541cc6e29711427  driver-columns-gsd41-asis.bin
+8d30da6278ebf3302188a7311043edb0b944f4f1069b69eb4389cc476c3a8a90  driver-columns-gsd41.bin.gz
+779f7712ce7132da84866f62594631afd6e2f1d7314d6f6af3d75772705b5726  driver-columns-gsd41-asis.bin.gz

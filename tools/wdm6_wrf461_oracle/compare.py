@@ -34,14 +34,11 @@ _RADII = ("re_cloud", "re_ice", "re_snow")
 
 
 def _ulp(candidate, reference):
-    try:
-        from gpuwm.verify.state_equiv import fp32_signed_ulp
-    except ImportError:          # the oracle box without the package
-        def key(v):
-            b = np.ascontiguousarray(v, np.float32).view(np.uint32)
-            neg = (b & np.uint32(0x80000000)) != 0
-            return np.where(neg, ~b, b ^ np.uint32(0x80000000)).astype(np.int64)
-        return key(candidate) - key(reference)
+    # One implementation, imported (tests/test_fp32_ulp.py): the inline
+    # complement key this carried for a box without the package put -0.0
+    # and +0.0 one ULP apart.  The package is on the path wherever this
+    # oracle's GPU side runs.
+    from gpuwm.verify.state_equiv import fp32_signed_ulp
     return fp32_signed_ulp(candidate, reference)
 
 

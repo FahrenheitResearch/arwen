@@ -1,42 +1,53 @@
 // WRF swint_opt = 1: the surface shortwave between radiation calls.
 //
-// Statement-for-statement transcription of the routines the radiation
-// driver runs for swint_opt = 1 (NOAA-EMC/HRRR tag v4.1.21,
-// sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_radiation_driver.F, sha256
-// 7464639e..., commit 40ee6058c):
+// Statement for statement the routines the radiation driver runs for
+// swint_opt = 1, as WRF v4.6.1 phys/module_radiation_driver.F has them
+// (commit d66e442, sha256 77987565...):
 //
-//   swint_coszen_loc   radconst (:2729-2771, the declination half) and
-//                      calc_coszen (:2774-2800) at the CURRENT xtime: the
-//                      per-step block at :889-900 (the radiation step keeps
-//                      its own xtime + radt/2 call at :1032-1034)
-//   swint_update       update_swinterp_parameters (:2802-2883), once per
-//                      radiation call (:2403-2409), after the shortwave
+//   swint_coszen_loc   radconst (:3469-3511, the declination half) and
+//                      calc_coszen (:3514-3541) at the CURRENT xtime: the
+//                      per-step block at :1158-1170 (the radiation step
+//                      keeps its own xtime + radt*0.5 call at :1204-1206)
+//   swint_update       update_swinterp_parameters (:3543-3624), once per
+//                      radiation call (:2932-2938), after the shortwave
 //                      scheme wrote SWDOWN and SWDDIR
-//   swint_interp       interp_sw_radiation (:2885-2929), on EVERY step,
-//                      radiation steps included (:2422-2440 sits after
+//   swint_interp       interp_sw_radiation (:3626-3670), on EVERY step,
+//                      radiation steps included (:2964-2980 sits after
 //                      ENDIF Radiation_step)
 //
 // The fit is a power law per column: SWDDIR = Bx * coszen**bb and
 // SWDOWN = Gx * coszen**gg, the exponents from the log ratio of the two
-// most recent radiation results, clamped to [-0.5, 2.5]; at a clamp the
-// evaluation falls back to the ratio coszen_loc/coszen_ref.
+// most recent radiation results, clamped to [-0.5, 2.5]; at a clamp, and
+// at an exponent of exactly zero, the evaluation falls back to the ratio
+// coszen_loc/coszen_ref.
+//
+// Two upstream WRF bug fixes are part of the scheme here, both absent from
+// the operational HRRR fork (NOAA-EMC/HRRR v4.1.21, WRFV3.9 base, commit
+// 40ee6058c), which predates them:
+//   * WRF cc02f989f (v3.9.1, "fix for sunrise/sunset swint_opt calcs"):
+//     an exponent of exactly zero takes the ratio rule.  Without it a
+//     column whose fit had no sun-angle information (the ratio was one, or
+//     both fluxes were at or under 1 W m-2) held its flux flat until the
+//     next radiation call after sunrise or sunset.
+//   * WRF 650be0c7d (v4.3): calc_coszen bounds the cosine to [-1, 1]; the
+//     float32 sum can round one spacing past one at the subsolar point.
+// tools/swint_wrf461_oracle grades these kernels against v4.6.1's Fortran.
 //
 // Numerics.  Every add, subtract, multiply and divide is an explicit IEEE
 // single-rounded intrinsic (FADD and friends from glibc_flt32.cuh, which
 // the loader prepends for this module), so NVRTC neither contracts a
 // multiply-add into an FMA nor rewrites a constant division as a
-// reciprocal multiply (A146).  The transcendentals are glibc's own float32
-// words, not CUDA's: gfk_log / gfk_pow (glibc_flt32.cuh, logf and powf)
-// and glibc_sinf / glibc_cosf / glibc_asinf (glibc_trig_flt32.cuh), the
-// functions gfortran calls for LOG, **, SIN, COS and ASIN on REAL(4).  So
-// the kernels are bitwise the fork's Fortran compiled with gfortran
-// against glibc, which tests/test_swint_interpolation.py checks word for
-// word against the fixture tools/hrrr_radiation_driver_oracle cut.
+// reciprocal multiply (A146).  The transcendentals are WOOF's own float32
+// libm routines, not CUDA's: gfk_log / gfk_pow (glibc_flt32.cuh) and
+// glibc_sinf / glibc_cosf / glibc_asinf (glibc_trig_flt32.cuh), which
+// return the same words as the C library gfortran calls for LOG, **, SIN,
+// COS and ASIN on REAL(4), so the kernels are bitwise WRF's Fortran
+// compiled with gfortran at -O0.
 
 // calc_coszen per point at the current xtime, with radconst's
 // declination formed in the same thread (a per-call scalar every thread
-// computes identically; it is two sinf and one asinf).  No clamp: the
-// fork stores calc_coszen's value as it comes.
+// computes identically; it is two sinf and one asinf).  The cosine is
+// bounded to [-1, 1] as v4.6.1 calc_coszen bounds it (WRF 650be0c7d).
 extern "C" __global__ void swint_coszen_loc(
     long long n, const float* __restrict__ xlat,
     const float* __restrict__ xlon, float julian, float xtime, float gmt,
@@ -68,9 +79,11 @@ extern "C" __global__ void swint_coszen_loc(
     float tloctm = FADD(FADD(gmt, FDIV(xt24, 60.0f)), FDIV(xlon[i], 15.0f));
     float hrang = FMUL(FMUL(15.0f, FSUB(tloctm, 12.0f)), degrad);
     float xxlat = FMUL(xlat[i], degrad);
-    coszen_loc[i] = FADD(FMUL(glibc_sinf(xxlat), glibc_sinf(declin)),
-                         FMUL(FMUL(glibc_cosf(xxlat), glibc_cosf(declin)),
-                              glibc_cosf(hrang)));
+    float cz = FADD(FMUL(glibc_sinf(xxlat), glibc_sinf(declin)),
+                    FMUL(FMUL(glibc_cosf(xxlat), glibc_cosf(declin)),
+                         glibc_cosf(hrang)));
+    // coszen = min(max(coszen, -1.0), 1.0)
+    coszen_loc[i] = fminf(fmaxf(cz, -1.0f), 1.0f);
 }
 
 // The exponent of one power-law fit (the DIR and GHI halves of
@@ -146,7 +159,9 @@ extern "C" __global__ void swint_update(
     swddir_ref[i] = swddir[i];
 }
 
-// interp_sw_radiation: the surface shortwave at the current coszen.
+// interp_sw_radiation: the surface shortwave at the current coszen.  A
+// clamped exponent or an exponent of exactly zero takes the ratio rule
+// (WRF cc02f989f).
 extern "C" __global__ void swint_interp(
     long long n, const float* __restrict__ coszen_ref,
     const float* __restrict__ coszen_loc,
@@ -164,12 +179,12 @@ extern "C" __global__ void swint_interp(
     float czl = coszen_loc[i];
     if (czr > coszen_min && czl > coszen_min) {
         float dir, dn;
-        if (bb[i] == -0.5f || bb[i] == 2.5f) {
+        if (bb[i] == -0.5f || bb[i] == 2.5f || bb[i] == 0.0f) {
             dir = FMUL(FDIV(czl, czr), swddir_ref[i]);
         } else {
             dir = FMUL(bx[i], gfk_pow(czl, bb[i]));
         }
-        if (gg[i] == -0.5f || gg[i] == 2.5f) {
+        if (gg[i] == -0.5f || gg[i] == 2.5f || gg[i] == 0.0f) {
             dn = FMUL(FDIV(czl, czr), swdown_ref[i]);
         } else {
             dn = FMUL(gx[i], gfk_pow(czl, gg[i]));

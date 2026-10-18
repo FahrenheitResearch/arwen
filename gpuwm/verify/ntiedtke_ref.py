@@ -27,7 +27,6 @@ over one add, and evaluating it as an FMA moves bits.
 """
 from __future__ import annotations
 
-import math
 
 import numpy as np
 
@@ -68,7 +67,12 @@ def np_ntiedtke_scale_fac(dx):
         # it is verified here rather than assumed.  The KERNEL has no such
         # caveat: it calls gfk_log, which IS glibc's own algorithm.
         # gf_ref.py models tgammaf the same way for the same reason.
-        base = _F(_F(1.06133) + _F(math.log(float(_F(NT_DXREF / dx)))))
+        # Now evaluated through WOOF's own float32 logf
+        # (gpuwm.core.noahmp_libm.logf), the kernel's algorithm, so the
+        # mirror no longer rests on the once-rounded-double model above.
+        from gpuwm.core.noahmp_libm import logf
+
+        base = _F(_F(1.06133) + _F(logf(_F(NT_DXREF / dx))))
         # **3 on an INTEGER exponent: gfortran emits a multiply chain, not
         # powf.  Left to right, so (base*base)*base.
         sf = _F(_F(base * base) * base)
@@ -201,11 +205,16 @@ _C4IES = _F(7.66)
 
 
 def _exp32(x):
-    """glibc's expf, modelled the way np_ntiedtke_scale_fac models logf --
-    double evaluation rounded once.  np.exp on a float32 is NumPy's own
-    single-precision path and is several ULP away; the KERNEL calls
-    gfk_exp, which is glibc's algorithm and needs no model."""
-    return _F(math.exp(float(x)))
+    """The reference's single-precision ``exp``, through WOOF's own float32
+    libm (gpuwm.core.noahmp_libm.expf), the same algorithm the kernel's
+    gfk_exp runs.  This used to be modelled as a double evaluation rounded
+    once, which is correctly rounded and therefore NOT the same function:
+    the two part on rare arguments, and a real column from the column
+    oracle (tools/ntiedtke_column_oracle) hit one in the conversion's zqsat
+    while the CUDA kernel stayed exact."""
+    from gpuwm.core.noahmp_libm import expf
+
+    return _F(expf(_F(x)))
 
 
 #: cu_ntiedtke_common:17,32 -- parameters, so literals here.
@@ -214,9 +223,12 @@ _ZDNOPRC = _F(2.0e4)
 
 
 def _pow32(x, y):
-    """glibc's powf, modelled the same way expf and logf are: evaluate in
-    double, round once.  The kernel calls gfk_pow, which IS glibc's."""
-    return _F(math.pow(float(x), float(y)))
+    """Single-precision ``x**y`` with a real exponent, through WOOF's own
+    float32 libm (gpuwm.core.noahmp_libm.powf), for the same reason as
+    :func:`_exp32`: a once-rounded double is a different function."""
+    from gpuwm.core.noahmp_libm import powf
+
+    return _F(powf(_F(x), _F(y)))
 
 class NtConstants:
     """What cu_ntiedtke_init (:100-118) derives from the caller's constants.
@@ -1066,9 +1078,9 @@ def np_ntiedtke_closure(*, ldcum, ktype, kcbot, kctop, kdpl, loddraf,
                    + _F(c.vtmpc1 * _F(_F(pqen[k0 - 1]) - _F(pqen[k0]))))
                 * _F(c.g * _F(_F(pmfu[k0]) + _F(pmfd[k0])))))
             zcape1 = _F(zcape1 + _F(
-                _F(_F(_F(_F(ptu[k0]) - _F(ptenh[k0])) / _F(ptenh[k0]))
-                   + _F(_F(c.vtmpc1 * _F(_F(pqu[k0]) - _F(pqenh[k0])))
-                        - _F(plu[k0]))) * zdp))
+                _F(_F(_F(_F(_F(ptu[k0]) - _F(ptenh[k0])) / _F(ptenh[k0]))
+                      + _F(c.vtmpc1 * _F(_F(pqu[k0]) - _F(pqenh[k0]))))
+                   - _F(plu[k0])) * zdp))
         if deep and jk >= kcbot:
             if _F(_F(paph[klev]) - _F(paph[kdpl - 1])) < _F(50.0e2):
                 zdp = _F(_F(paph[k0 + 1]) - _F(paph[k0]))
@@ -2147,14 +2159,14 @@ def np_ntiedtke_cuflxn(*, ldcum, lddraf, ktype, kcbot, kctop, kdtop, lndj,
             if zrfl > _F(1.0e-20):
                 zdrfl1 = _F(_F(_F(_F(zcpecons * _F(max(
                     _F(0.0), _F(P_pqsen[jk] - P_pqen[jk])))) * _ZCUCOV)
-                    * _pow32(_F(_F(_F(np.sqrt(_F(
+                    * _pow32(_F(_F(_F(_F(np.sqrt(_F(
                         P_paph[jk] / P_paph[klev + 1])))
-                        / _F(5.09e-3)) * _F(zrfl / _ZCUCOV)), _F(0.5777)))
+                        / _F(5.09e-3)) * zrfl) / _ZCUCOV), _F(0.5777)))
                     * _F(P_paph[jk + 1] - P_paph[jk]))
                 zrnew = _F(zrfl - zdrfl1)
-                zrmin = _F(zrfl - _F(_F(_ZCUCOV * _F(max(_F(0.0), _F(
+                zrmin = _F(zrfl - _F(_F(_F(_ZCUCOV * _F(max(_F(0.0), _F(
                     _F(rhevap * P_pqsen[jk]) - P_pqen[jk]))))
-                    * _F(zcons2 * _F(P_paph[jk + 1] - P_paph[jk]))))
+                    * zcons2) * _F(P_paph[jk + 1] - P_paph[jk])))
                 zrnew = _F(max(zrnew, zrmin))
                 zrfln = _F(max(zrnew, _F(0.0)))
                 zdrfl = _F(min(_F(0.0), _F(zrfln - zrfl)))

@@ -136,7 +136,8 @@ def test_disabled_spp_provider_n1_is_byte_identical_to_bare_forecast(monkeypatch
     for name,got in driver.fields.items():
         want = plain[2].fields[name]
         if isinstance(got,cp.ndarray):
-            cp.testing.assert_array_equal(got.view(cp.uint8),want.view(cp.uint8),err_msg=name)
+            # reshape(-1): a strict process also carries 0-d SCM forcing scalars.
+            cp.testing.assert_array_equal(got.reshape(-1).view(cp.uint8),want.reshape(-1).view(cp.uint8),err_msg=name)
             compared += got.nbytes // 4
     print("DISABLED_SPP_N1_IDENTICAL_WORDS " + str(compared))
 

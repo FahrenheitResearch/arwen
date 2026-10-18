@@ -17,7 +17,7 @@ use rustwx_render::{
     text_width_bold,
 };
 use rayon::prelude::*;
-use rw_mpas::history::{Timestamp, read_history_cells};
+use rw_mpas::history::{Timestamp, read_history_cells_on_mesh};
 use rw_mpas::points::{Column, PointSampler, PointSpec, columns, parse_points};
 
 /// Every WRF name [`columns`] reads (the last three are optional there).
@@ -1099,7 +1099,7 @@ fn run() -> Result<(), String> {
     let frame_columns: Vec<Vec<Column>> = frames
         .par_iter()
         .map(|(valid, path)| {
-            let frame = read_history_cells(path, Some(&args.init), &cells, &POINT_FIELDS, Some(*valid))
+            let frame = read_history_cells_on_mesh(path, Some(&args.init), &cells, &POINT_FIELDS, Some(*valid), Some(&mesh))
                 .map_err(|e| e.to_string())?;
             columns(&compact, &frame).map_err(|e| e.to_string())
         })

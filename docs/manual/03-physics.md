@@ -37,7 +37,7 @@ declared one.
 | WDM6 | 16 | implemented-unverified | no oracle comparison has been run; column smoke only. WDM5 (14) and WDM7 (26) refused by name |
 | NSSL 2-moment | 18 | wrf-matched-run-candidate (its default variant) / implemented-unverified (other variants) | full CUDA port with fused-process oracles and a 500 m WRF comparison accepted by the project, with no published receipt linked here; explicitly not the default and not an observation-validation result |
 | Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures, 23 quantities each, flat 2.0e-6 relative and 2.0e-4 dB gate: 18 clear the flat gate, 3 miss it field by field, and 1 clears only under one named allowance. These are component comparisons, not successful forecast-scale gates [docs/public/PHYSICS.md:186, 396-414; tests/test_thompson_aerosol_adapter.py] |
-| P3 one-category | 50 | implemented-unverified | twelve-fixture oracle vs unmodified WRF `module_mp_p3.F` (v4.5.2, -O0 -ffp-contract=off): 4/12 bit-identical, five more within 2-7 ULP, F12 at 829 ULP; the two long mixed-phase cases bifurcate after the first steps, a measured property of the system, not the port; runs on the card by default (`p3_backend` = cuda/fused/reference, device arms byte-identical to each other); open: a 1-6 ULP CUDA-specific `qib` residual and F09; no matched WRF forecast run, no obs comparison |
+| P3 one-category | 50 | implemented-unverified | column oracle vs unmodified WRF 4.6.1 `module_mp_p3.F` (v4.5.2, -O0 -ffp-contract=off, correctly rounded tgammaf/log10f): 0 ULP on all 22 fields, every step, 78 columns in nine regimes plus the thirteen older fixtures, every device arm, default and strict builds alike (tools/p3_wrf461_oracle); two declared WRF-defect divergences, not copied (WRF's first-call 0/0 in sup/supi; WRF's float32 overflow to NaN in immersion freezing on a real-forecast column); runs on the card by default (`p3_backend` = cuda/fused/reference, device arms byte-identical to each other); no matched WRF forecast run, no obs comparison |
 
 P3 facts a modeller needs: an mp=50 run has no `QSNOW`, no `QGRAUP`, and no
 `GRAUPELNC` accumulator; they are not zero, they do not exist. Its inventory is
@@ -96,8 +96,10 @@ lines [docs/public/PHYSICS.md:940-952].
   `UZ0`/`VZ0` and no `MOL`/`ZOL`/`PSIM`/`PSIH`, which is why it is admitted only as
   the 2/2 pair with MYJ. `isftcflx`/`iz0tlnd` are refused: WRF passes them in and
   never reads them (CZIL hard-coded 0.1). No oracle comparison run.
-- MYNN (5), implemented-unverified: column solver oracle-matched over land and
-  water (max relative error 4.3e-7); `isftcflx` 0-3 ported.
+- MYNN (5), implemented-unverified: bitwise WRF v4.6.1 at column level. Over a
+  110-column oracle, 11 option sets (3 with SPP) and 2-3 steps, all 35 outputs equal the
+  unmodified `SFCLAY1D_mynn` word for word, under the strict build and default
+  arithmetic; `isftcflx` 0-3 ported. No matched WRF forecast yet.
 
 ## 3.5 Land surface (`sf_surface_physics`)
 
@@ -105,14 +107,16 @@ lines [docs/public/PHYSICS.md:940-952].
 
 | scheme | WRF id | maturity | evidence |
 |---|---|---|---|
-| Noah (4-layer) | 2 | implemented-unverified | 42-column oracle vs unmodified `module_sf_noahdrv.F`: 7 of 31 outputs bit-identical including the whole TSLB profile; TSK within 2 ULP, HFX worst at 375 ULP; land ice runs WRF's `SFLX_GLACIAL`, graded on 24 more oracle columns (TSK, HFX and TSLB bit-identical); part of the option set used in the historical matched WRF case; its own maturity remains implemented-unverified |
+| Noah (4-layer) | 2 | implemented-unverified | 80-column oracle vs unmodified `module_sf_noahdrv.F` and `module_sf_sfcdiags.F`: under strict arithmetic (`GPUWM_WRF_EXACT=1`) every driver output and T2/TH2/Q2 0 ULP on all graded columns (sm_120); default arithmetic (FMA contraction, flushed subnormals) within the per-field maxima pinned in tests/test_noah_wrf461_parity.py (TSK 1 ULP, HFX 802 ULP); land ice (`SFLX_GLACIAL`, 14 columns of those fixtures plus 48 land-ice fixture columns) and sea ice 0 ULP on their own oracles in both; held out: one subnormal-CHS column where WRF reads an uninitialised variable, and the declared positive-Q2 bound; part of the option set used in the historical matched WRF case; its own maturity remains implemented-unverified |
 | RUC (9-level) | 3 | implemented-unverified | column family oracle-matched; full device residency measured at production width (0.47 s per call at 360,000 columns, snow-free) |
 | Noah-MP | 4 | implemented-unverified | `NOAHMP_SFLX` bitwise on all four whole-column fixtures; device slab path max ULP 0 vs the scalar authority at 360,000 columns; expert route pinned to the exact WRF Registry default option identity; cold start runs on the CUDA driver kernel by default, byte-identical across all 28 state carriers (host-vs-device timing in the commit receipt), `GPUWM_NOAHMP_HOST_COLD_START` the named escape [commit f4889208f] |
 
-Divergences stated on the page: Noah's glacial land-ice column (`SFLX_GLACIAL`) runs
-as in WRF since 2026-10-12 (earlier releases left it untouched); frozen-ground
-infiltration on simultaneously-frozen-and-melting columns differs through CUDA vs
-glibc `expf`/`powf` (water redistributed, not lost). Noah-MP refuses glacier columns
+Divergences stated on the page: Noah's land-ice columns run `SFLX_GLACIAL` as in WRF
+(since 2.9.0; word for word with WRF v4.6.1 on the land-ice oracle columns since 2.9.1);
+frozen-ground
+infiltration on simultaneously-frozen-and-melting columns differs from WRF in default
+arithmetic (SFCRUNOFF up to 505 ULP; water redistributed, not lost) and is WRF's word
+under `GPUWM_WRF_EXACT=1`. Noah-MP refuses glacier columns
 during post-static initialization rather than silently skipping; sea ice takes WRF's
 own skip. RUC does not reproduce WRF's uninitialized-`ilnb` read on thin snow (a
 real WRF defect in which the answer depends on grid traversal order); ArWen passes
@@ -125,7 +129,7 @@ the defined one-layer answer and documents the divergence (D11)
 
 | option | selection | maturity | note |
 |---|---|---|---|
-| RTE+RRTMGP | 4/4 (default) | supported | the default modern k-distribution path; substitution token recorded in every config it touches |
+| RTE+RRTMGP | 4/4 (default) | supported | the default modern k-distribution path; substitution token recorded in every config it touches. WRF has no RTE+RRTMGP (its option 4 is RRTMG), so the referee is the upstream RTE+RRTMGP Fortran at the commit WOOF transcribes (fa107a1, single precision, gfortran): gas optics, Planck sources, cloud optics, McICA-masked increment, delta scaling and both solvers' broadband fluxes are bit for bit equal on 584 oracle columns, except at three table edges where the upstream code reads the wrong table node (a layer at exactly 355 K, eta exactly 1); WOOF reads the right one (tools/rrtmgp_rte_upstream_oracle) |
 | legacy RRTMG | 4/4 + `ra_rrtmg_variant = "rrtmg_legacy"` | page's own term "verification tier" (not registry vocabulary) | line transcription of WRF v4.6.1 option 4/4; batched LW/SW engines bit-identical (max ULP 0) to the port oracle over the full fixture decks; McICA generators match every stored WRF Fortran mask; used for all matched-run comparisons |
 | Dudhia SW (LW off) | 0/1 | supported | certified-slice shortwave |
 | WRF RRTM + Dudhia | 1/1 | implemented-unverified | RRTM longwave equals the unmodified WRF v4.6.1 Fortran word for word (0 ULP) on a 79-column oracle, every output and intermediate (tests/test_rrtm_lw_wrf461_parity.py); no matched forecast run; the Dudhia half is graded on its own |

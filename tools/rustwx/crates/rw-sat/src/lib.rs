@@ -11,6 +11,7 @@
 //! rw-ingest), and `export` (palette PNG quick-looks).
 
 pub mod abi;
+pub mod ami;
 pub mod cloud;
 pub mod composite;
 pub mod cwp;
@@ -18,8 +19,10 @@ pub mod dmw;
 pub mod events;
 pub mod export;
 pub mod follow;
+pub mod geo_imager;
 pub mod geostationary;
 pub mod goes;
+pub mod himawari;
 pub mod netcdf;
 pub mod palette;
 pub mod s3;

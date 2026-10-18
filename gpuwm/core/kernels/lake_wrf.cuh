@@ -785,11 +785,11 @@ q_ref2m(p) = (forc_q(g)+((temp2(p)*dqh(p))*((lake_div(1.,temp22m(p))-lake_div(1.
 // WRF:1116
 eflx_gnet(p) = (((betaprime(c)*sabg(p))+forc_lwrad(g))-(((eflx_lwrad_out(p)+eflx_sh_tot(p))+eflx_lh_tot(p))));
 // WRF:1125
-u2m = lake_max(0.1,(lake_div(ustar(p),vkc)*log(lake_div(2.,z0mg(p)))));
+u2m = lake_max(0.1,(lake_div(ustar(p),vkc)*lake_log(lake_div(2.,z0mg(p)))));
 // WRF:1127
 ws(c) = (1.2e-03*u2m);
 // WRF:1128
-ks(c) = ((6.6*sqrt(lake_abs(sin(lat(g)))))*(lake_pow(u2m,((-1.84)))));
+ks(c) = ((6.6*sqrt(lake_abs(lake_sin(lat(g)))))*(lake_pow(u2m,((-1.84)))));
 // WRF:1130
 }
 // WRF:1139
@@ -974,7 +974,7 @@ n2 = (lake_div(grav,rhow(c,j))*drhodz);
 // WRF:1471
 num = ((40.*n2)*lake_pow(((vkc*z_lake(c,j))),2));
 // WRF:1472
-den = lake_max(((lake_pow(ws(c),2))*exp((((-2.)*ks(c))*z_lake(c,j)))),1.e-10);
+den = lake_max(((lake_pow(ws(c),2))*lake_exp((((-2.)*ks(c))*z_lake(c,j)))),1.e-10);
 // WRF:1473
 ri = lake_div((((-1.)+sqrt(lake_max((1.+lake_div(num,den)),0.)))),20.);
 // WRF:1474
@@ -984,11 +984,11 @@ if((t_lake(c,1)>277.15)) {
 // WRF:1478
 if((lakedepth(c)>15.0f)) {
 // WRF:1479
-ke = lake_div((lake_div((((1.e+2*vkc)*ws(c))*z_lake(c,j)),p0)*exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
+ke = lake_div((lake_div((((1.e+2*vkc)*ws(c))*z_lake(c,j)),p0)*lake_exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
 // WRF:1480
 } else {
 // WRF:1481
-ke = lake_div((lake_div(((vkc*ws(c))*z_lake(c,j)),p0)*exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
+ke = lake_div((lake_div(((vkc*ws(c))*z_lake(c,j)),p0)*lake_exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
 // WRF:1482
 }
 // WRF:1483
@@ -998,17 +998,17 @@ if((lakedepth(c)>15.0f)) {
 // WRF:1485
 if((lakedepth(c)>150.0f)) {
 // WRF:1486
-ke = lake_div((lake_div((((1.e+5*vkc)*ws(c))*z_lake(c,j)),p0)*exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
+ke = lake_div((lake_div((((1.e+5*vkc)*ws(c))*z_lake(c,j)),p0)*lake_exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
 // WRF:1487
 } else {
 // WRF:1488
-ke = lake_div((lake_div((((1.e+4*vkc)*ws(c))*z_lake(c,j)),p0)*exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
+ke = lake_div((lake_div((((1.e+4*vkc)*ws(c))*z_lake(c,j)),p0)*lake_exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
 // WRF:1489
 }
 // WRF:1490
 } else {
 // WRF:1491
-ke = lake_div((lake_div(((vkc*ws(c))*z_lake(c,j)),p0)*exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
+ke = lake_div((lake_div(((vkc*ws(c))*z_lake(c,j)),p0)*lake_exp(((-ks(c))*z_lake(c,j)))),((1.+((37.*ri)*ri))));
 // WRF:1492
 }
 // WRF:1493
@@ -1068,9 +1068,9 @@ zin = (z_lake(c,j)-(0.5*dz_lake(c,j)));
 // WRF:1548
 zout = (z_lake(c,j)+(0.5*dz_lake(c,j)));
 // WRF:1549
-rsfin = exp(((-eta(islak))*lake_max((zin-za(islak)),0.)));
+rsfin = lake_exp(((-eta(islak))*lake_max((zin-za(islak)),0.)));
 // WRF:1550
-rsfout = exp(((-eta(islak))*lake_max((zout-za(islak)),0.)));
+rsfout = lake_exp(((-eta(islak))*lake_max((zout-za(islak)),0.)));
 // WRF:1555
 if((((t_grnd(c)>tfrz)&&(t_lake(c,1)>tfrz))&&(snl(c)==0))) {
 // WRF:1556
@@ -1603,7 +1603,7 @@ fl = lake_div(h2osoi_liq(c,j),((h2osoi_ice(c,j)+h2osoi_liq(c,j))));
 // WRF:2230
 if((t_soisno(c,j)>=tfrz)) {
 // WRF:2231
-dke = lake_max(0.,(log10(satw)+1.0));
+dke = lake_max(0.,(lake_log10(satw)+1.0));
 // WRF:2232
 dksat = tksatu(c,j);
 // WRF:2233
@@ -2739,15 +2739,15 @@ fi = lake_div(h2osoi_ice(c,j),wx);
 // WRF:3760
 td = (tfrz-t_soisno(c,j));
 // WRF:3761
-dexpf = exp(((-c4)*td));
+dexpf = lake_exp(((-c4)*td));
 // WRF:3765
 ddz1 = ((-c3)*dexpf);
 // WRF:3766
-if((bi>dm)) { ddz1 = (ddz1*exp(((-46.0e-3f)*((bi-dm))))); }
+if((bi>dm)) { ddz1 = (ddz1*lake_exp(((-46.0e-3f)*((bi-dm))))); }
 // WRF:3770
 if((h2osoi_liq(c,j)>(0.01f*dz(c,j)))) { ddz1 = (ddz1*c5); }
 // WRF:3774
-ddz2 = lake_div(((-burden(c))*exp((((-0.08f)*td)-(c2*bi)))),eta0);
+ddz2 = lake_div(((-burden(c))*lake_exp((((-0.08f)*td)-(c2*bi)))),eta0);
 // WRF:3778
 if((imelt(c,j)==1)) {
 // WRF:3779
@@ -3347,19 +3347,19 @@ zeta(p) = lake_div(zldis(p),obu(p));
 // WRF:4472
 if((zeta(p)<(-zetam))) {
 // WRF:4473
-ustar(p) = lake_div((vkc*um(p)),((((log(lake_div(((-zetam)*obu(p)),z0m(p)))-stabilityfunc1((-zetam)))+stabilityfunc1(lake_div(z0m(p),obu(p))))+(1.14*((lake_pow(((-zeta(p))),0.333)-lake_pow((zetam),0.333)))))));
+ustar(p) = lake_div((vkc*um(p)),((((lake_log(lake_div(((-zetam)*obu(p)),z0m(p)))-stabilityfunc1((-zetam)))+stabilityfunc1(lake_div(z0m(p),obu(p))))+(1.14*((lake_pow(((-zeta(p))),0.333)-lake_pow((zetam),0.333)))))));
 // WRF:4477
 } else if((zeta(p)<0.)) {
 // WRF:4478
-ustar(p) = lake_div((vkc*um(p)),(((log(lake_div(zldis(p),z0m(p)))-stabilityfunc1(zeta(p)))+stabilityfunc1(lake_div(z0m(p),obu(p))))));
+ustar(p) = lake_div((vkc*um(p)),(((lake_log(lake_div(zldis(p),z0m(p)))-stabilityfunc1(zeta(p)))+stabilityfunc1(lake_div(z0m(p),obu(p))))));
 // WRF:4481
 } else if((zeta(p)<=1.)) {
 // WRF:4482
-ustar(p) = lake_div((vkc*um(p)),(((log(lake_div(zldis(p),z0m(p)))+(5.*zeta(p)))-lake_div((5.*z0m(p)),obu(p)))));
+ustar(p) = lake_div((vkc*um(p)),(((lake_log(lake_div(zldis(p),z0m(p)))+(5.*zeta(p)))-lake_div((5.*z0m(p)),obu(p)))));
 // WRF:4483
 } else {
 // WRF:4484
-ustar(p) = lake_div((vkc*um(p)),((((log(lake_div(obu(p),z0m(p)))+5.)-lake_div((5.*z0m(p)),obu(p)))+((((5.*log(zeta(p)))+zeta(p))-1.)))));
+ustar(p) = lake_div((vkc*um(p)),((((lake_log(lake_div(obu(p),z0m(p)))+5.)-lake_div((5.*z0m(p)),obu(p)))+((((5.*lake_log(zeta(p)))+zeta(p))-1.)))));
 // WRF:4486
 }
 // WRF:4490
@@ -3369,19 +3369,19 @@ zeta(p) = lake_div(zldis(p),obu(p));
 // WRF:4492
 if((zeta(p)<(-zetat))) {
 // WRF:4493
-temp1(p) = lake_div(vkc,((((log(lake_div(((-zetat)*obu(p)),z0h(p)))-stabilityfunc2((-zetat)))+stabilityfunc2(lake_div(z0h(p),obu(p))))+(0.8*((lake_pow((zetat),((-0.333)))-lake_pow(((-zeta(p))),((-0.333)))))))));
+temp1(p) = lake_div(vkc,((((lake_log(lake_div(((-zetat)*obu(p)),z0h(p)))-stabilityfunc2((-zetat)))+stabilityfunc2(lake_div(z0h(p),obu(p))))+(0.8*((lake_pow((zetat),((-0.333)))-lake_pow(((-zeta(p))),((-0.333)))))))));
 // WRF:4497
 } else if((zeta(p)<0.)) {
 // WRF:4498
-temp1(p) = lake_div(vkc,(((log(lake_div(zldis(p),z0h(p)))-stabilityfunc2(zeta(p)))+stabilityfunc2(lake_div(z0h(p),obu(p))))));
+temp1(p) = lake_div(vkc,(((lake_log(lake_div(zldis(p),z0h(p)))-stabilityfunc2(zeta(p)))+stabilityfunc2(lake_div(z0h(p),obu(p))))));
 // WRF:4501
 } else if((zeta(p)<=1.)) {
 // WRF:4502
-temp1(p) = lake_div(vkc,(((log(lake_div(zldis(p),z0h(p)))+(5.*zeta(p)))-lake_div((5.*z0h(p)),obu(p)))));
+temp1(p) = lake_div(vkc,(((lake_log(lake_div(zldis(p),z0h(p)))+(5.*zeta(p)))-lake_div((5.*z0h(p)),obu(p)))));
 // WRF:4503
 } else {
 // WRF:4504
-temp1(p) = lake_div(vkc,((((log(lake_div(obu(p),z0h(p)))+5.)-lake_div((5.*z0h(p)),obu(p)))+((((5.*log(zeta(p)))+zeta(p))-1.)))));
+temp1(p) = lake_div(vkc,((((lake_log(lake_div(obu(p),z0h(p)))+5.)-lake_div((5.*z0h(p)),obu(p)))+((((5.*lake_log(zeta(p)))+zeta(p))-1.)))));
 // WRF:4506
 }
 // WRF:4510
@@ -3397,19 +3397,19 @@ zeta(p) = lake_div(zldis(p),obu(p));
 // WRF:4515
 if((zeta(p)<(-zetat))) {
 // WRF:4516
-temp2(p) = lake_div(vkc,((((log(lake_div(((-zetat)*obu(p)),z0q(p)))-stabilityfunc2((-zetat)))+stabilityfunc2(lake_div(z0q(p),obu(p))))+(0.8*((lake_pow((zetat),((-0.333)))-lake_pow(((-zeta(p))),((-0.333)))))))));
+temp2(p) = lake_div(vkc,((((lake_log(lake_div(((-zetat)*obu(p)),z0q(p)))-stabilityfunc2((-zetat)))+stabilityfunc2(lake_div(z0q(p),obu(p))))+(0.8*((lake_pow((zetat),((-0.333)))-lake_pow(((-zeta(p))),((-0.333)))))))));
 // WRF:4520
 } else if((zeta(p)<0.)) {
 // WRF:4521
-temp2(p) = lake_div(vkc,(((log(lake_div(zldis(p),z0q(p)))-stabilityfunc2(zeta(p)))+stabilityfunc2(lake_div(z0q(p),obu(p))))));
+temp2(p) = lake_div(vkc,(((lake_log(lake_div(zldis(p),z0q(p)))-stabilityfunc2(zeta(p)))+stabilityfunc2(lake_div(z0q(p),obu(p))))));
 // WRF:4524
 } else if((zeta(p)<=1.)) {
 // WRF:4525
-temp2(p) = lake_div(vkc,(((log(lake_div(zldis(p),z0q(p)))+(5.*zeta(p)))-lake_div((5.*z0q(p)),obu(p)))));
+temp2(p) = lake_div(vkc,(((lake_log(lake_div(zldis(p),z0q(p)))+(5.*zeta(p)))-lake_div((5.*z0q(p)),obu(p)))));
 // WRF:4526
 } else {
 // WRF:4527
-temp2(p) = lake_div(vkc,((((log(lake_div(obu(p),z0q(p)))+5.)-lake_div((5.*z0q(p)),obu(p)))+((((5.*log(zeta(p)))+zeta(p))-1.)))));
+temp2(p) = lake_div(vkc,((((lake_log(lake_div(obu(p),z0q(p)))+5.)-lake_div((5.*z0q(p)),obu(p)))+((((5.*lake_log(zeta(p)))+zeta(p))-1.)))));
 // WRF:4529
 }
 // WRF:4530
@@ -3421,19 +3421,19 @@ zeta(p) = lake_div(zldis(p),obu(p));
 // WRF:4536
 if((zeta(p)<(-zetat))) {
 // WRF:4537
-temp12m(p) = lake_div(vkc,((((log(lake_div(((-zetat)*obu(p)),z0h(p)))-stabilityfunc2((-zetat)))+stabilityfunc2(lake_div(z0h(p),obu(p))))+(0.8*((lake_pow((zetat),((-0.333)))-lake_pow(((-zeta(p))),((-0.333)))))))));
+temp12m(p) = lake_div(vkc,((((lake_log(lake_div(((-zetat)*obu(p)),z0h(p)))-stabilityfunc2((-zetat)))+stabilityfunc2(lake_div(z0h(p),obu(p))))+(0.8*((lake_pow((zetat),((-0.333)))-lake_pow(((-zeta(p))),((-0.333)))))))));
 // WRF:4541
 } else if((zeta(p)<0.)) {
 // WRF:4542
-temp12m(p) = lake_div(vkc,(((log(lake_div(zldis(p),z0h(p)))-stabilityfunc2(zeta(p)))+stabilityfunc2(lake_div(z0h(p),obu(p))))));
+temp12m(p) = lake_div(vkc,(((lake_log(lake_div(zldis(p),z0h(p)))-stabilityfunc2(zeta(p)))+stabilityfunc2(lake_div(z0h(p),obu(p))))));
 // WRF:4545
 } else if((zeta(p)<=1.)) {
 // WRF:4546
-temp12m(p) = lake_div(vkc,(((log(lake_div(zldis(p),z0h(p)))+(5.*zeta(p)))-lake_div((5.*z0h(p)),obu(p)))));
+temp12m(p) = lake_div(vkc,(((lake_log(lake_div(zldis(p),z0h(p)))+(5.*zeta(p)))-lake_div((5.*z0h(p)),obu(p)))));
 // WRF:4547
 } else {
 // WRF:4548
-temp12m(p) = lake_div(vkc,((((log(lake_div(obu(p),z0h(p)))+5.)-lake_div((5.*z0h(p)),obu(p)))+((((5.*log(zeta(p)))+zeta(p))-1.)))));
+temp12m(p) = lake_div(vkc,((((lake_log(lake_div(obu(p),z0h(p)))+5.)-lake_div((5.*z0h(p)),obu(p)))+((((5.*lake_log(zeta(p)))+zeta(p))-1.)))));
 // WRF:4550
 }
 // WRF:4554
@@ -3449,19 +3449,19 @@ zeta(p) = lake_div(zldis(p),obu(p));
 // WRF:4559
 if((zeta(p)<(-zetat))) {
 // WRF:4560
-temp22m(p) = lake_div(vkc,((((log(lake_div(((-zetat)*obu(p)),z0q(p)))-stabilityfunc2((-zetat)))+stabilityfunc2(lake_div(z0q(p),obu(p))))+(0.8*((lake_pow((zetat),((-0.333)))-lake_pow(((-zeta(p))),((-0.333)))))))));
+temp22m(p) = lake_div(vkc,((((lake_log(lake_div(((-zetat)*obu(p)),z0q(p)))-stabilityfunc2((-zetat)))+stabilityfunc2(lake_div(z0q(p),obu(p))))+(0.8*((lake_pow((zetat),((-0.333)))-lake_pow(((-zeta(p))),((-0.333)))))))));
 // WRF:4563
 } else if((zeta(p)<0.)) {
 // WRF:4564
-temp22m(p) = lake_div(vkc,(((log(lake_div(zldis(p),z0q(p)))-stabilityfunc2(zeta(p)))+stabilityfunc2(lake_div(z0q(p),obu(p))))));
+temp22m(p) = lake_div(vkc,(((lake_log(lake_div(zldis(p),z0q(p)))-stabilityfunc2(zeta(p)))+stabilityfunc2(lake_div(z0q(p),obu(p))))));
 // WRF:4566
 } else if((zeta(p)<=1.)) {
 // WRF:4567
-temp22m(p) = lake_div(vkc,(((log(lake_div(zldis(p),z0q(p)))+(5.*zeta(p)))-lake_div((5.*z0q(p)),obu(p)))));
+temp22m(p) = lake_div(vkc,(((lake_log(lake_div(zldis(p),z0q(p)))+(5.*zeta(p)))-lake_div((5.*z0q(p)),obu(p)))));
 // WRF:4568
 } else {
 // WRF:4569
-temp22m(p) = lake_div(vkc,((((log(lake_div(obu(p),z0q(p)))+5.)-lake_div((5.*z0q(p)),obu(p)))+((((5.*log(zeta(p)))+zeta(p))-1.)))));
+temp22m(p) = lake_div(vkc,((((lake_log(lake_div(obu(p),z0q(p)))+5.)-lake_div((5.*z0q(p)),obu(p)))+((((5.*lake_log(zeta(p)))+zeta(p))-1.)))));
 // WRF:4571
 }
 // WRF:4572
@@ -3477,14 +3477,14 @@ chik2 = sqrt((1.-(16.*zeta)));
 // WRF:4760
 chik = sqrt(chik2);
 // WRF:4761
-return ((((2.*log((((1.+chik))*0.5)))+log((((1.+chik2))*0.5)))-(2.*atan(chik)))+(pie*0.5));
+return ((((2.*lake_log((((1.+chik))*0.5)))+lake_log((((1.+chik2))*0.5)))-(2.*lake_atan(chik)))+(pie*0.5));
 }
 LAKE_HD double stabilityfunc2(const double& zeta) {
 double chik2;
 // WRF:4799
 chik2 = sqrt((1.-(16.*zeta)));
 // WRF:4800
-return (2.*log((((1.+chik2))*0.5)));
+return (2.*lake_log((((1.+chik2))*0.5)));
 }
 LAKE_HD void moninobukini(const double& ur,const double& thv,const double& dthv,const double& zldis,const double& z0m,double& um,double& obu) {
 double wc;
@@ -3510,13 +3510,13 @@ rib = lake_div(((grav*zldis)*dthv),(((thv*um)*um)));
 // WRF:4865
 if((rib>=0.)) {
 // WRF:4866
-zeta = lake_div((rib*log(lake_div(zldis,z0m))),((1.-(5.*lake_min(rib,0.19)))));
+zeta = lake_div((rib*lake_log(lake_div(zldis,z0m))),((1.-(5.*lake_min(rib,0.19)))));
 // WRF:4867
 zeta = lake_min(2.,lake_max(zeta,0.01));
 // WRF:4868
 } else {
 // WRF:4869
-zeta = (rib*log(lake_div(zldis,z0m)));
+zeta = (rib*lake_log(lake_div(zldis,z0m)));
 // WRF:4870
 zeta = lake_max((-100.),lake_min(zeta,(-0.01)));
 // WRF:4871
@@ -3797,7 +3797,7 @@ zlak(10) = 0.95;
 // WRF:5202
 for(j=1; j<=nlevsoil; j+=1) {
 // WRF:5203
-zsoi(j) = (scalez*((exp((0.5*((j-0.5))))-1.)));
+zsoi(j) = (scalez*((lake_exp((0.5*((j-0.5))))-1.)));
 // WRF:5204
 }
 // WRF:5206
@@ -3857,7 +3857,7 @@ bsw3d(i,k,j) = (2.91+(0.159*clay2d(i,j)));
 // WRF:5243
 bsw23d(i,k,j) = (-(((3.10+(0.157*clay2d(i,j)))-(0.003*sand2d(i,j)))));
 // WRF:5244
-psisat3d(i,k,j) = (-((exp(((((1.54-(0.0095*sand2d(i,j)))+(0.0063*(((100.0-sand2d(i,j))-clay2d(i,j))))))*log(10.0)))*9.8e-5)));
+psisat3d(i,k,j) = (-((lake_exp(((((1.54-(0.0095*sand2d(i,j)))+(0.0063*(((100.0-sand2d(i,j))-clay2d(i,j))))))*lake_log(10.0)))*9.8e-5)));
 // WRF:5246
 vwcsat3d(i,k,j) = lake_div((((50.5-(0.142*sand2d(i,j)))-(0.037*clay2d(i,j)))),100.0);
 // WRF:5247

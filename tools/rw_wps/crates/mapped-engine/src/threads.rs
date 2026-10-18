@@ -380,6 +380,27 @@ pub fn lanes(per_time_bytes: u64, field_bytes: &[u64], held_bytes: u64, times: u
     Ok(limit_requested_lanes(fit, requested))
 }
 
+/// Whether a ONE-lane writer may write a frame's bytes while the next
+/// valid time decodes: that keeps one prepared frame (priced at its
+/// decoded size, the sum of `field_bytes`) beside the valid time in
+/// flight, so it is granted only when [`series_price`] of one lane plus
+/// that frame fits the same budget [`lanes`] priced.  A platform that
+/// cannot report its memory overlaps, as [`lanes`] keeps two in flight
+/// there.
+///
+/// Named breakage: a memory-bound series (one lane) wrote each valid
+/// time's whole frame stream -- about 13 GB on a 3 km CONUS native-level
+/// source -- and only then began decoding the next, so every valid time
+/// paid its write on one core with the pool idle.
+pub fn overlap_write(per_time_bytes: u64, field_bytes: &[u64], held_bytes: u64) -> crate::refusal::Result<bool> {
+    let budget = usable_budget(held_bytes)?;
+    let decoded = field_bytes.iter().copied().fold(0u64, u64::saturating_add);
+    Ok(match budget.filter(|_| per_time_bytes > 0) {
+        Some(share) => series_price(1, width(), per_time_bytes, field_bytes).saturating_add(decoded) <= share,
+        None => true,
+    })
+}
+
 fn limit_requested_lanes(fit: usize, requested: Option<usize>) -> usize {
     requested.map_or(fit, |count| count.min(fit)).max(1)
 }

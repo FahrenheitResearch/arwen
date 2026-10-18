@@ -7,17 +7,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
-from gpuwm.config import RunConfig, SASE_PBL_SCHEME, radiation_enabled
+from gpuwm.config import RunConfig, SASE_PBL_SCHEME, radiation_enabled, soil_layer_count
 from gpuwm.core.physics_inventory import (PHYSICS_SLOT_DISPATCH,
                                           REFL_10CM_MICROPHYSICS,
                                           physics_driver_required)
-from gpuwm.io.wrf_output_schema import SCHEME_OUTPUT_FIELDS
+from gpuwm.io.wrf_output_schema import (SCHEME_OUTPUT_FIELDS,
+                                        CARRIED_SURFACE_OUTPUT_FIELDS,
+                                        NOAH_OUTPUT_FIELDS,
+                                        PHYSICS_PRESSURE_OUTPUT_FIELDS,
+                                        SURFACE_ENERGY_OUTPUT_FIELDS,
+                                        PBL_RATE_OUTPUT_FIELDS,
+                                        CUMULUS_RATE_OUTPUT_FIELDS,
+                                        SCM_FORCING_OUTPUT_FIELDS,
+                                        INACTIVE_DIAGNOSTIC_OUTPUT_FIELDS,
+                                        RADIATION_BOUNDARY_OUTPUT_FIELDS)
 from gpuwm.io.sfire_schema import (SFIRE_VOLUME_FIELDS, SFIRE_CLASS_FIELDS,
                                    sfire_history_shapes)
+from gpuwm.io.wrf_input_history_schema import (WRF_INPUT_HISTORY_ROWS,
+    WRF_INITIALIZED_HISTORY_ROWS, WRF_GNU_RANDOM_SEED_WORDS)
 
 CORE_DIRECT_STATE_FIELDS = {
     "U": "u", "V": "v", "W": "w", "PH": "php", "MU": "mup",
@@ -227,6 +239,17 @@ def live_state_history_fields(state) -> dict[str, object]:
         if key in live_surface:
             fields[SCHEME_OUTPUT_FIELDS[name].netcdf_name] = (
                 live_surface[key] if index is None else live_surface[key][index])
+    if dispatch and dispatch.get("sf_ocean_physics"):
+        from gpuwm.io.wrf_output_schema import OCEAN_OUTPUT_FIELDS
+        for key, metadata in OCEAN_OUTPUT_FIELDS.items():
+            fields[metadata.netcdf_name] = live_surface[key]
+    if dispatch is not None:
+        from gpuwm.core.physics_inventory import PHYSICS_SLOT_DISPATCH
+        noah_runner = PHYSICS_SLOT_DISPATCH["sf_surface_physics"][2]
+        if dispatch.get("sf_surface_physics") == noah_runner:
+            for key, schema in NOAH_OUTPUT_FIELDS.items():
+                if key in live_surface:
+                    fields[schema.netcdf_name] = live_surface[key]
     # MYNN's ten carried 3-D arrays and its four plume diagnostics exist only
     # under bl_pbl_physics=5, and wrfout does not auto-walk ``fields`` the way
     # the health collector does, so each emitted field is listed explicitly.
@@ -253,6 +276,11 @@ def live_state_history_fields(state) -> dict[str, object]:
                 if field_name in live_surface:
                     fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
                         live_surface[field_name]
+            # Registry's MYNN package allocates TKE_PBL on interfaces,
+            # although the wrapper evolves QKE instead (module_pbl_driver.F:
+            # 1660-1720). Preserve this separate initialized carrier.
+            if "tke_pbl" in live_surface:
+                fields[SCHEME_OUTPUT_FIELDS["tke_pbl"].netcdf_name] = live_surface["tke_pbl"]
     # Noah-MP's carried state and published diagnostics, on the same terms:
     # they exist only under sf_surface_physics=4, wrfout does not auto-walk
     # ``fields``, and the gate is the resolved routing.  The output names come
@@ -293,7 +321,8 @@ def live_state_history_fields(state) -> dict[str, object]:
                 RUC_DIAGNOSTICS_2D, RUC_STATE_2D, RUC_STATE_3D,
             )
             for field_name in (*RUC_STATE_2D, *RUC_STATE_3D,
-                               *RUC_DIAGNOSTICS_2D):
+                               *RUC_DIAGNOSTICS_2D,
+                               "sfcrunoff", "udrunoff", "acsnom", "noahres"):
                 if field_name in live_surface:
                     fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
                         live_surface[field_name]
@@ -358,9 +387,43 @@ def physics_history_fields(physics) -> dict[str, object]:
     """
     output = {name: physics.fields[field]
               for name, field in _OUTPUT_FIELDS.items()}
+    # Publish the same live carriers the schemes consume. Omitting these
+    # loses evolving land and solar state from an otherwise valid history.
+    for key, schema in CARRIED_SURFACE_OUTPUT_FIELDS.items():
+        if key in physics.fields:
+            output[schema.netcdf_name] = physics.fields[key]
+    # The raw input uses percent. The actual LSM carrier is the initialized
+    # fraction consumed by Noah, and is never reconstructed by the writer.
+    if "snoalb" in physics.fields:
+        output["SNOALB"] = physics.fields["snoalb"]
+    for key,schema in RADIATION_BOUNDARY_OUTPUT_FIELDS.items():
+        if key in physics.fields:
+            output[schema.netcdf_name] = physics.fields[key]
+    for key, schema in PHYSICS_PRESSURE_OUTPUT_FIELDS.items():
+        if key in physics.fields:
+            output[schema.netcdf_name] = physics.fields[key]
+    for key, schema in SURFACE_ENERGY_OUTPUT_FIELDS.items():
+        if key in physics.fields:
+            output[schema.netcdf_name] = physics.fields[key]
+    for key, schema in PBL_RATE_OUTPUT_FIELDS.items():
+        if key in physics.fields:
+            output[schema.netcdf_name] = physics.fields[key]
+    for key, schema in CUMULUS_RATE_OUTPUT_FIELDS.items():
+        if key in physics.fields:
+            output[schema.netcdf_name] = physics.fields[key]
+    for key, schema in SCM_FORCING_OUTPUT_FIELDS.items():
+        if key in physics.fields:
+            output[schema.netcdf_name] = physics.fields[key]
+    for key, schema in INACTIVE_DIAGNOSTIC_OUTPUT_FIELDS.items():
+        if key in physics.fields:
+            output[schema.netcdf_name] = physics.fields[key]
+    # WRF's live surface masks (core history rows in stock wrf.exe; the
+    # seaice and lake branches can move them during a run).  2.9.0 wrote
+    # neither, so a wrfout reader found no land/water mask beside LANDMASK.
+    for name, field in (("XLAND", "xland"), ("LAKEMASK", "lakemask")):
+        if field in physics.fields:
+            output[name] = physics.fields[field]
     if getattr(physics, "surface_energy_diag", False):
-        output.update(ALBEDO=physics.fields["albedo"],
-                      EMISS=physics.fields["emiss"])
         if "gsw" in physics.fields:
             output["GSW"] = physics.fields["gsw"]
     urban = getattr(physics, "urban", None)
@@ -373,10 +436,12 @@ def physics_history_fields(physics) -> dict[str, object]:
     # step consumes and then discards; the theta budget cannot be
     # closed by level without them.  Presence-guarded so a run with
     # radiation off carries the same inventory it always did.
-    for _name, _attr in (("RTHRATLW", "rthratenlw"),
+    for _name, _attr in (("RTHRATEN", "rthraten"), ("RTHRATLW", "rthratenlw"),
                          ("RTHRATSW", "rthratensw")):
         _value = getattr(physics, _attr, None)
         if _value is not None:
+            if _name == "RTHRATEN" and getattr(physics, "_wrf_rthraten", None) is not None:
+                _value = physics.radiation_theta_forcing()
             output[_name] = _value
     if physics.sase_active:
         # Each scheme supplies its own boundary-layer height.  YSU
@@ -423,8 +488,9 @@ def physics_history_fields(physics) -> dict[str, object]:
                 output[SCHEME_OUTPUT_FIELDS[name].netcdf_name] = physics.fields[name]
         if "albsol" in physics.fields and "gsw" in physics.fields:
             output["GSW"] = physics.fields["gsw"]
-        # WRF's SWNORM, written only where slope_rad runs.
-        if physics.topo_shortwave is not None:
+        # Registry.EM_COMMON:1713 writes the initialized carrier even when
+        # slope_rad is inactive. The active producer owns this same buffer.
+        if "swnorm" in physics.fields:
             output["SWNORM"] = physics.fields["swnorm"]
         # OLR rides the same "only while radiation is running" rule as
         # SWDOWN/GLW, and additionally only while the LONGWAVE half is
@@ -452,6 +518,8 @@ def physics_history_fields(physics) -> dict[str, object]:
                        else physics.rainc)
     output["RAINSH"] = physics._zero_accumulator()
     microphysics = physics.microphysics if physics.mp_physics else None
+    output["SR"] = (physics._zero_accumulator() if microphysics is None
+                    else microphysics.sr)
     for name, attribute in (("RAINNC", "rainnc"), ("SNOWNC", "snownc"),
                             ("GRAUPELNC", "graupelnc"),
                             ("HAILNC", "hailnc")):
@@ -473,17 +541,104 @@ def physics_history_fields(physics) -> dict[str, object]:
 #: 2026-10-07 combo sweep differ from WRF at step 0.
 WRF_FILE_GRID_HISTORY_FIELDS = (
     "XLAT", "XLONG", "XLAT_U", "XLONG_U", "XLAT_V", "XLONG_V",
-    "MAPFAC_M", "MAPFAC_U", "MAPFAC_V", "F", "E", "SINALPHA", "COSALPHA")
+    "MAPFAC_M", "MAPFAC_U", "MAPFAC_V", "F", "E", "SINALPHA", "COSALPHA", "RESM",
+    "PC", "O3_GFS_DU")
 
 
-def wrf_file_grid_history_fields(bundle) -> dict[str, np.ndarray]:
-    """The file's own grid words for a domain that entered through a
-    ``wrfinput`` (``bundle.restored.raw``); empty for every other door."""
-    raw = getattr(getattr(bundle, "restored", None), "raw", None)
+#: Static words wrf.exe writes to every history frame exactly as its input
+#: file holds them: the vertical-coordinate and base-state constants, the
+#: directional map factors, the computational latitude, the subgrid
+#: orography statistics, the vegetation-fraction bounds and the base column
+#: mass.  WRF v4.6.1 assigns none of them after initialization (no physics,
+#: dynamics or surface routine writes them), and on NCAR's CONUS 12 km
+#: benchmark every one equals the wrfinput word in every wrf.exe frame.
+#: 2.9.0 wrote none of them, so a post-processor built for wrfout (UPP-style
+#: pipelines read MAPFAC_MX/MY, C1H..C4F and the base state) found them
+#: missing.  Fields wrf.exe can change at run time are not here: XLAND and
+#: LAKEMASK are written from the live surface masks
+#: (:func:`physics_history_fields`); SST, SNOALB and the sea-ice-adjusted
+#: fields are not written yet.
+WRF_FILE_STATIC_HISTORY_FIELDS = (
+    "ZS", "DZS", "FNM", "FNP", "RDNW", "RDN", "DNW", "DN",
+    "CFN", "CFN1", "CF1", "CF2", "CF3",
+    "C1H", "C2H", "C1F", "C2F", "C3H", "C4H", "C3F", "C4F",
+    "RDX", "RDY", "RESM", "ZETATOP",
+    "T00", "P00", "TLP", "TISO", "TLP_STRAT", "P_STRAT",
+    "MAPFAC_MX", "MAPFAC_MY", "MAPFAC_UX", "MAPFAC_UY", "MAPFAC_VX",
+    "MAPFAC_VY", "MF_VX_INV", "CLAT", "VAR", "VAR_SSO",
+    "SHDMAX", "SHDMIN", "PCB")
+
+
+def _file_static_words(path, names) -> dict[str, np.ndarray]:
+    """``names`` read from the input file at ``path`` as stored float32
+    words (one Time record removed); names the file lacks are skipped."""
+    from gpuwm import netcdf_bridge
+
+    out = {}
+    with netcdf_bridge.open_dataset(path) as dataset:
+        present = [name for name in names
+                   if name in dataset.variables
+                   and np.dtype(dataset.variables[name].dtype) == np.float32]
+        decode = netcdf_bridge.BatchedDecode(dataset, present)
+        for name in present:
+            decode.ready(name)
+            variable = dataset.variables[name]
+            value = np.asarray(variable[...])
+            if variable.dimensions and variable.dimensions[0] == "Time":
+                value = value[0]
+            out[name] = np.array(value, dtype=np.float32, copy=True)
+    return out
+
+
+def wrf_file_grid_history_fields(bundle, cfg=None) -> dict[str, np.ndarray]:
+    """The file's own grid and static words for a domain that entered
+    through a WRF file (``bundle.restored``); empty for every other door."""
+    restored = getattr(bundle, "restored", None)
+    raw = getattr(restored, "raw", None)
     if not raw:
         return {}
-    return {name: np.asarray(raw[name], dtype=np.float32)
-            for name in WRF_FILE_GRID_HISTORY_FIELDS if name in raw}
+    out = {name: np.asarray(raw[name], dtype=np.float32)
+           for name in WRF_FILE_GRID_HISTORY_FIELDS if name in raw}
+    out.update({name: np.asarray(raw[name], dtype=np.float32)
+                for name in WRF_FILE_STATIC_HISTORY_FIELDS if name in raw})
+    # The input-history rows carry WRF's own dtype and history dimensions
+    # (gpuwm.io.wrf_input_history_schema); where a static word is also one
+    # of them, the typed row is the one written.
+    for name, row in WRF_INPUT_HISTORY_ROWS.items():
+        if name in raw:
+            value = np.asarray(raw[name], dtype=np.dtype(row["dtype"]))
+            if row["history_dimensions"] == []:
+                value = value.reshape(())
+            out[name] = value
+    unread = [name for name in WRF_FILE_STATIC_HISTORY_FIELDS
+              if name not in out]
+    path = getattr(restored, "path", None)
+    if unread and path is not None and Path(path).is_file():
+        out.update(_file_static_words(path, unread))
+    if cfg is not None:
+        # These slots retain WRF's initialized values while their producer
+        # is disabled. Active producers never acquire a fabricated zero.
+        surface = (int(cfg.ny), int(cfg.nx))
+        out["NEST_POS"] = np.zeros(surface, np.float32)
+        out["SST_INPUT"] = np.zeros(surface, np.float32)
+        # output_wrf.F:1021 temporarily sets the history flag to zero;
+        # :1560 restores the input flag after writing. Do not alter raw.
+        out["SAVE_TOPO_FROM_REAL"] = np.zeros((), np.int32)
+        if not cfg.use_adaptive_time_step:
+            out["MAX_MSFTX"] = np.zeros((), np.float32)
+            out["MAX_MSFTY"] = np.zeros((), np.float32)
+        for name, flag in (
+                ("ISEEDARR_SPPT", None), ("ISEEDARR_SKEBS", None),
+                ("ISEEDARR_RAND_PERTURB", None),
+                ("ISEEDARRAY_SPP_CONV", "spp_conv"),
+                ("ISEEDARRAY_SPP_PBL", "spp_pbl"),
+                ("ISEEDARRAY_SPP_LSM", "spp_lsm")):
+            if flag is None or not getattr(cfg, flag):
+                out[name] = np.zeros(WRF_GNU_RANDOM_SEED_WORDS, np.int32)
+        from gpuwm.static.rust_bridge import wrf_cell_geometry
+        out["AREA2D"], out["DX2D"] = wrf_cell_geometry(
+            cfg.dx, cfg.dy, shape=surface)
+    return out
 
 
 def metadata_history_fields(grid, static: dict) -> dict[str, object]:
@@ -574,7 +729,7 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
         physics = SimpleNamespace(
             fields=live_fields, state=state, mp_physics=cfg.mp_physics,
             surface_energy_diag=bool(cfg.surface_energy_diag),
-            microphysics=SimpleNamespace(),
+            microphysics=SimpleNamespace(sr=carrier(surface)),
             scheme_dispatch={name: table.get(int(getattr(cfg, name)))
                              for name, table in PHYSICS_SLOT_DISPATCH.items()},
             sase_active=cfg.bl_pbl_physics == SASE_PBL_SCHEME,
@@ -585,7 +740,7 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
             cldfra=carrier(mass) if "cldfra" in allocated else None,
             aodtot=carrier(surface) if "aodtot" in allocated else None,
             rainc=carrier(surface) if cfg.cu_physics else None,
-            rthratenlw=carrier(mass), rthratensw=carrier(mass),
+            rthraten=carrier(mass), rthratenlw=carrier(mass), rthratensw=carrier(mass),
             _zero_accumulator=lambda: carrier(surface),
             _sase_output_pblh=lambda: carrier(surface),
         )
@@ -610,7 +765,7 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
 
     # The base frame broadcasts PHB/PB even for a flat, one-column base
     # state. Staggered winds retain their faces rather than mass-cell counts.
-    frame = {"T": carrier(mass),
+    frame = {"T": carrier(mass), "THM": carrier(mass),
              **{name: getattr(state, attribute)
                 for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
              "PHB": carrier(full), "MUB": carrier(surface),
@@ -648,6 +803,18 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
         if shapes.get(name) == mass:
             shapes[name] = full
     shapes.update(Times=(19,), XTIME=(), ITIMESTEP=())
+    # The native-file door carries the input's scalar unchanged. Pricing
+    # includes it conservatively for doors without that optional record.
+    shapes["RESM"] = ()
+    shapes["PC"] = surface
+    shapes["O3_GFS_DU"] = surface
+    extents = {"scalar": 1, "soil_layers_stag": soil_layer_count(cfg),
+               "bottom_top": nz, "bottom_top_stag": nz + 1,
+               "south_north": ny, "south_north_stag": ny + 1,
+               "west_east": nx, "west_east_stag": nx + 1,
+               "seed_dim_stag": WRF_GNU_RANDOM_SEED_WORDS}
+    for name, row in (WRF_INPUT_HISTORY_ROWS | WRF_INITIALIZED_HISTORY_ROWS).items():
+        shapes[name] = tuple(extents[d] for d in row["history_dimensions"])
     return shapes
 
 

@@ -32,7 +32,7 @@ See :mod:`gpuwm.cycle.mpas_bridge` for the launcher and
 :mod:`mpas_cycle_bridge.worker` for the far side.
 
 What the port actually offers, verified against
-``lane/mesh-binding@12fe6a3`` on node-1 rather than from notes:
+``lane/mesh-binding@12fe6a3`` on test host A rather than from notes:
 
 ``tools/run_cuda_v841_full_physics_x4.py``
     ``_construct_device_stack(*, host, cache, arwen_checkout, state=None,

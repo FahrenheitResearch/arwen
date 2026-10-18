@@ -1372,7 +1372,7 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     re-initialised it cold-restarted cumulus on the whole child at every
     move (the 2026-08-16 moving-nest KF artifact report) and left the
     moved child with no producer for GLW between radiation calls (the
-    2026-08-24 node-2 campaign refusal).  A bespoke ``on_child_built``
+    2026-08-24 test host B campaign refusal).  A bespoke ``on_child_built``
     that carries nothing still gets a cold child, and its receipt says
     so (``accumulators_reinitialized``).
     """

@@ -28,6 +28,19 @@ before and after the launch, therefore differs by exactly the flux out of
 the lowest level times the step, which is the amount WB1 books.  Columns in
 the specified-zone ring, which WRF's clipped microphysics tiles never touch
 (the ring guard restores them after the call), book nothing.
+
+AEROSOL-AWARE THOMPSON (``mp_physics = 28``, the HRRR suite's scheme).  Its
+cloud fallout (``kernels/thompson_aerosol_sed.cu``,
+``launch_aa_cloud_sedimentation``) drops the same flux: "cloud mass and number
+leaving level kts are simply DISCARDED".  There the fallout does not move
+``qc``; it adds its flux divergence to WRF's running accumulator ``qcten``
+(per second), converted with the same refreshed density formed from the same
+temperature, pressure and vapour, and the terminal apply adds ``qcten*DT``
+once.  So the column sum of ``qcten`` on that density, before minus after
+the launch, times the step, is again exactly the flux out of the lowest level
+times the step (:func:`book_settled_cloud_tendency`).  Measured on 64 fog
+columns before this existed: 0.018 kg m-2 per hour left through the ground,
+booked nowhere.
 """
 
 from __future__ import annotations
@@ -67,7 +80,27 @@ def book_settled_cloud(state, cfg, before, qc, temperature, pressure, qv,
     """
     xp = cp if xp is None else xp
     after = cloud_column_water(qc, temperature, pressure, qv, dz, xp=xp)
-    settled = (before - after).astype(xp.float32)
+    return _book(state, cfg, (before - after).astype(xp.float32))
+
+
+def book_settled_cloud_tendency(state, cfg, before, qcten, dt, temperature,
+                                pressure, qv, dz, *, xp=None):
+    """Accumulate the water the ``mp_physics = 28`` fallout took out.
+
+    ``before`` is :func:`cloud_column_water` of the running cloud tendency
+    ``qcten`` (kg kg-1 s-1) taken immediately before
+    ``launch_aa_cloud_sedimentation`` on the same arrays; the launch adds its
+    flux divergence to ``qcten`` and the terminal apply adds ``qcten*dt`` to
+    the cloud once, so ``(before - after) * dt`` is the column water the
+    fallout removed (kg m-2).  Returns ``(cloudnc, cloudncv)``.
+    """
+    xp = cp if xp is None else xp
+    after = cloud_column_water(qcten, temperature, pressure, qv, dz, xp=xp)
+    return _book(state, cfg, ((before - after) * float(dt)).astype(xp.float32))
+
+
+def _book(state, cfg, settled):
+    """Zero the specified-zone ring and add ``settled`` to the pair."""
     from gpuwm.core.microphysics import _ring_guard_slices
     slices = _ring_guard_slices(state, cfg)
     if slices:
@@ -82,4 +115,4 @@ def book_settled_cloud(state, cfg, before, qc, temperature, pressure, qv,
 
 
 __all__ = ["CLOUDNCV_SLOT", "CLOUDNC_SLOT", "book_settled_cloud",
-           "cloud_column_water"]
+           "book_settled_cloud_tendency", "cloud_column_water"]

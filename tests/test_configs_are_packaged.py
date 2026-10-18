@@ -255,7 +255,8 @@ def test_the_sdist_carries_the_configs_too(
     ``exclude-package-data`` governs the wheel only, and ``MANIFEST.in``
     governs the sdist, so the two can drift. This measures the sdist's own
     default file set rather than trusting that ``package-data`` reaches it,
-    and then checks nothing in ``MANIFEST.in`` prunes what it found.
+    then applies ``MANIFEST.in`` and checks the public configs survive while
+    private snapshot exclusions stay out of a direct worktree sdist build.
     """
 
     _require_source_tree()
@@ -266,17 +267,24 @@ def test_the_sdist_carries_the_configs_too(
         f"{len(missing)} of {len(present)} configs would be absent from the "
         "sdist:\n  " + "\n  ".join(missing[:20]))
 
+    from setuptools._distutils.filelist import FileList
+    from tools.release_exclusions import matches, read_exclusions
+
+    rules = read_exclusions(REPO_ROOT)
+    public = {name for name in present if not matches(name, rules)}
+    files = FileList()
+    files.allfiles = [os.fspath(Path(name)) for name in sorted(in_sdist)]
+    files.files = list(files.allfiles)
     manifest = REPO_ROOT / "MANIFEST.in"
     if manifest.is_file():
-        offending = [
-            line.strip()
-            for line in manifest.read_text(encoding="utf-8").splitlines()
-            if line.split("#", 1)[0].strip().startswith(
-                ("exclude configs", "prune configs",
-                 "recursive-exclude configs", "global-exclude configs"))
-        ]
-        assert not offending, (
-            f"MANIFEST.in prunes configs from the sdist: {offending}")
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            if line.strip() and not line.lstrip().startswith("#"):
+                files.process_template_line(line)
+    included = {name.replace(os.sep, "/") for name in files.files}
+    assert public <= included, (
+        f"MANIFEST.in drops public configs from the sdist: {sorted(public - included)}")
+    assert not (present - public) & included, (
+        "the sdist includes private RELEASE-EXCLUDE'd config receipts")
     excluded = _pyproject()["tool"]["setuptools"].get(
         "exclude-package-data", {})
     assert "configs" not in excluded, (

@@ -3,6 +3,8 @@ import argparse
 from dataclasses import replace
 from types import SimpleNamespace
 
+from test_downscale_cli import _a_box_that_can_draw  # noqa: F401
+
 import pytest
 
 from conftest import requires_cupy
@@ -417,7 +419,6 @@ def test_a_mosaic_child_is_refused_before_the_parent_is_interpolated(
     import gpuwm.offline_child_run as offline_child_run
     from gpuwm.cli import main as cli_main
     from test_downscale_checkpoint_disk import _fitting_point_args
-    from test_downscale_cli import _a_box_that_can_draw  # noqa: F401
 
     original = offline_child.resolve_child_run_config
 

@@ -110,7 +110,11 @@ for drv in "${here}"/run_gocart_*.F90; do
     # this script does not, as the optics driver does) runs through that
     # script, which checks its own pinned sources: linking it against the
     # objects above would fail on the modules it USEs.
-    if [[ -f "${here}/build_${key}.sh" ]] && ! grep -q '/build.sh"' "${here}/build_${key}.sh"; then
+    # A build_<key>.sh that hands off to this script, directly or through
+    # another build_*.sh (build_ageing.sh -> build_sulfur.sh -> build.sh), is
+    # an entry point into this shared build, not its own build: running it
+    # from here would re-enter this loop and recurse without end.
+    if [[ -f "${here}/build_${key}.sh" ]] && ! grep -qE '/build(_[a-z0-9]+)?\.sh"' "${here}/build_${key}.sh"; then
         bash "${here}/build_${key}.sh" "${src}" "${build}/${key}" "${fixtures}/${key}" "${build}/${key}-tables"
         echo "fixture ${key}: $(find "${fixtures}/${key}" -name MANIFEST.txt | wc -l) cases (standalone build_${key}.sh)"
         continue

@@ -26,6 +26,7 @@ pub mod profile;
 pub mod surgery;
 pub mod validate;
 
+use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::error::{MpasError, MpasResult};
@@ -501,7 +502,7 @@ pub fn generate(
     let mesh_density: Vec<f64> = crate::mesh::profile::timed(
         &crate::mesh::profile::DENSITY,
         points.len() as u64,
-        || points.iter().map(|&p| prepared.density(p)).collect(),
+        || points.par_iter().map(|&p| prepared.density(p)).collect(),
     );
     let nominal = emit::nominal_min_dc_from_m(spec.finest_km() * 1000.0);
     let n_pts = points.len() as u64;
@@ -533,6 +534,7 @@ pub fn generate(
     // Delivered against requested, cell by cell.
     let delivered = mesh.spacing_m();
     let mut ratios: Vec<f64> = (0..mesh.n_cells)
+        .into_par_iter()
         .map(|i| delivered[i] / prepared.spacing_m(mesh.cell_xyz[i]))
         .collect();
     ratios.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -611,6 +613,12 @@ pub fn generate(
 pub fn provenance_json<T: Serialize>(receipt: &T) -> Result<String, serde_json::Error> {
     let mut value = serde_json::to_value(receipt)?;
     strip_durations(&mut value);
+    // The triangulation arm no longer changes a single output word (rings
+    // start at a canonical slot), so stamping its name into the file would be
+    // the only thing that made the two arms' bytes differ.
+    if let serde_json::Value::Object(map) = &mut value {
+        map.remove("triangulation");
+    }
     serde_json::to_string(&value)
 }
 

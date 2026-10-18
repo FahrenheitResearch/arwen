@@ -46,10 +46,17 @@ pub fn scan_angles_to_lat_lon(
         return None;
     }
 
-    let (x, y) = match sweep_angle_axis {
-        SweepAngleAxis::X => (x_rad, y_rad),
-        SweepAngleAxis::Y => (y_rad, x_rad),
-    };
+    if sweep_angle_axis == SweepAngleAxis::Y {
+        return scan_angles_to_lat_lon_sweep_y(
+            h,
+            a,
+            b,
+            longitude_of_projection_origin_deg,
+            x_rad,
+            y_rad,
+        );
+    }
+    let (x, y) = (x_rad, y_rad);
 
     let sin_x = x.sin();
     let cos_x = x.cos();
@@ -130,11 +137,12 @@ pub fn lat_lon_to_scan_angles(
         return None;
     }
 
-    let inner_x = (-sat_y / sat_range).asin();
-    let inner_y = (sat_z / sat_x).atan();
     let (x, y) = match sweep_angle_axis {
-        SweepAngleAxis::X => (inner_x, inner_y),
-        SweepAngleAxis::Y => (inner_y, inner_x),
+        SweepAngleAxis::X => ((-sat_y / sat_range).asin(), (sat_z / sat_x).atan()),
+        // Sweep about the y axis (the CGMS / Himawari / GK-2A / Meteosat convention): the
+        // north-south angle is the outer gimbal, so y is the elevation of the look vector
+        // and x its azimuth inside the plane that contains it.
+        SweepAngleAxis::Y => ((-sat_y / sat_x).atan(), (sat_z / sat_range).asin()),
     };
 
     let (roundtrip_lat, roundtrip_lon) = scan_angles_to_lat_lon(
@@ -202,17 +210,65 @@ pub fn lat_lon_to_scan_angles_fast(
         return None;
     }
 
-    let inner_x = (-sat_y / sat_range).asin();
-    let inner_y = (sat_z / sat_x).atan();
     let (x, y) = match sweep_angle_axis {
-        SweepAngleAxis::X => (inner_x, inner_y),
-        SweepAngleAxis::Y => (inner_y, inner_x),
+        SweepAngleAxis::X => ((-sat_y / sat_range).asin(), (sat_z / sat_x).atan()),
+        // Sweep about the y axis (the CGMS / Himawari / GK-2A / Meteosat convention): the
+        // north-south angle is the outer gimbal, so y is the elevation of the look vector
+        // and x its azimuth inside the plane that contains it.
+        SweepAngleAxis::Y => ((-sat_y / sat_x).atan(), (sat_z / sat_range).asin()),
     };
 
     if !x.is_finite() || !y.is_finite() {
         return None;
     }
     Some((x, y))
+}
+
+/// Scan angles to latitude/longitude for an imager that sweeps about the y
+/// axis (`sweep_angle_axis = "y"`: Himawari AHI, GK-2A AMI, Meteosat, the
+/// CGMS LRIT/HRIT normalized geostationary projection).  `x_rad` is the
+/// east-positive column angle and `y_rad` the north-positive line angle,
+/// the same orientation the GOES fixed grid uses; only the gimbal order
+/// differs.  The look vector is (cos x cos y, -sin x cos y, sin y), which is
+/// JMA's HSD navigation (S1 = h - Sn cos x cos y, S2 = Sn sin x cos y,
+/// S3 = -Sn sin y with its south-positive line angle).
+///
+/// Until 2026-10-16 the `Y` arm of [`scan_angles_to_lat_lon`] swapped x and
+/// y and fed them to the x-sweep formula, which is a different projection
+/// (tens of km wrong toward the full-disk corners); nothing in this
+/// workspace used it before the AHI/AMI decoders.
+fn scan_angles_to_lat_lon_sweep_y(
+    h: f64,
+    a: f64,
+    b: f64,
+    longitude_of_projection_origin_deg: f64,
+    x: f64,
+    y: f64,
+) -> Option<(f32, f32)> {
+    let (sin_x, cos_x, sin_y, cos_y) = (x.sin(), x.cos(), y.sin(), y.cos());
+    let eq_to_pol = (a * a) / (b * b);
+    let a_var = cos_y * cos_y + eq_to_pol * sin_y * sin_y;
+    let b_var = -2.0 * h * cos_x * cos_y;
+    let c_var = h * h - a * a;
+    let discriminant = b_var * b_var - 4.0 * a_var * c_var;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let r_s = (-b_var - discriminant.sqrt()) / (2.0 * a_var);
+    if !r_s.is_finite() || r_s <= 0.0 {
+        return None;
+    }
+    let s_x = r_s * cos_x * cos_y;
+    let s_y = -r_s * sin_x * cos_y;
+    let s_z = r_s * sin_y;
+    let latitude = (eq_to_pol * (s_z / ((h - s_x).hypot(s_y)))).atan();
+    let longitude = longitude_of_projection_origin_deg.to_radians() - (s_y / (h - s_x)).atan();
+    let lat_deg = latitude.to_degrees();
+    let lon_deg = normalize_longitude_deg(longitude.to_degrees());
+    if !lat_deg.is_finite() || !lon_deg.is_finite() {
+        return None;
+    }
+    Some((lat_deg as f32, lon_deg as f32))
 }
 
 fn normalize_longitude_deg(lon: f64) -> f64 {
@@ -282,5 +338,65 @@ mod tests {
             assert!((actual.0 - expected.0).abs() < 1.0e-12);
             assert!((actual.1 - expected.1).abs() < 1.0e-12);
         }
+    }
+
+    /// JMA's HSD navigation written out as the user guide states it
+    /// (kilometres, south-positive line angle), independent of the code above.
+    fn jma_hsd_navigation(x_deg: f64, y_line_deg: f64, sub_lon: f64) -> (f64, f64) {
+        let (x, y) = (x_deg.to_radians(), y_line_deg.to_radians());
+        let denom = y.cos().powi(2) + 1.006739501 * y.sin().powi(2);
+        let sd = ((42164.0 * x.cos() * y.cos()).powi(2) - denom * 1737122264.0).sqrt();
+        let sn = (42164.0 * x.cos() * y.cos() - sd) / denom;
+        let s1 = 42164.0 - sn * x.cos() * y.cos();
+        let s2 = sn * x.sin() * y.cos();
+        let s3 = -sn * y.sin();
+        let sxy = s1.hypot(s2);
+        ((1.006739501 * s3 / sxy).atan().to_degrees(), (s2 / s1).atan().to_degrees() + sub_lon)
+    }
+
+    #[test]
+    fn sweep_y_matches_the_jma_hsd_navigation() {
+        // Himawari constants: 42164 km from the Earth centre, 6378.137 / 6356.7523 km radii.
+        let (h, a, b, lon0) = (42_164_000.0 - 6_378_137.0, 6_378_137.0, 6_356_752.3, 140.7);
+        for (xd, yd) in [(0.0, 0.0), (4.0, 3.0), (-5.5, 5.0), (5.5, -5.5), (-3.0, -7.0), (7.5, 1.0)] {
+            let (lat_ref, lon_ref) = jma_hsd_navigation(xd, -yd, lon0);
+            let (lat, lon) = scan_angles_to_lat_lon(
+                h,
+                a,
+                b,
+                lon0,
+                SweepAngleAxis::Y,
+                f64::to_radians(xd),
+                f64::to_radians(yd),
+            )
+            .expect("on the disk");
+            assert!((f64::from(lat) - lat_ref).abs() < 2.0e-4, "{xd},{yd}: {lat} vs {lat_ref}");
+            assert!(longitude_delta_deg(f64::from(lon), lon_ref).abs() < 2.0e-4, "{xd},{yd}: {lon} vs {lon_ref}");
+        }
+    }
+
+    #[test]
+    fn sweep_y_round_trips_and_differs_from_sweep_x_off_axis() {
+        let lon0 = 128.2;
+        for (lat, lon) in [(0.0, 128.2), (37.5, 127.0), (-30.0, 150.0), (55.0, 100.0)] {
+            let (x, y) = lat_lon_to_scan_angles(H, A, B, lon0, SweepAngleAxis::Y, lat, lon)
+                .expect("visible");
+            let (la, lo) = scan_angles_to_lat_lon(H, A, B, lon0, SweepAngleAxis::Y, x, y).unwrap();
+            assert!((f64::from(la) - lat).abs() < 1.0e-3);
+            assert!(longitude_delta_deg(f64::from(lo), lon).abs() < 1.0e-3);
+            let fast = lat_lon_to_scan_angles_fast(H, A, B, lon0, SweepAngleAxis::Y, lat, lon).unwrap();
+            assert!((fast.0 - x).abs() < 1.0e-12 && (fast.1 - y).abs() < 1.0e-12);
+        }
+        // On either axis the two gimbal orders see the same point ...
+        let on_x = scan_angles_to_lat_lon(H, A, B, lon0, SweepAngleAxis::X, 0.1, 0.0).unwrap();
+        let on_y = scan_angles_to_lat_lon(H, A, B, lon0, SweepAngleAxis::Y, 0.1, 0.0).unwrap();
+        assert!((on_x.0 - on_y.0).abs() < 1.0e-5 && (on_x.1 - on_y.1).abs() < 1.0e-5);
+        let on_x = scan_angles_to_lat_lon(H, A, B, lon0, SweepAngleAxis::X, 0.0, 0.1).unwrap();
+        let on_y = scan_angles_to_lat_lon(H, A, B, lon0, SweepAngleAxis::Y, 0.0, 0.1).unwrap();
+        assert!((on_x.0 - on_y.0).abs() < 1.0e-5 && (on_x.1 - on_y.1).abs() < 1.0e-5);
+        // ... and toward a corner they do not.
+        let c_x = scan_angles_to_lat_lon(H, A, B, lon0, SweepAngleAxis::X, 0.1, 0.1).unwrap();
+        let c_y = scan_angles_to_lat_lon(H, A, B, lon0, SweepAngleAxis::Y, 0.1, 0.1).unwrap();
+        assert!((c_x.0 - c_y.0).abs() + (c_x.1 - c_y.1).abs() > 0.05, "{c_x:?} {c_y:?}");
     }
 }

@@ -175,15 +175,11 @@ AMBIGUOUS: dict[str, str] = {}
 #: bless a drifted citation as correct, which is the failure this table exists
 #: to prevent.
 RESOLVED: dict[str, tuple[str, str]] = {
-    # (The ``kernels/ysu.cu:250`` row -- the zero-flux short circuit -- left
-    # with the short circuit itself, golden/ports-pbl 2026-10-12.)
+    "kernels/ysu.cu:437": ("gpuwm/core/kernels/ysu.cu", "kpbl < nz"),
     "module_ra_sw.F:193-203": ("gpuwm/data/wrf_radiation/module_ra_sw.F", "QI1D(K)=QC1D(K)"),
     # YSU: the guard that skips the top-down block where WRF would read
     # thlix(i,k+2) one past an array declared kts:kte.  The anchor is the
     # guard condition the warning names.
-    "kernels/ysu.cu:425": (
-        "gpuwm/core/kernels/ysu.cu",
-        "kpbl < nz"),
     # Shin-Hong: the two guards on WRF's out-of-bounds q2xk(kpbl+1) read --
     # the CPU authority's and the CUDA kernel's.  The anchor is the guard
     # condition the warning is about.
@@ -195,8 +191,12 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # the column arrays moved into a global workspace) moved the kernel's
     # guard 58 lines: :1371 is now the `if (pblflg && k < kpbl)` loop body
     # and the `if (pblflg && kpbl < kte)` guard is at :1429.  Anchor
-    # unchanged.
-    "kernels/shinhong.cu:1429": (
+    # unchanged.  lane/verify-shinhong (the thx = tx/pi fix) moved it 8
+    # lines more, to :1437, and lane/verify-topo-wind (the topo_wind arm,
+    # shinhong_column_body<TOPO>, and sh_tanhf above the body) 161 more,
+    # to :1598.  Anchor unchanged.
+    "kernels/shinhong.cu:1602": (
+
         "gpuwm/core/kernels/shinhong.cu",
         "kpbl < kte"),
     # Shin-Hong: the transcription of WRF's br .gt. 0.0 stability-regime
@@ -268,12 +268,13 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # The restored selected integration resolves these declarations at
     # :1424 and :1518. Keep the original semantic anchors checked there.
     # (golden/wrf-fixes moved both one line up and golden/ports-mp three
-    # down; on the combined 2.9.0 line they sit at :1425 and :1519.
+    # down; on the combined 2.9.0 line they sat at :1425 and :1519, and
+    # after the 2.9.1 exact-chain intake at :1431 and :1525.
     # Anchors unchanged.)
-    "gpuwm/core/dycore.py:1425": (
+    "gpuwm/core/dycore.py:1431": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:1519": (
+    "gpuwm/core/dycore.py:1525": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

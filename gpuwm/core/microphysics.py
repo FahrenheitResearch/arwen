@@ -404,6 +404,17 @@ def validate_surface_diagnostics(
         status, site="microphysics", describe=describe)
 
 
+def prepare_microphysics_exner(pressure, out):
+    """Rounded moist_physics_prep_em Exner, shared with the physics caller.
+
+    The array power moved the step's PII by one ULP on identical pressure
+    words. That error enters latent heating even when the column scheme
+    itself agrees exactly with its Fortran oracle.
+    """
+    from gpuwm.core.physics import _physics_exner
+    return _physics_exner(pressure, out=out)
+
+
 def save_pre_mp_theta(state: DomainState) -> None:
     """WRF ``moist_physics_prep_em``: park the pre-microphysics FULL theta
     in the h_diabatic array (module_big_step_utilities_em.F:5503 "use
@@ -488,7 +499,7 @@ def _apply_kessler(state: DomainState, cfg: RunConfig, dt: float, *,
 
     th[...] = thb + state.thp
     rho[...] = 1.0 / state.alt                   # dry density 1/(al+alb)
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
+    prepare_microphysics_exner(state.p, pii)
     z8w[...] = (phb + state.php) / DTYPE(c.G)
     zh[...] = 0.5 * (z8w[:nz] + z8w[1:])
     dz8w[...] = z8w[1:] - z8w[:nz]
@@ -511,7 +522,15 @@ def _apply_kessler(state: DomainState, cfg: RunConfig, dt: float, *,
     return MicrophysicsDiagnostics(rainnc=rainnc, rainncv=rainncv, sr=sr)
 
 
-def _apply_thompson(
+def _apply_thompson(state: DomainState, cfg: RunConfig, dt: float, *,
+                    refl_10cm_due: bool = False) -> MicrophysicsDiagnostics:
+    """Keep the qualified default adapter; use the scalar port in strict mode."""
+    from gpuwm.wrf_exact import ENABLED
+    adapter = _apply_thompson_strict if ENABLED else _apply_thompson_default
+    return adapter(state, cfg, dt, refl_10cm_due=refl_10cm_due)
+
+
+def _apply_thompson_default(
         state: DomainState, cfg: RunConfig, dt: float, *,
         refl_10cm_due: bool = False) -> MicrophysicsDiagnostics:
     """Forecast adapter for the WRF-ordered classic Thompson path.
@@ -787,6 +806,53 @@ def _apply_thompson(
         graupelnc=graupelnc, graupelncv=graupelncv)
 
 
+
+def _apply_thompson_strict(
+        state: DomainState, cfg: RunConfig, dt: float, *,
+        refl_10cm_due: bool = False) -> MicrophysicsDiagnostics:
+    """Forecast adapter for classic Thompson (mp_physics=8).
+
+    Runs ``gpuwm.core.thompson_classic``, the literal transcription of WRF
+    v4.6.1 ``mp_gt_driver``/``mp_thompson`` for the classic scheme: WRF's
+    tendency structure (sources, condensation, evaporation and
+    sedimentation accumulate float tendencies; the terminal apply writes
+    the state once), every expression in gfortran's order and precision,
+    glibc's libm, no fused multiply-add, and the constants WRF's own
+    thompson_init computes.  Word for word against WRF's Fortran on the
+    committed real-column fixture (tools/thompson_real_column_parity/
+    mp8_wrf_ulp.py, tests/test_thompson_classic_wrf461.py).
+
+    The table root resolves to the packaged directory unless
+    GPUWM_THOMPSON_TABLE_ROOT overrides it, and
+    ``load_classic_device_tables`` byte-validates every asset before GPU
+    setup -- a wrong or missing root fails closed.
+    """
+    from gpuwm.thompson_generations import CLASSIC_GENERATIONS
+    generation = CLASSIC_GENERATIONS[getattr(cfg,"thompson_version","wrf_461")]
+    if generation.backend == "column":
+        from gpuwm.core.thompson_column import apply_generated
+        return apply_generated(state,cfg,dt,refl_10cm_due=refl_10cm_due)
+    table_root = _thompson_table_root()
+    required = ("qc", "qi", "ni", "qs", "qg", "qr", "nr")
+    missing = [name for name in required
+               if getattr(state, name, None) is None]
+    if missing:
+        raise ValueError(
+            "Thompson mp=8 state lacks " + ", ".join(missing))
+
+    from gpuwm.core.thompson_classic import apply_classic
+    from gpuwm.core.thompson_runtime import load_classic_device_tables
+
+    table_owner = load_classic_device_tables(table_root)
+    (rainnc, rainncv, snownc, snowncv, graupelnc, graupelncv,
+     sr) = apply_classic(state, cfg, dt, table_owner,
+                         refl_10cm_due=refl_10cm_due)
+    return MicrophysicsDiagnostics(
+        rainnc=rainnc, rainncv=rainncv, sr=sr,
+        snownc=snownc, snowncv=snowncv,
+        graupelnc=graupelnc, graupelncv=graupelncv)
+
+
 def normalize_spec_zone_ring_after_restore(state: DomainState,
                                            cfg: RunConfig,
                                            *, relocated: bool = False
@@ -880,11 +946,22 @@ def _column_words(row: ColumnSchemeRow, which: str):
     return words
 
 
-def column_scheme_kernel(row: ColumnSchemeRow, func: str, nz: int):
-    """``func`` from the row's unit, compiled at its level tier for ``nz``."""
+def column_scheme_kernel(row: ColumnSchemeRow, func: str, nz: int,
+                         conservative_surface: bool = False):
+    """``func`` from the row's unit, compiled at its level tier for ``nz``.
+
+    ``conservative_surface`` is correct-mode finding WB5 (the row's
+    ``conservative_surface_key``): the unit compiled with the row's
+    ``conservative_surface_define``.  False compiles exactly the unit this
+    function compiled before the key existed (the matched WRF arithmetic).
+    """
     from gpuwm.core.kernels import get_kernel_unflushed
     tier = row.level_tier(nz)
     defines = () if tier == row.shallow_tier else ((row.tier_define, tier),)
+    if conservative_surface:
+        if not row.conservative_surface_define:
+            raise ValueError(f"{row.label} has no conservative surface arm")
+        defines = defines + ((row.conservative_surface_define, 1),)
     return get_kernel_unflushed(row.unit, func, defines)
 
 
@@ -900,11 +977,17 @@ def _check_column_fields(label, fields: dict, shape) -> None:
 
 
 def launch_column_scheme(row: ColumnSchemeRow, theta, species, den, p, pii,
-                         dz, surface, effc, effi, effs, dt: float) -> None:
+                         dz, surface, effc, effi, effs, dt: float, *,
+                         conservative_surface: bool = False) -> None:
     """One call of a table-row scheme over contiguous FP32 ``(nz,ny,nx)``.
 
     ``species`` and ``surface`` are sequences in the row's order.
+    ``conservative_surface``: correct-mode finding WB5 (see
+    :func:`column_scheme_kernel`).
     """
+    if not isinstance(conservative_surface, bool):
+        raise TypeError("conservative_surface must be a bool, got "
+                        f"{conservative_surface!r}")
     shape = theta.shape
     if len(shape) != 3:
         raise ValueError(f"{row.label} fields must be 3-D, got {shape}")
@@ -920,7 +1003,8 @@ def launch_column_scheme(row: ColumnSchemeRow, theta, species, den, p, pii,
         "effs": effs}, shape)
     _check_column_fields(row.label, dict(zip(row.surface, surface)), (ny, nx))
     ncol = ny * nx
-    kernel = column_scheme_kernel(row, row.column_entry, nz)
+    kernel = column_scheme_kernel(row, row.column_entry, nz,
+                                  conservative_surface)
     kernel(((ncol + _TPB - 1) // _TPB,), (_TPB,),
            (theta, *species, den, p, pii, dz, *surface, effc, effi, effs,
             _column_words(row, "init"), DTYPE(dt),
@@ -968,7 +1052,9 @@ def _apply_column_scheme(state: DomainState, cfg: RunConfig, dt: float,
     save_pre_mp_theta(state)
     launch_column_scheme(
         row, theta, [getattr(state, n) for n in row.species], rho, state.p,
-        pii, dz, surface, state.effc, state.effi, state.effs, dt)
+        pii, dz, surface, state.effc, state.effi, state.effs, dt,
+        conservative_surface=bool(row.conservative_surface_key) and bool(
+            getattr(cfg, row.conservative_surface_key, False)))
     if refl_10cm_due:
         from gpuwm.core.refl import stash_refl_10cm
         refl_t = state.scratch((nz, ny, nx), "refl_t")
@@ -1110,6 +1196,66 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
         )
 
 
+#: WRF's start-of-domain CCN fill, one row per scheme that carries WRF's
+#: ``scalar:qnn`` (Registry.EM_COMMON:3031 WDM6, :3054 nssl_ccn_opt):
+#: (state field, rule).  The fill value is :func:`_ccn_start_value`.
+#:
+#: * ``"if_unset"`` is ``dyn_em/start_em.F:1750-1772`` (v4.6.1).  Every start
+#:   of a domain whose scalars carry QNN takes ``grid%ccn_conc`` everywhere
+#:   when the field's interior maximum is below 1.0 ("initialization of ccn
+#:   not already done").  For NSSL, ``ccn_conc = nssl_cccn/1.225`` with the
+#:   Registry defaults ``nssl_cccn = 0.5e9`` and ``nssl_ccn_is_ccna = 0``
+#:   (Registry.EM_COMMON:2408, :2422): the FP32 word is
+#:   ``NSSL2_BACKGROUND_CCN_PER_KG``.
+#: * ``"always"`` is ``phys/module_mp_wdm6.F:219-227``: WDM6 overwrites its
+#:   whole CCN window with ``ccn0`` (the namelist ``ccn_conc``) at
+#:   ``itimestep == 1``, whatever the start held.
+#:
+#: Allocation already seeds both values (``gpuwm/core/state.py``), but the
+#: native WRF-file door then loads the file's QNCCN over them, and real.exe
+#: writes that field as zeros.  Before this row existed an NSSL forecast
+#: started from a real.exe file ran with no CCN at all: no droplet
+#: activation, no cloud water where WRF condenses (the coverage-suite
+#: matched run of 2026-10-07: QNCCN 0 against WRF's 4.08e8 on every word at
+#: step 0, and 0.95 K of missing latent heating after one 60 s step).
+_CCN_START_FILL = {
+    16: ("nn", "always"),
+    18: ("qnn", "if_unset"),
+}
+
+
+def _ccn_start_value(cfg: RunConfig) -> float:
+    if int(cfg.mp_physics) == 16:
+        return float(cfg.wdm6_ccn_conc)
+    from gpuwm.core.microphysics_transition import NSSL2_BACKGROUND_CCN_PER_KG
+    return float(NSSL2_BACKGROUND_CCN_PER_KG)
+
+
+def ccn_start_fill(state: DomainState, cfg: RunConfig) -> dict[str, object]:
+    """WRF's start-of-domain CCN fill (see ``_CCN_START_FILL``).
+
+    Returns ``{}`` when the scheme carries no CCN scalar or when the fill
+    changes no word; otherwise a receipt naming the field, the rule, the
+    FP32 value written and the maximum the field held before.
+    """
+    row = _CCN_START_FILL.get(int(cfg.mp_physics))
+    if row is None:
+        return {}
+    name, rule = row
+    field = getattr(state, name, None)
+    if field is None:
+        return {}
+    value = DTYPE(_ccn_start_value(cfg))
+    prior_max = float(cp.max(field))
+    if rule == "if_unset" and prior_max >= 1.0:
+        return {}
+    if rule == "always" and bool(cp.all(field == value)):
+        return {}
+    field[...] = value
+    return {"field": name, "rule": rule, "value": float(value),
+            "prior_max": prior_max}
+
+
 def microphysics_init(state: DomainState, cfg: RunConfig) -> dict[str, object]:
     """WRF ``microphysics_init``'s ONE-TIME, per-domain scheme setup.
 
@@ -1150,6 +1296,13 @@ def microphysics_init(state: DomainState, cfg: RunConfig) -> dict[str, object]:
     overwrite an advected, activated and scavenged aerosol field with the
     synthetic profile every step while leaving every bound intact.
     """
+    ccn = ccn_start_fill(state, cfg)
+    receipt = {"ccn_start_fill": ccn} if ccn else {}
+    return {**receipt, **_scheme_init(state, cfg)}
+
+
+def _scheme_init(state: DomainState, cfg: RunConfig) -> dict[str, object]:
+    """The scheme-specific half of :func:`microphysics_init`."""
     named = _named_scheme(cfg.mp_physics)
     if named is not None and named.aerosol_aware:
         # A named aerosol-aware scheme takes the same once-per-domain

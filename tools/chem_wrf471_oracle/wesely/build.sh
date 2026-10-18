@@ -31,7 +31,7 @@ $fc -o run_wesely stub_wesely.o module_model_constants.o module_wrf_error.o modu
 {
  echo '# WRF v4.7.1 Wesely column oracle'
  $fc --version
- ldd --version | head -1
+ ldd --version | sed -n 1p
  echo "Flags: $flags"
  echo "Command: nice -n 15 bash $script_dir/build.sh $source_root $build_dir"
  cat "$script_dir/SOURCES.sha256"

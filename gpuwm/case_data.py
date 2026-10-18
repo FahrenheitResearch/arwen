@@ -148,7 +148,7 @@ _OPTIONAL_KEYS = (
     "forcing_interval_s", "output_domain", "source_orography",
     "source_orography_variable", "co2_vmr", "water_temperature_overlay",
     "water_temperature_policy", "preprocess_backend", "gfs_snow_convention",
-    "gfs_lake_skin",
+    "gfs_lake_skin", "gfs_lake_ice",
 )
 _KNOWN_KEYS = frozenset(_REQUIRED_KEYS) | frozenset(_OPTIONAL_KEYS)
 
@@ -496,6 +496,13 @@ class CaseDataConfig:
     #: inland-water reach (INLAND_WATER_SOURCE_REACH_M), past which such a
     #: lake takes the 2 m air temperature there instead.
     gfs_lake_skin: str = "wps"
+    #: Ice on a land-use lake on the GFS route.  ``observed``: a daily
+    #: observed snow and ice analysis (IMS, gpuwm.ingest.lake_ice) freezes
+    #: the lake cells it sees frozen, on every domain of the tree, and the
+    #: run falls back loudly to the forcing's ice when none can be read.
+    #: ``wps``: the forcing's ice only (metgrid's nearest-water search, as
+    #: WPS and real.exe give it), so a lake GFS does not resolve starts open.
+    gfs_lake_ice: str = "observed"
     #: Which provider decides the water-surface temperature.  Silence is
     #: ``era5_class_coherent``: one provider per surface class and per
     #: connected body of water, which is what makes a bare run's lakes
@@ -924,6 +931,11 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
         raise ValueError(
             "gfs_lake_skin must be one of "
             + ", ".join(repr(choice) for choice in GFS_LAKE_SKIN_CHOICES))
+    lake_ice = raw.get("gfs_lake_ice", GFS_LAKE_ICE_CHOICES[0])
+    if lake_ice not in GFS_LAKE_ICE_CHOICES:
+        raise ValueError(
+            "gfs_lake_ice must be one of "
+            + ", ".join(repr(choice) for choice in GFS_LAKE_ICE_CHOICES))
     water_policy = None
     if "water_temperature_policy" in raw:
         from gpuwm.ingest.water_temperature import (
@@ -1058,6 +1070,7 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
         water_temperature_overlay=overlay_path,
         water_temperature_policy=water_policy, gfs_snow_convention=snow_convention,
         gfs_lake_skin=lake_skin,
+        gfs_lake_ice=lake_ice,
         preprocess_backend=preprocess_backend)
 
 
@@ -1103,6 +1116,10 @@ def preparation_case_policy(data, *, sfcp_to_sfcp=None):
 #: ``gfs_lake_skin`` values; the first is the default.
 GFS_LAKE_SKIN_CHOICES = ("wps", "air_temperature")
 
+#: ``gfs_lake_ice`` values; the first is the default
+#: (gpuwm.ingest.lake_ice.LAKE_ICE_CHOICES).
+GFS_LAKE_ICE_CHOICES = ("observed", "wps")
+
 
 def gfs_preparation_policy(data):
     """The GFS route's own preparation operands, beside the shared ones.
@@ -1115,6 +1132,8 @@ def gfs_preparation_policy(data):
     return {
         "gfs_snow_convention": "wps" if data is None else data.gfs_snow_convention,
         "gfs_lake_skin": "wps" if data is None else data.gfs_lake_skin,
+        "gfs_lake_ice": (GFS_LAKE_ICE_CHOICES[0] if data is None
+                         else data.gfs_lake_ice),
     }
 
 

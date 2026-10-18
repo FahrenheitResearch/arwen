@@ -792,7 +792,7 @@ def preparation_seconds(stages: Mapping[str, Any]) -> float:
     pre-forecast phases differently -- rw-wps's preparation wall lands
     under ``prepare`` on the `gpuwm go` route and under ``manifest`` on
     the run-plan route, with ``authority`` and ``boot`` beside them.
-    MEASURED on node-1, a tree record printed ``prepare 0:00`` over 6.3
+    MEASURED on test host A, a tree record printed ``prepare 0:00`` over 6.3
     real seconds because the row read one key.  The reader means
     "everything before the model started", so that is what the cell is.
     """

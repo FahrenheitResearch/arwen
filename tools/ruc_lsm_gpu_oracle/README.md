@@ -56,3 +56,18 @@ against the C library on the box; `libm_fma_probe.py` is the diagnostic for
 the one expf argument the shared `gfk_exp` misses.  `pack_fixture.py` packs a
 case's WRF side into `tests/data/oracles/ruc_lsm/`, which
 `tests/test_ruc_gpu_column_oracle.py` grades on any card without Fortran.
+
+## The operational branch (`--lineage fork`)
+
+`run_woof.py --lineage fork` runs the RUC forms the HRRR door selects
+(`ruc_soilprop`, `ruc_irrigation`, `ruc_snow` = `wrf_45`,
+`ruc_qvg_cold_start = air`, `ruc_2m_diagnostic = log_profile`) and writes
+the driver for the operational RAP/HRRR branch's surface-driver arm
+(NOAA-EMC/HRRR v4.1.21 WRFV3.9 `module_surface_driver.F:3279-3420`): the same
+seam, and the branch's `SFCDIAGS_RUCLSM`, which also returns
+`T2_alt/TH2_alt/Q2_alt` and reads `DZ8W`.  Point `WRF_SRC` at the branch tree
+(tools/fork_forms_oracle/fetch_fork.py) and `RUC_TABLES` at the WRF v4.6.1
+`run/` tables WOOF loads, so the arm grades code forms and not a table
+difference.  The branch also accumulates SNOWFALLAC in metres under a
+Registry label of mm; WOOF keeps mm, and that one field is graded by the
+unit rule in tests/test_noaa_wrf39_fork_forms_oracle.py.

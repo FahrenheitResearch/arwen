@@ -301,7 +301,7 @@ ROOT_EXTERNAL_LBC_CLOCK_LEGACY = "legacy-elapsed-v0"
 #: and are re-exported below.
 PHYSICS_SETUP_SCHEMA_VERSION = 2
 PHYSICS_DRIVER_ALGORITHM_IDENTITY = \
-    "gpuwm-physics-driver-v3-kf-phase-energy-pre-mp-expiry"
+    "gpuwm-physics-driver-v8-strict-cache-held-cumulus-history-rates"
 #: The scheme identity tables and the plan-review gate that reads them are
 #: DEFINED in :mod:`gpuwm.checkpoint_identity` and imported above -- the
 #: gate is called from ``gpuwm.config.validate_run_config``, which ships in
@@ -372,8 +372,8 @@ RRTMGP_TRACE_GAS_POLICY_IDENTITY = \
 #: upper-level heating and outgoing longwave, so a v1 checkpoint may not
 #: continue under v2.
 RRTMG_LEGACY_LW_ALGORITHM_IDENTITY = \
-    "wrf-v4.6.1-rrtmg-legacy-lw-v2-owned-gpoint-stratosphere-corrections"
-RRTMG_LEGACY_SW_ALGORITHM_IDENTITY = "wrf-v4.6.1-rrtmg-legacy-sw-v1"
+    "wrf-v4.6.1-rrtmg-legacy-lw-v3-owned-gpoint-stratosphere-corrections-micron-inputs"
+RRTMG_LEGACY_SW_ALGORITHM_IDENTITY = "wrf-v4.6.1-rrtmg-legacy-sw-v2-micron-inputs"
 #: Legacy RRTMG extends the model column with WRF's own Cavallo buffer
 #: layers (deltap = 4 mb), like RRTM option 1 but with RRTMG's tables.
 RRTMG_LEGACY_ABOVE_ATMOSPHERE_POLICY = \
@@ -408,6 +408,7 @@ PHYSICS_ASSET_PATHS = {
     "noahmp_soilparm": Path("data/noahmp/SOILPARM.TBL"),
     "noahmp_genparm": Path("data/noahmp/GENPARM.TBL"),
     "kf_lutab": Path("data/kf_lutab/kf_lutab.npz"),
+    "satmedmf_manifest": Path("data/satmedmf/manifest.json"),
 }
 
 
@@ -476,7 +477,7 @@ STATE_REBUILT_ATTRS = frozenset({
     # carrier by dycore.step before any reader (core/dycore.py:2186-2187),
     # exactly like thp0 and the moist time-t copies above.  The carrier
     # itself is SERIALIZED (state_serialization_contract.py).
-    "tke0",
+    "tke0", "tke_edmf0",
     # RK time-t copies of transported droplet number.  nc0 exists for the
     # schemes that TRANSPORT nc -- mp=28 (Thompson aerosol-aware), mp=9
     # (Milbrandt-Yau) and mp=16 (WDM6); mp=10 allocates nc but does not
@@ -519,6 +520,10 @@ STATE_INFRA_ATTRS = frozenset({
     "_external_scalar_boundary_fields",
     "_scratch", "_scratch_arena", "_phb_host", "_dz_min",
     "_host_setup_state",
+    # Strict mode's record of the prepared base theta
+    # (gpuwm.core.state.adopt_wrf_theta_carrier): the prepared restore that
+    # sets thb = 300 rebuilds it, and setup_fingerprint already binds it.
+    "_setup_thb",
     # Rebuilt from specified/nested and spec_zone on DomainState creation.
     # It is health descriptor geometry, not integrated model state.
     "_health_spec_zone",
@@ -606,7 +611,7 @@ STATE_INFRA_ATTRS = frozenset({
     # at (gpuwm.core.mynn_pbl_scratch.resolve_mynn_tile_column_chunk).
     # INFRA: a buffer is never checkpointed as itself, and the width never
     # changes a bit.  Without it classify_state_attr refused every streamed
-    # buffer's inventory (measured on node-4's RTX 5070 Ti, 2026-09-30).
+    # buffer's inventory (measured on test host D's RTX 5070 Ti, 2026-09-30).
     "_tile_buffer",
     # The resident rank's admitted MYNN workspace width. It affects only
     # column batching and allocation, never forecast or checkpoint bits.
@@ -626,6 +631,17 @@ STATE_INFRA_ATTRS = frozenset({
     # resident rank holds, set by the door when it attaches a slab forcing.
     # INFRA: placement of a card's slab, never a forecast value.
     "_radar_tten_slab",
+    # gpuwm.da.iau.IAU_STATE_ATTRIBUTE: an analysis increment forced over an
+    # IAU window (gpuwm.da.analysis_door, the DA leg driver).  INFRA, like
+    # the radar forcing above: external data the attaching door rebuilds
+    # from its bundle, never a value the model integrated; its time
+    # densities are on the model's own clock, so a forcing rebuilt at a
+    # resume inside the window adds exactly what the unbroken run adds from
+    # there.  The concrete breakage its absence caused (named gap G4 of the
+    # WRF analysis door): classify_state_attr refused the attribute,
+    # so any checkpoint written inside a window, and the final trajectory
+    # digest of every IAU run on the tree route, raised RestartManifestError.
+    "_iau_forcing",
 })
 
 # --------------------------------------------------------------------------
@@ -708,12 +724,19 @@ CARRIED_SCRATCH_SLOTS = frozenset({
     "uh_follow_window", "uh_spawn_window",
     # Strict mode only: WRF's grid%muts from the last acoustic loop, which
     # the next step's first pressure diagnosis reads (gpuwm/core/dycore.py
-    # WRF_MUTS_SLOT).  Cross-step, so a tile buffer must carry it; a resumed
-    # run starts from mub + mu instead, start_em's spelling.
+    # WRF_MUTS_SLOT). Checkpoints retain it for exact continuation too.
     "wrf_exact_muts",
     # Strict mode only: the ring of mu_2 WRF's halo holds at the next step's
     # first RK stage (gpuwm/core/dycore.py WRF_MU_HALO_SLOT).
     "wrf_exact_mu_halo",
+})
+
+# These dycore carriers are absent in default mode. Rebuilding them from
+# rounded prognostics at resume changes the next strict pressure diagnosis
+# and boundary fluxes. Keep their carry classification for streaming and
+# relocation, while including allocated members in ordinary checkpoints.
+CHECKPOINTED_CARRIED_SCRATCH_SLOTS = frozenset({
+    "wrf_exact_muts", "wrf_exact_mu_halo",
 })
 
 #: The same class, for the window family whose names are GENERATED.
@@ -792,6 +815,19 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     # mp=8 and mp=28 alike: taken from the entry state at the top of every
     # call and read by that call's terminal apply.  Nothing survives a call.
     "mp_thompson_micro_columns",
+    # Classic Thompson's per-call working set (gpuwm/core/thompson_classic.py
+    # SCRATCH_* lists): the pre-microphysics theta, the plane-stacked
+    # tendencies, working fields and column buffers, and the cell and column
+    # flags.  WRF zeroes and recomputes all of them at the top of every
+    # column call (module_mp_thompson.F:1650-2002), so nothing survives a
+    # call boundary; a restored tendency would be applied twice.
+    "mp_thompson_saved_theta",
+    "mp_thompson_classic_ten",
+    "mp_thompson_classic_work",
+    "mp_thompson_classic_colbuf",
+    "mp_thompson_classic_flags",
+    "mp_thompson_classic_micro",
+    "mp_thompson_classic_kmelt",
     # mp_physics=28 (Thompson aerosol-aware).  Listed as EXACT names, not a
     # new "mp_thompson_aero_" prefix, because the prefix rule above exists
     # precisely to stop a future accumulator from being silently dropped --
@@ -1043,7 +1079,8 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
 #: post-restart radiation call.  Absent-tolerant on restore, so every
 #: checkpoint written before it existed stays restorable.
 DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr", "cldfra", "radiation_flux_diagnostics",
-                                          "aod5503d", "aodtot"})
+                                          "aod5503d", "aodtot",
+                                          "_wrf_rthraten", "rthraten"})
 
 #: Raw PBL rates read by GF and New Tiedtke between producer calls.
 #: WRF Registry RTHBLTEN/RQVBLTEN are restart-carried for the same reason.
@@ -1054,6 +1091,7 @@ DRIVER_HELD_FORCING_ATTRS = frozenset({"gf_rthblten", "gf_rqvblten"})
 DRIVER_REBUILT_ATTRS = frozenset({
     # User aerosol diagnostics are views of arrays serialized in fields.
     "aerosol2d",
+    "_wrf_rthraten_coupled",
     # Lake sparse work is rebuilt from the horizontal arrays in fields.
     "lake",
     # SPP flags/shapes derive from the bound RunConfig. Patterns are borrowed
@@ -1124,6 +1162,9 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # RunConfig by PhysicsDriver.__init__ (the config fingerprint already
     # binds the selector values themselves).
     "scheme_dispatch",
+    # Selector-derived history mapping rebuilt by PhysicsDriver.__init__.
+    # Its numerical rate buffers live in serialized fields.
+    "pbl_history_rates",
     "radiation_callable", "cumulus_callable",
     # Where this domain's downward longwave came from ("scheme",
     # "declared" or "unused").  A LABEL, not state: initialize_physics
@@ -1909,12 +1950,14 @@ def _restorable_scratch_slot(slot: str) -> bool:
     including the runs with no consumer to read it.  A nest-lifecycle run
     opts its own windows in per member instead
     (:func:`write_tree_restart`), so the reader has to accept a member the
-    classification alone says is not written.  Nothing else: a ``rebuild``
+    classification alone says is not written. Strict acoustic carriers
+    are checkpointed when allocated for exact continuation. A ``rebuild``
     slot is a per-call work buffer whose value between calls means
     nothing, and an unknown slot still raises out of
     :func:`classify_scratch_slot`.
     """
     return (classify_scratch_slot(slot) == "serialize"
+            or slot in CHECKPOINTED_CARRIED_SCRATCH_SLOTS
             or _is_tracker_window_slot(slot)
             or slot in LIFECYCLE_HELD_SCRATCH_SLOTS)
 
@@ -2079,6 +2122,9 @@ def _asset_sha256(path) -> str:
 
 def _active_asset_identity(cfg, driver) -> dict[str, dict]:
     roles = []
+    # Asset-only callers historically omit inactive physics selectors.
+    if int(getattr(cfg, "bl_pbl_physics", 0)) == 901:
+        roles.append("satmedmf_manifest")
     radiation = None if driver is None else driver.radiation_callable
     radiation_class = (None if radiation is None
                        else _callable_class_name(radiation))
@@ -2576,6 +2622,9 @@ def _mosaic_checkpoint_config(config: Mapping) -> dict:
     if not values.get("sf_lake_physics", 0):
         for name in ("sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev"):
             values.pop(name, None)
+    # WRF's ocean mixed layer (sf_ocean_physics = 1): off, no key echoes.
+    from gpuwm.surface_ocean import drop_inert_ocean
+    drop_inert_ocean(values)
     _drop_inert_mosaic(values)
     drop_default_diffusion_selectors(values)
     from gpuwm.config import drop_inert_g3_fields
@@ -2628,6 +2677,9 @@ def _drop_default_off_run_keys(values: dict) -> None:
     drop_inert_g3_fields(values)
     _drop_inert_chem_block(values)
     _drop_inert_fire_block(values)
+    # sf_ocean_physics and the oml_* settings (lane 291-fix-notes-and-doors-13).
+    from gpuwm.surface_ocean import drop_inert_ocean
+    drop_inert_ocean(values)
     # Correct-mode keys (gpuwm/correct_mode.py): False is the matched
     # WRF/MPAS arithmetic every earlier header ran, and outside the scheme
     # that reads it a key reaches nothing.  From 2.9.0 a key defaults ON
@@ -3248,6 +3300,13 @@ def physics_algorithm_identities(cfg) -> dict:
             algorithms["urban"] = URBAN_WATER_BALANCE_GENERATIONS[generation]["algorithm"]
         from gpuwm.checkpoint_identity import urban_algorithm_identity
         algorithms["urban"] = urban_algorithm_identity(cfg)
+    if int(getattr(cfg, "sf_ocean_physics", 0)):
+        # Only when the mixed layer runs, so every existing header is
+        # unchanged; a resume across ocean models is refused here.
+        from gpuwm.surface_ocean import ocean_option
+        ocean = ocean_option(cfg.sf_ocean_physics)
+        algorithms["surface_ocean"] = (ocean["algorithm_identity"] + ":" +
+            hashlib.sha256(json.dumps(ocean, sort_keys=True).encode()).hexdigest())
     mixing = dycore_mixing_identity(cfg)
     if mixing is not None:
         # Only when the dycore mixes (km_opt 2-4, an active km_opt = 1, or
@@ -3575,7 +3634,8 @@ def _scratch_manifest(state) -> dict[str, object]:
     pool = getattr(state, "_scratch", {})
     manifest = {}
     for slot in sorted(pool):
-        if classify_scratch_slot(slot) == "serialize":
+        if (classify_scratch_slot(slot) == "serialize"
+                or slot in CHECKPOINTED_CARRIED_SCRATCH_SLOTS):
             manifest[f"scratch/{slot}"] = pool[slot]
     return manifest
 
@@ -6888,9 +6948,25 @@ def _validate_scratch_target(state, slot: str, host: np.ndarray,
             f"scratch dtype {dtype}")
 
 
+def _validate_strict_radiation_total(stored, driver) -> None:
+    """A rounded held total cannot be rebuilt from its published components."""
+    target = getattr(driver, "_wrf_rthraten", None)
+    if target is None:
+        return
+    key = "diag/_wrf_rthraten"
+    if key not in stored:
+        raise RestartMismatchError(
+            "restart is missing diag/_wrf_rthraten; strict radiation and "
+            "cumulus forcing would resume with zero held heating. The "
+            "rounded total cannot be reconstructed from LW and SW. Use "
+            "a checkpoint written by this build or start from prepared state.")
+    _check_array(stored[key], target, key)
+
+
 def _validate_driver_payload(stored, header, state, driver, elapsed,
                              format_version: int) -> None:
     """Hoist every PhysicsDriver refusal without mutating the driver."""
+    _validate_strict_radiation_total(stored, driver)
     _validate_fire_payload(stored, header, driver)
     expected_optional = {f"driver/{name}/{component}" for name in OPTIONAL_DRIVER_TENDENCY_ATTRS
                          if getattr(driver, name, None) is not None for component in TENDENCY_COMPONENTS

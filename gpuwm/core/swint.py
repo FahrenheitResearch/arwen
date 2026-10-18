@@ -1,17 +1,15 @@
 """WRF ``swint_opt = 1``: the surface shortwave between radiation calls.
 
-Port authority: NOAA-EMC/HRRR tag v4.1.21 (the WRF fork operational HRRR
-v4 runs), ``sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_radiation_driver.F``
-(sha256 7464639e..., commit 40ee6058c, the commit the tree already pins
-for its vertical-advection oracle).  With ``swint_opt = 1`` the driver
-does three things:
+Authority: WRF v4.6.1 ``phys/module_radiation_driver.F`` (commit d66e442,
+sha256 77987565...), graded word for word by tools/swint_wrf461_oracle.
+With ``swint_opt = 1`` the driver does three things:
 
 * on EVERY step, before the radiation branch, ``radconst`` and
   ``calc_coszen`` at the CURRENT ``xtime`` fill ``coszen_loc``
-  (:889-900; the radiation step keeps its own ``xtime + radt*0.5`` call at
-  :1032-1034);
+  (:1158-1170; the radiation step keeps its own ``xtime + radt*0.5`` call
+  at :1204-1206);
 * on a radiation step, after the shortwave scheme wrote SWDOWN and SWDDIR,
-  ``update_swinterp_parameters`` (:2802-2883) fits each column's direct
+  ``update_swinterp_parameters`` (:3543-3624) fits each column's direct
   and global surface flux as a power of the solar zenith cosine,
   ``SWDDIR = Bx * coszen**bb`` and ``SWDOWN = Gx * coszen**gg``, the
   exponents from the log ratio between this call and the stored reference
@@ -19,41 +17,52 @@ does three things:
   positive), clamped to [-0.5, 2.5], then stores this call as the
   reference (``coszen_ref``, ``swdown_ref``, ``swddir_ref``);
 * on EVERY step, radiation steps included (the ``if (swint_opt .eq. 1)``
-  block at :2422-2440 sits after ``ENDIF Radiation_step``),
-  ``interp_sw_radiation`` (:2885-2929) rewrites SWDDIR, SWDOWN, SWDDIF,
-  SWDDNI and GSW at ``coszen_loc``, a clamped exponent falling back to the
-  ratio ``coszen_loc/coszen_ref``, night columns (either cosine at or
-  below 1e-4) zeroed.  GSW is ``SWDOWN * (1 - ALBSOL)``, ALBSOL being the
-  albedo the radiation step ran RRTMG with (:2081, :2154; the driver
-  rewrites ALBSOL only inside the radiation step, :1036-1065): here the
-  live ALBSOL field when sun-angle albedo is selected. RUC may update
-  that field between radiation calls. The disabled configuration retains
-  the albedo captured at the radiation call.
+  block at :2964-2980 sits after ``ENDIF Radiation_step``),
+  ``interp_sw_radiation`` (:3626-3670) rewrites SWDDIR, SWDOWN, SWDDIF,
+  SWDDNI and GSW at ``coszen_loc``, a clamped exponent or an exponent of
+  exactly zero falling back to the ratio ``coszen_loc/coszen_ref``, night
+  columns (either cosine at or below 1e-4) zeroed.  GSW is
+  ``SWDOWN * (1 - ALBEDO)`` with the LIVE albedo of the step: v4.6.1
+  passes ``grid%albedo`` (module_first_rk_step_part1.F:265), which the
+  land surface updates between radiation calls.  Under the fork-only
+  sun-angle albedo (``alb_sol = 1``) the live field is ALBSOL, as the
+  operational HRRR fork passes it.
 
 ``Bx``, ``bb``, ``Gx`` and ``gg`` are zeroed at ``itimestep == 1``
-(:1077-1085); the three references are Registry ``misc`` state and start
-at zero (Registry.EM_COMMON:1457-1463, all restart-carried).  None of the
+(:1708-1717); the three references are Registry ``misc`` state and start
+at zero (Registry.EM_COMMON:1729-1731, all restart-carried).  None of the
 fit touches the heating rates: RTHRATENSW stays the radiation call's.
 
-The spec that launched this port described the fit first as a ratio and
-then as a linear function of coszen; both were wrong, and the fork's text
-above is the authority.
+The operational HRRR fork (NOAA-EMC/HRRR v4.1.21, WRFV3.9 base, commit
+40ee6058c) carries these routines from before two upstream WRF bug fixes,
+and the engine follows v4.6.1, which has both:
+
+* WRF cc02f989f (v3.9.1, "fix for sunrise/sunset swint_opt calcs"): an
+  exponent of exactly zero takes the ratio rule.  The fork evaluates
+  ``Bx * coszen**0 = Bx`` there, so a column whose fit carried no sun
+  angle information (a ratio of one, or both fluxes at or under 1 W m-2,
+  where ``max(1, flux)`` makes both logs zero) held its flux flat until
+  the next radiation call.
+* WRF 650be0c7d (v4.3): ``calc_coszen`` bounds the cosine to [-1, 1]; the
+  float32 sum can round one spacing past one at the subsolar point.
 
 Everything the land surface reads between radiation calls therefore
 follows the sun on every step, which is why HRRR runs it with a 15-minute
 ``radt``.  The engine held the radiation call's fluxes for the whole
 interval before this module.
 
-Numerics: the kernels in ``gpuwm/core/kernels/swint.cu`` call glibc's own
-float32 ``logf``/``powf``/``sinf``/``cosf``/``asinf`` (the transcriptions
-in glibc_flt32.cuh and glibc_trig_flt32.cuh), so they are bitwise the
-fork's Fortran compiled with gfortran against glibc.  The NumPy twins
-below do the fit and the evaluation with the same glibc words
+Numerics: the kernels in ``gpuwm/core/kernels/swint.cu`` use WOOF's own
+float32 ``logf``/``powf``/``sinf``/``cosf``/``asinf`` routines and
+explicit single-rounded arithmetic, so they are bitwise WRF's Fortran
+compiled with gfortran -O0 wherever the C library's float32 routines
+return the correctly rounded word (tools/swint_wrf461_oracle records the
+one exception it found: an older C library's ``asinf``).  The NumPy twins
+below do the fit and the evaluation with the same words
 (gpuwm.core.noahmp_libm) and are bitwise the same; the twin of the
 per-step zenith cosine (:func:`coszen_loc_host`) uses NumPy's
-transcendentals, the seam dossier section 9.1 records for the adapter's
-radiation-step cosine, and the test holds the KERNEL's cosine to the
-fork's directly.
+transcendentals, so it is the shape check, and the tests hold the
+KERNEL's cosine to WRF's directly.
+
 """
 from __future__ import annotations
 
@@ -133,13 +142,16 @@ def coszen_loc_host(xlat, xlon, julian, xtime, gmt, *, generation="wrf_480"):
     hrang = (F(15.0) * (tloctm - F(12.0))) * _DEGRAD
     xxlat = xlat * _DEGRAD
     d = F(declin)
-    return (np.sin(xxlat) * np.sin(d)
-            + (np.cos(xxlat) * np.cos(d)) * np.cos(hrang)).astype(np.float32)
+    coszen = (np.sin(xxlat) * np.sin(d)
+              + (np.cos(xxlat) * np.cos(d)) * np.cos(hrang)).astype(np.float32)
+    # v4.6.1 calc_coszen: coszen = min(max(coszen, -1.0), 1.0)
+    return np.minimum(np.maximum(coszen, F(-1.0)), F(1.0)).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
 # NumPy twins of update_swinterp_parameters / interp_sw_radiation, with
-# glibc's own logf and powf (gpuwm.core.noahmp_libm), element by element.
+# WOOF's own float32 logf and powf (gpuwm.core.noahmp_libm), element by
+# element.
 # ---------------------------------------------------------------------------
 
 def _logf(x):
@@ -171,7 +183,7 @@ def _exponent(flux, flux_0, coszen, coszen_0):
 def update_swinterp_parameters(coszen, coszen_loc, swddir, swdown,
                                swddir_ref, bb, bx, swdown_ref, gg, gx,
                                coszen_ref):
-    """``update_swinterp_parameters`` (:2802-2883) on float32 arrays.
+    """``update_swinterp_parameters`` (:3543-3624) on float32 arrays.
 
     ``swddir_ref, bb, bx, swdown_ref, gg, gx, coszen_ref`` are updated IN
     PLACE, as the Fortran intent(inout) arguments are.
@@ -212,9 +224,15 @@ def update_swinterp_parameters(coszen, coszen_loc, swddir, swdown,
             swddir_ref_f[i] = swddir[i]
 
 
+def _ratio_rule(exponent):
+    """v4.6.1's test for the ratio fallback: a clamped exponent, or an
+    exponent of exactly zero (WRF cc02f989f)."""
+    return exponent == F(-0.5) or exponent == F(2.5) or exponent == F(0.0)
+
+
 def interp_sw_radiation(coszen_ref, coszen_loc, swddir_ref, bb, bx,
                         swdown_ref, gg, gx, albedo):
-    """``interp_sw_radiation`` (:2885-2929); returns
+    """``interp_sw_radiation`` (:3626-3670); returns
     ``(swdown, swddir, swddni, swddif, gsw)`` float32."""
     args = [np.asarray(a, np.float32).reshape(-1) for a in
             (coszen_ref, coszen_loc, swddir_ref, bb, bx, swdown_ref, gg, gx,
@@ -226,11 +244,11 @@ def interp_sw_radiation(coszen_ref, coszen_loc, swddir_ref, bb, bx,
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
         for i in range(n):
             if czr[i] > COSZEN_MIN and czl[i] > COSZEN_MIN:
-                if bb[i] == F(-0.5) or bb[i] == F(2.5):
+                if _ratio_rule(bb[i]):
                     d = F(F(czl[i] / czr[i]) * dref[i])
                 else:
                     d = F(bx[i] * _powf(czl[i], bb[i]))
-                if gg[i] == F(-0.5) or gg[i] == F(2.5):
+                if _ratio_rule(gg[i]):
                     s = F(F(czl[i] / czr[i]) * sref[i])
                 else:
                     s = F(gx[i] * _powf(czl[i], gg[i]))
@@ -348,11 +366,22 @@ class ShortwaveInterpolation:
 
     def _interpolate(self, fields):
         f = {name: self._flat(fields[name], name) for name in STATE_FIELDS}
-        # The fork passes live ALBSOL on every interpolation step, after
-        # the preceding RUC call may have changed snow/ice albedo. Keep
-        # the historical carried albedo for configurations without it.
-        albedo = (self._flat(fields["albsol"], "albsol")
-                  if "albsol" in fields else f["swint_albedo"])
+        # GSW takes the step's LIVE albedo.  v4.6.1 passes grid%albedo,
+        # which the land surface rewrites between radiation calls (snow
+        # cover, snow albedo); the fork-only sun-angle albedo (alb_sol = 1)
+        # keeps it in ALBSOL, which the fork passes instead.  The albedo
+        # captured at the last radiation call (swint_albedo, still carried
+        # for restart) held GSW on that call's surface until the next
+        # call, which neither code does.
+        if "albsol" in fields:
+            albedo = self._flat(fields["albsol"], "albsol")
+        elif "albedo" in fields:
+            albedo = self._flat(fields["albedo"], "albedo")
+        else:
+            raise KeyError(
+                "swint_opt = 1 evaluates GSW = SWDOWN * (1 - ALBEDO) with "
+                "the step's live albedo; fields carry neither 'albedo' nor "
+                "'albsol'")
         self._k_interp(self._grid, self._block,
                        (np.int64(self.ncol), f["coszen_ref"],
                         self._coszen_loc.reshape(-1),

@@ -26,6 +26,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use rayon::prelude::*;
+
 use crate::error::{Result, StaticError};
 
 const TRUE_STRINGS: [&str; 4] = ["yes", "true", ".true.", "1"];
@@ -677,6 +679,20 @@ impl GeogDataset {
             }
             raw.truncate(expect);
         }
+        let tile = Arc::new(self.shape_tile(raw, nz, include_border));
+        self.cache_tile(key, Some(tile.clone()));
+        Ok(Some(tile))
+    }
+
+    /// Crop the duplicated border (unless kept) and put rows bottom-up:
+    /// the per-plane reshaping `read_tile` always applied, shared by the
+    /// plane-subset read so both produce the same words for a plane.
+    fn shape_tile(&self, raw: Vec<i64>, nz: usize, include_border: bool) -> Tile {
+        let idx = &self.index;
+        let b = idx.tile_bdr;
+        let ny = (idx.tile_y + 2 * b) as usize;
+        let nx = (idx.tile_x + 2 * b) as usize;
+        let plane_words = ny * nx;
         let (mut data, mut out_ny, mut out_nx) = (raw, ny, nx);
         if b > 0 && !include_border {
             let bu = b as usize;
@@ -704,14 +720,109 @@ impl GeogDataset {
             }
             data = flipped;
         }
-        let tile = Arc::new(Tile {
+        Tile {
             nz,
             ny: out_ny,
             nx: out_nx,
             data,
-        });
-        self.cache_tile(key, Some(tile.clone()));
-        Ok(Some(tile))
+        }
+    }
+
+    /// Planes `[first_plane, first_plane + nz)` of tile `(xs, ys)`: the
+    /// same words `read_tile` holds for those planes.
+    ///
+    /// THE 23 SECONDS.  MEASURED 2026-10-16 on the CONUS 3 km start
+    /// (796 x 636): the 30-arc-second MODIS FPAR greenness and the MODIS
+    /// albedo store all twelve months in each tile, so one decoded tile
+    /// is 138 MB of i64, over the 128 MB decoded-tile cache bound, and
+    /// is never retained.  The monthly build reads one plane at a time,
+    /// so every month re-read and re-decoded every tile in full: 18.0 s
+    /// for greenness and 5.5 s for albedo, on one thread, of a 25.1 s
+    /// static build.  A plane read decodes only the plane it returns.
+    ///
+    /// A file whose length is not exactly the declared planes takes the
+    /// full read, which owns the trailing-plane refusal and truncation
+    /// rules, and is sliced, so every refusal is unchanged.
+    pub(crate) fn read_tile_planes(
+        &self,
+        xs: i64,
+        ys: i64,
+        include_border: bool,
+        first_plane: usize,
+        nz: usize,
+    ) -> Result<Option<Arc<Tile>>> {
+        let full = self.index.nz() as usize;
+        if first_plane == 0 && nz == full {
+            return self.read_tile(xs, ys, include_border);
+        }
+        if nz == 0 || first_plane + nz > full {
+            return Err(StaticError::Invalid(format!(
+                "source planes {first_plane}..{} are outside the dataset's {full} planes",
+                first_plane + nz
+            )));
+        }
+        let slice = |tile: Arc<Tile>| -> Arc<Tile> {
+            let plane = tile.ny * tile.nx;
+            Arc::new(Tile {
+                nz,
+                ny: tile.ny,
+                nx: tile.nx,
+                data: tile.data[first_plane * plane..(first_plane + nz) * plane].to_vec(),
+            })
+        };
+        let cached = self
+            .cache
+            .lock()
+            .expect("tile cache poisoned")
+            .get(&(xs, ys, include_border))
+            .cloned();
+        if let Some(hit) = cached {
+            return Ok(hit.map(slice));
+        }
+        let Some(file) = self.tiles.get(&(xs, ys)) else {
+            return Ok(None);
+        };
+        let idx = &self.index;
+        let b = idx.tile_bdr;
+        let plane_words = ((idx.tile_y + 2 * b) * (idx.tile_x + 2 * b)) as usize;
+        let ws = idx.wordsize as usize;
+        let words = std::fs::metadata(file)?.len() as usize / ws;
+        if words != full * plane_words {
+            return Ok(self.read_tile(xs, ys, include_border)?.map(slice));
+        }
+        use std::io::{Read, Seek, SeekFrom};
+        let mut bytes = vec![0u8; nz * plane_words * ws];
+        let mut handle = std::fs::File::open(file)?;
+        handle.seek(SeekFrom::Start((first_plane * plane_words * ws) as u64))?;
+        handle.read_exact(&mut bytes)?;
+        let raw = self.decode_words(&bytes);
+        drop(bytes);
+        Ok(Some(Arc::new(self.shape_tile(raw, nz, include_border))))
+    }
+
+    /// One source plane of a native tile with its interpolation border
+    /// retained (`read_tile_window` restricted to plane `z`).
+    pub fn read_tile_window_plane(
+        &self,
+        xs: i64,
+        ys: i64,
+        z: usize,
+    ) -> Result<Option<GeogWindow>> {
+        let Some(tile) = self.read_tile_planes(xs, ys, true, z, 1)? else {
+            return Ok(None);
+        };
+        let b = self.index.tile_bdr;
+        Ok(Some(GeogWindow {
+            index: self.index.clone(),
+            x0: xs - b,
+            y0: ys - b,
+            first_plane: z,
+            nz: 1,
+            ny: tile.ny,
+            nx: tile.nx,
+            raw: tile.data.clone(),
+            coverage: None,
+        }))
     }
 
     /// One native tile with its interpolation border retained
@@ -975,42 +1086,61 @@ impl GeogDataset {
         let (ty, tx) = (idx.tile_y, idx.tile_x);
         let yy0 = y0.max(1);
         let yy1 = y1.min(self.ny_global);
+        // Every tile the window touches, in the order the serial mosaic
+        // visited them: (ys, abs_x0, wx0, wx1, xs).
+        let mut visits: Vec<(i64, i64, i64, i64, i64)> = Vec::new();
         let mut ys = (yy0 - 1).div_euclid(ty) * ty + 1;
         while ys <= yy1 {
             for &(abs_x0, wx0, run) in &segs {
                 let wx1 = wx0 + run - 1;
                 let mut xs = (wx0 - 1).div_euclid(tx) * tx + 1;
                 while xs <= wx1 {
-                    if let Some(tile) = self.read_tile(xs, ys, false)? {
-                        // overlap in wrapped source coordinates
-                        let ox0 = wx0.max(xs);
-                        let ox1 = wx1.min(xs + tx - 1);
-                        let oy0 = yy0.max(ys);
-                        let oy1 = yy1.min(ys + ty - 1);
-                        if ox1 >= ox0 && oy1 >= oy0 {
-                            let di = ((abs_x0 - x0) + (ox0 - wx0)) as usize;
-                            let dj = (oy0 - y0) as usize;
-                            let cols = (ox1 - ox0 + 1) as usize;
-                            let rows = (oy1 - oy0 + 1) as usize;
-                            for z in 0..nz {
-                                for r in 0..rows {
-                                    let src = (first_plane + z) * tile.ny * tile.nx
-                                        + ((oy0 - ys) as usize + r) * tile.nx
-                                        + (ox0 - xs) as usize;
-                                    let dst = z * nyw * nxw
-                                        + (dj + r) * nxw
-                                        + di;
-                                    out[dst..dst + cols].copy_from_slice(
-                                        &tile.data[src..src + cols],
-                                    );
-                                }
-                            }
-                        }
-                    }
+                    visits.push((ys, abs_x0, wx0, wx1, xs));
                     xs += tx;
                 }
             }
             ys += ty;
+        }
+        // Decode the tiles on every core, a bounded chunk at a time (about
+        // 1 GiB of decoded words), then paste them in visit order.  Each
+        // paste writes cells no other tile writes, so the window holds the
+        // same words the one-tile-at-a-time loop wrote, and the first
+        // failing tile in visit order is still the error returned.
+        let tile_bytes = (nz * ty as usize * tx as usize * std::mem::size_of::<i64>()).max(1);
+        let chunk = ((1usize << 30) / tile_bytes).max(1);
+        for group in visits.chunks(chunk) {
+            let tiles: Vec<Result<Option<Arc<Tile>>>> = group
+                .par_iter()
+                .map(|&(ys, _, _, _, xs)| self.read_tile_planes(xs, ys, false, first_plane, nz))
+                .collect();
+            for (&(ys, abs_x0, wx0, wx1, xs), tile) in group.iter().zip(tiles) {
+                if let Some(tile) = tile? {
+                    // overlap in wrapped source coordinates
+                    let ox0 = wx0.max(xs);
+                    let ox1 = wx1.min(xs + tx - 1);
+                    let oy0 = yy0.max(ys);
+                    let oy1 = yy1.min(ys + ty - 1);
+                    if ox1 >= ox0 && oy1 >= oy0 {
+                        let di = ((abs_x0 - x0) + (ox0 - wx0)) as usize;
+                        let dj = (oy0 - y0) as usize;
+                        let cols = (ox1 - ox0 + 1) as usize;
+                        let rows = (oy1 - oy0 + 1) as usize;
+                        for z in 0..nz {
+                            for r in 0..rows {
+                                let src = z * tile.ny * tile.nx
+                                    + ((oy0 - ys) as usize + r) * tile.nx
+                                    + (ox0 - xs) as usize;
+                                let dst = z * nyw * nxw
+                                    + (dj + r) * nxw
+                                    + di;
+                                out[dst..dst + cols].copy_from_slice(
+                                    &tile.data[src..src + cols],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
         Ok(GeogWindow {
             index: idx,

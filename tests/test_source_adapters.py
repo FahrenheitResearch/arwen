@@ -84,6 +84,7 @@ EXPECTED_SOURCE_IDS = (
     "era5-l137",
     "20crv3",
     "20crv3-cf",
+    "hex-global",
     "mapped",
 )
 ROOT = Path(__file__).parents[1]
@@ -147,6 +148,7 @@ def test_registry_covers_bound_inventory_and_external_source_routes():
         "era5-l137",
         "20crv3",
         "20crv3-cf",
+        "hex-global",
         "mapped",
     ]
     # The arbitrary-acceptance seam, asserted as a property rather than as

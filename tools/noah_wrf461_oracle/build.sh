@@ -53,6 +53,7 @@ sources=(
     phys/module_sf_noahlsm.F
     phys/module_sf_noahlsm_glacial_only.F
     phys/module_sf_noahdrv.F
+    phys/module_sf_sfcdiags.F
     run/VEGPARM.TBL
     run/SOILPARM.TBL
     run/GENPARM.TBL
@@ -95,10 +96,14 @@ gfortran -c -O0 -cpp ${defines} ${free} -fallow-argument-mismatch -I "${build_di
     "${source_root}/phys/module_sf_noahlsm_glacial_only.F"
 gfortran -c -O0 -cpp ${defines} ${free} -fallow-argument-mismatch -I "${build_dir}" \
     "${source_root}/phys/module_sf_noahdrv.F"
+# SFCDIAGS (T2, TH2, Q2), which module_surface_driver.F:2994 calls right
+# after lsm; built without HWRF, as every non-HWRF WRF build is.
+gfortran -c -O0 -cpp ${defines} ${free} -I "${build_dir}" \
+    "${source_root}/phys/module_sf_sfcdiags.F"
 gfortran -c -O0 ${free} -I "${build_dir}" "${script_dir}/run_lsm.F90"
 gfortran -o run_lsm stub_wrf.o module_model_constants.o module_wrf_error.o \
     module_sf_noahlsm.o module_sf_noahlsm_glacial_only.o \
-    module_sf_noahdrv.o run_lsm.o
+    module_sf_noahdrv.o module_sf_sfcdiags.o run_lsm.o
 # The land-ice companion: same driver, same CSV layout, every column ICE = -1.
 gfortran -c -O0 ${free} -I "${build_dir}" "${script_dir}/run_lsm_glacial.F90"
 gfortran -o run_lsm_glacial stub_wrf.o module_model_constants.o \
@@ -206,6 +211,7 @@ sha256sum "${source_root}/share/module_model_constants.F" \
     "${source_root}/phys/module_sf_noahlsm.F" \
     "${source_root}/phys/module_sf_noahlsm_glacial_only.F" \
     "${source_root}/phys/module_sf_noahdrv.F" \
+    "${source_root}/phys/module_sf_sfcdiags.F" \
     "${script_dir}/stub_wrf.F90" \
     "${script_dir}/run_lsm.F90" \
     "${script_dir}/run_lsm_glacial.F90" \

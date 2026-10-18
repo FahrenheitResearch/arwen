@@ -58,6 +58,7 @@ from gpuwm.core.grid import BaseState, VerticalCoord, rebalance_hydrostatic
 from gpuwm.core.sase_limits import E_MIN as SASE_E_MIN
 from gpuwm.core.wdm6_constants import WDM6_NUMBER_SPECIES
 from gpuwm.microphysics_schemes import scheme as _named_scheme
+from gpuwm.wrf_exact import DIAGNOSTICS_ENABLED
 
 #: Model-field dtype.  FP64 only in setup code and test references.  Keeping
 #: the scalar type available without CuPy lets the Rust/NumPy native-input
@@ -470,6 +471,9 @@ class DomainState:
         self.p = zeros(nz, ny, nx)          # full pressure
         self.al = zeros(nz, ny, nx)         # alpha'_d
         self.alt = zeros(nz, ny, nx)        # total alpha_d
+        # Allocate before restart restoration so its exact carrier is in
+        # the expected inventory, including before the first diagnostic.
+        self.p_perturbation = zeros(nz, ny, nx) if DIAGNOSTICS_ENABLED else None
 
         # Moisture mixing ratios (per unit dry mass) plus RK time-t copies.
         # The Phase-2 qv/qc/qr allocation is unchanged.  WSM6's ice mass
@@ -829,6 +833,12 @@ class DomainState:
             # cu_physics without moisture), so the advective forcing pair
             # has no consumer here either.
             self.rthften = self.rqvften = None
+
+        from gpuwm.core.physics_inventory import PBL_ADVECTED_SCALARS
+        for name, floor in PBL_ADVECTED_SCALARS.get(cfg.bl_pbl_physics, ()):
+            setattr(self, name, zeros(nz, ny, nx))
+            getattr(self, name).fill(DTYPE(floor))
+            setattr(self, name + "0", rebuilt(name + "0", nz, ny, nx))
 
         # WRF two-time-level prognostic TKE (Registry.EM_COMMON:312,
         # ``state real tke ikj dyn_em 2 - r``), the km_opt=2 carrier.
@@ -1302,6 +1312,42 @@ class DomainState:
                 "height_half() called before load_base(): the base-state "
                 "geopotential has not been loaded")
         return self._dz_min
+
+
+def adopt_wrf_theta_carrier(state) -> None:
+    """Strict mode: hold theta as WRF's ``t = theta - 300`` (``thb == 300``).
+
+    Every strict kernel reads ``thp`` as WRF's ``t_2``: the EOS diagnosis
+    (kernels/diagnostics.cu, ``theta = 300 + thp``), the specified/relaxed
+    boundary coupling under GPUWM_WRF_EXACT_C_BIGSTEP (kernels/lbc_state.cu
+    takes the coupled table as ``thp`` with no ``thb`` term) and the strict
+    diffusion storage (kernels/smag2d.cu).  The wrfinput door supplies that
+    carrier (gpuwm/ingest/wrfinput.py sets ``thb = 300``); the prepared door
+    loaded the preparation's base profile into ``thb`` (290 to 464 K on a
+    12 km GFS case), so strict mode read theta up to 164 K low and the first
+    steps went non-finite (``p`` after the first strict diagnosis, then
+    microphysics RAINNC).  This re-expresses the loaded state in WRF's
+    carrier: ``thp = (thb + thp) - 300`` in FP32, the word a default run
+    writes as history ``T``, and ``thb = 300``.
+
+    Outside strict mode, or when ``thb`` already is 300 everywhere (the
+    wrfinput door), nothing changes.  The preparation's ``thb`` is kept on
+    the host as ``_setup_thb`` so the setup fingerprint
+    (gpuwm/state_serialization_contract.py) still binds the prepared base
+    the cache recorded, not the mode's re-expression of it.
+    """
+    from gpuwm.wrf_exact import ENABLED
+    if not ENABLED:
+        return
+    t0 = np.float32(c.T0)
+    thb = state.thb
+    if bool((thb == t0).all()):
+        return
+    state._setup_thb = np.array(thb.get() if hasattr(thb, "get") else thb,
+                                dtype=np.float32, copy=True)
+    full = thb if thb.ndim == 3 else thb[:, None, None]
+    state.thp[...] = (full + state.thp) - t0
+    thb[...] = t0
 
 
 def _check_terrain_z(base: BaseState, terrain_z) -> None:

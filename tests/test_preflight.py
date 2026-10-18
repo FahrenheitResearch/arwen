@@ -121,7 +121,7 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     attribute dropped from the restart manifest is a field that silently
     vanishes across a checkpoint.
     """
-    from gpuwm.config import SASE_PBL_SCHEME
+    from gpuwm.config import CCPP_TKE_EDMF_PBL_SCHEME, SASE_PBL_SCHEME
 
     nssl_cfg = dataclasses.replace(d01_cfg, mp_physics=18)
     # km_opt=2 is the only configuration that allocates the prognostic-TKE
@@ -171,6 +171,8 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
     tkeadv_cfg = dataclasses.replace(d01_cfg, bl_pbl_physics=5,
                                      sf_sfclay_physics=5,
                                      bl_mynn_tkeadvect=True)
+    # The carried CCPP energy and its time-t copy belong to this full union.
+    ccpp_cfg = dataclasses.replace(d01_cfg, bl_pbl_physics=CCPP_TKE_EDMF_PBL_SCHEME)
     names = (set(pf.state_array_shapes(d01_cfg))
              | set(pf.state_array_shapes(tkeadv_cfg))
              | set(pf.state_array_shapes(nssl_cfg))
@@ -182,7 +184,8 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
              | set(pf.state_array_shapes(wdm6_cfg))
              | set(pf.state_array_shapes(fsbm_cfg))
              | set(pf.state_array_shapes(gf_cfg))
-             | set(pf.state_array_shapes(tempo_cfg)))
+             | set(pf.state_array_shapes(tempo_cfg))
+             | set(pf.state_array_shapes(ccpp_cfg)))
     # Strict WRF arithmetic attaches its own carriers at first write, outside
     # DomainState's allocation list (c501f4d34, lane/wrf-exact-start); they
     # are classified, so they join the union by name.
@@ -862,9 +865,26 @@ def test_strict_mode_scratch_is_priced_and_builds_a_multi_domain_arena(
         nz, ny, nx = dc.run.nz, dc.run.ny, dc.run.nx
         expected = 4 * (3 * ny * nx + nz * ny * (nx + 1)
                         + nz * (ny + 1) * nx + nz * ny * nx)
+        # A strict process also carries WRF's 3-D PBL and cumulus tendency
+        # history rows (2.9.1, physics_inventory.history_tendency_rows); a
+        # default process does not.  Each is one (nz, ny, nx) FP32 plane.
+        from gpuwm.core.physics_inventory import (CUMULUS_HISTORY_RATES,
+                                                  PBL_HISTORY_RATES)
+        tendency_names = set(PBL_HISTORY_RATES) | {"rqiblten"} | set(CUMULUS_HISTORY_RATES)
+        extra = {it.name for it in s_dom.items} - {it.name for it in d_dom.items}
+        tendency = {name for name in extra
+                    if name.split("/", 1)[-1] in tendency_names}
+        assert tendency, "a strict process carries the tendency rows"
+        expected += 4 * nz * ny * nx * len(tendency)
+        # The six 0-d SCM forcing scalars are strict-only too
+        # (physics_inventory.scm_forcing_fields): 4 B each.
+        from gpuwm.core.physics_inventory import SCM_SURFACE_FORCING_FIELDS
+        scm = {name for name in extra
+               if name.split("/", 1)[-1] in SCM_SURFACE_FORCING_FIELDS}
+        assert len(scm) == len(SCM_SURFACE_FORCING_FIELDS)
+        expected += 4 * len(scm)
         assert s_dom.resident_bytes - d_dom.resident_bytes == expected
-        assert {it.name for it in s_dom.items} - {
-            it.name for it in d_dom.items} == set(_STRICT_SLOTS)
+        assert extra - tendency - scm == set(_STRICT_SLOTS)
 
 
 def test_smag_coefficients_alias_acoustic_backings(monkeypatch):
@@ -901,6 +921,26 @@ def test_smag_coefficients_alias_acoustic_backings(monkeypatch):
         4 * math.prod(flagship_shapes[slot])
         for slot in ("smag_km", "smag_kh"))
     assert removed == 141_120_000
+
+
+@pytest.mark.parametrize("strict,diff_opt,shared", [(True,1,False),(False,1,True),(True,2,True)])
+def test_coordinate_scalar_coefficient_survives_the_acoustic_loop(monkeypatch,strict,diff_opt,shared):
+    """Acoustic gamma must not overwrite the deferred coordinate Kh."""
+    import types
+    import gpuwm.core.state as state_mod
+    monkeypatch.setattr(state_mod,"cp",np)
+    monkeypatch.setattr(pf,"WRF_EXACT",strict)
+    cfg=RunConfig(**{**_TINY,"nx":12,"ny":10,"nz":8},
+                  moist=True,mp_physics=10,km_opt=4,diff_opt=diff_opt)
+    domains=(types.SimpleNamespace(run=cfg),)
+    shapes=pf.shared_scratch_arena_shapes(domains)
+    arena=state_mod.build_shared_scratch_arena(domains)
+    kh=arena.view(shapes["smag_kh"],"smag_kh")
+    gamma=arena.view(shapes["acoustic_gamma"],"acoustic_gamma")
+    kh[...] = np.float32(.125)
+    gamma[...] = np.float32(9)
+    assert np.shares_memory(kh,gamma) == shared
+    np.testing.assert_array_equal(kh,np.float32(9 if shared else .125))
 
 
 def _scan_scratch_tree(tree, rel):
@@ -1507,6 +1547,57 @@ def test_experimental_thompson_scratch_registry_is_complete():
             "mp_thompson_graupel_number_shadow",
             "mp_thompson_micro_columns"):
         assert pf.scratch_slot_uses_arena(slot)
+
+
+
+def test_strict_classic_thompson_scratch_registry_is_complete(monkeypatch):
+    """Under GPUWM_WRF_EXACT=1, mp=8's priced scratch is exactly what
+    apply_classic draws (a default process prices 2.9.1's adapter, above).
+
+    Breakage prevented: a slot the adapter draws that the registry does not
+    price is memory the fit gate never charged; a slot priced but not drawn
+    reserves memory the run never uses.  The classic unit's working set is
+    plane-stacked (planes*levels, ny, nx): eleven tendencies and eighteen
+    working fields per level, eleven column profiles per interface level.
+    """
+    from gpuwm.core import thompson_classic as tcl
+    monkeypatch.setattr(pf, "WRF_EXACT", True)
+    cfg = RunConfig(**_TINY, moist=True, mp_physics=8)
+    slots = pf.scratch_slot_registry(cfg)
+    mass = (cfg.nz, cfg.ny, cfg.nx)
+    surface = (cfg.ny, cfg.nx)
+    expected = {
+        "mp_th": mass,
+        "mp_pii": mass,
+        "mp_dz8w": mass,
+        "mp_thompson_temperature": mass,
+        "mp_thompson_saved_theta": mass,
+        "mp_thompson_graupel_number_shadow": mass,
+        "mp_thompson_classic_ten": (tcl.NTEN * cfg.nz, cfg.ny, cfg.nx),
+        "mp_thompson_classic_work": (tcl.NWORK * cfg.nz, cfg.ny, cfg.nx),
+        "mp_thompson_classic_colbuf": (tcl.NCOLPLANES * (cfg.nz + 1),
+                                       cfg.ny, cfg.nx),
+        "mp_thompson_classic_flags": mass,
+        "mp_thompson_classic_micro": surface,
+        "mp_thompson_classic_kmelt": surface,
+        "mp_rainnc": surface,
+        "mp_rainncv": surface,
+        "mp_snownc": surface,
+        "mp_snowncv": surface,
+        "mp_graupelnc": surface,
+        "mp_graupelncv": surface,
+        "mp_sr": surface,
+        "refl_10cm": mass,
+    }
+    assert expected.items() <= slots.items()
+    # the old adapter's slots are gone from mp=8's price
+    for gone in ("mp_z8w", "refl_t", "mp_thompson_micro_columns",
+                 "mp_thompson_frozen_reference_density",
+                 "mp_thompson_snow_velocity_boost"):
+        assert gone not in slots, gone
+    for slot in expected:
+        if slot.startswith("mp_thompson_"):
+            assert pf.scratch_slot_uses_arena(slot), slot
 
 
 # ---------------------------------------------------------------------------
@@ -3554,27 +3645,28 @@ def test_estimate_domain_itemization_pins(exp1):
     # RULINGS 1 (history CLDFRA, 2.8.7): physics holds the radiation cloud
     # fraction the history publishes, one (nz, ny, nx) FP32 buffer,
     # 4*49*200*250 = 9,800,000 B on top of the previous 276,106,760-B pin.
-    assert by_cat == {
-        "state": 573358148,
-        "physics": 285906760,
-        # KF hold + expiry mask + ring-guard saves, plus the v1.1
-        # co-located vertical-CFL reduction field: one extra FP32 word in
-        # each of the 256 `integration_health_partial` blocks and in the
-        # single `health_final` block, 4 * (256 + 1) = 1,028 B.  Batched YSU
-        # validation adds one four-byte scratch status word.  The strict
-        # health gate's rim geometry table (a677ad4e1) adds
-        # integration_health_rim, (1024, 3) FP32 words = 12,288 B.
-        "scratch": 596986868,
-        "lbc": 67091504,
-        "nest": 0,
-        # _prepare_atmosphere also allocates rho: 4*49*200*250 bytes.
-        "transient": 451062500,
-    }
+    # 2.9.1: the exact chain's 3-D PBL and cumulus tendency history rows are
+    # strict-only (physics_inventory.history_tendency_rows): thirteen
+    # 4*49*200*250 planes, 127,400,000 B, leave the default pin.
+    # The six 0-d SCM forcing scalars (24 B) are strict-only too (scm_forcing_fields).
+    # 2.9.2 (rrtmgp-rows): the default RTE+RRTMGP radiation carries WRF's
+    # top/bottom fluxes, 16 instantaneous + 16 AC* planes, and COSZEN: 33
+    # 4*200*250 planes, 6,600,000 B of physics.  Its call transients add the
+    # (16, ncol) flux stack 3,200,000 B and one chunk's clear-sky solve:
+    # three (3125, 50) flux outputs 1,875,000 B, the (3125, 256) LW incident
+    # plane 3,200,000 B and the (3125, 49, 16) zero band cloud 9,800,000 B,
+    # 18,075,000 B of transient.
+    assert by_cat == {'state': 573358148,
+ 'physics': 313706760,
+ 'scratch': 597187064,
+ 'lbc': 67091504,
+ 'nest': 0,
+ 'transient': 469137500}
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1523343280
+    assert d01.resident_bytes == 1551343476
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
-    assert d01.transient_bytes == 451062500
+    assert d01.transient_bytes == 469137500
 
 
 @requires_4dom_inputs
@@ -3744,7 +3836,11 @@ def test_d01_calibration_bounds_measured_fixture(exp1):
     # of the historical 1.47-GiB peak; the held CLDFRA buffer (RULINGS 1,
     # 2.8.7) adds 9,800,000 B, 1,523,330,992 B or 96.5 %.
     # This comparison does not turn that old run into a new measurement.
-    ratio = est.domains[0].resident_bytes / measured
+    # The six 0-d SCM forcing scalars (24 B) are strict-only too (scm_forcing_fields).
+    assert est.domains[0].resident_bytes == 1551343476
+    # Compare the recorded pre-intake residency to its historical measurement.
+    # New history carriers are separately priced above; this is no new pool measurement.
+    ratio = 1523343280 / measured
     assert 0.95 <= ratio <= 0.97
 
 
@@ -4449,7 +4545,8 @@ def test_check_cli_legacy_config_wraps(capsys):
     # default-on CQ faces add 29,688,200 B, and the held CLDFRA buffer
     # 9,800,000 B (RULINGS 1). The strict health rim table (a677ad4e1) adds
     # 12,288 B.
-    assert payload["domains"]["d01"]["resident_bytes"] == 1523343280
+    # The six 0-d SCM forcing scalars (24 B) are strict-only too (scm_forcing_fields).
+    assert payload["domains"]["d01"]["resident_bytes"] == 1551343476
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,
@@ -4868,6 +4965,9 @@ def test_legacy_rrtmg_variant_prices_the_lw_chain_local_frame():
     # "noah_mosaic" joined the same way (2026-09-30): the Noah mosaic column
     # launches only as gpuwm/core/noah_mosaic.py's own -fmad=false unit,
     # priced as noah_mosaic_unit.
+    # "thompson_fork" joined 2026-10-07 the same way: the fork Thompson
+    # column launches only as gpuwm/core/thompson_fork.py's own unit,
+    # priced as thompson_fork_unit.
     covered = frozenset().union(
         *(tu.covers for tu in pf.CHAINED_TRANSLATION_UNIT_FRAMES.values()))
     assert covered == {
@@ -4875,7 +4975,8 @@ def test_legacy_rrtmg_variant_prices_the_lw_chain_local_frame():
         "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09",
         "rrtmg_lw_taugb13_16", "p3", "urban_bep_bem",
         "terrain_drag",
-        "rrtmg_lw_chain_coalesced", "rrtmg_lw_zbatched", "noah_mosaic"}
+        "rrtmg_lw_chain_coalesced", "rrtmg_lw_zbatched", "noah_mosaic",
+        "thompson_fork"}
     assert covered <= pf.UNMEASURED_KERNEL_MODULES
     assert not modules & pf.UNMEASURED_KERNEL_MODULES
 
@@ -5728,11 +5829,20 @@ def test_the_recorded_local_frames_match_the_driver():
 
     observed = {}
     uncompilable = set()
+    from gpuwm.core.kernels import _DEFAULT_SOURCE_MODULES
     for path in sorted(kdir.glob("*.cu")):
-        if path.stem == "noah_mosaic":
+        if path.stem in {f"{m}_default" for m in _DEFAULT_SOURCE_MODULES}:
+            # A default process's text of <module>, compiled and priced
+            # under <module>'s own name (kernels._unit_text).
+            continue
+        if path.stem in ("noah_mosaic", "thompson_fork"):
             # Both mosaic launchers have dedicated --fmad=false composed
             # loaders and measured chained rows. The generic C++17 image
             # compiles, but no driver launches it and it has no frame row.
+            # The fork Thompson unit is the same shape: it launches only
+            # through gpuwm/core/thompson_fork.py's own compile, priced as
+            # the chained unit thompson_fork_unit and re-read by
+            # tests/test_thompson_fork_column_gpu.py.
             uncompilable.add(path.stem)
             continue
         try:

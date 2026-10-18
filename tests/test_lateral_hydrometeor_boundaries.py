@@ -526,6 +526,9 @@ def test_the_resident_door_refuses_what_the_tables_push_over_the_card(
     from gpuwm.ingest.memory_refusal import ResidentMemoryRefused
 
     monkeypatch.delenv(MEMORY_GATE_OVERRIDE_ENV, raising=False)
+    # The tables at the width the run walks: narrowing the MYNN width to
+    # fit (A3c, test_rank_pool_residue) is a different question.
+    monkeypatch.setattr(pf, "mynn_width_adjustable", lambda exp: False)
     exp = _hrrr_demo()
     vapour = pf.admission_estimate(exp)
     carrying = pf.admission_estimate(exp, source="hrrr")

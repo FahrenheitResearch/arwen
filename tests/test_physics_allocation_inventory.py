@@ -514,6 +514,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # the commit that adds the module, per the rule this file states,
     # rather than in a later sweep.
     'gpuwm/core/moist_n2_mutation.py': {},
+    # Classic Thompson (mp=8, lane/parity-mp-libm).  Zero: every working
+    # array of the unit is a named DomainState.scratch slot apply_classic
+    # draws (priced by preflight from thompson_classic's own slot lists).
+    'gpuwm/core/thompson_classic.py': {},
     # Milbrandt-Yau (mp_physics=9).  Zero, and deliberately so: every one of
     # the thirteen scratch volumes the six kernels pass to one another is a
     # named ``DomainState.scratch`` slot the adapter owns, so the allocation
@@ -525,6 +529,11 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # or per call; ``launch_milbrandt2`` reads it and never rebinds it.
     'gpuwm/core/milbrandt2.py': {},
     'gpuwm/core/morrison.py': {
+        # The two-moment launcher's standalone fallbacks: the four radii
+        # (one cp.empty_like comprehension), the WORK stack and the LTRUE
+        # column flag, each only when the caller hands none.  apply() hands
+        # the morr_work / morr_ltrue scratch slots, so a forecast step
+        # allocates nothing here.
         'launch_morrison': 3,
     },
     # MYJ (the 2/2 pair).  Entered here by the commit that closed the MYJ
@@ -710,7 +719,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # The resident tick-zero analysis field is one caller-owned FP32 mass
     # volume, 4 bytes per cell. Streamed history selects host NumPy zeros
     # instead, so the restored full-domain metadata path opens no GPU store.
-    'gpuwm/core/refl.py': {'analysis_refl_10cm': 1},
+    # launch_refl10cm_wsm6: the WSM6 reflectivity column workspace (lane/292-mem-cuts 052440f32b4), three
+    # per-call arrays (5 float32, 4 float64 and 1 uint8 rows per level) sized for the columns in flight, one
+    # tile (wsm6_tile_columns: the card's resident capacity), returned to the pool when the call ends.
+    'gpuwm/core/refl.py': {'analysis_refl_10cm': 1, 'launch_refl10cm_wsm6': 3},
     # WRF v4.7.1 slope_rad / topo_shading (lane 281-namelist-gaps), only on a
     # domain that turns slope_rad on.  ``__init__`` allocates the carrier's
     # held planes once per domain -- diffuse_frac, topo_coszen, hrang and
@@ -941,7 +953,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # did not, and the gate was red for it on every box since
     # (proof/node-reds-276).
     'gpuwm/core/wdm6.py': {'launch_wdm6': 1},
-    'gpuwm/core/wsm6.py': {},
+    # launch_wsm6: the column workspace that replaced the per-thread local frame (lane/292-mem-cuts
+    # 052440f32b4), one per call, wsm6_workspace_rows(nz) float32 rows for the columns in flight (one tile,
+    # at most the card's resident capacity), returned to the pool when the call ends.
+    'gpuwm/core/wsm6.py': {'launch_wsm6': 1},
     # WSM3 init words are one 25-word constant table per device,
     # uploaded with cp.asarray, which this raw allocator scanner excludes.
     # All timestep fields use DomainState scratch.
@@ -996,6 +1011,15 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         # commit's preflight row.
         'launch_ysu': 10,
     },
+
+    # Physics constructor allocations are fixed domain/soil/history carriers,
+    # priced by physics_inventory_census. Default WSM6 delegates its kernels
+    # to the common loader and has no per-call allocation.
+    'gpuwm/core/physics.py': {'couple_sase_w_tendency': 1, 'scalar': 1, 'zeros': 3, 'materialize': 2, 'couple_column_tendencies': 5, '_physics_exner': 1, '_prepare_atmosphere': 1, '__init__': 21, 'zero_surface': 1, '_run_cumulus': 8, '_compose_tendencies': 1, '_run_sfclay': 4, '_run_myj_pbl': 1, '_run_ysu': 2, '_ysu_scalar_pblmix': 1, '_run_shinhong': 2, '_run_sase': 2, '_zero_accumulator': 1, '_attach_urban': 2, 'initialize_physics': 35},
+
+    # Physics constructor allocations are fixed domain/soil/history carriers,
+    # priced by physics_inventory_census. Default WSM6 delegates its kernels
+    # to the common loader and has no per-call allocation.
 }
 
 
@@ -1417,6 +1441,24 @@ _PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['cal_cldfra2'] = 1
 # captured as a graph (2.9.0 round 2): one zero-length float32 coordinate pair
 # per radiation call, 0 bytes; the radconst output it reads is solar.py's.
 _PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_solar_constant_device'] = 1
+# OLR at the top of the radiation column (2.9.1, rrtmgp-edge-olr): one
+# (ncol,) float32 per longwave call, released with it.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['__call__'] += 1
+# The Morrison edge-ring mask (2.9.1, rrtmgp-edge-olr): one (ny, nx) bool per
+# domain shape, built once and cached on the adapter; the ring columns the
+# microphysics never runs on size their cloud from their own moments.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_microphysics_columns'] = 1
+# WRF's top/bottom boundary fluxes on RTE+RRTMGP (2.9.2, rrtmgp-rows): one
+# (rows, ncol) float32 stack per call, 8 rows per spectrum run, released with
+# the call (columns/boundary_fluxes); and the clear-sky SW solve's zero band
+# cloud optics, one (chunk, nlay, nband) float32 per SW chunk
+# (columns/clear_sky_cloud).  The clear-sky solves' flux outputs allocate
+# inside _lw_rte/_sw_rte (out=None), already counted there.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['__call__'] += 1
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/rrtmgp.py']['_clear_sky_cloud'] = 1
+# WRF's ocean mixed layer (2.9.1): initialize_ocean fills an absent (ny, nx)
+# mixed-layer field once at domain start, a persistent driver field.
+_PHYSICS_ALLOCATION_INVENTORY['gpuwm/core/surface_ocean.py'] = {'initialize_ocean': 1}
 
 
 def _live_inventory() -> dict[str, dict[str, int]]:

@@ -1,0 +1,1650 @@
+{
+    "shared_gates":  {
+                         "registry":  [
+                                          "tools/build_registry.py",
+                                          "--check"
+                                      ],
+                         "ftz_routes":  [
+                                            "-m",
+                                            "tools.ftz_receipt.route_inventory",
+                                            "--check"
+                                        ],
+                         "ftz_census":  [
+                                            "-m",
+                                            "tools.ftz_receipt.claim_census",
+                                            "--check"
+                                        ],
+                         "kernel_manifest":  [
+                                                 "-m",
+                                                 "pytest",
+                                                 "-q",
+                                                 "tests/test_kernel_manifest.py",
+                                                 "tests/test_build_registry.py",
+                                                 "tests/test_provenance_wire.py"
+                                             ],
+                         "stack_conflicts":  [
+                                                 "-m",
+                                                 "pytest",
+                                                 "-q",
+                                                 "tests/test_verify_lanes_stack_conflicts.py"
+                                             ],
+                         "ftz_statement":  [
+                                               "-m",
+                                               "tools.ftz_receipt.render_statement",
+                                               "--check"
+                                           ],
+                         "registry_history":  [
+                                                  "tools/registry_physics_history.py",
+                                                  "--check"
+                                              ]
+                     },
+    "lanes":  [
+                  {
+                      "branch":  "lane/verify-base5",
+                      "take":  true,
+                      "reason":  "Required round-3 base and scorer",
+                      "tip":  "74f3c71ead7c931a696ecbce7dd3d82eb7518c90",
+                      "tests":  [
+                                    "tests/test_health.py",
+                                    "tests/test_wrf_exact_round3.py",
+                                    "tests/test_combo_sweep_round2_refusals.py",
+                                    "tests/test_verify_exact_compare.py"
+                                ],
+                      "gpu_tests":  [
+                                        "tests/test_health.py",
+                                        "tests/test_wrf_exact_round3.py",
+                                        "tests/test_combo_sweep_round2_refusals.py",
+                                        "tests/test_verify_exact_compare.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_advect_wrf_exact.py",
+                                    "tests/test_advect_wrf_legacy_parity.py",
+                                    "tests/test_combo_sweep_generator.py",
+                                    "tests/test_combo_sweep_round2_fixes.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_mynn_gsd41_selection.py",
+                                    "tests/test_preflight.py",
+                                    "tests/test_registry_physics_identity.py",
+                                    "tests/test_rk_addtend_dry_map_factors.py",
+                                    "tests/test_scalar_pblmix_wrf461_resolution.py",
+                                    "tests/test_verify_exact_compare.py",
+                                    "tests/test_verify_exact_fixtures.py",
+                                    "tests/test_verify_exact_replay_setup.py",
+                                    "tests/test_verify_exact_scoring_holes.py",
+                                    "tests/test_wrf_direct.py",
+                                    "tests/test_wrf_exact_diffusion.py",
+                                    "tests/test_wrf_exact_ieva_theta.py",
+                                    "tests/test_wrf_exact_operation_order_gpu.py",
+                                    "tests/test_wrfinput_adapter.py",
+                                    "tests/test_wrfinput_start_base_wrf461.py"
+                                ],
+                      "branch":  "lane/verify-base3",
+                      "tip":  "adfdeff7cd5abd76f8936408221e4b7e5c16b95e",
+                      "reason":  "Carried by verify-base5",
+                      "take":  false,
+                      "gpu_tests":  [
+                                        "tests/test_advect_wrf_legacy_parity.py",
+                                        "tests/test_wrf_exact_operation_order_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_combo_sweep_generator.py",
+                                    "tests/test_verify_exact_compare.py",
+                                    "tests/test_verify_exact_fixtures.py",
+                                    "tests/test_verify_exact_replay_setup.py",
+                                    "tests/test_verify_exact_scoring_holes.py"
+                                ],
+                      "branch":  "lane/verify-exact-tool-crash",
+                      "tip":  "3926a4108277479582b554efadc34338e9c249b9",
+                      "reason":  "Carried by verify-base5",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_smag2d_wrf461_column_oracle.py",
+                                    "tests/test_wrf_exact_diffusion.py",
+                                    "tests/test_wrf_exact_diffusion_default.py"
+                                ],
+                      "branch":  "lane/verify-km-opt-4-smagorinsky-2d",
+                      "tip":  "1e5167e24797b9b9659f7e68c715e3b735a66d27",
+                      "reason":  "Separate diffusion task",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_diff_opt1_wrf471.py",
+                                    "tests/test_km3_wrf461_column_oracle.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_smag3d.py"
+                                ],
+                      "branch":  "lane/verify-km-opt-3-smagorinsky-3d",
+                      "tip":  "5b36daae065cb30e093f15a46fcfa50ece4dcc3b",
+                      "reason":  "Separate diffusion task",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_tke_km2_wrf461_column_oracle.py"
+                                ],
+                      "branch":  "lane/verify-km-opt-2-tke-1-5",
+                      "tip":  "d4d73030a5d0209406aa7b7ae8c88ceff2a26b9d",
+                      "reason":  "Separate diffusion task",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_checkpoint_config_echo.py",
+                                    "tests/test_chem_config.py",
+                                    "tests/test_config.py",
+                                    "tests/test_config_freeze.py",
+                                    "tests/test_constant_diffusion_wrf471_parity.py",
+                                    "tests/test_diff6.py",
+                                    "tests/test_diff_opt1_wrf471.py",
+                                    "tests/test_experiment.py",
+                                    "tests/test_km1_wrf461_oracle.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_noah_mosaic_config.py",
+                                    "tests/test_preflight.py",
+                                    "tests/test_registry_physics_identity.py",
+                                    "tests/test_smag3d.py"
+                                ],
+                      "branch":  "lane/verify-km-opt-1-constant-k",
+                      "tip":  "a8e3592383b2e3c9717c45b23cdbc49ed6755a26",
+                      "reason":  "Separate diffusion task",
+                      "take":  false,
+                      "gpu_tests":  [
+                                        "tests/test_constant_diffusion_wrf471_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_diff6_wrf461_column_oracle.py",
+                                    "tests/test_mp8_frozen.py"
+                                ],
+                      "branch":  "lane/verify-sixth-order-diffusion",
+                      "tip":  "d290ade892f97ab445359bb7357ffa45014f451f",
+                      "reason":  "Skipped because numerical code conflicts without separate diffusion lanes",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_upper_damping_wrf461_oracle.py"
+                                ],
+                      "branch":  "lane/verify-upper-damping",
+                      "tip":  "938eee89f17594cc63ad62ff2e129f77f03599cb",
+                      "reason":  "Skipped because numerical code conflicts without separate diffusion lanes",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_diffopt1_wrf461_column_oracle.py"
+                                ],
+                      "branch":  "lane/verify-diff-opt-1-coordinate",
+                      "tip":  "afe3a4fef39e64087562ff157ccc5d79f410881b",
+                      "reason":  "Separate diffusion task",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_km_opt0_null_operator_gpu.py"
+                                ],
+                      "branch":  "lane/verify-km-opt-0-closure-supplied",
+                      "tip":  "661e76b3ccaf87ff4091688526249b60b1df0ee9",
+                      "reason":  "Separate diffusion task",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kessler_wrf461_parity.py",
+                                    "tests/test_mp8_frozen.py"
+                                ],
+                      "branch":  "lane/verify-kessler-mp1",
+                      "tip":  "b3bc269d24050cc16c630a53b8cca03c99a5c956",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kessler_wrf461_parity.py",
+                                        "tests/test_mp8_frozen.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kessler_refute_columns.py",
+                                    "tests/test_kessler_wrf461_parity.py",
+                                    "tests/test_mp8_frozen.py"
+                                ],
+                      "branch":  "lane/verify-kessler-mp1-refute",
+                      "tip":  "5a90b281d4db279994fa872d69267db8e5ed63af",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kessler_refute_columns.py",
+                                        "tests/test_kessler_wrf461_parity.py",
+                                        "tests/test_mp8_frozen.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_local_bounds.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_wsm6_wrf461_column_exact.py"
+                                ],
+                      "branch":  "lane/verify-wsm6-mp6",
+                      "tip":  "2576951371d5569b4fea2ca9b8d9c8e02b590ab2",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_local_bounds.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_wsm6_wrf461_column_exact.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_local_bounds.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_wsm6_wrf461_column_exact.py"
+                                ],
+                      "branch":  "lane/verify-wsm6-mp6-refute",
+                      "tip":  "b9076d4cab98fb1c35b879c94bd814ca346cb6ce",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_local_bounds.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_wsm6_wrf461_column_exact.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_wdm6.py",
+                                    "tests/test_wdm6_column.py",
+                                    "tests/test_wdm6_sedimentation.py",
+                                    "tests/test_wdm6_wrf461_oracle.py"
+                                ],
+                      "branch":  "lane/verify-wdm6-mp16",
+                      "tip":  "be69f8994d169ac4019a29cc762c94c286da41f6",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_wdm6.py",
+                                        "tests/test_wdm6_column.py",
+                                        "tests/test_wdm6_sedimentation.py",
+                                        "tests/test_wdm6_wrf461_oracle.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_local_bounds.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_kf_morrison_interface.py",
+                                    "tests/test_morr_rimed_ice.py",
+                                    "tests/test_morrison.py",
+                                    "tests/test_morrison_finite_conservation.py",
+                                    "tests/test_morrison_regime_oracle.py",
+                                    "tests/test_morrison_snow_ratio_bound.py",
+                                    "tests/test_morrison_speed_prepare.py",
+                                    "tests/test_morrison_work_chunking.py",
+                                    "tests/test_morrison_wrf461_parity.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_physics_allocation_inventory.py",
+                                    "tests/test_preflight.py",
+                                    "tests/test_sr_expression_family.py",
+                                    "tests/test_streamed_admission.py"
+                                ],
+                      "branch":  "lane/verify-morrison-mp10",
+                      "tip":  "0577036f0679ae3646ced5b8dd7bc3dbbfe03c10",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_local_bounds.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_kf_morrison_interface.py",
+                                        "tests/test_morr_rimed_ice.py",
+                                        "tests/test_morrison.py",
+                                        "tests/test_morrison_finite_conservation.py",
+                                        "tests/test_morrison_regime_oracle.py",
+                                        "tests/test_morrison_snow_ratio_bound.py",
+                                        "tests/test_morrison_speed_prepare.py",
+                                        "tests/test_morrison_work_chunking.py",
+                                        "tests/test_morrison_wrf461_parity.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_physics_allocation_inventory.py",
+                                        "tests/test_preflight.py",
+                                        "tests/test_sr_expression_family.py",
+                                        "tests/test_streamed_admission.py"
+                                    ],
+                      "retired_tests":  [
+                                            "tests/test_morrison_speed_finalize.py",
+                                            "tests/test_morrison_speed_sediment.py"
+                                        ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_ensemble_batch_physics.py",
+                                    "tests/test_ensemble_native_decline_gpu.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_local_bounds.py",
+                                    "tests/test_kernel_manifest.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_kf_morrison_interface.py",
+                                    "tests/test_morr_rimed_ice.py",
+                                    "tests/test_morrison.py",
+                                    "tests/test_morrison_finite_conservation.py",
+                                    "tests/test_morrison_speed_prepare.py",
+                                    "tests/test_morrison_wrf461_parity.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_physics_allocation_inventory.py",
+                                    "tests/test_preflight.py",
+                                    "tests/test_real_init.py",
+                                    "tests/test_thompson_adapter_composition.py",
+                                    "tests/test_thompson_aerosol_adapter.py",
+                                    "tests/test_thompson_mp8_regime_columns_gpu.py",
+                                    "tests/test_thompson_real_column_host_parity.py",
+                                    "tests/test_wsm6_wrf461_gpu_parity.py",
+                                    "tests/test_thompson_finish_rounding_gpu.py"
+                                ],
+                      "branch":  "lane/verify-thompson-mp8",
+                      "tip":  "4970c4d27bfd14808a83b766ee396f1a017f6d92",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_ensemble_batch_physics.py",
+                                        "tests/test_ensemble_native_decline_gpu.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_local_bounds.py",
+                                        "tests/test_kernel_manifest.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_kf_morrison_interface.py",
+                                        "tests/test_morr_rimed_ice.py",
+                                        "tests/test_morrison.py",
+                                        "tests/test_morrison_finite_conservation.py",
+                                        "tests/test_morrison_speed_prepare.py",
+                                        "tests/test_morrison_wrf461_parity.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_physics_allocation_inventory.py",
+                                        "tests/test_preflight.py",
+                                        "tests/test_real_init.py",
+                                        "tests/test_thompson_adapter_composition.py",
+                                        "tests/test_thompson_aerosol_adapter.py",
+                                        "tests/test_thompson_mp8_regime_columns_gpu.py",
+                                        "tests/test_thompson_real_column_host_parity.py",
+                                        "tests/test_wsm6_wrf461_gpu_parity.py",
+                                        "tests/test_thompson_finish_rounding_gpu.py"
+                                    ],
+                      "retired_tests":  [
+                                            "tests/test_morrison_speed_finalize.py",
+                                            "tests/test_morrison_speed_sediment.py"
+                                        ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_milbrandt2_contract.py",
+                                    "tests/test_milbrandt2_wrf461_exact_gpu.py"
+                                ],
+                      "branch":  "lane/verify-milbrandt2mom-mp9",
+                      "tip":  "aa72f26d5047b91f2b9703372006e794971e929b",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_milbrandt2_contract.py",
+                                        "tests/test_milbrandt2_wrf461_exact_gpu.py"
+                                    ],
+                      "retired_tests":  [
+                                            "tests/test_milbrandt2_speed_shared.py"
+                                        ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_nssl2_column_oracle.py",
+                                    "tests/test_nssl2_contract.py",
+                                    "tests/test_nssl2_default_hooks.py",
+                                    "tests/test_nssl2_driver_support.py",
+                                    "tests/test_nssl2_fused_gs.py",
+                                    "tests/test_nssl2_gpu.py",
+                                    "tests/test_nssl2_nucond_diagnostics.py",
+                                    "tests/test_nssl2_production_coordinator.py",
+                                    "tests/test_nssl2_speed_fused_sediment.py",
+                                    "tests/test_nssl2_speed_gamma.py",
+                                    "tests/test_nssl2_speed_graph.py",
+                                    "tests/test_nssl2_speed_rain.py",
+                                    "tests/test_nssl2_speed_small.py",
+                                    "tests/test_nssl2_variants_gpu.py"
+                                ],
+                      "branch":  "lane/verify-nssl2-mp18",
+                      "tip":  "b436e0f4d5dffa2fc23081a280afc82d54160536",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_nssl2_column_oracle.py",
+                                        "tests/test_nssl2_contract.py",
+                                        "tests/test_nssl2_default_hooks.py",
+                                        "tests/test_nssl2_driver_support.py",
+                                        "tests/test_nssl2_fused_gs.py",
+                                        "tests/test_nssl2_gpu.py",
+                                        "tests/test_nssl2_nucond_diagnostics.py",
+                                        "tests/test_nssl2_production_coordinator.py",
+                                        "tests/test_nssl2_speed_fused_sediment.py",
+                                        "tests/test_nssl2_speed_gamma.py",
+                                        "tests/test_nssl2_speed_graph.py",
+                                        "tests/test_nssl2_speed_rain.py",
+                                        "tests/test_nssl2_speed_small.py",
+                                        "tests/test_nssl2_variants_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_manifest.py",
+                                    "tests/test_p3_cuda_gpu.py",
+                                    "tests/test_p3_front_door.py",
+                                    "tests/test_p3_port.py",
+                                    "tests/test_p3_wrf461_oracle_gpu.py",
+                                    "tests/test_p3_wrf461_rain_tables.py"
+                                ],
+                      "branch":  "lane/verify-p3-mp50",
+                      "tip":  "69afc98b0f048aba68df78a7885dda32fcc5d8dd",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_manifest.py",
+                                        "tests/test_p3_cuda_gpu.py",
+                                        "tests/test_p3_front_door.py",
+                                        "tests/test_p3_port.py",
+                                        "tests/test_p3_wrf461_oracle_gpu.py",
+                                        "tests/test_p3_wrf461_rain_tables.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_tempo_column_oracle_gpu.py",
+                                    "tests/test_tempo_device_libm.py",
+                                    "tests/test_tempo_runtime_gpu.py"
+                                ],
+                      "branch":  "lane/verify-tempo",
+                      "tip":  "2dc591c9dddb135324590b560f4521a2c769a4b8",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_tempo_column_oracle_gpu.py",
+                                        "tests/test_tempo_device_libm.py",
+                                        "tests/test_tempo_runtime_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_tempo_column_oracle_gpu.py",
+                                    "tests/test_tempo_device_libm.py",
+                                    "tests/test_tempo_runtime_gpu.py"
+                                ],
+                      "branch":  "lane/verify-tempo-refute",
+                      "tip":  "fd5d5643443ed6577e98e10bd80b7bc46dbdd75c",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_tempo_column_oracle_gpu.py",
+                                        "tests/test_tempo_device_libm.py",
+                                        "tests/test_tempo_runtime_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_devices_memory_pools.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_local_bounds.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_preflight.py",
+                                    "tests/test_thompson_fork_assets.py",
+                                    "tests/test_thompson_fork_column.py",
+                                    "tests/test_thompson_fork_column_gpu.py",
+                                    "tests/test_thompson_fork_tables_lock.py",
+                                    "tests/test_thompson_wrf39.py",
+                                    "tests/test_thompson_wrf39_rain_fallout_gpu.py"
+                                ],
+                      "branch":  "lane/verify-thompson-mp28-noaa-fork-generation",
+                      "tip":  "1b14dfc045944671273920d80a21a50f42270ceb",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_devices_memory_pools.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_local_bounds.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_preflight.py",
+                                        "tests/test_thompson_fork_assets.py",
+                                        "tests/test_thompson_fork_column.py",
+                                        "tests/test_thompson_fork_column_gpu.py",
+                                        "tests/test_thompson_fork_tables_lock.py",
+                                        "tests/test_thompson_wrf39.py",
+                                        "tests/test_thompson_wrf39_rain_fallout_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_physics_allocation_inventory.py",
+                                    "tests/test_thompson_aerosol_adapter.py",
+                                    "tests/test_thompson_aerosol_cold_gpu.py",
+                                    "tests/test_thompson_aerosol_device_helpers.py",
+                                    "tests/test_thompson_aerosol_libm.py",
+                                    "tests/test_thompson_aerosol_sat_gpu.py",
+                                    "tests/test_thompson_aerosol_state_gpu.py",
+                                    "tests/test_thompson_aerosol_warm_gpu.py",
+                                    "tests/test_thompson_fork_plain_powf_receipt.py",
+                                    "tests/test_thompson_wrf39.py",
+                                    "tests/test_thompson_wrf39_rain_fallout_gpu.py"
+                                ],
+                      "branch":  "lane/verify-thompson-aerosol-mp28",
+                      "tip":  "e5302f46ed2b3e66a1023004631f1af1c5acc71e",
+                      "reason":  "Held for separate mp28fix chain",
+                      "take":  false,
+                      "gpu_tests":  [
+                                        "tests/test_thompson_aerosol_cold_gpu.py",
+                                        "tests/test_thompson_aerosol_sat_gpu.py",
+                                        "tests/test_thompson_aerosol_state_gpu.py",
+                                        "tests/test_thompson_aerosol_warm_gpu.py",
+                                        "tests/test_thompson_wrf39_rain_fallout_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_terrain_drag_wrf471_parity.py",
+                                    "tests/test_ysu.py",
+                                    "tests/test_ysu_bep_rural_drag.py",
+                                    "tests/test_ysu_bep_wrf471_parity.py",
+                                    "tests/test_ysu_wrf461_parity.py",
+                                    "tests/test_ysu_wrf461_wide_parity.py"
+                                ],
+                      "branch":  "lane/verify-ysu",
+                      "tip":  "ac94373510bc81b793c24b05f8d324b10c93ce2c",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_terrain_drag_wrf471_parity.py",
+                                        "tests/test_ysu.py",
+                                        "tests/test_ysu_bep_rural_drag.py",
+                                        "tests/test_ysu_bep_wrf471_parity.py",
+                                        "tests/test_ysu_wrf461_parity.py",
+                                        "tests/test_ysu_wrf461_wide_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_registry_physics_identity.py",
+                                    "tests/test_shinhong_column_oracle.py",
+                                    "tests/test_shinhong_runtime.py",
+                                    "tests/test_shinhong_wrf461_parity.py"
+                                ],
+                      "branch":  "lane/verify-shinhong",
+                      "tip":  "e0c608ade71a9e11aa8ddd0ca35ea8f390a33fcf",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_registry_physics_identity.py",
+                                        "tests/test_shinhong_column_oracle.py",
+                                        "tests/test_shinhong_runtime.py",
+                                        "tests/test_shinhong_wrf461_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_registry_physics_identity.py",
+                                    "tests/test_shinhong_column_oracle.py",
+                                    "tests/test_shinhong_runtime.py",
+                                    "tests/test_shinhong_tanh_column_oracle.py",
+                                    "tests/test_shinhong_wrf461_parity.py"
+                                ],
+                      "branch":  "lane/verify-shinhong-refute",
+                      "tip":  "7b02d78e5a8af74df2b9ca05e050a2854f4ce7d9",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_registry_physics_identity.py",
+                                        "tests/test_shinhong_column_oracle.py",
+                                        "tests/test_shinhong_runtime.py",
+                                        "tests/test_shinhong_tanh_column_oracle.py",
+                                        "tests/test_shinhong_wrf461_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_registry_physics_identity.py",
+                                    "tests/test_shinhong_column_oracle.py",
+                                    "tests/test_shinhong_runtime.py",
+                                    "tests/test_shinhong_topo_wind.py",
+                                    "tests/test_shinhong_wrf461_parity.py",
+                                    "tests/test_terrain_drag_config.py",
+                                    "tests/test_terrain_drag_wrf471_parity.py",
+                                    "tests/test_topo_wind_wrf461_chain_parity.py",
+                                    "tests/test_ysu.py",
+                                    "tests/test_ysu_bep_rural_drag.py",
+                                    "tests/test_ysu_bep_wrf471_parity.py",
+                                    "tests/test_ysu_wrf461_parity.py",
+                                    "tests/test_ysu_wrf461_wide_parity.py"
+                                ],
+                      "branch":  "lane/verify-topo-wind",
+                      "tip":  "8b987dce253ae26e00e92bab310ecba731a7eaa4",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_registry_physics_identity.py",
+                                        "tests/test_shinhong_column_oracle.py",
+                                        "tests/test_shinhong_runtime.py",
+                                        "tests/test_shinhong_topo_wind.py",
+                                        "tests/test_shinhong_wrf461_parity.py",
+                                        "tests/test_terrain_drag_config.py",
+                                        "tests/test_terrain_drag_wrf471_parity.py",
+                                        "tests/test_topo_wind_wrf461_chain_parity.py",
+                                        "tests/test_ysu.py",
+                                        "tests/test_ysu_bep_rural_drag.py",
+                                        "tests/test_ysu_bep_wrf471_parity.py",
+                                        "tests/test_ysu_wrf461_parity.py",
+                                        "tests/test_ysu_wrf461_wide_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_myj_port.py",
+                                    "tests/test_myjpbl_wrf461_parity.py",
+                                    "tests/test_myjurb_wrf471_parity.py"
+                                ],
+                      "branch":  "lane/verify-myj",
+                      "tip":  "a4a4c6890b71dde02f59ce9801f52a44c820ed73",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_myj_port.py",
+                                        "tests/test_myjpbl_wrf461_parity.py",
+                                        "tests/test_myjurb_wrf471_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_myj_port.py",
+                                    "tests/test_myjsfc_wrf461_parity.py",
+                                    "tests/test_registry_physics_identity.py"
+                                ],
+                      "branch":  "lane/verify-eta-similarity-sfclay",
+                      "tip":  "1a16a749f9357ea5aa538018c1866bc2f2f27b9b",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_myj_port.py",
+                                        "tests/test_myjsfc_wrf461_parity.py",
+                                        "tests/test_registry_physics_identity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_mynn_wrf461_wrapper_columns_gpu.py",
+                                    "tests/test_mynn_pbl.py"
+                                ],
+                      "branch":  "lane/verify-mynn-pbl-wrf461",
+                      "tip":  "81dc22cb936bd6eb9e419ec380b3b4b8f1eca994",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_mynn_wrf461_wrapper_columns_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_mynn_gsd41_columns_exact_gpu.py",
+                                    "tests/test_mynn_gsd41_columns_oracle.py",
+                                    "tests/test_mynn_gsd41.py"
+                                ],
+                      "branch":  "lane/verify-mynn-pbl-gsd41-generation",
+                      "tip":  "acd5f7dac268210f1a71c366d6dc38d23e77ab4d",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_mynn_gsd41_columns_exact_gpu.py",
+                                        "tests/test_mynn_gsd41_columns_oracle.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_uwpbl_ftz_wrf471_parity.py",
+                                    "tests/test_uwpbl_wrf461_sources.py"
+                                ],
+                      "branch":  "lane/verify-uw-pbl",
+                      "tip":  "de60d52f82cc4903c35cdcb31417987d4619a8c1",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_uwpbl_ftz_wrf471_parity.py",
+                                        "tests/test_uwpbl_wrf461_sources.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_uwpbl_calm_wind.py",
+                                    "tests/test_uwpbl_ftz_wrf471_parity.py",
+                                    "tests/test_uwpbl_wrf461_sources.py"
+                                ],
+                      "branch":  "lane/verify-uw-pbl-refute",
+                      "tip":  "60e894fd7e556739dcc2a60ce1b11a9751221aa3",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_uwpbl_calm_wind.py",
+                                        "tests/test_uwpbl_ftz_wrf471_parity.py",
+                                        "tests/test_uwpbl_wrf461_sources.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_sfclayrev_wrf461_parity.py",
+                                    "tests/test_sfclayrev_flux_disable_replay.py"
+                                ],
+                      "branch":  "lane/verify-revised-mm5-sfclay",
+                      "tip":  "37b3a69b0b8b3fa72eb17c179ceb865ea85addd2",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_sfclayrev_wrf461_parity.py",
+                                        "tests/test_sfclayrev_flux_disable_replay.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_sfclay_classic_wrf461_parity.py"
+                                ],
+                      "branch":  "lane/verify-classic-mm5-sfclay",
+                      "tip":  "f7e1c86f61aab26227cddb79b70dd314ab5c4107",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_sfclay_classic_wrf461_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_mynn_sfclay_wrf461_column_oracle.py",
+                                    "tests/test_mynn_sfclay_wrf461_column_oracle_gpu.py",
+                                    "tests/test_physics_params.py",
+                                    "tests/test_spp_consumers.py"
+                                ],
+                      "branch":  "lane/verify-mynn-sfclay-wrf461",
+                      "tip":  "e38dfff9c3941a20eef75b7c9914235c2e67dfff",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_mynn_sfclay_wrf461_column_oracle.py",
+                                        "tests/test_mynn_sfclay_wrf461_column_oracle_gpu.py",
+                                        "tests/test_physics_params.py",
+                                        "tests/test_spp_consumers.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_mynn_sfclay_gsl_wrf39.py",
+                                    "tests/test_spp_consumers.py",
+                                    "tests/test_physics_params.py",
+                                    "tests/test_cuda_libm_table_copies.py"
+                                ],
+                      "branch":  "lane/verify-mynn-sfclay-gsl-wrf39-generation",
+                      "tip":  "8d3ab34e264b473be192da4139f6339919319295",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_mynn_sfclay_gsl_wrf39.py",
+                                        "tests/test_spp_consumers.py",
+                                        "tests/test_physics_params.py",
+                                        "tests/test_cuda_libm_table_copies.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_companion_distribution.py",
+                                    "tests/test_spp_consumers.py",
+                                    "tests/test_spp_wrf461_column_oracle.py",
+                                    "tests/test_spp_wrf461_column_oracle_gpu.py"
+                                ],
+                      "branch":  "lane/verify-spp-stochastic",
+                      "tip":  "27996ce8f85768c5d5ae2eadc5b3f9c66ad40842",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_companion_distribution.py",
+                                        "tests/test_spp_consumers.py",
+                                        "tests/test_spp_wrf461_column_oracle.py",
+                                        "tests/test_spp_wrf461_column_oracle_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_gf_workspace.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_noah.py",
+                                    "tests/test_noah_forcing_fused.py",
+                                    "tests/test_noah_mosaic_doors.py",
+                                    "tests/test_noah_seaice_wrf461_parity.py",
+                                    "tests/test_noah_sfcdiags_fused.py",
+                                    "tests/test_noah_wrf461_parity.py",
+                                    "tests/test_physics_allocation_inventory.py",
+                                    "tests/test_spp_consumers.py",
+                                    "tests/test_urban_noah_hook_wrf471_parity.py",
+                                    "tests/test_woof_expf_argument_reduction.py"
+                                ],
+                      "branch":  "lane/verify-noah-lsm",
+                      "tip":  "1a27d6a641a98761999b9cbfd1b651ac13e91d56",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_gf_workspace.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_noah.py",
+                                        "tests/test_noah_forcing_fused.py",
+                                        "tests/test_noah_mosaic_doors.py",
+                                        "tests/test_noah_seaice_wrf461_parity.py",
+                                        "tests/test_noah_sfcdiags_fused.py",
+                                        "tests/test_noah_wrf461_parity.py",
+                                        "tests/test_physics_allocation_inventory.py",
+                                        "tests/test_spp_consumers.py",
+                                        "tests/test_urban_noah_hook_wrf471_parity.py",
+                                        "tests/test_woof_expf_argument_reduction.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_noah_mosaic_ucm_table_switches.py",
+                                    "tests/test_noah_mosaic_ucm_wrf471_parity.py",
+                                    "tests/test_noah_mosaic_wrf471_parity.py"
+                                ],
+                      "branch":  "lane/verify-noah-mosaic",
+                      "tip":  "d225c17ac850a342e419083a3cd509ed567bd35a",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_noah_mosaic_ucm_table_switches.py",
+                                        "tests/test_noah_mosaic_ucm_wrf471_parity.py",
+                                        "tests/test_noah_mosaic_wrf471_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_noahmp_acsnom_order.py",
+                                    "tests/test_noahmp_wrf461_column_oracle.py",
+                                    "tests/test_noahmp_writeback_arithmetic.py"
+                                ],
+                      "branch":  "lane/verify-noah-mp",
+                      "tip":  "12ab0ab8d0a533b67f8027cc88ebd0621d0ce435",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_noahmp_acsnom_order.py",
+                                        "tests/test_noahmp_wrf461_column_oracle.py",
+                                        "tests/test_noahmp_writeback_arithmetic.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_ruc.py",
+                                    "tests/test_ruc_fork_oracle.py",
+                                    "tests/test_ruc_gpu.py",
+                                    "tests/test_ruc_gpu_column_oracle.py",
+                                    "tests/test_ruc_libm_words.py",
+                                    "tests/test_ruc_lsmruc_hrrr_switches.py",
+                                    "tests/test_ruc_nzs_tier.py",
+                                    "tests/test_ruc_runtime.py"
+                                ],
+                      "branch":  "lane/verify-ruc-lsm",
+                      "tip":  "08fa43b839bb5e2a41e08d7242cf0d513efd0fd3",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_ruc.py",
+                                        "tests/test_ruc_fork_oracle.py",
+                                        "tests/test_ruc_gpu.py",
+                                        "tests/test_ruc_gpu_column_oracle.py",
+                                        "tests/test_ruc_libm_words.py",
+                                        "tests/test_ruc_lsmruc_hrrr_switches.py",
+                                        "tests/test_ruc_nzs_tier.py",
+                                        "tests/test_ruc_runtime.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_lake_f64cr.py"
+                                ],
+                      "branch":  "lane/verify-clm-lake",
+                      "tip":  "315f08ac16a5f4aaef3ff2588bfedb9e7b02ce18",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_lake_f64cr.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_urban_slucm_regime_wrf461.py"
+                                ],
+                      "branch":  "lane/verify-urban-slucm",
+                      "tip":  "6f4087fda1cab6f68374e49e2c4041092d0dc6ab",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_urban_slucm_regime_wrf461.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_urban_bep_wrf461_column_oracle.py"
+                                ],
+                      "branch":  "lane/verify-urban-bep",
+                      "tip":  "ea4a2d6ab9f60f5cbb2be41b06d2006d34f81071",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_urban_bep_wrf461_column_oracle.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_urban_bem_regime_wrf461.py"
+                                ],
+                      "branch":  "lane/verify-urban-bep-bem",
+                      "tip":  "2871c8062a71140055a330019f2387dcd038f49c",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_urban_bem_regime_wrf461.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_rrtmg_legacy_column_oracle.py",
+                                    "tests/test_rrtmg_legacy_libm_routes.py",
+                                    "tests/test_rrtmg_legacy_wiring.py"
+                                ],
+                      "branch":  "lane/verify-rrtmg-legacy-lw-sw",
+                      "tip":  "8f6111b3402c11cedc15d08b36f725b69e890270",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_rrtmg_legacy_column_oracle.py",
+                                        "tests/test_rrtmg_legacy_libm_routes.py",
+                                        "tests/test_rrtmg_legacy_wiring.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_noahmp_slab_libm.py",
+                                    "tests/test_rrtm_longwave.py",
+                                    "tests/test_rrtm_lw_wrf461_parity.py",
+                                    "tests/test_trace_gas_overrides.py",
+                                    "tests/test_wrf_legacy_radiation.py"
+                                ],
+                      "branch":  "lane/verify-rrtm-lw",
+                      "tip":  "bf8d7a96b8486352af81e600222e91d3e0019c6f",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_noahmp_slab_libm.py",
+                                        "tests/test_rrtm_longwave.py",
+                                        "tests/test_rrtm_lw_wrf461_parity.py",
+                                        "tests/test_trace_gas_overrides.py",
+                                        "tests/test_wrf_legacy_radiation.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_dudhia_sw_wrf461_parity.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py"
+                                ],
+                      "branch":  "lane/verify-dudhia-sw",
+                      "tip":  "e33c9934fb15ea35a5a5994f80d1d314a8d33fc8",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_dudhia_sw_wrf461_parity.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_swint_interpolation.py"
+                                ],
+                      "branch":  "lane/verify-swint-opt",
+                      "tip":  "5bb6f73e93f69f834a41b5190d64b3450d04651c",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_swint_interpolation.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_analytic_clear_sky_wrf461_coszen.py",
+                                    "tests/test_noahmp_runtime.py"
+                                ],
+                      "branch":  "lane/verify-analytic-clear-sky",
+                      "tip":  "5ce3b0c69e9dd35239099ad23149abd0c303089a",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_analytic_clear_sky_wrf461_coszen.py",
+                                        "tests/test_noahmp_runtime.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_topo_radiation.py"
+                                ],
+                      "branch":  "lane/verify-topo-radiation",
+                      "tip":  "f84f8889da3516dcad4e8136fe9dae8ab9dc1e13",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_topo_radiation.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_noaa_wrf39_fork_forms_oracle.py",
+                                    "tests/test_rrtmg_legacy_column_oracle.py",
+                                    "tests/test_rrtmg_legacy_libm_routes.py",
+                                    "tests/test_rrtmg_legacy_wiring.py",
+                                    "tests/test_ruc.py",
+                                    "tests/test_ruc_fork_oracle.py",
+                                    "tests/test_ruc_gpu.py",
+                                    "tests/test_ruc_gpu_column_oracle.py",
+                                    "tests/test_ruc_libm_words.py",
+                                    "tests/test_ruc_lsmruc_hrrr_switches.py",
+                                    "tests/test_ruc_nzs_tier.py",
+                                    "tests/test_ruc_runtime.py"
+                                ],
+                      "branch":  "lane/verify-noaa-wrf39-fork-forms",
+                      "tip":  "fd4630b87cdaf5091cab3d2e19b4945c4dbf1bd4",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_noaa_wrf39_fork_forms_oracle.py",
+                                        "tests/test_rrtmg_legacy_column_oracle.py",
+                                        "tests/test_rrtmg_legacy_libm_routes.py",
+                                        "tests/test_rrtmg_legacy_wiring.py",
+                                        "tests/test_ruc.py",
+                                        "tests/test_ruc_fork_oracle.py",
+                                        "tests/test_ruc_gpu.py",
+                                        "tests/test_ruc_gpu_column_oracle.py",
+                                        "tests/test_ruc_libm_words.py",
+                                        "tests/test_ruc_lsmruc_hrrr_switches.py",
+                                        "tests/test_ruc_nzs_tier.py",
+                                        "tests/test_ruc_runtime.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_cuda_libm_table_copies.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_rrtmgp.py",
+                                    "tests/test_rrtmgp_optics.py",
+                                    "tests/test_rrtmgp_upstream_oracle.py",
+                                    "tests/test_rrtmgp_upstream_oracle_gpu.py"
+                                ],
+                      "branch":  "lane/verify-rte-rrtmgp",
+                      "tip":  "0bd9cd272c432dea47c8c7603fac0910dba92695",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_cuda_libm_table_copies.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_rrtmgp.py",
+                                        "tests/test_rrtmgp_optics.py",
+                                        "tests/test_rrtmgp_upstream_oracle.py",
+                                        "tests/test_rrtmgp_upstream_oracle_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_adaptive_history_timing.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_local_bounds.py",
+                                    "tests/test_kernel_manifest.py",
+                                    "tests/test_kf.py",
+                                    "tests/test_kf_morrison_interface.py",
+                                    "tests/test_kf_output_initialization.py",
+                                    "tests/test_kf_workspace.py",
+                                    "tests/test_kf_wrf461_oracle.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_physics_allocation_inventory.py",
+                                    "tests/test_registry_physics_identity.py"
+                                ],
+                      "branch":  "lane/verify-kain-fritsch",
+                      "tip":  "ebe43447783b77c45d9dee34dff0df91193ab91d",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_adaptive_history_timing.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_local_bounds.py",
+                                        "tests/test_kernel_manifest.py",
+                                        "tests/test_kf.py",
+                                        "tests/test_kf_morrison_interface.py",
+                                        "tests/test_kf_output_initialization.py",
+                                        "tests/test_kf_workspace.py",
+                                        "tests/test_kf_wrf461_oracle.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_physics_allocation_inventory.py",
+                                        "tests/test_registry_physics_identity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_gf_driver_parity.py",
+                                    "tests/test_gf_gfdrv_cuda.py",
+                                    "tests/test_gf_regime_column_oracle.py",
+                                    "tests/test_gf_regime_column_oracle_gpu.py",
+                                    "tests/test_gf_wrf461_parity.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_spp_consumers.py"
+                                ],
+                      "branch":  "lane/verify-grell-freitas",
+                      "tip":  "38feda51f4f975cfc80ded7cfed4c09c3e4ede8a",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_gf_driver_parity.py",
+                                        "tests/test_gf_gfdrv_cuda.py",
+                                        "tests/test_gf_regime_column_oracle.py",
+                                        "tests/test_gf_regime_column_oracle_gpu.py",
+                                        "tests/test_gf_wrf461_parity.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_spp_consumers.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_ntiedtke_column_oracle.py",
+                                    "tests/test_ntiedtke_first_step.py",
+                                    "tests/test_ntiedtke_prep_parity.py"
+                                ],
+                      "branch":  "lane/verify-new-tiedtke",
+                      "tip":  "4a33849a53dc27ad680f99c965f0db74a486de1d",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_ntiedtke_column_oracle.py",
+                                        "tests/test_ntiedtke_first_step.py",
+                                        "tests/test_ntiedtke_prep_parity.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_ntiedtke_tiedtke_closure.py"
+                                ],
+                      "branch":  "lane/verify-tiedtke-closure-emulation",
+                      "tip":  "3eb6cbd24f0529b76b2a7bfa9c25ac7dc688577e",
+                      "reason":  "Open or no comparable referee verdict",
+                      "take":  false,
+                      "gpu_tests":  [
+
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_gwdo_kim_wrf461_parity.py",
+                                    "tests/test_kernel_source_freeze_per_module.py"
+                                ],
+                      "branch":  "lane/verify-gwdo-kim",
+                      "tip":  "b741c11248caa02a1bafcb888ed293297c24aebc",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_gwdo_kim_wrf461_parity.py",
+                                        "tests/test_kernel_source_freeze_per_module.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_gsl_drag_wrf461_column_oracle.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_terrain_drag_config.py",
+                                    "tests/test_terrain_drag_tiles.py"
+                                ],
+                      "branch":  "lane/verify-gsl-drag",
+                      "tip":  "7484e849e1b52a756b3cb1aecbaac461eba96568",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_gsl_drag_wrf461_column_oracle.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_terrain_drag_config.py",
+                                        "tests/test_terrain_drag_tiles.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_chem_oracle_harness_reproducible.py",
+                                    "tests/test_chem_sulfur_wrf471_parity.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py"
+                                ],
+                      "branch":  "lane/verify-chem-aq-smoke",
+                      "tip":  "c27364174397ba2dcb75f3aab3e8068e7c3ea12a",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_chem_oracle_harness_reproducible.py",
+                                        "tests/test_chem_sulfur_wrf471_parity.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_physics_allocation_inventory.py",
+                                    "tests/test_sase.py",
+                                    "tests/test_sase_gpu.py",
+                                    "tests/test_sase_preflight_no_cupy.py"
+                                ],
+                      "branch":  "lane/verify-sase-pbl",
+                      "tip":  "86e8688b5941d0e7cc225e0ae1b854f8d13d0098",
+                      "reason":  "Open or no comparable referee verdict",
+                      "take":  false,
+                      "gpu_tests":  [
+                                        "tests/test_sase_gpu.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_advect_wrf_exact.py",
+                                    "tests/test_advect_wrf_legacy_parity.py",
+                                    "tests/test_combo_sweep_generator.py",
+                                    "tests/test_combo_sweep_round2_fixes.py",
+                                    "tests/test_mynn_gsd41_selection.py",
+                                    "tests/test_preflight.py",
+                                    "tests/test_registry_physics_identity.py",
+                                    "tests/test_scalar_pblmix_wrf461_resolution.py",
+                                    "tests/test_verify_exact_compare.py",
+                                    "tests/test_verify_exact_fixtures.py",
+                                    "tests/test_verify_exact_replay_setup.py",
+                                    "tests/test_verify_exact_scoring_holes.py",
+                                    "tests/test_wrf_direct.py",
+                                    "tests/test_wrf_exact_diffusion.py",
+                                    "tests/test_wrf_exact_ieva_theta.py",
+                                    "tests/test_wrf_exact_operation_order_gpu.py",
+                                    "tests/test_wrfinput_adapter.py",
+                                    "tests/test_wrfinput_physics_fields.py",
+                                    "tests/test_wrfinput_start_base_wrf461.py"
+                                ],
+                      "branch":  "lane/verify-matched-hrrr-stock",
+                      "tip":  "9081861547305a965c0b5d91ab8d5e04100721e2",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_advect_wrf_exact.py",
+                                        "tests/test_advect_wrf_legacy_parity.py",
+                                        "tests/test_combo_sweep_generator.py",
+                                        "tests/test_combo_sweep_round2_fixes.py",
+                                        "tests/test_mynn_gsd41_selection.py",
+                                        "tests/test_preflight.py",
+                                        "tests/test_registry_physics_identity.py",
+                                        "tests/test_scalar_pblmix_wrf461_resolution.py",
+                                        "tests/test_verify_exact_compare.py",
+                                        "tests/test_verify_exact_fixtures.py",
+                                        "tests/test_verify_exact_replay_setup.py",
+                                        "tests/test_verify_exact_scoring_holes.py",
+                                        "tests/test_wrf_direct.py",
+                                        "tests/test_wrf_exact_diffusion.py",
+                                        "tests/test_wrf_exact_ieva_theta.py",
+                                        "tests/test_wrf_exact_operation_order_gpu.py",
+                                        "tests/test_wrfinput_adapter.py",
+                                        "tests/test_wrfinput_physics_fields.py",
+                                        "tests/test_wrfinput_start_base_wrf461.py"
+                                    ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_advect_wrf_exact.py",
+                                    "tests/test_advect_wrf_legacy_parity.py",
+                                    "tests/test_combo_sweep_generator.py",
+                                    "tests/test_combo_sweep_round2_fixes.py",
+                                    "tests/test_downward_longwave_source.py",
+                                    "tests/test_kernel_compile_progress.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_local_bounds.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_kf_morrison_interface.py",
+                                    "tests/test_morr_rimed_ice.py",
+                                    "tests/test_morrison.py",
+                                    "tests/test_morrison_finite_conservation.py",
+                                    "tests/test_morrison_regime_oracle.py",
+                                    "tests/test_morrison_snow_ratio_bound.py",
+                                    "tests/test_morrison_speed_prepare.py",
+                                    "tests/test_morrison_work_chunking.py",
+                                    "tests/test_morrison_wrf461_parity.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_mynn_gsd41_selection.py",
+                                    "tests/test_physics_allocation_inventory.py",
+                                    "tests/test_preflight.py",
+                                    "tests/test_registry_physics_identity.py",
+                                    "tests/test_rk_addtend_dry_map_factors.py",
+                                    "tests/test_scalar_pblmix_wrf461_resolution.py",
+                                    "tests/test_sr_expression_family.py",
+                                    "tests/test_streamed_admission.py",
+                                    "tests/test_verify_exact_compare.py",
+                                    "tests/test_verify_exact_fixtures.py",
+                                    "tests/test_verify_exact_replay_setup.py",
+                                    "tests/test_verify_exact_scoring_holes.py",
+                                    "tests/test_wrf_direct.py",
+                                    "tests/test_wrf_exact_diffusion.py",
+                                    "tests/test_wrf_exact_ieva_theta.py",
+                                    "tests/test_wrf_exact_operation_order_gpu.py",
+                                    "tests/test_wrfinput_adapter.py",
+                                    "tests/test_wrfinput_start_base_wrf461.py",
+                                    "tests/test_strict_pressure_restart.py"
+                                ],
+                      "branch":  "lane/verify-matched-default",
+                      "tip":  "8f9729a33dd219aacb703a6963c59e65fdaf89e1",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_advect_wrf_exact.py",
+                                        "tests/test_advect_wrf_legacy_parity.py",
+                                        "tests/test_combo_sweep_generator.py",
+                                        "tests/test_combo_sweep_round2_fixes.py",
+                                        "tests/test_downward_longwave_source.py",
+                                        "tests/test_kernel_compile_progress.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_local_bounds.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_kf_morrison_interface.py",
+                                        "tests/test_morr_rimed_ice.py",
+                                        "tests/test_morrison.py",
+                                        "tests/test_morrison_finite_conservation.py",
+                                        "tests/test_morrison_regime_oracle.py",
+                                        "tests/test_morrison_snow_ratio_bound.py",
+                                        "tests/test_morrison_speed_prepare.py",
+                                        "tests/test_morrison_work_chunking.py",
+                                        "tests/test_morrison_wrf461_parity.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_mynn_gsd41_selection.py",
+                                        "tests/test_physics_allocation_inventory.py",
+                                        "tests/test_preflight.py",
+                                        "tests/test_registry_physics_identity.py",
+                                        "tests/test_rk_addtend_dry_map_factors.py",
+                                        "tests/test_scalar_pblmix_wrf461_resolution.py",
+                                        "tests/test_sr_expression_family.py",
+                                        "tests/test_streamed_admission.py",
+                                        "tests/test_verify_exact_compare.py",
+                                        "tests/test_verify_exact_fixtures.py",
+                                        "tests/test_verify_exact_replay_setup.py",
+                                        "tests/test_verify_exact_scoring_holes.py",
+                                        "tests/test_wrf_direct.py",
+                                        "tests/test_wrf_exact_diffusion.py",
+                                        "tests/test_wrf_exact_ieva_theta.py",
+                                        "tests/test_wrf_exact_operation_order_gpu.py",
+                                        "tests/test_wrfinput_adapter.py",
+                                        "tests/test_wrfinput_start_base_wrf461.py",
+                                        "tests/test_strict_pressure_restart.py"
+                                    ],
+                      "retired_tests":  [
+                                            "tests/test_morrison_speed_finalize.py",
+                                            "tests/test_morrison_speed_sediment.py"
+                                        ]
+                  },
+                  {
+                      "tests":  [
+                                    "tests/test_advect_wrf_exact.py",
+                                    "tests/test_advect_wrf_legacy_parity.py",
+                                    "tests/test_ccn_start_fill.py",
+                                    "tests/test_combo_sweep_generator.py",
+                                    "tests/test_combo_sweep_round2_fixes.py",
+                                    "tests/test_dudhia_sw_wrf461_parity.py",
+                                    "tests/test_gf_driver_parity.py",
+                                    "tests/test_gf_gfdrv_cuda.py",
+                                    "tests/test_gf_regime_column_oracle.py",
+                                    "tests/test_gf_regime_column_oracle_gpu.py",
+                                    "tests/test_gf_wrf461_parity.py",
+                                    "tests/test_kernel_loader_inert.py",
+                                    "tests/test_kernel_source_freeze_per_module.py",
+                                    "tests/test_mp8_frozen.py",
+                                    "tests/test_myj_port.py",
+                                    "tests/test_myjpbl_wrf461_parity.py",
+                                    "tests/test_myjsfc_wrf461_parity.py",
+                                    "tests/test_myjurb_wrf471_parity.py",
+                                    "tests/test_mynn_gsd41_selection.py",
+                                    "tests/test_noahmp_acsnom_order.py",
+                                    "tests/test_noahmp_slab_libm.py",
+                                    "tests/test_noahmp_wrf461_column_oracle.py",
+                                    "tests/test_noahmp_writeback_arithmetic.py",
+                                    "tests/test_nssl2_column_oracle.py",
+                                    "tests/test_nssl2_contract.py",
+                                    "tests/test_nssl2_default_hooks.py",
+                                    "tests/test_nssl2_driver_support.py",
+                                    "tests/test_nssl2_fused_gs.py",
+                                    "tests/test_nssl2_gpu.py",
+                                    "tests/test_nssl2_nucond_diagnostics.py",
+                                    "tests/test_nssl2_production_coordinator.py",
+                                    "tests/test_nssl2_speed_fused_sediment.py",
+                                    "tests/test_nssl2_speed_gamma.py",
+                                    "tests/test_nssl2_speed_graph.py",
+                                    "tests/test_nssl2_speed_rain.py",
+                                    "tests/test_nssl2_speed_small.py",
+                                    "tests/test_nssl2_variants_gpu.py",
+                                    "tests/test_preflight.py",
+                                    "tests/test_registry_physics_identity.py",
+                                    "tests/test_rk_addtend_dry_map_factors.py",
+                                    "tests/test_rrtm_longwave.py",
+                                    "tests/test_rrtm_lw_wrf461_parity.py",
+                                    "tests/test_scalar_pblmix_wrf461_resolution.py",
+                                    "tests/test_spp_consumers.py",
+                                    "tests/test_trace_gas_overrides.py",
+                                    "tests/test_verify_exact_compare.py",
+                                    "tests/test_verify_exact_fixtures.py",
+                                    "tests/test_verify_exact_replay_setup.py",
+                                    "tests/test_verify_exact_scoring_holes.py",
+                                    "tests/test_wrf_direct.py",
+                                    "tests/test_wrf_exact_diffusion.py",
+                                    "tests/test_wrf_exact_ieva_theta.py",
+                                    "tests/test_wrf_exact_operation_order_gpu.py",
+                                    "tests/test_wrf_legacy_radiation.py",
+                                    "tests/test_wrfinput_adapter.py",
+                                    "tests/test_wrfinput_start_base_wrf461.py"
+                                ],
+                      "branch":  "lane/verify-matched-coverage-12km",
+                      "tip":  "dd991c909736e80551208b81d9c1fd812d14ae42",
+                      "reason":  "Graded column verdict in 10-07 ledger; second-check limits retained",
+                      "take":  true,
+                      "gpu_tests":  [
+                                        "tests/test_advect_wrf_exact.py",
+                                        "tests/test_advect_wrf_legacy_parity.py",
+                                        "tests/test_ccn_start_fill.py",
+                                        "tests/test_combo_sweep_generator.py",
+                                        "tests/test_combo_sweep_round2_fixes.py",
+                                        "tests/test_dudhia_sw_wrf461_parity.py",
+                                        "tests/test_gf_driver_parity.py",
+                                        "tests/test_gf_gfdrv_cuda.py",
+                                        "tests/test_gf_regime_column_oracle.py",
+                                        "tests/test_gf_regime_column_oracle_gpu.py",
+                                        "tests/test_gf_wrf461_parity.py",
+                                        "tests/test_kernel_loader_inert.py",
+                                        "tests/test_kernel_source_freeze_per_module.py",
+                                        "tests/test_mp8_frozen.py",
+                                        "tests/test_myj_port.py",
+                                        "tests/test_myjpbl_wrf461_parity.py",
+                                        "tests/test_myjsfc_wrf461_parity.py",
+                                        "tests/test_myjurb_wrf471_parity.py",
+                                        "tests/test_mynn_gsd41_selection.py",
+                                        "tests/test_noahmp_acsnom_order.py",
+                                        "tests/test_noahmp_slab_libm.py",
+                                        "tests/test_noahmp_wrf461_column_oracle.py",
+                                        "tests/test_noahmp_writeback_arithmetic.py",
+                                        "tests/test_nssl2_column_oracle.py",
+                                        "tests/test_nssl2_contract.py",
+                                        "tests/test_nssl2_default_hooks.py",
+                                        "tests/test_nssl2_driver_support.py",
+                                        "tests/test_nssl2_fused_gs.py",
+                                        "tests/test_nssl2_gpu.py",
+                                        "tests/test_nssl2_nucond_diagnostics.py",
+                                        "tests/test_nssl2_production_coordinator.py",
+                                        "tests/test_nssl2_speed_fused_sediment.py",
+                                        "tests/test_nssl2_speed_gamma.py",
+                                        "tests/test_nssl2_speed_graph.py",
+                                        "tests/test_nssl2_speed_rain.py",
+                                        "tests/test_nssl2_speed_small.py",
+                                        "tests/test_nssl2_variants_gpu.py",
+                                        "tests/test_preflight.py",
+                                        "tests/test_registry_physics_identity.py",
+                                        "tests/test_rk_addtend_dry_map_factors.py",
+                                        "tests/test_rrtm_longwave.py",
+                                        "tests/test_rrtm_lw_wrf461_parity.py",
+                                        "tests/test_scalar_pblmix_wrf461_resolution.py",
+                                        "tests/test_spp_consumers.py",
+                                        "tests/test_trace_gas_overrides.py",
+                                        "tests/test_verify_exact_compare.py",
+                                        "tests/test_verify_exact_fixtures.py",
+                                        "tests/test_verify_exact_replay_setup.py",
+                                        "tests/test_verify_exact_scoring_holes.py",
+                                        "tests/test_wrf_direct.py",
+                                        "tests/test_wrf_exact_diffusion.py",
+                                        "tests/test_wrf_exact_ieva_theta.py",
+                                        "tests/test_wrf_exact_operation_order_gpu.py",
+                                        "tests/test_wrf_legacy_radiation.py",
+                                        "tests/test_wrfinput_adapter.py",
+                                        "tests/test_wrfinput_start_base_wrf461.py"
+                                    ]
+                  }
+              ]
+}

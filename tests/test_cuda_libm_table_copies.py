@@ -64,7 +64,7 @@ _WORD = re.compile(r"0[xX]([0-9A-Fa-f]+)ULL")
 #: Prefixes the kernel families use to namespace their private copy of a
 #: shared table.  The SUFFIX is the table's identity; the prefix says only
 #: which family pasted it.  Extending this is metadata, not a code path.
-_PREFIXES = ("C_", "MYNN_", "VP_")
+_PREFIXES = ("C_", "MYNN_", "VP_", "RRTMGP_")
 
 #: A suffix whose copies are the same glibc table, mapped to the attribute of
 #: ``gpuwm.core.noahmp_libm`` that spells it.  Value ``None`` means "shared
@@ -92,8 +92,8 @@ SHARED_TABLES: dict[str, str | None] = {
     "LOGF_MISC": None,
     "POWF_MISC": None,
     # WOOF's own float32 expf constants (scaled 1/ln2, shift, three
-    # polynomial terms), written once per MYNN unit: mynn_pbl.cu and its
-    # DMP sibling.  No tuple in noahmp_libm spells them, so cross-copy
+    # polynomial terms), written once per unit that carries the word:
+    # mynn_pbl.cu, its DMP sibling and rrtmgp_libm.cuh.  No tuple in noahmp_libm spells them, so cross-copy
     # equality is their gate, as for the other *_MISC rows.
     "EXPF_MISC": None,
 }

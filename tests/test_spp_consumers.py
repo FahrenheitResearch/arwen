@@ -23,7 +23,16 @@ DATA = Path(__file__).resolve().parents[1] / "gpuwm" / "data" / "spp"
 # The native captures ship in the gpuwm-data companion since 2.8.7
 # (gpuwm.data_assets.COMPANION_TREES); the ULP receipts stay in DATA.
 NATIVE_ZIP = "spp/native-wrf461.zip"
-NATIVE_ZIP_SHA256 = "9bc14a88c46b54547a6a19000830a3f4028fbce4b755f5bfb2648e853e4d0f4b"
+# Rebuilt by lane/verify-spp-stochastic on the program's oracle platform
+# (gfortran 13.3.0, glibc 2.39, the toolchain of every other WRF column
+# oracle) with tools/spp_wrf461_oracle/build.py and package.py.  The previous
+# archive (9bc14a88...) was built with gfortran 15.2.0 on glibc 2.43; its
+# MYNN PBL and GF captures differ from this platform's in the float32 libm
+# words, which the per-element budgets below used to absorb.  2.9.1: the GF
+# captures were re-run (receipt.json gf_rebuild, same platform) on the GF
+# harness after d612ddee205 corrected its GFS constants; built before it,
+# their stock capture differed from GFDRV on 14 of 216 columns by 1-4 ULP.
+NATIVE_ZIP_SHA256 = "201025994da48275c72fb06d37e38074c924780139a1aed8ed4409682b3a688e"
 
 
 @pytest.fixture(scope="session")
@@ -77,10 +86,20 @@ def _measure(actual, expected):
 def _gate(label, actual, expected):
     metrics = _measure(actual, expected)
     print("SPP_NATIVE " + json.dumps({"name": label, "ulp": {k:v for k,v in metrics.items() if v}, "fields": len(metrics)}, sort_keys=True))
-    # The whole-column ports already carry named arithmetic residuals.
-    # Store one measured bound per element: an exactly matching element has
-    # no slack, and an inherited error in one cloud cannot hide a change in
-    # another column. The new DMP and diffusivity operators are exact.
+    for name in expected:
+        assert np.isfinite(actual[name]).all(), (label, name)
+    # Every MYNN PBL label is 0 ULP against the capture rebuilt on the oracle
+    # platform, CPU and GPU, default and strict arithmetic (measured on W1,
+    # RTX PRO 6000, by lane/verify-spp-stochastic).  The budgets this gate
+    # used to read for them measured the old capture's foreign libm words,
+    # so a regression of up to 18 ULP in the SPP cloud diagnosis could pass.
+    if not label.split(".", 1)[1].startswith("surface"):
+        assert {name: value for name, value in metrics.items() if value} == {}, label
+        return
+    # The MYNN surface layer keeps one measured bound per element: on this
+    # base its kernel is not yet WRF-exact.  lane/verify-mynn-sfclay-wrf461
+    # makes it 0 ULP with spp_pbl=1 on the same platform; this budget
+    # retires when that fix lands (gpuwm/data/spp/*-ulp.json "why").
     with np.load(DATA / (label.split(".",1)[0] + "-ulp.npz"), allow_pickle=False) as budget:
         for name,value in expected.items():
             distance = fp32_ulp_distance(actual[name],value)
@@ -145,6 +164,14 @@ def test_mynn_driver_spp_native(oracle, backend, step):
 
 
 def test_mynn_surface_spp_native(oracle, backend):
+    # The gpu.surface budget was re-measured by lane/verify-mynn-sfclay-wrf461
+    # (gpu-ulp.json "gpu.surface_remeasured"; no other label moved).  This
+    # capture was built with gfortran 15.2.0 on glibc 2.43; on the program's
+    # oracle platform (gfortran 13.3.0, glibc 2.39) the CUDA kernel is 0 ULP
+    # on every output with spp_pbl=1 as well as 0
+    # (tests/test_mynn_sfclay_wrf461_column_oracle_gpu.py).  So the budget
+    # here measures the two platforms' float32 libm words, chiefly psim (up
+    # to 51 ULP), not a kernel residual.
     with (oracle / "surface-spp.csv").open(newline="") as stream:
         rows = list(csv.DictReader(stream))
     actual, expected = {}, {}
@@ -179,7 +206,10 @@ def test_spp_specializations_leave_default_compiler_sources_frozen():
             # downdraft-origin adjustment, as WRF does; the same change
             # re-pinned gf in tests/test_kernel_source_freeze_per_module.py.
             # Previously 53785cdb.
-            "gf": "5a3b174daffc9b7c5a6606dbcaf795693b599e5f4a9092316de186b4fcd4e7c1",
+            # RE-PINNED for 2.9.1 (the WRF exact chain): float32-widened GFS
+            # constants, the PBL closure bound, the lower-face W and the FMA exp
+            # form are default-on GF corrections. Previously ada52295.
+            "gf": "b5b0d38cd579ceb07253858607d743fe1b6652c4178f3d098d7fa423158f3af9",
             # Accepted staging adds source-selected GSD41 entry points.
             # This pins the actual default compiler string and checks that
             # constructing an SPP specialization leaves that string intact.

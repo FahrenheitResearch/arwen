@@ -1,0 +1,4300 @@
+{
+ "a": "/work/pverify/noah-mosaic/oracle461stock2",
+ "b": "/work/pverify/noah-mosaic/oracle461crb2",
+ "arrays_a": 24524,
+ "arrays_b": 24524,
+ "identical": 22541,
+ "families": {
+  "base": {
+   "arrays": 4080,
+   "differing_arrays": 90,
+   "words": 502928,
+   "differing_words": 237,
+   "max_ulp": 256
+  },
+  "cats": {
+   "arrays": 2040,
+   "differing_arrays": 32,
+   "words": 251464,
+   "differing_words": 157,
+   "max_ulp": 256
+  },
+  "ftz": {
+   "arrays": 255,
+   "differing_arrays": 1,
+   "words": 31433,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "lcz": {
+   "arrays": 1020,
+   "differing_arrays": 11,
+   "words": 171812,
+   "differing_words": 40,
+   "max_ulp": 256
+  },
+  "mosaic_init": {
+   "arrays": 800,
+   "differing_arrays": 0,
+   "words": 197904,
+   "differing_words": 0,
+   "max_ulp": 0
+  },
+  "terrain": {
+   "arrays": 1020,
+   "differing_arrays": 83,
+   "words": 125732,
+   "differing_words": 138,
+   "max_ulp": 212992
+  },
+  "twins": {
+   "arrays": 765,
+   "differing_arrays": 2,
+   "words": 61467,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm": {
+   "arrays": 2424,
+   "differing_arrays": 365,
+   "words": 232080,
+   "differing_words": 1451,
+   "max_ulp": 40192
+  },
+  "ucm_lcz": {
+   "arrays": 2424,
+   "differing_arrays": 386,
+   "words": 302320,
+   "differing_words": 2285,
+   "max_ulp": 880
+  },
+  "ucm_lcz_table": {
+   "arrays": 2424,
+   "differing_arrays": 136,
+   "words": 302320,
+   "differing_words": 1134,
+   "max_ulp": 57
+  },
+  "ucm_lcz_wrfinit": {
+   "arrays": 2424,
+   "differing_arrays": 391,
+   "words": 302320,
+   "differing_words": 2295,
+   "max_ulp": 848
+  },
+  "ucm_table": {
+   "arrays": 2424,
+   "differing_arrays": 108,
+   "words": 232080,
+   "differing_words": 246,
+   "max_ulp": 141
+  },
+  "ucm_wrfinit": {
+   "arrays": 2424,
+   "differing_arrays": 378,
+   "words": 232080,
+   "differing_words": 1359,
+   "max_ulp": 1771
+  }
+ },
+ "only_in_a_families": [],
+ "only_in_b_families": [],
+ "differing_arrays": 1983,
+ "differing_by_family_array": {
+  "base/grdflx_mosaic_out.bin": {
+   "cases": 16,
+   "differing_words": 85,
+   "max_ulp": 9
+  },
+  "base/grdflx_mosaic_in.bin": {
+   "cases": 12,
+   "differing_words": 65,
+   "max_ulp": 9
+  },
+  "base/grdflx_out.bin": {
+   "cases": 13,
+   "differing_words": 23,
+   "max_ulp": 4
+  },
+  "base/grdflx_in.bin": {
+   "cases": 9,
+   "differing_words": 18,
+   "max_ulp": 4
+  },
+  "base/hfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 5,
+   "max_ulp": 41
+  },
+  "base/hfx_out.bin": {
+   "cases": 4,
+   "differing_words": 5,
+   "max_ulp": 6
+  },
+  "base/tsk_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 5,
+   "max_ulp": 2
+  },
+  "base/tsk_out.bin": {
+   "cases": 4,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "base/hfx_in.bin": {
+   "cases": 4,
+   "differing_words": 5,
+   "max_ulp": 6
+  },
+  "base/hfx_mosaic_in.bin": {
+   "cases": 4,
+   "differing_words": 5,
+   "max_ulp": 41
+  },
+  "base/noahres_out.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 256
+  },
+  "base/tsk_in.bin": {
+   "cases": 4,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "base/tsk_mosaic_in.bin": {
+   "cases": 4,
+   "differing_words": 5,
+   "max_ulp": 2
+  },
+  "base/increment_potevp.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 3
+  },
+  "base/lh_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 3
+  },
+  "base/lh_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "base/potevp_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "base/qfx_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "base/qfx_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "cats/grdflx_mosaic_out.bin": {
+   "cases": 7,
+   "differing_words": 62,
+   "max_ulp": 11
+  },
+  "cats/grdflx_out.bin": {
+   "cases": 7,
+   "differing_words": 16,
+   "max_ulp": 4
+  },
+  "cats/grdflx_in.bin": {
+   "cases": 5,
+   "differing_words": 11,
+   "max_ulp": 4
+  },
+  "cats/grdflx_mosaic_in.bin": {
+   "cases": 5,
+   "differing_words": 52,
+   "max_ulp": 11
+  },
+  "cats/noahres_out.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 256
+  },
+  "cats/hfx_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 26
+  },
+  "cats/hfx_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "cats/tsk_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 2
+  },
+  "cats/hfx_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "cats/hfx_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 26
+  },
+  "cats/tsk_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 2
+  },
+  "ftz/grdflx_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "lcz/grdflx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 3
+  },
+  "lcz/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 3
+  },
+  "lcz/grdflx_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 4
+  },
+  "lcz/grdflx_in.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 4
+  },
+  "lcz/noahres_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 256
+  },
+  "terrain/grdflx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 28,
+   "max_ulp": 147
+  },
+  "terrain/grdflx_out.bin": {
+   "cases": 4,
+   "differing_words": 14,
+   "max_ulp": 176
+  },
+  "terrain/hfx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 470
+  },
+  "terrain/hfx_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 282
+  },
+  "terrain/noahres_out.bin": {
+   "cases": 4,
+   "differing_words": 5,
+   "max_ulp": 212992
+  },
+  "terrain/tsk_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "terrain/tsk_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "terrain/grdflx_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 27
+  },
+  "terrain/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 46
+  },
+  "terrain/hfx_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 282
+  },
+  "terrain/hfx_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 470
+  },
+  "terrain/increment_potevp.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 11
+  },
+  "terrain/lh_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 9
+  },
+  "terrain/lh_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 5
+  },
+  "terrain/noahres_in.bin": {
+   "cases": 3,
+   "differing_words": 4,
+   "max_ulp": 212992
+  },
+  "terrain/potevp_out.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "terrain/qfx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 14
+  },
+  "terrain/qfx_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 8
+  },
+  "terrain/qsfc_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 6
+  },
+  "terrain/tsk_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "terrain/tsk_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "terrain/lh_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 5
+  },
+  "terrain/lh_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 8
+  },
+  "terrain/potevp_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "terrain/qfx_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 8
+  },
+  "terrain/qfx_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 14
+  },
+  "terrain/qsfc_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "terrain/qsfc_out.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 3
+  },
+  "terrain/acsnom_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 11886
+  },
+  "terrain/canwat_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 4
+  },
+  "terrain/canwat_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "terrain/increment_acsnom.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 11886
+  },
+  "terrain/increment_sfcrunoff.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 30000
+  },
+  "terrain/increment_snopcx.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 16928
+  },
+  "terrain/qsfc_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "terrain/snopcx_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 16928
+  },
+  "terrain/snow_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "terrain/snow_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "terrain/snowh_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "terrain/snowh_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "twins/grdflx_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "twins/grdflx_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "ucm/akms_override.bin": {
+   "cases": 4,
+   "differing_words": 13,
+   "max_ulp": 103
+  },
+  "ucm/akms_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 30,
+   "max_ulp": 139
+  },
+  "ucm/akms_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 30,
+   "max_ulp": 139
+  },
+  "ucm/chr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm/chr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm/cmc_sfcdif_out.bin": {
+   "cases": 4,
+   "differing_words": 29,
+   "max_ulp": 545
+  },
+  "ucm/cmc_sfcdif_override.bin": {
+   "cases": 4,
+   "differing_words": 29,
+   "max_ulp": 545
+  },
+  "ucm/cmr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/cmr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/flxhumb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 272
+  },
+  "ucm/flxhumb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 272
+  },
+  "ucm/grdflx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 30
+  },
+  "ucm/grdflx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 30
+  },
+  "ucm/hfx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 16,
+   "max_ulp": 40192
+  },
+  "ucm/hfx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 16,
+   "max_ulp": 40192
+  },
+  "ucm/hfx_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 94
+  },
+  "ucm/hfx_override.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 94
+  },
+  "ucm/psih_override.bin": {
+   "cases": 4,
+   "differing_words": 7,
+   "max_ulp": 612
+  },
+  "ucm/psih_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 12,
+   "max_ulp": 612
+  },
+  "ucm/psih_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 12,
+   "max_ulp": 612
+  },
+  "ucm/psim_override.bin": {
+   "cases": 4,
+   "differing_words": 9,
+   "max_ulp": 656
+  },
+  "ucm/psim_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 656
+  },
+  "ucm/psim_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 656
+  },
+  "ucm/sh_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm/sh_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm/sh_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm/sh_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm/tc_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm/tc_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm/tc_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm/tc_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm/ts_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/ts_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/ts_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/ts_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/u10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 31
+  },
+  "ucm/u10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 31
+  },
+  "ucm/ust_out.bin": {
+   "cases": 4,
+   "differing_words": 35,
+   "max_ulp": 119
+  },
+  "ucm/ust_override.bin": {
+   "cases": 4,
+   "differing_words": 35,
+   "max_ulp": 119
+  },
+  "ucm/ust_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 25,
+   "max_ulp": 145
+  },
+  "ucm/ust_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 25,
+   "max_ulp": 145
+  },
+  "ucm/v10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 17
+  },
+  "ucm/v10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 17
+  },
+  "ucm/xxxg_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 92
+  },
+  "ucm/xxxg_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 92
+  },
+  "ucm/akms_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 38
+  },
+  "ucm/akms_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 38
+  },
+  "ucm/akms_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 25,
+   "max_ulp": 139
+  },
+  "ucm/chc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 23,
+   "max_ulp": 351
+  },
+  "ucm/chc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 23,
+   "max_ulp": 351
+  },
+  "ucm/chr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm/cmc_sfcdif_in.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 545
+  },
+  "ucm/cmr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/flxhumb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 272
+  },
+  "ucm/flxhumg_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 1578
+  },
+  "ucm/flxhumg_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 1578
+  },
+  "ucm/g_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm/g_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm/g_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm/g_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 30
+  },
+  "ucm/grdflx_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 72
+  },
+  "ucm/grdflx_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 72
+  },
+  "ucm/hfx_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 94
+  },
+  "ucm/hfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 16,
+   "max_ulp": 40192
+  },
+  "ucm/lh_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 9,
+   "max_ulp": 17
+  },
+  "ucm/lh_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 9,
+   "max_ulp": 17
+  },
+  "ucm/lh_out.bin": {
+   "cases": 2,
+   "differing_words": 5,
+   "max_ulp": 5
+  },
+  "ucm/lh_override.bin": {
+   "cases": 2,
+   "differing_words": 5,
+   "max_ulp": 5
+  },
+  "ucm/lh_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 17
+  },
+  "ucm/lh_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 17
+  },
+  "ucm/lh_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 17
+  },
+  "ucm/lh_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 17
+  },
+  "ucm/psih_in.bin": {
+   "cases": 3,
+   "differing_words": 6,
+   "max_ulp": 612
+  },
+  "ucm/psih_out.bin": {
+   "cases": 3,
+   "differing_words": 6,
+   "max_ulp": 612
+  },
+  "ucm/psih_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 612
+  },
+  "ucm/psim_in.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 656
+  },
+  "ucm/psim_out.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 656
+  },
+  "ucm/psim_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 656
+  },
+  "ucm/q2_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 8
+  },
+  "ucm/q2_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 8
+  },
+  "ucm/qc_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 36
+  },
+  "ucm/qc_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 36
+  },
+  "ucm/qc_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 36
+  },
+  "ucm/qc_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 36
+  },
+  "ucm/qfx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 14
+  },
+  "ucm/qfx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 14
+  },
+  "ucm/qfx_out.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 4
+  },
+  "ucm/qfx_override.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 4
+  },
+  "ucm/qsfc_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 7,
+   "max_ulp": 5
+  },
+  "ucm/qsfc_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 7,
+   "max_ulp": 5
+  },
+  "ucm/qsfc_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 3
+  },
+  "ucm/qsfc_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 3
+  },
+  "ucm/rn_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm/rn_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm/rn_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm/rn_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm/sh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm/sh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm/tc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm/tc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm/tg_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm/tg_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm/tg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm/tg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm/ts_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/ts_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm/u10_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 9
+  },
+  "ucm/u10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 10,
+   "max_ulp": 31
+  },
+  "ucm/ust_in.bin": {
+   "cases": 3,
+   "differing_words": 23,
+   "max_ulp": 119
+  },
+  "ucm/ust_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 20,
+   "max_ulp": 145
+  },
+  "ucm/v10_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 10
+  },
+  "ucm/v10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 10,
+   "max_ulp": 17
+  },
+  "ucm/xxxb_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 1771
+  },
+  "ucm/xxxb_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 1771
+  },
+  "ucm/xxxg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 92
+  },
+  "ucm/chc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 18,
+   "max_ulp": 351
+  },
+  "ucm/drelb_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 96
+  },
+  "ucm/drelb_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 96
+  },
+  "ucm/drelg_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 1408
+  },
+  "ucm/drelg_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 1408
+  },
+  "ucm/flxhumg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 1578
+  },
+  "ucm/g_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm/g_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm/grdflx_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 72
+  },
+  "ucm/lh_in.bin": {
+   "cases": 2,
+   "differing_words": 5,
+   "max_ulp": 5
+  },
+  "ucm/lh_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 16
+  },
+  "ucm/lh_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 10,
+   "max_ulp": 16
+  },
+  "ucm/lh_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 10,
+   "max_ulp": 16
+  },
+  "ucm/q2_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 8
+  },
+  "ucm/qc_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 36
+  },
+  "ucm/qc_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 36
+  },
+  "ucm/qfx_in.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 4
+  },
+  "ucm/qfx_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 14
+  },
+  "ucm/qsfc_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 3
+  },
+  "ucm/qsfc_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 5
+  },
+  "ucm/rn_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm/rn_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm/tg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm/tg_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm/tsk_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm/tsk_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm/u10_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 9
+  },
+  "ucm/u10_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 9
+  },
+  "ucm/v10_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 10
+  },
+  "ucm/v10_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 10
+  },
+  "ucm/xxxb_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 1771
+  },
+  "ucm/drelb_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 96
+  },
+  "ucm/drelg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1408
+  },
+  "ucm/tsk_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_lcz/akms_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 51
+  },
+  "ucm_lcz/akms_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 17,
+   "max_ulp": 51
+  },
+  "ucm_lcz/akms_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 17,
+   "max_ulp": 51
+  },
+  "ucm_lcz/chgr_sfcdif_out.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 2
+  },
+  "ucm_lcz/chgr_sfcdif_override.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 2
+  },
+  "ucm_lcz/cmgr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 2
+  },
+  "ucm_lcz/cmgr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 2
+  },
+  "ucm_lcz/cmr_sfcdif_out.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 4
+  },
+  "ucm_lcz/cmr_sfcdif_override.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 4
+  },
+  "ucm_lcz/grdflx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 46
+  },
+  "ucm_lcz/grdflx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 46
+  },
+  "ucm_lcz/hfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 51,
+   "max_ulp": 191
+  },
+  "ucm_lcz/hfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 51,
+   "max_ulp": 191
+  },
+  "ucm_lcz/hfx_out.bin": {
+   "cases": 4,
+   "differing_words": 40,
+   "max_ulp": 880
+  },
+  "ucm_lcz/hfx_override.bin": {
+   "cases": 4,
+   "differing_words": 40,
+   "max_ulp": 880
+  },
+  "ucm_lcz/psih_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 120
+  },
+  "ucm_lcz/psih_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 120
+  },
+  "ucm_lcz/psih_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 120
+  },
+  "ucm_lcz/psim_override.bin": {
+   "cases": 4,
+   "differing_words": 13,
+   "max_ulp": 144
+  },
+  "ucm_lcz/psim_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 144
+  },
+  "ucm_lcz/psim_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 144
+  },
+  "ucm_lcz/sh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 29,
+   "max_ulp": 191
+  },
+  "ucm_lcz/sh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 29,
+   "max_ulp": 191
+  },
+  "ucm_lcz/sh_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 183
+  },
+  "ucm_lcz/sh_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 183
+  },
+  "ucm_lcz/tc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 25,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 25,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tc_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tc_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 1
+  },
+  "ucm_lcz/ts_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 1
+  },
+  "ucm_lcz/ts_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 1
+  },
+  "ucm_lcz/ts_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz/ts_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tsk_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 27,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tsk_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 27,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tsk_out.bin": {
+   "cases": 2,
+   "differing_words": 13,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tsk_override.bin": {
+   "cases": 2,
+   "differing_words": 13,
+   "max_ulp": 1
+  },
+  "ucm_lcz/u10_override.bin": {
+   "cases": 4,
+   "differing_words": 14,
+   "max_ulp": 76
+  },
+  "ucm_lcz/u10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 16,
+   "max_ulp": 76
+  },
+  "ucm_lcz/u10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 16,
+   "max_ulp": 76
+  },
+  "ucm_lcz/v10_override.bin": {
+   "cases": 4,
+   "differing_words": 13,
+   "max_ulp": 114
+  },
+  "ucm_lcz/v10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 114
+  },
+  "ucm_lcz/v10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 114
+  },
+  "ucm_lcz/xxxg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 4
+  },
+  "ucm_lcz/xxxg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 4
+  },
+  "ucm_lcz/akms_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 51
+  },
+  "ucm_lcz/akms_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 51
+  },
+  "ucm_lcz/akms_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 51
+  },
+  "ucm_lcz/chc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 84
+  },
+  "ucm_lcz/chc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 84
+  },
+  "ucm_lcz/chgr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 2
+  },
+  "ucm_lcz/chr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz/chr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz/cmc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 241
+  },
+  "ucm_lcz/cmc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 241
+  },
+  "ucm_lcz/cmgr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 13,
+   "max_ulp": 2
+  },
+  "ucm_lcz/cmr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 4
+  },
+  "ucm_lcz/flxhumb_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 10,
+   "max_ulp": 31
+  },
+  "ucm_lcz/flxhumb_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 10,
+   "max_ulp": 31
+  },
+  "ucm_lcz/flxhumg_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 53
+  },
+  "ucm_lcz/flxhumg_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 53
+  },
+  "ucm_lcz/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 46
+  },
+  "ucm_lcz/hfx_in.bin": {
+   "cases": 3,
+   "differing_words": 33,
+   "max_ulp": 880
+  },
+  "ucm_lcz/hfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 38,
+   "max_ulp": 191
+  },
+  "ucm_lcz/increment_potevp.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 9
+  },
+  "ucm_lcz/lh_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 45,
+   "max_ulp": 22
+  },
+  "ucm_lcz/lh_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 45,
+   "max_ulp": 22
+  },
+  "ucm_lcz/lh_out.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 6
+  },
+  "ucm_lcz/lh_override.bin": {
+   "cases": 3,
+   "differing_words": 31,
+   "max_ulp": 6
+  },
+  "ucm_lcz/lh_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 22
+  },
+  "ucm_lcz/lh_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 22
+  },
+  "ucm_lcz/lh_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 3
+  },
+  "ucm_lcz/lh_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 3
+  },
+  "ucm_lcz/psih_in.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 120
+  },
+  "ucm_lcz/psih_out.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 120
+  },
+  "ucm_lcz/psih_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 120
+  },
+  "ucm_lcz/psim_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 144
+  },
+  "ucm_lcz/psim_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 144
+  },
+  "ucm_lcz/psim_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 144
+  },
+  "ucm_lcz/q2_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 7
+  },
+  "ucm_lcz/q2_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 7
+  },
+  "ucm_lcz/qc_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 20,
+   "max_ulp": 33
+  },
+  "ucm_lcz/qc_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 20,
+   "max_ulp": 33
+  },
+  "ucm_lcz/qc_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 33
+  },
+  "ucm_lcz/qc_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 33
+  },
+  "ucm_lcz/qfx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 45,
+   "max_ulp": 19
+  },
+  "ucm_lcz/qfx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 45,
+   "max_ulp": 19
+  },
+  "ucm_lcz/qfx_out.bin": {
+   "cases": 3,
+   "differing_words": 28,
+   "max_ulp": 8
+  },
+  "ucm_lcz/qfx_override.bin": {
+   "cases": 3,
+   "differing_words": 28,
+   "max_ulp": 8
+  },
+  "ucm_lcz/qsfc_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 33,
+   "max_ulp": 8
+  },
+  "ucm_lcz/qsfc_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 33,
+   "max_ulp": 8
+  },
+  "ucm_lcz/qsfc_out.bin": {
+   "cases": 3,
+   "differing_words": 26,
+   "max_ulp": 4
+  },
+  "ucm_lcz/qsfc_override.bin": {
+   "cases": 3,
+   "differing_words": 26,
+   "max_ulp": 4
+  },
+  "ucm_lcz/sh_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 183
+  },
+  "ucm_lcz/sh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 16,
+   "max_ulp": 191
+  },
+  "ucm_lcz/tc_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 1
+  },
+  "ucm_lcz/ts_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_lcz/ts_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tsk_in.bin": {
+   "cases": 2,
+   "differing_words": 13,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tsk_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 26,
+   "max_ulp": 1
+  },
+  "ucm_lcz/u10_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 76
+  },
+  "ucm_lcz/u10_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 76
+  },
+  "ucm_lcz/u10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 76
+  },
+  "ucm_lcz/ust_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 40
+  },
+  "ucm_lcz/ust_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 40
+  },
+  "ucm_lcz/ust_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 39
+  },
+  "ucm_lcz/ust_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 39
+  },
+  "ucm_lcz/v10_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 114
+  },
+  "ucm_lcz/v10_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 114
+  },
+  "ucm_lcz/v10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 114
+  },
+  "ucm_lcz/xxxg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 4
+  },
+  "ucm_lcz/chc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 84
+  },
+  "ucm_lcz/chr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz/cmc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 241
+  },
+  "ucm_lcz/drelb_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 32
+  },
+  "ucm_lcz/drelb_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 32
+  },
+  "ucm_lcz/drelg_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 47
+  },
+  "ucm_lcz/drelg_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 47
+  },
+  "ucm_lcz/flxhumb_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 31
+  },
+  "ucm_lcz/flxhumg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 53
+  },
+  "ucm_lcz/grdflx_out.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 12
+  },
+  "ucm_lcz/grdflx_override.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 12
+  },
+  "ucm_lcz/lh_in.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 3
+  },
+  "ucm_lcz/lh_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 13,
+   "max_ulp": 9
+  },
+  "ucm_lcz/lh_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 3
+  },
+  "ucm_lcz/lh_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 9
+  },
+  "ucm_lcz/q2_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 7
+  },
+  "ucm_lcz/qc_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 33
+  },
+  "ucm_lcz/qc_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 33
+  },
+  "ucm_lcz/qfx_in.bin": {
+   "cases": 2,
+   "differing_words": 5,
+   "max_ulp": 2
+  },
+  "ucm_lcz/qfx_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 13,
+   "max_ulp": 9
+  },
+  "ucm_lcz/qsfc_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz/qsfc_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tgr_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tgr_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz/ust_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 33
+  },
+  "ucm_lcz/ust_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 33
+  },
+  "ucm_lcz/drelb_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 32
+  },
+  "ucm_lcz/drelg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 47
+  },
+  "ucm_lcz/grdflx_in.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 12
+  },
+  "ucm_lcz/potevp_out.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz/potevp_override.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz/tgr_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/akms_override.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 3
+  },
+  "ucm_lcz_table/akms_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 3
+  },
+  "ucm_lcz_table/akms_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 3
+  },
+  "ucm_lcz_table/cmr_sfcdif_out.bin": {
+   "cases": 2,
+   "differing_words": 10,
+   "max_ulp": 4
+  },
+  "ucm_lcz_table/cmr_sfcdif_override.bin": {
+   "cases": 2,
+   "differing_words": 10,
+   "max_ulp": 4
+  },
+  "ucm_lcz_table/grdflx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 46
+  },
+  "ucm_lcz_table/grdflx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 46
+  },
+  "ucm_lcz_table/grdflx_out.bin": {
+   "cases": 2,
+   "differing_words": 30,
+   "max_ulp": 12
+  },
+  "ucm_lcz_table/grdflx_override.bin": {
+   "cases": 2,
+   "differing_words": 30,
+   "max_ulp": 12
+  },
+  "ucm_lcz_table/psim_override.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/psim_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/psim_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/u10_override.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 5
+  },
+  "ucm_lcz_table/u10_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 5
+  },
+  "ucm_lcz_table/u10_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 5
+  },
+  "ucm_lcz_table/v10_override.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 7
+  },
+  "ucm_lcz_table/v10_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 7
+  },
+  "ucm_lcz_table/v10_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 7
+  },
+  "ucm_lcz_table/akms_in.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 3
+  },
+  "ucm_lcz_table/akms_out.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 3
+  },
+  "ucm_lcz_table/akms_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 3
+  },
+  "ucm_lcz_table/chc_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/chc_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/chr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/chr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/cmc_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 5,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/cmc_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 5,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/cmr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 10,
+   "max_ulp": 4
+  },
+  "ucm_lcz_table/flxhumr_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/flxhumr_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/grdflx_in.bin": {
+   "cases": 2,
+   "differing_words": 30,
+   "max_ulp": 12
+  },
+  "ucm_lcz_table/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 46
+  },
+  "ucm_lcz_table/hfx_mosaic_out.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 48
+  },
+  "ucm_lcz_table/hfx_mosaic_override.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 48
+  },
+  "ucm_lcz_table/hfx_out.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 57
+  },
+  "ucm_lcz_table/hfx_override.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 57
+  },
+  "ucm_lcz_table/increment_potevp.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 9
+  },
+  "ucm_lcz_table/lh_mosaic_out.bin": {
+   "cases": 2,
+   "differing_words": 25,
+   "max_ulp": 8
+  },
+  "ucm_lcz_table/lh_mosaic_override.bin": {
+   "cases": 2,
+   "differing_words": 25,
+   "max_ulp": 8
+  },
+  "ucm_lcz_table/lh_out.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 5
+  },
+  "ucm_lcz_table/lh_override.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 5
+  },
+  "ucm_lcz_table/lh_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/lh_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/lh_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/lh_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/psim_in.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/psim_out.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/psim_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/q2_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/q2_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/qfx_mosaic_out.bin": {
+   "cases": 2,
+   "differing_words": 25,
+   "max_ulp": 7
+  },
+  "ucm_lcz_table/qfx_mosaic_override.bin": {
+   "cases": 2,
+   "differing_words": 25,
+   "max_ulp": 7
+  },
+  "ucm_lcz_table/qsfc_mosaic_out.bin": {
+   "cases": 2,
+   "differing_words": 25,
+   "max_ulp": 8
+  },
+  "ucm_lcz_table/qsfc_mosaic_override.bin": {
+   "cases": 2,
+   "differing_words": 25,
+   "max_ulp": 8
+  },
+  "ucm_lcz_table/qsfc_out.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 4
+  },
+  "ucm_lcz_table/qsfc_override.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 4
+  },
+  "ucm_lcz_table/sh_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/sh_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/sh_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/sh_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/u10_in.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 5
+  },
+  "ucm_lcz_table/u10_out.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 5
+  },
+  "ucm_lcz_table/u10_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 5
+  },
+  "ucm_lcz_table/ust_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/ust_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/ust_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/ust_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/v10_in.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 7
+  },
+  "ucm_lcz_table/v10_out.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 7
+  },
+  "ucm_lcz_table/v10_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 7
+  },
+  "ucm_lcz_table/chc_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/chr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/cmc_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 5,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/flxhumr_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/hfx_in.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 57
+  },
+  "ucm_lcz_table/hfx_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 48
+  },
+  "ucm_lcz_table/lh_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/lh_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/lh_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/lh_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/q2_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/qfx_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/qsfc_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/qsfc_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/sh_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/sh_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_table/tsk_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/tsk_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/tsk_out.bin": {
+   "cases": 1,
+   "differing_words": 12,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/tsk_override.bin": {
+   "cases": 1,
+   "differing_words": 12,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/ust_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/ust_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/potevp_out.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/potevp_override.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/qfx_out.bin": {
+   "cases": 1,
+   "differing_words": 21,
+   "max_ulp": 9
+  },
+  "ucm_lcz_table/qfx_override.bin": {
+   "cases": 1,
+   "differing_words": 21,
+   "max_ulp": 9
+  },
+  "ucm_lcz_table/tsk_in.bin": {
+   "cases": 1,
+   "differing_words": 12,
+   "max_ulp": 1
+  },
+  "ucm_lcz_table/tsk_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/akms_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 51
+  },
+  "ucm_lcz_wrfinit/akms_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 17,
+   "max_ulp": 51
+  },
+  "ucm_lcz_wrfinit/akms_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 17,
+   "max_ulp": 51
+  },
+  "ucm_lcz_wrfinit/chgr_sfcdif_out.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/chgr_sfcdif_override.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/cmgr_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/cmgr_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/cmr_sfcdif_out.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 4
+  },
+  "ucm_lcz_wrfinit/cmr_sfcdif_override.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 4
+  },
+  "ucm_lcz_wrfinit/grdflx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 43,
+   "max_ulp": 46
+  },
+  "ucm_lcz_wrfinit/grdflx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 43,
+   "max_ulp": 46
+  },
+  "ucm_lcz_wrfinit/hfx_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 49,
+   "max_ulp": 356
+  },
+  "ucm_lcz_wrfinit/hfx_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 49,
+   "max_ulp": 356
+  },
+  "ucm_lcz_wrfinit/hfx_out.bin": {
+   "cases": 4,
+   "differing_words": 41,
+   "max_ulp": 848
+  },
+  "ucm_lcz_wrfinit/hfx_override.bin": {
+   "cases": 4,
+   "differing_words": 41,
+   "max_ulp": 848
+  },
+  "ucm_lcz_wrfinit/psih_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 120
+  },
+  "ucm_lcz_wrfinit/psih_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 120
+  },
+  "ucm_lcz_wrfinit/psih_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 120
+  },
+  "ucm_lcz_wrfinit/psim_override.bin": {
+   "cases": 4,
+   "differing_words": 13,
+   "max_ulp": 144
+  },
+  "ucm_lcz_wrfinit/psim_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 144
+  },
+  "ucm_lcz_wrfinit/psim_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 144
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 29,
+   "max_ulp": 191
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 29,
+   "max_ulp": 191
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 183
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 183
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 25,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 25,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 4,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tsk_mosaic_out.bin": {
+   "cases": 4,
+   "differing_words": 28,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tsk_mosaic_override.bin": {
+   "cases": 4,
+   "differing_words": 28,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tsk_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tsk_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/u10_override.bin": {
+   "cases": 4,
+   "differing_words": 14,
+   "max_ulp": 76
+  },
+  "ucm_lcz_wrfinit/u10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 16,
+   "max_ulp": 76
+  },
+  "ucm_lcz_wrfinit/u10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 16,
+   "max_ulp": 76
+  },
+  "ucm_lcz_wrfinit/v10_override.bin": {
+   "cases": 4,
+   "differing_words": 13,
+   "max_ulp": 114
+  },
+  "ucm_lcz_wrfinit/v10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 114
+  },
+  "ucm_lcz_wrfinit/v10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 114
+  },
+  "ucm_lcz_wrfinit/xxxg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 4
+  },
+  "ucm_lcz_wrfinit/xxxg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 4
+  },
+  "ucm_lcz_wrfinit/akms_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 51
+  },
+  "ucm_lcz_wrfinit/akms_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 51
+  },
+  "ucm_lcz_wrfinit/akms_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 51
+  },
+  "ucm_lcz_wrfinit/chc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 84
+  },
+  "ucm_lcz_wrfinit/chc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 84
+  },
+  "ucm_lcz_wrfinit/chgr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 7,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/chr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/chr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/cmc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 241
+  },
+  "ucm_lcz_wrfinit/cmc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 241
+  },
+  "ucm_lcz_wrfinit/cmgr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 13,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/cmr_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 9,
+   "max_ulp": 4
+  },
+  "ucm_lcz_wrfinit/flxhumb_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 10,
+   "max_ulp": 31
+  },
+  "ucm_lcz_wrfinit/flxhumb_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 10,
+   "max_ulp": 31
+  },
+  "ucm_lcz_wrfinit/flxhumg_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 53
+  },
+  "ucm_lcz_wrfinit/flxhumg_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 53
+  },
+  "ucm_lcz_wrfinit/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 43,
+   "max_ulp": 46
+  },
+  "ucm_lcz_wrfinit/hfx_in.bin": {
+   "cases": 3,
+   "differing_words": 34,
+   "max_ulp": 848
+  },
+  "ucm_lcz_wrfinit/hfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 37,
+   "max_ulp": 356
+  },
+  "ucm_lcz_wrfinit/increment_potevp.bin": {
+   "cases": 2,
+   "differing_words": 24,
+   "max_ulp": 9
+  },
+  "ucm_lcz_wrfinit/lh_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 40,
+   "max_ulp": 8
+  },
+  "ucm_lcz_wrfinit/lh_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 40,
+   "max_ulp": 8
+  },
+  "ucm_lcz_wrfinit/lh_out.bin": {
+   "cases": 3,
+   "differing_words": 28,
+   "max_ulp": 6
+  },
+  "ucm_lcz_wrfinit/lh_override.bin": {
+   "cases": 3,
+   "differing_words": 28,
+   "max_ulp": 6
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 22
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 22
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 3
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 3
+  },
+  "ucm_lcz_wrfinit/psih_in.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 120
+  },
+  "ucm_lcz_wrfinit/psih_out.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 120
+  },
+  "ucm_lcz_wrfinit/psih_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 120
+  },
+  "ucm_lcz_wrfinit/psim_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 144
+  },
+  "ucm_lcz_wrfinit/psim_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 144
+  },
+  "ucm_lcz_wrfinit/psim_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 144
+  },
+  "ucm_lcz_wrfinit/q2_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 7
+  },
+  "ucm_lcz_wrfinit/q2_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 7
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 20,
+   "max_ulp": 33
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 20,
+   "max_ulp": 33
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 33
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 33
+  },
+  "ucm_lcz_wrfinit/qfx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 42,
+   "max_ulp": 8
+  },
+  "ucm_lcz_wrfinit/qfx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 42,
+   "max_ulp": 8
+  },
+  "ucm_lcz_wrfinit/qfx_out.bin": {
+   "cases": 3,
+   "differing_words": 29,
+   "max_ulp": 5
+  },
+  "ucm_lcz_wrfinit/qfx_override.bin": {
+   "cases": 3,
+   "differing_words": 29,
+   "max_ulp": 5
+  },
+  "ucm_lcz_wrfinit/qsfc_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 33,
+   "max_ulp": 8
+  },
+  "ucm_lcz_wrfinit/qsfc_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 33,
+   "max_ulp": 8
+  },
+  "ucm_lcz_wrfinit/qsfc_out.bin": {
+   "cases": 3,
+   "differing_words": 27,
+   "max_ulp": 4
+  },
+  "ucm_lcz_wrfinit/qsfc_override.bin": {
+   "cases": 3,
+   "differing_words": 27,
+   "max_ulp": 4
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 183
+  },
+  "ucm_lcz_wrfinit/sh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 16,
+   "max_ulp": 191
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/ts_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tsk_in.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tsk_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 26,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/u10_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 76
+  },
+  "ucm_lcz_wrfinit/u10_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 76
+  },
+  "ucm_lcz_wrfinit/u10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 13,
+   "max_ulp": 76
+  },
+  "ucm_lcz_wrfinit/ust_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 42
+  },
+  "ucm_lcz_wrfinit/ust_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 42
+  },
+  "ucm_lcz_wrfinit/ust_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 39
+  },
+  "ucm_lcz_wrfinit/ust_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 39
+  },
+  "ucm_lcz_wrfinit/v10_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 114
+  },
+  "ucm_lcz_wrfinit/v10_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 114
+  },
+  "ucm_lcz_wrfinit/v10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 114
+  },
+  "ucm_lcz_wrfinit/xxxg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 4
+  },
+  "ucm_lcz_wrfinit/chc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 84
+  },
+  "ucm_lcz_wrfinit/chr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/cmc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 241
+  },
+  "ucm_lcz_wrfinit/drelb_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 32
+  },
+  "ucm_lcz_wrfinit/drelb_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 32
+  },
+  "ucm_lcz_wrfinit/drelg_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 47
+  },
+  "ucm_lcz_wrfinit/drelg_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 47
+  },
+  "ucm_lcz_wrfinit/flxhumb_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 31
+  },
+  "ucm_lcz_wrfinit/flxhumg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 53
+  },
+  "ucm_lcz_wrfinit/grdflx_out.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 12
+  },
+  "ucm_lcz_wrfinit/grdflx_override.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 12
+  },
+  "ucm_lcz_wrfinit/lh_in.bin": {
+   "cases": 2,
+   "differing_words": 5,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/lh_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 5
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 3
+  },
+  "ucm_lcz_wrfinit/lh_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 9
+  },
+  "ucm_lcz_wrfinit/q2_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 7
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 33
+  },
+  "ucm_lcz_wrfinit/qc_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 33
+  },
+  "ucm_lcz_wrfinit/qfx_in.bin": {
+   "cases": 2,
+   "differing_words": 5,
+   "max_ulp": 2
+  },
+  "ucm_lcz_wrfinit/qfx_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 13,
+   "max_ulp": 8
+  },
+  "ucm_lcz_wrfinit/qsfc_in.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/qsfc_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tgr_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tgr_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/ust_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 32
+  },
+  "ucm_lcz_wrfinit/ust_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 8,
+   "max_ulp": 33
+  },
+  "ucm_lcz_wrfinit/drelb_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 32
+  },
+  "ucm_lcz_wrfinit/drelg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 47
+  },
+  "ucm_lcz_wrfinit/grdflx_in.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 12
+  },
+  "ucm_lcz_wrfinit/potevp_out.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/potevp_override.bin": {
+   "cases": 1,
+   "differing_words": 23,
+   "max_ulp": 1
+  },
+  "ucm_lcz_wrfinit/tgr_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/akms_override.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 1
+  },
+  "ucm_table/akms_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 2
+  },
+  "ucm_table/akms_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 2
+  },
+  "ucm_table/chr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm_table/chr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm_table/cmc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 5
+  },
+  "ucm_table/cmc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 5
+  },
+  "ucm_table/cmr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_table/cmr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_table/grdflx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 16,
+   "max_ulp": 2
+  },
+  "ucm_table/grdflx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 16,
+   "max_ulp": 2
+  },
+  "ucm_table/hfx_mosaic_out.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 134
+  },
+  "ucm_table/hfx_mosaic_override.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 134
+  },
+  "ucm_table/sh_urb2d_mosaic_out.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 141
+  },
+  "ucm_table/sh_urb2d_mosaic_override.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 141
+  },
+  "ucm_table/sh_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 141
+  },
+  "ucm_table/sh_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 141
+  },
+  "ucm_table/ust_out.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 1
+  },
+  "ucm_table/ust_override.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 1
+  },
+  "ucm_table/ust_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 1
+  },
+  "ucm_table/ust_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 1
+  },
+  "ucm_table/akms_in.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 1
+  },
+  "ucm_table/akms_out.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 1
+  },
+  "ucm_table/akms_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 2
+  },
+  "ucm_table/chc_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_table/chc_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_table/chr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm_table/cmc_sfcdif_in.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 5
+  },
+  "ucm_table/cmr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_table/flxhumg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 16
+  },
+  "ucm_table/flxhumg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 16
+  },
+  "ucm_table/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 16,
+   "max_ulp": 2
+  },
+  "ucm_table/hfx_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 134
+  },
+  "ucm_table/hfx_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 21
+  },
+  "ucm_table/hfx_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 21
+  },
+  "ucm_table/lh_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/lh_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/lh_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/lh_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/lh_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/lh_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/q2_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/q2_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/qfx_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 3
+  },
+  "ucm_table/qfx_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 3
+  },
+  "ucm_table/qfx_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/qfx_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/qsfc_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 4
+  },
+  "ucm_table/qsfc_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 4
+  },
+  "ucm_table/sh_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 141
+  },
+  "ucm_table/sh_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 3,
+   "max_ulp": 141
+  },
+  "ucm_table/tc_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tc_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tc_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tc_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tg_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tg_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/ust_in.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 1
+  },
+  "ucm_table/ust_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 7,
+   "max_ulp": 1
+  },
+  "ucm_table/chc_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 4,
+   "max_ulp": 2
+  },
+  "ucm_table/flxhumg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 16
+  },
+  "ucm_table/hfx_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 21
+  },
+  "ucm_table/lh_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/lh_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/lh_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/q2_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 5
+  },
+  "ucm_table/qfx_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/qfx_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 3
+  },
+  "ucm_table/qsfc_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 4
+  },
+  "ucm_table/tc_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tc_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_table/tg_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/akms_override.bin": {
+   "cases": 4,
+   "differing_words": 13,
+   "max_ulp": 103
+  },
+  "ucm_wrfinit/akms_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 30,
+   "max_ulp": 139
+  },
+  "ucm_wrfinit/akms_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 30,
+   "max_ulp": 139
+  },
+  "ucm_wrfinit/chr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm_wrfinit/chr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm_wrfinit/cmc_sfcdif_out.bin": {
+   "cases": 4,
+   "differing_words": 29,
+   "max_ulp": 545
+  },
+  "ucm_wrfinit/cmc_sfcdif_override.bin": {
+   "cases": 4,
+   "differing_words": 29,
+   "max_ulp": 545
+  },
+  "ucm_wrfinit/cmr_sfcdif_out.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/cmr_sfcdif_override.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/flxhumb_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 272
+  },
+  "ucm_wrfinit/flxhumb_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 19,
+   "max_ulp": 272
+  },
+  "ucm_wrfinit/grdflx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 25,
+   "max_ulp": 2
+  },
+  "ucm_wrfinit/grdflx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 25,
+   "max_ulp": 2
+  },
+  "ucm_wrfinit/hfx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 595
+  },
+  "ucm_wrfinit/hfx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 595
+  },
+  "ucm_wrfinit/hfx_out.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 44
+  },
+  "ucm_wrfinit/hfx_override.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 44
+  },
+  "ucm_wrfinit/psih_override.bin": {
+   "cases": 4,
+   "differing_words": 7,
+   "max_ulp": 612
+  },
+  "ucm_wrfinit/psih_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 12,
+   "max_ulp": 612
+  },
+  "ucm_wrfinit/psih_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 12,
+   "max_ulp": 612
+  },
+  "ucm_wrfinit/psim_override.bin": {
+   "cases": 4,
+   "differing_words": 9,
+   "max_ulp": 656
+  },
+  "ucm_wrfinit/psim_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 656
+  },
+  "ucm_wrfinit/psim_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 15,
+   "max_ulp": 656
+  },
+  "ucm_wrfinit/sh_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm_wrfinit/sh_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm_wrfinit/sh_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm_wrfinit/sh_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm_wrfinit/tc_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tc_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tc_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tc_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/ts_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/ts_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/ts_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/ts_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tsk_mosaic_out.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tsk_mosaic_override.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/u10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 31
+  },
+  "ucm_wrfinit/u10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 31
+  },
+  "ucm_wrfinit/ust_out.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 104
+  },
+  "ucm_wrfinit/ust_override.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 104
+  },
+  "ucm_wrfinit/ust_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 25,
+   "max_ulp": 145
+  },
+  "ucm_wrfinit/ust_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 25,
+   "max_ulp": 145
+  },
+  "ucm_wrfinit/v10_urb2d_out.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 17
+  },
+  "ucm_wrfinit/v10_urb2d_override.bin": {
+   "cases": 4,
+   "differing_words": 11,
+   "max_ulp": 17
+  },
+  "ucm_wrfinit/xxxg_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 92
+  },
+  "ucm_wrfinit/xxxg_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 92
+  },
+  "ucm_wrfinit/akms_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 38
+  },
+  "ucm_wrfinit/akms_out.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 38
+  },
+  "ucm_wrfinit/akms_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 25,
+   "max_ulp": 139
+  },
+  "ucm_wrfinit/chc_sfcdif_out.bin": {
+   "cases": 3,
+   "differing_words": 23,
+   "max_ulp": 351
+  },
+  "ucm_wrfinit/chc_sfcdif_override.bin": {
+   "cases": 3,
+   "differing_words": 23,
+   "max_ulp": 351
+  },
+  "ucm_wrfinit/chr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 2
+  },
+  "ucm_wrfinit/cmc_sfcdif_in.bin": {
+   "cases": 3,
+   "differing_words": 21,
+   "max_ulp": 545
+  },
+  "ucm_wrfinit/cmr_sfcdif_in.bin": {
+   "cases": 1,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/flxhumb_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 272
+  },
+  "ucm_wrfinit/flxhumg_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 1578
+  },
+  "ucm_wrfinit/flxhumg_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 1578
+  },
+  "ucm_wrfinit/g_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm_wrfinit/g_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm_wrfinit/g_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm_wrfinit/g_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm_wrfinit/grdflx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 25,
+   "max_ulp": 2
+  },
+  "ucm_wrfinit/hfx_in.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 44
+  },
+  "ucm_wrfinit/hfx_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 595
+  },
+  "ucm_wrfinit/lh_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/lh_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/lh_out.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 5
+  },
+  "ucm_wrfinit/lh_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 5
+  },
+  "ucm_wrfinit/lh_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 17
+  },
+  "ucm_wrfinit/lh_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 17
+  },
+  "ucm_wrfinit/lh_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 17
+  },
+  "ucm_wrfinit/lh_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 12,
+   "max_ulp": 17
+  },
+  "ucm_wrfinit/psih_in.bin": {
+   "cases": 3,
+   "differing_words": 6,
+   "max_ulp": 612
+  },
+  "ucm_wrfinit/psih_out.bin": {
+   "cases": 3,
+   "differing_words": 6,
+   "max_ulp": 612
+  },
+  "ucm_wrfinit/psih_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 11,
+   "max_ulp": 612
+  },
+  "ucm_wrfinit/psim_in.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 656
+  },
+  "ucm_wrfinit/psim_out.bin": {
+   "cases": 3,
+   "differing_words": 8,
+   "max_ulp": 656
+  },
+  "ucm_wrfinit/psim_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 656
+  },
+  "ucm_wrfinit/q2_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/q2_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/qc_urb2d_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 36
+  },
+  "ucm_wrfinit/qc_urb2d_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 36
+  },
+  "ucm_wrfinit/qc_urb2d_out.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 36
+  },
+  "ucm_wrfinit/qc_urb2d_override.bin": {
+   "cases": 3,
+   "differing_words": 18,
+   "max_ulp": 36
+  },
+  "ucm_wrfinit/qfx_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 6
+  },
+  "ucm_wrfinit/qfx_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 6
+  },
+  "ucm_wrfinit/qfx_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 4
+  },
+  "ucm_wrfinit/qfx_override.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 4
+  },
+  "ucm_wrfinit/qsfc_mosaic_out.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 4
+  },
+  "ucm_wrfinit/qsfc_mosaic_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 4
+  },
+  "ucm_wrfinit/qsfc_out.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 3
+  },
+  "ucm_wrfinit/qsfc_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 3
+  },
+  "ucm_wrfinit/rn_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/rn_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/rn_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/rn_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/sh_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm_wrfinit/sh_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 17,
+   "max_ulp": 661
+  },
+  "ucm_wrfinit/tc_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tc_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 14,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tg_urb2d_mosaic_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tg_urb2d_mosaic_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tg_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tg_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/ts_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/ts_urb2d_mosaic_in.bin": {
+   "cases": 3,
+   "differing_words": 3,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tsk_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 2,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/u10_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 9
+  },
+  "ucm_wrfinit/u10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 10,
+   "max_ulp": 31
+  },
+  "ucm_wrfinit/ust_in.bin": {
+   "cases": 3,
+   "differing_words": 9,
+   "max_ulp": 75
+  },
+  "ucm_wrfinit/ust_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 20,
+   "max_ulp": 145
+  },
+  "ucm_wrfinit/v10_override.bin": {
+   "cases": 3,
+   "differing_words": 5,
+   "max_ulp": 10
+  },
+  "ucm_wrfinit/v10_urb2d_in.bin": {
+   "cases": 3,
+   "differing_words": 10,
+   "max_ulp": 17
+  },
+  "ucm_wrfinit/xxxb_urb2d_out.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 1771
+  },
+  "ucm_wrfinit/xxxb_urb2d_override.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 1771
+  },
+  "ucm_wrfinit/xxxg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 92
+  },
+  "ucm_wrfinit/chc_sfcdif_in.bin": {
+   "cases": 2,
+   "differing_words": 18,
+   "max_ulp": 351
+  },
+  "ucm_wrfinit/drelb_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 96
+  },
+  "ucm_wrfinit/drelb_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 96
+  },
+  "ucm_wrfinit/drelg_urb2d_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 1408
+  },
+  "ucm_wrfinit/drelg_urb2d_override.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 1408
+  },
+  "ucm_wrfinit/flxhumg_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 6,
+   "max_ulp": 1578
+  },
+  "ucm_wrfinit/g_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm_wrfinit/g_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 32
+  },
+  "ucm_wrfinit/lh_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 5
+  },
+  "ucm_wrfinit/lh_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/lh_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 10,
+   "max_ulp": 16
+  },
+  "ucm_wrfinit/lh_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 10,
+   "max_ulp": 16
+  },
+  "ucm_wrfinit/q2_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/qc_urb2d_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 36
+  },
+  "ucm_wrfinit/qc_urb2d_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 12,
+   "max_ulp": 36
+  },
+  "ucm_wrfinit/qfx_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 4
+  },
+  "ucm_wrfinit/qfx_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 6
+  },
+  "ucm_wrfinit/qsfc_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 3
+  },
+  "ucm_wrfinit/qsfc_mosaic_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 4
+  },
+  "ucm_wrfinit/rn_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/rn_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 8
+  },
+  "ucm_wrfinit/tg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tg_urb2d_mosaic_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tsk_out.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/tsk_override.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  },
+  "ucm_wrfinit/u10_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 9
+  },
+  "ucm_wrfinit/u10_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 9
+  },
+  "ucm_wrfinit/v10_in.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 10
+  },
+  "ucm_wrfinit/v10_out.bin": {
+   "cases": 2,
+   "differing_words": 4,
+   "max_ulp": 10
+  },
+  "ucm_wrfinit/xxxb_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 6,
+   "max_ulp": 1771
+  },
+  "ucm_wrfinit/drelb_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 96
+  },
+  "ucm_wrfinit/drelg_urb2d_in.bin": {
+   "cases": 1,
+   "differing_words": 2,
+   "max_ulp": 1408
+  },
+  "ucm_wrfinit/tsk_in.bin": {
+   "cases": 1,
+   "differing_words": 1,
+   "max_ulp": 1
+  }
+ }
+}

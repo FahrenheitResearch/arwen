@@ -109,6 +109,7 @@ SASE_VERTICAL_LEVEL_BOUNDS = (2, 128)
 #: where the implicit diffusion has an interior interface (compute_vdiff's
 #: k = 2..pver rows) and a Richardson number exists above the surface.
 UWPBL_VERTICAL_LEVEL_BOUNDS = (2, None)
+SATMEDMF_VERTICAL_LEVEL_BOUNDS = (8, None)
 KF_VERTICAL_LEVEL_BOUNDS = (8, 128)
 # Grell-Freitas: the inversion-layer search clamps kend to ktf-8 and its
 # second-derivative stencil then reaches ktf-1, so a column shorter than 12

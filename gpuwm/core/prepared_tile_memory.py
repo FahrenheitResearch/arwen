@@ -55,7 +55,7 @@ smallest compute window, ``2 * halo + 1``, and none longer than the domain
 plus its halo -- which still bounds every legal rectangle of that area on
 every term, and does so by a perimeter a tiling can actually have.
 
-MEASURED against the fix, 2026-09-10, node-1 (RTX 5070 Ti, 15.51 GiB,
+MEASURED against the fix, 2026-09-10, test host A (RTX 5070 Ti, 15.51 GiB,
 cupy 14.2.0 / CUDA 13), the same 572x524x49 icon-eu forecast on real
 2026-09-10T12 data, per-process device memory read by nvidia-smi
 (``compute-apps used_memory``: the process's whole device allocation,

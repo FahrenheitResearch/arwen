@@ -132,7 +132,7 @@ def test_binary_ice_mode_full_field_hashes(tmp_path, monkeypatch, backend):
                 soilprop=kw["ruc_soilprop"], irrigation=kw["ruc_irrigation"], snow=kw["ruc_snow"])
             for n, a in fields.items():
                 if isinstance(a, cp.ndarray):
-                    cp.testing.assert_array_equal(slab[n][0].view("u1"), slab[n][1].view("u1"))
+                    cp.testing.assert_array_equal(slab[n][0].reshape(-1).view("u1"), slab[n][1].reshape(-1).view("u1"))
                     a[...] = slab[n][0]
             return census[0]
 

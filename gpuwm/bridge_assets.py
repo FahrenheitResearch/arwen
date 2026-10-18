@@ -3,7 +3,10 @@
 A PLATFORM wheel now ships the compiled Rust itself: the artifacts below
 are staged into ``gpuwm/libexec/bridges`` by
 ``tools/stage_wheel_bridges.py`` before the wheel is built, so on a
-platform a bundle exists for, ``pip install gpuwm`` carries every declared artifact. This command remains the route for everyone else: the ``py3-none-any`` fallback
+platform a bundle exists for, ``pip install gpuwm`` carries every declared
+artifact but the on-demand observation-stream doors (:func:`on_demand_artifacts`),
+which the first door that needs them stages from the bundle by itself.  This
+command remains the route for everyone else: the ``py3-none-any`` fallback
 wheel, which pip resolves wherever no platform bundle is published,
 carries no binaries at all.  Before either existed, the only way to get
 the GRIB decoders, the CPU preprocessing library, the fetch backbone,
@@ -14,10 +17,12 @@ isobaric-height reader, the radar superob, the native GRIB2 and ML dataset
 exporters, the nowcast frames converter, the global globe packer, the
 observation scorecard, the forecast verification scorer, the simulated
 radar, the regular-grid intermediate producer, the MPAS point renderer, the
-TEMPO initialization library and the terminal workspace onto a
+TEMPO initialization library, the projected MET intermediate library, the
+seven observation-stream doors, the radar feed listings and the terminal
+workspace onto a
 wheel install was to clone the repository and run ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-forty-eight files.
+fifty-seven files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -26,7 +31,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the forty-eight artifacts of
+One bundle per platform, holding the fifty-seven artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges/<release>-<bundle digest>``)
 -- the staged rung of the resolution ladder every consumer already
@@ -226,6 +231,22 @@ class BundledArtifact:
     bytes and names the ABI this release speaks, on top of the size and
     SHA-256 every artifact is pinned by.
 
+    ``on_demand`` says the platform wheel does not carry the artifact.  It
+    stays in this roster, in each platform bundle and in its pins, so every
+    proof of the bundle still covers it; the first door that needs it stages
+    it by itself (:func:`gpuwm.bridges.fetch_on_demand`, the pinned ZIP
+    member alone, verified against the packaged size and SHA-256), and
+    ``gpuwm fetch-bridges --partial --artifact NAME`` or a plain
+    ``gpuwm fetch-bridges`` stages it ahead of time.  Breakage this
+    prevents: the 2.9.0 Linux wheel was 96,049,884 bytes against PyPI's
+    100,000,000-byte per-file limit, and the six observation-stream doors
+    marked below compress to about 9.7 MB together, so carried in the wheel
+    they would make it unpublishable; left out of every package, as they
+    were in 2.9.0, buoys, radiosondes, motion vectors, occultations, WIS2
+    and prepbufr could not be fetched from an install at all.  Only an
+    artifact no forecast reaches may be marked: a decoder, a writer or the
+    renderer marked here would make a bare install refuse its own forecast.
+    :func:`wheel_artifacts` is the one place the two sets are told apart.
     """
 
     name: str
@@ -234,6 +255,7 @@ class BundledArtifact:
     env_var: str
     consumer: str
     vendored: bool = False
+    on_demand: bool = False
 
 
 #: The artifacts a bundle carries (every BundledArtifact below), in build order: the five
@@ -607,6 +629,21 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "GPUWM_RW_HEX_POINTS",
         "soundings and meteograms at named points from MPAS native history "
         "(the gpuwm-hex product door)"),
+    # 2.9.1.  The projected MET intermediate library (crate
+    # projected-intermediate in the engine workspace), loaded through
+    # ctypes by `gpuwm-hex intermediate` for every projected source (HRRR
+    # and any other Lambert regional model).  It regrids the decoder's
+    # window onto the hex point target with the engine's own exact donors,
+    # rotates the winds to earth and writes and verifies the MET file.  It
+    # was built by nothing that shipped, so on 2.9.0 a pip install could
+    # start hex only from lat-lon sources: `gpuwm-hex intermediate --source
+    # hrrr` exited 2 with "librw_projected_intermediate.so was not found".
+    # Environment variable spelled to match the one gpuwm-hex resolves.
+    BundledArtifact(
+        "rw_projected_intermediate", "library", "tools/rw_wps",
+        "GPUWM_PROJECTED_INTERMEDIATE_BRIDGE",
+        "projected-source MET intermediates for hex point runs "
+        "(gpuwm-hex intermediate --source hrrr)"),
     # 2.9.0.  TEMPO's tempo_init port (crate rw-tempo), loaded through
     # ctypes by gpuwm.core.tempo_rust whenever a run selects TEMPO.  It was
     # built by every cut and carried by no bundle, so TEMPO -- and the
@@ -659,6 +696,58 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_zarr", "executable", "tools/zarr_bridge",
         "GPUWM_RW_ZARR", "regular-grid Zarr acquisition and forcing record decode"),
+    # 2.9.1.  The observation-stream doors of `gpuwm obs streams` and the
+    # local data assimilation (gpuwm.obs.streams, gpuwm.da.obs_conventional).
+    # Until 2.9.1 they were in no wheel and no bundle, so `gpuwm obs streams
+    # fetch --stream ndbc` (and every stream but METAR) refused on any install
+    # with a cargo build from a clone.  On demand: see BundledArtifact.
+    # Environment variables spelled to match gpuwm.obs.frontdoor; a test
+    # binds the two.
+    BundledArtifact(
+        "rw_igra2", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_IGRA2", "IGRA2 radiosondes (gpuwm obs streams fetch --stream igra2)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_amv", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_AMV", "GOES derived motion winds (gpuwm obs streams fetch --stream goes-dmw)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_ndbc", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_NDBC", "NDBC buoys and ships (gpuwm obs streams fetch --stream ndbc)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_gnssro", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_GNSSRO",
+        "GNSS radio occultation (gpuwm obs streams fetch --stream gnss-ro / cdaac-ro)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_wis2", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_WIS2", "the WIS2 global feed (gpuwm obs streams fetch --stream wis2)",
+        on_demand=True),
+    BundledArtifact(
+        "rw_prepbufr", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_PREPBUFR", "NCEP prepbufr conventional observations (local DA)",
+        on_demand=True),
+    # 2.9.2.  MADIS aircraft, radiosondes and mesonets from the public
+    # real-time and archive files (gpuwm obs streams fetch --stream
+    # madis-acars / madis-raob / madis-mesonet).  The door was built in the
+    # tree and reached by nothing: the stream table called MADIS
+    # account-gated, which the public files never were.
+    BundledArtifact(
+        "rw_madis", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MADIS",
+        "MADIS aircraft, radiosondes and mesonets (gpuwm obs streams fetch --stream madis-*)",
+        on_demand=True),
+    # 2.9.2.  The listings that feed rw_odim: without them a European volume
+    # was reachable only by a URL the user already knew, so the polar-volume
+    # door had no live or archive route.  BowEcho's catalog adapters plus
+    # FMI/DMI archive lookup; its build.rs stamps the source revision.  On
+    # demand: no forecast reaches it, and it carries an HTTP client.
+    BundledArtifact(
+        "rw_radar_feeds", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_RADAR_FEEDS",
+        "national radar-volume feed listings (gpuwm obs radar-feeds)",
+        on_demand=True),
 )
 
 
@@ -693,12 +782,27 @@ LIBRARY_ABI: dict[str, tuple[str, int]] = {
     "rw_tempo": ("gpuwm_tempo_abi_version", 1),
     # Matches gpuwm.obs.superob_bridge.SUPEROB_ABI; a test binds them.
     "rw_superob": ("gpuwm_superob_abi_version", 1),
+    # Exported by crates/projected-intermediate/src/lib.rs.
+    "rw_projected_intermediate": ("gpuwm_projected_intermediate_abi_version", 1),
 }
 
 
 def wheel_artifacts() -> tuple[BundledArtifact, ...]:
-    """Every declared artifact ships in each platform wheel, in roster order."""
-    return BUNDLED_ARTIFACTS
+    """The artifacts a platform wheel carries, in roster order.
+
+    Every declared artifact except the on-demand ones.  Staging into the
+    package, the packaged ``BUNDLE.json`` and every check of an installed
+    or built wheel's native inventory read this, so the set is decided
+    once.  The bundle and the pins are not narrowed by it: they carry
+    :data:`BUNDLED_ARTIFACTS` whole.
+    """
+    return tuple(artifact for artifact in BUNDLED_ARTIFACTS if not artifact.on_demand)
+
+
+def on_demand_artifacts() -> tuple[BundledArtifact, ...]:
+    """The artifacts the bundle carries and the platform wheel does not."""
+    return tuple(artifact for artifact in BUNDLED_ARTIFACTS if artifact.on_demand)
+
 
 def library_abi_for(name: str) -> tuple[str, int]:
     """``(symbol, expected_version)`` for the library artifact ``name``.
@@ -1154,6 +1258,9 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
     # bridge build against it by path.
     "tools/rw_wps": ("tools/rw_wps", "tools/grib1_bridge/vendor/grib-core",
                      "tools/preparation_resources.rs",
+                     # projected-intermediate compiles grib1_bridge's WPS
+                     # intermediate writer in by #[path] (2.9.1).
+                     "tools/grib1_bridge/src/wps_intermediate.rs",
                      "tools/rustwx/vendor/netcrust",
                      "tools/sfire_wrf471_oracle/fixtures/debug",
                      "tools/region_global_dealias",
@@ -1172,6 +1279,7 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
     "tools/zarr_bridge": (
         "tools/zarr_bridge", "tools/rustwx/crates/netcdf-writer",
         "tools/rw_wps", "tools/grib1_bridge/vendor/grib-core",
+        "tools/grib1_bridge/src/wps_intermediate.rs",
         "tools/preparation_resources.rs",
         "tools/rustwx/vendor/netcrust",
         "tools/sfire_wrf471_oracle/fixtures/debug",
@@ -2450,5 +2558,5 @@ __all__ = [
     "stage_from_bundle", "stage_from_dir",
     "stage_from_loose_files", "staging_available", "verify_contract_marker",
     "verify_pinned_file", "verify_source_revision",
-    "wheel_artifacts",
+    "on_demand_artifacts", "wheel_artifacts",
 ]

@@ -256,8 +256,12 @@ def engine_state(arrays, meta, arm):
     dev["tke"] = cp.asarray(arrays["tke"])
     for name in ("u", "v", "w", "php", *SPECIES, *NUMBERS, "tke"):
         dev[name + "0"] = dev[name]
-    for name in ("ru_t", "rv_t", "rw_t", "rth_t"):
-        dev[name] = None
+    # The production specs mark scalar rows by a None tendency; the dry rows
+    # carry their RK tendency arrays (the strict pass keys on that, 2.9.1).
+    dev["ru_t"] = cp.zeros((nz, ny, nx + 1), cp.float32)
+    dev["rv_t"] = cp.zeros((nz, ny + 1, nx), cp.float32)
+    dev["rw_t"] = cp.zeros((nz + 1, ny, nx), cp.float32)
+    dev["rth_t"] = cp.zeros((nz, ny, nx), cp.float32)
     store = {}
 
     def scratch(shape, slot, dtype=None):
@@ -268,7 +272,8 @@ def engine_state(arrays, meta, arm):
         elif buf.shape != shape:
             raise ValueError(f"scratch slot {slot!r} has shape {buf.shape}, requested {shape}")
         return buf
-    state = SimpleNamespace(**dev, scratch=scratch, _scratch=store, physics=None, chem=None,
+    state = SimpleNamespace(**dev, scratch=scratch, _scratch=store, existing_scratch=store.get,
+                            physics=None, chem=None,
                             elapsed_seconds=0.0,
                             cf1=F32(meta["cf1"]), cf2=F32(meta["cf2"]), cf3=F32(meta["cf3"]))
     boundary = meta["boundary"]
@@ -324,6 +329,16 @@ def engine_outputs(arrays, meta, arm):
     if km_opt == 2:
         state.scratch((nz, ny, nx), "smag_rtke")[...] = 0
     dycore._compute_wrf_smag_tendencies(state, cfg, km2, kh2, specs, time_t=True)
+    from gpuwm import wrf_exact
+    if wrf_exact.ENABLED:
+        # A strict step mixes the scalar rows (moisture, TKE) at
+        # rk_scalar_tend with the first acoustic loop's MUTS
+        # (dycore.add_scalar_coordinate_wrf, the 2.9.1 exact chain).  This
+        # unit replay has no acoustic loop: MUTS is its own mass, the one the
+        # recorded WRF call used for every row.
+        muts = state.scratch(state.mub2d.shape, dycore.WRF_MUTS_SLOT)
+        muts[...] = state.mub2d + state.mup0
+        dycore.add_scalar_coordinate_wrf(state, cfg)
     cp.cuda.Device().synchronize()
     out["kmh"], out["khh"] = cp.asnumpy(km2), cp.asnumpy(kh2)
     out["k_first_launch_equal"] = bool(

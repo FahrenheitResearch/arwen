@@ -300,10 +300,25 @@ def _solar(env):
     julian = F((julday - 1) + hour / 24.0)
     gmt = F(START.hour + START.minute / 60.0 + START.second / 3600.0)
     xtime = F(ELAPSED / 60.0)
-    declin, solcon = leg.radconst(julian)
-    coszen = leg.calc_coszen(
-        julian, xtime + F(RADT_MINUTES) * F(0.5), gmt, env.lat, env.lon,
-        declin)
+    # The adapter's sun follows its solar generation (rrtmg_legacy.py, the
+    # radiation call's dispatch): this configuration names none, so it is the
+    # default wrf_480 device unit (gpuwm.core.solar); the WRF v4.6.1 device
+    # unit (rrtmg_legacy_solar.cu) is the strict wrf_461 generation's.
+    xt_mid = xtime + F(RADT_MINUTES) * F(0.5)
+    from gpuwm.wrf_exact import ENABLED
+    generation = getattr(env.cfg, "solar_generation", "wrf_480")
+    if ENABLED and generation == "wrf_461":
+        coszen_d, _hrang, declin, solcon = leg.solar_geometry_device(
+            julian, xt_mid, gmt, env.lat, env.lon)
+    elif generation == "wrf_480":
+        from gpuwm.core.solar import solar_geometry_device
+        ds, coszen_d, _hrang = solar_geometry_device(julian, xt_mid, gmt, env.lat, env.lon)
+        declin, solcon = map(F, cp.asnumpy(ds))
+    else:
+        declin, solcon = leg.radconst(julian)
+        coszen_d = leg.calc_coszen(julian, xt_mid, gmt, env.lat, env.lon, declin,
+                                   generation="wrf_461")
+    coszen = cp.asnumpy(cp.asarray(coszen_d))
     return julday, julian, declin, solcon, coszen
 
 

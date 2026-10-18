@@ -124,8 +124,13 @@ RUC_2M_DIAGNOSTIC_DEFAULT = "flux"
 #: formula, at the branch's position), and not rebuilt after the snow
 #: column; fresh-snow albedo kept from the depth on the ground; melt cap
 #: independent of the step; melt bookkeeping scaled by cover under the
-#: snow mosaic; SNOWFALLAC grown by new snow less its melt; and the
-#: ``ktau = 1`` snow cover default from snow water.
+#: snow mosaic; SNOWFALLAC grown by new snow less its melt; the
+#: ``ktau = 1`` snow cover default from snow water; and LSMRUC's MYJ test on
+#: CHKLOWQ (the branch's :1083-1087, v4.5.2 :1066), which leaves CHKLOWQ at 1
+#: on every land point here because this port's RUC is fail-closed on MYJ.
+#: MEASURED against the branch's own LSMRUC (tools/ruc_lsm_gpu_oracle,
+#: ``--lineage fork``): before the gate the GPU step wrote 0 on 175 of the
+#: 816 CHKLOWQ words (102 columns x 8 steps) where the branch writes 1.
 #:
 #: ``wrf_461``: WRF v4.6.1 (``isncond_opt = 2``, ``isncovr_opt = 2``), the
 #: form every earlier gpuwm build ran and the WRF v4.6.1 oracle pins.

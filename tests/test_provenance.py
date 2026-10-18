@@ -1066,7 +1066,7 @@ def test_a_second_gpuwm_on_the_path_does_not_lend_its_version(
     site = tmp_path / "venv-site"
     _pip_install(site, version="9.8.7", files={
         name: (WORKTREE / "gpuwm" / name).read_bytes()
-        for name in ("__init__.py", "cupy_windows_warning.py")})
+        for name in ("__init__.py", "cupy_windows_warning.py", "numerics.py")})
     _pip_install(tmp_path / "user-site", version="1.2.3", files={})
     sites = [str(site), str(tmp_path / "user-site")]
     if stranger == "first":

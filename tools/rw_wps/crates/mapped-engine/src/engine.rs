@@ -1471,33 +1471,21 @@ impl<'a> DecodeStream<'a> {
         let decode_window = if windowed { self.decode_window.as_ref() } else { None };
         let aliases = crate::grib::record_aliases(mapping)?;
         let mut records: Vec<GribRecord> = Vec::new();
-        for object in plan.iter() {
-            let mut wanted: Vec<usize> = object.by_key.get(key).cloned().unwrap_or_default();
-            wanted.extend(object.invariant.iter().copied());
-            wanted.sort_unstable();
-            wanted.dedup();
-            if wanted.is_empty() {
-                continue;
-            }
-            let file = parse_grib2_object(&object.source)?;
-            let windowed = match decode_window {
-                Some(_) => windowed_records(mapping, &file, &wanted, &aliases, &self.decode_fields)?,
-                None => std::collections::BTreeSet::new(),
-            };
-            let record_window = decode_window.map(|window| crate::grib::RecordWindow {
-                rows: window.rows,
-                columns: window.columns,
-                records: &windowed,
+        let mut start = 0;
+        while start < plan.len() {
+            let end = start + object_batch_len(&plan[start..])?;
+            let slots = crate::threads::install(|| {
+                use rayon::prelude::*;
+                plan[start..end].par_iter().map(|object| {
+                    decode_stream_object(mapping, object, key, declaration, &aliases,
+                                         decode_window, &self.decode_fields, None)
+                        .map(|(_, records)| records)
+                }).collect::<Vec<_>>()
             });
-            let mut decoded = crate::grib::grib2_records_within(
-                &file,
-                &object.source,
-                &wanted,
-                declaration,
-                record_window.as_ref(),
-            )?;
-            crate::grib::alias_records(&aliases, &mut decoded);
-            records.extend(decoded);
+            for decoded in slots {
+                records.extend(decoded?);
+            }
+            start = end;
         }
         let collection = assemble_grib(mapping, &records)?;
         drop(records);
@@ -1624,61 +1612,89 @@ impl<'a> DecodeStream<'a> {
             } => {
                 let aliases = crate::grib::record_aliases(mapping)?;
                 let mut records: Vec<GribRecord> = Vec::new();
-                for object in plan.iter() {
-                    let mut wanted: Vec<usize> = object
-                        .by_key
-                        .get(key)
-                        .cloned()
-                        .unwrap_or_default();
-                    wanted.extend(object.invariant.iter().copied());
-                    wanted.sort_unstable();
-                    wanted.dedup();
-                    if wanted.is_empty() {
-                        continue;
-                    }
-                    if !parsed.contains_key(&object.source) {
-                        parsed.insert(object.source.clone(), parse_grib2_object(&object.source)?);
-                    }
-                    let file = &parsed[&object.source];
-                    let windowed = match decode_window {
-                        Some(_) => windowed_records(mapping, file, &wanted, &aliases, &self.decode_fields)?,
-                        None => std::collections::BTreeSet::new(),
-                    };
-                    let record_window = decode_window.map(|window| {
-                        crate::grib::RecordWindow {
-                            rows: window.rows,
-                            columns: window.columns,
-                            records: &windowed,
-                        }
+                let mut start = 0;
+                while start < plan.len() {
+                    let end = start + object_batch_len(&plan[start..])?;
+                    // Move each cached parse to its own task. There is no shared
+                    // cache lock around decompression or message decode.
+                    let jobs: Vec<_> = plan[start..end].iter()
+                        .map(|object| (object, parsed.remove(&object.source))).collect();
+                    let slots = crate::threads::install(|| {
+                        use rayon::prelude::*;
+                        jobs.into_par_iter().map(|(object, file)| {
+                            decode_stream_object(mapping, object, key, declaration, &aliases,
+                                                 decode_window, &self.decode_fields, file)
+                        }).collect::<Vec<_>>()
                     });
-                    let mut decoded = crate::grib::grib2_records_within(
-                        file,
-                        &object.source,
-                        &wanted,
-                        declaration,
-                        record_window.as_ref(),
-                    )?;
-                    crate::grib::alias_records(&aliases, &mut decoded);
-                    records.extend(decoded);
-                    // The parsed object is dropped the moment this valid
-                    // time is done with it, unless the NEXT valid time
-                    // reads the same object (a multi-time object) or it
-                    // carries a cycle-invariant record every slice needs.
-                    // Without this a field-per-file source -- 251 objects
-                    // at one valid time is a shipped shape -- would hold
-                    // every staged payload at once.
-                    let needed_again = next
-                        .map(|next| object.by_key.contains_key(next))
-                        .unwrap_or(false)
-                        || !object.invariant.is_empty();
-                    if !needed_again {
-                        parsed.remove(&object.source);
+                    // Drain in input order: bytes, provenance and the first
+                    // refusal are the serial stream's, regardless of schedule.
+                    for (object, slot) in plan[start..end].iter().zip(slots) {
+                        let (file, decoded) = slot?;
+                        records.extend(decoded);
+                        let needed_again = next
+                            .map(|next| object.by_key.contains_key(next)).unwrap_or(false)
+                            || !object.invariant.is_empty();
+                        if needed_again {
+                            if let Some(file) = file {
+                                parsed.insert(object.source.clone(), file);
+                            }
+                        }
                     }
+                    start = end;
                 }
                 assemble_grib(mapping, &records)
             }
         }
     }
+}
+
+/// Bound in-flight staged objects by both the admitted pool width and
+/// the inventory byte budget. The streamed decoded records still belong
+/// to one valid time, and cached multi-time objects retain their old lifetime.
+fn object_batch_len(plan: &[ObjectPlan]) -> Result<usize> {
+    let sizes: Vec<_> = plan.iter().take(crate::threads::width()).map(|object| {
+        std::fs::metadata(&object.source).map(|meta| meta.len()).unwrap_or(0)
+    }).collect();
+    Ok(inventory_batch_len(&sizes, inventory_budget()?).min(sizes.len()))
+}
+
+/// A field-per-file stream used to decompress its objects serially even
+/// though grib2_records_within parallelized the messages inside each one.
+/// The R11 case's cold compose spent 5 s on one core here. An object is now
+/// a pool task, with its parse moved back to the ordered cache when needed.
+#[allow(clippy::too_many_arguments)]
+fn decode_stream_object(
+    mapping: &Mapping,
+    object: &ObjectPlan,
+    key: &crate::assemble::TimeKey,
+    declaration: &crate::model::GridDeclaration,
+    aliases: &[crate::grib::RecordAlias],
+    decode_window: Option<&crate::window::Window>,
+    decode_fields: &std::collections::BTreeSet<String>,
+    cached: Option<grib_core::grib2::Grib2File>,
+) -> Result<(Option<grib_core::grib2::Grib2File>, Vec<GribRecord>)> {
+    let mut wanted = object.by_key.get(key).cloned().unwrap_or_default();
+    wanted.extend(object.invariant.iter().copied());
+    wanted.sort_unstable();
+    wanted.dedup();
+    if wanted.is_empty() {
+        return Ok((cached, Vec::new()));
+    }
+    let file = match cached {
+        Some(file) => file,
+        None => parse_grib2_object(&object.source)?,
+    };
+    let windowed = match decode_window {
+        Some(_) => windowed_records(mapping, &file, &wanted, aliases, decode_fields)?,
+        None => std::collections::BTreeSet::new(),
+    };
+    let record_window = decode_window.map(|window| crate::grib::RecordWindow {
+        rows: window.rows, columns: window.columns, records: &windowed,
+    });
+    let mut decoded = crate::grib::grib2_records_within(
+        &file, &object.source, &wanted, declaration, record_window.as_ref())?;
+    crate::grib::alias_records(aliases, &mut decoded);
+    Ok((Some(file), decoded))
 }
 
 /// Read, stage and parse one GRIB2 object.
@@ -2079,6 +2095,8 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
     let admitted_times = if stream.times_are_independent() { stream.keys().len() } else { 1 };
     let lanes = crate::threads::lanes(
         stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), admitted_times)?;
+    let overlap_write = lanes == 1 && stream.keys().len() > 1 && crate::threads::overlap_write(
+        stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes())?;
     let document = if lanes > 1 {
         let first = std::sync::Mutex::new(stream.take_first());
         let stream = &stream;
@@ -2097,9 +2115,9 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
             },
         )?
     } else {
-        crate::frames::write_frameset_with_decode_window(
+        crate::frames::write_frameset_one_lane(
             &output, &mapping, &summary, &digests, invocation.atmospheric_window, decode_window,
-            |key| stream.slice(key),
+            overlap_write, |key| stream.slice(key),
         )?
     };
     let frame_count = document

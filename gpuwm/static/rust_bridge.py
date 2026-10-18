@@ -432,6 +432,54 @@ def grid_array(handle: int, stagger: int, kind: int,
     return out
 
 
+def wrf_cell_geometry(dx, dy, msftx=None, msfty=None, *, shape=None):
+    """Source-REAL WRF cell area and distance, computed in Rust once."""
+    library = load()
+    try:
+        function = library.gpuwm_static_wrf_cell_geometry
+    except AttributeError as error:
+        raise StaticBridgeError("native WRF history cell geometry requires the rebuilt static-fields bridge") from error
+    pointer = ctypes.POINTER(ctypes.c_float)
+    function.argtypes = [ctypes.c_float, ctypes.c_float, pointer, pointer,
+                         pointer, pointer, ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    if shape is None:
+        x, y = np.asarray(msftx), np.asarray(msfty)
+        if x.shape != y.shape or x.ndim != 2:
+            raise ValueError("WRF cell geometry needs a horizontal shape")
+        shape = x.shape
+    if len(shape) != 2 or any(int(n) <= 0 for n in shape):
+        raise ValueError("WRF cell geometry needs a positive horizontal shape")
+    area = np.empty(tuple(map(int, shape)), np.float32)
+    distance = np.empty_like(area)
+    _check(library, function(float(dx), float(dy),
+           None, None, area.ctypes.data_as(pointer), distance.ctypes.data_as(pointer), area.size),
+           "wrf_cell_geometry")
+    return area, distance
+
+
+def wrf_noah_snow_albedo(max_alb, ivgtyp):
+    """Native Noah LSMINIT table replacement, seeded from Rust REAL4."""
+    library = load()
+    try:
+        function = library.gpuwm_static_wrf_noah_snow_albedo
+    except AttributeError as error:
+        raise StaticBridgeError("native Noah LSMINIT requires the rebuilt static-fields bridge") from error
+    pointer = ctypes.POINTER(ctypes.c_float)
+    index_pointer = ctypes.POINTER(ctypes.c_int32)
+    function.argtypes = [pointer, ctypes.c_size_t, index_pointer, pointer, ctypes.c_size_t]
+    function.restype = ctypes.c_int
+    table = np.ascontiguousarray(max_alb, dtype=np.float32)
+    indices = np.ascontiguousarray(ivgtyp, dtype=np.int32)
+    if table.ndim != 1 or indices.ndim != 2:
+        raise ValueError("native Noah snow albedo needs a category table and horizontal indices")
+    output = np.empty(indices.shape, np.float32)
+    _check(library, function(table.ctypes.data_as(pointer), table.size,
+           indices.ctypes.data_as(index_pointer), output.ctypes.data_as(pointer), output.size),
+           "wrf_noah_snow_albedo")
+    return output
+
+
 def grid_identity_probes_json(handle: int) -> str:
     """The corridor identity-probe JSON document for a grid handle."""
     library = load()
@@ -551,6 +599,45 @@ def require_extra_fields(library=None):
                          ctypes.POINTER(ctypes.c_uint64)]
     function.restype = ctypes.c_int32
     return library
+
+
+def scalar_reference_asin_f32(values) -> np.ndarray:
+    """Evaluate ASIN with the qualified native binary32 intrinsic contract.
+
+    The optional entry point leaves ordinary static loading unchanged. Three
+    scalar word probes distinguish the required rounding from a native runtime
+    that would change terrain fluxes or radiation-call solar declination.
+    """
+    library = load()
+    try:
+        entry = library.gpuwm_static_scalar_asin_f32
+    except AttributeError:
+        raise StaticBridgeError(
+            "the static-fields bridge lacks the strict scalar ASIN contract; "
+            "SLP_AZI and SWNORM before Noah, or solar COSZEN, would differ. Rebuild "
+            "static-fields from this checkout: " + _checkout_build_command()) from None
+    f32p = ctypes.POINTER(ctypes.c_float)
+    entry.argtypes = [f32p, f32p, ctypes.c_size_t]
+    entry.restype = ctypes.c_int32
+
+    def evaluate(array):
+        result = np.empty_like(array)
+        _check(library, entry(array.ctypes.data_as(f32p), result.ctypes.data_as(f32p),
+                              ctypes.c_size_t(array.size)), "scalar terrain rotation")
+        return result
+
+    probes = np.array([0xbd137442, 0xbd222103, 0xbd289002], dtype=np.uint32).view(np.float32)
+    expected = np.array([0xbd137c6b, 0xbd222bdc, 0xbd289c33], dtype=np.uint32)
+    if not np.array_equal(evaluate(probes).view(np.uint32), expected):
+        raise StaticBridgeError(
+            "this native scalar rounding changes SLP_AZI and SWNORM before "
+            "Noah, or solar COSZEN; it cannot match the scalar reference")
+    return evaluate(np.ascontiguousarray(values, dtype=np.float32))
+
+
+def scalar_rotation_asin_f32(values) -> np.ndarray:
+    """Retain the terrain caller while sharing its native scalar contract."""
+    return scalar_reference_asin_f32(values)
 
 
 def build_extra_fields(grid_handle: int, specs: list[dict],

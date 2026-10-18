@@ -7,8 +7,10 @@ from pack_fixtures import pack_case, _known_hashes, SHA_LIST
 #: ucm/ucm_lcz carry the oracle's own FRC_URB2D words in every cell; the
 #: _wrfinit pair keeps the fraction urban_var_init leaves, zero wherever the
 #: dominant category is not urban (WRF's rule, run_mosaic_ucm.F90 families
-#: 3 and 4).  Name families after the two paths to pack only those.
-FAMILIES = ("ucm", "ucm_lcz", "ucm_wrfinit", "ucm_lcz_wrfinit")
+#: 3 and 4); the _table pair (families 5 and 6) keeps every urban switch
+#: as the shipped tables set it.  Name families after the paths to pack
+#: only those.
+FAMILIES = ("ucm", "ucm_lcz", "ucm_wrfinit", "ucm_lcz_wrfinit", "ucm_table", "ucm_lcz_table")
 raw, out = map(Path, sys.argv[1:3])
 families = tuple(sys.argv[3:]) or FAMILIES
 known = _known_hashes()

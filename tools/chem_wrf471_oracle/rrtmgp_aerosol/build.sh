@@ -9,7 +9,7 @@ tables=$(realpath "$2")
 (cd "$tables" && sha256sum -c "$script/TABLES.sha256")
 [[ $(gfortran -dumpfullversion) == 15.2.0 ]] || { echo 'requires gfortran 15.2.0'; exit 3; }
 gfortran --version | head -1
-ldd --version | head -1
+ldd --version | sed -n 1p
 mkdir -p "$build"
 cat > "$build/control.f90" <<'EOF'
 subroutine probe(n,a,b)

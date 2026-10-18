@@ -764,22 +764,25 @@ def test_a_dry_pbl_config_is_admitted_by_both_config_doors():
     because ``initialize_physics`` carried a blanket dry refusal of its
     own.  Both are needed; neither substitutes for the other.
 
-    The property here is symmetry: whatever the PBL slot admits dry, it
-    admits for every scheme in it, so a future scheme cannot quietly
-    acquire a moisture gate of its own.
+    The property here is symmetry for the existing dry-capable PBL slot.
+    CCPP requires moist buoyancy inputs, so its admission gate is outside
+    this dry capability claim.
     """
-    from gpuwm.config import PBL_SCHEMES, validate_run_config
+    from gpuwm.config import (CCPP_TKE_EDMF_PBL_SCHEME, PBL_SCHEMES,
+                              validate_run_config)
 
     validate_myj_pairing(_cfg(sf_sfclay_physics=2, bl_pbl_physics=2,
                               moist=False))
     for pbl in PBL_SCHEMES:
-        if pbl == 900:
+        # Preserve the existing SASE exclusion and the CCPP moist-input gate.
+        if pbl in (900, CCPP_TKE_EDMF_PBL_SCHEME):
             continue
         sfclay = 2 if pbl == 2 else 1
         validate_run_config(_cfg(sf_sfclay_physics=sfclay,
                                  bl_pbl_physics=pbl, moist=False))
     assert {pbl for pbl, _ in _DRY_PBL_SLOT} == {
-        pbl for pbl in PBL_SCHEMES if pbl not in (0, 900)}, (
+        pbl for pbl in PBL_SCHEMES
+        if pbl not in (0, 900, CCPP_TKE_EDMF_PBL_SCHEME)}, (
         "a scheme joined the PBL slot without joining the dry run below")
 
 
@@ -843,6 +846,34 @@ def test_a_dry_pbl_run_reaches_the_driver_and_mixes(pbl, sfclay):
     assert float(np.max(cp.asnumpy(driver.fields["exch_h"]))) > 0.0
     assert float(np.max(cp.asnumpy(driver.fields["pblh"]))) > 0.0
     assert np.all(np.isfinite(cp.asnumpy(state.thp)))
+
+
+@requires_gpu
+def test_myj_cold_start_writes_wrfs_initial_ust():
+    """MYJSFCINIT sets USTAR = 0.1 at every point on a cold start, so
+    wrf.exe's t=0 history frame writes UST = 0.1; 2.9.0 wrote the MM5 cold
+    start 1e-4 there (every UST word of NCAR's CONUS benchmark differed from
+    WRF at t=0)."""
+    import cupy as cp
+
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.physics import (
+        DECLARED_CONSTANT_GLW_WM2, initialize_physics)
+    from gpuwm.core.state import init_at_rest
+
+    cfg = _cfg(nx=6, ny=5, nz=24, dt=6.0, run_seconds=60.0, moist=False,
+               sf_sfclay_physics=2, bl_pbl_physics=2,
+               sf_surface_physics=2, num_soil_layers=4, bldt=0.0, radt=0.0,
+               cu_physics=0, mp_physics=0, km_opt=4, c_s=0.25)
+    coord = make_vertical_coord(cfg.nz)
+    base = make_base_state(
+        coord, lambda z: 300.0 + 0.003 * np.asarray(z, np.float64),
+        p_surf=cfg.p_surf, ztop=cfg.ztop)
+    state = init_at_rest(cfg, coord, base)
+    driver = initialize_physics(state, cfg, landmask=1.0, tsk=290.0,
+                                glw=DECLARED_CONSTANT_GLW_WM2, swdown=0.0)
+    ust = cp.asnumpy(driver.fields["ust"])
+    assert np.all(ust == np.float32(0.1)), np.unique(ust)
 
 
 def test_the_matched_pair_is_admitted():

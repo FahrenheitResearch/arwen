@@ -1,0 +1,12 @@
+# -O0 module_bl_gwdo_gsl.o libm symbols:
+                 U atan2f
+                 U expf
+                 U powf
+                 U sinf
+# WRF-flags (-O2 -ftree-vectorize -funroll-loops) libm symbols:
+                 U _ZGVbN4v_expf
+                 U _ZGVbN4vv_powf
+                 U atan2f
+                 U expf
+                 U powf
+                 U sinf

@@ -89,6 +89,28 @@ def _validate_vertical_velocity(
         raise ValueError("vertical_velocity must be C-contiguous")
 
 
+_TABLES_READY: set[int] = set()
+
+
+def _ensure_init_tables() -> None:
+    """Build WRF's init-time tables (nssl_2mom_init) in the GS module once.
+
+    The fused kernel reads WRF's Seifert collection coefficients, its
+    incomplete-gamma ratio tables and ventilation factors from a device
+    global that ``nssl2_gs_init_tables`` fills from WRF's own GAMMA_DP,
+    GAMXINFDP, delbk and delabk.  The build is idempotent: under stream
+    capture it is simply recorded into the graph.
+    """
+    import cupy as cp
+
+    device = cp.cuda.runtime.getDevice()
+    if device in _TABLES_READY:
+        return
+    get_kernel("nssl2_fused_gs", "nssl2_gs_init_tables")((4,), (256,), ())
+    if not cp.cuda.get_current_stream().is_capturing():
+        _TABLES_READY.add(device)
+
+
 def launch_fused_gs(
     workspace: NSSL2DriverWorkspace,
     full_theta,
@@ -102,8 +124,17 @@ def launch_fused_gs(
     dt_s: float,
     *,
     hail_on: bool = True,
+    loaded_vapor=None,
 ) -> None:
     """Advance the complete default option-18 GS slab exactly once.
+
+    ``loaded_vapor`` is the vapour mixing ratio as the driver loaded it
+    (the Registry ``qv``, which nothing changes before the final scatter).
+    WRF diagnoses the primary-ice target ``t7`` from it before the
+    first-step number initialisation moves sub-threshold condensate into
+    vapour (``module_mp_nssl_2mom.F:2834-2856`` then ``:2950-2952``).
+    Omitted, the workspace vapour is used, which is the same array content
+    on every step but the first.
 
     ``hail_on`` selects WRF's hail category switch.  ``True`` is the resolved
     option-18 default (``nssl_hail_on=1``, ``lhl>1``).  ``False`` is the
@@ -156,17 +187,24 @@ def launch_fused_gs(
     }
     _validate_environment(workspace.shape, fields)
     _validate_vertical_velocity(workspace.shape, vertical_velocity)
+    if loaded_vapor is None:
+        loaded_vapor = workspace.field("qv")
+    else:
+        _validate_environment(workspace.shape, {"loaded_vapor": loaded_vapor})
     nz, ny, nx = workspace.shape
     step = _step32(dt_s)
 
     blocks = (size + _THREADS - 1) // _THREADS
     launch = ((blocks,), (_THREADS,))
+    from gpuwm.wrf_exact import ENABLED
+    if ENABLED:
+        _ensure_init_tables()
     get_kernel("nssl2_fused_gs", "nssl2_prepare_fused_gs")(
         *launch,
         (
             temperature_k,
             primary_ice_target_m3,
-            workspace.state,
+            loaded_vapor if ENABLED else workspace.state,
             full_theta,
             air_density,
             pressure_pa,
@@ -217,6 +255,7 @@ class NSSL2FusedGS:
             fields.dz,
             self.dt_s,
             hail_on=self.hail_on,
+            loaded_vapor=getattr(fields, "qv", None),
         )
 
 

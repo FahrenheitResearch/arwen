@@ -1,0 +1,11 @@
+# WRF v4.6.1 (tag v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28).
+# module_bl_gwdo_gsl.F is the routine under test (byte-identical to v4.7.1's,
+# same sha256 as tools/terrain_drag_wrf471_oracle/SOURCES.sha256 pins);
+# module_pbl_driver.F holds the call site the driver repeats (:2157-2185);
+# module_model_constants.F the constants it passes; configure.defaults the
+# gfortran flags of WRF's own build (the -O2 variant).  build.sh refuses
+# any other bytes.
+812881f3b8bf496264ee963e3d019993f87825302169eff3bced7425cebd7258  phys/module_bl_gwdo_gsl.F
+90336e30296991fb397ffde87649a4bd20eaa2b7dc6e90639b043810c8420b56  phys/module_pbl_driver.F
+5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062  share/module_model_constants.F
+cc977015aa91f8522f67204bf1e38c378604ebcf469c21a49b00dde495810526  arch/configure.defaults

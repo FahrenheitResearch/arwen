@@ -28,48 +28,36 @@ branches. They include both signed zeros, positive and negative subnormals,
 the normal/subnormal boundary, and every hydrometeor at zero, near zero, and
 active mass. Every reference output in the CSV was returned by WRF.
 
-To measure the current CUDA port with the repository's sole FP32 total-order
+To measure gpuwm's Morrison (`gpuwm/core/kernels/morrison.cu`, the literal
+transcription of this module) with the repository's sole FP32 total-order
 ULP implementation:
 
-```powershell
+```bash
+python tools/morrison_wrf461_oracle/validate_morrison_oracle.py --row37-off
 python tools/morrison_wrf461_oracle/validate_morrison_oracle.py
-python tools/morrison_wrf461_oracle/validate_morrison_oracle.py `
-  --fmad-false-diagnostic
 ```
 
-The second command is diagnostic only. Disabling contraction globally is not a
-shipped parity fix.
+The first builds the unit with `MORR_ROW37_OFF`, WRF's arithmetic alone:
+every one of the 10,948 returned words is bitwise.  The second is the
+production build, which keeps the owner-ruled row-37 corrections (the
+deposition-nucleation vapour cap and the wide re-evaluation of a
+non-finite freezing rate); on the fixture they fire only in case 13 under
+both modes, and `tests/test_morrison_wrf461_parity.py` pins exactly that.
 
+## Stress columns beyond the fixture
 
-The 2026-09-04 platform check used unchanged production source from integration
-commit `7af9e74f7366e2eab36bc30e9662e3a20f9e6615`. On an RTX 3080 (sm_86),
-WSL Ubuntu 24.04, Python 3.12.3, CuPy 14.2.0, CUDA runtime 12.9, NVRTC 12.8
-and driver API 13.3, the complete 19-field historical residual is retained as
-`MEASURED_SM86_LINUX_MAX_ULP` in `tests/test_morrison_wrf461_parity.py`.
-The same card under native Windows, Python 3.13, CuPy 14.0.1 and CUDA
-runtime/NVRTC 13.0 reproduces the existing `MEASURED_SM89_LINUX_MAX_ULP`
-signature exactly. Architecture alone does not identify the signature.
+`run_morrison_columns.F90` drives the same public wrapper over many
+columns read from a binary file; `stress_columns.py` writes seeded random
+columns for it and grades gpuwm against what WRF returned:
 
-A fresh GNU Fortran 13.3.0 / glibc 2.39 build of the four byte-pinned WRF
-modules reproduced both reference CSVs exactly after line-ending normalization:
+```bash
+# beside build.sh's objects (gfortran -O0, same flags):
+gfortran -c -O0 -cpp -ffree-form -ffree-line-length-none -I .     tools/morrison_wrf461_oracle/run_morrison_columns.F90
+gfortran -o run_cols stub_wrf_error.o ccpp_kind_types.o     module_model_constants.o module_mp_radar.o     module_mp_morr_two_moment_O0.o run_morrison_columns.o
+python tools/morrison_wrf461_oracle/stress_columns.py make stress
+for i in 0 1 2 3 4 5; do ./run_cols stress/stress_$i.bin stress/wrf_$i.bin; done
+python tools/morrison_wrf461_oracle/stress_columns.py compare     stress/stress_0.bin stress/wrf_0.bin --row37-off
+```
 
-- `morrison-levels.csv`: `fd3da3055881ebe8756d9274d9c276478cf6de02799c3904df0dfd822d74e78b`
-- `morrison-surface.csv`: `fa45f06b0aef1ab604b1df7c0832bf3a466fe4ca55f14a10e28c66990ace06e7`
-
-The Linux production measurement contains 3,563 differing values out of
-10,948. A no-FMAD diagnostic still differs in 3,403 values. These controls
-rule out reference drift and show that disabling contraction does not establish
-WRF agreement. The added signature records an observed compiler/platform
-residual; the strict bitwise comparison remains unresolved. A separate GPU control
-changes the latent-heat intercept from 3.1484e6 to 3.1494e6 in an in-memory
-compilation and requires the actual theta comparison to worsen.
-
-The finite-transfer corrections advance Morrison's continuation identity.
-They repair rain and cloud freezing range, cloud log-space moments, final
-vapor writeback and in-range number preservation. The prior aggregate
-signatures remain historical records. They are not repinned as tolerances
-for the changed algorithm. The complete fixture comparison remains visible,
-alongside finite-state, water-budget and known incorrect latent-heat controls.
-The expected fixture contains no effective-radius outputs, so it cannot
-establish the four radii's agreement. Default-REAL constants, the reference
-GAMMA function and compiler target still require separate adjudication.
+The constants the unit reads come from WRF's own MORR_TWO_MOMENT_INIT and
+radar_init (`tools/morrison_constants`), dumped from the same -O0 build.

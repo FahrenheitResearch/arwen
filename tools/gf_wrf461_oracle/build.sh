@@ -180,33 +180,21 @@ cat libmvec-report.txt
 
 # The stage oracle proves its own decomposition: it reruns GFDRV on every
 # column and compares its reconstruction of the driver's output algebra
-# against the driver's own answer, bitwise.
+# against the driver's own answer, bitwise.  ZERO differing rows is the only
+# accepted value.
 #
-# 208 of the 216 rows are exact.  The 8 that are not are a MEASURED fact, not
-# a tolerance: they carry a 1-2 ULP difference in the deep mass flux `xmb`
-# that comes from how GFDRV evaluates `omeg = -g*rho*w` (:471) and
-# `dhdt = cp*rthblten*pi + xlv*rqvblten` (:416).  Those constants are the GFS
-# physcons ones, declared real(kind_phys) = real(8) but INITIALISED FROM
-# real(4) LITERALS (`con_g = 9.80665e+0`, not `9.80665d+0`), so they carry
-# float32 values widened to double, and the expression rounds differently
-# from either a pure-float32 or a pure-float64 spelling.  The measurement:
-#   both constants real(8):            8 rows differ
-#   omeg real(4), dhdt real(8):        4 rows differ
-#   omeg real(8), dhdt real(4):       14 rows differ
-#   both real(4):                     10 rows differ
-# No spelling reaches 0, so this is recorded rather than tuned -- picking the
-# variant with the smallest count would be fitting the fixture, not matching
-# WRF.  The source-faithful real(8) spelling is what ships.
-#
-# Consequence for the port: on those 8 rows the GFDRV fixture is authoritative
-# and the stage fixture is not.  gf-stage-consistency.csv marks them.
-#
-# The guard fails only if the disagreement GROWS past what was measured, which
-# would mean the decomposition has drifted rather than that WRF is subtle.
+# History, because the old tolerance here is the guard this replaces: until
+# the 2026-10-07 verification lane this gate accepted 8 differing rows,
+# explained as GFDRV's "mixed precision".  The real cause was the
+# decomposition's own spelling of the GFS constants as accurate doubles
+# (9.80665e+0_kind_phys) where WRF's module_gfs_physcons initialises its
+# real(8) parameters from DEFAULT-REAL literals and so computes with
+# float64(float32(9.80665)).  The three run_*.F90 decompositions now USE
+# module_gfs_physcons itself, and all 216 rows are exact.
 bad=$(awk -F, 'NR>1 && $4+0 != 0' gf-stage-consistency.csv | wc -l)
 echo "stage decomposition: ${bad} of $(( $(wc -l < gf-stage-consistency.csv) - 1 )) rows differ from GFDRV"
-if [[ "${bad}" -gt 8 ]]; then
-    echo "stage decomposition drifted: ${bad} rows differ, 8 were measured" >&2
+if [[ "${bad}" -ne 0 ]]; then
+    echo "stage decomposition drifted: ${bad} rows differ from GFDRV" >&2
     awk -F, 'NR>1 && $4+0 != 0' gf-stage-consistency.csv | head -20 >&2
     exit 6
 fi

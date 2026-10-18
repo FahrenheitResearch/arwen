@@ -67,10 +67,12 @@ def test_argument_stdin_streams_and_exit_code(binaries, probe, name):
     launcher = probe / (name + suffix)
     shutil.copy2(root / launcher.name, launcher)
     args = [str(launcher), "echo", "", "a b", 'a"b', "c\\d", "snow-雪"]
-    completed = subprocess.run(args, input="input text\n", capture_output=True, text=True, encoding="utf-8")
+    # Bytes, not a text pipe: on Windows a text pipe writes "\r\n" and reads it back as "\n", so the
+    # launcher's stdin and stdout passthrough would be proved only up to line endings.
+    completed = subprocess.run(args, input=b"input text\n", capture_output=True)
     assert completed.returncode == 39
-    assert completed.stdout == "".join(f"arg={arg}\n" for arg in args) + "stdin=input text\n"
-    assert completed.stderr == "probe stderr\n"
+    assert completed.stdout == ("".join(f"arg={arg}\n" for arg in args) + "stdin=input text\n").encode("utf-8")
+    assert completed.stderr == b"probe stderr\n"
 
 
 def alive(pid):
@@ -95,6 +97,9 @@ def alive(pid):
 def test_killed_launcher_leaves_no_renderer(binaries, probe):
     root, suffix = binaries
     launcher = probe / ("rw_compare" + suffix)
+    # copy2 preserves the shared build's read-only mode. Replace the earlier
+    # test's owned copy rather than trying to overwrite that executable.
+    launcher.unlink(missing_ok=True)
     shutil.copy2(root / launcher.name, launcher)
     pid_file = probe / "child.pid"
     child = subprocess.Popen([str(launcher), "block", str(pid_file)])

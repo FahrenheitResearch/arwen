@@ -2394,6 +2394,17 @@ impl App {
                             Err(error) => self.status = format!("Configuration created; mode plots were not saved: {error}. B opens Plots for review."),
                         }
                     }
+                } else if self.job.as_ref().is_some_and(|job| job.geography_gap) && path.is_file() {
+                    // 2.9.2: `gpuwm check` after the emission names the geography datasets the
+                    // configuration reads that WPS_GEOG lacks (exit 6).  The configuration was
+                    // written; the next step is staging them, not a failed creation.
+                    self.open(path.clone());
+                    self.guide_cache = None;
+                    self.case_cache = None;
+                    self.status = format!(
+                        "Configuration created; the geography datasets it reads are not staged yet. Run: gpuwm fetch-geog --config {} (Ctrl+L names each dataset). Next: Enter reviews the plan.",
+                        display_path(&path)
+                    );
                 } else if let Some(draft) = self.job.as_ref().and_then(Job::configuration_recovery) {
                     self.open_configuration_recovery(draft);
                 } else if self.memory_recovery_available() {
@@ -6908,6 +6919,9 @@ mod tests {
     #[test]
     fn memory_refusal_classification_does_not_turn_other_failures_into_resizing() {
         let go = "go: memory -- the forecast needs 8.28 GiB; that EXCEEDS the 7.22 GiB budget\ngpuwm go: this configuration will not fit: the forecast needs 8.28 GiB; that EXCEEDS the 7.22 GiB budget\n";
+        assert!(job::geography_gap(6, "gpuwm check: geography BLOCKER (exit 6 unless a memory leg fails harder): x\n"));
+        assert!(!job::geography_gap(6, "gpuwm check FAILED (rc 6)\n"));
+        assert!(!job::geography_gap(2, "gpuwm check: geography BLOCKER (exit 6 unless a memory leg fails harder): x\n"));
         assert!(job::memory_refusal("go", 2, go));
         for code in [0, 1, 4, 5, 130] {
             assert!(!job::memory_refusal("go", code, go));
@@ -8181,12 +8195,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             app.poll();
         }
-        assert_eq!(
-            app.job.as_ref().unwrap().outcome,
-            Some(0),
-            "{}",
-            app.job.as_ref().unwrap().log_tail(60)
-        );
+        {
+            // Exit 0, or the geography gap on a machine with no staged WPS_GEOG: the
+            // configuration is written either way and the TUI opens it.
+            let job = app.job.as_ref().unwrap();
+            assert!(job.outcome == Some(0) || job.geography_gap, "{}", job.log_tail(60));
+        }
         assert_eq!(
             app.editor.as_ref().unwrap().path,
             created.canonicalize().unwrap()
@@ -8216,12 +8230,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
             app.poll();
         }
-        assert_eq!(
-            app.job.as_ref().unwrap().outcome,
-            Some(0),
-            "{}",
-            app.job.as_ref().unwrap().log_tail(60)
-        );
+        {
+            // Exit 0, or the geography gap on a machine with no staged WPS_GEOG: the
+            // configuration is written either way and the TUI opens it.
+            let job = app.job.as_ref().unwrap();
+            assert!(job.outcome == Some(0) || job.geography_gap, "{}", job.log_tail(60));
+        }
         assert_eq!(fs::read(&created).unwrap(), original);
         assert_eq!(
             app.editor.as_ref().unwrap().path,

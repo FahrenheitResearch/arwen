@@ -82,7 +82,7 @@
     "rule-recipe-landfall",
     "ibtracs-2007151N14072-2007-06-06T00"
    ],
-   "result": "12 km 228 by 232 points (2724 by 2772 km); 3 km 368 by 384 points (1101 by 1149 km); 1 km 330 by 384 points (329 by 383 km); 49 levels; priced at 11.79 GiB of a 14.54 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+   "result": "12 km 204 by 204 points (2436 by 2436 km); 3 km 296 by 296 points (885 by 885 km); 49 levels; priced at 7.71 GiB of a 14.54 GiB budget; cumulus per grid, outer to inner: 1, 0"
   },
   "computed-fit-tc-2007151n14072-24gb": {
    "kind": "computed",
@@ -95,7 +95,7 @@
     "rule-recipe-landfall",
     "ibtracs-2007151N14072-2007-06-06T00"
    ],
-   "result": "12 km 236 by 242 points (2820 by 2892 km); 3 km 400 by 424 points (1197 by 1269 km); 1 km 468 by 528 points (467 by 527 km); 49 levels; priced at 16.61 GiB of a 22.06 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+   "result": "12 km 228 by 232 points (2724 by 2772 km); 3 km 368 by 384 points (1101 by 1149 km); 1 km 390 by 444 points (389 by 443 km); 49 levels; priced at 13.54 GiB of a 22.06 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
   },
   "computed-fit-tc-2007151n14072-32gb": {
    "kind": "computed",
@@ -108,7 +108,7 @@
     "rule-recipe-landfall",
     "ibtracs-2007151N14072-2007-06-06T00"
    ],
-   "result": "12 km 236 by 240 points (2820 by 2868 km); 3 km 400 by 416 points (1197 by 1245 km); 1 km 570 by 630 points (569 by 629 km); 49 levels; priced at 21.05 GiB of a 29.58 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
+   "result": "12 km 236 by 242 points (2820 by 2892 km); 3 km 400 by 424 points (1197 by 1269 km); 1 km 468 by 528 points (467 by 527 km); 49 levels; priced at 16.99 GiB of a 29.58 GiB budget; cumulus per grid, outer to inner: 1, 0, 0"
   },
   "rule-recipe-time-estimate": {
    "kind": "rule",
@@ -205,14 +205,14 @@
       "need_gib": 5.06,
       "budget_gib": 6.75
      },
-     "disk_gib": 11.8,
+     "disk_gib": 13.1,
      "disk_budget_gib": 40,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 3600,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.1 GiB of ERA5 files for 5 forcing times; the preparation, 0.0 GiB; the history files, 7.1 GiB, written every hour on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 1.2 GiB; the rendered pictures, 3.4 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 40 GiB disk budget",
+     "disk_basis": "the download, 0.1 GiB of ERA5 files for 5 forcing times; the preparation, 0.0 GiB; the history files, 8.4 GiB, written every hour on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 1.2 GiB; the rendered pictures, 3.4 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 40 GiB disk budget",
      "download": {
       "bytes": 81549000,
       "transfer_bytes": 2755000000,
@@ -420,14 +420,14 @@
       "need_gib": 7.54,
       "budget_gib": 10.75
      },
-     "disk_gib": 31.0,
+     "disk_gib": 35.2,
      "disk_budget_gib": 50,
      "output": {
       "history_interval_s": 10800,
       "nest_history_interval_s": 7200,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.4 GiB of ERA5 files for 15 forcing times; the preparation, 0.0 GiB; the history files, 22.1 GiB, written every 3 hours on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 2.4 GiB; the rendered pictures, 6.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
+     "disk_basis": "the download, 0.4 GiB of ERA5 files for 15 forcing times; the preparation, 0.0 GiB; the history files, 26.3 GiB, written every 3 hours on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 2.4 GiB; the rendered pictures, 6.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
      "download": {
       "bytes": 441558000,
       "transfer_bytes": 8265000000,
@@ -564,7 +564,199 @@
     },
     {
      "card_gb": 16,
-     "rung": "static-12-3key-1-m60",
+     "rung": "static-12-3-key",
+     "fits": true,
+     "domains": [
+      {
+       "grid_id": 1,
+       "parent_id": 0,
+       "dx_km": 12.0,
+       "nx": 204,
+       "ny": 204,
+       "nz": 49,
+       "width_km": 2436.0,
+       "height_km": 2436.0,
+       "parent_grid_ratio": 1,
+       "following": false,
+       "cu_physics": 1,
+       "centre": {
+        "lat": 22.3,
+        "lon": 60.95
+       }
+      },
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "dx_km": 3.0,
+       "nx": 296,
+       "ny": 296,
+       "nz": 49,
+       "width_km": 885.0,
+       "height_km": 885.0,
+       "parent_grid_ratio": 4,
+       "following": false,
+       "cu_physics": 0,
+       "centre": {
+        "lat": 22.3,
+        "lon": 60.95
+       }
+      }
+     ],
+     "start": "2007-06-03T00:00Z",
+     "length_h": 84,
+     "source": "era5",
+     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
+     "physics": {
+      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
+      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 km grid, where the storms are resolved and a scheme would convect the same air twice. Over the sea the surface layer uses Donelan drag, which levels off in strong wind as measured in hurricanes, with a constant heat and moisture roughness (WRF's tropical cyclone option, isftcflx 1). The default roughness keeps raising the drag as the wind rises, which holds a strong storm's peak wind down."
+     },
+     "fitted_grid": "12 km 204 by 204 points (2436 by 2436 km); 3 km 296 by 296 points (885 by 885 km); 49 levels",
+     "memory": {
+      "need_gib": 7.71,
+      "budget_gib": 14.54
+     },
+     "disk_gib": 58.1,
+     "disk_budget_gib": 60,
+     "output": {
+      "history_interval_s": 10800,
+      "nest_history_interval_s": 3600,
+      "keep_checkpoints": 1
+     },
+     "disk_basis": "the download, 0.4 GiB of ERA5 files for 15 forcing times; the preparation, 0.0 GiB; the history files, 45.7 GiB, written every 3 hours on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 2.4 GiB; the rendered pictures, 9.5 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
+     "download": {
+      "bytes": 441558000,
+      "transfer_bytes": 8265000000,
+      "objects": 15,
+      "leads": 15,
+      "source": "era5",
+      "mode": "arco",
+      "preparation_bytes": 24062998,
+      "chain": "experiment"
+     },
+     "est_minutes": null,
+     "est_basis": "unmeasured: the engine gives no time estimate for a plan",
+     "why": "The 3 km grid covers the track from 24 hours before the landfall at 2007-06-06 00:00 UTC to the end, so that moment is resolved; before that the storm is carried on the 12 km grid.",
+     "what_is_given_up": "No 1 km grid; the first 48 hours run at 12 km with a cumulus scheme, so the storm reaches the 3 km grid weaker and less organised than it should be; the outer grid writes every 3 hours instead of every hour, to keep the run within this card's 60 GiB disk budget.",
+     "finest_km": 3.0,
+     "rings_km": [
+      {
+       "grid_id": 2,
+       "parent_id": 1,
+       "km": 771
+      }
+     ],
+     "door": "domain",
+     "intent": {
+      "root_dx_km": 12,
+      "chain": "4",
+      "buffer_km": "700,0",
+      "source": "era5",
+      "cycle": "2007-06-03T00",
+      "hours": 84,
+      "era5_provider": "arco",
+      "isftcflx": 1,
+      "history_interval_s": 10800,
+      "nest_history_interval_s": 3600,
+      "card": "16gb"
+     },
+     "box": {
+      "lat": 22.3,
+      "lon": 60.95,
+      "width_km": 881,
+      "height_km": 857
+     },
+     "recipe": {
+      "source": "era5",
+      "cycle": "2007-06-03T00",
+      "hours": 84,
+      "card": "16gb",
+      "lat": 22.3,
+      "lon": 60.95,
+      "width_km": 881,
+      "height_km": 857,
+      "dx_km": 12.0,
+      "chain": "4",
+      "buffer_km": "700,0",
+      "era5_provider": "arco"
+     },
+     "cite": [
+      "computed-fit-tc-2007151n14072-16gb",
+      "rule-recipe-best-tc",
+      "ibtracs-2007151N14072-track",
+      "rule-recipe-landfall",
+      "ibtracs-2007151N14072-2007-06-06T00"
+     ],
+     "better_rungs_refused": [
+      {
+       "rung": "static-12-3-1-m240",
+       "need_gib": 36.14,
+       "reason": "needs 36.14 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m180",
+       "need_gib": 34.07,
+       "reason": "needs 34.07 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m130",
+       "need_gib": 32.86,
+       "reason": "needs 32.86 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m240",
+       "need_gib": 27.88,
+       "reason": "needs 27.88 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m180",
+       "need_gib": 21.47,
+       "reason": "needs 21.47 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m130",
+       "need_gib": 16.99,
+       "reason": "needs 16.99 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3-1-m90",
+       "need_gib": 29.57,
+       "reason": "needs 29.57 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m90",
+       "need_gib": 13.54,
+       "reason": "writes 70.8 GiB even at the sparsest allowed output, over this card's 60 GiB disk budget"
+      },
+      {
+       "rung": "static-12-3-1-m60",
+       "need_gib": 28.97,
+       "reason": "needs 28.97 GiB; this card's budget is 14.54 GiB"
+      },
+      {
+       "rung": "static-12-3key-1-m60",
+       "need_gib": 12.08,
+       "reason": "writes 62.8 GiB even at the sparsest allowed output, over this card's 60 GiB disk budget"
+      },
+      {
+       "rung": "static-12-3-track",
+       "need_gib": 14.43,
+       "reason": "priced at 14.43 GiB of a 14.54 GiB budget: under 5% headroom, so a desktop on the same card could refuse it"
+      },
+      {
+       "rung": "following-12-3",
+       "need_gib": 6.16,
+       "reason": "the storm moves 846 km east-west and 902 km north-south in the window; the following nest has room for 716 and 476 km inside its fixed 12 km parent"
+      },
+      {
+       "rung": "following-12-3-small",
+       "need_gib": 5.0,
+       "reason": "the storm moves 846 km east-west and 902 km north-south in the window; the following nest has room for 836 and 596 km inside its fixed 12 km parent"
+      }
+     ]
+    },
+    {
+     "card_gb": 24,
+     "rung": "static-12-3key-1-m90",
      "fits": true,
      "domains": [
       {
@@ -605,11 +797,11 @@
        "grid_id": 3,
        "parent_id": 2,
        "dx_km": 1.0,
-       "nx": 330,
-       "ny": 384,
+       "nx": 390,
+       "ny": 444,
        "nz": 49,
-       "width_km": 329.0,
-       "height_km": 383.0,
+       "width_km": 389.0,
+       "height_km": 443.0,
        "parent_grid_ratio": 3,
        "following": false,
        "cu_physics": 0,
@@ -627,19 +819,19 @@
       "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
       "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice. Over the sea the surface layer uses Donelan drag, which levels off in strong wind as measured in hurricanes, with a constant heat and moisture roughness (WRF's tropical cyclone option, isftcflx 1). The default roughness keeps raising the drag as the wind rises, which holds a strong storm's peak wind down."
      },
-     "fitted_grid": "12 km 228 by 232 points (2724 by 2772 km); 3 km 368 by 384 points (1101 by 1149 km); 1 km 330 by 384 points (329 by 383 km); 49 levels",
+     "fitted_grid": "12 km 228 by 232 points (2724 by 2772 km); 3 km 368 by 384 points (1101 by 1149 km); 1 km 390 by 444 points (389 by 443 km); 49 levels",
      "memory": {
-      "need_gib": 11.79,
-      "budget_gib": 14.54
+      "need_gib": 13.54,
+      "budget_gib": 22.06
      },
-     "disk_gib": 55.0,
-     "disk_budget_gib": 60,
+     "disk_gib": 70.8,
+     "disk_budget_gib": 80,
      "output": {
       "history_interval_s": 10800,
       "nest_history_interval_s": 10800,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.5 GiB of ERA5 files for 15 forcing times; the preparation, 0.1 GiB; the history files, 41.4 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 5.8 GiB; the rendered pictures, 7.2 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
+     "disk_basis": "the download, 0.5 GiB of ERA5 files for 15 forcing times; the preparation, 0.1 GiB; the history files, 56.3 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 6.6 GiB; the rendered pictures, 7.3 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
      "download": {
       "bytes": 541314000,
       "transfer_bytes": 8265000000,
@@ -647,16 +839,16 @@
       "leads": 15,
       "source": "era5",
       "mode": "arco",
-      "preparation_bytes": 59756794,
+      "preparation_bytes": 68403922,
       "chain": "experiment"
      },
-     "est_minutes": 410,
-     "est_basis": "estimated from the speed of 1 measured run of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.5 GB of ERA5 files, about 8 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 7 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 11 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
-     "why": "A 326 by 377 km grid at 1 km holds the eyewall from 12 hours before to 12 hours after the landfall at 2007-06-06 00:00 UTC, with the best-track centre at least 60 km inside its edge the whole time, inside a 3 km grid that holds the storm from 24 hours before that to the end; before then the 12 km grid carries it, which frees the memory the 1 km grid needs.",
-     "what_is_given_up": "The 1 km grid has 60 km around the key hours' track instead of 240 km, so the outer eyewall and the inner rain bands sit nearer its edge; the first 48 hours run at 12 km with a cumulus scheme, so the storm reaches the 3 km grid weaker and less organised than it should be; the nests write every 3 hours instead of every hour and the outer grid writes every 3 hours instead of every hour, to keep the run within this card's 60 GiB disk budget.",
+     "est_minutes": null,
+     "est_basis": "unmeasured: the engine gives no time estimate for a plan",
+     "why": "A 386 by 437 km grid at 1 km holds the eyewall from 15 hours before to 12 hours after the landfall at 2007-06-06 00:00 UTC, with the best-track centre at least 60 km inside its edge the whole time, inside a 3 km grid that holds the storm from 24 hours before that to the end; before then the 12 km grid carries it, which frees the memory the 1 km grid needs.",
+     "what_is_given_up": "The 1 km grid has 90 km around the key hours' track instead of 240 km, so the outer eyewall and the inner rain bands sit nearer its edge; the first 48 hours run at 12 km with a cumulus scheme, so the storm reaches the 3 km grid weaker and less organised than it should be; the nests write every 3 hours instead of every hour and the outer grid writes every 3 hours instead of every hour, to keep the run within this card's 80 GiB disk budget.",
      "finest_km": 1.0,
      "key_cover_h": [
-      12,
+      15,
       12
      ],
      "rings_km": [
@@ -668,14 +860,14 @@
       {
        "grid_id": 3,
        "parent_id": 2,
-       "km": 382
+       "km": 352
       }
      ],
      "door": "domain",
      "intent": {
       "root_dx_km": 12,
       "chain": "4,3",
-      "buffer_km": "1065,365,0",
+      "buffer_km": "1035,335,0",
       "source": "era5",
       "cycle": "2007-06-03T00",
       "hours": 84,
@@ -683,88 +875,75 @@
       "isftcflx": 1,
       "history_interval_s": 10800,
       "nest_history_interval_s": 10800,
-      "card": "16gb"
+      "card": "24gb"
      },
      "box": {
       "lat": 22.75,
       "lon": 60.1,
-      "width_km": 326,
-      "height_km": 377
+      "width_km": 386,
+      "height_km": 437
      },
      "recipe": {
       "source": "era5",
       "cycle": "2007-06-03T00",
       "hours": 84,
-      "card": "16gb",
+      "card": "24gb",
       "lat": 22.75,
       "lon": 60.1,
-      "width_km": 326,
-      "height_km": 377,
+      "width_km": 386,
+      "height_km": 437,
       "dx_km": 12.0,
       "chain": "4,3",
-      "buffer_km": "1065,365,0",
+      "buffer_km": "1035,335,0",
       "era5_provider": "arco"
      },
      "cite": [
-      "computed-fit-tc-2007151n14072-16gb",
+      "computed-fit-tc-2007151n14072-24gb",
       "rule-recipe-best-tc",
       "ibtracs-2007151N14072-track",
       "rule-recipe-landfall",
-      "ibtracs-2007151N14072-2007-06-06T00",
-      "rule-recipe-time-estimate"
+      "ibtracs-2007151N14072-2007-06-06T00"
      ],
      "better_rungs_refused": [
       {
        "rung": "static-12-3-1-m240",
-       "need_gib": 35.35,
-       "reason": "needs 35.35 GiB; this card's budget is 14.54 GiB"
+       "need_gib": 36.14,
+       "reason": "needs 36.14 GiB; this card's budget is 22.06 GiB"
       },
       {
        "rung": "static-12-3-1-m180",
-       "need_gib": 33.38,
-       "reason": "needs 33.38 GiB; this card's budget is 14.54 GiB"
+       "need_gib": 34.07,
+       "reason": "needs 34.07 GiB; this card's budget is 22.06 GiB"
       },
       {
        "rung": "static-12-3-1-m130",
-       "need_gib": 32.25,
-       "reason": "needs 32.25 GiB; this card's budget is 14.54 GiB"
+       "need_gib": 32.86,
+       "reason": "needs 32.86 GiB; this card's budget is 22.06 GiB"
       },
       {
        "rung": "static-12-3key-1-m240",
-       "need_gib": 27.38,
-       "reason": "needs 27.38 GiB; this card's budget is 14.54 GiB"
+       "need_gib": 27.88,
+       "reason": "needs 27.88 GiB; this card's budget is 22.06 GiB"
       },
       {
        "rung": "static-12-3key-1-m180",
-       "need_gib": 21.05,
-       "reason": "needs 21.05 GiB; this card's budget is 14.54 GiB"
+       "need_gib": 21.47,
+       "reason": "priced at 21.47 GiB of a 22.06 GiB budget: under 5% headroom, so a desktop on the same card could refuse it"
       },
       {
        "rung": "static-12-3key-1-m130",
-       "need_gib": 16.61,
-       "reason": "needs 16.61 GiB; this card's budget is 14.54 GiB"
+       "need_gib": 16.99,
+       "reason": "writes 89 GiB even at the sparsest allowed output, over this card's 80 GiB disk budget"
       },
       {
        "rung": "static-12-3-1-m90",
-       "need_gib": 29.03,
-       "reason": "needs 29.03 GiB; this card's budget is 14.54 GiB"
-      },
-      {
-       "rung": "static-12-3key-1-m90",
-       "need_gib": 13.22,
-       "reason": "writes 64.8 GiB even at the sparsest allowed output, over this card's 60 GiB disk budget"
-      },
-      {
-       "rung": "static-12-3-1-m60",
-       "need_gib": 28.46,
-       "reason": "needs 28.46 GiB; this card's budget is 14.54 GiB"
+       "need_gib": 29.57,
+       "reason": "needs 29.57 GiB; this card's budget is 22.06 GiB"
       }
-     ],
-     "est_kind": "estimated",
-     "est_total_minutes": 435
+     ]
     },
     {
-     "card_gb": 24,
+     "card_gb": 32,
      "rung": "static-12-3key-1-m130",
      "fits": true,
      "domains": [
@@ -830,17 +1009,17 @@
      },
      "fitted_grid": "12 km 236 by 242 points (2820 by 2892 km); 3 km 400 by 424 points (1197 by 1269 km); 1 km 468 by 528 points (467 by 527 km); 49 levels",
      "memory": {
-      "need_gib": 16.61,
-      "budget_gib": 22.06
+      "need_gib": 16.99,
+      "budget_gib": 29.58
      },
-     "disk_gib": 77.4,
-     "disk_budget_gib": 80,
+     "disk_gib": 89.0,
+     "disk_budget_gib": 100,
      "output": {
       "history_interval_s": 10800,
       "nest_history_interval_s": 10800,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.5 GiB of ERA5 files for 15 forcing times; the preparation, 0.1 GiB; the history files, 61.1 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 8.5 GiB; the rendered pictures, 7.2 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
+     "disk_basis": "the download, 0.5 GiB of ERA5 files for 15 forcing times; the preparation, 0.1 GiB; the history files, 72.6 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 8.5 GiB; the rendered pictures, 7.3 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
      "download": {
       "bytes": 578340000,
       "transfer_bytes": 8265000000,
@@ -851,10 +1030,10 @@
       "preparation_bytes": 88224539,
       "chain": "experiment"
      },
-     "est_minutes": 710,
-     "est_basis": "estimated from the speed of 1 measured run of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.6 GB of ERA5 files, about 8 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 10 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 16 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
+     "est_minutes": null,
+     "est_basis": "unmeasured: the engine gives no time estimate for a plan",
      "why": "A 466 by 517 km grid at 1 km holds the eyewall from 18 hours before to 12 hours after the landfall at 2007-06-06 00:00 UTC, with the best-track centre at least 60 km inside its edge the whole time, inside a 3 km grid that holds the storm from 24 hours before that to the end; before then the 12 km grid carries it, which frees the memory the 1 km grid needs.",
-     "what_is_given_up": "The 1 km grid has 130 km around the key hours' track instead of 240 km, so the outer eyewall and the inner rain bands sit nearer its edge; the first 48 hours run at 12 km with a cumulus scheme, so the storm reaches the 3 km grid weaker and less organised than it should be; the nests write every 3 hours instead of every hour and the outer grid writes every 3 hours instead of every hour, to keep the run within this card's 80 GiB disk budget.",
+     "what_is_given_up": "The 1 km grid has 130 km around the key hours' track instead of 240 km, so the outer eyewall and the inner rain bands sit nearer its edge; the first 48 hours run at 12 km with a cumulus scheme, so the storm reaches the 3 km grid weaker and less organised than it should be; the nests write every 3 hours instead of every hour and the outer grid writes every 3 hours instead of every hour, to keep the run within this card's 100 GiB disk budget.",
      "finest_km": 1.0,
      "key_cover_h": [
       18,
@@ -884,7 +1063,7 @@
       "isftcflx": 1,
       "history_interval_s": 10800,
       "nest_history_interval_s": 10800,
-      "card": "24gb"
+      "card": "32gb"
      },
      "box": {
       "lat": 22.75,
@@ -896,7 +1075,7 @@
       "source": "era5",
       "cycle": "2007-06-03T00",
       "hours": 84,
-      "card": "24gb",
+      "card": "32gb",
       "lat": 22.75,
       "lon": 60.1,
       "width_km": 466,
@@ -907,218 +1086,39 @@
       "era5_provider": "arco"
      },
      "cite": [
-      "computed-fit-tc-2007151n14072-24gb",
-      "rule-recipe-best-tc",
-      "ibtracs-2007151N14072-track",
-      "rule-recipe-landfall",
-      "ibtracs-2007151N14072-2007-06-06T00",
-      "rule-recipe-time-estimate"
-     ],
-     "better_rungs_refused": [
-      {
-       "rung": "static-12-3-1-m240",
-       "need_gib": 35.35,
-       "reason": "needs 35.35 GiB; this card's budget is 22.06 GiB"
-      },
-      {
-       "rung": "static-12-3-1-m180",
-       "need_gib": 33.38,
-       "reason": "needs 33.38 GiB; this card's budget is 22.06 GiB"
-      },
-      {
-       "rung": "static-12-3-1-m130",
-       "need_gib": 32.25,
-       "reason": "needs 32.25 GiB; this card's budget is 22.06 GiB"
-      },
-      {
-       "rung": "static-12-3key-1-m240",
-       "need_gib": 27.38,
-       "reason": "needs 27.38 GiB; this card's budget is 22.06 GiB"
-      },
-      {
-       "rung": "static-12-3key-1-m180",
-       "need_gib": 21.05,
-       "reason": "priced at 21.05 GiB of a 22.06 GiB budget: under 5% headroom, so a desktop on the same card could refuse it"
-      }
-     ],
-     "est_kind": "estimated",
-     "est_total_minutes": 740
-    },
-    {
-     "card_gb": 32,
-     "rung": "static-12-3key-1-m180",
-     "fits": true,
-     "domains": [
-      {
-       "grid_id": 1,
-       "parent_id": 0,
-       "dx_km": 12.0,
-       "nx": 236,
-       "ny": 240,
-       "nz": 49,
-       "width_km": 2820.0,
-       "height_km": 2868.0,
-       "parent_grid_ratio": 1,
-       "following": false,
-       "cu_physics": 1,
-       "centre": {
-        "lat": 22.75,
-        "lon": 60.1
-       }
-      },
-      {
-       "grid_id": 2,
-       "parent_id": 1,
-       "dx_km": 3.0,
-       "nx": 400,
-       "ny": 416,
-       "nz": 49,
-       "width_km": 1197.0,
-       "height_km": 1245.0,
-       "parent_grid_ratio": 4,
-       "following": false,
-       "cu_physics": 0,
-       "centre": {
-        "lat": 22.75,
-        "lon": 60.1
-       }
-      },
-      {
-       "grid_id": 3,
-       "parent_id": 2,
-       "dx_km": 1.0,
-       "nx": 570,
-       "ny": 630,
-       "nz": 49,
-       "width_km": 569.0,
-       "height_km": 629.0,
-       "parent_grid_ratio": 3,
-       "following": false,
-       "cu_physics": 0,
-       "centre": {
-        "lat": 22.75,
-        "lon": 60.1
-       }
-      }
-     ],
-     "start": "2007-06-03T00:00Z",
-     "length_h": 84,
-     "source": "era5",
-     "source_why": "ERA5 reanalysis: one consistent analysis for any date from 1940, read from Google's public copy with no key.",
-     "physics": {
-      "profile": "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
-      "why": "Morrison two-moment microphysics with rimed ice falling as hail, YSU boundary layer, full RTE+RRTMGP radiation: the one suite matched against WRF, and the engine's own default for this source. Kain-Fritsch on the 12 km grid only; off on the 3 and 1 km grids, where the storms are resolved and a scheme would convect the same air twice. Over the sea the surface layer uses Donelan drag, which levels off in strong wind as measured in hurricanes, with a constant heat and moisture roughness (WRF's tropical cyclone option, isftcflx 1). The default roughness keeps raising the drag as the wind rises, which holds a strong storm's peak wind down."
-     },
-     "fitted_grid": "12 km 236 by 240 points (2820 by 2868 km); 3 km 400 by 416 points (1197 by 1245 km); 1 km 570 by 630 points (569 by 629 km); 49 levels",
-     "memory": {
-      "need_gib": 21.05,
-      "budget_gib": 29.58
-     },
-     "disk_gib": 93.3,
-     "disk_budget_gib": 100,
-     "output": {
-      "history_interval_s": 10800,
-      "nest_history_interval_s": 10800,
-      "keep_checkpoints": 1
-     },
-     "disk_basis": "the download, 0.5 GiB of ERA5 files for 15 forcing times; the preparation, 0.1 GiB; the history files, 75.1 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 10.3 GiB; the rendered pictures, 7.2 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
-     "download": {
-      "bytes": 573520500,
-      "transfer_bytes": 8265000000,
-      "objects": 15,
-      "leads": 15,
-      "source": "era5",
-      "mode": "arco",
-      "preparation_bytes": 108394468,
-      "chain": "experiment"
-     },
-     "est_minutes": 960,
-     "est_basis": "estimated from the speed of 1 measured run of this kind of storm on an RTX 5070 Ti (16 GB), scaled by this layout's grid points, time steps and hours; a faster or slower card changes it; the time to all pictures adds the download (0.6 GB of ERA5 files, about 8 minutes at the 17 MB/s measured on 3 downloads of that source on the same machine) and the preparation (about 13 minutes, at the rate measured on 3 preparations of the same kind) and the pictures, about 19 minutes, scaled from the measured run that drew its pictures by this layout's picture frames and grid points",
-     "why": "A 566 by 617 km grid at 1 km holds the eyewall from 21 hours before to 12 hours after the landfall at 2007-06-06 00:00 UTC, with the best-track centre at least 60 km inside its edge the whole time, inside a 3 km grid that holds the storm from 24 hours before that to the end; before then the 12 km grid carries it, which frees the memory the 1 km grid needs.",
-     "what_is_given_up": "The 1 km grid has 180 km around the key hours' track instead of 240 km, so the outer eyewall and the inner rain bands sit nearer its edge; the first 48 hours run at 12 km with a cumulus scheme, so the storm reaches the 3 km grid weaker and less organised than it should be; the nests write every 3 hours instead of every hour and the outer grid writes every 3 hours instead of every hour, to keep the run within this card's 100 GiB disk budget.",
-     "finest_km": 1.0,
-     "key_cover_h": [
-      21,
-      12
-     ],
-     "rings_km": [
-      {
-       "grid_id": 2,
-       "parent_id": 1,
-       "km": 807
-      },
-      {
-       "grid_id": 3,
-       "parent_id": 2,
-       "km": 307
-      }
-     ],
-     "door": "domain",
-     "intent": {
-      "root_dx_km": 12,
-      "chain": "4,3",
-      "buffer_km": "995,295,0",
-      "source": "era5",
-      "cycle": "2007-06-03T00",
-      "hours": 84,
-      "era5_provider": "arco",
-      "isftcflx": 1,
-      "history_interval_s": 10800,
-      "nest_history_interval_s": 10800,
-      "card": "32gb"
-     },
-     "box": {
-      "lat": 22.75,
-      "lon": 60.1,
-      "width_km": 566,
-      "height_km": 617
-     },
-     "recipe": {
-      "source": "era5",
-      "cycle": "2007-06-03T00",
-      "hours": 84,
-      "card": "32gb",
-      "lat": 22.75,
-      "lon": 60.1,
-      "width_km": 566,
-      "height_km": 617,
-      "dx_km": 12.0,
-      "chain": "4,3",
-      "buffer_km": "995,295,0",
-      "era5_provider": "arco"
-     },
-     "cite": [
       "computed-fit-tc-2007151n14072-32gb",
       "rule-recipe-best-tc",
       "ibtracs-2007151N14072-track",
       "rule-recipe-landfall",
-      "ibtracs-2007151N14072-2007-06-06T00",
-      "rule-recipe-time-estimate"
+      "ibtracs-2007151N14072-2007-06-06T00"
      ],
      "better_rungs_refused": [
       {
        "rung": "static-12-3-1-m240",
-       "need_gib": 35.35,
-       "reason": "needs 35.35 GiB; this card's budget is 29.58 GiB"
+       "need_gib": 36.14,
+       "reason": "needs 36.14 GiB; this card's budget is 29.58 GiB"
       },
       {
        "rung": "static-12-3-1-m180",
-       "need_gib": 33.38,
-       "reason": "needs 33.38 GiB; this card's budget is 29.58 GiB"
+       "need_gib": 34.07,
+       "reason": "needs 34.07 GiB; this card's budget is 29.58 GiB"
       },
       {
        "rung": "static-12-3-1-m130",
-       "need_gib": 32.25,
-       "reason": "needs 32.25 GiB; this card's budget is 29.58 GiB"
+       "need_gib": 32.86,
+       "reason": "needs 32.86 GiB; this card's budget is 29.58 GiB"
       },
       {
        "rung": "static-12-3key-1-m240",
-       "need_gib": 27.38,
-       "reason": "writes 117.5 GiB even at the sparsest allowed output, over this card's 100 GiB disk budget"
+       "need_gib": 27.88,
+       "reason": "writes 134.4 GiB even at the sparsest allowed output, over this card's 100 GiB disk budget"
+      },
+      {
+       "rung": "static-12-3key-1-m180",
+       "need_gib": 21.47,
+       "reason": "writes 107.5 GiB even at the sparsest allowed output, over this card's 100 GiB disk budget"
       }
-     ],
-     "est_kind": "estimated",
-     "est_total_minutes": 1000
+     ]
     }
    ],
    "cite": [

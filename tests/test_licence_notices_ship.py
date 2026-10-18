@@ -371,8 +371,11 @@ def test_the_arm_scope_list_is_derived_from_the_tree() -> None:
     """
     _requires_source_tree()
     derived = _arm_files()
-    assert len(derived) == 18, derived
-    assert len([name for name in derived if name != "glibc_trig_flt32.cuh"]) == 17, derived
+    # Twenty since the 2.9.1 exact-chain intake: mynn_surface_libm.cuh (the
+    # MYNN surface layer's copy of mynn_pbl.cu's logf/expf/powf) and
+    # rrtmgp_libm.cuh joined.
+    assert len(derived) == 20, derived
+    assert len([name for name in derived if name != "glibc_trig_flt32.cuh"]) == 19, derived
     assert "glibc_trig_flt32.cuh" in derived
     listed = _read(KERNEL_NOTICE)
     missing = [name for name in derived if name not in listed]
@@ -423,6 +426,16 @@ FDLIBM_FILES: tuple[str, ...] = (
     # glibc's s_log1pf.c (plm_log1p, plm_log1pf); the root NOTICE gives the
     # file its own paragraph and its header carries the Sun notices.
     "portable_libm64.cuh",
+    # The 2.9.1 intake of the WRF exact chain: FDLIBM's atanf (the
+    # sfclay table words) in atan_scalar_flt32.cuh, mynn_surface_libm.cuh
+    # and terrain_drag.cu; s_expm1f.c in gf_wrf_normalization.cuh; expm1f
+    # and tanhf in shinhong.cu and ysu_topo.cuh (the ysu_480_topo.cuh
+    # code); e_log10f.c's reduction in nssl2_diagnostics.cu and
+    # thompson_fork.cu; e_log10.c in thompson_classic.cu.
+    "atan_scalar_flt32.cuh", "gf_wrf_normalization.cuh",
+    "mynn_surface_libm.cuh", "nssl2_diagnostics.cu", "shinhong.cu",
+    "terrain_drag.cu", "thompson_classic.cu", "thompson_fork.cu",
+    "ysu_topo.cuh",
 )
 
 #: Device routines whose NAME looks like an FDLIBM one but which are not
@@ -445,11 +458,25 @@ _NOT_FDLIBM = {
     # special-case arm transcribe CORE-MATH log10f.c bc385c2, MIT (NOTICE).
     "urban_bem.cuh": ("ubm_atanf", "ubm_log10f", "ubm_log10f_special"),
     "urban_ucm.cu": ("u_atan", "u_log10"),       # (float)atan/log10((double)x)
+    # Dudhia shortwave: WOOF's own float32 log10 on its own gfk_log (an
+    # exponent split and a two-part log10(2)); no third-party source is
+    # copied.  Word-equal to the C library's log10f on every float32 in
+    # [1, +inf] (tools/dudhia_sw_wrf461_oracle/sweep_libm.py).
+    "dudhia_sw.cu": ("dsw_log10f",),
     # Noah mosaic: noah_log10 and its special-case arm transcribe CORE-MATH
     # log10f.c bc385c2, MIT (NOTICE), not FDLIBM.
     "noah_mosaic.cu": ("noah_log10", "noah_log10_special"),
+    # Noah (lane/verify-noah-lsm): noah_log10f is WOOF's own log10, composed
+    # on WOOF's own float32 logf (gfk_log) as k*log10(2) + log10(e)*ln(m);
+    # graded exhaustively against the oracle host's log10f.
+    "noah.cu": ("noah_log10f",),
     # slope_rad / topo_shading: (float)atan((double)x), (float)atan2((double)y, (double)x)
-    "topo_radiation.cu": ("tr_atan", "tr_atan2"),
+    "topo_radiation.cu": ("tr_atan", "tr_atan2",
+                          # the exact chain's slope atan2: the correctly
+                          # rounded double-double side test, and the
+                          # scalar quadrant arm on sfc_classic_atanf
+                          # (atan_scalar_flt32.cuh, on FDLIBM_FILES)
+                          "tr_atan2_resolve", "tr_slope_atan2_scalar"),
     # mp28 column support: tc_atan calls CUDA's atan/atanf; tc_log10
     # delegates to thompson_aa_log10f / thompson_aa_log10, whose
     # transcription lives in thompson_aerosol_libm.cuh (on FDLIBM_FILES).
@@ -457,6 +484,14 @@ _NOT_FDLIBM = {
     # Goddard bands: g_log10 is gfk_log(x) * log10(e), WOOF's own
     # composition; no FDLIBM reduction is transcribed.
     "goddard_bands.cuh": ("g_log10",),
+    # WOOF's own float32 log10 (gfk_log10) and Morrison's binary64 log10
+    # (mo_log10d, WRF's DOUBLE ALOG10 in refl10cm_hm): WOOF's own libm
+    # routines, graded word for word against the oracle host's C library
+    # (tools/glibc_flt32_extra_proof, tools/morrison_wrf461_oracle).
+    "glibc_flt32_extra.cuh": ("gfk_log10",),
+    "morrison.cu": ("mo_log10d",),
+    # The fork Thompson's DOUBLE LOG10 is CUDA's binary64 log10.
+    "thompson_fork.cu": ("tf_log10",),
 }
 
 _FDLIBM_DEF = re.compile(
@@ -579,6 +614,15 @@ UPSTREAM_TOKENS = {
     "TEMPO": "NCAR/TEMPO",
 }
 
+#: TEMPO's sources as rw-tempo cites them: the src/module_mp_tempo_*.F90
+#: modules, by full name or by their short names (params.F90, utils.F90,
+#: driver.F90), all in NCAR/TEMPO, not in WRF.
+_TEMPO_SHORT = frozenset({"params.F90", "utils.F90", "driver.F90"})
+
+#: WOOF's own Fortran: the TEMPO reference driver in tools/tempo_ref, which
+#: links unmodified TEMPO and dumps its init state.  First-party, no notice.
+_OWN_FORTRAN = frozenset({"tempo_ref_driver.F90"})
+
 #: Cited Fortran sources with NO counterpart in the WRF distribution, so they
 #: are WPS's own.  Measured against a WRF v4.6.1 checkout.
 _WPS_ONLY = frozenset({
@@ -622,8 +666,12 @@ def test_every_upstream_a_first_party_crate_transcribes_is_notified() -> None:
     projects = set()
     unclassified = []
     for name in sorted(cited):
+        if name in _OWN_FORTRAN:
+            continue
         if name.startswith("mpas_"):
             projects.add("MPAS")
+        elif name.startswith("module_mp_tempo_") or name in _TEMPO_SHORT:
+            projects.add("TEMPO")
         elif name in {"INITPOST.F", "MDL2P.F", "params.F"}:
             projects.add("UPP")
         elif name in _WPS_ONLY:
@@ -676,6 +724,11 @@ def test_the_earlier_gamma_stays_deleted() -> None:
     fingerprints = ("exp2_adj", "x_adj_mant", "gamma_coeff", "0xBB360B61",
                     "0x3A500D01")
     for path in _kernel_sources():
+        if path.name == "gf_wrf_normalization.cuh":
+            # Accepted strict-only GF normalization has an independent source pin.
+            import hashlib
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == "2f258d559bda0b6c97a7220f2eb4c27473817ad25daf69769e858d63a1731942"
+            continue
         text = _decommented(_read(path))
         hit = [token for token in fingerprints if token in text]
         assert hit == [], f"{path.name} carries the earlier gamma's fingerprints: {hit}"

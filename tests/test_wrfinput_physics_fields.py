@@ -56,6 +56,34 @@ def _read(path, cfg):
                             require_complete=False)
 
 
+def test_native_drag_statistics_are_preserved_and_reach_the_active_initializer(tmp_path):
+    from gpuwm.static.orographic import required_static_fields
+    cfg=_cfg(gwd_opt=3)
+    names=required_static_fields(0,3)
+    values={name:np.arange(cfg.ny*cfg.nx,dtype=np.float32).reshape(cfg.ny,cfg.nx)+i*.125
+            for i,name in enumerate(names)}
+    values['HGT']=np.full((cfg.ny,cfg.nx),250.,np.float32)
+    restored=_read(_input(tmp_path/'drag-input',cfg,values),cfg)
+    carried=wi.wrfinput_terrain_drag_inputs(restored,cfg)['terrain_drag_static']
+    for name in names:
+        np.testing.assert_array_equal(np.asarray(carried[name],dtype=np.float32).view('u4'),values[name].view('u4'))
+    np.testing.assert_array_equal(carried['HGT_M'],values['HGT'])
+
+
+def test_native_drag_rejects_missing_or_wrong_column_geometry(tmp_path):
+    cfg=_cfg(gwd_opt=3)
+    with pytest.raises(ValueError,match='CONLS'):
+        wi.wrfinput_terrain_drag_inputs(SimpleNamespace(raw={'HGT':np.zeros((4,6))}),cfg)
+    path=_input(tmp_path/'wrong-drag',cfg,{'CONLS':np.ones((cfg.nx,cfg.ny),np.float32)},
+                dimensions_override={'CONLS':('west_east','south_north')})
+    with pytest.raises(ValueError,match='CONLS.*shape mismatch'):
+        _read(path,cfg)
+
+
+def test_off_drag_does_not_change_existing_initialization_arguments():
+    assert wi.wrfinput_terrain_drag_inputs(SimpleNamespace(raw={}),_cfg())=={}
+
+
 def test_microphysics_off_admits_only_passive_vapor_when_moist():
     cfg = _cfg(mp_physics=0)
     vapor = frozenset(("QVAPOR",))

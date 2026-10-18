@@ -44,7 +44,9 @@ def _normalized_options(options: Iterable[str]) -> tuple[str, ...]:
     normalized = tuple(str(option) for option in options)
     if normalized != tuple(options):
         raise TypeError("kernel compile options must already be strings")
-    return normalized
+    # what the compile took under this process's numerics (gpuwm/numerics.py; strict: unchanged)
+    from gpuwm.numerics import effective_options
+    return effective_options(normalized)
 
 
 def _image_identity(module: Any) -> dict[str, Any]:
@@ -118,6 +120,8 @@ def record_module(module_key: str, *, source: str,
     suffix rather than replacing it: the manifest is a record of everything
     the process compiled, and losing one of two images would under-report it.
     """
+    from gpuwm.kernel_plan import refuse_while_capturing
+    refuse_while_capturing()  # a static-plan capture loaded nothing for the run
     entry = {
         "source_sha256": source_sha256(source),
         "options": list(_normalized_options(options)),

@@ -1,5 +1,9 @@
 """Grell-Freitas cumulus adapter: the ``cu_physics=3`` engine callable.
 
+With ``GPUWM_WRF_EXACT=1``, the driver's mass-flux normalization uses
+WOOF's earlier float32 operation sequence to reproduce stock WRF's words.
+Default arithmetic keeps the current routine. Neither arm reads a capture.
+
 The scheme itself is ``gpuwm/core/kernels/gf.cu`` -- the whole of WRF
 v4.6.1's GFDRV per column, held at max_ulp 0 against the byte-frozen
 oracle by ``tests/test_gf_gfdrv_cuda.py`` with ``fzu`` PINNED from that
@@ -55,17 +59,20 @@ are about what the engine can hand it today):
    are not yet coupled.  WRF couples them; MPAS-A v8.4.1 does NOT
    (its cu_grell_freitas call carries no rucuten/rvcuten), so for the
    MPAS seam this is native parity, not a gap.
-3. **w on mass levels** is the KF-precedent average
-   ``0.5*(w[k] + w[k+1])`` of the staggered field.
+3. **Vertical velocity** uses the lower face ``w[k]`` in strict and
+   default arithmetic, as WRF's GF driver does. The closure expects this
+   staggered value; averaging adjacent faces changes its forcing. This
+   deliberately changes the previous adapter convention.
 4. **dx** is per-column when the driver carries ``gf_dx_column``
    ([ny, nx], metres); the scalar ``cfg.dx`` otherwise.  WRF's own GFDRV
    takes dx(i,j), so the per-column feed is the WRF interface, not an
    extension.
 
-Ice routing follows WRF's own ``F_QI`` gate: with a prognostic ``qi`` the
-258 K split routes cold condensate to RQICUTEN; without one, everything
-lands in RQCCUTEN (module_cu_gf_wrfdrv.F:810-840 with F_QI false), which
-is exact here because the split routes one number to one of two slots.
+Default ice routing folds the 258 K split back into RQCCUTEN when there is
+no prognostic ice. Strict mode retains GFDRV's split even in that case,
+because stock cumulus_driver passes RQICUTEN unconditionally and the later
+F_QI gate leaves that cold slot unused (module_cumulus_driver.F:1314,
+module_cu_gf_wrfdrv.F:822, module_physics_addtendc.F:194).
 """
 
 from __future__ import annotations
@@ -75,6 +82,21 @@ import numpy as np
 from gpuwm.core.kf import _model_clock_dt
 
 DTYPE = np.float32
+
+
+def _mask_output_support(value, cfg):
+    """Stock GFDRV publishes only the four-cell nonperiodic interior."""
+    from gpuwm.wrf_exact import ENABLED
+    if not ENABLED:
+        return value
+    forced = bool(getattr(cfg, "specified", False) or getattr(cfg, "nested", False))
+    if forced or getattr(cfg, "open_x", False):
+        value[..., :4] = DTYPE(0)
+        value[..., -4:] = DTYPE(0)
+    if forced or getattr(cfg, "open_y", False):
+        value[..., :4, :] = DTYPE(0)
+        value[..., -4:, :] = DTYPE(0)
+    return value
 
 #: gf.cu's compiled level bound; nz above this recompiles via the
 #: integer-define tier.
@@ -128,7 +150,7 @@ def gf_kernel_capacity(nz: int) -> int:
 # gf.cu used to keep GFDRV's column arrays in the per-thread local frame, and
 # CUDA prices a local frame at the card's RESIDENT-THREAD CAPACITY -- one
 # per-context backing store of (frame - 1024) * SMs * maxThreadsPerSM, taken
-# at first launch and never returned.  MEASURED on node-1 (RTX 5070 Ti, 70
+# at first launch and never returned.  MEASURED on test host A (RTX 5070 Ti, 70
 # SMs x 1,536, sm_120, NVRTC 13.3): the 22,416 B frame took 2,196.0 MiB while
 # the kernel only ever had 384 threads/SM in flight.  The arrays now live in
 # a global workspace this adapter allocates, sized to the threads ACTUALLY in
@@ -206,6 +228,13 @@ def is_native_gf_result(result, owner, state, cfg) -> bool:
             != (getattr(state, "qi", None) is not None)):
         return False
     shape = tuple(state.p.shape)
+    history = result.history_rates or {}
+    if set(history) - {"rqicuten", "rucuten", "rvcuten"}:
+        return False
+    for value in history.values():
+        if (type(value) is not cp.ndarray or value.shape != shape
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            return False
     for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten", "rainc"):
         value = getattr(result, name)
         if name == "rqicuten" and value is None:
@@ -227,12 +256,18 @@ def validate_native_gf_result(result, state) -> None:
     # The existing scanner has six volume slots and two surface slots.
     # Inactive slots use valid pointers but are never loaded.
     placeholder = result.rthcuten
+    history_ice = (result.history_rates or {}).get("rqicuten", result.rqicuten)
+    history_u = (result.history_rates or {}).get("rucuten")
+    history_v = (result.history_rates or {}).get("rvcuten")
     values = (result.rthcuten, result.rqvcuten, result.rqccuten,
-              placeholder if result.rqicuten is None else result.rqicuten,
-              placeholder, placeholder, result.rainc, result.rainc)
-    active = 0x47 | (0x08 if result.rqicuten is not None else 0)
+              placeholder if history_ice is None else history_ice,
+              placeholder if history_u is None else history_u,
+              placeholder if history_v is None else history_v, result.rainc, result.rainc)
+    active = (0x47 | (0x08 if history_ice is not None else 0)
+              | (0x10 if history_u is not None else 0) | (0x20 if history_v is not None else 0))
     labels = ((0, "cumulus rthcuten"), (1, "cumulus rqvcuten"),
               (2, "cumulus rqccuten"), (3, "cumulus rqicuten"),
+              (4, "cumulus history rucuten"), (5, "cumulus history rvcuten"),
               (6, "cumulus RAINC increment"))
 
     def describe(flags):
@@ -364,15 +399,22 @@ class GrellFreitas:
             # Assignment into lvin packs this view without a temporary copy.
             return cp.asarray(a, dtype=DTYPE).reshape(nz, ncol).T
 
-        w_mass = DTYPE(0.5) * (state.w[:-1] + state.w[1:])
+        # GFDRV consumes lower-face W, including in its closure. Keep the
+        # same physical convention in strict and default arithmetic.
+        w_lower_face = state.w[:-1]
         if self._driver is not None:
-            rthraten = self._driver.rthratenlw + self._driver.rthratensw
+            total = getattr(self._driver, "radiation_theta_forcing", None)
+            rthraten = (total() if total is not None else
+                        self._driver.rthratenlw + self._driver.rthratensw)
         else:
             rthraten = cp.zeros((nz, ny, nx), dtype=DTYPE)
         zeros_lev = cp.zeros((ncol, nz), dtype=DTYPE)
+        forcing_mass = None
+        from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 
         def held_lane(name):
             """Driver-held auxiliary forcing lane, zeros when absent."""
+            nonlocal forcing_mass
             lane = (None if self._driver is None
                     else getattr(self._driver, name, None))
             if lane is None:
@@ -381,12 +423,24 @@ class GrellFreitas:
                 raise ValueError(
                     f"driver {name} must be [nz, ny, nx]={nz, ny, nx}, "
                     f"got {lane.shape}")
+            owned = {"gf_rthdynten": "rthften", "gf_rqvdynten": "rqvften"}
+            if (WRF_EXACT and name in owned
+                    and lane is getattr(state, owned[name], None)
+                    and cfg.cu_physics == 3):
+                if forcing_mass is None:
+                    from gpuwm.state_serialization_contract import WRF_MUTS_SLOT
+                    mut = state.existing_scratch(WRF_MUTS_SLOT)
+                    if mut is None:
+                        mut = state.total_mu()
+                    forcing_mass = (state.c1h[:, None, None] * mut[None]
+                                    + state.c2h[:, None, None])
+                return cols(lane / forcing_mass)
             return cols(lane)
 
         lvin = cp.empty((ncol, len(_IN_LEV), nz), dtype=DTYPE)
         lvin[:, _IN_LEV.index("u"), :] = cols(atmosphere["u"])
         lvin[:, _IN_LEV.index("v"), :] = cols(atmosphere["v"])
-        lvin[:, _IN_LEV.index("w"), :] = cols(w_mass)
+        lvin[:, _IN_LEV.index("w"), :] = cols(w_lower_face)
         lvin[:, _IN_LEV.index("t"), :] = cols(atmosphere["temperature"])
         lvin[:, _IN_LEV.index("qv"), :] = cols(atmosphere["qv"])
         lvin[:, _IN_LEV.index("p"), :] = cols(atmosphere["pressure"])
@@ -463,25 +517,34 @@ class GrellFreitas:
 
         def grid(j):
             # (ncol, nz) slice -> (nz, ny, nx)
-            return cp.ascontiguousarray(
-                lev[:, j, :].T.reshape(nz, ny, nx))
+            return _mask_output_support(cp.ascontiguousarray(
+                lev[:, j, :].T.reshape(nz, ny, nx)), cfg)
 
         rthcuten = grid(_OUT_LEV.index("rthcuten"))
         rqvcuten = grid(_OUT_LEV.index("rqvcuten"))
         rqc = grid(_OUT_LEV.index("rqccuten"))
         rqi = grid(_OUT_LEV.index("rqicuten"))
+        history_rates = {
+            "rqicuten": rqi,
+            "rucuten": grid(_OUT_LEV.index("dudt")),
+            "rvcuten": grid(_OUT_LEV.index("dvdt")),
+        }
         if getattr(state, "qi", None) is None:
-            # WRF's F_QI-false arm: the 258 K split routes ONE number to one
-            # of two slots, so folding is exact addition against a zero.
-            rqc = cp.ascontiguousarray(rqc + rqi)
+            from gpuwm.wrf_exact import ENABLED
+            # Stock cumulus_driver passes RQICUTEN to GFDRV even without
+            # prognostic ice. GFDRV splits cold condensate into that slot;
+            # calculate_phy_tend and phy_cu_ten leave it unused under F_QI.
+            if not ENABLED:
+                rqc = cp.ascontiguousarray(rqc + rqi)
             rqi = None
         rainc = cp.ascontiguousarray(
             sca[:, _OUT_SCA.index("raincv")].reshape(ny, nx))
+        _mask_output_support(rainc, cfg)
 
         return _native_result_type()(
             owner=self,
             rthcuten=rthcuten, rqvcuten=rqvcuten, rqccuten=rqc,
-            rqicuten=rqi, rainc=rainc)
+            rqicuten=rqi, rainc=rainc, history_rates=history_rates)
 
 
 __all__ = ["GrellFreitas"]

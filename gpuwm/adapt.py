@@ -18,6 +18,7 @@ import sys
 import tempfile
 from typing import Mapping, Sequence
 
+from gpuwm.docs_links import tree_url
 from gpuwm.experiment import did_you_mean
 from gpuwm.explain import layered, warn
 from gpuwm.mapped_authoring import (
@@ -1590,7 +1591,7 @@ def register_cli(subparsers) -> None:
             "each trusted row. docs/arbitrary-verified-adapters.md covers "
             "the descriptor schema, the battery, and refusal examples. "
             "Both are in the repository, under "
-            "https://github.com/FahrenheitResearch/arwen/tree/main/docs, "
+            f"{tree_url('tree')}docs, "
             "if this is a wheel install without a checkout."
         ),
     )

@@ -5480,6 +5480,14 @@ def _public_config_value(value):
                 run_document.pop("noahmp_snow_age", None)
             if int(run_document.get("sf_urban_physics", 0) or 0) != 1:
                 run_document.pop("urban_water_balance", None)
+            # The ocean mixed layer (2.9.1): off, its selector and settings
+            # leave the document, which keeps the bytes it had before them.
+            if int(run_document.get("sf_ocean_physics", 0) or 0) == 0:
+                from gpuwm.surface_ocean import ocean_namelist_defaults
+                for name, default in (("sf_ocean_physics", 0),
+                                      *ocean_namelist_defaults().items()):
+                    if run_document.get(name, default) == default:
+                        run_document.pop(name, None)
             # The correct-mode keys (gpuwm/correct_mode.py), by the
             # checkpoint echo's rule: written only where on AND read by a
             # selected scheme, so a default document without WSM6 or New

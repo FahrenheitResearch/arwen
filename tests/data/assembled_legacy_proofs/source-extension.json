@@ -1,7 +1,7 @@
 {
   "schema": "measured-legacy-source-extension-v1",
   "baseline": "cd336e62d6e6b6312c9636e0fdfff84801909b6a",
-  "measured_tip": "ee3d22dc28e27ddb47c427e3765450a047f69e49",
+  "measured_tip": "63063559075cc6fce5ecd9b7ee51619f0fa7bdbb",
   "sources": {
     "gpuwm/core/acoustic.py": {
       "before": {
@@ -29,8 +29,8 @@
         "sha256": "d4cc20c6a23c94f169228d19937724bb678b51b4e597495af09a1672ce8c263b"
       },
       "after": {
-        "bytes": 248835,
-        "sha256": "0f9386925df53dd238566a97b89e954b83023c4980d8aaf8ca22434803617210"
+        "bytes": 252174,
+        "sha256": "0bc75159c1fcc7e683014832fd6c162ce9e6d2f92f15801ac8c11c6a6d75ea26"
       }
     },
     "gpuwm/core/kernels/__init__.py": {
@@ -39,8 +39,8 @@
         "sha256": "e44a76e72880e6cbacee4a3cf299ab7e1a0b418e737355b3b64bfd60358b67cc"
       },
       "after": {
-        "bytes": 47043,
-        "sha256": "7f89014968269f1c606f295102a5cbb13d07cf5e3dbd1122badcb41afd8465b4"
+        "bytes": 54712,
+        "sha256": "0f1cff2281f0f46a66446c8030bb12791995d0af27fa282a28c745a242c73b70"
       }
     },
     "gpuwm/wrf_exact.py": {
@@ -51,6 +51,16 @@
       "after": {
         "bytes": 5260,
         "sha256": "d732e6ae4b6487302b4e06af8c3cdd601a8dfcdb8fe40599f1bc1a6be715406d"
+      }
+    },
+    "gpuwm/nvrtc_ptx_cache.py": {
+      "before": {
+        "bytes": 10626,
+        "sha256": "78c42865a01763a13d0349321699913de51ba2465508900bbfc4c64794e61134"
+      },
+      "after": {
+        "bytes": 13994,
+        "sha256": "17654554ddf4fda177370c366d46e045b93b8e3de9da3582be2ae1f29ebf0c3c"
       }
     }
   },

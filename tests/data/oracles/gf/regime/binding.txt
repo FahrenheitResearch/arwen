@@ -1,0 +1,2 @@
+000000000004f4c0 T tgammaf
+                 U tgammaf@GLIBC_2.2.5

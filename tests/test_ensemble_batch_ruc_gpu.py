@@ -40,8 +40,9 @@ def _equal(actual, expected):
     import cupy as cp
     for name, array in expected.items():
         if isinstance(array, cp.ndarray):
-            np.testing.assert_array_equal(cp.asnumpy(actual[name]).view(np.uint8),
-                                          cp.asnumpy(array).view(np.uint8), err_msg=name)
+            assert actual[name].shape == array.shape, name
+            np.testing.assert_array_equal(cp.asnumpy(actual[name]).reshape(-1).view(np.uint8),
+                                          cp.asnumpy(array).reshape(-1).view(np.uint8), err_msg=name)
 
 
 def _ordinary(driver, atmosphere, dt, count, lineage, **options):

@@ -22,6 +22,19 @@ default_profile_for`), so a plain first forecast finds its kernels
 cached; ``--profile`` names others and ``--all-profiles`` takes every
 shipped suite.
 
+EVERY CORE (2026-10-16).  Each profile's two steps compile their kernels one
+after another on one thread, so the pass used to hold one core for minutes
+(``--all-profiles --levels 49`` warming an image on an RTX PRO 6000 box sat
+at 100 % of one core for 186 s and more).  The profiles now run side by
+side, one spawned worker process per profile, as many at once as there are
+usable cores and card memory for (:func:`profile_workers`;
+``GPUWM_WARM_KERNELS_WORKERS`` caps it).  Each worker compiles exactly what
+the serial pass compiled for its profile, through the same code, into the
+same caches under the same keys.  Each worker also binds a
+:mod:`gpuwm.kernel_plan` for its profile, so a later warm of a changed tree
+compiles that profile's recorded kernel set on a pool as well.  One profile,
+or no card answer, keeps the single in-process pass.
+
 What it does not reach: kernels only a real case uses (terrain, lateral
 boundaries, output diagnostics) still compile on the first real run, and
 a run at a vertical level count above a kernel's compiled ceiling adds
@@ -135,20 +148,10 @@ def synthetic_downward_longwave(cfg) -> tuple[float | None, str]:
     return None, "not read by this suite"
 
 
-def _run_profile(profile: str, levels: int) -> str:
-    """Build the synthetic domain with ``profile``'s physics; step it.
-
-    Returns the sentence :func:`synthetic_downward_longwave` gave for the
-    downward longwave the column ran on.
-    """
-
-    import cupy as cp
+def _profile_config(profile: str, levels: int):
+    """The synthetic column's run configuration under ``profile``'s physics."""
 
     from gpuwm.config import RunConfig, validate_run_config
-    from gpuwm.core.dycore import step
-    from gpuwm.core.grid import make_base_state, make_vertical_coord
-    from gpuwm.core.moist import init_moist_balanced
-    from gpuwm.core.physics import initialize_physics
     from gpuwm.physics_compat import single_domain_runtime_switches
 
     names = {field.name for field in fields(RunConfig)}
@@ -158,18 +161,72 @@ def _run_profile(profile: str, levels: int) -> str:
     # The synthetic column is flat: the moist balanced builder takes flat
     # base states only.
     settings["terrain_opt"] = 0
-    cfg = validate_run_config(RunConfig(
+    return validate_run_config(RunConfig(
         nx=_NX, ny=_NY, nz=int(levels), dx=_DX_M, dy=_DX_M,
         ztop=_ZTOP_M, dt=_DT_S, run_seconds=_DT_S * _STEPS,
         clock_dt=_DT_S, output_interval_s=_DT_S * _STEPS,
         open_x=False, open_y=False, **settings))
+
+
+def _bind_profile_plan(profile: str, levels: int) -> bool:
+    """Bind ``profile``'s kernel plan and start its compiles on every core.
+
+    The recorded plan (an earlier warm of this profile on this compiler)
+    and the static plan (:func:`gpuwm.kernel_prewarm.submit_static`: the
+    modules the profile's selectors launch, captured through their own
+    loaders) both go to one pool as wide as the usable cores; the column's
+    steps then find their modules built or being built.  The breakage this
+    prevents: on a fresh box (no recorded plan) each profile compiled its
+    kernels one after another inside its worker at 100 % of one core for
+    60 to 120 s while the other cores sat idle (`gpuwm warm-kernels` 173 s
+    for 161 kernels, 3 workers, 48 cores, RTX PRO 6000 box, 2026-10-17).
+
+    A worker warms several profiles one after another: each gets its own
+    plan under its own tag (rebind), not the first profile's.  False when
+    no plan could be bound; the profile still warms, serially.
+    """
+
+    from gpuwm import kernel_plan, kernel_prewarm
+
+    tag = f"warm-kernels {profile} levels={int(levels)}"
+    try:
+        planned = (kernel_plan.rebind(tag) if kernel_plan._state["installed"]
+                   else kernel_plan.install(tag_text=tag))
+        if planned:
+            kernel_plan.start()
+            try:
+                kernel_prewarm.submit_static(
+                    kernel_prewarm.single_domain_experiment(_profile_config(profile, levels)))
+            except Exception:  # noqa: BLE001 - a refused profile is reported by _run_profile
+                pass
+            kernel_plan.close()
+        return bool(planned)
+    except Exception:  # noqa: BLE001 - the profile still warms without a plan
+        return False
+
+
+def _run_profile(profile: str, levels: int) -> str:
+    """Build the synthetic domain with ``profile``'s physics; step it.
+
+    Returns the sentence :func:`synthetic_downward_longwave` gave for the
+    downward longwave the column ran on.
+    """
+
+    import cupy as cp
+
+    from gpuwm.core.dycore import step
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.moist import init_moist_balanced
+    from gpuwm.core.physics import initialize_physics
+
+    cfg = _profile_config(profile, levels)
     coord = make_vertical_coord(cfg.nz, hybrid_opt=cfg.hybrid_opt,
                                 etac=cfg.etac)
     base = make_base_state(coord, _theta, p_surf=cfg.p_surf, ztop=cfg.ztop)
     state = init_moist_balanced(cfg, coord, base, _vapour)
     grid = (cfg.ny, cfg.nx)
     glw, longwave = synthetic_downward_longwave(cfg)
-    initialize_physics(
+    driver = initialize_physics(
         state, cfg, radiation_start_time=_VALID_TIME,
         radiation_latitude=np.full(grid, _LATITUDE),
         radiation_longitude=np.full(grid, _LONGITUDE),
@@ -177,10 +234,44 @@ def _run_profile(profile: str, levels: int) -> str:
         noahmp_latitude=np.full(grid, _LATITUDE),
         noahmp_longitude=np.full(grid, _LONGITUDE),
         **({} if glw is None else {"glw": glw}))
+    _seed_monthly_leaf_area(driver, cfg, grid)
     for _ in range(_STEPS):
         step(state, cfg)
     cp.cuda.runtime.deviceSynchronize()
     return longwave
+
+
+#: The synthetic column's monthly leaf area (m2 m-2), the same in every
+#: month.  Only its being finite matters: the kernels a profile compiles do
+#: not depend on the value.
+_SYNTHETIC_LAI12M = 2.0
+
+
+def _seed_monthly_leaf_area(driver, cfg, grid) -> None:
+    """Seed LAI from a synthetic LAI12M the way every real road does.
+
+    Under RUC with ``rdlai2d=true`` :func:`initialize_physics` leaves LAI
+    not-a-number and each real road seeds it from the static LAI12M
+    (:mod:`gpuwm.runtime` via :func:`gpuwm.core.landuse.surface_leaf_area`).
+    The synthetic column has no static catalogue, so without this seed the
+    RUC land-surface step refuses (:mod:`gpuwm.core.ruc_runtime`: "this road
+    seeded no LAI field") and the two RUC monthly-LAI profiles warmed
+    nothing (warm-kernels on the unified box image, 2026-10-16: 30 of 32 profiles).
+    """
+
+    if not (int(getattr(cfg, "sf_surface_physics", 0)) == 3
+            and bool(getattr(cfg, "rdlai2d", False))):
+        return
+    driver_fields = getattr(driver, "fields", None)
+    if driver_fields is None or "lai" not in driver_fields:
+        return
+    import cupy as cp
+
+    from gpuwm.core.landuse import surface_leaf_area
+
+    lai12m = np.full((12, *grid), _SYNTHETIC_LAI12M, dtype=np.float32)
+    driver_fields["lai"][...] = cp.asarray(
+        surface_leaf_area(cfg, lai12m, _VALID_TIME), dtype=cp.float32)
 
 
 #: What a profile that reads an unstaged asset is told.  The physics tables
@@ -189,6 +280,172 @@ def _run_profile(profile: str, levels: int) -> str:
 MISSING_ASSET_REMEDY = ("gpuwm fetch-tables stages the physics tables this "
                         "suite reads; gpuwm doctor names any other missing "
                         "asset and the command that installs it")
+
+
+#: Card memory each profile worker is budgeted: a CUDA context, CuPy's pool,
+#: the 16x16 synthetic domain and the physics tables the profile stages.
+#: Measured 2026-10-17 on an RTX 4090 (--all-profiles --levels 49/50): 8
+#: workers held 16.9-19.8 GB, about 2.1-2.5 GB each; the old 1 GiB budget let
+#: 23 workers start on the 24 GB card and one died with
+#: CUDA_ERROR_OUT_OF_MEMORY.  3 GiB fits 7 workers on a 4090, 10 on a 5090.
+_WORKER_CARD_BYTES = 3 << 30
+WORKERS_ENVIRONMENT = "GPUWM_WARM_KERNELS_WORKERS"
+
+
+def profile_workers(count: int) -> int:
+    """How many profiles warm at once: usable cores, card memory, the cap.
+
+    1 when the card does not answer a memory query (the pass then runs in
+    this process, as it always did).
+    """
+
+    if count <= 1:
+        return 1
+    try:
+        import cupy as cp
+
+        free, _total = cp.cuda.runtime.memGetInfo()
+    except Exception:
+        return 1
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cores = os.cpu_count() or 1
+    workers = min(count, cores, max(1, int(free) // _WORKER_CARD_BYTES))
+    cap = os.environ.get(WORKERS_ENVIRONMENT, "").strip()
+    if cap.isdigit() and int(cap) > 0:
+        workers = min(workers, int(cap))
+    return max(1, workers)
+
+
+def _out_of_memory(error: BaseException) -> bool:
+    """A card-memory refusal (a property of how many workers share the card, not of the profile)."""
+
+    try:
+        from cupy.cuda.memory import OutOfMemoryError
+
+        if isinstance(error, OutOfMemoryError):
+            return True
+    except Exception:  # noqa: BLE001 - no CuPy: judge by the text
+        pass
+    return "OUT_OF_MEMORY" in str(error) or "out of memory" in str(error).lower()
+
+
+def _profile_worker(profile: str, levels: int) -> dict:
+    """One profile in a spawned worker process; returns a picklable outcome."""
+
+    from gpuwm import kernel_plan
+    from gpuwm import nvrtc_ptx_cache as direct_cache
+
+    planned = _bind_profile_plan(profile, levels)
+    direct_cache.cache_events(clear=True)  # this profile's events only
+    began = time.perf_counter()
+    outcome: dict = {"profile": profile}
+    try:
+        outcome["longwave"] = _run_profile(profile, levels)
+    except ValueError as refusal:
+        outcome["refused"] = str(refusal)
+    except FileNotFoundError as missing:
+        outcome["missing"] = str(missing)
+    except Exception as error:  # noqa: BLE001 - a device fault stops the pass
+        key = "oom" if _out_of_memory(error) else "fatal"
+        outcome[key] = f"{profile}: {type(error).__name__}: {error}"
+    outcome["seconds"] = round(time.perf_counter() - began, 1)
+    outcome["direct_events"] = direct_cache.cache_events()
+    if planned:
+        receipt = kernel_plan.receipt()
+        calls, replay = receipt.get("calls") or {}, receipt.get("replay") or {}
+        outcome["nvrtc_compiles"] = int(calls.get("inline_compiles", 0)) + int(replay.get("pool_compiled", 0))
+        kernel_plan.save()  # a pool worker exits without running atexit
+    return outcome
+
+
+def _warm_side_by_side(profiles, levels, workers, say, rows, failed):
+    """Warm ``profiles`` in ``workers`` spawned processes; fill rows/failed."""
+
+    import concurrent.futures
+    import multiprocessing
+
+    outcomes = {}
+    fatal = None
+    context = multiprocessing.get_context("spawn")
+
+    def take(profile, outcome, retried=False):
+        nonlocal fatal
+        if retried:
+            outcome["retried_after_out_of_memory"] = True
+        outcomes[profile] = outcome
+        if "oom" in outcome:
+            if retried:  # alone on the card and still out of memory: a real fault
+                fatal = fatal or outcome["oom"]
+            return
+        if "fatal" in outcome:
+            fatal = fatal or outcome["fatal"]
+            return
+        if say is None:
+            return
+        if "refused" in outcome:
+            say(f"warm-kernels: {profile}: FAILED: {outcome['refused']}")
+        elif "missing" in outcome:
+            say(f"warm-kernels: {profile}: FAILED: {outcome['missing']}. Next: "
+                f"{MISSING_ASSET_REMEDY}")
+        else:
+            compiled = outcome.get("nvrtc_compiles")
+            say(f"warm-kernels: {profile}: "
+                f"{'?' if compiled is None else compiled} kernel(s) compiled in "
+                f"{outcome['seconds']:.1f} s; downward longwave {outcome['longwave']}"
+                + (" (retried alone after running out of card memory)" if retried else ""))
+
+    with concurrent.futures.ProcessPoolExecutor(workers, mp_context=context) as pool:
+        futures = {pool.submit(_profile_worker, profile, int(levels)): profile
+                   for profile in profiles}
+        for future in concurrent.futures.as_completed(futures):
+            profile = futures[future]
+            try:
+                outcome = future.result()
+            except Exception as error:  # noqa: BLE001 - a worker that died
+                key = "oom" if _out_of_memory(error) else "fatal"
+                outcome = {"profile": profile, key: f"{profile}: {type(error).__name__}: {error}",
+                           "seconds": None, "direct_events": []}
+            take(profile, outcome)
+    # A profile that ran out of card memory beside the others is not a fault of
+    # the profile: it warms again after the pool, alone, in a fresh process.
+    retry = [profile for profile in profiles if "oom" in outcomes.get(profile, {})]
+    if retry and fatal is None:
+        if say is not None:
+            say(f"warm-kernels: {len(retry)} profile(s) ran out of card memory beside the others; "
+                "warming them one at a time")
+        with concurrent.futures.ProcessPoolExecutor(1, mp_context=context,
+                                                    max_tasks_per_child=1) as alone:
+            for profile in retry:
+                try:
+                    outcome = alone.submit(_profile_worker, profile, int(levels)).result()
+                except Exception as error:  # noqa: BLE001 - a worker that died
+                    outcome = {"profile": profile, "fatal": f"{profile}: {type(error).__name__}: {error}",
+                               "seconds": None, "direct_events": []}
+                take(profile, outcome, retried=True)
+    if fatal is not None:
+        raise RuntimeError(f"warm-kernels stopped: {fatal}")
+    events = []
+    for profile in profiles:  # the report keeps the requested order
+        outcome = outcomes[profile]
+        events.extend(outcome["direct_events"])
+        if "refused" in outcome:
+            failed.append({"profile": profile, "error": outcome["refused"]})
+            continue
+        if "missing" in outcome:
+            failed.append({"profile": profile, "error": outcome["missing"],
+                           "remedy": MISSING_ASSET_REMEDY})
+            continue
+        row = {"profile": profile,
+               # NVRTC compiles this profile's worker made: side by side,
+               # a cache-entry difference cannot be split between profiles.
+               "kernels_compiled": int(outcome.get("nvrtc_compiles") or 0),
+               "seconds": outcome["seconds"],
+               "downward_longwave": outcome["longwave"]}
+        row.update(_direct_cache_counts(outcome["direct_events"]))
+        rows.append(row)
+    return events
 
 
 def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
@@ -235,10 +492,17 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
     rows = []
     failed = []
     started = time.perf_counter()
-    for profile in profiles:
+    workers = profile_workers(len(profiles))
+    side_events = None
+    if workers > 1:
+        side_events = _warm_side_by_side(profiles, levels, workers, say, rows, failed)
+    for profile in (() if workers > 1 else profiles):
         before = notice.scan_kernel_cache(cache_dir)[0]
         direct_profile_start = len(direct_cache.cache_events())
         began = time.perf_counter()
+        # The in-process pass compiles on every core too (one profile, or a
+        # card that does not answer): the same plan a worker binds.
+        _bind_profile_plan(profile, levels)
         try:
             longwave = _run_profile(profile, levels)
         except ValueError as refusal:
@@ -268,7 +532,9 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
     finished = notice.kernel_cache_state(
         cache_dir, compute_capability=capability)
     direct_after = _direct_cache_inventory(cache_dir)
-    direct_events = direct_cache.cache_events()[direct_event_start:]
+    direct_events = (side_events if side_events is not None
+                     else direct_cache.cache_events()[direct_event_start:])
+    entries_after = notice.scan_kernel_cache(cache_dir)[0]
     return {
         "schema": WARM_KERNELS_SCHEMA,
         "device": str(device),
@@ -277,8 +543,11 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
         "levels": int(levels),
         "profiles": rows,
         "failed": failed,
-        "kernels_compiled": sum(row["kernels_compiled"] for row in rows),
+        "kernels_compiled": (sum(row["kernels_compiled"] for row in rows)
+                             if side_events is None
+                             else max(0, entries_after - entries_before)),
         "seconds": round(time.perf_counter() - started, 1),
+        "workers": workers,
         "cache_entries_before": int(entries_before),
         "cache_entries_for_this_card": int(finished.entries_for_capability),
         "direct_nvrtc_cache": {
@@ -387,6 +656,6 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = ["DEFAULT_LEVELS", "MISSING_ASSET_REMEDY", "WARM_KERNELS_SCHEMA",
-           "default_profiles",
+           "WORKERS_ENVIRONMENT", "default_profiles", "profile_workers",
            "register_cli", "synthetic_downward_longwave", "warm_kernels",
            "warm_kernels_main"]

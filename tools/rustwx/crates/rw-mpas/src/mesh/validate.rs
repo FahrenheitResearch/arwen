@@ -8,6 +8,7 @@
 //! produce a mesh that validates clean everywhere else and integrates wrong, so
 //! they are checked here or they are checked nowhere.
 
+use rayon::prelude::*;
 use std::collections::VecDeque;
 
 use serde::Serialize;
@@ -320,28 +321,34 @@ pub fn well_centredness(mesh: &MpasMesh) -> WellCentredness {
     let mut obtuse = 0usize;
     let mut worst_angle = 0.0f64;
     let mut worst_triangle = 0usize;
-    for v in 0..mesh.n_vertices {
-        let c: Vec<V3> = (0..mesh.vertex_degree)
-            .map(|k| mesh.cell_xyz[mesh.cells_on_vertex[v * mesh.vertex_degree + k] as usize])
-            .collect();
-        let angle = |p: V3, q: V3, r: V3| -> f64 {
-            match (tangent_towards(p, q), tangent_towards(p, r)) {
-                (Some(u), Some(w)) => {
-                    let s = cross(u, w);
-                    (s[0] * s[0] + s[1] * s[1] + s[2] * s[2])
-                        .sqrt()
-                        .atan2(dot(u, w))
+    // The angles on every core; the first-strict-largest scan in vertex order.
+    let largest_angles: Vec<f64> = (0..mesh.n_vertices)
+        .into_par_iter()
+        .map(|v| {
+            let c: Vec<V3> = (0..mesh.vertex_degree)
+                .map(|k| mesh.cell_xyz[mesh.cells_on_vertex[v * mesh.vertex_degree + k] as usize])
+                .collect();
+            let angle = |p: V3, q: V3, r: V3| -> f64 {
+                match (tangent_towards(p, q), tangent_towards(p, r)) {
+                    (Some(u), Some(w)) => {
+                        let s = cross(u, w);
+                        (s[0] * s[0] + s[1] * s[1] + s[2] * s[2])
+                            .sqrt()
+                            .atan2(dot(u, w))
+                    }
+                    _ => 0.0,
                 }
-                _ => 0.0,
-            }
-        };
-        let largest = [
-            angle(c[0], c[1], c[2]),
-            angle(c[1], c[2], c[0]),
-            angle(c[2], c[0], c[1]),
-        ]
-        .into_iter()
-        .fold(0.0f64, f64::max);
+            };
+            [
+                angle(c[0], c[1], c[2]),
+                angle(c[1], c[2], c[0]),
+                angle(c[2], c[0], c[1]),
+            ]
+            .into_iter()
+            .fold(0.0f64, f64::max)
+        })
+        .collect();
+    for (v, &largest) in largest_angles.iter().enumerate() {
         if largest > worst_angle {
             worst_angle = largest;
             worst_triangle = v;
@@ -350,16 +357,16 @@ pub fn well_centredness(mesh: &MpasMesh) -> WellCentredness {
             obtuse += 1;
         }
     }
-    let mut non_crossing = 0usize;
-    for e in 0..mesh.n_edges {
-        let c0 = mesh.cell_xyz[mesh.cells_on_edge[e * 2] as usize];
-        let c1 = mesh.cell_xyz[mesh.cells_on_edge[e * 2 + 1] as usize];
-        let v0 = mesh.vertex_xyz[mesh.vertices_on_edge[e * 2] as usize];
-        let v1 = mesh.vertex_xyz[mesh.vertices_on_edge[e * 2 + 1] as usize];
-        if !segments_cross(c0, c1, v0, v1) {
-            non_crossing += 1;
-        }
-    }
+    let non_crossing = (0..mesh.n_edges)
+        .into_par_iter()
+        .filter(|&e| {
+            let c0 = mesh.cell_xyz[mesh.cells_on_edge[e * 2] as usize];
+            let c1 = mesh.cell_xyz[mesh.cells_on_edge[e * 2 + 1] as usize];
+            let v0 = mesh.vertex_xyz[mesh.vertices_on_edge[e * 2] as usize];
+            let v1 = mesh.vertex_xyz[mesh.vertices_on_edge[e * 2 + 1] as usize];
+            !segments_cross(c0, c1, v0, v1)
+        })
+        .count();
     WellCentredness {
         obtuse_triangles: obtuse,
         non_crossing_dual_edges: non_crossing,
@@ -455,58 +462,100 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
         )));
     }
 
+    // EVERY CHECK FROM HERE DOWN RUNS ON EVERY CORE (2026-10-17: no
+    // single-threaded stages; this gate was most of the generator's one-thread
+    // tail on a 439 k-cell country mesh). Each loop below is one independent
+    // reading per cell, edge or vertex. A refusal is found with `find_first`,
+    // so the cell or edge named is the one the serial loop stopped at; a
+    // reported extreme is either an exact order-free `max`/`min` fold, or a
+    // parallel map into a vector that the original first-strict-extreme scan
+    // then reads in index order, so every number in the report is the bit the
+    // serial loop produced.
+    //
     // --------------------------------------------------- reciprocity of the ring
-    for i in 0..nc {
-        let deg = mesh.n_edges_on_cell[i] as usize;
-        for j in 0..deg {
-            let nb = mesh.cells_on_cell[i * mesh.max_edges + j];
-            if nb < 0 || nb as usize >= nc {
-                return Err(MpasError::Refusal(format!(
-                    "cell {i} slot {j} names neighbour {nb}, outside 0..{nc}; a flux would be gathered from unallocated memory"
-                )));
+    enum RingFault {
+        Neighbour(usize, usize, i32),
+        Mutual(usize, usize),
+        Edge(usize, usize, i32),
+        Pair(usize, usize, usize, i32, i32, usize),
+    }
+    let ring_fault = (0..nc)
+        .into_par_iter()
+        .map(|i| {
+            let deg = mesh.n_edges_on_cell[i] as usize;
+            for j in 0..deg {
+                let nb = mesh.cells_on_cell[i * mesh.max_edges + j];
+                if nb < 0 || nb as usize >= nc {
+                    return Some(RingFault::Neighbour(i, j, nb));
+                }
+                let nb = nb as usize;
+                let back = (0..mesh.n_edges_on_cell[nb] as usize)
+                    .any(|k| mesh.cells_on_cell[nb * mesh.max_edges + k] == i as i32);
+                if !back {
+                    return Some(RingFault::Mutual(i, nb));
+                }
+                let e = mesh.edges_on_cell[i * mesh.max_edges + j];
+                if e < 0 || e as usize >= ne {
+                    return Some(RingFault::Edge(i, j, e));
+                }
+                let e = e as usize;
+                let (c0, c1) = (mesh.cells_on_edge[e * 2], mesh.cells_on_edge[e * 2 + 1]);
+                let pair_ok =
+                    (c0 == i as i32 && c1 == nb as i32) || (c1 == i as i32 && c0 == nb as i32);
+                if !pair_ok {
+                    return Some(RingFault::Pair(i, j, e, c0, c1, nb));
+                }
             }
-            let nb = nb as usize;
-            let back = (0..mesh.n_edges_on_cell[nb] as usize)
-                .any(|k| mesh.cells_on_cell[nb * mesh.max_edges + k] == i as i32);
-            if !back {
-                return Err(MpasError::Refusal(format!(
-                    "cell {i} lists {nb} as a neighbour but {nb} does not list {i}: the neighbour relation is not mutual, so the edge between them carries a flux out of one cell that never arrives in the other"
-                )));
-            }
-            let e = mesh.edges_on_cell[i * mesh.max_edges + j];
-            if e < 0 || e as usize >= ne {
-                return Err(MpasError::Refusal(format!(
-                    "cell {i} slot {j} names edge {e}, outside 0..{ne}"
-                )));
-            }
-            let e = e as usize;
-            let (c0, c1) = (mesh.cells_on_edge[e * 2], mesh.cells_on_edge[e * 2 + 1]);
-            let pair_ok = (c0 == i as i32 && c1 == nb as i32) || (c1 == i as i32 && c0 == nb as i32);
-            if !pair_ok {
-                return Err(MpasError::Refusal(format!(
-                    "edgesOnCell[{i}][{j}] = {e} separates cells {c0} and {c1}, not {i} and {nb}: the edge-to-cell map and the cell-to-cell ring disagree, so a normal wind would be applied across the wrong pair of cells"
-                )));
-            }
+            None
+        })
+        .find_first(|f| f.is_some())
+        .flatten();
+    match ring_fault {
+        Some(RingFault::Neighbour(i, j, nb)) => {
+            return Err(MpasError::Refusal(format!(
+                "cell {i} slot {j} names neighbour {nb}, outside 0..{nc}; a flux would be gathered from unallocated memory"
+            )));
         }
+        Some(RingFault::Mutual(i, nb)) => {
+            return Err(MpasError::Refusal(format!(
+                "cell {i} lists {nb} as a neighbour but {nb} does not list {i}: the neighbour relation is not mutual, so the edge between them carries a flux out of one cell that never arrives in the other"
+            )));
+        }
+        Some(RingFault::Edge(i, j, e)) => {
+            return Err(MpasError::Refusal(format!(
+                "cell {i} slot {j} names edge {e}, outside 0..{ne}"
+            )));
+        }
+        Some(RingFault::Pair(i, j, e, c0, c1, nb)) => {
+            return Err(MpasError::Refusal(format!(
+                "edgesOnCell[{i}][{j}] = {e} separates cells {c0} and {c1}, not {i} and {nb}: the edge-to-cell map and the cell-to-cell ring disagree, so a normal wind would be applied across the wrong pair of cells"
+            )));
+        }
+        None => {}
     }
 
     // ------------------------------------------------------------- ring winding
-    for i in 0..nc {
-        let deg = mesh.n_edges_on_cell[i] as usize;
-        let base = i * mesh.max_edges;
-        let mut acc: V3 = [0.0, 0.0, 0.0];
-        for j in 0..deg {
-            let a = mesh.vertex_xyz[mesh.vertices_on_cell[base + j] as usize];
-            let b = mesh.vertex_xyz[mesh.vertices_on_cell[base + (j + 1) % deg] as usize];
-            let c = cross(a, b);
-            acc = [acc[0] + c[0], acc[1] + c[1], acc[2] + c[2]];
-        }
-        let signed = dot(acc, mesh.cell_xyz[i]);
-        if !(signed > 0.0) {
-            return Err(MpasError::Refusal(format!(
-                "cell {i}'s vertex ring winds clockwise seen from outside (signed area {signed:.3e}). Every sign convention in the TRiSK operators is read off that winding, so a reversed cell reverses its vorticity and its tangential flux while its area still comes out positive"
-            )));
-        }
+    let clockwise = (0..nc)
+        .into_par_iter()
+        .map(|i| {
+            let deg = mesh.n_edges_on_cell[i] as usize;
+            let base = i * mesh.max_edges;
+            let mut acc: V3 = [0.0, 0.0, 0.0];
+            for j in 0..deg {
+                let a = mesh.vertex_xyz[mesh.vertices_on_cell[base + j] as usize];
+                let b = mesh.vertex_xyz[mesh.vertices_on_cell[base + (j + 1) % deg] as usize];
+                let c = cross(a, b);
+                acc = [acc[0] + c[0], acc[1] + c[1], acc[2] + c[2]];
+            }
+            let signed = dot(acc, mesh.cell_xyz[i]);
+            if !(signed > 0.0) { Some((i, signed)) } else { None }
+        })
+        .find_first(|x| x.is_some())
+        .flatten();
+    if let Some((i, signed)) = clockwise {
+        return Err(MpasError::Refusal(format!(
+            "cell {i}'s vertex ring winds clockwise seen from outside (signed area {signed:.3e}). Every sign convention in the TRiSK operators is read off that winding, so a reversed cell reverses its vorticity and its tangential flux while its area still comes out positive"
+        )));
     }
 
     // ------------------------------------------------- the four silent surfaces
@@ -515,13 +564,14 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     //    coupled pair; the port's validator accepts either one swapped.
     let mut min_orient = f64::INFINITY;
     let mut worst_orient_edge = 0usize;
-    for e in 0..ne {
-        let o = edge_orientation(mesh, e);
+    let orientation: Vec<f64> = (0..ne).into_par_iter().map(|e| edge_orientation(mesh, e)).collect();
+    for (e, &o) in orientation.iter().enumerate() {
         if o < min_orient {
             min_orient = o;
             worst_orient_edge = e;
         }
     }
+    drop(orientation);
     if !(min_orient > 0.0) {
         return Err(MpasError::Refusal(format!(
             "edge {worst_orient_edge} has (n x t).r = {min_orient:.3e}, not positive: its cellsOnEdge order and verticesOnEdge order are not the locked right-handed pair. A flipped edge validates clean everywhere else and reverses the tangential wind reconstruction at that edge for the whole run"
@@ -532,13 +582,17 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     //    primal and dual arcs cross at a right angle.
     let mut max_nonorth = 0.0f64;
     let mut worst_nonorth_edge = 0usize;
-    for e in 0..ne {
-        let c = edge_nonorthogonality(mesh, e).abs();
+    let nonorth: Vec<f64> = (0..ne)
+        .into_par_iter()
+        .map(|e| edge_nonorthogonality(mesh, e).abs())
+        .collect();
+    for (e, &c) in nonorth.iter().enumerate() {
         if c > max_nonorth {
             max_nonorth = c;
             worst_nonorth_edge = e;
         }
     }
+    drop(nonorth);
     if max_nonorth > limits.orthogonality {
         return Err(MpasError::Refusal(format!(
             "edge {worst_nonorth_edge}: the primal and dual great circles cross at {:.6} degrees off perpendicular (|cos| = {max_nonorth:.3e}, limit {:.3e}). The published meshes read 5.1e-13 and 5.3e-13. A non-orthogonal mesh is not a centroidal Voronoi tessellation; the divergence and gradient operators lose their second-order cancellation between neighbours and the leftover first-order term appears as grid-scale noise wherever the mesh is worst",
@@ -552,36 +606,67 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     let mut max_anti = 0.0f64;
     let mut pairs = 0usize;
     let mut worst_pair = (0usize, 0usize);
-    for e in 0..ne {
-        let n = mesh.n_edges_on_edge[e] as usize;
-        for k in 0..n {
-            let ep = mesh.edges_on_edge[e * mesh.max_edges2 + k];
-            if ep < 0 {
+    // Per edge: the stencil's first strict-largest residual and its partner,
+    // or the first fault; then the edges in order, so the pair named is the
+    // one the single loop over (edge, slot) would have named.
+    enum StencilFault {
+        Empty(usize, usize, usize),
+        OneWay(usize, usize),
+    }
+    let per_edge: Vec<Result<(f64, usize), StencilFault>> = (0..ne)
+        .into_par_iter()
+        .map(|e| {
+            let n = mesh.n_edges_on_edge[e] as usize;
+            let mut edge_max = 0.0f64;
+            let mut edge_partner = 0usize;
+            for k in 0..n {
+                let ep = mesh.edges_on_edge[e * mesh.max_edges2 + k];
+                if ep < 0 {
+                    return Err(StencilFault::Empty(e, k, n));
+                }
+                let ep = ep as usize;
+                let r_ee = mesh.weights_on_edge[e * mesh.max_edges2 + k] * mesh.dc_edge[e]
+                    / mesh.dv_edge[ep];
+                // find e in e''s stencil
+                let np = mesh.n_edges_on_edge[ep] as usize;
+                let back =
+                    (0..np).find(|&t| mesh.edges_on_edge[ep * mesh.max_edges2 + t] == e as i32);
+                let Some(t) = back else {
+                    return Err(StencilFault::OneWay(e, ep));
+                };
+                let r_ep = mesh.weights_on_edge[ep * mesh.max_edges2 + t] * mesh.dc_edge[ep]
+                    / mesh.dv_edge[e];
+                let residual = (r_ee + r_ep).abs();
+                if residual > edge_max {
+                    edge_max = residual;
+                    edge_partner = ep;
+                }
+            }
+            Ok((edge_max, edge_partner))
+        })
+        .collect();
+    for (e, reading) in per_edge.iter().enumerate() {
+        match reading {
+            Err(StencilFault::Empty(e, k, n)) => {
                 return Err(MpasError::Refusal(format!(
                     "edge {e} stencil slot {k} is empty inside its declared length {n}; MPAS sums the whole declared stencil, so an empty slot is a term silently dropped from the tangential wind"
                 )));
             }
-            let ep = ep as usize;
-            let r_ee = mesh.weights_on_edge[e * mesh.max_edges2 + k] * mesh.dc_edge[e]
-                / mesh.dv_edge[ep];
-            // find e in e''s stencil
-            let np = mesh.n_edges_on_edge[ep] as usize;
-            let back = (0..np).find(|&t| mesh.edges_on_edge[ep * mesh.max_edges2 + t] == e as i32);
-            let Some(t) = back else {
+            Err(StencilFault::OneWay(e, ep)) => {
                 return Err(MpasError::Refusal(format!(
                     "edge {e} reconstructs from edge {ep}, but {ep} does not reconstruct from {e}: the tangential stencil is not symmetric, so the Thuburn energy identity has no pair to cancel against and the scheme injects energy every step"
                 )));
-            };
-            let r_ep = mesh.weights_on_edge[ep * mesh.max_edges2 + t] * mesh.dc_edge[ep]
-                / mesh.dv_edge[e];
-            let residual = (r_ee + r_ep).abs();
-            if residual > max_anti {
-                max_anti = residual;
-                worst_pair = (e, ep);
             }
-            pairs += 1;
+            Ok((edge_max, edge_partner)) => {
+                if *edge_max > max_anti {
+                    max_anti = *edge_max;
+                    worst_pair = (e, *edge_partner);
+                }
+                pairs += mesh.n_edges_on_edge[e] as usize;
+            }
         }
     }
+    drop(per_edge);
     if max_anti > limits.weight_antisymmetry {
         return Err(MpasError::Refusal(format!(
             "the TRiSK weights are not antisymmetric: R[{},{}] + R[{},{}] = {max_anti:.3e}, limit {:.3e} over {pairs} ordered pairs. The published meshes read 1.7e-16 at the median. Antisymmetry is what makes the tangential reconstruction energy-conserving; without it the scheme adds or removes kinetic energy at every edge, and nothing downstream of this crate ever looks at a weight value",
@@ -591,15 +676,15 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
 
     // 4. Weight padding. MPAS sums the whole row, so a nonzero padding slot is a
     //    wind term added out of nowhere.
-    let mut bad_padding = 0usize;
-    for e in 0..ne {
-        let n = mesh.n_edges_on_edge[e] as usize;
-        for k in n..mesh.max_edges2 {
-            if mesh.weights_on_edge[e * mesh.max_edges2 + k] != 0.0 {
-                bad_padding += 1;
-            }
-        }
-    }
+    let bad_padding: usize = (0..ne)
+        .into_par_iter()
+        .map(|e| {
+            let n = mesh.n_edges_on_edge[e] as usize;
+            (n..mesh.max_edges2)
+                .filter(|&k| mesh.weights_on_edge[e * mesh.max_edges2 + k] != 0.0)
+                .count()
+        })
+        .sum();
     if bad_padding > 0 {
         return Err(MpasError::Refusal(format!(
             "{bad_padding} weightsOnEdge padding slots are not exactly 0.0; MPAS sums the full maxEdges2 row, so each one adds an unowned term to a tangential wind. The published meshes have 0"
@@ -627,28 +712,49 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     }
 
     // ------------------------------------------------------- the kite partition
-    let mut max_kite_rel = 0.0f64;
-    for v in 0..nv {
-        let row = &mesh.kite_areas_on_vertex[v * 3..v * 3 + 3];
-        let s = row[0] + row[1] + row[2];
-        let rel = if mesh.area_triangle[v] > 0.0 {
-            (s / mesh.area_triangle[v] - 1.0).abs()
-        } else {
-            1.0
-        };
-        max_kite_rel = max_kite_rel.max(rel);
-    }
-    let mut per_cell = vec![0.0f64; nc];
-    for v in 0..nv {
-        for s in 0..3 {
-            let c = mesh.cells_on_vertex[v * 3 + s] as usize;
-            per_cell[c] += mesh.kite_areas_on_vertex[v * 3 + s];
-        }
+    // `f64::max` is exact and order-free, so both folds read the serial bit.
+    let mut max_kite_rel = (0..nv)
+        .into_par_iter()
+        .map(|v| {
+            let row = &mesh.kite_areas_on_vertex[v * 3..v * 3 + 3];
+            let s = row[0] + row[1] + row[2];
+            if mesh.area_triangle[v] > 0.0 {
+                (s / mesh.area_triangle[v] - 1.0).abs()
+            } else {
+                1.0
+            }
+        })
+        .reduce(|| 0.0f64, f64::max);
+    // Each cell sums its own kites itself, in the order the vertex-major loop
+    // added them to the cell's slot: the kite slots sorted by (cell, vertex,
+    // slot), read off `cellsOnVertex` exactly as that loop read them, so the
+    // per-cell sum is the same additions in the same order.
+    let mut kite_slots: Vec<(u32, u32, u8)> = (0..nv)
+        .into_par_iter()
+        .flat_map_iter(|v| {
+            (0..3u8).map(move |s| (mesh.cells_on_vertex[v * 3 + s as usize] as u32, v as u32, s))
+        })
+        .collect();
+    kite_slots.par_sort_unstable();
+    let mut slot_offsets = vec![0usize; nc + 1];
+    for &(c, _, _) in &kite_slots {
+        slot_offsets[c as usize + 1] += 1;
     }
     for c in 0..nc {
-        let rel = (per_cell[c] / mesh.area_cell[c] - 1.0).abs();
-        max_kite_rel = max_kite_rel.max(rel);
+        slot_offsets[c + 1] += slot_offsets[c];
     }
+    let per_cell_rel = (0..nc)
+        .into_par_iter()
+        .map(|c| {
+            let mut sum = 0.0f64;
+            for &(_, v, s) in &kite_slots[slot_offsets[c]..slot_offsets[c + 1]] {
+                sum += mesh.kite_areas_on_vertex[v as usize * 3 + s as usize];
+            }
+            (sum / mesh.area_cell[c] - 1.0).abs()
+        })
+        .reduce(|| 0.0f64, f64::max);
+    drop(kite_slots);
+    max_kite_rel = max_kite_rel.max(per_cell_rel);
     if max_kite_rel > limits.kite_partition {
         return Err(MpasError::Refusal(format!(
             "the kite areas do not partition the mesh: worst relative gap {max_kite_rel:.3e}, limit {:.3e}. kiteAreasOnVertex is the area weight MPAS uses to move vorticity between the dual and primal grids, so a partition that does not close moves circulation that does not exist",
@@ -799,7 +905,7 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     }
 
     let r = crate::mesh::geom::EARTH_RADIUS_M;
-    let dc_m: Vec<f64> = mesh.dc_edge.iter().map(|&d| d * r).collect();
+    let dc_m: Vec<f64> = mesh.dc_edge.par_iter().map(|&d| d * r).collect();
 
     // ------------------------- the two dual-edge gates: length, then ratio
     //
@@ -865,19 +971,23 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     }
 
     let mut ratios: Vec<f64> = (0..ne).map(|e| mesh.dv_edge[e] / mesh.dc_edge[e]).collect();
-    ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ratios.par_sort_by(|a, b| a.partial_cmp(b).unwrap());
     let spacing = mesh.spacing_m();
-    let mut max_adj = 1.0f64;
-    for i in 0..nc {
-        let deg = mesh.n_edges_on_cell[i] as usize;
-        for j in 0..deg {
-            let nb = mesh.cells_on_cell[i * mesh.max_edges + j] as usize;
-            let a = spacing[i];
-            let b = spacing[nb];
-            let ratio = if a > b { a / b } else { b / a };
-            max_adj = max_adj.max(ratio);
-        }
-    }
+    let max_adj = (0..nc)
+        .into_par_iter()
+        .map(|i| {
+            let deg = mesh.n_edges_on_cell[i] as usize;
+            let mut cell_max = 1.0f64;
+            for j in 0..deg {
+                let nb = mesh.cells_on_cell[i * mesh.max_edges + j] as usize;
+                let a = spacing[i];
+                let b = spacing[nb];
+                let ratio = if a > b { a / b } else { b / a };
+                cell_max = cell_max.max(ratio);
+            }
+            cell_max
+        })
+        .reduce(|| 1.0f64, f64::max);
     let min_sp = spacing.iter().cloned().fold(f64::INFINITY, f64::min);
     let max_sp = spacing.iter().cloned().fold(0.0f64, f64::max);
 

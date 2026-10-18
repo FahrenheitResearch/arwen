@@ -586,13 +586,13 @@ def test_the_streaming_inventory_carries_what_restart_deliberately_does_not():
 
     added = set(physinv.streaming_only_members())
     # Strict acoustic mass carriers survive the gap between steps too.
-    # Restart deliberately reconstructs them at start_em instead.
+    # Exact restart now retains these too; tracker windows remain stream-only.
     acoustic_slots = {"wrf_exact_muts", "wrf_exact_mu_halo"}
-    assert added == {f"scratch/{s}" for s in
-                     set(uh_diag.TRACKER_WINDOW_SLOTS) | acoustic_slots}
+    assert added == {f"scratch/{s}" for s in uh_diag.TRACKER_WINDOW_SLOTS}
     for slot in acoustic_slots:
         assert restart.classify_scratch_slot(slot) == "carry"
         assert slot not in restart.SERIALIZED_SCRATCH_SLOTS
+        assert slot in restart.CHECKPOINTED_CARRIED_SCRATCH_SLOTS
     for slot in uh_diag.TRACKER_WINDOW_SLOTS:
         # "carry", not "rebuild", since feat-uh-accum: restart.py grew a
         # THIRD scratch class for exactly this pair -- genuine cross-step

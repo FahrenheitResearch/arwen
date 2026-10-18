@@ -133,8 +133,22 @@ def driver_source() -> str:
     return runtime_unit("noahmp_driver").source
 
 
+def _current_device() -> int:
+    """The card a compiled module must be loaded on: the current one.
+
+    ``compile_runtime_unit`` loads its image with ``cupy.cuda.function.Module``
+    into the CURRENT context only, so a module cached per process and reused
+    on a second card hands that card the first card's function handles
+    (CUDA_ERROR_INVALID_HANDLE at the first launch; the two-card HRRR start,
+    2026-10-16).  The device is therefore part of every module cache key.
+    """
+    import cupy as cp
+
+    return cp.cuda.runtime.getDevice()
+
+
 @lru_cache(maxsize=None)
-def _module(options: tuple[str, ...], source: str | None):
+def _module(device: int, options: tuple[str, ...], source: str | None):
     return compile_runtime_unit(
         "noahmp_driver",
         module_key="gpuwm.core.noahmp_driver_gpu:driver"
@@ -149,7 +163,7 @@ def driver_module(options: tuple[str, ...] = DEFAULT_OPTIONS,
     ``source`` exists so a negative control can compile a perturbed copy and
     show the gate can fail; leave it ``None`` for the real thing.
     """
-    return _module(tuple(options), source)
+    return _module(_current_device(), tuple(options), source)
 
 
 def _launch(name, host_x, host_ix, out_stride, module):

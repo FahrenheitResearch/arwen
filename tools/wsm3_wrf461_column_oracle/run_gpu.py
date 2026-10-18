@@ -115,7 +115,9 @@ def run_gpu(columns: Path, dt: float, nsteps: int):
         launch_wsm3(dev["th"], dev["qv"], dev["qc"], dev["qr"], w,
                     dev["den"], dev["pii"], dev["p"], dev["dz"],
                     s["rainnc"], s["rainncv"], s["snownc"], s["snowncv"],
-                    s["sr"], dt, effc=effc, effi=effi, effs=effs)
+                    s["sr"], dt, effc=effc, effi=effi, effs=effs,
+                    # The WRF oracle is exact mode (finding WB5 off).
+                    conservative_surface=False)
         cp.multiply(dev["th"], dev["pii"], out=t)
         cp.cuda.runtime.deviceSynchronize()
         g = lambda a: a.get().reshape(nz, ncol)

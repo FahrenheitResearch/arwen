@@ -1,35 +1,27 @@
-"""Compare the one-launch sedimentation path against frozen base kernels."""
-from pathlib import Path
-import importlib.util
+"""The one-launch sedimentation route gives the same bits as the per-category
+kernels.
 
+nssl2_sediment_all_parallel_64 is the route production takes for nz <= 64,
+and it is the route tools/nssl2_wrf461_column_oracle grades against WRF
+v4.6.1 (bitwise).  The per-category sequential kernels serve deeper columns
+and the no-gamma-table fallback, so they must give the same bits on every
+column both can hold.  (These tests used to compare against a frozen copy of
+the pre-speedup kernels, retired when the sedimentation became a WRF
+transliteration: it pinned bits WRF does not produce.)
+"""
 import numpy as np
 import pytest
 
-def _reference(name, attribute):
-    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(name + ".py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return getattr(module, attribute)
+from nssl2_sediment_paths import device_or_skip, kernel
 
-
-_BASE_DENSE = _reference("test_nssl2_speed_gamma", "_BASE_DENSE")
-_BASE_RAIN = _reference("test_nssl2_speed_rain", "_BASE_RAIN")
-_BASE_SMALL = _reference("test_nssl2_speed_small", "_BASE_SMALL")
+# The device comes through nssl2_sediment_paths, which the conftest AST marker
+# cannot see; the GPU shard leg selects by this marker.
+pytestmark = pytest.mark.gpu
 
 
 @pytest.mark.parametrize("nz", [2, 49, 64])
 def test_fused_sediment_bits(nz):
-    cp = pytest.importorskip("cupy")
-    try:
-        if cp.cuda.runtime.getDeviceCount() == 0:
-            pytest.skip("CUDA device unavailable")
-    except cp.cuda.runtime.CUDARuntimeError:
-        pytest.skip("CUDA device unavailable")
-    from gpuwm.core.kernels import _preamble
-    source = (Path(__file__).parents[1] / "gpuwm/core/kernels/nssl2_driver_support.cu").read_text()
-    reference = cp.RawModule(code=_preamble() + _BASE_RAIN + _BASE_SMALL + _BASE_DENSE,
-                             options=("-std=c++17",))
-    actual = cp.RawModule(code=_preamble() + source, options=("-std=c++17",))
+    cp = device_or_skip()
     rng = np.random.default_rng(1805 + nz)
     shape = (nz, 1, 97)
     rho_host = rng.uniform(0.3, 1.2, shape).astype(np.float32)
@@ -44,16 +36,16 @@ def test_fused_sediment_bits(nz):
     for mass, volume in ((5, 14), (6, 15)):
         state[volume] = rho_host * state[mass] / rng.uniform(170, 900, shape).astype(np.float32)
     table = cp.empty((2, 120), dtype=cp.float64)
-    actual.get_function("nssl2_fill_velocity_gamma")((2,), (64,), (table,))
+    kernel("nssl2_fill_velocity_gamma")((2,), (64,), (table,))
     for dt in (15, 45):
         outputs = []
-        for module in (reference, actual):
+        for fused in (False, True):
             data = cp.asarray(state.copy())
             accum = cp.full((1, 97), np.float32(0.125))
             exported = cp.empty((5, 1, 97), dtype=cp.float32)
             scalars = (np.float32(dt), np.int32(nz), np.int32(1), np.int32(97))
-            if module is actual:
-                module.get_function("nssl2_sediment_all_parallel_64")((97, 6), (64,),
+            if fused:
+                kernel("nssl2_sediment_all_parallel_64")((97, 6), (64,),
                     (rho, temperature, data, dz, accum, exported, table, *scalars))
             else:
                 for category, mass, number, volume, slot in (
@@ -63,10 +55,11 @@ def test_fused_sediment_bits(nz):
                     args = [rho, data[mass], data[number]]
                     if volume is not None:
                         args.append(data[volume])
-                    module.get_function(f"nssl2_{category}_sediment_64")((2,), (64,),
+                    kernel(f"nssl2_{category}_sediment_64")((2,), (64,),
                         (*args, dz, accum, exported[slot], *scalars))
-                module.get_function("nssl2_cloud_sediment_64")((2,), (64,),
+                kernel("nssl2_cloud_sediment_64")((2,), (64,),
                     (rho, temperature, data[1], data[7], dz, accum, *scalars))
             outputs.append([x.get().view(np.uint32) for x in (data, accum, exported)])
+        assert np.any(outputs[0][0] != state.view(np.uint32))
         for expected, observed in zip(*outputs):
             np.testing.assert_array_equal(expected, observed)

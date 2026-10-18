@@ -36,6 +36,7 @@ members = [
     "crates/rw-netcdf",
     "crates/rw-nexrad",
     "crates/rw-odim",
+    "crates/rw-radar-feeds",
     "crates/rw-post",
     "crates/rw-obs",
     "crates/rw-scoreboard",

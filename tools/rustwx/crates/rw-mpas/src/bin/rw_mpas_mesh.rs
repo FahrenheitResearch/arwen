@@ -88,14 +88,11 @@ fn usage() -> String {
          --sweeps         relaxation budget (default 300)\n\
          --omega          over-relaxation factor (default 1.4; 1.0 is plain Lloyd)\n\
          --triangulation  how the Delaunay is kept between relaxation sweeps.\n\
-        \x20                 rebuild (DEFAULT, class A) rebuilds it from scratch every sweep.\n\
-        \x20                 That is what every registered mesh was generated with and the\n\
-        \x20                 only setting that reproduces one byte for byte.\n\
-        \x20                 incremental (class B) keeps the facets and repairs them by Lawson\n\
-        \x20                 flips. SAME triangulation, but each cell keeps the ring ROTATION\n\
-        \x20                 it had where a rebuild re-rolls it for about 27% of cells, so the\n\
-        \x20                 FILE differs. Use it for a mesh that has never existed; never to\n\
-        \x20                 regenerate one with a registered SHA-256.\n\n\
+        \x20                 incremental (DEFAULT) keeps the facets and repairs them by Lawson\n\
+        \x20                 flips. rebuild rebuilds the hull from scratch every sweep (slower).\n\
+        \x20                 Rings start at their smallest neighbour index, so both arms write\n\
+        \x20                 the same bytes. Meshes generated before 2026-10-16 used the old\n\
+        \x20                 ring rotation and are not reproduced byte for byte by either.\n\n\
          THE REGIONAL CULL\n\
          --cull-parent    cut a limited-area mesh out of an existing global grid or static\n\
          --cull-provenance-grid GRID  bind static provenance to the final regional grid\n\
@@ -348,8 +345,8 @@ fn run() -> Result<String, String> {
         }
         lloyd.omega = v;
     }
-    // THE CLASS SWITCH. Default `rebuild`; see `hull::TriangulationMode` for
-    // why a faster default would silently lapse every registered mesh digest.
+    // THE ARM SWITCH. Default `incremental`; both arms write the same bytes
+    // (see `hull::TriangulationMode`).
     if let Some(v) = args.get("triangulation") {
         lloyd.triangulation = rw_mpas::mesh::hull::TriangulationMode::parse(v)?;
     }

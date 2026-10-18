@@ -551,12 +551,25 @@ class PackedProductionPhysics:
         component.state.elapsed_seconds, component.state.p_top = state.elapsed_seconds, state.p_top
         component.state.physics.microphysics_updates = state.physics.microphysics_updates
         result = component()
+
+        def split(name, value):
+            return self._gather(namespace + ":returned", name,
+                [self._member_view(value, member) for member in range(self.members)], joined=False)
+
+        # boundary_fluxes is a name -> (ny, nx) map; each plane splits by member.
         returned = {field.name: None if getattr(result, field.name) is None else
-            self._gather(namespace + ":returned", field.name,
-                [self._member_view(getattr(result, field.name), member) for member in range(self.members)], joined=False)
+            ({key: split(f"{field.name}/{key}", value) for key, value in getattr(result, field.name).items()}
+             if isinstance(getattr(result, field.name), dict) else split(field.name, getattr(result, field.name)))
             for field in dataclass_fields(result)}
-        return tuple(RadiationResult(**{name: None if array is None else array[member]
-                      for name, array in returned.items()}) for member in range(self.members))
+
+        def member_value(value, member):
+            if value is None:
+                return None
+            if isinstance(value, dict):
+                return {key: array[member] for key, array in value.items()}
+            return value[member]
+        return tuple(RadiationResult(**{name: member_value(value, member)
+                      for name, value in returned.items()}) for member in range(self.members))
 
     def close(self):
         if self._active:

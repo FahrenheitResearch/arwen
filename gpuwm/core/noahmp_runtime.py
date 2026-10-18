@@ -302,12 +302,32 @@ def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
     if count == 0:
         return
     at = (gj, gi)
+    # The input deck copies 51 four-byte values per full-domain column.
+    # Gather sparse columns on-device only when this avoids at least 16 MiB:
+    # smaller calls lose to advanced-index launch overhead. The threshold
+    # affects transport only; CPU conversions and physical arithmetic stay.
+    gather_inputs = (mask_host.size - count) * (51 * 4) >= 16 * 1024 * 1024
+    device_at = (cp.asarray(gj), cp.asarray(gi)) if gather_inputs else None
+
+    def read2(value):
+        if gather_inputs:
+            return cp.asnumpy(value[device_at])
+        return cp.asnumpy(value)[at]
+
+    def read_layers(name):
+        if gather_inputs:
+            return cp.asnumpy(fields[name][:, device_at[0], device_at[1]])
+        return cp.asnumpy(fields[name])[:, gj, gi]
+
     dt32 = f32(dt)
 
     def host2(name):
-        return cp.asnumpy(fields[name])[at].astype(np.float32, copy=False)
+        return read2(fields[name]).astype(np.float32, copy=False)
 
     def forcing(name, level=0):
+        if gather_inputs:
+            return cp.asnumpy(atmosphere[name][level][device_at]).astype(
+                np.float32, copy=False)
         return cp.asnumpy(
             atmosphere[name][level]).astype(np.float32, copy=False)[at]
 
@@ -326,12 +346,12 @@ def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
     rainbl = host2("rainbl")
     prcp = rainbl / np.float32(dt32)             # :765
     tbot = np.minimum(host2("tmn"), np.float32(263.15))   # :1050
-    cosz = cp.asnumpy(cp.asarray(coszen, dtype=cp.float32))[at]
+    cosz = read2(cp.asarray(coszen, dtype=cp.float32))
 
-    isnow = cp.asnumpy(fields["isnowxy"])[at].astype(np.int32, copy=False)
-    snice = cp.asnumpy(fields["snicexy"])[:, gj, gi].T.astype(
+    isnow = read2(fields["isnowxy"]).astype(np.int32, copy=False)
+    snice = read_layers("snicexy").T.astype(
         np.float32, copy=False)
-    snliq = cp.asnumpy(fields["snliqxy"])[:, gj, gi].T.astype(
+    snliq = read_layers("snliqxy").T.astype(
         np.float32, copy=False)
     # FICEOLD (:1026-1029): live slots divide unguarded, the rest stay 0.
     slot = np.arange(NSNOW, dtype=np.int32)[None, :]
@@ -340,8 +360,8 @@ def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
     with np.errstate(divide="ignore", invalid="ignore"):
         np.divide(snice, snice + snliq, out=ficeold, where=live)
 
-    tslb = cp.asnumpy(fields["tslb"])[:, gj, gi].T
-    tsno = cp.asnumpy(fields["tsnoxy"])[:, gj, gi].T
+    tslb = read_layers("tslb").T
+    tsno = read_layers("tsnoxy").T
     inputs = {
         "cosz": cosz, "sfctmp": temperature, "sfcprs": p_ml, "uu": u,
         "vv": v, "q2": q_ml, "soldn": host2("swdown"), "prcp": prcp,
@@ -352,15 +372,20 @@ def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
         "snowh": host2("snowh"), "tg": host2("tgxy"),
         "tauss": host2("taussxy"), "qsfc": host2("qsfc"),
         "isnow": isnow, "ficeold": ficeold,
-        "smc": cp.asnumpy(fields["smois"])[:, gj, gi].T,
-        "sh2o": cp.asnumpy(fields["sh2o"])[:, gj, gi].T,
-        "zsnso": cp.asnumpy(fields["zsnsoxy"])[:, gj, gi].T,
+        "smc": read_layers("smois").T,
+        "sh2o": read_layers("sh2o").T,
+        "zsnso": read_layers("zsnsoxy").T,
         "stc": np.concatenate((tsno, tslb), axis=1),
         "snice": snice, "snliq": snliq,
         "zsoil": zsoil_from_dzs(dzs),
     }
     inputs["noahmp_snow_age"] = noahmp_snow_age
     r = evaluator(inputs, count, float(dt32))
+
+    # Host gathering is finished. Reuse these device indices throughout
+    # write-back instead of uploading both NumPy indices for each carrier.
+    gj, gi = device_at if gather_inputs else (cp.asarray(gj), cp.asarray(gi))
+    at = (gj, gi)
 
     # ---- write-back: the glacier arm (:1065-1150) + shared (:1223-1400)
     def dev(name):
@@ -401,8 +426,9 @@ def _glacier_lsm_step(fields, atmosphere, glacier_mask, *, params, coszen,
     fields["acsnow"][at] = (fields["acsnow"][at]
                             + cp.asarray(rainbl) * dev("fpice"))
     ponding = (dev("ponding") + dev("ponding1")) + dev("ponding2")
-    fields["acsnom"][at] = (fields["acsnom"][at]
-                            + (dev("qmelt") * dt32f + ponding))
+    fields["acsnom"][at] = acsnom_accumulate(
+        fields["acsnom"][at], dev("qmelt"), dt32f, dev("ponding"),
+        dev("ponding1"), dev("ponding2"))
     fields["pondingxy"][at] = ponding
     put2("emiss", "emissi")
     put2("qsfc", "qsfc")
@@ -572,6 +598,24 @@ UNDEFINED_VALUE = -1.0e36
 
 #: ``FOLN``, :1031 -- "for now, set to nitrogen saturation".
 FOLN = 1.0
+
+
+def acsnom_accumulate(acsnom, qmelt, dt, ponding, ponding1, ponding2):
+    """``ACSNOM = ACSNOM + QMELT*DT + PONDING + PONDING1 + PONDING2``
+    (module_sf_noahmpdrv.F:1243), in Fortran's left-to-right order.
+
+    Each ``+`` is one binary32 rounding applied to the running total, so the
+    sum is ``((((ACSNOM + QMELT*DT) + PONDING) + PONDING1) + PONDING2)``.
+    Grouping the ponding terms first (as ``PONDINGXY`` is grouped at :1296)
+    rounds differently: the WRF v4.6.1 column oracle
+    (tools/noahmp_wrf461_oracle/column) measured 1 ULP on 8 snowmelt column
+    values before this order was restored.  Works on NumPy and CuPy alike;
+    every operand is binary32 and every operation is a separate rounding.
+    """
+    total = acsnom + qmelt * dt
+    total = total + ponding
+    total = total + ponding1
+    return total + ponding2
 
 #: Carried per-column scalars, in WRF's Registry spelling lower-cased so a
 #: restart manifest and a wrfout carry the identifiers WRF writes.  Every one
@@ -1272,6 +1316,19 @@ def noahmp_cold_start(fields, *, params: NoahmpRuntimeParameters,
 
     for name, array in slab.items():
         fields[name][...] = cp.asarray(array)
+
+    # NOAHMP_INIT also seeds the two 2-m temperature diagnostics
+    # (module_sf_noahmpdrv.F:2129-2132) with exactly the expression it uses
+    # for TVXY and TGXY: TSK, or 273.15 over snow when TSK is warmer.  On a
+    # land column noahmplsm overwrites them at the first step; on open water
+    # and sea ice noahmplsm never writes them, so this seed is what WRF
+    # carries and publishes there for the whole run (T2MV/T2MB in wrfout).
+    # Leaving them at the allocation's zero published 0 K over every water
+    # and sea-ice column; the WRF v4.6.1 column oracle
+    # (tools/noahmp_wrf461_oracle/column) found it.
+    for diagnostic, source in (("t2mvxy", "tvxy"), ("t2mbxy", "tgxy")):
+        if diagnostic in fields:
+            fields[diagnostic][...] = fields[source]
 
 
 def cold_start_on_device(slab, *, params: NoahmpRuntimeParameters,
@@ -2246,7 +2303,9 @@ def _write_back_slab(fields, j, i, r, *, nsoil, dt) -> None:
     fields["acsnow"][at] = (fields["acsnow"][at]
                             + fields["rainbl"][at] * r["fpice"])
     ponding = (r["ponding"] + r["ponding1"]) + r["ponding2"]
-    fields["acsnom"][at] = fields["acsnom"][at] + (r["qmelt"] * dt + ponding)
+    fields["acsnom"][at] = acsnom_accumulate(
+        fields["acsnom"][at], r["qmelt"], dt, r["ponding"], r["ponding1"],
+        r["ponding2"])
     fields["pondingxy"][at] = ponding
 
     # :1285-1286, specific humidity back to mixing ratio.
@@ -2376,7 +2435,9 @@ def _write_back_batch(host, host_3d, staged, *, nsoil, dt) -> None:
     host["canwat"][at] = r["canliq"] + r["canice"]                    # :1241
     host["acsnow"][at] = host["acsnow"][at] + host["rainbl"][at] * r["fpice"]
     ponding = (r["ponding"] + r["ponding1"]) + r["ponding2"]
-    host["acsnom"][at] = host["acsnom"][at] + (r["qmelt"] * dt + ponding)
+    host["acsnom"][at] = acsnom_accumulate(
+        host["acsnom"][at], r["qmelt"], dt, r["ponding"], r["ponding1"],
+        r["ponding2"])
     host["pondingxy"][at] = ponding
 
     # :1285-1286, specific humidity back to mixing ratio.

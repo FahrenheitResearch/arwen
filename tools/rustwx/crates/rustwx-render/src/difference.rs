@@ -31,7 +31,16 @@
 //!   contours cannot be subtracted into one set of lines.
 //! * The colour bar is symmetric about zero; its half range comes from
 //!   `data/difference.json` (see [`half_range`]) and the rule that set it is
-//!   reported with every panel.
+//!   reported with every panel.  A table range is a fixed bar for a loop,
+//!   and it never hides a difference: when every cell's |A - B| would fall
+//!   inside the table bar's neutral bands, the bar is fitted to the
+//!   difference instead ([`RangeRule::Adaptive`]).
+//! * Every panel prints the largest |A - B| and how many cells differ (or
+//!   that A and B are identical), so the picture says what it compared even
+//!   where the bands round it away.
+//! * `RUSTWX_DIFFERENCE_TABLE` replaces the table: `auto` fits every bar to
+//!   its own difference, `table` is the built-in table, and a path names a
+//!   JSON file whose top-level keys replace the built-in table's.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -55,6 +64,13 @@ use crate::{RenderSaveTiming, RustRenderer, RustwxRenderError};
 pub const GRID_TOLERANCE_DEG: f32 = 1.0e-4;
 
 const TABLE_JSON: &str = include_str!("../data/difference.json");
+
+/// The environment variable that replaces the difference table: `auto`
+/// (every bar fitted to its own difference), `table` (the built-in table),
+/// or the path of a JSON file whose top-level keys replace the built-in
+/// table's (so `{"rows": []}` alone is `auto`, and a file with only `rows`
+/// sets one's own fixed bars).
+pub const DIFFERENCE_TABLE_ENV: &str = "RUSTWX_DIFFERENCE_TABLE";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DifferenceTable {
@@ -103,6 +119,108 @@ impl DifferenceTable {
                 .expect("data/difference.json is compiled in and parsed by a unit test");
             table
         })
+    }
+
+    /// The table this process draws with: the built-in one, or the one
+    /// [`DIFFERENCE_TABLE_ENV`] names.  A value that cannot be read is
+    /// refused by name rather than drawn with a table the caller did not ask
+    /// for.
+    pub fn active() -> Result<&'static DifferenceTable, RustwxRenderError> {
+        static ACTIVE: OnceLock<Result<DifferenceTable, String>> = OnceLock::new();
+        ACTIVE
+            .get_or_init(|| {
+                let value = std::env::var(DIFFERENCE_TABLE_ENV).unwrap_or_default();
+                Self::from_setting(value.trim())
+            })
+            .as_ref()
+            .map_err(|message| RustwxRenderError::Difference(message.clone()))
+    }
+
+    /// The table one [`DIFFERENCE_TABLE_ENV`] value names.
+    pub fn from_setting(value: &str) -> Result<DifferenceTable, String> {
+        match value {
+            "" | "table" | "default" => Ok(Self::builtin().clone()),
+            "auto" => {
+                let mut table = Self::builtin().clone();
+                table.rows.clear();
+                Ok(table)
+            }
+            path => {
+                let text = std::fs::read_to_string(path).map_err(|err| {
+                    format!(
+                        "{DIFFERENCE_TABLE_ENV}={path}: cannot read the difference table: {err} \
+                         (give auto, table, or the path of a JSON difference table)"
+                    )
+                })?;
+                Self::overlaid(&text)
+                    .map_err(|err| format!("{DIFFERENCE_TABLE_ENV}={path}: {err}"))
+            }
+        }
+    }
+
+    /// The built-in table with `text`'s top-level keys put in place of its
+    /// own, checked as the built-in table is.
+    pub fn overlaid(text: &str) -> Result<DifferenceTable, String> {
+        let replacement: serde_json::Value =
+            serde_json::from_str(text).map_err(|err| format!("not JSON: {err}"))?;
+        let serde_json::Value::Object(replacement) = replacement else {
+            return Err("a difference table is a JSON object".to_string());
+        };
+        let mut merged: serde_json::Value =
+            serde_json::from_str(TABLE_JSON).expect("the built-in table parses");
+        let object = merged.as_object_mut().expect("the built-in table is an object");
+        for (key, value) in replacement {
+            object.insert(key, value);
+        }
+        let table: DifferenceTable = serde_json::from_value(merged)
+            .map_err(|err| format!("not a difference table: {err}"))?;
+        table.check()?;
+        Ok(table)
+    }
+
+    /// What a table must hold to draw a true bar.
+    pub fn check(&self) -> Result<(), String> {
+        if self.bands < 2 {
+            return Err(format!("bands is {}; a bar needs at least 2", self.bands));
+        }
+        if self.neutral_bands >= self.bands {
+            return Err(format!(
+                "neutral_bands {} leaves no coloured band of {}",
+                self.neutral_bands, self.bands
+            ));
+        }
+        if !(self.percentile > 0.0 && self.percentile <= 100.0) {
+            return Err(format!("percentile {} is not in (0, 100]", self.percentile));
+        }
+        for hex in &self.colors {
+            crate::theme::parse_color(hex).map_err(|err| format!("colour {hex:?}: {err}"))?;
+        }
+        for row in &self.rows {
+            if !(row.half_range.is_finite() && row.half_range > 0.0) {
+                return Err(format!(
+                    "row {} ({}) has half_range {}; it must be a positive number",
+                    row.product, row.units, row.half_range
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The largest |A - B| a bar of `half_range` draws in its neutral
+    /// colour: the inner edge of the first coloured band either side of
+    /// zero.  A field whose every |A - B| is at or below this draws as no
+    /// difference at all.
+    pub fn neutral_reach(&self, half_range: f64) -> f64 {
+        let bands = self.bands.max(2);
+        let neutral = self.neutral_bands.min(bands);
+        if neutral == 0 {
+            return 0.0;
+        }
+        let start = (bands - neutral) / 2;
+        let step = 2.0 * half_range / bands as f64;
+        let low = -half_range + step * start as f64;
+        let high = -half_range + step * (start + neutral) as f64;
+        low.abs().min(high.abs())
     }
 
     /// The row for `product_key` drawn in `units`: the longest row product
@@ -175,11 +293,20 @@ pub enum RangeRule {
     /// The table's percentile of |A - B| (`observed`), rounded up to a
     /// 1-2-5 band step.
     Percentile { percentile: f64, observed: f64 },
+    /// Fewer cells differ than the percentile reaches, so the percentile is
+    /// zero: the largest |A - B| (`observed`), rounded up to a 1-2-5 band
+    /// step, so the cells that differ are drawn.
+    Maximum { observed: f64 },
+    /// The table row's bar (`table`) would draw every cell in its neutral
+    /// colour, so the bar is fitted to the difference by `fitted`
+    /// ([`RangeRule::Percentile`] or [`RangeRule::Maximum`]).
+    Adaptive { table: f64, fitted: Box<RangeRule> },
     /// No cell has a defined difference, or every one is zero.
     NoDifference,
 }
 
 impl RangeRule {
+    /// One token (no spaces): the receipt line splits on spaces.
     pub fn describe(&self) -> String {
         match self {
             RangeRule::Table => "table".to_string(),
@@ -187,8 +314,32 @@ impl RangeRule {
                 percentile,
                 observed,
             } => format!("p{percentile}={observed:.4}"),
+            RangeRule::Maximum { observed } => format!("max={}", magnitude_label(*observed)),
+            RangeRule::Adaptive { table, fitted } => {
+                format!("adaptive(table={table},{})", fitted.describe())
+            }
             RangeRule::NoDifference => "no-difference".to_string(),
         }
+    }
+}
+
+/// A magnitude to three significant figures, in plain decimals down to
+/// 0.001 and in exponent form below, so a difference of one unit in the
+/// last place of a 32-bit temperature still reads as a number.
+pub fn magnitude_label(value: f64) -> String {
+    if !value.is_finite() {
+        return format!("{value}");
+    }
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        "0".to_string()
+    } else if magnitude >= 100.0 {
+        format!("{value:.0}")
+    } else if magnitude >= 1.0e-3 {
+        let places = (2 - magnitude.log10().floor() as i32).max(0) as usize;
+        format!("{value:.places$}")
+    } else {
+        format!("{value:.2e}")
     }
 }
 
@@ -207,22 +358,89 @@ pub fn nice_step(value: f64) -> f64 {
     10.0 * base
 }
 
+/// The largest |A - B| over the cells where the difference is defined, and
+/// how many of those cells there are and how many differ.
+pub fn difference_extent(values: &[f32]) -> (f64, usize, usize) {
+    let mut max_abs = 0.0f64;
+    let mut defined = 0usize;
+    let mut differing = 0usize;
+    for value in values.iter().filter(|value| value.is_finite()) {
+        defined += 1;
+        if *value != 0.0 {
+            differing += 1;
+        }
+        max_abs = max_abs.max(f64::from(value.abs()));
+    }
+    (max_abs, defined, differing)
+}
+
 /// The bar's half range and the rule that set it.
 ///
-/// A table row wins.  Without one, the half range is the table's
-/// percentile of |A - B| over the cells where the difference is defined,
-/// rounded up so that one band is a 1, 2 or 5 step: with 10 bands a 99th
-/// percentile of 7.3 gives bands of 2 and a half range of 10.
+/// A table row wins, so the frames of a loop share one bar, unless that bar
+/// would hide the whole difference: when some cell differs but no |A - B|
+/// reaches past the bar's neutral bands, the bar is fitted to the
+/// difference ([`RangeRule::Adaptive`]).  (A 0.9 °F difference on every
+/// cell drew as a blank map on the table's +/-10 °F bar, whose neutral
+/// bands reach 2 °F.)
+///
+/// Without a row, the half range is the table's percentile of |A - B| over
+/// the cells where the difference is defined, rounded up so that one band is
+/// a 1, 2 or 5 step: with 10 bands a 99th percentile of 7.3 gives bands of 2
+/// and a half range of 10.  When fewer cells differ than the percentile
+/// reaches (the percentile is zero but some cell is not), the largest
+/// |A - B| sets it instead, so those cells are drawn.
 pub fn half_range(
     table: &DifferenceTable,
     product_key: &str,
     units: &str,
     values: &[f32],
 ) -> (f64, RangeRule) {
-    let half_bands = (table.bands.max(2) / 2) as f64;
     if let Some(row) = table.row_for(product_key, units) {
+        let (max_abs, _, _) = difference_extent(values);
+        // Decide from the table's percentile of |A - B| over the cells that
+        // differ, not from the single largest value: one cell past the
+        // neutral reach kept the table bar and left every other differing
+        // cell white (+0.5 K everywhere plus +2 K on one cell drew a blank
+        // map with one light-blue cell).
+        if max_abs > 0.0
+            && differing_percentile(table, values) <= table.neutral_reach(row.half_range)
+        {
+            let (half, fitted) = fitted_half_range(table, values);
+            return (
+                half,
+                RangeRule::Adaptive {
+                    table: row.half_range,
+                    fitted: Box::new(fitted),
+                },
+            );
+        }
         return (row.half_range, RangeRule::Table);
     }
+    fitted_half_range(table, values)
+}
+
+/// The table's percentile of |A - B| over the finite cells that differ
+/// (zero when none does).
+fn differing_percentile(table: &DifferenceTable, values: &[f32]) -> f64 {
+    let mut magnitudes: Vec<f32> = values
+        .iter()
+        .filter(|value| value.is_finite() && **value != 0.0)
+        .map(|value| value.abs())
+        .collect();
+    if magnitudes.is_empty() {
+        return 0.0;
+    }
+    let rank = ((table.percentile / 100.0) * magnitudes.len() as f64).ceil() as usize;
+    let index = rank.clamp(1, magnitudes.len()) - 1;
+    let (_, observed, _) = magnitudes.select_nth_unstable_by(index, |a, b| a.total_cmp(b));
+    f64::from(*observed)
+}
+
+/// The half range fitted to the difference itself: the table's percentile
+/// of |A - B|, or the largest |A - B| when the percentile is zero, rounded
+/// up to a 1-2-5 band step.
+fn fitted_half_range(table: &DifferenceTable, values: &[f32]) -> (f64, RangeRule) {
+    let half_bands = (table.bands.max(2) / 2) as f64;
     let mut magnitudes: Vec<f32> = values
         .iter()
         .filter(|value| value.is_finite())
@@ -231,20 +449,50 @@ pub fn half_range(
     if magnitudes.is_empty() {
         return (nice_step(0.0) * half_bands, RangeRule::NoDifference);
     }
+    let largest = magnitudes
+        .iter()
+        .fold(0.0f64, |acc, value| acc.max(f64::from(*value)));
     let rank = ((table.percentile / 100.0) * magnitudes.len() as f64).ceil() as usize;
     let index = rank.clamp(1, magnitudes.len()) - 1;
     let (_, observed, _) = magnitudes.select_nth_unstable_by(index, |a, b| a.total_cmp(b));
     let observed = f64::from(*observed);
-    if observed <= 0.0 {
-        return (nice_step(0.0) * half_bands, RangeRule::NoDifference);
+    if observed > 0.0 {
+        return (
+            nice_step(observed / half_bands) * half_bands,
+            RangeRule::Percentile {
+                percentile: table.percentile,
+                observed,
+            },
+        );
     }
-    (
-        nice_step(observed / half_bands) * half_bands,
-        RangeRule::Percentile {
-            percentile: table.percentile,
-            observed,
-        },
-    )
+    if largest > 0.0 {
+        return (
+            nice_step(largest / half_bands) * half_bands,
+            RangeRule::Maximum { observed: largest },
+        );
+    }
+    (nice_step(0.0) * half_bands, RangeRule::NoDifference)
+}
+
+/// The panel's statement of what it compared, in the units it draws:
+/// `max abs diff 0.900 °F` and how many cells differ, or that the two runs
+/// are identical on every cell, so a picture whose bands round a difference
+/// away still says there is one.
+pub fn extent_tokens(max_abs: f64, defined: usize, differing: usize, units: &str) -> Vec<String> {
+    let units = units.trim();
+    let with_units = |value: String| {
+        if units.is_empty() { value } else { format!("{value} {units}") }
+    };
+    if defined == 0 {
+        return vec!["no cell defined in both runs".to_string()];
+    }
+    if differing == 0 {
+        return vec![format!("identical on all {defined} cells")];
+    }
+    vec![
+        format!("max abs diff {}", with_units(magnitude_label(max_abs))),
+        format!("{differing} of {defined} cells differ"),
+    ]
 }
 
 /// The zero-centred bar over `half_range`: `bands` equal bands from
@@ -412,8 +660,10 @@ pub struct DrawnDifference {
     pub half_range: f64,
     pub step: f64,
     pub rule: RangeRule,
-    /// Cells with a defined difference, and the largest |A - B| among them.
+    /// Cells with a defined difference, how many of them differ, and the
+    /// largest |A - B| among them.
     pub defined_cells: usize,
+    pub differing_cells: usize,
     pub max_abs: f64,
 }
 
@@ -547,6 +797,7 @@ pub fn difference_request(
     let values = subtract_fields(&a.field, &b.field, floor)?;
     let units = chrome_plan::display_units(&a.field.units);
     let (half, rule) = half_range(table, product_key, &units, &values);
+    let (max_abs, defined, differing) = difference_extent(&values);
     let scale = difference_scale(table, half);
     let step = 2.0 * half / table.bands.max(2) as f64;
     let had_overlays = !a.contours.is_empty()
@@ -583,11 +834,15 @@ pub fn difference_request(
         had_overlays,
         table,
     ));
-    request.subtitle_left = Some(difference_subtitle(
+    // The extent leads the metadata row, so a narrow canvas that has to
+    // shorten the row drops run A's trailing tokens, never this.
+    let mut subtitle = extent_tokens(max_abs, defined, differing, &units);
+    subtitle.push(difference_subtitle(
         a.subtitle_left.as_deref(),
         b.subtitle_left.as_deref(),
         labels,
     ));
+    request.subtitle_left = Some(subtitle.join(" | "));
     Ok((request, half, step, rule))
 }
 
@@ -820,7 +1075,7 @@ fn subtract(
                 "run B drew no {key} at this valid time, so there is nothing to subtract"
             ))
         })?;
-    let table = DifferenceTable::builtin();
+    let table = DifferenceTable::active()?;
     let (diff, half_range, step, rule) = difference_request(request, &b, key, labels, table)?;
     // Written where the lane asked, because every lane reads back the file
     // it asked for; the caller moves it to [`difference_path`] once the
@@ -835,16 +1090,7 @@ fn subtract(
         }
         None => None,
     };
-    let defined: Vec<f32> = diff
-        .field
-        .values
-        .iter()
-        .copied()
-        .filter(|value| value.is_finite())
-        .collect();
-    let max_abs = defined
-        .iter()
-        .fold(0.0f64, |acc, value| acc.max(f64::from(value.abs())));
+    let (max_abs, defined_cells, differing_cells) = difference_extent(&diff.field.values);
     let drawn = DrawnDifference {
         key: key.to_string(),
         output,
@@ -854,7 +1100,8 @@ fn subtract(
         half_range,
         step,
         rule,
-        defined_cells: defined.len(),
+        defined_cells,
+        differing_cells,
         max_abs,
     };
     if let Some(session) = lock().as_mut() {
@@ -971,14 +1218,112 @@ mod tests {
     #[test]
     fn a_table_row_fixes_the_range_for_its_product_and_units_only() {
         let table = DifferenceTable::builtin();
-        let values = vec![0.3f32; 4];
+        // 3 °F leaves the +/-10 °F bar's neutral bands, so the table bar stands.
+        let values = vec![3.0f32; 4];
         let (half, rule) = half_range(table, "d01-3km_2m_temperature", "°F", &values);
         assert_eq!((half, rule), (10.0, RangeRule::Table));
         // Same product in a unit the table does not list: the percentile rule.
         let (_, rule) = half_range(table, "d01-3km_2m_temperature", "furlongs", &values);
         assert!(matches!(rule, RangeRule::Percentile { .. }));
+        // Identical runs keep the table bar: there is nothing to hide.
+        let (half, rule) = half_range(table, "d01-3km_2m_temperature", "°F", &[0.0f32; 4]);
+        assert_eq!((half, rule), (10.0, RangeRule::Table));
         // A longer product name that merely ends in a listed one's tail.
         assert!(table.row_for("d01-3km_x2m_temperature", "°F").is_none());
+    }
+
+    #[test]
+    fn a_difference_inside_the_table_bars_neutral_bands_gets_a_fitted_bar() {
+        // The reproduced case: run B 0.5 K warmer at 2 m, so A minus B is
+        // -0.9 °F on every cell.  The table's +/-10 °F bar has neutral bands
+        // reaching 2 °F, so it drew a blank map.
+        let table = DifferenceTable::builtin();
+        assert!((table.neutral_reach(10.0) - 2.0).abs() < 1.0e-12);
+        let values = vec![-0.9f32; 8000];
+        let (half, rule) = half_range(table, "d01-12km_2m_temperature", "°F", &values);
+        assert!((half - 1.0).abs() < 1.0e-9, "{half}");
+        assert!(
+            matches!(&rule, RangeRule::Adaptive { table, fitted }
+                if *table == 10.0 && matches!(**fitted, RangeRule::Percentile { .. })),
+            "{rule:?}"
+        );
+        assert!(!rule.describe().contains(' '), "{}", rule.describe());
+        // On the fitted bar the difference is past the neutral bands.
+        assert!(0.9 > table.neutral_reach(half));
+        // A difference the table bar already shows keeps the table bar.
+        let visible = vec![3.0f32; 8000];
+        let (half, rule) = half_range(table, "d01-12km_2m_temperature", "°F", &visible);
+        assert_eq!((half, rule), (10.0, RangeRule::Table));
+        // One cell past the neutral reach does not keep the table bar when
+        // every other differing cell is inside it (2.9.1 verify: 7,999 cells
+        // at -0.9 °F and one at 3.6 °F were drawn white but for that one cell).
+        let mut outlier = values.clone();
+        outlier[17] = 3.6;
+        let (half, rule) = half_range(table, "d01-12km_2m_temperature", "°F", &outlier);
+        assert!(matches!(rule, RangeRule::Adaptive { .. }), "{rule:?}");
+        assert!(0.9 > table.neutral_reach(half), "{half}");
+        // Reflectivity: a 10 dBZ edge on the +/-50 dBZ bar is still neutral.
+        let (half, rule) = half_range(table, "composite_reflectivity", "dBZ", &[0.0, 4.0, -10.0]);
+        assert!(matches!(rule, RangeRule::Adaptive { .. }), "{rule:?}");
+        assert!(half < 50.0);
+    }
+
+    #[test]
+    fn a_few_differing_cells_are_drawn_when_the_percentile_is_zero() {
+        // 3 of 1000 cells differ by about one unit in the last place: the
+        // 99th percentile is zero, which used to report no difference.
+        let mut values = vec![0.0f32; 1000];
+        values[3] = 3.0e-5;
+        values[500] = -1.5e-5;
+        values[999] = 1.0e-5;
+        let table = DifferenceTable::builtin();
+        let (half, rule) = half_range(table, "x_unlisted", "K", &values);
+        assert_eq!(rule, RangeRule::Maximum { observed: f64::from(3.0e-5f32) });
+        assert!(half >= 3.0e-5 && half <= 1.0e-4, "{half}");
+        assert!(f64::from(3.0e-5f32) > table.neutral_reach(half));
+        let (max_abs, defined, differing) = difference_extent(&values);
+        assert_eq!((defined, differing), (1000, 3));
+        assert_eq!(
+            extent_tokens(max_abs, defined, differing, "K"),
+            vec!["max abs diff 3.00e-5 K".to_string(), "3 of 1000 cells differ".to_string()]
+        );
+        assert_eq!(
+            extent_tokens(0.0, 1000, 0, "K"),
+            vec!["identical on all 1000 cells".to_string()]
+        );
+        assert_eq!(magnitude_label(0.9), "0.900");
+        assert_eq!(magnitude_label(12.345), "12.3");
+        assert_eq!(magnitude_label(1234.4), "1234");
+    }
+
+    #[test]
+    fn the_table_setting_is_builtin_auto_or_a_file_and_a_bad_one_is_refused() {
+        let builtin = DifferenceTable::builtin();
+        let table = DifferenceTable::from_setting("").unwrap();
+        assert_eq!(table.rows.len(), builtin.rows.len());
+        let auto = DifferenceTable::from_setting("auto").unwrap();
+        assert!(auto.rows.is_empty());
+        let (_, rule) = half_range(&auto, "d01-3km_2m_temperature", "°F", &[3.0f32; 4]);
+        assert!(matches!(rule, RangeRule::Percentile { .. }), "{rule:?}");
+        let own = DifferenceTable::overlaid(
+            r#"{"rows": [{"product": "2m_temperature", "units": "°F", "half_range": 1}]}"#,
+        )
+        .unwrap();
+        assert_eq!(own.rows.len(), 1);
+        assert_eq!(own.bands, builtin.bands, "keys the file leaves out keep the built-in value");
+        let (half, rule) = half_range(&own, "d01-3km_2m_temperature", "°F", &[0.5f32; 4]);
+        assert_eq!((half, rule), (1.0, RangeRule::Table));
+        for bad in [
+            "[]",
+            "not json",
+            r#"{"bands": 1}"#,
+            r#"{"neutral_bands": 10}"#,
+            r#"{"rows": [{"product": "x", "units": "K", "half_range": 0}]}"#,
+        ] {
+            assert!(DifferenceTable::overlaid(bad).is_err(), "{bad}");
+        }
+        let err = DifferenceTable::from_setting("/no/such/difference-table.json").unwrap_err();
+        assert!(err.contains(DIFFERENCE_TABLE_ENV) && err.contains("cannot read"), "{err}");
     }
 
     #[test]

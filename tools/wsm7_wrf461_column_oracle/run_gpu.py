@@ -114,7 +114,9 @@ def run_gpu(columns: Path, dt: float, nsteps: int):
         launch_column(24, theta=dev["th"], qv=dev["qv"], species=species,
                       rho=dev["den"], pii=dev["pii"], pressure=dev["p"],
                       dz=dev["dz"], surface=s, effc=effc, effi=effi,
-                      effs=effs, dt=dt)
+                      effs=effs, dt=dt,
+                      # The WRF oracle is exact mode (finding WB5 off).
+                      conservative_surface=False)
         cp.multiply(dev["th"], dev["pii"], out=t)
         launch_refl10cm(24, qv=dev["qv"], species=species, t=t,
                         pressure=dev["p"], refl=refl)

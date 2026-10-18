@@ -156,6 +156,7 @@ class ReferenceRun:
     #: Steps at which the recording kept raw arrays (runs.csv ``raw_steps``),
     #: whether or not this copy of the recording still holds them.
     raw_steps: tuple[int, ...] = ()
+    first_nonfinite_step: int | None = None
 
     @property
     def scorable(self) -> bool:
@@ -233,6 +234,10 @@ class ReplayRun:
         run is OK.
         """
 
+        if referee.first_nonfinite_step is not None:
+            return (f"incomplete: the {referee.build} referee is non-finite from step "
+                    f"{referee.first_nonfinite_step}; last finite scoring step "
+                    f"{referee.last_good_step}")
         if referee.status != "OK":
             return (f"incomplete: the {referee.build} referee ended {referee.status} "
                     f"after step {referee.last_good_step}")
@@ -294,11 +299,23 @@ class Recording:
                     inputs if (inputs / "wrfinput_d01").is_file() else None, None)
             directory = self.root / row["build"] / case / combo
             summary = self.summary.get(key, {})
+            hashes = directory / "hashes.json"
+            nonfinite = (json.loads(hashes.read_text(encoding="utf-8")).get("nonfinite")
+                         or {}) if hashes.is_file() else {}
+            # These are model steps, not frame indices. RQIBLTEN and any other
+            # fields the recording marks unreliable cannot shorten the referee.
+            first_nonfinite = min((int(step) for name, steps in nonfinite.items()
+                                   if name not in self.unreliable_fields
+                                   for step in steps), default=None)
+            last_good = int(row["last_good_step"] or 0)
+            if first_nonfinite is not None:
+                last_good = min(last_good, first_nonfinite - 1)
             ref = ReferenceRun(
                 build=row["build"], case=case, combo=combo, status=row["status"],
                 steps_requested=int(row["steps_requested"] or 20),
                 steps_per_frame=int(row["steps_per_frame"] or 1),
-                last_good_step=int(row["last_good_step"] or 0),
+                last_good_step=last_good,
+                first_nonfinite_step=first_nonfinite,
                 designated=_truthy(row.get("stock461_is_designated_reference", "")),
                 clean=summary.get("clean_reference", ""),
                 detail=(row.get("refusal") or row.get("crash") or "")[:300],

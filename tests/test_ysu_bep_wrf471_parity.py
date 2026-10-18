@@ -48,6 +48,7 @@ import pytest
 
 from conftest import requires_gpu
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 
 _ORACLE = Path(__file__).resolve().parents[1] / "tests" / "data" / "oracles" / "urban" / "bep"
 #: WRF with the one-line rural-drag fix gpuwm carries: what the port is graded against.
@@ -108,6 +109,10 @@ BASELINE_MAX_ULP: dict[str, int] = {
     "delta": 0,
 }
 
+#: Under GPUWM_WRF_EXACT=1 (no flush to zero) the arm is WRF's word on every
+#: field, the subnormal lanes included.
+STRICT_MAX_ULP: dict[str, int] = {field: 0 for field in BASELINE_MAX_ULP}
+
 #: One row per NVRTC build measured, kept so a build that ever reads
 #: differently names itself.  Both builds read the same table.
 BASELINE_MAX_ULP_BY_NVRTC_BUILD: dict[str, dict[str, int]] = {
@@ -139,6 +144,12 @@ def _recorded_baseline() -> tuple[str, dict[str, int]]:
     build = nvrtc_build()
     capability = str(cp.cuda.Device().compute_capability)
     label = f"{build} on sm_{capability}"
+    if WRF_EXACT:
+        # GPUWM_WRF_EXACT=1 compiles --ftz=false, so the subnormal lanes the
+        # default row carries (dqv, dqc, dqi) are written as WRF wrote them:
+        # every field is WRF's word (measured on an RTX 5070 Ti, sm_120, with the
+        # strict wrf_461 arm).
+        return label + " strict", STRICT_MAX_ULP
     if (capability, build) in BASELINE_MAX_ULP_BY_ARCH_AND_BUILD:
         return label, BASELINE_MAX_ULP_BY_ARCH_AND_BUILD[(capability, build)]
     return label, BASELINE_MAX_ULP_BY_NVRTC_BUILD.get(build, BASELINE_MAX_ULP)

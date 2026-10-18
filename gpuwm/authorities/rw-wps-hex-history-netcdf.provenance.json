@@ -1,0 +1,18 @@
+{
+  "schema": "gpuwm-hex-history-in-band-terrain-provenance-v1",
+  "source": "gpuwm-hex forecast history converted by rw_mpas_convert (gpuwm-hex export --field-set full --window region-latlon:CLAT,CLON,W_KM,H_KM or global-mesh) onto a regular lat-lon window",
+  "field": "terrain_height",
+  "selector": {
+    "format": "netcdf",
+    "name": [
+      "HGT"
+    ]
+  },
+  "time_policy": "decoded at every valid time and required invariant (the mesh terrain does not change)",
+  "member_policy": "one hex run per input set; an ensemble member is its own run and its own frame set",
+  "vertical_policy": "55 MPAS model levels: full pressure in PB (P is zero), heights from the init zgrid in PHB (g = 9.80665) averaged to mass levels, theta from T + 300 K, temperature from theta with MPAS's own kappa (R/cp = 2/7) and p0 = 1e5 Pa",
+  "humidity_policy": "QVAPOR and Q2 are dry-air mixing ratios; specific humidity is r / (1 + r), which initialization inverts exactly; condensate mixing ratios are carried as the run wrote them",
+  "wind_policy": "RADAR_U_EARTH / RADAR_V_EARTH: earth-relative winds on the mass grid, the converter's full-field-set pair (no restaggering)",
+  "surface_policy": "hex carries no ocean model: open-water skin temperature TSK is the SST the run was initialised with and is held, so SST is taken from TSK (water-skin-is-sst). Sea ice (SEAICE = xice) and snow (SNOW, SNOWH) are the land surface's own state from the history. Noah's four layers 0-10-40-100-200 cm map one to one.",
+  "input_identity": "dynamic file paths and SHA-256 values are owned by the mapped input manifest"
+}

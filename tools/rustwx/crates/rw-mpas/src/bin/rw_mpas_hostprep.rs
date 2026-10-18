@@ -6,11 +6,13 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 fn main() -> ExitCode {
     let _stamp = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
+    let _deformation = std::hint::black_box(rw_mpas::hosttables::DEFORMATION_MARKER);
     let _tables = std::hint::black_box(rw_mpas::hosttables::TABLES_MARKER);
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args == ["--abi"] || args == ["--help"] {
         println!("{}", rw_mpas::hostprep::ABI_MARKER);
         println!("{}", rw_mpas::hosttables::TABLES_MARKER);
+        println!("{}", rw_mpas::hosttables::DEFORMATION_MARKER);
         return ExitCode::SUCCESS;
     }
     if args != ["--protocol", "hex-hostprep-v1"] {

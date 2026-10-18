@@ -91,8 +91,49 @@ exclude tests/test_obs_parallel_native.py
 exclude tests/test_regional_packing_bench.py
 exclude tests/test_timeline_qualification.py
 
-# Keep the user manuals and their directly linked workflow references
-# available to readers of the source distribution.
-include docs/public/*-USER-MANUAL.md
-include docs/public/TILES.md docs/install.md docs/run-plan.md
+# The snapshot already excludes these private campaign receipts. Direct
+# sdist builds also inherit configs' package-data, so exclude them here too.
+exclude configs/da_rerun_286/recent/active-241/case-plan.json
+exclude configs/da_rerun_286/recent/active-241/authority/authority-receipt.json
+exclude configs/da_rerun_286/recent/large-601-center32p2/case-plan.json
+exclude configs/da_rerun_286/recent/large-601-center32p2/authority/authority-receipt.json
+exclude configs/da_rerun_286/recent/requested-601-center31/case-plan.json
+exclude configs/da_rerun_286/recent/requested-601-center31/authority/authority-receipt.json
+exclude configs/da_rerun_286/recent/native-linux-pricing.json
+exclude configs/da_rerun_286/recent/native-linux-pricing-241.json
+
+# The README's extracted-source install must have its entry points, and
+# its documentation links must resolve in the sdist.  The CHANGELOG's
+# links are history: two of its pages (the MCP server guide and the 1.9
+# assembly notes) name AI coding agents, which the packet's attribution
+# gate refuses in a public asset, so they are read on the repository.
+# Include public pages recursively, without sweeping in non-page receipts
+# or the internal campaign documents elsewhere under docs/.
+include install.sh install.ps1
+recursive-include docs/public *.md
+# A draft is not documentation: the announcement draft carries the
+# project's own attribution text, which the packet's attribution gate
+# refuses in a public asset (2.9.2 cut, packet verifier).  It stays
+# under docs/public because the claim-backing gate and the resolved-
+# scale receipt read it there.
+exclude docs/public/ANNOUNCEMENT-DRAFT.md
+include docs/public/img/arwen-desktop-2.7.png
+include docs/public/receipts/physics-composition-walk.json
+include docs/public/receipts/surface-moisture-ledger-accounting.json
+include docs/2.7.5-development-record.md docs/2.7.6-development-record.md
+include docs/ADAPTIVE-TIMESTEP.md docs/AUTOMATIC-STREAMING-SEARCH.md
+include docs/ENSEMBLE_PROVIDERS.md docs/SFIRE-IDEAL.md docs/SFIRE-STATIC.md
+include docs/adapt-validation-contract.md docs/arbitrary-verified-adapters.md
+include docs/benchmark.md docs/cells.md docs/cumulus-new-tiedtke.md
+include docs/da-nowcast-quickstart.md docs/da-vs-wofs.md
+include docs/desktop-package-launcher.md
+include docs/dev/a65-preparation-peaks.md docs/dev/mynn-gsd41.md docs/dev/verify-exact.md
+include docs/ensemble-output-contract.md docs/ensemble-wrf-stochastic-import.md
+include docs/gf_gamma_known_delta.md docs/grib2-export.md docs/install.md
+include docs/local-da-companion-protocol.md
+include docs/migrating-from-wps.md docs/ml-export.md docs/mpas-seam.md
+include docs/native_source_adapters.md docs/nowcast-frames.md docs/obs-scorecard.md
+include docs/run-output-folders.md docs/run-plan.md
+include docs/scoreboard-nightly.md docs/water-temperature-overlay.md
+recursive-include docs/manual *.md
 recursive-include docs/integration-kit *.md *.json *.py

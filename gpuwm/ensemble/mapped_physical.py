@@ -25,7 +25,7 @@ class MappedPhysicalPreparation:
         from gpuwm.ingest.preprocess_backend import ParallelCpuPreprocessBackend
         from gpuwm.ingest.water_overlay import load_bound_water_overlay
         from gpuwm.ingest.water_temperature import WaterTemperatureStatics
-        from gpuwm.native_wrf_contract import (NATIVE_LANDUSE_IDENTITY, native_geometry_contract,
+        from gpuwm.native_wrf_contract import (native_landuse_identity, native_geometry_contract,
             validate_native_lambert_contract, verify_native_static_receipt, load_native_static_cache)
         from gpuwm.static.highres_production import (
             apply_prepared_highres, load_static_highres, static_highres_identity)
@@ -54,17 +54,18 @@ class MappedPhysicalPreparation:
         self.static, self.static_receipt = apply_prepared_highres(
             self.static, self.grid, config=highres, domain_id=1,
             case_date=self.experiment.start_time.date(),
-            landuse_attrs=NATIVE_LANDUSE_IDENTITY, baseline_receipt=receipt)
+            landuse_attrs=native_landuse_identity(self.static), baseline_receipt=receipt)
         self.experiment, self.vertical_adaptation = adapt_experiment_for_statics(
             self.experiment, (self.grid,), root_terrain=self.static["HGT_M"],
             static_catalog=None, static_highres=highres)
         self.cfg = self.experiment.root.run
         self.geometry = native_geometry_contract(self.grid, self.cfg)
-        self.static_identity = physical_static_identity(self.static, NATIVE_LANDUSE_IDENTITY)
+        self.static_identity = physical_static_identity(
+            self.static, native_landuse_identity(self.static))
         self.water_statics = WaterTemperatureStatics.for_route(
             route="mapped", policy=self.case_policy["water_temperature_policy"],
             landmask=self.static["LANDMASK"], lu_index=self.static["LU_INDEX"],
-            landuse_attrs=NATIVE_LANDUSE_IDENTITY)
+            landuse_attrs=native_landuse_identity(self.static))
         self.workers = workers
         self.backend = ParallelCpuPreprocessBackend(bridge=cpu_bridge, workers=workers)
         self.setup = PreparationSetup()

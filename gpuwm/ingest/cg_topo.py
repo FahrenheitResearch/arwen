@@ -30,6 +30,17 @@ from collections.abc import Mapping
 
 import numpy as np
 
+
+def _host(array) -> np.ndarray:
+    """``array`` on the host.  The CUDA preparation backend hands the
+    source terrain over as a device array, which ``np.asarray`` refuses
+    ("Implicit conversion to a NumPy array is not allowed"); every
+    smooth_cg_topo run prepared on the card stopped there.  The copy is
+    exact, so both backends blend the same words."""
+    get = getattr(array, "get", None)
+    return np.asarray(get() if callable(get) else array)
+
+
 def blend_root_terrain(hgt, source_orography, *, spec_bdy_width: int,
                        blend_width: int) -> np.ndarray:
     """``blend_terrain(toposoil, ht)`` on the d01 mass grid, in FP32.
@@ -44,10 +55,10 @@ def blend_root_terrain(hgt, source_orography, *, spec_bdy_width: int,
     so a corner cell takes the ring nearest the boundary.  The returned
     array keeps ``hgt``'s dtype; the interior values are ``hgt``'s own.
     """
-    fine64 = np.asarray(hgt)
+    fine64 = _host(hgt)
     if fine64.ndim != 2:
         raise ValueError("root terrain must be a (ny, nx) mass-grid field")
-    coarse = np.asarray(source_orography)
+    coarse = _host(source_orography)
     if coarse.shape != fine64.shape:
         raise ValueError(
             f"source terrain {coarse.shape} does not match the root grid "

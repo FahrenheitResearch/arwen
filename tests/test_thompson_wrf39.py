@@ -19,24 +19,19 @@ The breakage each gate prevents, named:
    2.8.6 mp=28 accumulator rework; the pre-rework claim against the
    pre-fork commit is held by
    ``test_the_fork_arms_were_pure_insertions_until_the_rework``).
-4. ``test_fork_fixture_against_the_fork_fortran`` -- the port's fork
-   generation against the fork's own Fortran (NOAA-EMC/HRRR v4.1.21
-   module_mp_thompson.F, built by tools/thompson_fork_oracle/build.sh) on 42
-   saved real-data columns: with the fork's own snow fall no cell of any
-   field may differ by more than 1e-2 and the echo by more than 1e-3 dB;
-   with the default blend only melting-layer snow may differ.  Needs a C++
-   compiler and the fork's tables (GPUWM_THOMPSON_FORK_TABLE_ROOT); skips
-   naming the missing piece.
+4. The fork generation's word-for-word agreement with the fork's own
+   Fortran is tests/test_thompson_fork_column_gpu.py (0 ULP on every
+   output of the column unit, gpuwm/core/kernels/thompson_fork.cu).  The
+   host-backend fixture check that stood here graded the multi-kernel fork
+   path at 1e-2 relative; that path no longer runs the generation.
 """
+# Replaced in 2.9.1 (the WRF exact chain): test_fork_fixture_against_the_fork_fortran -> tests/test_thompson_fork_column_gpu.py::test_every_output_cell_is_the_forks_word.
+# Replaced in 2.9.1 (the WRF exact chain): test_fork_fixture_with_the_default_snow_fall -> tests/test_thompson_fork_column_gpu.py::test_the_blend_snow_fall_moves_only_melting_snow.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import shutil
-import subprocess
-import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -263,52 +258,6 @@ def test_every_fork_arm_is_reachable_only_through_the_define():
             (_KERNELS / unit).read_text(encoding="utf-8"))
         assert "thompson_aa_wrf39_" not in text, unit
         assert "THOMPSON_AA_WRF39_" not in text, unit
-
-
-def _run_check(snow_fall: str) -> dict:
-    root = os.environ.get("GPUWM_THOMPSON_FORK_TABLE_ROOT") or str(
-        Path.home() / ".gpuwm" / "tables" / "thompson-wrf39-noaa")
-    if not (Path(root) / "qr_acr_qg.dat").is_file():
-        pytest.skip("the fork's Thompson tables are not staged (run gpuwm "
-                    "fetch-tables --thompson-fork --thompson-fork-only, or "
-                    "set GPUWM_THOMPSON_FORK_TABLE_ROOT)")
-    if shutil.which("g++") is None and shutil.which("c++") is None:
-        pytest.skip("no C++ compiler to build the host kernels")
-    done = subprocess.run(
-        [sys.executable,
-         str(_ROOT / "tools" / "thompson_fork_oracle" / "fork_fixture_check.py"),
-         "--snow-fall", snow_fall],
-        capture_output=True, text=True, check=False,
-        env=dict(os.environ, CUDA_VISIBLE_DEVICES="-1",
-                 GPUWM_THOMPSON_FORK_TABLE_ROOT=root))
-    assert done.returncode == 0, done.stderr[-4000:]
-    return json.loads(done.stdout.strip().splitlines()[-1])
-
-
-def test_fork_fixture_against_the_fork_fortran():
-    result = _run_check("wrf_39_noaa")
-    beyond = {name: field["n_beyond_1e-2"]
-              for name, field in result["fields"].items()
-              if field["n_beyond_1e-2"]}
-    assert beyond == {}
-    assert result["refl"]["max_abs_db"] <= 1.0e-3
-
-
-def test_fork_fixture_with_the_default_snow_fall():
-    """The blend differs from the fork only in snow: in the melting layer,
-    and above it in the same columns, because the fork's singular speed
-    there sets the column's fallout substep count."""
-    result = _run_check("blend")
-    snow_columns = set()
-    for name, field in result["fields"].items():
-        if name in ("qs", "re_snow"):
-            snow_columns |= {cell["at"][0] for cell in field["cells"]}
-            assert (any(cell["t_in"] > 273.15 for cell in field["cells"])
-                    or not field["cells"])
-        else:
-            assert field["n_beyond_1e-2"] == 0, name
-    assert snow_columns
-
 
 
 def test_the_operational_fork_signature_names_the_fork_s_own_keys():

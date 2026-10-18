@@ -1,0 +1,29 @@
+# Live and archive listings of national radar-volume feeds, as URL rows a
+# fetcher and the polar-volume decoder (`rw_odim`) consume.
+#
+# Reuse first: every catalog adapter here is BowEcho's own
+# (`vendor/bowecho/crates/data_source`, the `IntlProvider` registry: DWD,
+# DMI, FMI, SMHI, GeoSphere, SHMU, CHMI, ANM, Piemonte, Lombardia, KAIA,
+# NCI, JMA and EUMETNET ORD for every other OPERA country). This crate adds
+# only what that registry does not have: dated archive lookup for FMI (its
+# bucket holds 2007 onwards) and DMI (its STAC answers a datetime range),
+# a stamp per frame so a time window can be cut, and the
+# hand-parsed CLI the bridge bundle needs.
+
+[package]
+name = "rw-radar-feeds"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Live and archive listings of national radar-volume feeds (BowEcho IntlProvider registry plus FMI/DMI archive adapters)"
+
+[dependencies]
+data_source = { path = "../../vendor/bowecho/crates/data_source" }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde_json = { workspace = true }
+
+[[bin]]
+name = "rw_radar_feeds"
+path = "src/bin/rw_radar_feeds.rs"

@@ -3034,9 +3034,9 @@ class CudaSW:
         self.max_nlay = None  # retained API attribute: workspace has no fixed layer ceiling
         #: Per-chunk device workspace of the batched chain (Section 11):
         #: every slot is allocated once and reused across the chunks of a
-        #: call and across calls, and only the slots the kernels read
-        #: before writing are zeroed per chunk; release_scratch hands the
-        #: bytes back to the pool between radiation events.  ONE PER
+        #: call, and only the slots the kernels read before writing are
+        #: zeroed per chunk; the call itself hands the bytes back to the
+        #: pool when it returns (release_scratch stays for callers).  ONE PER
         #: STREAM (see :attr:`_scratch`): the compiled module and the packed
         #: tables are read-only and shared by every stream on this card,
         #: the workspace is written by every call and is not.
@@ -3890,6 +3890,16 @@ class CudaSW:
         # zeroed returned slabs.
         O["swuflxcln"] = cp.zeros((ncol, nl1), dtype=cp.float32)
         O["swdflxcln"] = cp.zeros((ncol, nl1), dtype=cp.float32)
+        # The workspace served every chunk of this call; hand it back now
+        # (memory census 2026-10-14, item 8).  A caller that never invoked
+        # release_scratch (the hex MPAS RRTMG wrapper) held 1.6 GiB of it
+        # through every non-radiation step at 120 km.  Releasing drops the
+        # Python references only: the kernels queued on this stream keep
+        # their blocks until they finish (CuPy's pool frees are ordered on
+        # the allocating stream), every ``take`` slot is written before it
+        # is read (SW_TAKE_SLOTS) and the constants are refilled with the
+        # same words, so the next call computes the same bits.
+        scratch.release()
         return O
 
     def rrtmg_sw_batched(self, *args, **kwargs):

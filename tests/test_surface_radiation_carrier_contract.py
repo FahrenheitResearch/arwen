@@ -711,6 +711,7 @@ def _hand_built_compute_driver(monkeypatch, *, carriers):
     """
     from types import SimpleNamespace
     import gpuwm.core.physics as physics
+    from gpuwm.config import RRTMG_VARIANT_LEGACY
 
     monkeypatch.setattr(physics, "cp", np)
     atmosphere = {
@@ -723,7 +724,10 @@ def _hand_built_compute_driver(monkeypatch, *, carriers):
     state = SimpleNamespace(elapsed_seconds=0.0)
     cfg = SimpleNamespace(
         dt=60.0, bldt=0.0, ra_physics=0, sf_sfclay_physics=91,
-        sf_surface_physics=2, bl_pbl_physics=1, cu_physics=0)
+        sf_surface_physics=2, bl_pbl_physics=1, cu_physics=0,
+        # The 2.9.1 radiation boundary-flux accumulator reads the variant
+        # (radiation off: no fluxes either way).
+        ra_rrtmg_variant=RRTMG_VARIANT_LEGACY)
     driver = object.__new__(physics.PhysicsDriver)
     driver.swint = None
     driver.state = state

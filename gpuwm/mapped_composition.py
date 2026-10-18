@@ -1513,6 +1513,39 @@ class _RegularSnapshots(_ABCSequence):
             pressure = field(index, "air_pressure").values
         return np.median(np.asarray(pressure), axis=(1, 2)) / 100.0
 
+    def surface_field_values(self, position: int, legacy: str):
+        """One surface field of one snapshot, as :meth:`_pack` packs it, or ``None``.
+
+        ``_pack`` builds a whole valid time -- every field read, verified and
+        joined -- and the daily-mean inland air temperature needs one 2 m
+        field from each.  On the 18 h HRRR CONUS start that was 19 whole
+        packs, 30 s on one core in front of the start time's build.  A field
+        the frameset stores under its canonical name is read and verified
+        alone here and converted exactly as the pack converts it
+        (``np.asarray(values, dtype=np.float64)``).  A latitude-longitude
+        source may be re-cut around the globe by the pack, so it, and any
+        frameset without single-field reads, answers ``None`` and the
+        caller packs the snapshot as before.
+        """
+
+        from gpuwm.mapped_source import REGULAR_SNAPSHOT_LEGACY_NAMES
+
+        canonical = next((name for name, value in REGULAR_SNAPSHOT_LEGACY_NAMES.items()
+                          if value == legacy), None)
+        frames = self._bundle.frames
+        field = getattr(frames, "field", None)
+        header = getattr(frames, "header", None)
+        if canonical is None or field is None or header is None:
+            return None
+        index = self._order[int(position)]
+        if header(index).grid.projection == "regular_latitude_longitude":
+            return None
+        try:
+            values = field(index, canonical).values
+        except KeyError:
+            return None
+        return np.asarray(values, dtype=np.float64)
+
     def _pack(self, index: int, *, full=False):
         fieldwise = getattr(self._bundle.frames, "fieldwise_frame", None)
         frame = (fieldwise(index) if fieldwise is not None else

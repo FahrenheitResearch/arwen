@@ -8,8 +8,10 @@
 // CSNOW/SNFRAC/ALCALC/SNOWPACK/SNOW_NEW/SNOWZ0, REDPRM from packed
 // tables).  One thread per (i, j) column, 4 soil layers, FP32
 // throughout with FP64 used only for the energy-residual diagnostics.
+// Land-ice columns (ivgtyp == isice) run SFLX_GLACIAL
+// (module_sf_noahlsm_glacial_only.F) in noah_glacial_column below.
 // NOT ported (see gpuwm/core/noah.py): UA_PHYS, FASDAS, WRF-Hydro,
-// SFCDIF_off.  Land-ice columns run SFLX_GLACIAL (below).  The urban canopy
+// SFCDIF_off.  The urban canopy
 // models run AFTER this kernel (gpuwm/core/urban_driver.py); this kernel
 // carries their hand-over only: the NATURAL remap of urban columns
 // (module_sf_noahdrv.F:964-990), TSK_RURAL_BEP, and the rural Q1/Q2K/ZLVL,
@@ -22,6 +24,10 @@
 // defines (CP=1004.5, XLV, RCP, RHOWATER) or the literals NSTBOLT/NXLF.
 
 #define NSOIL 4
+
+#ifndef NOAH_WRF_SCALAR_RCT
+#define NOAH_WRF_SCALAR_RCT 0
+#endif
 
 #define NRD      287.04f      // noahlsm module RD
 #define NSIGMA   5.67e-8f     // noahlsm SIGMA
@@ -38,6 +44,60 @@
 #define NLSUBC   2.501e+6f    // PENMAN/SNOPAC LSUBC
 #define NSTBOLT  5.67051e-8f  // module_model_constants STBOLT (NOAHRES)
 #define NXLF     3.50e+5f     // module_model_constants XLF (SNOPCX)
+
+// ------------------------------------------------- float32 libm words
+// The ordinary-land column calls WOOF's own float32 expf/logf/powf
+// (gfk_exp, gfk_log, gfk_pow of glibc_flt32.cuh), the same words the
+// land-ice arm below uses, so its exponentials, logarithms and powers are
+// the ones WRF's gfortran build gets from the C library rather than CUDA's.
+//
+// noah_log10f: log10(x) = k*log10(2) + log10(e)*ln(m) for x = m*2^k with m
+// in [1,2) (or [0.5,1) when k is negative), with log10(2) split into a head
+// and a tail so k*log10(2) carries no rounding of its own.  Every operation
+// is spelled with an __f*_rn intrinsic so no contraction can fuse them.
+// MEASURED exhaustively on box W1 (glibc 2.39, x86-64): over all
+// 2,139,095,039 positive finite float32 inputs this formula on the host
+// libm's logf gives the same word as the host's log10f; that log10f is NOT
+// correctly rounded (29,787,059 inputs differ from log10 in double rounded
+// once), so a correctly rounded log10f would not reproduce WRF here.
+// tools/noah_wrf461_oracle/libm_exhaustive.py repeats the comparison for
+// this device function against the host log10f.
+__device__ __forceinline__ float noah_log10f(float x)
+{
+    unsigned int hx = __float_as_uint(x);
+    if ((hx & 0x7fffffffu) == 0u) return __uint_as_float(0xff800000u);
+    if (hx >= 0x7f800000u) return (hx > 0x7f800000u || (hx >> 31))
+                               ? __uint_as_float(0x7fc00000u) : x;
+    int k = 0;
+    if (hx < 0x00800000u) {               // subnormal: scale by 2^25
+        x = __fmul_rn(x, 33554432.0f);
+        hx = __float_as_uint(x);
+        k -= 25;
+    }
+    k += (int)(hx >> 23) - 127;
+    int i = (int)(((unsigned int)k & 0x80000000u) >> 31);
+    hx = (hx & 0x007fffffu) | ((unsigned int)(0x7f - i) << 23);
+    float y = (float)(k + i);
+    float z = __fadd_rn(__fmul_rn(y, __uint_as_float(0x355427dbu)),
+                        __fmul_rn(__uint_as_float(0x3ede5bd9u),
+                                  gfk_log(__uint_as_float(hx))));
+    return __fadd_rn(z, __fmul_rn(y, __uint_as_float(0x3e9a2080u)));
+}
+
+// noah_powi: X**N for an INTEGER N, the binary powering gfortran -O0 hands
+// to libgcc's __powisf2 (module_sf_noahlsm.F:3803 ACRT**(CVFRZ-J) and
+// module_sf_noahdrv.F:1312 T1**4): y = x if n is odd else 1, then square x
+// and multiply it in for each further bit, every product rounded to float.
+__device__ __forceinline__ float noah_powi(float x, int m)
+{
+    unsigned int n = m < 0 ? (unsigned int)(-m) : (unsigned int)m;
+    float y = (n % 2u) ? x : 1.0f;
+    while (n >>= 1) {
+        x = __fmul_rn(x, x);
+        if (n % 2u) y = __fmul_rn(y, x);
+    }
+    return m < 0 ? __fdiv_rn(1.0f, y) : y;
+}
 
 // packed-table column indices (gpuwm/core/noah.py VEG_COLS/SOIL_COLS/GEN)
 #define NVEGC 15
@@ -98,10 +158,10 @@ __device__ static real noah_frh2o(real tkelv, real smc, real sh2o,
     if (swl < 0.0f) swl = 0.0f;
     while (nlog < 10 && kcount == 0) {
         nlog += 1;
-        real df = logf(__fdiv_rn(psis * gs, hlice)
-                       * powf(1.0f + ck * swl, 2.0f)
-                       * powf(smcmax / (smc - swl), bx))
-                  - logf(-(tkelv - t0) / tkelv);
+        real df = gfk_log(__fdiv_rn(psis * gs, hlice)
+                       * gfk_pow(1.0f + ck * swl, 2.0f)
+                       * gfk_pow(smcmax / (smc - swl), bx))
+                  - gfk_log(-(tkelv - t0) / tkelv);
         real denom = 2.0f * ck / (1.0f + ck * swl) + bx / (smc - swl);
         real swlk = swl - df / denom;
         if (swlk > (smc - 0.02f)) swlk = smc - 0.02f;
@@ -112,7 +172,7 @@ __device__ static real noah_frh2o(real tkelv, real smc, real sh2o,
     }
     real freew = smc - swl;
     if (kcount == 0) {                 // Flerchinger explicit fallback
-        real fk = powf((hlice / (gs * (-psis)))
+        real fk = gfk_pow((hlice / (gs * (-psis)))
                        * ((tkelv - t0) / tkelv), -1.0f / bx) * smcmax;
         if (fk < 0.02f) fk = 0.02f;
         freew = fminf(fk, smc);
@@ -123,7 +183,7 @@ __device__ static real noah_frh2o(real tkelv, real smc, real sh2o,
 // ---------------------------------------------------------------- CSNOW
 __device__ static real noah_csnow(real dsnow)
 {
-    return 2.0f * 0.11631f * (0.328f * powf(10.0f, 2.25f * dsnow));
+    return 2.0f * 0.11631f * (0.328f * gfk_pow(10.0f, 2.25f * dsnow));
 }
 
 // ------------------------------------------------------------- SNOW_NEW
@@ -135,7 +195,7 @@ __device__ static void noah_snow_new(real temp, real newsn, real& snowh,
     real tempc = temp - 273.15f;
     real dsnew;
     if (tempc <= -15.0f) dsnew = 0.05f;
-    else dsnew = 0.05f + 0.0017f * powf(tempc + 15.0f, 1.5f);
+    else dsnew = 0.05f + 0.0017f * gfk_pow(tempc + 15.0f, 1.5f);
     real hnewc = newsnc / dsnew;
     if (snowhc + hnewc < 1.0e-3f) sndens = fmaxf(dsnew, sndens);
     else sndens = (snowhc * sndens + hnewc * dsnew) / (snowhc + hnewc);
@@ -148,7 +208,7 @@ __device__ static real noah_snfrac(real sneqv, real snup, real salp)
 {
     if (sneqv < snup) {
         real rsnow = sneqv / snup;
-        return 1.0f - (expf(-salp * rsnow) - rsnow * expf(-salp));
+        return 1.0f - (gfk_exp(-salp * rsnow) - rsnow * gfk_exp(-salp));
     }
     return 1.0f;
 }
@@ -168,8 +228,8 @@ __device__ static void noah_alcalc(real alb, real snoalb, real embrd,
         snotime1 = 0.0f;
     } else {
         snotime1 = snotime1 + dt;
-        snoalb2 = snoalb1 * powf(snacca,
-                                 powf(__fdiv_rn(snotime1, 86400.0f), snaccb));
+        snoalb2 = snoalb1 * gfk_pow(snacca,
+                                 gfk_pow(__fdiv_rn(snotime1, 86400.0f), snaccb));
     }
     snoalb2 = fmaxf(snoalb2, alb);
     albedo = alb + sncovr * (snoalb2 - alb);
@@ -186,24 +246,24 @@ __device__ static real noah_tdfcnd(real smc, real qz, real smcmax,
         real satratio = smc / smcmax;
         const real thkice = 2.2f, thkw = 0.57f, thko = 2.0f,
                    thkqtz = 7.7f;
-        real thks = powf(thkqtz, qz) * powf(thko, 1.0f - qz);
+        real thks = gfk_pow(thkqtz, qz) * gfk_pow(thko, 1.0f - qz);
         real xunfroz = sh2o / smc;
         real xu = xunfroz * smcmax;
-        real thksat = powf(thks, 1.0f - smcmax)
-                      * powf(thkice, smcmax - xu) * powf(thkw, xu);
+        real thksat = gfk_pow(thks, 1.0f - smcmax)
+                      * gfk_pow(thkice, smcmax - xu) * gfk_pow(thkw, xu);
         real gammd = (1.0f - smcmax) * 2700.0f;
         real thkdry = (0.135f * gammd + 64.7f)
                       / (2700.0f - 0.947f * gammd);
         real akei = satratio;
         real akel;
-        if (satratio > 0.1f) akel = log10f(satratio) + 1.0f;
+        if (satratio > 0.1f) akel = noah_log10f(satratio) + 1.0f;
         else akel = 0.0f;
         real ake = ((smc - sh2o) * akei + sh2o * akel) / smc;
         return ake * (thksat - thkdry) + thkdry;
     }
-    real psif = psisat * 100.0f * powf(smcmax / smc, bexp);
-    real pf = log10f(fabsf(psif));
-    if (pf <= 5.1f) return 420.0f * expf(-(pf + 2.7f));
+    real psif = psisat * 100.0f * gfk_pow(smcmax / smc, bexp);
+    real pf = noah_log10f(fabsf(psif));
+    if (pf <= 5.1f) return 420.0f * gfk_exp(-(pf + 2.7f));
     return 0.1744f;
 }
 
@@ -268,7 +328,16 @@ __device__ static void noah_canres(real solar, real ch, real sfctmp,
     real ff = 0.55f * 2.0f * solar / (rgl * xlai);
     real rcs = (ff + rsmin / rsmax) / (1.0f + ff);
     rcs = fmaxf(rcs, 0.0001f);
-    real rct = 1.0f - 0.0016f * powf(topt - sfctmp, 2.0f);
+#if NOAH_WRF_SCALAR_RCT
+    // Stock scalar CANRES lowers its constant **2.0 to an FP32 multiply
+    // (module_sf_noahlsm.F:1083). Keep the subtract, square, coefficient
+    // and final subtract separately rounded, as in the stock executable.
+    real temperature_delta = __fsub_rn(topt, sfctmp);
+    real rct = __fsub_rn(1.0f, __fmul_rn(0.0016f,
+                                    __fmul_rn(temperature_delta, temperature_delta)));
+#else
+    real rct = 1.0f - 0.0016f * gfk_pow(topt - sfctmp, 2.0f);
+#endif
     rct = fmaxf(rct, 0.0001f);
     real rcq = 1.0f / (1.0f + hs * (q2sat - q2));
     rcq = fmaxf(rcq, 0.01f);
@@ -286,7 +355,7 @@ __device__ static void noah_canres(real solar, real ch, real sfctmp,
     rcsoil = fmaxf(rcsoil, 0.0001f);
     rc = rsmin / (xlai * rcs * rct * rcq * rcsoil);
     real rr2 = (__fdiv_rn(4.0f * emissi * NSIGMA * NRD, CP))
-               * powf(sfctmp, 4.0f) / (sfcprs * ch) + 1.0f;
+               * gfk_pow(sfctmp, 4.0f) / (sfcprs * ch) + 1.0f;
     real delta = (slv / CP) * dqsdt2;
     pc = (rr2 + delta) / (rr2 * (1.0f + rc * ch) + delta);
 }
@@ -298,7 +367,7 @@ __device__ static real noah_devap(real etp1, real smc, real shdfac,
     real sratio = (smc - smcdry) / (smcmax - smcdry);
     real fx;
     if (sratio > 0.0f) {
-        fx = powf(sratio, fxexp);
+        fx = gfk_pow(sratio, fxexp);
         fx = fmaxf(fminf(fx, 1.0f), 0.0f);
     } else {
         fx = 0.0f;
@@ -318,7 +387,7 @@ __device__ static void noah_transp(real* et, real etp1,
     real etp1a;
     if (cmc != 0.0f)
         etp1a = shdfac * pc * etp1
-                * (1.0f - powf(cmc / cmcmax, cfactr));
+                * (1.0f - gfk_pow(cmc / cmcmax, cfactr));
     else
         etp1a = shdfac * pc * etp1;
     real gx[NSOIL];
@@ -362,7 +431,7 @@ __device__ static void noah_evapo(real& eta1, const real* smc, real cmc,
                         pc, cfactr, smcref, nroot, rtdis);
             for (int k = 0; k < NSOIL; ++k) ett = ett + et[k];
             if (cmc > 0.0f)
-                ec = shdfac * powf(cmc / cmcmax, cfactr) * etp1;
+                ec = shdfac * gfk_pow(cmc / cmcmax, cfactr) * etp1;
             else
                 ec = 0.0f;
             real cmc2ms = cmc / dt;
@@ -393,14 +462,14 @@ __device__ static void noah_wdfcnd(real& wdf, real& wcnd, real smc,
     real factr2 = smc / smcmax;
     factr1 = fminf(factr1, factr2);
     real expon = bexp + 2.0f;
-    wdf = dwsat * powf(factr2, expon);
+    wdf = dwsat * gfk_pow(factr2, expon);
     if (sicemax > 0.0f) {
-        real vkwgt = 1.0f / (1.0f + powf(500.0f * sicemax, 3.0f));
+        real vkwgt = 1.0f / (1.0f + gfk_pow(500.0f * sicemax, 3.0f));
         wdf = vkwgt * wdf + (1.0f - vkwgt) * dwsat
-              * powf(factr1, expon);
+              * gfk_pow(factr1, expon);
     }
     expon = 2.0f * bexp + 3.0f;
-    wcnd = dksat * powf(factr2, expon);
+    wcnd = dksat * gfk_pow(factr2, expon);
 }
 
 // ------------------------------------------------------------------ SRT
@@ -436,7 +505,7 @@ __device__ static void noah_srt(real* rhstt, real edir, const real* et,
                                            - smcwlt) / smcav);
             dd = dd + dmax[ks];
         }
-        real val = 1.0f - expf(-kdt * dt1);
+        real val = 1.0f - gfk_exp(-kdt * dt1);
         real ddt = dd * val;
         real px = pcpdrp * dt;
         if (px < 0.0f) px = 0.0f;
@@ -449,10 +518,9 @@ __device__ static void noah_srt(real* rhstt, real edir, const real* et,
             for (int j = 1; j <= ialp1; ++j) {
                 int k = 1;
                 for (int jj = j + 1; jj <= ialp1; ++jj) k = k * jj;
-                ssum = ssum + powf(acrt, (real)(cvfrz - j))
-                       / (real)k;
+                ssum = ssum + noah_powi(acrt, cvfrz - j) / (real)k;
             }
-            fcr = 1.0f - expf(-acrt) * ssum;
+            fcr = 1.0f - gfk_exp(-acrt) * ssum;
         }
         infmax = infmax * fcr;
         real wdf0, wcnd0;
@@ -846,7 +914,7 @@ __device__ static void noah_snowpack(real esd, real dtsec, real& snowh,
     real esdcx;
     if (esdc > 1.0e-2f) esdcx = esdc;
     else esdcx = 1.0e-2f;
-    real bfac = dthr * c1k * expf(0.08f * tavgc - c2k * sndens);
+    real bfac = dthr * c1k * gfk_exp(0.08f * tavgc - c2k * sndens);
     const int ipol = 4;
     real pexp = 0.0f;
     for (int j = ipol; j >= 1; --j)
@@ -865,234 +933,355 @@ __device__ static void noah_snowpack(real esd, real dtsec, real& snowh,
     snowh = snowhc * 0.01f;
 }
 
-// ======================================================= SFLX_GLACIAL
-// WRF v4.6.1 phys/module_sf_noahlsm_glacial_only.F, the land-ice column
-// module_sf_noahdrv.F's ICE == -1 arm calls (ivgtyp == isice, xice below the
-// sea-ice threshold).  Until 2026-10-12 noah_column returned from such a
-// column without touching it; the WRF oracle measured that as TSK 255.0
-// against 273.15 K and HFX 0 against 388.9 W/m2 after one 60 s step.
+// ------------------------------------------------- exact sign compare
+// Subnormal-preserving float -> double, the pattern of shinhong.cu's sh_f2d
+// and rrtmg_sw.cu's rsw_f2d.  CuPy compiles every kernel with -ftz=true, so a
+// plain `x > 0.0f` is setp.gt.ftz.f32 and reads a positive subnormal as zero;
+// a plain (double)x cast is no better, because the cvt.f64.f32 it emits
+// DAZes the input too.  The bits are decoded instead, so the compare is the
+// IEEE one gfortran's `.GT. 0.0` makes.
+__device__ __forceinline__ double noah_f2d(real x)
+{
+    unsigned int ix = __float_as_uint(x);
+    if (((ix >> 23) & 0xffu) == 0u) {     // zero or subnormal
+        double v = (double)(ix & 0x7fffffu) * 0x1p-149;
+        return (ix >> 31) ? -v : v;
+    }
+    return (double)x;                     // normal / inf / nan
+}
+
+// ====================================================================
+// LAND ICE: module_sf_noahdrv.F lsm's ICE == -1 arm (:1140-1183) and
+// SFLX_GLACIAL with its whole subtree (module_sf_noahlsm_glacial_only.F,
+// WRF v4.6.1, sha256 f43c6482 in the oracle receipt).  Until 2.8.6 the
+// column returned untouched (TSK 255.0 against WRF's 273.15 K on the oracle's
+// land-ice column).  The expressions are those noah_mosaic.cu's
+// noah_mosaic_tile_glacial already carries, graded there against WRF's
+// mosaic driver; this arm restates them for the ordinary driver, whose prep
+// and post-update differ from lsm_mosaic's in four places (the SWDOWN > 10
+// term of the snow DQSDT2 test, no CQS2 = CHS rewrite, SMSTAV = SOILW = 0,
+// and noahres in float32 as written).
 //
-// The module's CSNOW, SNOW_NEW, SNOWPACK and HSTEP (with module_sf_noahlsm's
-// ROSR12) are statement-for-statement the land routines above, and its
-// ALCALC is the land one at SNCOVR = 1 (multiplying by exactly 1.0 changes no
-// word), so those are reused.  PENMAN, SNOPAC, HRTICE and SNOWZ0 differ and
-// are transcribed here.  Same arithmetic discipline as the rest of this unit:
-// FP32, CUDA libm, divisions by a literal spelled __fdiv_rn.
+// Every operation is the rounding gfortran -O0 performs: no contraction
+// (the __f*_rn intrinsics), glibc's own float32 exp/pow words (gfk_exp,
+// gfk_pow from glibc_flt32.cuh), and gfortran's compile-time folds spelled
+// as the same single-precision operations at run time.  The ordinary-land
+// path above keeps its own arithmetic (row 18 of the parity sweep).
+// ====================================================================
 
-// glacial SNOWZ0: no snow-cover blend, the buried-ice length alone
-__device__ static real glacial_snowz0(real z0brd, real snowh)
+#define NGL_CAPA __uint_as_float(0x3e924925u)   // CAPA = R_D/CP (noahdrv:700)
+
+// glacial CSNOW (:578-591)
+__device__ static real nglac_csnow(real dsnow)
 {
-    const real z0s = 0.001f;
-    real burial = 7.0f * z0brd - snowh;
-    if (burial <= 0.0007f) return z0s;
-    return __fdiv_rn(burial, 7.0f);
+    real c = __fmul_rn(0.328f, gfk_pow(10.0f, __fmul_rn(2.25f, dsnow)));
+    return __fmul_rn(__fmul_rn(2.0f, 0.11631f), c);
 }
 
-// glacial PENMAN: the latent heat follows T1 (ice or water), not SNCOVR
-__device__ static void glacial_penman(real sfctmp, real sfcprs, real ch,
-                                      real th2, real prcp, real fdown,
-                                      real t24, real ssoil, real q2,
-                                      real q2sat, real& etp, real rch,
-                                      real& rr, bool snowng, bool frzgra,
-                                      real dqsdt2, real& flx2, real emissi,
-                                      real t1)
+// glacial SNOW_NEW (:1228-1278)
+__device__ static void nglac_snow_new(real temp, real newsn, real& snowh,
+                                      real& sndens)
 {
-    real elcp1, lvs;
-    if (t1 > 273.15f) {
-        elcp1 = NELCP;
-        lvs = NLSUBC;
+    real tempc = __fsub_rn(temp, 273.15f);
+    real dsnew;
+    if (tempc <= -15.0f) dsnew = 0.05f;
+    else dsnew = __fadd_rn(0.05f, __fmul_rn(0.0017f,
+                     gfk_pow(__fadd_rn(tempc, 15.0f), 1.5f)));
+    real snowhc = __fmul_rn(snowh, 100.0f);
+    real newsnc = __fmul_rn(newsn, 100.0f);
+    real hnewc = __fdiv_rn(newsnc, dsnew);
+    if (__fadd_rn(snowhc, hnewc) < 1.0e-3f) {
+        sndens = fmaxf(dsnew, sndens);
     } else {
-        elcp1 = __fdiv_rn(NELCP * NLSUBS, NLSUBC);
-        lvs = NLSUBS;
+        sndens = __fdiv_rn(__fadd_rn(__fmul_rn(snowhc, sndens),
+                                     __fmul_rn(hnewc, dsnew)),
+                           __fadd_rn(snowhc, hnewc));
     }
-    real delta = elcp1 * dqsdt2;
-    real a = elcp1 * (q2sat - q2);
-    rr = emissi * t24 * 6.48e-8f / (sfcprs * ch) + 1.0f;
-    if (!snowng) {
-        if (prcp > 0.0f) rr = rr + NCPH2O * prcp / rch;
-    } else {
-        rr = rr + NCPICE * prcp / rch;
-    }
-    if (frzgra) flx2 = -NLSUBF * prcp;
-    else flx2 = 0.0f;
-    real fnet = fdown - (emissi * NSIGMA * t24) - ssoil - flx2;
-    real rad = fnet / rch + th2 - sfctmp;
-    real epsca = (a * rr + rad * delta) / (delta + rr);
-    // lvs is one of two literals; spelled so a branch-specialised divide
-    // cannot become a reciprocal multiply.
-    etp = __fdiv_rn(epsca * rch, lvs);
+    snowhc = __fadd_rn(snowhc, hnewc);
+    snowh = __fmul_rn(snowhc, 0.01f);
 }
 
-// HRTICE: the ice column's heat-equation coefficients (fixed ice heat
-// capacity and conductivity profiles, ZBOT = -25 m)
-__device__ static void glacial_hrtice(real* rhsts, const real* stc,
-                                      real tbot, const real* zsoil, real yy,
-                                      real zz1, real df1, real* ai,
-                                      real* bi, real* ci)
+// glacial ALCALC (:412-523): complete snow cover, so no SNCOVR weights.
+__device__ static void nglac_alcalc(real alb, real snoalb, real embrd,
+                                    real dt, bool snowng, real lvcoef,
+                                    real& snotime1, real& albedo,
+                                    real& emissi)
 {
-    const real zbot = -25.0f;
-    real hcpct = 1.0e6f * (0.8194f - 0.1309f * 0.5f * zsoil[0]);
+    const real snacca = 0.94f, snaccb = 0.58f;
+    emissi = __fadd_rn(embrd, __fsub_rn(NEMISSI_S, embrd));
+    real snoalb1 = __fadd_rn(snoalb, __fmul_rn(lvcoef,
+                                               __fsub_rn(0.85f, snoalb)));
+    real snoalb2 = snoalb1;
+    if (snowng) {
+        snotime1 = 0.0f;
+    } else {
+        snotime1 = __fadd_rn(snotime1, dt);
+        snoalb2 = __fmul_rn(snoalb1, gfk_pow(snacca,
+                      gfk_pow(__fdiv_rn(snotime1, 86400.0f), snaccb)));
+    }
+    snoalb2 = fmaxf(snoalb2, alb);
+    albedo = __fadd_rn(alb, __fsub_rn(snoalb2, alb));
+    if (albedo > snoalb2) albedo = snoalb2;
+}
+
+// glacial HRTICE (:565-707): ice thermal properties, ZBOT = -25 m.
+__device__ static void nglac_hrtice(real* rhsts, const real* stc, real tbot,
+                                    const real* zsoil, real yy, real zz1,
+                                    real df1, real* ai, real* bi, real* ci)
+{
+    real hcpct = __fmul_rn(1.0e6f, __fsub_rn(0.8194f,
+                     __fmul_rn(__fmul_rn(0.1309f, 0.5f), zsoil[0])));
     real df1k = df1;
-    real ddz = 1.0f / (-0.5f * zsoil[1]);
+    real ddz = __fdiv_rn(1.0f, __fmul_rn(-0.5f, zsoil[1]));
     ai[0] = 0.0f;
-    ci[0] = (df1 * ddz) / (zsoil[0] * hcpct);
-    bi[0] = -ci[0] + df1 / (0.5f * zsoil[0] * zsoil[0] * hcpct * zz1);
-    real dtsdz = (stc[0] - stc[1]) / (-0.5f * zsoil[1]);
-    real ssoil = df1 * (stc[0] - yy) / (0.5f * zsoil[0] * zz1);
-    rhsts[0] = (df1 * dtsdz - ssoil) / (zsoil[0] * hcpct);
+    ci[0] = __fdiv_rn(__fmul_rn(df1, ddz), __fmul_rn(zsoil[0], hcpct));
+    bi[0] = __fadd_rn(-ci[0], __fdiv_rn(df1,
+                __fmul_rn(__fmul_rn(__fmul_rn(__fmul_rn(0.5f, zsoil[0]),
+                                              zsoil[0]), hcpct), zz1)));
+    real dtsdz = __fdiv_rn(__fsub_rn(stc[0], stc[1]),
+                           __fmul_rn(-0.5f, zsoil[1]));
+    real ssoil = __fdiv_rn(__fmul_rn(df1, __fsub_rn(stc[0], yy)),
+                           __fmul_rn(__fmul_rn(0.5f, zsoil[0]), zz1));
+    rhsts[0] = __fdiv_rn(__fsub_rn(__fmul_rn(df1, dtsdz), ssoil),
+                         __fmul_rn(zsoil[0], hcpct));
     real ddz2 = 0.0f;
     df1k = df1;
     real df1n = df1;
     for (int k = 1; k < NSOIL; ++k) {
-        real zmd = 0.5f * (zsoil[k] + zsoil[k - 1]);
-        hcpct = 1.0e6f * (0.8194f - 0.1309f * zmd);
-        df1n = 0.32333f - (0.10073f * zmd);
+        real zmd = __fmul_rn(0.5f, __fadd_rn(zsoil[k], zsoil[k - 1]));
+        hcpct = __fmul_rn(1.0e6f, __fsub_rn(0.8194f, __fmul_rn(0.1309f, zmd)));
+        df1n = __fsub_rn(0.32333f, __fmul_rn(0.10073f, zmd));
         real dtsdz2;
         if (k != NSOIL - 1) {
-            real denom = 0.5f * (zsoil[k - 1] - zsoil[k + 1]);
-            dtsdz2 = (stc[k] - stc[k + 1]) / denom;
-            ddz2 = 2.0f / (zsoil[k - 1] - zsoil[k + 1]);
-            ci[k] = -df1n * ddz2 / ((zsoil[k - 1] - zsoil[k]) * hcpct);
+            real denom = __fmul_rn(0.5f, __fsub_rn(zsoil[k - 1], zsoil[k + 1]));
+            dtsdz2 = __fdiv_rn(__fsub_rn(stc[k], stc[k + 1]), denom);
+            ddz2 = __fdiv_rn(2.0f, __fsub_rn(zsoil[k - 1], zsoil[k + 1]));
+            ci[k] = -__fdiv_rn(__fmul_rn(df1n, ddz2),
+                               __fmul_rn(__fsub_rn(zsoil[k - 1], zsoil[k]),
+                                         hcpct));
         } else {
-            dtsdz2 = (stc[k] - tbot)
-                     / (0.5f * (zsoil[k - 1] + zsoil[k]) - zbot);
+            dtsdz2 = __fdiv_rn(__fsub_rn(stc[k], tbot),
+                               __fsub_rn(__fmul_rn(0.5f, __fadd_rn(zsoil[k - 1],
+                                                                   zsoil[k])),
+                                         -25.0f));
             ci[k] = 0.0f;
         }
-        real denom = (zsoil[k] - zsoil[k - 1]) * hcpct;
-        rhsts[k] = (df1n * dtsdz2 - df1k * dtsdz) / denom;
-        ai[k] = -df1k * ddz / ((zsoil[k - 1] - zsoil[k]) * hcpct);
-        bi[k] = -(ai[k] + ci[k]);
+        real denom = __fmul_rn(__fsub_rn(zsoil[k], zsoil[k - 1]), hcpct);
+        rhsts[k] = __fdiv_rn(__fsub_rn(__fmul_rn(df1n, dtsdz2),
+                                       __fmul_rn(df1k, dtsdz)), denom);
+        ai[k] = -__fdiv_rn(__fmul_rn(df1k, ddz),
+                           __fmul_rn(__fsub_rn(zsoil[k - 1], zsoil[k]), hcpct));
+        bi[k] = -__fadd_rn(ai[k], ci[k]);
         df1k = df1n;
         dtsdz = dtsdz2;
         ddz = ddz2;
     }
 }
 
-// glacial SNOPAC: the snowpack on ice never runs out (SNEQV is held at
-// 0.10 m or more), and melt is limited to the energy left at T1 = TFREEZ
-__device__ static void glacial_snopac(real& etp, real& eta, real prcp,
-                                      real prcpf, bool snowng, real dt,
-                                      real df1, real q2, real& t1,
-                                      real sfctmp, real t24, real th2,
-                                      real fdown, real& ssoil, real* stc,
-                                      real sfcprs, real rch, real rr,
-                                      real& sneqv, real& sndens,
-                                      real& snowh, const real* zsoil,
-                                      real tbot, real& snomlt, real& dew,
-                                      real& flx1, real flx2, real& flx3,
-                                      real& esnow, real emissi, real ribb)
+// glacial SHFLX (:824-853) -> HRTICE, then HSTEP (:710-754) and the shared
+// noahlsm ROSR12 (module_sf_noahlsm.F:2537).
+// HSTEP (module_sf_noahlsm.F:1853, and the glacial copy :710-754) with the
+// noahlsm ROSR12 it calls; shared by the land-ice and sea-ice arms.
+__device__ static void nice_hstep(real* stc, real dt, real* rhsts, real* ai,
+                                  real* bi, real* ci)
 {
-    const real esdmin = 1.0e-6f;
-    real esnow2 = 0.0f, etanrg, ex;
-    snomlt = 0.0f;
-    dew = 0.0f;
-    esnow = 0.0f;
-    (void)prcpf;
-    (void)q2;
-    (void)sfcprs;
-    (void)eta;
-    if (etp <= 0.0f) {
-        if ((ribb >= 0.1f) && (fdown > 150.0f)) {
-            etp = __fdiv_rn(__fdiv_rn(fminf(etp * (1.0f - ribb), 0.0f),
-                                      0.980f)
-                            + etp * (0.980f - 1.0f), 0.980f);
-        }
-        real etp1 = etp * 0.001f;
-        dew = -etp1;
-        esnow2 = etp1 * dt;
-        etanrg = etp * NLSUBS;
-    } else {
-        esnow = etp;
-        real esnow1 = esnow * 0.001f;
-        esnow2 = esnow1 * dt;
-        etanrg = esnow * NLSUBS;
+    for (int k = 0; k < NSOIL; ++k) {
+        rhsts[k] = __fmul_rn(rhsts[k], dt);
+        ai[k] = __fmul_rn(ai[k], dt);
+        bi[k] = __fadd_rn(1.0f, __fmul_rn(bi[k], dt));
+        ci[k] = __fmul_rn(ci[k], dt);
     }
-    flx1 = 0.0f;
-    if (snowng) {
-        flx1 = NCPICE * prcp * (t1 - sfctmp);
-    } else {
-        if (prcp > 0.0f) flx1 = NCPH2O * prcp * (t1 - sfctmp);
+    // ROSR12(P=CI, A=AI, B=BI, C=CIin, D=RHSTSin, DELTA=RHSTS)
+    real p[NSOIL], delta[NSOIL], c[NSOIL];
+    for (int k = 0; k < NSOIL; ++k) c[k] = ci[k];
+    c[NSOIL - 1] = 0.0f;
+    p[0] = __fdiv_rn(-c[0], bi[0]);
+    delta[0] = __fdiv_rn(rhsts[0], bi[0]);
+    for (int k = 1; k < NSOIL; ++k) {
+        real rb = __fdiv_rn(1.0f, __fadd_rn(bi[k], __fmul_rn(ai[k], p[k - 1])));
+        p[k] = __fmul_rn(-c[k], rb);
+        delta[k] = __fmul_rn(__fsub_rn(rhsts[k], __fmul_rn(ai[k], delta[k - 1])),
+                             rb);
     }
-    real dsoil = -(0.5f * zsoil[0]);
-    real dtot = snowh + dsoil;
-    real denom = 1.0f + df1 / (dtot * rr * rch);
-    real t12a = ((fdown - flx1 - flx2 - emissi * NSIGMA * t24) / rch
-                 + th2 - sfctmp - etanrg / rch) / rr;
-    real t12b = df1 * stc[0] / (dtot * rr * rch);
-    real t12 = (sfctmp + t12a + t12b) / denom;
-    if (t12 <= NTFREEZ) {
-        t1 = t12;
-        ssoil = df1 * (t1 - stc[0]) / dtot;
-        sneqv = fmaxf(0.0f, sneqv - esnow2);
-        flx3 = 0.0f;
-        ex = 0.0f;
-        snomlt = 0.0f;
-    } else {
-        t1 = NTFREEZ;
-        if (dtot > 2.0f * dsoil) dtot = 2.0f * dsoil;
-        ssoil = df1 * (t1 - stc[0]) / dtot;
-        if (sneqv - esnow2 <= esdmin) {
-            sneqv = 0.0f;
-            ex = 0.0f;
-            snomlt = 0.0f;
-            flx3 = 0.0f;
-        } else {
-            sneqv = sneqv - esnow2;
-            real seh = rch * (t1 - th2);
-            real t14 = (t1 * t1) * (t1 * t1);
-            flx3 = fdown - flx1 - flx2 - emissi * NSIGMA * t14 - ssoil
-                   - seh - etanrg;
-            if (flx3 <= 0.0f) flx3 = 0.0f;
-            ex = __fdiv_rn(flx3 * 0.001f, NLSUBF);
-            snomlt = ex * dt;
-            if (sneqv - snomlt >= esdmin) {
-                sneqv = sneqv - snomlt;
-            } else {
-                ex = sneqv / dt;
-                flx3 = ex * 1000.0f * NLSUBF;
-                snomlt = sneqv;
-                sneqv = 0.0f;
-            }
-        }
+    p[NSOIL - 1] = delta[NSOIL - 1];
+    for (int k = 1; k < NSOIL; ++k) {
+        int kk = NSOIL - k - 1;
+        p[kk] = __fadd_rn(__fmul_rn(p[kk], p[kk + 1]), delta[kk]);
     }
-    // SHFLX (HRTICE + HSTEP) with ZZ1 = 1: unlike the land SHFLX it leaves
-    // T1 and SSOIL as SNOPAC set them.
-    const real zz1 = 1.0f;
-    real yy = stc[0] - 0.5f * ssoil * zsoil[0] * zz1 / df1;
-    real rhsts[NSOIL], ai[NSOIL], bi[NSOIL], ci[NSOIL], stcf[NSOIL];
-    glacial_hrtice(rhsts, stc, tbot, zsoil, yy, zz1, df1, ai, bi, ci);
-    noah_hstep(stcf, stc, rhsts, dt, ai, bi, ci);
-    for (int i = 0; i < NSOIL; ++i) stc[i] = stcf[i];
-    if (sneqv >= 0.10f) {
-        noah_snowpack(sneqv, dt, snowh, sndens, t1, yy);
-    } else {
-        sneqv = 0.10f;
-        snowh = 0.50f;
-    }
+    for (int k = 0; k < NSOIL; ++k) stc[k] = __fadd_rn(stc[k], p[k]);
 }
 
-// SFLX_GLACIAL itself.  Outputs are SFLX_GLACIAL's: ETA/SHEAT/ETA_KINEMATIC,
-// ESNOW/ETP in W m-2 on return, SSOIL with WRF's closing sign flip, RUNOFF1.
-__device__ static void noah_sflx_glacial(
-        real ffrozp, real dt, const real* zsoil, real lwdn, real solnet,
-        real sfcprs, real prcp, real sfctmp, real q2, real th2, real q2sat,
-        real dqsdt2, real alb, real snoalb, real tbot, real z0brd, real& z0,
-        real& emissi, real embrd, real& t1, real* stc, real& snowh,
-        real& sneqv, real& albedo, real ch, real& eta, real& sheat,
-        real& eta_kinematic, real& fdown, real& esnow, real& dew, real& etp,
-        real& ssoil, real& flx1, real& flx2, real& flx3, real& snomlt,
-        real& sncovr, real& runoff1, real& q1, real& snotime1, real ribb,
-        real lvcoef)
+__device__ static void nglac_shflx(real* stc, real dt, real yy, real zz1,
+                                   const real* zsoil, real tbot, real df1)
 {
+    real rhsts[NSOIL], ai[NSOIL], bi[NSOIL], ci[NSOIL];
+    nglac_hrtice(rhsts, stc, tbot, zsoil, yy, zz1, df1, ai, bi, ci);
+    nice_hstep(stc, dt, rhsts, ai, bi, ci);
+}
+
+// glacial SNOWPACK (:1076-1199)
+__device__ static void nglac_snowpack(real sneqv, real dtsec, real& snowh,
+                                      real& sndens, real tsnow, real tsoil)
+{
+    real esdc = __fmul_rn(sneqv, 100.0f);
+    real dthr = __fdiv_rn(dtsec, 3600.0f);
+    real tsnowc = __fsub_rn(tsnow, 273.15f);
+    real tsoilc = __fsub_rn(tsoil, 273.15f);
+    real tavgc = __fmul_rn(0.5f, __fadd_rn(tsnowc, tsoilc));
+    real esdcx = (esdc > 1.0e-2f) ? esdc : 1.0e-2f;
+    real bfac = __fmul_rn(__fmul_rn(dthr, 0.01f),
+                          gfk_exp(__fsub_rn(__fmul_rn(0.08f, tavgc),
+                                            __fmul_rn(21.0f, sndens))));
+    real pexp = 0.0f;
+    for (int j = 4; j >= 1; --j)
+        pexp = __fdiv_rn(__fmul_rn(__fmul_rn(__fadd_rn(1.0f, pexp), bfac),
+                                   esdcx), (real)(j + 1));
+    pexp = __fadd_rn(pexp, 1.0f);
+    real dsx = __fmul_rn(sndens, pexp);
+    if (dsx > 0.40f) dsx = 0.40f;
+    if (dsx < 0.05f) dsx = 0.05f;
+    sndens = dsx;
+    if (tsnowc >= 0.0f) {
+        real dw = __fdiv_rn(__fmul_rn(0.13f, dthr), 24.0f);
+        sndens = __fadd_rn(__fmul_rn(sndens, __fsub_rn(1.0f, dw)), dw);
+        if (sndens >= 0.40f) sndens = 0.40f;
+    }
+    snowh = __fmul_rn(__fdiv_rn(esdc, sndens), 0.01f);
+}
+
+// One land-ice column: lsm's prep (module_sf_noahdrv.F:792-981), the ICE == -1
+// arm and SFLX_GLACIAL (:1140-1183), then lsm's post-update (:1210-1597).
+// __noinline__ keeps the ordinary-land body's instruction selection where it
+// was: this arm is a call from the place the column used to return.
+__device__ __noinline__ static void noah_glacial_column(
+                 size_t idx, size_t plane,
+                 const real* __restrict__ psfc_a,
+                 const real* __restrict__ sfcprs_a,
+                 const real* __restrict__ sfctmp_a,
+                 const real* __restrict__ qv1_a,
+                 const real* __restrict__ qgh_a,
+                 const real* __restrict__ glw_a,
+                 const real* __restrict__ swdown_a,
+                 const real* __restrict__ rainbl_a,
+                 const real* __restrict__ sr_a,
+                 const real* __restrict__ chs_a,
+                 const real* __restrict__ cqs2_a,
+                 real* __restrict__ chs2_a,
+                 const real* __restrict__ rib_a,
+                 const real* __restrict__ tmn_a,
+                 const real* __restrict__ snoalb_a,
+                 const real* __restrict__ embck_a,
+                 real* __restrict__ tsk_a,
+                 real* __restrict__ hfx_a,
+                 real* __restrict__ qfx_a,
+                 real* __restrict__ lh_a,
+                 real* __restrict__ grdflx_a,
+                 real* __restrict__ qsfc_a,
+                 real* __restrict__ canwat_a,
+                 real* __restrict__ snow_a,
+                 real* __restrict__ snowc_a,
+                 real* __restrict__ snowh_a,
+                 real* __restrict__ albedo_a,
+                 real* __restrict__ albbck_a,
+                 real* __restrict__ emiss_a,
+                 real* __restrict__ znt_a,
+                 real* __restrict__ z0_a,
+                 real* __restrict__ snotime_a,
+                 real* __restrict__ lai_a,
+                 real* __restrict__ smstav_a,
+                 real* __restrict__ smstot_a,
+                 real* __restrict__ sfcrunoff_a,
+                 real* __restrict__ udrunoff_a,
+                 real* __restrict__ acsnow_a,
+                 real* __restrict__ acsnom_a,
+                 real* __restrict__ snopcx_a,
+                 real* __restrict__ potevp_a,
+                 real* __restrict__ noahres_a,
+                 real* __restrict__ reslin_a,
+                 real* __restrict__ smois_a,
+                 real* __restrict__ tslb_a,
+                 real* __restrict__ sh2o_a,
+                 real* __restrict__ smcrel_a,
+                 int* __restrict__ ebal_a,
+                 const real* __restrict__ genp,
+                 const real* __restrict__ dzs,
+                 real dt, int frpcpn,
+                 int bep_opt, real* __restrict__ rural_bep)
+{
+    // ---------------- lsm prep (the statements before the ICE branch that
+    // SFLX_GLACIAL reads; the vegetation, soil and urban ones it does not)
+    const real a2 = 17.67f, a3 = 273.15f, a4 = 29.65f;
+    const real a23m4 = __fmul_rn(a2, __fsub_rn(a3, a4));
+    real psfc = psfc_a[idx];
+    real sfcprs = sfcprs_a[idx];
+    real q2k = __fdiv_rn(qv1_a[idx], __fadd_rn(1.0f, qv1_a[idx]));
+    real q2sat = __fdiv_rn(qgh_a[idx], __fadd_rn(1.0f, qgh_a[idx]));
+    real sfctmp = sfctmp_a[idx];
+    real apes = gfk_pow(__fdiv_rn(1.0e5f, psfc), NGL_CAPA);
+    real apelm = gfk_pow(__fdiv_rn(1.0e5f, sfcprs), NGL_CAPA);
+    real sfcth2 = __fmul_rn(sfctmp, apelm);
+    real th2 = __fdiv_rn(sfcth2, apes);
+    real emissi = emiss_a[idx];
+    real lwdn = __fmul_rn(glw_a[idx], emissi);
+    real soldn = swdown_a[idx];
+    real solnet = __fmul_rn(soldn, __fsub_rn(1.0f, albedo_a[idx]));
+    real prcp = __fdiv_rn(rainbl_a[idx], dt);
+    real t1 = tsk_a[idx];
+    real chk = chs_a[idx];
+    real sneqv = __fmul_rn(snow_a[idx], 0.001f);
+    real snowhk = snowh_a[idx];
+    real sncovr = snowc_a[idx];
+    real ffrozp;
+    if (frpcpn) ffrozp = sr_a[idx];
+    else ffrozp = (sfctmp <= 273.15f) ? 1.0f : 0.0f;
+    real sfcma4 = __fsub_rn(sfctmp, a4);
+    real dqsdt2 = __fdiv_rn(__fmul_rn(q2sat, a23m4), __fmul_rn(sfcma4, sfcma4));
+    if (noah_f2d(snow_a[idx]) > 0.0) {
+        real sfctsno = sfctmp;
+        real e2sat = __fmul_rn(611.2f, gfk_exp(__fmul_rn(6174.0f,
+                         __fsub_rn(__fdiv_rn(1.0f, 273.15f),
+                                   __fdiv_rn(1.0f, sfctsno)))));
+        real q2sati = __fdiv_rn(__fmul_rn(0.622f, e2sat),
+                                __fsub_rn(sfcprs, e2sat));
+        q2sati = __fdiv_rn(q2sati, __fadd_rn(1.0f, q2sati));
+        real snowc = snowc_a[idx];
+        real dqi = __fdiv_rn(__fmul_rn(q2sati, 6174.0f),
+                             __fmul_rn(sfctsno, sfctsno));
+        if (t1 > 273.14f) {
+            q2sat = __fadd_rn(__fmul_rn(q2sat, __fsub_rn(1.0f, snowc)),
+                              __fmul_rn(q2sati, snowc));
+            dqsdt2 = __fadd_rn(__fmul_rn(dqsdt2, __fsub_rn(1.0f, snowc)),
+                               __fmul_rn(dqi, snowc));
+        } else {
+            q2sat = q2sati;
+            dqsdt2 = dqi;
+        }
+        if (t1 > 273.0f && noah_f2d(snowc) > 0.0 && swdown_a[idx] > 10.0f)
+            dqsdt2 = __fmul_rn(dqsdt2, __fsub_rn(1.0f, snowc));
+    }
+    real tbot = tmn_a[idx];
+    real snoalb1 = snoalb_a[idx];
+    real cmc = __fdiv_rn(canwat_a[idx], 1000.0f);
+    real alb = albbck_a[idx];
+    real z0brd = z0_a[idx];
+    real embrd = embck_a[idx];
+    real snotime1 = snotime_a[idx];
+    real ribb = rib_a[idx];
+    real stc[NSOIL];
+    for (int k = 0; k < NSOIL; ++k) stc[k] = tslb_a[k * plane + idx];
+    if ((sneqv != 0.0f && snowhk == 0.0f) || (snowhk <= sneqv))
+        snowhk = __fmul_rn(5.0f, sneqv);
+
+    // ---------------- SFLX_GLACIAL (:32-409)
+    real zsoil[NSOIL];
+    zsoil[0] = -dzs[0];
+    for (int k = 1; k < NSOIL; ++k) zsoil[k] = __fadd_rn(-dzs[k], zsoil[k - 1]);
     if (sneqv < 0.10f) {
         sneqv = 0.10f;
-        snowh = 0.50f;
+        snowhk = 0.50f;
     }
-    // WRF stops the model here when SNDENS > 1 ("physical snow depth is less
-    // than snow water equiv."); the driver's SNOWHK = 5*SNEQV repair and the
-    // 0.10 m / 0.50 m reset above leave no input that reaches it.
-    real sndens = sneqv / snowh;
-    real sncond = noah_csnow(sndens);
+    real sndens = __fdiv_rn(sneqv, snowhk);
+    real sncond = nglac_csnow(sndens);
     bool snowng = false, frzgra = false;
     if (prcp > 0.0f) {
         if (ffrozp > 0.5f) snowng = true;
@@ -1100,52 +1289,225 @@ __device__ static void noah_sflx_glacial(
     }
     real prcpf;
     if (snowng || frzgra) {
-        real sn_new = prcp * dt * 0.001f;
-        sneqv = sneqv + sn_new;
+        real sn_new = __fmul_rn(__fmul_rn(prcp, dt), 0.001f);
+        sneqv = __fadd_rn(sneqv, sn_new);
         prcpf = 0.0f;
-        noah_snow_new(sfctmp, sn_new, snowh, sndens);
+        nglac_snow_new(sfctmp, sn_new, snowhk, sndens);
         if (sncovr > 0.99f) {
-            if (stc[0] < (NTFREEZ - 5.0f)) sndens = 0.2f;
-            if (snowng && (t1 < 273.0f) && (sfctmp < 273.0f)) sndens = 0.2f;
+            if (stc[0] < __fsub_rn(NTFREEZ, 5.0f)) sndens = 0.2f;
+            if (snowng && t1 < 273.0f && sfctmp < 273.0f) sndens = 0.2f;
         }
-        sncond = noah_csnow(sndens);
+        sncond = nglac_csnow(sndens);
     } else {
         prcpf = prcp;
     }
+    (void)prcpf;   // SNOPAC's PRCP1 = PRCPF*0.001 is never read again
     sncovr = 1.0f;
-    noah_alcalc(alb, snoalb, embrd, 1.0f, dt, snowng, snotime1, lvcoef,
-                albedo, emissi);
+    real albedo;
+    nglac_alcalc(alb, snoalb1, embrd, dt, snowng, genp[GEN_LVCOEF],
+                 snotime1, albedo, emissi);
     real df1 = sncond;
-    real dsoil = -(0.5f * zsoil[0]);
-    real dtot = snowh + dsoil;
-    real frcsno = snowh / dtot;
-    real frcsoi = dsoil / dtot;
-    df1 = frcsno * sncond + frcsoi * df1;
-    if (dtot > 2.0f * dsoil) dtot = 2.0f * dsoil;
-    ssoil = df1 * (t1 - stc[0]) / dtot;
-    z0 = glacial_snowz0(z0brd, snowh);
-    fdown = solnet + lwdn;
-    real t2v = sfctmp * (1.0f + 0.61f * q2);
-    real rho = sfcprs / (NRD * t2v);
-    real rch = rho * NCP_PEN * ch;
-    real t24 = sfctmp * sfctmp * sfctmp * sfctmp;
-    real rr;
-    glacial_penman(sfctmp, sfcprs, ch, th2, prcp, fdown, t24, ssoil, q2,
-                   q2sat, etp, rch, rr, snowng, frzgra, dqsdt2, flx2,
-                   emissi, t1);
-    glacial_snopac(etp, eta, prcp, prcpf, snowng, dt, df1, q2, t1, sfctmp,
-                   t24, th2, fdown, ssoil, stc, sfcprs, rch, rr, sneqv,
-                   sndens, snowh, zsoil, tbot, snomlt, dew, flx1, flx2,
-                   flx3, esnow, emissi, ribb);
-    eta_kinematic = etp;
-    q1 = q2 + eta_kinematic * CP / rch;
-    sheat = -(ch * CP * sfcprs) / (NR_SHEAT * t2v) * (th2 - t1);
-    esnow = esnow * NLSUBS;
-    etp = etp * NLSUBS;
-    if (etp > 0.0f) eta = esnow;
-    else eta = etp;
-    ssoil = -1.0f * ssoil;
-    runoff1 = snomlt / dt;
+    real dsoil = -__fmul_rn(0.5f, zsoil[0]);
+    real dtot = __fadd_rn(snowhk, dsoil);
+    real frcsno = __fdiv_rn(snowhk, dtot);
+    real frcsoi = __fdiv_rn(dsoil, dtot);
+    df1 = __fadd_rn(__fmul_rn(frcsno, sncond), __fmul_rn(frcsoi, df1));
+    if (dtot > __fmul_rn(2.0f, dsoil)) dtot = __fmul_rn(2.0f, dsoil);
+    real ssoil = __fdiv_rn(__fmul_rn(df1, __fsub_rn(t1, stc[0])), dtot);
+    // glacial SNOWZ0 (:1202-1226)
+    real burial = __fsub_rn(__fmul_rn(7.0f, z0brd), snowhk);
+    real z0k = (burial <= 0.0007f) ? 0.001f : __fdiv_rn(burial, 7.0f);
+    real fdown = __fadd_rn(solnet, lwdn);
+    real t2v = __fmul_rn(sfctmp, __fadd_rn(1.0f, __fmul_rn(0.61f, q2k)));
+    real rho = __fdiv_rn(sfcprs, __fmul_rn(NRD, t2v));
+    real rch = __fmul_rn(__fmul_rn(rho, NCP_PEN), chk);
+    real t24 = __fmul_rn(__fmul_rn(__fmul_rn(sfctmp, sfctmp), sfctmp), sfctmp);
+    // glacial PENMAN (:756-821)
+    real elcp1, lvs;
+    if (t1 > 273.15f) {
+        elcp1 = NELCP;
+        lvs = NLSUBC;
+    } else {
+        elcp1 = __fdiv_rn(__fmul_rn(NELCP, NLSUBS), NLSUBC);
+        lvs = NLSUBS;
+    }
+    real delta = __fmul_rn(elcp1, dqsdt2);
+    real a = __fmul_rn(elcp1, __fsub_rn(q2sat, q2k));
+    real rr = __fadd_rn(__fdiv_rn(__fmul_rn(__fmul_rn(emissi, t24), 6.48e-8f),
+                                  __fmul_rn(sfcprs, chk)), 1.0f);
+    if (!snowng) {
+        if (prcp > 0.0f) rr = __fadd_rn(rr, __fdiv_rn(__fmul_rn(NCPH2O, prcp), rch));
+    } else {
+        rr = __fadd_rn(rr, __fdiv_rn(__fmul_rn(NCPICE, prcp), rch));
+    }
+    real flx2 = frzgra ? __fmul_rn(-NLSUBF, prcp) : 0.0f;
+    real fnet = __fsub_rn(__fsub_rn(__fsub_rn(fdown,
+                    __fmul_rn(__fmul_rn(emissi, NSIGMA), t24)), ssoil), flx2);
+    real rad = __fsub_rn(__fadd_rn(__fdiv_rn(fnet, rch), th2), sfctmp);
+    real epsca = __fdiv_rn(__fadd_rn(__fmul_rn(a, rr), __fmul_rn(rad, delta)),
+                           __fadd_rn(delta, rr));
+    real etp = __fdiv_rn(__fmul_rn(epsca, rch), lvs);
+    // glacial SNOPAC (:856-1073)
+    const real esdmin = 1.0e-6f;
+    real snomlt = 0.0f, esnow = 0.0f, esnow2 = 0.0f, etanrg;
+    if (etp <= 0.0f) {
+        if (ribb >= 0.1f && fdown > 150.0f) {
+            etp = __fdiv_rn(__fadd_rn(
+                      __fdiv_rn(fminf(__fmul_rn(etp, __fsub_rn(1.0f, ribb)), 0.0f),
+                                0.980f),
+                      __fmul_rn(etp, __fsub_rn(0.980f, 1.0f))), 0.980f);
+        }
+        real etp1 = __fmul_rn(etp, 0.001f);
+        esnow2 = __fmul_rn(etp1, dt);
+        etanrg = __fmul_rn(etp, NLSUBS);
+    } else {
+        esnow = etp;
+        real esnow1 = __fmul_rn(esnow, 0.001f);
+        esnow2 = __fmul_rn(esnow1, dt);
+        etanrg = __fmul_rn(esnow, NLSUBS);
+    }
+    real flx1 = 0.0f;
+    if (snowng) flx1 = __fmul_rn(__fmul_rn(NCPICE, prcp), __fsub_rn(t1, sfctmp));
+    else if (prcp > 0.0f)
+        flx1 = __fmul_rn(__fmul_rn(NCPH2O, prcp), __fsub_rn(t1, sfctmp));
+    dsoil = -__fmul_rn(0.5f, zsoil[0]);
+    dtot = __fadd_rn(snowhk, dsoil);
+    real denom = __fadd_rn(1.0f, __fdiv_rn(df1, __fmul_rn(__fmul_rn(dtot, rr), rch)));
+    real t12a = __fdiv_rn(__fsub_rn(__fsub_rn(__fadd_rn(__fdiv_rn(
+                    __fsub_rn(__fsub_rn(__fsub_rn(fdown, flx1), flx2),
+                              __fmul_rn(__fmul_rn(emissi, NSIGMA), t24)), rch),
+                    th2), sfctmp), __fdiv_rn(etanrg, rch)), rr);
+    real t12b = __fdiv_rn(__fmul_rn(df1, stc[0]),
+                          __fmul_rn(__fmul_rn(dtot, rr), rch));
+    real t12 = __fdiv_rn(__fadd_rn(__fadd_rn(sfctmp, t12a), t12b), denom);
+    real stc1_old = stc[0];
+    real flx3 = 0.0f;
+    int ebal_case;
+    double reslin;
+    if (t12 <= NTFREEZ) {
+        ebal_case = 1;
+        t1 = t12;
+        ssoil = __fdiv_rn(__fmul_rn(df1, __fsub_rn(t1, stc[0])), dtot);
+        sneqv = fmaxf(0.0f, __fsub_rn(sneqv, esnow2));
+        reslin = ((double)fdown - (double)flx1 - (double)flx2
+                  - (double)emissi * (double)NSIGMA * (double)t24
+                  + (double)rch * ((double)th2 - (double)sfctmp)
+                  - (double)etanrg
+                  - (double)rch * (double)rr * ((double)t12 - (double)sfctmp)
+                  - (double)df1 * ((double)t12 - (double)stc1_old)
+                    / (double)dtot);
+    } else {
+        bool clipped = false;
+        t1 = NTFREEZ;
+        if (dtot > __fmul_rn(2.0f, dsoil)) dtot = __fmul_rn(2.0f, dsoil);
+        ssoil = __fdiv_rn(__fmul_rn(df1, __fsub_rn(t1, stc[0])), dtot);
+        real seh = __fmul_rn(rch, __fsub_rn(t1, th2));
+        real t14 = __fmul_rn(__fmul_rn(t1, t1), __fmul_rn(t1, t1));
+        if (__fsub_rn(sneqv, esnow2) <= esdmin) {
+            sneqv = 0.0f;
+            snomlt = 0.0f;
+            flx3 = 0.0f;
+            clipped = true;
+        } else {
+            sneqv = __fsub_rn(sneqv, esnow2);
+            flx3 = __fsub_rn(__fsub_rn(__fsub_rn(__fsub_rn(__fsub_rn(
+                       __fsub_rn(fdown, flx1), flx2),
+                       __fmul_rn(__fmul_rn(emissi, NSIGMA), t14)), ssoil),
+                       seh), etanrg);
+            if (flx3 <= 0.0f) {
+                flx3 = 0.0f;
+                clipped = true;
+            }
+            real ex = __fdiv_rn(__fmul_rn(flx3, 0.001f), NLSUBF);
+            snomlt = __fmul_rn(ex, dt);
+            if (__fsub_rn(sneqv, snomlt) >= esdmin) {
+                sneqv = __fsub_rn(sneqv, snomlt);
+            } else {
+                ex = __fdiv_rn(sneqv, dt);
+                flx3 = __fmul_rn(__fmul_rn(ex, 1000.0f), NLSUBF);
+                snomlt = sneqv;
+                sneqv = 0.0f;
+                clipped = true;
+            }
+        }
+        ebal_case = clipped ? 3 : 2;
+        reslin = ((double)fdown - (double)flx1 - (double)flx2
+                  - (double)emissi * (double)NSIGMA * (double)t14
+                  - (double)ssoil - (double)seh
+                  - (double)etanrg - (double)flx3);
+    }
+    real yy = __fsub_rn(stc[0], __fdiv_rn(__fmul_rn(__fmul_rn(
+                  __fmul_rn(0.5f, ssoil), zsoil[0]), 1.0f), df1));
+    nglac_shflx(stc, dt, yy, 1.0f, zsoil, tbot, df1);
+    if (sneqv >= 0.10f) {
+        nglac_snowpack(sneqv, dt, snowhk, sndens, t1, yy);
+    } else {
+        sneqv = 0.10f;
+        snowhk = 0.50f;
+    }
+    // SFLX_GLACIAL epilogue
+    real eta_kin = etp;
+    real q1 = __fadd_rn(q2k, __fdiv_rn(__fmul_rn(eta_kin, CP), rch));
+    real sheat = __fmul_rn(__fdiv_rn(-__fmul_rn(__fmul_rn(chk, CP), sfcprs),
+                                     __fmul_rn(NR_SHEAT, t2v)),
+                           __fsub_rn(th2, t1));
+    real esnow_e = __fmul_rn(esnow, NLSUBS);
+    real etp_e = __fmul_rn(etp, NLSUBS);
+    real eta_e = (etp_e > 0.0f) ? esnow_e : etp_e;
+    real ssoil_out = __fmul_rn(-1.0f, ssoil);
+    real runoff1 = __fdiv_rn(snomlt, dt);
+
+    // ---------------- lsm post-update (ICE == -1 sets SOILM = 0,
+    // XLAI = 0.01, RUNOFF2 = RUNOFF3 = 0, SWC = SMC = SMAV = 1; SOILW keeps
+    // the 0 written at :799)
+    lai_a[idx] = 0.01f;
+    canwat_a[idx] = __fmul_rn(cmc, 1000.0f);
+    snow_a[idx] = __fmul_rn(sneqv, 1000.0f);
+    snowh_a[idx] = snowhk;
+    albedo_a[idx] = albedo;
+    albbck_a[idx] = alb;
+    z0_a[idx] = z0brd;
+    emiss_a[idx] = emissi;
+    znt_a[idx] = z0k;
+    tsk_a[idx] = t1;
+    if (bep_opt >= 2 && rural_bep != nullptr) rural_bep[idx] = t1;
+    hfx_a[idx] = sheat;
+    potevp_a[idx] = __fadd_rn(potevp_a[idx], __fmul_rn(etp_e,
+                        __fdiv_rn(dt, __fmul_rn(XLV, RHOWATER))));
+    qfx_a[idx] = eta_kin;
+    lh_a[idx] = eta_e;
+    grdflx_a[idx] = ssoil_out;
+    snowc_a[idx] = sncovr;
+    chs2_a[idx] = cqs2_a[idx];
+    snotime_a[idx] = snotime1;
+    qsfc_a[idx] = __fdiv_rn(q1, __fsub_rn(1.0f, q1));
+    for (int k = 0; k < NSOIL; ++k) {
+        smois_a[k * plane + idx] = 1.0f;
+        tslb_a[k * plane + idx] = stc[k];
+        sh2o_a[k * plane + idx] = 1.0f;
+        smcrel_a[k * plane + idx] = 1.0f;
+    }
+    real t14 = __fmul_rn(__fmul_rn(t1, t1), __fmul_rn(t1, t1));
+    noahres_a[idx] = __fsub_rn(__fsub_rn(__fsub_rn(__fsub_rn(__fsub_rn(
+                         __fadd_rn(__fsub_rn(__fadd_rn(solnet, lwdn), sheat),
+                                   ssoil_out), eta_e),
+                         __fmul_rn(__fmul_rn(emissi, NSTBOLT), t14)),
+                         flx1), flx2), flx3);
+    reslin_a[idx] = (real)reslin;
+    ebal_a[idx] = ebal_case;
+    smstav_a[idx] = 0.0f;
+    smstot_a[idx] = __fmul_rn(0.0f, 1000.0f);
+    sfcrunoff_a[idx] = __fadd_rn(sfcrunoff_a[idx],
+                                 __fmul_rn(__fmul_rn(runoff1, dt), 1000.0f));
+    udrunoff_a[idx] = __fadd_rn(udrunoff_a[idx],
+                                __fmul_rn(__fmul_rn(0.0f, dt), 1000.0f));
+    if (ffrozp > 0.5f)
+        acsnow_a[idx] = __fadd_rn(acsnow_a[idx], __fmul_rn(prcp, dt));
+    if (noah_f2d(snow_a[idx]) > 0.0) {
+        acsnom_a[idx] = __fadd_rn(acsnom_a[idx], __fmul_rn(snomlt, 1000.0f));
+        snopcx_a[idx] = __fsub_rn(snopcx_a[idx], __fdiv_rn(snomlt,
+                            __fdiv_rn(dt, __fmul_rn(1000.0f, NXLF))));
+    }
 }
 
 // ---------------------------------------------------------------- kernel
@@ -1282,6 +1644,28 @@ void noah_column_body(const int* __restrict__ ivgtyp,
     }
     int vegtyp = ivgtyp[idx];
     int soiltyp = isltyp[idx];
+    if (vegtyp == isice) {         // land ice: ICE = -1, SFLX_GLACIAL
+        // TSK_RURAL_BEP = T1 (module_sf_noahdrv.F:1243-1247) holds for a
+        // land-ice column too; only the URBAN instantiation passes it.
+        int glacial_bep_opt = 0;
+        real* glacial_bep = nullptr;
+        if constexpr (URBAN) {
+            glacial_bep_opt = urban_opt;
+            glacial_bep = tsk_rural_bep;
+        }
+        noah_glacial_column(idx, plane, psfc_a, sfcprs_a, sfctmp_a, qv1_a,
+                            qgh_a, glw_a, swdown_a, rainbl_a, sr_a, chs_a,
+                            cqs2_a, chs2_a, rib_a, tmn_a, snoalb_a, embck_a,
+                            tsk_a, hfx_a, qfx_a, lh_a, grdflx_a, qsfc_a,
+                            canwat_a, snow_a, snowc_a, snowh_a, albedo_a,
+                            albbck_a, emiss_a, znt_a, z0_a, snotime_a, lai_a,
+                            smstav_a, smstot_a, sfcrunoff_a, udrunoff_a,
+                            acsnow_a, acsnom_a, snopcx_a, potevp_a,
+                            noahres_a, reslin_a, smois_a, tslb_a, sh2o_a,
+                            smcrel_a, ebal_a, genp, dzs, dt, frpcpn,
+                            glacial_bep_opt, glacial_bep);
+        return;
+    }
 
     const real tresh = 0.95f, a2 = 17.67f, a3 = 273.15f, a4 = 29.65f;
     const real a23m4 = a2 * (a3 - a4);
@@ -1290,8 +1674,8 @@ void noah_column_body(const int* __restrict__ ivgtyp,
     real q2k = qv1_a[idx] / (1.0f + qv1_a[idx]);
     real q2sat = qgh_a[idx] / (1.0f + qgh_a[idx]);
     real sfctmp = sfctmp_a[idx];
-    real apes = powf(1.0e5f / psfc, RCP);             // CAPA = R_d/CP
-    real apelm = powf(1.0e5f / sfcprs, RCP);
+    real apes = gfk_pow(1.0e5f / psfc, RCP);             // CAPA = R_d/CP
+    real apelm = gfk_pow(1.0e5f / sfcprs, RCP);
     real sfcth2 = sfctmp * apelm;
     real th2 = sfcth2 / apes;
     real emissi = emiss_a[idx];
@@ -1312,9 +1696,17 @@ void noah_column_body(const int* __restrict__ ivgtyp,
     else ffrozp = (sfctmp <= 273.15f) ? 1.0f : 0.0f;
 
     real dqsdt2 = q2sat * a23m4 / ((sfctmp - a4) * (sfctmp - a4));
-    if (snow_a[idx] > 0.0f) {
+    // WRF's IF(SNOW(I,J).GT.0.0) (module_sf_noahdrv.F:893) is TRUE for a
+    // positive subnormal SNOW; `snow_a[idx] > 0.0f` under CuPy's -ftz=true
+    // was FALSE, so the column took the snow-free saturation (oracle case 18:
+    // TSK 0.083 K, HFX 1.95 and LH 2.87 W/m2 from WRF).  The other two
+    // compares on this snow state cannot change a value: a subnormal SNEQV
+    // is zeroed by SFLX's `<= 1.0e-7` reset whichever way the first test
+    // goes, and a subnormal SNOW leaving SFLX comes only from SNOPAC's cold
+    // arm, where SNOMLT = 0 makes the ACSNOM/SNOPCX updates below no-ops.
+    if (noah_f2d(snow_a[idx]) > 0.0) {
         real sfctsno = sfctmp;
-        real e2sat = 611.2f * expf(6174.0f * (1.0f / 273.15f
+        real e2sat = 611.2f * gfk_exp(6174.0f * (1.0f / 273.15f
                                               - 1.0f / sfctsno));
         real q2sati = 0.622f * e2sat / (sfcprs - e2sat);
         q2sati = q2sati / (1.0f + q2sati);
@@ -1348,84 +1740,6 @@ void noah_column_body(const int* __restrict__ ivgtyp,
     }
     if ((sneqv != 0.0f && snowhk == 0.0f) || (snowhk <= sneqv))
         snowhk = 5.0f * sneqv;
-
-    // LAND ICE: module_sf_noahdrv.F:1137-1190 (ICE == -1).  Everything above
-    // is the driver prep every land column shares; the ice column then skips
-    // REDPRM and SFLX for SFLX_GLACIAL and the same post-update block, with
-    // the soil held saturated (SMC = SH2O = SMAV = 1), XLAI = 0.01, SOILM and
-    // SOILW = 0, and no subsurface runoff.  An ice cell is never an urban
-    // category, so the urban remap below cannot apply to it.
-    if (vegtyp == isice) {
-        real sldpth_g[NSOIL], zsoil_g[NSOIL];
-        for (int k = 0; k < NSOIL; ++k) sldpth_g[k] = dzs[k];
-        zsoil_g[0] = -sldpth_g[0];
-        for (int kz = 1; kz < NSOIL; ++kz)
-            zsoil_g[kz] = -sldpth_g[kz] + zsoil_g[kz - 1];
-        real alb_g = albbck_a[idx];       // ALBBRD = ALBBCK
-        real z0brd_g = z0_a[idx];         // Z0BRD  = Z0
-        real z0k_g, albedo_g, eta_g, sheat_g, eta_kin_g, fdown_g;
-        real esnow_g, dew_g, etp_g, ssoil_g, flx1_g, flx2_g, flx3_g;
-        real snomlt_g, runoff1_g, q1_g;
-        noah_sflx_glacial(ffrozp, dt, zsoil_g, lwdn, solnet, sfcprs, prcp,
-                          sfctmp, q2k, th2, q2sat, dqsdt2, alb_g, snoalb1,
-                          tbot, z0brd_g, z0k_g, emissi, embrd, t1, stc,
-                          snowhk, sneqv, albedo_g, chk, eta_g, sheat_g,
-                          eta_kin_g, fdown_g, esnow_g, dew_g, etp_g,
-                          ssoil_g, flx1_g, flx2_g, flx3_g, snomlt_g, sncovr,
-                          runoff1_g, q1_g, snotime1, ribb, genp[GEN_LVCOEF]);
-        // driver post-update (module_sf_noahdrv.F:1218-1330, 1577-1596)
-        lai_a[idx] = 0.01f;
-        canwat_a[idx] = cmc * 1000.0f;
-        snow_a[idx] = sneqv * 1000.0f;
-        snowh_a[idx] = snowhk;
-        albedo_a[idx] = albedo_g;
-        albbck_a[idx] = alb_g;
-        z0_a[idx] = z0brd_g;
-        emiss_a[idx] = emissi;
-        znt_a[idx] = z0k_g;
-        tsk_a[idx] = t1;
-        if constexpr (URBAN) {
-            if (urban_opt >= 2) tsk_rural_bep[idx] = t1;
-        }
-        hfx_a[idx] = sheat_g;
-        potevp_a[idx] = potevp_a[idx]
-                        + etp_g * (__fdiv_rn(dt, (XLV * RHOWATER)));
-        qfx_a[idx] = eta_kin_g;
-        lh_a[idx] = eta_g;
-        grdflx_a[idx] = ssoil_g;
-        snowc_a[idx] = sncovr;
-        chs2_a[idx] = cqs2_a[idx];
-        snotime_a[idx] = snotime1;
-        qsfc_a[idx] = q1_g / (1.0f - q1_g);
-        for (int k = 0; k < NSOIL; ++k) {
-            smois_a[k * plane + idx] = 1.0f;
-            tslb_a[k * plane + idx] = stc[k];
-            sh2o_a[k * plane + idx] = 1.0f;
-            smcrel_a[k * plane + idx] = 1.0f;
-        }
-        double t1g = (double)t1;
-        noahres_a[idx] = (real)(((double)solnet + (double)lwdn)
-                                - (double)sheat_g + (double)ssoil_g
-                                - (double)eta_g
-                                - ((double)emissi * (double)NSTBOLT
-                                   * t1g * t1g * t1g * t1g)
-                                - (double)flx1_g - (double)flx2_g
-                                - (double)flx3_g);
-        reslin_a[idx] = 0.0f;
-        ebal_a[idx] = 4;                  // 4 = SFLX_GLACIAL column
-        chklowq_a[idx] = 1.0f;
-        smstav_a[idx] = 0.0f;             // SOILW = 0
-        smstot_a[idx] = 0.0f * 1000.0f;   // SOILM = 0
-        sfcrunoff_a[idx] = sfcrunoff_a[idx] + runoff1_g * dt * 1000.0f;
-        udrunoff_a[idx] = udrunoff_a[idx] + 0.0f * dt * 1000.0f;
-        if (ffrozp > 0.5f)
-            acsnow_a[idx] = acsnow_a[idx] + prcp * dt;
-        if (snow_a[idx] > 0.0f) {
-            acsnom_a[idx] = acsnom_a[idx] + snomlt_g * 1000.0f;
-            snopcx_a[idx] = snopcx_a[idx] - snomlt_g * 1000.0f * NXLF / dt;
-        }
-        return;
-    }
     // URBAN NATURAL-SURFACE REMAP, module_sf_noahdrv.F:964-990.  With an
     // urban model on, the natural fraction of a city cell is WRF's NATURAL
     // vegetation category and its skin temperature is the RURAL one: for
@@ -1611,7 +1925,7 @@ void noah_column_body(const int* __restrict__ ivgtyp,
     real df1 = noah_tdfcnd(smc[0], quartz, smcmax, swc[0], bexp,
                            psisat, soiltyp, opt_thcnd);
     if (vegtyp == isurban) df1 = 3.24f;
-    df1 = df1 * expf(sbeta * shdfac);
+    df1 = df1 * gfk_exp(sbeta * shdfac);
     if (sncovr > 0.97f) df1 = sncond;
     real dsoil = -(0.5f * zsoil[0]);
     real dtot = 0.0f;
@@ -1692,7 +2006,7 @@ void noah_column_body(const int* __restrict__ ivgtyp,
         real df1n = noah_tdfcnd(smc[0], quartz, smcmax, swc[0], bexp,
                                 psisat, soiltyp, opt_thcnd);
         if (vegtyp == isurban) df1n = 3.24f;
-        df1n = df1n * expf(sbeta * shdfac);
+        df1n = df1n * gfk_exp(sbeta * shdfac);
         real yynum = fdown - emissi * NSIGMA * t24;
         real yy = sfctmp + (yynum / rch + th2 - sfctmp - beta * epsca)
                            / rr;
@@ -1776,8 +2090,8 @@ void noah_column_body(const int* __restrict__ ivgtyp,
                       - (double)df1 * ((double)t12 - (double)stc1_old)
                         / (double)dtot);
         } else {
-            t1 = NTFREEZ * fmaxf(0.01f, powf(sncovr, snoexp))
-                 + t12 * (1.0f - fmaxf(0.01f, powf(sncovr, snoexp)));
+            t1 = NTFREEZ * fmaxf(0.01f, gfk_pow(sncovr, snoexp))
+                 + t12 * (1.0f - fmaxf(0.01f, gfk_pow(sncovr, snoexp)));
             beta = 1.0f;
             ssoil_pac = df1 * (t1 - stc[0]) / dtot;
             bool clipped = false;
@@ -1937,14 +2251,17 @@ void noah_column_body(const int* __restrict__ ivgtyp,
         sh2o_a[k * plane + idx] = swc[k];
         smcrel_a[k * plane + idx] = smav[k];
     }
-    double t1d = (double)t1;
-    noahres_a[idx] = (real)(((double)solnet + (double)lwdn)
-                            - (double)sheat + (double)ssoil_out
-                            - (double)eta_e
-                            - ((double)emissi * (double)NSTBOLT
-                               * t1d * t1d * t1d * t1d)
-                            - (double)flx1 - (double)flx2
-                            - (double)flx3);
+    // module_sf_noahdrv.F:1312: the residual is a float32 sum, left to
+    // right, with T1**4 as gfortran's -O0 __powisf2 forms it.  It cancels
+    // terms of order 500 W/m2 into a residual of order 0.01, so the float32
+    // rounding of each partial sum IS the answer; a float64 sum rounded once
+    // is a different function of the same terms.
+    noahres_a[idx] = __fsub_rn(__fsub_rn(__fsub_rn(__fsub_rn(__fsub_rn(
+                         __fadd_rn(__fsub_rn(__fadd_rn(solnet, lwdn), sheat),
+                                   ssoil_out), eta_e),
+                         __fmul_rn(__fmul_rn(emissi, NSTBOLT),
+                                   noah_powi(t1, 4))),
+                         flx1), flx2), flx3);
     reslin_a[idx] = (real)reslin;
     ebal_a[idx] = ebal_case;
     chklowq_a[idx] = 1.0f;
@@ -1956,7 +2273,12 @@ void noah_column_body(const int* __restrict__ ivgtyp,
         acsnow_a[idx] = acsnow_a[idx] + prcp * dt;
     if (snow_a[idx] > 0.0f) {
         acsnom_a[idx] = acsnom_a[idx] + snomlt * 1000.0f;
-        snopcx_a[idx] = snopcx_a[idx] - snomlt * 1000.0f * NXLF / dt;
+        // module_sf_noahdrv.F:1595 SNOPCX - SNOMLT/FDTLIW with FDTLIW =
+        // DT/ROWLIW (:730) and ROWLIW = 1.E3*XLF, as the land-ice arm spells
+        // it; SNOMLT*1000*XLF/DT is the same quantity rounded differently
+        // (1 ULP on seven melting columns of the oracle).
+        snopcx_a[idx] = __fsub_rn(snopcx_a[idx], __fdiv_rn(snomlt,
+                            __fdiv_rn(dt, __fmul_rn(1000.0f, NXLF))));
     }
 }
 
@@ -2143,123 +2465,6 @@ void noah_column_urban(const int* __restrict__ ivgtyp,
                            tsk_rural_bep, rural_q1, rural_q2k, rural_zlvl);
 }
 
-// ====================================================================
-// Sea-ice support (2.9.0 intake of the exact chain's seaice_noah port,
-// verify-noah-lsm 217a273cc).  The helpers below are the ones
-// noah_seaice_column calls, with the names and words they carry in that
-// port; the land-ice column above (glacial_*) is unchanged.
-// ====================================================================
-
-// ------------------------------------------------- exact sign compare
-// Subnormal-preserving float -> double, the pattern of shinhong.cu's sh_f2d
-// and rrtmg_sw.cu's rsw_f2d.  CuPy compiles every kernel with -ftz=true, so a
-// plain `x > 0.0f` is setp.gt.ftz.f32 and reads a positive subnormal as zero;
-// a plain (double)x cast is no better, because the cvt.f64.f32 it emits
-// DAZes the input too.  The bits are decoded instead, so the compare is the
-// IEEE one gfortran's `.GT. 0.0` makes.
-__device__ __forceinline__ double noah_f2d(real x)
-{
-    unsigned int ix = __float_as_uint(x);
-    if (((ix >> 23) & 0xffu) == 0u) {     // zero or subnormal
-        double v = (double)(ix & 0x7fffffu) * 0x1p-149;
-        return (ix >> 31) ? -v : v;
-    }
-    return (double)x;                     // normal / inf / nan
-}
-
-#define NGL_CAPA __uint_as_float(0x3e924925u)   // CAPA = R_D/CP (noahdrv:700)
-
-// glacial CSNOW (:578-591)
-__device__ static real nglac_csnow(real dsnow)
-{
-    real c = __fmul_rn(0.328f, gfk_pow(10.0f, __fmul_rn(2.25f, dsnow)));
-    return __fmul_rn(__fmul_rn(2.0f, 0.11631f), c);
-}
-
-// glacial SNOW_NEW (:1228-1278)
-__device__ static void nglac_snow_new(real temp, real newsn, real& snowh,
-                                      real& sndens)
-{
-    real tempc = __fsub_rn(temp, 273.15f);
-    real dsnew;
-    if (tempc <= -15.0f) dsnew = 0.05f;
-    else dsnew = __fadd_rn(0.05f, __fmul_rn(0.0017f,
-                     gfk_pow(__fadd_rn(tempc, 15.0f), 1.5f)));
-    real snowhc = __fmul_rn(snowh, 100.0f);
-    real newsnc = __fmul_rn(newsn, 100.0f);
-    real hnewc = __fdiv_rn(newsnc, dsnew);
-    if (__fadd_rn(snowhc, hnewc) < 1.0e-3f) {
-        sndens = fmaxf(dsnew, sndens);
-    } else {
-        sndens = __fdiv_rn(__fadd_rn(__fmul_rn(snowhc, sndens),
-                                     __fmul_rn(hnewc, dsnew)),
-                           __fadd_rn(snowhc, hnewc));
-    }
-    snowhc = __fadd_rn(snowhc, hnewc);
-    snowh = __fmul_rn(snowhc, 0.01f);
-}
-
-// noahlsm ROSR12 (module_sf_noahlsm.F:2537).
-// HSTEP (module_sf_noahlsm.F:1853, and the glacial copy :710-754) with the
-// noahlsm ROSR12 it calls; shared by the land-ice and sea-ice arms.
-__device__ static void nice_hstep(real* stc, real dt, real* rhsts, real* ai,
-                                  real* bi, real* ci)
-{
-    for (int k = 0; k < NSOIL; ++k) {
-        rhsts[k] = __fmul_rn(rhsts[k], dt);
-        ai[k] = __fmul_rn(ai[k], dt);
-        bi[k] = __fadd_rn(1.0f, __fmul_rn(bi[k], dt));
-        ci[k] = __fmul_rn(ci[k], dt);
-    }
-    // ROSR12(P=CI, A=AI, B=BI, C=CIin, D=RHSTSin, DELTA=RHSTS)
-    real p[NSOIL], delta[NSOIL], c[NSOIL];
-    for (int k = 0; k < NSOIL; ++k) c[k] = ci[k];
-    c[NSOIL - 1] = 0.0f;
-    p[0] = __fdiv_rn(-c[0], bi[0]);
-    delta[0] = __fdiv_rn(rhsts[0], bi[0]);
-    for (int k = 1; k < NSOIL; ++k) {
-        real rb = __fdiv_rn(1.0f, __fadd_rn(bi[k], __fmul_rn(ai[k], p[k - 1])));
-        p[k] = __fmul_rn(-c[k], rb);
-        delta[k] = __fmul_rn(__fsub_rn(rhsts[k], __fmul_rn(ai[k], delta[k - 1])),
-                             rb);
-    }
-    p[NSOIL - 1] = delta[NSOIL - 1];
-    for (int k = 1; k < NSOIL; ++k) {
-        int kk = NSOIL - k - 1;
-        p[kk] = __fadd_rn(__fmul_rn(p[kk], p[kk + 1]), delta[kk]);
-    }
-    for (int k = 0; k < NSOIL; ++k) stc[k] = __fadd_rn(stc[k], p[k]);
-}
-
-// glacial SNOWPACK (:1076-1199)
-__device__ static void nglac_snowpack(real sneqv, real dtsec, real& snowh,
-                                      real& sndens, real tsnow, real tsoil)
-{
-    real esdc = __fmul_rn(sneqv, 100.0f);
-    real dthr = __fdiv_rn(dtsec, 3600.0f);
-    real tsnowc = __fsub_rn(tsnow, 273.15f);
-    real tsoilc = __fsub_rn(tsoil, 273.15f);
-    real tavgc = __fmul_rn(0.5f, __fadd_rn(tsnowc, tsoilc));
-    real esdcx = (esdc > 1.0e-2f) ? esdc : 1.0e-2f;
-    real bfac = __fmul_rn(__fmul_rn(dthr, 0.01f),
-                          gfk_exp(__fsub_rn(__fmul_rn(0.08f, tavgc),
-                                            __fmul_rn(21.0f, sndens))));
-    real pexp = 0.0f;
-    for (int j = 4; j >= 1; --j)
-        pexp = __fdiv_rn(__fmul_rn(__fmul_rn(__fadd_rn(1.0f, pexp), bfac),
-                                   esdcx), (real)(j + 1));
-    pexp = __fadd_rn(pexp, 1.0f);
-    real dsx = __fmul_rn(sndens, pexp);
-    if (dsx > 0.40f) dsx = 0.40f;
-    if (dsx < 0.05f) dsx = 0.05f;
-    sndens = dsx;
-    if (tsnowc >= 0.0f) {
-        real dw = __fdiv_rn(__fmul_rn(0.13f, dthr), 24.0f);
-        sndens = __fadd_rn(__fmul_rn(sndens, __fsub_rn(1.0f, dw)), dw);
-        if (sndens >= 0.40f) sndens = 0.40f;
-    }
-    snowh = __fmul_rn(__fdiv_rn(esdc, sndens), 0.01f);
-}
 
 // ====================================================================
 // SEA ICE: WRF v4.6.1 seaice_noah (module_sf_noah_seaice_drv.F) and

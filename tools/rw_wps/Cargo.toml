@@ -24,6 +24,7 @@ resolver = "2"
 members = [
     "crates/rw-wps",
     "crates/mapped-engine",
+    "crates/projected-intermediate",
 ]
 # The vendored library crates are path dependencies of the members,
 # not workspace members: their donor manifests stay byte-identical.

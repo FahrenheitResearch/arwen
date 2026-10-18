@@ -3349,8 +3349,14 @@ def ruc_initialize_cold_start(
         raise ValueError("RUC tslb and smois must be finite")
     if np.any((temperature < np.float32(170.0)) | (temperature > np.float32(400.0))):
         raise ValueError("RUC tslb must remain within WRF's 170..400 K preflight")
-    if np.any((total_water < np.float32(0.0)) | (total_water > np.float32(1.0))):
-        raise ValueError("RUC smois must remain within 0..1 m3 m-3")
+    # No range check on smois.  ruclsminit takes real.exe's words as they
+    # are (an unfrozen layer gets sh2o = smois; module_sf_ruclsm.F, the
+    # land-point loop of ruclsminit), and real.exe's vertical interpolation
+    # writes small negative deep-layer values near coasts (down to -0.032 at
+    # layer 8 on the gulf-coast combo case).  The first soilmoist call bounds
+    # every layer to [qmin + 1.e-8, maxsmc] (module_sf_ruclsm.F:6033-6076).
+    # The 0..1 check named no breakage and refused 24 combo-sweep runs that
+    # stock WRF integrates (2026-10-07, round 2); finiteness above stands.
 
     horizontal_shape = temperature.shape[1:]
     soil_type = _horizontal_integer_field(isltyp, horizontal_shape, "isltyp")
@@ -10094,6 +10100,10 @@ def ruc_land_surface_step(
     humid = (
         qvatm >= (q2sat * np.float32(0.95)).astype(np.float32)
     ) & (qvatm < columns["qvg"])
+    if snow == "wrf_45":
+        # The operational branch (:1083-1087) and WRF v4.0-4.5 zero CHKLOWQ
+        # only under the MYJ PBL; this port's RUC is fail-closed on MYJ.
+        humid = humid & ~humid
     columns["chklowq"][land] = np.where(humid, zero, one).astype(
         np.float32)[land]
 

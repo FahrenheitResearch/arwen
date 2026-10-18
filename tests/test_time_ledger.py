@@ -146,7 +146,7 @@ def test_shell_schema_and_warn_once(tmp_path):
     assert result.returncode == 0, result.stderr
     rows = _records(path)
     assert [row["phase"] for row in rows] == ["begin", "end"]
-    assert rows[1]["attrs"] == {"ok": True}
+    assert {k: v for k, v in rows[1]["attrs"].items() if k != "cpu_s"} == {"ok": True}
     env["GPUWM_TIME_LEDGER"] = str(tmp_path)
     result = subprocess.run([bash, "-c", command, "bash", script], env=env, text=True, capture_output=True)
     assert result.returncode == 0 and result.stderr.count("time ledger: ") == 1

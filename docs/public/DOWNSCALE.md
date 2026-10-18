@@ -650,7 +650,7 @@ refused before the first step.
 
 ### A drawn extent on the measured card
 
-`--child-size NX,NY` with `--auto-vram` prices the extent you drew on the
+`--child-size NX,NY` with `--auto-vram` prices the extent you chose on the
 card in front of you: the door measures the local card once, prices the
 given child on it (`memory.basis` is `measured-local`, `gpu_sizing` carries
 the measurement) and reports `memory.fits`. The same holds for
@@ -890,7 +890,7 @@ with no staged Rust renderer is turned away before the child is
 integrated rather than after, with `--render-products none` named as the
 way to run the forecast anyway.
 
-**A child that does not finish keeps the pictures it drew.** A run that
+**A child that does not finish keeps the pictures it rendered.** A run that
 stops partway through -- non-finite, a refusal raised mid-run, an
 interrupt -- leaves every picture drawn while it ran exactly where it was
 published, and adds the verdict those pictures cannot carry themselves.

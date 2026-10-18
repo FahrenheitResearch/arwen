@@ -28,6 +28,11 @@ import os
 import pathlib
 import re
 
+# Kernel numerics for the battery (owner ruling 2026-10-16: fast is the default, strict the opt-in).  The
+# column oracles grade units word for word against WRF, so the battery names strict before gpuwm loads;
+# tests of the fast default select it themselves (tests/test_numerics_default.py).
+os.environ["GPUWM_NUMERICS"] = "strict"
+
 import pytest
 
 #: Set to 1 to guarantee no local device is opened, whatever is collected.
@@ -939,6 +944,35 @@ def _chain_static_staging_kept_off_the_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _lake_ice_analysis_kept_off_the_network(monkeypatch, tmp_path_factory):
+    """Keep the GFS route's observed lake ice from downloading in this suite.
+
+    Since 2.9.1 a GFS preparation reads the daily IMS snow and ice analysis
+    (gpuwm.ingest.lake_ice) into ~/.gpuwm/cache/surface-obs.  Pointed at an
+    empty per-session cache and with no network answer, every preparation
+    here falls back to the forcing's ice exactly as an offline run does,
+    so fixtures recorded before the change keep their bytes.  The
+    acquisition and decision are tested in tests/test_lake_ice.py.
+    """
+
+    from urllib.error import URLError
+
+    from gpuwm.ingest import lake_ice
+
+    monkeypatch.setenv(lake_ice.CACHE_ENV,
+                       str(tmp_path_factory.getbasetemp() / "surface-obs-empty"))
+    original = lake_ice.acquire_observed_lake_ice
+
+    def offline(valid_time, **kwargs):
+        def refuse(request, timeout):
+            raise URLError("network kept off in the test suite")
+        kwargs.setdefault("opener", refuse)
+        return original(valid_time, **kwargs)
+
+    monkeypatch.setattr(lake_ice, "acquire_observed_lake_ice", offline)
+
+
+@pytest.fixture(autouse=True)
 def _the_default_geography_root_counts_as_staged(monkeypatch):
     """Answer the DEFAULT WPS_GEOG root as staged, on every test machine.
 
@@ -1239,8 +1273,21 @@ def wrf_rust_gap() -> str | None:
 #: every collection, so `pytest tests/test_config.py` opened the NetCDF
 #: bridge, loaded the CPU library and (see grib1_bridge_gap) built a crate,
 #: for a file that reads none of them.
+def netcdf_writer_gap() -> str | None:
+    """Why the Rust NetCDF writer library cannot load here, or None."""
+
+    try:
+        from gpuwm.io.nc_writer_bridge import resolve_ncwrite_bridge
+        resolve_ncwrite_bridge()
+    except Exception as error:                          # noqa: BLE001
+        return f"the Rust NetCDF writer library is not usable here ({str(error).splitlines()[0]})"
+    return None
+
+
 CAPABILITY_PROBES = {
     "netcdf_bridge": netcdf_bridge_gap,
+    # The ensemble product collector writes its NetCDF through this library.
+    "netcdf_writer_bridge": netcdf_writer_gap,
     "wrf_eta_bridge": functools.partial(cpu_preprocess_gap,
                                        "gpuwm_wrf_eta_f32"),
     "wrf_sfcprs_bridge": functools.partial(cpu_preprocess_gap,
@@ -1267,6 +1314,7 @@ CAPABILITY_PROBES = {
 CAPABILITY_MARKER = "requires_capability"
 
 requires_netcdf_bridge = pytest.mark.requires_capability("netcdf_bridge")
+requires_netcdf_writer_bridge = pytest.mark.requires_capability("netcdf_writer_bridge")
 requires_wrf_eta_bridge = pytest.mark.requires_capability("wrf_eta_bridge")
 requires_wrf_sfcprs_bridge = pytest.mark.requires_capability(
     "wrf_sfcprs_bridge")

@@ -10,19 +10,19 @@ use rw_mpas::convert::{
 };
 use rw_mpas::remap::{read_mesh_topology, ProductRemap};
 use rw_mpas::history::{
-    assert_mesh_agrees, read_history, read_history_with_init, read_init_fields, MpasFrame, Timestamp,
+    assert_mesh_agrees, read_history_on_mesh, read_init_fields, MpasFrame, Timestamp,
 };
 use rw_mpas::sha256_file;
 use rw_mpas::weights::{
     build_weights, read_mesh_cell_spacing, read_mesh_coordinates, ON_MESH_SPACING_FACTOR,
 };
-use rw_mpas::window::{Window, GLOBAL_MESH_WINDOW, REGION_SPEC_PREFIX};
+use rw_mpas::window::{Window, GLOBAL_MESH_WINDOW, REGION_LATLON_SPEC_PREFIX, REGION_SPEC_PREFIX};
 use rw_store::netcdf_classic::NcFormat;
 
 const USAGE: &str = "\
 usage: rw_mpas_convert --history FILE... --mesh FILE --out-dir DIR
                        [--init FILE] [--mesh-sha256 HEX] [--init-sha256 HEX]
-                       [--window focus|global|global-mesh|mesh|composite|region:...|lambert:...]
+                       [--window focus|global|global-mesh|mesh|composite|region:...|region-latlon:...|lambert:...]
                        [--compose SOURCES.json] [--compose-base-only]
                        [--field-set full|surface]
                        [--simulation-start YYYY-MM-DD_HH:MM:SS]
@@ -43,6 +43,11 @@ windows:
           near the equator) whose dx is the median spacing of the mesh cells
           inside it, rounded down. The caller names the ground; the mesh
           names the resolution.
+  region-latlon:CLAT,CLON,WIDTH_KM,HEIGHT_KM
+          the same box at the mesh's own spacing, held on a regular lat-lon
+          grid at any latitude. Lat-lon frames carry CF 1-D coordinates
+          (lat, lon, Time, bottom_top, bottom_top_stag, soil_layers_stag),
+          so this is the window an ArWen domain reads as its parent.
   lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON
           an explicit WRF-style Lambert grid, for landing on another
           model's own grid point for point.
@@ -87,11 +92,21 @@ categories and soil.  Each frame records the method per variable
 lines comparing the window integral of RAINC+RAINNC with the mesh's own.
 --remap nearest (the default) is the frozen nearest-cell map.
 
---jobs N (single-source only, default 1) converts N history frames at a
-time.  A frame is read, remapped, written and hashed on its own, so frames
-are independent; stdout lines and the JSON receipt keep the order of
---history whatever N is, and every output file is the same bytes.  Each
-frame in flight holds its history and its output in memory.
+A split-stream history (RRFS-MPAS writes its history with no latCell/lonCell
+and its 2 m, 10 m, precipitation and reflectivity fields to diag.*.nc) takes
+its cell centres from --mesh, once the cell counts and the static fields both
+files carry (shdmin, shdmax) agree, and reads the fields it lacks from the
+diag file of the same time beside it (history.T.nc -> diag.T.nc).  The frame
+names both files (MPAS_CELL_CENTRES_*, MPAS_DIAG_*).  A history that carries
+its own centres, as MPAS-A writes it, is read exactly as before.
+
+--jobs N (single-source only) converts N history frames at a time.  The
+default converts as many at once as there are frames, cores and host memory
+for (each frame in flight holds its history in memory; the bound is half the
+available memory over twice the history file's size).  A frame is read,
+remapped, written and hashed on its own, so frames are independent; stdout
+lines and the JSON receipt keep the order of --history whatever N is, and
+every output file is the same bytes.
 
 --compose-base-only frames the same window from the same sources and then
 converts the BASE alone, so the composite has a coarse counterpart over
@@ -107,7 +122,14 @@ const MESH_WINDOW: &str = "mesh";
 /// reader already advises about inferred angle units. `gpuwm.bridges` and
 /// `gpuwm.mpas_mesh` both carry this literal; a change here is a change
 /// there.
-const ABI: &str = "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED";
+///
+/// It also names the flags a caller may pass that an older build refuses
+/// (`--remap`, with its REMAP and BUDGET stdout lines, and `--jobs`).  THE
+/// BREAKAGE THIS PREVENTS: the literal did not move when 2.9.0 added them,
+/// so a converter staged before 2.9.0 in `~/.gpuwm/bridges` passed `gpuwm
+/// doctor` and `fetch-bridges` as current, and the gpuwm-hex product stage
+/// then died on `rw_mpas_convert: unknown flag --remap` with no maps drawn.
+const ABI: &str = "gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED\tREMAP\tBUDGET\t--remap nearest|product\t--jobs N";
 
 /// `GPUWM_BRIDGE_SOURCE_REV=<40-hex commit>`: the source revision this
 /// binary was built from, embedded so the gpuwm release cut can prove a
@@ -180,7 +202,8 @@ fn parse() -> Result<Args, String> {
         compose_base_only: false,
         model_label: None,
         remap: "nearest".to_string(),
-        jobs: 1,
+        // 0 = not given: sized from the frames, cores and memory in run().
+        jobs: 0,
     };
     let mut raw = std::env::args().skip(1).peekable();
     while let Some(flag) = raw.next() {
@@ -324,7 +347,8 @@ fn load_source(
     .map_err(|e| e.to_string())?;
     let mut frames = Vec::with_capacity(entry.history.len());
     for history in &entry.history {
-        let frame = read_history(history, None, None, None, None).map_err(|e| e.to_string())?;
+        let frame =
+            read_history_on_mesh(history, None, None, None, Some(&mesh)).map_err(|e| e.to_string())?;
         assert_mesh_agrees(&frame, &mesh, 1.0e-4).map_err(|e| e.to_string())?;
         frames.push(frame);
     }
@@ -664,7 +688,10 @@ fn run() -> Result<(), String> {
             derived.description()
         );
         derived
-    } else if args.window == GLOBAL_MESH_WINDOW || args.window.starts_with(REGION_SPEC_PREFIX) {
+    } else if args.window == GLOBAL_MESH_WINDOW
+        || args.window.starts_with(REGION_SPEC_PREFIX)
+        || args.window.starts_with(REGION_LATLON_SPEC_PREFIX)
+    {
         let spacing = read_mesh_cell_spacing(&mesh_path).map_err(|e| e.to_string())?;
         if spacing.spacing_metres.len() != mesh.n_cells() {
             return Err(format!(
@@ -794,10 +821,60 @@ fn run() -> Result<(), String> {
     };
     let convert_one = |history: &PathBuf| -> Result<(Vec<String>, String), String> {
         let mut lines: Vec<String> = Vec::new();
-        let frame = read_history_with_init(history, init_fields.as_ref(), None, None)
+        let frame = read_history_on_mesh(history, init_fields.as_ref(), None, None, Some(&mesh))
             .map_err(|e| e.to_string())?;
         let (dlat, dlon) =
             assert_mesh_agrees(&frame, &mesh, 1.0e-4).map_err(|e| e.to_string())?;
+        // A split-stream history (RRFS-MPAS) took its centres from --mesh and
+        // fields from its diag stream: said on stderr and in the receipt,
+        // and only for such a frame, so MPAS-A receipts are unchanged.
+        let split_json = match &frame.split {
+            None => String::new(),
+            Some(split) => {
+                eprintln!(
+                    "rw_mpas_convert: advisory: history {} carries no cell centres; they are                      the mesh's {} (static fields agreeing cell for cell: {}); {} field(s)                      from the diag stream {}: {}",
+                    history.display(),
+                    split.coordinates_path.display(),
+                    if split.agreed_static_fields.is_empty() {
+                        "none".to_string()
+                    } else {
+                        split.agreed_static_fields.join(", ")
+                    },
+                    split.diag_fields.len(),
+                    split
+                        .diag_path
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(none beside it)".to_string()),
+                    split.diag_fields.join(", ")
+                );
+                format!(
+                    ", \"split_streams\": {{\"cell_centres_from\": \"{}\", \"cell_centres_sha256\": \"{}\", \"agreed_static_fields\": [{}], \"diag\": {}, \"diag_sha256\": {}, \"diag_fields\": [{}]}}",
+                    json_escape(&split.coordinates_path.display().to_string()),
+                    split.coordinates_sha256,
+                    split
+                        .agreed_static_fields
+                        .iter()
+                        .map(|n| format!("\"{n}\""))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    match &split.diag_path {
+                        Some(p) => format!("\"{}\"", json_escape(&p.display().to_string())),
+                        None => "null".to_string(),
+                    },
+                    match &split.diag_sha256 {
+                        Some(d) => format!("\"{d}\""),
+                        None => "null".to_string(),
+                    },
+                    split
+                        .diag_fields
+                        .iter()
+                        .map(|n| format!("\"{n}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        };
         let stamp = frame.valid_time.label().replace(':', "_");
         let destination = Path::new(&out_dir).join(format!("{}_{stamp}", args.prefix));
         let options = ConvertOptions {
@@ -873,7 +950,7 @@ fn run() -> Result<(), String> {
         // every frame the converter had just written.
         let output_sha256 = sha256_file(&emitted.path).map_err(|e| e.to_string())?;
         let record = format!(
-            "{{\"output\": \"{}\", \"output_sha256\": \"{}\", \"output_bytes\": {}, \"valid_time\": \"{}\", \"simulation_start\": \"{}\", \"lead_seconds\": {}, \"convert_seconds\": {}, \"history_sha256\": \"{}\", \"init_sha256\": \"{}\", \"max_latitude_error_degrees\": {:e}, \"max_longitude_error_degrees\": {:e}, \"written_variables\": [{}], \"absent_wrf_fields\": [{}], \"precipitation_budget\": {}}}",
+            "{{\"output\": \"{}\", \"output_sha256\": \"{}\", \"output_bytes\": {}, \"valid_time\": \"{}\", \"simulation_start\": \"{}\", \"lead_seconds\": {}, \"convert_seconds\": {}, \"history_sha256\": \"{}\", \"init_sha256\": \"{}\", \"max_latitude_error_degrees\": {:e}, \"max_longitude_error_degrees\": {:e}, \"written_variables\": [{}], \"absent_wrf_fields\": [{}], \"precipitation_budget\": {}{}}}",
             json_escape(&emitted.path.display().to_string()),
             output_sha256,
             emitted.bytes,
@@ -898,11 +975,13 @@ fn run() -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join(", "),
             budget_json,
+            split_json,
         );
         Ok((lines, record))
     };
+    let jobs = if args.jobs > 0 { args.jobs } else { auto_frame_jobs(&args.history) };
     let mut records: Vec<String> = Vec::new();
-    for chunk in args.history.chunks(args.jobs.max(1)) {
+    for chunk in args.history.chunks(jobs.max(1)) {
         let done: Vec<Result<(Vec<String>, String), String>> = if chunk.len() == 1 {
             vec![convert_one(&chunk[0])]
         } else {
@@ -951,6 +1030,26 @@ fn run() -> Result<(), String> {
         started.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+/// Frames converted at a time when --jobs is not given: every frame, up to the
+/// cores, and no more than half the available host memory holds at about
+/// twice each history file's size (its fields as read, plus the plane being
+/// written).
+fn auto_frame_jobs(history: &[PathBuf]) -> usize {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let largest = history
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .map(|meta| meta.len())
+        .max()
+        .unwrap_or(0);
+    let per_frame = largest.saturating_mul(2).saturating_add(256 << 20);
+    let by_memory = match rw_host_memory::available_bytes() {
+        Some(available) => ((available / 2) / per_frame.max(1)).max(1) as usize,
+        None => 1,
+    };
+    history.len().min(cores).min(by_memory).clamp(1, 64)
 }
 
 fn main() -> ExitCode {

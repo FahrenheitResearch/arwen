@@ -87,3 +87,34 @@ def test_a_run_without_inputs_is_refused_by_name(tmp_path):
 def test_fractional_time_steps(tmp_path):
     run = _run(tmp_path)
     assert time_step_seconds(Path(run.namelist)) == 7.5
+
+
+from gpuwm.config import ConfigurationRefused, UnsupportedConfiguration
+
+
+@pytest.mark.parametrize("raised,status", [
+    (UnsupportedConfiguration("scalar_pblmix=1 requires bl_pbl_physics=1 (YSU) or 5 (MYNN)"), "REFUSED"),
+    (ConfigurationRefused("named refusal"), "REFUSED"),
+    (ValueError("shape mismatch"), "CRASH"),
+    (OSError("input read failed"), "CRASH"),
+    (NotImplementedError("missing code branch"), "CRASH"),
+    (KeyError("unexpected"), "CRASH"),
+])
+def test_a_door_error_is_this_runs_outcome_not_the_processs(tmp_path, monkeypatch, raised, status):
+    """The scalar_pblmix door refusal is a NotImplementedError; it escaped the
+    replay and ended the whole verify-exact process, dropping every later run
+    of its chunk (199 of 647 runs in the first pass of combo sweep round 3)."""
+    from datetime import datetime
+    from gpuwm.verify_exact import replay as rp
+
+    monkeypatch.setattr(rp, "stage_run_directory", lambda run, stage: None)
+
+    def refuse(run, stage):
+        raise raised
+
+    monkeypatch.setattr(rp, "resolve_replay", refuse)
+    run = ReplayRun("case", "X001", {"id": "X001"}, tmp_path, tmp_path / "namelist.input")
+    result = rp.replay(run, tmp_path / "work", reference_meta={}, keep_steps=set(),
+                       run_seconds=60.0, step_seconds=15.0, start=datetime(2024, 1, 1))
+    assert result.status == status
+    assert type(raised).__name__ in result.error

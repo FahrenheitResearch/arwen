@@ -151,13 +151,10 @@ def test_concentration_space_kernels_have_identity_moment_scales():
         root / "gpuwm/core/kernels/nssl2_diagnostics.cu").read_text(
             encoding="ascii")
 
-    assert (
-        "input_number_scale = concentration_space ? 1.0f : rho" in nucond)
-    assert (
-        "output_number_scale = concentration_space ? 1.0f : 1.0f / rho"
-        in nucond)
-    assert "number_scale = concentration_space ? 1.0f : rho" in diagnostics
-    assert "volume_scale = concentration_space ? 1.0f : rho" in diagnostics
+    assert "const float in_scale = concentration_space ? 1.0f : dn;" in nucond
+    assert ("const float out_scale = concentration_space ? 1.0f : "
+            "__fdiv_rn(1.0f, dn);") in nucond
+    assert "const float scale = concentration_space ? 1.0f : db;" in diagnostics
     assert "const float nc = fmaxf(cloud_number[idx], 0.0f)" in diagnostics
     assert "cloud_number[idx] * rho" not in diagnostics
 

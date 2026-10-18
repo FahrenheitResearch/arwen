@@ -1,0 +1,440 @@
+{
+ "check": "refute of lane/verify-uw-pbl (de60d52f8, tree 083e2696)",
+ "date": "2026-10-07",
+ "box": "W1 (AWS us-west-2), RTX PRO 6000 Blackwell, driver 595.91.07, NVRTC 12.9, cupy 14.2.0",
+ "oracle": "WRF v4.6.1 d66e442f, gfortran 13.3.0 -O0, glibc 2.39; rebuilt by the lane's run_oracle.sh; the lane's 370-column fixtures came out byte-identical to the lane's SHA256SUMS",
+ "tree_graded": "18ebac36 (lane tip + calm-wind guard + refute tools), commit 0c3f2ffe4 on lane/verify-uw-pbl-refute",
+ "runs": {
+  "strict/lanefx": {
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control_detected": true,
+   "compile_options": [
+    "--fmad=false",
+    "--ftz=false",
+    "--prec-div=true",
+    "--prec-sqrt=true",
+    "-DGPUWM_WRF_EXACT=1"
+   ]
+  },
+  "strict/lanefx-cr": {
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control_detected": true,
+   "compile_options": [
+    "--fmad=false",
+    "--ftz=false",
+    "--prec-div=true",
+    "--prec-sqrt=true",
+    "-DGPUWM_WRF_EXACT=1"
+   ]
+  },
+  "strict/refute-host": {
+   "columns": 1908,
+   "column_steps": 8460,
+   "words": 6732720,
+   "mismatched_words": 5,
+   "max_ulp": 1,
+   "max_abs": 9.094947017729282e-13,
+   "exact": false,
+   "negative_control_detected": true,
+   "compile_options": [
+    "--fmad=false",
+    "--ftz=false",
+    "--prec-div=true",
+    "--prec-sqrt=true",
+    "-DGPUWM_WRF_EXACT=1"
+   ]
+  },
+  "strict/refute-cr": {
+   "columns": 1908,
+   "column_steps": 8460,
+   "words": 6732720,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control_detected": true,
+   "compile_options": [
+    "--fmad=false",
+    "--ftz=false",
+    "--prec-div=true",
+    "--prec-sqrt=true",
+    "-DGPUWM_WRF_EXACT=1"
+   ]
+  },
+  "strict/bulk-host": {
+   "columns": 20000,
+   "column_steps": 40000,
+   "words": 34020000,
+   "mismatched_words": 9,
+   "max_ulp": 2,
+   "max_abs": 9.094947017729282e-13,
+   "exact": false,
+   "negative_control_detected": true,
+   "compile_options": [
+    "--fmad=false",
+    "--ftz=false",
+    "--prec-div=true",
+    "--prec-sqrt=true",
+    "-DGPUWM_WRF_EXACT=1"
+   ]
+  },
+  "strict/bulk-cr": {
+   "columns": 20000,
+   "column_steps": 40000,
+   "words": 34020000,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control_detected": true,
+   "compile_options": [
+    "--fmad=false",
+    "--ftz=false",
+    "--prec-div=true",
+    "--prec-sqrt=true",
+    "-DGPUWM_WRF_EXACT=1"
+   ]
+  },
+  "default/lanefx": {
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 860,
+   "max_ulp": 1718508282,
+   "max_abs": 10.840034484863281,
+   "exact": false,
+   "negative_control_detected": true
+  },
+  "default/lanefx-cr": {
+   "columns": 370,
+   "column_steps": 1328,
+   "words": 735264,
+   "mismatched_words": 860,
+   "max_ulp": 1718508282,
+   "max_abs": 10.840034484863281,
+   "exact": false,
+   "negative_control_detected": true
+  },
+  "default/refute-host": {
+   "columns": 1908,
+   "column_steps": 8460,
+   "words": 6732720,
+   "mismatched_words": 5,
+   "max_ulp": 1,
+   "max_abs": 9.094947017729282e-13,
+   "exact": false,
+   "negative_control_detected": true
+  },
+  "default/refute-cr": {
+   "columns": 1908,
+   "column_steps": 8460,
+   "words": 6732720,
+   "mismatched_words": 0,
+   "max_ulp": 0,
+   "max_abs": 0.0,
+   "exact": true,
+   "negative_control_detected": true
+  },
+  "default/bulk-host": {
+   "columns": 20000,
+   "column_steps": 40000,
+   "words": 34020000,
+   "mismatched_words": 18,
+   "max_ulp": 7618146,
+   "max_abs": 9.094947017729282e-13,
+   "exact": false,
+   "negative_control_detected": true
+  },
+  "default/bulk-cr": {
+   "columns": 20000,
+   "column_steps": 40000,
+   "words": 34020000,
+   "mismatched_words": 9,
+   "max_ulp": 7618146,
+   "max_abs": 1.0675296290802248e-38,
+   "exact": false,
+   "negative_control_detected": true
+  }
+ },
+ "strict_mismatch_words": [
+  {
+   "case": "cases-refute-fuzz-n150 col 150 step 2",
+   "field": "rthblten",
+   "level": 15,
+   "wrf_hex": "0x3447cfd8",
+   "gpu_hex": "0x3447cfd7",
+   "ulp": 1
+  },
+  {
+   "case": "cases-refute-fuzz-n150 col 150 step 2",
+   "field": "rthblten",
+   "level": 18,
+   "wrf_hex": "0x34215e2e",
+   "gpu_hex": "0x34215e2d",
+   "ulp": 1
+  },
+  {
+   "case": "cases-refute-fuzz-n45 col 106 step 1",
+   "field": "tauresx2d",
+   "level": 1,
+   "wrf_hex": "0x3724c32a",
+   "gpu_hex": "0x3724c329",
+   "ulp": 1
+  },
+  {
+   "case": "cases-refute-long col 12 step 15",
+   "field": "rthblten",
+   "level": 13,
+   "wrf_hex": "0x33be39a9",
+   "gpu_hex": "0x33be39aa",
+   "ulp": 1
+  },
+  {
+   "case": "cases-refute-long col 42 step 26",
+   "field": "rthblten",
+   "level": 16,
+   "wrf_hex": "0x34967c26",
+   "gpu_hex": "0x34967c25",
+   "ulp": 1
+  },
+  {
+   "case": "cases-bulk001-n60 col 116 step 2",
+   "field": "rthblten",
+   "level": 12,
+   "wrf_hex": "0x35c99c94",
+   "gpu_hex": "0x35c99c95",
+   "ulp": 1
+  },
+  {
+   "case": "cases-bulk003-n100 col 354 step 1",
+   "field": "tauresx2d",
+   "level": 1,
+   "wrf_hex": "0xb66fa055",
+   "gpu_hex": "0xb66fa053",
+   "ulp": 2
+  },
+  {
+   "case": "cases-bulk004-n41 col 25 step 2",
+   "field": "tauresy2d",
+   "level": 1,
+   "wrf_hex": "0x348a2960",
+   "gpu_hex": "0x348a295f",
+   "ulp": 1
+  },
+  {
+   "case": "cases-bulk006-n150 col 127 step 2",
+   "field": "rthblten",
+   "level": 7,
+   "wrf_hex": "0x376d9858",
+   "gpu_hex": "0x376d9857",
+   "ulp": 1
+  },
+  {
+   "case": "cases-bulk006-n150 col 127 step 2",
+   "field": "rthblten",
+   "level": 19,
+   "wrf_hex": "0xb4406092",
+   "gpu_hex": "0xb4406093",
+   "ulp": 1
+  },
+  {
+   "case": "cases-bulk019-n100 col 87 step 2",
+   "field": "rthblten",
+   "level": 11,
+   "wrf_hex": "0x33ce7a17",
+   "gpu_hex": "0x33ce7a16",
+   "ulp": 1
+  },
+  {
+   "case": "cases-bulk024-n50 col 367 step 2",
+   "field": "rthblten",
+   "level": 13,
+   "wrf_hex": "0x34bc9f0e",
+   "gpu_hex": "0x34bc9f0f",
+   "ulp": 1
+  },
+  {
+   "case": "cases-bulk032-n50 col 387 step 2",
+   "field": "rthblten",
+   "level": 15,
+   "wrf_hex": "0x333b4466",
+   "gpu_hex": "0x333b4467",
+   "ulp": 1
+  },
+  {
+   "case": "cases-bulk038-n150 col 195 step 1",
+   "field": "rthblten",
+   "level": 49,
+   "wrf_hex": "0x364ca4a2",
+   "gpu_hex": "0x364ca4a1",
+   "ulp": 1
+  }
+ ],
+ "strict_mismatch_cause": "every word equals the WRF build relinked with correctly rounded cos/acos (hostcr-refute.json, hostcr-bulk.json)",
+ "calm_columns_strict": {
+  "1": {
+   "u1": 0.0,
+   "v1": 0.0,
+   "ust": 1.123344898223877,
+   "mismatches_on_wrf_finite_words": 1,
+   "product_value_where_wrf_nan": {
+    "tauresx2d": [
+     0.000772582134231925
+    ],
+    "tauresy2d": [
+     0.0001191505798487924
+    ]
+   },
+   "product_nonfinite_words": 0
+  },
+  "2": {
+   "u1": 0.0,
+   "v1": 0.0,
+   "ust": 0.09062560647726059,
+   "mismatches_on_wrf_finite_words": 0,
+   "product_value_where_wrf_nan": {
+    "tauresx2d": [
+     -0.0001581287942826748
+    ],
+    "tauresy2d": [
+     0.0008265131036750972
+    ]
+   },
+   "product_nonfinite_words": 0
+  },
+  "3": {
+   "u1": 0.0,
+   "v1": 0.0,
+   "ust": 0.2244044691324234,
+   "mismatches_on_wrf_finite_words": 1,
+   "product_value_where_wrf_nan": {
+    "tauresx2d": [
+     0.0005925996811129153
+    ],
+    "tauresy2d": [
+     0.0002288802934344858
+    ]
+   },
+   "product_nonfinite_words": 0
+  },
+  "4": {
+   "u1": 0.0,
+   "v1": 0.0,
+   "ust": 0.04336194694042206,
+   "mismatches_on_wrf_finite_words": 0,
+   "product_value_where_wrf_nan": {
+    "tauresx2d": [
+     -9.927151404554024e-05
+    ],
+    "tauresy2d": [
+     -0.000530649849679321
+    ]
+   },
+   "product_nonfinite_words": 0
+  },
+  "5": {
+   "u1": -0.08223863691091537,
+   "v1": -0.17911311984062195,
+   "ust": 0.0,
+   "mismatches_on_wrf_finite_words": 0,
+   "product_value_where_wrf_nan": {},
+   "product_nonfinite_words": 0
+  },
+  "6": {
+   "u1": -0.6005052328109741,
+   "v1": -1.4437700510025024,
+   "ust": 0.0,
+   "mismatches_on_wrf_finite_words": 0,
+   "product_value_where_wrf_nan": {},
+   "product_nonfinite_words": 0
+  },
+  "7": {
+   "u1": -7.024804592132568,
+   "v1": 7.996326923370361,
+   "ust": 0.0,
+   "mismatches_on_wrf_finite_words": 0,
+   "product_value_where_wrf_nan": {},
+   "product_nonfinite_words": 0
+  },
+  "8": {
+   "u1": 0.3861519396305084,
+   "v1": 0.21074636280536652,
+   "ust": 0.0,
+   "mismatches_on_wrf_finite_words": 0,
+   "product_value_where_wrf_nan": {},
+   "product_nonfinite_words": 0
+  },
+  "9": {
+   "u1": 0.0,
+   "v1": 0.0,
+   "ust": 0.0,
+   "mismatches_on_wrf_finite_words": 118,
+   "product_value_where_wrf_nan": {
+    "tauresx2d": [
+     0.00021945549815427512
+    ],
+    "tauresy2d": [
+     -4.734300455311313e-05
+    ]
+   },
+   "product_nonfinite_words": 0
+  },
+  "10": {
+   "u1": 0.0,
+   "v1": 0.0,
+   "ust": 0.0,
+   "mismatches_on_wrf_finite_words": 82,
+   "product_value_where_wrf_nan": {
+    "tauresx2d": [
+     7.390137398033403e-06
+    ],
+    "tauresy2d": [
+     -3.631619256339036e-05
+    ]
+   },
+   "product_nonfinite_words": 0
+  },
+  "11": {
+   "u1": 0.0,
+   "v1": 0.0,
+   "ust": 0.0,
+   "mismatches_on_wrf_finite_words": 1,
+   "product_value_where_wrf_nan": {
+    "tauresx2d": [
+     0.0009352337219752371
+    ],
+    "tauresy2d": [
+     -4.083325984538533e-05
+    ]
+   },
+   "product_nonfinite_words": 0
+  },
+  "12": {
+   "u1": 0.0,
+   "v1": 0.0,
+   "ust": 0.0,
+   "mismatches_on_wrf_finite_words": 0,
+   "product_value_where_wrf_nan": {
+    "tauresx2d": [
+     8.302598871523514e-05
+    ],
+    "tauresy2d": [
+     -0.00017584057059139013
+    ]
+   },
+   "product_nonfinite_words": 0
+  }
+ }
+}

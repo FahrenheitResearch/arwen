@@ -1,0 +1,10 @@
+{
+  "name": "fpvs",
+  "elements": 7501,
+  "dtype": "<f8",
+  "bytes": 60008,
+  "sha256": "0b8a676caa5d01c27335c0a1adbec67c9fcbcebdffbc20f41654ec1ae1414206",
+  "source_commit": "1d9b076503c27cd4cfa8b22a977a71e889cbb149",
+  "builder": "gpuwm.core.kernels:satmedmf:satmedmf_fpvs_table",
+  "reference": "funcphys.gpvs and fpvsx, kind_phys=8, gfortran 13.3, -O0 -ffp-contract=off -fno-tree-vectorize"
+}

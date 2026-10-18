@@ -35,7 +35,10 @@ def test_exact_mode_authors_every_key_off():
     assert res.settings == {"thompson_cloud_surface_booking": False,
                             "ntiedtke_dry_mass_coupling": False,
                             "wsm6_conservative_surface": False,
-                            "wdm6_conservative_surface": False}
+                            "wdm6_conservative_surface": False,
+                            "wsm3_conservative_surface": False,
+                            "wsm5_conservative_surface": False,
+                            "wsm7_conservative_surface": False}
     assert res.applied == ()
     assert "forced_by" not in res.receipt()
 
@@ -45,7 +48,10 @@ def test_correct_mode_sets_every_registered_key():
     assert res.settings == {"thompson_cloud_surface_booking": True,
                             "ntiedtke_dry_mass_coupling": True,
                             "wsm6_conservative_surface": True,
-                            "wdm6_conservative_surface": True}
+                            "wdm6_conservative_surface": True,
+                            "wsm3_conservative_surface": True,
+                            "wsm5_conservative_surface": True,
+                            "wsm7_conservative_surface": True}
     assert res.receipt()["applied_findings"] == ["WB1", "WB4", "WB5"]
 
 
@@ -54,7 +60,10 @@ def test_correct_skip_drops_one_correction():
     assert res.settings == {"thompson_cloud_surface_booking": True,
                             "ntiedtke_dry_mass_coupling": True,
                             "wsm6_conservative_surface": False,
-                            "wdm6_conservative_surface": False}
+                            "wdm6_conservative_surface": False,
+                            "wsm3_conservative_surface": False,
+                            "wsm5_conservative_surface": False,
+                            "wsm7_conservative_surface": False}
     assert res.receipt()["physics.correct_skip"] == ["WB5"]
 
 
@@ -79,7 +88,7 @@ def test_strict_wrf_mode_forces_exact_and_records_it():
     # Strict mode installs its NVRTC hook at ``import gpuwm``
     # (gpuwm/wrf_exact.py install, sealed by the assembled-legacy proofs),
     # and that hook imports cupy.cuda.compiler.  On a host without CuPy (the
-    # public CI cpu job, node-1's Stage 1) the probe hands it a stand-in
+    # public CI cpu job, test host A's Stage 1) the probe hands it a stand-in
     # compiler whose two hooked entry points are never called: this test
     # reads the mode resolution only, and no kernel is compiled.
     stub = (
@@ -166,7 +175,9 @@ def test_wb5_spans_wsm6_and_wdm6_and_a_one_key_arm_reads_as_itself():
     sedimentation routine).  Each key is read by its own scheme only, and a
     configuration that turns one of them off reads back as what it is."""
     assert correct_mode.CORRECTIONS_BY_FINDING["WB5"].keys == (
-        "wsm6_conservative_surface", "wdm6_conservative_surface")
+        "wsm6_conservative_surface", "wdm6_conservative_surface",
+        "wsm3_conservative_surface", "wsm5_conservative_surface",
+        "wsm7_conservative_surface")
     assert correct_mode.key_in_scope("wdm6_conservative_surface",
                                       {"mp_physics": 16})
     assert not correct_mode.key_in_scope("wdm6_conservative_surface",
@@ -178,7 +189,10 @@ def test_wb5_spans_wsm6_and_wdm6_and_a_one_key_arm_reads_as_itself():
     assert receipt["applied_findings"] == ["WB1", "WB4", "WB5"]
     assert receipt["keys"] == {"thompson_cloud_surface_booking": True,
                                "ntiedtke_dry_mass_coupling": True,
-                               "wdm6_conservative_surface": True}
+                               "wdm6_conservative_surface": True,
+                               "wsm3_conservative_surface": True,
+                               "wsm5_conservative_surface": True,
+                               "wsm7_conservative_surface": True}
 
 
 def test_run_receipt_names_each_domains_mode():
@@ -187,22 +201,31 @@ def test_run_receipt_names_each_domains_mode():
     receipt = correct_mode.run_receipt({2: arm, 1: exact})
     assert list(receipt["domains"]) == ["1", "2"]
     assert receipt["domains"]["1"]["physics.mode"] == "exact"
-    assert receipt["domains"]["2"]["applied_findings"] == ["WB1", "WB5"]
+    # Receipt v2: only the findings that reached this domain's schemes
+    # (WSM6 without New Tiedtke: WB5); WB4 is skipped by name.
+    assert receipt["domains"]["2"]["applied_findings"] == ["WB5"]
+    assert receipt["domains"]["2"]["uncorrected"] == []
     assert receipt["domains"]["2"]["physics.correct_skip"] == ["WB4"]
     assert receipt["default"] == correct_mode.PHYSICS_MODE_DEFAULT
 
 
 def test_run_receipt_says_which_corrections_reached_the_run():
     """A correct-mode domain lists every key on, but only the keys its
-    schemes read are in effect: WSM6 without New Tiedtke is WB5 alone, a
-    Thompson domain is WB1 alone, Morrison is none (the matched arithmetic),
-    and an exact domain is none.  Breakage prevented: a receipt that reads
-    as if WB4 and WB5 changed a Thompson-only run."""
+    schemes read are in effect, and (receipt v2) applied_findings names only
+    those: WSM6 without New Tiedtke is WB5 alone, a Thompson domain is WB1
+    alone, WSM3/WSM5/WSM7 are WB5 alone, Morrison is none (the matched
+    arithmetic), and an exact domain is none.  Breakage prevented: a receipt
+    that reads as if WB4 and WB5 changed a Thompson-only run, or WB1 a
+    WSM5 run."""
     correct = correct_mode.resolve("correct").settings
     cases = (
         ({"mp_physics": 6}, ["WB5"], ["wsm6_conservative_surface"]),
         ({"mp_physics": 16}, ["WB5"], ["wdm6_conservative_surface"]),
         ({"mp_physics": 8}, ["WB1"], ["thompson_cloud_surface_booking"]),
+        ({"mp_physics": 28}, ["WB1"], ["thompson_cloud_surface_booking"]),
+        ({"mp_physics": 3}, ["WB5"], ["wsm3_conservative_surface"]),
+        ({"mp_physics": 4}, ["WB5"], ["wsm5_conservative_surface"]),
+        ({"mp_physics": 24}, ["WB5"], ["wsm7_conservative_surface"]),
         ({"mp_physics": 10}, [], []),
         ({"mp_physics": 6, "cu_physics": 16}, ["WB4", "WB5"],
          ["ntiedtke_dry_mass_coupling", "wsm6_conservative_surface"]),
@@ -211,7 +234,8 @@ def test_run_receipt_says_which_corrections_reached_the_run():
         cfg = RunConfig(**{**_TINY, **schemes}, **correct)
         block = correct_mode.run_receipt({1: cfg})["domains"]["1"]
         assert block["physics.mode"] == "correct"
-        assert block["applied_findings"] == ["WB1", "WB4", "WB5"]
+        assert block["applied_findings"] == findings, schemes
+        assert block["uncorrected"] == [], schemes
         assert block["in_effect"] == {"findings": findings, "keys": keys}, schemes
     exact = RunConfig(**_TINY, **correct_mode.resolve("exact").settings)
     assert correct_mode.run_receipt({1: exact})["domains"]["1"]["in_effect"] == {
@@ -249,7 +273,7 @@ def test_a_289_checkpoint_resumes_only_in_exact_mode_and_says_how():
     with pytest.raises(RestartMismatchError) as refused:
         _require_config_match(stored, RunConfig(**_TINY), "ckpt.nc")
     assert "wsm6_conservative_surface" in str(refused.value)
-    assert "exact mode" in str(refused.value)
+    assert "matched (exact) arithmetic" in str(refused.value)
     _require_config_match(stored, exact, "ckpt.nc")
     # A Thompson checkpoint is untouched by the flip: the keys reach nothing.
     thompson = RunConfig(**{**_TINY, "mp_physics": 8})
@@ -340,3 +364,101 @@ def test_wb1_slots_are_priced_and_carried_only_when_booking():
             nz=on.nz, ny=on.ny, nx=on.nx)}
     from gpuwm.io.restart import SERIALIZED_SCRATCH_SLOTS
     assert {"mp_cloudnc", "mp_cloudncv"} <= SERIALIZED_SCRATCH_SLOTS
+
+
+# ------------------------------------------- 2.9.1: WB5 in WSM3/5/7, receipts --
+_MP_SELECTORS = ("mp_physics",)
+
+
+def _shipped(component):
+    from gpuwm.physics_registry import implemented_selector_values
+    return sorted(v for v in implemented_selector_values(component) if v != 0)
+
+
+def test_every_carrier_scheme_is_a_shipped_scheme():
+    """The carrier registry names only schemes the engine ships, so a typo
+    cannot hide a carrier from the gate below."""
+    shipped = {"mp_physics": set(_shipped("microphysics")),
+               "cu_physics": set(_shipped("cumulus"))}
+    for c in correct_mode.CORRECTIONS:
+        assert c.carriers, c.finding
+        for selector, schemes in c.carriers:
+            assert set(schemes) <= shipped[selector], (c.finding, schemes)
+    for key, (selector, schemes) in correct_mode.KEY_SCOPE.items():
+        finding = correct_mode.CORRECTIONS_BY_FINDING[
+            correct_mode.FINDING_BY_KEY[key]]
+        carried = {v for s, vs in finding.carriers if s == selector for v in vs}
+        assert set(schemes) <= carried, key
+
+
+@pytest.mark.parametrize("selector,value", [
+    *(("mp_physics", v) for v in _shipped("microphysics")),
+    *(("cu_physics", v) for v in _shipped("cumulus"))])
+def test_no_shipped_scheme_runs_a_registered_defect_in_correct_mode(
+        selector, value):
+    """THE GATE.  For every shipped microphysics and cumulus scheme, a
+    default (correct-mode) configuration lists no uncorrected finding.
+    Breakage prevented: a receipt reading as WB1/WB5 applied while the
+    selected scheme still ran the defect (2.9.0's WSM3, WSM5 and WSM7), and
+    a future port of a registered defect shipping without its correction."""
+    cfg = RunConfig(**{**_TINY, selector: value},
+                    **correct_mode.resolve("correct").settings)
+    assert correct_mode.uncorrected(cfg) == []
+    assert correct_mode.uncorrected_notice({1: cfg}) is None
+
+
+def test_an_uncorrected_carrier_is_listed_and_logged(monkeypatch):
+    """With a carrier whose scheme has no key in scope (simulated by
+    narrowing WB5's carriers past its keys), the domain lists the finding
+    as uncorrected, applied_findings leaves it out, and the run-log line
+    names the domain and the finding."""
+    wb5 = correct_mode.CORRECTIONS_BY_FINDING["WB5"]
+    widened = replace(wb5, carriers=(("mp_physics", (3, 4, 6, 16, 24, 10)),))
+    corrections = tuple(widened if c.finding == "WB5" else c
+                        for c in correct_mode.CORRECTIONS)
+    monkeypatch.setattr(correct_mode, "CORRECTIONS", corrections)
+    cfg = RunConfig(**{**_TINY, "mp_physics": 10},
+                    **correct_mode.resolve("correct").settings)
+    block = correct_mode.run_receipt({2: cfg})["domains"]["2"]
+    assert block["uncorrected"] == ["WB5"]
+    assert block["applied_findings"] == []
+    line = correct_mode.uncorrected_notice({2: cfg})
+    assert line is not None and "d02 WB5" in line
+    # Exact mode and a named skip are what the run asked for: nothing listed.
+    exact = RunConfig(**{**_TINY, "mp_physics": 10},
+                      **correct_mode.resolve("exact").settings)
+    assert correct_mode.uncorrected(exact) == []
+    skip = RunConfig(**{**_TINY, "mp_physics": 10},
+                     **correct_mode.resolve("correct", ["WB5"]).settings)
+    assert correct_mode.uncorrected(skip) == []
+
+
+@pytest.mark.parametrize("mp,key", [(3, "wsm3_conservative_surface"),
+                                    (4, "wsm5_conservative_surface"),
+                                    (24, "wsm7_conservative_surface")])
+def test_wsm3_5_7_keys_bind_only_their_scheme_and_a_290_checkpoint_resumes_exact(
+        mp, key):
+    """Each new WB5 key echoes only under its own scheme, an exact run of
+    that scheme echoes as 2.9.0 did, and a 2.9.0 checkpoint of it (no key
+    in the header: exact) is refused under the 2.9.1 default with the
+    notice naming the key, and resumes when exact is named."""
+    from gpuwm.io.restart import (RestartMismatchError, _require_config_match,
+                                  configuration_echo)
+    cfg = RunConfig(**{**_TINY, "mp_physics": mp})
+    assert configuration_echo(cfg).get(key) is (
+        True if correct_mode.CORRECT_KEYS_DEFAULT else None)
+    for other in ("wsm6_conservative_surface", "wdm6_conservative_surface",
+                  *(k for k in ("wsm3_conservative_surface",
+                                "wsm5_conservative_surface",
+                                "wsm7_conservative_surface") if k != key)):
+        assert other not in configuration_echo(cfg)
+    exact = RunConfig(**{**_TINY, "mp_physics": mp},
+                      **correct_mode.resolve("exact").settings)
+    stored = configuration_echo(exact)
+    assert key not in stored
+    if correct_mode.STRICT:  # pragma: no cover - strict runner
+        return
+    with pytest.raises(RestartMismatchError) as refused:
+        _require_config_match(stored, cfg, "ckpt.nc")
+    assert key in str(refused.value)
+    _require_config_match(stored, exact, "ckpt.nc")

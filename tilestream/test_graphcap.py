@@ -300,7 +300,7 @@ def test_a_fresh_object_on_a_freed_address_is_not_a_double_buffer():
         # rebinding assignment frees the old object only after the new one
         # exists, and the allocations in between (the fingerprint's own
         # among them) can take the freed block first: on CPython 3.13 on
-        # node-4 and on Windows no address came back in 64 captures, so
+        # test host D and on Windows no address came back in 64 captures, so
         # the precondition below never held.
         state.physics.tendencies = None
         state.physics.tendencies = Bundle()

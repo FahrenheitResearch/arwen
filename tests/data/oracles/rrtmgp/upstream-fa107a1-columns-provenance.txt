@@ -1,0 +1,21 @@
+upstream-fa107a1-columns.npz
+sha256 083ec62dd765aeec2db0b570212abccbe8f16c86a560f3709ab85aaa08981141
+
+What it holds: the 72-column x 60-layer oracle set (seed 20261007) made by
+tools/rrtmgp_rte_upstream_oracle/oracle.py make, its McICA masks bit-packed,
+and the SHA-256 of every column of every output of two Fortran builds:
+"stock" (earth-system-radiation/rte-rrtmgp fa107a16120051c4124305c6b3d4c87059119f58)
+and "fixed" (the same with upstream-boundary-fixes.patch).
+
+Built on W1 (AWS us-west-2, Ubuntu 24.04): gfortran 13.3.0
+(Ubuntu 13.3.0-6ubuntu2~24.04.1), glibc 2.39 (2.39-0ubuntu8.9),
+FFLAGS -O0 -ffp-contract=off -cpp -DRTE_USE_SP -ffree-line-length-none
+-fno-fast-math, netcdf-fortran 4.5.4 (Ubuntu 4.6.0+really4.5.4); coefficient tables rrtmgp-data v1.9
+from gpuwm-data.  rte_column_oracle.F90 sha256
+1508ad61a18e2c6551c43008169a1a6668b57f6d9d247a3da599dbeec706a070.
+
+Regenerate:
+  build.sh UPSTREAM build; build.sh UPSTREAM build-fixed --boundary-fixes
+  run.sh TREE build build-fixed WORK        (inside a card grant)
+  oracle.py fixture --npz WORK/cols.npz --ref WORK/ref.bin \
+      --ref-fixed WORK/ref-fixed.bin --out upstream-fa107a1-columns.npz

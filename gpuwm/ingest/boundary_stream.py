@@ -2499,6 +2499,7 @@ class PreparedTreeWriter:
                              build_forcing_time: Callable[[int], tuple],
                              forcing, times: Sequence,
                              release: Callable[[], None] | None = None,
+                             workers: int = 1,
                              ) -> None:
         """Build forcing times 1..count-1 and write each interval as it closes.
 
@@ -2514,10 +2515,27 @@ class PreparedTreeWriter:
         back after each time.  A domain tree's seal reads the root's whole
         boundary set back from the sealed cache (:class:`TreeStartStates`),
         so no interval is held here after it is written.
+
+        ``workers`` greater than 1 builds that many forcing times at once on
+        threads (each with a copy of the caller's context), while the
+        intervals are still added, written and released here in index order.
+        Each time's build is the same call on the same inputs, so the
+        written bytes are those of the serial loop; at most ``workers`` + 1
+        times are held.  Named breakage: a GEFS member preparation on a
+        rented RTX PRO 6000 spent 42 s of its 70 s here on one core, nine
+        independent forcing times in a row, with the card at 39 % and 17 of
+        30 cores idle (KCCX 2026-10-16).
         """
 
         from gpuwm.progress import prep_progress
 
+        workers = max(1, min(int(workers), int(count) - 1))
+        if workers > 1:
+            self._stream_forcing_times_concurrently(
+                count=int(count), build_forcing_time=build_forcing_time,
+                forcing=forcing, times=times, release=release,
+                workers=workers)
+            return
         for index in range(1, int(count)):
             built = time.perf_counter()
             met, initialized = build_forcing_time(index)
@@ -2535,6 +2553,53 @@ class PreparedTreeWriter:
             # it, so "boundary times 3 of 16 ready" is what a watcher needs.
             prep_progress("root_boundaries", label="Boundary times",
                           done=index, count=int(count) - 1)
+
+    def _stream_forcing_times_concurrently(self, *, count, build_forcing_time,
+                                           forcing, times, release, workers):
+        """The serial loop's adds, writes and releases, in its order; builds in parallel."""
+
+        from concurrent.futures import ThreadPoolExecutor
+        from gpuwm.progress import prep_progress
+
+        def timed(index):
+            started = time.perf_counter()
+            built = build_forcing_time(index)
+            return built, time.perf_counter() - started
+
+        pending = {}
+        following = 1
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="forcing-time") as pool:
+            def submit_next():
+                nonlocal following
+                if following < count:
+                    # A fresh copy per task: the preparation's math scope,
+                    # setup owners and posted context are context variables.
+                    context = contextvars.copy_context()
+                    pending[following] = pool.submit(context.run, timed, following)
+                    following += 1
+
+            try:
+                while len(pending) < workers and following < count:
+                    submit_next()
+                for index in range(1, count):
+                    (met, initialized), seconds = pending.pop(index).result()
+                    submit_next()
+                    forcing.add_state(initialized.state, index=index)
+                    del met, initialized
+                    if release is not None:
+                        release()
+                    self.note_build_seconds(seconds)
+                    interval = forcing.interval(index - 1, times)
+                    self.write_segment(index - 1, interval)
+                    del interval
+                    forcing.release(index - 1)
+                    prep_progress("root_boundaries", label="Boundary times",
+                                  done=index, count=count - 1)
+            except BaseException:
+                for future in pending.values():
+                    future.cancel()
+                raise
 
     def write_intervals(self, intervals) -> None:
         """Write intervals a route already holds: a source already complete."""

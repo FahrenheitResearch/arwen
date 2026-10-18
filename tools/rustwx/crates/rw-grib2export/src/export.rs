@@ -250,6 +250,8 @@ pub struct Devices {
     choice: PostDevice,
     #[cfg(any(windows, target_os = "linux"))]
     opened: Option<std::result::Result<rw_post::gpu::GpuPost, String>>,
+    /// The one line `auto` owes the user when the card did not open.
+    notice: Option<String>,
 }
 
 impl Devices {
@@ -258,7 +260,16 @@ impl Devices {
             choice,
             #[cfg(any(windows, target_os = "linux"))]
             opened: None,
+            notice: None,
         }
+    }
+
+    /// The pending CPU-fallback notice, once per process.  Breakage this
+    /// prevents: through 2.9.0 a card whose driver refused the post kernels
+    /// (CUDA_ERROR_UNSUPPORTED_PTX_VERSION on a CUDA 13.2 driver) silently
+    /// computed every GRIB2 product on the CPU; only manifest.json said cpu.
+    pub fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
     }
 
     /// The card for a frame of `shape`, or `None` for the CPU.  `gpu`
@@ -270,7 +281,14 @@ impl Devices {
             return Ok(None);
         }
         if self.opened.is_none() {
-            self.opened = Some(rw_post::gpu::GpuPost::open(0).map_err(|e| e.to_string()));
+            let opened = rw_post::gpu::GpuPost::open(0).map_err(|e| e.to_string());
+            if let (Err(e), PostDevice::Auto) = (&opened, self.choice) {
+                self.notice = Some(format!(
+                    "post_device auto: the GRIB2 products are computed on the CPU (the same bytes, slower) \
+                     because the GPU post kernels did not open: {e}"
+                ));
+            }
+            self.opened = Some(opened);
         }
         match self.opened.as_ref().unwrap() {
             Ok(g) => {
@@ -946,7 +964,12 @@ pub fn run(req: &Request, emit: &mut dyn FnMut(Value)) -> Result<Value> {
             {
                 continue;
             }
-            let (record, b) = export_frame(&on_disk.path, candidate, req, &mut devices, meta, ext.as_mut(), emit)?;
+            let exported = export_frame(&on_disk.path, candidate, req, &mut devices, meta, ext.as_mut(), emit);
+            if let Some(message) = devices.take_notice() {
+                eprintln!("rw_grib2export: {message}");
+                emit(json!({"event": "warning", "code": "post_device_cpu", "message": message}));
+            }
+            let (record, b) = exported?;
             state.insert(key, record);
             frames += 1;
             bytes += b;
@@ -966,6 +989,35 @@ pub fn run(req: &Request, emit: &mut dyn FnMut(Value)) -> Result<Value> {
     let done = json!({"event": "done", "frames": frames, "bytes": bytes, "seconds": t0.elapsed().as_secs_f64(), "out": req.out.display().to_string()});
     emit(done.clone());
     Ok(done)
+}
+
+/// `--probe-post-device`: does the first card open with the post kernels?
+/// `gpuwm doctor` reads it for its "GPU post kernels" line, so a card whose
+/// driver refuses the kernels is named before a run falls back to the CPU.
+pub fn probe_post_device() -> Value {
+    #[cfg(any(windows, target_os = "linux"))]
+    {
+        let floor = rw_post::gpu::PTX_DRIVER_FLOOR;
+        if !rw_post::gpu::driver_present() {
+            return json!({"ok": false, "driver": false, "error": "no NVIDIA driver library could be loaded", "ptx_driver_floor": floor});
+        }
+        match rw_post::gpu::GpuPost::open(0) {
+            Ok(g) => json!({"ok": true, "driver": true, "device": g.device.describe(), "ptx_driver_floor": floor}),
+            Err(e) => {
+                // Which step failed: a card that opens but refuses the kernel
+                // images ("load post kernels") is the driver-floor case.
+                let operation = match &e {
+                    rw_post::gpu::GpuError::Driver { operation, .. } => *operation,
+                    rw_post::gpu::GpuError::Input(_) => "input",
+                };
+                json!({"ok": false, "driver": true, "operation": operation, "error": e.to_string(), "ptx_driver_floor": floor})
+            }
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        json!({"ok": false, "driver": false, "error": "this platform has no CUDA post path"})
+    }
 }
 
 /// `--list`: the catalog and options as JSON.

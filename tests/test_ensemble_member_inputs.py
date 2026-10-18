@@ -692,7 +692,11 @@ def test_the_experiment_loader_refuses_random_physics_on_every_route(tmp_path):
             with pytest.raises(ValueError) as refused:
                 load(config)
             assert "no runtime consumer" in str(refused.value), switch
-            assert "unperturbed" in str(refused.value)
+            # rand_perturb perturbs no forecast field in WRF (only the
+            # RAND_PERT output field is missing); the others leave the
+            # perturbed physics unperturbed.
+            assert ("would be missing" if switch.startswith("rand_perturb")
+                    else "unperturbed") in str(refused.value), switch
 
 
 def test_the_run_config_loader_refuses_random_physics(tmp_path):

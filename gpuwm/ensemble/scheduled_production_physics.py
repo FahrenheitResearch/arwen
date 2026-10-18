@@ -23,7 +23,7 @@ def production_physics_memory_plan(drivers, configs, *, reuse_original_workspace
     context, events, original forecasts and allocator retention are separate
     caller reservations. This reads live array metadata, never field words.
     """
-    from gpuwm.core.physics_inventory import MYNN_SURFACE_OUTPUTS
+    from gpuwm.core.physics_inventory import MYNN_SURFACE_OUTPUTS, radiation_boundary_flux_names
     from gpuwm.core.mynn_sfclay import MYNN_SURFACE_INPUTS
     from gpuwm.core.mynn_pbl_runtime import (_ATMOSPHERE_LAYERS, _COLUMN_FIELDS, _STATE_FIELD,
         MYNN_PBL_DIAGNOSTICS_2D, MYNN_PBL_DIAGNOSTICS_INT_2D)
@@ -106,6 +106,10 @@ def production_physics_memory_plan(drivers, configs, *, reuse_original_workspace
         bank(namespace + ":returned", name, (nz, ny, nx), joined=False)
     for name in ("swdown", "glw", "gsw", "coszen", "olr", "swddir", "swddif"):
         bank(namespace + ":returned", name, (ny, nx), joined=False)
+    # The packed adapter splits each named top/bottom flux into its own
+    # contiguous member bank, in addition to the native flux-stack reserve.
+    for name in radiation_boundary_flux_names(cfg):
+        bank(namespace + ":returned", "boundary_fluxes/" + name, (ny, nx), joined=False)
     adapter = driver.radiation_callable
     native_workspace = getattr(adapter, "chunk_workspace", None) is not None
     memory = rrtmgp_call_memory_inventory(cfg, members=members, ny=ny, nx=nx,

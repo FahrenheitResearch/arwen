@@ -13,9 +13,10 @@ energy balance producing TSK/HFX/QFX/LH/GRDFLX, runoff, and the WRF
 driver diagnostics (SMSTAV/SMSTOT/SMCREL/ACSNOM/ACSNOW/SNOPCX/POTEVP/
 NOAHRES), and the land-ice column: ``ivgtyp == isice`` runs WRF's
 ``SFLX_GLACIAL`` (module_sf_noahlsm_glacial_only.F) through the driver's
-ICE == -1 arm, as WRF does (ported 2026-10-12; until then such a column
-was left untouched).  NOT ported: UA_PHYS, FASDAS, WRF-Hydro, the urban
-canopy models themselves (they run after the kernel,
+ICE == -1 arm in ``noah_glacial_column``, as WRF does (until 2.9.0 such a
+column was left untouched), graded bitwise against WRF by
+tests/test_noah_wrf461_parity.py.  NOT ported: UA_PHYS, FASDAS, WRF-Hydro,
+the urban canopy models themselves (they run after the kernel,
 :mod:`gpuwm.core.urban_driver`; the kernel carries their hand-over through
 ``launch_noah(urban=...)``, and the plain ``VEGTYP==ISURBAN`` parameter
 overrides inside SFLX/HRT ARE ported) and ``SFCDIF_off`` (the exchange

@@ -3,7 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 
-SOURCE_EXTENSION_SHA = "a28411700dbc582af6b5a1493a6c9748129550d641462417667aec1d915556a7"
+SOURCE_EXTENSION_SHA = "f7c55c7902f6e2a12486f3d9c4d36624362e2e65acd4431bbd7cc54fc3301036"
+DIFFUSION_CACHE_EXTENSION_SHA = "dc62aef108288286637a7a59019716f79fc76a54b85dc63508ed25de889b6a75"
 
 PROOF_SHAS = {
     "acoustic-published.json": "a87236d1940de34920102e86cbfc57ddafb0cabb103c4d891923385cf9c2e1e9",
@@ -37,7 +38,43 @@ def _identity(proof, modules):
         assert capture["module_options"][module] == list(module_options(module))
 
 
-def _source_extension(root, name, before, after):
+def _diffusion_cache_extension(root, before, after):
+    from gpuwm.core.kernels import module_options, module_source
+
+    folder = Path(root) / "tests/data/assembled_legacy_proofs"
+    path = folder / "diffusion-cache-source-extension.json"
+    assert _sha(path) == DIFFUSION_CACHE_EXTENSION_SHA, "diffusion cache extension seal"
+    measured = json.loads(path.read_text())
+    assert measured["schema"] == "diffusion-cache-source-extension-v1"
+    assert measured["source"] == "gpuwm/nvrtc_ptx_cache.py"
+    assert measured["before"] == before and measured["after"] == after
+    assert measured["generator_sha256"] == _sha(Path(root) / "tools/battery/diffusion_cache_source_receipt.py")
+    assert measured["numerics"] == "strict"
+    for module in ("smag2d", "diff_opt1"):
+        assert measured["module_options"][module] == list(module_options(module))
+        assert measured["module_source_sha256"][module] == hashlib.sha256(module_source(module).encode()).hexdigest()
+    driver = _load(root, "driver-source.json")
+    expected = {}
+    for family in ("horizontal-driver", "vertical-driver", "km-mutations"):
+        artifact = family + ".json"
+        assert _sha(folder / artifact) == driver["artifacts"][artifact]
+        pin = json.loads((folder / artifact).read_text())
+        expected[family] = {key: {"words": row["words"], "gpu_sha256": row["gpu_sha256"]}
+                            for key, row in _word_rows(pin["cases"]).items()}
+    coordinate = _load(root, "coordinate-native.json")
+    expected["coordinate"] = {key: {"words": row["current_to_native"]["words"],
+                                     "gpu_sha256": row["current_sha256"]}
+                              for key, row in coordinate["fields"].items()}
+    assert measured["fields"] == expected, "diffusion cache extension changed frozen words"
+
+
+def _source_extension(root, name, before, after, schema=None):
+    if name == "gpuwm/nvrtc_ptx_cache.py" and schema in (
+            "assembled-driver-native-word-proof-v1", "assembled-coordinate-native-word-proof-v1"):
+        # Only these two families were reproduced with the changed cache.
+        # The original WRF receipts and the unrelated acoustic seal stay intact.
+        _diffusion_cache_extension(root, before, after)
+        return
     # The 2.8.9 captures stay immutable.  A sealed orchestration source that a
     # microphysics port had to extend (new mass packages in calc_cq and
     # slow_buoyancy, new loader rows) is admitted only by a fresh base-versus-tip
@@ -64,7 +101,7 @@ def _sources(root, proof):
         path = Path(root) / name
         actual = {"bytes": path.stat().st_size, "sha256": _sha(path)}
         if actual != row:
-            _source_extension(root, name, row, actual)
+            _source_extension(root, name, row, actual, proof.get("schema"))
 
 
 def validate_published_acoustic(root):
@@ -143,12 +180,12 @@ def validate_drivers(root):
     proof = _load(root, "driver-source.json")
     assert proof["schema"] == "assembled-driver-native-word-proof-v1"
     _identity(proof, ("smag2d",))
-    _sources(root, proof)
     folder = root / "tests/data/assembled_legacy_proofs"
     artifacts = {}
     for name, digest in proof["artifacts"].items():
         assert _sha(folder / name) == digest, name
         artifacts[name] = json.loads((folder / name).read_text())
+    _sources(root, proof)
     native = artifacts["vertical-native-control.json"]
     assert native["schema"] == "vertical-declared-xkmv-native-control-v1"
     assert (native["case_count"], native["arrays"], native["words"],

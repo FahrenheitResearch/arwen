@@ -212,7 +212,7 @@ def fake_cupy(monkeypatch):
                     fn.cache_clear()
     module = sys.modules.get("gpuwm.core.noahmp_slab_libm")
     if module is not None:
-        module._MODULE_CACHE = None
+        module._MODULE_CACHE.clear()
         module._KERNEL_CACHE.clear()
 
 
@@ -300,7 +300,7 @@ def test_actual_runtime_factory_compiles_authoritative_source(name, fake_cupy, m
         compiled = getattr(module, f"{short}_module")()
     elif name == "noahmp_libm_slab":
         from gpuwm.core import noahmp_slab_libm as module
-        module._MODULE_CACHE = None
+        module._MODULE_CACHE.clear()
         compiled = module._module()
     elif name == "noahmp_vegeflux":
         from gpuwm.core import noahmp_vegeflux_gpu as module
@@ -1169,7 +1169,9 @@ def test_existing_estimator_inventories_match_the_baseline(lsm, mp, monkeypatch)
     against digests the BASELINE tree produced (fixture ``baseline_commit``),
     not this one.  The one field the baseline's profile did not have --
     ``compile_platform``, ``None`` on every default profile -- is dropped
-    before hashing, so the numbers are what is compared."""
+    before hashing, so the numbers are what is compared. Re-record each
+    scheme with ``python proof/node-reds-276/regen_estimator_baseline.py
+    . <mp> --write`` after explaining the allocation change."""
     monkeypatch.setattr(pf.sys, "platform", "linux")
     monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
     fixture = json.loads((ROOT / "tests/fixtures/noahmp_estimator_baseline_snapshots.json")

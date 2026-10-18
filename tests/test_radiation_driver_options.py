@@ -122,6 +122,10 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
         # 2.9.0 correct mode (gpuwm/correct_mode.py): the WB5 and WB4 keys.
         "wsm6_conservative_surface", "ntiedtke_dry_mass_coupling",
         "wdm6_conservative_surface", "thompson_cloud_surface_booking",
+        "wsm3_conservative_surface", "wsm5_conservative_surface",
+        "wsm7_conservative_surface",
+        # 2.9.1: WRF's ocean mixed layer, appended after the correct-mode keys.
+        "sf_ocean_physics", "oml_hml0", "oml_gamma", "oml_relaxation_time",
         # golden/ports-cu: Grell 3D and New SAS controls.
         "cugd_avedx", "maxiens", "maxens", "maxens2", "maxens3",
         "ensdim", "cu_diag", "convtrans_avglen_m",

@@ -1,4 +1,5 @@
-"""All native tools ship in platform wheels, including the three restored tools."""
+"""Platform wheels carry every native tool but the on-demand observation-stream
+doors, which stay in the bundle and its pins and are staged on first use."""
 
 from __future__ import annotations
 
@@ -18,6 +19,10 @@ stage_wheel_bridges = pytest.importorskip("tools.stage_wheel_bridges")
 
 REPO = Path(__file__).resolve().parents[1]
 ON_DEMAND = {"rw_simradar", "rw_mlexport", "rw_globe_pack"}
+#: 2.9.1: the six observation-stream doors are on demand (PyPI per-file limit);
+#: 2.9.2 adds rw_madis and the radar feed listings (rw_radar_feeds), also on demand.
+STREAM_DOORS = {"rw_igra2", "rw_amv", "rw_ndbc", "rw_gnssro", "rw_wis2", "rw_prepbufr", "rw_madis",
+                "rw_radar_feeds"}
 PLATFORMS = ("linux-x86_64", "win-x86_64")
 REVISION = "a" * 40
 FETCH = "gpuwm fetch-bridges"
@@ -29,14 +34,14 @@ FETCH = "gpuwm fetch-bridges"
 
 def test_three_formerly_omitted_artifacts_are_restored():
     assert ON_DEMAND <= {a.name for a in bridge_assets.wheel_artifacts()}
-    assert not hasattr(bridge_assets.BundledArtifact, "on_demand")
+    assert {a.name for a in bridge_assets.on_demand_artifacts()} == STREAM_DOORS
 
 
 def test_the_wheel_carries_every_other_artifact_in_roster_order():
     carried = bridge_assets.wheel_artifacts()
     assert [a.name for a in carried] == [
-        a.name for a in bridge_assets.BUNDLED_ARTIFACTS]
-    assert len(carried) == len(bridge_assets.BUNDLED_ARTIFACTS)
+        a.name for a in bridge_assets.BUNDLED_ARTIFACTS if a.name not in STREAM_DOORS]
+    assert len(carried) == len(bridge_assets.BUNDLED_ARTIFACTS) - len(STREAM_DOORS)
     assert ON_DEMAND <= {a.name for a in carried}
 
 
@@ -94,8 +99,8 @@ def test_staging_into_the_package_carries_the_restored_tools(tmp_path, monkeypat
     _assert_wheel_inventory(packaged, platform)
     said = capsys.readouterr().out
     carried, declared = len(bridge_assets.wheel_artifacts()), len(bridge_assets.BUNDLED_ARTIFACTS)
-    assert carried == declared
-    assert f"staged {carried} artifacts" in said
+    assert carried == declared - len(STREAM_DOORS)
+    assert f"staged {carried} of {declared} artifacts" in said
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -232,7 +237,7 @@ def _driver(relative: str, *values):
 ])
 def test_the_desktop_drivers_read_the_same_declaration(relative):
     rows = _function(relative, "declared_artifacts")(DECLARATION)
-    assert rows == [(a.name, a.vendored, False) for a in bridge_assets.BUNDLED_ARTIFACTS]
+    assert rows == [(a.name, a.vendored, a.on_demand) for a in bridge_assets.BUNDLED_ARTIFACTS]
 
 
 @private_input(STAGE_PUBLIC_DESKTOP)
@@ -246,7 +251,7 @@ def test_the_desktop_staging_counts_what_the_wheel_carries():
 @private_input(BUILD_ACCEPTANCE)
 def test_the_acceptance_driver_reads_the_same_on_demand_set():
     reader = _function(BUILD_ACCEPTANCE, "on_demand_artifacts")
-    assert reader(REPO) == set()
+    assert reader(REPO) == STREAM_DOORS
 
 
 @pytest.mark.parametrize("relative, needle", [
@@ -278,6 +283,8 @@ def test_the_release_verifier_still_holds_the_bundle_to_the_whole_roster():
 
 @pytest.fixture
 def pip_install(tmp_path, monkeypatch):
+    from gpuwm import rustwx
+
     platform = "linux-x86_64"
     binaries = tuple(
         bridge_assets.BinaryPin(a.name, bridge_assets.artifact_filename(a, platform), 8,
@@ -289,6 +296,9 @@ def pip_install(tmp_path, monkeypatch):
     monkeypatch.setattr(bridge_assets, "load_pins", lambda path=None: pins)
     monkeypatch.setattr(bridge_assets, "host_platform", lambda: platform)
     monkeypatch.setattr(bridges, "_package_parent", lambda: tmp_path / "site-packages")
+    # A local install.sh build must not satisfy this simulated pip install.
+    monkeypatch.setattr(rustwx, "crate_dir",
+                        lambda: tmp_path / "site-packages" / bridges.RUSTWX_CRATE_RELATIVE)
     for name in ("GPUWM_RW_SIMRADAR", "GPUWM_RW_MLEXPORT", "GPUWM_RW_GLOBE_PACK"):
         monkeypatch.delenv(name, raising=False)
     return pins

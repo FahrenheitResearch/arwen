@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use rw_store::netcdf_classic::{
     NcAttr, NcClassicWriter, NcData, NcDim, NcFormat, NcType, NcVarDef,
 };
+use rayon::prelude::*;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -310,22 +311,15 @@ pub fn published_schema_bytes(n_cells: usize) -> u64 {
 }
 
 fn one_based_ids(n: usize) -> Vec<i32> {
-    (1..=n as i32).collect()
+    (1..=n as i32).into_par_iter().collect()
 }
 
 fn to_one_based(v: &[i32]) -> Vec<i32> {
-    v.iter().map(|&x| x + 1).collect()
+    v.par_iter().map(|&x| x + 1).collect()
 }
 
 fn split_lat_lon(points: &[crate::mesh::geom::V3]) -> (Vec<f64>, Vec<f64>) {
-    let mut lat = Vec::with_capacity(points.len());
-    let mut lon = Vec::with_capacity(points.len());
-    for &p in points {
-        let (la, lo) = lat_lon(p);
-        lat.push(la);
-        lon.push(lo);
-    }
-    (lat, lon)
+    points.par_iter().map(|&p| lat_lon(p)).unzip()
 }
 
 /// Eight hex characters, the shape the published files' `file_id` carries,

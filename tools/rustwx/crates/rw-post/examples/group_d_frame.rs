@@ -129,7 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     if use_gpu {
-        let g = rw_post::gpu::GpuPost::open(0)?;
+        let g = rw_post::gpu::GpuPost::open_with(0, rw_post::gpu::test_image())?;
         summary["gpu_device"] = json!(g.device.describe());
         // Group A's state built on the device, then group D on it.
         let dinp = g.upload_state_inputs(&frame.state)?;

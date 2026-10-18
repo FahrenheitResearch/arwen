@@ -728,7 +728,13 @@ def _domain_clocks(experiment) -> dict:
     return resolve_clock(experiment).clocks()
 
 
-def experiment_census(path: Path, selections=None) -> dict:
+def _census_one_selection(item):
+    path, selection = item
+    install_host_array_backend()
+    return experiment_census(path, selections=[selection])
+
+
+def experiment_census(path: Path, selections=None, *, workers=1) -> dict:
     """Measure every selectable combination on every domain of ``path``.
 
     Combinations the production validators reject (an LSM without a surface
@@ -752,6 +758,30 @@ def experiment_census(path: Path, selections=None) -> dict:
     clocks = _domain_clocks(experiment)
     if selections is None:
         selections = selectable_matrix(experiment.domains[0].run)
+
+    if workers > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        selections = list(selections)
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            parts = list(pool.map(_census_one_selection,
+                                  ((path, selection) for selection in selections),
+                                  chunksize=4))
+        report = dict(parts[0])
+        for key in ("rows", "rejected", "over_ceiling", "own_ceiling_rows"):
+            report[key] = [row for part in parts for row in part[key]]
+        shared = [row for row in report["rows"]
+                  if row["ceiling"] == report["max_health_fields"]]
+        worst = max(shared, key=lambda row: row["peak"]) if shared else None
+        report["worst_selection"] = None if worst is None else worst["selection"]
+        report["worst_count"] = 0 if worst is None else worst["peak"]
+        report["headroom"] = report["max_health_fields"] - report["worst_count"]
+        expected = [selection.key() for selection in selections]
+        actual = [row["selection"] for row in report["rows"] + report["rejected"]]
+        actual += [row["selection"] for row in report["over_ceiling"]
+                   if row["selection"] not in actual]
+        if sorted(expected) != sorted(actual):
+            raise RuntimeError("parallel census lost or duplicated a matrix selection")
+        return report
 
     rows = []
     rejected = []
@@ -865,6 +895,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("config", type=Path,
                         help="experiment TOML to measure")
+    parser.add_argument("--workers", type=int, default=1, choices=range(1, 17),
+                        help="independent CPU constructors, maximum 16; no GPU")
     parser.add_argument("--json", action="store_true",
                         help="emit the full census as JSON")
     parser.add_argument("--breakdown", action="store_true",
@@ -896,10 +928,10 @@ def _measure(args) -> int:
         experiment = load_any_experiment(args.config)
         anchor = selection_from_key(args.around)
         sample = neighbourhood_sample_matrix(experiment.domains[0].run, anchor)
-        census = experiment_census(args.config, selections=sample)
+        census = experiment_census(args.config, selections=sample, workers=args.workers)
         census["sampled_around"] = anchor.key()
     else:
-        census = experiment_census(args.config)
+        census = experiment_census(args.config, workers=args.workers)
         census["sampled_around"] = None
     if args.json:
         json.dump(census, sys.stdout, indent=2, sort_keys=True)

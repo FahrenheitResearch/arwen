@@ -28,6 +28,18 @@ tool makes to the lock. Opening 2.7.5, 2.7.6 and 2.8.0 each left the old
 digest behind, so ``tests/test_vendored_cargo_registry.py`` refused the new
 line until a second commit re-pinned it by hand.
 
+And it moves the README's links into the public repository's tagged tree.
+The README is the PyPI page and the GitHub front page, and its links to the
+NOTICE, PROVENANCE, the changelog and the operator manuals name a release
+tag. Opening 2.7.5, 2.7.6 and 2.8.0 moved those tags by hand; 2.8.1 through
+2.9.0 did not, so 2.9.0 shipped a README whose NOTICE link showed the 2.8.0
+notice (41,394 bytes against 66,869, without the maths-library notices added
+since: Rust libm, the CORE-MATH transcriptions and further Arm
+optimized-routines files the wheel carries) and whose stage contract and
+changelog were three weeks old.
+``--check`` now names any such link whose tag is not ``pyproject.toml``'s
+version, so the release contract set refuses the stale tag.
+
 Usage:
   python tools/release/bump_version.py --to 2.7.5    # rewrite, open the changelog section
   python tools/release/bump_version.py --check       # exit 1 naming any file out of step
@@ -54,6 +66,13 @@ DECLARATIONS = (
 )
 
 CHANGELOG = "CHANGELOG.md"
+
+#: Files whose links into the public repository's tagged tree must name the
+#: release being cut, and the link pattern whose group 2 is the tag's version.
+#: The disclaimer receipt carries a verbatim copy of one README item, link included.
+TAG_LINK_FILES = ("README.md", "docs/public/receipts/resolved-scale-disclaimer.json")
+TAG_LINK = re.compile(
+    r"(https://github\.com/FahrenheitResearch/arwen/(?:blob|tree|raw)/v)(\d+\.\d+\.\d+)(/)")
 
 #: The generator of the two binary licence notices, and the notices it writes.
 NOTICE_TOOL = "tools/update_tui_license_notice.py"
@@ -86,10 +105,25 @@ def declared(root: Path) -> list[tuple[str, str]]:
     return found
 
 
+def tag_links(root: Path) -> list[tuple[str, int, str]]:
+    """Every (file, line, version) link into a tagged tree of the public repository."""
+    found = []
+    for relative in TAG_LINK_FILES:
+        path = root / relative
+        if not path.is_file():
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            found.extend((relative, number, m.group(2)) for m in TAG_LINK.finditer(line))
+    return found
+
+
 def disagreements(root: Path) -> list[str]:
     found = declared(root)
     lead = found[0][1]
-    return [f"{relative} says {version}, pyproject.toml says {lead}" for relative, version in found if version != lead]
+    wrong = [f"{relative} says {version}, pyproject.toml says {lead}" for relative, version in found if version != lead]
+    wrong.extend(f"{relative}:{number} links the v{version} tree, pyproject.toml says {lead}"
+                 for relative, number, version in tag_links(root) if version != lead)
+    return wrong
 
 
 def _rewrite(path: Path, pattern: re.Pattern, to: str) -> None:
@@ -127,6 +161,12 @@ def bump(root: Path, to: str) -> list[str]:
     for relative, pattern, _ in DECLARATIONS:
         _rewrite(root / relative, pattern, to)
         if relative not in touched:
+            touched.append(relative)
+    for relative in TAG_LINK_FILES:
+        path = root / relative
+        if path.is_file() and any(version != to for r, _, version in tag_links(root) if r == relative):
+            text = path.read_bytes().decode("utf-8")
+            path.write_bytes(TAG_LINK.sub(lambda m: m.group(1) + to + m.group(3), text).encode("utf-8"))
             touched.append(relative)
     if open_changelog(root, to):
         touched.append(CHANGELOG)

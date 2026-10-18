@@ -3,7 +3,7 @@
 THE BREAKAGE THIS PREVENTS.  With a GPU visible, NVRTC 13.4 answers a
 compile for sm_120 from NVIDIA's ComputeCache (``~/.nv/ComputeCache``, or
 ``CUDA_CACHE_PATH``) under a key that does not include ``-ftz``.  Measured
-on node-4's RTX 5070 Ti (NVRTC 13.4.92, driver 13.2) with a kernel that
+on test host D's RTX 5070 Ti (NVRTC 13.4.92, driver 13.2) with a kernel that
 divides every float in [1, 2) by the literal 3, one program name, one
 source: compiled
 with ``-ftz=true`` in one process and then with ``--ftz=false`` in a fresh

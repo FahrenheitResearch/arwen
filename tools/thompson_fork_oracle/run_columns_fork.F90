@@ -47,6 +47,7 @@ program run_thompson_columns_fork
   integer :: ncol, nz, nxp, i, k, u, free_unit, nfield, itimestep
   logical :: unit_opened
   real :: dt
+  real, volatile :: libm_probe
   real, allocatable, dimension(:,:,:) :: th, pii, p, w, dz, hgt
   real, allocatable, dimension(:,:,:) :: qv, qc, qr, qi, qs, qg
   real, allocatable, dimension(:,:,:) :: ni, nr, nc, nwfa, nifa
@@ -58,6 +59,13 @@ program run_thompson_columns_fork
   real, allocatable, dimension(:,:) :: buf
   real, allocatable, dimension(:) :: buf2
   character(len=1024) :: in_path, out_path, step_arg
+
+  ! The glibc 2.43 host rounds LOG10F differently. Pin glibc 2.39's
+  ! words, as does the device transcription. Reject a changed referee.
+  libm_probe = transfer(int(z'39799D1E'), 0.0)
+  if (transfer(alog10(libm_probe), 0) /= int(z'C067E4AA')) then
+     error stop 'fork oracle requires glibc 2.39 log10f; use the pinned runtime'
+  endif
 
   call get_command_argument(1, in_path)
   call get_command_argument(2, out_path)

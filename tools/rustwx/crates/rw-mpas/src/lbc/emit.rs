@@ -2,7 +2,7 @@
 //!
 //! ## Schema by table, not by donor
 //! Unlike the init emitter, which re-emits a native capsule's container, the
-//! lbc container is small and fixed by the v8.4.1 registry (`lbc` stream,
+//! lbc container is small and fixed by the v8.4.2 registry (`lbc` stream,
 //! `lbcs` package: the three `moist` scalars, `lbc_u`, `lbc_w`, `lbc_rho`,
 //! `lbc_theta`, `xtime`, `Time`), so its dimensions, variables and attributes
 //! are declared here as a table.  There is no donor file to make the
@@ -11,23 +11,12 @@
 //! measured against the reference files.
 //!
 //! ## Header identity
-//! Global attributes reproduce the native header field-for-field, from three
-//! sources:
-//! * **carried** — mesh and build lineage (`on_a_sphere` .. `mesh_spec`,
-//!   `git_version`, the `model_name`/`core_name`/`version`/`source`/
-//!   `Conventions` block) read from the grid/init file this run consumed,
-//!   the same precedent `init::emit` set;
-//! * **stamped** — `config_*` values: the producer's own switches where a
-//!   switch exists, the v8.4.1 registry defaults otherwise, overridable per
-//!   name by caller-supplied table data (`--config-attrs`);
-//! * **owned** — `history` names this producer truthfully (never the native
-//!   command line), `parent_id` is the consumed grid file's `file_id`, and
-//!   `file_id` is minted deterministically from the run's inputs.
-//!
-//! `history`, `file_id` and the trailing `gpuwm_provenance` are therefore the
-//! only header fields expected to differ from a native file produced from the
-//! same inputs; the compare module reports exactly which fields differ so
-//! that claim is measured, not asserted.
+//! Core identity is stamped for the v8.4.2 producer, while mesh metadata and
+//! ancestry follow native bootstrapping, including its missing-attribute defaults.
+//! `config_*` values come from producer switches or registry defaults, with
+//! caller-supplied overrides for metadata only. `history`, `git_version`,
+//! `file_id` and `gpuwm_provenance` describe this Rust producer truthfully;
+//! header differences are reported separately from every stream field.
 //!
 //! ## Layout identity
 //! The header is zero-padded so the data section starts at the same offset
@@ -56,15 +45,13 @@ pub fn lbc_file_name(valid_time: &str) -> String {
     format!("lbc.{}.nc", valid_time.replace(':', "."))
 }
 
-/// Identity carried out of the grid/init file: the lineage attributes and the
-/// parent's `file_id`.
+/// Native bootstrapped mesh attributes and the complete parent chain.
 #[derive(Debug)]
 pub struct HeaderSource {
     carried: Vec<NcAttr>,
-    pub parent_file_id: String,
+    pub parent_id: String,
 }
 
-/// The carried attribute names, in the order the native header emits them.
 const CARRIED_LEADING: [&str; 6] = [
     "model_name",
     "core_name",
@@ -81,58 +68,85 @@ const CARRIED_MESH: [&str; 5] = [
     "y_period",
 ];
 
-fn carry_attr(file: &netcrust::File, name: &str, from: &Path) -> MpasResult<NcAttr> {
-    let attr = file.attribute(name).ok_or_else(|| {
-        MpasError::Refusal(format!(
-            "{} carries no global attribute {name}; the lbc header carries the grid file's \
-             lineage, and inventing a value here would stamp the stream with an identity its \
-             mesh never had",
-            from.display()
-        ))
-    })?;
-    let value = match attr.value() {
-        netcrust::AttributeValue::Chars(s) => NcAttrValue::Text(s.clone()),
-        netcrust::AttributeValue::Strings(v) if v.len() == 1 => NcAttrValue::Text(v[0].clone()),
-        netcrust::AttributeValue::Ints(v) => NcAttrValue::Ints(v.clone()),
-        netcrust::AttributeValue::Floats(v) => NcAttrValue::Floats(v.clone()),
-        netcrust::AttributeValue::Doubles(v) => NcAttrValue::Doubles(v.clone()),
-        other => {
-            return Err(MpasError::Refusal(format!(
-                "global attribute {name} in {} has a value shape this writer cannot carry: {other:?}",
-                from.display()
-            )))
-        }
-    };
-    Ok(NcAttr {
-        name: name.to_string(),
-        value,
-    })
+/// MPAS v8.4.2 src/framework/mpas_bootstrapping.F:285-381:
+/// failed text attribute reads take the native bootstrap default.
+fn mesh_text(file: &netcrust::File, name: &str, default: &str) -> String {
+    file.attribute(name)
+        .and_then(|a| a.as_string().map(|s| s.trim_end_matches(' ').to_string()))
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// MPAS v8.4.2 src/framework/mpas_bootstrapping.F:300-308,364-381:
+/// the input attribute is converted to RKIND, not carried in its donor type.
+fn mesh_real(file: &netcrust::File, name: &str, default: f32) -> f32 {
+    file.attribute(name)
+        .map(|a| match a.value() {
+            netcrust::AttributeValue::Floats(v) if v.len() == 1 => v[0],
+            netcrust::AttributeValue::Doubles(v) if v.len() == 1 => v[0] as f32,
+            netcrust::AttributeValue::Ints(v) if v.len() == 1 => v[0] as f32,
+            _ => default,
+        })
+        .unwrap_or(default)
 }
 
 impl HeaderSource {
+    /// MPAS v8.4.2 src/framework/mpas_bootstrapping.F:285-381 and
+    /// src/driver/mpas_subdriver.F:513-530. Core metadata is supplied by the
+    /// producer (core_init_atmosphere/mpas_init_atm_core_interface.F:38-61),
+    /// not required in its input mesh. A bare regional mesh is valid input.
     pub fn from_grid(grid_path: &Path) -> MpasResult<HeaderSource> {
         let file = netcrust::File::open(grid_path)?;
-        let mut carried = Vec::new();
-        for name in CARRIED_LEADING.iter().chain(CARRIED_MESH.iter()) {
-            carried.push(carry_attr(&file, name, grid_path)?);
+        let on_a_sphere = mesh_text(&file, "on_a_sphere", "YES").contains("YES");
+        let periodic = !on_a_sphere && mesh_text(&file, "is_periodic", "NO").contains("YES");
+        let mut carried = vec![
+            NcAttr::text("model_name", "mpas"),
+            NcAttr::text("core_name", "init_atmosphere"),
+            NcAttr::text("version", "8.4.2"),
+            NcAttr::text("source", "MPAS"),
+            NcAttr::text("Conventions", "MPAS"),
+            NcAttr::text(
+                "git_version",
+                concat!("gpuwm-", env!("GPUWM_BRIDGE_SOURCE_REV")),
+            ),
+        ];
+        for (name, value) in [
+            ("on_a_sphere", logical(on_a_sphere)),
+            (
+                "sphere_radius",
+                float(mesh_real(&file, "sphere_radius", 1.0)),
+            ),
+            ("is_periodic", logical(periodic)),
+            (
+                "x_period",
+                float(if periodic {
+                    mesh_real(&file, "x_period", 0.0)
+                } else {
+                    0.0
+                }),
+            ),
+            (
+                "y_period",
+                float(if periodic {
+                    mesh_real(&file, "y_period", 0.0)
+                } else {
+                    0.0
+                }),
+            ),
+            ("mesh_spec", text(&mesh_text(&file, "mesh_spec", "0.0"))),
+        ] {
+            carried.push(NcAttr {
+                name: name.to_string(),
+                value,
+            });
         }
-        // mesh_spec sits after parent_id in the native order; carried
-        // separately so the assembly below can interleave the owned fields.
-        carried.push(carry_attr(&file, "mesh_spec", grid_path)?);
-        let parent_file_id = file
-            .attribute("file_id")
-            .and_then(|a| a.as_string().map(str::to_string))
-            .ok_or_else(|| {
-                MpasError::Refusal(format!(
-                    "{} carries no file_id; parent_id cannot be recorded, and an lbc stream \
-                     with no parentage cannot be tied to the init it belongs to",
-                    grid_path.display()
-                ))
-            })?;
-        Ok(HeaderSource {
-            carried,
-            parent_file_id,
-        })
+        let file_id = mesh_text(&file, "file_id", "");
+        let previous_parent = mesh_text(&file, "parent_id", "");
+        let parent_id = if file_id.is_empty() {
+            previous_parent
+        } else {
+            format!("{file_id}\n{previous_parent}")
+        };
+        Ok(HeaderSource { carried, parent_id })
     }
 }
 
@@ -141,7 +155,7 @@ enum ConfigValue {
     /// Producer switch: the value comes from [`LbcConfig`], never from an
     /// override.
     Knob(NcAttrValue),
-    /// Namelist metadata: the v8.4.1 registry default, overridable by name.
+    /// Namelist metadata: the v8.4.2 registry default, overridable by name.
     Default(NcAttrValue),
 }
 
@@ -159,15 +173,13 @@ fn logical(v: bool) -> NcAttrValue {
 }
 
 /// The `config_*` block, in the registry's declaration order — which is the
-/// order the native writer stamps it in.  Defaults are the v8.4.1
+/// order the native writer stamps it in. Defaults are the v8.4.2
 /// `core_init_atmosphere` Registry.xml `default_value`s, transcribed; rows
 /// marked `Knob` take the producer's actual switch instead and refuse an
 /// override, because the header must not claim a configuration the run did
 /// not use.
-pub fn config_attributes(
-    cfg: &LbcConfig,
-    n_vert_levels: usize,
-) -> MpasResult<Vec<NcAttr>> {
+/// MPAS v8.4.2 src/core_init_atmosphere/Registry.xml:54-370.
+pub fn config_attributes(cfg: &LbcConfig, n_vert_levels: usize) -> MpasResult<Vec<NcAttr>> {
     use ConfigValue::{Default, Knob};
     let rows: Vec<(&str, ConfigValue)> = vec![
         ("config_init_case", Knob(int(9))),
@@ -258,7 +270,7 @@ pub fn config_attributes(
         match known.get(name.as_str()) {
             None => {
                 return Err(MpasError::Refusal(format!(
-                    "--config-attrs names {name}, which is not a v8.4.1 init_atmosphere \
+                    "--config-attrs names {name}, which is not a v8.4.2 init_atmosphere \
                      namelist attribute this table declares; a misspelled name would silently \
                      leave the default in the header"
                 )))
@@ -313,18 +325,16 @@ fn override_value(
                     return Err(refuse("a string"));
                 }
             } else {
-                NcAttrValue::Text(
-                    json.as_str().ok_or_else(|| refuse("a string"))?.to_string(),
-                )
+                NcAttrValue::Text(json.as_str().ok_or_else(|| refuse("a string"))?.to_string())
             }
         }
         NcAttrValue::Ints(_) => NcAttrValue::Ints(vec![json
             .as_i64()
-            .ok_or_else(|| refuse("an integer"))? as i32]),
-        NcAttrValue::Floats(_) => NcAttrValue::Floats(vec![json
-            .as_f64()
-            .ok_or_else(|| refuse("a number"))?
-            as f32]),
+            .ok_or_else(|| refuse("an integer"))?
+            as i32]),
+        NcAttrValue::Floats(_) => {
+            NcAttrValue::Floats(vec![json.as_f64().ok_or_else(|| refuse("a number"))? as f32])
+        }
         other => {
             return Err(MpasError::Refusal(format!(
                 "attribute {name} has an unoverridable default shape {other:?}"
@@ -469,14 +479,15 @@ pub fn write_lbc_file(
     // Global attributes: carried lineage, owned identity, stamped config.
     let mut gattrs: Vec<NcAttr> = Vec::new();
     // model_name .. y_period.
-    for a in header.carried.iter().take(CARRIED_LEADING.len() + CARRIED_MESH.len()) {
+    for a in header
+        .carried
+        .iter()
+        .take(CARRIED_LEADING.len() + CARRIED_MESH.len())
+    {
         gattrs.push(a.clone());
     }
     gattrs.push(NcAttr::text("history", "rw_mpas_lbc"));
-    gattrs.push(NcAttr::text(
-        "parent_id",
-        format!("{}\n", header.parent_file_id),
-    ));
+    gattrs.push(NcAttr::text("parent_id", header.parent_id.clone()));
     // mesh_spec, carried last.
     gattrs.push(
         header
@@ -557,6 +568,79 @@ fn space_separated(stamp: &str) -> MpasResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_bootstrap_accepts_bare_meshes_and_keeps_the_parent_chain() {
+        let path = std::env::temp_dir().join(format!("lbc-header-{}.nc", std::process::id()));
+        let cases = [
+            (vec![], "", "YES", "NO", 0.0),
+            (
+                vec![NcAttr::text("parent_id", "ancestor")],
+                "ancestor",
+                "YES",
+                "NO",
+                0.0,
+            ),
+            (
+                vec![
+                    NcAttr::text("file_id", "mesh  "),
+                    NcAttr::text("parent_id", "ancestor"),
+                ],
+                "mesh\nancestor",
+                "YES",
+                "NO",
+                0.0,
+            ),
+            (
+                vec![
+                    NcAttr::text("on_a_sphere", "NO"),
+                    NcAttr::text("is_periodic", "YES"),
+                    NcAttr::float("x_period", 42.0),
+                ],
+                "",
+                "NO",
+                "YES",
+                42.0,
+            ),
+            (
+                vec![
+                    NcAttr::text("is_periodic", "YES"),
+                    NcAttr::float("x_period", 42.0),
+                ],
+                "",
+                "YES",
+                "NO",
+                0.0,
+            ),
+        ];
+        for (attrs, parent, sphere, periodic, period) in cases {
+            drop(
+                NcClassicWriter::create(
+                    &path,
+                    NcFormat::Data64,
+                    vec![NcDim::fixed("nCells", 1)],
+                    attrs,
+                    vec![],
+                    0,
+                )
+                .unwrap(),
+            );
+            let header = HeaderSource::from_grid(&path).unwrap();
+            assert_eq!(header.parent_id, parent);
+            let attrs: BTreeMap<_, _> = header
+                .carried
+                .iter()
+                .map(|a| (a.name.as_str(), &a.value))
+                .collect();
+            assert!(matches!(attrs["on_a_sphere"], NcAttrValue::Text(v) if v == sphere));
+            assert!(matches!(attrs["is_periodic"], NcAttrValue::Text(v) if v == periodic));
+            assert!(matches!(attrs["x_period"], NcAttrValue::Floats(v) if v == &[period]));
+            assert!(matches!(attrs["sphere_radius"], NcAttrValue::Floats(v) if v == &[1.0]));
+            assert!(matches!(attrs["mesh_spec"], NcAttrValue::Text(v) if v == "0.0"));
+            assert!(matches!(attrs["version"], NcAttrValue::Text(v) if v == "8.4.2"));
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn the_file_name_follows_the_stream_template() {

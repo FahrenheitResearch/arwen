@@ -1,0 +1,4 @@
+{
+ "about": "Single-core exemptions for gpuwm/timeline/parallelism.py. Each entry names why the stage may run on about one core, who owns it and when it retires (2026-10-16: no single-CPU path on the critical path). An entry without all four fields is refused.",
+ "allow": []
+}

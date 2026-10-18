@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import decimal
 
-__all__ = ["exp_cr", "log_cr"]
+__all__ = ["exp_cr", "log_cr", "log10f_cr"]
 
 #: 60 significant decimal digits ~= 199 bits, against the 53 a double needs.
 _PRECISION = 60
@@ -73,3 +73,42 @@ def exp_cr(x: float) -> float:
 def log_cr(x: float) -> float:
     """``log(x)`` correctly rounded to binary64, identically on every host."""
     return float(_CONTEXT.ln(decimal.Decimal(x)))
+
+
+def log10f_cr(values):
+    """``log10`` of float32 values, correctly rounded to float32, on every host.
+
+    The value is the 60-digit decimal logarithm rounded once to binary32:
+    the nearest of the three float32 candidates around its binary64
+    conversion is chosen by exact decimal distance (ties to even), so no
+    double rounding can occur.  Positive finite arguments only; anything
+    else is refused rather than guessed.
+
+    This is what a C library whose ``log10f`` rounds correctly returns, and
+    what P3's ``ALOG10`` evaluates to in WRF built against one.  It exists
+    for P3's rain-table generation (gpuwm/core/p3_tables.py), ~10,600
+    calls once per process; the device kernel's own ``p3_log10`` is the
+    run-time path.
+    """
+    import numpy as np
+
+    flat = np.asarray(values, dtype=np.float32)
+    out = np.empty(flat.shape, dtype=np.float32)
+    src = flat.reshape(-1)
+    dst = out.reshape(-1)
+    for position, value in enumerate(src):
+        if not (np.isfinite(value) and value > 0):
+            raise ValueError(f"log10f_cr takes positive finite float32, "
+                             f"got {value!r}")
+        exact = _CONTEXT.log10(decimal.Decimal(float(value)))
+        guess = np.float32(float(exact))
+        best, best_gap = None, None
+        for cand in (np.nextafter(guess, np.float32(-np.inf)), guess,
+                     np.nextafter(guess, np.float32(np.inf))):
+            gap = abs(exact - decimal.Decimal(float(cand)))
+            if (best_gap is None or gap < best_gap
+                    or (gap == best_gap
+                        and int(cand.view(np.uint32)) % 2 == 0)):
+                best, best_gap = cand, gap
+        dst[position] = best
+    return out

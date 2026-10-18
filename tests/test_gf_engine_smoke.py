@@ -19,6 +19,56 @@ from conftest import requires_gpu
 cp = pytest.importorskip("cupy")
 
 
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("ice_active", [False, True])
+def test_real_adapter_routes_cold_condensate_from_its_kernel(ice_active, monkeypatch):
+    """The actual kernel split reaches the correct stock publication slot."""
+    from types import SimpleNamespace as NS
+    from gpuwm.core import gf
+    from gpuwm.verify.gf_oracle import load_gf_oracle
+    from gpuwm.wrf_exact import ENABLED
+    fixture=load_gf_oracle()
+    col=int(np.flatnonzero(np.any(fixture.levels["rqicuten"] != 0,axis=1))[0])
+    lev=fixture.levels; sf=fixture.surface
+    grid=lambda name:cp.asarray(lev[name][col,:,None,None].copy())
+    volume=grid("p")
+    state=NS(p=volume,ht=cp.asarray([[sf["ht"][col]]],cp.float32),
+             w=cp.concatenate((grid("w"),cp.zeros((1,1,1),cp.float32))),
+             qi=cp.zeros_like(volume) if ice_active else None)
+    atmosphere={dst:grid(src) for dst,src in
+                (("u","u"),("v","v"),("temperature","t"),("qv","qv"),
+                 ("pressure","p"),("exner","pi"),("rho","rho"),("dz","dz8w"))}
+    atmosphere["p_interface"]=cp.concatenate((grid("p8w"),cp.zeros((1,1,1),cp.float32)))
+    fields={name:cp.asarray([[sf[name][col]]],cp.float32) for name in ("hfx","qfx","xland")}
+    fields["kpbl"]=cp.asarray([[sf["kpbl"][col]]],cp.int32)
+    adapter=gf.GrellFreitas()
+    adapter.bind_driver(NS(rthratenlw=grid("rthraten"),rthratensw=cp.zeros_like(volume),
+                          gf_rthdynten=grid("rthften"),gf_rqvdynten=grid("rqvften"),
+                          gf_rthblten=grid("rthblten"),gf_rqvblten=grid("rqvblten")))
+    module=gf._gf_module(volume.shape[0]); saved=[]
+    class Function:
+        def __init__(self,fn): self.fn=fn
+        def __getattr__(self,name): return getattr(self.fn,name)
+        def __call__(self,launch_grid,block,args):
+            self.fn(launch_grid,block,args);saved.append(args[3].copy())
+    class Module:
+        def get_function(self,name): return Function(module.get_function(name))
+    monkeypatch.setattr(gf,"_gf_module",lambda *args,**kwargs:Module())
+    cfg=NS(dt=float(sf["dt"][col]),dx=float(sf["dx"][col]),
+           ishallow=int(sf["ishallow"][col]),clos_choice=int(sf["ichoice"][col]),lightning_option=0)
+    result=adapter(atmosphere=atmosphere,fields=fields,state=state,cfg=cfg)
+    liquid=saved[0][0,gf._OUT_LEV.index("rqccuten"),:,None,None]
+    ice=saved[0][0,gf._OUT_LEV.index("rqicuten"),:,None,None]
+    assert bool(cp.any(ice != 0).item()), "the selected column must exercise cold routing"
+    expected=liquid if ENABLED or ice_active else liquid+ice
+    cp.testing.assert_array_equal(result.rqccuten.view(cp.uint32),expected.view(cp.uint32))
+    if ice_active:
+        cp.testing.assert_array_equal(result.rqicuten.view(cp.uint32),ice.view(cp.uint32))
+    else:
+        assert result.rqicuten is None
+
+
 def _state_for(cfg):
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.moist import init_moist_balanced

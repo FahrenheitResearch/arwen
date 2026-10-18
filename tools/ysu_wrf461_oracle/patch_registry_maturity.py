@@ -55,15 +55,21 @@ YSU_WARNINGS = [
     "word on every lane.",
 
     "DELIBERATE DIVERGENCE, WRF is undefined: with ust**3 underflowed to "
-    "zero, wstar3 zero and sfcflg true, bl_ysu.F90:963 computes prfac2 = "
-    "15.9*(wstar3+wstar3_2)/ust3/(1.+4.*karman*(...)/ust3) = 0/0 and fills "
-    "the heat-tendency column with NaN -- pinned in the oracle fixture "
-    "(case 13). gpuwm returns the defined algebraic value there and is "
-    "WRF's word on every lane WRF wrote a number, KPBL and PBLH included. "
+    "zero or a subnormal and sfcflg true, bl_ysu.F90:948 computes prfac2 = "
+    "15.9*(wstar3+wstar3_2)/ust3/(1.+4.*karman*(...)/ust3) = 0/0 or Inf/Inf "
+    "and fills the heat-tendency column with NaN -- pinned in the oracle "
+    "fixture (case 13). gpuwm returns the defined algebraic value there and "
+    "is WRF's word on every lane WRF wrote a number, KPBL and PBLH included. "
     "Separately, at kpbl == kte with cloud at kpbl-1, bl_ysu.F90:846 reads "
     "thlix(i,k+2) one element past an array declared kts:kte; "
-    "kernels/ysu.cu:425 guards that access with kpbl < nz and skips the "
-    "top-down block instead.",
+    "kernels/ysu.cu:437 guards that access with kpbl < nz and skips the "
+    "top-down block instead. And get_pblh (bl_ysu.F90:1622) searches the lowest 500 m "
+    "with do while (zw1d(k) .le. 500.) and no k <= kte bound, reading "
+    "qke1d(kte), a word bl_ysu_run never sets, and on a column whose levels "
+    "all sit below 500 m walking past the array (gfortran -fcheck=bounds "
+    "stops at bl_ysu.F90:1625; tools/topo_wind_wrf461_oracle/bounds_check.sh); "
+    "kernels/ysu_topo.cuh bounds the search at kte. No real WRF grid has its "
+    "top below 500 m.",
 
     "WRF's default surface-drag arm is implemented: module_bl_ysu.F:404 "
     "passes ctopo and ctopo2 and bl_ysu.F90:1308 applies their drag. The "

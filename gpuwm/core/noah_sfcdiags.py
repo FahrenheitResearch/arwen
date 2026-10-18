@@ -3,28 +3,36 @@
 ``PhysicsDriver._refresh_surface_diagnostics`` runs after every Noah call.
 Written as CuPy array expressions it was about 20 launches from Python for a
 few loads and stores per column, about 0.11 ms of every default-suite step on
-a 250 x 200 grid.  This kernel makes the same writes in one launch and is an
-exact transcription of those expressions, operation by operation:
+a 250 x 200 grid.  This kernel makes the same writes in one launch, in WRF
+v4.6.1 SFCDIAGS's arithmetic (phys/module_sf_sfcdiags.F:45-72):
 
 * every multiply, add, subtract and divide is spelled with its ``_rn``
-  intrinsic, in the expressions' own association (``rho * CP * safe_chs2``
-  is ``(rho * CP) * safe_chs2``), so NVRTC cannot contract a multiply and an
-  add or subtract into one FMA where CuPy rounded each operator separately;
-* ``cp.power`` on float32 is CuPy's ``powf(in0, in1)``, which is what is
-  called here;
-* each ``cp.where`` is a select of values both of which are computed, so a
+  intrinsic, in WRF's association (``RHO*CP*CHS2`` is ``(RHO*CP)*CHS2``), so
+  NVRTC cannot contract a multiply and an add or subtract into one FMA that
+  gfortran -O0 never forms;
+* TH2's ``(1.E5/PSFC)**ROVCP`` is a REAL**REAL power, which WRF's build
+  hands to the C library's powf; it is WOOF's own float32 powf here
+  (``gfk_pow``, kernels/glibc_flt32.cuh), not CUDA's.  CUDA's powf was this
+  kernel's word until lane/verify-noah-lsm: graded on every float32 surface
+  pressure from 20 to 110 kPa (tools/noah_wrf461_oracle/sfcdiags_sweep.py)
+  it gave a different TH2 on 1,234,353 of 20,617,217 pressures, up to 2 ULP;
+  gfk_pow gives WRF's word on all of them;
+* each WRF ``if`` is a select of values both of which are computed, so a
   column's branch never changes another column's bits.
 
-TH2 reads the T2 this launch just wrote, as the third statement of the
-expressions read ``f["t2"]`` after the second assigned it.  A caller holding
-NumPy arrays keeps the expressions; :func:`device_arrays` is the test.
+TH2 reads the T2 this launch just wrote, as WRF's TH2 reads T2(I,J).  Q2
+carries one documented bound WRF does not
+(``PhysicsDriver._refresh_surface_diagnostics``).  Carriers that are not
+C-contiguous float32 CuPy arrays of the grid's shape go through the same
+kernel on contiguous copies (:func:`refresh_any`), so there is one
+arithmetic, not two.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-_SOURCE = r"""
+_KERNEL_TEXT = r"""
 extern "C" __global__
 void noah_sfcdiags(const float* psfc, const float* tsk, const float* cqs2,
                    const float* chs2, const float* qsfc, const float* qfx,
@@ -59,9 +67,17 @@ void noah_sfcdiags(const float* psfc, const float* tsk, const float* cqs2,
     const float temperature = t_active ? heated : ts;
     t2[c] = temperature;
     // th2 = t2 * power(P0 / psfc, RCP)
-    th2[c] = __fmul_rn(temperature, powf(__fdiv_rn(p0, ps), rcp));
+    th2[c] = __fmul_rn(temperature, gfk_pow(__fdiv_rn(p0, ps), rcp));
 }
 """
+
+
+def _source() -> str:
+    """WOOF's float32 libm header, then the kernel: the string NVRTC gets."""
+    from pathlib import Path
+
+    header = Path(__file__).resolve().parent / "kernels" / "glibc_flt32.cuh"
+    return header.read_text(encoding="utf-8") + _KERNEL_TEXT
 
 _THREADS = 256
 _KERNEL = None
@@ -77,9 +93,10 @@ def _kernel():
         # A forecast translation unit, so the kernel manifest records it
         # (tests/test_kernel_manifest.py SITE_FILES): a RawModule, the
         # compile a RawKernel of the same source and options makes.
-        module = cp.RawModule(code=_SOURCE, options=())
+        source = _source()
+        module = cp.RawModule(code=source, options=())
         _compile_observed(module, "gpuwm.core.noah_sfcdiags")
-        record_module("gpuwm.core.noah_sfcdiags", source=_SOURCE,
+        record_module("gpuwm.core.noah_sfcdiags", source=source,
                       options=(), module=module)
         _KERNEL = module.get_function("noah_sfcdiags")
     return _KERNEL
@@ -109,3 +126,26 @@ def refresh(fields, qv1, *, rd, cp_air, p0, rcp, active_floor) -> None:
          fields["q2"], fields["t2"], fields["th2"],
          np.float32(rd), np.float32(cp_air), np.float32(p0), np.float32(rcp),
          np.float32(active_floor), np.int64(ncol)))
+
+
+def refresh_any(fields, qv1, *, rd, cp_air, p0, rcp, active_floor) -> None:
+    """:func:`refresh` for any CuPy carrier of the grid's shape.
+
+    Inputs are copied to C-contiguous float32 arrays, the one kernel runs on
+    the copies, and the three results are written back into ``fields``.
+    """
+    import cupy as cp
+
+    shape = fields["tsk"].shape
+    names = ("psfc", "tsk", "cqs2", "chs2", "qsfc", "qfx", "hfx")
+    work = {name: cp.ascontiguousarray(cp.broadcast_to(
+        cp.asarray(fields[name], dtype=cp.float32), shape))
+        for name in names}
+    for name in ("q2", "t2", "th2"):
+        work[name] = cp.empty(shape, dtype=cp.float32)
+    level1 = cp.ascontiguousarray(cp.broadcast_to(
+        cp.asarray(qv1, dtype=cp.float32), shape))
+    refresh(work, level1, rd=rd, cp_air=cp_air, p0=p0, rcp=rcp,
+            active_floor=active_floor)
+    for name in ("q2", "t2", "th2"):
+        fields[name][...] = work[name]

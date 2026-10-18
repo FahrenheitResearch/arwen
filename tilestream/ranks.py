@@ -208,6 +208,12 @@ class RankedRun(multigpu.MultiGPUDomain):
                                         nodes=self._card_nodes)
         original_inventory = streaming.streamed_store_inventory()
         self.global_keys = tuple(global_keys)
+        if not self.global_keys:
+            # The 0-d domain-owned carriers when the caller names none
+            # (see tilestream.driver.TiledRun).
+            from tilestream.global_inventory import global_keys as _owned
+            self.global_keys = tuple(key for key in _owned(store)
+                                     if getattr(store[key], "ndim", 1) == 0)
         if self.global_keys:
             from tilestream.global_inventory import global_keys as domain_global_keys
             if set(self.global_keys) != set(domain_global_keys(store)):

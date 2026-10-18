@@ -1,0 +1,42 @@
+{
+  "seed": 20261008,
+  "npatch": 9,
+  "ncell": 558,
+  "families": {
+    "alpine-ridges": 120,
+    "coast": 112,
+    "threshold-probes": 192,
+    "plains": 60,
+    "tiny-domains": 10,
+    "extreme-high-range": 64
+  },
+  "regimes": {
+    "convective-land": 103,
+    "stable-night-land": 114,
+    "ocean": 37,
+    "high-terrain": 0,
+    "high-terrain-topo-wind": 114,
+    "snow-ice-cold": 66,
+    "stratocumulus-topdown": 22,
+    "tropical-moist": 24,
+    "edge-probe": 78
+  },
+  "nz": [
+    4,
+    30,
+    40,
+    45,
+    50,
+    60,
+    120
+  ],
+  "dt": [
+    1.0,
+    10.0,
+    20.0,
+    30.0,
+    45.0,
+    60.0,
+    300.0
+  ]
+}

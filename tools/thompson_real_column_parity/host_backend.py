@@ -143,12 +143,14 @@ def _preprocess(source: str) -> str:
     read after expansion.  The shim is NOT included here: it defines
     ``__global__`` away, and the regex below needs it.
     """
+    # Bytes on the pipe: a text-mode pipe sends CRLF on Windows (the R4 lint).
     done = subprocess.run(
         [compiler(), "-E", "-P", "-std=c++17", "-x", "c++", "-"],
-        input=source, capture_output=True, text=True, check=False)
+        input=source.encode("utf-8"), capture_output=True, check=False)
     if done.returncode != 0:
-        raise RuntimeError("preprocessing failed: " + done.stderr[-4000:])
-    return done.stdout
+        raise RuntimeError("preprocessing failed: "
+                           + done.stderr.decode("utf-8", "replace")[-4000:])
+    return done.stdout.decode("utf-8")
 
 
 def parse_kernels(source: str) -> dict[str, list[Param]]:
@@ -378,13 +380,18 @@ def _fake_cupy() -> types.ModuleType:
                 "gpuwm_mp_zero_below": (
                     "float32 t", "float32 x", "if (x < t) x = 0.0f;"),
             }
-            if supported.get(name) != (inputs, outputs, operation):
-                raise RuntimeError(
-                    "the host backend has no implementation for this "
-                    f"elementwise kernel: {name}")
+            # A module may build kernels at import that a host measurement
+            # never launches (gpuwm/core/morrison.py's field preparation);
+            # an unknown kernel is refused when it is CALLED.
+            self.supported = supported.get(name) == (inputs, outputs,
+                                                     operation)
             self.name = name
 
         def __call__(self, *args):
+            if not self.supported:
+                raise RuntimeError(
+                    "the host backend has no implementation for this "
+                    f"elementwise kernel: {self.name}")
             if self.name == "gpuwm_mp_floor_zero":
                 (field,) = args
                 threshold = np.float32(0)
@@ -519,6 +526,9 @@ def install() -> None:
         raise RuntimeError(
             "the real cupy is already imported in this process; the host "
             "backend must be installed before any gpuwm.core import")
+    # Initialize opt-in compiler hooks before replacing CuPy with the CPU shim.
+    # This imports the compiler, without opening a device or compiling a kernel.
+    import gpuwm
     sys.modules["cupy"] = _fake_cupy()
     from gpuwm.core import kernels as K
     originals = {

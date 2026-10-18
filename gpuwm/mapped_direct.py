@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import hashlib
 import json
@@ -11,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from typing import Mapping, Sequence
@@ -59,6 +61,8 @@ from gpuwm.ingest.preparation_price import (
 from gpuwm.ingest.preprocess_backend import (
     preprocess_math_call,
     admit_preparation,
+    move_start_result_to_host,
+    start_time_backend,
     preprocess_identity,
     release_backend_memory,
     resolve_preprocess_backend,
@@ -1310,6 +1314,52 @@ def _seal_posted_mapped(posted_source, *, writer, plan, mapping_contract,
 
 
 @preprocess_math_call
+class _EarlyInitialDecode:
+    """The separate initial analysis, decoded beside the boundary source.
+
+    ``decode_initial_analysis`` reads only the declared analysis files, the
+    packaged authorities, the grids and the start time, none of which the
+    boundary source's decode or its start time's build touches.  On the
+    literal HRRR start it took 45.6 s of the 234 s root stage, one after the
+    other with the 137 s boundary decode while the card sat idle.  It now
+    starts as soon as the grids are known, in its own engine process, and the
+    root stage enters the same context it would have entered, so every array
+    and receipt it hands on is the one the serial decode produced.
+    """
+
+    def __init__(self, request, **arguments):
+        from contextlib import ExitStack
+        self._stack = ExitStack()
+        self._analysis = None
+        self._error = None
+        self._thread = threading.Thread(
+            target=self._run, args=(request, arguments),
+            name="initial-analysis-decode", daemon=True)
+        self._thread.start()
+
+    def _run(self, request, arguments):
+        from gpuwm.initial_source import decode_initial_analysis
+        try:
+            self._analysis = self._stack.enter_context(
+                decode_initial_analysis(request, **arguments))
+        except BaseException as error:  # re-raised on the root stage's thread
+            self._error = error
+
+    def close(self):
+        self._thread.join()
+        self._stack.close()
+
+    @contextlib.contextmanager
+    def analysis(self):
+        self._thread.join()
+        try:
+            if self._error is not None:
+                raise self._error
+            yield self._analysis
+        finally:
+            self._stack.close()
+
+
 def prepare_mapped_wrf(
     *,
     composition: str | Path,
@@ -1762,6 +1812,14 @@ def prepare_mapped_wrf(
     )
 
     posted_source = None
+    early_initial = None
+    if initial_request is not None:
+        early_initial = _EarlyInitialDecode(
+            initial_request, output_parent=output_root.parent, grids=grids,
+            valid_time=exp.start_time, workers=preprocess_workers,
+            decoders=decoders)
+        import atexit
+        atexit.register(early_initial.close)
     with prep_stage("root_initialize" if physical_provider is not None else "source_decode",
                     label=("Initialize member from shared source" if physical_provider is not None
                            else "Decode and compose source"),
@@ -1971,6 +2029,10 @@ def prepare_mapped_wrf(
             "mapped", exp, snapshots,
             boundary_species=mapping_boundary_species(mapping_contract)),
         workers=preprocess_workers)
+    # The start time is built before the head exists, so no forecast sits
+    # beside it: it takes the whole card when the build fits there, and
+    # its result moves to the host before the head (start_time_backend).
+    start_preprocess = start_time_backend(preprocess)
     preprocess_receipt = preprocess.receipt()
     posted_plan = (None if posted_source is None else _posted_input_plan(
         posted_source, mapping=mapping, composition=composition,
@@ -2079,15 +2141,26 @@ def prepare_mapped_wrf(
                 raise ValueError("physical input valid times differ from the full initial/boundary window")
             require_mapped_physical_field_contract(physical_input, expected_physical_fields)
         forcing_timings = []
+        # Forcing times may be built on several threads (stream_forcing_times
+        # workers); the lazy snapshot sequence keeps a one-deep cache and its
+        # frames read engine scratch, so a time's source is packed one at a
+        # time and only the interpolation and initialization run side by side.
+        snapshot_lock = threading.Lock()
 
-        def build_forcing_time(index, *, source_override=None, aerosol_snapshot=None):
+        def build_forcing_time(index, *, source_override=None, aerosol_snapshot=None,
+                               backend=None):
             nonlocal physical_output
+            backend = preprocess if backend is None else backend
             # One forcing time's build, unchanged: interpolate, initialize,
             # attach the map factors.  The single-domain route calls it start
             # first (gpuwm.ingest.boundary_stream), as does a chained
             # hierarchy; an unchained hierarchy keeps the start time last.
             build_started = time.perf_counter()
-            source = snapshots[index] if source_override is None else source_override
+            if source_override is None:
+                with snapshot_lock:
+                    source = snapshots[index]
+            else:
+                source = source_override
             timing = {"forcing_index": index, "valid_time": str(source.valid_time)}
             horizontal_started = time.perf_counter()
             # Metgrid classifies masked-field TARGET cells by the model
@@ -2095,7 +2168,7 @@ def prepare_mapped_wrf(
             # lanes so soil, skin, snow, and physics share one surface.
             if physical_input is None:
                 met = interpolate_era5_to_lambert(
-                    source, grid, backend=preprocess,
+                    source, grid, backend=backend,
                     target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
                     water_temperature_statics=water_statics)
             else:
@@ -2111,9 +2184,10 @@ def prepare_mapped_wrf(
                 met.fields.get("SOURCE_OROGRAPHY"))
             if physical_output_store is not None:
                 from gpuwm.ensemble.physical_store import physical_static_identity
-                from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+                from gpuwm.native_wrf_contract import native_landuse_identity
                 actual_static = physical_static_identity(
-                    native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY)
+                    native_static_export_fields(static, grid),
+                    native_landuse_identity(static))
             if physical_output_store is not None and posted_source is not None:
                 from datetime import timezone
                 from gpuwm.ensemble.posted_physical import PostedPhysicalStream, posted_source_identity
@@ -2131,9 +2205,10 @@ def prepare_mapped_wrf(
             elif physical_output is not None:
                 if index == 0:
                     from gpuwm.ensemble.physical_store import physical_static_identity
-                    from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+                    from gpuwm.native_wrf_contract import native_landuse_identity
                     physical_output.document["source"]["static_identity"] = physical_static_identity(
-                        native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY)
+                        native_static_export_fields(static, grid),
+                    native_landuse_identity(static))
                 physical_output.write(met)
             from gpuwm.ensemble.posted_preparation import (
                 current_posted_preparation, replace_current_native_snapshot)
@@ -2156,7 +2231,7 @@ def prepare_mapped_wrf(
                 met, cfg, coord, static["HGT_M"], grid=grid,
                 landmask=static["LANDMASK"],
                 p_top=exp.vertical.p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
-                preprocess_backend=preprocess,
+                preprocess_backend=backend,
                 state_backend="preprocess",
                 # Only the start time's result is kept below; every later
                 # time contributes its state to the boundaries.
@@ -2220,7 +2295,15 @@ def prepare_mapped_wrf(
             # static fields, receipts); the later times are built after it is
             # published, one resident at a time, and each interval is written
             # as soon as its two times exist.
-            initial_met, initial_result = build_forcing_time(0)
+            if initial_request is None and start_preprocess is not preprocess:
+                initial_met, initial_result = build_forcing_time(
+                    0, backend=start_preprocess)
+                moved = move_start_result_to_host(initial_met, initial_result)
+                release_backend_memory(start_preprocess)
+                preprocess.selection["chunking"]["start_time"]["moved_to_host_bytes"] = moved
+            else:
+                initial_met, initial_result = build_forcing_time(0)
+            start_preprocess = None
             forcing.add_state(initial_result.state, index=0)
             if initial_request is not None:
                 from gpuwm.initial_source import decode_initial_analysis
@@ -2231,10 +2314,11 @@ def prepare_mapped_wrf(
                 del initial_result
                 release_backend_memory(preprocess)
                 try:
-                    with decode_initial_analysis(
+                    with (early_initial.analysis() if early_initial is not None
+                          else decode_initial_analysis(
                             initial_request, output_parent=output_root.parent,
                             grids=grids, valid_time=exp.start_time,
-                            workers=preprocess_workers, decoders=decoders) as analysis:
+                            workers=preprocess_workers, decoders=decoders)) as analysis:
                         _require_source_top(
                             exp, cfg, _source_top_pressure_pa(
                                 (analysis.snapshot,), mapping_contract=analysis.mapping),
@@ -2451,12 +2535,13 @@ def prepare_mapped_wrf(
         }
         if physical_input is not None:
             from gpuwm.ensemble.physical_store import physical_input_binding, physical_static_identity
-            from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+            from gpuwm.native_wrf_contract import native_landuse_identity
             source_identity["ensemble_physical_input"] = physical_input_binding(
                 physical_input, grid, cfg, source_identity,
                 input_manifest_sha256=published_manifest_sha256,
                 static_identity=physical_static_identity(
-                    native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY))
+                    native_static_export_fields(static, grid),
+                    native_landuse_identity(static)))
         from gpuwm.ensemble.posted_preparation import bind_current_source_identity
         source_identity = bind_current_source_identity(source_identity,
             domain_id=exp.root.grid_id)
@@ -2854,11 +2939,28 @@ def prepare_mapped_wrf(
                         backend=str(preprocess_receipt["backend"]),
                         count=len(snapshots) - 1):
             boundaries_started = time.perf_counter()
+            from gpuwm.ensemble.posted_preparation import current_posted_preparation
+            from gpuwm.ingest.preparation_workers import forcing_time_workers
+            # Side by side only where a time's build reads and writes nothing
+            # but its own arrays: a physical store or a posted source is
+            # written or waited on in time order, so those stay serial.
+            independent_times = (physical_input is None and physical_output is None
+                                 and posted_source is None
+                                 and current_posted_preparation() is None)
+            forcing_workers = forcing_time_workers(
+                len(snapshots) - 1,
+                cpu_workers=worker_policy.get("effective_workers"),
+                backend=str(preprocess_receipt["backend"]),
+                selection=preprocess_receipt.get("selection"),
+            ) if independent_times else {"workers": 1, "basis": "ordered physical or posted source"}
+            worker_policy["forcing_time_workers"] = forcing_workers
             writer.stream_forcing_times(
                 count=len(snapshots), build_forcing_time=build_forcing_time,
                 forcing=forcing, times=times,
-                release=lambda: release_backend_memory(preprocess))
+                release=lambda: release_backend_memory(preprocess),
+                workers=forcing_workers["workers"])
         initialize_seconds += time.perf_counter() - boundaries_started
+        forcing_timings.sort(key=lambda entry: entry["forcing_index"])
         posted_proof = {}
         with prep_stage("prepared_cache", label="Seal prepared cache"):
             cache_started = time.perf_counter()

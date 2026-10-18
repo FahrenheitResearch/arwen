@@ -15,7 +15,7 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
-description = "EUMETNET OPERA ODIM_H5 polar-volume decoder (PVOL/SCAN): per-sweep VRAD/DBZH with classified undetect/nodata planes"
+description = "Polar-volume decoder (ODIM_H5 PVOL/SCAN, plus JMA GRIB2, IRIS RAW, UF, CfRadial 1, DORADE): per-sweep moments with classified undetect/nodata planes"
 
 [dependencies]
 # Pure-Rust, read-only HDF5 decode.  Declared as a repo-relative path rather
@@ -32,6 +32,14 @@ hdf5-reader = { path = "../../vendor/netcrust/vendor/hdf5-reader" }
 rw-nexrad = { path = "../rw-nexrad" }
 
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+
+# The non-ODIM polar formats (`src/world`). BowEcho's readers are reused for
+# JMA, CfRadial 1 and DORADE (the same vendored crates rw-simradar already
+# builds offline); flate2 expands gzip-wrapped volumes (IDEAM's CfRadial,
+# the public UF files), at the version and backend rw-fetch uses.
+nexrad_io = { path = "../../vendor/bowecho/crates/nexrad_io" }
+radar_core = { path = "../../vendor/bowecho/crates/radar_core" }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

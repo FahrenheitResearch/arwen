@@ -406,8 +406,9 @@ def test_a_field_written_in_another_shape_is_listed_and_blocks_a_match():
 def test_a_named_refusal_before_the_first_frame_is_a_refusal_not_a_crash():
     from gpuwm.verify_exact.cli import initialisation_refusal
     empty = RunRecord({}, {})
-    assert initialisation_refusal("CRASH", "ValueError: RUC smois must remain within 0..1", empty) == (
-        "REFUSED", "at initialisation: ValueError: RUC smois must remain within 0..1")
+    assert initialisation_refusal("CRASH", "ConfigurationRefused: invalid soil input", empty) == (
+        "REFUSED", "at initialisation: ConfigurationRefused: invalid soil input")
+    assert initialisation_refusal("CRASH", "ValueError: shape mismatch", empty)[0] == "CRASH"
     assert initialisation_refusal("CRASH", "RuntimeError: non-finite", empty)[0] == "CRASH"
     started = _record(_state(17))
     assert initialisation_refusal("CRASH", "ValueError: late", started)[0] == "CRASH"

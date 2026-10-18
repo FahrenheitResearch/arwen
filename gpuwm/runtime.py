@@ -1469,18 +1469,51 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
                                  ) -> PreparedRealCase:
     source = _runtime_preparation_source()
     if source is None:
-        return _prepare_root_experiment_case(exp, data, input_catalog=input_catalog,
+        prepared = _prepare_root_experiment_case(exp, data, input_catalog=input_catalog,
             forcing_by_time=forcing_by_time, scratch_arena=scratch_arena,
             dycore_state_workspace=dycore_state_workspace, store_request=store_request)
+        return _hold_strict_theta_carrier(prepared)
     catalog = _runtime_input_catalog(data) if input_catalog is None else input_catalog
     grid = (experiment_grid(exp, data) if len(exp.domains) == 1 else grids_from_projection_config(exp)[0])
     selection = GeogSelection.from_case_data(data, domain_id=exp.root.grid_id)
-    return source.prepare_root(exp, data, grid=grid, selection=selection, catalog=catalog,
+    prepared = source.prepare_root(exp, data, grid=grid, selection=selection, catalog=catalog,
         scratch_arena=scratch_arena, dycore_state_workspace=dycore_state_workspace,
         store_request=store_request,
         build=lambda: _prepare_root_experiment_case(exp, data, input_catalog=catalog,
             forcing_by_time=forcing_by_time, scratch_arena=scratch_arena,
             dycore_state_workspace=dycore_state_workspace, store_request=store_request))
+    return _hold_strict_theta_carrier(prepared)
+
+
+def _hold_strict_theta_carrier(prepared: PreparedRealCase) -> PreparedRealCase:
+    """Strict mode: the in-process prepared root holds theta as WRF's ``t = theta - 300``.
+
+    THE BREAKAGE THIS PREVENTS (2.9.2): every strict kernel reads ``thp`` as
+    WRF's ``t_2`` with ``thb == 300`` (gpuwm.core.state.adopt_wrf_theta_carrier).
+    2.9.1 re-expressed the prepared state that way only where a prepared cache
+    is restored (gpuwm.ingest.prepared_cache.restore_prepared_cache), which the
+    chained GFS-series preparation passes through.  The route that builds its
+    forcing in the forecast's own process (the experiment route ``gpuwm go``
+    takes on the keyless ERA5 default, SEALED_REASONS["experiment_run"]) runs
+    ``prepare_real_case``'s state as built, with the preparation's 290-464 K
+    base in ``thb``, so strict mode read theta up to 164 K low and stopped at
+    its first step: "microphysics RAINNC contains a non-finite value" on the
+    default ``gpuwm go`` config (500x400 at 12 km, 2026-10-11T12 ERA5).
+
+    This is the one door every in-process root passes (the single-domain
+    arm, the tree root in gpuwm.core.model, ensemble members), reached after
+    every store or capture of the prepared words was written, so the caches
+    keep the preparation's base.  A host-store preparation returns no state
+    (its strict refusal stands: prepared_store.refuse_strict_streamed_base);
+    a root restored from a cache is already re-expressed, and the adoption is
+    a no-op on it.  Default mode is untouched: adopt_wrf_theta_carrier returns
+    at once outside GPUWM_WRF_EXACT=1.
+    """
+    state = getattr(getattr(prepared, "initial_result", None), "state", None)
+    if state is not None:
+        from gpuwm.core.state import adopt_wrf_theta_carrier
+        adopt_wrf_theta_carrier(state)
+    return prepared
 
 
 def _prepare_root_experiment_case(exp: ExperimentConfig,
@@ -2044,7 +2077,7 @@ class RealRelocationChildPreparer:
             # radiation calls holds allocation fill under a ledger that
             # says nothing ever wrote it -- and the carrier contract
             # refuses, correctly, at the first move (the 2026-08-24
-            # node-2 campaign's GLW refusal).  See
+            # test host B campaign's GLW refusal).  See
             # gpuwm/core/physics_continuation.py.
             "carriers": capture_carriers(driver, store=store,
                                           scalars=None if stream is None else stream.scalars),
@@ -2461,14 +2494,20 @@ class PreparedTreeRelocationChildPreparer(RealRelocationChildPreparer):
 
     def _rebuild_driver(self, initialized, new_dc, parent_node,
                         moved, *, center_lat=None) -> float:
-        from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+        from gpuwm.native_wrf_contract import native_landuse_identity
 
+        # The footprint's own static decides the land-use identity, as the
+        # t=0 tree and single-domain paths do: a 20-category static (the
+        # 15 arc-second MODIS set) has no lake class, and handing it the
+        # constant's ISLAKE = 21 made RUC's mosaic land use index
+        # LANDUSEF[20] of a 20-plane static.
         seconds = rebuild_child_driver_from_land_state(
             exp=self.exp, data=None, model=self.model,
             initialized=initialized, child_dc=new_dc,
             parent_node=parent_node, land=moved,
             center_lat=center_lat,
-            landuse_attrs=dict(NATIVE_LANDUSE_IDENTITY),
+            landuse_attrs=native_landuse_identity(
+                getattr(initialized, "static_fields", None)),
             radiation_factory=lambda _dc, _state, _lat, _lon: None)
         driver = getattr(initialized.state, "physics", None)
         radiation = (None if driver is None
@@ -4068,8 +4107,15 @@ def _global_wrf_attrs(
         coord=None, feedback=None, initial_condition=None,
         configured_dt: float | None = None,
         source: str | None = None,
-        simulation_start_time: datetime | None = None) -> dict[str, object]:
+        simulation_start_time: datetime | None = None,
+        static_fields=None) -> dict[str, object]:
     """Assemble one domain's wrfout global attributes.
+
+    ``static_fields`` (the domain's prepared static) states the land-use
+    identity when no GEOG selection does: a 20-category MODIS static (the
+    15 arc-second set, with no lake class) stamps NUM_LAND_CAT = 20 and
+    ISLAKE = -1, as geogrid and wrf.exe do, instead of the default table's
+    21 and 21.
 
     ``initial_condition`` is the preparation receipt's provenance block
     (see :func:`gpuwm.io.wrfout.initial_condition_global_attrs`).  It
@@ -4090,6 +4136,20 @@ def _global_wrf_attrs(
 
     landuse_attrs = (None if geog_selection is None
                      else geog_selection.landuse_global_attrs())
+    if landuse_attrs is None and static_fields is not None:
+        landusef = static_fields.get("LANDUSEF") if hasattr(
+            static_fields, "get") else None
+        if landusef is not None:
+            from gpuwm.native_wrf_contract import native_landuse_identity
+            from gpuwm.static.geog import DEFAULT_LANDUSE_ATTRS
+            categories = int(np.shape(landusef)[0])
+            # Only the MODIS set without its lake class (20 planes) is
+            # re-stated; any other static keeps the attributes it always had.
+            if categories == 20:
+                landuse_attrs = {
+                    **DEFAULT_LANDUSE_ATTRS,
+                    **native_landuse_identity(static_fields),
+                    "NUM_LAND_CAT": categories}
     identity = {}
     if domain is not None:
         run = getattr(domain, "run", domain)
@@ -4218,7 +4278,9 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                              getattr(prepared, "geog_selection", None),
                              domain=prepared.cfg,
                              coord=prepared.initial_result.coord,
-                             feedback=feedback)
+                             feedback=feedback,
+                             static_fields=getattr(prepared, "static_fields",
+                                                   None))
     attrs.update(history_attrs)
     attrs.update(fire_history_attrs(getattr(state, "physics", None)))
     path = output_dir / wrfout_filename(valid_time, domain_id)

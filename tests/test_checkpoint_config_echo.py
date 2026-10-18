@@ -115,6 +115,9 @@ MOVED = {
 
 #: The keys an echo at every default leaves out.
 DEFAULT_OFF = frozenset({
+    # The ocean mixed layer (2.9.1) off: dropped, as in a header written
+    # before the keys existed.
+    "sf_ocean_physics", "oml_hml0", "oml_gamma", "oml_relaxation_time",
     # Inactive G3 fields preserve pre-G3 checkpoint identities.
     "cugd_avedx",
     "maxiens",
@@ -186,6 +189,8 @@ DEFAULT_OFF = frozenset({
     # Tiedtke, so both are absent, as in a 2.8.9 header.
     "wsm6_conservative_surface", "ntiedtke_dry_mass_coupling",
     "wdm6_conservative_surface", "thompson_cloud_surface_booking",
+    "wsm3_conservative_surface", "wsm5_conservative_surface",
+    "wsm7_conservative_surface",
 })
 
 

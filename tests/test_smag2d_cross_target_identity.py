@@ -7,6 +7,7 @@ isolates NVRTC target arithmetic; physical ptxas and hardware differences need
 the paired architecture forecast proof. It rewrites a diagnostic PTX header,
 never the engine's runtime compilation route.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,22 +16,49 @@ import pytest
 
 from conftest import requires_gpu
 from tools.cuda_cross_target_replay import (
-    SCENARIOS, TARGETS,
+    SCENARIOS, TARGETS, compiler_options, sources,
     compile_modules, load_modules, replay_scenario,
 )
 
 
 @pytest.fixture(scope="module")
 def blackwell_word_fixtures():
-    """Original sm_120 answers protect the rounding baseline without old code."""
+    """Keep original answers except the measured, merged WRF TKE corrections.
+
+    Regenerate the extension with tools/smag_wrf_word_extension.py using
+    cuda_cross_target_replay artifacts on a certified card.
+    """
     path = Path(__file__).with_name("fixtures") / "smag2d_blackwell_words.json"
     frozen = json.loads(path.read_text())
     assert frozen["schema"] == "gpuwm-smag2d-blackwell-random-fixtures-v1"
     assert frozen["reference_physical_target"] == 120
     assert frozen["runtime_ftz"] is True
-    return {tuple(case["scenario"]): {
+    answers = {tuple(case["scenario"]): {
         (row["variant"], row["kernel"]): row for row in case["kernels"]
     } for case in frozen["scenarios"]}
+    extension_path = path.with_name("smag2d_wrf_word_extension.json")
+    assert hashlib.sha256(extension_path.read_bytes()).hexdigest() == "e1a6203d9a4d8a7c3510e801313082a5205b2e0d2544b6a14c0a1f3d15e8b705"
+    extension = json.loads(extension_path.read_text())
+    assert extension["schema"] == "smag-compiled-wrf-word-extension-v1"
+    assert extension["original_fixture_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    generator = path.parents[2] / "tools/smag_wrf_word_extension.py"
+    assert extension["generator_sha256"] == hashlib.sha256(generator.read_bytes()).hexdigest()
+    assert extension["module_source_sha256"] == {
+        name: hashlib.sha256(source.encode()).hexdigest() for name, source in sources().items()}
+    assert extension["options"] == list(compiler_options(120))
+    assert [case["scenario"] for case in extension["scenarios"]] == [case["scenario"] for case in frozen["scenarios"]]
+    corrected = set()
+    for case in extension["scenarios"]:
+        expected = answers[tuple(case["scenario"])]
+        for row in case["kernels"]:
+            key = (row["variant"], row["kernel"])
+            assert row["kernel"] in {"wrf_tke_rhs", "wrf_calc_n2", "wrf_tke_km"}
+            assert row["input_sha256"] == expected[key]["input_sha256"]
+            assert row["output_arg_indices"] == expected[key]["output_arg_indices"]
+            corrected.add(row["kernel"])
+            expected[key] = row
+    assert corrected == {"wrf_tke_rhs", "wrf_calc_n2", "wrf_tke_km"}
+    return answers
 
 
 @pytest.fixture(scope="module")

@@ -228,7 +228,7 @@ fn absent_carriers_omit_their_fields_with_a_reason() {
 #[ignore = "needs an NVIDIA GPU"]
 fn gpu_matches_cpu_bit_for_bit_in_every_mode() {
     use rw_post::gpu::GpuPost;
-    let g = GpuPost::open(0).expect("an NVIDIA GPU with the post kernels");
+    let g = GpuPost::open_with(0, rw_post::gpu::test_image()).expect("an NVIDIA GPU with the post kernels");
     for (nx, ny, nz, seed) in [(37, 29, 50, 21u64), (64, 33, 20, 22), (5, 3, 2, 23)] {
         let (inp, st, hgt) = frame(nx, ny, nz, seed);
         let n = inp.shape.ncell();
@@ -346,7 +346,7 @@ fn simulated_ir_emission_level_or_olr() {
 fn gpu_simulated_ir_matches_cpu_in_both_branches() {
     use rw_post::group_d::column::olr_brightness_temperature;
     use rw_post::gpu::GpuPost;
-    let g = GpuPost::open(0).expect("an NVIDIA GPU with the post kernels");
+    let g = GpuPost::open_with(0, rw_post::gpu::test_image()).expect("an NVIDIA GPU with the post kernels");
     for (nx, ny, nz, seed) in [(41, 23, 50, 41u64), (9, 7, 3, 42)] {
         let (mut inp, _, hgt) = frame(nx, ny, nz, seed);
         let n = inp.shape.ncell();

@@ -340,3 +340,46 @@ def test_runplan_ensemble_grib2_refuses_before_preparation(source, tmp_path, mon
     document["run_options"]["grib2"] = True
     document["run_options"]["ensemble"] = {"members": 1}
     runplan.build_plan(document, source="fixture", base_dir=tmp_path, sha256="0" * 64)
+
+
+def test_post_device_cpu_fallback_warns_once_per_run(tmp_path):
+    """Breakage: a card whose driver refused the post kernels (a CUDA 13.2
+    driver refusing NVRTC 13.4's PTX) computed every GRIB2 product on the
+    CPU and said so only in manifest.json.  The exporter's warning now
+    reaches the run's warnings, once per run although every live append is
+    its own exporter process."""
+    warnings = []
+    message = ("post_device auto: the GRIB2 products are computed on the CPU (the same bytes, slower) "
+               "because the GPU post kernels did not open: load post kernels: CUDA_ERROR_UNSUPPORTED_PTX_VERSION")
+
+    def invoke(executable, request, **kwargs):
+        if request["mode"] == "append":
+            kwargs["stream"].write(
+                '{"event": "warning", "code": "post_device_cpu", "message": "%s"}\n' % message)
+        return 0
+
+    export = grib2_live.LiveGrib2Export(tmp_path / "grib2", executable=Path("native"), invoke=invoke,
+        warn=lambda code, text, **fields: warnings.append((code, text)))
+    export.frame_committed(domain=1, valid_time="2024-05-25T18:00:00", path=tmp_path / "a.nc")
+    export.frame_committed(domain=1, valid_time="2024-05-25T19:00:00", path=tmp_path / "b.nc")
+    export.stop()
+    assert warnings == [("grib2_post_device_cpu", message)]
+
+
+def test_standalone_door_prints_the_exporter_warning(tmp_path, monkeypatch, capsys):
+    from gpuwm import grib2_export
+
+    class Process:
+        def __init__(self, argv, **kwargs):
+            import io
+            self.stdout = io.StringIO(
+                '{"event": "warning", "code": "post_device_cpu", "message": "post_device auto: on the CPU"}\n'
+                '{"event": "done", "frames": 0, "bytes": 0, "seconds": 0.0}\n')
+        def poll(self):
+            return 0
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(grib2_export.subprocess, "Popen", Process)
+    assert grib2_export.invoke(Path("native"), {"schema": grib2_export.REQUEST_SCHEMA}) == 0
+    assert "export-grib2: post_device auto: on the CPU" in capsys.readouterr().err

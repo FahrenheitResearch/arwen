@@ -1,7 +1,9 @@
 // gpuwm/core/kernels/topo_radiation.cu
 //
 // WRF v4.7.1 slope-dependent shortwave (slope_rad = 1) and terrain
-// shadowing (topo_shading = 1), transcribed statement by statement:
+// shadowing (topo_shading = 1), transcribed statement by statement (WRF
+// v4.6.1 compiles the same statements; tools/wrf_topo_radiation_v461_oracle
+// /extract.py pins each block's hash in both):
 //
 //   topo_slope_geometry  dyn_em/start_em.F:1539-1577 (SLOPE, SLP_AZI)
 //   topo_shadow_init     phys/module_radiation_driver.F:4474-4608
@@ -17,12 +19,21 @@
 //
 // FP32 throughout, every operation rounded where the Fortran rounds it:
 // the explicit __f*_rn intrinsics keep NVRTC from contracting a multiply
-// and an add into an FMA that gfortran (no -march) never emits, and every
-// transcendental is the float nearest the double result -- the oracle's
-// second build links the same definitions (tools/
-// wrf_topo_radiation_v471_oracle/libm_cr.c), so the two agree bit for bit
-// and the stock-glibc build measures the libm seam alone.
-//
+// and an add into an FMA that gfortran (no -march) never emits.  Every
+// transcendental is a word of WOOF's own float32 libm, which the loader
+// prepends for this unit (gpuwm/core/kernels/__init__.py _EXTRA_HEADERS):
+// gfk_exp / gfk_pow (glibc_flt32.cuh) and glibc_sinf / glibc_cosf /
+// glibc_asinf / glibc_acosf / glibc_atanf / glibc_tanf
+// (glibc_trig_flt32.cuh), the float words gfortran's SIN, COS, ASIN, ACOS,
+// ATAN, TAN, EXP and ** on REAL(4) reach in the reference libm; ATAN2 is
+// the correctly rounded value, as that libm's atan2f is.  The column oracle
+// (tools/wrf_topo_radiation_v461_oracle) grades the chain bitwise against
+// WRF v4.6.1's Fortran linked to that libm.  Before 2026-10-07 the unit
+// evaluated every transcendental as the double function rounded to float,
+// which no libm a wrf.exe links does for sinf/cosf/expf/powf: 3,660 of the
+// chain oracle's 425,468 values (max 1,056 ulp) differed from WRF v4.6.1
+// on glibc 2.43, and 7,492 (max 1,254 ulp) on glibc 2.39.
+
 // Indices are WRF's: 1-based (i, j) on the mass grid, nx by ny.  One patch
 // covers the domain, as in a serial wrf.exe: toposhad's iteration-1 scan
 // reads up to two cells past the domain edge, where HT carries WRF's
@@ -37,23 +48,178 @@
 // piconst = 3.1415926535897932384626433 -> 0x40490FDB, DEGRAD = piconst/180.
 __device__ __forceinline__ float tr_degrad() { return __int_as_float(0x3C8EFA35); }
 
-__device__ __forceinline__ float tr_sin(float x) { return (float)sin((double)x); }
-__device__ __forceinline__ float tr_cos(float x) { return (float)cos((double)x); }
-__device__ __forceinline__ float tr_tan(float x) { return (float)tan((double)x); }
-__device__ __forceinline__ float tr_asin(float x) { return (float)asin((double)x); }
-__device__ __forceinline__ float tr_acos(float x) { return (float)acos((double)x); }
-__device__ __forceinline__ float tr_atan(float x) { return (float)atan((double)x); }
+__device__ __forceinline__ float tr_sin(float x) { return glibc_sinf(x); }
+__device__ __forceinline__ float tr_cos(float x) { return glibc_cosf(x); }
+__device__ __forceinline__ float tr_tan(float x) { return glibc_tanf(x); }
+__device__ __forceinline__ float tr_asin(float x) { return glibc_asinf(x); }
+__device__ __forceinline__ float tr_acos(float x) { return glibc_acosf(x); }
+__device__ __forceinline__ float tr_atan(float x) { return glibc_atanf(x); }
+
+// ---------------------------------------------------------------------------
+// ATAN2, correctly rounded.  The reference libm's atan2f is correctly
+// rounded for every normal result, so WOOF's word must be too.  The double
+// atan2 rounded once to float is not quite: CUDA's double atan2 carries up
+// to 2 ulp of double error, and where its value falls within that of a
+// float rounding midpoint the float can land on the wrong side (measured
+// 2026-10-07: 6 such inputs in two whole-domain sweeps of 2^32 each,
+// atan2f(y, 1000) at y = +-0.10431296, +-62919774208 and atan2f(1000, x)
+// at x = -3000.564, -31459887104).  So: take the rounded double when it is
+// clear of the midpoint by more than 8 ulp of double; otherwise decide the
+// side exactly.  For the midpoint m (exact in double) and the true angle
+// t = atan2(y, x), y cos m - x sin m = hypot(x, y) sin(t - m), so its sign
+// is the sign of t - m.  That needs sin m and cos m to about 2^-100,
+// which double-double arithmetic gives (Taylor series on m reduced by
+// pi/2 to [-pi/4, pi/4]).  Only near-midpoint arguments, about one in
+// 10^7, take that path.  Results below 2^-122 in magnitude, and infinite
+// arguments, keep the rounded double: slope azimuths never reach them (the
+// gradient ratio of a terrain field cannot be 2^-122).  Whole-domain
+// check (tools/wrf_topo_radiation_v461_oracle/libm_digest.py, 2026-10-07):
+// equal to glibc 2.43's atan2f on 3.5e9 random pairs, 4.3e9 terrain-
+// gradient pairs and every atan2f(1000, x); on every atan2f(y, 1000) but
+// 67,108 results below 2^-122, the inputs where glibc 2.43's own atan2f
+// also departs from the long-double atan2 rounded to float.
+// ---------------------------------------------------------------------------
+struct tr_dd { double hi, lo; };
+
+__device__ __forceinline__ tr_dd tr_fast_two_sum(double a, double b)
+{
+    const double s = __dadd_rn(a, b);
+    return {s, __dsub_rn(b, __dsub_rn(s, a))};
+}
+
+__device__ __forceinline__ tr_dd tr_two_sum(double a, double b)
+{
+    const double s = __dadd_rn(a, b);
+    const double bb = __dsub_rn(s, a);
+    return {s, __dadd_rn(__dsub_rn(a, __dsub_rn(s, bb)), __dsub_rn(b, bb))};
+}
+
+__device__ __forceinline__ tr_dd tr_dd_add(tr_dd a, tr_dd b)
+{
+    tr_dd s = tr_two_sum(a.hi, b.hi);
+    const tr_dd t = tr_two_sum(a.lo, b.lo);
+    s = tr_fast_two_sum(s.hi, __dadd_rn(s.lo, t.hi));
+    return tr_fast_two_sum(s.hi, __dadd_rn(s.lo, t.lo));
+}
+
+__device__ __forceinline__ tr_dd tr_dd_mul(tr_dd a, tr_dd b)
+{
+    const double p = __dmul_rn(a.hi, b.hi);
+    double e = __fma_rn(a.hi, b.hi, -p);
+    e = __fma_rn(a.hi, b.lo, e);
+    e = __fma_rn(a.lo, b.hi, e);
+    return tr_fast_two_sum(p, e);
+}
+
+__device__ __forceinline__ tr_dd tr_dd_scale(tr_dd a, double b)
+{
+    const double p = __dmul_rn(a.hi, b);
+    return tr_fast_two_sum(p, __fma_rn(a.lo, b, __fma_rn(a.hi, b, -p)));
+}
+
+// a / n for a small positive integer n.
+__device__ __forceinline__ tr_dd tr_dd_div_int(tr_dd a, double n)
+{
+    const double q1 = __ddiv_rn(a.hi, n);
+    const double r = __dadd_rn(__fma_rn(-q1, n, a.hi), a.lo);
+    return tr_fast_two_sum(q1, __ddiv_rn(r, n));
+}
+
+struct tr_dd_pair { tr_dd s, c; };
+
+// sin and cos of m (|m| <= pi + tiny), each to about 2^-100.  Everything
+// here is inline and returns by value, so the unit keeps no local frame.
+__device__ __forceinline__ tr_dd_pair tr_dd_sincos(double m)
+{
+    // pi/2 as three doubles.
+    const double p1 = 0x1.921fb54442d18p+0;
+    const double p2 = 0x1.1a62633145c07p-54;
+    const double p3 = -0x1.f1976b7ed8fbcp-110;
+    const int k = (int)rint(__dmul_rn(m, 0x1.45f306dc9c883p-1));  // m*2/pi
+    const double kd = (double)k;
+    // m - k*p1 is exact (|k| <= 2, and m lies within pi/4 of k*p1).
+    tr_dd a = {__dsub_rn(m, __dmul_rn(kd, p1)), 0.0};
+    a = tr_dd_add(a, tr_two_sum(__dmul_rn(-kd, p2), __dmul_rn(-kd, p3)));
+    const tr_dd a2 = tr_dd_mul(a, a);
+    tr_dd st = a, ct = {1.0, 0.0};          // running terms
+    tr_dd s = a, c = {1.0, 0.0};
+    for (int n = 1; n <= 14; ++n) {
+        st = tr_dd_div_int(tr_dd_mul(st, a2), (double)((2 * n) * (2 * n + 1)));
+        ct = tr_dd_div_int(tr_dd_mul(ct, a2), (double)((2 * n - 1) * (2 * n)));
+        if (n & 1) {
+            s = tr_dd_add(s, {-st.hi, -st.lo});
+            c = tr_dd_add(c, {-ct.hi, -ct.lo});
+        } else {
+            s = tr_dd_add(s, st);
+            c = tr_dd_add(c, ct);
+        }
+    }
+    const tr_dd ns = {-s.hi, -s.lo}, nc = {-c.hi, -c.lo};
+    switch (k & 3) {
+    case 0: return {s, c};
+    case 1: return {c, ns};
+    case 2: return {ns, nc};
+    default: return {nc, s};
+    }
+}
+
+// The float on the true angle's side of the midpoint between f (the
+// rounded double r) and its neighbour on r's side, decided exactly.
+__device__ __forceinline__ float tr_atan2_resolve(float y, float x, double r,
+                                                  float f)
+{
+    const double fd = (double)f;
+    const unsigned int fb = __float_as_uint(f);
+    const float g = __uint_as_float(fabs(r) > fabs(fd) ? fb + 1u : fb - 1u);
+    const double m = __dmul_rn(0.5, __dadd_rn(fd, (double)g));  // exact
+    const tr_dd_pair sc = tr_dd_sincos(m);
+    // y cos m - x sin m = hypot(x, y) sin(t - m): the sign of t - m.
+    const tr_dd n = tr_dd_add(tr_dd_scale(sc.c, (double)y),
+                              tr_dd_scale(sc.s, -(double)x));
+    const double side = n.hi != 0.0 ? n.hi : n.lo;
+    const float above = (double)g > fd ? g : f;
+    const float below = (double)g > fd ? f : g;
+    return side > 0.0 ? above : below;
+}
+
 __device__ __forceinline__ float tr_atan2(float y, float x)
 {
-    return (float)atan2((double)y, (double)x);
+    const double r = atan2((double)y, (double)x);
+    const float f = __double2float_rn(r);
+    if (!(fabs(r) >= 0x1p-122) || isinf(y) || isinf(x)) return f;
+    const double fd = (double)f;
+    if (fd == r) return f;
+    const unsigned int fb = __float_as_uint(f);
+    const float g = __uint_as_float(fabs(r) > fabs(fd) ? fb + 1u : fb - 1u);
+    const double m = __dmul_rn(0.5, __dadd_rn(fd, (double)g));
+    // Clear of the midpoint by more than 8 ulp of double: f is right.
+    if (fabs(__dsub_rn(r, m)) > __dmul_rn(fabs(r), 0x1p-49)) return f;
+    return tr_atan2_resolve(y, x, r, f);
 }
-__device__ __forceinline__ float tr_exp(float x) { return (float)exp((double)x); }
-__device__ __forceinline__ float tr_pow(float x, float y)
-{
-    return (float)pow((double)x, (double)y);
+__device__ __forceinline__ float tr_exp(float x) { return gfk_exp(x); }
+// Scalar-build slope initialization uses a rounded single-precision ratio
+// before WOOF's own atan. The column oracle keeps its rounded atan2 path.
+// Quadrants are reconstructed with a split pi to retain the subtraction's
+// rounding when the terrain faces away from the positive coordinate axis.
+__device__ __forceinline__ float tr_slope_atan2_scalar(float y, float x) {
+    const float pi_hi = __int_as_float(0x40490fdb);
+    const float pi_lo = __int_as_float(0xb3bbbd2e);
+    const bool nx = (__float_as_uint(x) >> 31) != 0;
+    const bool ny = (__float_as_uint(y) >> 31) != 0;
+    if (isnan(x) || isnan(y)) return __fadd_rn(x,y);
+    if (y == 0.0f) return nx ? copysignf(pi_hi,y) : y;
+    if (x == 0.0f) return copysignf(__int_as_float(0x3fc90fdb),y);
+    if (isinf(x) && isinf(y))
+        return copysignf(nx ? __int_as_float(0x4016cbe4) : __int_as_float(0x3f490fdb),y);
+    const float z = sfc_classic_atanf(__fdiv_rn(fabsf(y),fabsf(x)));
+    if (!nx) return ny ? -z : z;
+    const float q = __fsub_rn(z,pi_lo);
+    return ny ? __fsub_rn(q,pi_hi) : __fsub_rn(pi_hi,q);
 }
-// 4.*atan(1.): a constant expression gfortran folds, correctly rounded.
-__device__ __forceinline__ float tr_pi() { return __fmul_rn(4.0f, tr_atan(1.0f)); }
+__device__ __forceinline__ float tr_pow(float x, float y) { return gfk_pow(x, y); }
+// pi = 4.*atan(1.): a constant expression gfortran folds at compile time,
+// correctly rounded: 0x40490FDB.
+__device__ __forceinline__ float tr_pi() { return __int_as_float(0x40490FDB); }
 
 // ---------------------------------------------------------------------------
 // SLOPE and SLP_AZI from HT (start_em.F:1539-1577), non-periodic domain.
@@ -61,7 +227,8 @@ __device__ __forceinline__ float tr_pi() { return __fmul_rn(4.0f, tr_atan(1.0f))
 extern "C" __global__ void topo_slope_geometry(
     const float* __restrict__ ht, const float* __restrict__ msftx,
     const float* __restrict__ msfty, const float* __restrict__ sina,
-    const float* __restrict__ cosa, float rdx, float rdy,
+    const float* __restrict__ cosa,
+    const float* __restrict__ rotation_asin, float rdx, float rdy,
     int nx, int ny,
     float* __restrict__ slope, float* __restrict__ slp_azi)
 {
@@ -90,9 +257,17 @@ extern "C" __global__ void topo_slope_geometry(
         slp = 0.0f;
         azi = 0.0f;
     } else {
+#ifdef TR_SLOPE_SCALAR
+        azi = __fadd_rn(tr_slope_atan2_scalar(hx, hy), pi);
+#else
         azi = __fadd_rn(tr_atan2(hx, hy), pi);
+#endif
         // Rotate slope azimuth to lat-lon grid
+#ifdef TR_SLOPE_SCALAR
+        const float asa = rotation_asin[TR_M(i, j)];
+#else
         const float asa = tr_asin(sina[TR_M(i, j)]);
+#endif
         if (cosa[TR_M(i, j)] >= 0.0f) {
             azi = __fsub_rn(azi, asa);
         } else {

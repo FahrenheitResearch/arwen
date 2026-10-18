@@ -1,0 +1,16 @@
+# WRF v4.6.1 (tag v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28),
+# phys/physics_mmm as that commit carries it.  Every file the gwd_opt = 1
+# oracle compiles or cites.  build.sh refuses any other bytes.
+#
+# bl_gwdo.F90 and module_bl_gwdo.F are byte-identical to WRF v4.7.1's (the
+# same sha256 as tools/terrain_drag_wrf471_oracle/SOURCES.sha256), and so is
+# the gwdo call in module_pbl_driver.F.  ccpp_kind_types.F differs only in
+# its precision guard (4.6.1 '#if ( RWORDSIZE == 4 )', 4.7.1
+# '#ifndef DOUBLE_PRECISION'); both make kind_phys real(4) in WRF's default
+# single-precision build.
+a76e1e5b52fc7cd40be9ccb506fde28b1ef2486b812d518f7f1c882766d484db  phys/ccpp_kind_types.F
+c294ef2eb9da1ee9ce6594b97adea7280eb18760e0c5576ab7149c35bb7c3c3b  phys/physics_mmm/bl_gwdo.F90
+d782ddcda578a1fde0cd74e6526bf14f27cb0fb48113c227ad971717e6ca90cc  phys/module_bl_gwdo.F
+5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062  share/module_model_constants.F
+90336e30296991fb397ffde87649a4bd20eaa2b7dc6e90639b043810c8420b56  phys/module_pbl_driver.F
+b4e4332c1e39c5ab77bc669ae977c8d183b0015aefaab5709a2f4ebe32e0963e  phys/module_physics_init.F

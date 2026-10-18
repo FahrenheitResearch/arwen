@@ -225,6 +225,7 @@ tests/test_ensemble_recenter_native_gpu.py
 tests/test_ensemble_stochastic.py
 tests/test_ensemble_stochastic_streaming_gpu.py
 tests/test_spp_consumers_gpu.py
+tests/test_spp_wrf461_column_oracle_gpu.py
 tests/test_ruc_spp_gpu.py
 
 # SHARD 1y: the batch line's qualification trials: acoustic Mu/W fusion,
@@ -503,7 +504,7 @@ tests/test_p3_restart_manifest_gpu.py
 # predates the CUDA port, it is whole-module GPU by _cupy_scope, and its
 # 31 rows are 31/31 DESELECTED under the stage-1 marker filter, so on a
 # CPU list it would report green on nothing and on no list it was asked
-# by nobody.  Measured 31 passed on node-1's RTX 5070 Ti at this tip,
+# by nobody.  Measured 31 passed on an RTX 5070 Ti at this tip,
 # against package files hash-matched to the worktree, before listing.
 tests/test_p3_port.py
 
@@ -541,6 +542,7 @@ tests/test_p3_front_door.py
 tests/test_uwpbl_launcher_wrf471_parity.py
 tests/test_uwpbl_driver_seam.py
 tests/test_uwpbl_ftz_wrf471_parity.py
+tests/test_uwpbl_calm_wind.py
 
 # SHARD 1u: the [devices] split's device legs (lanes 281-multigpu-2card and 282-multigpu).
 # test_multislab_hazards_gpu.py steps two differently seeded states at
@@ -640,6 +642,9 @@ tests/test_attribute_tracking_gpu.py
 tests/test_storm_tracking_isobaric_gpu.py
 tests/test_model_stability_gpu.py
 tests/test_nssl2_gpu.py
+# WRF's start-of-domain CCN fill (start_em.F:1750-1772, module_mp_wdm6.F:219-227)
+# through initialize_physics: an NSSL run from a real.exe file starts with CCN.
+tests/test_ccn_start_fill.py
 
 # SHARD 1l: the LETKF accelerator staging seam.
 #
@@ -714,6 +719,9 @@ tests/test_rrtmg_sw_layout_identity.py
 tests/test_rrtmg_sw_stream_order.py
 tests/test_rrtmgp_night.py
 tests/test_rrtmgp_mcica.py
+# RTE+RRTMGP edge ring and OLR level (2.9.1): Morrison ring columns radiate
+# their own moments, not background radii; OLR is the column-top flux.
+tests/test_rrtmgp_edge_olr.py
 tests/test_surface_w_fused.py
 tests/test_face_mass_fused.py
 tests/test_rk_bookkeeping.py
@@ -742,9 +750,10 @@ tests/test_thompson_speed_glue.py
 # SHARD 1o: the two-moment speed lane's device legs, each held bit for bit
 # against the path it replaced: the one-launch microphysics ring guard
 # (mp_ring_copy) against the slice-copy body, NaN payloads and the float64
-# fallback included; Morrison sedimentation, finalize and fused preparation
-# against readable base kernels (tests/data/morrison_*_base.cu) and the CuPy
-# ufunc chain; the P3 level arms against the sequential unfused reference;
+# fallback included; Morrison's fused preparation against the CuPy ufunc
+# chain (its sedimentation and finalize legs retired with the kernels they
+# held: the WRF v4.6.1 transcription is graded against WRF itself,
+# tests/test_morrison_regime_oracle.py and test_morrison_wrf461_parity.py); the P3 level arms against the sequential unfused reference;
 # NSSL sedimentation in one six-row launch, the device gamma table and graph
 # captures against the frozen base kernels; and Milbrandt-Yau
 # category-parallel sedimentation against its frozen base kernel.  The lane
@@ -752,8 +761,6 @@ tests/test_thompson_speed_glue.py
 # rule admits only the frozen cumulus oracle families; they are per-cut
 # device gates.
 tests/test_mp_ring_fused_gpu.py
-tests/test_morrison_speed_sediment.py
-tests/test_morrison_speed_finalize.py
 tests/test_morrison_speed_prepare.py
 tests/test_p3_speed_levels.py
 tests/test_nssl2_speed_fused_sediment.py
@@ -774,7 +781,7 @@ tests/test_milbrandt2_wrf461_exact_gpu.py
 # Each holds the new device path equal to the one it replaced word for word.
 # The lane appended them to tools/battery/stage1_files.txt, where under
 # GPUWM_NO_LOCAL_GPU=1 and the leg's marker expression they collected,
-# measured on weather-node-2 after the forward merge of 1e2bf43da:
+# measured on the RTX 5090 host after the forward merge of 1e2bf43da:
 #
 #   whole files, moved off stage 1 (0 CPU rows each):
 #   test_tendency_coupling_fused      64/64  deselected on CPU
@@ -842,6 +849,11 @@ tests/test_urban_bem_wrf471_parity.py
 tests/test_urban_bem_regime_wrf461.py
 tests/test_myjurb_wrf471_parity.py
 tests/test_ysu_bep_wrf471_parity.py
+# 2.9.1 landing batch: the ocean mixed layer's WRF column oracle and the CCPP
+# sa-TKE-EDMF port's driver rows on the card, which no list carried (the
+# upstream CCPP oracle file opens no device and runs on the stage-1 leg).
+tests/test_oml_gpu.py
+tests/test_satmedmf_driver.py
 # The declared rural-drag divergence of the flag_bep arm: the column test
 # (a non-urban column under BEP against urban off) and its WRF-against-WRF
 # record.
@@ -881,6 +893,12 @@ tests/test_topo_radiation.py
 # arm to its pinned distance; those need a card.  The fixture-receipt rows
 # run on stage 1 with the settings file.
 tests/test_terrain_drag_wrf471_parity.py
+# gwd_opt = 1 against byte-unmodified WRF v4.6.1 on the reference platform
+# (tools/gwdo_kim_wrf461_oracle): 148 columns, two grids, six (dx, dt)
+# cases, the wind-sector atan2f sample and the branch controls.  Prevents
+# the drag drifting from WRF's words, including the sector choice on a
+# boundary that a correctly rounded atan2 made differently.
+tests/test_gwdo_kim_wrf461_parity.py
 # Tiled GSL tendencies must retain resident bits after the actual device
 # geography gather. Prevents wrong-column statistics and topo_wind slab
 # edges clamping a domain-interior neighbour during preparation.
@@ -1326,6 +1344,32 @@ tests/test_physics_driver.py
 # would have passed every battery.
 tests/test_correct_mode_water_budget.py
 
+# The benchmark command docs/public/WRF-INPUTS.md prints, run as the page
+# writes it on NCAR's public v4.4 CONUS 12 km folder (lane/291-fix-ncar-
+# benchmark): 2.9.0 exited 2 on it ("cu_physics=5 is required").  The run
+# opens the card in a `python -m gpuwm` subprocess; it reads
+# GPUWM_NCAR_CONUS12KM, or the folder retained beside the legs' test inputs
+# (the parent of GPUWM_TEST_WRF_REAL_DIRECTORY; the 5090 host holds it there), and
+# needs a card the run's priced reservation fits (the 5090's 32 GB, not a
+# 16 GB card).  2.9.2: it skipped on every leg (no leg set the variable)
+# while the command exited 2 in apply_warm_start_physics.
+tests/test_ncar_benchmark_door_gpu.py
+
+# Per-cut files the 2.9.2 lanes appended below the shard-2 marker,
+# which put them on the weekly cumulus-oracle shard; they belong here.
+# New Tiedtke per-column grid spacing (2026-10-11): each column runs at the
+# spacing its driver carries (MPAS-A hands cu_ntiedtke len_disp/meshDensity**0.25
+# per cell), held bitwise to a whole batch at that spacing.  Measured 5 device
+# rows passed on one RTX PRO 6000 at d547dc8c3 plus this change.
+tests/test_ntiedtke_column_dx.py
+# The old Morrison speed sediment/finalize files were retired in caa2b7fb184;
+# test_morrison_regime_oracle.py grades the replacement literal transcription.
+# The analysis door's worker on the card (gpuwm.da.analysis_door): the increment it forces lands
+# whole on the dycore, a zero increment steps the same bytes as no analysis, and a forcing
+# rebuilt at a resume continues the unbroken leg bit for bit.  Measured 3 device rows passed on
+# an RTX 4090 (sm_89).
+tests/test_analysis_door_gpu.py
+
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py
 tests/test_gf_shallow_cuda.py
@@ -1367,13 +1411,3 @@ tests/test_ntiedtke_post_run_parity.py
 tests/test_ntiedtke_prep_parity.py
 tests/test_ntiedtke_uscale_parity.py
 tests/test_ntiedtke_workspace.py
-
-# Correctness stack files that collect only on the GPU leg.
-
-# Mixed CPU and GPU selected suites also retain their device leg.
-
-# New Tiedtke per-column grid spacing (2026-10-11): each column runs at the
-# spacing its driver carries (MPAS-A hands cu_ntiedtke len_disp/meshDensity**0.25
-# per cell), held bitwise to a whole batch at that spacing.  Measured 5 device
-# rows passed on one RTX PRO 6000 at d547dc8c3 plus this change.
-tests/test_ntiedtke_column_dx.py

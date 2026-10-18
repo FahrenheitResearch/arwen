@@ -71,6 +71,7 @@ def _open_table(path, *, prefetch: bool = True):
 
 from gpuwm import data_assets
 from gpuwm.config import DEFAULT_COLUMN_CHUNK
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 from gpuwm.physics_compat import (
     WRF_RRTMG_TO_RTE_RRTMGP,
     WRF_RRTMG_TO_RTE_RRTMGP_V1,
@@ -2074,13 +2075,23 @@ def load_gas_tables(kind: str) -> GasTables:
         else:
             rayleigh = np.stack((nc.variables["rayl_lower"][:],
                                  nc.variables["rayl_upper"][:]), axis=0)
-            quiet = _array(nc.variables["solar_source_quiet"][:], np.float64)
-            facular = _array(nc.variables["solar_source_facular"][:], np.float64)
-            sunspot = _array(nc.variables["solar_source_sunspot"][:], np.float64)
-            mg = _scalar(nc.variables["mg_default"])
-            sb = _scalar(nc.variables["sb_default"])
-            solar = quiet + (mg - 0.1495954) * facular \
-                + (sb - 0.00066696) * sunspot
+            from gpuwm.wrf_exact import ENABLED
+            if ENABLED:
+                quiet = _array(nc.variables["solar_source_quiet"][:], np.float32)
+                facular = _array(nc.variables["solar_source_facular"][:], np.float32)
+                sunspot = _array(nc.variables["solar_source_sunspot"][:], np.float32)
+                mg = np.float32(_scalar(nc.variables["mg_default"]))
+                sb = np.float32(_scalar(nc.variables["sb_default"]))
+                solar = np.asarray(quiet + np.float32(mg - np.float32(0.1495954)) * facular, np.float32)
+                solar = np.asarray(solar + np.float32(sb - np.float32(0.00066696)) * sunspot, np.float32)
+            else:
+                quiet = _array(nc.variables["solar_source_quiet"][:], np.float64)
+                facular = _array(nc.variables["solar_source_facular"][:], np.float64)
+                sunspot = _array(nc.variables["solar_source_sunspot"][:], np.float64)
+                mg = _scalar(nc.variables["mg_default"])
+                sb = _scalar(nc.variables["sb_default"])
+                solar = quiet + (mg - 0.1495954) * facular \
+                    + (sb - 0.00066696) * sunspot
             kwargs.update(
                 rayleigh=_array(rayleigh, np.float64),
                 solar_source=_array(solar, np.float64),
@@ -2159,6 +2170,7 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
                       effc=None, effr=None, effi=None,
                       effs=None, cldfra=None,
                       snow_treatment=SNOW_TREATMENT_FULL_MASS,
+                      radii_written=None,
                       validate=True) -> HydrometeorPaths:
     """Convert hydrometeor mixing ratios to cloud-optics inputs on device.
 
@@ -2206,6 +2218,13 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
     (``effr`` is accepted for interface parity with Morrison's
     diagnostics and ignored); ice/snow combine by number before clipping
     to the shipped RRTMGP table domains.
+    ``radii_written`` (Morrison only, one bool per column) marks the
+    columns the microphysics ran on and so wrote ``effc/effi/effs`` and
+    its fixed droplet number.  The specified-zone ring it never runs on
+    (WRF's clipped tiles, gpuwm.core.microphysics) keeps the allocation
+    background there (2.5/5/10 um, zero droplets); those columns take the
+    same radii from their own moments instead, with Morrison's fixed
+    250 cm-3 droplet number.  Without it every column is taken as written.
     ``"milbrandt2"`` is mp_physics=9 and is shaped like Morrison's branch
     with the scheme's own PSD: the radii are WRF's commented-out
     Milbrandt-Yau block (module_mp_milbrandt2mom.F:3351-3378) evaluated
@@ -2471,6 +2490,16 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
     tiny = DTYPE(1.0e-20)
 
     rho_air = play / (DTYPE(287.15) * tlay)
+    written = None
+    if radii_written is not None and effc is not None:
+        written = cp.asarray(radii_written, dtype=cp.bool_).reshape(-1, 1)
+        if written.shape[0] != qc.shape[0]:
+            raise ValueError("radii_written must have one value per column")
+        # The ring holds a zero droplet number only because the scheme
+        # never ran there; Morrison's INUM=1 number is this constant in
+        # every column it does run on (kernels/morrison.cu, WRF NDCNST).
+        ncp = cp.where(written, ncp,
+                       DTYPE(MORRISON_FIXED_DROPLET_NUMBER_M3) / rho_air)
     shape = DTYPE(0.0005714) * (ncp / DTYPE(1.0e6) * rho_air) \
         + DTYPE(0.2714)
     pgam = cp.clip(DTYPE(1.0) / (shape * shape) - DTYPE(1.0),
@@ -2487,6 +2516,7 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
                        / cp.maximum(qmass, tiny), DTYPE(1.0 / 3.0))
         return DTYPE(1.5e6) / cp.maximum(lam, tiny)
 
+    gamma_c = re_c
     supplied_effective = (effc, effr, effi, effs)
     if any(value is not None for value in supplied_effective):
         if any(value is None for value in supplied_effective):
@@ -2500,6 +2530,10 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
                 effc=re_c, effr=re_r, effi=re_i, effs=re_s)
             # effr is interface parity only (ignored input, not gated).
             _require_plausible_radii_um(effc=re_c, effi=re_i, effs=re_s)
+        if written is not None:
+            re_c = cp.where(written, re_c, gamma_c)
+            re_i = cp.where(written, re_i, exponential_radius(qi, nip, 500.0))
+            re_s = cp.where(written, re_s, exponential_radius(qs, nsp, 100.0))
     else:
         re_i = exponential_radius(qi, nip, 500.0)
         re_s = exponential_radius(qs, nsp, 100.0)
@@ -2543,6 +2577,25 @@ def cal_cldfra2(qc, qi, *, f_qc=True, f_qi=True, out=None):
             (np.int32(n), np.int32(bool(f_qc)), np.int32(bool(f_qi)),
              cp.ascontiguousarray(qc), cp.ascontiguousarray(qi), out))
     return out
+
+
+def _host_expf(x):
+    """WOOF's own float32 expf over a host array (noahmp_libm, bitwise the
+    device slab_expf)."""
+    from gpuwm.core.noahmp_libm import expf
+    x = np.asarray(x, np.float32)
+    out = np.empty(x.shape, np.float32)
+    flat = out.reshape(-1)
+    for i, v in enumerate(x.reshape(-1)):
+        flat[i] = expf(v)
+    return out
+
+
+def _host_powf(x, y):
+    """WOOF's own float32 powf over host arrays (noahmp_libm.powf_array)."""
+    from gpuwm.core.noahmp_libm import powf_array
+    return np.asarray(powf_array(np.asarray(x, np.float32),
+                                 np.asarray(y, np.float32)), np.float32)
 
 
 def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
@@ -2604,12 +2657,22 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
             "qs carrying total ice) at :3902-3922, whose weight is the "
             "F_ICE_PHY ice fraction; no accepted scheme has that species "
             "set")
+    # EXP and ** on REAL(4) are WOOF's own float32 expf and powf
+    # (gpuwm.core.noahmp_slab_libm), not CuPy's CUDA builtins: cp.exp and
+    # cp.power round differently and moved CLDFRA by up to 2,113 ULP on the
+    # legacy RRTMG column oracle (tools/rrtmg_legacy_column_oracle).  Host
+    # arrays (the CPU-emulated adapter tests substitute NumPy for CuPy) take
+    # the same functions' host twins, bit for bit.
+    if type(qv).__module__.split(".")[0] == "cupy":
+        from gpuwm.core.noahmp_slab_libm import slab_expf, slab_powf
+    else:
+        slab_expf, slab_powf = _host_expf, _host_powf
     qcldmin = DTYPE(1.0e-12)
     svpt0 = DTYPE(273.15)
     tc = tlay - svpt0
-    esw = DTYPE(1000.0) * DTYPE(0.61078) * cp.exp(
+    esw = DTYPE(1000.0) * DTYPE(0.61078) * slab_expf(
         DTYPE(17.2693882) * tc / (tlay - DTYPE(35.86)))
-    esi = DTYPE(1000.0) * DTYPE(0.61078) * cp.exp(
+    esi = DTYPE(1000.0) * DTYPE(0.61078) * slab_expf(
         DTYPE(21.8745584) * tc / (tlay - DTYPE(7.66)))
     ep2 = DTYPE(287.0) / DTYPE(461.6)
     qvsw = ep2 * esw / (play - esw)
@@ -2641,9 +2704,9 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
     rhum = qv / qvs_weight
     subsat = cp.maximum(DTYPE(1.0e-10), qvs_weight - qv)
     arg = cp.maximum(DTYPE(-6.9),
-                     DTYPE(-100.0) * qcld / cp.power(subsat, DTYPE(0.49)))
-    fraction = cp.power(cp.maximum(DTYPE(1.0e-10), rhum), DTYPE(0.25)) \
-        * (DTYPE(1.0) - cp.exp(arg))
+                     DTYPE(-100.0) * qcld / slab_powf(subsat, DTYPE(0.49)))
+    fraction = slab_powf(cp.maximum(DTYPE(1.0e-10), rhum), DTYPE(0.25)) \
+        * (DTYPE(1.0) - slab_expf(arg))
     fraction = cp.where(fraction < DTYPE(0.01), DTYPE(0.0), fraction)
     return cp.ascontiguousarray(
         cp.where(qcld < qcldmin, DTYPE(0.0),
@@ -2656,6 +2719,12 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
 #: species at P3's own radius (module_ra_rrtmg_sw.F:10851-10863), so the ice
 #: rule below never reaches it.
 SCHEME_RADII_COUPLINGS = ("wsm3", "wsm6", "thompson", "nssl", "p3")
+
+#: Morrison's fixed cloud-droplet number (INUM=1), per m3: WRF's NDCNST =
+#: 250 cm-3, which kernels/morrison.cu writes back as nc = 250e6/rho after
+#: every call.  The radiation coupling uses it on the specified-zone ring,
+#: whose nc carrier the scheme never writes (see hydrometeor_paths).
+MORRISON_FIXED_DROPLET_NUMBER_M3 = 250.0e6
 
 #: A cloudy layer whose liquid radius is at or below this (microns) carries
 #: the microphysics' no-cloud background, not a droplet size: WRF's 2.5 um
@@ -3430,6 +3499,34 @@ class RRTMGPRadiation:
         return cp.ascontiguousarray(array.transpose(1, 2, 0).reshape(
             array.shape[1] * array.shape[2], array.shape[0]))
 
+    def _microphysics_columns(self, cfg, ny, nx):
+        """``(ny*nx,)`` bool, True where the microphysics runs.
+
+        False on the specified-zone ring of a specified or nested domain,
+        the ring WRF's clipped tiles and gpuwm.core.microphysics never
+        touch (same predicate and slices).  None when there is no ring.
+        Built on the device and cached, so a captured step adds no copy.
+        """
+        if not (getattr(cfg, "specified", False)
+                or getattr(cfg, "nested", False)):
+            return None
+        sz = int(getattr(cfg, "spec_zone", 0) or 0)
+        if sz <= 0:
+            return None
+        key = (int(ny), int(nx), sz)
+        cached = getattr(self, "_microphysics_columns_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        import cupy as cp
+        from gpuwm.core.physics_inventory import spec_zone_ring_slices
+
+        columns = cp.ones((ny, nx), dtype=cp.bool_)
+        for ring in spec_zone_ring_slices(ny, nx, sz):
+            columns[ring] = False
+        columns = columns.reshape(-1)
+        self._microphysics_columns_cache = (key, columns)
+        return columns
+
     @staticmethod
     def _field_from_state(state, names, fallback):
         for name in names:
@@ -3561,15 +3658,20 @@ class RRTMGPRadiation:
         WRF's 0-based fractional julian day (frame/module_domain.F:2165):
         1369.704 W/m2 at julian 92.75 (eccfac 0.999784).
         """
-        from gpuwm.core.solar import solar_generation, geometry_at
+        from gpuwm.core.solar import solar_generation
         solar_generation(generation)
-        if generation == 'wrf_480':
-            empty = np.empty((0,), np.float32)
-            return float(geometry_at(valid_time, empty, empty, generation=generation)[0][1].get())
         hour = (valid_time.hour + valid_time.minute / 60.0
                 + valid_time.second / 3600.0
                 + valid_time.microsecond / 3.6e9)
         julian = (valid_time.timetuple().tm_yday - 1) + hour / 24.0
+        if generation == 'wrf_480':
+            # WRF's REAL(4) radconst word, on the host: the same float32
+            # operation order as the device kernel's rls_radconst (word for
+            # word, tests/test_solar_generation_gpu.py), so a CPU-only
+            # process (the npref references) gets the same SOLCON a card
+            # does.  The capture-safe device twin is _solar_constant_device.
+            from gpuwm.core.rrtmg_legacy import radconst
+            return float(radconst(julian)[1])
         da = 2.0 * np.pi * julian / 365.0
         eccfac = (1.000110 + 0.034221 * np.cos(da) + 0.001280 * np.sin(da)
                   + 0.000719 * np.cos(2.0 * da)
@@ -3656,7 +3758,7 @@ class RRTMGPRadiation:
         tlay = self._columns(atmosphere["temperature"])
         exner = _device_profile(
             self._columns(atmosphere["exner"]), play.shape, "exner")
-        qv = self._columns(atmosphere["qv"])
+        qv = _radiation_reads_nonnegative(self._columns(atmosphere["qv"]))
         if declared_p_top is None:
             # Legacy/synthetic direct callers do not carry BaseState.p_top.
             # Production always takes the scalar path above, so this fallback
@@ -3730,6 +3832,13 @@ class RRTMGPRadiation:
                                for name, value in effective.items()})
                 effective_fields = {
                     name: kwargs[name] for name in effective}
+                # The microphysics never runs on the specified-zone ring,
+                # so these carriers hold their allocation background there.
+                # Without this the domain's edge columns radiated 2.5-5 um
+                # cloud and ice (median 35 % of the neighbour's surface
+                # shortwave under ice cloud, measured on a default run).
+                kwargs["radii_written"] = self._microphysics_columns(
+                    cfg, ny, nx)
         elif scheme == "milbrandt2":
             # Milbrandt-Yau derives its radii from the transported number
             # moments on EVERY call -- there is no post-update effective
@@ -3785,10 +3894,15 @@ class RRTMGPRadiation:
             kwargs.update({name: self._columns(value)
                            for name, value in effective.items()})
             effective_fields = {name: kwargs[name] for name in effective}
-        qc_cols = self._columns(qc3)
-        qr_cols = self._columns(qr3)
-        qi_cols = self._columns(qi3)
-        qs_cols = self._columns(qs3)
+        qc_cols = _radiation_reads_nonnegative(self._columns(qc3))
+        qr_cols = _radiation_reads_nonnegative(self._columns(qr3))
+        qi_cols = _radiation_reads_nonnegative(self._columns(qi3))
+        qs_cols = _radiation_reads_nonnegative(self._columns(qs3))
+        for name in list(numbers):
+            clamped = _radiation_reads_nonnegative(numbers[name])
+            numbers[name] = clamped
+            if name in kwargs:
+                kwargs[name] = clamped
         # WRF radiation driver, icloud=1 default: CLDFRA from cal_cldfra1
         # (module_radiation_driver.F:1320-1332), grid-box paths divided by
         # max(0.01, CLDFRA) into in-cloud paths, and McICA subcolumn masks
@@ -3947,6 +4061,28 @@ class RRTMGPRadiation:
         lw_up = (cp.empty(flux_shape, dtype=DTYPE) if self.longwave
                  else cp.zeros(flux_shape, dtype=DTYPE))
         lw_dn = cp.empty_like(lw_up) if self.longwave else cp.zeros_like(lw_up)
+        # OLR is WRF's upward longwave at the top of the WHOLE radiation
+        # column, above-model layers included (module_ra_rrtmg_lw.F:
+        # olr(i,j) = uflx(1,kte+2)), not at the model top: the model-flux
+        # store below keeps levels 0..nz only, and the above-model column
+        # emits and absorbs, so its top differs from lw_up[:, nz] by a few
+        # W m-2.  One value per column, taken off the same solve.
+        lw_up_toa = (cp.empty(ncol, dtype=DTYPE) if self.longwave
+                     else None)
+        # WRF's instantaneous top/bottom fluxes, all-sky and clear-sky, for
+        # the spectra this adapter runs (SWUPT ... LWDNBC, the history rows
+        # and the AC* accumulations of physics_inventory.
+        # radiation_boundary_flux_names).  The clear-sky rows come from a
+        # second RTE solve per chunk on the same gas optics with zero cloud;
+        # it only reads its inputs, so the all-sky solve and every field
+        # derived from it are unchanged.  Dark SW columns keep zero.
+        from gpuwm.core.physics_inventory import RADIATION_BOUNDARY_FLUXES
+        boundary_names = tuple(
+            name for name in RADIATION_BOUNDARY_FLUXES
+            if (self.longwave if name.startswith("lw") else self.shortwave))
+        boundary = cp.zeros((len(boundary_names), ncol), dtype=DTYPE)
+        boundary_rows = {name: boundary[index]
+                         for index, name in enumerate(boundary_names)}
         for start in range(0, ncol if self.longwave else 0, self.column_chunk):
             sl = slice(start, min(start + self.column_chunk, ncol))
             chunk_ncol = sl.stop - sl.start
@@ -3988,6 +4124,9 @@ class RRTMGPRadiation:
                     validate=full_validation)
                 emiss = _expand_band_to_gpoint(
                     emiss_bands[sl], self.lw_tables, "surface emissivity")
+                clear = lw_rte(
+                    gas_lw.tau, sources.lay_source, sources.lev_source,
+                    sources.sfc_source, emiss, top_at_1=False)
                 flux = lw_rte(
                     optics_lw.tau, sources.lay_source, sources.lev_source,
                     sources.sfc_source, emiss, top_at_1=False)
@@ -4024,11 +4163,17 @@ class RRTMGPRadiation:
                 # No Planck kernel: the solver derives lay/lev/sfc itself.
                 planck_in = PlanckInputs(
                     tables=self.lw_tables, play=lw_profile.play,
+                    plev=lw_profile.plev,
                     tlay=lw_profile.tlay, tlev=lw_profile.tlev,
                     tsfc=tsfc[sl], vmr=vmr_lw, metadata=chunk_metadata)
                 emiss = _expand_band_to_gpoint(
                     emiss_bands[sl], self.lw_tables, "surface emissivity",
                     out=work["emiss_gpt"])
+                # Clear sky first, on fresh outputs: gas tau alone, the
+                # same solver-derived Planck sources.
+                clear = _lw_rte(
+                    gas_lw.tau, None, None, None, emiss, top_at_1=False,
+                    out=None, incident_out=None, planck=planck_in)
                 flux = _lw_rte(
                     gas_lw.tau, None, None, None, emiss, top_at_1=False,
                     out=(work["flux_up"], work["flux_dn"]),
@@ -4039,7 +4184,10 @@ class RRTMGPRadiation:
                 del mask_lw, planck_in
             _store_model_flux_pair(
                 flux.flux_up, flux.flux_dn, nz, lw_up[sl], lw_dn[sl], xp=cp)
-            del vmr_lw, gas_lw, cld_lw, emiss, flux
+            lw_up_toa[sl] = flux.flux_up[:, -1]
+            _store_boundary_fluxes(boundary_rows, "lw", sl, flux, clear,
+                                   xp=cp)
+            del vmr_lw, gas_lw, cld_lw, emiss, flux, clear
             del chunk_metadata, lw_profile, lw_paths, lw_cldfra, lw_chunk
             # ``work`` is the phase view mapping and every value in it is a
             # view of the workspace backing, so the name keeps the whole
@@ -4163,6 +4311,11 @@ class RRTMGPRadiation:
                 albedo, inc, mu_chunk = _prepare_sw_inputs(
                     albedo_surface[sl], solar, mu[sl], sw_profile.play.shape[1],
                     xp=cp)
+                clear = _sw_rte(
+                    gas_sw.tau, gas_sw.ssa, None, mu_chunk, albedo, albedo,
+                    inc, top_at_1=False, out=None,
+                    fused_cloud=_clear_sky_cloud(
+                        self.sw_tables, *gas_sw.tau.shape[:2]))
                 flux = sw_rte(
                     optics_sw.tau, optics_sw.ssa, optics_sw.g, mu_chunk,
                     albedo, albedo, inc, top_at_1=False)
@@ -4193,6 +4346,12 @@ class RRTMGPRadiation:
                 albedo, inc, mu_chunk = _prepare_sw_inputs(
                     albedo_surface[sl], solar, mu[sl], sw_profile.play.shape[1],
                     out=(work["albedo_gpt"], work["inc_gpt"], work["mu0"]), xp=cp)
+                # Clear sky first, on fresh outputs (see the LW branch).
+                clear = _sw_rte(
+                    gas_sw.tau, gas_sw.ssa, None, mu_chunk,
+                    albedo, albedo, inc, top_at_1=False, out=None,
+                    fused_cloud=_clear_sky_cloud(
+                        self.sw_tables, *gas_sw.tau.shape[:2]))
                 flux = _sw_rte(
                     gas_sw.tau, gas_sw.ssa, None, mu_chunk,
                     albedo, albedo, inc, top_at_1=False,
@@ -4201,6 +4360,11 @@ class RRTMGPRadiation:
                     fused_cloud=FusedCloudOptics(
                         tables=self.sw_tables, cloud=cld_sw, mask=mask_sw))
                 del mask_sw
+            _store_boundary_fluxes(
+                boundary_rows, "sw", sl, flux, clear,
+                daylight=(daylight.reshape(-1)[sl] if sw_columns is None
+                          else None), xp=cp)
+            del clear
             if sw_columns is None:
                 _store_model_flux_pair(
                     flux.flux_up, flux.flux_dn, nz, sw_up[sl], sw_dn[sl],
@@ -4233,7 +4397,10 @@ class RRTMGPRadiation:
 
         result = _fluxes_to_radiation(
             lw_up, lw_dn, sw_up, sw_dn, plev, exner, ny=ny, nx=nx,
-            coszen=mu_raw, validate=full_validation)
+            coszen=mu_raw, validate=full_validation, lw_up_toa=lw_up_toa)
+        result.boundary_fluxes = {
+            name: boundary[index].reshape(ny, nx)
+            for index, name in enumerate(boundary_names)}
         if sw_dir_sfc is not None:
             if want_swddir:
                 result.swddir = cp.ascontiguousarray(
@@ -4333,6 +4500,26 @@ def _validate_host_range(name, value, lower, upper, unit):
             f"is outside allowed range {bound} {unit}")
 
 
+def _radiation_reads_nonnegative(columns):
+    """Strict mode: the radiation reads max(0, q), as WRF's driver does.
+
+    WRF's radiation column setup clamps every water species it reads
+    (``QV1D(K)=max(0.,QV1D(K))``, ``QC1D(K)=max(0.,QC1D(K))`` and the
+    rest, module_ra_rrtmg_lw.F:12009-12143).  Strict mode carries WRF's
+    below-zero scalar residuals in the state (rk_update_scalar with no
+    clamp), and handing them to this scheme unclamped refused 55 RTE+RRTMGP
+    runs of combo sweep round 3 (2026-10-07) in the input validation.  The
+    default path's state is already clamped, so it is left as it was.
+    Returns a new array; the state is not touched.  ``None`` passes through.
+    """
+    if not WRF_EXACT or columns is None:
+        return columns
+    import cupy as cp
+
+    xp = cp.get_array_module(columns)
+    return xp.maximum(columns, xp.asarray(0, dtype=columns.dtype))
+
+
 def _require_finite_nonnegative(**fields):
     """Reject upstream physics defects instead of silently clearing them."""
     import cupy as cp
@@ -4384,8 +4571,14 @@ def _require_plausible_radii_um(*, bands=None, **fields):
 
 
 def _fluxes_to_radiation(lw_up, lw_dn, sw_up, sw_dn, plev, exner, *,
-                         ny, nx, coszen=None, validate=True):
-    """Map bottom-to-top broadband column fluxes into the radiation slot."""
+                         ny, nx, coszen=None, validate=True, lw_up_toa=None):
+    """Map bottom-to-top broadband column fluxes into the radiation slot.
+
+    ``lw_up_toa`` is the upward longwave at the top of the full radiation
+    column (one value per column) and OLR is taken from it.  Without it the
+    top of the given level stack is used, for callers whose stack already
+    ends at the column top.
+    """
     import cupy as cp
     from gpuwm.core import constants
     from gpuwm.core.physics import RadiationResult
@@ -4400,6 +4593,8 @@ def _fluxes_to_radiation(lw_up, lw_dn, sw_up, sw_dn, plev, exner, *,
     sw_up = _device_profile(sw_up, level_shape, "sw_up")
     sw_dn = _device_profile(sw_dn, level_shape, "sw_dn")
     plev = _device_profile(plev, level_shape, "plev")
+    olr = (lw_up[:, -1] if lw_up_toa is None
+           else _device_profile(lw_up_toa, (ncol,), "lw_up_toa"))
     dp = cp.abs(plev[:, 1:] - plev[:, :-1])
     if validate and (bool(cp.any(dp <= DTYPE(0.0)))
                      or bool(cp.any(exner <= DTYPE(0.0)))):
@@ -4420,9 +4615,9 @@ def _fluxes_to_radiation(lw_up, lw_dn, sw_up, sw_dn, plev, exner, *,
         rthratensw=theta_heating(sw_up, sw_dn),
         swdown=cp.ascontiguousarray(sw_dn[:, 0].reshape(ny, nx)),
         glw=cp.ascontiguousarray(lw_dn[:, 0].reshape(ny, nx)),
-        # OLR: the upward longwave flux at the TOP level of the same
-        # bottom-to-top level stack whose level 0 supplies GLW above.
-        olr=cp.ascontiguousarray(lw_up[:, -1].reshape(ny, nx)),
+        # OLR: the upward longwave flux at the top of the radiation
+        # column (the above-model layers included), WRF's uflx(1,kte+2).
+        olr=cp.ascontiguousarray(olr.reshape(ny, nx)),
         gsw=cp.ascontiguousarray(
             (sw_dn[:, 0] - sw_up[:, 0]).reshape(ny, nx)),
         coszen=(None if coszen is None else cp.ascontiguousarray(
@@ -4585,12 +4780,21 @@ def _gas_optics(tables: GasTables, play, plev, tlay, vmr, *, metadata,
         shared_mem=shared)
     col_dry = None
     if compute_col_dry:
+        # get_layer_number (mo_gas_optics_utils.F90), operator for
+        # operator and in its association; each CuPy operator is one
+        # rounded float32 operation, as the kernels' rrtmgp_col_dry is.
         h2o = vmr[:, :, tables.gas_index["h2o"]]
         fact = DTYPE(1.0) / (DTYPE(1.0) + h2o)
         m_air = (DTYPE(0.028964) + DTYPE(0.018016) * h2o) * fact
-        col_dry_value = (cp.abs(plev[:, 1:] - plev[:, :-1])
-                         * DTYPE(6.02214076e23) * fact
-                         / (DTYPE(10000.0) * m_air * DTYPE(9.80665)))
+        if WRF_EXACT:
+            col_dry_value = (DTYPE(10.0) * cp.abs(plev[:, :-1] - plev[:, 1:])
+                             * DTYPE(6.02214076e23) * fact
+                             / (DTYPE(1000.0) * m_air * DTYPE(100.0)
+                                * DTYPE(9.80665)))
+        else:
+            col_dry_value = (cp.abs(plev[:, 1:] - plev[:, :-1])
+                             * DTYPE(6.02214076e23) * fact
+                             / (DTYPE(10000.0) * m_air * DTYPE(9.80665)))
         if col_dry_out is None:
             col_dry = col_dry_value
         else:
@@ -4621,6 +4825,47 @@ def delta_scale(tau, ssa, g):
         (tau, ssa, g, *out, np.int32(n)))
     return out
 
+
+
+#: WRF's top/bottom boundary fluxes off one chunk's RTE solves (levels run
+#: bottom to top, top_at_1=False): index -1 is the top of the radiation
+#: column, above-model layers included, as RRTMG_LWRAD/RRTMG_SWRAD publish
+#: SWUPT/LWDNT (module_ra_rrtmg_lw.F and _sw.F, level kte+2), and index 0
+#: the surface.  (suffix, from the clear-sky solve, flux, level).
+_BOUNDARY_FLUX_TAKES = (
+    ("upt", False, "flux_up", -1), ("uptc", True, "flux_up", -1),
+    ("dnt", False, "flux_dn", -1), ("dntc", True, "flux_dn", -1),
+    ("upb", False, "flux_up", 0), ("upbc", True, "flux_up", 0),
+    ("dnb", False, "flux_dn", 0), ("dnbc", True, "flux_dn", 0))
+
+
+def _store_boundary_fluxes(rows, side, columns, allsky, clear, *,
+                           daylight=None, xp):
+    """Write one chunk's eight boundary fluxes for ``side`` ("lw"/"sw").
+
+    ``daylight`` masks dark shortwave columns to the radiation driver's
+    zero on the full-column path; compacted daylit columns pass None.
+    """
+    for suffix, clear_sky, key, level in _BOUNDARY_FLUX_TAKES:
+        value = getattr(clear if clear_sky else allsky, key)[:, level]
+        if daylight is not None:
+            value = xp.where(daylight, value, DTYPE(0.0))
+        rows[side + suffix][columns] = value
+
+
+def _clear_sky_cloud(tables, ncol, nlay):
+    """Zero band cloud optics for the clear-sky RTE solve.
+
+    Handed to the fused solvers, zero cloud extinction leaves the gas
+    optics alone (the SW combine gives the gas tau and ssa and zero
+    asymmetry), so the clear-sky solve needs no g-point asymmetry cube.
+    One (ncol, nlay, nband) zero array serves tau, ssa and g.
+    """
+    import cupy as cp
+    zero = cp.zeros((ncol, nlay, tables.nband), dtype=DTYPE)
+    return FusedCloudOptics(tables=tables,
+                            cloud=CloudOpticsResult(zero, zero, zero),
+                            mask=None)
 
 
 class FusedCloudOptics(NamedTuple):
@@ -4687,6 +4932,7 @@ class PlanckInputs(NamedTuple):
 
     tables: "GasTables"
     play: object
+    plev: object
     tlay: object
     tlev: object
     tsfc: object
@@ -4705,8 +4951,12 @@ def _planck_solver_args(planck, tau, ncol, nlay, ngpt):
 
     if planck is None:
         z = np.int32(0)
-        # 17 pointer parameters then 7 integers; the last is pk_on = 0.
-        return (tau,) * 17 + (z,) * 7
+        # Strict unit: 18 pointer parameters then 8 integers; the 2.9.1
+        # default unit (rrtmgp_rte_default.cu, no plev and no H2O index):
+        # 17 then 7.  The last is pk_on = 0.
+        if not WRF_EXACT:
+            return (tau,) * 17 + (z,) * 7
+        return (tau,) * 18 + (z,) * 8
     t = planck.tables
     if t.kind != "lw":
         raise ValueError("in-solver Planck requires LW gas tables")
@@ -4714,6 +4964,7 @@ def _planck_solver_args(planck, tau, ncol, nlay, ngpt):
         raise ValueError("Planck inputs do not match the gas table")
     d = t.to_device()
     play = _device_profile(planck.play, (ncol, nlay), "planck.play")
+    plev = _device_profile(planck.plev, (ncol, nlay + 1), "planck.plev")
     tlay = _device_profile(planck.tlay, (ncol, nlay), "planck.tlay")
     tlev = _device_profile(planck.tlev, (ncol, nlay + 1), "planck.tlev")
     tsfc = _device_profile(planck.tsfc, (ncol,), "planck.tsfc")
@@ -4723,12 +4974,22 @@ def _planck_solver_args(planck, tau, ncol, nlay, ngpt):
             f"planck.vmr must have shape {(ncol, nlay, t.ngas + 1)}, "
             f"got {vmr.shape}")
     m = planck.metadata
-    return (play, tlay, tlev, tsfc, vmr, m.iatm, m.jt, m.jp, m.ftemp,
+    if not WRF_EXACT:
+        # The 2.9.1 default unit interpolates the Planck fractions in eta
+        # built from play alone: no plev, no H2O index.
+        return (play, tlay, tlev, tsfc, vmr, m.iatm, m.jt, m.jp, m.ftemp,
+                m.fpress, d.temp_ref, d.vmr_ref, d.flavor, d.gpoint_flavor,
+                d.gpoint_bands, d.planck_fraction, d.totplnk,
+                np.int32(t.ngas), np.int32(t.ntemp), np.int32(t.npres),
+                np.int32(t.neta), np.int32(t.nband),
+                np.int32(t.totplnk.shape[0]), np.int32(1))
+    return (play, plev, tlay, tlev, tsfc, vmr, m.iatm, m.jt, m.jp, m.ftemp,
             m.fpress, d.temp_ref, d.vmr_ref, d.flavor, d.gpoint_flavor,
             d.gpoint_bands, d.planck_fraction, d.totplnk,
             np.int32(t.ngas), np.int32(t.ntemp), np.int32(t.npres),
             np.int32(t.neta), np.int32(t.nband),
-            np.int32(t.totplnk.shape[0]), np.int32(1))
+            np.int32(t.totplnk.shape[0]), np.int32(t.gas_index["h2o"]),
+            np.int32(1))
 
 
 def lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
@@ -4932,7 +5193,8 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
         if not warp_fold:
             fold((fold_blocks,), (_RTE_BLOCK,), (
                 part_up, part_dn, up, down, np.int32(ncol), np.int32(nlev),
-                np.int32(gpt0), np.int32(min(tile, ngpt - gpt0))))
+                np.int32(gpt0), np.int32(min(tile, ngpt - gpt0)))
+                + ((np.int32(gpt0 + tile >= ngpt),) if WRF_EXACT else ()))
     return FluxResult(up, down)
 
 
@@ -5072,8 +5334,9 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
             "RRTMGP CUDA Planck sources support at most 128 layers: the "
             "rrtmgp_planck_sources kernel holds a fixed pfrac[128] per "
             f"thread and this profile has {nlay} layers")
-    # plev is validated because it is part of the public gas/source profile
-    # contract even though Planck interpolation itself only consumes play.
+    # plev gives each layer's dry-air column: the Planck fractions are
+    # interpolated in eta built from gas COLUMNS (vmr * col_dry), as the
+    # gas optics are (compute_Planck_source reads interpolation()'s fmajor).
     plev = _device_profile(plev, (ncol, nlay + 1), "plev")
     tlay = _device_profile(tlay, (ncol, nlay), "tlay")
     tlev = _device_profile(tlev, (ncol, nlay + 1), "tlev")
@@ -5108,17 +5371,24 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
     # loop it replaces was independent.
     threads = 128
     cells = int(ncol) * int(tables.ngpt)
+    if WRF_EXACT:
+        head = (play, plev, tlay)
+        tail = (np.int32(tables.totplnk.shape[0]),
+                np.int32(tables.gas_index["h2o"]))
+    else:
+        # The 2.9.1 default unit's signature: no plev, no H2O index.
+        head = (play, tlay)
+        tail = (np.int32(tables.totplnk.shape[0]),)
     get_kernel("rrtmgp_gas", "rrtmgp_planck_sources")(
         ((cells + threads - 1) // threads,), (threads,),
-        (play, tlay, tlev, tsfc, vmr, metadata.iatm, metadata.jt,
+        head + (tlev, tsfc, vmr, metadata.iatm, metadata.jt,
          metadata.jp, metadata.ftemp, metadata.fpress, d.temp_ref,
          d.vmr_ref, d.flavor,
          d.gpoint_flavor, d.gpoint_bands, d.planck_fraction, d.totplnk,
          lay, lev, sfc, np.int32(ncol), np.int32(nlay),
          np.int32(tables.ngas), np.int32(tables.ngpt),
          np.int32(tables.ntemp), np.int32(tables.npres),
-         np.int32(tables.neta), np.int32(tables.nband),
-         np.int32(tables.totplnk.shape[0])))
+         np.int32(tables.neta), np.int32(tables.nband)) + tail)
     return PlanckSourceResult(lay, lev, sfc)
 
 

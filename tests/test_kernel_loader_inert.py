@@ -44,8 +44,9 @@ _ALLOWED_AEROSOL_MODULES = frozenset({
 #: literal, which is the property these tests hold: NOTHING receives a
 #: device header without being named here, in a second place.
 #: rrtmgp_rte joined when the LW solver started deriving its own Planck
-#: sources; rrtmgp_gas is deliberately absent (it keeps its own copies so
-#: its assembled source and PTX stay byte-identical).
+#: sources; rrtmgp_gas joined (with rrtmgp_libm.cuh on both) when the two
+#: units were made word for word the upstream single-precision Fortran and
+#: the Planck words moved into the shared header.
 #: gf joined when the glibc 2.39 float32 transcendentals were lifted out of
 #: gf.cu into glibc_flt32.cuh for New Tiedtke to share.  It is the one entry
 #: whose module KNOWINGLY gives up the byte-identical-source guarantee the
@@ -99,7 +100,7 @@ _EXPECTED_HEADERS = {
     # from the same header; each is held by its own oracle parity tests at
     # 0 ULP (tests/test_chem_*_wrf471_parity.py), not by source identity.
     **{name: ("glibc_flt32.cuh",) for name in (
-        "chem_dust", "chem_seasalt", "chem_rrtmgp_aerosol", "chem_sulfur",
+        "chem_dust", "chem_seasalt", "chem_rrtmgp_aerosol",
         "chem_ageing", "chem_settling", "chem_drydep_gocart", "chem_optics")},
     # The mp=28 units take WOOF's own float32 and binary64 libm words
     # (thompson_aerosol_libm.cuh on glibc_flt32/flt64.cuh) ahead of their
@@ -107,8 +108,11 @@ _EXPECTED_HEADERS = {
     **{name: ("glibc_flt32.cuh", "glibc_flt64.cuh",
               "thompson_aerosol_libm.cuh", "thompson_aerosol_common.cuh")
        for name in _ALLOWED_AEROSOL_MODULES},
-    "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
-    "gf": ("glibc_flt32.cuh",),
+    # The exact chain's strict headers (a default process composes
+    # rrtmgp_rte from rrtmgp_planck_common_default.cuh and gf from
+    # glibc_flt32.cuh alone; kernels/__init__.py _extra_header_text).
+    "rrtmgp_rte": ("rrtmgp_libm.cuh", "rrtmgp_planck_common.cuh"),
+    "gf": ("glibc_flt32.cuh", "gf_wrf_normalization.cuh"),
     "g3": ("glibc_flt32.cuh",),
     "ntiedtke": ("glibc_flt32.cuh",),
     # The original cu6 kernel: a new module whose GPU column oracle
@@ -161,7 +165,7 @@ _EXPECTED_HEADERS = {
     # use the shared WRF-oracle float32 functions.  RUC's soil-resistance
     # COS takes glibc_cosf (lane/verify-ruc-lsm).
     "ruc": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
-    "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
+    "lake": ("glibc_flt32.cuh", "f64cr.cuh", "lake_support.cuh", "lake_wrf.cuh"),
     # Kain-Fritsch: WOOF's own float32 expf/logf/powf for its WRF 4.6.1
     # column oracle (2026-10-07); the unit compiles on gpuwm/core/kf.py's
     # own route from this same assembled source.
@@ -187,7 +191,25 @@ _EXPECTED_HEADERS = {
     "wdm6_refl": ("glibc_flt32.cuh", "glibc_flt64.cuh"),
     'nsas': ('glibc_flt32.cuh', 'nsas_constants.cuh'),
     "wsm6r": ("glibc_flt32.cuh", "glibc_flt64.cuh"),
+    # The exact chain's units (intake 2.9.1); the nssl2 and rrtmgp_gas
+    # headers reach only a strict process.
+    "chem_sulfur": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
+    "physics_exner": ("glibc_flt32.cuh",),
+    "topo_radiation": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh",
+                       "atan_scalar_flt32.cuh"),
+    "thompson_classic": ("glibc_flt32.cuh", "glibc_flt32_extra.cuh",
+                         "glibc_flt64.cuh", "thompson_classic_constants.cuh"),
+    "morrison": ("glibc_flt32.cuh", "glibc_flt32_extra.cuh", "glibc_flt64.cuh",
+                 "glibc_trig_flt32.cuh", "morrison_constants.cuh"),
+    "thompson_fork": ("glibc_flt32.cuh", "glibc_flt64.cuh",
+                      "thompson_fork_constants.cuh"),
+    **{name: ("glibc_flt32.cuh", "nssl2_wrf_math.cuh") for name in (
+        "nssl2_nucond", "nssl2", "nssl2_fused_gs", "nssl2_driver_support",
+        "nssl2_diagnostics")},
+    "rrtmgp_gas": ("rrtmgp_libm.cuh", "rrtmgp_planck_common.cuh"),
 }
+
+# Retained overrides from the earlier merge pass.
 
 
 def _module_names() -> list[str]:
@@ -197,14 +219,22 @@ def _module_names() -> list[str]:
     return names
 
 
-def test_lake_compile_options_do_not_change_existing_modules():
+@pytest.mark.parametrize("strict", [False, True])
+def test_lake_compile_options_do_not_change_existing_modules(monkeypatch, strict):
+    import gpuwm.wrf_exact as exact
+    monkeypatch.setattr(exact, "ENABLED", strict)
     # These are closed literal grants for the selected source: the six
     # no-FMA units, four surface units and five diffusion units. In
     # particular MYNN PBL carries both the no-FMA and no-FTZ requirements.
     # A global option change must still fail for every other actual module.
     no_fmad = {"lake", "g3", "ysu", "shinhong", "mynn_pbl", "mynn_dmp_sibling",
                "wsm6", "kessler", "myjpbl", "milbrandt2", "milbrandt2_zet",
-               "wdm6", "wdm6_refl", "wsm3", "wsm6r"}
+               "wdm6", "wdm6_refl", "wsm3", "wsm6r", "noah"}
+    if strict:
+        no_fmad |= {"morrison", "rrtmgp_rte", "noah_init", "wdm6",
+            "milbrandt2_zet", "wdm6_refl", "rrtmgp_gas", "milbrandt2",
+            "rrtmgp_cloud", "noah", "myjsfc", "kessler", "thompson_classic",
+            "myjpbl", "wsm6"}
     no_ftz = {"g3", "sfclay", "myjsfc", "mynn_surface", "mynn_pbl", "thompson_column",
               "ysu_480", "wsm6r", "aer_opt2"}
     diffusion = {"smag2d", "diffusion", "diff_opt1", "diff6", "diff6_seam"}
@@ -226,6 +256,8 @@ def test_lake_compile_options_do_not_change_existing_modules():
     expected['nsas'] = ('-std=c++17', '--ftz=false', '--fmad=false')
     # The lightning unit's own direct NVRTC route (lane order of flags).
     expected["lightning"] = ("-std=c++17", "--ftz=false", "--fmad=false")
+    # WRF's ocean mixed layer (2.9.1) compiles as the column-exact ports do.
+    expected["oml"] = ("-std=c++17", "--fmad=false", "--ftz=false")
     names = _module_names()
     assert set(expected) <= set(names), sorted(set(expected) - set(names))
     for name in names:
@@ -233,11 +265,15 @@ def test_lake_compile_options_do_not_change_existing_modules():
             name, ("-std=c++17",)), name
 
 
-def _strict_diagnostics_header(name: str) -> str:
-    from gpuwm.wrf_exact import DIAGNOSTICS_ENABLED
-    if name == "diagnostics" and DIAGNOSTICS_ENABLED:
-        return (_KDIR / "glibc_flt32.cuh").read_text(encoding="utf-8")
-    return ""
+def _strict_header_text(name: str) -> str:
+    from gpuwm.wrf_exact import ENABLED, DIAGNOSTICS_ENABLED
+    headers = ()
+    if ENABLED and name == "acoustic":
+        headers = ("glibc_trig_flt32.cuh",)
+    if DIAGNOSTICS_ENABLED and name == "diagnostics":
+        headers = ("glibc_flt32.cuh",)
+    return "".join((_KDIR / header).read_text(encoding="utf-8")
+                   for header in headers)
 
 
 def _pre_hook_source(name: str) -> str:
@@ -253,13 +289,12 @@ def _pre_hook_source(name: str) -> str:
     the em dashes in acoustic.cu, advection.cu and coriolis_map.cu as cp1252
     and agree with each other while both being wrong.
     """
-    return (kernel_loader._preamble() + _strict_diagnostics_header(name)
+    return (kernel_loader._preamble() + _strict_header_text(name)
             + (_KDIR / f"{name}.cu").read_text(encoding="utf-8"))
 
 
 def _pre_hook_source_int_defines(name: str, prefix: str) -> str:
-    return (kernel_loader._preamble() + _strict_diagnostics_header(name)
-            + prefix + "\n"
+    return (kernel_loader._preamble() + _strict_header_text(name) + prefix + "\n"
             + (_KDIR / f"{name}.cu").read_text(encoding="utf-8"))
 
 
@@ -408,14 +443,12 @@ def test_mosaic_ucm_composes_one_header_and_unchanged_ucm():
 
 
 def test_noah_initialization_reuses_device_physics_without_moving_forecast_source():
-    # The forecast unit gains exactly one header, glibc_flt32.cuh, for the
-    # sea-ice column's gfk_exp/gfk_pow (lane/290-A5-fixes); the ordinary
-    # land column reads none of it and its words are unchanged (the release
-    # short case is byte-identical to 0bf505764 with the header present).
+    from gpuwm.wrf_exact import ENABLED
     glibc = (_KDIR / "glibc_flt32.cuh").read_text(encoding="utf-8")
+    strict_prefix = "#define NOAH_WRF_SCALAR_RCT 1\n" if ENABLED else ""
     assert kernel_loader.EXTRA_HEADERS["noah"] == ("glibc_flt32.cuh",)
     assert kernel_loader.module_source("noah") == (
-        kernel_loader._preamble() + glibc
+        kernel_loader._preamble() + glibc + strict_prefix
         + (_KDIR / "noah.cu").read_text(encoding="utf-8"))
     assert kernel_loader.EXTRA_HEADERS["noah_init"] == ("glibc_flt32.cuh", "noah.cu")
     reused = (_KDIR / "noah.cu").read_text(encoding="utf-8")

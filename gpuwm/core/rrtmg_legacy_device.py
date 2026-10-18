@@ -24,7 +24,7 @@ _PREFLIGHTED = set()
 
 
 @lru_cache(maxsize=None)
-def _gpu_module(device, cloud_form="wrf_461"):
+def _gpu_module(device, cloud_form="wrf_461", radii_units="meters"):
     """Direct NVRTC PTX load, no RawModule and no explicit -arch option.
 
     CuPy supplies the architecture itself. Duplicating it fails on NVRTC
@@ -38,6 +38,8 @@ def _gpu_module(device, cloud_form="wrf_461"):
     options = ("-std=c++17", "--ftz=false")
     if fork_cloud:
         options += ("-DRP_CLOUD_FORM=1",)
+    if radii_units == "microns":
+        options += ("-DRP_RADIUS_MICRONS=1",)
     with cp.cuda.Device(device):
         ptx, _ = compiler.compile_using_nvrtc(
             source, options, None,
@@ -132,6 +134,10 @@ def _surface(cp, value, ncol, name):
 
 def _prep(sw, kw):
     import cupy as cp
+    kw = dict(kw)
+    radii_units = kw.pop("radii_units", "meters")
+    if radii_units not in ("meters", "microns"):
+        raise ValueError("radii_units must be meters or microns")
     bound = _SIGNATURES[sw].bind(**kw)
     bound.apply_defaults()
     k = bound.arguments
@@ -170,7 +176,7 @@ def _prep(sw, kw):
                       ("tsk", "emiss", "xland", "xice", "snow", "xlat"))}
     device = cp.cuda.runtime.getDevice()
     gpu_preflight()
-    mod = _gpu_module(device, k["rrtmg_cloud_optics_form"])
+    mod = _gpu_module(device, k["rrtmg_cloud_optics_form"], radii_units)
     if sw:
         night = cp.empty(ncol, cp.uint8)
         mod.get_function("rp_day")(((ncol+127)//128,), (128,),

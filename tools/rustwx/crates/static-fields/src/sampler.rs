@@ -994,22 +994,34 @@ impl<'g> DomainSampler<'g> {
         for (t, &o) in origin.iter().enumerate() {
             groups.entry(o).or_default().push(t);
         }
+        // One source plane per tile (a twelve-month tile decoded whole for
+        // each month was most of the albedo build), and the tiles on every
+        // core.  Each point belongs to exactly one tile group, so the
+        // scatter below writes what the serial loop wrote, and the first
+        // failing tile in key order is still the error returned.
+        let groups: Vec<((i64, i64), Vec<usize>)> = groups.into_iter().collect();
+        let sampled: Vec<Result<Option<Vec<f64>>>> = groups
+            .par_iter()
+            .map(|&((xs, ys), ref picks)| {
+                let Some(tile) = ds.read_tile_window_plane(xs, ys, z)? else {
+                    return Ok(None);
+                };
+                let vals = tile.values(z);
+                let view = WindowView {
+                    ny: tile.ny,
+                    nx: tile.nx,
+                    vals: &vals,
+                    x0: tile.x0 as f64,
+                    y0: tile.y0 as f64,
+                };
+                let px: Vec<f64> = picks.iter().map(|&t| xx[t]).collect();
+                let py: Vec<f64> = picks.iter().map(|&t| yy[t]).collect();
+                interp_seq(seq, &view, &px, &py).map(Some)
+            })
+            .collect();
         let mut out = vec![f64::NAN; todo.len()];
-        for ((xs, ys), picks) in groups {
-            let Some(tile) = ds.read_tile_window(xs, ys)? else {
-                continue;
-            };
-            let vals = tile.values(z);
-            let view = WindowView {
-                ny: tile.ny,
-                nx: tile.nx,
-                vals: &vals,
-                x0: tile.x0 as f64,
-                y0: tile.y0 as f64,
-            };
-            let px: Vec<f64> = picks.iter().map(|&t| xx[t]).collect();
-            let py: Vec<f64> = picks.iter().map(|&t| yy[t]).collect();
-            let got = interp_seq(seq, &view, &px, &py)?;
+        for ((_, picks), got) in groups.iter().zip(sampled) {
+            let Some(got) = got? else { continue };
             for (&t, v) in picks.iter().zip(got) {
                 out[t] = v;
             }

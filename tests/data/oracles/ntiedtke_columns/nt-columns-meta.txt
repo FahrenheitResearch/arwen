@@ -1,0 +1,8 @@
+nz 49
+dt 72.0
+dx_native 12000.0
+source wrfout_d01_2019-11-27_00:00:00.gnu
+pressure hydrostatic_(wrfout_columns)
+radiation_lanes synthetic
+subset_of mix
+ncol 25

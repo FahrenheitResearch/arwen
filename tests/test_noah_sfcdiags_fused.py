@@ -1,13 +1,20 @@
-"""Noah's fused SFCDIAGS writes exactly what the array expressions wrote.
+"""Noah's SFCDIAGS writes the same words whatever carries the fields.
 
-``PhysicsDriver._refresh_surface_diagnostics`` takes one launch on CuPy
-arrays (``gpuwm.core.noah_sfcdiags``) and keeps its CuPy expressions for any
-other carrier.  This runs the driver's two paths on the same inputs and
-compares Q2, T2 and TH2 as uint32, over columns built to reach every branch:
+``PhysicsDriver._refresh_surface_diagnostics`` takes one launch on C-contiguous
+float32 CuPy arrays (``gpuwm.core.noah_sfcdiags.refresh``) and runs the same
+kernel on contiguous copies for any other carrier (``refresh_any``).  Until
+lane/verify-noah-lsm the second path was a set of CuPy array expressions
+whose TH2 called CUDA's powf; the kernel now calls WOOF's own float32 powf,
+which is WRF's word (tests/test_noah_wrf461_parity.py and
+tools/noah_wrf461_oracle/sfcdiags_sweep.py), so the expressions went and both
+paths are one arithmetic.  This runs the driver's two paths on the same
+inputs and compares Q2, T2 and TH2 as uint32, over columns built to reach
+every branch:
 exchange coefficients on and next to the 1e-5 activity floor, zero and
 negative ones, surface humidity whose flux inversion goes negative (the
 Q2 = qv(k=1) guard), signed zeros, infinities and NaN.
 """
+# Replaced in 2.9.1 (the WRF exact chain): test_fused_sfcdiags_is_bitwise_the_array_expressions -> test_fused_sfcdiags_is_bitwise_the_other_carrier_path.
 from __future__ import annotations
 
 import numpy as np
@@ -66,7 +73,7 @@ def _driver(cp, columns, shape):
 
 @pytest.mark.gpu
 @requires_gpu
-def test_fused_sfcdiags_is_bitwise_the_array_expressions(monkeypatch):
+def test_fused_sfcdiags_is_bitwise_the_other_carrier_path(monkeypatch):
     cp = pytest.importorskip("cupy")
     from gpuwm.core import noah_sfcdiags
 

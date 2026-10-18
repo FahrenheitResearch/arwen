@@ -12,7 +12,7 @@ operation below. An unadmitted plan launches nothing.
 | 1 | `gpuwm suite init --region REGION --boxes box-r.json,box-g.json -o country.suite.toml` | Every referenced registry row exists |
 | 2 | `gpuwm suite validate country.suite.toml` | Schema, regions, shapes and rates resolve; unknown keys exit 2 |
 | 3 | `gpuwm suite plan country.suite.toml --json` | Complete suite admitted, or exit 2 names the budget and overrun |
-| 4 | Prepare every row's inputs with the ordinary doors (`gpuwm go CONFIG --prepare-only`, `gpuwm-hex country --stage prepare`) and write their paths into `deployment.json` | The bindings document names each prepared input, DA and CPU-stage door |
+| 4 | Write `deployment.json`: each box's queue `launcher_prefix`, the products and verify CPU doors, and the prepared inputs of hex rows (`gpuwm-hex country --stage prepare`) | `gpuwm suite run FILE` with no `--bindings` lists every row and gap still to bind, in one refusal |
 | 5 | `gpuwm suite rehearse country.suite.toml --bindings deployment.json --from PAST_DATE --days 1` | Every cycle completed and observation scores cover every verification cycle |
 | 6 | `gpuwm suite run country.suite.toml --bindings deployment.json --detach` | Journal advancing and heartbeat younger than 120 seconds |
 | 7 | `gpuwm suite status --json`, `gpuwm suite events --follow` | Each row reports its cycle, state, lag and score |
@@ -23,13 +23,24 @@ ships `US` and `PH`; adding a region is a table row). With no `--boxes`, `init`
 writes the template's boxes and the plan prices them from the shipped rate
 table; plan against your own `gpuwm check --json` receipts before launch.
 
-Automatic preparation and measured-rate calibration are not commands in this
-release: preparation runs through the ordinary forecast and hex doors (step 4),
-and rates come from the shipped rate table. An admitted reservation plan still
-has `execution_ready=false` until its prepared, DA and CPU-stage bindings
-exist; run and rehearse refuse it with `suite_execution_unbound` unless a
-`--bindings deployment.json` document materializes those reservations.
-Operation across two hosts is refused with `suite_transport_unbound`. See
+Regional CAM rows (`regional-cam`, `regional-cam-ensemble`, `regional-nest`)
+prepare themselves. For each cycle the controller launches a zero-card prepare
+stage, `ROW.prepare`, ahead of the forecast reservation: it derives that
+cycle's configuration from the row's recipe (or the row's `base_config` in
+`deployment.json`) and runs `gpuwm go CONFIG --prepare-only` on the CPU. The
+forecast waits for it and then runs on the published bundle, so its cards never
+wait on a download or a preparation. A source that has not posted yet takes the
+source-late ladder (exit 75). A row whose `lbc` ladder does not contain its
+`[fetch]` source is refused before anything is fetched (`suite_prepared_lbc`),
+because `gpuwm go` takes initial and boundary conditions from that one source.
+Prepared bundles are retained as history (36 h by default).
+
+Hex rows, hex ensemble manifests, shadow DA, the products and verify CPU doors
+and each box's queue are still named in `deployment.json`. Rates come from the
+shipped rate table. Until every row binds, `run` and `rehearse` refuse with one
+message that names each row and what it lacks (`suite_execution_unbound`,
+`suite_launcher_missing`). Operation across two hosts is refused with
+`suite_transport_unbound`. See
 [the binding contract](../suite-runtime-bindings.md) for prepared authority,
 member placement, CPU stages and queue configuration. An explicit
 `gpuwm.suite.runtime-fixture.v1` JSON plan is for door qualification only.

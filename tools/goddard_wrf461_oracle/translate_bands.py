@@ -139,7 +139,7 @@ class Emitter:
                 # is __fdiv_rn for a float operand and WRF's double division
                 # for an fp_kind one (overloads in the header below); a bare
                 # __fdiv_rn narrowed the fp_kind operands to float and made
-                # g_pow(float, GReal) ambiguous (2.9.0 round 2, node-4 GPU leg).
+                # g_pow(float, GReal) ambiguous (2.9.0 round 2, test host D GPU leg).
                 return f'g_div({a},{b})'
             op={'.eqv.':'==','.neqv.':'!=','.and.':'&&','.or.':'||','.eq.':'==','.ne.':'!=','.lt.':'<','.le.':'<=','.gt.':'>','.ge.':'>=','/=':'!='}.get(op,op)
             return f'({a}{op}{b})'

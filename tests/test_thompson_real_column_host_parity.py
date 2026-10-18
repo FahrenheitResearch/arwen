@@ -103,6 +103,12 @@ _FIXTURE_MP8_CORRECTED_RACG = (
 PINNED_FINAL_CELLS: dict[str, int] = {}
 REFL_MAX_DB = 1.0e-2
 
+# Retained base diagnostics: no allowances added by this intake.
+PINNED_RATE_CELLS_MP8: dict[str, int] = {}
+PINNED_FINAL_CELLS_MP8: dict[str, int] = {}
+PINNED_REFL_MP8 = {"max_abs_db": 0.05, "n_gt_0p1_db": 0}
+PINNED_T_EXIT_REL_MP8 = 1.0e-5
+
 #: Every regime a repair acts in, by the label make_fixture.py gives it.
 REQUIRED_REGIMES = (
     "A entry ice without number",
@@ -199,20 +205,24 @@ def test_rate_readback_anchors_match_the_kernels():
                      - len(text.splitlines()))
             expected = sum(len(rate_map) + 2 for _a, rate_map in anchors)
             assert added == expected, (mp, module, added, expected)
-            calls = [line for line in instrumented.splitlines()
-                     if "HOST_RATE(" in line]
-            assert len(calls) == sum(len(m) for _a, m in anchors), (
+            calls = (sum("HOST_RATE(" in line
+                         for line in instrumented.splitlines())
+                     - sum("HOST_RATE(" in line for line in text.splitlines()))
+            assert calls == sum(len(m) for _a, m in anchors), (
                 mp, module)
-    # mp=8 reads back every WRF rate classic Thompson carries: each is either
-    # in one of the classic kernels' maps or named as not carried.
-    carried = set()
-    for anchors in port_rates.ANCHORS_MP8.values():
-        for _anchor, rate_map in anchors:
-            carried |= set(rate_map)
-    missing = [name for name in RATES
-               if name not in carried
-               and name not in port_rates.NOT_CARRIED_MP8]
-    assert not missing, missing
+    # mp=8: the classic unit publishes every WRF rate from its own source,
+    # in RATES order, the not-carried aerosol terms as zero.
+    import re
+    assert set(port_rates.ANCHORS_MP8) == {"thompson_classic"}
+    text = module_source("thompson_classic")
+    block = re.search(r"const double r_\[64\] = \{([^}]*)\};", text)
+    assert block is not None
+    names = [n.strip() for n in block.group(1).split(",")]
+    want = ["0.0" if n in port_rates.NOT_CARRIED_MP8 else n for n in RATES]
+    assert names == want
+    # and the cp2 rates again after the rain evaporation
+    for name in ("prw_vcd", "pnc_wcd", "prv_rev", "pnr_rev"):
+        assert f"HOST_RATE({port_rates.SLOT[name]}, idx, {name});" in text
 
 
 def test_the_fixture_covers_every_repaired_regime():
@@ -260,6 +270,7 @@ def _run_tool(tmp_path, script_name, *args):
         wsl, unix = found
         cmd = [wsl, "--exec", "env",
                f"GPUWM_HOST_KERNEL_BUILD_DIR={unix(build)}",
+                   "GPUWM_WRF_EXACT=1",
                "python3", unix(script),
                *[unix(a) if isinstance(a, Path) else a for a in args]]
         env = None
@@ -267,7 +278,8 @@ def _run_tool(tmp_path, script_name, *args):
         if shutil.which(os.environ.get("CXX", "g++")) is None:
             pytest.skip("no C++ compiler to build the host kernels")
         cmd = [sys.executable, str(script), *[str(a) for a in args]]
-        env = dict(os.environ, GPUWM_HOST_KERNEL_BUILD_DIR=str(build))
+        env = dict(os.environ, GPUWM_HOST_KERNEL_BUILD_DIR=str(build),
+                   GPUWM_WRF_EXACT="1")
     done = subprocess.run(cmd, capture_output=True, text=True, env=env,
                           check=False)
     if done.returncode != 0:
@@ -348,61 +360,89 @@ def test_corrected_racg_reference_retains_every_stock_input_word(
 # mp_physics=8 on the same columns.
 # ---------------------------------------------------------------------------
 
-#: Process-rate cells beyond 1e-2 that no rounding rule explains, per rate, on
-#: the committed mp=8 fixture: none.  Each entry this table held was a WRF
-#: v4.6.1 rule the classic kernels of thompson.cu did not follow, the
-#: counterpart of a repair the mp=28 kernels carry (their comments name the
-#: WRF lines), read cell by cell off this fixture and retired with its
-#: repair:
-#:
-#: * A, :1855-1858, ice arriving with mass and no number given 5 micron
-#:   crystals before its size clamps and read so by the nucleation (:2627):
-#:   ``pri_ide`` 9, ``pni_ide`` 8, ``prs_ide`` 1, ``pni_iau`` 9, ``prs_iau``
-#:   9, the rain-collects-ice set (``pri_rci``, ``pni_rci``, ``prr_rci``,
-#:   ``pnr_rci``, ``prg_rci``, 1 each, whose gate reads the ice size), the
-#:   rain freezing and rain-snow collection the rain limiter scales with it
-#:   (``pri_rfz``, ``prg_rfz``, ``prr_rcs``, 1 each), one ``pni_sci``,
-#:   ``prs_sci`` 1 and one cell each of rain evaporation;
-#: * E, :2649 and :2713, collected ice turned into a number with WRF's D0i
-#:   minimum crystal mass: ``pni_sci`` 2;
-#: * O, :2703, the graupel sublimation number gated on the entry mixing
-#:   ratio: ``png_gde`` 7;
-#: * C, :3067-3091, rain whose post-source concentration is at or below R1
-#:   removed with its entry mass: ``prv_rev`` 3 and ``pnr_rev`` 3, which
-#:   read that rain.
-PINNED_RATE_CELLS_MP8: dict[str, int] = {}
-#: Final-state cells beyond 1e-2 that no rounding rule explains, per
-#: quantity, on the committed mp=8 fixture: none.
-#:
-#: Retired: K, the entry rewrite (:1844-1942), repaired in the classic
-#: adapter, took ``qs`` from 7 to 6, ``ni`` from 11 to 7 and ``nr`` from 2
-#: to 1; L, the cloud fallout gate read from the L_qc the adjustment leaves
-#: (:3485, :3645), took ``qc`` from 2 to none; A took ``qi`` from 6, ``qs``
-#: from 6, ``nr`` from 1 to none, ``ni`` from 7 to 1, ``qr`` from 3 to 2,
-#: ``qg`` from 9 to 7 and ``ng`` from 52 to 51; C and F, :3067-3160, rain
-#: and graupel emptied at the source stage removed and the private graupel
-#: number re-balanced there, took ``qr`` from 2, ``qg`` from 7 and ``ng``
-#: from 51 to none; H, :4024-4040, the terminal ice bound in its
-#: per-kilogram form for ice whose mixing ratio passed R1 but whose
-#: concentration did not, took ``ni`` from 1 to none.
-PINNED_FINAL_CELLS_MP8: dict[str, int] = {}
-#: The largest reflectivity gap from WRF on the mp=8 fixture, in dB, and the
-#: cells beyond 0.1 dB (9.29 dB and 5 cells until A, C, F and O were
-#: repaired).
-PINNED_REFL_MP8 = {"max_abs_db": 0.05, "n_gt_0p1_db": 0}
-#: The exit temperature's largest relative gap from WRF on the mp=8 fixture
-#: (2.7e-5 until A was repaired).
-PINNED_T_EXIT_REL_MP8 = 1.0e-5
+def _bitwise_report(tmp_path, fixture, *extra):
+    return _run_tool(tmp_path, "mp8_wrf_ulp.py", fixture, "--backend",
+                     "host", "--json-only", *extra)
+
+
+def _differing(report):
+    return {name: (entry["mismatches"], entry["max_ulp"])
+            for name, entry in report["fields"].items()
+            if entry["mismatches"]}
+
+
+#: WRF v4.6.1's module with its two classic-Thompson defects repaired
+#: (tools/thompson_mp8_column_oracle/repair_wrf461.py: the rain-collecting-
+#: graupel table slot and the graupel TAU+1 flag), the control the classic
+#: unit is graded against word for word.  Same columns as _FIXTURE_MP8,
+#: written by ``REPAIR=1 build_wrf.sh`` + ``make_fixture.py --mp8``.
+_FIXTURE_MP8_REPAIRED = (_ROOT / "tests" / "data"
+                         / "thompson_real_columns_wrf461_mp8_repaired.npz")
+_WRF461_SHA = ("fabf19e2a9073cff886e882b187080bfdf089d3fd40c0fce1d19bc93b1e5e802")
+_WRF461_REPAIRED_SHA = (
+    "ccd74ab8a7296b1f58bf08b4c1c12ca44d7ea495860e210ee5ef9f901e8ab62d")
 
 
 def test_real_columns_against_wrf461_mp8(tmp_path):
-    assert _FIXTURE_MP8.exists(), _FIXTURE_MP8
-    z = np.load(_FIXTURE_MP8)
+    """Every output word and every carried rate equals WRF's, with WRF's two
+    v4.6.1 defects repaired (the unit does not copy them; see
+    thompson_classic.cu at the rain-collecting-graupel read and the graupel
+    TAU+1 flag)."""
+    assert _FIXTURE_MP8_REPAIRED.exists(), _FIXTURE_MP8_REPAIRED
+    z = np.load(_FIXTURE_MP8_REPAIRED)
     z28 = np.load(_FIXTURE)
-    # the same columns as the mp=28 fixture, and WRF's same source
+    # the same columns as the mp=28 fixture, and WRF's same source, repaired
     assert int(z["mp_physics"]) == 8
     for key in ("col_p", "col_th", "col_qv", "col_qc", "col_qi"):
         assert np.array_equal(z[key], z28[key]), key
+    receipt = str(z["wrf_build_receipt"])
+    assert _WRF461_SHA in receipt and _WRF461_REPAIRED_SHA in receipt
+    report = _bitwise_report(tmp_path, _FIXTURE_MP8_REPAIRED, "--rates")
+    rates = [name for name in report["fields"] if name.startswith("rate_")]
+    assert len(rates) == 58, len(rates)
+    assert report["overall"]["values"] > 27048
+    assert not _differing(report), _differing(report)
+    assert report["overall"]["bitwise"]
+
+
+def test_mp8_differs_from_unmodified_wrf461_only_where_its_defects_act(
+        tmp_path):
+    """Against UNMODIFIED WRF v4.6.1 the unit differs in exactly the words
+    the two repairs move, cell for cell.
+
+    Breakage prevented: a divergence from WRF that is not one of the two
+    documented v4.6.1 defects hiding behind them.  The two fixtures hold the
+    same 42 columns through unmodified and repaired WRF; the words where the
+    unit's answer differs from unmodified WRF must be exactly the words
+    where repaired WRF differs from it (1187 on this fixture: the rain-
+    collecting-graupel slot; the TAU+1 flag acts on none of these columns).
+    """
+    pristine = np.load(_FIXTURE_MP8)
+    repaired = np.load(_FIXTURE_MP8_REPAIRED)
+    assert _WRF461_SHA in str(pristine["wrf_build_receipt"])
+    saved = tmp_path / "unit-words.npz"
+    _bitwise_report(tmp_path, _FIXTURE_MP8, "--save", saved)
+    got = np.load(saved)
+    total = 0
+    for name in got.files:
+        want = np.asarray(pristine[f"wrf_{name}"], np.float32)
+        fixed = np.asarray(repaired[f"wrf_{name}"], np.float32)
+        if name.startswith("re_"):
+            want = (want * np.float32(1.0e6)).astype(np.float32)
+            fixed = (fixed * np.float32(1.0e6)).astype(np.float32)
+        have = np.asarray(got[name], np.float32).reshape(want.shape)
+        unit_moves = have.view(np.uint32) != want.view(np.uint32)
+        repair_moves = fixed.view(np.uint32) != want.view(np.uint32)
+        assert np.array_equal(unit_moves, repair_moves), name
+        total += int(repair_moves.sum())
+    assert total == 1187, total
+
+
+def test_mp8_rule_columns_are_wrfs_own_answers(tmp_path):
+    fixture = _ROOT / "tests" / "data" / "thompson_rule_columns_wrf461_mp8.npz"
+    assert fixture.exists(), fixture
+    z = np.load(fixture)
+    assert int(z["mp_physics"]) == 8
     assert ("fabf19e2a9073cff886e882b187080bfdf089d3fd40c0fce1d19bc93b1e5e802"
             in str(z["wrf_build_receipt"]))
     assert _FIXTURE_MP8_CORRECTED_RACG.exists(), (
@@ -443,7 +483,9 @@ def test_real_columns_against_wrf461_mp8(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Named WRF rules on built columns (tools/thompson_real_column_parity/
-# rule_checks.py), mp=28 and mp=8 through their production adapters.
+# rule_checks.py), mp=28 through its production adapter.  mp=8's rule
+# columns are graded against WRF's own answers above
+# (test_mp8_rule_columns_are_wrfs_own_answers).
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
@@ -451,7 +493,7 @@ def rules(tmp_path_factory):
     return _run_tool(tmp_path_factory.mktemp("rules"), "rule_checks.py")
 
 
-@pytest.mark.parametrize("mp", (28, 8))
+@pytest.mark.parametrize("mp", (28,))
 def test_a_column_wrf_leaves_at_its_no_micro_exit_is_returned_untouched(
         rules, mp):
     """module_mp_thompson.F:2020 and :3974.
@@ -477,7 +519,7 @@ def test_a_column_wrf_leaves_at_its_no_micro_exit_is_returned_untouched(
         assert got["nwfa_max"][1] == pytest.approx(9999.0e6, rel=1e-7)
 
 
-@pytest.mark.parametrize("mp", (28, 8))
+@pytest.mark.parametrize("mp", (28,))
 def test_ice_above_0c_keeps_its_number_inside_the_size_bounds(rules, mp):
     """module_mp_thompson.F:3033-3055.
 
@@ -499,7 +541,7 @@ def test_ice_above_0c_keeps_its_number_inside_the_size_bounds(rules, mp):
                                                     rel=1.0e-6)
 
 
-@pytest.mark.parametrize("mp", (28, 8))
+@pytest.mark.parametrize("mp", (28,))
 def test_cloud_and_ice_at_or_below_r1_melt_before_they_are_removed(
         rules, mp):
     """module_mp_thompson.F:3943-3966, then :4007-4009 and :4023-4027.
@@ -521,7 +563,7 @@ def test_cloud_and_ice_at_or_below_r1_melt_before_they_are_removed(
     assert got["qi"] == [0.0, 0.0, 0.0, 0.0]
 
 
-@pytest.mark.parametrize("mp", (28, 8))
+@pytest.mark.parametrize("mp", (28,))
 def test_melting_snow_blends_with_the_rain_pass_s_own_fall_speed(rules, mp):
     """module_mp_thompson.F:3612-3634 and :3722-3724.
 
@@ -546,7 +588,7 @@ def test_melting_snow_blends_with_the_rain_pass_s_own_fall_speed(rules, mp):
         got["rule"]["rain_above"], rel=1.0e-3)
 
 
-@pytest.mark.parametrize("mp", (28, 8))
+@pytest.mark.parametrize("mp", (28,))
 def test_a_species_is_present_where_its_mixing_ratio_passes_r1(rules, mp):
     """module_mp_thompson.F:1827-1949 with :2783-2825.
 

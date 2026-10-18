@@ -289,6 +289,7 @@
                         "runtime":  {
                                         "runner_module": "hexcore.drivers.forecast_receipt",
                                         "prepare_module": "hexcore.preset_prepare",
+                                        "paired_package": {"distribution": "gpuwm-hex", "minimum": "0.4.0", "below": "0.5"},
                                         "source_profile": "rrfs-v2",
                                         "physics_suite":  "rrfs_v2_tempo_candidate",
                                         "experimental":  true,

@@ -1,0 +1,54 @@
+ PENMAN ETP RCH RR EPSCA              NaN   1.64092050E-42         Infinity              NaN
+ CANRES PC RC              NaN   33.6613922    
+ SMFLX PCPDRP SMC              NaN  0.282000005      0.282000005      0.282000005      0.282000005    
+ SSTEP K STOT SMC           1              NaN              NaN
+ SSTEP K STOT SMC           2              NaN              NaN
+ SSTEP K STOT SMC           3              NaN              NaN
+ SSTEP K STOT SMC           4              NaN              NaN
+ POST ETA ETA_KINEMATIC T1   146.850433       146.850433                  NaN
+ POST SMC              NaN              NaN              NaN              NaN  STC              NaN              NaN              NaN              NaN
+ PENMAN ETP RCH RR EPSCA              NaN   1.64092050E-42         Infinity              NaN
+ CANRES PC RC              NaN   241.471741    
+ SMFLX PCPDRP SMC              NaN  0.280999988      0.280999988      0.280999988      0.280999988    
+ SSTEP K STOT SMC           1              NaN              NaN
+ SSTEP K STOT SMC           2              NaN              NaN
+ SSTEP K STOT SMC           3              NaN              NaN
+ SSTEP K STOT SMC           4              NaN              NaN
+ POST ETA ETA_KINEMATIC T1              NaN              NaN              NaN
+ POST SMC              NaN              NaN              NaN              NaN  STC              NaN              NaN              NaN              NaN
+ PENMAN ETP RCH RR EPSCA              NaN   1.64092050E-42         Infinity              NaN
+ CANRES PC RC              NaN   53.5475540    
+ SMFLX PCPDRP SMC              NaN  0.280000001      0.280000001      0.280000001      0.280000001    
+ SSTEP K STOT SMC           1              NaN              NaN
+ SSTEP K STOT SMC           2              NaN              NaN
+ SSTEP K STOT SMC           3              NaN              NaN
+ SSTEP K STOT SMC           4              NaN              NaN
+ POST ETA ETA_KINEMATIC T1              NaN              NaN              NaN
+ POST SMC              NaN              NaN              NaN              NaN  STC              NaN              NaN              NaN              NaN
+ PENMAN ETP RCH RR EPSCA              NaN   1.64092050E-42         Infinity              NaN
+ CANRES PC RC              NaN   33.6613922    
+ SMFLX PCPDRP SMC              NaN  0.282000005      0.282000005      0.282000005      0.282000005    
+ SSTEP K STOT SMC           1              NaN              NaN
+ SSTEP K STOT SMC           2              NaN              NaN
+ SSTEP K STOT SMC           3              NaN              NaN
+ SSTEP K STOT SMC           4              NaN              NaN
+ POST ETA ETA_KINEMATIC T1   157.718491       157.718491                  NaN
+ POST SMC              NaN              NaN              NaN              NaN  STC              NaN              NaN              NaN              NaN
+ PENMAN ETP RCH RR EPSCA              NaN   1.64092050E-42         Infinity              NaN
+ CANRES PC RC              NaN   241.471741    
+ SMFLX PCPDRP SMC              NaN  0.280999988      0.280999988      0.280999988      0.280999988    
+ SSTEP K STOT SMC           1              NaN              NaN
+ SSTEP K STOT SMC           2              NaN              NaN
+ SSTEP K STOT SMC           3              NaN              NaN
+ SSTEP K STOT SMC           4              NaN              NaN
+ POST ETA ETA_KINEMATIC T1   84.6759949       84.6759949                  NaN
+ POST SMC              NaN              NaN              NaN              NaN  STC              NaN              NaN              NaN              NaN
+ PENMAN ETP RCH RR EPSCA              NaN   1.64092050E-42         Infinity              NaN
+ CANRES PC RC              NaN   53.5475540    
+ SMFLX PCPDRP SMC              NaN  0.280000001      0.280000001      0.280000001      0.280000001    
+ SSTEP K STOT SMC           1              NaN              NaN
+ SSTEP K STOT SMC           2              NaN              NaN
+ SSTEP K STOT SMC           3              NaN              NaN
+ SSTEP K STOT SMC           4              NaN              NaN
+ POST ETA ETA_KINEMATIC T1   146.850433       146.850433                  NaN
+ POST SMC              NaN              NaN              NaN              NaN  STC              NaN              NaN              NaN              NaN

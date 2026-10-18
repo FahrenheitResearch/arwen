@@ -257,7 +257,10 @@ pub struct BtMeta {
     pub arrays: BTreeMap<String, ArrayEntry>,
     pub payload_bytes: usize,
     pub content_sha256: String,
-    pub planck: PlanckRow,
+    /// The ABI file's four Planck constants; absent on AHI/AMI packs,
+    /// whose calibration is in `calibration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planck: Option<PlanckRow>,
     pub brightness_temperature_formula: String,
     pub dqf_policy: String,
     pub counts: BtCounts,
@@ -265,6 +268,26 @@ pub struct BtMeta {
     pub clear_sky_mask: Option<ClearSkyRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_check: Option<CrossCheckRow>,
+    /// `abi` when absent (every pack written before the AHI/AMI decoders);
+    /// `ahi` / `ami` for `rw_goes geo-bt` packs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<String>,
+    /// The producer's channel label (`B13`, `IR105`), geo-bt packs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub central_wavelength_um: Option<f64>,
+    /// The producer's calibration constants and the relation applied
+    /// (geo-bt packs; ABI packs carry `planck`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<serde_json::Value>,
+    /// Measurement time (POSIX s) of each of the `ny` rows.  Written by
+    /// geo-bt, and by `bt` when the pack is a window of its sector (the
+    /// scan-level start/end no longer bound the window's rows then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_time_unix_s: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radiance_units: Option<String>,
 }
 
 impl ContainerMeta for BtMeta {
@@ -307,6 +330,8 @@ pub struct RadianceOptions {
     pub bbox_index: Option<[i64; 4]>,
     /// `--received-utc`: when this system first held the granule.
     pub received_utc: Option<String>,
+    /// `--bbox S,N,W,E`: crop to the smallest window holding that box.
+    pub bbox: Option<[f64; 4]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +514,25 @@ pub fn cmd_bt(options: &RadianceOptions) -> Result<String, Box<dyn Error>> {
             out.display()
         )));
     }
-    let window = options.window;
+    let full_scene = rw_sat::abi::read_goes_abi_scene(rad_path)?;
+    let window = match (options.window, options.bbox) {
+        (Some(w), _) => Some(w),
+        (None, Some(b)) => Some(
+            rw_sat::geo_imager::window_for_bbox(&full_scene.projection, &full_scene.fixed_grid, b)
+                .ok_or_else(|| boxed_error(format!("--bbox {b:?} is not in view of {}", rad_path.display())))?,
+        ),
+        (None, None) => None,
+    };
+    // A window's rows are a slice of the scan, so its pixel times are carried
+    // per row (the ABI row-time model on the full sector's row index).
+    let row_time_unix_s = window.map(|[_, _, y_start, y_count]| {
+        let t0 = full_scene.start_time_utc.timestamp_millis() as f64 / 1000.0;
+        let t1 = full_scene.end_time_utc.timestamp_millis() as f64 / 1000.0;
+        let rows = full_scene.fixed_grid.ny as f64;
+        (y_start..y_start + y_count)
+            .map(|r| t0 + (t1 - t0) * (r as f64 + 0.5) / rows)
+            .collect::<Vec<f64>>()
+    });
 
     let rad_granule = identify(rad_path)?;
     let parsed = parse_goes_abi_filename(&rad_granule.filename)?;
@@ -695,12 +738,18 @@ pub fn cmd_bt(options: &RadianceOptions) -> Result<String, Box<dyn Error>> {
         arrays,
         payload_bytes: payload.len(),
         content_sha256: hex_sha256(&payload),
-        planck,
+        planck: Some(planck),
         brightness_temperature_formula: BT_FORMULA.to_string(),
         dqf_policy: L1B_DQF_POLICY.to_string(),
         counts,
         clear_sky_mask,
         cross_check,
+        instrument: None,
+        channel_name: None,
+        central_wavelength_um: None,
+        calibration: None,
+        row_time_unix_s,
+        radiance_units: None,
     };
     let pack_bytes = write_container(out, &meta, &payload)?;
 
@@ -723,7 +772,7 @@ pub fn cmd_bt(options: &RadianceOptions) -> Result<String, Box<dyn Error>> {
         ny: usize,
         window: Option<[usize; 4]>,
         planes: &'a [String],
-        planck: &'a PlanckRow,
+        planck: &'a Option<PlanckRow>,
         counts: &'a BtCounts,
         clear_sky_mask: &'a Option<ClearSkyRow>,
         cross_check: &'a Option<CrossCheckRow>,
@@ -831,7 +880,7 @@ pub fn verify_bt_pack(path: &Path, bytes: &[u8]) -> Result<String, Box<dyn Error
         on_abi_2km_lattice: bool,
         lattice_x_index_min: Option<i64>,
         lattice_y_index_max: Option<i64>,
-        planck: &'a PlanckRow,
+        planck: &'a Option<PlanckRow>,
         counts: &'a BtCounts,
         clear_sky_mask: &'a Option<ClearSkyRow>,
         cross_check: &'a Option<CrossCheckRow>,
@@ -1882,11 +1931,22 @@ pub fn cmd_quicklook(options: &RadianceOptions) -> Result<String, Box<dyn Error>
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
-            let lattice = lattice_indices(&meta.x_scan_rad, &meta.y_scan_rad)?;
+            // An ABI pack sits on the global 2 km lattice; an AHI pack (2 km pitch 55.9 urad) does not, and
+            // is painted on its own pixel indices (a lattice --bbox-index crop is then refused below).
+            let (x_first, y_first) = match lattice_indices(&meta.x_scan_rad, &meta.y_scan_rad) {
+                Ok(lattice) => (lattice.x_index[0], lattice.y_index[0]),
+                Err(err) if meta.instrument.as_deref().is_some_and(|i| i != "abi") => {
+                    if options.bbox_index.is_some() {
+                        return Err(err);
+                    }
+                    (0, 0)
+                }
+                Err(err) => return Err(err),
+            };
             (
                 values,
-                lattice.x_index[0],
-                lattice.y_index[0],
+                x_first,
+                y_first,
                 meta.nx,
                 meta.ny,
                 options.band.unwrap_or(meta.band),

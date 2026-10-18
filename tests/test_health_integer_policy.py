@@ -133,7 +133,8 @@ _NX, _NY, _NZ = 3, 2, 8
 #: land-surface value at each of the three surface layers it admits (1,
 #: 5, 91).  Its sfclay=0 cells are refused by name (no UST/HFX/QFX) and
 #: its sfclay=2 cells by validate_myj_pairing (the TKE_MYJ scan).
-_ROUTED_COMBINATIONS = 57
+# Re-measured 2026-10-09: CCPP adds eight admitted inventories; int32 policy is unchanged.
+_ROUTED_COMBINATIONS = 65
 
 #: Every int32 descriptor the routed cross-product actually produces.
 _INT32_DESCRIPTORS = frozenset({

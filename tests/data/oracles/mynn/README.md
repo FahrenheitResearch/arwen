@@ -405,3 +405,34 @@ platforms, because those leaves route `exp`/`log`/`**` through
 not bitwise and carries the measured three-platform union in
 `tests/test_mynn_surface_water.py`; what is left in it is the psi tables and
 the saturation `exp`, which are still NumPy and are shared with land.
+
+## Wrapper column oracle (`wrapper-columns-*.npz`)
+
+`wrapper-columns-<variant>-ml<n>.npz` (base, mixscalars, spp; mixing length 1
+and 2) come from `tools/mynn_pbl_wrf461_oracle/build_columns.sh`. That script
+compiles the unmodified WRF v4.6.1 `phys/ccpp_kind_types.F`,
+`share/module_model_constants.F`, `phys/module_bl_mynn_common.F`,
+`phys/module_bl_mynn.F` and `phys/module_bl_mynn_wrapper.F` with no stub
+(gfortran 13.3.0 -O0 -ffp-contract=off, WRF's `-DRWORDSIZE=4` word sizes,
+glibc 2.39) and drives `mynnedmf_wrapper_run`, the routine
+`module_pbl_driver.F` calls, through `run_wrapper_columns.F90`.
+
+- 80 columns from `wrapper_columns.py`'s catalogue: convective land (10),
+  stable night (10), ocean (12), high terrain at 580 to 780 hPa (8), snow and
+  ice (12), moist convection and cloud (8), high wind (6), edge cases (14).
+- Seven call groups, one `dxc`/`delt`/FLAG_QS each: 3 km/20 s, 1 km/6 s,
+  12 km/60 s, 27 km/150 s, 250 m/1.5 s, 100 m/0.5 s, and 3 km with FLAG_QS
+  off.
+- 40 levels in WRF's physics layout (`kme = kde = nz + 1`, `kte = nz`); the
+  unused `kme` slot of every input is NaN and no output is non-finite.
+- 12 steps: a cold start and 11 warm steps, the state advanced with the
+  wrapper's own tendencies.
+- Each file stores the inputs, the step-1 state and every output. The later
+  steps' inputs are rebuilt from WRF's outputs by `replay_inputs`, which
+  `pack` proved bitwise against the recording before dropping them.
+
+Source hashes, the harness hash and the record hashes are in
+`wrapper-columns-provenance.txt`. The CRLF hashes of `module_bl_mynn.F` and
+`module_bl_mynn_common.F` are the `7fde5fc9...` and `71cc8a9a...` pinned above.
+`tests/test_mynn_wrf461_wrapper_columns_gpu.py` grades WOOF's
+`mynn_pbl_step` against all six files.

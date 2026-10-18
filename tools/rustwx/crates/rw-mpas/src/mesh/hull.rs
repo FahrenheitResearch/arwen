@@ -70,6 +70,12 @@ pub fn delaunay_rings(points: &[V3]) -> MpasResult<Rings> {
 }
 
 fn delaunay_rings_inner(points: &[V3]) -> MpasResult<Rings> {
+    if points.len() >= PAR_MIN_POINTS {
+        if let Some(t) = parallel_triangulation(points) {
+            return t.rings();
+        }
+        crate::mesh::profile::HULL_PAR_FALLBACK.add(0, 1);
+    }
     let faces = build_hull(points)?;
     let live: Vec<[u32; 3]> = faces.iter().filter(|f| f.alive).map(|f| f.v).collect();
     crate::mesh::profile::timed(
@@ -82,6 +88,14 @@ fn delaunay_rings_inner(points: &[V3]) -> MpasResult<Rings> {
 /// The randomized-incremental construction itself: every facet ever created,
 /// live and retired, with `alive` marking the finished hull.
 fn build_hull(points: &[V3]) -> MpasResult<Vec<Face>> {
+    build_hull_l(points, None)
+}
+
+/// [`build_hull`] on a SUBSET of a larger point set: `labels[i]` is local
+/// point `i`'s index in the whole set, and the exact-degeneracy tie-break
+/// reads those, so a region's hull breaks every tie exactly as the whole
+/// set's hull does (see [`delaunay_triangulation`]'s parallel route).
+fn build_hull_l(points: &[V3], labels: Option<&[u32]>) -> MpasResult<Vec<Face>> {
     let n = points.len();
     if n < 4 {
         return Err(MpasError::Refusal(format!(
@@ -129,7 +143,17 @@ fn build_hull(points: &[V3]) -> MpasResult<Vec<Face>> {
         let mut placed = false;
         for (fi, f) in faces.iter_mut().enumerate() {
             c_seed += 1;
-            if visible(points, f, p) {
+            if visible_at_l(
+                points[f.v[0] as usize],
+                points[f.v[1] as usize],
+                points[f.v[2] as usize],
+                points[p as usize],
+                f.v[0],
+                f.v[1],
+                f.v[2],
+                p,
+                labels,
+            ) {
                 f.conflicts.push(p);
                 point_face[p as usize] = fi as u32;
                 placed = true;
@@ -198,7 +222,7 @@ fn build_hull(points: &[V3]) -> MpasResult<Vec<Face>> {
                 if a != NONE && stamp[a as usize] != generation {
                     c_flood += 1;
                     let fv = faces[a as usize].v;
-                    if visible_at(
+                    if visible_at_l(
                         points[fv[0] as usize],
                         points[fv[1] as usize],
                         points[fv[2] as usize],
@@ -207,6 +231,7 @@ fn build_hull(points: &[V3]) -> MpasResult<Vec<Face>> {
                         fv[1],
                         fv[2],
                         p,
+                        labels,
                     ) {
                         stamp[a as usize] = generation;
                         stack.push(a);
@@ -309,7 +334,7 @@ fn build_hull(points: &[V3]) -> MpasResult<Vec<Face>> {
                 // Facet `first_new + k` is `[u, w, p]` by construction above,
                 // so these are the same four operands, in the same order,
                 // that `visible(points, &faces[first_new + k], q)` formed.
-                if visible_at(uu, ww, pp, qq, u, w, p, q) {
+                if visible_at_l(uu, ww, pp, qq, u, w, p, q, labels) {
                     home = first_new + k as u32;
                     break;
                 }
@@ -360,7 +385,7 @@ fn exact_duplicate(points: &[V3]) -> Option<(usize, usize)> {
             )
         })
         .collect();
-    keyed.sort_unstable();
+    keyed.par_sort_unstable();
     for w in keyed.windows(2) {
         if w[0].0 == w[1].0 {
             return Some((w[0].1.min(w[1].1), w[0].1.max(w[1].1)));
@@ -377,6 +402,7 @@ fn exact_duplicate(points: &[V3]) -> Option<(usize, usize)> {
 /// produce; if one ever does slip through and the tie-break is not coherent, the
 /// hull fails to close and refuses by name rather than emitting a mesh.
 #[inline]
+#[allow(dead_code)]
 fn visible(points: &[V3], f: &Face, p: u32) -> bool {
     visible_at(
         points[f.v[0] as usize],
@@ -407,6 +433,31 @@ fn visible(points: &[V3], f: &Face, p: u32) -> bool {
 /// same four operands in the same order into the same predicate. This is a
 /// LOAD change, not a numerics change, and the registered-digest proof is
 /// what says so.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn visible_at_l(
+    a: V3,
+    b: V3,
+    c: V3,
+    d: V3,
+    ia: u32,
+    ib: u32,
+    ic: u32,
+    p: u32,
+    labels: Option<&[u32]>,
+) -> bool {
+    let det = orient3d_sign(a, b, c, d);
+    if det != 0.0 {
+        return det > 0.0;
+    }
+    match labels {
+        None => orient3d_sos(a, b, c, d, ia, ib, ic, p) > 0.0,
+        Some(l) => {
+            orient3d_sos(a, b, c, d, l[ia as usize], l[ib as usize], l[ic as usize], l[p as usize]) > 0.0
+        }
+    }
+}
+
 #[inline]
 fn visible_at(a: V3, b: V3, c: V3, d: V3, ia: u32, ib: u32, ic: u32, p: u32) -> bool {
     // SIGN, not value: `orient3d_sign` answers from a plain f64 determinant
@@ -619,7 +670,21 @@ fn rings_from_faces(n: usize, faces: &[[u32; 3]]) -> MpasResult<Rings> {
                 seen.dedup();
                 if seen.len() != deg {
                     *flag = RING_REPEAT;
+                    return;
                 }
+                // CANONICAL START (2026-10-16: no single-threaded hot
+                // loops; bytes may change). The walk above starts wherever
+                // the facet array happens to list this cell first, and that
+                // order is an accident of HOW the facets were made: the
+                // randomized insertion order of a rebuild, or the flip history
+                // of a maintained triangulation. Starting every ring at its
+                // smallest neighbour index (the counter-clockwise order is
+                // kept) makes the rings, and so the centroid quadrature and
+                // the emitted grid file, a function of the triangulation
+                // alone. That is what lets the Lawson-repaired arm be the
+                // default: it and a full rebuild now write the same bytes.
+                let k0 = (0..deg).min_by_key(|&k| out[k]).unwrap_or(0);
+                out.rotate_left(k0);
             });
     }
     if let Some(i) = fault.iter().position(|&f| f != RING_OK) {
@@ -711,7 +776,7 @@ impl TriangulationMode {
             "rebuild" => Ok(TriangulationMode::Rebuild),
             "incremental" | "maintained" => Ok(TriangulationMode::Maintained),
             other => Err(format!(
-                "--triangulation {other} is not a mode; it is `rebuild` (class A: rebuilt every sweep, the arm every registered mesh digest was minted on and the only one that reproduces one) or `incremental` (class B: {})",
+                "--triangulation {other} is not a mode; it is `incremental` (the default: {}) or `rebuild` (the hull rebuilt from scratch every sweep: slower, same bytes)",
                 Triangulation::CLASS_NOTE
             )),
         }
@@ -730,10 +795,12 @@ impl TriangulationMode {
 }
 
 impl Default for TriangulationMode {
-    /// REBUILD. A default that changed the bytes of every mesh anybody
-    /// regenerated would break every registered digest without being asked.
+    /// MAINTAINED (2026-10-16). Rings start at a canonical slot (see
+    /// `rings_from_faces`), so the maintained arm and a rebuild write the same
+    /// bytes, and the rebuild arm's ~1,000 single-threaded hull builds per
+    /// graded mesh bought nothing. `rebuild` stays selectable.
     fn default() -> Self {
-        TriangulationMode::Rebuild
+        TriangulationMode::Maintained
     }
 }
 
@@ -761,7 +828,7 @@ impl Triangulation {
     /// The sentence a caller prints, a receipt stamps and a refusal quotes, so
     /// the class is never implicit at any surface.
     pub const CLASS_NOTE: &'static str =
-        "maintained triangulation (class B): the facet list is repaired by Lawson flips instead of rebuilt, which preserves each cell's ring ROTATION between sweeps where a rebuild re-rolls it for about 27% of cells. The triangulation is the same one; the emitted bytes are not. A mesh with a registered SHA-256 must be regenerated on the rebuild path";
+        "maintained triangulation (default): the facet list is repaired by Lawson flips instead of rebuilt from scratch every sweep. Rings start at their smallest neighbour index, so this arm and `rebuild` write the same bytes; meshes generated before 2026-10-16 used the old ring rotation and are not reproduced by either arm";
 
     pub fn n_facets(&self) -> usize {
         self.tris.len()
@@ -773,13 +840,110 @@ impl Triangulation {
 
     /// The neighbour rings of the current facet list.
     pub fn rings(&self) -> MpasResult<Rings> {
-        let v: Vec<[u32; 3]> = self.tris.iter().map(|t| t.v).collect();
         crate::mesh::profile::timed(
             &crate::mesh::profile::TRI_RINGS,
             self.n_points as u64,
-            || rings_from_faces(self.n_points, &v),
+            || match rings_from_adjacency(self.n_points, &self.tris) {
+                Some(r) => Ok(r),
+                // Anything the fast walk cannot close is handed to the
+                // facet-list reader, which names the defect in its refusal.
+                None => {
+                    let v: Vec<[u32; 3]> = self.tris.iter().map(|t| t.v).collect();
+                    rings_from_faces(self.n_points, &v)
+                }
+            },
         )
     }
+}
+
+/// The rings of a maintained triangulation, walked through its adjacency with
+/// every step parallel (THE BREAKAGE: `rings_from_faces` fills its per-cell
+/// step table on one thread, and the maintained arm asks for rings once per
+/// sweep, about 1,000 times per graded mesh). Each cell's ring is the
+/// counter-clockwise walk round its fan, rotated to start at its smallest
+/// neighbour exactly as `rings_from_faces` rotates, so the two readers return
+/// identical rings. None on any defect (no facet, open fan, two fans, a
+/// repeated neighbour); the caller then re-reads with `rings_from_faces`.
+fn rings_from_adjacency(n: usize, tris: &[Tri]) -> Option<Rings> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let first: Vec<AtomicU32> = (0..n).into_par_iter().map(|_| AtomicU32::new(NONE)).collect();
+    let count: Vec<AtomicU32> = (0..n).into_par_iter().map(|_| AtomicU32::new(0)).collect();
+    tris.par_iter().enumerate().for_each(|(f, t)| {
+        for &v in &t.v {
+            let v = v as usize;
+            if v < n {
+                first[v].fetch_min(f as u32, Ordering::Relaxed);
+                count[v].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    });
+    let walk = |v: usize, out: Option<&mut [u32]>| -> Option<usize> {
+        let f0 = first[v].load(Ordering::Relaxed);
+        let want = count[v].load(Ordering::Relaxed) as usize;
+        if f0 == NONE || want < 3 {
+            return None;
+        }
+        let mut out = out;
+        let mut f = f0;
+        let mut d = 0usize;
+        loop {
+            let t = tris.get(f as usize)?;
+            let k = (0..3).find(|&k| t.v[k] as usize == v)?;
+            if d >= want {
+                return None;
+            }
+            if let Some(o) = out.as_deref_mut() {
+                o[d] = t.v[(k + 1) % 3];
+            }
+            d += 1;
+            f = t.adj[(k + 2) % 3];
+            if f == f0 {
+                break;
+            }
+        }
+        if d != want {
+            return None;
+        }
+        Some(d)
+    };
+    let degree: Vec<u32> = (0..n)
+        .into_par_iter()
+        .map(|v| walk(v, None).map(|d| d as u32).unwrap_or(0))
+        .collect();
+    if degree.par_iter().any(|&d| d == 0) {
+        return None;
+    }
+    let mut offsets = vec![0u32; n + 1];
+    for i in 0..n {
+        offsets[i + 1] = offsets[i] + degree[i];
+    }
+    let mut values = vec![0u32; offsets[n] as usize];
+    let mut slices: Vec<&mut [u32]> = Vec::with_capacity(n);
+    let mut rest = &mut values[..];
+    for i in 0..n {
+        let (head, tail) = rest.split_at_mut(degree[i] as usize);
+        slices.push(head);
+        rest = tail;
+    }
+    let ok = slices.par_iter_mut().enumerate().all(|(v, out)| {
+        let out: &mut [u32] = &mut **out;
+        if walk(v, Some(&mut *out)).is_none() {
+            return false;
+        }
+        let mut seen: Vec<u32> = out.to_vec();
+        seen.sort_unstable();
+        seen.dedup();
+        if seen.len() != out.len() {
+            return false;
+        }
+        let k0 = (0..out.len()).min_by_key(|&k| out[k]).unwrap_or(0);
+        out.rotate_left(k0);
+        true
+    });
+    if !ok {
+        return None;
+    }
+    Some(Rings { offsets, values })
 }
 
 /// Build the triangulation from scratch, keeping the facets.
@@ -788,6 +952,20 @@ impl Triangulation {
 /// points: the live facets are compacted in their original array order and
 /// `rings_from_faces` reads nothing else.
 pub fn delaunay_triangulation(points: &[V3]) -> MpasResult<Triangulation> {
+    let n = points.len();
+    if n >= PAR_MIN_POINTS {
+        let par = crate::mesh::profile::timed(&crate::mesh::profile::HULL, n as u64, || {
+            parallel_triangulation(points)
+        });
+        if let Some(t) = par {
+            return Ok(t);
+        }
+        crate::mesh::profile::HULL_PAR_FALLBACK.add(0, 1);
+    }
+    delaunay_triangulation_serial(points)
+}
+
+fn delaunay_triangulation_serial(points: &[V3]) -> MpasResult<Triangulation> {
     let n = points.len();
     let faces = crate::mesh::profile::timed(&crate::mesh::profile::HULL, n as u64, || {
         build_hull(points)
@@ -904,10 +1082,28 @@ pub fn lawson_repair(points: &[V3], tri: &mut Triangulation) -> MpasResult<usize
     for &e in seeds.iter().rev() {
         stack.push(((e / 3), (e % 3) as u8));
     }
-    let mut flips = 0usize;
     // 3 per facet is already generous: the measured pass finds 13 to 63
     // violations in 286,000 to 610,912 ring steps.
     let budget = 3 * tris.len() + 64;
+    let (flips, more) = flip_stack(points, tris, &mut stack, budget)?;
+    tests += more;
+    crate::mesh::profile::LAWSON.add(0, tests);
+    crate::mesh::profile::LAWSON_FLIPS.add(0, flips as u64);
+    Ok(flips)
+}
+
+/// The serial Lawson flip loop: pop an edge `(facet, slot)`, flip it if the
+/// opposite generator lies outside the facet's plane, push the quad's four
+/// outer edges. Returns (flips, edge tests). Shared by the post-move repair
+/// and the point insertion of [`apply_edits`].
+fn flip_stack(
+    points: &[V3],
+    tris: &mut [Tri],
+    stack: &mut Vec<(u32, u8)>,
+    budget: usize,
+) -> MpasResult<(usize, u64)> {
+    let mut tests = 0u64;
+    let mut flips = 0usize;
     while let Some((f, s)) = stack.pop() {
         let s = s as usize;
         let fv = tris[f as usize].v;
@@ -986,9 +1182,7 @@ pub fn lawson_repair(points: &[V3], tri: &mut Triangulation) -> MpasResult<usize
         stack.push((g, 0));
         stack.push((g, 1));
     }
-    crate::mesh::profile::LAWSON.add(0, tests);
-    crate::mesh::profile::LAWSON_FLIPS.add(0, flips as u64);
-    Ok(flips)
+    Ok((flips, tests))
 }
 
 /// Repair `tri` in place, or rebuild it from scratch BY NAME if the repair
@@ -1010,6 +1204,347 @@ pub fn repair_or_rebuild(points: &[V3], tri: &mut Triangulation) -> MpasResult<u
             Ok(0)
         }
     }
+}
+
+// ======================================================================
+// POINT-SET EDITS ON THE MAINTAINED TRIANGULATION
+// ======================================================================
+//
+// THE BREAKAGE THIS REMOVES (2026-10-16: no single-threaded
+// stages). Surgery deletes and inserts a few dozen generators per round and
+// then rebuilt the whole hull on one thread: 47 rebuilds on the 1 km-core spec,
+// most of what was left serial once Lloyd kept its triangulation. Here the
+// edit is applied to the triangulation itself: a deleted generator's star is
+// re-triangulated by Delaunay ear clipping, an inserted one is located by a
+// walk, split 1-to-3 and legalised by Lawson flips, and a final parallel
+// Lawson pass proves every edge locally Delaunay under the final labels. A
+// locally Delaunay closed surface on cospherical points IS the hull, and rings
+// start at a canonical slot, so the result is the rings a rebuild gives; the
+// `--triangulation rebuild` arm stays as the referee and writes the same
+// bytes. Any step that meets a case it does not handle (an exactly
+// on-edge insertion, a walk that does not arrive, no admissible ear) rebuilds
+// by name and is counted in `hull.lawson_fallback_to_rebuild`.
+
+const DEAD: u32 = u32::MAX;
+
+/// The facet slot holding generator `v`, or None.
+fn find_facet_of(tris: &[Tri], v: u32) -> Option<usize> {
+    tris.par_iter()
+        .position_first(|t| t.v[0] == v || t.v[1] == v || t.v[2] == v)
+}
+
+/// Delete generator `v` from the surface: its star polygon is re-triangulated
+/// by Delaunay ear clipping into `d - 2` facets; the two spare slots go to
+/// `free`.
+fn delete_vertex(points: &[V3], tris: &mut [Tri], free: &mut Vec<u32>, v: u32) -> Result<(), ()> {
+    let start = find_facet_of(tris, v).ok_or(())? as u32;
+    // Walk the star counter-clockwise: in facet f with v at slot k, the ring
+    // step is v[k+1] -> v[k+2], and the next facet round v is across the edge
+    // (v[k+2], v[k]) -- slot k+2.
+    let mut star: Vec<u32> = Vec::with_capacity(8);
+    let mut poly: Vec<u32> = Vec::with_capacity(8);
+    let mut outer: Vec<u32> = Vec::with_capacity(8);
+    let mut f = start;
+    loop {
+        let t = tris[f as usize];
+        let k = (0..3).find(|&k| t.v[k] == v).ok_or(())?;
+        star.push(f);
+        poly.push(t.v[(k + 1) % 3]);
+        outer.push(t.adj[(k + 1) % 3]);
+        f = t.adj[(k + 2) % 3];
+        if f == start {
+            break;
+        }
+        if star.len() > 64 {
+            return Err(());
+        }
+    }
+    let d = poly.len();
+    if d < 3 {
+        return Err(());
+    }
+    // Delaunay ear clipping: the first convex ear (in ring order) whose
+    // circumcircle holds no other polygon vertex, by the hull's own predicate
+    // and tie-break. One exists for the star of a deleted Delaunay vertex.
+    let origin: V3 = [0.0; 3];
+    let mut ring: Vec<u32> = poly.clone();
+    let mut made: Vec<[u32; 3]> = Vec::with_capacity(d - 2);
+    while ring.len() > 3 {
+        let m = ring.len();
+        let mut chosen = None;
+        for i in 0..m {
+            let a = ring[(i + m - 1) % m];
+            let b = ring[i];
+            let c = ring[(i + 1) % m];
+            if orient3d_sign(origin, points[a as usize], points[b as usize], points[c as usize]) <= 0.0 {
+                continue;
+            }
+            let mut empty = true;
+            for j in 0..m {
+                let x = ring[j];
+                if x == a || x == b || x == c {
+                    continue;
+                }
+                if visible_at(
+                    points[a as usize],
+                    points[b as usize],
+                    points[c as usize],
+                    points[x as usize],
+                    a,
+                    b,
+                    c,
+                    x,
+                ) {
+                    empty = false;
+                    break;
+                }
+            }
+            if empty {
+                chosen = Some(i);
+                break;
+            }
+        }
+        let i = chosen.ok_or(())?;
+        let m = ring.len();
+        made.push([ring[(i + m - 1) % m], ring[i], ring[(i + 1) % m]]);
+        ring.remove(i);
+    }
+    if orient3d_sign(
+        origin,
+        points[ring[0] as usize],
+        points[ring[1] as usize],
+        points[ring[2] as usize],
+    ) <= 0.0
+    {
+        return Err(());
+    }
+    made.push([ring[0], ring[1], ring[2]]);
+    // Slots: reuse the star's own facets, free the two spares.
+    let slots: Vec<u32> = star[..made.len()].to_vec();
+    free.extend_from_slice(&star[made.len()..]);
+    for &s in &star[made.len()..] {
+        tris[s as usize] = Tri {
+            v: [DEAD; 3],
+            adj: [DEAD; 3],
+        };
+    }
+    // Adjacency: every directed edge (p, q) of a made facet is either an
+    // internal edge (its reverse is in another made facet) or a polygon edge
+    // whose outer facet was recorded in `outer`.
+    let mut boundary: Vec<((u32, u32), u32)> = Vec::with_capacity(d);
+    for i in 0..d {
+        boundary.push(((poly[i], poly[(i + 1) % d]), outer[i]));
+    }
+    for (mi, tv) in made.iter().enumerate() {
+        let mut adj = [DEAD; 3];
+        for e in 0..3 {
+            let p = tv[e];
+            let q = tv[(e + 1) % 3];
+            if let Some((_, o)) = boundary.iter().find(|((x, y), _)| *x == p && *y == q) {
+                adj[e] = *o;
+            } else {
+                let other = made
+                    .iter()
+                    .enumerate()
+                    .find(|(oi, ov)| {
+                        *oi != mi
+                            && (0..3).any(|k| ov[k] == q && ov[(k + 1) % 3] == p)
+                    })
+                    .map(|(oi, _)| slots[oi])
+                    .ok_or(())?;
+                adj[e] = other;
+            }
+        }
+        tris[slots[mi] as usize] = Tri { v: *tv, adj };
+    }
+    // Re-aim the outer facets' back-pointers from the old star facets.
+    for (mi, tv) in made.iter().enumerate() {
+        for e in 0..3 {
+            let p = tv[e];
+            let q = tv[(e + 1) % 3];
+            if let Some((_, o)) = boundary.iter().find(|((x, y), _)| *x == p && *y == q) {
+                let o = *o as usize;
+                let k = (0..3)
+                    .find(|&k| tris[o].v[k] == q && tris[o].v[(k + 1) % 3] == p)
+                    .ok_or(())?;
+                tris[o].adj[k] = slots[mi];
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Insert generator `p` (already in `points`): walk to its facet, split 1-to-3
+/// into two fresh slots, legalise by Lawson flips.
+fn insert_vertex(
+    points: &[V3],
+    tris: &mut Vec<Tri>,
+    free: &mut Vec<u32>,
+    p: u32,
+    hint: &mut u32,
+) -> Result<(), ()> {
+    let origin: V3 = [0.0; 3];
+    let q = points[p as usize];
+    let mut f = *hint;
+    if f as usize >= tris.len() || tris[f as usize].v[0] == DEAD {
+        f = (0..tris.len()).find(|&i| tris[i].v[0] != DEAD).ok_or(())? as u32;
+    }
+    let mut steps = 0usize;
+    let limit = 4 * tris.len() + 16;
+    loop {
+        let t = tris[f as usize];
+        let mut moved = false;
+        let mut on_edge = false;
+        for r in 0..3 {
+            let e = (r + steps) % 3;
+            let a = points[t.v[e] as usize];
+            let b = points[t.v[(e + 1) % 3] as usize];
+            let s = orient3d_sign(origin, a, b, q);
+            if s < 0.0 {
+                f = t.adj[e];
+                moved = true;
+                break;
+            }
+            if s == 0.0 {
+                on_edge = true;
+            }
+        }
+        if !moved {
+            if on_edge {
+                return Err(());
+            }
+            break;
+        }
+        steps += 1;
+        if steps > limit {
+            return Err(());
+        }
+    }
+    let t = tris[f as usize];
+    let [a, b, c] = t.v;
+    let [n_ab, n_bc, n_ca] = t.adj;
+    let mut take = |tris: &mut Vec<Tri>| -> u32 {
+        match free.pop() {
+            Some(s) => s,
+            None => {
+                tris.push(Tri {
+                    v: [DEAD; 3],
+                    adj: [DEAD; 3],
+                });
+                tris.len() as u32 - 1
+            }
+        }
+    };
+    let t1 = take(tris);
+    let t2 = take(tris);
+    tris[f as usize] = Tri {
+        v: [a, b, p],
+        adj: [n_ab, t1, t2],
+    };
+    tris[t1 as usize] = Tri {
+        v: [b, c, p],
+        adj: [n_bc, t2, f],
+    };
+    tris[t2 as usize] = Tri {
+        v: [c, a, p],
+        adj: [n_ca, f, t1],
+    };
+    let k = slot_facing(tris, n_bc, f).ok_or(())?;
+    tris[n_bc as usize].adj[k] = t1;
+    let k = slot_facing(tris, n_ca, f).ok_or(())?;
+    tris[n_ca as usize].adj[k] = t2;
+    let mut stack: Vec<(u32, u8)> = vec![(t2, 0), (t1, 0), (f, 0)];
+    let budget = 3 * tris.len() + 64;
+    flip_stack(points, tris, &mut stack, budget).map_err(|_| ())?;
+    *hint = f;
+    Ok(())
+}
+
+/// Bring `tri` (a triangulation of `old`) to a triangulation of `new`, where
+/// `new` is `old` with the generators at `removed` (ascending, distinct)
+/// swap-removed in DESCENDING index order and then `new[old.len() -
+/// removed.len()..]` appended -- exactly the edit surgery makes. Rebuilds BY
+/// NAME (counted) whenever a step meets a case it does not handle.
+pub fn apply_edits_or_rebuild(
+    old: &[V3],
+    removed: &[usize],
+    new: &[V3],
+    tri: &mut Triangulation,
+) -> MpasResult<()> {
+    let _span = crate::mesh::profile::Span::new(&crate::mesh::profile::EDITS, new.len() as u64);
+    if apply_edits(old, removed, new, tri).is_err() {
+        crate::mesh::profile::LAWSON_FALLBACK.add(0, 1);
+        *tri = delaunay_triangulation(new)?;
+    }
+    Ok(())
+}
+
+fn apply_edits(old: &[V3], removed: &[usize], new: &[V3], tri: &mut Triangulation) -> Result<(), ()> {
+    if tri.n_points != old.len() || old.len() < removed.len() + 4 {
+        return Err(());
+    }
+    let mut cur: Vec<V3> = old.to_vec();
+    let mut free: Vec<u32> = Vec::new();
+    for &idx in removed.iter().rev() {
+        if idx >= cur.len() {
+            return Err(());
+        }
+        delete_vertex(&cur, &mut tri.tris, &mut free, idx as u32)?;
+        let last = (cur.len() - 1) as u32;
+        cur.swap_remove(idx);
+        if last != idx as u32 {
+            let to = idx as u32;
+            tri.tris.par_iter_mut().for_each(|t| {
+                for k in 0..3 {
+                    if t.v[k] == last {
+                        t.v[k] = to;
+                    }
+                }
+            });
+        }
+    }
+    let kept = cur.len();
+    if new.len() < kept || new[..kept] != cur[..] {
+        return Err(());
+    }
+    let mut hint = 0u32;
+    for (j, &p) in new[kept..].iter().enumerate() {
+        cur.push(p);
+        insert_vertex(&cur, &mut tri.tris, &mut free, (kept + j) as u32, &mut hint)?;
+    }
+    // Compact: drop the dead slots, remap adjacency.
+    let mut remap = vec![DEAD; tri.tris.len()];
+    let mut next = 0u32;
+    for (i, t) in tri.tris.iter().enumerate() {
+        if t.v[0] != DEAD {
+            remap[i] = next;
+            next += 1;
+        }
+    }
+    let mut packed: Vec<Tri> = Vec::with_capacity(next as usize);
+    for t in tri.tris.iter() {
+        if t.v[0] == DEAD {
+            continue;
+        }
+        let mut adj = t.adj;
+        for a in adj.iter_mut() {
+            if *a as usize >= remap.len() || remap[*a as usize] == DEAD {
+                return Err(());
+            }
+            *a = remap[*a as usize];
+        }
+        packed.push(Tri { v: t.v, adj });
+    }
+    if packed.len() != 2 * new.len() - 4 {
+        return Err(());
+    }
+    tri.tris = packed;
+    tri.n_points = new.len();
+    // Labels moved (swap-remove), so the SoS tie-breaks of the final labels
+    // are the ones that count: one global parallel pass, which on the normal
+    // path finds nothing.
+    lawson_repair(new, tri).map_err(|_| ())?;
+    Ok(())
 }
 
 /// Normalise a batch of points onto the unit sphere, refusing anything without
@@ -1118,7 +1653,11 @@ mod tests {
     /// split had quietly become unnecessary, and that is a finding, not a
     /// pass.
     #[test]
-    fn the_repaired_rings_differ_from_a_rebuild_only_by_rotation() {
+    fn the_repaired_rings_equal_a_rebuild_exactly() {
+        // THE BREAKAGE: the maintained arm used to keep each ring's starting
+        // slot, so it wrote a different file from a rebuild. Rings now start
+        // at their smallest neighbour; a repaired triangulation and a rebuild
+        // must give the same rings, slot for slot.
         let n = 4_000usize;
         let pts = spiral(n);
         let mut tri = delaunay_triangulation(&pts).expect("triangulation");
@@ -1126,16 +1665,46 @@ mod tests {
         lawson_repair(&moved, &mut tri).expect("repair");
         let repaired = tri.rings().expect("rings");
         let rebuilt = delaunay_rings(&moved).expect("rebuild");
-        let mut rotated = 0usize;
-        for i in 0..n {
-            if repaired.ring(i) != rebuilt.ring(i) {
-                rotated += 1;
-            }
+        assert_eq!(repaired.offsets, rebuilt.offsets);
+        assert_eq!(repaired.values, rebuilt.values);
+    }
+
+    /// THE BREAKAGE: surgery rebuilt the hull on one thread after every
+    /// round of deletions and insertions. The edit is now applied to the
+    /// maintained triangulation; it must land on exactly the rebuild's rings.
+    #[test]
+    fn edits_applied_to_the_triangulation_equal_a_rebuild() {
+        let n = 3_000usize;
+        let pts = spiral(n);
+        let mut tri = delaunay_triangulation(&pts).expect("triangulation");
+        let removed: Vec<usize> = vec![3, 17, 400, 401, 1_500, 2_999];
+        let mut new = pts.clone();
+        for &i in removed.iter().rev() {
+            new.swap_remove(i);
         }
-        assert!(
-            rotated > 0,
-            "not one ring rotated between the maintained and the rebuilt triangulation of {n} moved generators. If that is so the two classes have merged and `TriangulationMode` is dead weight -- check it before deleting the split"
-        );
+        for k in 0..25usize {
+            let a = pts[(k * 97) % n];
+            let b = pts[(k * 97 + 1) % n];
+            new.push(unit(add(scale(a, 0.6), scale(b, 0.4))).expect("direction"));
+        }
+        apply_edits(&pts, &removed, &new, &mut tri).expect("the edit path, not the fallback");
+        let edited = tri.rings().expect("rings");
+        let rebuilt = delaunay_rings(&new).expect("rebuild");
+        assert_eq!(edited.offsets, rebuilt.offsets);
+        assert_eq!(edited.values, rebuilt.values);
+    }
+
+    /// THE BREAKAGE: the serial hull was one thread for the whole build. The
+    /// parallel region build must prove itself and return the serial rings.
+    #[test]
+    fn the_parallel_build_equals_the_serial_build() {
+        let n = 60_000usize;
+        let pts = jitter(&spiral(n), 0.002, 0xFACE);
+        let par = parallel_triangulation(&pts).expect("the parallel build proved itself");
+        let serial = delaunay_triangulation_serial(&pts).expect("serial");
+        let (a, b) = (par.rings().expect("rings"), serial.rings().expect("rings"));
+        assert_eq!(a.offsets, b.offsets);
+        assert_eq!(a.values, b.values);
     }
 
     /// THE BREAKAGE: a flip rewrites two facets and has to re-aim the
@@ -1202,9 +1771,12 @@ mod tests {
     /// that flipped to the fast arm would lapse every one of those pins with
     /// nothing in the run saying why.
     #[test]
-    fn the_default_triangulation_mode_is_the_class_a_arm() {
-        assert_eq!(TriangulationMode::default(), TriangulationMode::Rebuild);
-        assert!(!TriangulationMode::default().is_maintained());
+    fn the_default_triangulation_mode_is_the_maintained_arm() {
+        // 2026-10-16: no single-threaded rebuild per sweep. Both arms
+        // write the same bytes (canonical ring start), so the fast one is
+        // the default and `rebuild` stays selectable.
+        assert_eq!(TriangulationMode::default(), TriangulationMode::Maintained);
+        assert!(TriangulationMode::default().is_maintained());
         assert_eq!(TriangulationMode::Rebuild.as_str(), "rebuild");
         assert_eq!(TriangulationMode::Maintained.as_str(), "incremental");
         assert_eq!(
@@ -1217,8 +1789,8 @@ mod tests {
         );
         let err = TriangulationMode::parse("fast").expect_err("must refuse");
         assert!(
-            err.contains("registered") && err.contains("rebuild") && err.contains("incremental"),
-            "an unknown mode must be refused by naming both modes and what the default protects; it said: {err}"
+            err.contains("same bytes") && err.contains("rebuild") && err.contains("incremental"),
+            "an unknown mode must be refused by naming both modes and that they write the same bytes; it said: {err}"
         );
     }
 
@@ -1518,4 +2090,234 @@ mod tests {
             "the backwards scan disagreed with the map it replaced on a              repeated directed edge"
         );
     }
+}
+
+// ======================================================================
+// THE PARALLEL BUILD
+// ======================================================================
+//
+// THE BREAKAGE (2026-10-16: no single-threaded stages): the
+// randomized-incremental hull is one thread by construction, 5.5 s of a 17 s
+// 2.6 M-cell run on that thread alone. Here the sphere is cut into regions
+// (the Voronoi cells of a fixed Fibonacci set of centres), each region's
+// points plus a halo are triangulated by the same serial hull in parallel,
+// with the exact-degeneracy tie-break reading GLOBAL indices, and each
+// region keeps exactly the facets whose circumcentre falls in it.
+//
+// WHY THE ANSWER IS THE SAME ONE. A kept facet's circumcircle must lie inside
+// the region's halo disc (checked per facet; the halo grows and the region is
+// redone otherwise), and every point inside that disc took part in the local
+// hull, so the facet's circumcircle is empty of EVERY point: it is a facet of
+// the whole set's Delaunay triangulation. The kept facets are then required
+// to number exactly 2n - 4, to pair every directed edge with its reverse, to
+// use every point, and to pass the exact local-Delaunay test on every edge.
+// A closed, consistently oriented, locally Delaunay surface on cospherical
+// points is the convex hull, which is the unique (tie-broken) Delaunay
+// triangulation. Anything short of that returns None and the caller builds
+// serially, counted in `hull.parallel_fallback_to_serial`.
+
+/// Below this many points one serial build is a few tens of milliseconds and
+/// the region bookkeeping costs more than it saves.
+const PAR_MIN_POINTS: usize = 40_000;
+
+fn parallel_triangulation(points: &[V3]) -> Option<Triangulation> {
+    let n = points.len();
+    if n < 64 || n > u32::MAX as usize / 4 {
+        return None;
+    }
+    // A fixed region count from n alone, so the decomposition (and the
+    // fallback decision) does not depend on the thread count.
+    let k = (n / 12_000).clamp(8, 512);
+    let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+    let centres: Vec<V3> = (0..k)
+        .map(|i| {
+            let z = 1.0 - (2.0 * i as f64 + 1.0) / k as f64;
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            let t = golden * i as f64;
+            [r * t.cos(), r * t.sin(), z]
+        })
+        .collect();
+    let nearest = |p: V3| -> usize {
+        let mut best = 0usize;
+        let mut bd = f64::NEG_INFINITY;
+        for (i, c) in centres.iter().enumerate() {
+            let d = p[0] * c[0] + p[1] * c[1] + p[2] * c[2];
+            if d > bd {
+                bd = d;
+                best = i;
+            }
+        }
+        best
+    };
+    let owner: Vec<u32> = points.par_iter().map(|&p| nearest(p) as u32).collect();
+    let mut members: Vec<Vec<u32>> = vec![Vec::new(); k];
+    for (i, &o) in owner.iter().enumerate() {
+        members[o as usize].push(i as u32);
+    }
+    let regions: Vec<Option<Vec<[u32; 3]>>> = (0..k)
+        .into_par_iter()
+        .map(|r| region_facets(points, &centres, &nearest, r, &members[r]))
+        .collect();
+    let mut faces: Vec<[u32; 3]> = Vec::with_capacity(2 * n);
+    for f in regions {
+        faces.extend(f?);
+    }
+    if faces.len() != 2 * n - 4 {
+        return None;
+    }
+    // Adjacency: every directed edge must meet its reverse exactly once.
+    let mut keys: Vec<(u64, u32)> = faces
+        .par_iter()
+        .enumerate()
+        .flat_map_iter(|(f, v)| {
+            (0..3).map(move |s| {
+                (((v[s] as u64) << 32) | v[(s + 1) % 3] as u64, (f * 3 + s) as u32)
+            })
+        })
+        .collect();
+    keys.par_sort_unstable();
+    if keys.par_windows(2).any(|w| w[0].0 == w[1].0) {
+        return None;
+    }
+    let adj: Vec<Option<[u32; 3]>> = faces
+        .par_iter()
+        .map(|v| {
+            let mut a = [NONE; 3];
+            for s in 0..3 {
+                let rev = ((v[(s + 1) % 3] as u64) << 32) | v[s] as u64;
+                let at = keys.binary_search_by(|e| e.0.cmp(&rev)).ok()?;
+                a[s] = keys[at].1 / 3;
+            }
+            Some(a)
+        })
+        .collect();
+    let mut tris: Vec<Tri> = Vec::with_capacity(faces.len());
+    for (v, a) in faces.iter().zip(adj) {
+        tris.push(Tri { v: *v, adj: a? });
+    }
+    let used: Vec<std::sync::atomic::AtomicBool> = (0..n)
+        .into_par_iter()
+        .map(|_| std::sync::atomic::AtomicBool::new(false))
+        .collect();
+    tris.par_iter().for_each(|t| {
+        for &v in &t.v {
+            used[v as usize].store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    if used.par_iter().any(|u| !u.load(std::sync::atomic::Ordering::Relaxed)) {
+        return None;
+    }
+    if !locally_delaunay(points, &tris) {
+        return None;
+    }
+    Some(Triangulation { tris, n_points: n })
+}
+
+/// Every edge locally Delaunay by the hull's exact predicate.
+fn locally_delaunay(points: &[V3], tris: &[Tri]) -> bool {
+    (0..tris.len() * 3).into_par_iter().all(|e| {
+        let f = e / 3;
+        let s = e % 3;
+        let g = tris[f].adj[s];
+        if (g as usize) < f {
+            return true;
+        }
+        let Some(t) = slot_facing(tris, g, f as u32) else {
+            return false;
+        };
+        let fv = tris[f].v;
+        let y = tris[g as usize].v[(t + 2) % 3];
+        !visible_at(
+            points[fv[0] as usize],
+            points[fv[1] as usize],
+            points[fv[2] as usize],
+            points[y as usize],
+            fv[0],
+            fv[1],
+            fv[2],
+            y,
+        )
+    })
+}
+
+/// One region's facets: the local hull of its points plus a halo, keeping the
+/// facets whose circumcentre this region owns and whose circumcircle the halo
+/// covers; the halo doubles until every owned facet is covered.
+fn region_facets(
+    points: &[V3],
+    centres: &[V3],
+    nearest: &(impl Fn(V3) -> usize + Sync),
+    r: usize,
+    own: &[u32],
+) -> Option<Vec<[u32; 3]>> {
+    let c = centres[r];
+    let dotc = |p: V3| p[0] * c[0] + p[1] * c[1] + p[2] * c[2];
+    let ang = |d: f64| d.clamp(-1.0, 1.0).acos();
+    let extent = own
+        .iter()
+        .map(|&i| ang(dotc(points[i as usize])))
+        .fold(0.0f64, f64::max);
+    // A spacing guess from the region's own density; the coverage test, not
+    // this guess, is what makes the answer right.
+    let cap = 2.0 * std::f64::consts::PI * (1.0 - extent.cos()).max(1e-12);
+    let h = (cap / own.len().max(1) as f64).sqrt().max(1e-6);
+    let mut margin = 4.0 * h;
+    for _ in 0..10 {
+        let reach = extent + margin;
+        if reach > 2.0 {
+            return None;
+        }
+        let cos_reach = reach.cos();
+        let halo: Vec<u32> = (0..points.len() as u32)
+            .filter(|&i| dotc(points[i as usize]) >= cos_reach)
+            .collect();
+        if halo.len() < 4 {
+            margin *= 2.0;
+            continue;
+        }
+        let sub: Vec<V3> = halo.iter().map(|&i| points[i as usize]).collect();
+        let faces = build_hull_l(&sub, Some(&halo)).ok()?;
+        let mut kept: Vec<[u32; 3]> = Vec::new();
+        let mut covered = true;
+        for f in faces.iter().filter(|f| f.alive) {
+            let g = [
+                halo[f.v[0] as usize],
+                halo[f.v[1] as usize],
+                halo[f.v[2] as usize],
+            ];
+            // Canonical rotation (smallest global index first) so every
+            // region computes this facet's circumcentre with the same bits.
+            let k0 = (0..3).min_by_key(|&k| g[k]).unwrap_or(0);
+            let v = [g[k0], g[(k0 + 1) % 3], g[(k0 + 2) % 3]];
+            let (a, b, cc) = (
+                points[v[0] as usize],
+                points[v[1] as usize],
+                points[v[2] as usize],
+            );
+            let nrm = crate::mesh::geom::cross(
+                crate::mesh::geom::sub(b, a),
+                crate::mesh::geom::sub(cc, a),
+            );
+            let Some(cen) = unit(nrm) else {
+                covered = false;
+                break;
+            };
+            if nearest(cen) != r {
+                continue;
+            }
+            let rho = ang(cen[0] * a[0] + cen[1] * a[1] + cen[2] * a[2]);
+            // A small absolute guard keeps a facet whose circle touches the
+            // halo edge from being accepted on rounding.
+            if ang(dotc(cen)) + rho + 1e-9 >= reach {
+                covered = false;
+                break;
+            }
+            kept.push(v);
+        }
+        if covered {
+            return Some(kept);
+        }
+        margin *= 2.0;
+    }
+    None
 }

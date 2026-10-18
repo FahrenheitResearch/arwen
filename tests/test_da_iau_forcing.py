@@ -116,6 +116,24 @@ def test_specified_ring_is_excluded_like_the_physics_couplers():
     assert (ru[:, :, 0] == 0).all() and (ru[:, :, -1] == 0).all()
 
 
+def test_a_boundary_zone_left_to_the_boundary_is_masked_on_every_field():
+    state = _stub_state(nz=2, ny=8, nx=9)
+    ones = {name: np.ones_like(getattr(state, name)) for name in ("thp", "u", "v", "w", "php")}
+    cfg = SimpleNamespace(dt=60.0, specified=True, nested=False)
+    ring = iau.IauForcing(state, [iau.IauNode(ones, iau.box_density(0.0, 60.0))]).fold(state, cfg, None)
+    zone = iau.IauForcing(state, [iau.IauNode(ones, iau.box_density(0.0, 60.0))],
+                          boundary_rows=3).fold(state, cfg, None)
+    # the default leaves the specified ring and leaves php and w alone (the physics rule)
+    assert (ring.slow["rth_t"][:, 1, 1] > 0).all() and (ring.slow["rph_t"][:, 0, 0] > 0).all()
+    for slot in ("rth_t", "ru_t", "rv_t", "rph_t", "rw_t"):
+        field = zone.slow[slot]
+        assert not field[..., :3, :].any() and not field[..., -3:, :].any(), slot
+        assert not field[..., :, :3].any() and not field[..., :, -3:].any(), slot
+        assert (field[..., 3:-3, 3:-3] > 0).all(), slot
+    with pytest.raises(iau.IauError):
+        iau.IauForcing(state, [iau.IauNode(ones, iau.box_density(0.0, 60.0))], boundary_rows=0)
+
+
 def test_shares_must_sum_to_one():
     state = _stub_state()
     half = ((0.0, 0.5 / 60.0), (60.0, 0.5 / 60.0))

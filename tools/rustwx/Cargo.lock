@@ -2489,6 +2489,7 @@ name = "rw-mpas"
 version = "0.1.0"
 dependencies = [
  "libloading",
+ "netcdf-reader 0.3.0",
  "netcrust",
  "rayon",
  "rw-host-memory",
@@ -2562,7 +2563,10 @@ name = "rw-odim"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "flate2",
  "hdf5-reader",
+ "nexrad_io",
+ "radar_core",
  "rw-nexrad",
  "serde",
  "serde_json",
@@ -2584,9 +2588,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-radar-feeds"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "data_source",
+ "serde_json",
+]
+
+[[package]]
 name = "rw-sat"
 version = "0.1.0"
 dependencies = [
+ "bzip2 0.5.2",
  "chrono",
  "hdf5-reader",
  "image",
@@ -2601,6 +2615,24 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ureq",
+]
+
+[[package]]
+name = "rw-scoreboard"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "flate2",
+ "grib-core",
+ "netcdf-writer",
+ "netcrust",
+ "obs-regrid",
+ "rustwx-core",
+ "rustwx-io",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zstd",
 ]
 
 [[package]]
@@ -2625,24 +2657,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
-]
-
-[[package]]
-name = "rw-scoreboard"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "flate2",
- "grib-core",
- "netcdf-writer",
- "netcrust",
- "obs-regrid",
- "rustwx-core",
- "rustwx-io",
- "serde",
- "serde_json",
- "sha2",
- "zstd",
 ]
 
 [[package]]

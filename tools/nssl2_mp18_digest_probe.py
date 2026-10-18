@@ -137,7 +137,9 @@ def run_probe(steps: int = 3, nz: int = 40, ny: int = 4, nx: int = 4):
             workspace.field("qnr"), workspace.field("qni"),
             workspace.field("qns"), workspace.field("qnn"),
             dt, supersaturation_scratch=ss_scratch,
-            concentration_space=True, validate_values=False)
+            concentration_space=True, validate_values=False,
+            frozen=tuple(workspace.field(name) for name in (
+                "qg", "qh", "qng", "qnh", "qvolg", "qvolh")))
 
     def finish(_workspace) -> None:
         pass

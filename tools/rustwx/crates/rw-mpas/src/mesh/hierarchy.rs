@@ -303,7 +303,12 @@ fn insert_level(
                     // the GP-doubled interior for a deficit that is not local
                     // to it.
                     let h_bar_m = field.spacing_m(mid);
-                    if h_bar_m <= field.level_spacing_m {
+                    // AT the level means within rounding of it. THE BREAKAGE:
+                    // an exact `<=` let a uniform plateau whose field spacing
+                    // came out one ulp above the level (a km -> m round trip)
+                    // top up cells the level does not ask for, so the count
+                    // hinged on the last bit of the spacing.
+                    if h_bar_m <= field.level_spacing_m * (1.0 + 1e-9) {
                         continue;
                     }
                     let h_bar = h_bar_m / EARTH_RADIUS_M;
@@ -445,9 +450,12 @@ fn first_off_band_dislocation<F: DensityField>(
     front_m: f64,
 ) -> Option<OffBand> {
     let mut found: Option<OffBand> = None;
-    surgery::for_each_quad(points, rings, |r| {
-        if r.q >= Q_DISLOCATION || found.is_some() {
-            return;
+    // The sub-threshold quads, found in parallel and in the same canonical
+    // order the serial visitor used (THE BREAKAGE: a whole-mesh scan on one
+    // thread per ladder level); the few that come back are judged in order.
+    for r in surgery::quads_below(points, rings, Q_DISLOCATION) {
+        if found.is_some() {
+            break;
         }
         let (a, b) = (points[r.i as usize], points[r.j as usize]);
         let mid = unit(add(a, b)).unwrap_or(a);
@@ -469,7 +477,7 @@ fn first_off_band_dislocation<F: DensityField>(
                 ball_cells,
             });
         }
-    });
+    }
     found
 }
 

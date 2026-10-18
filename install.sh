@@ -578,11 +578,31 @@ fi
 # activated: without .venv/bin on PATH its console-script check reports a
 # gap this script created and the install exits nonzero for it.
 say "running gpuwm doctor"
-if PATH="$(pwd)/.venv/bin:$PATH" .venv/bin/gpuwm doctor; then
-    say "done -- doctor is clean.  Activate with: . .venv/bin/activate"
+# Doctor's lines are kept so the closing line can say what it found: a
+# doctor that exits 0 can still name a MISSING dataset (the geography a
+# forecast is refused without is an opt-in download, not a broken install),
+# and "doctor is clean" over that line sent a reader straight into the
+# refusal at their first `gpuwm go` (2.9.2 box door test).  The exit status
+# is doctor's own, unchanged.
+doctor_log="$(mktemp)"
+doctor_status="$(mktemp)"
+{ status=0; PATH="$(pwd)/.venv/bin:$PATH" .venv/bin/gpuwm doctor || status=$?; echo "$status" > "$doctor_status"; } 2>&1 | tee "$doctor_log"
+status="$(cat "$doctor_status")"
+rm -f "$doctor_status"
+if [ "$status" -eq 0 ]; then
+    if grep -q '^  MISSING' "$doctor_log"; then
+        say "done -- doctor passes, with these gaps still to stage:"
+        grep '^  MISSING' "$doctor_log" | sed 's/^  MISSING /install:   missing /' | cut -c1-160
+        say "each gap's line above prints its remedy (geography: gpuwm fetch-geog);"
+        say "a forecast is refused at its start until the geography is staged."
+    else
+        say "done -- doctor is clean."
+    fi
+    say "Activate with: . .venv/bin/activate"
+    rm -f "$doctor_log"
 else
-    status=$?
+    rm -f "$doctor_log"
     say "install steps completed; doctor reports gaps above (each line"
     say "prints its own remedy).  Re-run ./install.sh any time."
-    exit $status
+    exit "$status"
 fi

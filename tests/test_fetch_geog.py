@@ -285,13 +285,21 @@ def test_the_mesh_column_carries_every_dataset_the_mesh_door_opens():
     # is ARCHIVES, and one archive carries seven directories.  The two are
     # bound through the pin table's own child declarations, so a dataset
     # added to the engine's list without a mesh-scoped pin behind it is a
-    # tree doctor calls complete and the door then refuses.
-    from gpuwm.rustwx_static import REQUIRED_GEOG_DATASETS, fetchable_for
+    # tree doctor calls complete and the door then refuses.  The scope is
+    # every dataset a mesh-door option reads: the native default and
+    # --legacy-static, whose with-lakes land use the static builder
+    # gpuwm-hex 0.4.0 ships also requires (2.9.1: scoped WRF-only, `gpuwm
+    # fetch-geog --datasets mesh` staged an archive every hex point mesh
+    # refused).
+    from gpuwm.rustwx_static import (
+        LEGACY_GEOG_DATASETS, REQUIRED_GEOG_DATASETS, fetchable_for)
 
     mesh_pins = set(geog_assets.datasets_required_by(
         geog_assets.GEOG_CONSUMER_MESH))
-    assert set(fetchable_for(REQUIRED_GEOG_DATASETS)) == mesh_pins
+    read = tuple(dict.fromkeys(REQUIRED_GEOG_DATASETS + LEGACY_GEOG_DATASETS))
+    assert set(fetchable_for(read)) == mesh_pins
     assert "soilgrids" in mesh_pins
+    assert "modis_landuse_20class_30s_with_lakes" in mesh_pins
 
 
 def test_the_soil_archive_is_required_by_the_mesh_door_only():
@@ -1325,6 +1333,47 @@ def test_list_totals_only_the_datasets_still_needed(tmp_path, capsys):
     assert (f"fetch-geog: total {archive.archive_bytes / 1024 ** 3:.2f} GiB "
             "download") in out
     assert f"for the 1 of {len(datasets)} dataset(s) still needed" in out
+
+
+@pytest.mark.parametrize("extra", [
+    ["--datasets", "mesh"],
+    ["--datasets", "mesh", "--source", "ncar"],
+    ["--source", "ncar", "--bundle"],
+    ["--datasets", "all", "--keep-archives"],
+    ["--static-source", "hrrr-conus-v4"],
+])
+def test_explain_prints_the_plan_and_touches_nothing(
+        tmp_path, monkeypatch, capsys, extra):
+    """Hex global run, 2026-10-16: `gpuwm fetch-geog --explain` started a
+    13 GB download.  --explain is print-only on every path: exit 0, the plan
+    on stdout, no network and no writes."""
+    import socket
+
+    from gpuwm.cli import main
+    from gpuwm.static import external_source
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("--explain reached the network or the fetcher")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(geog_assets, "fetch_geog", refuse)
+    monkeypatch.setattr(geog_assets, "download_archive", refuse)
+    monkeypatch.setattr(geog_assets, "_rw_asset", refuse)
+    monkeypatch.setattr(external_source, "fetch_static_source", refuse)
+    root = tmp_path / "geog"
+    assert main(["fetch-geog", "--explain", "--root", str(root), *extra]) == 0
+    out = capsys.readouterr().out
+    assert not root.exists()
+    if "--static-source" in extra:
+        assert "would stage static source hrrr-conus-v4" in out
+    else:
+        assert "nothing was downloaded or written" in out
+    if extra[:2] == ["--datasets", "mesh"]:
+        # The two native land-use pins the hex static opens, with the
+        # host the fetch will really use (they are not on the mirror).
+        for name in ("modis_landuse_20class_30s", "landuse_30s"):
+            assert f"  needed  {name}: " in out
+            assert f"wps_files/{name}.tar.bz2" in out
 
 
 def test_cli_refuses_unknown_dataset_as_a_usage_error(tmp_path, capsys):

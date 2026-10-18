@@ -25,6 +25,7 @@ mod plan;
 mod record;
 mod stream;
 mod assets;
+mod bz2par;
 mod objects;
 
 use std::path::{Path, PathBuf};

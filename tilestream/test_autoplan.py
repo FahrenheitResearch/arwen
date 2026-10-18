@@ -837,7 +837,7 @@ class InstrumentUnusable(_UNUSABLE_BASE):
 #: two boxes (2.9583 GiB at 1 buffer, 5.5975 GiB at 2), so the residual is the
 #: whole of the difference between them:
 #:
-#:   node-1, idle RTX 5070 Ti (2 MiB of 16303 in use):  +66.7 MiB at 1 buffer,
+#:   test host A, idle RTX 5070 Ti (2 MiB of 16303 in use):  +66.7 MiB at 1 buffer,
 #:                                                     +122.1 MiB at 2 buffers
 #:   local RTX 3080, WDDM, desktop in use:              +66.7 MiB at 1 buffer,
 #:                                                    +2069.0 MiB at 2 buffers
@@ -896,11 +896,11 @@ def test_vram_model_against_a_real_allocation(rung: str = "dry",
     Our arrays are cut from that slack without a new device allocation, so
     the device counter and the pool total under-count by the same amount
     and the foreign check above cannot see it.  MEASURED 2026-10-09 on
-    node-2's RTX 5090 in the 2.8.9 shard's own file order: the default pool
+    test host B's RTX 5090 in the 2.8.9 shard's own file order: the default pool
     entered this test at 1.223 GiB held, 0.355 GiB live, and the 1-buffer
     reading came out 2.471 GiB (1.464x, pool 2.038 GiB) against 3.193 GiB
     (1.133x, pool 2.740 GiB) for the same build alone in a process, on that
-    card and on node-4's RTX 5070 Ti alike.  The model was the same on both
+    card and on test host D's RTX 5070 Ti alike.  The model was the same on both
     cards; the reading was not of our allocation.  A fresh pool holds no
     slack, so the reading is the allocation a fresh process would make.
     """

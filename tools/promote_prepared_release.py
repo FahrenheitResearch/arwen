@@ -487,10 +487,13 @@ def expected_python_files(repo: Path, project: str = "gpuwm") -> set[str]:
     finder = config["tool"]["setuptools"]["packages"]["find"]
     require(finder.get("where", ["."]) == ["."], "unsupported package source root")
     filters = {}
+    declaration_only: tuple[str, ...] = ()
     if project == "gpuwm":
         for node in ast.parse((root / "setup.py").read_text(encoding="utf-8")).body:
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "DEVELOPMENT_MODULE_GLOBS":
                 filters = ast.literal_eval(node.value)
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "DECLARATION_ONLY_DATA_PACKAGES":
+                declaration_only = tuple(ast.literal_eval(node.value))
     packages = find_namespace_packages(str(root), include=finder.get("include", ["*"]), exclude=finder.get("exclude", []))
     data = config["tool"]["setuptools"].get("package-data", {})
     excluded = config["tool"]["setuptools"].get("exclude-package-data", {})
@@ -520,8 +523,19 @@ def expected_python_files(repo: Path, project: str = "gpuwm") -> set[str]:
             if content and (".py" in content or content.split()[0] in {"graft", "prune"}):
                 selected.process_template_line(content)
         roots = tuple(package.replace(".", "/") + "/" for package in packages)
+        # setup.py's build_py hands no manifest member to a declaration-only
+        # package (the wheel's `docs` payload is its package-data, the sdist
+        # keeps its pages and examples), so for those packages the census is
+        # the declaration alone.  Measured on the 2.9.2 cut: the packet
+        # verifier expected docs/integration-kit/examples/*.py from
+        # MANIFEST.in's recursive-include while the wheel, built by that
+        # build_py, carried docs/mpas-seam.md only.
+        declared = {name for name in result
+                    if name.startswith(tuple(package + "/" for package in declaration_only))}
         result = {Path(name).as_posix() for name in selected.files
-                  if name.endswith(".py") and Path(name).as_posix().startswith(roots)}
+                  if name.endswith(".py") and Path(name).as_posix().startswith(roots)
+                  and not Path(name).as_posix().startswith(
+                      tuple(package + "/" for package in declaration_only))} | declared
     require(bool(result), "declared wheel Python inventory is empty")
     return result
 
@@ -534,12 +548,30 @@ def check_python_inventory(path: Path, repo: Path, project: str) -> None:
 
 
 def on_demand_artifacts(repo: Path) -> set[str]:
-    """Compatibility reader: all artifacts now ship in the platform wheel."""
-    return set()
+    """Names the tagged gpuwm/bridge_assets.py declares ``on_demand=True``.
+
+    They are in each platform bundle and its pins and are not in the platform
+    wheel; the first door that needs one stages it from the bundle. Read from
+    the tagged source rather than from the wheel under test, so a wheel cannot
+    excuse its own missing file.
+    """
+    path = repo / "gpuwm/bridge_assets.py"
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        target = getattr(node, "target", None)
+        if not (isinstance(node, ast.AnnAssign) and getattr(target, "id", None) == "BUNDLED_ARTIFACTS"):
+            continue
+        calls = getattr(node.value, "elts", [])
+        require(bool(calls) and all(isinstance(call, ast.Call) and getattr(call.func, "id", None) == "BundledArtifact"
+                                    and call.args and isinstance(getattr(call.args[0], "value", None), str)
+                                    for call in calls), "BUNDLED_ARTIFACTS is not a literal roster of declarations")
+        return {call.args[0].value for call in calls
+                if any(keyword.arg == "on_demand" and getattr(keyword.value, "value", None) is True
+                       for keyword in call.keywords)}
+    raise PublicationError(f"no BUNDLED_ARTIFACTS declaration in {path}")
 
 
 def check_embedded_natives(path: Path, pins: dict, platform: str | None, on_demand: set[str]) -> dict:
-    """The platform wheel embeds every pinned native artifact, byte for byte."""
+    """The platform wheel embeds the pinned bundle's binaries less the on-demand ones, byte for byte."""
     prefix = "gpuwm/libexec/bridges/"
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
@@ -550,8 +582,9 @@ def check_embedded_natives(path: Path, pins: dict, platform: str | None, on_dema
             return {"platform": None, "artifacts": 0}
         pinned = pins["platforms"][platform]["binaries"]
         _rows(pinned, "native bundle pins")
-        require(not on_demand, "wheel exclusions are retired; every native artifact must ship")
-        rows = pinned
+        require(on_demand <= {row.get("artifact") for row in pinned},
+                "an on-demand native artifact is not pinned in the bundle, so no install can stage it")
+        rows = [row for row in pinned if row.get("artifact") not in on_demand]
         expected = _rows(rows, "native bundle pins")
         require(held == set(expected) | {"BUNDLE.json"},
                 "embedded native inventory differs from the wheel-carried part of the proven bundle")

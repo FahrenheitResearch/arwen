@@ -172,3 +172,37 @@ def test_wrf_file_door_history_writes_the_files_grid_words():
         np.testing.assert_array_equal(value, raw[name].astype(np.float32))
     # Every other door keeps the projection's fields.
     assert wrf_file_grid_history_fields(SimpleNamespace(static_fields={})) == {}
+
+
+def test_wrf_file_door_history_carries_wrfs_static_words(tmp_path):
+    """wrf.exe writes its coordinate constants, directional map factors and
+    static surface words to every history frame exactly as its input holds
+    them; 2.9.0 wrote none (129 of WRF's 203 history fields were missing on
+    NCAR's CONUS benchmark).  They are read from the file itself, float32
+    words unchanged, scalars kept 0-D; integer Registry flags stay out."""
+    netCDF4 = pytest.importorskip("netCDF4")
+    from gpuwm.io.history_layout import wrf_file_grid_history_fields
+    from gpuwm.netcdf_bridge import find_netcdf_bin
+
+    # The words are read through the rw_netcdf bridge, as the door reads them.
+    if find_netcdf_bin() is None:
+        pytest.skip("rw_netcdf is not built in this tree")
+
+    path = tmp_path / "wrfinput_d01"
+    with netCDF4.Dataset(path, "w") as ds:
+        ds.createDimension("Time", None)
+        ds.createDimension("bottom_top", 3)
+        ds.createDimension("soil_layers_stag", 4)
+        ds.createDimension("south_north", 2)
+        ds.createDimension("west_east", 2)
+        ds.createVariable("C1H", "f4", ("Time", "bottom_top"))[0] = [0.9, 0.5, 0.1]
+        ds.createVariable("ZS", "f4", ("Time", "soil_layers_stag"))[0] = [.05, .25, .7, 1.5]
+        ds.createVariable("T00", "f4", ("Time",))[0] = 290.0
+        ds.createVariable("MAPFAC_MX", "f4", ("Time", "south_north", "west_east"))[0] = 1.01
+        ds.createVariable("GOT_VAR_SSO", "i4", ("Time",))[0] = 1
+    got = wrf_file_grid_history_fields(SimpleNamespace(
+        restored=SimpleNamespace(raw={"XLAT": np.zeros((2, 2))}, path=path)))
+    assert {"C1H", "ZS", "T00", "MAPFAC_MX"} <= set(got)
+    assert "GOT_VAR_SSO" not in got
+    assert got["T00"].shape == () and got["T00"].dtype == np.float32
+    np.testing.assert_array_equal(got["ZS"], np.float32([.05, .25, .7, 1.5]))

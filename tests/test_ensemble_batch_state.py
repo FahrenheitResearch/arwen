@@ -67,7 +67,11 @@ def test_additional_member_carriers_are_copied_and_priced_before_allocation():
         arrays = dict(member.arrays)
         arrays["p_perturbation"] = np.full(shape, index + 1, np.float32)
         arrays["status_words"] = np.array([0x80000000, 0x7FC00123, index], np.uint32)
-        enriched.append(replace(member, arrays=arrays))
+        # A default DomainState holds the strict carrier's slot as
+        # p_perturbation = None (the WRF exact chain); here the name becomes
+        # an array carrier, so it leaves the scalar metadata.
+        scalars = {k: v for k, v in member.scalars.items() if k != "p_perturbation"}
+        enriched.append(replace(member, arrays=arrays, scalars=scalars))
     baseline = pack(members)
     result = pack(enriched, extra_specs=specs)
     for index, member in enumerate(enriched):

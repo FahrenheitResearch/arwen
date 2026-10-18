@@ -1549,6 +1549,12 @@ class TiledRun:
 
         home = _arrays_of(store, names, inventory_fn)
         global_keys = tuple(global_keys)
+        if not global_keys:
+            # The 0-d domain-owned carriers (tilestream.global_inventory:
+            # the SCM forcing scalars) when the caller names none.
+            from tilestream.global_inventory import global_keys as _owned
+            global_keys = tuple(key for key in _owned(home)
+                                if getattr(home[key], "ndim", 1) == 0)
         if global_keys:
             from tilestream.global_inventory import global_keys as domain_global_keys
             if set(global_keys) != set(domain_global_keys(home)):

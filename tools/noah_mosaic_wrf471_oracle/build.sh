@@ -39,7 +39,10 @@ for list in "${script_dir}"/sources-*.list; do
 done
 
 # --- byte identity to the pinned sources ------------------------------------
-pins=("${script_dir}"/SOURCES.sha256 "${script_dir}"/SOURCES-*.sha256)
+# NOAH_MOSAIC_PIN_DIR names another release's pin lists (the WRF 4.6.1 build,
+# tools/noah_mosaic_wrf461_oracle/build.sh); the harness itself is shared.
+pin_dir="${NOAH_MOSAIC_PIN_DIR:-${script_dir}}"
+pins=("${pin_dir}"/SOURCES.sha256 "${pin_dir}"/SOURCES-*.sha256)
 declare -A pinned=()
 for pin in "${pins[@]}"; do
     while read -r sum rel; do
@@ -75,7 +78,9 @@ cd "${build_dir}"
 
 # Capture the actual post-SFCDIAGS UCM category predicate and assignments.
 # Neither the surface driver nor the Noah driver is edited for this oracle.
-sed -n '3004,3016p' "${source_root}/phys/module_surface_driver.F" \
+# WRF 4.6.1 carries the same 13 lines one line earlier (3003,3015).
+driver_lines="${NOAH_MOSAIC_DRIVER_LINES:-3004,3016}"
+sed -n "${driver_lines}p" "${source_root}/phys/module_surface_driver.F" \
     > mosaic_surface_driver_3004_3016.inc
 cmp mosaic_surface_driver_3004_3016.inc \
     "${script_dir}/mosaic_surface_driver_3004_3016.inc"
@@ -133,6 +138,17 @@ done
 gfortran -c -O0 ${free} -I "${build_dir}" "${script_dir}/oracle_io.F90"
 objects+=(oracle_io.o)
 
+# NOAH_MOSAIC_CR_LIBM=1 links correctly rounded atanf and log10f ahead of the
+# C library's (cr_libm_control.c). WRF's words then stop depending on which
+# C library the host has: glibc 2.39's atanf/log10f are not correctly rounded,
+# 2.43's are, and the committed corpus was written on 2.43. The default build
+# keeps the host's own routines.
+if [[ "${NOAH_MOSAIC_CR_LIBM:-0}" == 1 ]]; then
+    gcc -c -O0 -o cr_libm_control.o "${script_dir}/cr_libm_control.c"
+    objects+=(cr_libm_control.o)
+    echo "cr_libm_control.o linked: atanf/log10f correctly rounded" > cr-libm.txt
+fi
+
 # Positive control: the _ZGV grep must be able to fire on this toolchain.
 gfortran -c -Ofast -ftree-vectorize \
     -o libmvec_positive_control.o "${script_dir}/libmvec_positive_control.F90"
@@ -183,6 +199,6 @@ done
 gfortran --version | head -1 > compiler.txt
 {
     for pin in "${pins[@]}"; do cat "${pin}"; done
-    sha256sum "${script_dir}"/*.F90 "${script_dir}/build.sh"
+    sha256sum "${script_dir}"/*.F90 "${script_dir}"/*.c "${script_dir}/build.sh"
 } > oracle-sha256sums.txt
 echo "mosaic oracle built in ${build_dir}; fixtures in ${build_dir}/fixtures"

@@ -94,6 +94,7 @@ from gpuwm.ingest.prepared_cache import (  # noqa: E402
 from gpuwm.native_wrf_contract import (  # noqa: E402
     NATIVE_LANDUSE_IDENTITY,
     load_native_static_cache,
+    native_landuse_identity,
     validate_native_lambert_contract,
     validate_native_lambert_contracts,
     verify_native_static_receipt,
@@ -540,6 +541,7 @@ _SUITE_RECEIPT_SWITCH_KEYS = (
 #: :func:`_profile_pinned_physics` map, and even that only after
 #: :func:`_declared_physics_conflicts` has proved the config agrees.
 _MATERIALIZED_PHYSICS_KEYS = frozenset({
+    'oml_gamma', 'oml_hml0', 'oml_relaxation_time', 'sf_ocean_physics',
     "moist", "moist_cq", "mp_physics", "top_lid", "epssm",
     "morr_rimed_ice", "wsm6_hail_opt", "ra_physics",
     "ra_lw_physics", "ra_sw_physics", "radt", "radt_minutes",
@@ -3060,7 +3062,7 @@ def claim_output_directory(
         # not share a folder.  The door therefore hands this function a
         # directory that exists and is empty, every single time.
         # Refusing it killed the whole prepare-then-simulate route --
-        # measured on weather-node-1, where the forecast never started.
+        # measured on test host A, where the forecast never started.
         try:
             held = sorted(child.name for child in path.iterdir())
         except OSError as probe_error:
@@ -7255,14 +7257,14 @@ def preflight_prepared_forecast(
             source_identity={"input_manifest_sha256": physical_manifest, **source_identity},
             input_manifest_authority=physical_manifest,
             input_plan=None if as_posted is None else as_posted["input_plan"],
-            static_identity=physical_static_identity(static,NATIVE_LANDUSE_IDENTITY))
+            static_identity=physical_static_identity(static, native_landuse_identity(static)))
     if "ensemble_physical_input" in source_identity:
         from gpuwm.ensemble.physical_store import physical_static_identity, validate_physical_input_binding
         validate_physical_input_binding(
             source_identity["ensemble_physical_input"], input_manifest_sha256=
             _physical_base_manifest_digest(source_manifest_sha256, manifest_files),
             source_identity=source_identity,
-            static_identity=physical_static_identity(static, NATIVE_LANDUSE_IDENTITY))
+            static_identity=physical_static_identity(static, native_landuse_identity(static)))
     if layout.kind in _HIERARCHY_LAYOUTS \
             and source_identity.get("grid_id") != 1:
         raise ValueError("hierarchy prepared-cache source identity is not d01")
@@ -7649,10 +7651,14 @@ def preflight_prepared_forecast(
         cache_identity_compatibility=cache_identity_compatibility,
         cache_reader=reader,
         experiment=exp, grid=grid, static=MappingProxyType(static),
-        landuse_identity=MappingProxyType(dict(_LANDUSE_IDENTITY)),
+        landuse_identity=MappingProxyType(native_landuse_identity(static)),
         forcing_hours=forcing_hours,
         boundary_interval_seconds=boundary_interval_seconds,
-        physics_receipt=MappingProxyType(physics_receipt),
+        physics_receipt=MappingProxyType(
+            physics_receipt if native_landuse_identity(static)
+            == dict(_LANDUSE_IDENTITY) else
+            {**physics_receipt,
+             "landuse_identity": native_landuse_identity(static)}),
         export_source_receipt=export_source_receipt,
         source_manifest_receipt=(
             None if source_manifest_receipt is None
@@ -9361,6 +9367,14 @@ def run_prepared_forecast(
             kernel_cache_census=kernel_cache_census, restart=restart,
             health_debug=health_debug, ensemble_bootstrap=ensemble_bootstrap)
 
+    # The single-domain regional route compiles the configuration's whole
+    # recorded kernel set on every core now, the same call the domain-tree
+    # runner makes (gpuwm.kernel_plan).  Without it this route never bound a
+    # plan: the 1x RTX PRO 6000 box's ArWen CONUS 3 km first step compiled
+    # ~220 kernels on one core for 35.8 s with the card at 0 % and wrote no
+    # plan for the next run (2026-10-17 04:52Z, v2 image).
+    from gpuwm import kernel_prewarm as _kernel_prewarm
+    _kernel_prewarm.start_plan(inputs.experiment)
     from gpuwm.output_disk import require_output_space, renderer_products
 
     require_output_space(
@@ -9414,6 +9428,12 @@ def run_prepared_forecast(
             *args, **kwargs, p_top=exp.vertical.p_top, column_chunk=exp.column_chunk,
             trace_gas_overrides=trace_gas_overrides)
     cfg = exp.root.run
+    # Correct mode: a domain whose schemes carry a finding no correction
+    # covers says so here, once, as well as in the receipt.
+    from gpuwm.correct_mode import uncorrected_notice
+    correct_mode_line = uncorrected_notice({1: cfg})
+    if correct_mode_line is not None:
+        print(f"prepared forecast: {correct_mode_line}", flush=True)
     # The per-step log opens HERE, before the restore, so its first line
     # is the run announcing itself rather than the run's third minute.
     step_log = (progress_options or ProgressOptions()).open(

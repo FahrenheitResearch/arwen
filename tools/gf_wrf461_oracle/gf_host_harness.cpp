@@ -41,6 +41,8 @@ static inline double __dadd_rn(double a, double b) { return a + b; }
 static inline double __dsub_rn(double a, double b) { return a - b; }
 static inline double __dmul_rn(double a, double b) { return a * b; }
 static inline double __ddiv_rn(double a, double b) { return a / b; }
+// glibc_flt32.cuh's gfk_exp fuses its argument reduction (__fma_rn).
+static inline double __fma_rn(double a, double b, double c) { return std::fma(a, b, c); }
 
 static inline float __uint_as_float(unsigned int u)
 { float f; std::memcpy(&f, &u, 4); return f; }
@@ -64,6 +66,7 @@ static inline float __double2float_rn(double d) { return (float)d; }
 // grader stops building, which is the break test_gf_workspace.py names.
 #include "common.cuh"
 #include "glibc_flt32.cuh"
+#include "gf_wrf_normalization.cuh"
 #include "gf.cu"
 
 // ---- the column workspace, on the host -----------------------------------

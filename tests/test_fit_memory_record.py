@@ -555,7 +555,10 @@ def test_new_forecast_says_how_big_a_too_big_hrrr_draft_is(tmp_path, monkeypatch
     # (the HRRR default suite became MYNN PBL and surface layer with RUC,
     # 346 to 398), 0542178eb (the GSD MYNN generation, to 408.7),
     # a64145961 (the sixth-order filter's workspace priced, to 414.7) and
-    # cd2d67020 (to 416.6).
-    assert memory["fits"] is False and memory["budget_gib"] == 6.75 and 405 < memory["need_gib"] < 425, memory
+    # cd2d67020 (to 416.6).  lane/292-hrrr-admission gave the one-card
+    # road the A13 pool residue bound this HRRR suite carries on the
+    # ranked road (2.25 GiB in place of the ratio's 13 per cent of the
+    # subtotal), to 377.2.
+    assert memory["fits"] is False and memory["budget_gib"] == 6.75 and 365 < memory["need_gib"] < 390, memory
     assert body["message"] == (f"Too big for the 8 GB card: this grid needs about {memory['need_gib']:.1f} GiB "
                                "and 6.8 GiB is usable."), body

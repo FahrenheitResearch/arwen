@@ -94,6 +94,7 @@ can run for each trusted row.
 | `gem-gdps` | per-valid-time GDPS GRIB2 (Datamart per-variable files, concatenable) plus the analysis terrain record | ECCC's global GDPS through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- 33 pressure levels, the single 0-10 cm ISBA soil layer, and the once-per-cycle analysis invariants (orography, land mask, ice) broadcast by the generic invariant grammar; not stock-WRF certified |
 | `ecmwf-open-data` | ordered three-hourly `oper` GRIB2 step files | ECMWF's open-data IFS at 0.25 degrees through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- 14 pressure levels (earlier publications: 13 levels, depth-below-land soil and no surface geopotential, read through the same mapping), dewpoint-derived 2 m humidity, index-addressed IFS soil and cycle-analysis in-band terrain are table data; 0.25-degree open data (CC-BY-4.0), the 9 km HRES is access-restricted; not stock-WRF certified |
 | `gefs` | one verified member's `pgrb2a`+`pgrb2b` pair per valid time (concatenated), staged by `gpuwm-member-prep` | One MEMBER of NCEP's 31-forecast global ensemble through the generic mapped route.  Packaged profile supplies mapping/composition/provenance -- the 31-level ladder is the measured exact union of the two products' disjoint isobaric sets, every state selector pins PDT 1 (mean/spread and accumulation twins refuse at the byte level), four Noah soil layers split across the pair; in-band terrain; not stock-WRF certified |
+| `hex-global` | gpuwm-hex export frames (`--field-set full`, a lat-lon window or global-mesh), each also named as its `hex_in_band_surface` supplement, plus `--author-input-manifest` | A gpuwm-hex forecast as an ArWen domain's initial and boundary source through the packaged `hex-history-netcdf-v1` profile (the 55 MPAS model levels read directly); the boundary cadence is the export's, named to `gpuwm domain --cadence`; not stock-WRF certified.  The whole route is the fenced block in `native-mapped-source-authoring.md` |
 | `mapped` | mapping, composition, ordered inputs, role bindings, SHA manifest | Generic GRIB1, GRIB2, or NetCDF; new mappings are validated, not certified |
 
 All executing routes require an output path that does not already exist.
@@ -255,6 +256,7 @@ test refuses any drift between the two.
 | `era5-l137` | `era5-model-level`, `era5-ml` |
 | `20crv3` | `20cr`, `twentycrv3`, `20crv3-member` |
 | `20crv3-cf` | `20crv3-netcdf`, `20cr-netcdf`, `20cr-cf` |
+| `hex-global` | `hex`, `gpuwm-hex`, `hex-regional` |
 | `mapped` | `generic-mapped`, `mapping-v1` |
 
 Not every row is runnable on this release; the tables above name the

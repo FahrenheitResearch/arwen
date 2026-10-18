@@ -21,19 +21,19 @@ GFDRV either side of gamma stay graded bitwise against WRF.  What is graded
 here is the port; what is graded against a 113-bit oracle instead of against
 WRF is gamma, in tests/test_gf_gamma_correctly_rounded.py.
 
-The 208/216 mixed-precision boundary is handled exactly as the CPU gate
-handles it (tests/test_gf_driver_parity.py): the 8 columns of
-gf_oracle.stage_rows_to_distrust are the rows where GFDRV's OWN
-decomposition (run_cup_gf.F90) disagrees with GFDRV -- module_gfs_physcons
-real(8) constants initialised from real(4) literals -- and on those the
-port is graded against the stage path instead, bitwise on all 216, which
-attributes the residual to the driver and proves the port adds nothing.
+There is no driver residual.  Until 2026-10-07 this suite excused 8 of the
+216 columns as "GFDRV's own mixed precision"; the cause was the kernel's
+own spelling of the module_gfs_physcons constants as accurate doubles where
+WRF computes with float64(float32(9.80665)).  gf.cu now carries WRF's words
+and every column is graded bitwise against GFDRV.
 
 The corrected-k22 half of the shallow ledger lives here too: with the
 shipped default (corrected indexing) every word of every GFDRV output is
 identical to the faithful run over the whole fixture, because the three
 columns the correction touches are rejected under both modes.
 """
+# Replaced in 2.9.1 (the WRF exact chain): test_on_those_eight_the_residual_is_amplitude_not_structure -> test_no_column_is_inexact.
+# Replaced in 2.9.1 (the WRF exact chain): test_the_eight_inexact_columns_are_the_fixtures_own -> test_no_column_is_inexact.
 
 from __future__ import annotations
 
@@ -51,11 +51,10 @@ for _p in (_ROOT, _TOOLS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from gpuwm.core.fp32_ulp import fp32_ulp_distance             # noqa: E402
 from gpuwm.core.gf import gf_workspace_floats                 # noqa: E402
 from gpuwm.core.kernels import load_module                    # noqa: E402
 from gpuwm.verify.gf_oracle import (                          # noqa: E402
-    GF_NZ, load_gf_oracle, stage_rows_to_distrust,
+    GF_NZ, load_gf_oracle,
 )
 from gf_field_lists import (                                  # noqa: E402
     DRV_IN_LEV, DRV_ISCA_FIELDS, DRV_LEV_FIELDS, DRV_SCA_FIELDS,
@@ -115,7 +114,28 @@ def drv(module, fixture):
 
 @pytest.fixture(scope="module")
 def exact(fixture):
-    return ~stage_rows_to_distrust(fixture)
+    return np.ones(fixture.ncol, dtype=bool)
+
+
+@pytest.mark.gpu
+def test_strict_driver_computes_stock_normalization_without_pins():
+    """Actual scalar-build factors are computed without runtime pins."""
+    from gpuwm.wrf_exact import ENABLED
+    if not ENABLED:
+        pytest.skip("stock operation sequence is the strict arithmetic arm")
+    from gpuwm.core.kernels import module_source
+    source = module_source("gf") + '''
+extern "C" __global__ void normalization_probe(const float *a, const float *b, float *r) {
+    int i=threadIdx.x; if(i<2) r[i]=gfd_pdf_normalizer(a[i],b[i]);
+}
+'''
+    probe = cp.RawModule(code=source, options=("-std=c++17",))
+    a = cp.asarray(np.array([0x406cccc7, 0x40a67a98], np.uint32).view(np.float32))
+    b = cp.asarray(np.array([0x3fa66666, 0x40800000], np.uint32).view(np.float32))
+    r = cp.zeros(2, cp.float32)
+    probe.get_function("normalization_probe")((1,), (2,), (a,b,r))
+    np.testing.assert_array_equal(cp.asnumpy(r).view(np.uint32),
+                                  np.array([0x40cd2e4b, 0x439edc76], np.uint32))
 
 
 def _lev(drv, name):
@@ -137,8 +157,7 @@ def _assert_bit_exact(got, wantw, what):
 
 
 # ==========================================================================
-# the tendencies GFDRV writes, on the 208 columns its own decomposition
-# reproduces
+# the tendencies GFDRV writes, on every column
 # ==========================================================================
 @pytest.mark.gpu
 @pytest.mark.parametrize("field", _WRF_LEV)
@@ -167,8 +186,7 @@ def test_gfdrv_xmb_free_surface_output_bitwise_everywhere(drv, fixture,
 @pytest.mark.parametrize("field", ["gdc", "gdc2"])
 def test_the_cloud_water_diagnostics_are_bitwise_on_all_216(drv, fixture,
                                                             field):
-    """cupclw carries no mass flux, so the 8 mixed-precision columns cannot
-    move it -- and do not."""
+    """cupclw carries no mass flux; bitwise on all 216."""
     _assert_bit_exact(_lev(drv, field), fixture.levels[field],
                       f"gfdrv.{field}")
 
@@ -184,8 +202,7 @@ def test_gfdrv_surface_indices_exact(drv, fixture, field):
 
 
 # ==========================================================================
-# the stage seam, on ALL 216 columns -- what proves the 8-column residual
-# is GFDRV's own and the port adds nothing
+# the stage seam, on ALL 216 columns
 # ==========================================================================
 @pytest.mark.gpu
 @pytest.mark.parametrize("field", _SEAM_LEV)
@@ -207,41 +224,17 @@ def test_the_stage_precipitation_seam(drv, fixture, field):
 
 
 # ==========================================================================
-# the 8 mixed-precision columns
+# no inexact column (the retired 8-column residual)
 # ==========================================================================
 @pytest.mark.gpu
-def test_the_eight_inexact_columns_are_the_fixtures_own(drv, fixture,
-                                                        exact):
-    """Exactly stage_rows_to_distrust: a 9th inexact column or a healed one
-    is a finding either way."""
+def test_no_column_is_inexact(drv, fixture):
+    """Every GFDRV column bitwise.  Replaces the retired gate that accepted
+    8 columns at up to 34 ULP: the cause was the kernel's accurate-double
+    spelling of WRF's float32-widened GFS constants."""
     got = _lev(drv, "rthcuten")
     want = fixture.levels["rthcuten"]
     inexact = ~np.all(got.view(np.uint32) == want.view(np.uint32), axis=1)
-    assert np.array_equal(inexact, ~exact)
-    assert int(inexact.sum()) == 8
-
-
-@pytest.mark.gpu
-def test_on_those_eight_the_residual_is_amplitude_not_structure(drv,
-                                                                fixture,
-                                                                exact):
-    """A 1-2 ULP xmb shift scaling the profile: bounded at the CPU gate's
-    own envelope and flipping no branch."""
-    bad = ~exact
-    got = _lev(drv, "rthcuten")[bad]
-    want = fixture.levels["rthcuten"][bad]
-    d = fp32_ulp_distance(got, want)
-    assert int(d[d >= 0].max()) <= 34
-    live = np.abs(want) > np.float32(1e-12)
-    rel = np.abs(got[live] - want[live]) / np.abs(want[live])
-    assert float(rel.max()) < 1e-4
-    ktd = drv["isc"][:, DRV_ISCA_FIELDS.index("ktop_deep")].astype(np.int64)
-    assert np.array_equal(ktd[bad],
-                          fixture.surface["ktop_deep"].astype(np.int64)[bad])
-    _assert_bit_exact(_sca(drv, "htop")[bad], fixture.surface["htop"][bad],
-                      "htop@8")
-    _assert_bit_exact(_sca(drv, "hbot")[bad], fixture.surface["hbot"][bad],
-                      "hbot@8")
+    assert int(inexact.sum()) == 0, np.flatnonzero(inexact).tolist()
 
 
 # ==========================================================================
@@ -325,6 +318,9 @@ def test_the_unpinned_run_is_the_documented_divergence_not_a_regression(
     tendency field moves by at most 2.12 per cent of its own maximum.
     docs/gf_gamma_known_delta.md section 3 carries the whole table.
     """
+    from gpuwm.wrf_exact import ENABLED
+    if ENABLED:
+        pytest.skip("default normalization control; strict uses the scalar build sequence")
     free = _launch(module, fixture, 1, pin_fzu=False)
     up, dn, sh = captured_fzu(fixture)
     pinned = (up > 0) | (dn > 0) | (sh > 0)

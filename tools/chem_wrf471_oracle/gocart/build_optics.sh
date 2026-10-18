@@ -54,7 +54,7 @@ nm -u control.o > undefined-control.txt
 grep _ZGV undefined-control.txt
 gfortran -o run_optics stub_optics.o module_model_constants.o module_data_gocart_seas.o module_data_gocart_dust.o module_data_rrtmgaeropt.o optics_module.o module_aer_opt_out.o rrtmg_module.o oracle_io.o run_gocart_optics.o
 gfortran --version | head -1
-ldd --version | head -1
+ldd --version | sed -n 1p
 ./run_optics "$fixtures" "$tables"
 if ./run_optics --negative > negative-tau.log 2>&1; then
   echo 'FAIL: negative RRTMG tau was accepted'; exit 7

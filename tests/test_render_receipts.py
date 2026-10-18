@@ -72,6 +72,32 @@ def test_repeated_image_path_counts_once_and_changed_file_cannot_claim_success(t
         receipts.summarize(tmp_path)
 
 
+def test_undrawn_product_explains_the_reason_covering_most_frames(tmp_path):
+    """D4: F000's timing limit cannot explain missing UH at F001 onward."""
+    family = "uh_2to5km_1h_max"
+    timing = "1-h UH max requires forecast hour >= 1"
+    skipped = [(family, f"/frames/wrfout_00: F000: {timing}")]
+    for hour in range(1, 12):
+        lead = f"F{hour:03d}"
+        skipped.append((family,
+            f"/frames/wrfout_{hour:02d}: {lead}: stored hour {lead} has no "
+            "'uh_2to5km_max_1h' variable; hourly 'uh_2to5km' and wrfout-lane "
+            "'updraft_helicity_2to5km' fallbacks also unavailable: "
+            f"stored hour {lead} has no 'updraft_helicity_2to5km' variable"))
+    summary = _publish(tmp_path, [], skipped, spec=family)
+    row, = summary["undrawn_families"]
+    assert row["count"] == 12
+    assert len(row["reasons"]) == 2
+    assert row["reasons"][0].startswith("11 frame(s): ")
+    assert "'uh_2to5km_max_1h'" in row["reasons"][0]
+    assert "fallbacks also unavailable" in row["reasons"][0]
+    assert row["reasons"][1] == f"1 frame(s): {timing}"
+    headline, detail = receipts.undrawn_note(receipts.read_summary(tmp_path))
+    assert headline.index("11 frame(s):") < headline.index("1 frame(s):")
+    assert "fallbacks also unavailable" in headline and timing in headline
+    assert "skipped 12 time(s)" in detail
+
+
 def test_full_exact_reasons_survive_bounded_status_summary(tmp_path):
     skipped=[(f"family_{index}",f"input {number}: "+"雨"*500) for index in range(64) for number in range(4)]
     summary=_publish(tmp_path,[],skipped,failures=["native decode failed"],spec="all")

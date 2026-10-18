@@ -21,6 +21,8 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Mapping
 
+import os
+
 import numpy as np
 
 from gpuwm.ingest.soil_contract import (
@@ -29,7 +31,10 @@ from gpuwm.ingest.soil_contract import (
 )
 
 from gpuwm.ingest.grib import Era5Snapshot
-from gpuwm.ingest.lake_temperature import LAKE_FIELDS, map_ice_free_lake_water
+from gpuwm.ingest.lake_temperature import (
+    LAKE_FIELDS, LAKE_ICE_COVER_THRESHOLD, map_ice_free_lake_water,
+    map_lake_ice,
+)
 from gpuwm.ingest.source_coverage import (
     SourceCoverageRefusal,
     SourceProjectionRefusal,
@@ -2097,14 +2102,29 @@ class DailyMeanAirTemperature:
             start = min(times)
             chosen = [index for index, when in enumerate(times)
                       if (when - start).total_seconds() < self._hours * 3600.0]
+            reader = getattr(self._snapshots, "surface_field_values", None)
+            values = [None] * len(chosen)
+            if reader is not None and len(chosen) > 1:
+                # Every time's 2 m field read and verified side by side; the
+                # sum below still runs in forcing order, so the mean's bytes
+                # are the serial loop's.
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(
+                        max_workers=min(len(chosen), os.cpu_count() or 1),
+                        thread_name_prefix="inland-air") as pool:
+                    values = list(pool.map(
+                        lambda index: reader(index, _INLAND_AIR_FIELD), chosen))
             total = None
-            for index in chosen:
-                fields = self._snapshots[index].fields
-                if _INLAND_AIR_FIELD not in fields:
-                    raise ValueError(
-                        f"forcing time {times[index]} carries no "
-                        f"{_INLAND_AIR_FIELD} for the inland-water daily mean")
-                value = _as_host_float64(fields[_INLAND_AIR_FIELD])
+            for slot, index in enumerate(chosen):
+                value = values[slot]
+                if value is None:
+                    fields = self._snapshots[index].fields
+                    if _INLAND_AIR_FIELD not in fields:
+                        raise ValueError(
+                            f"forcing time {times[index]} carries no "
+                            f"{_INLAND_AIR_FIELD} for the inland-water daily mean")
+                    value = fields[_INLAND_AIR_FIELD]
+                value = _as_host_float64(value)
                 total = value.copy() if total is None else total + value
             span = (times[chosen[-1]] - start).total_seconds() / 3600.0
             self._value = (total / len(chosen), {
@@ -2633,15 +2653,23 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 "temperature assembly needs a mapped SKINTEMP and this "
                 "source carries none")
         source_sst = snapshot.fields.get("SST")
+        lake_targets = (water_temperature_statics.lake
+                        & ~water_temperature_statics.land)
         lake_water = map_ice_free_lake_water(
-            snapshot, mass_ty, mass_tx,
-            water_temperature_statics.lake & ~water_temperature_statics.land)
+            snapshot, mass_ty, mass_tx, lake_targets)
+        # wrf_compat asks for stock WRF byte for byte, and stock WRF's
+        # ungrib never reads the lake model's ice; every other policy gets it.
+        lake_ice = (None if water_temperature_statics.policy == "wrf_compat"
+                    else map_lake_ice(snapshot, mass_ty, mass_tx, lake_targets))
         assembly = assemble_for_route(
             water_temperature_statics,
             mapped_sst=(None if "SST" not in out
                         else _as_host_float64(out["SST"])),
             mapped_skin=_as_host_float64(out["SKINTEMP"]),
             mapped_lake_water=(None if lake_water is None else lake_water.values),
+            lake_ice=(None if lake_ice is None else (
+                np.nan_to_num(lake_ice.fraction, nan=0.0)
+                >= LAKE_ICE_COVER_THRESHOLD)),
             source_sst=(None if source_sst is None
                         else _as_host_float64(source_sst)),
             source_lat=np.asarray(snapshot.latitude, dtype=np.float64),
@@ -2662,6 +2690,34 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             out["LAKE_WATER_TEMP"] = lake_water.values
             water_temperature_receipt = {
                 **water_temperature_receipt, "lake_water_mapping": lake_water.receipt}
+        if lake_ice is not None:
+            # The source lake model's ice is the lake's ice, carried the way
+            # WRF carries lake ice with its lake model off: as the cell's ice
+            # fraction (XICE), raised to the lake model's cover where the
+            # sea-ice analysis gives less, with the ice-surface temperature
+            # as its skin.  ERA5's sea-ice analysis leaves most of a frozen
+            # Great Lake and every small lake open; before this those cells
+            # started as open water near 273 K.  Only cells with lake-model
+            # ice change; the soil route reads SKINTEMP on ice cells only.
+            fraction = lake_ice.fraction
+            known = np.isfinite(fraction)
+            xice = (_as_host_float64(out["XICE"]) if "XICE" in out
+                    else np.zeros(fraction.shape, dtype=np.float64))
+            raised = known & (fraction > xice)
+            iced = known & (fraction > 0.0)
+            if np.any(raised):
+                out["XICE"] = engine.float32(np.where(raised, fraction, xice))
+            if np.any(iced):
+                skin = _as_host_float64(out["SKINTEMP"])
+                out["SKINTEMP"] = engine.float32(
+                    np.where(iced, lake_ice.temperature, skin))
+            water_temperature_receipt = {
+                **water_temperature_receipt,
+                "lake_ice_mapping": {
+                    **lake_ice.receipt,
+                    "cells_ice_cover_raised": int(raised.sum()),
+                    "cells_skin_from_ice": int(iced.sum()),
+                }}
         # Once per domain, not once per forcing time: every time of a
         # domain assembles the same providers over the same cells.
         announce_water_temperature(

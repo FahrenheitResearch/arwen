@@ -65,9 +65,20 @@ def _init_words_on_device():
     return words
 
 
-def wsm3_kernel(func: str, nz: int):
-    """``func`` from ``kernels/wsm3.cu`` compiled at the WSM3_KMAX tier for ``nz``."""
+def wsm3_kernel(func: str, nz: int, conservative_surface: bool = False):
+    """``func`` from ``kernels/wsm3.cu`` compiled at the WSM3_KMAX tier for ``nz``.
+
+    ``conservative_surface`` is correct-mode finding WB5
+    (``RunConfig.wsm3_conservative_surface``): its own unit compiled with
+    ``WSM3_PLM_SURFACE``.  False compiles exactly the unit this function
+    compiled before the key existed (the matched WRF arithmetic).
+    """
     capacity = _kernel_capacity(nz)
+    if conservative_surface:
+        defines = (() if capacity == _SHALLOW_KMAX
+                   else (("WSM3_KMAX", capacity),))
+        return get_kernel_int_defines(
+            "wsm3", func, defines + (("WSM3_PLM_SURFACE", 1),))
     if capacity == _SHALLOW_KMAX:
         return get_kernel("wsm3", func)
     return get_kernel_int_defines("wsm3", func, (("WSM3_KMAX", capacity),))
@@ -75,13 +86,17 @@ def wsm3_kernel(func: str, nz: int):
 
 def launch_wsm3(theta, qv, qc, qr, w, rho, pii, pressure, dz,
                 rainnc, rainncv, snownc, snowncv, sr, dt: float, *,
-                effc, effi, effs) -> None:
+                effc, effi, effs, conservative_surface: bool = False) -> None:
     """Launch one WSM3 call over contiguous FP32 ``(nz,ny,nx)`` fields.
 
     ``w`` is the vertical velocity on the BOTTOM face of each mass level
     (WRF's ``w_2(i,k,j)`` for k = kts..kte), the face the scheme's
-    freezing step reads at the melting level.
+    freezing step reads at the melting level.  ``conservative_surface``:
+    correct-mode finding WB5 (see :func:`wsm3_kernel`).
     """
+    if not isinstance(conservative_surface, bool):
+        raise TypeError("conservative_surface must be a bool, got "
+                        f"{conservative_surface!r}")
     shape = theta.shape
     if len(shape) != 3:
         raise ValueError(f"WSM3 fields must be 3-D, got {shape}")
@@ -112,7 +127,7 @@ def launch_wsm3(theta, qv, qc, qr, w, rho, pii, pressure, dz,
             raise ValueError(f"{name} must be C-contiguous")
     ncol = ny * nx
     blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    kernel = wsm3_kernel("wsm3_column", nz)
+    kernel = wsm3_kernel("wsm3_column", nz, conservative_surface)
     kernel(
         (blocks,), (_COLUMN_TPB,),
         (theta, qv, qc, qr, w, rho, pressure, pii, dz,
@@ -162,7 +177,9 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
     launch_wsm3(
         theta, state.qv, state.qc, state.qr, w, rho, pii, state.p, dz,
         rainnc, rainncv, snownc, snowncv, sr, dt,
-        effc=state.effc, effi=state.effi, effs=state.effs)
+        effc=state.effc, effi=state.effi, effs=state.effs,
+        conservative_surface=bool(
+            getattr(cfg, "wsm3_conservative_surface", False)))
     if refl_10cm_due:
         from gpuwm.core.refl import compute_and_stash_refl_10cm
         refl_t = state.scratch((nz, ny, nx), "refl_t")

@@ -30,6 +30,11 @@ __device__ __forceinline__ float rp_div(float a, float b) {
 #define RP_SU(a,b) rp_sub((a),(b))
 #define RP_MU(a,b) rp_mul((a),(b))
 #define RP_DV(a,b) rp_div((a),(b))
+#ifdef RP_RADIUS_MICRONS
+#define RP_RADIUS(x) (x)
+#else
+#define RP_RADIUS(x) RP_MU((x), 1.e6f)
+#endif
 __device__ __forceinline__ float rp_max(float a, float b) {
     return isnan(a) ? a : (isnan(b) ? b : (a > b ? a : b));
 }
@@ -171,16 +176,16 @@ extern "C" __global__ void rp_prep(
         }
         float rec=0.0f, ric=0.0f, rsc=0.0f;
         if (icloud) {
-            rec = hc ? rp_max(2.5f, RP_MU(rc[j], 1.e6f)) : 5.0f;
+            rec = hc ? rp_max(2.5f, RP_RADIUS(rc[j])) : 5.0f;
             float xdiff = RP_SU(land[c], 1.5f);
             if (hc && xdiff>0.0f && rec<=2.5f && cf[j]>0.0f) rec=(sw && RP_CLOUD_FORM) ? 9.6f : 10.5f;
             if (hc && xdiff<0.0f && rec<=2.5f && cf[j]>0.0f) rec=(sw && RP_CLOUD_FORM) ? 5.4f : 7.5f;
-            ric = hi ? rp_max(5.0f, RP_MU(ri[j], 1.e6f)) : 10.0f;
+            ric = hi ? rp_max(5.0f, RP_RADIUS(ri[j])) : 10.0f;
             if (hi && ric<=5.0f && cf[j]>0.0f)
                 ric = rp_max(rp_rei(t[j], retab, 75), 5.0f);
-            rsc = hs ? rp_max(10.0f, RP_MU(rs[j], 1.e6f)) : 10.0f;
+            rsc = hs ? rp_max(10.0f, RP_RADIUS(rs[j])) : 10.0f;
             if (!hs && hi && hc) {
-                rsc = rp_max(10.0f, RP_MU(ri[j], 1.e6f));
+                rsc = rp_max(10.0f, RP_RADIUS(ri[j]));
                 qsnow=qi[j]; qice=0.0f; ric=10.0f;
             }
         }

@@ -352,8 +352,12 @@ def layout(plan):
 # since the WRF 4.6.1 Kain-Fritsch port, 26779da4e via 3bf65e9c7, keeps 66
 # column arrays in its workspace, not 52, which prices the floor at
 # 5,192,867,947 B, read the same way at the 2.9.0 lane tip; with
-# KFWS_SLOTS set back to 52 the previous pins of this file all pass).
-@pytest.mark.parametrize("budget_gib", [4.85, 4.95, 5.05])
+# KFWS_SLOTS set back to 52 the previous pins of this file all pass; 4.9
+# through 5.15 on the 2.9.2 tip 63063559075, where the floor prices
+# 5,254,488,212 B -- the RRTMGP flux rows and the WSM6 column workspace
+# moved the resident envelope 61,620,265 B -- read at 0.05 GiB steps from
+# 4.8 to 5.2).
+@pytest.mark.parametrize("budget_gib", [4.9, 5.0, 5.1])
 def test_a_floor_inside_its_budget_is_the_preset_and_not_a_refusal(budget_gib):
     narrowed, bound = tc._budget_sizing(CARD, budget_gib)
     assert bound == "request"
@@ -521,8 +525,11 @@ def test_the_request_bound_flag_and_the_flagless_door_give_one_answer(
 # 5.005 through 5.025, admitting at 5.03, read at 0.005 GiB steps from 4.98
 # to 5.10.  The 66-array KF workspace, 26779da4e, moved it to 5.095 through
 # 5.105, admitting at 5.11, read at 0.005 GiB steps from 4.98 to 5.20 at the
-# 2.9.0 lane tip.)
-TILE_BAND = [5.095, 5.1, 5.105]
+# 2.9.0 lane tip.  The 2.9.2 RRTMGP flux rows and WSM6 column workspace,
+# which price the floor at 5,254,488,212 B, moved it to 5.155 through
+# 5.165, admitting at 5.17, read at 0.005 GiB steps from 5.08 to 5.30 at
+# 63063559075.)
+TILE_BAND = [5.155, 5.16, 5.165]
 
 
 @pytest.mark.parametrize("budget_gib", TILE_BAND)
@@ -551,7 +558,7 @@ def test_the_tile_roads_band_ends_where_its_own_budget_clears_the_price():
     """And it ends there rather than where the flat road's budget or the fit
     target does, which is the whole reason neither can be the number quoted."""
     plan = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=CARD, hours=3,
-                           tiles="auto", nest_budget_gib=5.11)
+                           tiles="auto", nest_budget_gib=5.17)
     assert plan["nest"]["dimensions"] == list(tc.CHILD_DIMS)
 
 

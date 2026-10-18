@@ -76,15 +76,17 @@ def test_family_membership_is_the_kernel_audit():
     from gpuwm.core.physics import (_SR_EXPRESSION_FAMILY_STEP_SCALINGS,
                                     _sr_roundoff_envelope)
 
-    # wsm6.cu:406 and wdm6.cu:672: identical expression, identical
-    # floor(dt/120+0.5) minor-loop split; WDM6 carries four extra
-    # post-sum unit scalings per step (wdm6.cu:655-667).
-    assert _SR_EXPRESSION_FAMILY_STEP_SCALINGS == {6: 0, 16: 4}
+    # wsm6.cu:519 and wdm6.cu:754: identical expression, identical
+    # floor(dt/120+0.5) minor-loop split, and both scale every
+    # accumulation step as WRF does, fallsum*delz/denr*dtcld*1000
+    # (four roundings per side: wsm6.cu:501-515, wdm6.cu:737-751).
+    assert _SR_EXPRESSION_FAMILY_STEP_SCALINGS == {6: 4, 16: 4}
     # milbrandt2.cu:2340: the same positive-sum quotient once per call.
     assert _sr_roundoff_envelope(9, 60.0)[1] > 0
-    # morrison.cu:1041-1049 is order-dominated (denominator partials
-    # dominate the numerator's under round-to-nearest monotonicity), so
-    # Morrison keeps the tight range; NSSL sits outside the range check.
+    # Morrison (the WRF v4.6.1 transcription) sums signed fallout
+    # components, so no envelope bounds its SR; morrison.bound_snow_ratio
+    # holds the forecast SR to [0, 1] before this check, and Morrison
+    # keeps the tight range.  NSSL sits outside the range check.
     for outsider in (0, 1, 8, 10, 18, 28, 50):
         assert _sr_roundoff_envelope(outsider, 60.0) == (
             np.float32(1.0), 0, 0)
@@ -142,6 +144,8 @@ def test_wdm6_envelope_is_the_wsm6_bound_with_step_scalings():
         upper16, ulps16, loops16 = _sr_roundoff_envelope(16, dt)
         assert loops16 == loops6
         assert ulps16 > ulps6
+        # WSM6 forms the same scaled accumulation (2.9.0 WRF rewrite).
+        assert _sr_roundoff_envelope(6, dt) == (upper16, ulps16, loops16)
         adds = loops6 - 1
         analytic = Fraction(
             (scale + 1) ** 7 * (scale - 3),
@@ -150,9 +154,32 @@ def test_wdm6_envelope_is_the_wsm6_bound_with_step_scalings():
         encoded = Fraction(scale + 2 * ulps16, scale)
         next_encoded = Fraction(scale + 2 * (ulps16 + 1), scale)
         assert encoded <= analytic < next_encoded
-    # The mp=6 grant is bit-identical to what 1.9.0 shipped: the family
-    # refactor added a parameter, not a change to WSM6's envelope.
-    assert _sr_roundoff_envelope(6, 60.0) == _wsm6_sr_roundoff_limit(60.0)
+    # The zero-scaling bound (a kernel accumulating pre-scaled returns,
+    # WSM6 before 2.9.0) stays available and is strictly tighter.
+    assert _wsm6_sr_roundoff_limit(60.0)[1] == 3
+    assert _sr_roundoff_envelope(6, 60.0)[1] == 7
+
+
+def test_wsm6_default_forecast_sr_four_ulps_over_one_is_accepted(
+        monkeypatch):
+    """The 2.9.0 field case: a default hex forecast (WSM6, dt=90 s, one
+    minor loop) produced SR=1.00000048, 4 ULPs over 1, and the 3-ULP
+    zero-scaling grant killed it at 4590 s.  The scaled-accumulation
+    bound admits it unmutated and still refuses one ULP past itself.
+    """
+    field_value = np.float32(1.00000048)
+    assert np.asarray(field_value).view(np.uint32).item() - 0x3F800000 == 4
+    physics, driver, diagnostics, shape = _cpu_diagnostics_driver(
+        monkeypatch, 6, dt=90.0)
+    assert driver._sr_roundoff_max_ulps == 7
+    _accept(driver, diagnostics, shape, field_value)
+    assert driver.microphysics.sr.view(np.uint32)[0, 0] == np.asarray(
+        field_value).view(np.uint32).item()
+    upper_bits = np.asarray(
+        driver._sr_roundoff_upper, np.float32).view(np.uint32).item()
+    beyond = np.asarray(upper_bits + 1, np.uint32).view(np.float32)
+    with pytest.raises(ValueError, match="roundoff_ulps=7"):
+        _accept(driver, diagnostics, shape, beyond)
 
 
 def test_my2_envelope_matches_its_analytic_bound():

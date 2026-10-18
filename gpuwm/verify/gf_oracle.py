@@ -20,9 +20,10 @@ ported stage by stage and a single boundary cannot serve both purposes:
 
 The decomposition proves itself: ``gf-stage-consistency.csv`` records, per
 (case, dx, arm), how many words of GFDRV's output the stage path fails to
-reproduce bitwise.  208 of 216 rows are exact.  On the 8 that are not
-(:func:`stage_rows_to_distrust`) the GFDRV fixture is authoritative and the
-stage fixture is not; see ``tools/gf_wrf461_oracle/README.md`` for why.
+reproduce bitwise.  All 216 rows are exact, and ``build.sh`` refuses any
+other count.  (Until 2026-10-07 8 rows were not, and a helper here masked
+them; the cause was the decomposition's own accurate-double spelling of
+WRF's float32-widened GFS constants, and the helper is retired with it.)
 
 Axes: 18 cases x 6 grid spacings x 2 ``ishallow`` arms = 216 columns, each
 with 40 levels.  ``dx`` is a fixture axis, not a constant, because GF's
@@ -50,7 +51,6 @@ __all__ = [
     "GF_NDX",
     "GfOracleFixture",
     "load_gf_oracle",
-    "stage_rows_to_distrust",
     "measure_fields",
 ]
 
@@ -206,37 +206,6 @@ def load_gf_oracle(directory: Path | str | None = None) -> GfOracleFixture:
         shallow_levels=shallow_levels,
         shallow_surface=shallow_surface,
         shallow_consistency=shallow_consistency,
-    )
-
-
-def stage_rows_to_distrust(fixture: GfOracleFixture) -> np.ndarray:
-    """Boolean mask over columns where the stage decomposition is not exact.
-
-    These are the rows where ``run_cup_gf``'s reconstruction of GFDRV's output
-    algebra differs from the driver's own answer.  The cause is measured, not
-    guessed: GFDRV evaluates ``omeg``, ``mconv`` and ``dhdt`` with the GFS
-    physcons constants, which are ``real(8)`` parameters initialised from
-    ``real(4)`` literals, and no float32/float64 spelling of those three
-    expressions reproduces the driver on every column.  The residual is a
-    uniform 1-2 ULP shift in ``xmb``; no branch flips (``ktop``, ``kbcon`` and
-    ``ierr`` agree on all 216 rows).
-
-    A gate comparing a port against the STAGE fixture should skip these
-    columns.  A gate comparing against the GFDRV fixture should not: the
-    GFDRV fixture is WRF's own answer everywhere.
-    """
-    ck = np.stack(
-        [
-            fixture.consistency["case"],
-            fixture.consistency["idx"],
-            fixture.consistency["arm"],
-        ],
-        axis=1,
-    ).astype(np.int32)
-    bad = fixture.consistency["ndiff_words_vs_gfdrv"].astype(np.int64) != 0
-    lookup = {tuple(int(v) for v in ck[r]): bool(bad[r]) for r in range(ck.shape[0])}
-    return np.array(
-        [lookup[tuple(int(v) for v in row)] for row in fixture.key], dtype=bool
     )
 
 

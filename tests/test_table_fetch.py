@@ -450,6 +450,50 @@ def test_a_missing_table_is_one_sentence_naming_the_file_and_the_command(
     assert isinstance(raised.value, FileNotFoundError)
 
 
+def test_a_fresh_wheel_runs_mp8_with_no_manual_fetch(tmp_path, monkeypatch,
+                                                     capsys):
+    """`mp_physics=8 (Thompson) needs qr_acr_qg_V4.dat, freezeH2O.dat,
+    which are not staged at .../site-packages/gpuwm_data/...`
+
+    A clean ``pip install gpuwm`` refused every Thompson forecast until
+    someone ran ``gpuwm fetch-tables`` by hand (the image build and the
+    2x MPAS box, 2026-10-16).  The run's own preflight now stages the
+    set on first use, through the fetch-tables leg and its pins, into
+    the user root; the advisory preflight still never downloads.
+    """
+
+    real_packaged = packaged_thompson_table_root()
+    if not all((real_packaged / name).is_file()
+               for name in table_assets.EXTERNALIZED_TABLE_FILENAMES):
+        pytest.skip("externalized asset bytes not present in this checkout")
+    _packaged, user_root = _wheel_shaped_install(tmp_path, monkeypatch)
+    fetched: list[str] = []
+
+    def _pinned_source(root, asset):
+        # Stands in for the network only; the bytes are still verified
+        # against the pins before the atomic install.
+        fetched.append(asset.filename)
+        return table_assets.fetch_asset_from_dir(root, asset, real_packaged)
+
+    monkeypatch.setattr(table_assets, "fetch_asset_from_sources",
+                        _pinned_source)
+
+    with pytest.raises(table_assets.MissingTableAssets):
+        table_assets.require_thompson_tables(stage=False)
+    assert fetched == []
+
+    assert table_assets.require_thompson_tables() == user_root
+    assert sorted(fetched) == sorted(table_assets.EXTERNALIZED_TABLE_FILENAMES)
+    validate_table_assets(user_root)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "first use" in captured.err
+
+    fetched.clear()
+    assert table_assets.require_thompson_tables() == user_root
+    assert fetched == []
+
+
 def test_drift_stays_the_byte_validator_s_sentence_not_the_preflight_s(
         tmp_path, monkeypatch):
     """Negative control: the preflight answers absence, and only absence.

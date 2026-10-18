@@ -15,7 +15,10 @@ an absence.
 | European radar composite | works | composite reflectivity, dBZ | `rw_opera` |
 | European per-site polar volumes | works | reflectivity + radial velocity | `rw_odim`, via `gpuwm obs radar` |
 | Worldwide surface reports | works | temperature, dewpoint, wind, MSLP | `rw_asos` |
-| Japanese radar | not built, provenance question open | - | none |
+| Japanese radar (JMA, NICT mirror 2017+) | works | reflectivity + radial velocity | `rw_odim`, via `gpuwm obs radar fetch --archive jma-nict` |
+| Australian radar (BoM, NCI rq0 archive) | works, 1-3 days behind real time | reflectivity + radial velocity | `rw_odim`, via `gpuwm obs radar fetch --archive bom-nci` |
+| Colombian radar (IDEAM, AWS) | works, 4-12 h batches | reflectivity + radial velocity | `rw_odim` (IRIS RAW, CfRadial 1), via `--archive ideam-s3` |
+| Korean radar (KMA API Hub) | reader built; needs a free KMA account key | reflectivity + radial velocity | `rw_odim` (UF), via `--archive kma-apihub` with `GPUWM_KMA_AUTHKEY` |
 
 ## 1. European radar: the composite route works end to end
 
@@ -253,19 +256,55 @@ an extra network costs one metadata request, a dropped one costs
 observations silently. The authoritative filter remains the station-level
 `--bbox` that `rw_asos stations` already applies.
 
-## 4. Japanese radar: assessed, not built
+## 4. Radar outside Europe and the US: JMA, BoM, IDEAM, KMA (built 2026-10-16)
 
-Raw data and decoded receipts exist on the development workstation from an earlier session
-(an earlier session's working tree): 20 JMA
-sites, 655 sweeps, 512 radials, 500 m gates, elevations 0.7 to 25.0 deg,
-including `Pvr` radial velocity. That is a genuine volumetric dataset and it
-is better suited to DA than the European composite.
+`rw_odim` reads, chosen by each file's magic bytes, the polar formats the
+open national archives serve, into the same sweep pack as ODIM:
 
-There is **no decoder for it in the Rust stack on this box**. A bounded
-search over the development trees for `JMAGPV` in `*.rs` returned zero hits;
-the volumes were served through a local bridge masquerading as NEXRAD.
+| Format | Who publishes it | Reader |
+| --- | --- | --- |
+| JMA polar GRIB2 tar | Japan (NICT mirror) | BowEcho `nexrad_io::jma`, plus `rw_odim::world::jma` |
+| ODIM_H5 | BoM via NCI rq0, OPERA | `rw_odim` |
+| IRIS/Sigmet RAW | IDEAM (7 of 9 sites), Vaisala sites | `rw_odim::world::iris` (new) |
+| CfRadial 1 | IDEAM Bogota and santa_elena | BowEcho `nexrad_io::cfradial` |
+| Universal Format | KMA, RVP8 sites | `rw_odim::world::uf` (new) |
+| DORADE | field campaigns | BowEcho `nexrad_io::dorade` |
 
-Nothing was built on it, per the directive. The provenance question is below.
+`gpuwm obs radar fetch --archive ID --site S --time T --out-dir D [--out P]`
+fetches one volume and packs it. The archives are rows of
+`gpuwm/obs/data/radar_archives_world.json`; adding a network that publishes
+in a known wrapping is a table edit. The BoM day zip (about 1 GB per site-day)
+is read by HTTP range: one volume costs about 4 MB.
+
+What the JMA reader adds over the shared decode, measured on the 2019-10-12
+09Z Typhoon Hagibis volume:
+
+- **"No Echo" is clear air.** JMA's format description defines level 1 of
+  the reflectivity level table as "No Echo" and level 0 as missing. The
+  shared decode returned level 1 as 0.00 dBZ (millions of gates per volume);
+  it is now `undetect`, so the clear-air path sees it.
+- **The Nyquist interval comes from the PRF pair.** The file states the
+  transmit frequency and both PRFs of every Doppler cut, but no interval. The
+  dual-PRF extended interval `lambda f1 f2 / (4 |f1 - f2|)` is 52.5 m/s at
+  Akita (940/752 Hz, C band); 25-80 % of the typhoon's velocities exceed the
+  single-PRF 13.1 m/s and at most 0.005 % exceed 52.5, so the stored
+  velocities are unfolded to it. The long-range lowest cut declares no PRF
+  and gets no interval: its velocity is refused by name, its reflectivity is
+  used.
+
+IRIS, UF and CfRadial decodes were checked gate-for-gate against Py-ART 2.3
+on the real files (`tools/radar_world_fixtures.sh`, then
+`cargo test -p rw-odim --test world_real_files -- --ignored`): identical
+measured-gate counts, values equal to float32 rounding. Two deliberate
+differences: IRIS antenna altitude is site plus tower (Py-ART reports the
+ground), and UF's first gate is where the UF header says its centre is
+(Py-ART adds another half gate).
+
+Still open, with the reason: KMA's API answers HTTP 401 without an account
+key (free registration at apihub.kma.go.kr, done by a person, not by us);
+the JMA mirror has whole-day gaps (2024-08-27 to 31 are empty), reported as
+404s; the JMA data's redistribution terms remain the question below, so its
+files are fetched on demand and never committed.
 
 Japanese *satellite* is a different matter and is real: `rw_sat` carries
 Himawari AHI against the public NOAA S3 mirror, with HSD header parsing.
@@ -357,7 +396,8 @@ data for European real-time, ERA5 for European hindcasts**, with GFS as the
 fallback. This needs your ruling because it adds a background source rather
 than reusing one.
 
-**Q4. Japanese feed go/no-go.** The data is DA-grade and the provenance is
+**Q4. Japanese feed go/no-go.** (The decoder is built, section 4; the
+provenance question below is unchanged and still yours.) The data is DA-grade and the provenance is
 what you flagged: rehosted from a university, no decoder in the Rust stack,
 and the earlier session reached it through a local bridge rather than a
 documented endpoint. Building an ODIM/GRIB2 polar decoder for it is

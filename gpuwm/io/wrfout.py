@@ -55,6 +55,8 @@ from gpuwm.io.history_layout import (
 )
 
 from gpuwm.io.netcdf_serialization import NETCDF4_IO_LOCK
+from gpuwm.io.wrf_input_history_schema import (WRF_INPUT_HISTORY_ROWS,
+    WRF_INITIALIZED_HISTORY_ROWS, WRF_GNU_RANDOM_SEED_WORDS)
 
 _COMPLETION_ATTR = "GPUWM_WRITE_COMPLETE"
 # netCDF4 releases the GIL around HDF5 calls, while the shipped HDF5 library
@@ -167,7 +169,7 @@ _VAR_META = REGISTRY_VAR_META
 #: every Noah-MP field on them is declared ``Z``-staggered.
 _STAGGER = {"west_east_stag": "X", "south_north_stag": "Y",
             "bottom_top_stag": "Z", "soil_layers_stag": "Z",
-            "snow_layers_stag": "Z", "snso_layers_stag": "Z"}
+            "snow_layers_stag": "Z", "snso_layers_stag": "Z", "seed_dim_stag": "Z"}
 
 #: Noah-MP snow-stack history fields, keyed by name for the same reason
 #: TSLB/SMOIS/SH2O are: their leading extent is a scheme's own vertical axis,
@@ -201,7 +203,7 @@ _SNSO_LAYER_FIELDS = frozenset({SCHEME_OUTPUT_FIELDS["zsnsoxy"].netcdf_name})
 #: so a soil array is unroutable by shape alone and a nine-level soil field
 #: over a twenty-level column raises ``KeyError`` rather than picking a wrong
 #: axis.  That is what it did before these two names were added.
-_SOIL_LAYER_FIELDS = frozenset({"TSLB", "SMOIS", "SH2O",
+_SOIL_LAYER_FIELDS = frozenset({"TSLB", "SMOIS", "SH2O", "SMCREL",
                                 "SMFR3D", "KEEPFR3DFLAG", "TVGL_URB", "SMG_URB"})
 
 #: The land-use table identity stamped on every history file.
@@ -740,6 +742,8 @@ def state_frame(
             "MUB": cp.asnumpy(state.mub2d),
             "HGT": cp.asnumpy(state.ht),
         }
+        # WOOF advances dry perturbation theta, the USE_THETA_M=0 record.
+        fields["THM"] = fields["T"]
         if include_diagnostic_pressure:
             pb = state.pb
             pb3 = pb if pb.ndim == 3 else pb[:, None, None]
@@ -1202,6 +1206,20 @@ class WrfoutWriter:
 
     def _dims_for(self, name, shape):
         nz, ny, nx = self.nz, self.ny, self.nx
+        row = WRF_INPUT_HISTORY_ROWS.get(name, WRF_INITIALIZED_HISTORY_ROWS.get(name))
+        if row is not None:
+            dims = tuple(row["history_dimensions"])
+            extents = {"scalar": 1, "soil_layers_stag": self.soil_layers,
+                       "bottom_top": nz, "bottom_top_stag": nz + 1,
+                       "south_north": ny, "south_north_stag": ny + 1,
+                       "west_east": nx, "west_east_stag": nx + 1,
+                       "seed_dim_stag": WRF_GNU_RANDOM_SEED_WORDS}
+            expected = tuple(extents[d] for d in dims)
+            if tuple(shape) != expected:
+                raise ValueError(f"native history {name} has shape {shape}, expected {expected}")
+            for dim in dims:
+                self._ensure_dimension(dim, extents[dim])
+            return ("Time", *dims)
         if name in SFIRE_PARTICLE_FIELDS:
             if len(shape)!=1 or shape[0]<1:
                 raise ValueError(f"firebrand history field {name} must contain its native particle allocation")
@@ -1247,6 +1265,9 @@ class WrfoutWriter:
                     "snso_layers_stag", snow_layers + self.soil_layers)
                 axis = "snso_layers_stag"
             return ("Time", axis, "south_north", "west_east")
+        if name in ("ZS", "DZS") and tuple(shape) == (self.soil_layers,):
+            # WRF's soil-layer depth and thickness rows (Time, soil_layers_stag).
+            return ("Time", "soil_layers_stag")
         if name in _SOIL_LAYER_FIELDS:
             expected = (self.soil_layers, ny, nx)
             if tuple(shape) != expected:
@@ -1596,6 +1617,7 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
                for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
             "PHB": phb, "MUB": state.mub2d, "HGT": state.ht,
         }
+        fields["THM"] = fields["T"]
         if include_diagnostic_pressure:
             pb = state.pb
             pb3 = pb if pb.ndim == 3 else pb[:, None, None]
@@ -2565,7 +2587,8 @@ class PerDomainWrfoutWriters:
                     configured_dt=float(node.clock.spec.dt_fp32),
                     feedback=getattr(model, "_feedback_provenance", None),
                     initial_condition=initial_condition, source=source,
-                    simulation_start_time=start_time),
+                    simulation_start_time=start_time,
+                    static_fields=getattr(case, "static_fields", None)),
                 abort_event=self._abort_event,
                 grid_id=node.cfg.grid_id,
                 history_selection=self._selection_for(node.cfg),
@@ -2721,7 +2744,8 @@ class PerDomainWrfoutWriters:
                 feedback=getattr(self.model, "_feedback_provenance", None),
                 initial_condition=self._initial_condition,
                 source=self._source,
-                simulation_start_time=self.start_time),
+                simulation_start_time=self.start_time,
+                static_fields=static_fields),
             abort_event=self._abort_event,
             grid_id=grid_id,
             # Only [simulated_radar] listens for a late domain's frames.
@@ -2779,7 +2803,8 @@ class PerDomainWrfoutWriters:
             feedback=getattr(self.model, "_feedback_provenance", None),
             initial_condition=self._initial_condition,
             source=self._source,
-            simulation_start_time=self.start_time))
+            simulation_start_time=self.start_time,
+            static_fields=static_fields))
 
     def submit(self, node, ticks: int, *, refl_field=None) -> None:
         """One domain's history frame, from wherever that domain's truth is.

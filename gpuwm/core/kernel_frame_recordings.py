@@ -55,7 +55,7 @@ default stack, so the row still reserves nothing.
 
 ``ysu`` is the one that mattered to users: ``bl_pbl_physics = 1`` is the
 wizard's default, so YSU's frame was the widest a BARE DEFAULT run
-LAUNCHED, and MEASURED on weather-node-1 (RTX 5070 Ti, sm_120) it was
+LAUNCHED, and MEASURED on test host A (RTX 5070 Ti, sm_120) it was
 holding an 842.0 MiB launch-time reservation on every default run.
 
 The sm_86 rows were briefly DROPPED on the theory that the RTX 3080 was
@@ -103,7 +103,7 @@ row here at all is the case those protect:
 
 A NOTE ON WHAT THESE ROWS ARE, because it is easy to over-read them: the
 driver takes the reservation at LAUNCH, not at module load.  MEASURED on
-node-1 2026-08-21 with a two-kernel module -- compiling a module holding
+test host A 2026-08-21 with a two-kernel module -- compiling a module holding
 a 16,384 B kernel reserved 0.0 MiB, and the 1,574.0 MiB appeared only
 when that kernel was actually launched.  So a row here is a CEILING over
 what a module could cost, and a module whose widest kernel a given
@@ -118,7 +118,7 @@ Rows move with the ARCHITECTURE at a fixed compiler, with the COMPILER
 BUILD at a fixed architecture, or with both (``noahmp_leaves``,
 ``shinhong``).  A row also moves with the SOURCE, and that is what the
 2026-09-28 re-read found: every sm_120 recording was read again on an RTX
-5090 (weather-node-2) and an RTX 5070 Ti (weather-node-4), the two cards
+5090 (test host B) and an RTX 5070 Ti (test host D), the two cards
 agreeing to the byte at every build, and three rows had gone stale.
 ``rrtmgp_rte`` still carried 5,152 B on 13.0.48 and 13.3.33, a reading
 of the source before the RRTMGP optimisation (every build now compiles it
@@ -182,7 +182,7 @@ class KernelFrameRecording:
 
 
 #: The reading every shipped row came from: the development Windows desktop
-#: while the RTX 5090 was in it (the card moved to weather-node-2 on
+#: while the RTX 5090 was in it (the card moved to test host B on
 #: 2026-08-16, so this exact box no longer exists and the table can no
 #: longer be regenerated on it).  Rows were taken 2026-07-26 and
 #: extended 2026-07-31 / 2026-08-03 / 2026-08-10 as schemes landed; the
@@ -207,19 +207,19 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         'diff6': 0,
         'diff6_seam': 0,
         'diffusion': 0,
-        # Read 2026-10-02 on RTX 5090 and on node-4's RTX 5070 Ti, through
+        # Read 2026-10-02 on RTX 5090 and on test host D's RTX 5070 Ti, through
         # the production loader at this NVRTC: both coordinate-diffusion
         # exports 0 B.
         'diff_opt1': 0,
         # New merged leaf modules, read on RTX 5090 at the same
-        # compiler. All exported kernels are 0 B, on node-4's RTX 5070 Ti too.
+        # compiler. All exported kernels are 0 B, on test host D's RTX 5070 Ti too.
         'bandwidth_glue': 0,
         'noah_init': 0,
         'wrf_cold_start_w': 0,
         'dycore': 0,
         'ftz_probe': 0,
-        # RE-READ 2026-09-28 on an RTX 5090 (node-2) and an RTX 5070 Ti
-        # (node-4), NVRTC 13.0.48 build id CL-36260728 on both: gf 72,
+        # RE-READ 2026-09-28 on an RTX 5090 (test host B) and an RTX 5070 Ti
+        # (test host D), NVRTC 13.0.48 build id CL-36260728 on both: gf 72,
         # rrtmgp_rte 3,600 and shinhong 13,000 (the rows below), every
         # other row here reproduced to the byte.  The old values (88,
         # 5,152, 14,040) were readings of older source; 5,152 predates
@@ -287,7 +287,7 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         'tke_budget': 0,
         'uh_diag': 0,
         'vert_interp': 768,
-        # RE-READ 2026-09-28, RTX 5090 (node-2), NVRTC 13.0.48,
+        # RE-READ 2026-09-28, RTX 5090 (test host B), NVRTC 13.0.48,
         # after 308c2d39e (WDM6 rain mass and number conservation)
         # took falk and falkn, two per-level arrays, off the stack:
         # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
@@ -303,17 +303,17 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
     }),
 )
 
-#: weather-node-1, RTX 5070 Ti / Linux, 2026-08-20.  Same target
+#: test host A, RTX 5070 Ti / Linux, 2026-08-20.  Same target
 #: architecture as the recording above and a LATER NVRTC, which is what
 #: isolates the compiler half: ``nssl2_fused_gs`` 112 -> 216,
 #: ``rrtmgp_cloud`` 0 -> 40, ``shinhong`` 13,000 -> 17,160 (14,040 ->
 #: 17,160 at the source both were first read at) and ``noahmp_leaves``
 #: 272 -> 208 move with the build alone.  RE-READ 2026-09-28 on an RTX
-#: 5090 (node-2) and an RTX 5070 Ti (node-4), NVRTC 13.3.33 build id
+#: 5090 (test host B) and an RTX 5070 Ti (test host D), NVRTC 13.3.33 build id
 #: CL-37862127 on both: every row reproduced to the byte except
 #: ``rrtmgp_rte``, 5,152 -> 3,600 (see its row).
 SM120_NVRTC_13_3_33 = KernelFrameRecording(
-    box='weather-node-1',
+    box='test host A',
     device='NVIDIA GeForce RTX 5070 Ti',
     compute_capability='120',
     nvrtc_build='13.3.33',
@@ -324,7 +324,7 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
     # wave) postdate this reading and were never read on this compiler.
     # The compile platform is a property of the ENVIRONMENT the process
     # runs in -- the NVRTC library the resolved cuda-toolkit wheel put
-    # on the loader path -- not of the box: the same node-1 read NVRTC
+    # on the loader path -- not of the box: the same test host A read NVRTC
     # 13.0.88 from one venv (2026-08-31), 13.3.33 from another (the
     # Noah-MP composed reading of 2026-09-10) and 13.4.59 from a third
     # the same day (see :data:`RESOLVED_TOOLCHAIN_PINS`).  Extending this
@@ -341,12 +341,12 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         'diff6': 0,
         'diff6_seam': 0,
         'diffusion': 0,
-        # Read 2026-10-02 on RTX 5090 and on node-4's RTX 5070 Ti, through
+        # Read 2026-10-02 on RTX 5090 and on test host D's RTX 5070 Ti, through
         # the production loader at this NVRTC: both coordinate-diffusion
         # exports 0 B.
         'diff_opt1': 0,
         # New merged leaf modules, read on RTX 5090 at the same
-        # compiler. All exported kernels are 0 B, on node-4's RTX 5070 Ti too.
+        # compiler. All exported kernels are 0 B, on test host D's RTX 5070 Ti too.
         'bandwidth_glue': 0,
         'noah_init': 0,
         'wrf_cold_start_w': 0,
@@ -395,7 +395,7 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         'rrtmgp_cloud': 40,
         'rrtmgp_gas': 512,
         'rrtmgp_mcica': 0,
-        # RE-READ 2026-09-28 (node-2 and node-4): 5,152 was a reading of
+        # RE-READ 2026-09-28 (test host B and test host D): 5,152 was a reading of
         # the source before the RRTMGP optimisation took three per-thread
         # column arrays off rrtmgp_sw_2stream's stack.
         'rrtmgp_rte': 3600,
@@ -418,7 +418,7 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         'tke_budget': 0,
         'uh_diag': 0,
         'vert_interp': 768,
-        # RE-READ 2026-09-28, RTX 5070 Ti (node-4), NVRTC 13.3.33,
+        # RE-READ 2026-09-28, RTX 5070 Ti (test host D), NVRTC 13.3.33,
         # after 308c2d39e (WDM6 rain mass and number conservation)
         # took falk and falkn, two per-level arrays, off the stack:
         # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
@@ -552,7 +552,7 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         # sm_86 campaign that closed the "no measurement platform in this
         # lane" declaration the two MYNN-EDMF modules (4a0bb3f69) landed
         # under: both compile to a 0 B frame, so neither reserves
-        # anything on any card.  node-1 (sm_120, NVRTC 13.0.88 -- a
+        # anything on any card.  test host A (sm_120, NVRTC 13.0.88 -- a
         # platform with no recording) read 0 B for both as well.
         'mynn_dmp_sibling': 0,
         'mynn_pbl': 0,
@@ -598,7 +598,7 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         # below this platform's ceiling frames (kf 24,064, gf 23,984), so
         # the reservation is unchanged.  The two sm_120 recordings carried
         # 5,152 for that older source until they were re-read on
-        # 2026-09-28 (node-2 and node-4), where every sm_120 build
+        # 2026-09-28 (test host B and test host D), where every sm_120 build
         # compiles it to this same 3,600.
         'rrtmgp_rte': 3600,
         'rrtmgp_validation': 0,
@@ -695,8 +695,8 @@ SM86_NVRTC_12_9_86 = KernelFrameRecording(
 #: :data:`RESOLVED_TOOLCHAIN_PINS`).  Read 2026-09-28 with
 #: ``tools/vram_reserve_probe.py frames`` in a venv installed from
 #: ``cupy-cuda13x[ctk]>=14.0`` (CuPy 14.2.0, NVRTC build id CL-38855100),
-#: fresh CuPy cache, on an RTX 5090 (weather-node-2, 170 SMs) and an RTX
-#: 5070 Ti (weather-node-4, 70 SMs): the two cards agree to the byte on
+#: fresh CuPy cache, on an RTX 5090 (test host B, 170 SMs) and an RTX
+#: 5070 Ti (test host D, 70 SMs): the two cards agree to the byte on
 #: every module.  Every row equals the 13.3.33 recording's, so the
 #: 13.3 -> 13.4 step moved no standalone frame on this architecture, and
 #: the five modules that recording never read (``lbc_time``,
@@ -711,10 +711,10 @@ SM86_NVRTC_12_9_86 = KernelFrameRecording(
 #: portable_libm64_grade included).  Re-read 2026-10-02 on RTX 5090
 #: through the production loader for the four 2.8.2 keys below
 #: (bandwidth_glue, diff_opt1, noah_init, wrf_cold_start_w), and on
-#: node-4's RTX 5070 Ti the same day at NVRTC 13.0.48, 13.0.88, 13.3.33,
+#: test host D's RTX 5070 Ti the same day at NVRTC 13.0.48, 13.0.88, 13.3.33,
 #: 13.4.92 and 12.9.86: 0 B each on both cards.
 SM120_NVRTC_13_4_92 = KernelFrameRecording(
-    box='weather-node-2',
+    box='test host B',
     device='NVIDIA GeForce RTX 5090',
     compute_capability='120',
     nvrtc_build='13.4.92',
@@ -722,7 +722,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
     measured='2026-10-05',
     # FAST_SBM and the full-column Thompson generation arrived after this
     # full reading; their own rows (G2, V12) do not back-fill a measurement
-    # on this compile platform.  Lin, Ferrier-Aligo and WSM-family (WSM7) units also arrived after it.
+    # on this compile platform.  Lin, Ferrier-Aligo, WSM-family (WSM7) and CCPP TKE-EDMF units also arrived after it.
     complete=False,
     frames=MappingProxyType({
         # The original cu6 kernel (cu_physics = 6), read 2026-10-09 on V9's
@@ -732,7 +732,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'tiedtke': 16,
         # 2.9.0 round 2: four units golden/ports-rad and golden/ports-cu brought
         # with no row, read 2026-10-13 with tools/vram_reserve_probe.py frames
-        # through the production loader on node-4's RTX 5070 Ti (70 SMs), CuPy
+        # through the production loader on test host D's RTX 5070 Ti (70 SMs), CuPy
         # 14.2.0, nvidia-cuda-nvrtc 13.4.92, at 2f7194f53 (the two cards of this
         # recording agree to the byte on every module both read): nsas through
         # its no-FTZ route, lightning through its direct NVRTC site.
@@ -753,7 +753,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'rrtmg_smoke_manifest': 0,
         'upper_wind_limiter': 0,
         # The coupled fire's standalone units (lane/ec-sfire), read
-        # 2026-10-06 with `tools/vram_reserve_probe.py frames` on node-4's
+        # 2026-10-06 with `tools/vram_reserve_probe.py frames` on test host D's
         # RTX 5070 Ti (sm_120), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92,
         # through the production loader: 0 B each.  The same reading
         # reproduced every other row of this recording to the byte.  The
@@ -762,6 +762,13 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'sfire_coupling': 0,
         'sfire_ideal': 0,
         'sfire_ideal_atmos': 0,
+        # Classic Thompson's transcription of WRF v4.6.1 mp_thompson
+        # (lane/parity-mp-libm), read 2026-10-05 through the production
+        # loader (-std=c++17 --fmad=false) on an RTX PRO 6000 Blackwell
+        # (box J, sm_120), CuPy 14.2.0, NVRTC 13.4: every entry point 0 B
+        # (tc_entry, tc_sources, tc_column, tc_refl10cm,
+        # tc_effective_radius, tc_finish; 32/158/96/198/28/16 registers).
+        'thompson_classic': 0,
         # Initialization-only parameter-table scaler, driver attributes
         # read through the production loader on 2026-10-04, CuPy 14.2.0,
         # NVRTC 13.4.92 (CL-38855100), -std=c++17: 0 B local, 16 registers,
@@ -798,14 +805,14 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'real_init': 0,
         'real_init_math': 0,
         # The chem program's standalone kernels, read 2026-09-30 on
-        # weather-node-2's RTX 5090 through gpuwm.core.kernels.load_module
+        # test host B's RTX 5090 through gpuwm.core.kernels.load_module
         # in a venv of cupy-cuda13x 14.2.0 and nvidia-cuda-nvrtc 13.4.92
         # (read_compile_platform() == ('120', '13.4.92')); the same pass
         # at nvidia-cuda-nvrtc 13.4.59 read every value identically
         # (lane/aq-gocart; lane/aq-core's chem kernels are entered below
         # from its own read, which the same pass reproduced, and so are
         # the dycore-host speed lane's four units).  The same pass on
-        # weather-node-1's RTX 4090 (sm_89, NVRTC 13.0.48) is
+        # test host A's RTX 4090 (sm_89, NVRTC 13.0.48) is
         # SM89_NVRTC_13_0_48 below.
         'chem_ageing': 0,
         'chem_drydep_gocart': 0,
@@ -817,9 +824,9 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'chem_seasalt': 0,
         'chem_settling': 0,
         'chem_sulfur': 32,
-        # lane/aq-cams, read 2026-09-30 on weather-node-2's RTX 5090 with
+        # lane/aq-cams, read 2026-09-30 on test host B's RTX 5090 with
         # tools/vram_reserve_probe.py frames (NVRTC 13.4.92, CL-38855100);
-        # the same kernel reads 0 B on weather-node-1's RTX 4090 (sm_89).
+        # the same kernel reads 0 B on test host A's RTX 4090 (sm_89).
         'chem_drydep_wesely': 0,
         'acoustic': 544,
         'advection': 0,
@@ -829,11 +836,11 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # per-level arrays in any chem kernel: 2,048 B at its unspecialized
         # CHEM_NZ = 256 and exactly 8 B a level at every bound read (11, 30,
         # 49, 59, 96, 128, 129, 200, 256), so nothing reserved through 128
-        # levels.  The same six read the same bytes on weather-node-1's RTX
+        # levels.  The same six read the same bytes on test host A's RTX
         # 4090 (sm_89, NVRTC 13.4).  mono_advection sits in order below.
         'chem_bdy': 0,
         # The smoke lane's three units (lane/aq-smoke), read 2026-09-30 on
-        # this box and on weather-node-1's RTX 4090 (sm_89, NVRTC 13.4.92)
+        # this box and on test host A's RTX 4090 (sm_89, NVRTC 13.4.92)
         # with the same frames reader, every entry point equal on both:
         # chem_fire 64 B (its fire-type classifier's 16 group sums),
         # chem_plumerise 0 B -- the Freitas plume state lives in a global
@@ -853,12 +860,12 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'diff6': 0,
         'diff6_seam': 0,
         'diffusion': 0,
-        # Read 2026-10-02 on RTX 5090 and on node-4's RTX 5070 Ti, through
+        # Read 2026-10-02 on RTX 5090 and on test host D's RTX 5070 Ti, through
         # the production loader at this NVRTC: both coordinate-diffusion
         # exports 0 B.
         'diff_opt1': 0,
         # New merged leaf modules, read on RTX 5090 at the same
-        # compiler. All exported kernels are 0 B, on node-4's RTX 5070 Ti too.
+        # compiler. All exported kernels are 0 B, on test host D's RTX 5070 Ti too.
         'bandwidth_glue': 0,
         'noah_init': 0,
         'wrf_cold_start_w': 0,
@@ -976,8 +983,12 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # Read 2026-09-30 on this box at this NVRTC, fresh CuPy cache (WRF
         # v4.7.1 slope_rad / topo_shading, lane 281-namelist-gaps): the
         # shadow scan and the surface adjustment 40 B each, the other four
-        # entry points 0 B.
-        'topo_radiation': 40,
+        # entry points 0 B.  Re-read 2026-10-07 at the same NVRTC on W1's
+        # RTX PRO 6000 (sm_120, fresh cache, lane verify-topo-radiation):
+        # the pre-change unit still reads 40 B there, and with the float32
+        # libm words in place of CUDA's double sin/cos every entry point
+        # reads 0 B.
+        'topo_radiation': 0,
         'uh_diag': 0,
         # uwpbl.cu joined after this reading.  Read on this card and
         # this NVRTC build 2026-09-30 (the loader's get_function().
@@ -996,7 +1007,10 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # build, after lane/verify-wsm6-mp6 rewrote kernels/wsm6.cu as WRF's
         # own call chain: 7,216 -> 6,448 B at WSM6_KMAX 64 (8,048 B at 80);
         # wsm6_refl10cm_column, the module's other kernel, is 3,392 B.
-        'wsm6': 6448,
+        # RE-READ 2026-10-16 on an RTX 5090 (this NVRTC build) after
+        # the column workspace (memory census item 12): both kernels hold
+        # 0 B; the column arrays moved to a launcher-owned global workspace.
+        'wsm6': 0,
         'ysu': 0,
         'ysu_validation': 0,
         # The urban canopy models joined after this reading.  Read on this
@@ -1042,9 +1056,16 @@ PHYSICS_PARAMS_MEASURED_SOURCE_SHA256 = (
 # Courant <= 1 kept the upwind flux (lane/ec-tracer-mass): RTX 5090
 # (box L), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92, through the production
 # loader with `tools/vram_reserve_probe.py frames`: 0 B, as before.
+# upper_wind_limiter was re-read 2026-10-07 after glibc_flt32.cuh's gfk_exp
+# took a fused argument reduction (lane/verify-noah-lsm, d22f6ff48; the
+# limiter's own source is unchanged): box W1, RTX PRO 6000 (sm_120), CuPy
+# 14.2.0, NVRTC 12.9.86, `tools/vram_reserve_probe.py frames` through the
+# production loader on the lane tree and on the verify-base tree: 0 B on
+# both, and every module of the frames census reads the same on both
+# (noah 176 B, ruc 144 B, ysu 0 B).  Previously e9b862f4.
 DYCORE_FRAME_MEASURED_SOURCE_SHA256 = MappingProxyType({
     "pd_vertical_sl": "929291a52c94c01fc7a3c648d867e26f0339b84865a24445911d8f7b2f862222",
-    "upper_wind_limiter": "e9b862f461fbb18827ec6768ae7517020d55e20ba12683fa11b626fc119dfe6c",
+    "upper_wind_limiter": "d5ae17c0401ca7ef2d72f16de490e57a2090e6e35523c060637eef0e1b4686a8",
 })
 
 #: A167: sm_120 at NVRTC 12.9.86, the compiler of the default gpuwm[gpu]
@@ -1060,18 +1081,18 @@ DYCORE_FRAME_MEASURED_SOURCE_SHA256 = MappingProxyType({
 #: other row is at or below it (gf 88, uwpbl 2,032, noahmp_leaves 272 read
 #: as other recordings already carry them).  Read 2026-10-01 with
 #: tools/vram_reserve_probe.py frames through the production loader, fresh
-#: CuPy and driver caches, two processes on each of node-4's RTX 5070 Ti
-#: (driver 13.2) and node-2's RTX 5090 (driver 13.3), CuPy 14.2.0 with
+#: CuPy and driver caches, two processes on each of test host D's RTX 5070 Ti
+#: (driver 13.2) and test host B's RTX 5090 (driver 13.3), CuPy 14.2.0 with
 #: nvidia-cuda-nvrtc-cu12 12.9.86: the four readings agree to the byte.
 #: COMPLETE: every ``.cu`` that compiles alone, the 15 that do not being
 #: exactly preflight.UNMEASURED_KERNEL_MODULES.
 #: Re-read 2026-10-02 on RTX 5090 through the production loader:
 #: all 99 standalone rows, including the four new keys below.
 #: Earlier cross-card readings above describe the preceding
-#: 95-row source set. The new rows read 0 B on node-4's RTX 5070 Ti too
+#: 95-row source set. The new rows read 0 B on test host D's RTX 5070 Ti too
 #: (2026-10-02, this build).
 SM120_NVRTC_12_9_86 = KernelFrameRecording(
-    box='weather-node-2',
+    box='test host B',
     device='NVIDIA GeForce RTX 5090',
     compute_capability='120',
     nvrtc_build='12.9.86',
@@ -1086,6 +1107,7 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
         # Lin row measured on G2, same arch/compiler, 2026-10-08.
         # Default tier 128; tiers 256/512 are 45488/60848 bytes.
         "lin": 37808,
+        'satmedmf': 0,  # G2 2026-10-08, production loader, three entry points, NVRTC 12.9.86.
         'acoustic': 544,
         'advection': 0,
         'coriolis_map': 0,
@@ -1093,12 +1115,12 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
         'diff6': 0,
         'diff6_seam': 0,
         'diffusion': 0,
-        # Read 2026-10-02 on RTX 5090 and on node-4's RTX 5070 Ti, through
+        # Read 2026-10-02 on RTX 5090 and on test host D's RTX 5070 Ti, through
         # the production loader at this NVRTC: both coordinate-diffusion
         # exports 0 B.
         'diff_opt1': 0,
         # New merged leaf modules, read on RTX 5090 at the same
-        # compiler. All exported kernels are 0 B, on node-4's RTX 5070 Ti too.
+        # compiler. All exported kernels are 0 B, on test host D's RTX 5070 Ti too.
         'bandwidth_glue': 0,
         'noah_init': 0,
         'wrf_cold_start_w': 0,
@@ -1110,7 +1132,7 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
         'health_tile': 0,
         'held_heating': 0,
         # The card preparation's units (lane 281-gpu-forcing-prep), read
-        # 2026-10-01 on node-2's RTX 5090 at this build with the rest of the
+        # 2026-10-01 on test host B's RTX 5090 at this build with the rest of the
         # tree, fresh CuPy cache: wider here than under NVRTC 13.4 for the
         # float64 libm twins (real_init_math, thompson_cold_start and the
         # test-only grading unit 48 B, against 0 B at 13.4.92).
@@ -1131,7 +1153,13 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
         'microphysics_validation': 0,
         'milbrandt2': 2048,
         'milbrandt2_zet': 0,
-        'morrison': 5120,
+        # Re-read 2026-10-07 at the WRF v4.6.1 transcription
+        # (lane/verify-morrison-mp10) on box W1's RTX PRO 6000 (sm_120,
+        # NVRTC 12.9.86, the production loader, by
+        # tests/test_preflight.py::test_the_recorded_local_frames_match_the_driver):
+        # 4,096 B, down from the replaced kernel's 5,120 B.  The other
+        # platforms' morrison rows are still the replaced kernel's.
+        'morrison': 4096,
         'myjpbl': 9232,
         'myjsfc': 0,
         'myjurb': 12304,
@@ -1189,13 +1217,16 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
         'thompson_aerosol_state': 40,
         'thompson_aerosol_warm': 0,
         'tke_budget': 0,
-        'topo_radiation': 40,
+        # Re-read 2026-10-07 on W1's RTX PRO 6000 (sm_120) at this NVRTC,
+        # fresh cache (lane verify-topo-radiation): 0 B on every entry point
+        # with the float32 libm words; the pre-change unit reads 40 B.
+        'topo_radiation': 0,
         'uh_diag': 0,
         'urban_bep': 16,
         'urban_bep_couple': 0,
         'urban_ucm': 552,
         'uwpbl': 2032,
-        # Re-read 2026-10-01 on node-2's RTX 5090 at this build (fresh CuPy
+        # Re-read 2026-10-01 on test host B's RTX 5090 at this build (fresh CuPy
         # cache, the GPU forcing-preparation lane's merge 843d2043e): the
         # WRF-real vertical step that gives the Rust bridge's bits is 512 B.
         'vert_interp': 512,
@@ -1213,11 +1244,17 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
         # build: tiedtke_column holds 24 B (255 registers). Its column
         # arrays live in a per-call global arena, not in the frame.
         'tiedtke': 24,
+        # lane/verify-rrtmg-legacy-lw-sw: the legacy RRTMG solar unit
+        # (rrtmg_legacy_solar.cu), read 2026-10-07 on W1's RTX PRO 6000
+        # Blackwell (sm_120) at this NVRTC through the production loader:
+        # 0 B for rls_radconst and rls_calc_coszen.  Not yet read at NVRTC
+        # 13.4.92, so that complete recording does not list it.
+        'rrtmg_legacy_solar': 0,
     }),
 )
 
 
-#: node-1's RTX 4090 (sm_89) at NVRTC 13.4.92, the cupy-cuda13x[ctk] build
+#: test host A's RTX 4090 (sm_89) at NVRTC 13.4.92, the cupy-cuda13x[ctk] build
 #: of a fresh gpu-cu13 install, read 2026-09-30 with tools/
 #: vram_reserve_probe.py frames: every standalone ``.cu`` in the tree (the
 #: 86 it compiles; the 13 it cannot are the composed fragments of
@@ -1236,7 +1273,7 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
 #: Both read on this card on 2026-10-01 (see the first rows below), and the
 #: recording is complete again.
 SM89_NVRTC_13_4_92 = KernelFrameRecording(
-    box='weather-node-1',
+    box='test host A',
     device='NVIDIA GeForce RTX 4090',
     compute_capability='89',
     nvrtc_build='13.4.92',
@@ -1244,6 +1281,11 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
     measured='2026-09-30',
     complete=False,  # The new lake module has not been read on this architecture.
     frames=MappingProxyType({
+        # CCPP production-loader reading on SM89, NVRTC 13.4.92,
+        # 2026-10-10: module maximum 112 B, column 255 registers.
+        # docs/public/receipts/ccpp-tke-edmf-sm89-frame.json retains
+        # compiler provenance and the bitwise column parity receipt.
+        'satmedmf': 112,
         # Read whole 2026-10-01 on this card at this build, fresh CuPy cache,
         # at the GPU forcing-preparation lane's merge with integrate/2.8
         # 57066783c (843d2043e): every row below equals that reading, and the
@@ -1381,7 +1423,9 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
         'vert_interp': 512,
         'wdm6': 9264,
         'wdm6_refl': 16128,
-        'wsm6': 7216,
+        # RE-READ 2026-10-16 on an RTX 4090 (sm_89, this NVRTC build) after the WSM6 column
+        # workspace (lane/292-mem-cuts): wsm6_refl10cm_column holds 24 B, wsm6_column less.
+        'wsm6': 24,
         'ysu': 0,
         'ysu_validation': 0,
     }),
@@ -1391,13 +1435,13 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
 # gp-vert measured only this module on each card at the loaded compiler.
 # The wider tiers read 1280 B and 2048 B; the table prices the default unit.
 SM120_VERT_NVRTC_13_4_59 = KernelFrameRecording(
-    box='node-2', device='NVIDIA GeForce RTX 5090',
+    box='test host B', device='NVIDIA GeForce RTX 5090',
     compute_capability='120', nvrtc_build='13.4.59',
     platform_family='linux', measured='2026-09-30', complete=False,
     frames=MappingProxyType({'vert_interp': 512}),
 )
 SM89_VERT_NVRTC_13_4_59 = KernelFrameRecording(
-    box='node-1', device='NVIDIA GeForce RTX 4090',
+    box='test host A', device='NVIDIA GeForce RTX 4090',
     compute_capability='89', nvrtc_build='13.4.59',
     platform_family='linux', measured='2026-09-30', complete=False,
     frames=MappingProxyType({'vert_interp': 512}),
@@ -1407,13 +1451,13 @@ SM89_VERT_NVRTC_13_4_59 = KernelFrameRecording(
 #: Every recording, oldest reading first.  Order is not significant to
 #: the ceiling; it is the order a reader should walk them in.
 SM120_NVRTC_13_4_59_COLD_START = KernelFrameRecording(
-    box='weather-node-2', device='NVIDIA GeForce RTX 5090',
+    box='test host B', device='NVIDIA GeForce RTX 5090',
     compute_capability='120', nvrtc_build='13.4.59', platform_family='linux',
     measured='2026-09-30', complete=False,
     frames=MappingProxyType({'thompson_cold_start': 0}),
 )
 SM89_NVRTC_13_4_59_COLD_START = KernelFrameRecording(
-    box='weather-node-1', device='NVIDIA GeForce RTX 4090',
+    box='test host A', device='NVIDIA GeForce RTX 4090',
     compute_capability='89', nvrtc_build='13.4.59', platform_family='linux',
     measured='2026-10-01', complete=False,
     # Re-read 2026-10-01 on this card at the lane's merge (843d2043e): 48 B,
@@ -1478,7 +1522,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     # that no longer exists; that platform re-reads lake on its next box.
     # gp-libm64 records only its new grading unit on the measured compiler.
     KernelFrameRecording(
-        box='node-2', device='NVIDIA GeForce RTX 5090',
+        box='test host B', device='NVIDIA GeForce RTX 5090',
         compute_capability='120', nvrtc_build='13.4.59',
         platform_family='linux', measured='2026-09-30', complete=False,
         # YSU's production module, including ysu_column_topo, re-read
@@ -1489,13 +1533,25 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
                                 'wrf_cold_start_w': 0}),
     ),
     KernelFrameRecording(
-        box='node-1', device='NVIDIA GeForce RTX 4090',
+        box='test host A', device='NVIDIA GeForce RTX 4090',
         compute_capability='89', nvrtc_build='13.4.59',
         platform_family='linux', measured='2026-09-30', complete=False,
         frames=MappingProxyType({'portable_libm64_grade': 48}),
     ),
     SM120_NVRTC_13_4_59_COLD_START,
     SM89_NVRTC_13_4_59_COLD_START,
+    # The 2.9.1 intake of the WRF exact chain: physics_exner.cu, the
+    # strict (GPUWM_WRF_EXACT=1) scalar WRF power behind
+    # physics._physics_exner, read 2026-10-16 on this card through the
+    # production loader in both arithmetic modes: 0 B.  The same reading
+    # took the strict units of the default-source modules (nssl2*,
+    # rrtmgp_*, ysu): each at or under its ceiling, so none is listed.
+    KernelFrameRecording(
+        box='test host B', device='NVIDIA GeForce RTX 5090',
+        compute_capability='120', nvrtc_build='13.4.92',
+        platform_family='linux', measured='2026-10-16', complete=False,
+        frames=MappingProxyType({'physics_exner': 0}),
+    ),
     SM120_NVRTC_13_0_48,
     SM120_NVRTC_13_3_33,
     SM86_NVRTC_13_0_48,
@@ -1520,7 +1576,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     # instance of the same fail-closed raise waiting for whoever
     # priced a run that selected them.
     KernelFrameRecording(
-        box='node-1 (this workstation)',
+        box='test host A (this workstation)',
         device='NVIDIA GeForce RTX 5070 Ti',
         compute_capability='120',
         nvrtc_build='13.0.88',
@@ -1543,14 +1599,14 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
             # loader at this NVRTC: both coordinate-diffusion exports 0 B.
             'diff_opt1': 0,
             # New merged leaf modules, read on RTX 5090 at the same
-            # compiler. All exported kernels are 0 B, on node-4's RTX 5070 Ti too.
+            # compiler. All exported kernels are 0 B, on test host D's RTX 5070 Ti too.
             'bandwidth_glue': 0,
             'noah_init': 0,
             'wrf_cold_start_w': 0,
             'dycore': 0,
             'ftz_probe': 0,
-            # RE-READ 2026-09-28 on an RTX 5090 (node-2) and an RTX 5070
-            # Ti (node-4), NVRTC 13.0.88 build id CL-36424714 on both:
+            # RE-READ 2026-09-28 on an RTX 5090 (test host B) and an RTX 5070
+            # Ti (test host D), NVRTC 13.0.88 build id CL-36424714 on both:
             # gf 88 -> 72 and shinhong 14,040 -> 13,000 (its row below)
             # since this recording was read; every other row reproduced
             # to the byte.
@@ -1620,7 +1676,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
             'tke_budget': 0,
             'uh_diag': 0,
             'vert_interp': 768,
-            # RE-READ 2026-09-28, RTX 5070 Ti (node-4), NVRTC 13.0.88,
+            # RE-READ 2026-09-28, RTX 5070 Ti (test host D), NVRTC 13.0.88,
             # after 308c2d39e (WDM6 rain mass and number conservation)
             # took falk and falkn, two per-level arrays, off the stack:
             # 9,776 -> 9,264 B at WDM6_KMAX 64, 11,568 B at 80.
@@ -1666,7 +1722,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     SM89_VERT_NVRTC_13_4_59,
 
     # A FIFTH COMPILE PLATFORM, partial on purpose: sm_89 at NVRTC
-    # 13.0.48, weather-node-1's RTX 4090 (CuPy 14.0.1), read 2026-09-30
+    # 13.0.48, test host A's RTX 4090 (CuPy 14.0.1), read 2026-09-30
     # by lane/aq-gocart with the same instrument (load_module, then the
     # widest local_size_bytes over each module's exported __global__
     # symbols, zero launches) over the chem program's standalone modules
@@ -1674,7 +1730,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     # chem_dust 72 B (AFWA's chem_dust_afwa; 0 B on sm_120) and
     # chem_optics 1,904 B (1,648 B on sm_120).  No other module was read.
     KernelFrameRecording(
-        box='weather-node-1',
+        box='test host A',
         device='NVIDIA GeForce RTX 4090',
         compute_capability='89',
         nvrtc_build='13.0.48',
@@ -1700,7 +1756,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     ),
 
     # A SIXTH COMPILE PLATFORM, partial on purpose: sm_89 at NVRTC 13.4.59
-    # (CuPy 14.2.0, CUDA runtime 13.2), weather-node-1's RTX 4090, read
+    # (CuPy 14.2.0, CUDA runtime 13.2), test host A's RTX 4090, read
     # 2026-10-01 on the integrated chem line (lane/aq-integrate) with
     # tools/vram_reserve_probe.py frames: load_module, then the widest
     # local_size_bytes over each module's exported __global__ symbols, zero
@@ -1710,7 +1766,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     # same two the 13.0.48 reading raised; chem_vertmx is its unspecialized
     # CHEM_NZ = 256 frame, as on sm_120.
     KernelFrameRecording(
-        box='weather-node-1',
+        box='test host A',
         device='NVIDIA GeForce RTX 4090',
         compute_capability='89',
         nvrtc_build='13.4.59',
@@ -1739,6 +1795,22 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
             'chem_wetdep_ls': 0,
             'mono_advection': 0,
         }),
+    ),
+    # 2.9.2 line, 2026-10-17: the two modules preflight.UNMEASURED_KERNEL_MODULES
+    # still declared uncompilable compile alone now, read through the
+    # production loader (kernels.load_module, kernel_local_size_bytes) on test
+    # host B's RTX 5090.  goddard reads at its source default GDD_MAX_LEVELS
+    # tier; urban_ucm480 is the WRF 4.8 full-canopy SLUCM.  The same run of
+    # tests/test_preflight.py::test_the_recorded_local_frames_match_the_driver
+    # read fast_sbm at 27,408 B on this compiler, 672 B wider than the G2
+    # NVRTC 12.9.86 row above, so the ceiling takes this reading.  None of
+    # the three moves the assumed bound (thompson_column, 50,016 B).
+    KernelFrameRecording(
+        box='test host B', device='NVIDIA GeForce RTX 5090',
+        compute_capability='120', nvrtc_build='13.4.92',
+        platform_family='linux', measured='2026-10-17', complete=False,
+        frames=MappingProxyType({'goddard': 43664, 'urban_ucm480': 352,
+                                 'fast_sbm': 27408}),
     ),
 )
 
@@ -1854,9 +1926,23 @@ CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW = MappingProxyType({
         "with -fmad=false --ftz=false; terrain_drag.cu fails standalone. "
         "Priced 1,184 B from sm_89 and sm_120 at NVRTC 13.4.59, measured "
         "2026-10-01 over every export; re-read 2026-10-02 on sm_120 at "
-        "13.4.59, 13.4.92 and 12.9.86 with the same maximum. Re-audited by "
+        "13.4.59, 13.4.92 and 12.9.86 with the same maximum. Re-read "
+        "2026-10-07 on sm_120 (RTX PRO 6000) at 12.9.86 after "
+        "lane/verify-gwdo-kim's td_atan2f, unchanged. Re-audited by "
         "tests/test_terrain_drag_wrf471_parity.py::"
         "test_production_drag_frames_match_the_recorded_unit.",
+    "thompson_fork_unit":
+        "thompson_fork.cu + thompson_fork_constants.cuh compiled directly "
+        "with thompson_fork.MODULE_OPTIONS by "
+        "gpuwm/core/thompson_fork.py (_module); the *.cu glob compiles it "
+        "with the loader's options, which is not what launches.  Priced "
+        "784 B, thompson_fork_column's register spill at 255 registers on "
+        "sm_120 (RTX PRO 6000 Blackwell Server Edition) at NVRTC 12.9.86, "
+        "read 2026-10-07 in the default and the strict build; its column "
+        "arrays are an arena priced by "
+        "preflight.thompson_fork_column_workspace_bytes.  Re-read on any "
+        "device by tests/test_thompson_fork_column_gpu.py::"
+        "test_the_column_unit_compiles_to_the_frame_it_is_priced_at.",
 })
 
 
@@ -1864,8 +1950,13 @@ CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW = MappingProxyType({
 # export.  These are separate from standalone .cu recordings: the unit
 # requires the two glibc headers.  The source and options bind the readings
 # to the composition that was measured, rather than only to its filename.
+# Re-pinned by lane/verify-gsl-drag (gwdo_gsl_column gained the SPP pattern
+# pointer and one load): the (120, 12.9.86) row was re-read on the RTX PRO
+# 6000 on 2026-10-07 with the new source and is unchanged; the other three
+# rows are carried from the previous composition, not re-read.
 TERRAIN_DRAG_COMPOSED_SOURCE_SHA256 = (
-    "ee9a70dfaff59d8e9d36f6b4a0214fa9124c72742b0bb60726639460f7b60fcf")
+    '152673b7e9981fc75721b69b0d222e0bd9d8b4fdfc5bcfe14275d0d61f2aab9b')
+
 TERRAIN_DRAG_COMPOSED_OPTIONS = ("-std=c++17", "-fmad=false", "--ftz=false")
 TERRAIN_DRAG_COMPOSED_FRAME_READINGS = MappingProxyType({
     ("89", "13.4.59"): MappingProxyType({
@@ -1959,7 +2050,7 @@ class ComposedUnitFrameRecording:
 #: platform from the element-wise maximum over the rows that describe
 #: this tree (:func:`gpuwm.core.noahmp_frame_provenance.composed_frame_ceiling`).
 NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
-    # weather-node-1, RTX 5070 Ti (70 SMs x 1,536), Linux, sm_120 at NVRTC
+    # test host A, RTX 5070 Ti (70 SMs x 1,536), Linux, sm_120 at NVRTC
     # 13.3.33 -- the same compile platform as SM120_NVRTC_13_3_33 above,
     # re-read 2026-09-10 for the fifteen Noah-MP runtime units with
     # `python tools/measure_noahmp_frames.py measure` (fresh process, empty
@@ -2042,7 +2133,7 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
                 '737546bb9ec00f4b1069dee8fc7ba9b0a436dd1153f1988e81e79a8f49e5a423',
         }),
     ),
-    # weather-node-1, the same RTX 5070 Ti, Linux, sm_120 at NVRTC 13.4.59
+    # test host A, the same RTX 5070 Ti, Linux, sm_120 at NVRTC 13.4.59
     # -- the compiler a FRESH `pip install gpuwm[gpu-cu13]` has installed
     # since 2026-09-09, when cuda-toolkit 13.4.1 (the `[ctk]` extra's
     # resolution) began pinning nvidia-cuda-nvrtc 13.4.59.  Read
@@ -2127,7 +2218,7 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
                 '737546bb9ec00f4b1069dee8fc7ba9b0a436dd1153f1988e81e79a8f49e5a423',
         }),
     ),
-    # weather-node-1, the same RTX 5070 Ti (70 SMs x 1,536), Linux, sm_120
+    # test host A, the same RTX 5070 Ti (70 SMs x 1,536), Linux, sm_120
     # at NVRTC 12.9.86 -- the compiler every fresh CUDA-12 install
     # compiles on.  `cupy-cuda12x[ctk]>=14.0` resolves cuda-toolkit
     # 12.9.2.0, which pins nvidia-cuda-nvrtc-cu12 12.9.86; re-resolved
@@ -2279,7 +2370,7 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # ceiling, never below its last reading, and plan review says so.
     # Re-read it with `python tools/measure_noahmp_frames.py measure` on
     # an sm_86 card and restore "86" to the gpu-cu12 pin.
-    # weather-node-2, RTX 5090 (170 SMs x 1,536), Linux, sm_120 at NVRTC
+    # test host B, RTX 5090 (170 SMs x 1,536), Linux, sm_120 at NVRTC
     # 13.4.92 -- the compiler a FRESH `pip install gpuwm[gpu-cu13]` has
     # installed since 2026-09-16, when cuda-toolkit 13.4.2 (the `[ctk]`
     # extra's resolution) began pinning nvidia-cuda-nvrtc 13.4.92.  Read
@@ -2287,7 +2378,7 @@ NOAHMP_COMPOSED_FRAME_RECORDINGS: tuple[ComposedUnitFrameRecording, ...] = (
     # venv installed from `cupy-cuda13x[ctk]>=14.0` (CuPy 14.2.0, NVRTC
     # build id CL-38855100), same instrument and same fresh-process
     # discipline as the rows above (fifteen units, 108 exports, empty CuPy
-    # cache, zero launches).  weather-node-4's RTX 5070 Ti (70 SMs) read
+    # cache, zero launches).  test host D's RTX 5070 Ti (70 SMs) read
     # the same day in its own venv of the same resolution gave the same
     # frames and the same unit identities, so the row is a reading of the
     # platform and not of one card.
@@ -2480,7 +2571,7 @@ RESOLVED_TOOLCHAIN_PINS: tuple[ResolvedToolchainPin, ...] = (
     # This is the compiler the shipped desktop runtime carries and the
     # extra `gpuwm[gpu]` and `gpuwm[all]` alias to, and two architectures
     # were read on it 2026-09-11 inside environments installed from this
-    # very requirement: sm_120 on weather-node-1 and sm_86 on the platform
+    # very requirement: sm_120 on test host A and sm_86 on the platform
     # the packaged desktop runtime compiles on.  Both are declared here:
     # the declaration is the statement that a fresh install of this extra
     # lands on a recorded platform, and the gate in
@@ -2655,3 +2746,21 @@ KERNEL_LOCAL_FRAME_RECORDINGS += (
         frames=MappingProxyType({"wsm6r": 0}),
     ),
 )
+
+# WRF's ocean mixed layer (oml.cu, sf_ocean_physics = 1), read from driver
+# function attributes by its port lane (port289-1-ocean1-oml) through the
+# production loader in both arithmetic modes: 0 B for oml_init and oml_step.
+# Partial: only the new unit is claimed here.
+KERNEL_LOCAL_FRAME_RECORDINGS += (
+    KernelFrameRecording(
+        box="V12", device="NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+        compute_capability="120", nvrtc_build="12.8.93",
+        platform_family="linux", measured="2026-10-10", complete=False,
+        frames=MappingProxyType({"oml": 0}),
+    ),
+)
+# A new standalone unit retires older completeness claims; measured frame
+# values stay unchanged.
+KERNEL_LOCAL_FRAME_RECORDINGS = tuple(
+    replace(row, complete=False) if "oml" not in row.frames else row
+    for row in KERNEL_LOCAL_FRAME_RECORDINGS)

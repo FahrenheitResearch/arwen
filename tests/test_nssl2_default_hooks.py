@@ -84,6 +84,15 @@ def test_default_hook_binds_direct_workspace_nucond_once(monkeypatch):
         assert np.shares_memory(args[offset], expected)
         assert args[offset].ctypes.data == expected.ctypes.data
     assert args[15] == 2.5
+    frozen = kwargs.pop("frozen")
+    # WRF's NUCOND moment tail (module_mp_nssl_2mom.F:11726-12205) cleans
+    # and density-bounds graupel and hail too, so the production hook must
+    # hand NUCOND the workspace's own graupel/hail views, in this order.
+    for actual, name in zip(
+            frozen, ("qg", "qh", "qng", "qnh", "qvolg", "qvolh"),
+            strict=True):
+        expected = workspace.field(name)
+        assert actual.ctypes.data == expected.ctypes.data
     assert kwargs == {
         "supersaturation_scratch":
             state._scratch[default_hooks.NSSL2_NUCOND_SCRATCH],

@@ -1,7 +1,7 @@
 """A failed stage whose event stream its owner already closed does not mask the failure.
 
 Breakage it prevents (golden 2.9.0 verify round 1, the ensemble showcase's
-defect (b), reproduced on node-2 with the candidate wheel): an ensemble
+defect (b), reproduced on test host B with the candidate wheel): an ensemble
 member's preparation refused (GEFS has no analysed aerosol), the door said so
 and returned exit 1, and then the command's ledger closed the member's
 observer.  Its preparation stage was still open, so the observer wrote

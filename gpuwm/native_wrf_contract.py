@@ -55,6 +55,23 @@ NATIVE_LANDUSE_IDENTITY = {
     "ISICE": 15,
 }
 
+
+def native_landuse_identity(static=None) -> dict:
+    """:data:`NATIVE_LANDUSE_IDENTITY` for one prepared static.
+
+    The native caches carry the MODIS table.  Its 20-category set without
+    the lake class (the 15 arc-second land use geog_data_res = 'modis_15s'
+    selects) has no category 21, and geogrid writes ISLAKE = -1 for it.
+    Handed the constant's 21, RUC's mosaic land use indexed LANDUSEF[20] of
+    a 20-plane static and the forecast stopped ("index 20 is out of bounds
+    for axis 0 with size 20").  Every other static gets the constant.
+    """
+    identity = dict(NATIVE_LANDUSE_IDENTITY)
+    landusef = None if static is None else static.get("LANDUSEF")
+    if landusef is not None and int(np.shape(landusef)[0]) == 20:
+        identity["ISLAKE"] = -1
+    return identity
+
 _NATIVE_STATIC_MASS_2D = frozenset({
     "HGT_M", "LANDMASK", "LU_INDEX", "SCT_DOM", "SCB_DOM", "SNOALB",
     "SOILTEMP", "TMN",
@@ -398,8 +415,18 @@ def _landuse_category_count(landusef) -> int:
     classes.  The table identity (MMINLU, ISWATER, ISLAKE, ISICE) is the same
     table's; any other count still fails the shape check below.  Which legend
     a run may use is bound by the prepared-static identity, not here.
+
+    The GEOG tree's MODIS land use without its lake class (the 15
+    arc-second set geog_data_res = 'modis_15s' selects) has 20 categories,
+    as geogrid stamps it; the forecast refused that static ("LANDUSEF has
+    shape (20, ...), expected (21, ...)") until 2.9.1, so NOAA's operational
+    HRRR namelist.wps could import and then not prepare.
     """
+    from gpuwm.static.build import _LANDUSE_CATEGORY_COUNTS
+
     count = int(np.shape(landusef)[0])
+    if count in set(_LANDUSE_CATEGORY_COUNTS.values()):
+        return count
     if count != _NATIVE_STATIC_CATEGORY_COUNT["LANDUSEF"]:
         from gpuwm.core.landuse import load_landuse_table
         if count == int(load_landuse_table().lucats):

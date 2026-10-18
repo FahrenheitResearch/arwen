@@ -757,12 +757,12 @@ def test_the_contract_carries_both_rules():
     contract = build_namelist_contract()
     sections = contract["sections"]
     num_land_cat = sections["physics"]["keys"]["num_land_cat"]
-    assert num_land_cat["values"] == [21, 61]
+    assert num_land_cat["values"] == [20, 21, 61]
     assert "use_wudapt_lcz = 1" in num_land_cat["why"]
     geog = sections["geogrid"]["keys"]["geog_data_res"]
     assert geog["values"] is None
     assert geog["tokens"] == ["30s", "5m", "bnu_soil_30s", "cglc_modis_lcz", "default",
-                              "modis_lai"]
+                              "modis_15s", "modis_fpar", "modis_lai"]
     assert geog["token_separator"] == "+"
     assert geog["reach"] == "max_dom"
     assert "also replaces terrain and soil" in geog["why"]

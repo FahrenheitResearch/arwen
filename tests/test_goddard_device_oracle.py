@@ -35,7 +35,7 @@ def _run(tmp_path, mutate_band=None):
     assert cp.cuda.runtime.getDeviceCount() > 0
     # The runner is a second CUDA process on the same card.  Inside a GPU
     # shard this process's CuPy pools still hold every earlier test's blocks,
-    # and on a 16 GB card (node-4's RTX 5070 Ti, 2.9.0 round 2) the runner's
+    # and on a 16 GB card (test host D's RTX 5070 Ti, 2.9.0 round 2) the runner's
     # band kernel then could not reserve its local memory at launch
     # (CUDA_ERROR_OUT_OF_MEMORY).  Hand the cached blocks back first.
     cp.cuda.Device().synchronize()

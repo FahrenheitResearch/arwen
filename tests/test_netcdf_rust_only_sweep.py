@@ -96,6 +96,14 @@ _PLUMBING_OR_BLOCKED = {
     # The process-wide netCDF4 session lock and the deferred import every
     # other user here takes since 0b680cac1 (D-10): it opens no dataset.
     "gpuwm/io/netcdf_serialization.py": "plumbing",
+    # merge_boundary rewrites a wrfbdy_d01 with a longer forcing tail
+    # (2.9.2, the forcing-extension door).  Blocked on the reader, not
+    # the writer: rw_netcdf's inventory hands attribute values back
+    # untyped (an NC_INT FieldType of 104 arrives as the float 104.0),
+    # and the rebuilt file must carry WRF's int/float attribute types
+    # as the source did.  Converts once the inventory names each
+    # attribute's stored type (named gap; owner: the NetCDF bridge).
+    "gpuwm/io/wrf_boundary_extension.py": "attrs",
     "gpuwm/offline_child.py": "plumbing",
     "gpuwm/offline_child_run.py": "plumbing",
     "gpuwm/render.py": "plumbing",

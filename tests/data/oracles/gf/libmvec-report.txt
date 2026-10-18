@@ -1,5 +1,5 @@
 # gfortran: GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
-# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39
+# glibc:    ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
 # -O0 libm symbols (THE REFERENCE):
 module_cu_gf_deep U __powisf2
 module_cu_gf_deep U expf

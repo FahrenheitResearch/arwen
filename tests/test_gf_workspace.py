@@ -308,6 +308,7 @@ static inline double __dadd_rn(double a, double b) { return a + b; }
 static inline double __dsub_rn(double a, double b) { return a - b; }
 static inline double __dmul_rn(double a, double b) { return a * b; }
 static inline double __ddiv_rn(double a, double b) { return a / b; }
+static inline double __fma_rn(double a, double b, double c) { return std::fma(a, b, c); }
 static inline float __uint_as_float(unsigned int u)
 { float f; std::memcpy(&f, &u, 4); return f; }
 static inline unsigned int __float_as_uint(float f)

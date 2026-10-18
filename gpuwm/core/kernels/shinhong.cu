@@ -11,17 +11,19 @@
 // column col is [k*st + col] with st = ny*nx; the working arrays use a tiled global workspace,
 // indexed 1-based like the Fortran, and bounded by SHINHONG_KMAX.
 //
-// ARM A ONLY.  The oracle records two arms; this kernel implements arm A
-// (ctopo = ctopo2 = 1), the only arm WRF's Registry default (topo_wind=0) and
-// this engine can reach.  With ctopo == 1 the momentum surface-drag diagonal
-// (:1387) multiplies by exactly 1.0f, and with ctopo2 == 1 the u10/v10 blend
-// (:1472-1473) returns its input word for word -- both are bitwise identities,
-// proved on the CPU gate by
-// tests/test_shinhong_wrf461_parity.py::test_the_topo_wind_arm_is_real_and_this_far_from_arm_a
-// (which also pins how far arm B actually sits from arm A: ~1.9e9 ULP on the
-// momentum tendencies, because they cross zero between the arms).  The ctopo
-// multiply and the u10/v10 blend are therefore omitted here, and the kernel
-// has no u10/v10 outputs at all.
+// TWO ARMS.  The oracle records two arms.  Arm A (ctopo = ctopo2 = 1, WRF's
+// Registry default topo_wind = 0) is shinhong_column: with ctopo == 1 the
+// momentum surface-drag diagonal (:1387) multiplies by exactly 1.0f and with
+// ctopo2 == 1 the u10/v10 blend (:1472-1473) returns its input word for word,
+// both bitwise identities (proved on the CPU gate by
+// tests/test_shinhong_wrf461_parity.py::test_the_topo_wind_arm_is_real_and_this_far_from_arm_a,
+// which also pins how far arm B sits from arm A: ~1.9e9 ULP on the momentum
+// tendencies, because they cross zero between the arms), so that kernel
+// spells neither and writes no u10/v10.  Arm B is shinhong_column_topo,
+// WRF's topo_wind = 1 or 2: module_pbl_driver.F hands Shin-Hong CTOPO and
+// CTOPO2 exactly as it hands YSU, and the scheme reads both (:1387,
+// :1472-1473).  Until lane/verify-topo-wind this engine refused topo_wind
+// under Shin-Hong on the claim that only YSU reads the coefficients.
 //
 // Two deliberate divergences carried over from the authority, both
 // defined-behaviour guards against reads WRF itself never defines:
@@ -128,13 +130,20 @@ struct ShColC {
 // The scheme's own per-level names, as the authority spells them.
 #define SH_UX(k)    SH_G(u, k)
 #define SH_VX(k)    SH_G(v, k)
-#define SH_THX(k)   SH_G(theta, k)
-// Temperature: the engine hands the kernel theta and exner, so tx is formed
-// as theta*exner where the scheme reads temperature (same convention as
-// ysu.cu; the parity loader reconstructs theta = t/pi2d so thx is bitwise
-// WRF's, and the (t/pi)*pi round-trip cost at the tx sites lands in the
-// pinned tables).
+// Temperature and potential temperature, formed exactly as WRF forms them.
+// The engine hands the kernel the model's theta and exner.  WRF's phy_prep
+// forms t_phy = th_phy*pi_phy, one float32 multiply
+// (module_big_step_utilities_em.F:4855), and module_pbl_driver hands THAT
+// to the scheme as t3d; the scheme then forms its own thx = tx/pi2d (:559).
+// (theta*pi)/pi is not the float32 identity, so reading theta directly as
+// thx is not WRF's word: on the wide column oracle
+// (tools/shinhong_column_oracle, 903 columns) theta and (theta*pi)/pi differ
+// on 2,016 of 41,755 levels, and the kernel that read theta directly
+// differed from WRF on about 1,100 lanes of every tendency and on hpbl in 77
+// columns (up to 117 ULP).  Both words are therefore formed here, the
+// division spelled __fdiv_rn so it is IEEE in every build.
 #define SH_TX(k)    (SH_G(theta, k) * SH_G(exner, k))
+#define SH_THX(k)   __fdiv_rn(SH_TX(k), SH_G(exner, k))
 #define SH_QVX(k)   SH_G(qv, k)
 #define SH_QCX(k)   SH_G(qc, k)
 #define SH_QIX(k)   SH_G(qi, k)
@@ -513,6 +522,7 @@ __device__ void sh_mixlen(const real *u, const real *v, const real *theta,
 
 __device__ void sh_prodq2(real dtturbl, real ustar,
                           const real *u, const real *v, const real *theta,
+                          const real *exner,
                           int st, int col, ShColC thvx,
                           ShCol q2, ShColC el, ShColC z,
                           ShColC akm, ShColC akh,
@@ -629,12 +639,153 @@ __device__ void sh_vdifq(real dtdif, ShCol q2, ShColC z, ShColC akhk,
         q2[k] = (-(cr[k] * q2[k - 1]) + rsq2[k]) / cm[k];
 }
 
+// tanhf for the convective length scale's csfac, :847
+// `csfac = 0.5*(tanh(uwstx)+3.)`.
+//
+// WHY NOT tanh() IN DOUBLE.  Until lane/verify-topo-wind this read
+// __double2float_rn(tanh((double)uwstx)), the correctly rounded tanh.  The
+// reference platform of this verification (Ubuntu 24.04, glibc 2.39, the
+// platform of the YSU and MYNN oracles) returns the classic expm1f-based
+// tanhf, which differs from the correctly rounded value on 5.3% of floats
+// in [-0.5, 10] (tools/ysu_wrf461_oracle/tanhf_sweep.py).  csfac sets
+// cslen and so the mixing length and the nonlocal momentum profile; the
+// topo_wind chain oracle's 24,775-cell Shin-Hong sweep showed 16 cells off
+// WRF in el, tke, du or dv (up to 8,738 ULP on dv, |du| 1.6e-8 m/s2) under
+// every topo_wind option, arm A included, and nowhere else.  sh_tanhf and
+// sh_expm1f are WOOF's own float32 code, the same algorithm and the same
+// words as the YSU unit's ysu_tanhf/ysu_expm1f (kernels/ysu_topo.cuh) and
+// the MYNN unit's mynn_tanhf/mynn_expm1f, held to the reference platform's
+// tanhf by tests/test_shinhong_topo_wind.py (the YSU oracle's stored sample
+// of it) and, over every float in [-10, 10], by
+// tools/topo_wind_wrf461_oracle/sh_tanhf_sweep.py.
+__device__ __forceinline__ real sh_scale_exponent(real y, int k)
+{
+    return __uint_as_float(__float_as_uint(y) + ((unsigned)k << 23));
+}
+
+__device__ real sh_expm1f(real x)
+{
+    const real ln2_hi = __uint_as_float(0x3F317180u);
+    const real ln2_lo = __uint_as_float(0x3717F7D1u);
+    const real invln2 = __uint_as_float(0x3FB8AA3Bu);
+    const real q1 = __uint_as_float(0xBD088889u);
+    const real q2 = __uint_as_float(0x3AD00D01u);
+    const real q3 = __uint_as_float(0xB8A670CDu);
+    const real q4 = __uint_as_float(0x36867E54u);
+    const real q5 = __uint_as_float(0xB457EDBBu);
+    const real tiny = 1.0e-30f;
+
+    unsigned word = __float_as_uint(x);
+    unsigned sign = word & 0x80000000u;
+    unsigned magnitude = word & 0x7FFFFFFFu;
+    if (magnitude >= 0x4195B844u) {              // |x| >= 27*ln2
+        if (magnitude >= 0x42B17218u) {          // |x| >= 88.72
+            if (magnitude > 0x7F800000u) return __fadd_rn(x, x);
+            if (magnitude == 0x7F800000u) return sign == 0u ? x : -1.0f;
+            if (x > 8.8721679688e01f) return __int_as_float(0x7F800000);
+        }
+        if (sign != 0u) return __fsub_rn(tiny, 1.0f);
+    }
+    int k;
+    real correction;
+    if (magnitude > 0x3EB17218u) {               // |x| > 0.5*ln2
+        real hi, lo;
+        if (magnitude < 0x3F851592u) {           // |x| < 1.5*ln2
+            if (sign == 0u) {
+                hi = __fsub_rn(x, ln2_hi); lo = ln2_lo; k = 1;
+            } else {
+                hi = __fadd_rn(x, ln2_hi); lo = -ln2_lo; k = -1;
+            }
+        } else {
+            k = (int)__fadd_rn(__fmul_rn(invln2, x), sign == 0u ? 0.5f : -0.5f);
+            real scale = (real)k;
+            hi = __fsub_rn(x, __fmul_rn(scale, ln2_hi));
+            lo = __fmul_rn(scale, ln2_lo);
+        }
+        x = __fsub_rn(hi, lo);
+        correction = __fsub_rn(__fsub_rn(hi, x), lo);
+    } else if (magnitude < 0x33000000u) {        // |x| < 2**-25
+        return x;
+    } else {
+        k = 0;
+        correction = 0.0f;
+    }
+
+    real hfx = __fmul_rn(0.5f, x);
+    real hxs = __fmul_rn(x, hfx);
+    real r1 = __fadd_rn(1.0f, __fmul_rn(hxs, __fadd_rn(q1, __fmul_rn(hxs,
+        __fadd_rn(q2, __fmul_rn(hxs, __fadd_rn(q3, __fmul_rn(hxs,
+            __fadd_rn(q4, __fmul_rn(hxs, q5))))))))));
+    real t = __fsub_rn(3.0f, __fmul_rn(r1, hfx));
+    real e = __fmul_rn(hxs, __fdiv_rn(__fsub_rn(r1, t),
+                                      __fsub_rn(6.0f, __fmul_rn(x, t))));
+    if (k == 0) return __fsub_rn(x, __fsub_rn(__fmul_rn(x, e), hxs));
+    e = __fsub_rn(__fmul_rn(x, __fsub_rn(e, correction)), correction);
+    e = __fsub_rn(e, hxs);
+    if (k == -1) return __fsub_rn(__fmul_rn(0.5f, __fsub_rn(x, e)), 0.5f);
+    if (k == 1) {
+        if (x < -0.25f)
+            return __fmul_rn(-2.0f, __fsub_rn(e, __fadd_rn(x, 0.5f)));
+        return __fadd_rn(1.0f, __fmul_rn(2.0f, __fsub_rn(x, e)));
+    }
+    real y;
+    if (k <= -2 || k > 56) {
+        y = __fsub_rn(1.0f, __fsub_rn(e, x));
+        y = sh_scale_exponent(y, k);
+        return __fsub_rn(y, 1.0f);
+    }
+    if (k < 23) {
+        t = __uint_as_float(0x3F800000u - (0x1000000u >> k));
+        y = __fsub_rn(t, __fsub_rn(e, x));
+    } else {
+        t = __uint_as_float((unsigned)(0x7F - k) << 23);
+        y = __fsub_rn(x, __fadd_rn(e, t));
+        y = __fadd_rn(y, 1.0f);
+    }
+    return sh_scale_exponent(y, k);
+}
+
+// 1 - 2/(expm1f(2|x|)+2) at |x| >= 1, -t/(t+2) below, saturated at 22.
+__device__ real sh_tanhf(real x)
+{
+    const real tiny = 1.0e-30f;
+    unsigned word = __float_as_uint(x);
+    unsigned magnitude = word & 0x7FFFFFFFu;
+    real z;
+    if (magnitude >= 0x7F800000u)                // inf or NaN: one/x +- one
+        return (word & 0x80000000u) == 0u
+            ? __fadd_rn(__fdiv_rn(1.0f, x), 1.0f)
+            : __fsub_rn(__fdiv_rn(1.0f, x), 1.0f);
+    if (magnitude < 0x41B00000u) {               // |x| < 22
+        if (magnitude < 0x24000000u)             // |x| < 2**-55
+            return __fmul_rn(x, __fadd_rn(1.0f, x));
+        real ax = __uint_as_float(magnitude);
+        if (magnitude >= 0x3F800000u) {          // |x| >= 1
+            real t = sh_expm1f(__fmul_rn(2.0f, ax));
+            z = __fsub_rn(1.0f, __fdiv_rn(2.0f, __fadd_rn(t, 2.0f)));
+        } else {
+            real t = sh_expm1f(__fmul_rn(-2.0f, ax));
+            z = __fdiv_rn(-t, __fadd_rn(t, 2.0f));
+        }
+    } else {
+        z = __fsub_rn(1.0f, tiny);
+    }
+    return (word & 0x80000000u) == 0u ? z : -z;
+}
+
 // ------------------------------------------------------------------------
 // The column: shinhong (:9-262) around shinhong2d (:266-1615), arm A.
 // ------------------------------------------------------------------------
 
-extern "C" __global__
-void shinhong_column(const real *u, const real *v, const real *theta,
+// TOPO selects arm B, WRF's topo_wind (dyn_em/start_em.F:1579-1626 forms
+// CTOPO/CTOPO2, gpuwm.core.terrain_drag.topo_wind_coefficients): CTOPO
+// scales the surface-drag diagonal (:1387) and CTOPO2 blends the 10 m wind
+// toward the first-level wind (:1472-1473), written to u10_out/v10_out.
+// TOPO = false is arm A, the ctopo = ctopo2 = 1 identity, and compiles to
+// the kernel it always was (shinhong_column below).
+template <bool TOPO>
+__device__ __forceinline__
+void shinhong_column_body(const real *u, const real *v, const real *theta,
                      const real *qv, const real *qc, const real *qi,
                      const real *p, const real *p_interface,
                      const real *exner, const real *dz, const real *tke,
@@ -648,7 +799,9 @@ void shinhong_column(const real *u, const real *v, const real *theta,
                      real *hpbl_out, int *kpbl_out, real *wstar_out,
                      real *delta_out,
                      real dt, real dx, real dy, int tke_diag,
-                     int nz, int ny, int nx, real *ws, int wskp, int col0) {
+                     int nz, int ny, int nx, real *ws, int wskp, int col0,
+                     const real *ctopo, const real *ctopo2,
+                     real *u10_out, real *v10_out) {
     int col = col0 + blockDim.x * blockIdx.x + threadIdx.x;
     int st = ny * nx;
     if (col >= st || nz > SHINHONG_KMAX) return;
@@ -733,7 +886,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
     // conq/conw/conwrc (:545-547) feed only the dusfc/dvsfc/dtsfc/dqsfc
     // accumulators, which the wrapper never reads; not transcribed.
 
-    // thx is the model's theta itself (see SH_THX above); thvx (:563-568).
+    // thx = tx/pi2d (:559, see SH_THX above); thvx (:563-568).
     for (int k = 1; k <= kte; ++k) {
         real tvcon = 1.0f + ep1 * SH_QVX(k);
         thvx[k] = SH_THX(k) * tvcon;
@@ -903,7 +1056,11 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         if (wstar != 0.0f) {
             real uwst = fabsf(ustv / wstar - 0.5f);
             real uwstx = -80.0f * uwst + 14.0f;
+#ifdef GPUWM_WRF_EXACT
+            csfac = 0.5f * (sh_tanhf(uwstx) + 3.0f);
+#else
             csfac = 0.5f * (__double2float_rn(tanh((double)uwstx)) + 3.0f);
+#endif
         } else {
             csfac = 1.0f;   // dead in WRF: pblflg requires sflux>0 => wstar>0
         }
@@ -1330,9 +1487,15 @@ void shinhong_column(const real *u, const real *v, const real *theta,
     real s = wspd1 / wspdv;                      // no floor: WRF has none, and
                                                  // the fixture's 1e-10 wspd
                                                  // probe would measure one
-    // :1387 -- both arms run this; the ctopo multiply is the arm-A identity
-    // omitted per the header comment.
-    ad[1] = 1.0f + ustv * ustv / wspd1 * rhox * G / delp[1] * dt2 * (s * s);
+    // :1387 `1.+ctopo(i)*ust(i)**2/wspd1(i)*rhox(i)*g/del(i,1)*dt2*(...)**2`,
+    // evaluated left to right from ctopo*ust**2.  Arm A's ctopo = 1 product
+    // is the identity, so it is not spelled there (per the header comment).
+    if constexpr (TOPO)
+        ad[1] = 1.0f + ctopo[col] * (ustv * ustv) / wspd1 * rhox * G
+                / delp[1] * dt2 * (s * s);
+    else
+        ad[1] = 1.0f + ustv * ustv / wspd1 * rhox * G / delp[1] * dt2
+                * (s * s);
     r1[1] = SH_UX(1);
     r2[1] = SH_VX(1);
     for (int k = 1; k <= kte - 1; ++k) {
@@ -1385,6 +1548,16 @@ void shinhong_column(const real *u, const real *v, const real *theta,
 
     // ---- 10 m wind blend (:1471-1474): with ctopo2 = 1 the blend returns
     // its input bitwise (the arm-A identity, see the header); no outputs.
+    // Arm B: u10 = ctopo2*u10 + (1-ctopo2)*ux(1), ux(1) the first-level wind
+    // the call was handed; each product and the sum rounded once, as gfortran
+    // rounds them (ysu_topo.cuh ysu_topo_blend_u10).
+    if constexpr (TOPO) {
+        real c2 = ctopo2[col];
+        u10_out[col] = __fadd_rn(__fmul_rn(c2, u10[col]),
+                                 __fmul_rn(__fsub_rn(1.0f, c2), SH_UX(1)));
+        v10_out[col] = __fadd_rn(__fmul_rn(c2, v10[col]),
+                                 __fmul_rn(__fsub_rn(1.0f, c2), SH_VX(1)));
+    }
 
     // ---- SGS TKE diagnostics (:1478-1608) ----
     if (tke_diag == 1) {
@@ -1442,7 +1615,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
                   q2xk, zq, ustv, corfv, epshol, hpbl, kpbl, pblflg,
                   hgamu, hgamv, hgamq, mfk, ufxpblk, vfxpblk, qfxpblk, kte,
                   s2k, rigk, elk, wsb, wskp);
-        sh_prodq2(dt, ustv, u, v, theta, st, col, thvx,
+        sh_prodq2(dt, ustv, u, v, theta, exner, st, col, thvx,
                   q2xk, elk, zq, akmk, akhk,
                   hgamu, hgamv, hgamq, delxy, hpbl, pblflg, kpbl,
                   mfk, ufxpblk, vfxpblk, qfxpblk, kte);
@@ -1462,6 +1635,24 @@ void shinhong_column(const real *u, const real *v, const real *theta,
     delta_out[col] = delta;
 }
 
+#define SH_COLUMN_PARAMS     const real *u, const real *v, const real *theta, const real *qv,     const real *qc, const real *qi, const real *p, const real *p_interface,     const real *exner, const real *dz, const real *tke, const real *psfc,     const real *znt, const real *ust, const real *hfx, const real *qfx,     const real *wspd, const real *br, const real *psim, const real *psih,     const real *xland, const real *u10, const real *v10, const real *corf,     real *du, real *dv, real *dtheta, real *dqv, real *dqc, real *dqi,     real *exch_h, real *tke_out, real *el, real *hpbl_out, int *kpbl_out,     real *wstar_out, real *delta_out, real dt, real dx, real dy,     int tke_diag, int nz, int ny, int nx, real *ws, int wskp, int col0
+#define SH_COLUMN_ARGS     u, v, theta, qv, qc, qi, p, p_interface, exner, dz, tke, psfc, znt,     ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10, corf, du, dv,     dtheta, dqv, dqc, dqi, exch_h, tke_out, el, hpbl_out, kpbl_out,     wstar_out, delta_out, dt, dx, dy, tke_diag, nz, ny, nx, ws, wskp, col0
+
+// Arm A: every run without topo_wind.
+extern "C" __global__
+void shinhong_column(SH_COLUMN_PARAMS) {
+    shinhong_column_body<false>(SH_COLUMN_ARGS, nullptr, nullptr, nullptr,
+                                nullptr);
+}
+
+// Arm B: topo_wind = 1 or 2 (gpuwm.core.shinhong.launch_shinhong topo=).
+extern "C" __global__
+void shinhong_column_topo(SH_COLUMN_PARAMS, const real *ctopo,
+                          const real *ctopo2, real *u10_out, real *v10_out) {
+    shinhong_column_body<true>(SH_COLUMN_ARGS, ctopo, ctopo2, u10_out,
+                               v10_out);
+}
+
 // ------------------------------------------------------------------------
 // Direct probe of the five partition functions, mirroring the oracle's
 // shinhong-partition.csv d x h grid.  This is the guaranteed-firing negative
@@ -1469,6 +1660,15 @@ void shinhong_column(const real *u, const real *v, const real *theta,
 // powf, so the probe pins exactly how far the device curves sit from the
 // words WRF wrote, without the column dynamics in between.
 // ------------------------------------------------------------------------
+
+// sh_tanhf on its own, for the gate that holds it to the reference
+// platform's tanhf.
+extern "C" __global__
+void shinhong_tanhf_probe(const real *x, real *out, long long n) {
+    long long i = (long long)blockDim.x * blockIdx.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = sh_tanhf(x[i]);
+}
 
 extern "C" __global__
 void shinhong_partition_probe(const real *d, const real *h,

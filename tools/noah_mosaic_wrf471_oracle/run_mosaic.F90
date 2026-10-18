@@ -282,7 +282,7 @@ program run_mosaic
   subn=transfer(1,1.0);nzero=sign(0.,-1.)
   dzs=[.10,.30,.60,1.00]
   sf_urban_physics=0;lcz=0;nurbm=3
-  do switch=1,11
+  do switch=1,12
   mc=3;nlcat=21
   if(switch==5) mc=1
   if(switch==6) mc=5
@@ -476,6 +476,14 @@ program run_mosaic
     qv3d(19,1,1)=.008;canwat(24,1)=.3
     chs(25,1)=.02;chs2(25,1)=.03;cqs2(25,1)=.03
   endif
+  if(switch==12) then
+    ! High terrain: the base columns near 3 km (interface pressures 710 and
+    ! 700 hPa, SFCPRS 70500 Pa), 12 K colder air, skin, soil and deep soil,
+    ! 40% less vapour and saturation humidity, 40 W m-2 less longwave.
+    p8w3d(:,1,1)=71000.;p8w3d(:,2,1)=70000.
+    t3d=t3d-12.;tsk=tsk-12.;tslb=tslb-12.;tmn=tmn-12.
+    qv3d=qv3d*.6;qgh=qgh*.6;glw=glw-40.
+  endif
 
   allocate(landusef(ncase,nlcat,1),landusef2(ncase,nlcat,1),mosaic_cat_index(ncase,nlcat,1))
   allocate(tsk_mosaic(ncase,mc,1)); tsk_mosaic=0.
@@ -620,7 +628,7 @@ program run_mosaic
     mc=1
     sfcrunoff=0.;udrunoff=0.;potevp=0.;acsnom=0.;snopcx=0.;acsnow=0.
   endif
-  do step=1,merge(1,4,switch>=8)
+  do step=1,merge(1,4,switch>=8.and.switch<=11)
     itimestep=step
     if(step==2) then
       swdown=0.;gsw=0.;rainbl=2.
@@ -641,6 +649,8 @@ program run_mosaic
       call oracle_open('twins/'//trim(case_name))
     case(11)
       call oracle_open('ftz/'//trim(case_name))
+    case(12)
+      call oracle_open('terrain/'//trim(case_name))
     end select
     call oracle_put('variant',switch)
     call oracle_put('mosaic_cat',mc);call oracle_put('nlcat',nlcat)

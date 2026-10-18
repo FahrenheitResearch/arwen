@@ -62,7 +62,11 @@ def test_dispatch_table_routes_only_values_with_a_real_runner():
         # to its own runner and graded against tools/uwpbl_wrf471_oracle.
         "bl_pbl_physics": {0: None, 1: "_run_ysu", 2: "_run_myj_pbl",
                            5: "_run_mynn_pbl", 9: "_run_uwpbl",
-                           11: "_run_shinhong", 900: "_run_sase"},
+                           11: "_run_shinhong", 900: "_run_sase",
+                           901: "_run_satmedmf"},
+        # 1 is WRF's one-dimensional ocean mixed layer (OML1D), graded
+        # against WRF's own column module.
+        "sf_ocean_physics": {0: None, 1: "_run_surface_ocean"},
     }
 
 
@@ -107,6 +111,7 @@ def test_routed_values_resolve_to_their_own_runner():
     assert resolve_physics_slot("bl_pbl_physics", 1) == "_run_ysu"
     assert resolve_physics_slot("bl_pbl_physics", 5) == "_run_mynn_pbl"
     assert resolve_physics_slot("bl_pbl_physics", 11) == "_run_shinhong"
+    assert resolve_physics_slot("bl_pbl_physics", 901) == "_run_satmedmf"
 
 
 # ---------------------------------------------------------------------------
@@ -124,15 +129,18 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
     # after every surface layer since lane/282-wrf-exact (f6eb30981);
     # production's _prepare_atmosphere and fields always carry both.
     atmosphere = {
+        "pressure": np.full((1, 1, 2), 95000.0, np.float32),
         "p_interface": np.array(
             [[[100000.0, 90000.0]], [[95000.0, 85000.0]]], np.float32),
         "qv": np.full((1, 1, 2), 0.01, np.float32),
     }
     monkeypatch.setattr(
         physics, "_prepare_atmosphere", lambda state: atmosphere)
-    state = SimpleNamespace(elapsed_seconds=0.0)
+    state = SimpleNamespace(elapsed_seconds=0.0, c1h=np.ones(1, np.float32),
+                            c2h=np.zeros(1, np.float32),
+                            total_mu=lambda: np.ones((1, 2), np.float32))
     cfg = SimpleNamespace(
-        dt=60.0, bldt=0.0, ra_physics=0,
+        dt=60.0, bldt=0.0, ra_physics=0, ra_rrtmg_variant="rte-rrtmgp",
         sf_sfclay_physics=sf_sfclay_physics,
         sf_surface_physics=sf_surface_physics,
         bl_pbl_physics=bl_pbl_physics, cu_physics=0,
@@ -140,16 +148,23 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
         # since 614632b77.
         ruc_2m_diagnostic="flux")
     driver = object.__new__(physics.PhysicsDriver)
+    driver._wrf_rthraten = None
+    driver._wrf_rthraten_coupled = True
     driver.swint = None
     driver.state = state
     driver.fields = {
         name: np.full((1, 2), value, np.float32)
         for name, value in {
-            "psfc": -123.0, "tsk": 290.0, "hfx": 0.0, "qfx": 0.0,
+            "p_hyd": 95000.0, "psfc": -123.0, "tsk": 290.0, "hfx": 0.0, "qfx": 0.0,
             "qsfc": 0.0, "chs2": 0.0, "cqs2": 0.0,
             "t2": -999.0, "q2": -999.0, "th2": -999.0, "xland": 1.0,
         }.items()
     }
+    for name in physics.PBL_HISTORY_RATES:
+        driver.fields[name] = np.zeros((1, 1, 2), np.float32)
+    for name, source in physics.SURFACE_ENERGY_ACCUMULATORS.items():
+        for field in (name, source):
+            driver.fields.setdefault(field, np.zeros((1, 2), np.float32))
     driver.surface_enabled = True
     # WRF swint_opt = 1's carrier (89aba028e): the real constructor leaves
     # this slot None when swint_opt is 0, and compute() reads it every step.
@@ -485,7 +500,8 @@ def test_schema_tables_and_soil_geometry():
     # 9 joined with the UW moist-turbulence port (WRF v4.7.1
     # module_bl_camuwpbl_driver.F): a routed runner, a restart identity,
     # a registry option and a namelist-import row in the same change.
-    assert PBL_SCHEMES == (0, 1, 2, 5, 9, 11, 900)
+    # 901 is the non-WRF CCPP closure, with its own runner and asset identity.
+    assert PBL_SCHEMES == (0, 1, 2, 5, 9, 11, 900, 901)
     assert LAND_SURFACE_SOIL_LAYERS[2] == (4,)
     assert LAND_SURFACE_SOIL_LAYERS[3] == (6, 9)
     assert LAND_SURFACE_SOIL_LAYERS[4] == (4,)
@@ -625,3 +641,14 @@ def test_vram_inventory_counts_the_mynn_surface_allocations():
     # ... and only when MYNN is selected: carrying them in every MM5 run
     # would change the restart inventory of unrelated configurations.
     assert not (extra & base)
+
+
+def test_ccpp_asset_identity_binds_only_the_active_pbl_table():
+    from gpuwm.io import restart
+
+    inactive = _cfg(sf_surface_physics=0, cu_physics=0, ra_physics=0,
+                    bl_pbl_physics=0)
+    active = _cfg(sf_surface_physics=0, cu_physics=0, ra_physics=0,
+                  bl_pbl_physics=901)
+    assert restart._active_asset_identity(inactive, None) == {}
+    assert set(restart._active_asset_identity(active, None)) == {"satmedmf_manifest"}

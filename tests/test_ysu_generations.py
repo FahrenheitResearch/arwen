@@ -80,22 +80,43 @@ def test_generation_paths_keep_legacy_source_and_noftz_is_scoped():
 def test_preflight_prices_the_selected_generation():
     from types import SimpleNamespace
     from gpuwm.core.preflight import domain_kernel_modules
+    from gpuwm.wrf_exact import ENABLED
+    from gpuwm.ysu_generations import ysu_kernel_selection
     for version in YSU_GENERATIONS:
         cfg = config(bl_pbl_physics=1, sf_sfclay_physics=1, ysu_version=version)
         modules = domain_kernel_modules(SimpleNamespace(run=cfg, grid_id=1), prices_refl=False)
-        selected = ysu_generation(version)["kernel_module"]
+        selected, _ = ysu_kernel_selection(version, strict=ENABLED)
         assert selected in modules
-        assert ("ysu" in modules) == (version == "wrf_461")
+        assert ("ysu" in modules) == (selected == "ysu")
 
 
-def test_legacy_reproduces_289_in_both_arithmetic_modes():
-    """wrf_461 is 2.8.9's YSU kernel and restart identity, default and strict:
-    a wrf_461 run (or a 2.8.9 checkpoint continued under it) must not move."""
+# Replaces test_legacy_reproduces_289_in_both_arithmetic_modes (90d99f591):
+# under GPUWM_WRF_EXACT=1 wrf_461 is now the source-ordered unit that writes
+# unmodified WRF 4.6.1's words, so it reproduces 2.8.9 under default
+# arithmetic only.
+def test_legacy_reproduces_289_by_default_and_wrf_461_under_strict():
+    """wrf_461 under default arithmetic is 2.8.9's YSU kernel and restart
+    identity: a default wrf_461 run (or a 2.8.9 checkpoint continued under
+    it) must not move.  Under GPUWM_WRF_EXACT=1 it is the source-ordered
+    unit that writes unmodified WRF 4.6.1's words
+    (test_ysu_generation_batch_gpu.py grades it), under its own identity, so
+    an older strict wrf_461 checkpoint is refused instead of continued with
+    different arithmetic."""
     from gpuwm.checkpoint_identity import PBL_ALGORITHM_IDENTITIES
     from gpuwm.ysu_generations import ysu_kernel_selection, ysu_algorithm_identity
     assert ysu_kernel_selection("wrf_461") == ("ysu", ())
-    assert ysu_kernel_selection("wrf_461", strict=True) == ("ysu", ())
+    assert ysu_kernel_selection("wrf_461", strict=True) == ("ysu_480", (("YSU_LEGACY_TOPDOWN", 1),))
     assert ysu_algorithm_identity("wrf_461") == PBL_ALGORITHM_IDENTITIES[1]
-    assert ysu_algorithm_identity("wrf_461", strict=True) == PBL_ALGORITHM_IDENTITIES[1]
+    assert ysu_algorithm_identity("wrf_461", strict=True) == "ysu-wrf-v4.6.1-source-order-noftz-v1"
     assert ysu_kernel_selection("wrf_480", strict=True) == ("ysu_480", ())
     assert ysu_algorithm_identity("wrf_480") != ysu_algorithm_identity("wrf_461")
+    # The 2.9.2 default wrf_480 entrainment Courant bound has its own
+    # identity; strict wrf_480 retains the upstream top-down cap. Both
+    # wrf_461 identities and its default 2.8.9 selection above stay pinned.
+    assert {ysu_algorithm_identity(v, strict=s) for v in YSU_GENERATIONS
+            for s in (False, True)} == {
+        PBL_ALGORITHM_IDENTITIES[1],
+        "ysu-wrf-v4.6.1-source-order-noftz-v1",
+        "ysu-wrf-v4.8.0-entrainment-courant-v2",
+        "ysu-wrf-v4.8.0-topdown-cap-noftz-v1",
+    }

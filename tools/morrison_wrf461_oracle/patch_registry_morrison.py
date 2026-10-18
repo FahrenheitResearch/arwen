@@ -21,39 +21,49 @@ REGISTRY_PATH = Path("gpuwm/physics_registry_v2.json")
 OPTION_MARKER = b'"morrison-mp10":'
 MORRISON_WARNINGS = [
     (
-        "Morrison is compared with 28 columns from the unmodified WRF v4.6.1 "
-        "public microphysics wrapper and radar diagnostic. Bitwise agreement "
-        "and forecast-trajectory agreement remain unestablished. Historical "
-        "aggregate residual signatures are diagnostic records, not accuracy "
-        "tolerances for the corrected algorithm."
+        "Morrison is the literal transcription of the unmodified WRF v4.6.1 "
+        "module_mp_morr_two_moment (driver, MORR_TWO_MOMENT_MICRO, POLYSVP, "
+        "GAMMA, refl10cm_hm). Built without the two declared corrections "
+        "(MORR_ROW37_OFF) it returns WRF's words bitwise under both strict "
+        "and default arithmetic on the 28-column wrapper fixture, six seeded "
+        "stress sets (24,576 columns) and 742 weather-regime columns "
+        "(tools/morrison_wrf461_oracle). Forecast-trajectory agreement with "
+        "WRF remains unestablished."
     ),
     (
         "Both WRF rimed-ice identities are implemented, with "
         "morr_rimed_ice=0 selecting graupel AG=19.3/BG=0.37/RHOG=400 and =1 "
         "selecting WRF-default hail AG=114.5/BG=0.5/RHOG=900 in both the "
-        "process kernel and reflectivity diagnostic."
+        "process kernel and reflectivity diagnostic; the constants are the "
+        "words WRF's own MORR_TWO_MOMENT_INIT and radar_init compute."
     ),
     (
-        "Finite-transfer corrections retain rain and cloud freezing through "
-        "their joint donor budgets, restore log-space cloud moments, store "
-        "vapor returned by final cleanup, and preserve number when its slope "
-        "is already in range. Exceptional freezing uses wider intermediates; "
-        "this corrects inherited numerical failure and changes continuation "
-        "identity. Tiny column checks establish these transfers, not forecast "
-        "skill or the validity of the empirical formulas at extreme cold."
+        "Declared divergence 1: where WRF's float freezing-rate exponentials "
+        "overflow (very cold rain or cloud), WRF returns non-finite state; "
+        "WOOF re-evaluates the rates in double and rations the cloud and "
+        "rain donors, so its state stays finite. Measured: it fires only in "
+        "columns where WRF's own output is not finite."
     ),
     (
-        "Deposition nucleation retains the declared correction that caps "
-        "MNUCCD by vapor excess over ice saturation and scales NNUCCD with it. "
-        "The reference's one-sided limiter can create a seed mass without "
-        "available vapor. This deliberate difference remains active."
+        "Declared divergence 2: deposition nucleation caps MNUCCD by the "
+        "vapor excess over ice saturation and scales NNUCCD with it. Below "
+        "about 159 K WRF's one-sided FUDGEF limiter lets nucleation draw "
+        "vapor that is not there (negative vapor); above it, in cold "
+        "ice-supersaturated air near the tropopause (measured 178-213 K), "
+        "the cap keeps each nucleated crystal at its seed mass where WRF "
+        "shrinks the mass but not the number, so ni, qi, qs, qv and "
+        "reflectivity differ from WRF in those columns."
     ),
     (
-        "Remaining comparison obligations include default-REAL constants, "
-        "the reference GAMMA implementation, transcendental and contraction "
-        "behavior, and the chosen reference compiler. The four effective "
-        "radii lack expected values in the committed wrapper fixture; "
-        "agreement with a float64 transcription does not supply that oracle."
+        "Declared divergence 3: WRF's SR = SNOWRT/(PRECRT+1E-12) sums "
+        "signed fallout and leaves [0, 1] in degenerate columns (WRF itself "
+        "returns SR < 0 in 401 and SR > 1 in 208 of 24,576 stress columns); "
+        "the forecast path clips SR to [0, 1] before the land surface reads "
+        "it. Only SR moves, only there."
+    ),
+    (
+        "The four effective radii have no WRF expected values in the "
+        "wrapper fixture; WRF's wrapper does not return them."
     ),
 ]
 

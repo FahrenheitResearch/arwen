@@ -875,14 +875,40 @@ fn check_classic_extent(file: &netcrust::File) -> Result<bool, String> {
 /// Preserve fixed-width ASCII character arrays in their declared shape.
 /// Classic readers return one string per row; HDF5 NC_CHAR returns one
 /// string per byte. Neither packing nor CF masking applies to characters.
-fn character_bytes(file: &netcrust::File, variable: &netcrust::Variable) -> Result<Vec<u8>, String> {
+///
+/// `vlen` names an NC_STRING variable (NetCDF-4 variable-length text, one
+/// text per element and no character dimension in its shape, e.g. RFMIP's
+/// `expt_label`): its texts are padded to the widest one, and that width
+/// is returned so the caller can append it to the shape. Before this such
+/// a variable was refused as "does not fit its 1-byte slot", and one such
+/// variable failed every variable read beside it.
+fn character_bytes(file: &netcrust::File, variable: &netcrust::Variable, vlen: bool)
+                   -> Result<(Vec<u8>, Option<usize>), String> {
     let name = variable.name();
     let shape = variable.shape();
     let total = shape.iter().try_fold(1usize, |n, &size| n.checked_mul(size))
         .ok_or_else(|| format!("{name}: character shape overflows"))?;
     let width = shape.last().copied().unwrap_or(1);
     let strings = file.read_strings(name).map_err(|error| format!("cannot decode {name}: {error}"))?;
-    if total == 0 && strings.is_empty() { return Ok(Vec::new()); }
+    if total == 0 && strings.is_empty() { return Ok((Vec::new(), None)); }
+    // An HDF5 NC_CHAR array also answers as the string type, one text per
+    // byte (shape (19, 32) -> 608 one-character texts): that is the classic
+    // form below.  Variable-length text is the case where one text per
+    // element carries more than a character.
+    if vlen && strings.len() == total && strings.iter().any(|text| text.len() > 1) {
+        let chunk = strings.iter().map(|text| text.len()).max().unwrap_or(1);
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(total * chunk)
+            .map_err(|error| format!("{name}: cannot allocate {} character bytes: {error}", total * chunk))?;
+        for text in strings {
+            if !text.is_ascii() {
+                return Err(format!("{name}: expected ASCII text; decoded text is not ASCII"));
+            }
+            bytes.extend_from_slice(text.as_bytes());
+            bytes.resize(bytes.len() + chunk - text.len(), 0);
+        }
+        return Ok((bytes, Some(chunk)));
+    }
     let chunk = if width > 0 && strings.len() == total / width {
         width
     } else if strings.len() == total { 1 } else {
@@ -898,7 +924,7 @@ fn character_bytes(file: &netcrust::File, variable: &netcrust::Variable) -> Resu
         bytes.extend_from_slice(text.as_bytes());
         bytes.resize(bytes.len() + chunk - text.len(), 0);
     }
-    Ok(bytes)
+    Ok((bytes, None))
 }
 
 #[cfg(test)]
@@ -1019,14 +1045,24 @@ fn dump_one(path: &Path, file: &netcrust::File, out_dir: &Path, index: usize, na
             if window.is_some() || sample_window.is_some() {
                 return Err(format!("{name}: --window requires a numeric variable"));
             }
-            let shape = variable.shape();
-            let values = character_bytes(&file, variable)?;
+            let mut shape = variable.shape();
+            let mut dimensions: Vec<String> =
+                variable.dimensions().iter().map(|d| d.name().to_string()).collect();
+            let vlen = matches!(variable.dtype(), netcrust::DataType::String);
+            let (values, string_width) = character_bytes(&file, variable, vlen)?;
+            if let Some(width) = string_width {
+                // NC_STRING: the texts have no character dimension of their
+                // own, so the record gets one, the widest text, and the
+                // reader sees the same (..., width) S1 array a classic
+                // char variable gives it.
+                shape.push(width);
+                dimensions.push(format!("{name}_strlen"));
+            }
             let filename = format!("{index:04}.chars");
             fs::write(out_dir.join(&filename), values)
                 .map_err(|error| format!("cannot write {name}: {error}"))?;
             return Ok(DumpRecord {
-                name: name.to_string(), filename, shape,
-                dimensions: variable.dimensions().iter().map(|d| d.name().to_string()).collect(),
+                name: name.to_string(), filename, shape, dimensions,
                 dtype: "|S1", units: None, times: None, cf: CfApplied::default(),
                 unit_transform: None,
                 water_layer_conversion: None,

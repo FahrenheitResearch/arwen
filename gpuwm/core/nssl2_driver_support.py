@@ -64,8 +64,10 @@ class NSSL2DriverWorkspace:
     QVEXCESS, and diagnostic phases; none of those phases should re-gather.
 
     ``category_surface_export`` has shape ``(5, ny, nx)`` in the fixed order
-    rain/ice/snow/graupel/hail and units kg/m2 over the step. The standard WRF
-    four-category precipitation reducer intentionally omits cloud-ice export.
+    rain/ice/snow/graupel/hail.  The cloud-ice row is kg/m2 over the step and
+    is not reduced (WRF's four-category reducer omits cloud-ice fallout); the
+    four reduced rows carry WRF's surface ``xfall``, which the reducer sums
+    before multiplying by ``dt*rho`` exactly as WRF does.
     ``ignored_accumulator`` preserves the likewise-unreduced cloud-droplet
     surface export after sedimentation, allowing an exact water-budget receipt
     without adding it to WRF's precipitation accumulators.
@@ -371,11 +373,23 @@ def reduce_nssl2_precipitation(
         workspace: NSSL2DriverWorkspace,
         rainnc, rainncv, snownc, snowncv,
         graupelnc, graupelncv, hailnc, hailncv, sr,
+        *, air_density, dt_s: float,
         ) -> None:
-    """Apply WRF's four-category surface precipitation reducer and SR."""
+    """Apply WRF's four-category surface precipitation reducer and SR.
+
+    WRF sums the categories' surface ``xfall`` before multiplying by
+    ``dtp*dn1`` (``module_mp_nssl_2mom.F:3008-3061``); the workspace rows
+    carry that ``xfall``, so the reducer needs the step and the cell density
+    (only the lowest level is read).
+    """
     if not isinstance(workspace, NSSL2DriverWorkspace):
         raise TypeError("workspace must be NSSL2DriverWorkspace")
     _, ny, nx = workspace.shape
+    if tuple(air_density.shape) != tuple(workspace.shape):
+        raise ValueError(
+            f"air_density has shape {air_density.shape}, expected "
+            f"{workspace.shape}")
+    step = _step32(dt_s)
     _validate_surface_fields({
         "rainnc": rainnc,
         "rainncv": rainncv,
@@ -389,12 +403,15 @@ def reduce_nssl2_precipitation(
     }, (ny, nx))
     ncol = ny * nx
     blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
+    from gpuwm.wrf_exact import ENABLED
+    density_args = (air_density,) if ENABLED else ()
+    step_args = (step,) if ENABLED else ()
     get_kernel(
         "nssl2_driver_support", "nssl2_driver_reduce_precipitation",
     )((blocks,), (_COLUMN_TPB,),
-      (workspace.category_surface_export,
+      (workspace.category_surface_export, *density_args,
        rainnc, rainncv, snownc, snowncv,
-       graupelnc, graupelncv, hailnc, hailncv, sr, np.int32(ncol)))
+       graupelnc, graupelncv, hailnc, hailncv, sr, *step_args, np.int32(ncol)))
 
 
 def scatter_nssl2_driver_workspace(
@@ -471,7 +488,8 @@ def launch_nssl2_driver_support(
         qicuten=qicuten, qccuten=qccuten)
     reduce_nssl2_precipitation(
         workspace, rainnc, rainncv, snownc, snowncv,
-        graupelnc, graupelncv, hailnc, hailncv, sr)
+        graupelnc, graupelncv, hailnc, hailncv, sr,
+        air_density=air_density, dt_s=dt_s)
     scatter_nssl2_driver_workspace(
         workspace, air_density,
         qv, qc, qr, qi, qs, qg, qh,

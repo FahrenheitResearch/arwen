@@ -100,20 +100,16 @@ STAGE_LAUNCHERS = (
     ("finalize", "gpuwm.core.thompson_aerosol_state",
      "launch_aerosol_state_finalize"),
 )
-#: The same stage boundaries in the mp=8 adapter.  Its sources end with the
-#: warm network (no droplet-number balance), and its last write of the
-#: state is the private graupel number's finalize.
+#: The stage boundaries of the mp=8 adapter, gpuwm/core/thompson_classic.py,
+#: which carries WRF's own structure: after ``launch_classic_sources`` every
+#: working value is WRF's ``X1d + Xten*DT`` at the end of the rain
+#: evaporation (cp2, :3574), and ``launch_classic_column`` is the terminal
+#: apply.  The unit is graded word for word by ``mp8_wrf_ulp.py``; these
+#: snapshots keep this tool's stage comparison meaningful for it.
 STAGE_LAUNCHERS_MP8 = (
-    ("cold", "gpuwm.core.thompson",
-     "launch_frozen_vapor_network_from_owner"),
-    ("sources", "gpuwm.core.thompson",
-     "launch_warm_frozen_source_network_from_owner"),
-    ("condensation", "gpuwm.core.thompson", "launch_cloud_saturation_adjust"),
-    ("rain_evaporation", "gpuwm.core.thompson", "launch_rain_evaporation"),
-    ("sedimentation", "gpuwm.core.thompson", "launch_rain_sedimentation"),
-    ("cleanup", "gpuwm.core.thompson", "launch_final_phase_cleanup"),
-    ("finalize", "gpuwm.core.thompson",
-     "launch_classic_graupel_number_finalize"),
+    ("rain_evaporation", "gpuwm.core.thompson_classic",
+     "launch_classic_sources"),
+    ("finalize", "gpuwm.core.thompson_classic", "launch_classic_column"),
 )
 STAGE_LAUNCHERS_BY_MP = {28: STAGE_LAUNCHERS, 8: STAGE_LAUNCHERS_MP8}
 #: WRF checkpoint whose ``X1d + Xten*DT`` equals the port state after a
@@ -123,6 +119,9 @@ STAGE_LAUNCHERS_BY_MP = {28: STAGE_LAUNCHERS, 8: STAGE_LAUNCHERS_MP8}
 #: two codes' working values are different quantities by construction and
 #: the comparison moves to the final state (``final`` and ``final_clean``).
 STAGE_CHECKPOINT = {"sources": "cp1", "rain_evaporation": "cp2"}
+#: mp=8 snapshots only the post-evaporation state (STAGE_LAUNCHERS_MP8).
+STAGE_CHECKPOINT_BY_MP = {28: STAGE_CHECKPOINT,
+                          8: {"rain_evaporation": "cp2"}}
 #: Relative difference a column may carry into sedimentation and still count
 #: as "clean" for ``final_clean``.
 CLEAN_REL = 2.0e-6
@@ -145,7 +144,7 @@ def load_columns(path, max_cols=None, seed=0):
     return cols
 
 
-def c_powf(x, y):
+def glibc_powf(x, y):
     """Elementwise float32 ``x**y`` through the C library's powf, the word
     WRF's phy_prep forms ``pi_phy`` with in the gfortran build and the
     adapter's Exner kernel reproduces.  NumPy's float32 power is not that
@@ -162,18 +161,24 @@ def c_powf(x, y):
 
 def prepare(cols, mp=28):
     """The float32 arrays both codes receive, formed as the adapter forms
-    them (gpuwm/core/microphysics_aerosol.py and microphysics.py alike:
-    ``pii = (p/P0)**RCP``, ``z8w = (phb + php)/G`` with the whole
-    geopotential in ``php``, ``dz = z8w[1:] - z8w[:-1]``)."""
+    them: ``pii = (p/P0)**RCP``, ``z8w = (phb + php)/G`` with the whole
+    geopotential in ``php``, ``dz = z8w[1:] - z8w[:-1]``.
+
+    mp=8: ``pii`` is glibc's powf (:func:`glibc_powf`), as WRF's phy_prep
+    and the classic unit (thompson_classic.cu tc_entry) form it; the mp=8
+    fixture is written with it.  mp=28 keeps NumPy's power, with which its
+    committed fixture was written."""
     from gpuwm.core import constants as C
     p = np.ascontiguousarray(cols["p"], dtype=f32)
     geop = np.ascontiguousarray(cols["geop"], dtype=f32)
     zero = np.zeros_like(geop)
     z8w = (zero + geop) / f32(C.G)
+    exner = (glibc_powf(p / f32(C.P0), C.RCP) if mp == 8
+             else np.power(p / f32(C.P0), f32(C.RCP)))
     inp = {
         "th": np.ascontiguousarray(cols["th"], dtype=f32),
         "p": p,
-        "pii": c_powf(p / f32(C.P0), f32(C.RCP)),
+        "pii": exner,
         "geop": geop,
         "z8w": z8w,
         "dz": np.ascontiguousarray(z8w[:, 1:] - z8w[:, :-1]),
@@ -353,6 +358,30 @@ def _snapshot(state, dt=None, species=SPECIES):
         # and that is what WRF's checkpoints are compared as.
         snap["qv"] = np.maximum(snap["qv"], 1.0e-10)
     snap["T"] = _cols(state._scratch["mp_thompson_temperature"])
+    classic_ten = state._scratch.get("mp_thompson_classic_ten")
+    if classic_ten is not None and dt is not None:
+        # The classic unit leaves the (rewritten) entry state in place and
+        # its tendencies in ``ten`` until the terminal apply: WRF's working
+        # value is X1d + Xten*DT, in float32 (gpuwm/core/kernels/
+        # thompson_classic.cu, TC_TTEN..TC_NGTEN).
+        ten = np.asarray(classic_ten, f32)
+        ten = ten.reshape(11, -1, *ten.shape[1:])   # (NTEN*nz,...) planes
+        order = ("T", "qv", "qc", None, "qi", "ni", "qr", "nr", "qs", "qg",
+                 "ng")
+        entries = {v: np.asarray(getattr(state, v), f32)
+                   for v in ("qv", "qc", "qi", "ni", "qr", "nr", "qs", "qg")}
+        entries["T"] = np.asarray(state._scratch["mp_thompson_temperature"],
+                                  f32)
+        entries["ng"] = np.asarray(
+            state._scratch["mp_thompson_graupel_number_shadow"], f32)
+        for slot, var in enumerate(order):
+            if var is None:
+                continue
+            value = (entries[var] + ten[slot] * f32(dt)).astype(f32)
+            if var == "qv":
+                value = np.maximum(value, f32(1.0e-10))
+            snap[var] = _cols(value)
+        return snap
     if "mp_thompson_graupel_number_shadow" in state._scratch:
         snap["ng"] = _cols(state._scratch["mp_thompson_graupel_number_shadow"])
     for acc, var in (("qcten", "qc"), ("ncten", "nc"), ("nwfaten", "nwfa"),
@@ -811,7 +840,8 @@ def run(columns, build, out_dir, *, max_cols=None, seed=0,
 
     # 5b. Stage states and per-species stage tendencies.
     stages = {}
-    for stage, cp in STAGE_CHECKPOINT.items():
+    stage_cps = STAGE_CHECKPOINT_BY_MP[mp]
+    for stage, cp in stage_cps.items():
         rows = {}
         for var in (*species, "T", "ng"):
             wrf_v = wrf_stage(cps, cp, var, dt)
@@ -826,8 +856,8 @@ def run(columns, build, out_dir, *, max_cols=None, seed=0,
     summary["stages"] = stages
 
     tendencies = {}
-    order = ["entry", "sources", "rain_evaporation"]
-    cp_of = {"entry": None, **STAGE_CHECKPOINT}
+    order = ["entry", *stage_cps]
+    cp_of = {"entry": None, **stage_cps}
     for a_stage, b_stage in zip(order[:-1], order[1:]):
         rows = {}
         for var in (*species, "T"):
@@ -997,7 +1027,8 @@ def run(columns, build, out_dir, *, max_cols=None, seed=0,
             & (c1["t1d"] < 273.15))),
         "graupel_number_removed_by_wrf_at_the_source_stage": int(np.nansum(
             (c1["ng1d"] > 0) & (ng_tau1 <= 0)
-            & (port["stages"]["sources"]["ng"] > 0))),
+            & (port["stages"].get("sources", port["stages"][
+                "rain_evaporation"])["ng"] > 0))),
         "entry_mass_at_or_below_r1_concentration": r1_band,
         # T and its kin: condensate the port returns at or below R1 where
         # WRF's terminal apply wrote zero (:4007, :4025, :4042, :4057,

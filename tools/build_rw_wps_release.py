@@ -247,6 +247,24 @@ _TOP_LEVEL_EXCLUDES = {
     # Forecast input runners and terminal job/catalog entry points have no
     # standalone preprocessing command. Their readers remain staged below.
     "metem_forecast.py", "wrfinput_forecast.py",
+    # The resident member-leg server (2.9.2, gpuwm/leg_server.py) runs
+    # WRF-input forecast legs in warm engine processes: it imports the
+    # excluded gpuwm.wrfinput_forecast on both of its paths, nothing
+    # RW-WPS ships imports it, and a preprocessing wheel runs no leg.
+    # Staged, its import of the excluded executor refused this builder's
+    # own unresolved-import scan and with it the whole wheel staging.
+    "leg_server.py",
+    # The kernel pre-warm (2.9.2, gpuwm/kernel_prewarm.py) compiles a run's
+    # CUDA kernel set beside the fetch; its importers are the forecast
+    # runners (wrfinput_forecast, prepared_*_forecast) and warm_kernels,
+    # and it reaches gpuwm.core.preflight, which is not staged and reads
+    # gpuwm.io.restart (refused below).  A preprocessing wheel compiles no
+    # kernels.
+    "kernel_prewarm.py",
+    # mp_tend_radar's live attach (2.9.1): the dycore and the device kernel
+    # on running domains; preparation reads the tendency in
+    # gpuwm/ingest/wrfinput_radar.py, which stays staged.
+    "wrfinput_radar_forcing.py",
     "launchpad_api.py", "tui_worker.py",
     # These forecast UI doors size research runs, dispatch remote workers,
     # select runtime products or validate starter run plans. They reach the
@@ -433,6 +451,8 @@ _CORE_MODULES = {
     # function-local, and preflight re-exports every name.  No CuPy, no
     # forecast executor.
     "device_inventory.py",
+    # Configuration-only prognostic names used by state and device inventory.
+    "physics_inventory.py",
     # The resident admission the prepared-cache restore, the wrfinput
     # restore and init_at_rest (all staged) take before their DomainState
     # constructor: the exact state inventory and the boundary tables
@@ -721,7 +741,9 @@ _ENSEMBLE_MODULES = {
 _IO_MODULES = {"__init__.py", "classic_product.py", "classic_tape.py",
                "history_selection.py", "nc_writer_bridge.py",
                "netcdf_serialization.py",
-               "wrf_output_schema.py", "sfire_schema.py"}
+               "wrf_output_schema.py", "sfire_schema.py",
+               # Import-free WRF registry data used by input and output schemas.
+               "wrf_input_history_schema.py"}
 _ROOT_DATA = {
     # gpuwm.fetch_pool sizes its transfer pool from this table at import (2.8.9).
     "fetch-width-rows.json",
@@ -1018,6 +1040,10 @@ _OPTIONAL_STAGED_IMPORTS = {
     ("gpuwm/ingest/hrrr_physics.py", "gpuwm.core.radiation_composition"):
         "GPU physics initialization after the standalone --prepare-only return, "
         "on the same boundary as this module's existing core.physics import",
+    ("gpuwm/ingest/wrfinput.py", "gpuwm.core.ruc_runtime"):
+        "initialize_wrfinput_physics performs RUC cold initialization only "
+        "after importing CuPy and creating the executing physics driver; "
+        "host input reading and preparation do not call this function",
     ("gpuwm/ingest/wrfinput.py", "gpuwm.core.physics"):
         "initialize_wrfinput_physics imports CuPy first and initializes an "
         "executing forecast; file reading and host state restoration do not call it",
@@ -1606,6 +1632,7 @@ gpuwm = [
   "core/kernels/*.cuh",
   "data/noah_tables/*.TBL",
   "data/noah_tables/*.md",
+  "data/surface_ocean.json",
   "data/chem/*.json",
   "data/chem/*.md",
   "data/chem/species/*.json",
@@ -1758,6 +1785,10 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
             )
     _copy_source(REPO / "gpuwm/data/wsm_family/schemes.json",
                  package / "data/wsm_family/schemes.json")
+    # Configuration loads the ocean selector/default table before any
+    # forecast allocation, including in the preparation-only package.
+    _copy_source(REPO / "gpuwm" / "data" / "surface_ocean.json",
+                 package / "data" / "surface_ocean.json")
     # The chem table (gpuwm.chem_table, staged with the top-level modules):
     # its schema, rows, sets, sources and diagnostics, which a chem
     # preparation loads by name.  Not the oracle fixtures, which only the

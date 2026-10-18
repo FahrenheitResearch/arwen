@@ -325,3 +325,35 @@ def test_ferrier_hires_wrapper_remaps_total_ice_on_device(icloud):
               has_reqc=0, has_reqi=0, has_reqs=0)
     for sw in (False, True):
         dual(side_kwargs(kw, sw), sw)
+
+
+@pytest.mark.parametrize("sw", [False, True])
+@pytest.mark.parametrize("snow_radius", [0, 1])
+def test_canonical_microns_keep_stock_cloud_prep_bits(sw, snow_radius):
+    # Stock metre radii are converted once inside the wrapper. Forecast
+    # state already holds that rounded micron result. Its metre roundtrip
+    # changes some words, observed at the second whole-model call.
+    kw = side_kwargs(synthetic(7), sw)
+    kw["has_reqs"] = snow_radius
+    host = ref.swrad_prep_batch if sw else ref.lwrad_prep_batch
+    device = dev.swrad_prep_batch_device if sw else dev.lwrad_prep_batch_device
+    expected = host(**kw)
+    names = ("cldfmcl", "taucmcl", "ciwpmcl", "clwpmcl", "cswpmcl")
+    if sw:
+        names += ("ssacmcl", "asmcmcl", "fsfcmcl")
+    for name in names:
+        expected[name] = expected[name].transpose(1, 2, 0)
+    dkw = device_kwargs(kw)
+    changed = 0
+    for name in ("re_cloud", "re_ice", "re_snow"):
+        microns = (kw[name] * np.float32(1.e6)).astype(np.float32)
+        roundtrip = microns * np.float32(1.e-6) * np.float32(1.e6)
+        changed += np.count_nonzero(microns.view(np.uint32) != roundtrip.view(np.uint32))
+        dkw[name] = cp.asarray(microns)
+    assert changed > 0, "fixture must exercise the lost radius bits"
+    assert_bits(device(**dkw, radii_units="microns"), expected)
+
+
+def test_unknown_radius_units_refused():
+    with pytest.raises(ValueError, match="radii_units must be meters or microns"):
+        dev.lwrad_prep_batch_device(radii_units="unknown")

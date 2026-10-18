@@ -7,6 +7,7 @@ that same path instead of re-decoding source-specific soil fields.
 """
 
 from __future__ import annotations
+from gpuwm.surface_ocean import ocean_input_fields
 
 from collections.abc import Mapping
 from types import MappingProxyType, SimpleNamespace
@@ -226,6 +227,7 @@ def initialize_prepared_physics(
         # the preparation ran with topo_wind / gwd_opt on; read only then.
         terrain_drag_static=static,
         **lake_physics_inputs(cfg, static),
+        **ocean_input_fields(cfg, fields),
         **ruc_mosaic_physics_inputs(
             cfg, static, landuse_attrs=landuse_attrs, xice=fields["SEAICE"],
             fractional_seaice=fractional_seaice),

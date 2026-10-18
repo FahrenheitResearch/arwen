@@ -55,7 +55,8 @@ def _snapshot(state):
                    if isinstance(v, cp.ndarray)})
     arrays.update({"diagnostic/" + k: v for k, v in state._scratch.items()
                    if k in ("refl_10cm", "up_heli_max", "uh")})
-    return ({k: cp.asnumpy(v).view(np.uint8).copy() for k, v in arrays.items()},
+    # reshape(-1): a strict process also carries 0-d SCM forcing scalars.
+    return ({k: cp.asnumpy(v).reshape(-1).view(np.uint8).copy() for k, v in arrays.items()},
             carrier_scalars(state))
 
 

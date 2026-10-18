@@ -1,0 +1,45 @@
+# Observed lake-ice analyses the preparation can start frozen lakes from.
+#
+# A row is data, not code: gpuwm.ingest.lake_ice reads every row through one
+# acquisition ladder and one Rust reader (tools/grib1_bridge/src/ims_snow_ice.rs).
+# Rows are tried in order; within a row the analysis valid at or before the
+# start is tried first, then up to `lookback_days` earlier ones (an analysis is
+# posted some hours after its valid time, and lake ice changes slowly).
+# Adding another hemispheric snow/ice analysis on the same codes is a new row.
+#
+# Keys:
+#   id, describes     the row's name and what it is
+#   format            "ims-ascii-v1.3": the IMS ASCII grid (codes 0 outside,
+#                     1 open water, 2 snow-free land, 3 sea or lake ice,
+#                     4 snow-covered land; first row at the lower left)
+#   url               the file, with {year} and {doy} (day of year, 3 digits)
+#                     of the analysis's 00 UTC valid time
+#   mirrors           further URL templates serving the same files
+#   pixel_m           the nominal pixel size, metres (true at 60 N)
+#   lookback_days     how many earlier daily analyses may stand in
+#   licence           the data's terms
+#   citation          how the publisher asks to be cited
+
+schema = "gpuwm-lake-ice-sources-v1"
+
+[[source]]
+id = "ims-1km"
+describes = "NOAA/NESDIS IMS Daily Northern Hemisphere Snow and Ice Analysis, 1 km, version 1.3 (NSIDC G02156)"
+format = "ims-ascii-v1.3"
+url = "https://noaadata.apps.nsidc.org/NOAA/G02156/1km/{year}/ims{year}{doy}_00UTC_1km_v1.3.asc.gz"
+mirrors = []
+pixel_m = 1000.0
+lookback_days = 3
+licence = "US Government work (NOAA/NESDIS), no restriction on use"
+citation = "U.S. National Ice Center. 2008, updated daily. IMS Daily Northern Hemisphere Snow and Ice Analysis at 1 km, 4 km, and 24 km Resolutions, Version 1. NSIDC. doi:10.7265/N52R3PMC"
+
+[[source]]
+id = "ims-4km"
+describes = "NOAA/NESDIS IMS Daily Northern Hemisphere Snow and Ice Analysis, 4 km, version 1.3 (NSIDC G02156)"
+format = "ims-ascii-v1.3"
+url = "https://noaadata.apps.nsidc.org/NOAA/G02156/4km/{year}/ims{year}{doy}_00UTC_4km_v1.3.asc.gz"
+mirrors = []
+pixel_m = 4000.0
+lookback_days = 3
+licence = "US Government work (NOAA/NESDIS), no restriction on use"
+citation = "U.S. National Ice Center. 2008, updated daily. IMS Daily Northern Hemisphere Snow and Ice Analysis at 1 km, 4 km, and 24 km Resolutions, Version 1. NSIDC. doi:10.7265/N52R3PMC"

@@ -131,7 +131,9 @@ FOUR_DOMAIN_CONFIG = REPO_ROOT / "configs" / "real74_4dom.toml"
 #: remaining refusals are 288 WRF-fatal pairing rows plus 72 active-LSM
 #: rows whose surface exchange fields have no ArWen writer.
 #: Headroom remains 392 descriptors under the unchanged 1024 ceiling.
-WORST_MEASURED_COUNT = 632
+# Full constructor census: 5850 measured rows, 8550 refusals, peak 675, root 303, child 675.
+# Receipt sha256: 960beb8e2202259e6330ab8596cb6664e932ee2cdceaad7370ef8d6ddfa98e31
+WORST_MEASURED_COUNT = 675
 #: The worst combination(s).  MYNN/RUC with Kain-Fritsch is widest; km_opt
 #: does not change the inventory -- every member here peaks at the SAME 632.
 #:
@@ -145,16 +147,13 @@ WORST_MEASURED_COUNT = 632
 #: reason km_opt=2 never was.  The measured peak did NOT move: still 632,
 #: headroom still 392 of 1024.  Two members now instead of three, and
 #: "km_opt does not change the inventory" still holds across both.
-WORST_SELECTIONS = frozenset({
-    "mp18-lsm3-pbl5-sfclay5-cu1-km1",
-    "mp18-lsm3-pbl5-sfclay5-cu1-km4",
-})
+WORST_SELECTIONS = frozenset({'mp18-lsm3-pbl5-sfclay5-cu1-km4', 'mp18-lsm3-pbl5-sfclay5-cu96-km1', 'mp18-lsm3-pbl5-sfclay5-cu1-km1', 'mp18-lsm3-pbl5-sfclay5-cu96-km4'})
 #: The worst combination, per domain.  The root is about 41% of a child:
 #: a child carries 196 ``nest.scratch`` rolling/SINT descriptors plus 178
 #: ``lbc`` descriptors for the rolling boundary its FORCE attaches, and the
 #: root carries 2 packed LBC descriptors instead -- 260 - 2 + 196 + 178 = 632.
-WORST_ROOT_COUNT = 260
-WORST_CHILD_COUNT = 632
+WORST_ROOT_COUNT = 303
+WORST_CHILD_COUNT = 675
 
 #: An early-warning band, not the cap.  632 of 1024 leaves 392.  The current
 #: peak includes the 31 retained fractional-sea-ice descriptors used only by
@@ -176,7 +175,7 @@ EARLY_WARNING_COUNT = 768
 #: 156/528 after), and the peak rows are untouched because MYNN's surface
 #: layer (sfclay5) does not carry it.
 CALIBRATION_SELECTION = "mp18-lsm2-pbl0-sfclay1-cu0-km1"
-CALIBRATION_CHILD_COUNT = 528
+CALIBRATION_CHILD_COUNT = 570
 
 #: What ``MAX_HEALTH_FIELDS`` costs: eight fixed ``integration_health_*``
 #: device slots per DomainState.  48 KiB per domain at 1024 for the seven
@@ -199,9 +198,14 @@ def four_domain_census(tmp_path_factory):
     """
     foreign_cwd = tmp_path_factory.mktemp("not-the-repository")
     completed = subprocess.run(
-        [sys.executable, str(TOOL), "--json", str(FOUR_DOMAIN_CONFIG)],
-        cwd=str(foreign_cwd), capture_output=True, text=True, timeout=1800,
-        env={**os.environ, "GPUWM_NO_LOCAL_GPU": "1"})
+        [sys.executable, str(TOOL), "--workers", "4", "--json", str(FOUR_DOMAIN_CONFIG)],
+        # The selector matrix now includes 800 CCPP combinations.  E's
+        # exhaustive fixture already took 1653 s on the shared validation
+        # host; 1800 s timed out the expanded matrix before any assertions.
+        # Keep every selection and the ceiling checks, with a bounded hour
+        # for this full CPU census.  The neighbourhood fixture stays short.
+        cwd=str(foreign_cwd), capture_output=True, text=True, timeout=3600,
+        env={**os.environ, "GPUWM_NO_LOCAL_GPU": "1", "GPUWM_WRF_EXACT": "0"})
     assert completed.returncode == 0, (
         f"the census failed:\n{completed.stderr[-4000:]}")
     return json.loads(completed.stdout)
@@ -229,10 +233,10 @@ def neighbourhood_census(tmp_path_factory):
     """
     foreign_cwd = tmp_path_factory.mktemp("not-the-repository")
     completed = subprocess.run(
-        [sys.executable, str(TOOL), "--around", PEAK_ANCHOR, "--json",
+        [sys.executable, str(TOOL), "--workers", "4", "--around", PEAK_ANCHOR, "--json",
          str(FOUR_DOMAIN_CONFIG)],
         cwd=str(foreign_cwd), capture_output=True, text=True, timeout=1800,
-        env={**os.environ, "GPUWM_NO_LOCAL_GPU": "1"})
+        env={**os.environ, "GPUWM_NO_LOCAL_GPU": "1", "GPUWM_WRF_EXACT": "0"})
     assert completed.returncode == 0, (
         f"the census failed:\n{completed.stderr[-4000:]}")
     return json.loads(completed.stdout)
@@ -342,6 +346,7 @@ def test_the_cheap_arm_really_is_cheaper_and_still_covers_the_peak(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_no_selectable_combination_exceeds_the_ceiling(four_domain_census):
     """The headline: nothing a user can pick dies at the health gate."""
     report = four_domain_census
@@ -353,6 +358,7 @@ def test_no_selectable_combination_exceeds_the_ceiling(four_domain_census):
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_worst_selectable_count_is_the_recorded_measurement(
         four_domain_census):
     """The peak is pinned, so growth is visible instead of merely tolerated."""
@@ -371,6 +377,7 @@ def test_worst_selectable_count_is_the_recorded_measurement(
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_noahmp_slice_matches_the_current_wrf_authority(
         four_domain_census):
     """Why 570 became 601 again, as a gate rather than as a comment.
@@ -597,18 +604,55 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     The original non-UW slices retain every historical count below.
     """
     full = four_domain_census
-    # Preserve every historical admission/refusal pin separately. The new
-    # family row must add exactly WSM6's configuration cells, with its own
-    # state inventory, rather than absorbing unrelated admission changes.
+    # Preserve every historical admission/refusal pin separately. The 2.9.2
+    # ports add five MP selectors and classic KF (cu96). Each new MP has
+    # WSM6's admission cells, and classic KF has cu1's. Check those complete
+    # slices before projecting the historical ten-MP/two-CU slice below.
+    new_mps = {3, 4, 5, 24, 106}
+    assert set(full["selectable_axes"]["mp_physics"]) == {
+        0, 1, 6, 8, 9, 10, 16, 18, 28, 50} | new_mps
+    assert set(full["selectable_axes"]["cu_physics"]) == {0, 1, 96}
     keys = ("bl_pbl_physics", "sf_sfclay_physics", "sf_surface_physics", "km_opt", "cu_physics")
     cells = lambda mp: {tuple(row[key] for key in keys) for row in full["rows"] if row["mp_physics"] == mp}
-    assert cells(24) == cells(6) and cells(24)
     refused = lambda mp: {entry["selection"].split("-", 1)[1] for entry in full["rejected"] if entry["selection"].startswith(f"mp{mp}-")}
-    assert refused(24) == refused(6)
+    for mp in sorted(new_mps):
+        assert cells(mp) == cells(6) and cells(mp), mp
+        assert refused(mp) == refused(6), mp
+    cu_keys = ("mp_physics", *keys[:-1])
+    cu_cells = lambda cu: {tuple(row[key] for key in cu_keys)
+                           for row in full["rows"] if row["cu_physics"] == cu}
+    assert cu_cells(96) == cu_cells(1) and cu_cells(96)
+    assert {entry["selection"].replace("-cu96-", "-cu1-")
+            for entry in full["rejected"] if "-cu96-" in entry["selection"]} == {
+        entry["selection"] for entry in full["rejected"]
+        if "-cu1-" in entry["selection"]}
     report = {**full,
-              "rows": [row for row in full["rows"] if row["mp_physics"] != 24],
-              "rejected": [entry for entry in full["rejected"] if not entry["selection"].startswith("mp24-")],
-              "selectable_axes": {**full["selectable_axes"], "mp_physics": [mp for mp in full["selectable_axes"]["mp_physics"] if mp != 24]}}
+              "rows": [row for row in full["rows"]
+                       if row["mp_physics"] not in new_mps and row["cu_physics"] != 96],
+              "rejected": [entry for entry in full["rejected"]
+                           if not any(entry["selection"].startswith(f"mp{mp}-") for mp in new_mps)
+                           and "-cu96-" not in entry["selection"]],
+              "selectable_axes": {**full["selectable_axes"],
+                                  "mp_physics": [mp for mp in full["selectable_axes"]["mp_physics"] if mp not in new_mps],
+                                  "cu_physics": [0, 1]}}
+    # Re-measured 2026-10-09: the non-WRF CCPP closure adds its own slice.
+    # Keep every historical WRF admission count below independent of it.
+    from gpuwm.config import CCPP_TKE_EDMF_PBL_SCHEME
+    ccpp_rows = [row for row in report["rows"]
+                 if row["bl_pbl_physics"] == CCPP_TKE_EDMF_PBL_SCHEME]
+    marker = f"-pbl{CCPP_TKE_EDMF_PBL_SCHEME}-"
+    ccpp_refused = [entry for entry in report["rejected"]
+                    if marker in entry["selection"]]
+    assert len(ccpp_rows) == 320
+    assert len(ccpp_refused) == 480
+    assert {row["sf_sfclay_physics"] for row in ccpp_rows} == {1, 91}
+    assert all(any(f"-sfclay{value}-" in entry["selection"]
+                   for value in (0, 2, 5)) for entry in ccpp_refused)
+    report = {**report,
+              "rows": [row for row in report["rows"]
+                       if row["bl_pbl_physics"] != CCPP_TKE_EDMF_PBL_SCHEME],
+              "rejected": [entry for entry in report["rejected"]
+                           if marker not in entry["selection"]]}
     # 9d8055e26, lane/europe-uw-pbl: the routed UW selector adds its own
     # measured slice. Preserve the old non-UW pins beside the combined pins
     # so this update cannot absorb an unrelated admission change.
@@ -715,6 +759,7 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_worst_selectable_count_stays_inside_the_early_warning_band(
         four_domain_census):
     """Fire while there is still room to decide, not at the cap."""
@@ -819,6 +864,7 @@ def test_a_measurement_failure_is_never_filed_as_a_refusal(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_per_domain_counts_are_not_one_domain_times_four(four_domain_census):
     """A root and a child are different inventories; neither scales.
 
@@ -839,6 +885,7 @@ def test_per_domain_counts_are_not_one_domain_times_four(four_domain_census):
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_child_domains_carry_the_rolling_boundary_descriptors(
         four_domain_census):
     """A child's inventory includes what its first FORCE attaches.
@@ -865,6 +912,7 @@ def test_child_domains_carry_the_rolling_boundary_descriptors(
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_grid_dimensions_do_not_change_the_descriptor_count(
         four_domain_census):
     """The count is a property of the configuration, not of its size.
@@ -885,6 +933,7 @@ def test_grid_dimensions_do_not_change_the_descriptor_count(
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_the_census_reproduces_the_recorded_528_descriptor_step(
         four_domain_census):
     """Calibration against the only figure written down before this existed.
@@ -909,6 +958,7 @@ def test_the_census_reproduces_the_recorded_528_descriptor_step(
 # ---------------------------------------------------------------------------
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_the_sweep_accounts_for_every_axis_combination(four_domain_census):
     """Measured + refused == the whole cross-product: nothing was dropped.
 
@@ -933,6 +983,7 @@ def test_the_sweep_accounts_for_every_axis_combination(four_domain_census):
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_the_census_measured_this_checkout(four_domain_census):
     """The subprocess measured THIS tree, not the pip-installed one.
 
@@ -952,6 +1003,7 @@ def test_the_census_measured_this_checkout(four_domain_census):
 
 
 @pytest.mark.slow
+@pytest.mark.timeout(3700)  # The full fixture bounds its subprocess at 3600 s.
 def test_the_ceiling_costs_fixed_metadata_not_field_storage(
         four_domain_census):
     """Record what raising ``MAX_HEALTH_FIELDS`` would actually cost.

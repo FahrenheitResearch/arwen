@@ -87,6 +87,8 @@ hookup is a controller handoff commit at merge.
 """
 
 from __future__ import annotations
+
+from contextlib import contextmanager
 from collections.abc import Iterable, Mapping
 
 
@@ -114,6 +116,7 @@ from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
 from gpuwm.core import kernel_frame_recordings as _kernel_frame_recordings
 from gpuwm.core.noahmp_kernel_sources import NOAHMP_PRICING_MODULES
 from gpuwm.experiment import DomainConfig, ExperimentConfig
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 # The preparation price's inventories, in the leaf the RW-WPS wheel
 # stages; re-exported here under their historical names.
 from gpuwm.core.device_inventory import (  # noqa: F401
@@ -471,7 +474,7 @@ _WINDOWS_PLATFORM_NAMES = ("cygwin",)
 
 #: What `gpuwm check` says about an experimental two-way configuration.
 #:
-#: `feedback = 1` is a legal schema value, so a node-7 validation run
+#: `feedback = 1` is a legal schema value, so a test host G validation run
 #: authored one, got a clean PASS and exit 0 here -- output identical to
 #: the feedback=0 twin -- and discovered only at prepare, after a 26 s
 #: hierarchy build, that the prepared-hierarchy route refused two-way
@@ -1150,8 +1153,8 @@ ENVELOPE_AFFINE_BASIS = (
 #: forecasts spanning the first radiation call and a history write, a 6 h
 #: legacy-RRTMG forecast, a ``[tiles]`` forecast and three trees, each
 #: forecast's own process tree sampled at 100 ms through NVML beside the
-#: runtime's 20 Hz watcher, on an RTX 5070 Ti 16 GB (node-4, card held
-#: alone) and an RTX 5090 32 GB (node-2, the run's own processes).  The
+#: runtime's 20 Hz watcher, on an RTX 5070 Ti 16 GB (test host D, card held
+#: alone) and an RTX 5090 32 GB (test host B, the run's own processes).  The
 #: two CONUS 3 km forecasts of 2026-09-30 on the RTX PRO 6000 are carried
 #: as rows too.  The table lives beside the constant it calibrates:
 #: :data:`FORECAST_PEAK_BATTERY`.
@@ -1255,8 +1258,8 @@ def forecast_pool_headroom(runs) -> float:
 #: The A163 battery, one row per measured forecast: ``(label, card,
 #: radiation lane, domains, itemized subtotal, itemized non-pool, measured
 #: peak, measured pool-held peak, held arrays)``, bytes.  The peak is NVML
-#: at 100 ms: device-wide on node-4, whose card was held alone, and the
-#: sum of the forecast's own process tree on node-2's shared card; the
+#: at 100 ms: device-wide on test host D, whose card was held alone, and the
+#: sum of the forecast's own process tree on test host B's shared card; the
 #: pool-held peak is the runtime's 20 Hz ``cupy_pool_total`` receipt.  The
 #: subtotal, non-pool and held arrays (the urban arrays priced at their
 #: allocated size, :func:`forecast_pool_estimate_bytes`) are
@@ -1264,8 +1267,8 @@ def forecast_pool_headroom(runs) -> float:
 #: 12Z, 20 min forecasts (70 min for the delayed-nest tree), radiation
 #: from step 0, history every 10 min; the second repair's rows are
 #: HRRR-prs 2026-09-30 00Z, labelled with their own length.  The PRO 6000
-#: rows are the CONUS 3 km report's
-#: (Downloads/CONUS-HRRR-CLONE-18H-2026-09-30/REPORT.md section 3) at its
+#: rows are the CONUS 3 km HRRR-clone 18 h run report's
+#: (2026-09-30, section 3) at its
 #: printed two decimals, pool-held not recorded (0).
 FORECAST_PEAK_BATTERY = (
     ("lean 528x528x49", "RTX 5070 Ti", "rte-rrtmgp", 1,
@@ -1397,12 +1400,22 @@ ENVELOPE_A163_BASIS = (
 #: sum rounded up to the next quarter gibibyte: 2.25 GiB.  A rank's pool
 #: margin is the smaller of the A163 ratio's margin and this bound, so
 #: below 17.3 GiB of itemized pool nothing changes, and above it the
-#: margin is the bound.  On the single-card road the ratio stands: its
-#: only rows above 11 GiB are the RTX PRO 6000 CONUS runs of 2026-09-30,
-#: which recorded a device peak and no pool-held peak, and one of them
-#: (HRRR physics, 1620 x 953 x 50) peaked 4.24 GiB over its itemized pool
-#: plus non-pool, which a 2.25 GiB bound would not cover; it is left as
-#: measured until a single-card run of that size records its pool.
+#: margin is the bound.
+#:
+#: ONE CARD, THE SAME BOUND (2026-10-17).  The single-card road kept the
+#: ratio because one RTX PRO 6000 row of 2026-09-30 (HRRR physics,
+#: 1620 x 953 x 50) peaked 4.24 GiB over the pool it was itemized at then
+#: (64.68 GiB) plus its non-pool.  The itemization has since priced the
+#: arrays that run held unlisted (the RUC slabs, the Thompson tables and
+#: accumulators, moist_cq, ...): today's pricing of that grid is a
+#: 78.1 GiB subtotal, so its bounded envelope (82.3 GiB) sits 9.9 GiB above
+#: the 72.48 GiB the card measured.  The residue is the pool's, not the
+#: rank's: a one-domain forecast of a suite on this table carries the
+#: bound on one card too (:func:`single_card_pool_residue_cap_bytes`).
+#: THE BREAKAGE: full HRRR (1797 x 1057 x 50) on one 96 GB RTX PRO 6000
+#: was priced 108.05 GiB against 94.47 GiB free, 12.1 GiB of it the
+#: ratio's margin, and refused resident; it runs resident at 1.70 s/step,
+#: and was streamed instead at 4.5 s/step (lane/292-hrrr-admission).
 #:
 #: Each row: ``(label, card, layout, rank, itemized pool bytes (the
 #: rank's subtotal plus its seam buffers, this module's pricing with the
@@ -1604,6 +1617,74 @@ def rank_pool_residue_basis(runs) -> str:
     if rank_pool_residue_suite(runs) is None:
         return RANK_POOL_RESIDUE_UNMEASURED_BASIS
     return RANK_POOL_RESIDUE_BASIS
+
+
+def single_card_pool_residue_cap_bytes(exp) -> int | None:
+    """The A13 byte bound a ONE-CARD resident forecast's pool margin
+    carries, or ``None`` when the ratio stands.
+
+    The same bound and the same suite table as a device rank
+    (:func:`rank_pool_residue_cap_bytes`): what the CuPy pool holds beyond
+    a complete itemization is a property of the suite's allocations, not
+    of the forecast being one rank of several, and the one single-card
+    row that kept the ratio is covered at today's itemization (see the A13
+    note above :data:`RANK_POOL_RESIDUE_BATTERY`).  One domain only: the
+    receipts are one HRRR grid, so a tree keeps the ratio."""
+    domains = tuple(getattr(exp, "domains", ()) or ())
+    if len(domains) != 1:
+        return None
+    return rank_pool_residue_cap_bytes([domains[0].run])
+
+
+def single_card_residue_terms(exp) -> dict:
+    """``estimate_experiment`` keywords for the one-card residue bound:
+    empty where the ratio stands, so a ratio-priced call is the call it
+    always was."""
+    cap = single_card_pool_residue_cap_bytes(exp)
+    return {} if cap is None else {"pool_residue_cap_bytes": cap}
+
+
+def mynn_width_adjustable(exp) -> bool:
+    """Can the resident road narrow this forecast's MYNN width to fit?
+
+    True when a domain runs MYNN and neither a pin nor an operator
+    override names the width (those are walked as asked)."""
+    from gpuwm.core.mynn_pbl_scratch import mynn_rank_chunk_candidates
+    runs = [dc.run for dc in (getattr(exp, "domains", ()) or ())
+            if int(getattr(dc.run, "bl_pbl_physics", 0) or 0) == 5]
+    return bool(runs) and len(mynn_rank_chunk_candidates(int(runs[0].nz))) > 1
+
+
+@contextmanager
+def required_mynn_pricing(exp, width: int | None = None, *,
+                          only_given: bool = False):
+    """Price the resident MYNN workspace at ``width`` columns, or at the
+    narrowest width a run may walk when ``width`` is None (A3c).
+
+    The MYNN column width is a speed choice that never changes a byte of
+    output (:func:`gpuwm.core.mynn_pbl_scratch.choose_mynn_column_chunk`).
+    The ranked road prices each rank at the narrowest width and widens it
+    into what the budget leaves (open-defects ledger A3c).  On one card the
+    run picks its width from the card's free memory before anything is
+    allocated (98,304 columns on a 96 GB card, 5.3 GiB of workspace at 50
+    levels against 0.45 GiB at the narrowest), so a forecast whose state
+    and physics fit only at a narrower width was refused.  The resident
+    door prices the narrow width when the walked one does not fit, then
+    fits and pins the widest width that does
+    (:func:`gpuwm.core.streaming.admit_resident_road`).  ``only_given``
+    leaves the width alone when ``width`` is None.  A pin or an operator
+    override is the width priced either way."""
+    from gpuwm.core.mynn_pbl_scratch import (
+        mynn_pricing_resident_chunk, mynn_rank_chunk_candidates)
+    runs = [dc.run for dc in (getattr(exp, "domains", ()) or ())
+            if int(getattr(dc.run, "bl_pbl_physics", 0) or 0) == 5]
+    if not runs or (width is None and only_given):
+        yield None
+        return
+    if width is None:
+        width = int(mynn_rank_chunk_candidates(int(runs[0].nz))[0])
+    with mynn_pricing_resident_chunk(int(width)):
+        yield int(width)
 
 
 def machine_peak_envelope_bytes(
@@ -2070,7 +2151,12 @@ def read_compile_platform() -> tuple[str, str] | None:
 #: under-pricing is what put a run 1,630 MiB over; the bound is stated, not
 #: silently tightened.
 KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
-    "fast_sbm": 26736,
+    # WRF's ocean mixed layer, read at 0 B through the production loader
+    # by the OML port lane (port289-1-ocean1-oml, tools/vram_reserve_probe.py).
+    "oml": 0,
+    # 27,408 B on test host B (RTX 5090, sm_120, NVRTC 13.4.92, 2026-10-17);
+    # the G2 reading under NVRTC 12.9.86 was 26,736 B (kernel_frame_recordings).
+    "fast_sbm": 27408,
     "thompson_column": 50016,
     "g3": 512,  # Widest driver-read G3 ensemble variant on sm_120 / NVRTC 13.2.86.
     # New port units: measured production-composed driver frames, V12 12.8.93.
@@ -2082,7 +2168,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "wsm7": 7216,
     # 2.9.0 round 2: the radiation, lightning and New SAS units joined with no
     # row (golden/ports-rad, golden/ports-cu).  Read 2026-10-13 through the
-    # production loader (tools/vram_reserve_probe.py frames) on node-4's RTX
+    # production loader (tools/vram_reserve_probe.py frames) on test host D's RTX
     # 5070 Ti, sm_120, NVRTC 13.4, at 2f7194f53: nsas through its no-FTZ
     # route, lightning through its direct NVRTC site.
     "aer_opt2": 0,
@@ -2098,7 +2184,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "rrtmg_smoke_manifest": 0,
     "upper_wind_limiter": 0,
     # The coupled fire's standalone units (lane/ec-sfire), 0 B each on
-    # sm_120 / NVRTC 13.4.92 (node-4 RTX 5070 Ti, 2026-10-06).
+    # sm_120 / NVRTC 13.4.92 (test host D RTX 5070 Ti, 2026-10-06).
     "chem_sfire": 0,
     "sfire_coupling": 0,
     "sfire_ideal": 0,
@@ -2112,6 +2198,10 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "ensemble_bookkeeping": 0,
     "ensemble_stochastic": 0,
     "ruc_spp": 0,
+    # Classic Thompson (mp=8), the transcription of WRF v4.6.1
+    # mp_thompson: 0 B at every entry point, sm_120 / NVRTC 13.4,
+    # 2026-10-05 (kernel_frame_recordings.SM120_NVRTC_13_4_92).
+    "thompson_classic": 0,
     # Production lake loader.  Measured 2026-10-03 at 14,224 B (RTX 5090,
     # NVRTC 13.4.92) and 14,400 B (RTX PRO 6000, NVRTC 12.8.93) while the
     # column arrays lived in the local frame; that frame was the widest of
@@ -2195,7 +2285,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # gpuwm/core/kernels/gf.cu keeps them in a global workspace that
     # gpuwm/core/gf.py sizes to the threads IN FLIGHT, because the driver
     # sizes the local-memory backing store to the threads the card can
-    # ever hold.  MEASURED on node-1 (RTX 5070 Ti, sm_120): the frame went
+    # ever hold.  MEASURED on test host A (RTX 5070 Ti, sm_120): the frame went
     # 22,416 -> 72 B on NVRTC 13.3 and 22,416 -> 88 B on NVRTC 13.0.48,
     # and the launch-time reservation went 2,200.0 MiB -> 4.0 MiB.  Both
     # readings are under the 1,024 B default stack, so the row reserves
@@ -2225,7 +2315,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # Kain-Fritsch.  One thread owns one whole column, and every column
     # array lives in a global workspace gpuwm/core/kf.py sizes to the threads
     # IN FLIGHT, because the driver sizes the local-memory backing store to
-    # the threads the card can ever hold.  MEASURED on node-1 (RTX 5070 Ti,
+    # the threads the card can ever hold.  MEASURED on test host A (RTX 5070 Ti,
     # 70 SMs x 1,536, sm_120, NVRTC 13.0.48): the pre-workspace frame was
     # 9,216 B and its launch-time reservation 840.0 MiB.
     #
@@ -2317,7 +2407,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # The two MYNN-EDMF qn-family modules (4a0bb3f69) landed declared
     # UNMEASURED because their lane had no measurement platform; the
     # 2026-08-31 sm_86 campaign measured both at 0 B (RTX 3080, NVRTC
-    # 13.0.48; node-1's sm_120 at NVRTC 13.0.88 also read 0 B), which
+    # 13.0.48; test host A's sm_120 at NVRTC 13.0.88 also read 0 B), which
     # retired that declaration.  Scalar per column, no per-thread stack
     # arrays -- the same shape as mynn_pbl itself.
     "mynn_dmp_sibling": 0,
@@ -2363,6 +2453,12 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # has them).
     "rrtmg_legacy_adapter": 0,
     "rrtmg_legacy_prep": 0,
+    # The adapter's WRF v4.6.1 radconst + calc_coszen (WOOF's own float32
+    # trig): 0 B for both entry points, read on sm_120 at NVRTC 12.9.86.
+    "rrtmg_legacy_solar": 0,
+    # The exact chain's strict Exner unit (physics_exner.cu): 0 B, read
+    # on sm_120 at NVRTC 13.4.92.
+    "physics_exner": 0,
     "rrtmg_lw": 0,
     "rrtmg_mcica_wrf": 0,
     # Another compiler-build move at a fixed sm_120: 0 B on NVRTC 13.0.48,
@@ -2463,6 +2559,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # is its binary64 scalars at 255 registers: 3,184 B on sm_89 and 864 B
     # on sm_120, both at NVRTC 13.4.92 (kernel_frame_recordings).
     "uwpbl": 3184,
+    "satmedmf": 112,  # Recorded SM89/NVRTC 13.4.92 module maximum.
     # Fused preparation interpolation, 16 B on sm_89 and sm_120, NVRTC 13.4.92.
     # Portable binary64 RH kernel is 0 B; regular interpolation remains 16 B.
     "horizontal": 16,
@@ -2505,7 +2602,12 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # sm_120 build reads 6,448 B here (NVRTC 12.9.86, 13.0.48, 13.0.88,
     # 13.3.33, 13.4.92); the row stays at the 7,216 B the sm_86 and sm_89
     # recordings carry from the previous source, the element-wise maximum,
-    # until those cards are read again.
+    # until those cards are read again.  Since the column workspace
+    # (2026-10-16, memory census item 12) both kernels read 0 B on sm_120
+    # (NVRTC 13.4.92): the arrays live in a per-call global workspace of
+    # (25 nz + 8) x 4 B per column in flight.  This row stays the ceiling,
+    # which over-prices that workspace (safe direction) until the
+    # workspace is priced on its own and every recording is re-read.
     "wsm6": 7216,
     "wsm3": 5664,
     # YSU (bl_pbl_physics = 1, the SHIPPED DEFAULT).  One thread still owns
@@ -2515,7 +2617,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # FLIGHT, because the driver sizes the local-memory backing store to
     # the threads the card can ever hold.
     #
-    # MEASURED on node-1 (weather-node-1, RTX 5070 Ti, 70 SMs x 1,536,
+    # MEASURED on test host A (RTX 5070 Ti, 70 SMs x 1,536,
     # sm_120) through the real launcher at nz=49: the frame went 9,232 -> 0
     # B on BOTH NVRTC 13.0 and 13.3, and the launch-time reservation went
     # 842.0 MiB -> nothing.  A zero frame reserves nothing on any card, and
@@ -2547,6 +2649,12 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "urban_bep": 16,
     "urban_bep_couple": 0,
     "urban_ucm": 552,
+    # 2026-10-17, test host B (RTX 5090, sm_120, NVRTC 13.4.92): the two
+    # modules that left UNMEASURED_KERNEL_MODULES on the 2.9.2 line.
+    # goddard at its source default GDD_MAX_LEVELS tier; urban_ucm480 is
+    # the WRF 4.8 full-canopy SLUCM (kernel_frame_recordings, same date).
+    "goddard": 43664,
+    "urban_ucm480": 352,
 }
 
 #: The readings the ceiling above is made of, each naming its box, its
@@ -2694,7 +2802,7 @@ LEVEL_SPECIALIZED_KERNEL_FRAMES: dict[str, LevelSpecializedFrame] = {
     # the bound worth 312 B of frame that reserves nothing either way.  So
     # gpuwm/core/kf.py stopped recompiling the module per level count, and
     # the ONE binary that can now launch holds a frame that does not move
-    # with ``nz`` at all.  MEASURED on node-1 (RTX 5070 Ti, sm_120, NVRTC
+    # with ``nz`` at all.  MEASURED on test host A (RTX 5070 Ti, sm_120, NVRTC
     # 13.0.48): 512 B at the shipped KF_KMAX = 128 -- half the 1,024 B
     # default stack, so it reserves nothing on any card.  The flat row in
     # KERNEL_MAX_LOCAL_SIZE_BYTES is the whole model.
@@ -2725,20 +2833,7 @@ THOMPSON_SHALLOW_KERNEL_FRAMES = {
 }
 THOMPSON_SHALLOW_LEVELS = 64
 
-# thompson_version = "wrf_39_noaa" compiles the aerosol units with
-# THOMPSON_AA_WRF39 (gpuwm.core.thompson_aerosol_launch.WRF39_DEFINES), and
-# the fork's fallout is a different frame: read 2026-10-05 through the
-# production loader on RTX 5090 / NVRTC 13.4.92, the sedimentation unit's
-# widest export is 11,264 B (9,216 at wrf_461) and its widest 64-level or
-# plain export is 2,816 B (2,304 at wrf_461).  The other five aerosol units
-# read the same frame at both generations.  This row does not move today's
-# reservation: that is the widest frame over every launched module, and
-# mp_physics = 28 always launches the classic ``thompson`` unit, whose rows
-# (11,264 / 2,816) equal the fork's.  Breakage prevented: nothing else reads
-# the fork's frames, so a change that narrows the classic unit would leave the
-# shipped HRRR configuration recipes (which select the fork generation)
-# under-priced by up to 2,048 B per resident thread with no gate failing.
-#   module -> (widest export, widest plain/64-level export)
+
 THOMPSON_WRF39_KERNEL_FRAMES = {
     "thompson_aerosol_sed": (11264, 2816),
 }
@@ -2883,12 +2978,13 @@ CONDITIONAL_COLUMN_TIERED_FRAMES = {
 #: :data:`CHAINED_TRANSLATION_UNIT_FRAMES`, which cover these fragments
 #: as the translation units they actually launch in.
 UNMEASURED_KERNEL_MODULES = frozenset({
-    # New Goddard (golden/ports-rad) compiles only with its GDD_MAX_LEVELS =
-    # nz tier (gpuwm/core/radiation_composition.py, get_kernel_int_defines),
-    # so a standalone compile is a module nothing launches.  Until its tiered
-    # frame is measured a Goddard run is priced at the assumed bound (the
-    # widest recorded frame), which over-reserves and never under-reserves.
-    "goddard",
+    # New Goddard (golden/ports-rad) sat here while its standalone compile
+    # failed; it compiles alone now (read 2026-10-17 on test host B's RTX
+    # 5090, sm_120, NVRTC 13.4.92: 43,664 B, its source default
+    # GDD_MAX_LEVELS tier) and is a recorded row in
+    # kernel_frame_recordings.KERNEL_LOCAL_FRAME_RECORDINGS.  A run's own
+    # tier (gpuwm/core/radiation_composition.py, get_kernel_int_defines)
+    # is priced through its TieredKernelFrame declaration where one exists.
     # Noah mosaic (sf_surface_mosaic = 1) launches only through its own
     # unit, gpuwm/core/noah_mosaic.py _mosaic_module, compiled with
     # --fmad=false beside the loader's -std=c++17.  A default-option
@@ -2896,6 +2992,12 @@ UNMEASURED_KERNEL_MODULES = frozenset({
     # price nothing; the unit that does launch is noah_mosaic_unit in
     # CHAINED_TRANSLATION_UNIT_FRAMES below.
     "noah_mosaic",
+    # The fork Thompson unit (thompson_version = "wrf_39_noaa") launches
+    # only through gpuwm/core/thompson_fork.py's own NVRTC compile
+    # (its MODULE_OPTIONS).  The loader's default-option standalone
+    # compile is a module nothing launches; the unit that does is
+    # thompson_fork_unit in CHAINED_TRANSLATION_UNIT_FRAMES below.
+    "thompson_fork",
     "noahmp_driver", "noahmp_energy", "noahmp_thermal", "noahmp_libm_slab",
     "noahmp_glacier",
     # P3 borrows r_pow/r_exp/r_log from noahmp_leaves.cu rather than
@@ -2910,7 +3012,7 @@ UNMEASURED_KERNEL_MODULES = frozenset({
     # composed unit by gpuwm/core/p3_device.p3_reflectivity_source() and
     # calls p3.cu's own __device__ helpers (p3_get_rain_dsd2,
     # p3_access_lookup_table, ...), so p3_zdiag.cu alone fails NVRTC
-    # (read 2026-10-07 on node-4's RTX 5070 Ti, sm_120, NVRTC 13.4.92:
+    # (read 2026-10-07 on test host D's RTX 5070 Ti, sm_120, NVRTC 13.4.92:
     # 'identifier "P3_RD" is undefined').  It is the DA observation
     # operator (gpuwm/da/obsop.py), launched by no forecast scheme, so no
     # mp_physics row selects it and no forecast price reads it.  The unit
@@ -2928,17 +3030,19 @@ UNMEASURED_KERNEL_MODULES = frozenset({
     "terrain_drag",
     # The coupled fire's fragments (lane/ec-sfire): gpuwm/core/sfire_core.py
     # composes them with their shared headers into the units it compiles,
-    # and NVRTC refuses each handed over alone (node-4, 2026-10-06).  No
+    # and NVRTC refuses each handed over alone (test host D, 2026-10-06).  No
     # selector row names them; a row that did is priced at the assumed bound.
     "sfire_atm", "sfire_core", "sfire_moisture", "sfire_phys",
     "sfire_spotting", "sfire_wind",
-    # golden/wrf-fixes: the WRF 4.6.1/4.8.0 solar geometry unit (radconst +
-    # calc_coszen, gpuwm/core/solar.py) and the WRF 4.8 full-canopy SLUCM
-    # (urban_ucm_generation = "wrf_480") joined the tree with the upstream
-    # fixes and have not been read on a recorded platform yet; no selector
-    # row names either, so this declaration prices nothing.  Retire it with
-    # a row once a card reads them (frames_probe in the lane's gate script).
-    "rrtmg_legacy_solar", "urban_ucm480"})
+    # golden/wrf-fixes: the WRF 4.8 full-canopy SLUCM (urban_ucm_generation
+    # = "wrf_480") sat here until a card read it; it left this set on
+    # 2026-10-17 with the row test host B's RTX 5090 read (352 B, sm_120,
+    # NVRTC 13.4.92), as the solar geometry unit (rrtmg_legacy_solar) did at
+    # the 2.9.1 exact-chain intake.  Breakage the two retirements fix:
+    # tests/test_preflight.py::test_the_recorded_local_frames_match_the_driver
+    # asserts the set of modules NVRTC refuses alone is exactly this set, and
+    # both compiled alone on the 2.9.2 line.
+    })
 # face_mass, held_heating, rk_bookkeeping and surface_w (the dycore-host
 # speed lane's point-local units, 66af318bc) sat in this set on
 # 2026-09-30 under the same "no measurement platform in this lane"
@@ -3023,7 +3127,7 @@ CHAINED_TRANSLATION_UNIT_FRAMES: dict[str, ChainedTranslationUnitFrame] = {
     # legacy-RRTMG chain and the Noah-MP driver use.
     #
     # Measured 2026-08-29, cupy 14.2.0 NVRTC on sm_120 (RTX 5070 Ti,
-    # node-1), over all twelve kernels of the unit: local_size_bytes = 0
+    # test host A), over all twelve kernels of the unit: local_size_bytes = 0
     # for every one, both arms.  The widest register user is
     # ``p3k_kloopmain`` at 244 registers (the fused ``p3k_fused_process``
     # at 250), which costs occupancy but spills nothing.  A re-measure past
@@ -3089,6 +3193,23 @@ CHAINED_TRANSLATION_UNIT_FRAMES: dict[str, ChainedTranslationUnitFrame] = {
         module="terrain_drag_composed",
         max_local_size_bytes=1184,
         covers=frozenset({"terrain_drag"})),
+    # The fork Thompson unit (thompson_version = "wrf_39_noaa", mp_physics
+    # = 28, the HRRR and RAP doors' default): thompson_fork.cu +
+    # thompson_fork_constants.cuh compiled by gpuwm/core/thompson_fork.py.
+    # Its column arrays first sat in the thread's local frame, 48 + 448 B
+    # per level of a compiled TF_KMAX (read at fourteen bounds from 8 to
+    # 256): 25,136 B at a 50-level column, a 6.5 GiB launch-time
+    # reservation on a 188-SM RTX PRO 6000 that nothing priced.  They moved
+    # to a column arena sized to the launcher's tile
+    # (thompson_fork_column_workspace_bytes), and the unit's frame is now
+    # the register spill alone: 784 B at 255 registers, read 2026-10-07 off
+    # the driver on that card (sm_120) at NVRTC 12.9.86, the default
+    # install's compiler, in the default and the strict build alike.
+    # Under the 1,024 B default stack, so it reserves nothing.
+    "thompson_fork_unit": ChainedTranslationUnitFrame(
+        module="thompson_fork_unit",
+        max_local_size_bytes=784,
+        covers=frozenset({"thompson_fork"})),
 }
 
 _seen_covers: set[str] = set()
@@ -3433,6 +3554,7 @@ _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     # that kernel.  No validation module: _run_uwpbl's finiteness check is
     # a host reduction and compiles nothing.
     UW_PBL_SCHEME: ("uwpbl",),
+    901: ("satmedmf",),
     # Shin-Hong launches its column kernel plus its own batched output
     # validator, the YSU pair's shape (gpuwm/core/shinhong.py).
     11: ("shinhong", "shinhong_validation"),
@@ -3474,7 +3596,7 @@ _RADIATION_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 #: row).
 _RRTMG_LEGACY_KERNEL_MODULES: tuple[str, ...] = (
     "rrtmg_mcica_wrf", "rrtmg_lw_legacy_chain", "rrtmg_sw_legacy",
-    "rrtmg_legacy_adapter", "rrtmg_legacy_prep")
+    "rrtmg_legacy_adapter", "rrtmg_legacy_prep", "rrtmg_legacy_solar")
 
 
 def _radiation_44_kernel_modules(run) -> tuple[str, ...]:
@@ -3604,6 +3726,8 @@ def domain_kernel_modules(dc: DomainConfig, *,
         modules.add("aer_opt2")
     if int(getattr(dc.run, "sf_lake_physics", 0)) == 1:
         modules.add("lake")
+    if int(getattr(dc.run, "sf_ocean_physics", 0)) == 1:
+        modules.add("oml")
     mp_physics = int(dc.run.mp_physics)
     from gpuwm.thompson_generations import CLASSIC_GENERATIONS
     classic_generation = (CLASSIC_GENERATIONS.get(getattr(dc.run,"thompson_version","wrf_461"))
@@ -3630,6 +3754,13 @@ def domain_kernel_modules(dc: DomainConfig, *,
             "stash_refl_10cm it loads neither, and must say so in "
             "_SELF_REFLECTIVITY_MICROPHYSICS with the reason.  Leaving it "
             "out of both under-prices the local-memory reservation.")
+    if (WRF_EXACT and mp_physics == 28
+            and getattr(dc.run, "thompson_version", "wrf_461")
+            == "wrf_39_noaa"):
+        # Under GPUWM_WRF_EXACT=1 the fork generation's whole driver runs in
+        # its own column unit (gpuwm.core.microphysics_aerosol.
+        # _apply_thompson_fork_call); a default run keeps the aerosol units.
+        modules.add("thompson_fork_unit")
     if int(getattr(dc.run, "sf_surface_mosaic", 0)) == 1:
         # lsm_mosaic replaces lsm (module_surface_driver.F:2662-2778): the
         # mosaic unit runs every Noah column.  noah.cu is still loaded: the
@@ -3933,7 +4064,7 @@ def kf_column_workspace_bytes(
     and ``gpuwm/core/kf.py`` sizes that workspace to the columns it keeps
     in flight -- ``SMs x KF_TILE_BLOCKS_PER_SM x _TPB`` -- rather than to
     the resident-thread capacity the driver would have charged.  That
-    ratio is the whole saving: MEASURED on node-1 (RTX 5070 Ti, 70 SMs x
+    ratio is the whole saving: MEASURED on test host A (RTX 5070 Ti, 70 SMs x
     1,536) at nz = 49, 840.0 MiB of reservation became 174.2 MiB of
     workspace.
 
@@ -3979,11 +4110,13 @@ def column_workspace_bytes(
             + kf_column_workspace_bytes(exp, profile=profile)
             + ysu_column_workspace_bytes(exp, profile=profile)
             + shinhong_column_workspace_bytes(exp, profile=profile)
+            + thompson_fork_column_workspace_bytes(exp, profile=profile)
             + ntiedtke_column_workspace_bytes(exp, profile=profile)
             + tiedtke_column_workspace_bytes(exp)
             + g3_column_workspace_bytes(exp, profile=profile)
             + uwpbl_column_workspace_bytes(exp, profile=profile)
-            + column_cumulus_workspace_bytes(exp, profile=profile))
+            + column_cumulus_workspace_bytes(exp, profile=profile)
+            + satmedmf_column_workspace_bytes(exp))
 
 
 def column_cumulus_workspace_bytes(
@@ -4058,6 +4191,56 @@ def g3_column_workspace_bytes(
     return int(worst)
 
 
+def satmedmf_column_workspace_bytes(exp: ExperimentConfig) -> int:
+    worst=0
+    for dc in exp.domains:
+        if int(dc.run.bl_pbl_physics)!=901:
+            continue
+        n,k=int(dc.run.nx)*int(dc.run.ny),int(dc.run.nz)
+        capacity=(220+16*64)*k+4096
+        per_column=capacity*8+((20+2*64)*k+23)*8
+        chunk=min(n,max(1,(512*1024*1024)//per_column))
+        # Full input/output bindings, finite-step humidity conversion and pool.
+        worst=max(worst,chunk*per_column+n*(180*k+32)*8+7501*8)
+    return int(worst)
+
+
+def thompson_fork_column_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Device bytes of the fork Thompson unit's column arena, or zero.
+
+    thompson_version = "wrf_39_noaa" (mp_physics = 28) keeps the fork's
+    column arrays in an arena sized to the launcher's tile of threads in
+    flight (gpuwm.core.thompson_fork: TILE_BLOCKS_PER_SM blocks of BLOCK on
+    every multiprocessor, never more than the columns need), 377 B per
+    level + 1 per thread.  The sizing is the launcher's own formula
+    (thompson_fork.workspace_bytes), so this term and the allocation are
+    one formula.  Breakage prevented: an unpriced arena of 0.86 GiB at 50
+    levels on a 188-SM card, met as an out-of-memory at the first
+    microphysics call of a run admitted near the card's limit.  The domains
+    run one at a time, so the deepest/widest domain prices it.
+    """
+    from gpuwm.core.thompson_fork import tile_threads, workspace_bytes
+
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    if not WRF_EXACT:
+        # The fork unit launches only under GPUWM_WRF_EXACT=1
+        # (microphysics_aerosol._apply_thompson_fork_call); a default run
+        # allocates no arena, so pricing one would refuse runs that fit.
+        return 0
+    worst = 0
+    for dc in exp.domains:
+        if (int(getattr(dc.run, "mp_physics", 0) or 0) != 28
+                or getattr(dc.run, "thompson_version", "wrf_461")
+                != "wrf_39_noaa"):
+            continue
+        threads = tile_threads(profile.multiprocessor_count,
+                               int(dc.run.nx) * int(dc.run.ny))
+        worst = max(worst, workspace_bytes(int(dc.run.nz), threads))
+    return int(worst)
+
+
 def uwpbl_column_workspace_bytes(
         exp: ExperimentConfig, *,
         profile: DeviceLocalMemoryProfile | None = None) -> int:
@@ -4098,7 +4281,7 @@ def gf_column_workspace_bytes(
     ``gpuwm/core/gf.py`` sizes that workspace to the columns it keeps in
     flight -- ``SMs x GF_TILE_BLOCKS_PER_SM x GF_BLOCK`` -- rather than to
     the resident-thread capacity the driver would have charged.  That
-    ratio is the whole saving: MEASURED on node-1 (RTX 5070 Ti, 70 SMs x
+    ratio is the whole saving: MEASURED on test host A (RTX 5070 Ti, 70 SMs x
     1,536) at the nz<=40 tier, 2,200.0 MiB of reservation became 422.1
     MiB of workspace.
 
@@ -4137,7 +4320,7 @@ def ysu_column_workspace_bytes(
     -- ``SMs x YSU_TILE_BLOCKS_PER_SM x YSU_BLOCK`` -- rather than to the
     resident-thread capacity the driver charged.
 
-    MEASURED on node-1 (weather-node-1, RTX 5070 Ti, 70 SMs x 1,536,
+    MEASURED on test host A (RTX 5070 Ti, 70 SMs x 1,536,
     sm_120) at nz=49 and 102,400 columns: an 842.0 MiB reservation became
     123.0 MiB of workspace, for +1.8% on the kernel's wall clock.
 
@@ -4649,9 +4832,10 @@ def shared_dycore_state_workspace_bytes(
 #: initialize_physics's own 2-D allocations before the SFCLAY/Noah unions
 #: (physics.py:935-950).
 _PHYSICS_INIT_FIELDS_2D = (
-    "landmask", "xland", "tsk", "pblh", "mavail", "lakemask",
-    "ivgtyp", "isltyp", "vegfra", "tmn", "xice", "swdown", "glw",
-    "snow", "snowh",
+    "landmask", "xland", "tsk", "sst", "pblh", "mavail", "lakemask",
+    "ivgtyp", "isltyp", "vegfra", "tmn", "xice", "xicem", "swdown", "glw",
+    "snow", "snowh", "sstsk",
+    "achfx", "aclhf", "acgrdflx",
 )
 
 
@@ -4675,6 +4859,14 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
     from gpuwm.core.physics_inventory import SFCLAY_OUTPUTS
 
     union = dict.fromkeys(_PHYSICS_INIT_FIELDS_2D)
+    if cfg is not None:
+        # WRF's ocean mixed layer carries seven planes and reads GSW.
+        from gpuwm.surface_ocean import ocean_fields
+        union.update(dict.fromkeys(ocean_fields(cfg)))
+        if int(getattr(cfg, "sf_ocean_physics", 0)):
+            union["gsw"] = None
+    if cfg is not None and cfg.nwp_diagnostics == 0:
+        union["refd_max"] = None
     union.update(dict.fromkeys(SFCLAY_OUTPUTS))
     if cfg is not None and int(cfg.sf_sfclay_physics) == 5:
         from gpuwm.core.physics_inventory import MYNN_SURFACE_OUTPUTS
@@ -4687,6 +4879,16 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
         from gpuwm.core.physics_inventory import MYJ_SFCLAY_FIELDS_2D
         union.update(dict.fromkeys(MYJ_SFCLAY_FIELDS_2D))
     union.update(dict.fromkeys(NOAH_FIELDS_2D))
+    if cfg is not None and radiation_enabled(cfg):
+        from gpuwm.core.topo_radiation import topo_shortwave_active
+        if not topo_shortwave_active(cfg):
+            union["swnorm"] = None
+    if cfg is not None:
+        from gpuwm.core.physics_inventory import radiation_boundary_flux_names
+        for name in radiation_boundary_flux_names(cfg):
+            union[name] = union["ac"+name] = None
+        if "swupt" in radiation_boundary_flux_names(cfg):
+            union["coszen"] = None
     union.update(dict.fromkeys(("ebal", "kpbl")))
     if cfg is not None and int(cfg.bl_pbl_physics) == 5:
         from gpuwm.core.physics_inventory import (
@@ -4772,6 +4974,20 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
     shapes: dict[str, tuple[int, ...]] = {}
     if cam_ozone:
         shapes["radiation/o33d_grid"] = m
+    shapes["fields/p_hyd"] = m
+    from gpuwm.core.physics_inventory import scm_forcing_fields
+    for name in scm_forcing_fields():
+        shapes[f"fields/{name}"] = ()
+    if cfg.bl_pbl_physics:
+        from gpuwm.core.physics_inventory import pbl_history_rates
+        for name in pbl_history_rates(cfg):
+            shapes[f"fields/{name}"] = m
+    if cfg.cu_physics:
+        from gpuwm.core.physics_inventory import (CUMULUS_HISTORY_RATES,
+                                                  history_tendency_rows)
+        if history_tendency_rows():
+            for name in CUMULUS_HISTORY_RATES:
+                shapes[f"fields/{name}"] = m
     for name in physics_field_names_2d(cfg):
         shapes[f"fields/{name}"] = s2
     n_soil = soil_layer_count(cfg)
@@ -4828,6 +5044,7 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
         from gpuwm.core.physics_inventory import MYNN_PBL_STATE_3D
         for name in MYNN_PBL_STATE_3D:
             shapes[f"fields/{name}"] = m
+        shapes["fields/tke_pbl"] = (nz + 1, ny, nx)
     if int(cfg.bl_pbl_physics) == MYJ_PBL_SCHEME:
         # MYJ's carried TKE_MYJ and EL_MYJ, allocated by initialize_physics
         # for this selector only.  Missing them under-counts by 2*nz*ny*nx
@@ -4880,7 +5097,8 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
                 cfg, urban_columns=urban_columns).items():
             shapes[f"fields/{name}"] = shape
 
-    from gpuwm.core.physics_inventory import terrain_drag_array_shapes
+    from gpuwm.core.physics_inventory import (
+        PBL_OPTIONAL_TENDENCIES, terrain_drag_array_shapes)
     shapes.update(terrain_drag_array_shapes(cfg))
 
     stacks = ["pbl_tendencies", "radiation_tendencies", "cumulus_tendencies"]
@@ -4892,6 +5110,10 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
         shapes[f"{stack}/rv"] = (nz, ny + 1, nx)
         for comp in ("rtheta", "rqv", "rqc"):
             shapes[f"{stack}/{comp}"] = m
+    for component in PBL_OPTIONAL_TENDENCIES.get(cfg.bl_pbl_physics, ()):
+        shapes[f"pbl_tendencies/{component}"] = m
+        if (radiation_enabled(cfg) or cfg.cu_physics) and not reuse_pbl:
+            shapes[f"tendencies/{component}"] = m
     if cfg.cu_physics:
         # Mixed-phase KF returns QR/QI/QS independently.  At bldt=0 the fresh
         # PBL stack is the composed target; positive cadence keeps the
@@ -4930,6 +5152,10 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
 
     shapes["rthratenlw"] = m
     shapes["rthratensw"] = m
+    if radiation_enabled(cfg):
+        shapes["rthraten"] = m
+    if WRF_EXACT and radiation_enabled(cfg):
+        shapes["_wrf_rthraten"] = m
     if cfg.cu_physics in CUMULUS_ADVECTIVE_FORCING_SCHEMES:
         # Raw PBL rates held for GF/New Tiedtke across calls, tile swaps
         # and checkpoints; these are distinct from coupled tendencies.
@@ -5420,8 +5646,8 @@ def scratch_slot_registry(cfg: RunConfig, *,
                      wdm6_z8w=fl, wdm6_count_status=(1,), mp_rainnc=s2, mp_rainncv=s2,
                      mp_snownc=s2, mp_snowncv=s2, mp_graupelnc=s2,
                      mp_graupelncv=s2, mp_sr=s2, refl_t=m, refl_10cm=m)
-    if cfg.mp_physics == 8:
-        # microphysics.py:_apply_thompson preparation,
+    if cfg.mp_physics == 8 and not WRF_EXACT:
+        # microphysics.py:_apply_thompson_default preparation,
         # persistent precipitation, output-due private graupel-number shadow,
         # and Thompson REFL_10CM staging.  The three reference fields are
         # deliberately distinct registry entries even where the runtime can
@@ -5443,6 +5669,30 @@ def scratch_slot_registry(cfg: RunConfig, *,
             # state and read by the terminal apply for the :3974 vapour
             # floor: one float32 per column.
             mp_thompson_micro_columns=s2,
+        )
+        if getattr(cfg, "thompson_cloud_surface_booking", False) is True:
+            # Correct mode WB1 (gpuwm/core/thompson_cloud_booking.py): the
+            # settled-cloud total and its per-call amount.
+            slots.update(mp_cloudnc=s2, mp_cloudncv=s2)
+    elif cfg.mp_physics == 8:
+        # GPUWM_WRF_EXACT=1 (microphysics._apply_thompson_strict):
+        # gpuwm/core/thompson_classic.py:apply_classic, the slots it draws,
+        # from its own lists: theta, Exner, temperature, layer depths, the
+        # pre-microphysics theta, the private graupel number, the
+        # plane-stacked tendency / working / column buffers, the int32 cell
+        # and column flags, persistent precipitation and REFL_10CM staging.
+        from gpuwm.core import thompson_classic as tcl
+        for name, planes in tcl.SCRATCH_VOLUME_SLOTS:
+            slots[name] = (planes * cfg.nz, ny, nx)
+        for name, planes in tcl.SCRATCH_INTERFACE_SLOTS:
+            slots[name] = (planes * (cfg.nz + 1), ny, nx)
+        for name in tcl.SCRATCH_INT_VOLUME_SLOTS:
+            slots[name] = m
+        for name in tcl.SCRATCH_INT_SURFACE_SLOTS:
+            slots[name] = s2
+        slots.update(
+            mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2, mp_snowncv=s2,
+            mp_graupelnc=s2, mp_graupelncv=s2, mp_sr=s2, refl_10cm=m,
         )
         if getattr(cfg, "thompson_cloud_surface_booking", False) is True:
             # Correct mode WB1 (gpuwm/core/thompson_cloud_booking.py): the
@@ -5512,7 +5762,23 @@ def scratch_slot_registry(cfg: RunConfig, *,
             p3_flags=(2, ny, nx),
             refl_10cm=m,
         )
-    if cfg.mp_physics == 28:
+    if (WRF_EXACT and cfg.mp_physics == 28
+            and getattr(cfg, "thompson_version", "wrf_461") == "wrf_39_noaa"):
+        # Under GPUWM_WRF_EXACT=1 the operational fork's Thompson
+        # (thompson_version = "wrf_39_noaa") runs as one column unit (gpuwm/core/kernels/thompson_fork.cu) that
+        # holds the fork's tendencies and working arrays per column in its
+        # column arena (priced by thompson_fork_column_workspace_bytes, not
+        # here).  Its adapter
+        # (microphysics_aerosol._apply_thompson_fork_call) draws exactly
+        # microphysics_aerosol.FORK_SCRATCH_SLOTS: the preparation bracket,
+        # the seven precipitation slots and the reflectivity staging.
+        slots.update(
+            mp_th=m, mp_pii=m, mp_dz8w=m, mp_z8w=fl,
+            mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2, mp_snowncv=s2,
+            mp_graupelnc=s2, mp_graupelncv=s2, mp_sr=s2,
+            refl_10cm=m,
+        )
+    elif cfg.mp_physics == 28:
         # Thompson AEROSOL-AWARE (mp=28).  A deliberate near-clone of the
         # mp=8 block above -- the aerosol adapter reuses every classic
         # preparation, precipitation, melt-marker and reflectivity slot with
@@ -5539,6 +5805,10 @@ def scratch_slot_registry(cfg: RunConfig, *,
             # floor: one float32 per column.
             mp_thompson_micro_columns=s2,
         )
+        if getattr(cfg, "thompson_cloud_surface_booking", False) is True:
+            # Correct mode WB1 (gpuwm/core/thompson_cloud_booking.py): the
+            # settled-cloud total and its per-call amount, as for mp=8.
+            slots.update(mp_cloudnc=s2, mp_cloudncv=s2)
         # --- The aerosol working set -------------------------------------
         # WRF runs mp=28 as ONE monolithic column loop that freezes
         # nc1d/nwfa1d/nifa1d at entry (module_mp_thompson.F:1795-1812),
@@ -5639,13 +5909,26 @@ def scratch_slot_registry(cfg: RunConfig, *,
                      # float32 the arena estimator otherwise never saw.
                      my2_zet_t=m)
     if cfg.mp_physics == 10:
-        # morrison.py apply (prep + accumulators) + refl.py:324-325.
-        # morr_z8w is no longer allocated: the fused preparation kernel
-        # (morrison_prepare_fields) forms each dz in registers.  It stays
-        # priced, an over-estimate of (nz + 1) * ny * nx * 4 bytes, until
-        # the d01 calibration fixture (measured with it) is re-measured.
-        slots.update(morr_theta=m, morr_rho=m, morr_pii=m, morr_dz=m,
-                     morr_ice_to_snow=m, morr_z8w=fl,
+        # gpuwm/core/morrison.py apply, the slots it draws from its own
+        # lists (morrison_constants, CPU-only): the WRF preparation fields,
+        # the WORK stack for one column call (tendencies, the scheme's
+        # temperature, the stage hand-offs; the scheme runs in
+        # ceil(ncol / NWORK)-column calls, so WORK is one volume plus at
+        # most NWORK * nz values), the int32 LTRUE column flag, persistent
+        # precipitation and REFL_10CM staging with refl_t, the post-call
+        # temperature each column call copies out of its WORK plane.
+        # morr_z8w is not allocated: the preparation kernel forms each dz
+        # in registers.  It stays priced, an over-estimate of
+        # (nz + 1) * ny * nx * 4 bytes, until the d01 calibration fixture
+        # (measured with it) is re-measured.
+        from gpuwm.core import morrison_constants as mo
+        for name in mo.SCRATCH_VOLUME_SLOTS:
+            slots[name] = m
+        slots[mo.SCRATCH_WORK_SLOT] = mo.work_slot_shape(cfg.nz, ny * nx)
+
+        for name in mo.SCRATCH_INT_SURFACE_SLOTS:
+            slots[name] = s2
+        slots.update(morr_z8w=fl,
                      mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2,
                      mp_snowncv=s2, mp_graupelnc=s2, mp_graupelncv=s2,
                      mp_sr=s2, refl_t=m, refl_10cm=m)
@@ -6429,6 +6712,31 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "the fused cold source resets every velocity boost; output-due "
         "graupel number is initialized across the complete field before "
         "source/fallout reads"),
+    # Classic Thompson's own working set (gpuwm/core/thompson_classic.py).
+    # Every call writes every word it reads: tc_entry the temperature,
+    # theta, Exner, layer depths, private graupel number and both column
+    # flags (filled to zero first); tc_sources every tendency of every cell
+    # (zero in a no-microphysics column), every working field of every cell
+    # of a column with microphysics, and every cell flag; tc_column zeroes
+    # its fall-speed planes before it reads them and writes each flux
+    # before the update that reads it, and touches no column whose flags
+    # say it has no microphysics.  Nothing crosses a call.
+    ScratchSlotLifetime(
+        ("mp_thompson_saved_theta",
+         "mp_thompson_classic_ten",
+         "mp_thompson_classic_work",
+         "mp_thompson_classic_colbuf",
+         "mp_thompson_classic_flags",
+         "mp_thompson_classic_micro",
+         "mp_thompson_classic_kmelt"),
+        "write_before_read",
+        "gpuwm/core/thompson_classic.py:apply_classic; "
+        "gpuwm/core/kernels/thompson_classic.cu:tc_entry, tc_sources, "
+        "tc_column",
+        "WRF's mp_thompson zeroes its tendencies and recomputes every "
+        "working value at the top of each column call (module_mp_thompson.F"
+        ":1650-1777, :1798-2002); the unit's buffers hold exactly those "
+        "values for the length of one call"),
     # WRF's per-column no_micro flag (module_mp_thompson.F:1646, :2020),
     # registered for mp=8 and mp=28 by the Thompson repair G.  The slot
     # shipped in 217e84e18 without this row, so every mp=8 and mp=28
@@ -6517,9 +6825,17 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "or any dependent read"),
     ScratchSlotLifetime(
         ("morr_theta", "morr_rho", "morr_pii", "morr_dz",
-         "morr_ice_to_snow", "morr_z8w"), "write_before_read",
-        "gpuwm/core/morrison.py:159-202",
-        "Morrison preparation fields are rebuilt for every scheme call"),
+         "morr_work", "morr_ltrue", "morr_z8w"), "write_before_read",
+        "gpuwm/core/morrison.py:apply; gpuwm/core/kernels/morrison.cu:"
+        "mo_process, mo_sediment_64/_256, mo_finalize",
+        "Morrison preparation fields are rebuilt for every scheme call; "
+        "LTRUE is zeroed before the first column call; each column call's "
+        "mo_process writes every WORK plane of every cell of its columns "
+        "(tendencies, temperature, CPM, LAMI, ACN and the zeroed fallout "
+        "tendencies); that call's sedimentation and final loop read only "
+        "what it wrote (WRF's MORR_TWO_MOMENT_MICRO zeroes its tendencies "
+        "at :1275-1418 of every column call)"),
+
     ScratchSlotLifetime(
         ("my2_theta", "my2_pii", "my2_t", "my2_z", "my2_z8w", "my2_psfc"),
         "write_before_read", "gpuwm/core/milbrandt2.py::apply",
@@ -6541,7 +6857,8 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "read them"),
     ScratchSlotLifetime(
         ("refl_t",), "write_before_read", "gpuwm/core/refl.py:349-372; "
-        "gpuwm/core/nssl2_runtime.py:apply_nssl2_production",
+        "gpuwm/core/nssl2_runtime.py:apply_nssl2_production; "
+        "gpuwm/core/morrison.py:apply (every column call copies its T1D)",
         "post-scheme temperature preparation is assigned after the final "
         "condensation hook and before the reflectivity launch"),
     ScratchSlotLifetime(
@@ -6937,7 +7254,9 @@ def shared_scratch_arena_aliases(
 
     Smagorinsky K_m/K_h are consumed only while the pre-RK preparation builds
     the held mixing tendencies.  Each stage later prepares acoustic alpha and
-    gamma from scratch before its first acoustic read, and no stage reads K.
+    gamma from scratch before its first acoustic read. Strict coordinate
+    scalar diffusion reads Kh after the first acoustic loop, so that arm
+    keeps Kh separate from acoustic gamma.
     The two mass-point K arrays can therefore borrow prefixes of those two
     independent full-level coefficient backings.
 
@@ -7003,8 +7322,12 @@ def shared_scratch_arena_aliases(
                     and math.prod(shapes[slot])
                     <= math.prod(shapes["diff6_z"])):
                 aliases[slot] = "diff6_z"
+    keep_scalar_kh = WRF_EXACT and any(
+        dc.run.diff_opt == 1 and dc.run.km_opt in (2, 3, 4) for dc in domains)
     for slot, target in (("smag_km", "acoustic_alpha"),
                          ("smag_kh", "acoustic_gamma")):
+        if slot == "smag_kh" and keep_scalar_kh:
+            continue
         if (slot in shapes and target in shapes
                 and math.prod(shapes[slot]) <= math.prod(shapes[target])):
             aliases[slot] = target
@@ -7189,6 +7512,18 @@ def rrtmgp_workspace_shapes(nz: int, column_chunk: int, p_top: float = 5000.0
             for name, spec in phases[phase].items()}
 
 
+def _named_three_radius_schemes() -> frozenset[int]:
+    """Selectors outside WRF's numbering (gpuwm.microphysics_schemes, ids
+    from 900) whose cloud-optics family reads effc/effi/effs off the state
+    the way Thompson's row does: TEMPO (900) couples as "thompson"
+    (gpuwm/core/rrtmgp.py _MP_CLOUD_OPTICS_SCHEME), so its radiation call
+    packs the same three radius columns and they are priced here.
+    """
+    from gpuwm.microphysics_schemes import NAMED_SCHEMES
+    return frozenset(int(scheme.mp_id) for scheme in NAMED_SCHEMES.values()
+                     if scheme.cloud_optics_family in ("thompson", "wsm6", "wsm3"))
+
+
 def rrtmgp_column_shapes(
         cfg: RunConfig, p_top: float = 5000.0, *,
         column_chunk: int = DEFAULT_COLUMN_CHUNK,
@@ -7225,7 +7560,8 @@ def rrtmgp_column_shapes(
            "clwp", "ciwp", "reliq", "dgice"]
     if cfg.mp_physics == 10:
         lay += ["nc", "nr", "ni", "ns", "effc", "effr", "effi", "effs"]
-    elif cfg.mp_physics in (3, 4, 6, 8, 16, 18, 24, 28, 106):
+    elif (cfg.mp_physics in (3, 4, 6, 8, 16, 18, 24, 28, 106)
+          or cfg.mp_physics in _named_three_radius_schemes()):
         # WSM3 (3) packs its three radii for the same reason: WSM3SCHEME is
         # in the use_mp_re disjunction (module_physics_init.F:1008) and its
         # "wsm3" coupling reads effc/effi/effs (gpuwm/core/rrtmgp.py).
@@ -7290,6 +7626,19 @@ def rrtmgp_column_shapes(
     shapes["columns/emiss_bands"] = ((ncol, 16), 4)
     for name in ("tsfc", "mu0", "albedo_surface", "daylight"):
         shapes[f"columns/{name}"] = ((ncol,), 4)
+    # WRF's top/bottom fluxes (rrtmgp.py RRTMGPRadiation.__call__): the
+    # per-flux rows, and one chunk's clear-sky solve -- fresh flux outputs
+    # (SW: up, down, direct), the LW zero incident g-point plane and the
+    # SW zero band cloud optics.
+    from gpuwm.core.physics_inventory import radiation_boundary_flux_names
+    boundary = radiation_boundary_flux_names(cfg)
+    if boundary:
+        shapes["columns/boundary_fluxes"] = ((len(boundary), ncol), 4)
+        for name in ("up", "dn", "dir"):
+            shapes[f"columns/clear_sky_flux_{name}"] = (
+                (cap_ncol, peak_nz + 1), 4)
+        shapes["columns/clear_sky_incident"] = ((cap_ncol, 256), 4)
+        shapes["columns/clear_sky_cloud"] = ((cap_ncol, peak_nz, 16), 4)
     return shapes
 
 
@@ -8053,6 +8402,10 @@ class ExperimentMemoryEstimate:
         margin = (f"x {self.headroom:.2f}: measured peak/itemized "
                   f"{self.headroom - FORECAST_PEAK_RATIO_SAFETY:.2f} + safety "
                   f"{FORECAST_PEAK_RATIO_SAFETY:.2f}")
+        if self.pool_residue_cap_active:
+            margin = (f"+ {int(self.pool_residue_cap_bytes) / GIB:.2f}: the "
+                      f"measured pool residue bound (A13), under the "
+                      f"{margin}")
         pool = (f"subtotal {self.subtotal_bytes / GIB:.2f} {margin}"
                 if not held else
                 f"subtotal less held arrays "
@@ -9330,6 +9683,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                     boundary_source=_SAME_AS_SOURCE,
                     preparation_route: str | None = None,
                     urban_columns=None,
+                    resident_forcing_intervals: int | None = None,
                     ) -> PhaseMemoryEstimate:
     """Price every phase of ``exp`` and say which one binds the card.
 
@@ -9359,6 +9713,16 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
     unchanged; they price the ingest phase's HOST residency, which no
     term above touches.
 
+    ``resident_forcing_intervals`` is how many forcing intervals the
+    RESIDENT forecast holds on the card when that differs from the schedule:
+    a forecast started on a chained preparation's head streams its root's
+    intervals through one device slot
+    (:func:`gpuwm.ingest.lateral_bc.attach_streaming_lateral_boundaries`),
+    which is what its door prices (``forcing_intervals=1`` on a stream
+    head).  ``None`` holds the whole schedule, as a sealed restore does.
+    Only the resident forecast term reads it; the ingest phase and a
+    streamed domain's host series keep ``forcing_intervals``.
+
     ``boundary_source`` is the source whose published hydrometeors the
     root's boundary tables carry, in every forecast term here; it is
     ``source`` unless given.  A surface that prices no ingest phase
@@ -9373,11 +9737,16 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
         source=source, experiment=exp, requested=preprocess_backend)
     from gpuwm.boundary_fields import source_boundary_species
     forecast = estimate_experiment(
-        exp, column_chunk=column_chunk, forcing_intervals=forcing_intervals,
+        exp, column_chunk=column_chunk,
+        forcing_intervals=(forcing_intervals
+                           if resident_forcing_intervals is None
+                           else max(1, int(resident_forcing_intervals))),
         forcing_interval_seconds=forcing_interval_seconds,
         vram_gib=vram_gib, profile=profile,
         boundary_species=source_boundary_species(boundary_source),
-        urban_columns=urban_columns)
+        urban_columns=urban_columns,
+        # The one-card residue bound, as the admission prices it.
+        **single_card_residue_terms(exp))
     key = None if source is None else str(source).strip().lower()
     ingest = None
     if key in SOURCE_ANALYSIS_LEVELS or analysis_shapes_by_domain is not None:
@@ -9731,7 +10100,9 @@ def estimate_experiment(
 
 
 def admission_estimate(exp: ExperimentConfig, *, machine=None, source=None,
-                       urban_columns=None) -> ExperimentMemoryEstimate:
+                       urban_columns=None,
+                       mynn_column_chunk: int | None = None
+                       ) -> ExperimentMemoryEstimate:
     """THE estimate a tree's ``[tiles]`` admission is judged from.
 
     ONE function, called with the same arguments wherever the question is
@@ -9795,13 +10166,21 @@ def admission_estimate(exp: ExperimentConfig, *, machine=None, source=None,
     the plan the run builds.  The configuration has no land cover, so the
     review prices every column urban, the upper bound: a prepared door can
     admit what the review refused, never the other way (A176).
+
+    THE MEASURED POOL RESIDUE.  A one-domain forecast of a suite with
+    rank receipts carries the A13 pool residue bound
+    (:func:`single_card_pool_residue_cap_bytes`), as each device rank
+    does.  ``mynn_column_chunk`` prices the MYNN workspace at that width
+    instead of the width the run walks; only the resident road's width
+    fit asks for it (:func:`required_mynn_pricing`).
     """
     from gpuwm.boundary_fields import source_boundary_species
-    return estimate_experiment(
-        exp, column_chunk=exp.column_chunk,
-        profile=getattr(machine, "device_profile", None),
-        boundary_species=source_boundary_species(source),
-        urban_columns=urban_columns)
+    with required_mynn_pricing(exp, mynn_column_chunk, only_given=True):
+        return estimate_experiment(
+            exp, column_chunk=exp.column_chunk,
+            profile=getattr(machine, "device_profile", None),
+            boundary_species=source_boundary_species(source),
+            urban_columns=urban_columns, **single_card_residue_terms(exp))
 
 
 # ---------------------------------------------------------------------------
@@ -11146,7 +11525,9 @@ def _warn_unstaged_physics_tables(exp) -> None:
             return
         from gpuwm.table_assets import require_thompson_tables
 
-        require_thompson_tables()
+        # stage=False: a memory preflight must not start a 315 MiB
+        # download; the run doors stage the set on first use.
+        require_thompson_tables(stage=False)
     except FileNotFoundError as error:
         from gpuwm.explain import warn
 
@@ -11898,7 +12279,8 @@ def check_main(args) -> int:
             exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
             forcing_interval_seconds=forcing_interval,
             vram_gib=card_total_gib, profile=profile,
-            boundary_species=boundary_species, urban_columns=urban_columns
+            boundary_species=boundary_species, urban_columns=urban_columns,
+            **single_card_residue_terms(exp)
         ).alloc_estimate_bytes)
     if args.reserve_gib is not None:
         # Flat controller-ratified reserve replacing the proposed stack.
@@ -11941,7 +12323,8 @@ def check_main(args) -> int:
             exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
             forcing_interval_seconds=forcing_interval,
             vram_gib=card_total_gib, profile=profile,
-            boundary_species=boundary_species, urban_columns=urban_columns)
+            boundary_species=boundary_species, urban_columns=urban_columns,
+            **single_card_residue_terms(exp))
         measured_used = None
         free = None
         if declared_memory:
@@ -12626,7 +13009,11 @@ def check_main(args) -> int:
         print(f"  TIER 1  resident: {_format_bytes(estimate.resident_bytes)}"
               f"   subtotal (+workspace+transient peak): "
               f"{_format_bytes(estimate.subtotal_bytes)}")
-        print(f"  ESTIMATE (x{estimate.headroom:.2f}: measured peak/itemized "
+        print(f"  ESTIMATE ("
+              + (f"+{int(estimate.pool_residue_cap_bytes) / GIB:.2f} GiB "
+                 f"measured pool residue bound (A13), under "
+                 if estimate.pool_residue_cap_active else "")
+              + f"x{estimate.headroom:.2f}: measured peak/itemized "
               f"{estimate.headroom - FORECAST_PEAK_RATIO_SAFETY:.2f} + safety "
               f"{FORECAST_PEAK_RATIO_SAFETY:.2f}"
               + (f", on the subtotal less "
@@ -12650,6 +13037,7 @@ def check_main(args) -> int:
         kf_ws = kf_column_workspace_bytes(exp, profile=profile)
         ysu_ws = ysu_column_workspace_bytes(exp, profile=profile)
         shinhong_ws = shinhong_column_workspace_bytes(exp, profile=profile)
+        fork_ws = thompson_fork_column_workspace_bytes(exp, profile=profile)
         # Kept out of the f-string: a line break inside an f-string
         # expression is PEP 701 (Python 3.12+) syntax, and the supported
         # floor is 3.11 -- the 1.2.0 release workflow failed on exactly
@@ -12660,7 +13048,7 @@ def check_main(args) -> int:
         # to the per-card term (task 206).
         context_bytes = profile.cuda_context_bytes
         remeasured_bytes = (estimate.alloc_estimate_bytes + widest
-                            + gf_ws + kf_ws + ysu_ws + shinhong_ws
+                            + gf_ws + kf_ws + ysu_ws + shinhong_ws + fork_ws
                             + context_bytes
                             + reserve.retention_residual_bytes)
         gf_ws_term = (f" + GF column workspace {_format_bytes(gf_ws)}"
@@ -13393,7 +13781,7 @@ __all__ = [
     "device_rail_free_bytes", "device_wide_used_bytes",
     "column_workspace_bytes", "gf_column_workspace_bytes",
     "kf_column_workspace_bytes", "ysu_column_workspace_bytes",
-    "shinhong_column_workspace_bytes",
+    "shinhong_column_workspace_bytes", "thompson_fork_column_workspace_bytes",
     "kernel_local_memory_bytes", "non_pool_device_bytes",
     "physics_kernel_modules", "refl_diagnostic_reachable",
     "LEVEL_SPECIALIZED_KERNEL_FRAMES", "LevelSpecializedFrame",
@@ -13444,6 +13832,8 @@ __all__ = [
     "POOL_RESIDUE_SWING_BYTES", "RANK_POOL_RESIDUE_GAP_BASIS",
     "RANK_POOL_RESIDUE_SUITES", "RANK_POOL_RESIDUE_UNMEASURED_BASIS",
     "rank_pool_residue_cap_bytes", "rank_pool_residue_suite",
+    "single_card_pool_residue_cap_bytes", "single_card_residue_terms",
+    "mynn_width_adjustable", "required_mynn_pricing",
     "rank_pool_residue_basis",
     "HeldMemoryItem", "bem_workspace_bound_note",
     "forecast_pool_estimate_bytes", "urban_held_bytes",

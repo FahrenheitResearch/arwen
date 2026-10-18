@@ -72,25 +72,63 @@ impl Extrap {
 #[derive(Debug, Clone, Copy)]
 pub struct AboveTopLapseRate;
 
-/// A column of `(coordinate, value)` pairs, sorted ascending by coordinate.
-///
-/// Sorting is stable here where `mpas_quicksort` is not.  On a first-guess
-/// column the coordinates are distinct geopotential heights, so the two agree;
-/// where they could not — two levels reported at exactly the same height — a
-/// stable order is at least reproducible run to run, which an unstable
-/// quicksort's is not.
+/// Sort paired coordinates and payloads using native randomized partitions.
+/// MPAS-A v8.4.2 framework/mpas_sort.F:346-408. Equal coordinates retain
+/// native random tie ordering; supplying the same draws reproduces every word.
+pub fn quicksort_column_with(coords: &mut [f32], values: &mut [f32], mut random: impl FnMut() -> f32) {
+    assert_eq!(coords.len(), values.len());
+    if coords.is_empty() { return; }
+    let mut stack = vec![(0, coords.len()-1)];
+    while let Some((l,r)) = stack.pop() {
+        let pivot = l + (random() * (r-l) as f32) as usize;
+        let pivot_value = coords[pivot];
+        coords.swap(pivot,r); values.swap(pivot,r);
+        let mut split = l;
+        for i in l..r {
+            if coords[i] <= pivot_value {
+                coords.swap(split,i); values.swap(split,i); split += 1;
+            }
+        }
+        coords.swap(split,r); values.swap(split,r);
+        if split > l+1 { stack.push((l,split-1)); }
+        if r > split+1 { stack.push((split+1,r)); }
+        assert!(stack.len() <= 1000, "native quicksort exhausted its stack");
+    }
+}
+
+// GNU15.2 libgfortran _gfortran_random_r4 uses xoshiro256** followed by
+// truncating to 24 significant bits and multiplication by 2**-32. Native
+// initialization draws OS entropy; its seed is not a model namelist value.
+struct ColumnRandom([u64;4]);
+impl ColumnRandom {
+    fn new() -> Self {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let entropy = std::collections::hash_map::RandomState::new();
+        let state = std::array::from_fn(|i| {
+            let mut hash = entropy.build_hasher(); i.hash(&mut hash); hash.finish()
+        });
+        Self(state)
+    }
+    fn next(&mut self) -> f32 {
+        let result = self.0[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
+        let shift = self.0[1] << 17;
+        self.0[2] ^= self.0[0]; self.0[3] ^= self.0[1];
+        self.0[1] ^= self.0[2]; self.0[0] ^= self.0[3];
+        self.0[2] ^= shift; self.0[3] = self.0[3].rotate_left(45);
+        ((result >> 32) as u32 & 0xffffff00) as f32 * 2.3283064365386963e-10_f32
+    }
+}
+thread_local! {
+    static COLUMN_RANDOM: std::cell::RefCell<ColumnRandom> = std::cell::RefCell::new(ColumnRandom::new());
+}
+
+/// Native sort used at every case7 vertical driver call.
+/// MPAS-A v8.4.2 mpas_init_atm_cases.F:5033-5168, framework/mpas_sort.F:346-408.
 pub fn sorted_column(coords: &mut [f32], values: &mut [f32]) {
-    let n = coords.len();
-    let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_by(|&a, &b| {
-        coords[a]
-            .partial_cmp(&coords[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
+    COLUMN_RANDOM.with(|state| {
+        let mut state = state.borrow_mut();
+        quicksort_column_with(coords, values, || state.next());
     });
-    let c: Vec<f32> = idx.iter().map(|&i| coords[i]).collect();
-    let v: Vec<f32> = idx.iter().map(|&i| values[i]).collect();
-    coords.copy_from_slice(&c);
-    values.copy_from_slice(&v);
 }
 
 /// Interpolate `values` (paired with ascending `coords`) to `target`.

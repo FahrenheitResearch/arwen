@@ -69,14 +69,18 @@ def live_sigint():
         signal.signal(signal.SIGINT, previous if previous is not None else signal.SIG_DFL)
 
 
+def _send_interrupt():
+    """Ctrl-C to this process, as a terminal delivers it."""
+    if sys.platform == "win32":
+        import _thread
+        _thread.interrupt_main()
+    else:
+        os.kill(os.getpid(), signal.SIGINT)
+
+
 def _interrupt_soon(after=INTERRUPT_AFTER):
     """Send this process a SIGINT from another thread after ``after`` seconds."""
-    def send():
-        if sys.platform == "win32":
-            import _thread
-            _thread.interrupt_main()
-        else:
-            os.kill(os.getpid(), signal.SIGINT)
+    send = _send_interrupt
     timer = threading.Timer(after, send)
     timer.daemon = True
     timer.start()
@@ -224,6 +228,7 @@ def _session(tmp_path, *, members=3, cards=1, **kwargs):
 
 def test_session_interrupt_ends_as_interrupted_with_no_aggregate_products(tmp_path, live_sigint, capsys):
     collector, record = Collector(), {}
+    sent = threading.Event()
 
     def runner(member_inputs, *, output_directory, first_products, progress_callback=None, **kw):
         member = current_capture().member_id
@@ -233,9 +238,16 @@ def test_session_interrupt_ends_as_interrupted_with_no_aggregate_products(tmp_pa
             time.sleep(0.02)
             progress_callback(model_elapsed_seconds=60.0 * index / steps, outer_step=index)
             record[member] = index
+            if index == 10 and not sent.is_set():
+                # The interrupt lands while the first member is running (0.2 s in), not on a wall clock:
+                # under a loaded Stage 1 (2.9.2 rehearsal, 2026-10-17 17:50Z, six workers beside a cut's
+                # native build) the 0.5 s timer fired before any member had started, so there was no run to
+                # record and ensemble-run.json never existed.  The timer below is only a backstop.
+                sent.set()
+                _send_interrupt()
         return {"status": "PASS"}
 
-    timer = _interrupt_soon()
+    timer = _interrupt_soon(after=30.0)
     try:
         with pytest.raises(KeyboardInterrupt):
             _session(tmp_path, collector=collector).run_prepared(runner, _inputs())

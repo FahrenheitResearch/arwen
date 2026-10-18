@@ -219,7 +219,7 @@ def test_the_diagnostic_commands_are_never_refused(tmp_path):
 #: The modules ``import gpuwm`` and this gate's verdict run, copied into a
 #: throwaway checkout so the verdict is measured on a real interpreter
 #: with nothing of this machine's own installs in play.
-_GATE_MODULES = ("__init__.py", "cupy_windows_warning.py", "explain.py",
+_GATE_MODULES = ("__init__.py", "cupy_windows_warning.py", "numerics.py", "explain.py",
                  "provenance.py", "provenance_gate.py", "runtime_manifest.py")
 
 

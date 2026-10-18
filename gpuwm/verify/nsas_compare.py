@@ -34,10 +34,8 @@ FIXTURES = (Path(__file__).resolve().parents[2]
 
 def ulp_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """|ordered(a) - ordered(b)| on float32 bit patterns (NaN == NaN)."""
-    def ordered(x):
-        i = np.ascontiguousarray(x, dtype=np.float32).view(np.int32).astype(np.int64)
-        return np.where(i < 0, np.int64(-2**31) - i, i)
-    d = np.abs(ordered(a) - ordered(b))
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+    d = np.abs(monotone_fp32_key(a) - monotone_fp32_key(b))
     both_nan = np.isnan(a) & np.isnan(b)
     return np.where(both_nan, 0, d)
 

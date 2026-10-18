@@ -133,8 +133,14 @@ _PROVENANCE = {
         _NATIVE_MPAS_WPS),
     "modis_landuse_20class_15s": (
         "15-arc-second Noah-modified IGBP land use (native MPAS "
-        "MODIFIED_IGBP_MODIS_NOAH_15s option)",
+        "MODIFIED_IGBP_MODIS_NOAH_15s option; WPS geog_data_res "
+        "modis_15s)",
         _NATIVE_MPAS_WPS),
+    "lai_modis_30s": (
+        "30-arc-second monthly MODIS leaf area index (WPS geog_data_res "
+        "modis_lai)",
+        "NASA MODIS, distributed for WPS by NCAR; NASA data are free and "
+        "open"),
     "greenfrac": (
         "monthly green-vegetation fraction (native MPAS NCEP option)",
         _NATIVE_MPAS_WPS),

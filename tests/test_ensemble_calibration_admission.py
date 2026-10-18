@@ -68,7 +68,8 @@ def test_native_absent_consumer_refuses_before_headers(selector, tmp_path):
     with pytest.raises(ValueError, match=selector) as caught:
         refuse_public_arguments(SimpleNamespace(command=None, wrfinput=native))
     assert "no runtime consumer" in str(caught.value)
-    assert "unperturbed" in str(caught.value)
+    assert ("RAND_PERT history and restart field would be missing" if selector == "rand_perturb"
+            else "unperturbed") in str(caught.value)
 
 
 def test_disabled_stochastic_and_none_remain_ordinary():

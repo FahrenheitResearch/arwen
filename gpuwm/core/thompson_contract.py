@@ -172,7 +172,7 @@ FORK_GENERATED_TABLE_FILES: dict[str, tuple[TableRecord, ...]] = {
 }
 
 #: The fork set as tools/thompson_fork_oracle/build.sh generated it on
-#: node-2 (GNU Fortran 15.2.0, -O2 -fno-tree-vectorize, no libmvec);
+#: test host B (GNU Fortran 15.2.0, -O2 -fno-tree-vectorize, no libmvec);
 #: receipt tools/thompson_fork_oracle/PROVENANCE-node2.txt.
 FORK_TABLE_ASSETS = (
     TableAsset(

@@ -120,7 +120,7 @@ def write_arrays(path: str | os.PathLike[str],
             # freely -- dotted, slashed, whatever the seam calls them --
             # and netCDF refuses most of that as an identifier
             # ("NetCDF: Name contains illegal characters", which is how
-            # the first real seed run died on node-1).  So a name that
+            # the first real seed run died on test host A).  So a name that
             # is not a legal identifier is stored under a positional
             # one, with the true name in an attribute.  Legal names are
             # left exactly as they are, so anchors written before this

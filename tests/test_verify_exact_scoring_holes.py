@@ -161,7 +161,9 @@ def test_an_engine_crash_after_complete_history_is_never_pass():
     # frame matching, and the run scored PASS with exit 0.
     assert _decide(woof_status="CRASH") == "WOOF-CRASH"
     assert _decide(woof_status="CRASH", designated=False) == "WOOF-CRASH"
-    assert _decide(woof_status="CRASH", referee_sound=False) == "WOOF-CRASH"
+    # An unsound referee keeps its finite-window class (exact chain b6bd14ea,
+    # tests/test_verify_exact_round3_hardening.py); exit 3, never PASS.
+    assert _decide(woof_status="CRASH", referee_sound=False) == "UNSOUND-REF"
     assert _decide() == "PASS"
 
 
@@ -353,3 +355,74 @@ def test_cli_reports_coverage_over_scored_runs(tmp_path, capsys):
            "1 (50.0 %) passed" in text
     cover = json.loads((tmp_path / "out" / "results" / "1of1-score.coverage.json").read_text())
     assert cover[0]["pairs_integrated_sound"] == 1
+
+
+# -- the second combo sweep's check: crashes filed elsewhere, a green exit
+#    with no 0 ULP match -------------------------------------------------------
+
+def _crashed_after_a_step0_difference():
+    """WOOF differs at step 0 (as GLW does in every sweep run) and stops after
+    step 1; the referee wrote steps 0..3."""
+    ref = _record(_frames(30))
+    frames = {s: f for s, f in _frames(30).items() if s <= 1}
+    frames[0]["HFX"][0, 0] += 1
+    return compare_runs(_record(frames), ref)
+
+
+@pytest.mark.parametrize("sound, designated", [(True, True), (False, True), (True, False),
+                                                (False, False)])
+def test_a_woof_crash_before_the_referees_last_step_is_woof_crash_whatever_differs(
+        sound, designated):
+    comparison = _crashed_after_a_step0_difference()
+    assert comparison.first_step == 0 and comparison.missing_steps == (2, 3)
+    assert _decide(woof_status="CRASH", comparisons={"scalar": comparison},
+                   referee_sound=sound, designated=designated) == "WOOF-CRASH"
+
+
+def test_a_woof_crash_after_a_crashed_referees_last_step_stays_unsound_ref():
+    # The referee wrote steps 0..1 and then crashed; WOOF wrote past it before
+    # stopping.  Over the referee's window nothing is missing, so the run is
+    # judged by the referee's soundness, and the line still names WOOF's stop.
+    ref = _record({s: f for s, f in _frames(31).items() if s <= 1})
+    frames = {s: f for s, f in _frames(31).items() if s <= 2}
+    frames[0]["HFX"][0, 0] += 1
+    comparison = compare_runs(_record(frames), ref, through_step=1)
+    assert _decide(woof_status="CRASH", comparisons={"scalar": comparison},
+                   referee_sound=False) == "UNSOUND-REF"
+
+
+def test_cli_a_crash_after_a_step0_difference_is_woof_crash_not_unsound_ref(tmp_path):
+    # CHECK2 found 24 of these filed as UNSOUND-REF: the referee ran to step 3
+    # and then went non-finite; WOOF differed at step 0 and crashed at step 1.
+    frames = _frames(32)
+    _write_recording(tmp_path / "rec", {"A001": {"builds": _scalar(
+        frames, status="NON-FINITE", last_good=STEPS - 1)}}, summary={"A001": "yes"})
+    woof = {s: f for s, f in _frames(32).items() if s <= 1}
+    woof[0]["HFX"][0, 0] += 1
+    _write_woof(tmp_path / "out", "A001", woof, status="CRASH")
+    code, rows = _run(tmp_path)
+    assert rows["A001"]["outcome"] == "WOOF-CRASH"
+    assert rows["A001"]["failed"] and code == 1
+
+
+def test_cli_a_selection_of_only_woof_only_ok_runs_is_no_proof(tmp_path, capsys):
+    _write_recording(tmp_path / "rec", {"D001": {
+        "stratum": "D", "builds": {"strict": ("WRF-REFUSED", 0, None)}}},
+        summary={"D001": "no"})
+    _write_woof(tmp_path / "out", "D001", _frames(33))
+    code, rows = _run(tmp_path)
+    assert rows["D001"]["outcome"] == "WOOF-ONLY-OK"
+    assert code == 3
+    assert "1 WOOF-ONLY-OK run had no WRF reference" in capsys.readouterr().out
+
+
+def test_cli_woof_only_ok_beside_a_real_pass_exits_zero(tmp_path):
+    _write_recording(tmp_path / "rec", {
+        "A001": {"builds": _scalar(_frames(34))},
+        "D001": {"stratum": "D", "builds": {"strict": ("WRF-REFUSED", 0, None)}}},
+        summary={"A001": "yes", "D001": "no"})
+    _write_woof(tmp_path / "out", "A001", _frames(34))
+    _write_woof(tmp_path / "out", "D001", _frames(35))
+    code, rows = _run(tmp_path)
+    assert (rows["A001"]["outcome"], rows["D001"]["outcome"]) == ("PASS", "WOOF-ONLY-OK")
+    assert code == 0

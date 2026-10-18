@@ -3,7 +3,7 @@
 //! ## Schema by example, values by computation
 //! The container's shape — its seventeen dimensions, its 110 float, 21 int and
 //! 3 char variables and their attributes — is read from the capsule and
-//! re-emitted unchanged.  What each variable *holds* is then one of exactly
+//! re-emitted; native Thompson package activation can add nifa/nwfa. What each variable *holds* is then one of exactly
 //! two things, and the receipt says which for every single one:
 //!
 //! * **computed** — this port produced the numbers, and they are what the
@@ -31,8 +31,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use rayon::prelude::*;
+use rw_store::error::RwStoreError;
 use rw_store::netcdf_classic::{
-    NcAttr, NcAttrValue, NcClassicWriter, NcData, NcDim, NcFormat, NcType, NcVarDef,
+    NcAttr, NcAttrValue, NcClassicWriter, NcData, NcDim, NcFormat, NcOwned, NcSlab, NcType,
+    NcVarDef,
 };
 
 use crate::error::{MpasError, MpasResult};
@@ -79,7 +82,7 @@ const COORDINATE_ARRAYS: [&str; 15] = [
     "latVertex", "lonVertex", "xVertex", "yVertex", "zVertex",
 ];
 
-fn nc_type_of(dtype: &netcrust::DataType) -> MpasResult<NcType> {
+pub(super) fn nc_type_of(dtype: &netcrust::DataType) -> MpasResult<NcType> {
     Ok(match dtype {
         netcrust::DataType::Char | netcrust::DataType::I8 | netcrust::DataType::U8 => NcType::Char,
         netcrust::DataType::I16 => NcType::Short,
@@ -94,7 +97,7 @@ fn nc_type_of(dtype: &netcrust::DataType) -> MpasResult<NcType> {
     })
 }
 
-fn attr_of(a: &netcrust::Attribute) -> Option<NcAttr> {
+pub(super) fn attr_of(a: &netcrust::Attribute) -> Option<NcAttr> {
     let value = match a.value() {
         netcrust::AttributeValue::Chars(s) => NcAttrValue::Text(s.clone()),
         netcrust::AttributeValue::Strings(v) if v.len() == 1 => NcAttrValue::Text(v[0].clone()),
@@ -255,13 +258,41 @@ pub fn write_init(
         vars.push(NcVarDef::new(v.name(), ty, dimids).with_attrs(attrs));
     }
 
+    // MPAS: mpas_init_atm_core_interface.F:229-231;
+    // core_init_atmosphere/Registry.xml:1153-1173. Native file presence
+    // activates the pair even when the input stream has no aerosol slots.
+    let mut added_aerosols = Vec::new();
+    let has_computed_pair = computed.contains_key("nifa") && computed.contains_key("nwfa");
+    for (name, description) in [
+        ("nifa", "Gocart ice-friendly aerosol number concentration"),
+        ("nwfa", "Gocart water-friendly aerosol number concentration"),
+    ] {
+        if has_computed_pair && !cap_vars.iter().any(|v| v.name() == name) {
+            let dimensions: Vec<usize> = ["Time", "nCells", "nVertLevels"].iter()
+                .map(|name| dimid_of.get(*name).copied().ok_or_else(|| MpasError::Refusal(
+                    format!("Thompson aerosol output requires init dimension {name}"))))
+                .collect::<MpasResult<_>>()?;
+            let expected = dims[dimensions[1]].len as usize * dims[dimensions[2]].len as usize;
+            let Some(Computed::Floats(values)) = computed.get(name) else {
+                return Err(MpasError::Refusal(format!("native Thompson scalar {name} must be binary32")));
+            };
+            if values.len() != expected {
+                return Err(MpasError::Refusal(format!("Thompson scalar {name} has {} words, expected {expected}", values.len())));
+            }
+            vars.push(NcVarDef::new(name, NcType::Float, dimensions).with_attrs(vec![
+                NcAttr::text("units", "nb kg^{-1}"), NcAttr::text("long_name", description),
+            ]));
+            added_aerosols.push(name);
+        }
+    }
+
     let present: BTreeSet<String> = cap_vars.iter().map(|v| v.name().to_string()).collect();
     // Only the transported species a physics suite may add are created here;
     // any other computed name without a capsule variable stays a stray and
     // meets the "no variable for" refusal below, which the door keys on.
     let admitted = ["qi","qs","qg","ni","nr","nc","nwfa","nifa","ng","volg"];
     let extra: Vec<String> = computed.keys()
-        .filter(|name| !present.contains(*name) && admitted.contains(&name.as_str())).cloned().collect();
+        .filter(|name| !present.contains(*name) && !added_aerosols.contains(&name.as_str()) && admitted.contains(&name.as_str())).cloned().collect();
     for name in &extra {
         let mut ids = vec![];
         if let Some(&id) = dimid_of.get("Time") { ids.push(id); }
@@ -285,7 +316,7 @@ pub fn write_init(
     // left at whatever the capsule held.  Refuse instead.
     {
         let present: BTreeSet<String> = cap_vars.iter().map(|v| v.name().to_string()).collect();
-        let stray: Vec<&String> = computed.keys().filter(|k| !present.contains(*k) && !extra.contains(*k)).collect();
+        let stray: Vec<&String> = computed.keys().filter(|k| !present.contains(*k) && !extra.contains(*k) && !added_aerosols.contains(&k.as_str())).collect();
         if !stray.is_empty() {
             return Err(MpasError::Refusal(format!(
                 "this run computed {} value(s) the init file has no variable for: {:?}.  Writing                  the file anyway would silently drop them and leave the capsule's own numbers in                  their place",
@@ -301,6 +332,17 @@ pub fn write_init(
         ..Default::default()
     };
 
+    // Every slab's checks run here, in file order; the bytes are then
+    // produced (carried slabs read from the capsule), encoded and written on
+    // rayon workers, each at its own fixed offset in the file.
+    enum Source {
+        Computed,
+        Text(Vec<u8>),
+        CarriedInt,
+        CarriedFloat,
+        CarriedDouble,
+    }
+    let mut jobs: Vec<(String, Option<u64>, Source)> = Vec::with_capacity(cap_vars.len());
     for v in &cap_vars {
         let name = v.name().to_string();
         let is_record = v
@@ -308,10 +350,9 @@ pub fn write_init(
             .first()
             .map(|d| d.is_unlimited())
             .unwrap_or(false);
+        let record = if is_record { Some(0) } else { None };
 
         if let Some(value) = computed.get(&name) {
-            // One slab: the product of every dimension except a leading
-            // record axis.
             let expected: usize = v
                 .dimensions()
                 .iter()
@@ -326,16 +367,8 @@ pub fn write_init(
                     value.len()
                 )));
             }
-            let text_bytes;
-            let data = match value {
-                Computed::Floats(f) => NcData::Floats(f),
-                Computed::Ints(i) => NcData::Ints(i),
+            let source = match value {
                 Computed::Text(t) => {
-                    // A char slab is a fixed-width field: MPAS writes a
-                    // 19-character stamp into a 64-character StrLen and leaves
-                    // the rest blank.  Pad to the declared width here, and
-                    // refuse a label too long to fit rather than truncate one
-                    // into a different, still-readable value.
                     if t.len() > expected {
                         return Err(MpasError::Refusal(format!(
                             "computed {name} is {} character(s); the file's field is {expected}. \
@@ -345,88 +378,27 @@ pub fn write_init(
                     }
                     let mut bytes = t.as_bytes().to_vec();
                     bytes.resize(expected, b' ');
-                    text_bytes = bytes;
-                    NcData::Chars(&text_bytes)
+                    Source::Text(bytes)
                 }
+                _ => Source::Computed,
             };
-            if is_record {
-                writer.put_record(&name, 0, data)
-            } else {
-                writer.put(&name, data)
-            }
-            .map_err(|e| MpasError::Refusal(format!("cannot write {name}: {e}")))?;
+            jobs.push((name.clone(), record, source));
             ledger.computed.push(name);
             continue;
         }
 
-        // Carried straight through from the capsule.
         let ty = nc_type_of(v.dtype())?;
-        match ty {
+        let source = match ty {
             NcType::Char => {
-                // The three char variables in an MPAS init are identity
-                // labels the caller owns: the valid time, twice, and the
-                // land-use table name.  Carrying one out of the capsule would
-                // stamp this file with the capsule's identity instead of its
-                // own — a file dated to somebody else's cycle that opens and
-                // reads perfectly — so an unsupplied one refuses.
                 return Err(MpasError::Refusal(format!(
                     "char variable {name} was not supplied by the caller.  Char variables in an \
                      MPAS init are identity labels; copying one from the capsule would date this \
                      file to the capsule's cycle"
                 )));
             }
-            NcType::Int => {
-                let values: Vec<i32> = capsule
-                    .read_array_f64(&name)?
-                    .into_values()
-                    .into_iter()
-                    .map(|v| v.round() as i32)
-                    .collect();
-                if is_record {
-                    writer.put_record(&name, 0, NcData::Ints(&values))
-                } else {
-                    writer.put(&name, NcData::Ints(&values))
-                }
-                .map_err(|e| MpasError::Refusal(format!("cannot write {name}: {e}")))?;
-            }
-            NcType::Float => {
-                let values: Vec<f32> = capsule
-                    .read_array_f64(&name)?
-                    .into_values()
-                    .into_iter()
-                    .map(|v| v as f32)
-                    .collect();
-                if is_record {
-                    writer.put_record(&name, 0, NcData::Floats(&values))
-                } else {
-                    writer.put(&name, NcData::Floats(&values))
-                }
-                .map_err(|e| MpasError::Refusal(format!("cannot write {name}: {e}")))?;
-            }
-            // A Double is carried ONLY where a Double is the mesh's own
-            // representation, which is the fifteen coordinate arrays of a
-            // static built for a mesh with no native MPAS-A counterpart (see
-            // `staticfile::coordframe`).  Copying such an array as f32 would
-            // put the 0.5 m coordinate quantum back into the init file the
-            // dycore actually runs, which is the whole of what the binary64
-            // representation exists to remove.  A binary32 static reaches the
-            // `NcType::Float` arm above and its bytes do not move.
-            //
-            // Everywhere ELSE a Double still refuses by type name, and that
-            // refusal is what disciplines the native-free init door to
-            // pre-declare its whole vertical contract as float32 zero slots
-            // (`tests/init_capsule_abi.rs`).  Widening it to every variable
-            // would let a met-state slot arrive as a Double and be copied,
-            // which is the thing that gate exists to stop.
-            NcType::Double if COORDINATE_ARRAYS.contains(&name.as_str()) => {
-                let values: Vec<f64> = capsule.read_array_f64(&name)?.into_values();
-                if is_record {
-                    writer.put_record(&name, 0, NcData::Doubles(&values))
-                } else {
-                    writer.put(&name, NcData::Doubles(&values))
-                }
-                .map_err(|e| MpasError::Refusal(format!("cannot write {name}: {e}")))?;
-            }
+            NcType::Int => Source::CarriedInt,
+            NcType::Float => Source::CarriedFloat,
+            NcType::Double if COORDINATE_ARRAYS.contains(&name.as_str()) => Source::CarriedDouble,
             other => {
                 return Err(MpasError::Refusal(format!(
                     "carried variable {name} is {other:?}, which this emitter does not copy. \
@@ -436,8 +408,52 @@ pub fn write_init(
                      -- is pre-declared as a float32 zero slot by the door that mints the capsule"
                 )))
             }
-        }
+        };
+        jobs.push((name.clone(), record, source));
         ledger.carried.push(name);
+    }
+    {
+        let failure: std::sync::Mutex<Option<MpasError>> = std::sync::Mutex::new(None);
+        let keys: Vec<(&str, Option<u64>)> =
+            jobs.iter().map(|(name, record, _)| (name.as_str(), *record)).collect();
+        let written = writer.put_parallel(&keys, |i| {
+            let (name, _, source) = &jobs[i];
+            let carried = || -> Result<Vec<f64>, RwStoreError> {
+                match super::capsule::read_f64_par(&capsule, name) {
+                    Ok(values) => Ok(values),
+                    Err(e) => {
+                        failure.lock().unwrap().get_or_insert(MpasError::from(e));
+                        Err(RwStoreError::Format(format!("cannot read {name} from the capsule")))
+                    }
+                }
+            };
+            Ok(match source {
+                Source::Computed => match &computed[name] {
+                    Computed::Floats(f) => NcSlab::Borrowed(NcData::Floats(f)),
+                    Computed::Ints(v) => NcSlab::Borrowed(NcData::Ints(v)),
+                    Computed::Text(_) => unreachable!("text is carried as Source::Text"),
+                },
+                Source::Text(bytes) => NcSlab::Borrowed(NcData::Chars(bytes)),
+                Source::CarriedInt => NcSlab::Owned(NcOwned::Ints(
+                    carried()?.into_par_iter().map(|v| v.round() as i32).collect(),
+                )),
+                Source::CarriedFloat => NcSlab::Owned(NcOwned::Floats(
+                    carried()?.into_par_iter().map(|v| v as f32).collect(),
+                )),
+                Source::CarriedDouble => NcSlab::Owned(NcOwned::Doubles(carried()?)),
+            })
+        });
+        if let Some(e) = failure.into_inner().unwrap() {
+            return Err(e);
+        }
+        written.map_err(|e| MpasError::Refusal(format!("cannot write the init variables: {e}")))?;
+    }
+
+    for name in added_aerosols {
+        let Some(Computed::Floats(values)) = computed.get(name) else { unreachable!() };
+        writer.put_record(name, 0, NcData::Floats(values))
+            .map_err(|e| MpasError::Refusal(format!("cannot write native Thompson scalar {name}: {e}")))?;
+        ledger.computed.push(name.to_string());
     }
 
     for name in extra {

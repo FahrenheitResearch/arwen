@@ -1368,12 +1368,50 @@ fn write_frameset_within(
     available: &(dyn Fn(&std::path::Path) -> Option<u64> + Sync),
     slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection> + Send,
 ) -> Result<Value> {
+    write_frameset_within_overlap(directory, mapping, series, input_sha256, request_windows,
+        decode_window, available, false, slice)
+}
+
+/// [`write_frameset_within`], optionally writing each frame's bytes while
+/// the next valid time decodes (`overlap_write`, which the caller grants
+/// only when one more decoded frame fits in memory:
+/// [`crate::threads::overlap_write`]).
+#[allow(clippy::too_many_arguments)]
+fn write_frameset_within_overlap(
+    directory: &std::path::Path,
+    mapping: &Mapping,
+    series: &SeriesSummary,
+    input_sha256: &BTreeMap<String, String>,
+    request_windows: bool,
+    decode_window: Option<crate::window::Window>,
+    available: &(dyn Fn(&std::path::Path) -> Option<u64> + Sync),
+    overlap_write: bool,
+    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection> + Send,
+) -> Result<Value> {
     // One lane calls `slice` from this thread, in frameset order; the
     // lock only lets the one-lane and many-lane writers share one body.
     let slice = std::sync::Mutex::new(slice);
-    write_frameset_core(directory, mapping, series, input_sha256, request_windows,
-        decode_window.as_ref(), available, 1,
+    write_frameset_core_with(directory, mapping, series, input_sha256, request_windows,
+        decode_window.as_ref(), available, 1, overlap_write,
         &|_index, key| (slice.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))(key))
+}
+
+/// The one-valid-time writer with the stream written behind the next
+/// valid time's decode when `overlap_write` (see
+/// [`write_frameset_within_overlap`]).
+#[allow(clippy::too_many_arguments)]
+pub fn write_frameset_one_lane(
+    directory: &std::path::Path,
+    mapping: &Mapping,
+    series: &SeriesSummary,
+    input_sha256: &BTreeMap<String, String>,
+    request_windows: bool,
+    decode_window: Option<crate::window::Window>,
+    overlap_write: bool,
+    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection> + Send,
+) -> Result<Value> {
+    write_frameset_within_overlap(directory, mapping, series, input_sha256, request_windows,
+        decode_window, &crate::space::available_bytes, overlap_write, slice)
 }
 
 type FrameKey = (NaiveDateTime, Option<String>);
@@ -1668,15 +1706,13 @@ struct Committer<'w> {
     keys: &'w [FrameKey],
     count: usize,
     stream_path: std::path::PathBuf,
-    stream: std::io::BufWriter<std::fs::File>,
+    // The frame stream's bytes, and the whole-stream digest, go out on
+    // their own thread (`StreamWriter`), in frameset order.
+    stream: StreamWriter,
     offset: u64,
     // What the whole stream needs, once the first frame has said; kept
     // so a write that still meets a full disk can say how far it got.
     planned: Option<u64>,
-    // The whole-stream digest the reader re-computes before it trusts a
-    // single array.  Accumulated as the bytes go out rather than by
-    // re-reading the file: a real frameset is multi-gigabyte.
-    stream_digest: sha2::Sha256,
     frame_documents: Vec<Value>,
     windowed: bool,
     inventories: BTreeSet<Vec<String>>,
@@ -1740,33 +1776,18 @@ impl Committer<'_> {
         Ok(window)
     }
 
-    /// Stream one prepared frame's fields and document it.
+    /// Hand one prepared frame's fields to the stream writer and document
+    /// it.  The bytes go out on the writer's thread, in frameset order;
+    /// [`Self::drain`] waits for them.  A frame that carries a refusal is
+    /// drained here, so a write that fails ahead of that refusal is the
+    /// one reported, as when the bytes went out on this thread.
     fn commit(&mut self, frame: PreparedFrame) -> Result<()> {
         let (valid_time, member) = &self.keys[frame.index];
         let mut field_documents = Vec::with_capacity(frame.fields.len());
+        let mut payload = Vec::with_capacity(frame.fields.len());
         for field in frame.fields {
             let length = (field.values.len() * 8) as u64;
-            // Encoded, digested into the whole-stream hash, and
-            // written through a FIXED buffer, a chunk at a time.  One
-            // field of a 0.25-degree analysis is ~700 MB as f64;
-            // encoding a whole field into a second Vec first would
-            // double the peak of every decode this seam exists to make
-            // cheaper -- the same reason the reader streams its hash
-            // instead of reading the stream whole.  The field's OWN
-            // digest was taken from the full original values.
-            let mut chunk: Vec<u8> = Vec::with_capacity(STREAM_CHUNK * 8);
-            let mut field_written: u64 = 0;
-            for values in field.values.chunks(STREAM_CHUNK) {
-                chunk.clear();
-                for value in values {
-                    chunk.extend_from_slice(&value.to_le_bytes());
-                }
-                sha2::Digest::update(&mut self.stream_digest, &chunk);
-                if let Err(error) = self.stream.write_all(&chunk) {
-                    return Err(self.stream_failure(error, self.offset + field_written));
-                }
-                field_written += chunk.len() as u64;
-            }
+            payload.push(field.values);
             let mut field_document = json!({
                 "name": field.name,
                 "units": field.units,
@@ -1787,7 +1808,9 @@ impl Committer<'_> {
             field_documents.push(field_document);
             self.offset += length;
         }
+        self.stream.submit(payload);
         if let Some(refusal) = frame.failure {
+            self.drain()?;
             return Err(refusal);
         }
         // Every MappedSourceFrame scalar rides the frame, not the
@@ -1822,6 +1845,236 @@ impl Committer<'_> {
     }
 }
 
+impl Committer<'_> {
+    /// Wait until every frame handed to the writer is written, and report
+    /// the first write that failed as the serial writer reported it.
+    fn drain(&mut self) -> Result<()> {
+        match self.stream.drain() {
+            Ok(()) => Ok(()),
+            Err((error, written)) => Err(self.stream_failure(error, written)),
+        }
+    }
+}
+
+/// The frame stream's writer: its own thread, fed frames in frameset
+/// order, writing each field's little-endian bytes at their offsets from
+/// a few threads while one more folds the same bytes, in order, into the
+/// whole-stream SHA-256 the reader re-computes before it trusts a single
+/// array.  Accumulated as the bytes go out rather than by re-reading the
+/// file: a real frameset is multi-gigabyte.
+///
+/// Both threads encode their own FIXED chunk at a time.  One field of a
+/// 0.25-degree analysis is ~700 MB as f64; encoding a whole field into a
+/// second Vec first would double the peak of every decode this seam
+/// exists to make cheaper -- the same reason the reader streams its hash
+/// instead of reading the stream whole.  The field's OWN digest was taken
+/// from the full original values.
+///
+/// Named breakage: the encode, the whole-stream digest and the write ran
+/// one after another on the thread that orders the frameset, so a 3 km
+/// CONUS native-level compose spent about 6 s of every valid time's
+/// 13 GB on one core while the pool and the cards waited.
+struct StreamWriter {
+    jobs: Option<std::sync::mpsc::Sender<Vec<Vec<f64>>>>,
+    done: std::sync::mpsc::Receiver<std::result::Result<(), (std::io::Error, u64)>>,
+    pending: usize,
+    failed: Option<(std::io::Error, u64)>,
+    broken: bool,
+    thread: Option<std::thread::JoinHandle<(std::fs::File, sha2::Sha256)>>,
+}
+
+/// Threads writing one field's chunks at their offsets.  Page-cache
+/// writes from one thread top out near 2 GB/s on the measured box, below
+/// the whole-stream digest's rate, so a few share each field.
+const STREAM_WRITERS: usize = 4;
+
+impl StreamWriter {
+    fn new(file: std::fs::File) -> Self {
+        let (jobs, inbox) = std::sync::mpsc::channel::<Vec<Vec<f64>>>();
+        let (report, done) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("mapped-engine-stream".into())
+            .spawn(move || {
+                let stream = file;
+                let mut digest = <sha2::Sha256 as sha2::Digest>::new();
+                let mut offset: u64 = 0;
+                let mut broken = false;
+                for fields in inbox {
+                    let mut outcome = Ok(());
+                    if !broken {
+                        for values in &fields {
+                            if let Err(failure) = stream_field(&stream, &mut digest, values, offset) {
+                                outcome = Err(failure);
+                                broken = true;
+                                break;
+                            }
+                            offset += (values.len() * 8) as u64;
+                        }
+                    }
+                    drop(fields);
+                    if report.send(outcome).is_err() { break; }
+                }
+                (stream, digest)
+            })
+            .expect("spawn the frame stream writer");
+        StreamWriter { jobs: Some(jobs), done, pending: 0, failed: None, broken: false, thread: Some(thread) }
+    }
+
+    /// A writer with no thread, left behind when the real one is closed.
+    fn closed() -> Self {
+        let (_jobs, done) = std::sync::mpsc::channel();
+        StreamWriter { jobs: None, done, pending: 0, failed: None, broken: false, thread: None }
+    }
+
+    fn submit(&mut self, fields: Vec<Vec<f64>>) {
+        if let Some(jobs) = &self.jobs {
+            if jobs.send(fields).is_ok() {
+                self.pending += 1;
+            }
+        }
+    }
+
+    fn drain(&mut self) -> std::result::Result<(), (std::io::Error, u64)> {
+        while self.pending > 0 {
+            self.pending -= 1;
+            match self.done.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(failure)) => { self.failed.get_or_insert(failure); }
+                Err(_) => {
+                    self.failed.get_or_insert((std::io::Error::other("the frame stream writer stopped"), 0));
+                    self.pending = 0;
+                }
+            }
+        }
+        // The failed write's own error goes back the first time, so its
+        // OS code still classifies a full disk; the stream is broken from
+        // then on and every later wait says so.
+        match self.failed.take() {
+            Some(failure) => {
+                self.broken = true;
+                Err(failure)
+            }
+            None if self.broken => Err((std::io::Error::other(
+                "the frame stream writer stopped after a failed write"), 0)),
+            None => Ok(()),
+        }
+    }
+
+    /// Every frame written: the buffered stream and its digest back.
+    fn close(mut self) -> std::result::Result<(std::fs::File, sha2::Sha256), (std::io::Error, u64)> {
+        self.drain()?;
+        self.jobs = None;
+        let thread = self.thread.take().expect("the writer is joined once");
+        match thread.join() {
+            Ok(parts) => Ok(parts),
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+}
+
+impl Drop for StreamWriter {
+    /// A writer dropped on a refusal path still finishes and joins its
+    /// thread, so nothing writes into the scratch folder after the
+    /// engine has reported.
+    fn drop(&mut self) {
+        self.jobs = None;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// One field's bytes into the stream and the digest, side by side; the
+/// error carries the stream offset the serial writer reported: the field's
+/// start plus every chunk before the FIRST chunk (in stream order) whose
+/// write failed.
+fn stream_field(
+    stream: &std::fs::File,
+    digest: &mut sha2::Sha256,
+    values: &[f64],
+    offset: u64,
+) -> std::result::Result<(), (std::io::Error, u64)> {
+    fn encode(chunk: &mut Vec<u8>, values: &[f64]) {
+        chunk.clear();
+        for value in values {
+            chunk.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    let chunks: Vec<&[f64]> = values.chunks(STREAM_CHUNK).collect();
+    let chunk_bytes = (STREAM_CHUNK * 8) as u64;
+    std::thread::scope(|scope| {
+        let hasher = {
+            let chunks = &chunks;
+            scope.spawn(move || {
+                let mut buffer: Vec<u8> = Vec::with_capacity(STREAM_CHUNK * 8);
+                for values in chunks {
+                    encode(&mut buffer, values);
+                    sha2::Digest::update(digest, &buffer);
+                }
+            })
+        };
+        let writers: Vec<_> = (0..STREAM_WRITERS.min(chunks.len().max(1))).map(|first| {
+            let chunks = &chunks;
+            scope.spawn(move || -> Option<(usize, std::io::Error)> {
+                let mut buffer: Vec<u8> = Vec::with_capacity(STREAM_CHUNK * 8);
+                let mut index = first;
+                while index < chunks.len() {
+                    encode(&mut buffer, chunks[index]);
+                    let at = offset + index as u64 * chunk_bytes;
+                    if let Err(error) = write_all_at(stream, &buffer, at) {
+                        return Some((index, error));
+                    }
+                    index += STREAM_WRITERS;
+                }
+                None
+            })
+        }).collect();
+        let mut failed: Option<(usize, std::io::Error)> = None;
+        for writer in writers {
+            match writer.join() {
+                Ok(Some((index, error))) => {
+                    if failed.as_ref().is_none_or(|(first, _)| index < *first) {
+                        failed = Some((index, error));
+                    }
+                }
+                Ok(None) => {}
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        if let Err(payload) = hasher.join() {
+            std::panic::resume_unwind(payload);
+        }
+        match failed {
+            Some((index, error)) => Err((error, offset + index as u64 * chunk_bytes)),
+            None => Ok(()),
+        }
+    })
+}
+
+/// `buffer` written whole at byte `at` of `file`, from any thread.
+#[cfg(unix)]
+fn write_all_at(file: &std::fs::File, buffer: &[u8], at: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, buffer, at)
+}
+
+/// `buffer` written whole at byte `at` of `file`, from any thread.
+#[cfg(windows)]
+fn write_all_at(file: &std::fs::File, mut buffer: &[u8], mut at: u64) -> std::io::Result<()> {
+    while !buffer.is_empty() {
+        match std::os::windows::fs::FileExt::seek_write(file, buffer, at) {
+            Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero,
+                "failed to write whole buffer")),
+            Ok(written) => {
+                buffer = &buffer[written..];
+                at += written as u64;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 /// What a pipeline job hands back to the thread that writes the stream.
 enum Stage<'a> {
     Planned(usize, Result<PlannedFrame<'a>>),
@@ -1853,7 +2106,8 @@ std::thread_local! {
         std::cell::RefCell::new(None);
 }
 
-/// The one writer body, for one lane or many.
+/// The one writer body, for one lane or many, writing each frame before
+/// the next valid time is decoded.
 #[allow(clippy::too_many_arguments)]
 fn write_frameset_core(
     directory: &std::path::Path,
@@ -1864,6 +2118,25 @@ fn write_frameset_core(
     decode_window: Option<&crate::window::Window>,
     available: &(dyn Fn(&std::path::Path) -> Option<u64> + Sync),
     lanes: usize,
+    slice: &(dyn Fn(usize, &FrameKey) -> Result<DecodedCollection> + Sync),
+) -> Result<Value> {
+    write_frameset_core_with(directory, mapping, series, input_sha256, request_windows,
+        decode_window, available, lanes, false, slice)
+}
+
+/// [`write_frameset_core`]; with one lane and `overlap_write`, a frame's
+/// bytes go out while the next valid time decodes.
+#[allow(clippy::too_many_arguments)]
+fn write_frameset_core_with(
+    directory: &std::path::Path,
+    mapping: &Mapping,
+    series: &SeriesSummary,
+    input_sha256: &BTreeMap<String, String>,
+    request_windows: bool,
+    decode_window: Option<&crate::window::Window>,
+    available: &(dyn Fn(&std::path::Path) -> Option<u64> + Sync),
+    lanes: usize,
+    overlap_write: bool,
     slice: &(dyn Fn(usize, &FrameKey) -> Result<DecodedCollection> + Sync),
 ) -> Result<Value> {
     use crate::refusal::write_error;
@@ -1886,10 +2159,9 @@ fn write_frameset_core(
         keys: &plan.keys,
         count: plan.keys.len(),
         stream_path,
-        stream: std::io::BufWriter::new(file),
+        stream: StreamWriter::new(file),
         offset: 0,
         planned: None,
-        stream_digest: <sha2::Sha256 as sha2::Digest>::new(),
         frame_documents: Vec::with_capacity(plan.keys.len()),
         windowed: false,
         inventories: BTreeSet::new(),
@@ -1907,11 +2179,22 @@ fn write_frameset_core(
         Some(outcome) => outcome?,
         None => {
             for index in 0..plan.keys.len() {
-                let collection = slice(index, &plan.keys[index])?;
-                let planned = plan_frame(mapping, &plan, index, collection)?;
+                // With `overlap_write`, the previous frame's bytes are
+                // still going out while this one decodes and plans; they
+                // are drained before anything else happens in frameset
+                // order (the window request, the next write), and a write
+                // that failed is reported ahead of this frame's refusal,
+                // where the serial writer would have stopped.
+                let planned = slice(index, &plan.keys[index])
+                    .and_then(|collection| plan_frame(mapping, &plan, index, collection));
+                committer.drain()?;
+                let planned = planned?;
                 let window = committer.window_for(&planned)?;
                 let prepared = prepare_frame(&plan, planned, window, decode_window);
                 committer.commit(prepared)?;
+                if !overlap_write {
+                    committer.drain()?;
+                }
             }
         }
     }
@@ -1978,7 +2261,7 @@ fn pipeline<'s>(
         }
         let mut written = Ok(());
         while let Some(frame) = prepared.remove(&committed) {
-            written = committer.commit(frame);
+            written = committer.commit(frame).and_then(|()| committer.drain());
             if written.is_err() { break; }
             committed += 1;
         }
@@ -2072,8 +2355,13 @@ impl Committer<'_> {
     /// ever handed on.
     fn finish(mut self) -> Result<Value> {
         use crate::refusal::write_error;
+        let writer = std::mem::replace(&mut self.stream, StreamWriter::closed());
+        let (mut stream, stream_digest) = match writer.close() {
+            Ok(parts) => parts,
+            Err((error, written)) => return Err(self.stream_failure(error, written)),
+        };
         require_one_inventory(&self.inventories)?;
-        if let Err(error) = self.stream.flush() {
+        if let Err(error) = stream.flush() {
             return Err(self.stream_failure(error, self.offset));
         }
         let document = json!({
@@ -2087,7 +2375,7 @@ impl Committer<'_> {
                 "path": "frames.f64",
                 "dtype": "<f8",
                 "bytes": self.offset,
-                "sha256": crate::digest::hex_digest(self.stream_digest),
+                "sha256": crate::digest::hex_digest(stream_digest),
             },
             "mapping_sha256": self.mapping.sha256,
             "mapping_path": self.mapping.path,

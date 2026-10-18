@@ -380,7 +380,7 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["supported_sources"] == [
         "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
         "ecmwf-ens", "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
-        "gem-gdps", "gfs", "hrrr", "hrrr-native", "hrrr-prs", "icon-d2", "icon-eu",
+        "gem-gdps", "gfs", "hex-global", "hrrr", "hrrr-native", "hrrr-prs", "icon-d2", "icon-eu",
         "icon-global", "mapped", "rap", "rap-native", "rrfs"]
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA

@@ -2642,7 +2642,7 @@ def prepare_gfs_wrf(
             from gpuwm.ensemble.physical_store import (
                 NativePhysicalStore, physical_input_binding, physical_static_identity)
             from gpuwm.ensemble import gfs_physical_contract
-            from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+            from gpuwm.native_wrf_contract import native_landuse_identity
             if physical_input is not None:
                 if physical_input.document["grid"] != _geometry_contract(grid, cfg):
                     raise ValueError("GFS physical input geometry differs from native preparation geometry")
@@ -2688,7 +2688,8 @@ def prepare_gfs_wrf(
                 met.fields.get("SOURCE_OROGRAPHY"))
             if index == 0 and (physical_input is not None or physical_output_store is not None):
                 static_identity = physical_static_identity(
-                    native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY)
+                    native_static_export_fields(static, grid),
+                    native_landuse_identity(static))
                 if physical_input is not None:
                     native_source_identity["ensemble_physical_input"] = physical_input_binding(
                         physical_input, grid, cfg, native_source_identity,
@@ -2829,10 +2830,30 @@ def prepare_gfs_wrf(
         # run on its first surface call (`mavail must be finite`) after a
         # full preparation -- the death the retired GFS+RUC route refusal
         # used to pre-empt (ENG-009).
+        # OBSERVED LAKE ICE (gpuwm.ingest.lake_ice).  GFS carries no ice for
+        # a lake it does not resolve, and the nearest-water search above
+        # hands such a lake the nearest GFS water's ice (none) and skin, so a
+        # frozen lake started as open water far below freezing.  The daily
+        # observed analysis freezes the lake cells it sees frozen; the
+        # provider rides the child catalog so every nest is frozen from the
+        # same analysis.  gfs_lake_ice = "wps" keeps the forcing's ice (the
+        # WPS / real.exe identity arm); an unreadable analysis falls back to
+        # it loudly, for this run only.
+        from gpuwm.ingest.lake_ice import resolve_lake_ice_provider
+        lake_ice_provider = resolve_lake_ice_provider(
+            case_policy["gfs_lake_ice"], times[0],
+            where=f"the GFS start {times[0]:%Y-%m-%d %H} UTC")
+        _lake_lat, _lake_lon = grid.latlon_mass()
+        soil_fields, lake_skin, lake_ice_receipt = lake_ice_provider.freeze(
+            initial_met.fields, lake_skin, lat=_lake_lat, lon=_lake_lon,
+            lake_mask=lake_mask, dx_m=float(cfg.dx),
+            where=f"domain {exp.root.grid_id}")
+        native_source_identity = {**native_source_identity,
+                                  "lake_ice": lake_ice_receipt}
         from gpuwm.core.landuse import (
             ruc_fractional_seaice as _ruc_fractional_seaice)
         soil = preprocess_land_surface_soil(
-            initial_met.fields,
+            soil_fields,
             # real.exe's adjust_for_seaice_pre/post keep the fraction under
             # fractional_seaice = 1 (threshold 0.02) and snap to 0/1 at 0.5
             # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
@@ -3031,6 +3052,7 @@ def prepare_gfs_wrf(
                         static_highres=static_highres,
                         statics_corridor=statics_corridor,
                         case_policy=case_policy,
+                        lake_ice_provider=lake_ice_provider,
                         experiment_config=experiment_config,
                         wps_namelist=wps_namelist, geog_root=geog_root,
                         cpu_bridge=cpu_preprocess_bridge,
@@ -3090,6 +3112,9 @@ def prepare_gfs_wrf(
                     relative_humidity_convention="gfs_mixed",
                     lake_whole_source_search=(
                         case_policy["gfs_lake_skin"] == "wps"),
+                    # The root's observed lake-ice analysis, sampled on each
+                    # child's own grid (gpuwm.ingest.lake_ice).
+                    lake_ice_provider=lake_ice_provider,
                     # A child sees the catalog, not the config.  Without
                     # this a WRF-comparison reproduction would disable the
                     # soil reconstitution on the parent and silently keep
@@ -3506,6 +3531,9 @@ def _prepare_chained_gfs_tree(c) -> dict[str, object]:
             relative_humidity_convention="gfs_mixed",
             lake_whole_source_search=(
                 c.case_policy["gfs_lake_skin"] == "wps"),
+            # The root's observed lake-ice analysis, sampled on each
+            # child's own grid (gpuwm.ingest.lake_ice).
+            lake_ice_provider=c.lake_ice_provider,
             # A child sees the catalog, not the config.
             soil_texture_downscale=declared_soil_texture_downscale(
                 c.experiment_config),
@@ -3909,7 +3937,7 @@ def prepared_forecast_next_command(
     ``source`` names the prepared-forecast runner's own ``--source``
     value.  Every native front door that reaches a prepared bundle can
     print this, and one of them printing a complete hash-bound command
-    while another printed nothing at all was a node-8 finding in its own
+    while another printed nothing at all was a test host H finding in its own
     right: the 20CRv3 route ran end to end and then said nothing about
     how to run the forecast.
     """
@@ -3934,7 +3962,7 @@ def prepared_forecast_next_command(
     # It has to be a genuine SIBLING, not a child.  Both runners declare
     # --prepared-root a protected input and refuse any --outdir that
     # overlaps it in either direction, so the <root>/forecast this used
-    # to print was a command the runner rejected -- which is how a node-8
+    # to print was a command the runner rejected -- which is how a test host H
     # pilot got a traceback out of the front door's own suggestion.
     outdir = output_root.parent / f"{output_root.name}-forecast"
     cache = proof.get("prepared_cache")

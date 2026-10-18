@@ -3332,6 +3332,7 @@ fn import_options(specs: &[ProductSpec]) -> WrfProcessOptions {
         chart_selectors,
         named_products_only: false,
         snow_since: None,
+        required_fields: None,
     };
     options
 }

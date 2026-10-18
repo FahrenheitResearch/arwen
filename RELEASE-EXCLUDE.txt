@@ -288,6 +288,9 @@ proof/**
 # and the pin and verifier tools that re-prove a reused binary.
 tools/release/cut/**
 tools/release/chain/**
+# The daily release rehearsal drives the cut, the hosts and the card owner
+# protocol, and its scanner carries the internal-token list it reads for.
+tools/release/always_ready/**
 docs/dev/RELEASE-CUT.md
 
 # The branch-dispositions ledger and its gate: internal branch bookkeeping
@@ -433,3 +436,25 @@ tools/rustwx/crates/rw-mpas/tests/native_static/v35_forecast_pair.py
 tools/rustwx/crates/rw-mpas/examples/static_grid_longitudes.rs
 tools/rustwx/crates/rw-mpas/examples/static_grid_metadata.rs
 tools/rustwx/crates/rw-mpas/examples/static_netcdf_compact.rs
+
+# rw-mpas harnesses landed with the hex lanes Rust side (2.9.1, hexeng/hex040-fix-lbc-case9):
+# the case-9 LBC, init case-7 and surface-update replays drive the MPAS pool and the lane
+# hosts by their own paths. No Rust target reads them (the cargo tests cite them only in
+# doc comments); the 2.9.1 Stage 1 machine-path and cargo-gate scans refused them.
+tools/rustwx/crates/rw-mpas/tests/lbc_v842/**
+tools/rustwx/crates/rw-mpas/tests/native_case7/**
+tools/rustwx/crates/rw-mpas/tests/surface_oracle/**
+
+# The private data-assimilation side (owner rulings 2026-10-14 and 2026-10-16:
+# the JCSDA-framework DA, its rows and cases, its observation pipelines and the
+# box tooling stay in the private DA repository; the engine's local DA and the
+# plain observation readers stay public). These shipped in 2.9.0's export and
+# are copied to the private DA repository (branch da/from-292); they stay in
+# this tree, which is not exported. The stock JCSDA application build recipe
+# (the CPU referee), and three rented-box DA kits that run DA rows on box paths
+# behind the GPU mutex (nothing in the tree reads any of them).
+# tools/release_exclusions.py's DA rule refuses the same content anywhere else.
+tools/jedi_clone/**
+tools/da_deck/**
+tools/da_lane7/**
+tools/radar_tten_proof/lane6/**

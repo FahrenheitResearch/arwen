@@ -413,7 +413,21 @@ __device__ void wsm7_nislfv(int km, const float *c, const float *den,
                 precip = precip + q[k] * dza[k];
                 continue;
             } else if (za[k] < 0.0f && za[k + 1] >= 0.0f) {
+#ifdef WSM7_PLM_SURFACE
+                // Correct mode, finding WB5 (physics.mode = "correct"; the WSM6
+                // defect of kernels/wsm6.cu, shared by module_mp_wsm7.F's copy of
+                // nislfv_rain_plm): book the below-ground part of the straddling
+                // source cell with the same piecewise-linear profile (qmi/qpi)
+                // the remap above integrates for the part that stays aloft, so
+                // column water + surface precipitation is conserved.  The
+                // Fortran books it at the flat cell mean (the #else line, exact
+                // mode).
+                const float th = (0.0f - za[k]) / dza[k];
+                precip = precip + dza[k] * (qmi[k] * th
+                         + 0.5f * (qpi[k] - qmi[k]) * th * th);
+#else
                 precip = precip + q[k] * (0.0f - za[k]);
+#endif
                 break;
             }
             break;

@@ -1495,15 +1495,16 @@ def _receipt_nonnegative_finite(value):
 
 
 class _ReceiptHasher:
-    def __init__(self, pool):
+    def __init__(self, pool, depth=2):
         self.pool = pool
         self.pending = []
+        self.depth = max(1, int(depth))
 
     def submit(self, value):
         from concurrent.futures import Future
         # Bound live host arrays to two pending hashes, rather than retaining
         # all source-level outputs until the receipt has been assembled.
-        if len(self.pending) == 2:
+        if len(self.pending) >= self.depth:
             self.pending.pop(0).result()
         if hasattr(value, "get"):
             value = _receipt_host_float32(value)
@@ -1514,6 +1515,52 @@ class _ReceiptHasher:
             job = self.pool.submit(_receipt_array_fingerprint, value)
         self.pending.append(job)
         return job
+
+
+def _start_receipt_job(function, *args, **kwargs):
+    """Run one receipt builder on its own thread, on this thread's card.
+
+    The HRRR hydrometeor disposition replays the vertical operator once per
+    source level and hashes every replay: 59-65 s of a 120 s full HRRR CONUS
+    start (1797x1057x50 from RAP native, 2026-10-16) at about two cores with
+    the card idle, all of it before the rest of the start could proceed.
+    Its inputs are read-only from here on, so it runs beside the remaining
+    stages and the caller joins it with ``result()``.
+    """
+    import threading
+    from concurrent.futures import Future
+    device = None
+    cupy = sys.modules.get("cupy")
+    if cupy is not None:
+        try:
+            device = cupy.cuda.runtime.getDevice()
+        except cupy.cuda.runtime.CUDARuntimeError as exc:
+            if exc.status != 100:  # cudaErrorNoDevice
+                raise
+            # No card on this thread (the CPU preprocess backend masks it;
+            # a host without one): the receipt runs on the host, as the
+            # whole preparation does there.  Asking unconditionally refused
+            # every CPU-backend start with cudaErrorNoDevice.
+            device = None
+    binding = pm.current_cpu_bridge_binding()
+    job = Future()
+
+    def run():
+        try:
+            if device is not None:
+                sys.modules["cupy"].cuda.Device(device).use()
+            if binding is None:
+                value = function(*args, **kwargs)
+            else:
+                value = pm.run_with_cpu_bridge_binding(
+                    binding, function, *args, **kwargs)
+        except BaseException as error:  # re-raised by the caller's result()
+            job.set_exception(error)
+        else:
+            job.set_result(value)
+
+    threading.Thread(target=run, name="gpuwm-receipt", daemon=True).start()
+    return job
 
 
 def build_hrrr_hydrometeor_vertical_disposition(
@@ -1527,9 +1574,16 @@ def build_hrrr_hydrometeor_vertical_disposition(
     if count < _RECEIPT_HASH_MIN_CELLS:
         return _build_hrrr_hydrometeor_vertical_disposition(
             *args, operator_replay=operator_replay, hasher=_ReceiptHasher(None))
-    with _column_pool(2) as pool:
+    # One SHA-256 stream per replay, up to eight replays hashing side by
+    # side.  Two workers left the receipt waiting on its hashes (11.8 s of
+    # hashing at HRRR CONUS, 1797x1057x50 from RAP native, which held the
+    # start in its join); the pending host copies stay bounded by the pool.
+    from os import cpu_count
+    workers = max(2, min(8, cpu_count() or 2))
+    with _column_pool(workers) as pool:
         return _build_hrrr_hydrometeor_vertical_disposition(
-            *args, operator_replay=operator_replay, hasher=_ReceiptHasher(pool))
+            *args, operator_replay=operator_replay,
+            hasher=_ReceiptHasher(pool, depth=workers))
 
 
 def _build_hrrr_hydrometeor_vertical_disposition(
@@ -3928,9 +3982,30 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         names = tuple(names)
         if boundary_only:
             return {name: {} for name in names}
-        if route_name != "cpu" or state_xp is not host_numpy:
-            return {name: receipt_fingerprint(value_for(name)) for name in names}
         from gpuwm.ingest.preparation_fingerprints import array_fingerprints
+        if route_name != "cpu" or state_xp is not host_numpy:
+            # The device route hashed one field at a time on the calling
+            # thread (7 s of the HRRR CONUS start on one core).  The host
+            # copies of up to eight fields now hash side by side; each is
+            # still one ordered SHA-256 stream, so every receipt is the one
+            # array_correspondence_fingerprint wrote.
+            result = {}
+            for start in range(0, len(names), 8):
+                batch = names[start:start + 8]
+                arrays = []
+                for name in batch:
+                    value = value_for(name)
+                    if hasattr(value, "get"):
+                        value = value.get()
+                    arrays.append(host_numpy.ascontiguousarray(host_numpy.asarray(value)))
+                receipts = (None if any(array.size == 0 for array in arrays) else
+                            array_fingerprints(arrays, workers=max(
+                                1, min(int(column_workers or 1), len(arrays)))))
+                if receipts is None:
+                    receipts = [receipt_fingerprint(array) for array in arrays]
+                result.update(zip(batch, receipts))
+                del arrays
+            return result
         result = {}
         # Normalize at most two fields at a time. A five-species source may
         # hold float64 fields whose FP32 receipt copies are each substantial.
@@ -4518,6 +4593,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # not vapour.  The order is essential, not cosmetic.
     hydrometeors = {}
     hydrometeor_initialization: dict[str, object] = {}
+    vertical_disposition_job = None
     if decoded_species:
         # WRF's Q interpolation uses the metgrid surface pseudo-level.
         # Native HRRR has no supplied surface analysis and retains zero.
@@ -4525,12 +4601,25 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         zero_surface = backend_xp.zeros(
             (cfg.ny, cfg.nx), dtype=backend_xp.float32)
 
-        def replay_hydrometeor_support(ordered_mask):
-            return mass_vertical_plan.apply(
-                backend_xp.asarray(ordered_mask, dtype=backend_xp.float32),
-                zero_surface,
+        # The plan and surface are bound at definition: the replay runs on
+        # the receipt thread after this function has released its own names.
+        def replay_hydrometeor_support(ordered_mask, _plan=mass_vertical_plan,
+                                       _surface=zero_surface, _xp=backend_xp,
+                                       _vboundb=cfg.nz + 1):
+            if (_xp is not host_numpy and isinstance(ordered_mask, host_numpy.ndarray)
+                    and ordered_mask.dtype == host_numpy.bool_):
+                # Upload the mask as bytes and widen it on the card: the
+                # same 0/1 floats, a quarter of the host conversion and
+                # transfer per replay (5.6 s of the receipt thread at
+                # HRRR CONUS, one replay per source level).
+                operand = _xp.asarray(ordered_mask).astype(_xp.float32)
+            else:
+                operand = _xp.asarray(ordered_mask, dtype=_xp.float32)
+            return _plan.apply(
+                operand,
+                _surface,
                 interp_in_logp=True, extrap="constant",
-                vboundb=cfg.nz + 1, values_are_finite=True)
+                vboundb=_vboundb, values_are_finite=True)
 
         invalid_source = []
         for name in decoded_species:
@@ -4588,16 +4677,22 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             for name in decoded_species
             if name not in retained_names
         }
-        vertical_disposition = build_hrrr_hydrometeor_vertical_disposition(
+        # The disposition receipt describes the state; it does not decide
+        # it.  It runs beside the rest of the initialization and is joined
+        # before the result is returned, so its bytes and its failures are
+        # unchanged and it no longer sits on the start's critical path.
+        vertical_disposition_job = _start_receipt_job(
+            build_hrrr_hydrometeor_vertical_disposition,
             {name: fields[name] for name in retained_names},
             order,
             mass_source_pd_f32,
             mass_surface_pd_f32,
             mass_target_pd_f32,
-            hydrometeors,
+            dict(hydrometeors),
             operator_replay=replay_hydrometeor_support,
         ) if (retained_names and not supplied_mass_surfaces
-              and not boundary_only) else {}
+              and not boundary_only) else None
+        vertical_disposition = {}
         # Which regular-grid operator carried each retained species to the
         # mass grid, read off the snapshot that mapped it (the mapped
         # profiles, ERA5 and GFS publish it; the native HRRR decoder and a
@@ -4732,8 +4827,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # carry contributes nothing there either -- ``hydrometeors`` holds
     # exactly the retained set, in the package's own qc/qr/qi/qs/qg order,
     # and the accumulation below is WRF's own left-to-right one.
+    # The host setup route (every mp=28 start) sums on all its workers only
+    # host arrays: a full-device start's CuPy hydrometeors fell to the
+    # one-thread loop below (about 4 s of the HRRR CONUS start).  Their
+    # host copies take the native sum, the one a bounded start's NumPy
+    # fields take; the loop stays the fallback.
     condensate_h = (None if device_route else _host_arrays.sum_fields(
-        hydrometeors.values(), workers=column_workers))
+        [value.get() if hasattr(value, "get") else value
+         for value in hydrometeors.values()], workers=column_workers))
     if condensate_h is None:
         for analyzed in hydrometeors.values():
             contribution = _setup(analyzed).astype(np.float64)
@@ -5517,6 +5618,10 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # The native and preprocessing workers above free on their own threads
     # too; the next forcing time and the companion files start without it.
     _return_freed_host_memory()
+    if vertical_disposition_job is not None:
+        hydrometeor_initialization["vertical_disposition"] = (
+            vertical_disposition_job.result())
+        mark_timing("hydrometeor_disposition_receipt_join")
     if timing_report is not None:
         timing_report["total_seconds"] = perf_counter() - timing_start
     result = RealInitResult(

@@ -137,6 +137,21 @@ MEASUREMENT_TABLE: dict[str, str] = {
     "sonde_level": "a radiosonde level at its own release-plus-elapsed time",
     "amv_assigned_pressure": "a satellite motion vector at its assigned pressure",
     "ro_refractivity_tangent_point": "GNSS-RO refractivity at the tangent point height",
+    # Added with the prepbufr and MADIS doors (rw_prepbufr, rw_madis); until
+    # they were transcribed here every aircraft row and every mesonet or
+    # marine wind those doors wrote was counted as an unknown measurement.
+    "aircraft_level": "an aircraft report at its flight level (AIREP, PIREP, AMDAR, ACARS)",
+    "profiler_level": "a wind profiler range gate",
+    "vad_level": "a radar velocity-azimuth-display wind level",
+    "vad_superob":
+        "GSI's VAD superob: the mean of up to six consecutive VAD levels within "
+        "301 m, at the first level's pressure and the levels' mean height",
+    "platform_wind":
+        "a wind at the platform's own anemometer height, not reduced to 10 m "
+        "(ship, buoy, coastal platform, mesonet)",
+    "station_pressure_from_sea_level":
+        "station pressure computed by NCEP from the reported sea-level pressure "
+        "and the station elevation through the standard atmosphere",
 }
 
 

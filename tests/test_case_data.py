@@ -65,14 +65,44 @@ output_title = "fixture title"
 """
 
 
+#: The WPS twin of _EXPERIMENT_TOML's one 24 x 20, 12 km grid (e_we and
+#: e_sn are the staggered counts, nx + 1 and ny + 1).  A real namelist
+#: rather than stub bytes: every door that plans a [case_data] run reads
+#: the twin for its grids and geog_data_res (gpuwm.geog_assets.
+#: geography_for_run, behind `gpuwm go --dry-run`'s geography check and
+#: fetch-geog --config), and a twin with no &geogrid arrays is a refusal.
+_WPS_NAMELIST = """&share
+ max_dom = 1,
+/
+&geogrid
+ parent_id = 1,
+ parent_grid_ratio = 1,
+ i_parent_start = 1,
+ j_parent_start = 1,
+ e_we = 25,
+ e_sn = 21,
+ geog_data_res = 'default',
+ dx = 12000,
+ dy = 12000,
+ map_proj = 'lambert',
+ ref_lat = 40.0,
+ ref_lon = -98.0,
+ truelat1 = 30.0,
+ truelat2 = 60.0,
+ stand_lon = -98.0,
+/
+"""
+
+
 def make_case_toml(tmp_path, *, case_data=_CASE_DATA_TOML,
                    experiment=_EXPERIMENT_TOML, files=True) -> Path:
     """Write a loadable experiment+case_data TOML with its dummy inputs."""
     if files:
         (tmp_path / "forcing").mkdir(exist_ok=True)
         for name in ("forcing/era5_a.grb", "forcing/era5_b.grb",
-                     "Vtable.ERA5", "namelist.wps", "invariant.nc"):
+                     "Vtable.ERA5", "invariant.nc"):
             (tmp_path / name).write_bytes(b"stub")
+        (tmp_path / "namelist.wps").write_text(_WPS_NAMELIST, encoding="utf-8")
         (tmp_path / "GEOG").mkdir(exist_ok=True)
     path = tmp_path / "case.toml"
     path.write_text(experiment + case_data, encoding="utf-8")

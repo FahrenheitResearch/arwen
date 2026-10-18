@@ -48,6 +48,13 @@
 //! declared `NI` reports [`NyquistSource::Unavailable`](volume::NyquistSource)
 //! rather than a single-PRF estimate that would be a factor of three small.
 //!
+//! # Beyond ODIM
+//!
+//! [`world`] reads the polar formats the rest of the open world publishes
+//! (JMA's GRIB2 tars, IRIS/Sigmet RAW, Universal Format, CfRadial 1, DORADE)
+//! into the same [`PolarVolume`], so they are packed and assimilated by
+//! exactly the code below this seam. The reader is chosen by magic bytes.
+//!
 //! # Scope
 //!
 //! Polar objects only: `/what/object` of `PVOL` or `SCAN`. Composites (`COMP`)
@@ -59,10 +66,12 @@ pub mod assemble;
 pub mod attrs;
 pub mod censor;
 pub mod decode;
+pub mod dualprf;
 pub mod error;
 pub mod pack;
 pub mod quantity;
 pub mod volume;
+pub mod world;
 
 pub use assemble::{AssembleReport, MemberFile, VolumeGroup, assemble, odim_files_in, survey_dir};
 pub use censor::Census;
