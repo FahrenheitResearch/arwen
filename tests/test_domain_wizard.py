@@ -1085,14 +1085,22 @@ def test_native_source_keeps_explicit_geography_root(
     assert rc == 0
     printed = capsys.readouterr()
     raw = tomllib.loads(out.read_text())
-    assert raw["static"]["geog_root"] == str(geog.resolve())
+    # The wizard writes the root with forward slashes (TOML-safe on every
+    # platform); the hosted Windows CI compared that text with str(Path)
+    # and refused 2.9.2's first publish.  Compare paths, not spellings.
+    assert Path(raw["static"]["geog_root"]) == geog.resolve()
     assert "case_data" not in raw
     assert config_geog_root(out) == geog.resolve()
     assert "geography BLOCKER" not in printed.err
     assert "geography staging is the next step" not in printed.out
     command = printed.out.split("next:")[-1].strip().splitlines()[0]
     assert "--geog-root" not in command
-    assert shlex.split(command) == ["gpuwm", "go", str(out)]
+    # The printed command spells the configuration with forward slashes
+    # (shlex-safe on Windows, where a backslash path would lose its
+    # separators); compare the path, not the spelling.
+    words = shlex.split(command)
+    assert words[:2] == ["gpuwm", "go"] and len(words) == 3
+    assert Path(words[2]) == out
 
     checked_roots.clear()
     assert cli_main(["check", str(out), "--budget-gib", "20"]) == 0

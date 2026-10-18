@@ -8,7 +8,13 @@ import sys
 import time
 
 
-_REPLACE_BACKOFF_SECONDS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.19)
+#: About 4 s of backoff in all.  The first six steps (0.50 s) were enough on
+#: a workstation; on the hosted Windows runner (2.9.2 publish, cpu
+#: windows-2025, pytest-xdist at full load) a reader's open outlived them
+#: and the writer raised PermissionError [WinError 5] on a receipt replace.
+#: Waiting longer costs nothing but time: the source stays complete and the
+#: prior destination intact until one replace succeeds.
+_REPLACE_BACKOFF_SECONDS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.19, 0.25, 0.25, 0.5, 0.5, 1.0, 1.0)
 
 
 def io_path(path: str | os.PathLike[str]) -> Path:
@@ -49,7 +55,7 @@ def canonical_path(path: str | os.PathLike[str]) -> Path:
 
 def replace_file_with_retry(source: str | os.PathLike[str],
                             destination: str | os.PathLike[str]) -> Path:
-    """Atomically replace after at most 0.50 s of permission-error backoff.
+    """Atomically replace after at most about 4 s of permission-error backoff.
 
     Windows readers commonly hold a publication briefly without delete sharing.
     The source stays complete and the prior destination stays intact until one

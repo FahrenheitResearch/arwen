@@ -274,10 +274,13 @@ def test_background_receipt_updates_are_atomic_for_readers(tmp_path):
     path = tmp_path / "truth-status.json"
     obs.save(path, {"status": "pending", "rows": []})
     finished = threading.Event()
+    errors = []
     def update():
         try:
             for count in range(12):
                 obs.save(path, {"status": "complete", "rows": list(range(10000)), "update": count})
+        except BaseException as error:        # noqa: BLE001 - the thread's verdict is asserted below
+            errors.append(error)
         finally:
             finished.set()
     writer = threading.Thread(target=update)
@@ -290,3 +293,7 @@ def test_background_receipt_updates_are_atomic_for_readers(tmp_path):
             assert read_replaced_json(path)["status"] in ("pending", "complete")
     finally:
         writer.join()
+    # The writer must outlast the reader's opens as well: on the hosted
+    # Windows runner (2.9.2 publish) it gave up after 0.50 s of backoff with
+    # PermissionError, which pytest only reported as a thread warning.
+    assert not errors, errors
